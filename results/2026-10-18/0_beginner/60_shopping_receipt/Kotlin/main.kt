@@ -1,0 +1,22 @@
+import java.math.BigDecimal
+import java.math.RoundingMode
+
+
+fun main() {
+    val names = listOf("milk", "notebook", "bread", "apple", "detergent", "eggs")
+    val prices = intArrayOf(198, 165, 248, 128, 437, 268)
+    val quantities = intArrayOf(2, 3, 1, 4, 1, 1)
+    val food = booleanArrayOf(true, false, true, true, false, true)
+    var foodTotal = 0
+    var generalTotal = 0
+    for (i in names.indices) {
+        val subtotal = prices[i] * quantities[i]
+        if (food[i]) foodTotal += subtotal else generalTotal += subtotal
+        println("${names[i]} ${prices[i]} x ${quantities[i]} = $subtotal")
+    }
+    val foodTax = foodTotal * 8 / 100
+    val generalTax = generalTotal * 10 / 100
+    println("food: $foodTotal yen, tax $foodTax yen")
+    println("general: $generalTotal yen, tax $generalTax yen")
+    println("total: ${foodTotal + generalTotal + foodTax + generalTax} yen")
+}

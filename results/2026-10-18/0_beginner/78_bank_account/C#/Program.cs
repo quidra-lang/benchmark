@@ -1,0 +1,29 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Globalization;
+
+CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+
+string[] transactions = { "deposit Emma 1200", "withdraw Leo 4000", "transfer Nina Leo 5000",
+    "withdraw Leo 4000", "transfer Emma Nina 2500", "transfer Emma Nina 2000",
+    "withdraw Emma 300", "deposit Nina 750", "transfer Leo Emma 3200", "withdraw Nina 9800" };
+var balances = new SortedDictionary<string,int>(StringComparer.Ordinal) {
+    ["Nina"] = 12000, ["Leo"] = 3500, ["Emma"] = 800
+};
+for (int i = 0; i < transactions.Length; i++) {
+    string[] parts = transactions[i].Split(' ');
+    string name = parts[1];
+    int amount = int.Parse(parts[^1],CultureInfo.InvariantCulture);
+    bool success = parts[0] == "deposit" || balances[name] >= amount;
+    if (success) {
+        if (parts[0] == "deposit") balances[name] += amount;
+        else {
+            balances[name] -= amount;
+            if (parts[0] == "transfer") balances[parts[2]] += amount;
+        }
+    }
+    Console.WriteLine($"op {i + 1}: {transactions[i]}" +
+        (success ? " ok" : " failed (insufficient funds)"));
+}
+foreach (var pair in balances) Console.WriteLine($"{pair.Key}: {pair.Value}");

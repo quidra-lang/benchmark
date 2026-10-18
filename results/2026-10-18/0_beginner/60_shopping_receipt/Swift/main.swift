@@ -1,0 +1,16 @@
+import Foundation
+
+
+let names = ["milk", "notebook", "bread", "apple", "detergent", "eggs"]
+let prices = [198, 165, 248, 128, 437, 268], quantities = [2, 3, 1, 4, 1, 1]
+let food = [true, false, true, true, false, true]
+var foodTotal = 0, generalTotal = 0
+for i in names.indices {
+    let subtotal = prices[i] * quantities[i]
+    if food[i] { foodTotal += subtotal } else { generalTotal += subtotal }
+    print("\(names[i]) \(prices[i]) x \(quantities[i]) = \(subtotal)")
+}
+let foodTax = foodTotal * 8 / 100, generalTax = generalTotal * 10 / 100
+print("food: \(foodTotal) yen, tax \(foodTax) yen")
+print("general: \(generalTotal) yen, tax \(generalTax) yen")
+print("total: \(foodTotal + generalTotal + foodTax + generalTax) yen")
