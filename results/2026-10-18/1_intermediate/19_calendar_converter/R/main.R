@@ -408,10 +408,11 @@ validate_arguments <- function(command, args) {
   }
   calendar <- args[1]
   allowed <- calendars
-  if (command %in% c("INFO", "MONTHS", "MONTHCAL", "NTH", "SPAN"))
+  if (command %in% c("INFO", "MONTHS", "MONTHCAL", "NTH", "SPAN")) {
     allowed <- ymd
-  else if (command %in% c("LEAP", "NEWYEAR"))
+  } else if (command %in% c("LEAP", "NEWYEAR")) {
     allowed <- year_calendars
+  }
   require_command(calendar %in% allowed)
   if (command == "CONVERT") {
     require_command(args[3] == "TO" && args[4] %in% calendars)
@@ -437,7 +438,8 @@ validate_arguments <- function(command, args) {
     require_command(args[4] %in% tzolkin)
     require_command(digits(args[5], 2))
     require_command(args[6] %in% haab)
-    require_command(as.numeric(args[5]) <= if (args[6] == "Uayeb") 4 else 19)
+    maximum_day <- if (args[6] == "Uayeb") 4 else 19
+    require_command(as.numeric(args[5]) <= maximum_day)
   }
 }
 
@@ -455,9 +457,11 @@ calendar_lines <- function(calendar, year, month) {
   while (cursor <= last) {
     fields <- character()
     for (day in cursor:(cursor + 6)) {
-      if (first <= day && day <= last)
+      if (first <= day && day <= last) {
         fields <- c(fields, sprintf("%2d", day - first + 1))
-      else fields <- c(fields, "  ")
+      } else {
+        fields <- c(fields, "  ")
+      }
     }
     result <- c(result, sub("[[:space:]]+$", "", paste(fields, collapse = " ")))
     cursor <- cursor + 7
@@ -575,10 +579,11 @@ execute <- function(command, args) {
     first <- bounds[1]
     last <- bounds[2]
     weekday <- match(args[5], weekdays) - 1
-    if (args[4] == "LAST")
+    if (args[4] == "LAST") {
       day <- last - (last - weekday) %% 7
-    else
+    } else {
       day <- first + (weekday - first) %% 7 + 7 * (as.numeric(args[4]) - 1)
+    }
     return(if (day > last) "NONE" else format_date(calendar, day))
   }
   if (command == "VALID") {
@@ -657,11 +662,15 @@ for (i in seq_len(count)) {
     execute(command, args),
     error = function(e) {
       reason <- conditionMessage(e)
-      if (reason == "COMMAND") "INVALID COMMAND"
-      else if (reason == "RANGE") "OUT OF RANGE"
-      else if (reason %in% c("FORMAT", "YEAR", "MONTH", "DAY", "FIELD", "WEEK"))
+      if (reason == "COMMAND") {
+        "INVALID COMMAND"
+      } else if (reason == "RANGE") {
+        "OUT OF RANGE"
+      } else if (reason %in% c("FORMAT", "YEAR", "MONTH", "DAY", "FIELD", "WEEK")) {
         "INVALID DATE"
-      else stop(e)
+      } else {
+        stop(e)
+      }
     }
   )
   output <- c(output, result)
