@@ -33,18 +33,18 @@ Do not update an unapproved language merely because a newer version exists.
 
 Under `results/YYYY-MM-DD`, each programming language has three difficulty levels, with 100 programming topics per level. Each topic has two tasks:
 
-**Task A — Generation (`task1.txt`)**
+**Task A — Generation (`taskA.txt`)**
 
-`task1.txt` describes a program to create. The corresponding source code is stored within that language's directory.
+`taskA.txt` describes a program to create. The corresponding source code is stored within that language's directory.
 
 The source code must follow these rules:
 - Use idiomatic, widely accepted conventions for the language. For example, do not add Python type annotations when they would not normally be used for that kind of program.
 - When several implementations are reasonable, prefer one that is concise and conveys the required meaning clearly. Do not shorten code at the expense of important type information or clarity. For example, do not use C++ `auto` indiscriminately when an explicit type would better communicate the program's meaning.
 - Preserve the intended behavior of the task.
 
-**Task B — Understanding (`task2.txt` and `list-up.txt`)**
+**Task B — Understanding (`taskB.txt` and `list-up.txt`)**
 
-`task2.txt` describes a question about the program created for Task A. The question can involve either **code comprehension** (such as explaining an algorithm, tracing data, or identifying program behavior) or **code modification** (such as finding where and how to implement a requested change). Assume the existing program is bug-free.
+`taskB.txt` describes a question about the program created for Task A. The question can involve either **code comprehension** (such as explaining an algorithm, tracing data, or identifying program behavior) or **code modification** (such as finding where and how to implement a requested change). Assume the existing program is bug-free.
 
 `list-up.txt` contains the smallest set of lines from the Task A source code that an LLM would need to read to accurately answer the comprehension question or identify and understand the requested modification. Task B measures the source code that must be read, not the tokens needed to write the answer or the modified code.
 
@@ -68,14 +68,14 @@ Building and executing programs is not required for this benchmark update. Never
 
 For each language/topic updated in Step 2.2, use `metric/tokenizer.py` to recalculate:
 
-- `task1`: tokens in the complete Task A source code for that topic.
-- `task2`: tokens in that topic's `list-up.txt` file.
+- `taskA`: tokens in the complete Task A source code for that topic.
+- `taskB`: tokens in that topic's `list-up.txt` file.
 
 Write both totals to the `tokens.csv` file in the corresponding topic directory, using this format:
 
 ```csv
-task1,27492
-task2,3749
+taskA,27492
+taskB,3749
 ```
 
 Repeat this for every affected language/topic. Keep existing `tokens.csv` values for topics that were not modified; do not retokenize the entire dataset unnecessarily.
