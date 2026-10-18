@@ -73,6 +73,10 @@ J_WORDS_BY_START = {
 }
 RE_CPP_RAW = re.compile(r'(?:u8|u|U|L)?R"([^\s()\\]{0,16})\(')
 RE_HASH_QUOTE = re.compile(r'(?:br|rb|r)?(#{1,16})("""|")')
+RE_LUA_LONG = re.compile(r"\[(=*)\[")
+RE_RUBY_PERCENT = re.compile(r"%[qQwWiIxrs]([([{<|/!])")
+RE_R_INFIX = re.compile(r"%[^%\s]+%")
+RE_PHP_HEREDOC = re.compile(r"""<<<[ \t]*(['"]?)([A-Za-z_][A-Za-z_0-9]*)\1[ \t]*\n""")
 RE_STR_PREFIX = re.compile(r'(?i:\$@|@\$|@|\$+|fr|rf|tr|rt|br|rb|ur|ru|u8|r|f|t|b|u|l|c|R)?("""|\'\'\'|"|\'|`)')
 
 # Shared numeric lexeme rule, including common base, exponent, and suffix forms.
@@ -113,7 +117,7 @@ def _quoted_end(source: str, quote_start: int, opener: str, closer: str | None =
     """Return index after a quoted literal; supports escapes and J doubled '."""
     closer = closer or opener
     pos = quote_start + len(opener)
-    multiline = len(opener) == 3 or opener == "`" or verbatim  # raw, template and verbatim strings
+    multiline = len(opener) >= 3 or opener == "`" or verbatim  # raw, template and verbatim strings
     while pos < len(source):
         if verbatim and opener == '"' and source.startswith('""', pos):
             pos += 2  # C# verbatim string quotes are doubled.
@@ -137,12 +141,29 @@ def _quoted_end(source: str, quote_start: int, opener: str, closer: str | None =
     return None
 
 
+def _paired_delimiter_end(source: str, pos: int, opener: str, closer: str) -> int | None:
+    """Return the closing delimiter position, balancing Ruby percent literals."""
+    depth = 1
+    while pos < len(source):
+        if source[pos] == "\\":
+            pos += 2
+            continue
+        if opener != closer and source[pos] == opener:
+            depth += 1
+        elif source[pos] == closer:
+            depth -= 1
+            if depth == 0:
+                return pos
+        pos += 1
+    return None
+
+
 def _literal_regions(source: str, i: int) -> tuple[int, int, int, int] | None:
     """Return (prefix_end, opener_end, closer_start, end) for a literal.
 
     Delimiters count as one token each, and a literal prefix (e.g. r, f,
-    u8R) as one token. The content is tokenized without interpreting its
-    syntax, so text such as "ABC123" is not one indivisible token.
+    u8R) as one token. The content uses the same token splitting rules
+    as code, so text such as "ABC123" is not one indivisible token.
     """
     m = RE_CPP_RAW.match(source, i)
     if m:
@@ -160,6 +181,35 @@ def _literal_regions(source: str, i: int) -> tuple[int, int, int, int] | None:
             return m.start(1), m.end(), close_start, close_start + len(closer)
         return None
 
+    # Lua long brackets can contain quotes and newlines without ending early.
+    m = RE_LUA_LONG.match(source, i)
+    if m:
+        closer = "]" + m.group(1) + "]"
+        close_start = source.find(closer, m.end())
+        if close_start != -1:
+            return i, m.end(), close_start, close_start + len(closer)
+
+    # Ruby %q{}, %w(), %r/.../ etc. use paired delimiters.
+    m = RE_RUBY_PERCENT.match(source, i)
+    if m:
+        opening = m.group(1)
+        closing = {"(": ")", "[": "]", "{": "}", "<": ">"}.get(opening, opening)
+        close_start = _paired_delimiter_end(source, m.end(), opening, closing)
+        if close_start is not None:
+            return m.end() - 1, m.end(), close_start, close_start + 1
+
+    # PHP heredoc/nowdoc markers delimit raw multiline source text.
+    m = RE_PHP_HEREDOC.match(source, i)
+    if m:
+        name = re.escape(m.group(2))
+        closer = re.search(
+            rf"(?m)^[ \\t]*(?P<name>{name})(?=[ \\t]*(?:[;,.)\]}}]|$))",
+            source[m.end():],
+        )
+        if closer is not None:
+            close_start = m.end() + closer.start("name")
+            return i, m.end() - 1, close_start, close_start + len(m.group(2))
+
     m = RE_STR_PREFIX.match(source, i)
     if not m:
         return None
@@ -168,10 +218,16 @@ def _literal_regions(source: str, i: int) -> tuple[int, int, int, int] | None:
     # Julia's postfix conjugate transpose is not a quoted literal.
     if prefix_end == i and opener == "'" and i > 0 and (source[i-1].isalnum() or source[i-1] in ")]}"):
         return None
+    # C# raw strings can use more than three quote characters.
+    if opener == '"""':
+        end_of_opener = prefix_end + 3
+        while end_of_opener < len(source) and source[end_of_opener] == '"':
+            end_of_opener += 1
+        opener = source[prefix_end:end_of_opener]
     end = _quoted_end(source, prefix_end, opener, verbatim="@" in source[i:prefix_end])
     if end is None:
         return None
-    return prefix_end, m.end(), end - len(opener), end
+    return prefix_end, prefix_end + len(opener), end - len(opener), end
 
 
 def _identifier_chunks(name: str) -> list[str]:
@@ -267,6 +323,14 @@ def tokenize(source: str) -> list[Token]:
                 emit("literal_prefix", prefix_end)
             emit("quote", opener_end)
             continue
+
+        # R user-defined %name% infix operators are lexical atoms.
+        # Apply this syntactic rule independently of the file's language.
+        if ch == "%":
+            r_op = RE_R_INFIX.match(source, i, token_limit)
+            if r_op:
+                emit("operator", r_op.end())
+                continue
 
         # J primitive words with dot/colon remain lexical atoms, while
         # for_i. is decomposed through the generic identifier path below.

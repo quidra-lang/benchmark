@@ -79,6 +79,8 @@ For each language/topic updated in Step 2.2, use `metric/tokenizer.py` to recalc
 - `taskA`: tokens in the complete Task A source code for that topic.
 - `taskB`: tokens in that topic's `list-up.txt` file.
 
+The tokenizer applies **the same lexical counting rules to all 20 languages** (including inside quoted literals): word components, individual numeric digits, whitespace, punctuation, and recognized compound operators. Contiguous `[]` counts as one token. Common delimiters such as Lua long brackets, Ruby percent literals, and PHP heredoc/nowdoc are recognized to avoid false string endings. These are fixed, source-text-based counting rules, **not a model-specific LLM tokenizer or a complete parser for each language**.
+
 Save the token-colored HTML views as **`taskA.html`** and **`taskB.html`** alongside the corresponding language's source files. Run the following commands from the repository root, replacing the example directory and source filename with the actual paths:
 
 ```sh
