@@ -1155,10 +1155,11 @@ static void run(const char *command, int argc, char **a) {
     } else if (strcmp(command, "ORFS") == 0) {
         orfs(sequence, atoi(a[1]));
     } else if (strcmp(command, "GC") == 0) {
+        const char *labels = "ACGT";
         int values[4] = {0};
         char text[32];
         for (i = 0; i < n; ++i)
-            ++values[strchr("ACGT", sequence[i]) - "ACGT"];
+            ++values[strchr(labels, sequence[i]) - labels];
         percentage(gc(sequence), n, text);
         printf("A=%d C=%d G=%d T=%d GC=%s%%\n",
                values[0], values[1], values[2], values[3], text);
