@@ -172,7 +172,7 @@ number_arg <- function(text, minimum, maximum, nonzero = FALSE) {
 }
 
 kinds_for <- function(command, count) {
-  switch(
+  result <- switch(
     command,
     SEQ = c("new", "sequence"),
     SLICE = c("name", "position", "position", "new"),
@@ -191,9 +191,9 @@ kinds_for <- function(command, count) {
     ALIGN = c("name", "name", "mode", "score", "mismatch", "gap"),
     FOLD = c("name", "loop"),
     ASSEMBLE = c("new", "overlap", rep("name", count - 2)),
-    UNPACK = c("new", "unpacklength", "hex"),
-    rep("name", count)
+    UNPACK = c("new", "unpacklength", "hex")
   )
+  if (is.null(result)) rep("name", count) else result
 }
 
 validate <- function(command, arguments) {
@@ -404,7 +404,7 @@ align <- function(a, b, mode, match_score, mismatch, gap) {
   end_j <- 0
   for (i in seq_len(m)) {
     for (j in seq_len(n)) {
-      diagonal <- table[i, j] + if (left[i] == right[j]) match_score else mismatch
+      diagonal <- table[i, j] + (if (left[i] == right[j]) match_score else mismatch)
       value <- max(diagonal, table[i, j + 1] + gap, table[i + 1, j] + gap)
       table[i + 1, j + 1] <- if (local) max(0, value) else value
       if (local && table[i + 1, j + 1] > best) {
@@ -431,7 +431,7 @@ align <- function(a, b, mode, match_score, mismatch, gap) {
          (!local && (i != 0 || j != 0))) {
     if (i > 0 && j > 0 &&
         table[i + 1, j + 1] ==
-        table[i, j] + if (left[i] == right[j]) match_score else mismatch) {
+        table[i, j] + (if (left[i] == right[j]) match_score else mismatch)) {
       row_a <- c(row_a, left[i])
       row_b <- c(row_b, right[j])
       i <- i - 1
@@ -640,8 +640,11 @@ run_command <- function(command, a) {
   }
   if (command == "LIST") {
     names <- sort(ls(registry))
-    if (!length(names)) emit("no sequences")
-    else for (name in names) emit(name, nchar(sequence_of(name)), "nt")
+    if (!length(names)) {
+      emit("no sequences")
+    } else {
+      for (name in names) emit(name, nchar(sequence_of(name)), "nt")
+    }
     return(invisible(NULL))
   }
   name <- a[[1]]
@@ -650,8 +653,11 @@ run_command <- function(command, a) {
   if (command == "SLICE") {
     start <- a[[2]]
     end <- a[[3]]
-    part <- if (start <= end) substr(sequence, start, end)
-            else revcomp(substr(sequence, end, start))
+    part <- if (start <= end) {
+      substr(sequence, start, end)
+    } else {
+      revcomp(substr(sequence, end, start))
+    }
     emit(store(a[[4]], part))
   } else if (command == "MUTATE") {
     position <- a[[2]]
