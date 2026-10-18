@@ -365,8 +365,11 @@ local function show_hours(payroll, employee, period)
     if not found then emit(payroll, 2, "(none)") end
     for _, week in ipairs({2 * period - 1, 2 * period}) do
         local values, overtime = weekly(payroll, employee, week)
-        emit(payroll, 2, "week", week, table.unpack(hours_parts(values)),
-             "weekly-ot", duration(overtime))
+        local parts = {"week", week}
+        for _, item in ipairs(hours_parts(values)) do parts[#parts + 1] = item end
+        parts[#parts + 1] = "weekly-ot"
+        parts[#parts + 1] = duration(overtime)
+        emit(payroll, 2, table.unpack(parts))
     end
     emit(payroll, 2, "total", table.unpack(hours_parts(breakdown(payroll, employee, period))))
 end
