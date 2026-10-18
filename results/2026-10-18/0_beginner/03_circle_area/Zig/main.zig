@@ -15,7 +15,7 @@ pub fn main(init: std.process.Init) !void {
         const r: f64 = @floatFromInt(radius);
         const area = (pi * r) * r;
         const circumference = (2.0 * pi) * r;
-        try out.print("r={d} area=", .{radius});
+        try out.print("r={d} area=", .{ radius });
         try writeFixed(out, area);
         try out.writeAll(" circumference=");
         try writeFixed(out, circumference);

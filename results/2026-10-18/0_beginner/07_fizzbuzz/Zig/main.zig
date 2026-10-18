@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
         } else if (number % 5 == 0) {
             try out.writeAll("Buzz\n");
         } else {
-            try out.print("{d}\n", .{number});
+            try out.print("{d}\n", .{ number });
         }
     }
     try out.flush();

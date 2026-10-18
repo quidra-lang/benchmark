@@ -14,9 +14,11 @@ pub fn main(init: std.process.Init) !void {
     var end: usize = sentence.len;
     while (end > 0) {
         var start = end;
-        while (start > 0 and sentence[start - 1] != ' ') start -= 1;
+        while (start > 0 and sentence[start - 1] != ' ')
+            start -= 1;
         try out.writeAll(sentence[start..end]);
-        if (start == 0) break;
+        if (start == 0)
+            break;
         try out.writeByte(' ');
         end = start - 1;
     }

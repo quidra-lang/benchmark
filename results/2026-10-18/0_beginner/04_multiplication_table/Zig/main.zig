@@ -6,7 +6,7 @@ pub fn main(init: std.process.Init) !void {
     const out = &writer.interface;
     for (1..10) |row| {
         for (1..10) |column| {
-            try out.print("{d:>3}", .{row * column});
+            try out.print("{d:>3}", .{ row * column });
         }
         try out.writeByte('\n');
     }

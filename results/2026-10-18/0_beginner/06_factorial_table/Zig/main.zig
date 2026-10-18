@@ -7,7 +7,8 @@ pub fn main(init: std.process.Init) !void {
     var factorial: u32 = 1;
     var n: u32 = 0;
     while (n <= 12) : (n += 1) {
-        if (n > 0) factorial *= n;
+        if (n > 0)
+            factorial *= n;
         try out.print("{d}! = {d}\n", .{ n, factorial });
     }
     try out.flush();
