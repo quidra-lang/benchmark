@@ -280,7 +280,7 @@ class Inventory {
         return id;
     }
 
-    pair<vector<Part>, Amount> issue(const string& w, const string& code, Amount q) {
+    std::pair<vector<Part>, Amount> issue(const string& w, const string& code, Amount q) {
         vector<Part> parts;
         Amount cost = 0;
         for (int id : fifo(w, code)) {
@@ -664,7 +664,7 @@ class Inventory {
             for (const auto& [code, entry] : items) {
                 Amount q = 0;
                 Amount value = 0;
-                vector<pair<Amount, Amount>> warehouseValues;
+                vector<std::pair<Amount, Amount>> warehouseValues;
                 vector<Amount> itemBuckets(4, 0);
                 for (const string& w : warehouses) {
                     Amount heldQ = 0;
