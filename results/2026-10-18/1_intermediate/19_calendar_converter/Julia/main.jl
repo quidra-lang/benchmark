@@ -1,8 +1,8 @@
 using Printf
 
-const CALENDARS = split(
+const CALENDARS = String.(split(
     "GREGORIAN JULIAN ISO ISLAMIC HEBREW PERSIAN COPTIC ETHIOPIC FRENCH MAYAN JD FIXED"
-)
+))
 const YMD = Set([
     "GREGORIAN", "JULIAN", "ISLAMIC", "HEBREW", "PERSIAN",
     "COPTIC", "ETHIOPIC", "FRENCH"
@@ -132,8 +132,10 @@ function year_type(year::Int)
 end
 
 function names_for(calendar::String, year::Int)
-    calendar == "HEBREW" && is_leap(calendar, year) ?
-        HEBREW_LEAP_NAMES : MONTH_NAMES[calendar]
+    if calendar == "HEBREW" && is_leap(calendar, year)
+        return HEBREW_LEAP_NAMES
+    end
+    MONTH_NAMES[calendar]
 end
 
 function month_lengths(calendar::String, year::Int)
@@ -317,7 +319,7 @@ function new_years(calendar::String, first::Int, last::Int)
     end
     entries = String[]
     while start_fixed(calendar, year) <= last
-        push!(entries, "$year:" * format_date("GREGORIAN", start_fixed(calendar, year)))
+        push!(entries, string(year, ":", format_date("GREGORIAN", start_fixed(calendar, year))))
         year += 1
     end
     entries
