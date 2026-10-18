@@ -1,0 +1,634 @@
+// Native integer billing. Paid amounts and charging costs are stored, not repriced.
+int smaller(int a, int b)
+    return if a < b then a else b
+
+int integer_value(string text)
+    int result = int.parse(text)
+    return result
+
+string two_digits(int value)
+    return (if value < 10 then "0" else "") + value.string()
+
+string clock_text(int minute)
+    return (minute / 1440 + 1).string() + "-" + two_digits(minute % 1440 / 60) + ":" + two_digits(minute % 60)
+
+string duration(int minute)
+    return (minute / 60).string() + ":" + two_digits(minute % 60)
+
+string tenth(int value)
+    return (value / 10).string() + "." + (value % 10).string()
+
+string type_name(int kind)
+    return ["MOTORCYCLE", "CAR", "ECAR", "VAN", "BUS"][kind]
+
+string spot_kind(int kind)
+    return ["MOTO", "COMPACT", "LARGE", "EV"][kind]
+
+int type_id(string text)
+    for 0 <= int k < 5
+        if text == type_name(k)
+            return k
+    return -1
+
+int[] preference(int kind)
+    if kind == 0
+        return [0, 1, 2]
+    if kind == 1
+        return [1, 2]
+    if kind == 2
+        return [3, 1, 2]
+    return [2]
+
+int preference_rank(int kind, int target)
+    int[] kinds = preference(kind)
+    for 0 <= int k < int(len(kinds))
+        if kinds[k] == target
+            return k
+    return -1
+
+class Spot(int level, int number, int kind, bool closed, int occupant)
+class Vehicle(string plate, int kind, int spot, int entered, int energy, int charging, int validation, int paid_at, int paid_parking, int paid_night, bool active, int exited, string exit_location, int total, bool lost)
+class Waiting(string plate, int kind, int joined)
+class Pass(string plate, int last_day)
+class State()
+    int now = 0
+    int levels = 0
+    Spot[] spots = []
+    // At most N admissions and N exits. Fixed global slots never copy a history.
+    Vehicle[] vehicles = array(1000, fill = Vehicle("", 0, -1, 0, 0, 0, 0, -1, 0, 0, false, -1, "", 0, false))
+    int vehicle_used = 0
+    int[] exits = array(1000, fill = 0)
+    int exit_used = 0
+    Waiting[] waiting = []
+    Pass[] passes = []
+    int[] rates = [100, 200, 200, 300, 600]
+    int[] caps = [800, 1600, 1600, 2400, 4800]
+    int[] fees = [300, 2000, 30]
+    // Entries, exits, refusals, total stay; revenues: exits and five amounts.
+    int[][] stats = array(5, fill = array(4, fill = 0))
+    int[][] revenue = array(5, fill = array(6, fill = 0))
+    int[][][] daily = array(61, fill = array(5, fill = array(4, fill = 0)))
+    int parked = 0
+    int peak = 0
+    int peak_at = -1
+
+void emit(string text)
+    print(text + NL)
+
+void fail(string text)
+    emit("ERROR " + text)
+
+string spot_text(const State state, int index)
+    Spot item = state.spots[index]
+    return "L" + item.level.string() + "-" + item.number.string()
+
+string location(const State state, int index)
+    Vehicle item = state.vehicles[index]
+    string result = spot_text(state, item.spot)
+    if item.kind == 4
+        result += ".." + (state.spots[item.spot].number + 2).string()
+    return result
+
+int parked_id(const State state, string plate)
+    for 0 <= int k < state.vehicle_used
+        if state.vehicles[k].active and state.vehicles[k].plate == plate
+            return k
+    return -1
+
+int waiting_id(const State state, string plate)
+    for 0 <= int k < int(len(state.waiting))
+        if state.waiting[k].plate == plate
+            return k
+    return -1
+
+int pass_id(const State state, string plate)
+    for 0 <= int k < int(len(state.passes))
+        if state.passes[k].plate == plate
+            return k
+    return -1
+
+bool valid_pass(const State state, string plate, int minute)
+    int index = pass_id(state, plate)
+    return index >= 0 and state.passes[index].last_day >= minute / 1440 + 1
+
+int spot_id(const State state, string text)
+    for 0 <= int k < int(len(state.spots))
+        if spot_text(state, k) == text
+            return k
+    return -1
+
+bool free_spot(const State state, int index)
+    return not state.spots[index].closed and state.spots[index].occupant < 0
+
+int assign_spot(const State state, int kind)
+    if kind == 4
+        for 0 <= int k < int(len(state.spots)) - 2
+            bool fits = true
+            for 0 <= int offset < 3
+                Spot item = state.spots[k + offset]
+                if item.level != state.spots[k].level or item.number != state.spots[k].number + offset or item.kind != 2 or not free_spot(state, k + offset)
+                    fits = false
+            if fits
+                return k
+    else
+        for int target = preference(kind)[]
+            for 0 <= int k < int(len(state.spots))
+                if state.spots[k].kind == target and free_spot(state, k)
+                    return k
+    return -1
+
+int[] location_order(const State state)
+    int[] result = []
+    for 0 <= int k < int(len(state.spots))
+        int index = state.spots[k].occupant
+        if index >= 0 and state.vehicles[index].spot == k
+            result = result.append(index)
+    return result
+
+void occupy(State &state, int index, int target)
+    state.vehicles[index].spot = target
+    for 0 <= int offset < (if state.vehicles[index].kind == 4 then 3 else 1)
+        state.spots[target + offset].occupant = index
+
+void vacate(State &state, int index)
+    int target = state.vehicles[index].spot
+    for 0 <= int offset < (if state.vehicles[index].kind == 4 then 3 else 1)
+        state.spots[target + offset].occupant = -1
+
+int admit(State &state, string plate, int kind, int target)
+    int index = state.vehicle_used
+    state.vehicle_used += 1
+    state.vehicles[index] = Vehicle(plate, kind, target, state.now, 0, 0, 0, -1, 0, 0, true, -1, "", 0, false)
+    occupy(&state, index, target)
+    state.stats[kind][0] += 1
+    state.daily[state.now / 1440 + 1][kind][0] += 1
+    state.parked += 1
+    if state.parked > state.peak
+        state.peak = state.parked
+        state.peak_at = state.now
+    return index
+
+void refusal(State &state, int kind, int minute)
+    state.stats[kind][2] += 1
+    state.daily[minute / 1440 + 1][kind][2] += 1
+
+void give_up(State &state)
+    Waiting[] remaining = []
+    for Waiting item = state.waiting[]
+        if state.now - item.joined >= 30
+            emit("GIVEUP " + item.plate + " " + type_name(item.kind) + " " + clock_text(item.joined + 30))
+            refusal(&state, item.kind, item.joined + 30)
+        else
+            remaining = remaining.append(item)
+    state.waiting = remaining
+
+void process_queue(State &state)
+    Waiting[] remaining = []
+    for Waiting item = state.waiting[]
+        int target = assign_spot(state, item.kind)
+        if target < 0
+            remaining = remaining.append(item)
+        else
+            int index = admit(&state, item.plate, item.kind, target)
+            emit("ADMIT " + item.plate + " " + type_name(item.kind) + " " + location(state, index) + " waited " + duration(state.now - item.joined))
+    state.waiting = remaining
+
+int[] interval_fee(const State state, int index, int start, int finish, int free_minutes)
+    Vehicle item = state.vehicles[index]
+    int stay = finish - start
+    if valid_pass(state, item.plate, finish) or stay <= free_minutes
+        return [0, 0]
+    int parking = 0
+    int offset = 0
+    while offset < stay
+        int minutes = smaller(1440, stay - offset)
+        if offset == 0
+            minutes -= free_minutes
+        parking += smaller((minutes + 29) / 30 * state.rates[item.kind], state.caps[item.kind])
+        offset += 1440
+    return [parking, (finish / 1440 - start / 1440) * state.fees[0]]
+
+int[] exit_fees(const State state, int index, bool lost)
+    Vehicle item = state.vehicles[index]
+    int[] amounts = array(6, fill = 0)
+    if item.paid_at < 0
+        int[] partial = interval_fee(state, index, item.entered, state.now, 15 + item.validation)
+        amounts[0] = partial[0]
+        amounts[1] = partial[1]
+        amounts[2] = if lost then state.fees[1] else 0
+        amounts[5] = amounts[0] + amounts[1] + amounts[2] + item.charging
+    else
+        int[] extra = interval_fee(state, index, item.paid_at, state.now, 15)
+        amounts[0] = item.paid_parking + extra[0]
+        amounts[1] = item.paid_night + extra[1]
+        amounts[5] = extra[0] + extra[1]
+    amounts[3] = item.charging
+    amounts[4] = amounts[0] + amounts[1] + amounts[2] + amounts[3]
+    return amounts
+
+void fee_line(const State state, int index, string label, int[] amounts)
+    Vehicle item = state.vehicles[index]
+    emit(label + " " + item.plate + " " + location(state, index) + " stay " + duration(state.now - item.entered) + " parking " + amounts[0].string() + " night " + amounts[1].string() + " lost " + amounts[2].string() + " charge " + amounts[3].string() + " total " + amounts[4].string() + " due " + amounts[5].string())
+
+string annotation(const State state, int index)
+    Vehicle item = state.vehicles[index]
+    string result = ""
+    if valid_pass(state, item.plate, state.now)
+        result += " PASS"
+    if item.validation > 0
+        result += " VAL " + item.validation.string()
+    if item.energy > 0
+        result += " KWH " + item.energy.string()
+    if item.paid_at >= 0
+        result += " PAID"
+    return result
+
+void move_vehicle(State &state, int index, int target)
+    string previous = location(state, index)
+    vacate(&state, index)
+    occupy(&state, index, target)
+    emit("MOVE " + state.vehicles[index].plate + " " + previous + " -> " + location(state, index))
+
+string occupancy_line(string label, int[] used, int[] available, int closed_count)
+    string result = label
+    for 0 <= int k < 4
+        result += " " + spot_kind(k) + " " + used[k].string() + "/" + available[k].string()
+    return result + " closed " + closed_count.string()
+
+string daily_fields(int[] values)
+    return " entries " + values[0].string() + " exits " + values[1].string() + " refused " + values[2].string() + " revenue " + values[3].string()
+
+string stats_fields(int[] values)
+    int average = if values[1] == 0 then 0 else values[3] * 10 / values[1]
+    return " entries " + values[0].string() + " exits " + values[1].string() + " refused " + values[2].string() + " avg_stay " + tenth(average)
+
+string revenue_fields(int[] values)
+    return " exits " + values[0].string() + " parking " + values[1].string() + " night " + values[2].string() + " lost " + values[3].string() + " charge " + values[4].string() + " total " + values[5].string()
+
+void command(State &state, string line)
+    string[] words = line.split(" ")
+    string[] clock = words[1].split(":")
+    state.now = (integer_value(words[0]) - 1) * 1440 + integer_value(clock[0]) * 60 + integer_value(clock[1])
+    give_up(&state)
+    string action = words[2]
+    if action == "LEVEL"
+        state.levels += 1
+        int total = 0
+        string result = ""
+        for 0 <= int kind < 4
+            int count = integer_value(words[kind + 3])
+            result += " " + spot_kind(kind) + " " + count.string()
+            for 0 <= int k < count
+                total += 1
+                state.spots = state.spots.append(Spot(state.levels, total, kind, false, -1))
+        emit("LEVEL " + state.levels.string() + " spots " + total.string() + result)
+        process_queue(&state)
+        return
+    if action == "CLOSE" or action == "OPEN"
+        int target = spot_id(state, words[3])
+        if target < 0
+            fail("unknown spot " + words[3])
+        elif action == "CLOSE" and state.spots[target].closed
+            fail("spot " + words[3] + " is already closed")
+        elif action == "OPEN" and not state.spots[target].closed
+            fail("spot " + words[3] + " is not closed")
+        elif action == "CLOSE" and state.spots[target].occupant >= 0
+            fail("spot " + words[3] + " is occupied by " + state.vehicles[state.spots[target].occupant].plate)
+        else
+            state.spots[target].closed = action == "CLOSE"
+            emit(action + " " + words[3] + " " + spot_kind(state.spots[target].kind))
+            if action == "OPEN"
+                process_queue(&state)
+        return
+    if action == "RATE" or action == "FEE"
+        if action == "RATE"
+            int kind = type_id(words[3])
+            int rate = integer_value(words[4])
+            int cap = integer_value(words[5])
+            if kind < 0
+                fail("unknown type " + words[3])
+            elif cap < rate
+                fail("cap below rate for " + words[3])
+            else
+                state.rates[kind] = rate
+                state.caps[kind] = cap
+                emit("RATE " + words[3] + " " + rate.string() + " " + cap.string())
+        else
+            int item = -1
+            string[] kinds = ["NIGHT", "LOST", "KWH"]
+            for 0 <= int k < 3
+                if words[3] == kinds[k]
+                    item = k
+            if item < 0
+                fail("unknown fee " + words[3])
+            else
+                state.fees[item] = integer_value(words[4])
+                emit("FEE " + words[3] + " " + state.fees[item].string())
+        return
+    if action == "ENTER"
+        string plate = words[3]
+        int kind = type_id(words[4])
+        int index = parked_id(state, plate)
+        int queued = waiting_id(state, plate)
+        if kind < 0
+            fail("unknown type " + words[4])
+        elif index >= 0
+            fail(plate + " is already parked at " + location(state, index))
+        elif queued >= 0
+            fail(plate + " is already waiting")
+        else
+            int target = assign_spot(state, kind)
+            if target >= 0
+                int admitted = admit(&state, plate, kind, target)
+                emit("ENTER " + plate + " " + type_name(kind) + " " + location(state, admitted))
+            elif len(state.waiting) < 3
+                state.waiting = state.waiting.append(Waiting(plate, kind, state.now))
+                emit("WAIT " + plate + " " + type_name(kind) + " " + len(state.waiting).string())
+            else
+                refusal(&state, kind, state.now)
+                emit("FULL " + plate + " " + type_name(kind))
+        return
+    if action == "LEAVE"
+        int queued = waiting_id(state, words[3])
+        if queued < 0
+            fail(words[3] + " is not waiting")
+        else
+            emit("LEAVE " + words[3] + " " + type_name(state.waiting[queued].kind))
+            state.waiting = state.waiting[:<queued].concat(state.waiting[queued + 1:])
+        return
+    if action == "PASS" or action == "UNPASS"
+        int index = pass_id(state, words[3])
+        bool valid = valid_pass(state, words[3], state.now)
+        if action == "UNPASS"
+            if not valid
+                fail(words[3] + " has no pass")
+            else
+                state.passes[index].last_day = 0
+                emit("UNPASS " + words[3])
+        else
+            int days = integer_value(words[4])
+            int deadline = (if valid then state.passes[index].last_day else state.now / 1440) + days
+            if index < 0
+                state.passes = state.passes.append(Pass(words[3], deadline))
+            else
+                state.passes[index].last_day = deadline
+            emit("PASS " + words[3] + " until " + deadline.string())
+        return
+    if action == "EXIT" or action == "PAY" or action == "QUOTE" or action == "CHARGE" or action == "VALIDATE" or action == "MOVE"
+        string plate = words[3]
+        int index = parked_id(state, plate)
+        if index < 0
+            fail(plate + " is not parked")
+            return
+        Vehicle item = state.vehicles[index]
+        if action == "MOVE"
+            int target = spot_id(state, words[4])
+            if item.kind == 4
+                fail("bus " + plate + " cannot be moved")
+            elif target < 0
+                fail("unknown spot " + words[4])
+            elif item.spot == target
+                fail(plate + " is already at " + words[4])
+            elif state.spots[target].closed
+                fail("spot " + words[4] + " is closed")
+            elif state.spots[target].occupant >= 0
+                fail("spot " + words[4] + " is occupied by " + state.vehicles[state.spots[target].occupant].plate)
+            elif preference_rank(item.kind, state.spots[target].kind) < 0
+                fail(type_name(item.kind) + " cannot use " + spot_kind(state.spots[target].kind) + " spot " + words[4])
+            else
+                move_vehicle(&state, index, target)
+                process_queue(&state)
+            return
+        if action == "CHARGE"
+            int energy = integer_value(words[4])
+            if item.kind != 2
+                fail(plate + " is not an electric car")
+            elif state.spots[item.spot].kind != 3
+                fail(plate + " is not at a charger")
+            elif item.paid_at >= 0
+                fail(plate + " has already paid")
+            elif item.energy + energy > 100
+                fail("charge limit exceeded for " + plate)
+            else
+                int cost = energy * state.fees[2]
+                state.vehicles[index].energy += energy
+                state.vehicles[index].charging += cost
+                emit("CHARGE " + plate + " kwh " + energy.string() + " cost " + cost.string() + " stay_kwh " + state.vehicles[index].energy.string() + " stay_cost " + state.vehicles[index].charging.string())
+            return
+        if action == "VALIDATE"
+            int minutes = integer_value(words[4])
+            if item.paid_at >= 0
+                fail(plate + " has already paid")
+            elif item.validation + minutes > 180
+                fail("validation limit exceeded for " + plate)
+            else
+                state.vehicles[index].validation += minutes
+                emit("VALIDATE " + plate + " " + minutes.string() + " total " + state.vehicles[index].validation.string())
+            return
+        bool lost = action == "EXIT" and len(words) == 5
+        if item.paid_at >= 0 and (action == "PAY" or lost)
+            fail(plate + " has already paid")
+            return
+        int[] amounts = exit_fees(state, index, lost)
+        if action == "PAY"
+            state.vehicles[index].paid_at = state.now
+            state.vehicles[index].paid_parking = amounts[0]
+            state.vehicles[index].paid_night = amounts[1]
+            emit("PAY " + plate + " parking " + amounts[0].string() + " night " + amounts[1].string() + " charge " + amounts[3].string() + " total " + amounts[4].string())
+        else
+            fee_line(state, index, action, amounts)
+            if action == "EXIT"
+                state.vehicles[index].exit_location = location(state, index)
+                state.vehicles[index].exited = state.now
+                state.vehicles[index].total = amounts[4]
+                state.vehicles[index].lost = lost
+                state.vehicles[index].active = false
+                state.exits[state.exit_used] = index
+                state.exit_used += 1
+                vacate(&state, index)
+                state.parked -= 1
+                state.stats[item.kind][1] += 1
+                state.stats[item.kind][3] += state.now - item.entered
+                state.daily[state.now / 1440 + 1][item.kind][1] += 1
+                state.daily[state.now / 1440 + 1][item.kind][3] += amounts[4]
+                state.revenue[item.kind][0] += 1
+                for 0 <= int k < 5
+                    state.revenue[item.kind][k + 1] += amounts[k]
+                process_queue(&state)
+        return
+    if action == "REBALANCE"
+        int moved = 0
+        int[] snapshot = location_order(state)
+        for int index = snapshot[]
+            Vehicle item = state.vehicles[index]
+            if item.kind != 4 and preference_rank(item.kind, state.spots[item.spot].kind) > 0
+                int target = assign_spot(state, item.kind)
+                if target >= 0 and preference_rank(item.kind, state.spots[target].kind) < preference_rank(item.kind, state.spots[item.spot].kind)
+                    move_vehicle(&state, index, target)
+                    moved += 1
+        emit("REBALANCE " + moved.string())
+        process_queue(&state)
+    elif action == "WHERE"
+        string plate = words[3]
+        int index = parked_id(state, plate)
+        int queued = waiting_id(state, plate)
+        int last = -1
+        for 0 <= int k < state.exit_used
+            if state.vehicles[state.exits[k]].plate == plate
+                last = state.exits[k]
+        if index >= 0
+            Vehicle item = state.vehicles[index]
+            emit("WHERE " + plate + " " + location(state, index) + " " + type_name(item.kind) + " " + clock_text(item.entered) + " stay " + duration(state.now - item.entered) + annotation(state, index))
+        elif queued >= 0
+            emit("WHERE " + plate + " waiting " + (queued + 1).string())
+        elif last >= 0
+            emit("WHERE " + plate + " gone " + clock_text(state.vehicles[last].exited))
+        else
+            fail("unknown plate " + plate)
+    elif action == "LIST" or action == "OVERSTAY"
+        int level = if action == "LIST" and len(words) == 4 then integer_value(words[3]) else 0
+        if level > state.levels
+            fail("unknown level " + level.string())
+            return
+        int hours = if action == "OVERSTAY" then integer_value(words[3]) else 0
+        int[] found = []
+        for int index = location_order(state)[]
+            Vehicle item = state.vehicles[index]
+            if (level == 0 or state.spots[item.spot].level == level) and state.now - item.entered >= hours * 60
+                found = found.append(index)
+        if action == "OVERSTAY"
+            // Insertion is stable, preserving location order for equal entry times.
+            for 1 <= int k < int(len(found))
+                int index = found[k]
+                int position = k
+                while position > 0 and state.vehicles[found[position - 1]].entered > state.vehicles[index].entered
+                    found[position] = found[position - 1]
+                    position -= 1
+                found[position] = index
+        emit(action + (if action == "OVERSTAY" then " " + hours.string() else "") + " " + len(found).string())
+        for int index = found[]
+            Vehicle item = state.vehicles[index]
+            string text = location(state, index) + " " + item.plate + " " + type_name(item.kind) + " " + clock_text(item.entered)
+            emit(text + (if action == "OVERSTAY" then " stay " + duration(state.now - item.entered) else annotation(state, index)))
+    elif action == "MAP"
+        emit("MAP " + state.levels.string())
+        for 1 <= int level <= state.levels
+            string symbols = ""
+            int count = 0
+            for Spot item = state.spots[]
+                if item.level == level
+                    if count > 0 and count % 10 == 0
+                        symbols += " "
+                    symbols += if item.closed then "#" elif item.occupant >= 0 then "MCLE"[item.kind] else "mcle"[item.kind]
+                    count += 1
+            emit("L" + level.string() + " " + symbols)
+    elif action == "OCCUPANCY"
+        emit("OCCUPANCY vehicles " + state.parked.string() + " waiting " + len(state.waiting).string())
+        int[] all_used = array(4, fill = 0)
+        int[] all_available = array(4, fill = 0)
+        int all_closed = 0
+        for 1 <= int level <= state.levels
+            int[] used = array(4, fill = 0)
+            int[] available = array(4, fill = 0)
+            int closed_count = 0
+            for Spot item = state.spots[]
+                if item.level == level
+                    if item.closed
+                        closed_count += 1
+                    else
+                        available[item.kind] += 1
+                        if item.occupant >= 0
+                            used[item.kind] += 1
+            emit(occupancy_line("L" + level.string(), used, available, closed_count))
+            all_used += used
+            all_available += available
+            all_closed += closed_count
+        int numerator = 0
+        int denominator = 0
+        for 0 <= int k < 4
+            numerator += all_used[k]
+            denominator += all_available[k]
+        int usage = if denominator == 0 then 0 else numerator * 1000 / denominator
+        emit(occupancy_line("TOTAL", all_used, all_available, all_closed) + " rate " + tenth(usage) + "%")
+    elif action == "SIGN"
+        int[] spaces = array(5, fill = 0)
+        for 0 <= int kind < 4
+            for 0 <= int k < int(len(state.spots))
+                if free_spot(state, k) and preference_rank(kind, state.spots[k].kind) >= 0
+                    spaces[kind] += 1
+        int run = 0
+        int previous_level = 0
+        for 0 <= int k < int(len(state.spots))
+            Spot item = state.spots[k]
+            if item.level != previous_level or item.kind != 2 or not free_spot(state, k)
+                spaces[4] += run / 3
+                run = 0
+            if item.kind == 2 and free_spot(state, k)
+                run += 1
+            previous_level = item.level
+        spaces[4] += run / 3
+        string text = "SIGN"
+        for 0 <= int k < 5
+            text += " " + type_name(k) + " " + (if spaces[k] == 0 then "FULL" else spaces[k].string())
+        emit(text)
+    elif action == "RATES"
+        emit("RATES")
+        for 0 <= int k < 5
+            emit(type_name(k) + " " + state.rates[k].string() + " " + state.caps[k].string())
+        emit("NIGHT " + state.fees[0].string() + " LOST " + state.fees[1].string() + " KWH " + state.fees[2].string())
+    elif action == "PASSES"
+        string[] plates = []
+        for Pass item = state.passes[]
+            if valid_pass(state, item.plate, state.now)
+                plates = plates.append(item.plate)
+        plates = plates.sorted()
+        emit("PASSES " + len(plates).string())
+        for string plate = plates[]
+            int index = pass_id(state, plate)
+            emit(plate + " until " + state.passes[index].last_day.string() + (if parked_id(state, plate) >= 0 then " IN" else ""))
+    elif action == "HISTORY"
+        int[] found = []
+        int total = 0
+        for 0 <= int k < state.exit_used
+            int index = state.exits[k]
+            if state.vehicles[index].plate == words[3]
+                found = found.append(index)
+                total += state.vehicles[index].total
+        if len(found) == 0
+            fail("no history for " + words[3])
+        else
+            emit("HISTORY " + words[3] + " visits " + len(found).string() + " paid " + total.string())
+            for int index = found[]
+                Vehicle item = state.vehicles[index]
+                emit(clock_text(item.entered) + " " + clock_text(item.exited) + " " + item.exit_location + " " + type_name(item.kind) + " " + item.total.string() + (if item.lost then " LOST" else ""))
+    elif action == "REVENUE"
+        emit("REVENUE")
+        int[] total = array(6, fill = 0)
+        for 0 <= int k < 5
+            emit(type_name(k) + revenue_fields(state.revenue[k]))
+            total += state.revenue[k]
+        emit("TOTAL" + revenue_fields(total))
+    elif action == "DAILY"
+        int date = integer_value(words[3])
+        int[][] values = if date <= 60 then state.daily[date] else array(5, fill = array(4, fill = 0))
+        int[] total = array(4, fill = 0)
+        for int[] item = values[]
+            total += item
+        emit("DAILY " + date.string() + daily_fields(total))
+        for 0 <= int k < 5
+            emit(type_name(k) + daily_fields(values[k]))
+    else
+        emit("STATS parked " + state.parked.string() + " peak " + state.peak.string() + " at " + (if state.peak_at < 0 then "-" else clock_text(state.peak_at)))
+        int[] total = array(4, fill = 0)
+        for 0 <= int k < 5
+            emit(type_name(k) + stats_fields(state.stats[k]))
+            total += state.stats[k]
+        emit("ALL" + stats_fields(total))
+
+int command_count = 0
+scan(&command_count)
+State garage = State()
+for 0 <= int line_number < command_count
+    string input_line = ""
+    scan(&input_line)
+    command(&garage, input_line)

@@ -849,6 +849,7 @@ execute =: 3 : 0
 )
 main =: 3 : 0
   input =. 1!:1 (3)
+  if. LF~:{:input do. input=.input,LF end.
   lines =. <;._2 input
   count =. 0".0{::lines
   for_k. 1+i.count do.
