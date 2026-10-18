@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Tokenize source files and render a minimal line-numbered HTML view.
 
-Usage: python3 tokenizer.py FILE [FILE ...]
+Usage: python3 tokenizer.py [--html PATH] FILE [FILE ...]
 Writes a single integer per input to stdout and creates token.html in the
-current directory. The lexical rules are independent of file extension.
+current directory by default. Use --html to choose a different output path.
+The lexical rules are independent of file extension.
 """
 from __future__ import annotations
 
@@ -422,7 +423,11 @@ def render_html(programs: list[list[Token]]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Count source tokens and create a minimal token.html view."
+        description="Count source tokens and create a minimal HTML view."
+    )
+    parser.add_argument(
+        "--html", default="token.html", metavar="PATH",
+        help="HTML output file (default: token.html)",
     )
     parser.add_argument(
         "files", nargs="*", metavar="FILE",
@@ -438,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
         for item in inputs:
             source = sys.stdin.read() if item == "-" else Path(item).read_text(encoding="utf-8-sig")
             all_tokens.append(tokenize(source))
-        Path("token.html").write_text(render_html(all_tokens), encoding="utf-8")
+        Path(args.html).write_text(render_html(all_tokens), encoding="utf-8")
     except (OSError, UnicodeError) as error:
         parser.exit(2, f"error: {error}\n")
 

@@ -71,6 +71,16 @@ For each language/topic updated in Step 2.2, use `metric/tokenizer.py` to recalc
 - `taskA`: tokens in the complete Task A source code for that topic.
 - `taskB`: tokens in that topic's `list-up.txt` file.
 
+Save the token-colored HTML views as **`taskA.html`** and **`taskB.html`** alongside the corresponding language's source files. Run the following commands from the repository root, replacing the example directory and source filename with the actual paths:
+
+```sh
+LANG_DIR="results/YYYY-MM-DD/difficulty/topic/language"
+python3 metric/tokenizer.py --html "$LANG_DIR/taskA.html" "$LANG_DIR/source.ext"
+python3 metric/tokenizer.py --html "$LANG_DIR/taskB.html" "$LANG_DIR/list-up.txt"
+```
+
+For a Task A program consisting of multiple source files, pass all of its files to the same command and **sum the per-file token counts** printed to standard output. The HTML file will show all supplied files. `--html` sets the output path; if omitted, the default remains `token.html` in the current working directory.
+
 Write both totals to the `tokens.csv` file in the corresponding topic directory, using this format:
 
 ```csv
