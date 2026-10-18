@@ -207,9 +207,7 @@ fn month_lengths(calendar: &str, year: i64) -> Vec<i64> {
         "GREGORIAN" | "JULIAN" =>
             vec![31, 28 + extra, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
         "ISLAMIC" => {
-            let mut days = vec![30, 29, 30, 29, 30, 29, 30, 29, 30, 29, 30, 29 + extra];
-            days.shrink_to_fit();
-            days
+            vec![30, 29, 30, 29, 30, 29, 30, 29, 30, 29, 30, 29 + extra]
         }
         "PERSIAN" => {
             let mut days = vec![31; 6];
@@ -508,7 +506,7 @@ fn holiday_lines(year: i64) -> Vec<String> {
             if *day <= month_lengths(calendar, candidate_year)[month as usize - 1] {
                 let fixed = fixed_date(calendar, candidate_year, month, *day);
                 if first <= fixed && fixed <= last {
-                    entries.push((fixed, index + 6, name, calendar));
+                    entries.push((fixed, index + 6, *name, *calendar));
                 }
             }
             candidate_year += 1;
@@ -591,7 +589,7 @@ fn validate_arguments(command: &str, args: &[&str]) -> Result<()> {
             checked(decimal_digits(args[4], 1, 2))?;
             checked(HAAB.contains(&args[5]))?;
             let day: i64 = args[4].parse().unwrap();
-            checked(day <= if args[5] == "Uayeb" { 4 } else { 19 })
+            checked(day <= (if args[5] == "Uayeb" { 4 } else { 19 }))
         }
         _ => Ok(()),
     }
