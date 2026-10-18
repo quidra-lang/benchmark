@@ -1,0 +1,23 @@
+main =: 3 : 0
+  numbers =. '688126340316';'0128469655154';'92181914514156';'177332430060552';'7982377590420309';'9884593615513906'
+  for_box. numbers do.
+    number =. >box
+    digits =. '0123456789'i.number
+    transformed =. digits
+    for_i. i.#digits do.
+      if. 0=2|(#digits)-i do.
+        value =. 2*i{digits
+        if. value>9 do. value =. value-9 end.
+        transformed =. value i}transformed
+      end.
+    end.
+    total =. +/transformed
+    result =. 'valid'
+    if. 0~:10|total do.
+      expected =. 10|10-10|total-{:digits
+      result =. 'invalid (expected check digit ',(":expected),')'
+    end.
+    smoutput number,': ',result
+  end.
+)
+main ''
