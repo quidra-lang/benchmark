@@ -24,6 +24,8 @@ _COMMON_OPERATORS = """
 <: >: :< :> #[ ]# #= =# ##
 |> <| .? .: .* .+ .- ./ .% .^ .== .!= .>= .<= .> .< .=
 .+= .-= .*= ./= .%= .^= .&& .|| .??
+?-> ?.. ...? ?[] ~/ <- <<- ->> <<< <<~ =~ !~ ~= &. @= &+ &- &* &<< &>> [[ ]] :::
+%in% %notin% %>% %<>% %T>% %$% %*% %/% %% %o% %x% %||%
 """.split()
 # Recognize J symbolic primitives as single lexical operators.
 # Symbolic primitives such as *: are single tokens; +/ is two tokens.
@@ -70,7 +72,7 @@ J_WORDS_BY_START = {
 }
 RE_CPP_RAW = re.compile(r'(?:u8|u|U|L)?R"([^\s()\\]{0,16})\(')
 RE_HASH_QUOTE = re.compile(r'(?:br|rb|r)?(#{1,16})("""|")')
-RE_STR_PREFIX = re.compile(r'(?i:fr|rf|br|rb|ur|ru|u8|r|f|b|u|l|c|R)?("""|\'\'\'|"|\'|`)')
+RE_STR_PREFIX = re.compile(r'(?i:\$@|@\$|@|\$+|fr|rf|br|rb|ur|ru|u8|r|f|b|u|l|c|R)?("""|\'\'\'|"|\'|`)')
 
 # Shared numeric lexeme rule, including common base, exponent, and suffix forms.
 RE_NUMBER = re.compile(r"""
@@ -106,12 +108,15 @@ def _id_continue(ch: str) -> bool:
     return _id_start(ch) or ch.isdecimal() or unicodedata.category(ch) in {"Mn", "Mc", "Me", "Pc", "Cf"}
 
 
-def _quoted_end(source: str, quote_start: int, opener: str, closer: str | None = None) -> int | None:
+def _quoted_end(source: str, quote_start: int, opener: str, closer: str | None = None, *, verbatim: bool = False) -> int | None:
     """Return index after a quoted literal; supports escapes and J doubled '."""
     closer = closer or opener
     pos = quote_start + len(opener)
-    multiline = len(opener) == 3 or opener == "`"  # TS template/Go raw/Julia command strings
+    multiline = len(opener) == 3 or opener == "`" or verbatim  # raw, template and verbatim strings
     while pos < len(source):
+        if verbatim and opener == '"' and source.startswith('""', pos):
+            pos += 2  # C# verbatim string quotes are doubled.
+            continue
         if source.startswith(closer, pos):
             if opener == "'" and source.startswith("''", pos):
                 # In J, a doubled single quote is an escaped apostrophe.
@@ -122,7 +127,7 @@ def _quoted_end(source: str, quote_start: int, opener: str, closer: str | None =
                     pos += 2
                     continue
             return pos + len(closer)
-        if source[pos] == "\\":
+        if not verbatim and source[pos] == "\\":
             pos += 2   # C/Python/JS and friends; J/Quidra harmless convention
             continue
         if source[pos] == "\n" and not multiline:
@@ -162,7 +167,7 @@ def _literal_regions(source: str, i: int) -> tuple[int, int, int, int] | None:
     # Julia's postfix conjugate transpose is not a quoted literal.
     if prefix_end == i and opener == "'" and i > 0 and (source[i-1].isalnum() or source[i-1] in ")]}"):
         return None
-    end = _quoted_end(source, prefix_end, opener)
+    end = _quoted_end(source, prefix_end, opener, verbatim="@" in source[i:prefix_end])
     if end is None:
         return None
     return prefix_end, m.end(), end - len(opener), end
