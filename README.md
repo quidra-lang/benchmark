@@ -96,7 +96,7 @@ taskA,27492
 taskB,3749
 ```
 
-Repeat this for every affected language/topic. Keep existing `tokens.csv` values for topics that were not modified; do not retokenize the entire dataset unnecessarily.
+Repeat this for every affected language/topic. Keep existing counts for unmodified topics only when the tokenizer rules are unchanged. **When the tokenizer changes, recalculate both tasks for all languages and topics before recomputing `score.md`**, so that counts from different counting rules are never mixed.
 
 ## 3. Aggregate results
 
