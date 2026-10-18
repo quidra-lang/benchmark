@@ -71,8 +71,6 @@ For each language/topic updated in Step 2.2, use `metric/tokenizer.py` to recalc
 - `taskA`: tokens in the complete Task A source code for that topic.
 - `taskB`: tokens in that topic's `list-up.txt` file.
 
-The tokenizer is copied from Core's `mpt/tokenizer.py`, with one benchmark-specific rule: a contiguous empty square-bracket pair (`[]`) in source code counts as **one token**. Brackets containing elements or spaces, and brackets inside quoted strings, retain the original counting behavior.
-
 Write both totals to the `tokens.csv` file in the corresponding topic directory, using this format:
 
 ```csv
