@@ -1,0 +1,23 @@
+main =: 3 : 0
+  pairs =. (< 'kitten';'sitting'),(< 'flaw';'lawn'),(< 'listen';'silent'),(< 'intention';'execution'),< 'algorithm';'altruistic'
+  for_pair. pairs do.
+    'a b' =. >pair
+    rows =. #a
+    columns =. #b
+    dp =. (rows+1),(columns+1)
+    dp =. dp$0
+    for_i. i.rows+1 do. dp =. i (<i,0)}dp end.
+    for_j. i.columns+1 do. dp =. j (<0,j)}dp end.
+    for_i. >:i.rows do.
+      for_j. >:i.columns do.
+        cost =. ((i-1){a)~:(j-1){b
+        deletion =. 1+(<(i-1),j){dp
+        insertion =. 1+(<i,j-1){dp
+        substitution =. cost+(<(i-1),j-1){dp
+        dp =. (deletion<.insertion<.substitution) (<i,j)}dp
+      end.
+    end.
+    smoutput a,' -> ',b,': ',":(<rows,columns){dp
+  end.
+)
+main ''

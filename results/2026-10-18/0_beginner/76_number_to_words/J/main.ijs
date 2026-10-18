@@ -1,0 +1,24 @@
+underthousand =: 3 : 0
+  small =. ;:'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen'
+  tens =. ;:'zero zero twenty thirty forty fifty sixty seventy eighty ninety'
+  parts =. 0$<''
+  if. y>:100 do. parts =. parts,< (>(<.y%100){small),' hundred' end.
+  remainder =. 100|y
+  if. remainder>:20 do.
+    part =. >(<.remainder%10){tens
+    if. 0~:10|remainder do. part =. part,'-',>(10|remainder){small end.
+    parts =. parts,<part
+  elseif. remainder>0 do. parts =. parts,remainder{small
+  end.
+  }. ; (<' ') ,&.> parts
+)
+main =: 3 : 0
+  for_number. 0 13 40 100 568 71000 300019 999999 do.
+    parts =. 0$<''
+    if. number=0 do. parts =. <'zero' end.
+    if. number>:1000 do. parts =. parts,< (underthousand <.number%1000),' thousand' end.
+    if. 0~:1000|number do. parts =. parts,<underthousand 1000|number end.
+    smoutput (":number),': ',}. ; (<' ') ,&.> parts
+  end.
+)
+main ''

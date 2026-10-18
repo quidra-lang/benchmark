@@ -11,7 +11,11 @@ pub fn main(init: std.process.Init) !void {
             var value: i32 = 0;
             for (0..4) |k|
                 value += row[k] * b[k][j];
-            try out.print("{d:>5}", .{ value });
+            if (value < 0) {
+                try out.print("{d:>5}", .{ value });
+            } else {
+                try out.print("{d:>5}", .{ @as(u32, @intCast(value)) });
+            }
         }
         try out.writeByte('\n');
     }
