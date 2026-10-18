@@ -26,7 +26,7 @@ day_number <- function(text) {
   count <- 0
   if (year > 2000) {
     for (previous in 2000:(year - 1))
-      count <- count + if (leap(previous)) 366 else 365
+      count <- count + (if (leap(previous)) 366 else 365)
   }
   count + sum(head(lengths, month - 1)) + day - 1
 }
@@ -711,11 +711,11 @@ cmd_schedule <- function(a) {
   }, logical(1))]
   emit("SCHEDULE", date_weekday(day), "arrivals", length(arrivals),
        "departures", length(departures))
-  for (id in sort(arrivals)) {
+  for (id in sort(arrivals, method = "radix")) {
     entry <- reservation(id)
     emit("arrival", id, entry$guest, "room", entry$room$number, entry$status, indent = 2)
   }
-  for (id in sort(departures)) {
+  for (id in sort(departures, method = "radix")) {
     entry <- reservation(id)
     emit("departure", id, entry$guest, "room", entry$room$number, entry$status, indent = 2)
   }
