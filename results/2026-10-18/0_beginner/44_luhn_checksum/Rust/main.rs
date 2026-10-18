@@ -1,0 +1,23 @@
+fn main() {
+    for s in ["688126340316", "0128469655154", "92181914514156", "177332430060552", "7982377590420309",
+        "9884593615513906"] {
+        let mut sum = 0;
+        for (i, c) in s.bytes().rev().enumerate() {
+            let mut d = i32::from(c - b'0');
+            if i % 2 == 1 {
+                d *= 2;
+                if d > 9 {
+                    d -= 9;
+                }
+            }
+            sum += d;
+        }
+        if sum % 10 == 0 {
+            println!("{}: valid", s);
+        } else {
+            let last = i32::from(s.as_bytes()[s.len() - 1] - b'0');
+            let expected = (10 - (sum - last) % 10) % 10;
+            println!("{}: invalid (expected check digit {})", s, expected);
+        }
+    }
+}

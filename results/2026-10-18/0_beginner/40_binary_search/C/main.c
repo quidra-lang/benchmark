@@ -1,0 +1,27 @@
+#include <stdio.h>
+
+int main(void) {
+    int a[] = {3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77}, targets[] = {42, 3, 77,
+        31, 50, 1};
+    for (int i = 0; i < 6; i++) {
+        int t = targets[i], lo = 0, hi = 15, found = -1;
+        printf("%d: probes", t);
+        while (lo <= hi) {
+            int mid = (lo + hi) / 2;
+            printf(" %d", mid);
+            if (a[mid] == t) {
+                found = mid;
+                break;
+            }
+            if (a[mid] < t)
+                lo = mid + 1;
+            else
+                hi = mid - 1;
+        }
+        if (found >= 0)
+            printf(" -> index %d\n", found);
+        else
+            puts(" -> not found");
+    }
+    return 0;
+}

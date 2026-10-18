@@ -1,0 +1,10 @@
+#include <iostream>
+#include <string>
+
+int main() {
+    const int n = 5;
+    for (int row = 1; row < 2 * n; row++) {
+        int i = row <= n ? row : 2 * n - row;
+        std::cout << std::string(n - i, ' ') << std::string(2 * i - 1, '*') << '\n';
+    }
+}
