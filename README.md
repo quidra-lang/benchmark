@@ -12,6 +12,14 @@ These are reproducible proxies for token usage, not measurements of complete LLM
 
 When the user asks you to "start the benchmark," follow the steps below.
 
+## Shared tokenization rules
+
+The same tokenizer is used for all 20 languages: C, C#, C++, Dart, Go, J, Java, JavaScript, Julia, Kotlin, Lua, PHP, Python, Quidra, R, Ruby, Rust, Swift, TypeScript, and Zig.
+
+Identifiers split at underscores and word-case boundaries; digits of numeric literals count separately. String content follows the same rules as ordinary source code, with quote delimiters and prefixes counted separately. Known multicharacter operators use longest-match tokenization, including `[]`, `[[`, `]]`, and standard R operators such as `%in%`. Whitespace, indentation, line breaks, and comments are counted.
+
+This is a language-neutral source-text proxy, not a language-specific compiler lexer or model tokenizer. Arbitrary custom operators are not automatically combined, avoiding ambiguity such as C's `a%b%c` versus R's `%name%`.
+
 ## 1. Preparation and language selection
 
 1. Clone this repository, or pull its latest changes if it is already available locally. Work on the `develop` branch.
