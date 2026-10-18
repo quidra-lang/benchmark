@@ -69,7 +69,7 @@ fail(message::String) = throw(CommandError(message))
 
 revcomp(sequence::AbstractString) = join(COMPLEMENT[base] for base in reverse(sequence))
 gc(sequence::AbstractString) = count(base -> base == 'G' || base == 'C', sequence)
-fixed(value::Int, places::Int) = string(div(value, 10^places), ".", lpad(mod(value, 10^places), places, '0'))
+fixed(value::Int, places::Int) = string(div(value, 10^places), ".", lpad(string(mod(value, 10^places)), places, '0'))
 pct(part::Int, whole::Int) = fixed(div(10000 * part, whole), 2)
 transition(a::Char, b::Char) = a != b && string(a, b) in ("AG", "GA", "CT", "TC")
 frequency_order(table) = sort(collect(keys(table)); by=key -> (-table[key], key))
@@ -469,10 +469,10 @@ function primer!(tool::Toolkit, sequence::String)
         emit!(tool, label, value, passed ? "OK" : "FAIL")
         !passed && push!(failed, label)
     end
-    emit!(tool, isempty(failed) ? "PASS" : "FAIL",
-          isempty(failed) ? "" : join(failed, " "))
     if isempty(failed)
-        tool.output[end] = "PASS"
+        emit!(tool, "PASS")
+    else
+        emit!(tool, "FAIL", join(failed, " "))
     end
 end
 
