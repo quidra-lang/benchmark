@@ -6,7 +6,7 @@ This repository contains the data and instructions needed to benchmark the numbe
 
 The benchmark measures two source-code-based quantities:
 - Task A (Generation): output tokens, represented by the complete source code needed to satisfy a programming request.
-- Task B (Understanding): input tokens, represented by the minimum source-code lines that must be read to answer a code-comprehension question or determine how to make a requested code modification.
+- Task B (Understanding): input tokens, represented by the minimum source-code lines that must be read to answer a code-comprehension question or explain where and how the program would need to change for a proposed modification.
 
 These are reproducible proxies for token usage, not measurements of complete LLM conversations. Natural-language prompts and explanations are not counted.
 
@@ -44,9 +44,9 @@ The source code must follow these rules:
 
 **Task B — Understanding (`taskB.txt` and `list-up.txt`)**
 
-`taskB.txt` describes a question about the program created for Task A. The question can involve either **code comprehension** (such as explaining an algorithm, tracing data, or identifying program behavior) or **code modification** (such as finding where and how to implement a requested change). Assume the existing program is bug-free.
+`taskB.txt` describes a question about the program created for Task A. The question can involve either **code comprehension** (such as explaining an algorithm, tracing data, or identifying program behavior) or **modification analysis** (explaining which parts would need to change and how to satisfy proposed requirements). Assume the existing program is bug-free. Task B does not implement the proposed modification or alter the Task A source code.
 
-`list-up.txt` contains the smallest set of lines from the Task A source code that an LLM would need to read to accurately answer the comprehension question or identify and understand the requested modification. Task B measures the source code that must be read, not the tokens needed to write the answer or the modified code.
+`list-up.txt` contains the smallest set of lines from the Task A source code that an LLM would need to read to accurately answer the comprehension question or explain the changes required by a proposed modification. Select these lines from the existing program. Task B measures only the source code that must be read; the explanation is not counted, and no modified source code is produced.
 
 Rules for `list-up.txt`:
 - Include all source lines necessary to answer the comprehension question or understand the requested modification, including relevant declarations or dependencies when needed.
@@ -70,8 +70,6 @@ For each language/topic updated in Step 2.2, use `metric/tokenizer.py` to recalc
 
 - `taskA`: tokens in the complete Task A source code for that topic.
 - `taskB`: tokens in that topic's `list-up.txt` file.
-
-The tokenizer applies **the same lexical counting rules to all 20 languages** (including inside quoted literals): word components, individual numeric digits, whitespace, punctuation, and recognized compound operators. Contiguous `[]` counts as one token. Common delimiters such as Lua long brackets, Ruby percent literals, and PHP heredoc/nowdoc are recognized to avoid false string endings. These are fixed, source-text-based counting rules, **not a model-specific LLM tokenizer or a complete parser for each language**.
 
 Save the token-colored HTML views as **`taskA.html`** and **`taskB.html`** alongside the corresponding language's source files. Run the following commands from the repository root, replacing the example directory and source filename with the actual paths:
 
