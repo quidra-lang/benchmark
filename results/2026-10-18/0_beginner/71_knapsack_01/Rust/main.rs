@@ -1,0 +1,31 @@
+fn main() {
+    let names = ["tent", "stove", "lantern", "rope", "camera", "blanket", "water"];
+    let weights = [10, 3, 2, 3, 5, 5, 6];
+    let values = [120, 65, 45, 20, 90, 85, 100];
+    let mut dp = [[0_i32; 21]; 8];
+    for i in 1..=7 {
+        for w in 0..=20 {
+            dp[i][w] = dp[i - 1][w];
+            if weights[i - 1] <= w {
+                dp[i][w] = dp[i][w].max(dp[i - 1][w - weights[i - 1]] + values[i - 1]);
+            }
+        }
+    }
+    let mut chosen = [false; 7];
+    let (mut capacity, mut total_weight) = (20, 0);
+    for i in(1..=7).rev() {
+        if dp[i][capacity] != dp[i - 1][capacity] {
+            chosen[i - 1] = true;
+            capacity -= weights[i - 1];
+            total_weight += weights[i - 1];
+        }
+    }
+    println!("max value: {}\ntotal weight: {}", dp[7][20], total_weight);
+    print!("items:");
+    for i in 0..7 {
+        if chosen[i] {
+            print!(" {}", names[i]);
+        }
+    }
+    println!();
+}

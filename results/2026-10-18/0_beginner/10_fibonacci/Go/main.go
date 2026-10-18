@@ -9,9 +9,9 @@ func main() {
 	for i := 0; i < 30; i++ {
 		if i > 0 {
 			fmt.Print(" ")
-		};
-		fmt.Print(a);
-		sum += a;
+		}
+		fmt.Print(a)
+		sum += a
 		a, b = b, a + b
 	}
 	fmt.Printf("\nsum: %d\n", sum)

@@ -6,16 +6,16 @@ import (
 
 func main() {
 	for _, amount := range []int{3780, 15420, 99999, 506, 48263} {
-		remaining, total := amount, 0;
-		fmt.Printf("%d yen:", amount);
+		remaining, total := amount, 0
+		fmt.Printf("%d yen:", amount)
 		for _, d := range []int{10000, 5000, 1000, 500, 100, 50, 10, 5, 1} {
-			count := remaining / d;
-			remaining %= d;
+			count := remaining / d
+			remaining %= d
 			if count > 0 {
-				fmt.Printf(" %dx%d", d, count);
+				fmt.Printf(" %dx%d", d, count)
 				total += count
 			}
-		};
+		}
 		fmt.Printf(" (%d pieces)\n", total)
 	}
 }

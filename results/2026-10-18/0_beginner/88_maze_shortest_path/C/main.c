@@ -1,0 +1,41 @@
+#include <stdio.h>
+
+int main(void) {
+    char maze[9][14] = {"#############", "#S..#.......#", "#.#.#.###.#.#", "#.#...#...#.#", "#.###.#.###.#",
+        "#...#...#...#", "###.#####.#.#", "#.......#..G#", "#############"};
+    int parent[117], distance[117], queue[117], start = -1, goal = -1;
+    for (int i = 0; i < 117; i++) {
+        parent[i] = -1;
+        distance[i] = 0;
+        int r = i / 13, c = i % 13;
+        if (maze[r][c] == 'S')
+            start = i;
+        if (maze[r][c] == 'G')
+            goal = i;
+    }
+    int head = 0, tail = 0;
+    queue[tail++] = start;
+    parent[start] = start;
+    int dr[] = {-1, 1, 0, 0}, dc[] = {0, 0, -1, 1};
+    while (head < tail) {
+        int v = queue[head++], r = v / 13, c = v % 13;
+        for (int d = 0; d < 4; d++) {
+            int rr = r + dr[d], cc = c + dc[d];
+            if (rr < 0 || rr >= 9 || cc < 0 || cc >= 13 || maze[rr][cc] == '#')
+                continue;
+            int w = rr * 13 + cc;
+            if (parent[w] < 0) {
+                parent[w] = v;
+                distance[w] = distance[v] + 1;
+                queue[tail++] = w;
+            }
+        }
+    }
+    for (int v = goal; v != start; v = parent[v])
+        if (maze[v / 13][v % 13] == '.')
+            maze[v / 13][v % 13] = '*';
+    printf("steps: %d\n", distance[goal]);
+    for (int r = 0; r < 9; r++)
+        puts(maze[r]);
+    return 0;
+}

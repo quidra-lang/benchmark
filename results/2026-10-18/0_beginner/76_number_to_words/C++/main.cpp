@@ -1,0 +1,41 @@
+#include <iostream>
+#include <string>
+#include <array>
+
+const std::array<std::string, 20> small = {"zero", "one", "two", "three", "four", "five", "six",
+    "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen"};
+const std::array<std::string, 10> tens = {"", "", "twenty", "thirty", "forty", "fifty", "sixty",
+    "seventy", "eighty", "ninety"};
+std::string under(int n) {
+    std::string out;
+    if (n >= 100) {
+        out = small[n / 100] + " hundred";
+        n %= 100;
+        if (n)
+            out += ' ';
+    }
+    if (n >= 20) {
+        out += tens[n / 10];
+        if (n % 10)
+            out += "-" + small[n % 10];
+    } else if (n)
+        out += small[n];
+    return out;
+}
+
+int main() {
+    for (int n : std::array<int, 8>{0, 13, 40, 100, 568, 71000, 300019, 999999}) {
+        std::string result;
+        if (n == 0)
+            result = "zero";
+        if (n >= 1000)
+            result = under(n / 1000) + " thousand";
+        if (n % 1000) {
+            if (!result.empty())
+                result += ' ';
+            result += under(n % 1000);
+        }
+        std::cout << n << ": " << result << '\n';
+    }
+}

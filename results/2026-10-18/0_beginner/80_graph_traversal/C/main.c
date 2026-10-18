@@ -1,0 +1,60 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void dfs(int v, int graph[9][9], int *seen, int *order, int *length) {
+    seen[v] = 1;
+    order[(*length)++] = v;
+    for (int w = 0; w < 9; w++)
+        if (graph[v][w] && !seen[w])
+            dfs(w, graph, seen, order, length);
+}
+
+int compare(const void *a, const void *b) {
+    return *(const int *) a - * (const int *) b;
+}
+
+int main(void) {
+    int graph[9][9] = {{0}}, edges[][2] = {{5, 0}, {3, 8}, {7, 2}, {1, 6}, {0, 2}, {5, 3}, {7, 5}, {6,
+        4}, {8, 7}};
+    for (int i = 0; i < 9; i++)
+        graph[edges[i][0]][edges[i][1]] = graph[edges[i][1]][edges[i][0]] = 1;
+    int seen[9] = {0}, order[9], length = 0;
+    dfs(0, graph, seen, order, &length);
+    printf("DFS:");
+    for (int i = 0; i < length; i++)
+        printf(" %d", order[i]);
+    putchar('\n');
+    memset(seen, 0, sizeof seen);
+    int queue[9], head = 0, tail = 0;
+    queue[tail++] = 0;
+    seen[0] = 1;
+    printf("BFS:");
+    while (head < tail) {
+        int v = queue[head++];
+        printf(" %d", v);
+        for (int w = 0; w < 9; w++)
+            if (graph[v][w] && !seen[w]) {
+                seen[w] = 1;
+                queue[tail++] = w;
+            }
+    }
+    putchar('\n');
+    memset(seen, 0, sizeof seen);
+    int components[9][9], sizes[9], count = 0;
+    for (int v = 0; v < 9; v++)
+        if (!seen[v]) {
+            sizes[count] = 0;
+            dfs(v, graph, seen, components[count], &sizes[count]);
+            qsort(components[count], sizes[count], sizeof(int), compare);
+            count++;
+        }
+    printf("components: %d\n", count);
+    for (int k = 0; k < count; k++) {
+        printf("component %d:", k + 1);
+        for (int j = 0; j < sizes[k]; j++)
+            printf(" %d", components[k][j]);
+        putchar('\n');
+    }
+    return 0;
+}

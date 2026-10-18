@@ -1,0 +1,39 @@
+#include <iostream>
+#include <string>
+#include <vector>
+#include <array>
+#include <sstream>
+
+int main() {
+    for (const std::string &expression : std::array<std::string, 7>{"3 4 + 2 *", "-17 5 / 4 -3 * -",
+        "1 2 + * 3", "15 7 1 1 + - / 3 * 2 1 1 + + -", "4 2 5 * + 1 3 2 * - 5 + /", "2 3 4 + 5", "46341 46339 * -2 /"}) {
+        std::istringstream input(expression);
+        std::vector<long long> stack;
+        std::string error;
+        for (std::string token; input >> token;) {
+            if (token.size() == 1 && std::string("+-*/").find(token[0]) != std::string::npos) {
+                if (stack.size() < 2) {
+                    error = "stack underflow";
+                    break;
+                }
+                long long b = stack.back();
+                stack.pop_back();
+                long long a = stack.back();
+                stack.pop_back();
+                if (token == "/" && b == 0) {
+                    error = "division by zero";
+                    break;
+                }
+                stack.push_back(token == "+" ? a + b : token == "-" ? a - b : token == "*" ? a * b : a / b);
+            } else
+                stack.push_back(std::stoll(token));
+        }
+        if (error.empty() && stack.size() != 1)
+            error = "leftover operands";
+        std::cout << expression << " => ";
+        if (error.empty())
+            std::cout << stack[0] << '\n';
+        else
+            std::cout << "error: " << error << '\n';
+    }
+}
