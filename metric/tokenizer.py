@@ -25,6 +25,7 @@ _COMMON_OPERATORS = """
 |> <| .? .: .* .+ .- ./ .% .^ .== .!= .>= .<= .> .< .=
 .+= .-= .*= ./= .%= .^= .&& .|| .??
 ?-> ?.. ...? ?[] ~/ <- <<- ->> <<< <<~ =~ !~ ~= &. @= &+ &- &* &<< &>> [[ ]] :::
+.. ~/ ~/= &^ &^= &+= &-= &*=
 %in% %notin% %>% %<>% %T>% %$% %*% %/% %% %o% %x% %||%
 """.split()
 # Recognize J symbolic primitives as single lexical operators.
@@ -72,7 +73,7 @@ J_WORDS_BY_START = {
 }
 RE_CPP_RAW = re.compile(r'(?:u8|u|U|L)?R"([^\s()\\]{0,16})\(')
 RE_HASH_QUOTE = re.compile(r'(?:br|rb|r)?(#{1,16})("""|")')
-RE_STR_PREFIX = re.compile(r'(?i:\$@|@\$|@|\$+|fr|rf|br|rb|ur|ru|u8|r|f|b|u|l|c|R)?("""|\'\'\'|"|\'|`)')
+RE_STR_PREFIX = re.compile(r'(?i:\$@|@\$|@|\$+|fr|rf|tr|rt|br|rb|ur|ru|u8|r|f|t|b|u|l|c|R)?("""|\'\'\'|"|\'|`)')
 
 # Shared numeric lexeme rule, including common base, exponent, and suffix forms.
 RE_NUMBER = re.compile(r"""
