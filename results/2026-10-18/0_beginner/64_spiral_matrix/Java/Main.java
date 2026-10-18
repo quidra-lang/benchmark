@@ -1,8 +1,6 @@
-import java.util.*;
-import java.math.*;
+import java.util.Locale;
 
 public class Main {
-
     public static void main(String[] args) {
         int[][] matrix = new int[5][6];
         int[] dr = {0,1,0,-1}, dc = {1,0,-1,0};

@@ -1,3 +1,5 @@
+from collections import Counter
+
 rows = [
     "date,region,product,quantity,unit_price",
     "2026-04-01,north,notebook,10,200", "2026-04-01,east,marker,6,150",
@@ -7,16 +9,16 @@ rows = [
     "2026-04-03,north,eraser,20,80", "2026-04-04,east,stapler,5,600",
     "2026-04-04,south,notebook,6,200", "2026-04-04,west,marker,8,150",
 ]
-regions, products, dates = {}, {}, {}
+regions, products, dates = Counter(), Counter(), Counter()
 total = 0
 for line in rows[1:]:
     date, region, product, quantity, price = line.split(",")
     quantity, price = int(quantity), int(price)
     sales = quantity * price
     total += sales
-    regions[region] = regions.get(region, 0) + sales
-    products[product] = products.get(product, 0) + quantity
-    dates[date] = dates.get(date, 0) + sales
+    regions[region] += sales
+    products[product] += quantity
+    dates[date] += sales
 print(f"total: {total}")
 for region in sorted(regions, key=lambda name: (-regions[name], name)):
     print(f"{region}: {regions[region]}")

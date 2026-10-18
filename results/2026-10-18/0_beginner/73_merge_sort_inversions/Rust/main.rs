@@ -1,6 +1,4 @@
-fn merge_sort(a: &mut [i32],
-l: usize,
-r: usize) -> usize {
+fn merge_sort(a: &mut [i32], l: usize, r: usize) -> usize {
     if l == r {
         return 0;
     }
@@ -19,14 +17,8 @@ r: usize) -> usize {
             count += m - i + 1;
         }
     }
-    while i <= m {
-        temp.push(a[i]);
-        i += 1;
-    }
-    while j <= r {
-        temp.push(a[j]);
-        j += 1;
-    }
+    temp.extend_from_slice(&a[i..m + 1]);
+    temp.extend_from_slice(&a[j..r + 1]);
     a[l..=r].copy_from_slice(&temp);
     print!("merge [{}..{}]:", l, r);
     for n in &a[l..=r] {

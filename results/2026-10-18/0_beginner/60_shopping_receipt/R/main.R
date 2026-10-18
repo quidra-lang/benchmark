@@ -1,17 +1,10 @@
-items <- list(c("milk",198,2,"food"),c("notebook",165,3,"general"),c("bread",248,1,"food"),c("apple",128,4,"food"),c("detergent",437,1,"general"),c("eggs",268,1,"food"))
-totals <- c(food=0,general=0)
-for (item in items) {
-    price <- as.integer(item[2])
-    quantity <- as.integer(item[3])
-    subtotal <- price*quantity
-    totals[item[4]] <- totals[item[4]]+subtotal
-    cat(sprintf("%s %d x %d = %d\n",item[1],price,quantity,subtotal))
-}
-payment <- 0
-for (category in c("food","general")) {
-    rate <- if (category == "food") 8 else 10
-    tax <- (totals[category]*rate) %/% 100
-    payment <- payment+totals[category]+tax
-    cat(sprintf("%s: %d yen, tax %d yen\n",category,totals[category],tax))
-}
-cat(sprintf("total: %d yen\n",payment))
+items <- data.frame(name=c("milk","notebook","bread","apple","detergent","eggs"),
+    price=c(198L,165L,248L,128L,437L,268L), quantity=c(2L,3L,1L,4L,1L,1L),
+    category=c("food","general","food","food","general","food"))
+subtotals <- items$price * items$quantity
+cat(sprintf("%s %d x %d = %d\n",items$name,items$price,items$quantity,subtotals),sep="")
+categories <- c("food","general")
+totals <- tapply(subtotals,items$category,sum)[categories]
+taxes <- (totals * c(8L,10L)) %/% 100L
+cat(sprintf("%s: %d yen, tax %d yen\n",categories,totals,taxes),sep="")
+cat(sprintf("total: %d yen\n",sum(totals)+sum(taxes)))

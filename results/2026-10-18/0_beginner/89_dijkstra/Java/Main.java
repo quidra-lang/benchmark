@@ -1,8 +1,9 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 public class Main {
-
     public static void main(String[] args) {
         int[][] edges = {{0,1,7}, {0,2,3}, {0,3,9}, {1,2,2}, {2,4,6}, {1,3,3}, {3,4,4}, {3,5,5}, {4,5,3}, {4,6,8}, {5,6,4}};
         int[][] weight = new int[7][7];

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <vector>
 
@@ -16,12 +17,9 @@ int merge_sort(std::vector<int> &a, int l, int r) {
             count += m - i + 1;
         }
     }
-    while (i <= m)
-        temp.push_back(a[i++]);
-    while (j <= r)
-        temp.push_back(a[j++]);
-    for (int k = l; k <= r; k++)
-        a[k] = temp[k - l];
+    temp.insert(temp.end(), a.begin() + i, a.begin() + m + 1);
+    temp.insert(temp.end(), a.begin() + j, a.begin() + r + 1);
+    std::copy(temp.begin(), temp.end(), a.begin() + l);
     std::cout << "merge [" << l << ".." << r << "]:";
     for (int k = l; k <= r; k++)
         std::cout << ' ' << a[k];

@@ -435,13 +435,9 @@ function execute(line)
                 targets = filter(id -> PEOPLE[id].active && PEOPLE[id].volunteer && !isempty(PEOPLE[id].seat) && PEOPLE[id].cabin == class,f.volunteers)
                 for id in targets
                     p = PEOPLE[id]
-                    useful = false
-                    for waitingid in passengers(f)
+                    useful = any(passengers(f)) do waitingid
                         waiting = PEOPLE[waitingid]
-                        if waiting.kind != "INFANT" && waiting.cabin == class && isempty(waiting.seat) && allowed(f,waiting,p.seat,class,Set([id]))
-                            useful = true
-                            break
-                        end
+                        waiting.kind != "INFANT" && waiting.cabin == class && isempty(waiting.seat) && allowed(f,waiting,p.seat,class,Set([id]))
                     end
                     if useful
                         amount = rates[class]

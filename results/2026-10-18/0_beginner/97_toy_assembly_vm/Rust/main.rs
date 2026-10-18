@@ -1,5 +1,4 @@
-fn value(token: &str,
-registers: &[i64; 4]) -> i64 {
+fn value(token: &str, registers: &[i64; 4]) -> i64 {
     let c = token.as_bytes()[0];
     if (b'A'..=b'D').contains(&c) {
         registers[(c - b'A') as usize]

@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     var state = 12345;
     final counts = List.filled(13, 0);
     for (var i = 0; i < 1000; i++) {
@@ -13,10 +10,9 @@ void main() {
     }
     var best = 2;
     for (var sum = 2; sum <= 12; sum++) {
-        out.writeln('$sum: ${counts[sum]}');
+        print('$sum: ${counts[sum]}');
         if (counts[sum] > counts[best])
             best = sum;
     }
-    out.writeln('most frequent: $best');
-    stdout.write(out);
+    print('most frequent: $best');
 }

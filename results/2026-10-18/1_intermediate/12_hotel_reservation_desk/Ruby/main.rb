@@ -112,10 +112,8 @@ class Hotel
   end
 
   def rate(r, day)
-    percent = 100
-    @seasons.each do |start, finish, p|
-      percent = p if start <= day && day <= finish
-    end
+    season = @seasons.reverse_each.find { |start, finish, _| start <= day && day <= finish }
+    percent = season ? season[2] : 100
     r.base * percent / 100
   end
 
@@ -227,18 +225,9 @@ class Hotel
   end
 
   def metrics(day)
-    available = 0
-    occupied = 0
-    revenue = 0
-    @rooms.each_value do |r|
-      available += 1 unless r.blocks.key?(day)
-      night = r.occupied[day]
-      if night
-        occupied += 1
-        revenue += night[1]
-      end
-    end
-    [available, occupied, revenue]
+    nights = @rooms.values.filter_map { |r| r.occupied[day] }
+    available = @rooms.values.count { |r| !r.blocks.key?(day) }
+    [available, nights.length, nights.sum(&:last)]
   end
 
   def metrics_text(values)

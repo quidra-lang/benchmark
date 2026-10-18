@@ -184,22 +184,13 @@ expense_result =: 3 : 0
   command,' ',(0{::expense),' ',(money 11{::expense),((5{::expense) currency_note 6{::expense),' = ',' + ' join parts
 )
 chronological =: 3 : 0
-  order =. i.0
-  for_k. i.#EXPENSES do.
-    order =. order,k
-    current =. k{::EXPENSES
-    p =. k
-    while. p>0 do.
-      earlier =. ((p-1){order){::EXPENSES
-      if. (1{::earlier)<1{::current do. break. end.
-      if. ((1{::earlier)=1{::current)*.(2{::earlier)<2{::current do. break. end.
-      order =. ((p-1){order) p}order
-      p =. p-1
-    end.
-    order =. k p}order
+  keys =. 0 2$0
+  for_expense. EXPENSES do.
+    keys =. keys,>1 2{>expense
   end.
-  order
+  /:keys
 )
+
 debts_of =: 3 : 0
   n =. #MNAMES
   raw =. (n,n)$0
@@ -255,18 +246,11 @@ history_of =: 3 : 0
       items =. items,<item
     end.
   end.
-  for_k. 1+i.0>.(#items)-1 do.
-    current =. k{::items
-    p =. k
-    while. p>0 do.
-      earlier =. (p-1){::items
-      if. (0{::earlier)<0{::current do. break. end.
-      if. ((0{::earlier)=0{::current)*.(1{::earlier)<1{::current do. break. end.
-      items =. ((p-1){items) p}items
-      p =. p-1
-    end.
-    items =. (<current) p}items
+  keys =. 0 2$0
+  for_item. items do.
+    keys =. keys,>0 1{>item
   end.
+  items =. (/:keys){items
   result =. ,<'HISTORY ',y
   running =. 0
   for_item. items do.
@@ -747,10 +731,8 @@ execute =: 3 : 0
       end.
       if. count>0 do. output =. output,<'  currency ',code,' expenses ',(number count),' amount ',(money amount),' base ',money total end.
     end.
-    total =. 0
-    settlement_total =. 0
-    for_expense. EXPENSES do. total =. total+11{::>expense end.
-    for_settlement. SETTLEMENTS do. settlement_total =. settlement_total+6{::>settlement end.
+    total =. +/11{::&>EXPENSES
+    settlement_total =. +/6{::&>SETTLEMENTS
     output,<'  expenses ',(number #EXPENSES),' total ',(money total),' settlements ',(number #SETTLEMENTS),' total ',money settlement_total return.
   end.
   if. command text_equal 'BUDGETS' do.

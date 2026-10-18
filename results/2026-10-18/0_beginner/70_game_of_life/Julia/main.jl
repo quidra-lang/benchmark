@@ -4,7 +4,7 @@ function main()
     for generation in 0:4
         println("generation ",generation)
         for row in 1:8
-            println(join([board[row,column] ? '#' : '.' for column in 1:8]))
+            println(join(board[row,column] ? '#' : '.' for column in 1:8))
         end
         generation == 4 && break
         following = falses(8,8)

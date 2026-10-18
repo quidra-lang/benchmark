@@ -7,8 +7,7 @@ for (value in numbers) {
 }
 deviation <- sqrt(squares / length(numbers))
 ordered <- sort(numbers)
-candidates <- unique(ordered)
-frequencies <- vapply(candidates, function(value) sum(numbers == value), numeric(1))
+frequencies <- table(numbers)
 cat(sprintf("mean: %.3f\nmedian: %d\nmode: %d\nrange: %d\nstdev: %.3f\n",
-    floor(average*1000+0.5)/1000, ordered[6], candidates[which.max(frequencies)],
-    ordered[length(ordered)]-ordered[1], floor(deviation*1000+0.5)/1000))
+    average, ordered[6], as.integer(names(frequencies)[which.max(frequencies)]),
+    ordered[length(ordered)]-ordered[1], deviation))

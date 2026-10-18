@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     for (final s in ['(a + b) * [c - d]', '{x = [1, 2, (3 + 4)]}', 'f(a[i] + g(b)}', '(1 + 2)) * 3',
         'if (a < b) { c = d[0]; }', '((a + b] * c', '[{(x * y) - z}']) {
         final stack = <String>[];
@@ -21,7 +18,6 @@ void main() {
         }
         if (error == null && stack.isNotEmpty)
             error = s.length;
-        out.writeln('$s -> ${error==null?'balanced':'error at index $error'}');
+        print('$s -> ${error==null?'balanced':'error at index $error'}');
     }
-    stdout.write(out);
 }

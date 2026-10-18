@@ -19,8 +19,7 @@ void search(std::string &p, std::array<bool, 4> &used, int &count) {
 
 int main() {
     std::string permutation;
-    std::array<bool, 4> used {
-    };
+    std::array<bool, 4> used{};
     int count = 0;
     search(permutation, used, count);
 }

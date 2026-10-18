@@ -1,13 +1,13 @@
 function evaluate_tokens(tokens,variables,start)
-    position = Ref(start)
+    position = start
     function factor()
-        token = tokens[position[]]
-        position[] += 1
+        token = tokens[position]
+        position += 1
         if token == "-"
             return -factor()
         elseif token == "("
             value = expression()
-            position[] += 1
+            position += 1
             return value
         elseif isdigit(first(token))
             return parse(Int,token)
@@ -17,9 +17,9 @@ function evaluate_tokens(tokens,variables,start)
     end
     function term()
         value = factor()
-        while position[] <= length(tokens) && tokens[position[]] in ["*","/"]
-            operation = tokens[position[]]
-            position[] += 1
+        while position <= length(tokens) && tokens[position] in ("*","/")
+            operation = tokens[position]
+            position += 1
             right = factor()
             operation == "/" && right == 0 && error("division by zero")
             value = operation == "*" ? value*right : div(value,right)
@@ -28,9 +28,9 @@ function evaluate_tokens(tokens,variables,start)
     end
     function expression()
         value = term()
-        while position[] <= length(tokens) && tokens[position[]] in ["+","-"]
-            operation = tokens[position[]]
-            position[] += 1
+        while position <= length(tokens) && tokens[position] in ("+","-")
+            operation = tokens[position]
+            position += 1
             right = term()
             value = operation == "+" ? value+right : value-right
         end

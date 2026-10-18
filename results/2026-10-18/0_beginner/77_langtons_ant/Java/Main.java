@@ -1,8 +1,4 @@
-import java.util.*;
-import java.math.*;
-
 public class Main {
-
     public static void main(String[] args) {
         boolean[][] black = new boolean[11][11];
         int r = 5, c = 5, direction = 0;

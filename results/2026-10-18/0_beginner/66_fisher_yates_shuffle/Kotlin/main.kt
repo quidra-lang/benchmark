@@ -1,12 +1,5 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
-    val deck = mutableListOf<String>()
-    for (suit in "SHDC") {
-        for (rank in "A23456789TJQK") deck.add("$rank$suit")
-    }
+    val deck = "SHDC".flatMap { suit -> "A23456789TJQK".map { rank -> "$rank$suit" } }.toMutableList()
     var state = 2026L
     for (i in 51 downTo 1) {
         state = state * 48271 % 2147483647

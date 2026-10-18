@@ -18,34 +18,17 @@ module Darts
   def self.checkout(score, maximum = 3)
     key = [score, maximum]
     return CACHE[key] if CACHE.key?(key)
-    result = nil
-    if maximum >= 1
-      last = B.find { |dart| DATA[dart][:value] == score }
-      result = [last] if last
-    end
-    if result.nil? && maximum >= 2
-      A.each do |first|
-        last = B.find { |dart| DATA[first][:value] + DATA[dart][:value] == score }
+    (1..maximum).each do |count|
+      A.repeated_permutation(count - 1) do |prefix|
+        wanted = score - prefix.sum { |dart| DATA[dart][:value] }
+        last = B.find { |dart| DATA[dart][:value] == wanted }
         if last
-          result = [first, last]
-          break
+          CACHE[key] = prefix + [last]
+          return CACHE[key]
         end
       end
     end
-    if result.nil? && maximum >= 3
-      A.each do |first|
-        A.each do |second|
-          wanted = score - DATA[first][:value] - DATA[second][:value]
-          last = B.find { |dart| DATA[dart][:value] == wanted }
-          if last
-            result = [first, second, last]
-            break
-          end
-        end
-        break if result
-      end
-    end
-    CACHE[key] = result
+    CACHE[key] = nil
   end
 end
 

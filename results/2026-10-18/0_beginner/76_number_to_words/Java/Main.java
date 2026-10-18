@@ -1,5 +1,5 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class Main {
     static String underThousand(int n) {

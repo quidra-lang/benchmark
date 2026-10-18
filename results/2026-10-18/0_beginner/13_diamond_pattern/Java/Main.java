@@ -1,8 +1,4 @@
-import java.util.*;
-import java.math.*;
-
 public class Main {
-
     public static void main(String[] args) {
         int n = 5;
         for (int row = 1; row <= 2 * n - 1; row++) {

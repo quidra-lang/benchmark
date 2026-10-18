@@ -1,4 +1,5 @@
 import copy
+from textwrap import wrap as wrap_text
 import re
 import sys
 
@@ -145,33 +146,16 @@ def markup(line):
 
 
 def words(lines):
-    return [word for word in " ".join(lines).split(" ") if word]
+    return " ".join(lines).split()
 
 
 def wrap(sequence, width):
-    lines = []
-    for word in sequence:
-        if lines and len(lines[-1]) + 1 + len(word) <= width:
-            lines[-1] += " " + word
-        else:
-            lines.append(word)
-    return lines
+    return wrap_text(" ".join(sequence), width, break_long_words=False, break_on_hyphens=False)
 
 
 def clean_hi_line(line):
-    pieces = []
-    segments = 0
-    position = 0
-    while position < len(line):
-        closing = {"[": "]", "(": ")"}.get(line[position])
-        end = line.find(closing, position + 1) if closing is not None else -1
-        if end != -1:
-            segments += 1
-            position = end + 1
-        else:
-            pieces.append(line[position])
-            position += 1
-    normalized = " ".join(words(["".join(pieces)]))
+    cleaned, segments = re.subn(r"\[.*?\]|\(.*?\)", "", line)
+    normalized = " ".join(cleaned.split())
     prefix = "- " if normalized.startswith("- ") else ""
     body = normalized[len(prefix):]
     label, separator, rest = body.partition(":")
@@ -342,13 +326,13 @@ class SubtitleEditor:
         output.append(f"duration total={srt_time(total)} mean={srt_time(total // count)}")
         characters = sum(cue.characters for cue, duration in zip(self.cues, durations) if duration >= 1)
         output.append("speed " + (two_decimals(characters * 100000 // total) if total else "-"))
-        longest = max(range(count), key=lambda index: durations[index])
+        longest = durations.index(max(durations))
         output.append(f"longest cue={longest + 1} duration={srt_time(durations[longest])}")
         if count == 1:
             output.append("gap none")
         else:
             gaps = [self.cues[i + 1].start - self.cues[i].end for i in range(count - 1)]
-            largest = max(range(len(gaps)), key=lambda index: gaps[index])
+            largest = gaps.index(max(gaps))
             output.append(f"gap cue={largest + 1} ms={gaps[largest]}")
         return output
 

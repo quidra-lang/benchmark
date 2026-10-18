@@ -6,8 +6,8 @@ function laplace(array $matrix): int {
     for ($j = 0; $j < $n; $j++) {
         $minor = [];
         for ($row = 1; $row < $n; $row++) {
-            $values = [];
-            for ($column = 0; $column < $n; $column++) if ($column !== $j) $values[] = $matrix[$row][$column];
+            $values = $matrix[$row];
+            array_splice($values,$j,1);
             $minor[] = $values;
         }
         $term = $matrix[0][$j]*laplace($minor);

@@ -30,7 +30,7 @@ func main() {
 		}
 		caps := make([]string, len(words))
 		for i, w := range words {
-			caps[i] = strings.ToUpper(w[: 1]) + w[1:]
+			caps[i] = strings.ToUpper(w[:1]) + w[1:]
 		}
 		camel := words[0] + strings.Join(caps[1:], "")
 		fmt.Printf("%s: snake=%s, camel=%s, pascal=%s, kebab=%s\n", id, strings.Join(words, "_"), camel,

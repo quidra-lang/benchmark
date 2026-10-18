@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	names := []string{"tent", "stove", "lantern", "rope", "camera", "blanket", "water"}

@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	arrays := [][]int{{3, -5, 8, -2, 6, -9, 4, 1, -7, 5, -3, 2}, {-4, 7, -1, 3, -8, 10, -2, 5, -6, -2,
@@ -10,7 +8,7 @@ func main() {
 	for _, a := range arrays {
 		current, best, start, left, right := a[0], a[0], 0, 0, 0
 		for i := 1; i < len(a); i++ {
-			if current + a[i] < a[i] {
+			if current < 0 {
 				current = a[i]
 				start = i
 			} else {

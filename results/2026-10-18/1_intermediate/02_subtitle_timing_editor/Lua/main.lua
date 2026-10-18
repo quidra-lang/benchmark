@@ -72,10 +72,7 @@ end
 local function copy_cues(cues)
     local copy = {}
     for i, cue in ipairs(cues) do
-        local lines = {}
-        for j, line in ipairs(cue.lines) do
-            lines[j] = line
-        end
+        local lines = {table.unpack(cue.lines)}
         copy[i] = {index = cue.index, start = cue.start, stop = cue.stop, lines = lines}
     end
     return copy
@@ -426,9 +423,7 @@ local function inspect(command, args, cues)
         for _, cue in ipairs(cues) do
             output[#output + 1] = tostring(cue.index)
             output[#output + 1] = time_text(cue.start) .. " --> " .. time_text(cue.stop)
-            for _, line in ipairs(cue.lines) do
-                output[#output + 1] = line
-            end
+            table.move(cue.lines,1,#cue.lines,#output+1,output)
             output[#output + 1] = ""
         end
     elseif command == "TOVTT" then
@@ -458,9 +453,7 @@ local function inspect(command, args, cues)
                 end
                 output[#output + 1] = tostring(cue.index)
                 output[#output + 1] = time_text(cue.start, "VTT") .. " --> " .. time_text(cue.stop, "VTT") .. settings
-                for _, line in ipairs(lines) do
-                    output[#output + 1] = line
-                end
+                table.move(lines,1,#lines,#output+1,output)
                 output[#output + 1] = ""
             end
         end
@@ -608,13 +601,8 @@ local function modify(command, args, cues)
             local previous = result[#result]
             local joined = false
             if previous and cue.start - previous.stop < args[1] and not dialogue(previous) and not dialogue(cue) then
-                local lines = {}
-                for _, line in ipairs(previous.lines) do
-                    lines[#lines + 1] = line
-                end
-                for _, line in ipairs(cue.lines) do
-                    lines[#lines + 1] = line
-                end
+                local lines = {table.unpack(previous.lines)}
+                table.move(cue.lines,1,#cue.lines,#lines+1,lines)
                 lines = wrap_lines(lines, 42)
                 if #lines <= 2 then
                     previous.stop = math.max(previous.stop, cue.stop)
@@ -763,23 +751,14 @@ local function modify(command, args, cues)
         output[1] = prefix .. " removed_lines=" .. removed_lines .. " removed_cues=" .. removed_cues
     elseif command == "REPLACE" then
         local old, new = table.unpack(args[1])
+        local pattern = old:gsub("(%W)","%%%1")
         local replacements, changed = 0, 0
         for _, cue in ipairs(cues) do
             local local_count = 0
             for j, line in ipairs(cue.lines) do
-                local pieces, position = {}, 1
-                while true do
-                    local first, last = line:find(old, position, true)
-                    if not first then
-                        pieces[#pieces + 1] = line:sub(position)
-                        break
-                    end
-                    pieces[#pieces + 1] = line:sub(position, first - 1)
-                    pieces[#pieces + 1] = new
-                    position = last + 1
-                    local_count = local_count + 1
-                end
-                cue.lines[j] = table.concat(pieces)
+                local count
+                cue.lines[j],count = line:gsub(pattern,function() return new end)
+                local_count = local_count+count
             end
             replacements = replacements + local_count
             if local_count > 0 then
@@ -806,10 +785,7 @@ local function load_block(block, k, cues)
     if #block < 3 then
         return "BAD CUE " .. k .. ": no text"
     end
-    local lines = {}
-    for i = 3, #block do
-        lines[#lines + 1] = block[i]
-    end
+    local lines = {table.unpack(block,3)}
     cues[#cues + 1] = {index = tonumber(block[1]), start = start, stop = stop, lines = lines}
     return nil
 end

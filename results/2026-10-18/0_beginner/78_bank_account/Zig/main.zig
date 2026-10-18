@@ -1,7 +1,8 @@
 const std = @import("std");
 
+const names = [_][]const u8{ "Nina", "Leo", "Emma" };
+
 fn account(name: []const u8) usize {
-    const names = [_][]const u8{ "Nina", "Leo", "Emma" };
     for (names, 0..) |n, i| {
         if (std.mem.eql(u8, n, name))
             return i;
@@ -9,11 +10,14 @@ fn account(name: []const u8) usize {
     unreachable;
 }
 
+fn lessAccount(_: void, a: usize, b: usize) bool {
+    return std.mem.order(u8, names[a], names[b]) == .lt;
+}
+
 pub fn main(init: std.process.Init) !void {
     var output_buffer: [8192]u8 = undefined;
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
-    const names = [_][]const u8{ "Nina", "Leo", "Emma" };
     var balances = [_]u32{ 12000, 3500, 800 };
     const commands = [_][]const u8{
         "deposit Emma 1200",
@@ -53,15 +57,7 @@ pub fn main(init: std.process.Init) !void {
         });
     }
     var order = [_]usize{ 0, 1, 2 };
-    for (0..3) |i| {
-        for (i + 1..3) |j| {
-            if (std.mem.order(u8, names[order[j]], names[order[i]]) == .lt) {
-                const t = order[i];
-                order[i] = order[j];
-                order[j] = t;
-            }
-        }
-    }
+    std.mem.sort(usize, &order, {}, lessAccount);
     for (order) |i|
         try out.print("{s}: {d}\n", .{ names[i], balances[i] });
     try out.flush();

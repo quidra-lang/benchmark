@@ -78,7 +78,7 @@ class Player {
   counting(rows: Eligible[]): {selected: Eligible[]; adjustment: number} {
     const n = rows.length;
     if (n < 3) return {selected: [], adjustment: 0};
-    const k = n <= 5 ? 1 : n <= 8 ? 2 : n <= 11 ? 3 : n <= 14 ? 4 : n <= 16 ? 5 : n <= 18 ? 6 : n === 19 ? 7 : 8;
+    const k = [5, 8, 11, 14, 16, 18, 19, 20].findIndex(limit => n <= limit) + 1;
     const adjustment = n === 3 ? -20 : n === 4 || n === 6 ? -10 : 0;
     const selected = [...rows].sort((a, b) => a.adjusted - b.adjusted || b.number - a.number).slice(0, k);
     return {selected, adjustment};
@@ -320,7 +320,7 @@ class GolfScorer {
       }
     }
     if (carry) {
-      const sharing = (winners.length ? winners : ids).slice().sort();
+      const sharing = (winners.length ? winners : ids).toSorted();
       const share = Math.floor(carry * 100 / sharing.length);
       for (const id of sharing) totals[id] += share;
       this.emit("carry", carry, ...sharing);
@@ -485,7 +485,7 @@ class GolfScorer {
             if (score === "X") counts[6]++;
             else if (typeof score === "number") {
               const relative = score - r.course.pars[h];
-              counts[relative <= -2 ? 0 : relative === -1 ? 1 : relative === 0 ? 2 : relative === 1 ? 3 : relative === 2 ? 4 : 5]++;
+              counts[Math.max(0, Math.min(relative + 2, 5))]++;
               parScores[r.course.pars[h]].push(score);
             }
           }

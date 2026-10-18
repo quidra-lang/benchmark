@@ -6,7 +6,8 @@ for (match in matches) {
     goals <- as.integer(strsplit(parts[2],"-",fixed=TRUE)[[1]])
     for (side in 1:2) {
         team <- if (side == 1) parts[1] else parts[3]
-        gf <- goals[side]; ga <- goals[3-side]
+        gf <- goals[side]
+        ga <- goals[3-side]
         records[team,"played"] <- records[team,"played"]+1
         records[team,"gf"] <- records[team,"gf"]+gf
         records[team,"ga"] <- records[team,"ga"]+ga

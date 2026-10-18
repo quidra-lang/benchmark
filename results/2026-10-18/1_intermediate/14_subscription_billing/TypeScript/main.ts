@@ -528,16 +528,15 @@ class Billing {
         break;
       }
       case "MRR": {
-        const rows = new Map<string, {count: number; value: bigint}>();
-        for (const s of this.subs) {
-          if (!["ACTIVE", "PAST_DUE"].includes(s.state)) continue;
-          const amount = fee(s.plan, s.seats);
-          const mrr = s.plan.cycle === "MONTHLY" ? amount : s.plan.cycle === "YEARLY" ? amount / 12n : amount * 30n / 7n;
-          if (!rows.has(s.plan.name)) rows.set(s.plan.name, {count: 0, value: 0n});
-          const row = rows.get(s.plan.name)!;
-          row.count++;
-          row.value += mrr;
-        }
+        const active = this.subs.filter(s => ["ACTIVE", "PAST_DUE"].includes(s.state));
+        const groups = Map.groupBy(active, s => s.plan.name);
+        const rows = new Map([...groups].map(([name, subs]) => [name, {
+          count: subs.length,
+          value: sum(subs.map(s => {
+            const amount = fee(s.plan, s.seats);
+            return s.plan.cycle === "MONTHLY" ? amount : s.plan.cycle === "YEARLY" ? amount / 12n : amount * 30n / 7n;
+          })),
+        }]));
         this.emit(0, "MRR");
         for (const name of [...rows.keys()].sort()) {
           const row = rows.get(name)!;

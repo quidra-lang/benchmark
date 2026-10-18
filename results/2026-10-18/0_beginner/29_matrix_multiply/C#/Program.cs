@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Globalization;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
@@ -8,7 +6,8 @@ CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 int[,] a = { {3,-2,5,1},{-4,7,0,6},{2,9,-8,-3} }, b = { {1,4},{-5,2},{6,-1},{0,7} };
 for (int i = 0; i < 3; i++) {
     for (int j = 0; j < 2; j++) {
-        int sum = 0; for (int k = 0; k < 4; k++) sum += a[i,k] * b[k,j];
+        int sum = 0;
+        for (int k = 0; k < 4; k++) sum += a[i,k] * b[k,j];
         Console.Write($"{sum,5}");
     }
     Console.WriteLine();

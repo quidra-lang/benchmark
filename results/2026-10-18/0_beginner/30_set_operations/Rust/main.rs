@@ -12,7 +12,10 @@ fn main() {
         print!("{}:", labels[op]);
         for n in 0..26 {
             let keep = match op {
-                0 => a[n] || b[n], 1 => a[n] && b[n], 2 => a[n] && !b[n], _ => a[n] != b[n]
+                0 => a[n] || b[n],
+                1 => a[n] && b[n],
+                2 => a[n] && !b[n],
+                _ => a[n] != b[n],
             };
             if keep {
                 print!(" {}", n);

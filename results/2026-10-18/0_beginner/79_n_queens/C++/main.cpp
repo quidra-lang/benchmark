@@ -24,9 +24,9 @@ void search(int n, int row, std::array<int, 8> &positions, int &count, std::arra
 }
 
 int main() {
-    std::array<int, 8> first {};
+    std::array<int, 8> first{};
     for (int n = 4; n <= 8; n++) {
-        std::array<int, 8> positions {};
+        std::array<int, 8> positions;
         int count = 0;
         search(n, 0, positions, count, first);
         std::cout << "N=" << n << ": " << count << " solutions\n";

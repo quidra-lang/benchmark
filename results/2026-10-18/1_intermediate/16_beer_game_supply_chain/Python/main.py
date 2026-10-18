@@ -1,4 +1,6 @@
 import copy
+from collections import Counter
+from itertools import accumulate
 import sys
 
 
@@ -32,9 +34,8 @@ def parse_policy(tokens):
     count = PARAMETERS[name]
     if len(tokens) - 1 != count:
         raise CommandError(f"{name} needs {count} parameters")
-    values = []
-    for token in tokens[1:]:
-        values.append(int(token.replace(".", "")) if name == "STERMAN" and len(values) < 3 else int(token))
+    values = [int(token.replace(".", "")) if name == "STERMAN" and index < 3 else int(token)
+              for index, token in enumerate(tokens[1:])]
     if name == "FIXED":
         valid = 0 <= values[0] <= 1000
     elif name == "PASS":
@@ -369,11 +370,8 @@ class Game:
         stage = self.simulation.stages[index]
         initial = self.initials[index]
         nominal = initial["shipping"] + initial["orders"]
-        received = 0
-        cumulative = []
-        for r in stage.records:
-            received += r["received"]
-            cumulative.append(received - nominal * initial["quantity"])
+        cumulative = [received - nominal * initial["quantity"]
+                      for received in accumulate(r["received"] for r in stage.records)]
         ordered = count = 0
         leads = []
         for t, r in enumerate(stage.records):
@@ -568,10 +566,7 @@ class Game:
             if command == "PLOT":
                 self.plot(index, a[1], *self.range_check(a[2:], s.week))
             else:
-                bins = {}
-                for value in self.values(index, a[1]):
-                    bucket = value // width
-                    bins[bucket] = bins.get(bucket, 0) + 1
+                bins = Counter(value // width for value in self.values(index, a[1]))
                 self.emit("HISTOGRAM", a[0], a[1], "width", width, "weeks", f"1-{s.week}")
                 for bucket in range(min(bins), max(bins) + 1):
                     count = bins.get(bucket, 0)

@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-int value(const char *token, int *registers) {
+int value(const char *token, const int *registers) {
     return token[0] >= 'A' && token[0] <= 'D' ? registers[token[0] - 'A']: atoi(token);
 }
 

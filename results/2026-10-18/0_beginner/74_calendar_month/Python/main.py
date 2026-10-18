@@ -10,11 +10,6 @@ for index, (year, month) in enumerate([(2024, 2), (2026, 8), (2026, 11)]):
     lengths = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     print(f"{names[month - 1]} {year}")
     print("Su Mo Tu We Th Fr Sa")
-    week = ["  "] * weekday
-    for day in range(1, lengths[month - 1] + 1):
-        week.append(f"{day:2d}")
-        if len(week) == 7:
-            print(" ".join(week))
-            week = []
-    if week:
-        print(" ".join(week))
+    fields = ["  "] * weekday + [f"{day:2d}" for day in range(1, lengths[month - 1] + 1)]
+    for start in range(0, len(fields), 7):
+        print(" ".join(fields[start:start + 7]))

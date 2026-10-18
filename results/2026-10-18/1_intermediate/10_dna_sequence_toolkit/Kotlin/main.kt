@@ -1,5 +1,3 @@
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -7,7 +5,6 @@ import kotlin.math.min
 private const val BASES = "ACGT"
 private const val SYMBOLS = "ACGTRYSWKMBDHVN"
 private const val COMPLEMENTS = "TGCAYRSWMKVHDBN"
-private const val HEX = "0123456789ABCDEF"
 private val masks = intArrayOf(1,2,4,8,5,10,6,9,12,3,14,13,11,7,15)
 private const val AMINO = "ACDEFGHIKLMNPQRSTVWY"
 private val residues = intArrayOf(71079,103139,115089,129116,147177,57052,137141,113160,128174,113160,131193,114104,97117,128131,156188,87078,101105,99133,186213,163176)
@@ -70,11 +67,9 @@ private fun translation(codons: List<String>) = codons.map { genetic.getValue(it
 private fun wordCounts(words: List<String>) = words.groupingBy { it }.eachCount()
 private fun frequency(counts: Map<String,Int>) = counts.keys.sortedWith(compareByDescending<String> { counts.getValue(it) }.thenBy { it })
 private fun occurrences(s: String, motif: String): List<Int> {
-    val result = mutableListOf<Int>()
-    for (i in 0..s.length-motif.length) {
-        if (motif.indices.all { j -> masks[SYMBOLS.indexOf(motif[j])] and (1 shl BASES.indexOf(s[i+j])) != 0 }) result.add(i+1)
-    }
-    return result
+    return (0..s.length-motif.length).filter { i ->
+        motif.indices.all { j -> masks[SYMBOLS.indexOf(motif[j])] and (1 shl BASES.indexOf(s[i+j])) != 0 }
+    }.map { it+1 }
 }
 private fun transition(a: Char, b: Char) = a != b && (a in "AG" && b in "AG" || a in "CT" && b in "CT")
 private fun repeatCount(s: String, i: Int, u: Int): Int {
@@ -150,12 +145,11 @@ private class Toolkit {
         schemas[c] = args.toList()
         arities[c] = low..high
     }
-    fun emit(s: String) { output.add(s) }
     fun store(name: String, sequence: String) {
         error(sequence.length > 500,"too long")
         val replacing = name in registry
         registry[name] = sequence
-        emit((if (replacing) "replaced " else "stored ")+"$name ${sequence.length} nt")
+        output.add((if (replacing) "replaced " else "stored ")+"$name ${sequence.length} nt")
     }
     fun validate(command: String, a: List<String>, nums: IntArray, sequences: Array<String>) {
         val schema = schemas[command] ?: throw Fault("unknown command $command")
@@ -214,7 +208,7 @@ private class Toolkit {
             best = h[m][n]
         }
         if (local && best == 0) {
-            emit("score 0")
+            output.add("score 0")
             return
         }
         var i = bi
@@ -236,10 +230,10 @@ private class Toolkit {
         val left = x.reverse().toString()
         val right = y.reverse().toString()
         val middle = left.indices.map { k -> if (left[k] == '-' || right[k] == '-') '-' else if (left[k] == right[k]) '|' else '*' }.joinToString("")
-        emit("score $best a ${i+1}-$bi b ${j+1}-$bj identity ${middle.count { it == '|' }}/${left.length} gaps ${middle.count { it == '-' }}")
-        emit(left)
-        emit(middle)
-        emit(right)
+        output.add("score $best a ${i+1}-$bi b ${j+1}-$bj identity ${middle.count { it == '|' }}/${left.length} gaps ${middle.count { it == '-' }}")
+        output.add(left)
+        output.add(middle)
+        output.add(right)
     }
     fun pair(a: Char, b: Char) = complementBase(a) == b || a == 'G' && b == 'T' || a == 'T' && b == 'G'
     fun value(f: Array<IntArray>, i: Int, j: Int) = if (i > j) 0 else f[i][j]
@@ -275,8 +269,8 @@ private class Toolkit {
                 }
             }
         }
-        emit(structure.concatToString())
-        emit("pairs ${f[0][n-1]}")
+        output.add(structure.concatToString())
+        output.add("pairs ${f[0][n-1]}")
     }
     fun primer(s: String) {
         val n = s.length
@@ -297,10 +291,10 @@ private class Toolkit {
         val ok = listOf(n in 18..25,40*n <= 100*g && 100*g <= 60*n,temperature in 520..620,clamp in 1..3,bestRun <= 4,repeats <= 4,self <= 6)
         val failed = mutableListOf<String>()
         for (i in 0..6) {
-            emit("${names[i]} ${values[i]} "+(if (ok[i]) "OK" else "FAIL"))
+            output.add("${names[i]} ${values[i]} "+(if (ok[i]) "OK" else "FAIL"))
             if (!ok[i]) failed.add(names[i])
         }
-        emit(if (failed.isEmpty()) "PASS" else "FAIL "+list(failed))
+        output.add(if (failed.isEmpty()) "PASS" else "FAIL "+list(failed))
     }
     fun assemble(name: String, minimum: Int, sequences: Array<String>) {
         val unique = sequences.drop(2).distinct()
@@ -334,11 +328,10 @@ private class Toolkit {
                 }
             }
         }
-        var longest = fragments[0]
-        for (s in fragments) if (s.length > longest.length) longest = s
+        val longest = fragments.maxBy { it.length }
         error(longest.length > 500,"too long")
-        emit("contigs ${fragments.size}")
-        for (s in fragments) emit("${s.length} $s")
+        output.add("contigs ${fragments.size}")
+        for (s in fragments) output.add("${s.length} $s")
         store(name,longest)
     }
     fun execute(line: String) {
@@ -362,25 +355,25 @@ private class Toolkit {
                 val next = a[2][0]
                 error(old == next,"no change")
                 registry[a[0]] = s.take(nums[1]-1)+next+s.drop(nums[1])
-                emit("${a[0]} $old${nums[1]}$next "+(if (transition(old,next)) "transition" else "transversion"))
+                output.add("${a[0]} $old${nums[1]}$next "+(if (transition(old,next)) "transition" else "transversion"))
             }
             "DEL" -> {
                 registry.remove(a[0])
-                emit("deleted ${a[0]}")
+                output.add("deleted ${a[0]}")
             }
             "LIST" -> {
-                if (registry.isEmpty()) emit("no sequences")
-                for ((name,sequence) in registry) emit("$name ${sequence.length} nt")
+                if (registry.isEmpty()) output.add("no sequences")
+                for ((name,sequence) in registry) output.add("$name ${sequence.length} nt")
             }
-            "REVCOMP" -> emit(revcomp(s))
-            "COMPLEMENT" -> emit(complement(s))
-            "REVERSE" -> emit(s.reversed())
-            "TRANSCRIBE" -> emit(s.replace('T','U'))
-            "TRANSLATE" -> emit(translation(codons(s,nums[1])).ifEmpty { "none" })
+            "REVCOMP" -> output.add(revcomp(s))
+            "COMPLEMENT" -> output.add(complement(s))
+            "REVERSE" -> output.add(s.reversed())
+            "TRANSCRIBE" -> output.add(s.replace('T','U'))
+            "TRANSLATE" -> output.add(translation(codons(s,nums[1])).ifEmpty { "none" })
             "CODONS" -> {
                 val counts = wordCounts(codons(s,nums[1]))
-                if (counts.isEmpty()) emit("none")
-                for (c in frequency(counts)) emit("$c ${genetic[c]} ${counts[c]}")
+                if (counts.isEmpty()) output.add("none")
+                for (c in frequency(counts)) output.add("$c ${genetic[c]} ${counts[c]}")
             }
             "PROTEIN" -> {
                 val protein = translation(codons(s,nums[1])).substringBefore('*')
@@ -388,9 +381,9 @@ private class Toolkit {
                 val mass = 18015+protein.sumOf { residues[AMINO.indexOf(it)] }
                 val charge = protein.count { it in "KR" }-protein.count { it in "DE" }
                 val counts = wordCounts(protein.map { it.toString() })
-                emit(protein)
-                emit("length ${protein.length} mass ${milli(mass)} charge "+(if (charge > 0) "+" else "")+charge)
-                emit(frequency(counts).joinToString(" ") { "$it=${counts[it]}" })
+                output.add(protein)
+                output.add("length ${protein.length} mass ${milli(mass)} charge "+(if (charge > 0) "+" else "")+charge)
+                output.add(frequency(counts).joinToString(" ") { "$it=${counts[it]}" })
             }
             "ORFS" -> {
                 val found = mutableListOf<Orf>()
@@ -409,32 +402,32 @@ private class Toolkit {
                         }
                     }
                 }
-                if (found.isEmpty()) emit("none")
-                for (o in found.sortedBy { it.left }) emit((if (o.frame > 0) "+" else "")+"${o.frame} ${o.left} ${o.right} ${o.protein.length} ${o.protein}")
+                if (found.isEmpty()) output.add("none")
+                for (o in found.sortedBy { it.left }) output.add((if (o.frame > 0) "+" else "")+"${o.frame} ${o.left} ${o.right} ${o.protein.length} ${o.protein}")
             }
-            "GC" -> emit(BASES.map { "$it=${s.count { c -> c == it }}" }.joinToString(" ")+" GC=${pct(gc(s),n)}%")
+            "GC" -> output.add(BASES.map { "$it=${s.count { c -> c == it }}" }.joinToString(" ")+" GC=${pct(gc(s),n)}%")
             "GCWINDOW" -> {
                 error(nums[1] > n,"window too large")
-                for (i in 0..n-nums[1] step nums[2]) emit("${i+1}-${i+nums[1]} ${pct(gc(s.substring(i,i+nums[1])),nums[1])}%")
+                for (i in 0..n-nums[1] step nums[2]) output.add("${i+1}-${i+nums[1]} ${pct(gc(s.substring(i,i+nums[1])),nums[1])}%")
             }
             "SKEW" -> {
                 val skew = IntArray(n+1)
                 for (i in 0 until n) skew[i+1] = skew[i]+(if (s[i] == 'G') 1 else if (s[i] == 'C') -1 else 0)
                 val low = skew.minOrNull()!!
                 val high = skew.maxOrNull()!!
-                emit("min $low at "+list(skew.indices.filter { skew[it] == low }))
-                emit("max $high at "+list(skew.indices.filter { skew[it] == high }))
+                output.add("min $low at "+list(skew.indices.filter { skew[it] == low }))
+                output.add("max $high at "+list(skew.indices.filter { skew[it] == high }))
             }
             "KMERS" -> {
                 error(nums[1] > n,"k too large")
                 val words = (0..n-nums[1]).map { s.substring(it,it+nums[1]) }
                 val counts = wordCounts(words)
-                emit("${words.size} windows ${counts.size} distinct")
-                for (word in frequency(counts).take(nums[2])) emit("$word ${counts[word]}")
+                output.add("${words.size} windows ${counts.size} distinct")
+                for (word in frequency(counts).take(nums[2])) output.add("$word ${counts[word]}")
             }
             "FIND" -> {
-                emit("forward "+list(occurrences(s,a[1])))
-                emit("reverse "+list(occurrences(s,revcomp(a[1]))))
+                output.add("forward "+list(occurrences(s,a[1])))
+                output.add("reverse "+list(occurrences(s,revcomp(a[1]))))
             }
             "RESTRICT" -> {
                 val allCuts = sortedSetOf<Int>()
@@ -442,7 +435,7 @@ private class Toolkit {
                     val e = enzymes.indexOf(enzyme)
                     val found = occurrences(s,sites[e]).map { it+cuts[e]-1 }.filter { it in 1 until n }
                     allCuts.addAll(found)
-                    emit("$enzyme "+list(found))
+                    output.add("$enzyme "+list(found))
                 }
                 val ends = allCuts.toList()+n
                 var previous = 0
@@ -453,8 +446,8 @@ private class Toolkit {
                     sizes.add(end-previous)
                     previous = end
                 }
-                emit("fragments "+list(fragments))
-                emit("sizes "+list(sizes.sortedDescending()))
+                output.add("fragments "+list(fragments))
+                output.add("sizes "+list(sizes.sortedDescending()))
             }
             "PALINDROMES" -> {
                 error(nums[1] > nums[2],"invalid range")
@@ -463,12 +456,12 @@ private class Toolkit {
                     for (length in nums[1]..min(nums[2],n-i)) {
                         val part = s.substring(i,i+length)
                         if (part == revcomp(part)) {
-                            emit("${i+1} $length $part")
+                            output.add("${i+1} $length $part")
                             count++
                         }
                     }
                 }
-                if (count == 0) emit("none")
+                if (count == 0) output.add("none")
             }
             "REPEATS" -> {
                 error(nums[1] > nums[2],"invalid range")
@@ -484,21 +477,16 @@ private class Toolkit {
                         } else i++
                     }
                 }
-                if (found.isEmpty()) emit("none")
-                for (r in found.sortedWith(compareBy<Repeat> { it.start }.thenBy { it.unitLength })) emit("${r.start}-${r.end} ${r.unit}x${r.count}")
+                if (found.isEmpty()) output.add("none")
+                for (r in found.sortedWith(compareBy<Repeat> { it.start }.thenBy { it.unitLength })) output.add("${r.start}-${r.end} ${r.unit}x${r.count}")
             }
             "HAMMING" -> {
                 val b = sequences[1]
                 error(n != b.length,"length mismatch")
-                var distance = 0
-                var transitions = 0
-                for (i in s.indices) {
-                    if (s[i] != b[i]) {
-                        distance++
-                        if (transition(s[i],b[i])) transitions++
-                    }
-                }
-                emit("distance $distance transitions $transitions transversions ${distance-transitions}")
+                val pairs = s.zip(b)
+                val distance = pairs.count { (a,b) -> a != b }
+                val transitions = pairs.count { (a,b) -> transition(a,b) }
+                output.add("distance $distance transitions $transitions transversions ${distance-transitions}")
             }
             "ALIGN" -> align(s,sequences[1],a[2] == "LOCAL",nums[3],nums[4],nums[5])
             "CONSENSUS" -> {
@@ -514,12 +502,12 @@ private class Toolkit {
                     val mask = winners.sumOf { 1 shl it }
                     iupac.append(SYMBOLS[masks.indexOf(mask)])
                 }
-                for (b in 0..3) emit("${BASES[b]} "+list(profile[b].toList()))
-                emit("consensus $consensus")
-                emit("iupac $iupac")
+                for (b in 0..3) output.add("${BASES[b]} "+list(profile[b].toList()))
+                output.add("consensus $consensus")
+                output.add("iupac $iupac")
             }
-            "TM" -> emit("Tm ${fixed(tm(s),10,1)} "+(if (n < 14) "wallace" else "gc"))
-            "MASS" -> emit("ss ${milli(mass(s))} ds ${milli(mass(s)+mass(revcomp(s)))}")
+            "TM" -> output.add("Tm ${fixed(tm(s),10,1)} "+(if (n < 14) "wallace" else "gc"))
+            "MASS" -> output.add("ss ${milli(mass(s))} ds ${milli(mass(s)+mass(revcomp(s)))}")
             "PRIMER" -> primer(s)
             "FOLD" -> fold(s,nums[1])
             "ASSEMBLE" -> assemble(a[0],nums[1],sequences)
@@ -528,14 +516,14 @@ private class Toolkit {
                 for (i in 0 until n step 4) {
                     var value = 0
                     for (j in 0..3) value = 4*value+(if (i+j < n) BASES.indexOf(s[i+j]) else 0)
-                    hex.append(HEX[value/16]).append(HEX[value%16])
+                    hex.append(value.toString(16).uppercase().padStart(2,'0'))
                 }
-                emit("$n $hex")
+                output.add("$n $hex")
             }
             "UNPACK" -> {
                 val decoded = StringBuilder()
                 for (i in a[2].indices step 2) {
-                    val value = 16*HEX.indexOf(a[2][i])+HEX.indexOf(a[2][i+1])
+                    val value = a[2].substring(i,i+2).toInt(16)
                     for (shift in intArrayOf(6,4,2,0)) decoded.append(BASES[(value shr shift) and 3])
                 }
                 for (i in nums[1] until decoded.length) error(decoded[i] != 'A',"invalid padding")
@@ -548,13 +536,13 @@ private class Toolkit {
         try { execute(line) }
         catch (f: Fault) {
             output.clear()
-            emit("ERROR ${f.message}")
+            output.add("ERROR ${f.message}")
         }
         return output
     }
 }
 fun main() {
-    val input = BufferedReader(InputStreamReader(System.`in`))
+    val input = System.`in`.bufferedReader()
     val output = System.out.bufferedWriter()
     val toolkit = Toolkit()
     repeat(input.readLine().toInt()) {

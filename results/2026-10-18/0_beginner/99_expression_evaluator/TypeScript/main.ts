@@ -1,7 +1,7 @@
-function evaluate(tokens, variables) {
+function evaluate(tokens: string[], variables: Map<string, number>): number {
   let index = 0;
   const peek = () => tokens[index] ?? "";
-  function factor() {
+  function factor(): number {
     const token = tokens[index++];
     if (token === "-") return -factor();
     if (token === "(") {
@@ -11,9 +11,9 @@ function evaluate(tokens, variables) {
     }
     if (/^\d+$/.test(token)) return Number(token);
     if (!variables.has(token)) throw new Error(`undefined variable ${token}`);
-    return variables.get(token);
+    return variables.get(token)!;
   }
-  function term() {
+  function term(): number {
     let value = factor();
     while (peek() === "*" || peek() === "/") {
       const operation = tokens[index];
@@ -27,7 +27,7 @@ function evaluate(tokens, variables) {
     }
     return value;
   }
-  function expression() {
+  function expression(): number {
     let value = term();
     while (peek() === "+" || peek() === "-") {
       const operation = tokens[index];
@@ -44,7 +44,7 @@ const lines = [
   "shift = -area / 8 + 3", "height = 100 / (height - 7) + bonus",
   "volume = area * depth", "width = (width+3)*-(2-4)", "width * shift - height"
 ];
-const variables = new Map();
+const variables = new Map<string, number>();
 for (const line of lines) {
   const tokens = line.match(/\d+|[a-z]+|[-+*\/()=]/g);
   const name = tokens[1] === "=" ? tokens[0] : "";

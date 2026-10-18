@@ -49,7 +49,7 @@ class Program {
         return (value % modulus + modulus) % modulus;
     }
     static int Clamp(int value) {
-        return Math.Max(0, Math.Min(255, value));
+        return Math.Clamp(value, 0, 255);
     }
     static int Root(long numerator, long scale) {
         long value = numerator / scale;
@@ -68,10 +68,7 @@ class Program {
         return string.Format(CultureInfo.InvariantCulture,"#{0:X2}{1:X2}{2:X2}",color[0],color[1],color[2]);
     }
     List<Entry> Table() {
-        List<Entry> result = new();
-        for (int i = 0; i < NAMES.Length; i++) result.Add(new Entry(NAMES[i], Unpack(RGB[i])));
-        result.AddRange(registered);
-        return result;
+        return NAMES.Select((name, i) => new Entry(name, Unpack(RGB[i]))).Concat(registered).ToList();
     }
     int[] Color(string text) {
         if (HEX.IsMatch(text)) {
@@ -84,26 +81,14 @@ class Program {
         }
         Match matcher = RGB_TEXT.Match(text);
         if (matcher.Success) {
-            int[] result = new int[3];
-            for (int i = 0; i < 3; i++) {
-                result[i] = int.Parse(matcher.Groups[i + 1].Value);
-                Require(result[i] <= 255);
-            }
+            int[] result = Enumerable.Range(1, 3).Select(i => int.Parse(matcher.Groups[i].Value, CultureInfo.InvariantCulture)).ToArray();
+            Require(result.All(value => value <= 255));
             return result;
         }
-        foreach (Entry entry in Table()) {
-            if (entry.Name.Equals(text)) return entry.Color;
-        }
-        throw new Invalid();
-    }
-    static int Maximum(int[] c) {
-        return Math.Max(c[0], Math.Max(c[1], c[2]));
-    }
-    static int Minimum(int[] c) {
-        return Math.Min(c[0], Math.Min(c[1], c[2]));
+        return Table().FirstOrDefault(entry => entry.Name == text)?.Color ?? throw new Invalid();
     }
     static int Hue(int[] c) {
-        int maximum = Maximum(c), difference = maximum - Minimum(c);
+        int maximum = c.Max(), difference = maximum - c.Min();
         if (difference == 0) return 0;
         long numerator;
         if (maximum == c[0]) {
@@ -114,7 +99,7 @@ class Program {
         return Round(numerator, difference) % 360;
     }
     static int[] Hsl(int[] c) {
-        int maximum = Maximum(c), minimum = Minimum(c), difference = maximum - minimum;
+        int maximum = c.Max(), minimum = c.Min(), difference = maximum - minimum;
         int saturation = difference == 0 ? 0 : Percent(difference, 255 - Math.Abs(maximum + minimum - 255));
         return new int[]{Hue(c), saturation, Percent(maximum + minimum, 510)};
     }
@@ -136,7 +121,7 @@ class Program {
         return result;
     }
     static string Model(string command, int[] c) {
-        int r = c[0], g = c[1], b = c[2], m = Maximum(c), n = Minimum(c), d = m - n;
+        int r = c[0], g = c[1], b = c[2], m = c.Max(), n = c.Min(), d = m - n;
         int[] v = Hsl(c);
         return command switch {
             "HSL" => "hsl(" + v[0] + "," + v[1] + "%," + v[2] + "%)",
@@ -219,73 +204,41 @@ class Program {
     static int[] Mean(List<int[]> colors) {
         int[] result = new int[3];
         for (int component = 0; component < 3; component++) {
-            int sum = 0;
-            foreach (int[] color in colors) sum += color[component];
-            result[component] = Round(sum,colors.Count);
+            result[component] = Round(colors.Sum(color => color[component]), colors.Count);
         }
         return result;
     }
     static int[] Ranges(List<int[]> colors) {
-        int[] ranges = new int[3];
-        for (int i = 0; i < 3; i++) {
-            int low = 255, high = 0;
-            foreach (int[] color in colors) {
-                low = Math.Min(low,color[i]);
-                high = Math.Max(high,color[i]);
-            }
-            ranges[i] = high - low;
-        }
-        return ranges;
+        return Enumerable.Range(0, 3).Select(i => colors.Max(color => color[i]) - colors.Min(color => color[i])).ToArray();
     }
     static List<Cluster> Palette(int k, List<int[]> colors) {
         List<List<int[]>> boxes = new();
         boxes.Add(new(colors));
         while (boxes.Count < k) {
-            int selected = -1, width = -1;
-            for (int i = 0; i < boxes.Count; i++) {
-                if (boxes[i].Count < 2) continue;
-                int candidate = Maximum(Ranges(boxes[i]));
-                if (candidate > width) {
-                    width = candidate;
-                    selected = i;
-                }
-            }
+            int selected = Enumerable.Range(0, boxes.Count).Where(i => boxes[i].Count > 1)
+                .MaxBy(i => Ranges(boxes[i]).Max());
             List<int[]> box = boxes[selected];
             int[] ranges = Ranges(box);
-            int component = 0;
-            for (int i = 1; i < 3; i++) {
-                if (ranges[i] > ranges[component]) component = i;
-            }
-            int axis = component;
-            box = box.OrderBy(c => c[axis]).ToList();
+            int component = Array.IndexOf(ranges, ranges.Max());
+            box = box.OrderBy(c => c[component]).ToList();
             int middle = box.Count / 2;
             boxes[selected] = box.GetRange(0,middle);
             boxes.Insert(selected + 1,box.GetRange(middle,box.Count-middle));
         }
-        List<Cluster> result = new();
-        foreach (List<int[]> box in boxes) result.Add(new Cluster(Mean(box),box.Count));
-        return result;
+        return boxes.Select(box => new Cluster(Mean(box), box.Count)).ToList();
     }
     static string ClusterText(List<Cluster> clusters) {
-        List<string> result = new();
-        foreach (Cluster cluster in clusters) result.Add(Hex(cluster.Color) + ":" + cluster.Count);
-        return string.Join(" ",result);
+        return string.Join(" ", clusters.Select(cluster => $"{Hex(cluster.Color)}:{cluster.Count}"));
     }
     static string Kmeans(int k, List<int[]> colors) {
-        List<Cluster> initial = Palette(k,colors);
-        List<int[]> representatives = new();
-        foreach (Cluster cluster in initial) representatives.Add(cluster.Color);
+        List<int[]> representatives = Palette(k, colors).Select(cluster => cluster.Color).ToList();
         List<Cluster> result = new();
         int iteration = 0;
         while (iteration < 20) {
             iteration++;
-            List<List<int[]>> groups = new();
-            for (int i = 0; i < k; i++) groups.Add(new());
+            var groups = Enumerable.Range(0, k).Select(_ => new List<int[]>()).ToList();
             foreach (int[] color in colors) {
-                int best = 0;
-                for (int j = 1; j < k; j++) {
-                    if (Distance(color,representatives[j]) < Distance(color,representatives[best])) best = j;
-                }
+                int best = Enumerable.Range(0, k).MinBy(j => Distance(color, representatives[j]));
                 groups[best].Add(color);
             }
             result = new();
@@ -301,9 +254,7 @@ class Program {
         return iteration + " " + ClusterText(result);
     }
     List<int[]> Colors(string[] tokens, int start) {
-        List<int[]> result = new();
-        for (int i = start; i < tokens.Length; i++) result.Add(Color(tokens[i]));
-        return result;
+        return tokens.Skip(start).Select(Color).ToList();
     }
     static string ColorsText(List<int[]> colors) {
         return string.Join(" ",colors.Select(Hex));
@@ -317,25 +268,18 @@ class Program {
                 Require(NAME.IsMatch(t[1]) && !NAMES.Contains(t[1],StringComparer.Ordinal));
                 int[] c = Color(t[2]);
                 Entry entry = new Entry(t[1],c);
-                for (int i = 0; i < registered.Count; i++) {
-                    if (registered[i].Name.Equals(t[1])) {
-                        registered[i] = entry;
-                        return t[1] + " " + Hex(c);
-                    }
-                }
-                registered.Add(entry);
+                int index = registered.FindIndex(existing => existing.Name == t[1]);
+                if (index < 0) registered.Add(entry);
+                else registered[index] = entry;
                 return t[1] + " " + Hex(c);
             }
             case "UNDEFINE": {
                 Arity(t,1);
                 Require(NAME.IsMatch(t[1]));
-                for (int i = 0; i < registered.Count; i++) {
-                    if (registered[i].Name.Equals(t[1])) {
-                        registered.RemoveAt(i);
-                        return t[1] + " removed";
-                    }
-                }
-                throw new Invalid();
+                int index = registered.FindIndex(entry => entry.Name == t[1]);
+                Require(index >= 0);
+                registered.RemoveAt(index);
+                return t[1] + " removed";
             }
             case "LIST": {
                 Arity(t,0);
@@ -346,13 +290,7 @@ class Program {
             case "PARSE": {
                 Arity(t,1);
                 int[] c = Color(t[1]);
-                string name = "-";
-                foreach (Entry entry in Table()) {
-                    if (c.SequenceEqual(entry.Color)) {
-                        name = entry.Name;
-                        break;
-                    }
-                }
+                string name = Table().FirstOrDefault(entry => c.SequenceEqual(entry.Color))?.Name ?? "-";
                 return Hex(c) + " rgb(" + c[0] + "," + c[1] + "," + c[2] + ") " +
                     Model("HSL",c) + " " + Model("HSV",c) + " " + Model("HWB",c) + " " +
                     Model("CMYK",c) + " " + Model("YCBCR",c) + " " + Model("YIQ",c) + " " + name;
@@ -424,10 +362,7 @@ class Program {
             case "ANSI": {
                 Arity(t,1);
                 int[] c = Color(t[1]);
-                int best = 16;
-                for (int i = 17; i <= 255; i++) {
-                    if (Distance(c,Ansi(i)) < Distance(c,Ansi(best))) best = i;
-                }
+                int best = Enumerable.Range(16, 240).MinBy(i => Distance(c, Ansi(i)));
                 return best + " " + Hex(Ansi(best)) + " " + Distance(c,Ansi(best));
             }
             case "WEBSAFE":
@@ -442,8 +377,8 @@ class Program {
                 int[] c = Color(t[1]);
                 int value = t[2] switch {
                     "LUMA" => Round(299L*c[0]+587L*c[1]+114L*c[2],1000),
-                    "AVERAGE" => Round(c[0]+c[1]+c[2],3),
-                    "LIGHTNESS" => Round(Maximum(c)+Minimum(c),2),
+                    "AVERAGE" => Round(c.Sum(),3),
+                    "LIGHTNESS" => Round(c.Max()+c.Min(),2),
                     "HSP" => Root(299L*c[0]*c[0]+587L*c[1]*c[1]+114L*c[2]*c[2],1000),
                     _ => throw new Invalid(),
                 };
@@ -567,11 +502,7 @@ class Program {
             case "NEAREST": {
                 Arity(t,1);
                 int[] c = Color(t[1]);
-                List<Entry> entries = Table();
-                Entry best = entries[0];
-                foreach (Entry entry in entries) {
-                    if (Distance(c,entry.Color) < Distance(c,best.Color)) best = entry;
-                }
+                Entry best = Table().MinBy(entry => Distance(c, entry.Color))!;
                 return best.Name + " " + Hex(best.Color) + " " + Distance(c,best.Color);
             }
             case "DISTANCE": {
@@ -606,10 +537,7 @@ class Program {
                 Require(t.Length >= 3 && t.Length <= 34);
                 int[] bg = Color(t[1]);
                 List<int[]> options = Colors(t,2);
-                int[] best = options[0];
-                foreach (int[] c in options) {
-                    if (Ratio(c,bg) > Ratio(best,bg)) best = c;
-                }
+                int[] best = options.MaxBy(c => Ratio(c, bg))!;
                 return Hex(best) + " " + ContrastText(best,bg);
             }
             case "DESCRIBE": {
@@ -644,10 +572,7 @@ class Program {
                 List<string> result = new();
                 foreach (int[] c in options) {
                     int[] adjusted = {Clamp(c[0]+error[0]),Clamp(c[1]+error[1]),Clamp(c[2]+error[2])};
-                    int best = 0;
-                    for (int i = 1; i < 16; i++) {
-                        if (Distance(adjusted,Unpack(RGB[i])) < Distance(adjusted,Unpack(RGB[best]))) best = i;
-                    }
+                    int best = Enumerable.Range(0, 16).MinBy(i => Distance(adjusted, Unpack(RGB[i])));
                     result.Add(NAMES[best]);
                     int[] chosen = Unpack(RGB[best]);
                     for (int i = 0; i < 3; i++) error[i] = adjusted[i]-chosen[i];

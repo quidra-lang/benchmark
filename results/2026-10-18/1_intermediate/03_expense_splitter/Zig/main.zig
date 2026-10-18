@@ -1,8 +1,12 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn less(a: []const u8, b: []const u8) bool { return std.mem.order(u8, a, b) == .lt; }
+fn stringLess(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+fn descending(values: []const i64, a: usize, b: usize) bool {
+    return values[a] > values[b];
+}
 fn integer(text: []const u8) i64 { return std.fmt.parseInt(i64, text, 10) catch unreachable; }
 fn amount(text: []const u8) i64 {
     const dot = std.mem.findScalar(u8, text, '.').?;
@@ -35,21 +39,16 @@ fn distribute(gpa: Allocator, total: i64, weights: []const i64) Allocator.Error!
     for (weights) |w| sum += w;
     const result = try gpa.alloc(i64, weights.len);
     const order = try gpa.alloc(usize, weights.len);
+    const remainders = try gpa.alloc(i64, weights.len);
     var allotted: i64 = 0;
     for (weights, 0..) |w, i| {
-        result[i] = @divFloor(total * w, sum);
+        const share = total * w;
+        result[i] = @divFloor(share, sum);
+        remainders[i] = @mod(share, sum);
         allotted += result[i];
         order[i] = i;
     }
-    for (1..weights.len) |i| {
-        const entry = order[i];
-        var j = i;
-        while (j > 0 and @mod(total * weights[entry], sum) > @mod(total * weights[order[j - 1]], sum)) {
-            order[j] = order[j - 1];
-            j -= 1;
-        }
-        order[j] = entry;
-    }
+    std.mem.sort(usize, order, @as([]const i64, remainders), descending);
     for (0..@as(usize, @intCast(total - allotted))) |i| result[order[i]] += 1;
     return result;
 }
@@ -93,7 +92,7 @@ const Ledger = struct {
     members: std.ArrayList(Member) = .empty,
     rates: std.ArrayList(Currency) = .empty,
     budgets: std.ArrayList(Budget) = .empty,
-    used: std.ArrayList([]const u8) = .empty,
+    used: std.StringHashMapUnmanaged(void) = .empty,
     expenses: std.ArrayList(Expense) = .empty,
     settlements: std.ArrayList(Settlement) = .empty,
     error_buffer: [8192]u8 = undefined,
@@ -109,7 +108,7 @@ const Ledger = struct {
         return error.BadCommand;
     }
     fn memberIndex(self: *const Ledger, name: []const u8) ?usize {
-        for (self.members.items, 0..) |m, i| { if (equal(m.name, name)) return i; }
+        for (self.members.items, 0..) |m, i| { if (std.mem.eql(u8, m.name, name)) return i; }
         return null;
     }
     fn registered(self: *Ledger, name: []const u8) Error!usize {
@@ -125,22 +124,14 @@ const Ledger = struct {
         for (self.members.items, 0..) |m, i| {
             if (!active_only or m.active) try result.append(self.gpa, i);
         }
-        self.sortNames(result.items);
+        std.mem.sort(usize, result.items, self, memberLess);
         return result.items;
     }
-    fn sortNames(self: *const Ledger, values: []usize) void {
-        for (1..@max(1, values.len)) |i| {
-            const entry = values[i];
-            var j = i;
-            while (j > 0 and less(self.members.items[entry].name, self.members.items[values[j - 1]].name)) {
-                values[j] = values[j - 1];
-                j -= 1;
-            }
-            values[j] = entry;
-        }
+    fn memberLess(self: *const Ledger, a: usize, b: usize) bool {
+        return std.mem.order(u8, self.members.items[a].name, self.members.items[b].name) == .lt;
     }
     fn expenseIndex(self: *Ledger, id: []const u8) Error!usize {
-        for (self.expenses.items, 0..) |e, i| { if (equal(e.id, id)) return i; }
+        for (self.expenses.items, 0..) |e, i| { if (std.mem.eql(u8, e.id, id)) return i; }
         return self.failFmt("unknown expense {s}", .{id});
     }
     fn unfrozen(self: *Ledger, e: Expense) Error!void {
@@ -152,7 +143,7 @@ const Ledger = struct {
         }
     }
     fn rateIndex(self: *const Ledger, code: []const u8) ?usize {
-        for (self.rates.items, 0..) |r, i| { if (equal(r.code, code)) return i; }
+        for (self.rates.items, 0..) |r, i| { if (std.mem.eql(u8, r.code, code)) return i; }
         return null;
     }
     fn spec(self: *Ledger, text: []const u8) Error!Spec {
@@ -173,7 +164,10 @@ const Ledger = struct {
     fn portions(self: *const Ledger, e: Expense) Allocator.Error![]i64 {
         const values = try self.gpa.alloc(i64, e.participants.len);
         var sum: i64 = 0;
-        for (e.participants, 0..) |p, i| { values[i] = p.value; sum += p.value; }
+        for (e.participants, 0..) |p, i| {
+            values[i] = p.value;
+            sum += p.value;
+        }
         return switch (e.mode) {
             .EQUAL => equalParts(self.gpa, e.original, values.len),
             .EXACT => values,
@@ -199,17 +193,17 @@ const Ledger = struct {
         if (parsed.value == 0 or total == 0) return self.fail("invalid amount");
         const mode = std.meta.stringToEnum(Mode, a[5]).?;
         var participants: std.ArrayList(Entry) = .empty;
-        if (mode == .EQUAL and equal(a[6], "ALL")) {
+        if (mode == .EQUAL and std.mem.eql(u8, a[6], "ALL")) {
             for (try self.names(true)) |member| try participants.append(self.gpa, .{ .member = member, .value = 0 });
         } else {
             for (a[6..]) |token| {
-            const pair = try tokens(self.gpa, token, ':');
-            const member = try self.active(pair[0]);
-            for (participants.items) |p| {
-                if (p.member == member) return self.failFmt("duplicate member {s}", .{pair[0]});
-            }
-            const value = if (pair.len == 1) 0 else if (mode == .PERCENT or mode == .SHARES) integer(pair[1]) else amount(pair[1]);
-            try participants.append(self.gpa, .{ .member = member, .value = value });
+                const pair = try tokens(self.gpa, token, ':');
+                const member = try self.active(pair[0]);
+                for (participants.items) |p| {
+                    if (p.member == member) return self.failFmt("duplicate member {s}", .{pair[0]});
+                }
+                const value = if (pair.len == 1) 0 else if (mode == .PERCENT or mode == .SHARES) integer(pair[1]) else amount(pair[1]);
+                try participants.append(self.gpa, .{ .member = member, .value = value });
             }
         }
         var sum: i64 = 0;
@@ -222,7 +216,11 @@ const Ledger = struct {
             .serial = if (old) |v| v.serial else self.serial + 1,
             .original = parsed.value, .currency = parsed.currency, .category = a[4], .mode = mode,
             .payers = payers, .participants = participants.items, .total = total, .contributions = &.{}, .shares = &.{} };
-        if (old) |v| { e.interval = v.interval; e.next_day = v.next_day; e.copies = v.copies; }
+        if (old) |v| {
+            e.interval = v.interval;
+            e.next_day = v.next_day;
+            e.copies = v.copies;
+        }
         try self.compute(&e);
         return e;
     }
@@ -230,9 +228,15 @@ const Ledger = struct {
         const result = try self.gpa.alloc(i64, self.members.items.len);
         @memset(result, 0);
         for (self.expenses.items) |e| {
-            for (result, 0..) |*v, i| v.* += e.net(i);
+            for (e.payers, e.contributions) |payer, contribution|
+                result[payer.member] += contribution;
+            for (e.participants, e.shares) |participant, share|
+                result[participant.member] -= share;
         }
-        for (self.settlements.items) |s| { result[s.from] += s.total; result[s.to] -= s.total; }
+        for (self.settlements.items) |s| {
+            result[s.from] += s.total;
+            result[s.to] -= s.total;
+        }
         return result;
     }
     fn debts(self: *const Ledger) Allocator.Error![][]i64 {
@@ -240,13 +244,21 @@ const Ledger = struct {
         const count = self.members.items.len;
         const gross = try self.gpa.alloc([]i64, count);
         const result = try self.gpa.alloc([]i64, count);
-        for (0..count) |i| { gross[i] = try self.gpa.alloc(i64, count); @memset(gross[i], 0); result[i] = try self.gpa.alloc(i64, count); }
+        for (0..count) |i| {
+            gross[i] = try self.gpa.alloc(i64, count);
+            @memset(gross[i], 0);
+            result[i] = try self.gpa.alloc(i64, count);
+        }
         for (self.expenses.items) |e| {
             const net = try self.gpa.alloc(i64, count);
             var borrowers: std.ArrayList(usize) = .empty;
             var lenders: std.ArrayList(usize) = .empty;
+            @memset(net, 0);
+            for (e.payers, e.contributions) |payer, contribution|
+                net[payer.member] += contribution;
+            for (e.participants, e.shares) |participant, share|
+                net[participant.member] -= share;
             for (ns) |member| {
-                net[member] = e.net(member);
                 if (net[member] < 0) try borrowers.append(self.gpa, member);
                 if (net[member] > 0) try lenders.append(self.gpa, member);
             }
@@ -271,29 +283,28 @@ const Ledger = struct {
     }
     fn spent(self: *const Ledger, category: []const u8) i64 {
         var result: i64 = 0;
-        for (self.expenses.items) |e| { if (equal(e.category, category)) result += e.total; }
+        for (self.expenses.items) |e| { if (std.mem.eql(u8, e.category, category)) result += e.total; }
         return result;
     }
     fn warning(self: *const Ledger, out: *std.Io.Writer, category: []const u8) Error!void {
         for (self.budgets.items) |b| {
-            if (equal(b.category, category) and self.spent(category) > b.value)
-                try out.print("  WARNING {s} over budget by {s}\n", .{ category, try money(self.gpa, self.spent(category) - b.value) });
+            if (std.mem.eql(u8, b.category, category)) {
+                const total = self.spent(category);
+                if (total > b.value)
+                    try out.print("  WARNING {s} over budget by {s}\n", .{ category, try money(self.gpa, total - b.value) });
+                return;
+            }
         }
+    }
+    fn expenseLess(self: *const Ledger, a: usize, b: usize) bool {
+        const x = self.expenses.items[a];
+        const y = self.expenses.items[b];
+        return if (x.day != y.day) x.day < y.day else x.serial < y.serial;
     }
     fn chronological(self: *const Ledger) Allocator.Error![]usize {
         const result = try self.gpa.alloc(usize, self.expenses.items.len);
         for (result, 0..) |*v, i| v.* = i;
-        for (1..@max(1, result.len)) |i| {
-            const entry = result[i];
-            const a = self.expenses.items[entry];
-            var j = i;
-            while (j > 0) {
-                const b = self.expenses.items[result[j - 1]];
-                if (a.day > b.day or (a.day == b.day and a.serial >= b.serial)) break;
-                result[j] = result[j - 1]; j -= 1;
-            }
-            result[j] = entry;
-        }
+        std.mem.sort(usize, result, self, expenseLess);
         return result;
     }
     fn greedy(self: *const Ledger, ns: []const usize, original: []const i64) Allocator.Error![]Transfer {
@@ -310,7 +321,8 @@ const Ledger = struct {
             if (balance[sender] == 0 and balance[receiver] == 0) break;
             const value = @min(-balance[sender], balance[receiver]);
             try result.append(self.gpa, .{ .from = sender, .to = receiver, .value = value });
-            balance[sender] += value; balance[receiver] -= value;
+            balance[sender] += value;
+            balance[receiver] -= value;
         }
         return result.items;
     }
@@ -321,7 +333,7 @@ const Ledger = struct {
     fn execute(self: *Ledger, line: []const u8, out: *std.Io.Writer) Error!void {
         const a = try tokens(self.gpa, line, ' ');
         const op = a[0];
-        if (equal(op, "DAY")) {
+        if (std.mem.eql(u8, op, "DAY")) {
             const target = integer(a[1]);
             if (target <= self.day) return self.failFmt("invalid day {s}", .{a[1]});
             try out.print("DAY {d}\n", .{target});
@@ -349,16 +361,18 @@ const Ledger = struct {
                 copy.id = try std.fmt.allocPrint(self.gpa, "{s}#{d}", .{ template.id, self.expenses.items[index].copies + 1 });
                 copy.day = template.next_day;
                 copy.serial = self.serial;
-                copy.interval = 0; copy.next_day = 0; copy.copies = 0;
+                copy.interval = 0;
+                copy.next_day = 0;
+                copy.copies = 0;
                 try self.compute(&copy);
                 // No pointer into expenses is retained across the possible reallocation.
                 try self.expenses.append(self.gpa, copy);
-                try self.used.append(self.gpa, copy.id);
+                try self.used.put(self.gpa, copy.id, {});
                 try out.print("  RECUR {s} {s}\n", .{ copy.id, try money(self.gpa, copy.total) });
                 try self.warning(out, copy.category);
             }
             self.day = target;
-        } else if (equal(op, "MEMBER")) {
+        } else if (std.mem.eql(u8, op, "MEMBER")) {
             if (self.memberIndex(a[1])) |i| {
                 if (self.members.items[i].active) return self.failFmt("duplicate member {s}", .{a[1]});
                 self.members.items[i].active = true;
@@ -368,14 +382,14 @@ const Ledger = struct {
                 try self.members.append(self.gpa, .{ .name = a[1], .day = self.day });
                 try out.print("MEMBER {s} joined\n", .{a[1]});
             }
-        } else if (equal(op, "LEAVE")) {
+        } else if (std.mem.eql(u8, op, "LEAVE")) {
             const member = try self.active(a[1]);
             const balance = try self.balances();
             if (balance[member] != 0) return self.failFmt("member has a balance {s}", .{a[1]});
             self.members.items[member].active = false;
             self.members.items[member].day = self.day;
             try out.print("LEAVE {s}\n", .{a[1]});
-        } else if (equal(op, "CURRENCY")) {
+        } else if (std.mem.eql(u8, op, "CURRENCY")) {
             const value = integer(a[2]);
             try out.print("CURRENCY {s} {s}", .{ a[1], try rateText(self.gpa, value) });
             if (self.rateIndex(a[1])) |i| {
@@ -383,16 +397,19 @@ const Ledger = struct {
                 self.rates.items[i].rate = value;
             } else try self.rates.append(self.gpa, .{ .code = a[1], .rate = value });
             try out.writeByte('\n');
-        } else if (equal(op, "EXPENSE") or equal(op, "EDIT")) {
+        } else if (std.mem.eql(u8, op, "EXPENSE") or std.mem.eql(u8, op, "EDIT")) {
             var old_index: ?usize = null;
-            if (equal(op, "EXPENSE")) {
-                for (self.used.items) |id| { if (equal(id, a[1])) return self.failFmt("duplicate id {s}", .{a[1]}); }
-            } else { old_index = try self.expenseIndex(a[1]); try self.unfrozen(self.expenses.items[old_index.?]); }
+            if (std.mem.eql(u8, op, "EXPENSE")) {
+                if (self.used.contains(a[1])) return self.failFmt("duplicate id {s}", .{a[1]});
+            } else {
+                old_index = try self.expenseIndex(a[1]);
+                try self.unfrozen(self.expenses.items[old_index.?]);
+            }
             const e = try self.build(a, if (old_index) |i| self.expenses.items[i] else null);
             if (old_index) |i| self.expenses.items[i] = e else {
                 self.serial += 1;
                 try self.expenses.append(self.gpa, e);
-                try self.used.append(self.gpa, e.id);
+                try self.used.put(self.gpa, e.id, {});
             }
             try out.print("{s} {s} {s}{s} = ", .{ op, e.id, try money(self.gpa, e.total), try self.note(e.original, e.currency) });
             for (e.participants, 0..) |p, i| {
@@ -401,7 +418,7 @@ const Ledger = struct {
             }
             try out.writeByte('\n');
             try self.warning(out, e.category);
-        } else if (equal(op, "PAYERS")) {
+        } else if (std.mem.eql(u8, op, "PAYERS")) {
             const index = try self.expenseIndex(a[1]);
             const original = self.expenses.items[index];
             try self.unfrozen(original);
@@ -411,7 +428,8 @@ const Ledger = struct {
                 const pair = try tokens(self.gpa, token, ':');
                 const member = try self.active(pair[0]);
                 for (payers.items) |p| { if (p.member == member) return self.failFmt("duplicate member {s}", .{pair[0]}); }
-                const value = amount(pair[1]); sum += value;
+                const value = amount(pair[1]);
+                sum += value;
                 try payers.append(self.gpa, .{ .member = member, .value = value });
             }
             if (sum != original.original) return self.fail("payers do not add up");
@@ -426,12 +444,12 @@ const Ledger = struct {
                 try out.print("{s} {s}", .{ self.members.items[p.member].name, try money(self.gpa, contributions[i]) });
             }
             try out.writeByte('\n');
-        } else if (equal(op, "DELETE")) {
+        } else if (std.mem.eql(u8, op, "DELETE")) {
             const index = try self.expenseIndex(a[1]);
             try self.unfrozen(self.expenses.items[index]);
             _ = self.expenses.orderedRemove(index);
             try out.print("DELETE {s}\n", .{a[1]});
-        } else if (equal(op, "RECURRING")) {
+        } else if (std.mem.eql(u8, op, "RECURRING")) {
             const index = try self.expenseIndex(a[1]);
             const interval = integer(a[2]);
             const e = &self.expenses.items[index];
@@ -440,7 +458,7 @@ const Ledger = struct {
                 e.next_day = self.day + interval;
                 try out.print("RECURRING {s} interval {d} next {d}\n", .{ e.id, interval, e.next_day });
             }
-        } else if (equal(op, "SETTLE")) {
+        } else if (std.mem.eql(u8, op, "SETTLE")) {
             const from = try self.active(a[1]);
             const to = try self.active(a[2]);
             if (from == to) return self.failFmt("same member {s}", .{a[1]});
@@ -451,20 +469,20 @@ const Ledger = struct {
             try self.settlements.append(self.gpa, .{ .from = from, .to = to, .original = parsed.value,
                 .currency = parsed.currency, .total = total, .day = self.day, .serial = self.serial });
             try out.print("SETTLE {s} -> {s} {s}{s}\n", .{ a[1], a[2], try money(self.gpa, total), try self.note(parsed.value, parsed.currency) });
-        } else if (equal(op, "BUDGET")) {
+        } else if (std.mem.eql(u8, op, "BUDGET")) {
             const value = amount(a[2]);
             var index: ?usize = null;
-            for (self.budgets.items, 0..) |b, i| { if (equal(b.category, a[1])) index = i; }
+            for (self.budgets.items, 0..) |b, i| { if (std.mem.eql(u8, b.category, a[1])) index = i; }
             if (value == 0) { if (index) |i| _ = self.budgets.orderedRemove(i); } else if (index) |i|
                 self.budgets.items[i].value = value else try self.budgets.append(self.gpa, .{ .category = a[1], .value = value });
             try out.print("BUDGET {s} {s}\n", .{ a[1], if (value == 0) "removed" else try money(self.gpa, value) });
-        } else if (equal(op, "BALANCES")) {
+        } else if (std.mem.eql(u8, op, "BALANCES")) {
             try out.writeAll("BALANCES\n");
             const ns = try self.names(true);
             const balance = try self.balances();
             if (ns.len == 0) try out.writeAll("  (none)\n");
             for (ns) |member| try out.print("  {s} {s}\n", .{ self.members.items[member].name, try signedMoney(self.gpa, balance[member]) });
-        } else if (equal(op, "OWES")) {
+        } else if (std.mem.eql(u8, op, "OWES")) {
             const member = try self.registered(a[1]);
             const ns = try self.names(false);
             const matrix = try self.debts();
@@ -481,9 +499,18 @@ const Ledger = struct {
                 });
             }
             if (count == 0) try out.writeAll("  (none)\n");
-        } else if (equal(op, "HISTORY")) {
+        } else if (std.mem.eql(u8, op, "HISTORY")) {
             const member = try self.registered(a[1]);
-            const Record = struct { day: i64, serial: usize, label: []const u8, change: i64 };
+            const Record = struct {
+                day: i64,
+                serial: usize,
+                label: []const u8,
+                change: i64,
+
+                fn less(_: void, a: @This(), b: @This()) bool {
+                    return if (a.day != b.day) a.day < b.day else a.serial < b.serial;
+                }
+            };
             var records: std.ArrayList(Record) = .empty;
             for (self.expenses.items) |e| {
                 if (e.includes(member)) try records.append(self.gpa, .{ .day = e.day, .serial = e.serial, .label = e.id, .change = e.net(member) });
@@ -493,15 +520,7 @@ const Ledger = struct {
                     .label = try std.fmt.allocPrint(self.gpa, "{s}->{s}", .{ self.members.items[s.from].name, self.members.items[s.to].name }),
                     .change = if (s.from == member) s.total else -s.total });
             }
-            for (1..@max(1, records.items.len)) |i| {
-                const entry = records.items[i];
-                var j = i;
-                while (j > 0 and (entry.day < records.items[j - 1].day or
-                    (entry.day == records.items[j - 1].day and entry.serial < records.items[j - 1].serial))) {
-                    records.items[j] = records.items[j - 1]; j -= 1;
-                }
-                records.items[j] = entry;
-            }
+            std.mem.sort(Record, records.items, {}, Record.less);
             try out.print("HISTORY {s}\n", .{a[1]});
             var running: i64 = 0;
             for (records.items) |r| {
@@ -510,10 +529,13 @@ const Ledger = struct {
                     try signedMoney(self.gpa, r.change), try signedMoney(self.gpa, running) });
             }
             if (records.items.len == 0) try out.writeAll("  (none)\n");
-        } else if (equal(op, "MATRIX")) {
+        } else if (std.mem.eql(u8, op, "MATRIX")) {
             try out.writeAll("MATRIX\n");
             const ns = try self.names(true);
-            if (ns.len == 0) { try out.writeAll("  (none)\n"); return; }
+            if (ns.len == 0) {
+                try out.writeAll("  (none)\n");
+                return;
+            }
             const matrix = try self.debts();
             var l: usize = 0;
             var w: usize = 0;
@@ -527,21 +549,33 @@ const Ledger = struct {
                 }
             }
             w = @max(w, l);
-            try spaces(out, l);
+            try out.splatByteAll(' ', l);
             for (ns) |member| {
                 const name = self.members.items[member].name;
-                try spaces(out, 2 + w - name.len); try out.writeAll(name);
+                try out.splatByteAll(' ', 2 + w - name.len);
+                try out.writeAll(name);
             }
             try out.writeByte('\n');
             for (ns, 0..) |member, i| {
                 const name = self.members.items[member].name;
-                try out.writeAll(name); try spaces(out, l - name.len);
-                for (cells[i]) |cell| { try spaces(out, 2 + w - cell.len); try out.writeAll(cell); }
+                try out.writeAll(name);
+                try out.splatByteAll(' ', l - name.len);
+                for (cells[i]) |cell| {
+                    try out.splatByteAll(' ', 2 + w - cell.len);
+                    try out.writeAll(cell);
+                }
                 try out.writeByte('\n');
             }
-        } else if (equal(op, "CATEGORY")) {
+        } else if (std.mem.eql(u8, op, "CATEGORY")) {
             try out.writeAll("CATEGORY\n");
-            const CategoryTotal = struct { name: []const u8, value: i64 };
+            const CategoryTotal = struct {
+                name: []const u8,
+                value: i64,
+
+                fn less(_: void, a: @This(), b: @This()) bool {
+                    return if (a.value != b.value) a.value > b.value else stringLess({}, a.name, b.name);
+                }
+            };
             var totals = std.StringHashMap(i64).init(self.gpa);
             defer totals.deinit();
             var total: i64 = 0;
@@ -556,16 +590,7 @@ const Ledger = struct {
             while (iterator.next()) |entry| {
                 try categories.append(self.gpa, .{ .name = entry.key_ptr.*, .value = entry.value_ptr.* });
             }
-            for (1..@max(1, categories.items.len)) |i| {
-                const entry = categories.items[i];
-                var j = i;
-                while (j > 0 and (entry.value > categories.items[j - 1].value or
-                    (entry.value == categories.items[j - 1].value and less(entry.name, categories.items[j - 1].name)))) {
-                    categories.items[j] = categories.items[j - 1];
-                    j -= 1;
-                }
-                categories.items[j] = entry;
-            }
+            std.mem.sort(CategoryTotal, categories.items, {}, CategoryTotal.less);
             for (categories.items) |cached| {
                 const category = cached.name;
                 const subtotal = cached.value;
@@ -573,32 +598,27 @@ const Ledger = struct {
                 const shares = try self.gpa.alloc(i64, self.members.items.len);
                 @memset(shares, 0);
                 for (self.expenses.items) |e| {
-                    if (equal(e.category, category)) {
+                    if (std.mem.eql(u8, e.category, category)) {
                         for (e.participants, 0..) |p, i| shares[p.member] += e.shares[i];
                     }
                 }
                 const ns = try self.names(false);
-                for (1..@max(1, ns.len)) |i| {
-                    const entry = ns[i];
-                    var j = i;
-                    while (j > 0 and shares[entry] > shares[ns[j - 1]]) { ns[j] = ns[j - 1]; j -= 1; }
-                    ns[j] = entry;
-                }
+                std.mem.sort(usize, ns, @as([]const i64, shares), descending);
                 for (ns) |member| {
                     if (shares[member] != 0) try out.print("    {s} {s} {s}\n", .{ self.members.items[member].name,
                         try money(self.gpa, shares[member]), try percentage(self.gpa, shares[member], subtotal) });
                 }
             }
             if (categories.items.len == 0) try out.writeAll("  (none)\n");
-        } else if (equal(op, "BUDGETS")) {
+        } else if (std.mem.eql(u8, op, "BUDGETS")) {
             try out.writeAll("BUDGETS\n");
             const ordered = try self.gpa.dupe(Budget, self.budgets.items);
-            for (1..@max(1, ordered.len)) |i| {
-                const entry = ordered[i];
-                var j = i;
-                while (j > 0 and less(entry.category, ordered[j - 1].category)) { ordered[j] = ordered[j - 1]; j -= 1; }
-                ordered[j] = entry;
-            }
+            const Ordering = struct {
+                fn less(_: void, a: Budget, b: Budget) bool {
+                    return stringLess({}, a.category, b.category);
+                }
+            };
+            std.mem.sort(Budget, ordered, {}, Ordering.less);
             for (ordered) |b| {
                 const spent_amount = self.spent(b.category);
                 try out.print("  {s} spent {s} budget {s} used {s} {s} {s}\n", .{ b.category,
@@ -607,32 +627,49 @@ const Ledger = struct {
                     try money(self.gpa, if (spent_amount <= b.value) b.value - spent_amount else spent_amount - b.value) });
             }
             if (ordered.len == 0) try out.writeAll("  (none)\n");
-        } else if (equal(op, "TOTALS")) {
+        } else if (std.mem.eql(u8, op, "TOTALS")) {
             try out.writeAll("TOTALS\n");
             for (try self.names(false)) |member| {
-                var paid: i64 = 0; var share: i64 = 0; var sent: i64 = 0; var received: i64 = 0;
+                var paid: i64 = 0;
+                var share: i64 = 0;
+                var sent: i64 = 0;
+                var received: i64 = 0;
                 for (self.expenses.items) |e| {
                     for (e.payers, 0..) |p, i| { if (p.member == member) paid += e.contributions[i]; }
                     for (e.participants, 0..) |p, i| { if (p.member == member) share += e.shares[i]; }
                 }
-                for (self.settlements.items) |s| { if (s.from == member) sent += s.total; if (s.to == member) received += s.total; }
+                for (self.settlements.items) |s| {
+                    if (s.from == member) sent += s.total;
+                    if (s.to == member) received += s.total;
+                }
                 try out.print("  {s} paid {s} share {s} sent {s} received {s}\n", .{ self.members.items[member].name,
                     try money(self.gpa, paid), try money(self.gpa, share), try money(self.gpa, sent), try money(self.gpa, received) });
             }
             var currencies: std.ArrayList([]const u8) = .empty;
             var expense_total: i64 = 0;
-            for (self.expenses.items) |e| { if (e.currency.len > 0) try addUnique(self.gpa, &currencies, e.currency); expense_total += e.total; }
-            sortStrings(currencies.items);
+            for (self.expenses.items) |e| {
+                if (e.currency.len > 0) try addUnique(self.gpa, &currencies, e.currency);
+                expense_total += e.total;
+            }
+            std.mem.sort([]const u8, currencies.items, {}, stringLess);
             for (currencies.items) |code| {
-                var count: usize = 0; var original: i64 = 0; var total: i64 = 0;
-                for (self.expenses.items) |e| { if (equal(e.currency, code)) { count += 1; original += e.original; total += e.total; } }
+                var count: usize = 0;
+                var original: i64 = 0;
+                var total: i64 = 0;
+                for (self.expenses.items) |e| {
+                    if (std.mem.eql(u8, e.currency, code)) {
+                        count += 1;
+                        original += e.original;
+                        total += e.total;
+                    }
+                }
                 try out.print("  currency {s} expenses {d} amount {s} base {s}\n", .{ code, count, try money(self.gpa, original), try money(self.gpa, total) });
             }
             var settlement_total: i64 = 0;
             for (self.settlements.items) |s| settlement_total += s.total;
             try out.print("  expenses {d} total {s} settlements {d} total {s}\n", .{ self.expenses.items.len,
                 try money(self.gpa, expense_total), self.settlements.items.len, try money(self.gpa, settlement_total) });
-        } else if (equal(op, "MEMBERS")) {
+        } else if (std.mem.eql(u8, op, "MEMBERS")) {
             try out.writeAll("MEMBERS\n");
             for (try self.names(false)) |member| {
                 var count: usize = 0;
@@ -642,16 +679,18 @@ const Ledger = struct {
                     @as([]const u8, if (m.active) "active" else "left"), m.day, count });
             }
             if (self.members.items.len == 0) try out.writeAll("  (none)\n");
-        } else if (equal(op, "EXPENSES")) {
-            const member = if (equal(a[1], "MEMBER")) try self.registered(a[2]) else 0;
+        } else if (std.mem.eql(u8, op, "EXPENSES")) {
+            const member = if (std.mem.eql(u8, a[1], "MEMBER")) try self.registered(a[2]) else 0;
             try out.print("{s}\n", .{line});
-            var count: usize = 0; var total: i64 = 0;
+            var count: usize = 0;
+            var total: i64 = 0;
             for (try self.chronological()) |index| {
                 const e = self.expenses.items[index];
-                const selected = if (equal(a[1], "ALL")) true else if (equal(a[1], "CATEGORY")) equal(e.category, a[2]) else
-                    if (equal(a[1], "MEMBER")) e.includes(member) else e.day >= integer(a[2]) and e.day <= integer(a[3]);
+                const selected = if (std.mem.eql(u8, a[1], "ALL")) true else if (std.mem.eql(u8, a[1], "CATEGORY")) std.mem.eql(u8, e.category, a[2]) else
+                    if (std.mem.eql(u8, a[1], "MEMBER")) e.includes(member) else e.day >= integer(a[2]) and e.day <= integer(a[3]);
                 if (!selected) continue;
-                count += 1; total += e.total;
+                count += 1;
+                total += e.total;
                 try out.print("  day {d} {s} {s} {s} by ", .{ e.day, e.id, e.category, try money(self.gpa, e.total) });
                 for (e.payers, 0..) |p, i| {
                     if (i > 0) try out.writeByte(',');
@@ -660,7 +699,7 @@ const Ledger = struct {
                 try out.writeByte('\n');
             }
             try out.print("  count {d} total {s}\n", .{ count, try money(self.gpa, total) });
-        } else if (equal(op, "PERIODS")) {
+        } else if (std.mem.eql(u8, op, "PERIODS")) {
             const k = integer(a[1]);
             const Group = struct { period: i64, count: usize = 0, total: i64 = 0 };
             var groups: std.ArrayList(Group) = .empty;
@@ -670,13 +709,14 @@ const Ledger = struct {
                 if (groups.items.len == 0 or groups.items[groups.items.len - 1].period != period)
                     try groups.append(self.gpa, .{ .period = period });
                 const group = &groups.items[groups.items.len - 1];
-                group.count += 1; group.total += e.total;
+                group.count += 1;
+                group.total += e.total;
             }
             try out.print("PERIODS {d}\n", .{k});
             for (groups.items) |group| try out.print("  days {d}-{d} expenses {d} total {s}\n", .{
                 group.period * k + 1, group.period * k + k, group.count, try money(self.gpa, group.total) });
             if (groups.items.len == 0) try out.writeAll("  (none)\n");
-        } else if (equal(op, "SHOW")) {
+        } else if (std.mem.eql(u8, op, "SHOW")) {
             const e = self.expenses.items[try self.expenseIndex(a[1])];
             try out.print("SHOW {s}\n  day {d} category {s} mode {s} total {s}{s}\n", .{
                 e.id, e.day, e.category, @tagName(e.mode), try money(self.gpa, e.total), try self.note(e.original, e.currency) });
@@ -694,11 +734,11 @@ const Ledger = struct {
                 try out.writeByte('\n');
             }
             if (e.interval > 0) try out.print("  recurring interval {d} next {d}\n", .{ e.interval, e.next_day });
-        } else if (equal(op, "SIMPLIFY")) {
+        } else if (std.mem.eql(u8, op, "SIMPLIFY")) {
             const balance = try self.balances();
             var ns: std.ArrayList(usize) = .empty;
             for (try self.names(false)) |member| { if (balance[member] != 0) try ns.append(self.gpa, member); }
-            if (equal(a[1], "GREEDY")) {
+            if (std.mem.eql(u8, a[1], "GREEDY")) {
                 const transfers = try self.greedy(ns.items, balance);
                 try out.print("SIMPLIFY GREEDY transfers {d}\n", .{transfers.len});
                 for (transfers) |transfer| try self.printTransfer(out, transfer, "  ");
@@ -732,20 +772,9 @@ const Ledger = struct {
         }
     }
 };
-fn spaces(out: *std.Io.Writer, count: usize) std.Io.Writer.Error!void {
-    for (0..count) |_| try out.writeByte(' ');
-}
 fn addUnique(gpa: Allocator, list: *std.ArrayList([]const u8), value: []const u8) Allocator.Error!void {
-    for (list.items) |old| { if (equal(old, value)) return; }
+    for (list.items) |old| { if (std.mem.eql(u8, old, value)) return; }
     try list.append(gpa, value);
-}
-fn sortStrings(values: [][]const u8) void {
-    for (1..@max(1, values.len)) |i| {
-        const entry = values[i];
-        var j = i;
-        while (j > 0 and less(entry, values[j - 1])) { values[j] = values[j - 1]; j -= 1; }
-        values[j] = entry;
-    }
 }
 fn lowBit(mask: usize) usize { return mask & (~mask + 1); }
 fn lexMaskLess(left: usize, right: usize) bool {
@@ -755,7 +784,8 @@ fn lexMaskLess(left: usize, right: usize) bool {
         const x = lowBit(a);
         const y = lowBit(b);
         if (x != y) return x < y;
-        a ^= x; b ^= y;
+        a ^= x;
+        b ^= y;
     }
     return a == 0 and b != 0;
 }
@@ -767,7 +797,8 @@ const Optimal = struct {
         const sums = try gpa.alloc(i64, size);
         const memo = try gpa.alloc(i32, size);
         @memset(memo, -200);
-        sums[0] = 0; memo[0] = 0;
+        sums[0] = 0;
+        memo[0] = 0;
         for (1..size) |mask| {
             const bit = lowBit(mask);
             const index: usize = @intCast(@ctz(bit));

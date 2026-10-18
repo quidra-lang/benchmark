@@ -40,7 +40,9 @@ function treeHeight(?TreeNode $node): int {
 $tree = null;
 foreach ([50,27,74,13,39,62,88,6,31,45,70,34] as $value) $tree = insertNode($tree,$value);
 foreach (['inorder','preorder','postorder'] as $mode) echo $mode, ': ', implode(' ',traversal($tree,$mode)), "\n";
-$queue = [$tree]; $levelorder = []; $head = 0;
+$queue = [$tree];
+$levelorder = [];
+$head = 0;
 while ($head < count($queue)) {
     $node = $queue[$head++];
     $levelorder[] = $node->value;

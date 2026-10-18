@@ -7,7 +7,7 @@
 #include <sstream>
 
 int main() {
-    const std::array<std::string, 13> lines = {"date,region,product,quantity,unit_price", "2026-04-01,north,notebook,10,200",
+    std::array<std::string, 13> lines = {"date,region,product,quantity,unit_price", "2026-04-01,north,notebook,10,200",
         "2026-04-01,east,marker,6,150", "2026-04-01,south,eraser,25,80", "2026-04-02,west,stapler,4,600",
         "2026-04-02,north,marker,8,150", "2026-04-02,east,notebook,9,200", "2026-04-03,south,stapler,3,600",
         "2026-04-03,west,eraser,15,80", "2026-04-03,north,eraser,20,80", "2026-04-04,east,stapler,5,600",
@@ -31,16 +31,12 @@ int main() {
         return a.second != b.second ? a.second > b.second : a.first < b.first;
     });
     std::cout << "total: " << total << '\n';
-    for (const std::pair<std::string, int> &r : ranked)
-        std::cout << r.first << ": " << r.second << '\n';
-    for (const std::pair<const std::string, int> &p : products)
-        std::cout << p.first << ": " << p.second << '\n';
-    std::string best;
-    int best_total = -1;
-    for (const std::pair<const std::string, int> &day : days)
-        if (day.second > best_total) {
-            best = day.first;
-            best_total = day.second;
-        }
-    std::cout << "best day: " << best << " (" << best_total << ")\n";
+    for (const auto &[name, amount] : ranked)
+        std::cout << name << ": " << amount << '\n';
+    for (const auto &[name, quantity] : products)
+        std::cout << name << ": " << quantity << '\n';
+    auto best = std::max_element(days.begin(), days.end(), [](const auto &a, const auto &b) {
+        return a.second < b.second;
+    });
+    std::cout << "best day: " << best->first << " (" << best->second << ")\n";
 }

@@ -1,11 +1,9 @@
+from string import ascii_lowercase, ascii_uppercase
+
+
 def caesar(text, shift):
-    result = []
-    for char in text:
-        if "A" <= char <= "Z" or "a" <= char <= "z":
-            base = ord("A") if char <= "Z" else ord("a")
-            char = chr(base + (ord(char) - base + shift) % 26)
-        result.append(char)
-    return "".join(result)
+    shifted = "".join(letters[shift:] + letters[:shift] for letters in (ascii_lowercase, ascii_uppercase))
+    return text.translate(str.maketrans(ascii_lowercase + ascii_uppercase, shifted))
 
 
 message = "Zoe, meet Max by the Old Bridge at six!"

@@ -12,14 +12,9 @@ class Program {
     static string signed(int n) { return (n<0 ? "-" : "")+Math.Abs(n)/10+"."+Math.Abs(n)%10; }
     static string index(int? n) { return n==null ? "none" : n.Value<0 ? "+"+signed(-n.Value) : signed(n.Value); }
     static string handicap(int? n) { return n==null ? "none" : n.Value<0 ? "+"+(-n.Value) : n.Value.ToString(); }
-    static string cents(int n) { return n/100+"."+(n%100<10 ? "0" : "")+n%100; }
+    static string cents(int n) => $"{n/100}.{n%100:D2}";
     static string average(int total, int count) { return count==0 ? "-" : cents(total*100/count); }
-    static string numbers(int[] a) { return string.Join(" ",a.Select(n => n.ToString())); }
-    static int sum(int[] a, int from, int to) {
-        int result=0;
-        for (int i=from;i<to;i++) result+=a[i];
-        return result;
-    }
+    static int sum(int[] a, int from, int to) => a.Skip(from).Take(to-from).Sum();
     record Tee(string id, int rating, int slope);
     class Course {
         public string id;
@@ -68,7 +63,6 @@ class Program {
         public Dictionary<string,Event> events=new();
         public List<Event> eventOrder=new();
         public List<string> output;
-        public void emit(string s) { output.Add(s); }
         public Player player(string id) {
             Player p=players.GetValueOrDefault(id);
             error(p==null,"unknown player");
@@ -85,7 +79,7 @@ class Program {
             return t;
         }
         public IndexRecord low(Player p, int day) {
-            return p.records.Where(r => r.day>=day-365 && r.day<day).OrderBy(r => r.value).ThenBy(r => r.day).FirstOrDefault();
+            return p.records.Where(r => r.day>=day-365 && r.day<day).MinBy(r => (r.value,r.day));
         }
         public Eligible eligible(Player p) {
             int start=Math.Max(0,p.rounds.Count-20), n=p.rounds.Count-start, reduction=0;
@@ -97,10 +91,8 @@ class Program {
             }
             int k=n<3 ? 0 : n<=5 ? 1 : n<=8 ? 2 : n<=11 ? 3 : n<=14 ? 4 : n<=16 ? 5 : n<=18 ? 6 : n==19 ? 7 : 8;
             int adjustment=n==3 ? -20 : n==4 || n==6 ? -10 : 0;
-            List<int> order=new();
-            for (int i=0;i<n;i++) order.Add(i);
-            order=order.OrderBy(i => adjusted[i]).ThenByDescending(i => i).ToList();
-            return new Eligible(start,adjusted,order.GetRange(0,k),k,adjustment);
+            var order=Enumerable.Range(0,n).OrderBy(i => adjusted[i]).ThenByDescending(i => i).Take(k).ToList();
+            return new Eligible(start,adjusted,order,k,adjustment);
         }
         public void update(Player p, int day) {
             Eligible e=eligible(p);
@@ -108,8 +100,7 @@ class Program {
                 p.calculation=null;
                 return;
             }
-            int total=0;
-            foreach (int i in e.counting) total+=e.adjusted[i];
+            int total=e.counting.Sum(i => e.adjusted[i]);
             int a=away(total,e.k), c=a+e.adjustment;
             IndexRecord record=low(p,day);
             int? l=record==null ? null : record.value;
@@ -156,21 +147,14 @@ class Program {
             return new EventData(e,rounds,ph,strokes,nets,points,par);
         }
         public List<int> rank(int[][] values, List<int> candidates, bool high, List<string> ids) {
-            List<int> result=new(candidates);
-            result.Sort((a,b) => {
-                foreach (int start in new int[]{0,9,12,15,17}) {
-                    int cmp=CompareInt(sum(values[a],start,18),sum(values[b],start,18));
-                    if (cmp!=0) return high ? -cmp : cmp;
-                }
-                return StringComparer.Ordinal.Compare(ids[a],ids[b]);
+            var keys=candidates.Select(i => new {
+                Index=i,
+                Key=new[] {0,9,12,15,17}.Select(start => (high ? -1 : 1)*sum(values[i],start,18)).ToArray()
             });
-            return result;
+            var comparer=Comparer<int[]>.Create((a,b) => a.AsSpan().SequenceCompareTo(b));
+            return keys.OrderBy(k => k.Key,comparer).ThenBy(k => ids[k.Index],StringComparer.Ordinal).Select(k => k.Index).ToList();
         }
-        public List<int> all(int n) {
-            List<int> a=new();
-            for (int i=0;i<n;i++) a.Add(i);
-            return a;
-        }
+        public List<int> all(int n) => Enumerable.Range(0,n).ToList();
         public List<int> ranked(EventData d) {
             List<int> candidates=all(d.ph.Length);
             if (d.e.format.Equals("STROKE")) candidates.RemoveAll(i => d.rounds[i].scores.Any(s => s==NO_NET));
@@ -191,7 +175,7 @@ class Program {
             return new Match(statuses,result);
         }
         public void results(Event e, EventData d) {
-            emit("results "+e.id+": "+e.format+" "+e.course.id+" "+e.tee.id+" day "+e.day+" allowance "+e.allowance);
+            output.Add("results "+e.id+": "+e.format+" "+e.course.id+" "+e.tee.id+" day "+e.day+" allowance "+e.allowance);
             int n=e.players.Count;
             List<string> ids=e.players.Select(p => p.id).ToList();
             if (new[]{"STROKE","STABLEFORD","PAR"}.Contains(e.format)) {
@@ -200,41 +184,38 @@ class Program {
                     int i=order[r];
                     string value=e.format.Equals("STROKE") ? "net "+sum(d.nets[i],0,18)+" gross "+sum(d.rounds[i].scores,0,18) :
                         e.format.Equals("STABLEFORD") ? "points "+sum(d.points[i],0,18) : status(sum(d.par[i],0,18));
-                    emit((r+1)+" "+ids[i]+" "+value+" hcp "+handicap(d.ph[i]));
+                    output.Add((r+1)+" "+ids[i]+" "+value+" hcp "+handicap(d.ph[i]));
                 }
                 if (e.format.Equals("STROKE")) {
                     List<int> nr=all(n);
                     nr.RemoveAll(i => order.Contains(i));
                     nr=nr.OrderBy(i => ids[i],StringComparer.Ordinal).ToList();
-                    foreach (int i in nr) emit("NR "+ids[i]+" hcp "+handicap(d.ph[i]));
+                    foreach (int i in nr) output.Add("NR "+ids[i]+" hcp "+handicap(d.ph[i]));
                     if (order.Count!=0) {
-                        int[][] gross=new int[n][];
-                        for (int i=0;i<n;i++) gross[i]=d.rounds[i].scores;
+                        int[][] gross=d.rounds.Select(r => r.scores).ToArray();
                         int winner=rank(gross,order,false,ids)[0];
-                        emit("gross "+ids[winner]+" "+sum(gross[winner],0,18));
+                        output.Add("gross "+ids[winner]+" "+sum(gross[winner],0,18));
                     }
                 }
             } else if (new[]{"MATCH","NASSAU","FOURBALL"}.Contains(e.format)) {
                 string line="strokes";
                 for (int i=0;i<n;i++) line+=" "+ids[i]+" "+d.strokes[i];
-                emit(line);
+                output.Add(line);
                 int size=n/2;
                 string a=string.Join("+",ids.Take(size)), b=string.Join("+",ids.Skip(size));
                 int[] wins=new int[18];
                 for (int h=0;h<18;h++) {
-                    int left=NO_NET,right=NO_NET;
-                    for (int i=0;i<size;i++) left=Math.Min(left,d.nets[i][h]);
-                    for (int i=size;i<n;i++) right=Math.Min(right,d.nets[i][h]);
-                    wins[h]=CompareInt(right,left);
+                    int left=d.nets.Take(size).Min(row => row[h]), right=d.nets.Skip(size).Min(row => row[h]);
+                    wins[h]=right.CompareTo(left);
                 }
                 if (e.format.Equals("NASSAU")) {
-                    emit("front "+match(wins,0,8,a,b).result);
-                    emit("back "+match(wins,9,17,a,b).result);
-                    emit("total "+match(wins,0,17,a,b).result);
+                    output.Add("front "+match(wins,0,8,a,b).result);
+                    output.Add("back "+match(wins,9,17,a,b).result);
+                    output.Add("total "+match(wins,0,17,a,b).result);
                 } else {
                     Match m=match(wins,0,17,a,b);
-                    emit("status "+string.Join(", ",m.statuses));
-                    emit("result "+m.result);
+                    output.Add("status "+string.Join(", ",m.statuses));
+                    output.Add("result "+m.result);
                 }
             } else if (e.format.Equals("BETTERBALL")) {
                 int[][] values=Matrix(n/2);
@@ -246,7 +227,7 @@ class Program {
                 List<int> order=rank(values,all(n/2),true,keys);
                 for (int r=0;r<order.Count;r++) {
                     int i=order[r];
-                    emit((r+1)+" "+ids[2*i]+"+"+ids[2*i+1]+" points "+sum(values[i],0,18)+" hcp "+handicap(d.ph[2*i])+" "+handicap(d.ph[2*i+1]));
+                    output.Add((r+1)+" "+ids[2*i]+"+"+ids[2*i+1]+" points "+sum(values[i],0,18)+" hcp "+handicap(d.ph[2*i])+" "+handicap(d.ph[2*i+1]));
                 }
             } else {
                 int carry=0;
@@ -254,13 +235,11 @@ class Program {
                 List<int> tied=all(n);
                 for (int h=0;h<18;h++) {
                     carry++;
-                    int minimum=NO_NET;
-                    for (int i=0;i<n;i++) minimum=Math.Min(minimum,d.nets[i][h]);
-                    tied=new();
-                    for (int i=0;i<n;i++) if (d.nets[i][h]==minimum) tied.Add(i);
+                    int minimum=d.nets.Min(row => row[h]);
+                    tied=Enumerable.Range(0,n).Where(i => d.nets[i][h]==minimum).ToList();
                     if (minimum!=NO_NET && tied.Count==1) {
                         int i=tied[0];
-                        emit("hole "+(h+1)+" "+ids[i]+" "+carry);
+                        output.Add("hole "+(h+1)+" "+ids[i]+" "+carry);
                         totals[i]+=carry*100;
                         carry=0;
                     }
@@ -272,32 +251,31 @@ class Program {
                         line+=" "+ids[i];
                         totals[i]+=carry*100/tied.Count;
                     }
-                    emit(line);
+                    output.Add(line);
                 }
                 List<int> order=all(n);
                 order=order.OrderByDescending(i => totals[i]).ThenBy(i => ids[i],StringComparer.Ordinal).ToList();
-                foreach (int i in order) emit(ids[i]+" "+cents(totals[i]));
+                foreach (int i in order) output.Add(ids[i]+" "+cents(totals[i]));
             }
         }
         public void card(Player p, int number, Round r) {
-            emit("card "+p.id+" "+number+": "+r.course.id+" "+r.tee.id+" day "+r.day+" handicap "+handicap(r.handicap));
+            output.Add("card "+p.id+" "+number+": "+r.course.id+" "+r.tee.id+" day "+r.day+" handicap "+handicap(r.handicap));
             int[] strokes=allocate(r.course,r.handicap ?? 0), nets=new int[18], points=new int[18];
             for (int h=0;h<18;h++) {
                 nets[h]=r.scores[h]==NO_NET ? NO_NET : r.scores[h]-strokes[h];
                 points[h]=nets[h]==NO_NET ? 0 : Math.Max(0,r.course.par[h]+2-nets[h]);
-                emit((h+1)+" "+r.course.par[h]+" "+r.course.si[h]+" "+r.raw[h]+" "+r.adjusted[h]+" "+strokes[h]+" "+(nets[h]==NO_NET ? "-" : Convert.ToString(nets[h]))+" "+points[h]);
+                output.Add((h+1)+" "+r.course.par[h]+" "+r.course.si[h]+" "+r.raw[h]+" "+r.adjusted[h]+" "+strokes[h]+" "+(nets[h]==NO_NET ? "-" : Convert.ToString(nets[h]))+" "+points[h]);
                 if (h==8) cardTotal("OUT",r,strokes,nets,points,0,9);
                 if (h==17) {
                     cardTotal("IN",r,strokes,nets,points,9,18);
                     cardTotal("TOTAL",r,strokes,nets,points,0,18);
                 }
             }
-            emit("ags "+r.ags+" diff "+signed(r.diff));
+            output.Add("ags "+r.ags+" diff "+signed(r.diff));
         }
         public void cardTotal(string label, Round r, int[] strokes, int[] nets, int[] points, int from, int to) {
-            bool complete=true;
-            for (int h=from;h<to;h++) if (r.scores[h]==NO_NET) complete=false;
-            emit(label+" "+sum(r.course.par,from,to)+" "+(complete ? Convert.ToString(sum(r.scores,from,to)) : "-")+" "+sum(r.adjusted,from,to)+
+            bool complete=!r.scores.Skip(from).Take(to-from).Contains(NO_NET);
+            output.Add(label+" "+sum(r.course.par,from,to)+" "+(complete ? Convert.ToString(sum(r.scores,from,to)) : "-")+" "+sum(r.adjusted,from,to)+
                 " "+sum(strokes,from,to)+" "+(complete ? Convert.ToString(sum(nets,from,to)) : "-")+" "+sum(points,from,to));
         }
         public void statistics(Player p) {
@@ -324,7 +302,7 @@ class Program {
             string[] labels={"eagles","birdies","pars","bogeys","doubles","others","pickups"};
             for (int i=0;i<7;i++) line+=" "+labels[i]+" "+category[i];
             for (int i=0;i<3;i++) line+=" par"+(i+3)+" "+average(totals[i],counts[i]);
-            emit(line);
+            output.Add(line);
         }
         public void execute(string[] t) {
             switch (t[0]) {
@@ -385,18 +363,19 @@ class Program {
                     p.rounds.Add(r);
                     update(p,day);
                     if (p.index!=null) p.records.Add(new IndexRecord(day,p.index.Value));
-                    emit("round "+p.id+" "+p.rounds.Count+": ags "+r.ags+" diff "+signed(r.diff)+(r.exceptional==0 ? "" : " exceptional "+signed(-r.exceptional))+" index "+index(p.index));
+                    output.Add("round "+p.id+" "+p.rounds.Count+": ags "+r.ags+" diff "+signed(r.diff)+(r.exceptional==0 ? "" : " exceptional "+signed(-r.exceptional))+" index "+index(p.index));
                     break;
                 }
                 case "REMOVE": {
                     Player p=player(t[1]);
                     error(p.rounds.Count==0,"no rounds");
                     int number=p.rounds.Count;
-                    Round r=RemoveLast(p.rounds);
+                    Round r=p.rounds[^1];
+                    p.rounds.RemoveAt(number-1);
                     p.index=r.oldIndex;
                     p.calculation=r.oldCalculation;
                     p.records.RemoveRange(r.oldRecords,p.records.Count-r.oldRecords);
-                    emit("removed "+p.id+" "+number+": index "+index(p.index));
+                    output.Add("removed "+p.id+" "+number+": index "+index(p.index));
                     break;
                 }
                 case "INDEX": {
@@ -405,16 +384,16 @@ class Program {
                     Calculation c=p.calculation;
                     if (c!=null) line+=" lowest "+c.k+" average "+signed(c.average)+" adjustment "+signed(c.adjustment)+
                         (c.low==null ? "" : " low "+index(c.low))+(c.hard ? " hard cap" : c.soft ? " soft cap" : "")+(c.maximum ? " maximum" : "");
-                    emit(line);
+                    output.Add(line);
                     break;
                 }
                 case "HISTORY": {
                     Player p=player(t[1]);
                     Eligible e=eligible(p);
-                    emit("history "+p.id+": rounds "+p.rounds.Count);
+                    output.Add("history "+p.id+": rounds "+p.rounds.Count);
                     for (int i=0;i<e.adjusted.Length;i++) {
                         Round r=p.rounds[e.start+i];
-                        emit((e.start+i+1)+" day "+r.day+" "+r.course.id+" "+r.tee.id+" ags "+r.ags+" diff "+signed(r.diff)+
+                        output.Add((e.start+i+1)+" day "+r.day+" "+r.course.id+" "+r.tee.id+" ags "+r.ags+" diff "+signed(r.diff)+
                             (r.diff==e.adjusted[i] ? "" : " adjusted "+signed(e.adjusted[i]))+(e.counting.Contains(i) ? " *" : ""));
                     }
                     break;
@@ -423,7 +402,7 @@ class Program {
                     Player p=player(t[1]);
                     int day=int.Parse(t[2]);
                     IndexRecord r=low(p,day);
-                    emit("lowindex "+p.id+" "+day+": "+(r==null ? "none" : index(r.value)+" day "+r.day));
+                    output.Add("lowindex "+p.id+" "+day+": "+(r==null ? "none" : index(r.value)+" day "+r.day));
                     break;
                 }
                 case "COURSEHCP": {
@@ -432,7 +411,7 @@ class Program {
                     Tee tee=findTee(c,t[3]);
                     error(p.index==null,"no index");
                     int h=courseHandicap(c,tee,p.index.Value);
-                    emit("coursehcp "+p.id+" "+c.id+" "+tee.id+": "+handicap(h)+" strokes "+numbers(allocate(c,h)));
+                    output.Add("coursehcp "+p.id+" "+c.id+" "+tee.id+": "+handicap(h)+" strokes "+string.Join(" ",allocate(c,h)));
                     break;
                 }
                 case "HCPTABLE": {
@@ -440,12 +419,12 @@ class Program {
                     Tee tee=findTee(c,t[2]);
                     int first=int.Parse(t[3]),last=int.Parse(t[4]);
                     error(first< -100 || first>last || last>540,"invalid index");
-                    emit("hcptable "+c.id+" "+tee.id+": "+index(first)+" to "+index(last));
+                    output.Add("hcptable "+c.id+" "+tee.id+": "+index(first)+" to "+index(last));
                     int start=first,h=courseHandicap(c,tee,first);
                     for (int i=first+1;i<=last+1;i++) {
                         int next=i<=last ? courseHandicap(c,tee,i) : h+1;
                         if (next!=h) {
-                            emit(index(start)+" to "+index(i-1)+": "+handicap(h));
+                            output.Add(index(start)+" to "+index(i-1)+": "+handicap(h));
                             start=i;
                             h=next;
                         }
@@ -476,20 +455,20 @@ class Program {
                     }
                     List<int> order=all(18);
                     order.Sort((a,b) => {
-                        if (counts[a]==0 || counts[b]==0) return counts[a]==counts[b] ? CompareInt(a,b) : counts[a]==0 ? 1 : -1;
-                        int cmp=CompareLong((long)(totals[b]-c.par[b]*counts[b])*counts[a],(long)(totals[a]-c.par[a]*counts[a])*counts[b]);
-                        return cmp==0 ? CompareInt(a,b) : cmp;
+                        if (counts[a]==0 || counts[b]==0) return counts[a]==counts[b] ? a.CompareTo(b) : counts[a]==0 ? 1 : -1;
+                        int cmp=((long)(totals[b]-c.par[b]*counts[b])*counts[a]).CompareTo((long)(totals[a]-c.par[a]*counts[a])*counts[b]);
+                        return cmp==0 ? a.CompareTo(b) : cmp;
                     });
                     for (int i=0;i<18;i++) ranks[order[i]]=i+1;
-                    emit("holestats "+c.id+": rounds "+rounds.Count);
-                    for (int h=0;h<18;h++) emit((h+1)+" par "+c.par[h]+" si "+c.si[h]+" scores "+counts[h]+" avg "+average(totals[h],counts[h])+" rank "+ranks[h]);
+                    output.Add("holestats "+c.id+": rounds "+rounds.Count);
+                    for (int h=0;h<18;h++) output.Add((h+1)+" par "+c.par[h]+" si "+c.si[h]+" scores "+counts[h]+" avg "+average(totals[h],counts[h])+" rank "+ranks[h]);
                     break;
                 }
                 case "PLAYERS": {
                     List<Player> order=new(players.Values);
                     order=order.OrderBy(p => p.index==null).ThenBy(p => p.index).ThenBy(p => p.id,StringComparer.Ordinal).ToList();
-                    emit("players "+order.Count);
-                    foreach (Player p in order) emit(p.id+" "+p.name+" "+index(p.index)+" rounds "+p.rounds.Count);
+                    output.Add("players "+order.Count);
+                    foreach (Player p in order) output.Add(p.id+" "+p.name+" "+index(p.index)+" rounds "+p.rounds.Count);
                     break;
                 }
                 case "EVENT": {
@@ -498,8 +477,7 @@ class Program {
                     Tee tee=findTee(c,t[4]);
                     int allowance=int.Parse(t[6]);
                     error(allowance<1 || allowance>100,"invalid allowance");
-                    List<Player> list=new();
-                    for (int i=7;i<t.Length;i++) list.Add(player(t[i]));
+                    var list=t.Skip(7).Select(player).ToList();
                     int n=list.Count;
                     bool valid=t[2] switch { "MATCH" or "NASSAU" => n==2, "FOURBALL" => n==4, "BETTERBALL" => n==4 || n==6 || n==8, _ => n>=2 && n<=8 };
                     error(new HashSet<Player>(list).Count!=n || !valid,"invalid players");
@@ -534,11 +512,11 @@ class Program {
                     }
                     List<string> order=new(merit.Keys);
                     order=order.OrderByDescending(id => merit[id][0]).ThenByDescending(id => merit[id][1]).ThenBy(id => id,StringComparer.Ordinal).ToList();
-                    emit("merit: events "+count);
+                    output.Add("merit: events "+count);
                     for (int i=0;i<order.Count;i++) {
                         string id=order[i];
                         int[] a=merit[id];
-                        emit((i+1)+" "+id+" "+a[0]+" wins "+a[1]+" played "+a[2]);
+                        output.Add((i+1)+" "+id+" "+a[0]+" wins "+a[1]+" played "+a[2]);
                     }
                     break;
                 }
@@ -547,19 +525,12 @@ class Program {
         public List<string> process(string line) {
             output=new();
             try { execute(line.Split(' ')); }
-            catch (Fault f) { emit("ERROR "+f.Message); }
+            catch (Fault f) { output.Add("ERROR "+f.Message); }
             return output;
         }
     }
     static long Floor(long n, long d) => n/d-(n%d<0 ? 1 : 0);
-    static int CompareLong(long a, long b) => a.CompareTo(b);
-    static int CompareInt(int a, int b) => a.CompareTo(b);
     static int[][] Matrix(int n) => Enumerable.Range(0,n).Select(_ => new int[18]).ToArray();
-    static Round RemoveLast(List<Round> rounds) {
-        Round r=rounds[^1];
-        rounds.RemoveAt(rounds.Count-1);
-        return r;
-    }
     static int[] MeritRow(Dictionary<string,int[]> merit, string id) {
         if (!merit.TryGetValue(id,out int[] row)) {
             row=new int[3];

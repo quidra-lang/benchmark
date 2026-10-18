@@ -1,8 +1,4 @@
-import java.util.*;
-import java.math.*;
-
 public class Main {
-
     public static void main(String[] args) {
         String[] grades = {"A", "B", "C", "D", "F"};
         int[] counts = new int[5];

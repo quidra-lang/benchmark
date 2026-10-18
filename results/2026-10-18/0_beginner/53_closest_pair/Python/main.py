@@ -1,4 +1,3 @@
-from decimal import Decimal, ROUND_HALF_UP
 from math import sqrt
 
 points = [(12, -7), (-33, 25), (41, 18), (-8, -44), (27, 39), (-46, -12), (5, 14), (36, -29), (-19, 47), (-2, 3)]
@@ -13,5 +12,5 @@ for i in range(len(points)):
         if farthest is None or squared > farthest[0]:
             farthest = pair
 for label, (squared, i, j) in [("closest", closest), ("farthest", farthest)]:
-    distance = Decimal.from_float(sqrt(squared)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-    print(f"{label}: P{i} P{j} {distance}")
+    distance = sqrt(squared)
+    print(f"{label}: P{i} P{j} {distance:.4f}")

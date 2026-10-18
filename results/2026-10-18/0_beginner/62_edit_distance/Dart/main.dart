@@ -1,8 +1,6 @@
-import 'dart:io';
 import 'dart:math' as math;
 
 void main() {
-    final out = StringBuffer();
     for (final p in [('kitten', 'sitting'), ('flaw', 'lawn'), ('listen', 'silent'), ('intention',
         'execution'), ('algorithm', 'altruistic')]) {
         final a = p.$1, b = p.$2, dp = List.generate(p.$1.length + 1, (_) => List.filled(p.$2.length + 1,
@@ -15,7 +13,6 @@ void main() {
             for (var j = 1; j <= b.length; j++)
                 dp[i][j] = math.min(math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1), dp[i - 1][j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
         }
-        out.writeln('$a -> $b: ${dp[a.length][b.length]}');
+        print('$a -> $b: ${dp[a.length][b.length]}');
     }
-    stdout.write(out);
 }

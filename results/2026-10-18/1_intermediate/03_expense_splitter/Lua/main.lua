@@ -32,12 +32,6 @@ local function total(values)
     return result
 end
 
-local function append(output, values)
-    for _, value in ipairs(values) do
-        output[#output + 1] = value
-    end
-end
-
 local function fail(message)
     error(message, 0)
 end
@@ -389,11 +383,7 @@ local function copy_expense(expense)
     local result = {}
     for key, value in pairs(expense) do
         if type(value) == "table" then
-            local list = {}
-            for i, item in ipairs(value) do
-                list[i] = item
-            end
-            result[key] = list
+            result[key] = {table.unpack(value)}
         else
             result[key] = value
         end
@@ -440,7 +430,8 @@ local function advance_day(state, day)
             template.copies = template.copies + 1
             template.next_day = template.next_day + template.interval
             output[#output + 1] = "  RECUR " .. copy_id .. " " .. amount_text(copy.total)
-            append(output, budget_warning(state, copy.category))
+            local warnings = budget_warning(state, copy.category)
+            table.move(warnings,1,#warnings,#output+1,output)
         end
     end
     state.day = day
@@ -580,13 +571,13 @@ local function ledger_summary(command, args, line, state)
         end
         local header = string.rep(" ", left)
         for _, name in ipairs(active) do
-            header = header .. "  " .. string.rep(" ", width - #name) .. name
+            header = header .. "  " .. string.format("%"..width.."s",name)
         end
         output[#output + 1] = header
         for i, name in ipairs(active) do
-            local row = name .. string.rep(" ", left - #name)
+            local row = string.format("%-"..left.."s",name)
             for _, cell in ipairs(cells[i]) do
-                row = row .. "  " .. string.rep(" ", width - #cell) .. cell
+                row = row .. "  " .. string.format("%"..width.."s",cell)
             end
             output[#output + 1] = row
         end
@@ -821,10 +812,7 @@ local function execute(line, state)
         else
             original = expense_ref(state, id, true)
         end
-        local parts = {}
-        for i = 6, #args do
-            parts[#parts + 1] = args[i]
-        end
+        local parts = {table.unpack(args,6)}
         local expense = build_expense(state, id, payer, spec, category, mode, parts)
         if original then
             expense.day, expense.record = original.day, original.record
@@ -836,7 +824,8 @@ local function execute(line, state)
         end
         state.expenses[id] = expense
         local output = {expense_line(command, expense)}
-        append(output, budget_warning(state, category))
+        local warnings = budget_warning(state, category)
+        table.move(warnings,1,#warnings,#output+1,output)
         return output
     elseif command == "PAYERS" then
         local expense = expense_ref(state, args[1], true)

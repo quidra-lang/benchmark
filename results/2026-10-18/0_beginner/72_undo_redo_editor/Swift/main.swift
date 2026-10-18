@@ -1,6 +1,3 @@
-import Foundation
-
-
 let commands = ["undo", "type hello world", "delete 5", "type there", "undo", "undo", "redo",
     "type friend", "redo", "delete 20", "undo", "redo", "redo", "type see you"]
 var undo = [String](), redo = [String](), buffer = ""

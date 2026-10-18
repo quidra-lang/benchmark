@@ -16,6 +16,11 @@ class Program {
     };
     static readonly long[] MESH_SCALE={1,8,80,160,320,640};
     static readonly string[] MAIDEN={"ABCDEFGHIJKLMNOPQR","0123456789","abcdefghijklmnopqrstuvwx","0123456789"};
+    static readonly Dictionary<string,int> counts = new() {
+            ["ENCODE"]=4, ["DECODE"]=2, ["NEIGHBORS"]=2, ["PARENT"]=2, ["CHILDREN"]=2,
+            ["COMMON"]=3, ["CONTAINS"]=4, ["COVER"]=6, ["CONVERT"]=5, ["STEPS"]=3,
+            ["PATH"]=3, ["RELATE"]=4, ["SIZE"]=2, ["SHORTEN"]=3, ["RECOVER"]=3
+        };
     record Cell(string system, int level, long x, long y, long w, long h);
     class Invalid : Exception {}
     static void require(bool condition) { if (!condition) throw new Invalid(); }
@@ -33,7 +38,7 @@ class Program {
         bool negative = s.StartsWith("-");
         string[] pieces = (negative ? s.Substring(1) : s).Split('.');
         long value = long.Parse(pieces[0])*1000000;
-        if (pieces.Length == 2) value += long.Parse(pieces[1]+new string('0',6-pieces[1].Length));
+        if (pieces.Length == 2) value += long.Parse(pieces[1].PadRight(6,'0'));
         if (negative) value = -value;
         require(latitude ? value >= -90000000 && value <= 90000000 : value >= -180000000 && value < 180000000);
         return value;
@@ -44,9 +49,9 @@ class Program {
         return result;
     }
     static int level(string system, long precision) {
-        int[] values = precisions(system);
-        for (int i = 0; i < values.Length; i++) if (values[i] == precision) return i;
-        throw new Invalid();
+        int result = Array.IndexOf(precisions(system),(int)precision);
+        require(result >= 0);
+        return result;
     }
     static Cell grid(string system, int level, long x, long y) {
         int p = precisions(system)[level];
@@ -93,10 +98,7 @@ class Program {
         require(s.Length != 0 && s.All(c => c >= '0' && c <= '9'));
         return long.Parse(s);
     }
-    static string pad(long n, int width) {
-        string s = n.ToString();
-        return new string('0',Math.Max(0,width-s.Length))+s;
-    }
+    static string pad(long n, int width) => n.ToString("D"+width,CultureInfo.InvariantCulture);
     static long power(int n) {
         long result = 1;
         for (int i = 0; i < n; i++) result *= 10;
@@ -294,7 +296,7 @@ class Program {
         Cell g=grid(c.system,level,0,0);
         return grid(c.system,level,c.x*g.w/c.w,c.y*g.h/c.h);
     }
-    static string shown(Cell c) { string result=code(c); return result==null ? "-" : result; }
+    static string shown(Cell c) => code(c) ?? "-";
     static string coordinateFormat(long n) { return (n<0 ? "-" : "")+Math.Abs(n)/1000000+"."+pad(Math.Abs(n)%1000000,6); }
     static long boundary(Cell c, bool latitude, int offset, bool center) {
         long extent=latitude ? 180000000 : 360000000, total=latitude ? c.h : c.w, value=latitude ? c.y : c.x;
@@ -404,11 +406,6 @@ class Program {
     static string execute(string line) {
         string[] t=line.Split(' ');
         string command=t[0];
-        Dictionary<string,int> counts = new() {
-            ["ENCODE"]=4, ["DECODE"]=2, ["NEIGHBORS"]=2, ["PARENT"]=2, ["CHILDREN"]=2,
-            ["COMMON"]=3, ["CONTAINS"]=4, ["COVER"]=6, ["CONVERT"]=5, ["STEPS"]=3,
-            ["PATH"]=3, ["RELATE"]=4, ["SIZE"]=2, ["SHORTEN"]=3, ["RECOVER"]=3
-        };
         if (!counts.ContainsKey(command) && !command.Equals("COMPACT")) return auxiliary(t);
         if (command.Equals("COMPACT")) require(t.Length>=3 && t.Length<=102);
         else require(t.Length==counts[command]+1);
@@ -469,12 +466,7 @@ class Program {
         if (command.Equals("COMPACT")) {
             HashSet<Cell> cells=new();
             for (int i=2;i<t.Length;i++) cells.Add(decode(system,t[i]));
-            HashSet<Cell> covered = new();
-            foreach (Cell c in cells) {
-                foreach (Cell a in cells) {
-                    if (a.level<c.level && ancestor(c,a.level).Equals(a)) covered.Add(c);
-                }
-            }
+            var covered = cells.Where(c => cells.Any(a => a.level<c.level && ancestor(c,a.level) == a)).ToList();
             cells.ExceptWith(covered);
             bool changed=true;
             while (changed) {

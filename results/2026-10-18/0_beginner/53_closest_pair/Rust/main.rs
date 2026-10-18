@@ -21,11 +21,7 @@ fn main() {
         }
     }
     for k in 0..2 {
-        let q = (f64::from(best[k]).sqrt() * 10000.0 + 0.5) as i32;
-        println!("{}: P{} P{} {}.{:04}", if k == 0 {
-            "closest"
-        } else {
-            "farthest"
-        }, bi[k], bj[k], q / 10000, q % 10000);
+        println!("{}: P{} P{} {:.4}", if k == 0 { "closest" } else { "farthest" },
+                 bi[k], bj[k], f64::from(best[k]).sqrt());
     }
 }

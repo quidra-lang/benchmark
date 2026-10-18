@@ -31,10 +31,7 @@ int main() {
             x[i] = sum / a[i][i];
         }
         std::cout << "system " << s + 1 << ":\n";
-        for (int i = 0; i < n; i++) {
-            long long q = static_cast<long long>(std::abs(x[i]) * 10000 + 0.5);
-            std::cout << 'x' << i + 1 << " = " << (x[i] < 0 ? "-" : "") << q / 10000 << '.' << std::setfill('0')
-                << std::setw(4) << q % 10000 << '\n';
-        }
+        for (int i = 0; i < n; i++)
+            std::cout << 'x' << i + 1 << " = " << std::fixed << std::setprecision(4) << x[i] << '\n';
     }
 }

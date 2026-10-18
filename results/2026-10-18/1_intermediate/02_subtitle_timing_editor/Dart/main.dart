@@ -30,7 +30,10 @@ int floorDiv(int a, int b) {
 }
 
 int roundRatio(int a, int b) {
-  if (b < 0) { a = -a; b = -b; }
+  if (b < 0) {
+    a = -a;
+    b = -b;
+  }
   return floorDiv(2 * a + b, 2 * b);
 }
 
@@ -69,7 +72,7 @@ List<String> wrap(List<String> lines, int width) {
   return result;
 }
 bool sameLines(List<String> a, List<String> b) =>
-    a.length == b.length && [for (var i = 0; i < a.length; i++) a[i] == b[i]].every((x) => x);
+    a.length == b.length && a.indexed.every((entry) => entry.$2 == b[entry.$1]);
 String normalized(String s) => s.split(' ').where((w) => w.isNotEmpty).join(' ');
 
 const formatTags = ['<i>', '</i>', '<b>', '</b>', '<u>', '</u>'];
@@ -119,8 +122,9 @@ const modifying = ['SHIFT', 'SHIFTFROM', 'SCALE', 'SYNC', 'SNAP', 'FIXOVERLAP',
 
 Command parseCommand(String line, int cueCount) {
   final parts = line.split(' '), name = parts.first;
-  if (!schemas.containsKey(name)) throw CommandError('unknown command');
-  final schema = List<String>.of(schemas[name]!);
+  final declared = schemas[name];
+  if (declared == null) throw CommandError('unknown command');
+  final schema = List<String>.of(declared);
   if (name == 'DELETE' && parts.length == 3) schema.add('position');
   final stringLast = schema.isNotEmpty &&
       ['string', 'text', 'replacement'].contains(schema.last);
@@ -135,7 +139,10 @@ Command parseCommand(String line, int cueCount) {
   final values = <Object>[];
   for (var i = 0; i < schema.length; i++) {
     final type = schema[i], s = raw[i];
-    if (type == 'string') { values.add(s); continue; }
+    if (type == 'string') {
+      values.add(s);
+      continue;
+    }
     if (type == 'text' || type == 'replacement') {
       final lines = s.split('|');
       if (lines.any((l) => l.isEmpty) || type == 'replacement' && lines.length != 2) badArguments();
@@ -227,7 +234,10 @@ class Editor {
         for (var i = 0; i < cues.length; i++) listCue(out, i);
       case 'VALIDATE':
         var problems = 0;
-        void problem(String s) { out.writeln(s); problems++; }
+        void problem(String s) {
+          out.writeln(s);
+          problems++;
+        }
         for (var i = 0; i < cues.length; i++) {
           final c = cues[i], p = i + 1, d = c.duration;
           if (c.index != p) problem('cue $p: index ${c.index} (expected $p)');
@@ -255,14 +265,20 @@ class Editor {
       case 'AT':
         var active = 0;
         for (var i = 0; i < cues.length; i++) {
-          if (cues[i].start <= n(0) && n(0) < cues[i].end) { listCue(out, i); active++; }
+          if (cues[i].start <= n(0) && n(0) < cues[i].end) {
+            listCue(out, i);
+            active++;
+          }
         }
         out.writeln('AT active=$active');
       case 'GAPS':
         var count = 0;
         for (var i = 0; i + 1 < cues.length; i++) {
           final gap = cues[i + 1].start - cues[i].end;
-          if (gap < n(0)) { out.writeln('${i + 1} ${i + 2} $gap'); count++; }
+          if (gap < n(0)) {
+            out.writeln('${i + 1} ${i + 2} $gap');
+            count++;
+          }
         }
         out.writeln('GAPS count=$count');
       case 'STATS':
@@ -273,7 +289,10 @@ class Editor {
             final d = cues[i].duration < 0 ? 0 : cues[i].duration;
             total += d;
             if (d > 0) chars += cues[i].characters;
-            if (d > maximum) { maximum = d; longest = i; }
+            if (d > maximum) {
+              maximum = d;
+              longest = i;
+            }
           }
           out.writeln('duration total=${timeText(total)} mean=${timeText(total ~/ cues.length)}');
           out.writeln('speed ${total == 0 ? '-' : decimal(chars * 100000 ~/ total)}');
@@ -283,7 +302,10 @@ class Editor {
             var position = 0, gap = cues[1].start - cues[0].end;
             for (var i = 1; i + 1 < cues.length; i++) {
               final candidate = cues[i + 1].start - cues[i].end;
-              if (candidate > gap) { gap = candidate; position = i; }
+              if (candidate > gap) {
+                gap = candidate;
+                position = i;
+              }
             }
             out.writeln('gap cue=${position + 1} ms=$gap');
           }
@@ -358,11 +380,15 @@ class Editor {
               final f = roundRatio(t * rate.$1, 1000 * rate.$2);
               value = roundRatio(f * 1000 * rate.$2, rate.$1);
             } else value = t + n(op == 'SHIFT' ? 0 : 1);
-            if (value < 0) { value = 0; clamp = true; }
+            if (value < 0) {
+              value = 0;
+              clamp = true;
+            }
             if (value != t) changed++;
             after.add(value);
           }
-          c.start = after[0]; c.end = after[1];
+          c.start = after[0];
+          c.end = after[1];
           if (clamp) clamped++;
         }
         if (op == 'SNAP') out.writeln('SNAP changed=$changed');
@@ -373,8 +399,13 @@ class Editor {
         for (var i = 0; i + 1 < cues.length; i++) {
           final candidate = cues[i + 1].start - n(0);
           if (cues[i].end > candidate) {
-            if (candidate > cues[i].start) { cues[i].end = candidate; fixed++; }
-            else { out.writeln('cue ${i + 1}: cannot fix'); failed++; }
+            if (candidate > cues[i].start) {
+              cues[i].end = candidate;
+              fixed++;
+            } else {
+              out.writeln('cue ${i + 1}: cannot fix');
+              failed++;
+            }
           }
         }
         out.writeln('FIXOVERLAP fixed=$fixed failed=$failed');
@@ -385,27 +416,34 @@ class Editor {
           if (c.duration < n(0)) {
             var candidate = c.start + n(0);
             if (i + 1 < cues.length && cues[i + 1].start < candidate) candidate = cues[i + 1].start;
-            if (candidate > c.end) { c.end = candidate; extended++; }
+            if (candidate > c.end) {
+              c.end = candidate;
+              extended++;
+            }
           }
           if (c.duration < n(0)) short++;
         }
         out.writeln('EXTEND extended=$extended short=$short');
       case 'TIME':
-        cues[n(0) - 1].start = n(1); cues[n(0) - 1].end = n(2);
+        cues[n(0) - 1].start = n(1);
+        cues[n(0) - 1].end = n(2);
         out.writeln('TIME cue=${n(0)}');
       case 'SORT':
-        final ordered = [for (var i = 0; i < cues.length; i++) (cues[i], i)];
+        final ordered = [for (var i = 0; i < cues.length; i++) (cue: cues[i], original: i)];
         ordered.sort((a, b) {
-          final start = a.$1.start.compareTo(b.$1.start), end = a.$1.end.compareTo(b.$1.end);
-          return start != 0 ? start : end != 0 ? end : a.$2.compareTo(b.$2);
+          final start = a.cue.start.compareTo(b.cue.start), end = a.cue.end.compareTo(b.cue.end);
+          return start != 0 ? start : end != 0 ? end : a.original.compareTo(b.original);
         });
-        final moved = [for (var i = 0; i < ordered.length; i++) ordered[i].$2 != i].where((x) => x).length;
-        cues = ordered.map((entry) => entry.$1).toList();
+        final moved = ordered.indexed.where((entry) => entry.$2.original != entry.$1).length;
+        cues = ordered.map((entry) => entry.cue).toList();
         out.writeln('SORT moved=$moved');
       case 'RENUMBER':
         var changed = 0;
         for (var i = 0; i < cues.length; i++) {
-          if (cues[i].index != i + 1) { cues[i].index = i + 1; changed++; }
+          if (cues[i].index != i + 1) {
+            cues[i].index = i + 1;
+            changed++;
+          }
         }
         out.writeln('RENUMBER changed=$changed');
       case 'MERGE':
@@ -416,7 +454,9 @@ class Editor {
             final a = result.last, combined = wrap([...a.text, ...b.text], 42);
             if (b.start - a.end < n(0) && !a.dialogue && !b.dialogue && combined.length <= 2) {
               if (b.end > a.end) a.end = b.end;
-              a.text = combined; merged++; continue;
+              a.text = combined;
+              merged++;
+              continue;
             }
           }
           result.add(b);
@@ -427,9 +467,16 @@ class Editor {
         final result = <Cue>[];
         var split = 0;
         for (final c in cues) {
-          if (c.duration < 1 || c.dialogue) { result.add(c); continue; }
+          if (c.duration < 1 || c.dialogue) {
+            result.add(c);
+            continue;
+          }
           final lines = wrap(c.text, n(0));
-          if (lines.length <= 2) { c.text = lines; result.add(c); continue; }
+          if (lines.length <= 2) {
+            c.text = lines;
+            result.add(c);
+            continue;
+          }
           split++;
           final parts = [for (var i = 0; i < lines.length; i += 2) lines.sublist(i, i + 2 < lines.length ? i + 2 : lines.length)];
           final counts = parts.map((p) => p.fold(0, (s, line) => s + line.length)).toList();
@@ -463,7 +510,10 @@ class Editor {
       case 'BALANCE':
         var changed = 0, skipped = 0, dialogue = 0;
         for (final c in cues) {
-          if (c.dialogue) { dialogue++; continue; }
+          if (c.dialogue) {
+            dialogue++;
+            continue;
+          }
           final ws = words(c.text), text = ws.join(' ');
           List<String>? candidate;
           if (text.length <= 42) candidate = [text];
@@ -474,12 +524,17 @@ class Editor {
               final difference = (left.length - right.length).abs();
               if (left.length <= 42 && right.length <= 42 &&
                   (difference < bestDifference || difference == bestDifference && left.length < bestFirst)) {
-                bestDifference = difference; bestFirst = left.length; candidate = [left, right];
+                bestDifference = difference;
+                bestFirst = left.length;
+                candidate = [left, right];
               }
             }
           }
           if (candidate == null) skipped++;
-          else if (!sameLines(c.text, candidate)) { c.text = candidate; changed++; }
+          else if (!sameLines(c.text, candidate)) {
+            c.text = candidate;
+            changed++;
+          }
         }
         out.writeln('BALANCE changed=$changed skipped=$skipped dialogue=$dialogue');
       case 'STRIP' || 'CLEANHI':
@@ -492,13 +547,20 @@ class Editor {
             for (var p = 0; p < text.length;) {
               if (op == 'STRIP') {
                 final item = markup(text, p);
-                if (item.$2 == 3) converted.write(text[p]); else tags++;
+                if (item.$2 == 3) converted.write(text[p]);
+                else tags++;
                 p += item.$1;
               } else {
                 final close = text[p] == '[' ? ']' : text[p] == '(' ? ')' : '';
                 final end = close.isEmpty ? -1 : text.indexOf(close, p + 1);
-                if (end >= 0) { segments++; p = end + 1; }
-                else { converted.write(text[p]); p++; }
+                if (end >= 0) {
+                  segments++;
+                  p = end + 1;
+                }
+                else {
+                  converted.write(text[p]);
+                  p++;
+                }
               }
             }
             var line = op == 'STRIP' ? converted.toString().trim() : normalized(converted.toString());
@@ -507,14 +569,18 @@ class Editor {
               final colon = body.indexOf(':');
               if (colon > 0 && body.codeUnitAt(0) >= 65 && body.codeUnitAt(0) <= 90 &&
                   body.substring(0, colon).codeUnits.every((c) => c >= 65 && c <= 90 || c >= 48 && c <= 57 || c == 32)) {
-                line = normalized(prefix + body.substring(colon + 1)); labels++;
+                line = normalized(prefix + body.substring(colon + 1));
+                labels++;
               }
             }
             if (line.isEmpty || op == 'CLEANHI' && line == '-') removedLines++;
             else lines.add(line);
           }
           if (lines.isEmpty) removedCues++;
-          else { c.text = lines; result.add(c); }
+          else {
+            c.text = lines;
+            result.add(c);
+          }
         }
         cues = result;
         out.writeln(op == 'STRIP' ? 'STRIP tags=$tags removed_lines=$removedLines removed_cues=$removedCues' :
@@ -525,13 +591,11 @@ class Editor {
         for (final c in cues) {
           var changed = false;
           for (var i = 0; i < c.text.length; i++) {
-            final text = c.text[i], result = StringBuffer();
-            for (var p = 0; p < text.length;) {
-              if (text.startsWith(old, p)) {
-                result.write(replacement); p += old.length; count++; changed = true;
-              } else { result.write(text[p]); p++; }
-            }
-            c.text[i] = result.toString();
+            c.text[i] = c.text[i].replaceAllMapped(old, (_) {
+              count++;
+              changed = true;
+              return replacement;
+            });
           }
           if (changed) changedCues++;
         }
@@ -546,16 +610,24 @@ void main() {
   var block = <String>[];
   while (true) {
     final line = stdin.readLineSync()!;
-    if (line == '###') { editor.load(block, output); break; }
-    if (line.isEmpty) { editor.load(block, output); block = []; }
-    else block.add(line);
+    if (line == '###') {
+      editor.load(block, output);
+      break;
+    }
+    if (line.isEmpty) {
+      editor.load(block, output);
+      block = [];
+    } else block.add(line);
   }
   output.writeln('LOAD cues=${editor.cues.length} bad=${editor.bad}');
   final count = int.parse(stdin.readLineSync()!);
   for (var i = 0; i < count; i++) {
     final line = stdin.readLineSync()!;
-    try { output.write(editor.execute(line)); }
-    on CommandError catch (error) { output.writeln('ERROR ${error.message}'); }
+    try {
+      output.write(editor.execute(line));
+    } on CommandError catch (error) {
+      output.writeln('ERROR ${error.message}');
+    }
   }
   stdout.write(output);
 }

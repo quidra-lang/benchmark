@@ -2,6 +2,7 @@
 #include <array>
 #include <iostream>
 #include <map>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -158,9 +159,7 @@ BowlingInfo bowlingInfo(const BowlingState &state) {
     return info;
 }
 int bowlingTotal(const BowlingInfo &info) {
-    int total = 0;
-    for (int score : info.score) total += score;
-    return total;
+    return std::accumulate(info.score.begin(), info.score.end(), 0);
 }
 bool finalSet(const Match &m, const Rally &s) { return s.sets[0] == m.sets / 2 && s.sets[1] == m.sets / 2; }
 int tennisKind(const Match &m, const Rally &s) {
@@ -321,8 +320,7 @@ string score(const Match &m) {
         int cumulative = 0;
         for (int frame = 0; frame < 10; ++frame) {
             if (!info.count[frame]) continue;
-            string display;
-            for (int j = 0; j < info.count[frame]; ++j) display += info.marks[info.start[frame] + j];
+            string display(info.marks.data() + info.start[frame], info.count[frame]);
             cumulative += info.score[frame];
             if (info.final[frame]) display += text("(", cumulative, ")");
             result += " " + display;
@@ -486,8 +484,7 @@ vector<string> execute(const vector<string> &a) {
     }
     if (command == "STANDINGS") {
         std::map<string, Pair> totals;
-        for (const std::pair<const string, Match> &entry : matches) {
-            const Match &m = entry.second;
+        for (const auto &[id, m] : matches) {
             if (m.sport == Bowling || !finished(m)) continue;
             int side = winner(m);
             ++totals[m.names[side]][0];
@@ -495,7 +492,7 @@ vector<string> execute(const vector<string> &a) {
         }
         struct Standing { string name; int wins, losses; };
         vector<Standing> rows;
-        for (const std::pair<const string, Pair> &entry : totals) rows.push_back({entry.first, entry.second[0], entry.second[1]});
+        for (const auto &[name, counts] : totals) rows.push_back({name, counts[0], counts[1]});
         std::sort(rows.begin(), rows.end(), [](const Standing &a, const Standing &b) {
             if (a.wins != b.wins) return a.wins > b.wins;
             if (a.losses != b.losses) return a.losses < b.losses;

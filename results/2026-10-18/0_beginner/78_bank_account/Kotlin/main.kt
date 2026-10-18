@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val transactions = listOf("deposit Emma 1200", "withdraw Leo 4000", "transfer Nina Leo 5000",
         "withdraw Leo 4000", "transfer Emma Nina 2500", "transfer Emma Nina 2000",

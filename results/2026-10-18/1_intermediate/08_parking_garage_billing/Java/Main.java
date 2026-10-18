@@ -1,16 +1,15 @@
 import java.io.*;
 import java.util.*;
+import java.util.stream.IntStream;
 
 public class Main {
     static final String[] TYPES={"MOTORCYCLE","CAR","ECAR","VAN","BUS"};
     static final String[] KINDS={"MOTO","COMPACT","LARGE","EV"};
-    static final int[][] PREFS={{0,1,2},{1,2},{3,1,2},{2},{2}};
+    static final List<List<Integer>> PREFS=List.of(List.of(0,1,2),List.of(1,2),List.of(3,1,2),List.of(2),List.of(2));
     static class Fault extends RuntimeException { Fault(String message) { super(message); } }
     static void error(boolean condition, String message) { if (condition) throw new Fault(message); }
-    static int index(String[] values, String value) { return Arrays.asList(values).indexOf(value); }
-    static String two(int n) { return (n<10 ? "0" : "")+n; }
-    static String time(int n) { return (n/1440+1)+"-"+two(n/60%24)+":"+two(n%60); }
-    static String duration(int n) { return n/60+":"+two(n%60); }
+    static String time(int n) { return String.format(Locale.ROOT,"%d-%02d:%02d",n/1440+1,n/60%24,n%60); }
+    static String duration(int n) { return String.format(Locale.ROOT,"%d:%02d",n/60,n%60); }
     static String decimal(int n) { return n/10+"."+n%10; }
     static class Spot {
         int level, number, kind, order;
@@ -52,7 +51,6 @@ public class Main {
         int[][] stats=new int[5][9];
         Map<Integer,int[][]> days=new HashMap<>();
         List<String> output;
-        void emit(String s) { output.add(s); }
         int[][] daily(int date) { return days.computeIfAbsent(date,d -> new int[5][4]); }
         boolean pass(String plate) { return passes.getOrDefault(plate,0)>=now/1440+1; }
         Vehicle vehicle(String plate) {
@@ -75,8 +73,9 @@ public class Main {
                     }
                 }
             } else {
-                for (int wanted:PREFS[kind]) {
-                    for (Spot s:spots) if (s.kind==wanted && s.free()) return new ArrayList<>(List.of(s));
+                for (int wanted:PREFS.get(kind)) {
+                    Spot first=spots.stream().filter(s -> s.kind==wanted && s.free()).findFirst().orElse(null);
+                    if (first!=null) return List.of(first);
                 }
             }
             return null;
@@ -104,7 +103,7 @@ public class Main {
                 if (now-w.joined()>=30) {
                     queue.remove(w);
                     refuse(w.kind(),w.joined()+30);
-                    emit("GIVEUP "+w.plate()+" "+TYPES[w.kind()]+" "+time(w.joined()+30));
+                    output.add("GIVEUP "+w.plate()+" "+TYPES[w.kind()]+" "+time(w.joined()+30));
                 }
             }
         }
@@ -114,7 +113,7 @@ public class Main {
                 if (assigned!=null) {
                     queue.remove(w);
                     Vehicle v=park(w.plate(),w.kind(),assigned);
-                    emit("ADMIT "+v.plate+" "+TYPES[v.kind]+" "+v.location()+" waited "+duration(now-w.joined()));
+                    output.add("ADMIT "+v.plate+" "+TYPES[v.kind]+" "+v.location()+" waited "+duration(now-w.joined()));
                 }
             }
         }
@@ -152,7 +151,7 @@ public class Main {
             free(v);
             v.spots=target;
             occupy(v);
-            emit("MOVE "+v.plate+" "+old+" -> "+v.location());
+            output.add("MOVE "+v.plate+" "+old+" -> "+v.location());
         }
         int[] occupancy(List<Spot> target) {
             int[] result=new int[9];
@@ -176,11 +175,7 @@ public class Main {
         }
         String dailyLine(String label, int[] a) { return label+" entries "+a[0]+" exits "+a[1]+" refused "+a[2]+" revenue "+a[3]; }
         int[] sum(int[][] a, int width) {
-            int[] result=new int[width];
-            for (int[] row:a) {
-                for (int i=0;i<width;i++) result[i]+=row[i];
-            }
-            return result;
+            return IntStream.range(0,width).map(i -> Arrays.stream(a).mapToInt(row -> row[i]).sum()).toArray();
         }
         void execute(String[] t) {
             boolean trigger=false;
@@ -198,7 +193,7 @@ public class Main {
                         }
                     }
                     levels.add(added);
-                    emit("LEVEL "+levels.size()+" spots "+added.size()+" MOTO "+counts[0]+" COMPACT "+counts[1]+" LARGE "+counts[2]+" EV "+counts[3]);
+                    output.add("LEVEL "+levels.size()+" spots "+added.size()+" MOTO "+counts[0]+" COMPACT "+counts[1]+" LARGE "+counts[2]+" EV "+counts[3]);
                     trigger=true;
                     break;
                 }
@@ -213,16 +208,16 @@ public class Main {
                         s.closed=false;
                         trigger=true;
                     }
-                    emit(command+" "+s.id()+" "+KINDS[s.kind]);
+                    output.add(command+" "+s.id()+" "+KINDS[s.kind]);
                     break;
                 }
                 case "RATE": {
-                    int k=index(TYPES,t[3]);
+                    int k=Arrays.asList(TYPES).indexOf(t[3]);
                     error(k<0,"unknown type "+t[3]);
                     int rate=Integer.parseInt(t[4]), cap=Integer.parseInt(t[5]);
                     error(cap<rate,"cap below rate for "+t[3]);
                     rates[k]=new int[]{rate,cap};
-                    emit("RATE "+t[3]+" "+rate+" "+cap);
+                    output.add("RATE "+t[3]+" "+rate+" "+cap);
                     break;
                 }
                 case "FEE": {
@@ -237,24 +232,24 @@ public class Main {
                             break;
                         default: kwh=amount;
                     }
-                    emit("FEE "+t[3]+" "+amount);
+                    output.add("FEE "+t[3]+" "+amount);
                     break;
                 }
                 case "ENTER": {
                     String plate=t[3];
-                    int k=index(TYPES,t[4]);
+                    int k=Arrays.asList(TYPES).indexOf(t[4]);
                     error(k<0,"unknown type "+t[4]);
                     Vehicle existing=parked.get(plate);
                     error(existing!=null,plate+" is already parked at "+(existing==null ? "" : existing.location()));
                     error(queue.stream().anyMatch(w -> w.plate().equals(plate)),plate+" is already waiting");
                     List<Spot> assigned=assign(k);
-                    if (assigned!=null) emit("ENTER "+plate+" "+TYPES[k]+" "+park(plate,k,assigned).location());
+                    if (assigned!=null) output.add("ENTER "+plate+" "+TYPES[k]+" "+park(plate,k,assigned).location());
                     else if (queue.size()<3) {
                         queue.add(new Waiting(plate,k,now));
-                        emit("WAIT "+plate+" "+TYPES[k]+" "+queue.size());
+                        output.add("WAIT "+plate+" "+TYPES[k]+" "+queue.size());
                     } else {
                         refuse(k,now);
-                        emit("FULL "+plate+" "+TYPES[k]);
+                        output.add("FULL "+plate+" "+TYPES[k]);
                     }
                     break;
                 }
@@ -262,7 +257,7 @@ public class Main {
                     Waiting w=queue.stream().filter(x -> x.plate().equals(t[3])).findFirst().orElse(null);
                     error(w==null,t[3]+" is not waiting");
                     queue.remove(w);
-                    emit("LEAVE "+w.plate()+" "+TYPES[w.kind()]);
+                    output.add("LEAVE "+w.plate()+" "+TYPES[w.kind()]);
                     break;
                 }
                 case "EXIT", "PAY", "QUOTE": {
@@ -274,9 +269,9 @@ public class Main {
                         v.paidAt=now;
                         v.paidParking=f[0];
                         v.paidNight=f[1];
-                        emit("PAY "+v.plate+" parking "+f[0]+" night "+f[1]+" charge "+f[3]+" total "+f[4]);
+                        output.add("PAY "+v.plate+" parking "+f[0]+" night "+f[1]+" charge "+f[3]+" total "+f[4]);
                     } else {
-                        emit(feeLine(command,v,f));
+                        output.add(feeLine(command,v,f));
                         if (command.equals("EXIT")) {
                             history.computeIfAbsent(v.plate,p -> new ArrayList<>()).add(new Visit(v.entry,now,v.location(),v.kind,f[4],loss));
                             stats[v.kind][1]++;
@@ -302,7 +297,7 @@ public class Main {
                     int cost=energy*kwh;
                     v.energy+=energy;
                     v.charge+=cost;
-                    emit("CHARGE "+v.plate+" kwh "+energy+" cost "+cost+" stay_kwh "+v.energy+" stay_cost "+v.charge);
+                    output.add("CHARGE "+v.plate+" kwh "+energy+" cost "+cost+" stay_kwh "+v.energy+" stay_cost "+v.charge);
                     break;
                 }
                 case "VALIDATE": {
@@ -311,19 +306,19 @@ public class Main {
                     int minutes=Integer.parseInt(t[4]);
                     error(v.validation+minutes>180,"validation limit exceeded for "+v.plate);
                     v.validation+=minutes;
-                    emit("VALIDATE "+v.plate+" "+minutes+" total "+v.validation);
+                    output.add("VALIDATE "+v.plate+" "+minutes+" total "+v.validation);
                     break;
                 }
                 case "PASS": {
                     int end=(pass(t[3]) ? passes.get(t[3]) : now/1440)+Integer.parseInt(t[4]);
                     passes.put(t[3],end);
-                    emit("PASS "+t[3]+" until "+end);
+                    output.add("PASS "+t[3]+" until "+end);
                     break;
                 }
                 case "UNPASS": {
                     error(!pass(t[3]),t[3]+" has no pass");
                     passes.remove(t[3]);
-                    emit("UNPASS "+t[3]);
+                    output.add("UNPASS "+t[3]);
                     break;
                 }
                 case "MOVE": {
@@ -333,8 +328,8 @@ public class Main {
                     error(v.spots.get(0)==s,v.plate+" is already at "+t[4]);
                     error(s.closed,"spot "+t[4]+" is closed");
                     error(s.occupant!=null,"spot "+t[4]+" is occupied by "+(s.occupant==null ? "" : s.occupant.plate));
-                    error(Arrays.stream(PREFS[v.kind]).noneMatch(k -> k==s.kind),TYPES[v.kind]+" cannot use "+KINDS[s.kind]+" spot "+t[4]);
-                    move(v,new ArrayList<>(List.of(s)));
+                    error(!PREFS.get(v.kind).contains(s.kind),TYPES[v.kind]+" cannot use "+KINDS[s.kind]+" spot "+t[4]);
+                    move(v,List.of(s));
                     trigger=true;
                     break;
                 }
@@ -343,13 +338,13 @@ public class Main {
                     for (Vehicle v:ordered()) {
                         if (v.kind==4) continue;
                         List<Spot> target=assign(v.kind);
-                        if (target!=null && Arrays.stream(PREFS[v.kind]).boxed().toList().indexOf(target.get(0).kind)<
-                            Arrays.stream(PREFS[v.kind]).boxed().toList().indexOf(v.spots.get(0).kind)) {
+                        if (target!=null && PREFS.get(v.kind).indexOf(target.get(0).kind)<
+                            PREFS.get(v.kind).indexOf(v.spots.get(0).kind)) {
                             move(v,target);
                             moved++;
                         }
                     }
-                    emit("REBALANCE "+moved);
+                    output.add("REBALANCE "+moved);
                     trigger=true;
                     break;
                 }
@@ -359,40 +354,36 @@ public class Main {
                     for (int i=0;i<queue.size();i++) if (queue.get(i).plate().equals(t[3])) p=i;
                     List<Visit> visits=history.get(t[3]);
                     error(v==null && p<0 && visits==null,"unknown plate "+t[3]);
-                    if (v!=null) emit("WHERE "+v.plate+" "+v.location()+" "+TYPES[v.kind]+" "+time(v.entry)+" stay "+duration(now-v.entry)+annotation(v));
-                    else if (p>=0) emit("WHERE "+t[3]+" waiting "+(p+1));
-                    else emit("WHERE "+t[3]+" gone "+time(visits.get(visits.size()-1).exit()));
+                    if (v!=null) output.add("WHERE "+v.plate+" "+v.location()+" "+TYPES[v.kind]+" "+time(v.entry)+" stay "+duration(now-v.entry)+annotation(v));
+                    else if (p>=0) output.add("WHERE "+t[3]+" waiting "+(p+1));
+                    else output.add("WHERE "+t[3]+" gone "+time(visits.get(visits.size()-1).exit()));
                     break;
                 }
                 case "LIST": {
                     int l=t.length==4 ? Integer.parseInt(t[3]) : 0;
                     error(l>levels.size(),"unknown level "+l);
                     List<Vehicle> found=ordered().stream().filter(v -> l==0 || v.spots.get(0).level==l).toList();
-                    emit("LIST "+found.size());
-                    for (Vehicle v:found) emit(v.location()+" "+v.plate+" "+TYPES[v.kind]+" "+time(v.entry)+annotation(v));
+                    output.add("LIST "+found.size());
+                    for (Vehicle v:found) output.add(v.location()+" "+v.plate+" "+TYPES[v.kind]+" "+time(v.entry)+annotation(v));
                     break;
                 }
                 case "MAP": {
-                    emit("MAP "+levels.size());
+                    output.add("MAP "+levels.size());
                     for (int i=0;i<levels.size();i++) {
                         List<String> chunks=new ArrayList<>();
                         StringBuilder symbols=new StringBuilder();
                         for (Spot s:levels.get(i)) symbols.append(s.closed ? '#' : s.occupant!=null ? KINDS[s.kind].charAt(0) : Character.toLowerCase(KINDS[s.kind].charAt(0)));
                         for (int j=0;j<symbols.length();j+=10) chunks.add(symbols.substring(j,Math.min(j+10,symbols.length())));
-                        emit("L"+(i+1)+" "+String.join(" ",chunks));
+                        output.add("L"+(i+1)+" "+String.join(" ",chunks));
                     }
                     break;
                 }
                 case "OCCUPANCY": {
-                    emit("OCCUPANCY vehicles "+parked.size()+" waiting "+queue.size());
-                    for (int i=0;i<levels.size();i++) emit(occupancyLine("L"+(i+1),occupancy(levels.get(i))));
+                    output.add("OCCUPANCY vehicles "+parked.size()+" waiting "+queue.size());
+                    for (int i=0;i<levels.size();i++) output.add(occupancyLine("L"+(i+1),occupancy(levels.get(i))));
                     int[] a=occupancy(spots);
-                    int used=0, available=0;
-                    for (int i=0;i<4;i++) {
-                        used+=a[i];
-                        available+=a[i+4];
-                    }
-                    emit(occupancyLine("TOTAL",a)+" rate "+decimal(available==0 ? 0 : used*1000/available)+"%");
+                    int used=Arrays.stream(a,0,4).sum(), available=Arrays.stream(a,4,8).sum();
+                    output.add(occupancyLine("TOTAL",a)+" rate "+decimal(available==0 ? 0 : used*1000/available)+"%");
                     break;
                 }
                 case "SIGN": {
@@ -413,58 +404,57 @@ public class Main {
                                 }
                             }
                         } else {
-                            for (int wanted:PREFS[k]) {
-                                for (Spot s:spots) if (s.kind==wanted && s.free()) count++;
-                            }
+                            List<Integer> allowed=PREFS.get(k);
+                            count=(int)spots.stream().filter(s -> allowed.contains(s.kind) && s.free()).count();
                         }
                         line+=" "+TYPES[k]+" "+(count==0 ? "FULL" : Integer.toString(count));
                     }
-                    emit(line);
+                    output.add(line);
                     break;
                 }
                 case "RATES": {
-                    emit("RATES");
-                    for (int k=0;k<5;k++) emit(TYPES[k]+" "+rates[k][0]+" "+rates[k][1]);
-                    emit("NIGHT "+night+" LOST "+lost+" KWH "+kwh);
+                    output.add("RATES");
+                    for (int k=0;k<5;k++) output.add(TYPES[k]+" "+rates[k][0]+" "+rates[k][1]);
+                    output.add("NIGHT "+night+" LOST "+lost+" KWH "+kwh);
                     break;
                 }
                 case "PASSES": {
                     List<String> found=passes.keySet().stream().filter(this::pass).toList();
-                    emit("PASSES "+found.size());
-                    for (String plate:found) emit(plate+" until "+passes.get(plate)+(parked.containsKey(plate) ? " IN" : ""));
+                    output.add("PASSES "+found.size());
+                    for (String plate:found) output.add(plate+" until "+passes.get(plate)+(parked.containsKey(plate) ? " IN" : ""));
                     break;
                 }
                 case "OVERSTAY": {
                     int hours=Integer.parseInt(t[3]);
                     List<Vehicle> found=ordered().stream().filter(v -> now-v.entry>=hours*60).sorted(Comparator.comparingInt(v -> v.entry)).toList();
-                    emit("OVERSTAY "+hours+" "+found.size());
-                    for (Vehicle v:found) emit(v.location()+" "+v.plate+" "+TYPES[v.kind]+" "+time(v.entry)+" stay "+duration(now-v.entry));
+                    output.add("OVERSTAY "+hours+" "+found.size());
+                    for (Vehicle v:found) output.add(v.location()+" "+v.plate+" "+TYPES[v.kind]+" "+time(v.entry)+" stay "+duration(now-v.entry));
                     break;
                 }
                 case "HISTORY": {
                     List<Visit> visits=history.get(t[3]);
                     error(visits==null,"no history for "+t[3]);
-                    emit("HISTORY "+t[3]+" visits "+visits.size()+" paid "+visits.stream().mapToInt(Visit::total).sum());
-                    for (Visit v:visits) emit(time(v.entry())+" "+time(v.exit())+" "+v.location()+" "+TYPES[v.kind()]+" "+v.total()+(v.loss() ? " LOST" : ""));
+                    output.add("HISTORY "+t[3]+" visits "+visits.size()+" paid "+visits.stream().mapToInt(Visit::total).sum());
+                    for (Visit v:visits) output.add(time(v.entry())+" "+time(v.exit())+" "+v.location()+" "+TYPES[v.kind()]+" "+v.total()+(v.loss() ? " LOST" : ""));
                     break;
                 }
                 case "REVENUE": {
-                    emit("REVENUE");
-                    for (int k=0;k<5;k++) emit(revenueLine(TYPES[k],stats[k]));
-                    emit(revenueLine("TOTAL",sum(stats,9)));
+                    output.add("REVENUE");
+                    for (int k=0;k<5;k++) output.add(revenueLine(TYPES[k],stats[k]));
+                    output.add(revenueLine("TOTAL",sum(stats,9)));
                     break;
                 }
                 case "DAILY": {
                     int d=Integer.parseInt(t[3]);
                     int[][] a=daily(d);
-                    emit(dailyLine("DAILY "+d,sum(a,4)));
-                    for (int k=0;k<5;k++) emit(dailyLine(TYPES[k],a[k]));
+                    output.add(dailyLine("DAILY "+d,sum(a,4)));
+                    for (int k=0;k<5;k++) output.add(dailyLine(TYPES[k],a[k]));
                     break;
                 }
                 case "STATS": {
-                    emit("STATS parked "+parked.size()+" peak "+peak+" at "+(peak==0 ? "-" : time(peakAt)));
-                    for (int k=0;k<5;k++) emit(statsLine(TYPES[k],stats[k]));
-                    emit(statsLine("ALL",sum(stats,9)));
+                    output.add("STATS parked "+parked.size()+" peak "+peak+" at "+(peak==0 ? "-" : time(peakAt)));
+                    for (int k=0;k<5;k++) output.add(statsLine(TYPES[k],stats[k]));
+                    output.add(statsLine("ALL",sum(stats,9)));
                     break;
                 }
             }
@@ -476,7 +466,7 @@ public class Main {
             output=new ArrayList<>();
             giveup();
             try { execute(t); }
-            catch (Fault f) { emit("ERROR "+f.getMessage()); }
+            catch (Fault f) { output.add("ERROR "+f.getMessage()); }
             return output;
         }
     }

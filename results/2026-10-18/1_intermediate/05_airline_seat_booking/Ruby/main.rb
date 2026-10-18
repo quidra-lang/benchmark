@@ -12,7 +12,6 @@ class BookingSystem
     @flights = {}
     @bookings = {}
     @tiers = {}
-    @used = Set.new
     @defining = nil
     @serial = 0
   end
@@ -213,7 +212,7 @@ class BookingSystem
 
   def book(args)
     pnr, flight_name, cabin_name = args[0, 3]
-    fail_with("duplicate PNR #{pnr}") if @used.include?(pnr)
+    fail_with("duplicate PNR #{pnr}") if @bookings.key?(pnr)
     flight = get_flight(flight_name, true)
     cabin(flight, cabin_name)
     people = args.drop(3).each_with_index.map do |token, i|
@@ -248,7 +247,6 @@ class BookingSystem
     @serial += 1
     @bookings[pnr] = booking
     flight[:bookings] << booking
-    @used << pnr
     method = assign(flight, seated, cabin_name)
     items = people.map { |person| "#{person[:name]}:#{display(person)}" }.join(" ")
     ["BOOKED #{pnr} #{flight_name} #{cabin_name} #{method} #{items}"]

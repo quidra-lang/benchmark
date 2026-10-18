@@ -10,8 +10,6 @@ const OS = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
 const COLS = ["STUVWXYZ","ABCDEFGH","JKLMNPQR"]
 const ROWS = "ABCDEFGHJKLMNPQRSTUV"
 invalid() = throw(ArgumentError("INVALID"))
-fd(a,b) = fld(a,b)
-md(a,b) = mod(a,b)
 char_at(set,index) = string(set[index+1])
 function index_char(set,char)
     length(char) == 1 || invalid()
@@ -432,11 +430,10 @@ function execute(line)
         x2,y2 = point_cell(sys,p,lat2,lon2)
         columns = lon1 <= lon2 ? x2-x1+1 : min(w,x2-x1+1+w)
         (y2-y1+1)*columns > 100 && return "TOO MANY"
-        codes = [encode(sys,p,mod(x1+i,w),y) for y in y2:-1:y1 for i in 0:columns-1]
-        return join(codes," ")
+        return join((encode(sys,p,mod(x1+i,w),y) for y in y2:-1:y1 for i in 0:columns-1)," ")
     elseif command == "COMPACT"
         cells = [decode(sys,code) for code in t[2:end]]
-        return join([cell_code(sys,cell) for cell in compact_cells(sys,cells)]," ")
+        return join((cell_code(sys,cell) for cell in compact_cells(sys,cells))," ")
     end
     cell = decode(sys,t[2])
     p,x,y = cell
@@ -469,7 +466,7 @@ function execute(line)
         v,u = grid(sys,q)
         rx,ry = div(v,w),div(u,h)
         rx*ry > 100 && return "TOO MANY"
-        return join([encode(sys,q,rx*x+i,ry*y+j) for j in ry-1:-1:0 for i in 0:rx-1]," ")
+        return join((encode(sys,q,rx*x+i,ry*y+j) for j in ry-1:-1:0 for i in 0:rx-1)," ")
     elseif command == "CONVERT"
         t[3] == "TO" || invalid()
         sys2 = system_name(t[4])
@@ -509,7 +506,7 @@ function execute(line)
     n = max(abs(dx),abs(dy))
     n+1 > 100 && return "TOO MANY"
     n == 0 && return cell_code(sys,cell)
-    return join([encode(sys,p,mod(x+fld(2i*dx+n,2n),w),y+fld(2i*dy+n,2n)) for i in 0:n]," ")
+    return join((encode(sys,p,mod(x+fld(2i*dx+n,2n),w),y+fld(2i*dy+n,2n)) for i in 0:n)," ")
 end
 function main()
     total = parse(Int,readline())

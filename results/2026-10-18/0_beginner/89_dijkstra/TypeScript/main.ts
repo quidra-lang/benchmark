@@ -3,7 +3,7 @@ const edges = [
   [0, 1, 7], [0, 2, 3], [0, 3, 9], [1, 2, 2], [2, 4, 6], [1, 3, 3],
   [3, 4, 4], [3, 5, 5], [4, 5, 3], [4, 6, 8], [5, 6, 4]
 ];
-const graph = Array.from({length: names.length}, () => []);
+const graph: [number, number][][] = Array.from({length: names.length}, () => []);
 for (const [a, b, weight] of edges) {
   graph[a].push([b, weight]);
   graph[b].push([a, weight]);

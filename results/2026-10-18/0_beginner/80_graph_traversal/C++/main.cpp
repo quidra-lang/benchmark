@@ -12,11 +12,11 @@ void dfs(int v, const std::array<std::array<bool, 9>, 9> &graph, std::array<bool
 }
 
 int main() {
-    std::array<std::array<bool, 9>, 9> graph {};
-    const int edges[][2] = {{5, 0}, {3, 8}, {7, 2}, {1, 6}, {0, 2}, {5, 3}, {7, 5}, {6, 4}, {8, 7}};
-    for (const int(&e)[2] : edges)
+    std::array<std::array<bool, 9>, 9> graph{};
+    int edges[][2] = {{5, 0}, {3, 8}, {7, 2}, {1, 6}, {0, 2}, {5, 3}, {7, 5}, {6, 4}, {8, 7}};
+    for (const int (&e)[2] : edges)
         graph[e[0]][e[1]] = graph[e[1]][e[0]] = true;
-    std::array<bool, 9> seen {};
+    std::array<bool, 9> seen{};
     std::vector<int> order;
     dfs(0, graph, seen, order);
     std::cout << "DFS:";
@@ -41,10 +41,10 @@ int main() {
     std::vector<std::vector<int>> components;
     for (int v = 0; v < 9; v++)
         if (!seen[v]) {
-            std::vector<int> component;
+            components.emplace_back();
+            std::vector<int> &component = components.back();
             dfs(v, graph, seen, component);
             std::sort(component.begin(), component.end());
-            components.push_back(component);
         }
     std::cout << "components: " << components.size() << '\n';
     for (std::size_t i = 0; i < components.size(); i++) {

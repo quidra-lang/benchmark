@@ -1,3 +1,4 @@
+#[derive(Default)]
 struct Team {
     name: String,
     played: i32,
@@ -6,12 +7,10 @@ struct Team {
     losses: i32,
     gf: i32,
     ga: i32,
-    points: i32
+    points: i32,
 }
 
-fn record(t: &mut Team,
-gf: i32,
-ga: i32) {
+fn record(t: &mut Team, gf: i32, ga: i32) {
     t.played += 1;
     t.gf += gf;
     t.ga += ga;
@@ -29,13 +28,7 @@ ga: i32) {
 fn main() {
     let mut teams: Vec<Team> = ["Lions", "Tigers", "Eagles", "Sharks", "Wolves", "Bears"].iter().map(|&name| Team {
         name: name.to_string(),
-        played: 0,
-        wins: 0,
-        draws: 0,
-        losses: 0,
-        gf: 0,
-        ga: 0,
-        points: 0
+        ..Team::default()
     }).collect();
     for game in ["Lions 0-3 Bears", "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks", "Wolves 2-1 Eagles",
         "Lions 0-1 Tigers", "Tigers 3-3 Bears", "Eagles 2-2 Lions", "Sharks 2-2 Wolves", "Bears 3-1 Wolves",
@@ -51,10 +44,6 @@ fn main() {
     for (i, t) in teams.iter().enumerate() {
         let gd = t.gf - t.ga;
         println!("{}. {} P={} W={} D={} L={} GF={} GA={} GD={}{} Pts={}", i + 1, t.name, t.played, t.wins,
-            t.draws, t.losses, t.gf, t.ga, if gd> 0 {
-            "+"
-        } else {
-            ""
-        }, gd, t.points);
+            t.draws, t.losses, t.gf, t.ga, if gd > 0 { "+" } else { "" }, gd, t.points);
     }
 }

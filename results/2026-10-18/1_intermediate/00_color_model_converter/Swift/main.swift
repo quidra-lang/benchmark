@@ -30,7 +30,7 @@ class Converter {
         try check(tokens.count == count + 1)
     }
     func matches(_ text: String, _ pattern: String) -> Bool {
-        return text.range(of: "\\A(?:" + pattern + ")\\z", options: .regularExpression) != nil
+        text.range(of: "\\A(?:" + pattern + ")\\z", options: .regularExpression) != nil
     }
     func number(_ text: String, _ low: Int, _ high: Int) throws -> Int {
         try check(matches(text, "-?[0-9]{1,9}"))
@@ -43,17 +43,17 @@ class Converter {
         return n < 0 && n % d != 0 ? quotient - 1 : quotient
     }
     func round(_ n: Int64, _ d: Int64) -> Int {
-        return Int(floor(2*n+d,2*d))
+        Int(floor(2*n+d,2*d))
     }
     func round(_ n: Int, _ d: Int) -> Int {
-        return round(Int64(n),Int64(d))
+        round(Int64(n),Int64(d))
     }
     func away(_ n: Int, _ d: Int) -> Int {
-        return n < 0 ? -round(-n,d) : round(n,d)
+        n < 0 ? -round(-n,d) : round(n,d)
     }
-    func percent(_ a: Int, _ b: Int) -> Int { return round(100*a,b) }
-    func mod(_ value: Int, _ modulus: Int) -> Int { return (value % modulus + modulus) % modulus }
-    func clamp(_ value: Int) -> Int { return min(255,max(0,value)) }
+    func percent(_ a: Int, _ b: Int) -> Int { round(100*a,b) }
+    func mod(_ value: Int, _ modulus: Int) -> Int { (value % modulus + modulus) % modulus }
+    func clamp(_ value: Int) -> Int { min(255,max(0,value)) }
     func root(_ numerator: Int64, _ scale: Int64) -> Int {
         let value = numerator / scale
         var low: Int64 = 0
@@ -65,15 +65,12 @@ class Converter {
         }
         return Int(low)
     }
-    func unpack(_ value: Int) -> [Int] { return [value >> 16,(value >> 8) & 255,value & 255] }
+    func unpack(_ value: Int) -> [Int] { [value >> 16,(value >> 8) & 255,value & 255] }
     func hex(_ color: [Int]) -> String {
-        return "#" + color.map {
-            let digits = String($0,radix: 16,uppercase: true)
-            return (digits.count == 1 ? "0" : "") + digits
-        }.joined()
+        String(format: "#%02X%02X%02X", locale: Locale(identifier: "en_US_POSIX"), color[0], color[1], color[2])
     }
     func table() -> [Entry] {
-        return names.indices.map { Entry(name: names[$0],color: unpack(rgb[$0])) } + registered
+        names.indices.map { Entry(name: names[$0],color: unpack(rgb[$0])) } + registered
     }
     func color(_ text: String) throws -> [Int] {
         if matches(text,"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?") {
@@ -89,10 +86,8 @@ class Converter {
         if let entry = table().first(where: { $0.name == text }) { return entry.color }
         throw Invalid.command
     }
-    func maximum(_ c: [Int]) -> Int { return c.max()! }
-    func minimum(_ c: [Int]) -> Int { return c.min()! }
     func hue(_ c: [Int]) -> Int {
-        let largest = maximum(c), difference = largest - minimum(c)
+        let largest = c.max()!, difference = largest - c.min()!
         if difference == 0 { return 0 }
         var numerator: Int
         if largest == c[0] { numerator = 60*(c[1]-c[2]) }
@@ -102,7 +97,7 @@ class Converter {
         return round(numerator,difference) % 360
     }
     func hsl(_ c: [Int]) -> [Int] {
-        let largest = maximum(c), smallest = minimum(c), difference = largest - smallest
+        let largest = c.max()!, smallest = c.min()!, difference = largest - smallest
         let saturation = difference == 0 ? 0 : percent(difference,255-abs(largest+smallest-255))
         return [hue(c),saturation,percent(largest+smallest,510)]
     }
@@ -124,7 +119,7 @@ class Converter {
         }
     }
     func model(_ command: String, _ c: [Int]) -> String {
-        let r = c[0], g = c[1], b = c[2], m = maximum(c), n = minimum(c), d = m-n
+        let r = c[0], g = c[1], b = c[2], m = c.max()!, n = c.min()!, d = m-n
         switch command {
         case "HSL":
             let v = hsl(c)
@@ -150,10 +145,10 @@ class Converter {
         return [values[v/36],values[v/6%6],values[v%6]]
     }
     func gradient(_ a: [Int], _ b: [Int], _ index: Int, _ denominator: Int) -> [Int] {
-        return (0..<3).map { a[$0]+away((b[$0]-a[$0])*index,denominator) }
+        (0..<3).map { a[$0]+away((b[$0]-a[$0])*index,denominator) }
     }
     func luminance(_ c: [Int]) -> Int64 {
-        return 2126*Int64(c[0])*Int64(c[0])+7152*Int64(c[1])*Int64(c[1])+722*Int64(c[2])*Int64(c[2])
+        2126*Int64(c[0])*Int64(c[0])+7152*Int64(c[1])*Int64(c[1])+722*Int64(c[2])*Int64(c[2])
     }
     func contrast(_ a: [Int], _ b: [Int]) -> [Int64] {
         let first = luminance(a), second = luminance(b)
@@ -170,8 +165,7 @@ class Converter {
     func contrastText(_ a: [Int], _ b: [Int]) -> String {
         let values = contrast(a,b), ratio = round(100*values[0],values[1])
         let verdict = values[0] >= 7*values[1] ? "AAA" : 2*values[0] >= 9*values[1] ? "AA" : "FAIL"
-        let fraction = String(ratio % 100)
-        return "\(ratio / 100).\(fraction.count == 1 ? "0" : "")\(fraction) \(verdict)"
+        return String(format: "%d.%02d", locale: Locale(identifier: "en_US_POSIX"), ratio / 100, ratio % 100) + " " + verdict
     }
     func blendComponent(_ mode: String, _ x: Int, _ y: Int) throws -> Int {
         let multiply = x*y/255, screen = 255-(255-x)*(255-y)/255
@@ -201,7 +195,7 @@ class Converter {
         return try (0..<3).map { try blendComponent(mode,base[$0],top[$0]) }
     }
     func mean(_ colors: [[Int]]) -> [Int] {
-        return (0..<3).map { i in round(colors.reduce(0) { $0+$1[i] },colors.count) }
+        (0..<3).map { i in round(colors.reduce(0) { $0+$1[i] },colors.count) }
     }
     func ranges(_ colors: [[Int]]) -> [Int] {
         return (0..<3).map { i in colors.map { $0[i] }.max()! - colors.map { $0[i] }.min()! }
@@ -209,24 +203,12 @@ class Converter {
     func palette(_ k: Int, _ colors: [[Int]]) -> [Cluster] {
         var boxes = [colors]
         while boxes.count < k {
-            var selected = -1, width = -1
-            for i in boxes.indices {
-                if boxes[i].count < 2 { continue }
-                let candidate = ranges(boxes[i]).max()!
-                if candidate > width {
-                    width = candidate
-                    selected = i
-                }
-            }
+            let selected = boxes.indices.filter { boxes[$0].count > 1 }.max {
+                ranges(boxes[$0]).max()! < ranges(boxes[$1]).max()!
+            }!
             let range = ranges(boxes[selected])
-            var component = 0
-            for i in 1..<3 {
-                if range[i] > range[component] { component = i }
-            }
-            let axis = component
-            let sorted = boxes[selected].enumerated().sorted { a,b in
-                return a.element[axis] == b.element[axis] ? a.offset < b.offset : a.element[axis] < b.element[axis]
-            }.map { $0.element }
+            let component = range.indices.max { range[$0] < range[$1] }!
+            let sorted = boxes[selected].sorted { $0[component] < $1[component] }
             let middle = sorted.count / 2
             boxes[selected] = Array(sorted.prefix(middle))
             boxes.insert(Array(sorted.dropFirst(middle)),at: selected+1)
@@ -234,7 +216,7 @@ class Converter {
         return boxes.map { Cluster(color: mean($0),count: $0.count) }
     }
     func clusterText(_ clusters: [Cluster]) -> String {
-        return clusters.map { "\(hex($0.color)):\($0.count)" }.joined(separator: " ")
+        clusters.map { "\(hex($0.color)):\($0.count)" }.joined(separator: " ")
     }
     func kmeans(_ k: Int, _ colors: [[Int]]) -> String {
         var representatives = palette(k,colors).map { $0.color }
@@ -243,10 +225,7 @@ class Converter {
             iteration += 1
             var groups = [[[Int]]](repeating: [],count: k)
             for color in colors {
-                var best = 0
-                for j in 1..<k {
-                    if distance(color,representatives[j]) < distance(color,representatives[best]) { best = j }
-                }
+                let best = (0..<k).min { distance(color, representatives[$0]) < distance(color, representatives[$1]) }!
                 groups[best].append(color)
             }
             result = (0..<k).map { j in
@@ -259,9 +238,9 @@ class Converter {
         return "\(iteration) \(clusterText(result))"
     }
     func colors(_ tokens: [String], _ start: Int) throws -> [[Int]] {
-        return try tokens.dropFirst(start).map { try color($0) }
+        try tokens.dropFirst(start).map { try color($0) }
     }
-    func colorsText(_ colors: [[Int]]) -> String { return colors.map { hex($0) }.joined(separator: " ") }
+    func colorsText(_ colors: [[Int]]) -> String { colors.map { hex($0) }.joined(separator: " ") }
     func execute(_ line: String) throws -> String {
         let t = line.split(separator: " ").map(String.init), command = t[0]
         switch command {
@@ -316,8 +295,7 @@ class Converter {
             try arity(t,1)
             let c = try color(t[1])
             let value = 2048*round(31*c[0],255)+32*round(63*c[1],255)+round(31*c[2],255)
-            let digits = String(value,radix: 16,uppercase: true)
-            return "0x" + String(repeating: "0",count: 4-digits.count) + digits
+            return String(format: "0x%04X", locale: Locale(identifier: "en_US_POSIX"), value)
         case "FROM565":
             try arity(t,1)
             try check(matches(t[1],"0x[0-9a-fA-F]{4}"))
@@ -329,10 +307,7 @@ class Converter {
         case "ANSI":
             try arity(t,1)
             let c = try color(t[1])
-            var best = 16
-            for i in 17...255 {
-                if distance(c,ansi(i)) < distance(c,ansi(best)) { best = i }
-            }
+            let best = (16...255).min { distance(c, ansi($0)) < distance(c, ansi($1)) }!
             return "\(best) \(hex(ansi(best))) \(distance(c,ansi(best)))"
         case "WEBSAFE", "INVERT":
             try arity(t,1)
@@ -345,7 +320,7 @@ class Converter {
             switch t[2] {
             case "LUMA": value = round(299*c[0]+587*c[1]+114*c[2],1000)
             case "AVERAGE": value = round(c.reduce(0,+),3)
-            case "LIGHTNESS": value = round(maximum(c)+minimum(c),2)
+            case "LIGHTNESS": value = round(c.max()!+c.min()!,2)
             case "HSP": value = root(Int64(299*c[0]*c[0]+587*c[1]*c[1]+114*c[2]*c[2]),1000)
             default: throw Invalid.command
             }
@@ -419,11 +394,8 @@ class Converter {
             return hex(fromHsl(values[0],values[1],values[2]))
         case "NEAREST":
             try arity(t,1)
-            let c = try color(t[1]), entries = table()
-            var best = entries[0]
-            for entry in entries {
-                if distance(c,entry.color) < distance(c,best.color) { best = entry }
-            }
+            let c = try color(t[1])
+            let best = table().min { distance(c, $0.color) < distance(c, $1.color) }!
             return "\(best.name) \(hex(best.color)) \(distance(c,best.color))"
         case "DISTANCE":
             try arity(t,2)
@@ -450,10 +422,7 @@ class Converter {
         case "BEST":
             try check(t.count >= 3 && t.count <= 34)
             let bg = try color(t[1]), options = try colors(t,2)
-            var best = options[0]
-            for c in options {
-                if ratio(c,bg) > ratio(best,bg) { best = c }
-            }
+            let best = options.max { ratio($0, bg) < ratio($1, bg) }!
             return "\(hex(best)) \(contrastText(best,bg))"
         case "DESCRIBE":
             try arity(t,1)
@@ -473,13 +442,7 @@ class Converter {
         case "SORT":
             try check(t.count >= 2 && t.count <= 33)
             let options = try colors(t,1)
-            let sorted = options.enumerated().sorted { a,b in
-                let first = hsl(a.element), second = hsl(b.element)
-                for i in 0..<3 {
-                    if first[i] != second[i] { return first[i] < second[i] }
-                }
-                return a.offset < b.offset
-            }.map { $0.element }
+            let sorted = options.sorted { hsl($0).lexicographicallyPrecedes(hsl($1)) }
             return colorsText(sorted)
         case "DITHER":
             try check(t.count >= 2 && t.count <= 33)
@@ -487,10 +450,7 @@ class Converter {
             var error = [0,0,0], result = [String]()
             for c in options {
                 let adjusted = (0..<3).map { clamp(c[$0]+error[$0]) }
-                var best = 0
-                for i in 1..<16 {
-                    if distance(adjusted,unpack(rgb[i])) < distance(adjusted,unpack(rgb[best])) { best = i }
-                }
+                let best = (0..<16).min { distance(adjusted, unpack(rgb[$0])) < distance(adjusted, unpack(rgb[$1])) }!
                 result.append(names[best])
                 let chosen = unpack(rgb[best])
                 error = (0..<3).map { adjusted[$0]-chosen[$0] }

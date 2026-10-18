@@ -130,17 +130,13 @@ class Garage {
   }
 
   interval(v, start, end, grace) {
-    let remaining = end - start;
-    if (this.hasPass(v.plate, end) || remaining <= grace) return [0, 0];
+    const stay = end - start;
+    if (this.hasPass(v.plate, end) || stay <= grace) return [0, 0];
     const [rate, cap] = this.rates[v.kind];
     let parking = 0;
-    let first = true;
-    while (remaining > 0) {
-      const minutes = Math.min(remaining, 1440);
-      const billable = minutes - (first ? grace : 0);
+    for (let offset = 0; offset < stay; offset += 1440) {
+      const billable = Math.min(stay - offset, 1440) - (offset === 0 ? grace : 0);
       parking += Math.min(Math.floor((billable + 29) / 30) * rate, cap);
-      remaining -= minutes;
-      first = false;
     }
     return [parking, (dateOf(end) - dateOf(start)) * this.fees.NIGHT];
   }

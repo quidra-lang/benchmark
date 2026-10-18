@@ -8,7 +8,5 @@ func main() {
 	for _, value := range values {
 		sum += value
 	}
-	mean := float64(sum) / float64(len(values))
-	hundredths := int(mean*100.0 + 0.5)
-	fmt.Printf("%d.%02d\n", hundredths/100, hundredths%100)
+	fmt.Printf("%.2f\n", float64(sum)/float64(len(values)))
 }

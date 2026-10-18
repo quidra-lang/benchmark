@@ -1,13 +1,10 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	coins := []int{1, 5, 6, 9}
-	minimum, ways := [41]int{}, [41]int{}
-	ways[0] = 1
+	minimum, ways := [41]int{}, [41]int{1}
 	for amount := 1; amount <= 40; amount++ {
 		minimum[amount] = 1000
 		for _, coin := range coins {

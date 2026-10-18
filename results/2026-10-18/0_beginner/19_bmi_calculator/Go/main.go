@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	people := []struct {
@@ -20,7 +18,6 @@ func main() {
 		} else if bmi < 30 {
 			category = "overweight"
 		}
-		q := int(bmi * 10 + 0.5)
-		fmt.Printf("%s: BMI %d.%d (%s)\n", p.name, q / 10, q % 10, category)
+		fmt.Printf("%s: BMI %.1f (%s)\n", p.name, bmi, category)
 	}
 }

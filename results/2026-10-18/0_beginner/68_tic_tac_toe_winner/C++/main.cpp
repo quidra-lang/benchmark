@@ -1,31 +1,23 @@
 #include <iostream>
 #include <string>
-#include <array>
 
 int main() {
-    const std::array<std::array<std::string, 3>, 6> boards = {{{"XXX", "OO.", "O.X"}, {"X.O", ".X.",
-        "O.."}, {"XO.", ".OX", "XO."}, {"XOX", "XOO", "OXX"}, {"X.O", "XO.", "O.X"}, {"XOX", "OXO", "OXX"}}};
-    for (int k = 0; k < 6; k++) {
-        const std::array<std::string, 3> &b = boards[k];
+    std::string boards[][3] = {{"XXX", "OO.", "O.X"}, {"X.O", ".X.", "O.."}, {"XO.", ".OX", "XO."},
+                              {"XOX", "XOO", "OXX"}, {"X.O", "XO.", "O.X"}, {"XOX", "OXO", "OXX"}};
+    int lines[][3] = {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}, {0, 3, 6},
+                      {1, 4, 7}, {2, 5, 8}, {0, 4, 8}, {2, 4, 6}};
+    for (int k = 0; k < 6; ++k) {
+        std::string cells = boards[k][0] + boards[k][1] + boards[k][2];
         char winner = 0;
-        bool empty = false;
-        for (int i = 0; i < 3; i++) {
-            for (char c : b[i])
-                if (c == '.')
-                    empty = true;
-            if (b[i][0] != '.' && b[i][0] == b[i][1] && b[i][1] == b[i][2])
-                winner = b[i][0];
-            if (b[0][i] != '.' && b[0][i] == b[1][i] && b[1][i] == b[2][i])
-                winner = b[0][i];
+        for (const auto &line : lines) {
+            char first = cells[line[0]];
+            if (first != '.' && first == cells[line[1]] && first == cells[line[2]])
+                winner = first;
         }
-        if (b[0][0] != '.' && b[0][0] == b[1][1] && b[1][1] == b[2][2])
-            winner = b[0][0];
-        if (b[0][2] != '.' && b[0][2] == b[1][1] && b[1][1] == b[2][0])
-            winner = b[0][2];
         std::cout << "board " << k + 1 << ": ";
         if (winner)
             std::cout << winner << " wins\n";
         else
-            std::cout << (empty ? "in progress" : "draw") << '\n';
+            std::cout << (cells.find('.') != std::string::npos ? "in progress" : "draw") << '\n';
     }
 }

@@ -37,8 +37,7 @@ final class Editor {
 
     func bad() -> Problem { Problem(message: "bad arguments") }
     func sub(_ s: String, _ start: Int, _ end: Int? = nil) -> String {
-        let characters = Array(s)
-        return String(characters[start..<(end ?? characters.count)])
+        String(s.dropFirst(start).prefix((end ?? s.count)-start))
     }
     func number(_ s: String) throws -> Int {
         guard (1...9).contains(s.count) && s.allSatisfy({ $0 >= "0" && $0 <= "9" }) else {
@@ -78,18 +77,16 @@ final class Editor {
         guard lines.allSatisfy({ !$0.isEmpty }) else { throw bad() }
         return lines
     }
-    func pad(_ n: Int, _ width: Int) -> String {
-        let s = String(n)
-        return String(repeating: "0",count: max(0,width-s.count))+s
-    }
     func srt(_ t: Int) -> String {
-        pad(t/3600000,2)+":"+pad(t/60000%60,2)+":"+pad(t/1000%60,2)+","+pad(t%1000,3)
+        String(format: "%02ld:%02ld:%02ld,%03ld",locale: Locale(identifier: "en_US_POSIX"),t/3600000,t/60000%60,t/1000%60,t%1000)
     }
     func ass(_ t: Int) -> String {
         let c = (t+5)/10
-        return "\(c/360000):"+pad(c/6000%60,2)+":"+pad(c/100%60,2)+"."+pad(c%100,2)
+        return String(format: "%ld:%02ld:%02ld.%02ld",locale: Locale(identifier: "en_US_POSIX"),c/360000,c/6000%60,c/100%60,c%100)
     }
-    func decimal(_ v: Int) -> String { "\(v/100)."+pad(v%100,2) }
+    func decimal(_ v: Int) -> String {
+        String(format: "%ld.%02ld",locale: Locale(identifier: "en_US_POSIX"),v/100,v%100)
+    }
     func round(_ numerator: Int, _ denominator: Int) -> Int {
         let a = denominator < 0 ? -numerator : numerator
         let b = abs(denominator)
@@ -113,35 +110,12 @@ final class Editor {
         return result
     }
     func markup(_ line: String) -> [Item] {
-        let chars = Array(line)
-        var result: [Item] = []
-        var p = 0
-        while p < chars.count {
-            let suffix = String(chars[p...])
-            var token = ["<i>","</i>","<b>","</b>","<u>","</u>"].first { suffix.hasPrefix($0) }
-            var kind = token == nil ? 0 : 1
-            var digit = 0
-            if token == nil && suffix.hasPrefix("</font>") {
-                token = "</font>"
-                kind = 2
-            }
-            if token == nil && suffix.hasPrefix("<font") && p+5 < chars.count && (chars[p+5] == " " || chars[p+5] == ">") {
-                if let end = chars[(p+5)...].firstIndex(of: ">") {
-                    token = String(chars[p...end])
-                    kind = 2
-                }
-            }
-            if token == nil && p+6 <= chars.count && suffix.hasPrefix("{\\an") &&
-                chars[p+4] >= "1" && chars[p+4] <= "9" && chars[p+5] == "}" {
-                token = String(chars[p..<(p+6)])
-                kind = 3
-                digit = Int(String(chars[p+4]))!
-            }
-            let value = token ?? String(chars[p])
-            result.append(Item(text: value,kind: kind,digit: digit))
-            p += value.count
+        line.matches(of: #/</?[ibu]>|</font>|<font(?=[ >])[^>]*>|\{\\an[1-9]\}|./#).map {
+            let text = String($0.output)
+            let kind = text.hasPrefix("{\\an") ? 3 :
+                (text.hasPrefix("<font") || text == "</font>" ? 2 : (text.count > 1 ? 1 : 0))
+            return Item(text: text,kind: kind,digit: kind == 3 ? Int(String(text.dropFirst(4).first!))! : 0)
         }
-        return result
     }
     func listing(_ p: Int, _ c: Cue) -> String {
         "\(p) \(c.index) \(srt(c.start)) \(srt(c.end)) "+c.text.joined(separator: "|")
@@ -583,17 +557,9 @@ final class Editor {
                 var c = cues[i]
                 let before = count
                 c.text = c.text.map { t in
-                    var result = ""
-                    var cursor = 0
-                    while cursor <= t.count {
-                        let suffix = sub(t,cursor)
-                        guard let range = suffix.range(of: old) else { break }
-                        let found = cursor+suffix.distance(from: suffix.startIndex,to: range.lowerBound)
-                        result += sub(t,cursor,found)+replacement
-                        cursor = found+old.count
-                        count += 1
-                    }
-                    return result+sub(t,cursor)
+                    let pieces = t.components(separatedBy: old)
+                    count += pieces.count-1
+                    return pieces.joined(separator: replacement)
                 }
                 if count > before { changed += 1 }
                 cues[i] = c

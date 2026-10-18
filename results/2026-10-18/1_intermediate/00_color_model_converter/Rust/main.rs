@@ -93,17 +93,6 @@ fn from_hwb(h: i64, w: i64, k: i64) -> Color {
     sector(h).map(|x| rounded(255 * (x * (100 - w - k) + 60 * w), 6000))
 }
 
-fn integer_root(value: i64) -> i64 {
-    let (mut low, mut high) = (0, 1);
-    while high * high <= value { high *= 2; }
-    while low + 1 < high {
-        let middle = (low + high) / 2;
-        if middle * middle <= value { low = middle; }
-        else { high = middle; }
-    }
-    low
-}
-
 fn ansi_color(index: usize) -> Color {
     const LEVELS: [i64; 6] = [0, 95, 135, 175, 215, 255];
     if index < 16 { return BUILTINS[index].1; }
@@ -292,9 +281,9 @@ fn parse_color(text: &str, registry: &[Entry]) -> Option<Color> {
     registry.iter().find(|entry| entry.name == text).map(|entry| entry.color)
 }
 
-fn table(registry: &[Entry]) -> Vec<(String, Color)> {
-    BUILTINS.iter().map(|&(name, color)| (name.to_string(), color))
-        .chain(registry.iter().map(|entry| (entry.name.clone(), entry.color))).collect()
+fn table(registry: &[Entry]) -> impl Iterator<Item = (&str, Color)> + '_ {
+    BUILTINS.iter().copied()
+        .chain(registry.iter().map(|entry| (entry.name.as_str(), entry.color)))
 }
 
 fn prepare(spec: &Spec, words: &[&str], registry: &[Entry]) -> Option<Arguments> {
@@ -388,55 +377,55 @@ const BUILTINS: [(&str, Color); 24] = [
 
 const SPECS: [Spec; 53] = [
     Spec { name: "PARSE", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "DEFINE", signature: "NC", minimum: 2, maximum: 2,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "UNDEFINE", signature: "N", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "LIST", signature: "", minimum: 0, maximum: 0,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "HSL", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "FROMHSL", signature: "III", minimum: 3, maximum: 3,
-           low: [0,0,0,0], high: [359,100,100,0], keywords: "" },
+           low: [0; 4], high: [359,100,100,0], keywords: "" },
     Spec { name: "HSV", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "FROMHSV", signature: "III", minimum: 3, maximum: 3,
-           low: [0,0,0,0], high: [359,100,100,0], keywords: "" },
+           low: [0; 4], high: [359,100,100,0], keywords: "" },
     Spec { name: "HWB", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "FROMHWB", signature: "III", minimum: 3, maximum: 3,
-           low: [0,0,0,0], high: [359,100,100,0], keywords: "" },
+           low: [0; 4], high: [359,100,100,0], keywords: "" },
     Spec { name: "CMYK", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "FROMCMYK", signature: "IIII", minimum: 4, maximum: 4,
-           low: [0,0,0,0], high: [100,100,100,100], keywords: "" },
+           low: [0; 4], high: [100,100,100,100], keywords: "" },
     Spec { name: "YCBCR", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "FROMYCBCR", signature: "III", minimum: 3, maximum: 3,
-           low: [0,0,0,0], high: [255,255,255,0], keywords: "" },
+           low: [0; 4], high: [255,255,255,0], keywords: "" },
     Spec { name: "YIQ", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "FROMYIQ", signature: "III", minimum: 3, maximum: 3,
            low: [0,-255,-255,0], high: [255,255,255,0], keywords: "" },
     Spec { name: "RGB565", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "FROM565", signature: "W", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "ANSI", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "FROMANSI", signature: "I", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [255,0,0,0], keywords: "" },
+           low: [0; 4], high: [255,0,0,0], keywords: "" },
     Spec { name: "WEBSAFE", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "GRAY", signature: "CK", minimum: 2, maximum: 2,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "LUMA|AVERAGE|LIGHTNESS|HSP" },
+           low: [0; 4], high: [0; 4], keywords: "LUMA|AVERAGE|LIGHTNESS|HSP" },
     Spec { name: "INVERT", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "MIX", signature: "CCI", minimum: 3, maximum: 3,
-           low: [0,0,0,0], high: [0,0,100,0], keywords: "" },
+           low: [0; 4], high: [0,0,100,0], keywords: "" },
     Spec { name: "MIXHSL", signature: "CCI", minimum: 3, maximum: 3,
-           low: [0,0,0,0], high: [0,0,100,0], keywords: "" },
+           low: [0; 4], high: [0,0,100,0], keywords: "" },
     Spec { name: "GRADIENT", signature: "CCI", minimum: 3, maximum: 3,
            low: [0,0,2,0], high: [0,0,16,0], keywords: "" },
     Spec { name: "TINTS", signature: "CI", minimum: 2, maximum: 2,
@@ -446,51 +435,51 @@ const SPECS: [Spec; 53] = [
     Spec { name: "TONES", signature: "CI", minimum: 2, maximum: 2,
            low: [0,1,0,0], high: [0,10,0,0], keywords: "" },
     Spec { name: "BLEND", signature: "KCC", minimum: 3, maximum: 3,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "MULTIPLY|SCREEN|OVERLAY|HARDLIGHT|SOFTLIGHT|DARKEN|LIGHTEN|DIFFERENCE|EXCLUSION|ADD|SUBTRACT|COLORDODGE|COLORBURN|HUE|SATURATION|COLOR|LUMINOSITY" },
+           low: [0; 4], high: [0; 4], keywords: "MULTIPLY|SCREEN|OVERLAY|HARDLIGHT|SOFTLIGHT|DARKEN|LIGHTEN|DIFFERENCE|EXCLUSION|ADD|SUBTRACT|COLORDODGE|COLORBURN|HUE|SATURATION|COLOR|LUMINOSITY" },
     Spec { name: "ALPHA", signature: "CICI", minimum: 4, maximum: 4,
-           low: [0,0,0,0], high: [0,100,0,100], keywords: "" },
+           low: [0; 4], high: [0,100,0,100], keywords: "" },
     Spec { name: "SIMULATE", signature: "CK", minimum: 2, maximum: 2,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "PROTANOPIA|DEUTERANOPIA|TRITANOPIA|ACHROMATOPSIA" },
+           low: [0; 4], high: [0; 4], keywords: "PROTANOPIA|DEUTERANOPIA|TRITANOPIA|ACHROMATOPSIA" },
     Spec { name: "ROTATE", signature: "CI", minimum: 2, maximum: 2,
            low: [0,-720,0,0], high: [0,720,0,0], keywords: "" },
     Spec { name: "COMPLEMENT", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "TRIADIC", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "TETRADIC", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "SPLITCOMP", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "ANALOGOUS", signature: "CII", minimum: 3, maximum: 3,
            low: [0,1,1,0], high: [0,6,60,0], keywords: "" },
     Spec { name: "LIGHTEN", signature: "CI", minimum: 2, maximum: 2,
-           low: [0,0,0,0], high: [0,100,0,0], keywords: "" },
+           low: [0; 4], high: [0,100,0,0], keywords: "" },
     Spec { name: "DARKEN", signature: "CI", minimum: 2, maximum: 2,
-           low: [0,0,0,0], high: [0,100,0,0], keywords: "" },
+           low: [0; 4], high: [0,100,0,0], keywords: "" },
     Spec { name: "SATURATE", signature: "CI", minimum: 2, maximum: 2,
-           low: [0,0,0,0], high: [0,100,0,0], keywords: "" },
+           low: [0; 4], high: [0,100,0,0], keywords: "" },
     Spec { name: "DESATURATE", signature: "CI", minimum: 2, maximum: 2,
-           low: [0,0,0,0], high: [0,100,0,0], keywords: "" },
+           low: [0; 4], high: [0,100,0,0], keywords: "" },
     Spec { name: "NEAREST", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "DISTANCE", signature: "CC", minimum: 2, maximum: 2,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "CONTRAST", signature: "CC", minimum: 2, maximum: 2,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "ACCESSIBLE", signature: "CC", minimum: 2, maximum: 2,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "BEST", signature: "*", minimum: 2, maximum: 33,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "DESCRIBE", signature: "C", minimum: 1, maximum: 1,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "PALETTE", signature: "P", minimum: 2, maximum: 33,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "KMEANS", signature: "P", minimum: 2, maximum: 33,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "SORT", signature: "*", minimum: 1, maximum: 32,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "DITHER", signature: "*", minimum: 1, maximum: 32,
-           low: [0,0,0,0], high: [0,0,0,0], keywords: "" },
+           low: [0; 4], high: [0; 4], keywords: "" },
     Spec { name: "RANDOM", signature: "II", minimum: 2, maximum: 2,
            low: [1,1,0,0], high: [999999999,16,0,0], keywords: "" },
 ];
@@ -527,9 +516,8 @@ fn run(line: &str, registry: &mut Vec<Entry>) -> Option<String> {
             output.push(hex(c));
             output.push(format!("rgb({},{},{})", c[0], c[1], c[2]));
             for name in ["HSL", "HSV", "HWB", "CMYK", "YCBCR", "YIQ"] { output.push(model(name, c)); }
-            let name = table(registry).into_iter().find(|entry| entry.1 == c)
-                .map_or("-".to_string(), |entry| entry.0);
-            output.push(name);
+            let name = table(registry).find(|entry| entry.1 == c).map_or("-", |entry| entry.0);
+            output.push(name.to_string());
         }
         "HSL" | "HSV" | "HWB" | "CMYK" | "YCBCR" | "YIQ" => output.push(model(spec.name, c)),
         "FROMHSL" => output.push(hex(from_hsl(a, b, d))),
@@ -571,7 +559,7 @@ fn run(line: &str, registry: &mut Vec<Entry>) -> Option<String> {
                 0 => rounded(299 * c[0] + 587 * c[1] + 114 * c[2], 1000),
                 1 => rounded(c[0] + c[1] + c[2], 3),
                 2 => rounded(maximum + minimum, 2),
-                _ => integer_root((299 * c[0] * c[0] + 587 * c[1] * c[1] + 114 * c[2] * c[2]) / 1000),
+                _ => ((299 * c[0] * c[0] + 587 * c[1] * c[1] + 114 * c[2] * c[2]) / 1000).isqrt(),
             };
             output.push(hex([value; 3]));
         }
@@ -635,12 +623,8 @@ fn run(line: &str, registry: &mut Vec<Entry>) -> Option<String> {
             output.push(hex(from_hsl(value[0], value[1], value[2])));
         }
         "NEAREST" => {
-            let entries = table(registry);
-            let mut best = 0;
-            for i in 1..entries.len() {
-                if distance(c, entries[i].1) < distance(c, entries[best].1) { best = i; }
-            }
-            output.push(format!("{} {} {}", entries[best].0, hex(entries[best].1), distance(c, entries[best].1)));
+            let (name, color) = table(registry).min_by_key(|entry| distance(c, entry.1)).unwrap();
+            output.push(format!("{} {} {}", name, hex(color), distance(c, color)));
         }
         "DISTANCE" => {
             let other = args.colors[1];
@@ -648,7 +632,7 @@ fn run(line: &str, registry: &mut Vec<Entry>) -> Option<String> {
             let [r, g, b] = differences;
             let weight = (1024 + c[0] + other[0]) * r * r + 2048 * g * g
                 + (1534 - c[0] - other[0]) * b * b;
-            output.push(format!("{} {}", distance(c, other), integer_root(weight / 512)));
+            output.push(format!("{} {}", distance(c, other), (weight / 512).isqrt()));
         }
         "CONTRAST" => output.push(contrast_text(c, args.colors[1])),
         "ACCESSIBLE" => {

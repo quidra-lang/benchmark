@@ -15,7 +15,10 @@ main =: 3 : 0
       if. day>monthlength do.
         day =. 1
         month =. >:month
-        if. month>12 do. month =. 1 [ year =. >:year end.
+        if. month>12 do.
+          month =. 1
+          year =. >:year
+        end.
       end.
     end.
     smoutput original,' + ',(":days),' days = ',date year,month,day

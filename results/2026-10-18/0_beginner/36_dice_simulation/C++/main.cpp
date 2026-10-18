@@ -2,8 +2,7 @@
 #include <array>
 
 int main() {
-    std::array<int, 13> counts {
-    };
+    std::array<int, 13> counts{};
     long long x = 12345;
     for (int i = 0; i < 1000; i++) {
         x = x * 48271 % 2147483647;

@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val board = listOf("MMONKENBIR", "PMTIGERJPL", "TGREJEDUZI", "SPYUTEJDEC", "WKAPSIDLBN",
         "KUVNGSBPRO", "RIBSDACBAM", "YWVAUAPKAH", "KYCGTHHESR", "OCCALAOKKR")
@@ -13,14 +9,10 @@ fun main() {
         search@ for (r in 0 until 10) {
             for (c in 0 until 10) {
                 for (d in 0 until 8) {
-                    var match = true
-                    for (k in word.indices) {
+                    val match = word.indices.all { k ->
                         val nr = r + k * dr[d]
                         val nc = c + k * dc[d]
-                        if (nr !in 0 until 10 || nc !in 0 until 10 || board[nr][nc] != word[k]) {
-                            match = false
-                            break
-                        }
+                        nr in 0 until 10 && nc in 0 until 10 && board[nr][nc] == word[k]
                     }
                     if (match) {
                         result = "($r, $c) ${directions[d]}"

@@ -1,8 +1,4 @@
-import java.util.*;
-import java.math.*;
-
 public class Main {
-
     public static void main(String[] args) {
         int[][] polygon = {{1,1},{11,2},{13,9},{9,7},{7,12},{5,6},{2,10},{3,5}};
         for (int[] point : new int[][]{{4,8},{6,4},{10,8},{7,11},{14,3},{12,8}}) {

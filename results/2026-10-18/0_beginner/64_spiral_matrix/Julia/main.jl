@@ -16,10 +16,7 @@ function main()
         column += dc
     end
     for row in eachrow(matrix)
-        for value in row
-            @printf("%3d",value)
-        end
-        println()
+        println(join(@sprintf("%3d",value) for value in row))
     end
 end
 main()

@@ -1,6 +1,3 @@
-import Foundation
-
-
 let edges = [(0,1,7), (0,2,3), (0,3,9), (1,2,2), (2,4,6), (1,3,3), (3,4,4), (3,5,5), (4,5,3), (4,6,8), (5,6,4)]
 var weight = [[Int]](repeating: [Int](repeating: 0, count: 7), count: 7)
 for (a,b,w) in edges {
@@ -11,10 +8,7 @@ var distance = [Int](repeating: Int.max, count: 7), previous = [Int](repeating: 
 distance[0] = 0
 var done = [Bool](repeating: false, count: 7)
 for _ in 0..<7 {
-    var u = -1
-    for v in 0..<7 where !done[v] {
-        if u < 0 || distance[v] < distance[u] { u = v }
-    }
+    let u = (0..<7).filter { !done[$0] }.min { distance[$0] < distance[$1] }!
     done[u] = true
     for v in 0..<7 where weight[u][v] > 0 {
         if distance[u] + weight[u][v] < distance[v] {

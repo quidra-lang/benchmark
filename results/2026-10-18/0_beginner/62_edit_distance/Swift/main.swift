@@ -1,6 +1,3 @@
-import Foundation
-
-
 let pairs = [("kitten", "sitting"), ("flaw", "lawn"), ("listen", "silent"),
     ("intention", "execution"), ("algorithm", "altruistic")]
 for (first,second) in pairs {

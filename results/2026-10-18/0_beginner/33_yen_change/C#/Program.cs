@@ -1,15 +1,17 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Globalization;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
 int[] denominations = { 10000,5000,1000,500,100,50,10,5,1 };
 foreach (int amount in new[] { 3780,15420,99999,506,48263 }) {
-    int remaining = amount, total = 0; var parts = new List<string>();
+    int remaining = amount, total = 0;
+    var parts = new List<string>();
     foreach (int face in denominations) {
-        int count = remaining / face; remaining %= face; total += count;
+        int count = remaining / face;
+        remaining %= face;
+        total += count;
         if (count > 0) parts.Add($"{face}x{count}");
     }
     Console.WriteLine($"{amount} yen: {string.Join(" ", parts)} ({total} pieces)");

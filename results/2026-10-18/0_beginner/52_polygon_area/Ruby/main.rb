@@ -8,5 +8,5 @@ polygons.each_with_index do |vertices, index|
     dx, dy = x - next_x, y - next_y
     perimeter += Math.sqrt(dx * dx + dy * dy)
   end
-  puts format('polygon %d: area=%.1f perimeter=%.3f', index + 1, cross_sum.abs / 2.0, perimeter.round(3, half: :up))
+  puts format('polygon %d: area=%.1f perimeter=%.3f', index + 1, cross_sum.abs / 2.0, perimeter)
 end

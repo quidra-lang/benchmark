@@ -1,9 +1,3 @@
-fixed =: 4 : 0
-  scale =. 10 ^ x
-  rounded =. (*y) * <. 0.5 + scale * |y
-  , (":x) 8!:2 rounded % scale
-)
-
 main =: 3 : 0
   values =. 72 85 64 90 85 58 77 85 69 93 71
   mean =. (+/values)%#values
@@ -17,10 +11,10 @@ main =: 3 : 0
     squares =. squares+difference*difference
   end.
   deviation =. %:squares%#values
-  smoutput 'mean: ',3 fixed mean
+  smoutput 'mean: ',, '3' 8!:2 mean
   smoutput 'median: ',":5{ordered
   smoutput 'mode: ',":mode
   smoutput 'range: ',":({:ordered)-{.ordered
-  smoutput 'stdev: ',3 fixed deviation
+  smoutput 'stdev: ',, '3' 8!:2 deviation
 )
 main ''

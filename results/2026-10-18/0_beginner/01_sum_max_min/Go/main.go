@@ -7,12 +7,8 @@ func main() {
 	sum, maximum, minimum := 0, values[0], values[0]
 	for _, value := range values {
 		sum += value
-		if value > maximum {
-			maximum = value
-		}
-		if value < minimum {
-			minimum = value
-		}
+		maximum = max(maximum, value)
+		minimum = min(minimum, value)
 	}
 	fmt.Printf("sum: %d\nmax: %d\nmin: %d\n", sum, maximum, minimum)
 }

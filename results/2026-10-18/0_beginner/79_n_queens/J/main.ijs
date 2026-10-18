@@ -6,13 +6,9 @@ queens =: 3 : 0
   end.
   count =. 0
   for_column. i.n do.
-    valid =. 1
-    for_previous. i.row do.
-      difference =. (previous{positions)-column
-      if. (difference=0)+.(difference=row-previous)+.(-difference)=row-previous do.
-        valid =. 0 break.
-      end.
-    end.
+    differences =. (row{.positions)-column
+    diagonals =. row-i.row
+    valid =. -. +./ (differences=0) +. (|differences)=diagonals
     if. valid do.
       positions =. column row}positions
       'found first' =. queens n;(row+1);positions;first

@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	for _, s := range []string{"688126340316", "0128469655154", "92181914514156", "177332430060552",

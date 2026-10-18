@@ -10,7 +10,7 @@ type Edge struct {
 	weight int
 }
 
-func find(parent * [8]int, v int) int {
+func find(parent *[8]int, v int) int {
 	if parent[v] != v {
 		parent[v] = find(parent, parent[v])
 	}

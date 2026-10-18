@@ -1,7 +1,4 @@
-fn dfs(v: usize,
-graph: &[[bool; 9]; 9],
-seen: &mut [bool; 9],
-order: &mut Vec<usize>) {
+fn dfs(v: usize, graph: &[[bool; 9]; 9], seen: &mut [bool; 9], order: &mut Vec<usize>) {
     seen[v] = true;
     order.push(v);
     for w in 0..9 {
@@ -13,7 +10,7 @@ order: &mut Vec<usize>) {
 
 fn main() {
     let mut graph = [[false; 9]; 9];
-    for[a, b] in [[5, 0], [3, 8], [7, 2], [1, 6], [0, 2], [5, 3], [7, 5], [6, 4], [8, 7]] {
+    for [a, b] in [[5, 0], [3, 8], [7, 2], [1, 6], [0, 2], [5, 3], [7, 5], [6, 4], [8, 7]] {
         graph[a][b] = true;
         graph[b][a] = true;
     }

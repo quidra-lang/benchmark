@@ -1,6 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
 fun dfs(v: Int, graph: Array<BooleanArray>, seen: BooleanArray, order: MutableList<Int>) {
     seen[v] = true
     order.add(v)

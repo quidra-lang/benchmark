@@ -1,8 +1,4 @@
-import java.util.*;
-import java.math.*;
-
 public class Main {
-
     public static void main(String[] args) {
         String alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         for (String text : new String[]{"Man", "Hello, World!", "", "<b>bold</b>", "a+b=c?"}) {

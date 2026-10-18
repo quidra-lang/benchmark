@@ -2,18 +2,12 @@
 #include <string>
 #include <array>
 #include <algorithm>
+#include <bitset>
 
 int main() {
     for (unsigned n : std::array<unsigned, 6>{0, 10, 255, 1000, 43981, 65535}) {
-        unsigned v = n;
-        std::string bits;
-        do {
-            bits.push_back(static_cast<char>('0' + v % 2));
-            v /= 2;
-        }
-        while (v)
-            ;
-        std::reverse(bits.begin(), bits.end());
+        std::string bits = std::bitset<16>(n).to_string();
+        bits.erase(0, std::min(bits.find('1'), bits.size() - 1));
         std::cout << std::dec << n << ": bin=" << bits << " oct=" << std::oct << n << " hex=" << std::hex
             << std::uppercase << n << '\n';
     }

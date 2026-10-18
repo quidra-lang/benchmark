@@ -7,7 +7,7 @@ const categories = [
   "flush", "full house", "four of a kind", "straight flush"
 ];
 const ranked = hands.map(hand => {
-  const cards = hand.split(" "), counts = new Map();
+  const cards = hand.split(" "), counts = new Map<number, number>();
   for (const card of cards) {
     const rank = "23456789TJQKA".indexOf(card[0]) + 2;
     counts.set(rank, (counts.get(rank) ?? 0) + 1);

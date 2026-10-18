@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdio.h>
 
 int main(void) {
@@ -7,11 +8,8 @@ int main(void) {
         char clean[128];
         int len = 0;
         for (int i = 0; phrases[k][i]; i++) {
-            char c = phrases[k][i];
-            if (c >= 'A' && c <= 'Z')
-                c = (char)(c - 'A' + 'a');
-            if (c >= 'a' && c <= 'z')
-                clean[len++] = c;
+            unsigned char c = (unsigned char)phrases[k][i];
+            if (isalpha(c)) clean[len++] = (char)tolower(c);
         }
         int yes = 1;
         for (int i = 0; i < len / 2; i++)

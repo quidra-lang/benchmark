@@ -9,7 +9,7 @@ int before(Task a, Task b) {
     return a.priority != b.priority ? a.priority < b.priority: a.order < b.order;
 }
 
-void push(Task * heap, int *size, Task task) {
+void push(Task *heap, int *size, Task task) {
     int i = (*size)++;
     while (i > 0) {
         int p = (i - 1) / 2;
@@ -20,13 +20,13 @@ void push(Task * heap, int *size, Task task) {
     }
     heap[i] = task;
 }
-Task pop(Task * heap, int *size) {
+Task pop(Task *heap, int *size) {
     Task result = heap[0], last = heap[--*size];
     if (*size) {
         int i = 0;
-        while (2 * i + 1 < * size) {
+        while (2 * i + 1 < *size) {
             int c = 2 * i + 1;
-            if (c + 1 < * size && before(heap[c + 1], heap[c]))
+            if (c + 1 < *size && before(heap[c + 1], heap[c]))
                 c++;
             if (!before(heap[c], last))
                 break;

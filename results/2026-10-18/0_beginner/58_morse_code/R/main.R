@@ -1,6 +1,7 @@
 alphabet <- strsplit("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789","",fixed=TRUE)[[1]]
 codes <- strsplit(".- -... -.-. -.. . ..-. --. .... .. .--- -.- .-.. -- -. --- .--. --.- .-. ... - ..- ...- .-- -..- -.-- --.. ----- .---- ..--- ...-- ....- ..... -.... --... ---.. ----."," ",fixed=TRUE)[[1]]
-table <- setNames(codes,alphabet); reverse_table <- setNames(alphabet,codes)
+table <- setNames(codes,alphabet)
+reverse_table <- setNames(alphabet,codes)
 message <- "MEET ME AT PIER 9 AT 1745"
 encoded <- paste(vapply(strsplit(message," ",fixed=TRUE)[[1]],function(word) paste(table[strsplit(word,"",fixed=TRUE)[[1]]],collapse=" "),character(1)),collapse=" / ")
 decoded <- paste(vapply(strsplit(encoded," / ",fixed=TRUE)[[1]],function(word) paste(reverse_table[strsplit(word," ",fixed=TRUE)[[1]]],collapse=""),character(1)),collapse=" ")

@@ -20,18 +20,15 @@ int main(void) {
         s += d * d;
     }
     int mode = sorted[0], best = 0;
+    int count = 0;
     for (int i = 0; i < 11; i++) {
-        int count = 0;
-        for (int j = 0; j < 11; j++)
-            if (sorted[j] == sorted[i])
-                count++;
+        count = i && sorted[i] == sorted[i - 1] ? count + 1 : 1;
         if (count > best) {
             best = count;
             mode = sorted[i];
         }
     }
-    int m = (int)(mean * 1000 + 0.5), sd = (int)(sqrt(s / 11.0) * 1000 + 0.5);
-    printf("mean: %d.%03d\nmedian: %d\nmode: %d\nrange: %d\nstdev: %d.%03d\n", m / 1000, m % 1000, sorted[5],
-        mode, sorted[10] - sorted[0], sd / 1000, sd % 1000);
+    printf("mean: %.3f\nmedian: %d\nmode: %d\nrange: %d\nstdev: %.3f\n",
+           mean, sorted[5], mode, sorted[10] - sorted[0], sqrt(s / 11.0));
     return 0;
 }

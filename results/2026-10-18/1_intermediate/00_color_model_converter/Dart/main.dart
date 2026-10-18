@@ -177,22 +177,12 @@ List<Box> palette(int k, List<Color> colors) {
       }
     }
     final box = boxes[selected], ranges = box.ranges();
-    var component = 0;
-    for (var j = 1; j < 3; j++) {
-      if (ranges[j] > ranges[component])
-        component = j;
-    }
-    // Stable insertion sort, including duplicate RGB values and equal channels.
-    final sorted = box.colors.toList();
-    for (var i = 1; i < sorted.length; i++) {
-      final c = sorted[i];
-      var j = i;
-      while (j > 0 && sorted[j - 1][component] > c[component]) {
-        sorted[j] = sorted[j - 1];
-        j--;
-      }
-      sorted[j] = c;
-    }
+    final component = ranges.indexOf(ranges.reduce(math.max));
+    final indexed = box.colors.indexed.toList()..sort((a, b) {
+      final order = a.$2[component].compareTo(b.$2[component]);
+      return order != 0 ? order : a.$1.compareTo(b.$1);
+    });
+    final sorted = indexed.map((entry) => entry.$2).toList();
     final middle = sorted.length ~/ 2;
     boxes.replaceRange(selected, selected + 1, [Box(sorted.sublist(0, middle)), Box(sorted.sublist(middle))]);
   }
@@ -552,26 +542,17 @@ class Engine {
     if (op == 'SORT') {
       if (a.isEmpty || a.length > 32)
         throw Invalid();
-      final colors = allColors(0);
-      int compare(Color a, Color b) {
-        final x = hsl(a), y = hsl(b);
+      final colors = allColors(0).indexed.map((entry) =>
+        (index: entry.$1, color: entry.$2, key: hsl(entry.$2))).toList();
+      colors.sort((a, b) {
         for (var j = 0; j < 3; j++) {
-          final c = x[j].compareTo(y[j]);
-          if (c != 0)
-            return c;
+          final order = a.key[j].compareTo(b.key[j]);
+          if (order != 0)
+            return order;
         }
-        return 0;
-      }
-      for (var i = 1; i < colors.length; i++) {
-        final c = colors[i];
-        var j = i;
-        while (j > 0 && compare(colors[j - 1], c) > 0) {
-          colors[j] = colors[j - 1];
-          j--;
-        }
-        colors[j] = c;
-      }
-      return colorSequence(colors);
+        return a.index.compareTo(b.index);
+      });
+      return colorSequence(colors.map((entry) => entry.color));
     }
     if (op == 'DITHER') {
       if (a.isEmpty || a.length > 32)

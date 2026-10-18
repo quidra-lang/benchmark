@@ -1,18 +1,14 @@
-fn search(n: usize,
-row: usize,
-positions: &mut [usize; 8],
-count: &mut usize,
-first: &mut [usize; 8]) {
+fn search(n: usize, row: usize, positions: &mut [usize; 8],
+          count: &mut usize, first: &mut [usize; 8]) {
     if row == n {
-        if n == 8 && * count == 0 {
-            * first = *positions;
+        if n == 8 && *count == 0 {
+            *first = *positions;
         }
-        * count += 1;
+        *count += 1;
         return;
     }
     for col in 0..n {
-        let safe = (0..row).all(|r| positions[r] != col && positions[r].abs_diff(col) != row - r);
-        if safe {
+        if (0..row).all(|r| positions[r] != col && positions[r].abs_diff(col) != row - r) {
             positions[row] = col;
             search(n, row + 1, positions, count, first);
         }
@@ -29,11 +25,7 @@ fn main() {
     }
     for r in 0..8 {
         for c in 0..8 {
-            print!("{}", if first[r] == c {
-                'Q'
-            } else {
-                '.'
-            });
+            print!("{}", if first[r] == c { 'Q' } else { '.' });
         }
         println!();
     }

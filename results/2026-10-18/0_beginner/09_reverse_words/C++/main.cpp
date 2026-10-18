@@ -4,7 +4,7 @@
 #include <vector>
 
 int main() {
-    const std::string sentence = "every program starts with a single line";
+    std::string sentence = "every program starts with a single line";
     std::cout << std::string(sentence.rbegin(), sentence.rend()) << '\n';
     std::istringstream input(sentence);
     std::vector<std::string> words;

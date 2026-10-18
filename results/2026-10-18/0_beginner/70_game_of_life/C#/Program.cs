@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
 
@@ -34,8 +33,4 @@ for (int generation = 0; generation <= 4; generation++) {
     }
     board = next;
 }
-int alive = 0;
-foreach (bool cell in board) {
-    if (cell) alive++;
-}
-Console.WriteLine($"alive: {alive}");
+Console.WriteLine($"alive: {board.Cast<bool>().Count(cell => cell)}");

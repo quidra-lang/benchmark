@@ -25,23 +25,10 @@ while (queue.Count > 1) {
 }
 var codes = new Dictionary<char,string>();
 Codes(queue.Dequeue(),"",codes);
-int bits = 0;
 foreach (char ch in frequencies.Keys.Order()) {
     string code = codes[ch];
-    bits += frequencies[ch] * code.Length;
     Console.WriteLine($"'{ch}' freq={frequencies[ch]} code={code}");
 }
-Console.WriteLine($"encoded bits: {bits}");
+Console.WriteLine($"encoded bits: {frequencies.Sum(pair => pair.Value * codes[pair.Key].Length)}");
 Console.WriteLine($"fixed 8-bit: {text.Length * 8}");
-class Node {
-    public int Weight, Minimum;
-    public char? Symbol;
-    public Node? Left, Right;
-    public Node(int weight, int minimum, char? symbol, Node? left = null, Node? right = null) {
-        Weight = weight;
-        Minimum = minimum;
-        Symbol = symbol;
-        Left = left;
-        Right = right;
-    }
-}
+record Node(int Weight, int Minimum, char? Symbol, Node? Left = null, Node? Right = null);

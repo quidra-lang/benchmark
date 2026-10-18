@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 )
 
 func main() {
@@ -17,7 +18,7 @@ func main() {
 			index = (index + k - 1) % len(people)
 			last = people[index]
 			fmt.Printf(" %d", last)
-			people = append(people[: index], people[index + 1:]...)
+			people = slices.Delete(people, index, index+1)
 		}
 		fmt.Printf("\nsurvivor: %d\n", last)
 	}

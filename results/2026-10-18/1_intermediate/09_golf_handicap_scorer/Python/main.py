@@ -110,28 +110,11 @@ class Player:
         count = len(eligible)
         if count < 3:
             return [], 0
-        if count == 3:
-            lowest, adjustment = 1, -20
-        elif count == 4:
-            lowest, adjustment = 1, -10
-        elif count == 5:
-            lowest, adjustment = 1, 0
-        elif count == 6:
-            lowest, adjustment = 2, -10
-        elif count <= 8:
-            lowest, adjustment = 2, 0
-        elif count <= 11:
-            lowest, adjustment = 3, 0
-        elif count <= 14:
-            lowest, adjustment = 4, 0
-        elif count <= 16:
-            lowest, adjustment = 5, 0
-        elif count <= 18:
-            lowest, adjustment = 6, 0
-        elif count == 19:
-            lowest, adjustment = 7, 0
-        else:
-            lowest, adjustment = 8, 0
+        lowest = next(
+            k for k, limit in enumerate((5, 8, 11, 14, 16, 18, 19, 20), 1)
+            if count <= limit
+        )
+        adjustment = -20 if count == 3 else -10 if count in (4, 6) else 0
         return sorted(eligible, key=lambda row: (row[2], -row[0]))[:lowest], adjustment
 
     def update_index(self, day):
@@ -210,15 +193,15 @@ class Event:
     def rounds(self):
         rounds = {}
         for player in self.players:
-            matching = [
+            matching = next((
                 record for record in player.rounds
                 if record.course is self.course and record.tee is self.tee and record.day == self.day
-            ]
-            if not matching:
+            ), None)
+            if matching is None:
                 raise CommandError("missing round")
-            if matching[0].handicap is None:
+            if matching.handicap is None:
                 raise CommandError("no index")
-            rounds[player.identifier] = matching[0]
+            rounds[player.identifier] = matching
         return rounds
 
 
@@ -423,7 +406,8 @@ class GolfScorer:
 
     def stats(self, arguments):
         player = self.player(arguments[0])
-        categories = dict.fromkeys(("eagles", "birdies", "pars", "bogeys", "doubles", "others", "pickups"), 0)
+        labels = ("eagles", "birdies", "pars", "bogeys", "doubles", "others")
+        categories = dict.fromkeys(labels + ("pickups",), 0)
         par_scores = {par: [] for par in (3, 4, 5)}
         complete_totals = []
         for record in player.rounds:
@@ -434,9 +418,7 @@ class GolfScorer:
                     categories["pickups"] += 1
                 elif isinstance(score, int):
                     relative = score - par
-                    category = ("eagles" if relative <= -2 else "birdies" if relative == -1 else
-                                "pars" if relative == 0 else "bogeys" if relative == 1 else
-                                "doubles" if relative == 2 else "others")
+                    category = labels[max(0, min(relative + 2, 5))]
                     categories[category] += 1
                     par_scores[par].append(score)
         parts = [

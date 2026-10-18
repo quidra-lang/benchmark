@@ -1,30 +1,7 @@
 import Foundation
 
 enum EvaluationError: Error { case failure(String) }
-func tokenize(_ text: String) -> [String] {
-    let characters = Array(text)
-    var tokens = [String](), i = 0
-    while i < characters.count {
-        let ch = characters[i]
-        if ch == " " {
-            i += 1
-            continue
-        }
-        let number = ch >= "0" && ch <= "9", name = ch >= "a" && ch <= "z"
-        var j = i + 1
-        if number || name {
-            while j < characters.count {
-                let next = characters[j]
-                let matches = number ? (next >= "0" && next <= "9") : (next >= "a" && next <= "z")
-                if !matches { break }
-                j += 1
-            }
-        }
-        tokens.append(String(characters[i..<j]))
-        i = j
-    }
-    return tokens
-}
+
 class Parser {
     let tokens: [String], variables: [String:Int]
     var position: Int
@@ -78,11 +55,12 @@ let lines = ["width = 12", "height = width - 5", "area = width * height", "(area
     "width = (width+3)*-(2-4)", "width * shift - height"]
 var variables = [String:Int]()
 for line in lines {
-    let tokens = tokenize(line), assignment = tokens.count > 1 && tokens[1] == "="
+    let tokens = line.matches(of: #/[0-9]+|[a-z]+|[^ ]/#).map { String($0.output) }
+    let assignment = tokens.count > 1 && tokens[1] == "="
     let name = assignment ? tokens[0] : nil
     do {
         let result = try Parser(tokens,assignment ? 2 : 0,variables).expression()
-        if let name = name {
+        if let name {
             variables[name] = result
             print("\(name) = \(result)")
         } else { print(result) }

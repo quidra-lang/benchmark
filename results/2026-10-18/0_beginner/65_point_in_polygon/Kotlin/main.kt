@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val polygon = listOf(1 to 1,11 to 2,13 to 9,9 to 7,7 to 12,5 to 6,2 to 10,3 to 5)
     for ((px,py) in listOf(4 to 8,6 to 4,10 to 8,7 to 11,14 to 3,12 to 8)) {

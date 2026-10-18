@@ -1,8 +1,6 @@
-import 'dart:io';
 import 'dart:math' as math;
 
 void main() {
-    final out = StringBuffer();
     var state = 42, arrival = 0, totalWait = 0, maxWait = 0;
     final free = [0, 0];
     for (var customer = 1; customer <= 20; customer++) {
@@ -14,9 +12,7 @@ void main() {
         free[teller] = end;
         totalWait += wait;
         maxWait = math.max(maxWait, wait);
-        out.writeln('customer $customer: arrive=$arrival start=$start end=$end teller=${teller+1} wait=$wait');
+        print('customer $customer: arrive=$arrival start=$start end=$end teller=${teller+1} wait=$wait');
     }
-    final hundredths = totalWait * 5;
-    out.writeln('average wait: ${hundredths~/100}.${(hundredths%100).toString().padLeft(2,'0')}\nmax wait: $maxWait\nlast departure: ${math.max(free[0],free[1])}');
-    stdout.write(out);
+    print('average wait: ${(totalWait / 20).toStringAsFixed(2)}\nmax wait: $maxWait\nlast departure: ${math.max(free[0],free[1])}');
 }

@@ -3,10 +3,8 @@
 #include <algorithm>
 
 int main() {
-    std::array<bool, 201> prime {
-    };
-    for (int n = 2; n <= 200; n++)
-        prime[n] = true;
+    std::array<bool, 201> prime{};
+    std::fill(prime.begin() + 2, prime.end(), true);
     for (int p = 2; p <= 200; p++)
         if (prime[p])
             for (int j = p * 2; j <= 200; j += p)

@@ -2,10 +2,12 @@
 $grid = ['.......','..#....','....#..','.#.....','...#.#.','.......'];
 function countPaths(array $grid, bool $obstacles): int {
     $paths = array_fill(0,count($grid),array_fill(0,strlen($grid[0]),0));
-    for ($row = 0; $row < count($grid); $row++) for ($column = 0; $column < strlen($grid[0]); $column++) {
-        if ($obstacles && $grid[$row][$column] === '#') continue;
-        if ($row === 0 && $column === 0) $paths[$row][$column] = 1;
-        else $paths[$row][$column] = ($row > 0 ? $paths[$row-1][$column] : 0)+($column > 0 ? $paths[$row][$column-1] : 0);
+    for ($row = 0; $row < count($grid); $row++) {
+        for ($column = 0; $column < strlen($grid[0]); $column++) {
+            if ($obstacles && $grid[$row][$column] === '#') continue;
+            if ($row === 0 && $column === 0) $paths[$row][$column] = 1;
+            else $paths[$row][$column] = ($row > 0 ? $paths[$row-1][$column] : 0)+($column > 0 ? $paths[$row][$column-1] : 0);
+        }
     }
     return $paths[count($grid)-1][strlen($grid[0])-1];
 }

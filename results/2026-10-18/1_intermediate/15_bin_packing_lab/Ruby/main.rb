@@ -344,7 +344,7 @@ class Lab
     cells = Array.new(height) { Array.new(width, '.') }
     placements.each do |p|
       (p.y...(p.y + p.h)).each do |y|
-        (p.x...(p.x + p.w)).each { |x| cells[y][x] = letter(p.id) }
+        cells[y].fill(letter(p.id), p.x, p.w)
       end
     end
     (height - 1).downto(0) { |y| emit(cells[y].join) }
@@ -396,7 +396,7 @@ class Lab
       x = (0..(width - r.w)).min_by { |candidate| [heights[candidate, r.w].max, candidate] }
       y = heights[x, r.w].max
       placements << Placement.new(r.id, r.w, r.h, x, y, false)
-      (x...(x + r.w)).each { |column| heights[column] = y + r.h }
+      heights.fill(y + r.h, x, r.w)
     end
     height = heights.max
     emit('SKYLINE', "height=#{height}", "util=#{area * 100 / (width * height)}")

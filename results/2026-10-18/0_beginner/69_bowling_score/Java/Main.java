@@ -1,8 +1,7 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class Main {
-
     public static void main(String[] args) {
         int[][] games = {{8,1,10,7,3,9,0,10,10,2,6,6,4,0,9,10,7,2},
             {3,4,5,2,7,1,0,6,8,1,4,4,2,3,6,2,9,0,1,5},

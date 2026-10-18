@@ -1,11 +1,7 @@
 const std = @import("std");
 
 fn solve(board: *[81]u8, placements: *u64) bool {
-    var cell: usize = 0;
-    while (cell < 81 and board[cell] != 0)
-        cell += 1;
-    if (cell == 81)
-        return true;
+    const cell = std.mem.findScalar(u8, board, 0) orelse return true;
     const r = cell / 9;
     const c = cell % 9;
     var digit: u8 = 1;

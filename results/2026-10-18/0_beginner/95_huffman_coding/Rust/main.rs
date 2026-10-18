@@ -3,11 +3,10 @@ struct Node {
     minimum: usize,
     left: Option<usize>,
     right: Option<usize>,
-    symbol: Option<usize>
+    symbol: Option<usize>,
 }
 
-fn pop(roots: &mut Vec<usize>,
-nodes: &[Node]) -> usize {
+fn pop(roots: &mut Vec<usize>, nodes: &[Node]) -> usize {
     let position = roots.iter().enumerate().min_by_key(|pair| {
         let v = *pair.1;
         (nodes[v].weight, nodes[v].minimum)
@@ -15,10 +14,7 @@ nodes: &[Node]) -> usize {
     roots.remove(position)
 }
 
-fn assign(nodes: &[Node],
-root: usize,
-prefix: String,
-codes: &mut [String]) {
+fn assign(nodes: &[Node], root: usize, prefix: String, codes: &mut [String]) {
     if let Some(symbol) = nodes[root].symbol {
         codes[symbol] = prefix;
         return;
@@ -43,7 +39,7 @@ fn main() {
                 minimum: c,
                 left: None,
                 right: None,
-                symbol: Some(c)
+                symbol: Some(c),
             });
         }
     }
@@ -54,9 +50,9 @@ fn main() {
         nodes.push(Node {
             weight: nodes[left].weight + nodes[right].weight,
             minimum: nodes[left].minimum.min(nodes[right].minimum),
-                left: Some(left),
-                right: Some(right),
-                symbol: None
+            left: Some(left),
+            right: Some(right),
+            symbol: None,
         });
     }
     let mut codes = vec![String::new(); 128];

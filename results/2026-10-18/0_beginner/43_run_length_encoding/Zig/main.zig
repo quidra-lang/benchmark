@@ -28,14 +28,12 @@ pub fn main(init: std.process.Init) !void {
         i = 0;
         while (i < elen) {
             var count: usize = 0;
-            while (i < elen and encoded[i] >= '0' and encoded[i] <= '9') : (i += 1)
+            while (i < elen and std.ascii.isDigit(encoded[i])) : (i += 1)
                 count = count * 10 + encoded[i] - '0';
             const c = encoded[i];
             i += 1;
-            for (0..count) |_| {
-                decoded[dlen] = c;
-                dlen += 1;
-            }
+            @memset(decoded[dlen..][0..count], c);
+            dlen += count;
         }
         try out.print("{s} -> {s} -> {s}\n", .{ s, encoded[0..elen], decoded[0..dlen] });
     }

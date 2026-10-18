@@ -84,23 +84,7 @@ class Player
   def counting(rows)
     n = rows.length
     return [[], 0] if n < 3
-    k = if n <= 5
-          1
-        elsif n <= 8
-          2
-        elsif n <= 11
-          3
-        elsif n <= 14
-          4
-        elsif n <= 16
-          5
-        elsif n <= 18
-          6
-        elsif n == 19
-          7
-        else
-          8
-        end
+    k = [5, 8, 11, 14, 16, 18, 19, 20].index { |limit| n <= limit } + 1
     adjustment = n == 3 ? -20 : [4, 6].include?(n) ? -10 : 0
     [rows.sort_by { |number, _, adjusted| [adjusted, -number] }.first(k), adjustment]
   end
@@ -480,7 +464,7 @@ class GolfScorer
             counts[6] += 1
           elsif score.is_a?(Integer)
             relative = score - r.course.pars[h]
-            category = relative <= -2 ? 0 : relative == -1 ? 1 : relative == 0 ? 2 : relative == 1 ? 3 : relative == 2 ? 4 : 5
+            category = (relative + 2).clamp(0, 5)
             counts[category] += 1
             par_scores[r.course.pars[h]] << score
           end

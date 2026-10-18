@@ -45,6 +45,12 @@ final class Converter {
     let rows = ["a", "ka", "sa", "ta", "na", "ha", "ma", "ya", "ra", "wa", "ga", "za", "da", "ba", "pa"]
     let gojuon = "a i u e o ka ki ku ke ko sa si su se so ta ti tu te to na ni nu ne no ha hi hu he ho ma mi mu me mo ya yu yo ra ri ru re ro wa wi we wo N"
     let iroha = "i ro ha ni ho he to ti ri nu ru wo wa ka yo ta re so tu ne na ra mu u wi no o ku ya ma ke hu ko e te a sa ki yu me mi si we hi mo se su N"
+    let counts = [
+            "CONVERT": 2, "NORMALIZE": 0, "REVERSE": 1, "VALID": 1, "DETECT": 0,
+            "DIFF": 2, "SAME": 2, "MORAE": 1, "SYLLABLES": 1, "ROW": 1,
+            "STATS": 1, "SORT": 1, "INDEX": 1, "FIND": 2, "HAIKU": 1,
+            "KAIBUN": 1, "SHIRITORI": 1
+        ]
     var table: [Meta] = []
     var metadata: [String: Meta] = [:]
     var readers: [String: [String: String]] = [:]
@@ -111,8 +117,7 @@ final class Converter {
     }
 
     func slice(_ text: String, _ start: Int, _ end: Int? = nil) -> String {
-        let characters = Array(text)
-        return String(characters[start..<(end ?? characters.count)])
+        String(text.dropFirst(start).prefix((end ?? text.count) - start))
     }
 
     func devoice(_ id: String) -> String {
@@ -248,22 +253,9 @@ final class Converter {
     }
 
     func scan(_ text: String) -> [Word] {
-        let characters = Array(text)
-        var result: [Word] = []
-        var position = 0
-        while position < characters.count {
-            if letter(characters[position]) || characters[position] == "'" || characters[position] == "-" {
-                let start = position
-                repeat {
-                    position += 1
-                } while position < characters.count &&
-                    (letter(characters[position]) || characters[position] == "'" || characters[position] == "-")
-                result.append(Word(text: String(characters[start..<position]), start: start))
-            } else {
-                position += 1
-            }
+        text.matches(of: #/[A-Za-z'-]+/#).map {
+            Word(text: String($0.output), start: text.distance(from: text.startIndex, to: $0.range.lowerBound))
         }
-        return result
     }
 
     func pattern(_ text: String) -> Int {
@@ -401,15 +393,6 @@ final class Converter {
         return result
     }
 
-    func compare(_ first: [Int], _ second: [Int]) -> Int {
-        for index in 0..<min(first.count, second.count) {
-            if first[index] != second[index] {
-                return first[index] < second[index] ? -1 : 1
-            }
-        }
-        return first.count == second.count ? 0 : (first.count < second.count ? -1 : 1)
-    }
-
     func sorted(_ words: [Word]) -> [Word] {
         let bases = (orderSetting == "GOJUON" ? gojuon : iroha).split(separator: " ").map(String.init)
         let ranks = Dictionary(uniqueKeysWithValues: bases.enumerated().map { ($0.element, $0.offset) })
@@ -422,17 +405,9 @@ final class Converter {
                 word.morae.map { $0.id == "L" ? 1 : 0 }
             ]
         }
-        return words.sorted { first, second in
-            let left = key(first)
-            let right = key(second)
-            for index in 0..<4 {
-                let difference = compare(left[index], right[index])
-                if difference != 0 {
-                    return difference < 0
-                }
-            }
-            return first.start < second.start
-        }
+        return words.map { (word: $0, key: key($0)) }.sorted {
+            $0.key.lexicographicallyPrecedes($1.key) { $0.lexicographicallyPrecedes($1) }
+        }.map { $0.word }
     }
 
     func patternMorae(_ pattern: String, _ system: String) throws -> [String] {
@@ -504,12 +479,6 @@ final class Converter {
 
     func execute(_ line: String) throws -> String {
         let command = String(line.split(separator: " ", maxSplits: 1)[0])
-        let counts = [
-            "CONVERT": 2, "NORMALIZE": 0, "REVERSE": 1, "VALID": 1, "DETECT": 0,
-            "DIFF": 2, "SAME": 2, "MORAE": 1, "SYLLABLES": 1, "ROW": 1,
-            "STATS": 1, "SORT": 1, "INDEX": 1, "FIND": 2, "HAIKU": 1,
-            "KAIBUN": 1, "SHIRITORI": 1
-        ]
         guard counts[command] != nil || command == "SET" || command == "TABLE" else {
             throw Problem.message("unknown command " + command)
         }
@@ -710,48 +679,19 @@ final class Converter {
             }
             return result.joined(separator: ", ")
         case "STATS":
-            var rowCounts: [String: Int] = [:]
-            var count = 0
-            var voiced = 0
-            var semivoiced = 0
-            var contracted = 0
-            var n = 0
-            var q = 0
-            var l = 0
-            for word in words {
-                for mora in word.morae {
-                    count += 1
-                    if let meta = metadata[mora.id] {
-                        rowCounts[baseRow(meta.row), default: 0] += 1
-                        if voice(meta.row) == 1 {
-                            voiced += 1
-                        }
-                        if voice(meta.row) == 2 {
-                            semivoiced += 1
-                        }
-                        if meta.contracted {
-                            contracted += 1
-                        }
-                    } else {
-                        if mora.id == "N" {
-                            n += 1
-                        }
-                        if mora.id == "Q" {
-                            q += 1
-                        }
-                        if mora.id == "L" {
-                            l += 1
-                        }
-                    }
-                }
-            }
-            var result = ["morae=\(count)"]
-            for row in rows.prefix(10) {
-                if let value = rowCounts[row] {
-                    result.append(row + "=\(value)")
-                }
-            }
-            result += ["voiced=\(voiced)", "semivoiced=\(semivoiced)", "contracted=\(contracted)", "N=\(n)", "Q=\(q)", "L=\(l)"]
+            let morae = words.flatMap { $0.morae }
+            let regular = morae.compactMap { metadata[$0.id] }
+            let rowCounts = Dictionary(grouping: regular, by: { baseRow($0.row) }).mapValues { $0.count }
+            var result = ["morae=\(morae.count)"]
+            result += rows.prefix(10).compactMap { row in rowCounts[row].map { row + "=\($0)" } }
+            result += [
+                "voiced=\(regular.filter { voice($0.row) == 1 }.count)",
+                "semivoiced=\(regular.filter { voice($0.row) == 2 }.count)",
+                "contracted=\(regular.filter { $0.contracted }.count)",
+                "N=\(morae.filter { $0.id == "N" }.count)",
+                "Q=\(morae.filter { $0.id == "Q" }.count)",
+                "L=\(morae.filter { $0.id == "L" }.count)"
+            ]
             return result.joined(separator: " ")
         case "SORT", "INDEX":
             let ordered = sorted(words)
@@ -800,13 +740,12 @@ final class Converter {
                     return prefix + " must start with " + spelling(system, previous)
                 }
                 let key = ids(word).joined(separator: ".")
-                if seen.contains(key) {
+                if !seen.insert(key).inserted {
                     return prefix + " is repeated"
                 }
                 if tail == "N" {
                     return prefix + " ends with N"
                 }
-                seen.insert(key)
                 previous = tail
             }
             return "OK \(words.count)"

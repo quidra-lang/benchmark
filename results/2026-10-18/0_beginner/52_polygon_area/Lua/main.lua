@@ -7,5 +7,5 @@ for number,vertices in ipairs(polygons) do
         local dx,dy = point[1]-following[1],point[2]-following[2]
         perimeter = perimeter + math.sqrt(dx*dx+dy*dy)
     end
-    io.write(string.format("polygon %d: area=%.1f perimeter=%.3f\n",number,math.abs(twice_area)/2,math.floor(perimeter*1000+0.5)/1000))
+    io.write(string.format("polygon %d: area=%.1f perimeter=%.3f\n",number,math.abs(twice_area)/2,perimeter))
 end

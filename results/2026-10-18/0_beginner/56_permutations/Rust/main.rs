@@ -1,6 +1,6 @@
-fn search(p: &mut String, used: &mut[bool; 4], count: &mut i32) {
+fn search(p: &mut String, used: &mut [bool; 4], count: &mut i32) {
     if p.len() == 4 {
-        * count += 1;
+        *count += 1;
         println!("{}: {}", count, p);
         return;
     }

@@ -16,9 +16,7 @@ floor_ratio =: 4 : 0
   <.(x:x)%x:y
 )
 power =: 4 : 0
-  result =. 1
-  for_k. i.y do. result =. x*result end.
-  result
+  (x:x)^y
 )
 char_value =: 4 : 0
   if. 1~:#y do. _1 return. end.
@@ -111,15 +109,6 @@ point_cell =: 3 : 0
   cy =. (h-1)<.((lat+90000000)*h) floor_ratio 180000000
   sys,p,cx,cy
 )
-radix_digits =: 4 : 0
-  value =. x
-  result =. (#y)$0
-  for_k. |.i.#y do.
-    result =. ((k{y)|value) k}result
-    value =. value floor_ratio k{y
-  end.
-  result
-)
 encode =: 3 : 0
   'sys p cx cy' =. y
   if. sys=0 do.
@@ -162,8 +151,8 @@ encode =: 3 : 0
       dx =. cx floor_ratio 4
       dy =. cy floor_ratio 5
     end.
-    xd =. dx radix_digits count{.rx
-    yd =. dy radix_digits count{.ry
+    xd =. (count{.rx) #: dx
+    yd =. (count{.ry) #: dy
     result =. ''
     for_k. i.count do.
       alphabet =. k{::alphabets
@@ -215,8 +204,8 @@ encode =: 3 : 0
   u =. cx-280*scale
   v =. cy-135*scale
   if. (u<0)+.(u>:80*scale)+.(v<0)+.v>:100*scale do. '-' return. end.
-  xd =. u radix_digits (k+1){.80 8 10 2 2 2
-  yd =. v radix_digits (k+1){.100 8 10 2 2 2
+  xd =. ((k+1){.80 8 10 2 2 2) #: u
+  yd =. ((k+1){.100 8 10 2 2 2) #: v
   result =. (2 padded 0{yd),2 padded 0{xd
   for_j. 1+i.k do.
     if. j<3 do. result =. result,(number j{yd),number j{xd
@@ -433,19 +422,9 @@ compact =: 3 : 0
       end.
     end.
   end.
-  for_k. 1+i.0>.(#current)-1 do.
-    cell =. k{::current
-    position =. k
-    while. position>0 do.
-      other =. (position-1){::current
-      before =. (1{other)<1{cell
-      if. (1{other)=1{cell do. before =. ((3{other)>3{cell)+.(((3{other)=3{cell)*.(2{other)<:2{cell) end.
-      if. before do. break. end.
-      current =. ((position-1){current) position}current
-      position =. position-1
-    end.
-    current =. (<cell) position}current
-  end.
+  coordinates =. >current
+  keys =. (1{"1 coordinates),.(-3{"1 coordinates),.2{"1 coordinates
+  current =. (/:keys){current
   ' ' join encode&.>current
 )
 other_system =: 3 : 0

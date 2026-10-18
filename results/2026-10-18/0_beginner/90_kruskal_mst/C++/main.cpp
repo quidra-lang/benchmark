@@ -2,6 +2,7 @@
 #include <vector>
 #include <array>
 #include <algorithm>
+#include <numeric>
 
 struct Edge {
     char a, b;
@@ -20,9 +21,8 @@ int main() {
     std::sort(edges.begin(), edges.end(), [](const Edge &a, const Edge &b) {
         return a.weight < b.weight;
     });
-    std::array<int, 8> parent {};
-    for (int i = 0; i < 8; i++)
-        parent[i] = i;
+    std::array<int, 8> parent;
+    std::iota(parent.begin(), parent.end(), 0);
     int accepted = 0, total = 0, skipped = 0;
     for (const Edge &e : edges) {
         if (accepted == 7)

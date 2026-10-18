@@ -63,18 +63,9 @@ function involved(expense, name) {
 }
 
 function net(expense, name) {
-    let value = 0;
-    expense.payers.forEach((person, i) => {
-        if (person.name === name) {
-            value += expense.contributions[i];
-        }
-    });
-    expense.participants.forEach((person, i) => {
-        if (person.name === name) {
-            value -= expense.shares[i];
-        }
-    });
-    return value;
+    const paid = expense.payers.reduce((sum, person, i) => sum + (person.name === name ? expense.contributions[i] : 0), 0);
+    const share = expense.participants.reduce((sum, person, i) => sum + (person.name === name ? expense.shares[i] : 0), 0);
+    return paid - share;
 }
 
 function chronological(a, b) {
@@ -185,28 +176,19 @@ class Splitter {
             }
         }
         const a = converted.amount;
-        const weights = participants.map(person => person.value);
-        const sum = weights.reduce((x, y) => x + y, 0);
+        const sum = participants.reduce((sum, person) => sum + person.value, 0);
         if ((mode === "EXACT" && sum !== a) || (mode === "PERCENT" && sum !== 10000) ||
             (mode === "SHARES" && sum === 0) || (mode === "ADJUST" && sum > a)) {
             fail("splits do not add up");
         }
-        let portions;
-        if (mode === "EQUAL") {
-            portions = equal(a, participants.length);
-        } else if (mode === "EXACT") {
-            portions = weights;
-        } else if (mode === "ADJUST") {
-            portions = equal(a - sum, participants.length).map((value, i) => value + weights[i]);
-        } else {
-            portions = distribute(a, weights);
-        }
-        return {
+        const expense = {
             id, day: previous?.day ?? this.day, record: previous?.record ?? 0,
             ...converted, category, mode, payers: [{ name: payer, value: a }], participants,
-            shares: distribute(converted.total, portions), contributions: [converted.total],
+            shares: [], contributions: [converted.total],
             interval: previous?.interval ?? 0, next: previous?.next ?? 0, copies: previous?.copies ?? 0
         };
+        expense.shares = this.originalShares(expense, expense.total);
+        return expense;
     }
 
     balances() {
@@ -240,9 +222,9 @@ class Splitter {
             result.set(key, (result.get(key) ?? 0) + value);
         };
         for (const expense of this.expenses) {
-            const names = this.names().filter(name => involved(expense, name));
-            const borrowers = names.map(name => ({ name, value: net(expense, name) })).filter(person => person.value < 0);
-            const lenders = names.map(name => ({ name, value: net(expense, name) })).filter(person => person.value > 0);
+            const people = this.names().filter(name => involved(expense, name)).map(name => ({ name, value: net(expense, name) }));
+            const borrowers = people.filter(person => person.value < 0);
+            const lenders = people.filter(person => person.value > 0);
             let i = 0;
             let j = 0;
             while (i < borrowers.length && j < lenders.length) {
@@ -278,7 +260,7 @@ class Splitter {
         const sums = new Array(full + 1).fill(0);
         for (let mask = 1; mask <= full; mask++) {
             const bit = mask & -mask;
-            const index = names.findIndex((_, i) => bit === (1 << i));
+            const index = 31 - Math.clz32(bit);
             sums[mask] = sums[mask ^ bit] + balances.get(names[index]);
         }
         const memo = new Map([[0, 0]]);
@@ -589,14 +571,7 @@ class Splitter {
             output.push("  count " + selected.length + " total " + money(selected.reduce((sum, expense) => sum + expense.total, 0)));
         } else if (name === "PERIODS") {
             const k = Number(args[0]);
-            const groups = new Map();
-            for (const expense of this.expenses) {
-                const index = ratio(expense.day - 1, k);
-                if (!groups.has(index)) {
-                    groups.set(index, []);
-                }
-                groups.get(index).push(expense);
-            }
+            const groups = Map.groupBy(this.expenses, expense => ratio(expense.day - 1, k));
             output.push("PERIODS " + k);
             for (const index of [...groups.keys()].sort((a, b) => a - b)) {
                 const group = groups.get(index);

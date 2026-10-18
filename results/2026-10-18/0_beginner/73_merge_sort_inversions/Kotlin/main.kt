@@ -1,6 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
 fun mergeSort(values: IntArray, l: Int, r: Int): Int {
     if (l == r) return 0
     val m = (l + r) / 2

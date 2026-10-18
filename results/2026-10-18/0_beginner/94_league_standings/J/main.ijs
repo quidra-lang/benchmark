@@ -27,7 +27,10 @@ main =: 3 : 0
     else.
       winner =. home
       loser =. away
-      if. second>first do. winner =. away [ loser =. home end.
+      if. second>first do.
+        winner =. away
+        loser =. home
+      end.
       wins =. (>:winner{wins) winner}wins
       losses =. (>:loser{losses) loser}losses
       points =. (3+winner{points) winner}points

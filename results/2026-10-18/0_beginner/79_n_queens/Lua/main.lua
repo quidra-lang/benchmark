@@ -4,7 +4,7 @@ local function solve_queens(n)
         if row == n then
             solutions = solutions+1
             if #first == 0 then
-                for i = 1,n do first[i] = columns[i] end
+                first = {table.unpack(columns)}
             end
             return
         end

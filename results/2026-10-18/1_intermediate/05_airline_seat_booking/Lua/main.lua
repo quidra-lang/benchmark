@@ -9,7 +9,7 @@ local function words(text, pattern)
     return values
 end
 local function append(target, items)
-    for _, item in ipairs(items) do target[#target + 1] = item end
+    table.move(items, 1, #items, #target + 1, target)
 end
 local function copy_set(values)
     local result = {}
@@ -188,8 +188,7 @@ local function execute(line)
     if command == 'AIRCRAFT' then
         definition = {id = t[2], base = tonumber(t[3]), limit = tonumber(t[4]), cabins = {}, seats = {}, exits = {}, blocked = {}}
     elseif command == 'CABIN' then
-        local class, blocks = t[2], {}
-        for index = 5, #t do blocks[#blocks + 1] = t[index] end
+        local class, blocks = t[2], {table.unpack(t, 5)}
         local c = {from = tonumber(t[3]), to = tonumber(t[4]), blocks = blocks, seats = {}}
         for row = c.from, c.to do
             for b, block in ipairs(blocks) do
@@ -544,8 +543,7 @@ local function execute(line)
             if command == 'MANIFEST' then
                 table.sort(seated, function(a, b) return seat_less(f, a, b) end)
                 emit('MANIFEST ' .. f.id .. ' seated ' .. #seated .. ' unassigned ' .. #unassigned .. ' infants ' .. infants)
-                local ids = {}
-                append(ids, seated)
+                local ids = {table.unpack(seated)}
                 append(ids, unassigned)
                 for _, id in ipairs(ids) do
                     local p = people[id]

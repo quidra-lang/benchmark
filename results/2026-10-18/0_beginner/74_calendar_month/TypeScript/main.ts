@@ -12,13 +12,11 @@ months.forEach(([year, month], index) => {
   const lengths = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   console.log(`${names[month - 1]} ${year}`);
   console.log("Su Mo Tu We Th Fr Sa");
-  let week = Array(weekday).fill("  ");
-  for (let day = 1; day <= lengths[month - 1]; day++) {
-    week.push(String(day).padStart(2, " "));
-    if (week.length === 7) {
-      console.log(week.join(" "));
-      week = [];
-    }
+  const fields = [
+    ...Array(weekday).fill("  "),
+    ...Array.from({length: lengths[month - 1]}, (_, i) => String(i + 1).padStart(2))
+  ];
+  for (let start = 0; start < fields.length; start += 7) {
+    console.log(fields.slice(start, start + 7).join(" "));
   }
-  if (week.length > 0) console.log(week.join(" "));
 });

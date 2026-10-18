@@ -11,10 +11,10 @@ typedef struct {
     char tokens[128][32];
     int count, position;
     char error[128];
-    Variables * variables;
+    Variables *variables;
 } Parser;
-long long sum(Parser * p);
-void tokenize(Parser * p, const char *line) {
+long long sum(Parser *p);
+void tokenize(Parser *p, const char *line) {
     p->count = 0;
     p->position = 0;
     p->error[0] = 0;
@@ -35,7 +35,7 @@ void tokenize(Parser * p, const char *line) {
         p->tokens[p->count++][length] = 0;
     }
 }
-long long unary(Parser * p) {
+long long unary(Parser *p) {
     const char *token = p->tokens[p->position++];
     if (strcmp(token, "-") == 0)
         return -unary(p);
@@ -53,7 +53,7 @@ long long unary(Parser * p) {
     snprintf(p->error, sizeof p->error, "undefined variable %s", token);
     return 0;
 }
-long long product(Parser * p) {
+long long product(Parser *p) {
     long long value = unary(p);
     while (!p->error[0] && p->position < p->count && (strcmp(p->tokens[p->position], "*") == 0 || strcmp(p->tokens[p->position],
         "/") == 0)) {
@@ -69,7 +69,7 @@ long long product(Parser * p) {
     }
     return value;
 }
-long long sum(Parser * p) {
+long long sum(Parser *p) {
     long long value = product(p);
     while (!p->error[0] && p->position < p->count && (strcmp(p->tokens[p->position], "+") == 0 || strcmp(p->tokens[p->position],
         "-") == 0)) {
@@ -88,7 +88,7 @@ int main(void) {
         "width * shift - height"};
     Variables variables = {0};
     for (int line = 0; line < 9; line++) {
-        Parser p = {0};
+        Parser p;
         p.variables = &variables;
         tokenize(&p, lines[line]);
         int assignment = p.count > 1 && strcmp(p.tokens[1], "=") == 0;

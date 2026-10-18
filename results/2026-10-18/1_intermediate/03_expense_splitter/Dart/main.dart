@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 class LedgerError implements Exception {
   final String message;
@@ -50,10 +51,10 @@ class Expense {
       this.mode, this.payers, this.participants, this.total, this.contributions, this.shares);
   bool includes(String name) => payers.any((e) => e.name == name) || participants.any((e) => e.name == name);
   int net(String name) {
-    var result = 0;
-    for (var i = 0; i < payers.length; i++) if (payers[i].name == name) result += contributions[i];
-    for (var i = 0; i < participants.length; i++) if (participants[i].name == name) result -= shares[i];
-    return result;
+    final payer = payers.indexWhere((e) => e.name == name);
+    final participant = participants.indexWhere((e) => e.name == name);
+    return (payer < 0 ? 0 : contributions[payer]) -
+        (participant < 0 ? 0 : shares[participant]);
   }
   String get note => currency.isEmpty ? '' : ' [${money(original)} $currency]';
 }
@@ -70,7 +71,9 @@ class Ledger {
   final used = <String>{}, expenses = <Expense>[], settlements = <Settlement>[];
   List<String> names([bool activeOnly = false]) =>
       (members.keys.where((n) => !activeOnly || members[n]!.active).toList()..sort());
-  void registered(String name) { if (!members.containsKey(name)) fail('unknown member $name'); }
+  void registered(String name) {
+    if (!members.containsKey(name)) fail('unknown member $name');
+  }
   void active(String name) {
     registered(name);
     if (!members[name]!.active) fail('inactive member $name');
@@ -122,14 +125,23 @@ class Ledger {
         mode == 'SHARES' && sum < 1 || mode == 'ADJUST' && sum > parsed.$1) fail('splits do not add up');
     final e = Expense(id, old?.day ?? day, old?.serial ?? serial + 1, parsed.$1, parsed.$2,
         args[4], mode, [Entry(payer, parsed.$1)], participants, total, [], []);
-    if (old != null) { e.interval = old.interval; e.nextDay = old.nextDay; e.copies = old.copies; }
+    if (old != null) {
+      e.interval = old.interval;
+      e.nextDay = old.nextDay;
+      e.copies = old.copies;
+    }
     compute(e);
     return e;
   }
   Map<String, int> balances() {
     final result = {for (final n in names()) n: 0};
     for (final e in expenses) {
-      for (final name in result.keys) result[name] = result[name]! + e.net(name);
+      for (final payer in e.payers.indexed) {
+        result[payer.$2.name] = result[payer.$2.name]! + e.contributions[payer.$1];
+      }
+      for (final participant in e.participants.indexed) {
+        result[participant.$2.name] = result[participant.$2.name]! - e.shares[participant.$1];
+      }
     }
     for (final s in settlements) {
       result[s.from] = result[s.from]! + s.total;
@@ -145,8 +157,10 @@ class Ledger {
       final lenders = [for (var i = 0; i < ns.length; i++) if (net[i] > 0) i];
       var b = 0, l = 0;
       while (b < borrowers.length && l < lenders.length) {
-        final x = borrowers[b], y = lenders[l], transfer = -net[x] < net[y] ? -net[x] : net[y];
-        result[x][y] += transfer; net[x] += transfer; net[y] -= transfer;
+        final x = borrowers[b], y = lenders[l], transfer = math.min(-net[x], net[y]);
+        result[x][y] += transfer;
+        net[x] += transfer;
+        net[y] -= transfer;
         if (net[x] == 0) b++;
         if (net[y] == 0) l++;
       }
@@ -157,7 +171,10 @@ class Ledger {
   int spent(String category) => expenses.where((e) => e.category == category).fold(0, (s, e) => s + e.total);
   void warning(StringBuffer out, String category) {
     final budget = budgets[category];
-    if (budget != null && spent(category) > budget) out.writeln('  WARNING $category over budget by ${money(spent(category) - budget)}');
+    if (budget == null) return;
+    final total = spent(category);
+    if (total > budget)
+      out.writeln('  WARNING $category over budget by ${money(total - budget)}');
   }
   List<Expense> chronological(Iterable<Expense> values) => values.toList()..sort((a, b) {
     final cmp = a.day.compareTo(b.day);
@@ -171,9 +188,10 @@ class Ledger {
         if (balance[n]! < balance[sender]!) sender = n;
         if (balance[n]! > balance[receiver]!) receiver = n;
       }
-      final value = -balance[sender]! < balance[receiver]! ? -balance[sender]! : balance[receiver]!;
+      final value = math.min(-balance[sender]!, balance[receiver]!);
       result.add((sender, receiver, value));
-      balance[sender] = balance[sender]! + value; balance[receiver] = balance[receiver]! - value;
+      balance[sender] = balance[sender]! + value;
+      balance[receiver] = balance[receiver]! - value;
     }
     return result;
   }
@@ -185,21 +203,24 @@ class Ledger {
         if (target <= day) fail('invalid day ${a[1]}');
         out.writeln('DAY $target');
         while (true) {
-          final templates = expenses.where((e) => e.interval > 0 && e.nextDay <= target).toList();
+          final templates = expenses.where((e) => e.interval > 0 && e.nextDay <= target);
           if (templates.isEmpty) break;
-          templates.sort((x, y) {
-            final cmp = x.nextDay.compareTo(y.nextDay);
-            return cmp != 0 ? cmp : x.serial.compareTo(y.serial);
-          });
-          final e = templates.first;
+          final e = templates.reduce((x, y) =>
+            x.nextDay < y.nextDay || x.nextDay == y.nextDay && x.serial < y.serial ? x : y);
           if ([...e.payers, ...e.participants].any((p) => !members[p.name]!.active) || convert(e.original, e.currency) == 0) {
-            e.interval = 0; out.writeln('  CANCEL ${e.id}'); continue;
+            e.interval = 0;
+            out.writeln('  CANCEL ${e.id}');
+            continue;
           }
           e.copies++;
           final copy = Expense('${e.id}#${e.copies + 1}', e.nextDay, ++serial, e.original,
               e.currency, e.category, e.mode, List.of(e.payers), List.of(e.participants), 0, [], []);
-          compute(copy); expenses.add(copy); used.add(copy.id); e.nextDay += e.interval;
-          out.writeln('  RECUR ${copy.id} ${money(copy.total)}'); warning(out, copy.category);
+          compute(copy);
+          expenses.add(copy);
+          used.add(copy.id);
+          e.nextDay += e.interval;
+          out.writeln('  RECUR ${copy.id} ${money(copy.total)}');
+          warning(out, copy.category);
         }
         day = target;
       case 'MEMBER':
@@ -210,7 +231,8 @@ class Ledger {
       case 'LEAVE':
         active(a[1]);
         if (balances()[a[1]] != 0) fail('member has a balance ${a[1]}');
-        members[a[1]]!.active = false; members[a[1]]!.statusDay = day;
+        members[a[1]]!.active = false;
+        members[a[1]]!.statusDay = day;
         out.writeln('LEAVE ${a[1]}');
       case 'CURRENCY':
         final value = int.parse(a[2]), old = rates[a[1]];
@@ -218,15 +240,24 @@ class Ledger {
         out.writeln('CURRENCY ${a[1]} ${rateText(value)}${old == null ? '' : ' was ${rateText(old)}'}');
       case 'EXPENSE' || 'EDIT':
         Expense? old;
-        if (op == 'EXPENSE') { if (used.contains(a[1])) fail('duplicate id ${a[1]}'); }
-        else { old = expense(a[1]); unfrozen(old); }
+        if (op == 'EXPENSE') {
+          if (used.contains(a[1])) fail('duplicate id ${a[1]}');
+        } else {
+          old = expense(a[1]);
+          unfrozen(old);
+        }
         final e = build(a, old);
-        if (old == null) { serial++; expenses.add(e); used.add(e.id); }
+        if (old == null) {
+          serial++;
+          expenses.add(e);
+          used.add(e.id);
+        }
         else expenses[expenses.indexOf(old)] = e;
         out.writeln('$op ${e.id} ${money(e.total)}${e.note} = ${[for (var i = 0; i < e.participants.length; i++) '${e.participants[i].name} ${money(e.shares[i])}'].join(' + ')}');
         warning(out, e.category);
       case 'PAYERS':
-        final e = expense(a[1]); unfrozen(e);
+        final e = expense(a[1]);
+        unfrozen(e);
         final payers = <Entry>[], seen = <String>{};
         for (final token in a.skip(2)) {
           final pair = token.split(':'), name = pair[0];
@@ -235,17 +266,25 @@ class Ledger {
           payers.add(Entry(name, amount(pair[1])));
         }
         if (payers.fold(0, (sum, p) => sum + p.value) != e.original) fail('payers do not add up');
-        e.payers = payers; e.contributions = distribute(e.total, payers.map((p) => p.value).toList());
+        e.payers = payers;
+        e.contributions = distribute(e.total, payers.map((p) => p.value).toList());
         out.writeln('PAYERS ${e.id} ${money(e.total)}${e.note} = ${[for (var i = 0; i < payers.length; i++) '${payers[i].name} ${money(e.contributions[i])}'].join(' + ')}');
       case 'DELETE':
-        final e = expense(a[1]); unfrozen(e); expenses.remove(e);
+        final e = expense(a[1]);
+        unfrozen(e);
+        expenses.remove(e);
         out.writeln('DELETE ${e.id}');
       case 'RECURRING':
-        final e = expense(a[1]); e.interval = int.parse(a[2]);
+        final e = expense(a[1]);
+        e.interval = int.parse(a[2]);
         if (e.interval == 0) out.writeln('RECURRING ${e.id} stopped');
-        else { e.nextDay = day + e.interval; out.writeln('RECURRING ${e.id} interval ${e.interval} next ${e.nextDay}'); }
+        else {
+          e.nextDay = day + e.interval;
+          out.writeln('RECURRING ${e.id} interval ${e.interval} next ${e.nextDay}');
+        }
       case 'SETTLE':
-        active(a[1]); active(a[2]);
+        active(a[1]);
+        active(a[2]);
         if (a[1] == a[2]) fail('same member ${a[1]}');
         final parsed = spec(a[3]), total = convert(parsed.$1, parsed.$2);
         if (parsed.$1 == 0 || total == 0) fail('invalid amount');
@@ -262,7 +301,8 @@ class Ledger {
         if (ns.isEmpty) out.writeln('  (none)');
         for (final name in ns) out.writeln('  $name ${signedMoney(balance[name]!)}');
       case 'OWES':
-        registered(a[1]); out.writeln('OWES ${a[1]}');
+        registered(a[1]);
+        out.writeln('OWES ${a[1]}');
         final ns = names(), matrix = debts(ns), i = ns.indexOf(a[1]);
         var count = 0;
         for (var j = 0; j < ns.length; j++) {
@@ -273,21 +313,28 @@ class Ledger {
         }
         if (count == 0) out.writeln('  (none)');
       case 'HISTORY':
-        registered(a[1]); out.writeln('HISTORY ${a[1]}');
+        registered(a[1]);
+        out.writeln('HISTORY ${a[1]}');
         final records = <(int, int, String, int)>[];
         for (final e in expenses.where((e) => e.includes(a[1]))) records.add((e.day, e.serial, e.id, e.net(a[1])));
         for (final s in settlements.where((s) => s.from == a[1] || s.to == a[1])) records.add((s.day, s.serial, '${s.from}->${s.to}', s.from == a[1] ? s.total : -s.total));
         records.sort((x, y) => x.$1 != y.$1 ? x.$1.compareTo(y.$1) : x.$2.compareTo(y.$2));
         var running = 0;
-        for (final r in records) { running += r.$4; out.writeln('  day ${r.$1} ${r.$3} ${signedMoney(r.$4)} balance ${signedMoney(running)}'); }
+        for (final r in records) {
+          running += r.$4;
+          out.writeln('  day ${r.$1} ${r.$3} ${signedMoney(r.$4)} balance ${signedMoney(running)}');
+        }
         if (records.isEmpty) out.writeln('  (none)');
       case 'MATRIX':
         out.writeln('MATRIX');
         final ns = names(true), all = names(), matrix = debts(all);
-        if (ns.isEmpty) { out.writeln('  (none)'); break; }
+        if (ns.isEmpty) {
+          out.writeln('  (none)');
+          break;
+        }
         final cells = [for (final x in ns) [for (final y in ns) x == y ? '-' : money(matrix[all.indexOf(x)][all.indexOf(y)] > 0 ? matrix[all.indexOf(x)][all.indexOf(y)] : 0)]];
-        final l = ns.map((s) => s.length).reduce((a, b) => a > b ? a : b);
-        final w = [...ns, ...cells.expand((r) => r)].map((s) => s.length).reduce((a, b) => a > b ? a : b);
+        final l = ns.map((s) => s.length).reduce(math.max);
+        final w = [...ns, ...cells.expand((r) => r)].map((s) => s.length).reduce(math.max);
         out.writeln('${' ' * l}${ns.map((s) => '  ${s.padLeft(w)}').join()}');
         for (var i = 0; i < ns.length; i++) out.writeln('${ns[i].padRight(l)}${cells[i].map((s) => '  ${s.padLeft(w)}').join()}');
       case 'CATEGORY':
@@ -326,7 +373,10 @@ class Ledger {
             for (var i = 0; i < e.payers.length; i++) if (e.payers[i].name == n) paid += e.contributions[i];
             for (var i = 0; i < e.participants.length; i++) if (e.participants[i].name == n) share += e.shares[i];
           }
-          for (final s in settlements) { if (s.from == n) sent += s.total; if (s.to == n) received += s.total; }
+          for (final s in settlements) {
+            if (s.from == n) sent += s.total;
+            if (s.to == n) received += s.total;
+          }
           out.writeln('  $n paid ${money(paid)} share ${money(share)} sent ${money(sent)} received ${money(received)}');
         }
         final currencies = expenses.map((e) => e.currency).where((c) => c.isNotEmpty).toSet().toList()..sort();
@@ -383,7 +433,8 @@ class Ledger {
             sums[mask] = sums[mask ^ bit] + balance[ns[index]]!;
           }
           int solve(int mask) {
-            if (memo.containsKey(mask)) return memo[mask]!;
+            final known = memo[mask];
+            if (known != null) return known;
             final first = mask & -mask;
             var best = -100;
             for (var sub = mask; sub > 0; sub = (sub - 1) & mask) {
@@ -428,8 +479,11 @@ void main() {
   final count = int.parse(stdin.readLineSync()!);
   for (var i = 0; i < count; i++) {
     final line = stdin.readLineSync()!;
-    try { output.write(ledger.execute(line)); }
-    on LedgerError catch (error) { output.writeln('ERROR ${error.message}'); }
+    try {
+      output.write(ledger.execute(line));
+    } on LedgerError catch (error) {
+      output.writeln('ERROR ${error.message}');
+    }
   }
   stdout.write(output);
 }

@@ -13,16 +13,6 @@ text_equal =: 4 : 0
 number =: 3 : 0
   , '0' 8!:2 y
 )
-lower_ascii =: 3 : 0
-  codes =. a. i. y
-  codes =. codes + 32 * (codes>:65) *. codes<:90
-  codes { a.
-)
-upper_ascii =: 3 : 0
-  codes =. a. i. y
-  codes =. codes - 32 * (codes>:97) *. codes<:122
-  codes { a.
-)
 at =: 4 : 0
   if. (x<0)+.x>:#y do. '' else. x{y end.
 )
@@ -102,13 +92,13 @@ initialize =: 3 : 0
 initialize''
 case_pattern =: 3 : 0
   letters =. y #~ y e. 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-  if. letters text_equal lower_ascii letters do. 0 return. end.
+  if. letters text_equal tolower letters do. 0 return. end.
   if. ({.y)e.'ABCDEFGHIJKLMNOPQRSTUVWXYZ' do.
     tail_letters =. (}.y) #~ (}.y)e.'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-    if. tail_letters text_equal lower_ascii tail_letters do. 1 return. end.
+    if. tail_letters text_equal tolower tail_letters do. 1 return. end.
   end.
   if. (#letters)>:2 do.
-    if. letters text_equal upper_ascii letters do. 2 return. end.
+    if. letters text_equal toupper letters do. 2 return. end.
   end.
   _1
 )
@@ -135,7 +125,7 @@ syllable =: 3 : 0
 )
 read_word =: 3 : 0
   'sys original start' =. y
-  value =. lower_ascii original
+  value =. tolower original
   morae =. i.0
   columns =. i.0
   p =. 0
@@ -271,8 +261,8 @@ apply_case =: 3 : 0
   elseif. case_value text_equal 'TITLE' do. pattern =. 1
   elseif. case_value text_equal 'UPPER' do. pattern =. 2
   end.
-  if. pattern=1 do. (upper_ascii {.value),}.value
-  elseif. pattern=2 do. upper_ascii value
+  if. pattern=1 do. (toupper {.value),}.value
+  elseif. pattern=2 do. toupper value
   else. value
   end.
 )

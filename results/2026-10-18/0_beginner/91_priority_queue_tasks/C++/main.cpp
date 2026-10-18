@@ -15,7 +15,7 @@ struct Later {
     }
 };
 int main() {
-    std::priority_queue < Task, std::vector<Task>, Later > queue;
+    std::priority_queue<Task, std::vector<Task>, Later> queue;
     int sequence = 0;
     for (const std::string &operation : std::array<std::string, 16>{"add email 3", "add backup 5", "add deploy 1",
         "run", "add report 3", "add test 2", "add lint 3", "run", "run", "add cleanup 5", "add review 2",

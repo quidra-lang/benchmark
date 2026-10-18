@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	a, b := [26]bool{}, [26]bool{}
@@ -22,7 +20,7 @@ func main() {
 			case 1:
 				keep = a[n] && b[n]
 			case 2:
-				keep = a[n] && ! b[n]
+				keep = a[n] && !b[n]
 			case 3:
 				keep = a[n] != b[n]
 			}

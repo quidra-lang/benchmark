@@ -7,25 +7,16 @@ function topological(array $courses, array $edges): array {
         $indegree[$target]++;
     }
     sort($courses,SORT_STRING);
-    $order = []; $taken = [];
+    $order = [];
+    $taken = [];
     while (true) {
-        $ready = null;
-        foreach ($courses as $course) {
-            if (!isset($taken[$course]) && $indegree[$course] === 0) {
-                $ready = $course;
-                break;
-            }
-        }
+        $ready = array_find($courses,fn($course) => !isset($taken[$course]) && $indegree[$course] === 0);
         if ($ready === null) break;
         $order[] = $ready;
         $taken[$ready] = true;
         foreach ($adjacency[$ready] as $target) $indegree[$target]--;
     }
-    $remaining = [];
-    foreach ($courses as $course) {
-        if (!isset($taken[$course])) $remaining[] = $course;
-    }
-    return [$order,$remaining];
+    return [$order,array_diff($courses,$order)];
 }
 $courses1 = ['physics','algebra','graphics','programming','statistics','calculus','databases','algorithms'];
 $edges1 = [['calculus','physics'],['algebra','calculus'],['programming','algorithms'],['algebra','statistics'],['algorithms','databases'],['statistics','databases'],['calculus','graphics'],['algorithms','graphics'],['physics','graphics']];

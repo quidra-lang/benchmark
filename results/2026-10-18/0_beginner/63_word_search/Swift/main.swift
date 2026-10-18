@@ -1,6 +1,3 @@
-import Foundation
-
-
 let board = ["MMONKENBIR", "PMTIGERJPL", "TGREJEDUZI", "SPYUTEJDEC", "WKAPSIDLBN",
     "KUVNGSBPRO", "RIBSDACBAM", "YWVAUAPKAH", "KYCGTHHESR", "OCCALAOKKR"].map { Array($0) }
 let directions = ["E", "SE", "S", "SW", "W", "NW", "N", "NE"]
@@ -11,13 +8,9 @@ for word in ["TIGER", "ZEBRA", "MONKEY", "PANDA", "KOALA", "RABBIT"] {
     search: for r in 0..<10 {
         for c in 0..<10 {
             for d in 0..<8 {
-                var match = true
-                for k in letters.indices {
+                let match = letters.indices.allSatisfy { k in
                     let nr = r + k * dr[d], nc = c + k * dc[d]
-                    if nr < 0 || nr >= 10 || nc < 0 || nc >= 10 || board[nr][nc] != letters[k] {
-                        match = false
-                        break
-                    }
+                    return nr >= 0 && nr < 10 && nc >= 0 && nc < 10 && board[nr][nc] == letters[k]
                 }
                 if match {
                     result = "(\(r), \(c)) \(directions[d])"

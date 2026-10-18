@@ -7,7 +7,7 @@ function main()
         arrival += state%5+1
         state = (state*48271)%2147483647
         service = state%7+2
-        teller = free_times[1] <= free_times[2] ? 1 : 2
+        teller = argmin(free_times)
         start = max(arrival,free_times[teller])
         departure = start+service
         wait = start-arrival

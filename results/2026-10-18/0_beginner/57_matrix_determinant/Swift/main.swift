@@ -1,11 +1,10 @@
-import Foundation
-
 func determinant(_ matrix: [[Int]]) -> Int {
     if matrix.count == 1 { return matrix[0][0] }
     var result = 0
     for column in matrix.indices {
         let minor = matrix.dropFirst().map { row in row.enumerated().filter { $0.offset != column }.map { $0.element } }
-        let term = matrix[0][column] * determinant(minor); result += column % 2 == 0 ? term : -term
+        let term = matrix[0][column] * determinant(minor)
+        result += column % 2 == 0 ? term : -term
     }
     return result
 }

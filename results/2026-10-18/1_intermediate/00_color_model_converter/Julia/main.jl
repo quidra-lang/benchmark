@@ -60,7 +60,7 @@ const KEYWORDS = Dict(
 require_valid(condition) = condition || throw(ArgumentError("INVALID"))
 round_ratio(n,d) = fld(2*n+d,2*d)
 away_ratio(n,d) = n < 0 ? -round_ratio(-n,d) : round_ratio(n,d)
-byte_clamp(x) = min(255,max(0,x))
+byte_clamp(x) = clamp(x,0,255)
 hex_color(c) = @sprintf("#%02X%02X%02X",c[1],c[2],c[3])
 color_sequence(colors) = join(hex_color.(colors)," ")
 color_distance(a,b) = sum((a[i]-b[i])^2 for i in 1:3)
@@ -185,31 +185,8 @@ function ansi_color(number)
     return levels[[div(value,36)+1,div(value,6)%6+1,value%6+1]]
 end
 
-function root_ratio(n,d)
-    low,high = 0,1
-    while d*high*high <= n
-        high *= 2
-    end
-    while high-low > 1
-        middle = div(low+high,2)
-        if d*middle*middle <= n
-            low = middle
-        else
-            high = middle
-        end
-    end
-    return low
-end
-
-function nearest_index(color,colors)
-    best = 1
-    for i in 2:length(colors)
-        if color_distance(color,colors[i]) < color_distance(color,colors[best])
-            best = i
-        end
-    end
-    return best
-end
+root_ratio(n,d) = isqrt(fld(n,d))
+nearest_index(color,colors) = argmin(i -> color_distance(color,colors[i]),eachindex(colors))
 
 function contrast(a,b)
     luminance(c) = 2126*c[1]^2+7152*c[2]^2+722*c[3]^2
@@ -237,15 +214,8 @@ widths(colors) = [maximum(c[j] for c in colors)-minimum(c[j] for c in colors) fo
 function palette(colors,k)
     boxes = [copy(colors)]
     while length(boxes) < k
-        selected,best_width = 0,-1
-        for i in eachindex(boxes)
-            if length(boxes[i]) >= 2
-                width = maximum(widths(boxes[i]))
-                if width > best_width
-                    selected,best_width = i,width
-                end
-            end
-        end
+        candidates = findall(box -> length(box) >= 2,boxes)
+        selected = argmax(i -> maximum(widths(boxes[i])),candidates)
         box = boxes[selected]
         axis = argmax(widths(box))
         indices = sortperm(1:length(box);by=i -> (box[i][axis],i))
@@ -494,12 +464,7 @@ function execute(command,raw,registered,registration_order)
     elseif command == "BEST"
         colors = args[1]
         bg = colors[1]
-        selected = 2
-        for i in 3:length(colors)
-            if contrast(colors[i],bg)[1] > contrast(colors[selected],bg)[1]
-                selected = i
-            end
-        end
+        selected = argmax(i -> contrast(colors[i],bg)[1],2:length(colors))
         return hex_color(colors[selected])*" "*contrast_text(colors[selected],bg)
     elseif command == "DESCRIBE"
         h,s,l = hsl(args[1])

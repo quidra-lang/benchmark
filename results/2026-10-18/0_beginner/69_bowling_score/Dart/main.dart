@@ -12,8 +12,7 @@ void main() {
         out.write('game ${g+1}:');
         for (var frame = 0; frame < 10; frame++) {
             if (frame == 9) {
-                for (final v in rolls.skip(index))
-                    total += v;
+                total += rolls.skip(index).reduce((a, b) => a + b);
             } else if (rolls[index] == 10) {
                 total += 10 + rolls[index + 1] + rolls[index + 2];
                 index++;

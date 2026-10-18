@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     for (text in listOf("Man", "Hello, World!", "", "<b>bold</b>", "a+b=c?")) {

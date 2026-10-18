@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 class MatchError implements Exception {
   final String message;
@@ -201,8 +202,7 @@ class State {
       previousWinner = side;
       currentRun = 1;
     }
-    if (currentRun > runs[side])
-      runs[side] = currentRun;
+    runs[side] = max(runs[side], currentRun);
     if (match.sport == 'TENNIS' && kind == 'NORMAL') {
       final receiver = 1 - server;
       if (normalGameWin(receiver, 1)) {
@@ -302,8 +302,7 @@ class State {
   }
 
   void completedTurn(int side) {
-    if (turnValue > high[side])
-      high[side] = turnValue;
+    high[side] = max(high[side], turnValue);
     if (turnValue >= 100)
       tons[side]++;
     if (turnValue == 180)
@@ -358,25 +357,25 @@ class State {
       fail('match over');
     switch (event.kind) {
       case 'POINT':
-      point(event.side);
+        point(event.side);
       case 'ROLL':
-      roll(event.first);
+        roll(event.first);
       case 'THROW':
-      throwDart(event.first);
+        throwDart(event.first);
       case 'SUB':
-      final team = lineup[event.side],
-      position = team.indexOf(event.first);
-      if (position < 0)
-        fail('player not on court');
-      if (team.contains(event.second))
-        fail('player already on court');
-      if (substitutions[event.side] == 6)
-        fail('no substitutions left');
-      team[position] = event.second;
-      substitutions[event.side]++;
+        final team = lineup[event.side], position = team.indexOf(event.first);
+        if (position < 0)
+          fail('player not on court');
+        if (team.contains(event.second))
+          fail('player already on court');
+        if (substitutions[event.side] == 6)
+          fail('no substitutions left');
+        team[position] = event.second;
+        substitutions[event.side]++;
       case 'TIMEOUT':
-      if (timeouts[event.side] == 2) fail('no timeouts left');
-      timeouts[event.side]++;
+        if (timeouts[event.side] == 2)
+          fail('no timeouts left');
+        timeouts[event.side]++;
     }
   }
   String? situation(int side) {
@@ -503,14 +502,12 @@ void main() {
       if (op == 'MATCH') {
         if (matches.containsKey(a[1]))
           fail('duplicate match');
-        final sport = a[2], rules = allowed[sport]!, options = {
-          for (final key in allowed[a[2]]!.keys)
-            key: allowed[a[2]]![key]!.first
-          };
+        final sport = a[2], rules = allowed[sport]!;
+        final options = rules.map((key, values) => MapEntry(key, values.first));
         final seen = <String>{}, start = sport == 'BOWLING' ? 4 : sport == 'VOLLEYBALL' ? 7 : 5;
         for (final option in a.skip(start)) {
           final pair = option.split('=');
-          if (pair.length != 2 || !rules.containsKey(pair[0]) || !rules[pair[0]]!.contains(pair[1]) || !seen.add(pair[0]))
+          if (pair.length != 2 || !(rules[pair[0]]?.contains(pair[1]) ?? false) || !seen.add(pair[0]))
             fail('invalid option');
           options[pair[0]] = pair[1];
         }

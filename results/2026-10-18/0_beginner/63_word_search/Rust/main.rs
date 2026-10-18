@@ -1,21 +1,15 @@
-fn search(board: &[&str],
-word: &str) -> Option<(i32, i32, usize)> {
+fn search(board: &[&str], word: &str) -> Option<(i32, i32, usize)> {
     let directions = [(0, 1), (1, 1), (1, 0), (1, -1),
                       (0, -1), (-1, -1), (-1, 0), (-1, 1)];
     for r in 0..10_i32 {
         for c in 0..10_i32 {
             for (d, (dr, dc)) in directions.iter().enumerate() {
-                let mut matches = true;
-                for (k, ch) in word.bytes().enumerate() {
+                if word.bytes().enumerate().all(|(k, ch)| {
                     let rr = r + dr * k as i32;
                     let cc = c + dc * k as i32;
-                    if !(0..10).contains(&rr) || !(0..10).contains(&cc)
-                        || board[rr as usize].as_bytes()[cc as usize] != ch {
-                        matches = false;
-                        break;
-                    }
-                }
-                if matches {
+                    (0..10).contains(&rr) && (0..10).contains(&cc)
+                        && board[rr as usize].as_bytes()[cc as usize] == ch
+                }) {
                     return Some((r, c, d));
                 }
             }

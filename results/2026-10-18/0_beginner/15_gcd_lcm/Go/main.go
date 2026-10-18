@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func gcd(a, b int64) int64 {
 	for b != 0 {

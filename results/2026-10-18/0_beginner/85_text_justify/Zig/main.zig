@@ -28,8 +28,7 @@ pub fn main(init: std.process.Init) !void {
                     try out.writeByte(' ');
                 try out.writeAll(word);
             }
-            for (0..30 - (letters + n - 1)) |_|
-                try out.writeByte(' ');
+            try out.splatByteAll(' ', 30 - (letters + n - 1));
         } else {
             const spaces = 30 - letters;
             const gaps = n - 1;
@@ -37,8 +36,7 @@ pub fn main(init: std.process.Init) !void {
                 try out.writeAll(word);
                 if (i < gaps) {
                     const width = spaces / gaps + @as(usize, if (i < spaces % gaps) 1 else 0);
-                    for (0..width) |_|
-                        try out.writeByte(' ');
+                    try out.splatByteAll(' ', width);
                 }
             }
         }

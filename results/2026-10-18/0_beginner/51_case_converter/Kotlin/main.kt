@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     for (id in listOf("user_name","maxRetryCount","ShoppingCartItem","background-color","get_last_login_time","isEmailAddressValid")) {
         val words = id.split(Regex("[_-]|(?=[A-Z])")).filter { it.isNotEmpty() }.map { it.lowercase() }

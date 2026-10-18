@@ -24,9 +24,7 @@ for expression in expressions:
         elif token == "*":
             result = a * b
         else:
-            result = abs(a) // abs(b)
-            if (a < 0) != (b < 0):
-                result = -result
+            result = int(a / b)
         stack.append(result)
     if error is None and len(stack) != 1:
         error = "leftover operands"

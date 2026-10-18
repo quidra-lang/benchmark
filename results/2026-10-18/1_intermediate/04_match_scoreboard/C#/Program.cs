@@ -4,10 +4,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 
-static class CollectionExtensions {
-    public static bool IsEmpty<T>(this ICollection<T> values) => values.Count == 0;
-    public static bool IsEmpty(this string value) => value.Length == 0;
-}
 class Program {
     const int P=0,G=2,W=4,L=6,R=8,GS=10,SERVE=11,LEG=12,DONE=13,WINNER=14,
         TC=15,TS=16,TV=17,TURN=18,LINEUP=21,SUBS=33,TIMEOUTS=35,POINTS=37,SERVED=39,
@@ -186,7 +182,7 @@ class Program {
                     for (int side = 0; side < 2; side++) {
                         s[SUBS+side] = 0;
                         s[TIMEOUTS+side] = 0;
-                        for (int i = 0; i < 6; i++) s[LINEUP+side*6+i] = initial[side][i];
+                        Array.Copy(initial[side],0,s,LINEUP+side*6,6);
                     }
                     s[SERVE] = First() ^ (finished.Count%2);
                 }
@@ -235,7 +231,7 @@ class Program {
             if (sport.Equals("BADMINTON")) s[SERVE] = x;
             if (sport.Equals("VOLLEYBALL") && s[SERVE] != x) {
                 int start = LINEUP+x*6, old = s[start];
-                for (int i = 0; i < 5; i++) s[start+i] = s[start+i+1];
+                Array.Copy(s,start+1,s,start,5);
                 s[start+5] = old;
                 s[SERVE] = x;
             }
@@ -376,13 +372,10 @@ class Program {
                 side = tokens[2].Equals("A") ? 0 : 1;
                 if (command.Equals("SUB")) {
                     int from = int.Parse(tokens[3]), to = int.Parse(tokens[4]);
-                    for (int i = 0; i < 6; i++) {
-                        if (s[LINEUP+side*6+i] == from) position = i;
-                    }
+                    int start = LINEUP+side*6;
+                    position = Array.IndexOf(s,from,start,6)-start;
                     if (position < 0) Fail("player not on court");
-                    for (int i = 0; i < 6; i++) {
-                        if (s[LINEUP+side*6+i] == to) Fail("player already on court");
-                    }
+                    if (Array.IndexOf(s,to,start,6) >= 0) Fail("player already on court");
                     if (s[SUBS+side] == 6) Fail("no substitutions left");
                 } else if (s[TIMEOUTS+side] == 2) Fail("no timeouts left");
             }
@@ -425,7 +418,7 @@ class Program {
             if (history.Count == 0) Fail("nothing to undo");
             int[] undo = history.Pop();
             for (int i = 1; i < undo.Length; i += 2) s[undo[i]] = undo[i+1];
-            while (finished.Count > undo[0]) finished.RemoveAt(finished.Count-1);
+            finished.RemoveRange(undo[0],finished.Count-undo[0]);
         }
         public string Situation(int x) {
             int[] old = (int[])s.Clone();
@@ -436,7 +429,7 @@ class Program {
             string result = Over() ? "match point" : finished.Count > count ? (Tennis() || sport.Equals("VOLLEYBALL") ? "set point" : "game point") :
                 normal && s[G]+s[G+1] > games ? (x == serve ? "game point" : "break point") : "";
             s = old;
-            while (finished.Count > count) finished.RemoveAt(finished.Count-1);
+            finished.RemoveRange(count,finished.Count-count);
             return result;
         }
         public string FinishedScore(Finished f, int first) {
@@ -446,9 +439,8 @@ class Program {
         public string Pair(int offset) { return s[offset]+"-"+s[offset+1]; }
         public string Score() {
             if (sport.Equals("BOWLING")) {
-                List<string> frames = new();
-                foreach (BowlingFrame f in BowlingFrames()) frames.Add(f.Marks+(f.Cumulative == null ? "" : "("+f.Cumulative+")"));
-                return id+": "+names[0]+(frames.IsEmpty() ? "" : " "+string.Join(" ",frames));
+                var frames = BowlingFrames().Select(f => f.Marks+(f.Cumulative == null ? "" : "("+f.Cumulative+")")).ToList();
+                return id+": "+names[0]+(frames.Count == 0 ? "" : " "+string.Join(" ",frames));
             }
             int serve = Over() ? -1 : Server();
             List<string> items = new();
@@ -460,7 +452,7 @@ class Program {
                         for (int i = 0; i < s[TC]; i++) items.Add(app.darts[s[TURN+i]].Name);
                     }
                     List<string> check = app.Checkout(s[R+s[SERVE]],3-s[TC]);
-                    if (!check.IsEmpty()) {
+                    if (check.Count != 0) {
                         items.Add("checkout");
                         items.AddRange(check);
                     }
@@ -486,7 +478,7 @@ class Program {
                     }
                     for (int x = 0; x < 2; x++) {
                         string situation = Situation(x);
-                        if (!situation.IsEmpty()) items.Add("("+situation+" "+names[x]+")");
+                        if (situation.Length != 0) items.Add("("+situation+" "+names[x]+")");
                     }
                 }
             }
@@ -496,12 +488,9 @@ class Program {
             List<string> output = new();
             if (sport.Equals("BOWLING")) {
                 List<BowlingFrame> frames = BowlingFrames();
-                int strikes = 0, spares = 0, open = 0;
-                foreach (BowlingFrame f in frames) {
-                    strikes += f.Marks.Count(c => c == 'X');
-                    spares += f.Marks.Count(c => c == '/');
-                    if (f.Open) open++;
-                }
+                int strikes = frames.Sum(f => f.Marks.Count(c => c == 'X'));
+                int spares = frames.Sum(f => f.Marks.Count(c => c == '/'));
+                int open = frames.Count(f => f.Open);
                 int[] old = (int[])s.Clone();
                 while (!Over()) Roll(s[STANDING]);
                 int maximum = BowlingFrames().Last().Cumulative!.Value;
@@ -513,15 +502,14 @@ class Program {
                 string line = id+" "+names[x]+": ";
                 if (sport.Equals("DARTS")) {
                     long average = s[DARTS+x] == 0 ? 0 : (long)s[SCORED+x]*300/s[DARTS+x];
-                    line += "darts "+s[DARTS+x]+" average "+average/100+"."+(average%100 < 10 ? "0" : "")+average%100+
+                    line += "darts "+s[DARTS+x]+" average "+$"{average/100}.{average%100:D2}"+
                         " busts "+s[BUSTS+x]+" high "+s[HIGH+x]+" tons "+s[TONS+x]+" 180s "+s[MAXIMUMS+x]+" doubles "+s[HITS+x]+"/"+s[ATTEMPTS+x];
                 } else {
                     line += "points "+s[POINTS+x]+" serve "+s[SERVEWON+x]+"/"+s[SERVED+x]+" run "+s[RUN+x];
                     if (Tennis()) line += " holds "+s[HOLDS+x]+"/"+s[SERVICE+x]+" breaks "+s[BREAKS+x]+" break points "+s[BPW+x]+"/"+s[BPO+x];
                     if (sport.Equals("VOLLEYBALL")) {
-                        List<string> lineup = new();
-                        for (int i = 0; i < 6; i++) lineup.Add(Convert.ToString(s[LINEUP+x*6+i]));
-                        line += " subs "+s[SUBS+x]+" timeouts "+s[TIMEOUTS+x]+" lineup "+string.Join(",",lineup);
+                        line += " subs "+s[SUBS+x]+" timeouts "+s[TIMEOUTS+x]+" lineup "+
+                            string.Join(",",s.Skip(LINEUP+x*6).Take(6));
                     }
                 }
                 output.Add(line);
@@ -532,8 +520,7 @@ class Program {
             if (!Over()) Fail("match not finished");
             if (sport.Equals("BOWLING")) return id+": "+names[0]+" "+BowlingFrames().Last().Cumulative;
             int winner = s[WINNER];
-            List<string> scores = new();
-            foreach (Finished f in finished) scores.Add(FinishedScore(f,winner));
+            var scores = finished.Select(f => FinishedScore(f,winner));
             return id+": "+names[winner]+" def. "+names[1-winner]+" "+string.Join(" ",scores);
         }
     }
@@ -548,7 +535,7 @@ class Program {
         }
         if (command.Equals("CHECKOUT")) {
             List<string> answer = Checkout(int.Parse(t[1]),3);
-            return new List<string> { "checkout "+t[1]+": "+(answer.IsEmpty() ? "none" : string.Join(" ",answer)) };
+            return new List<string> { "checkout "+t[1]+": "+(answer.Count == 0 ? "none" : string.Join(" ",answer)) };
         }
         if (command.Equals("STANDINGS")) {
             Dictionary<string,int[]> totals = new(StringComparer.Ordinal);
@@ -563,9 +550,8 @@ class Program {
             }
             List<string> names = totals.Keys.ToList();
             names = names.OrderByDescending(name => totals[name][0]).ThenBy(name => totals[name][1]).ThenBy(name => name,StringComparer.Ordinal).ToList();
-            List<string> records = new();
-            foreach (string name in names) records.Add(name+" "+totals[name][0]+"-"+totals[name][1]);
-            return new List<string> { "standings: "+(records.IsEmpty() ? "none" : string.Join(", ",records)) };
+            var records = names.Select(name => name+" "+totals[name][0]+"-"+totals[name][1]).ToList();
+            return new List<string> { "standings: "+(records.Count == 0 ? "none" : string.Join(", ",records)) };
         }
         Match target = matches.GetValueOrDefault(t[1]);
         if (target == null) Fail("unknown match");

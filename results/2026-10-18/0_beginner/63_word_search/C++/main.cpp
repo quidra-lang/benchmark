@@ -3,9 +3,9 @@
 #include <array>
 
 int main() {
-    const std::array<std::string, 10> board = {"MMONKENBIR", "PMTIGERJPL", "TGREJEDUZI", "SPYUTEJDEC",
+    std::array<std::string, 10> board = {"MMONKENBIR", "PMTIGERJPL", "TGREJEDUZI", "SPYUTEJDEC",
         "WKAPSIDLBN", "KUVNGSBPRO", "RIBSDACBAM", "YWVAUAPKAH", "KYCGTHHESR", "OCCALAOKKR"};
-    const std::array<std::string, 6> words = {"TIGER", "ZEBRA", "MONKEY", "PANDA", "KOALA", "RABBIT"};
+    std::array<std::string, 6> words = {"TIGER", "ZEBRA", "MONKEY", "PANDA", "KOALA", "RABBIT"};
     const std::array<std::string, 8> names = {"E", "SE", "S", "SW", "W", "NW", "N", "NE"};
     const int dr[] = {0, 1, 1, 1, 0, -1, -1, -1}, dc[] = {1, 1, 0, -1, -1, -1, 0, 1};
     for (const std::string &word : words) {

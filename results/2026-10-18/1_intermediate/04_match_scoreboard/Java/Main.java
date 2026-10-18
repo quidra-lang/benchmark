@@ -172,7 +172,7 @@ public class Main {
                     for (int side = 0; side < 2; side++) {
                         s[SUBS+side] = 0;
                         s[TIMEOUTS+side] = 0;
-                        for (int i = 0; i < 6; i++) s[LINEUP+side*6+i] = initial[side][i];
+                        System.arraycopy(initial[side],0,s,LINEUP+side*6,6);
                     }
                     s[SERVE] = first() ^ (finished.size()%2);
                 }
@@ -221,7 +221,7 @@ public class Main {
             if (sport.equals("BADMINTON")) s[SERVE] = x;
             if (sport.equals("VOLLEYBALL") && s[SERVE] != x) {
                 int start = LINEUP+x*6, old = s[start];
-                for (int i = 0; i < 5; i++) s[start+i] = s[start+i+1];
+                System.arraycopy(s,start+1,s,start,5);
                 s[start+5] = old;
                 s[SERVE] = x;
             }
@@ -405,7 +405,7 @@ public class Main {
             if (history.isEmpty()) fail("nothing to undo");
             int[] undo = history.pop();
             for (int i = 1; i < undo.length; i += 2) s[undo[i]] = undo[i+1];
-            while (finished.size() > undo[0]) finished.removeLast();
+            finished.subList(undo[0],finished.size()).clear();
         }
         String situation(int x) {
             int[] old = s.clone();
@@ -416,7 +416,7 @@ public class Main {
             String result = over() ? "match point" : finished.size() > count ? (tennis() || sport.equals("VOLLEYBALL") ? "set point" : "game point") :
                 normal && s[G]+s[G+1] > games ? (x == serve ? "game point" : "break point") : "";
             s = old;
-            while (finished.size() > count) finished.removeLast();
+            finished.subList(count,finished.size()).clear();
             return result;
         }
         String finishedScore(Finished f, int first) {
@@ -426,8 +426,7 @@ public class Main {
         String pair(int offset) { return s[offset]+"-"+s[offset+1]; }
         String score() {
             if (sport.equals("BOWLING")) {
-                List<String> frames = new ArrayList<>();
-                for (BowlingFrame f : bowlingFrames()) frames.add(f.marks()+(f.cumulative() == null ? "" : "("+f.cumulative()+")"));
+                List<String> frames = bowlingFrames().stream().map(f -> f.marks()+(f.cumulative() == null ? "" : "("+f.cumulative()+")")).toList();
                 return id+": "+names[0]+(frames.isEmpty() ? "" : " "+String.join(" ",frames));
             }
             int serve = over() ? -1 : server();
@@ -476,12 +475,9 @@ public class Main {
             List<String> output = new ArrayList<>();
             if (sport.equals("BOWLING")) {
                 List<BowlingFrame> frames = bowlingFrames();
-                int strikes = 0, spares = 0, open = 0;
-                for (BowlingFrame f : frames) {
-                    strikes += (int)f.marks().chars().filter(c -> c == 'X').count();
-                    spares += (int)f.marks().chars().filter(c -> c == '/').count();
-                    if (f.open()) open++;
-                }
+                long strikes = frames.stream().mapToLong(f -> f.marks().chars().filter(c -> c == 'X').count()).sum();
+                long spares = frames.stream().mapToLong(f -> f.marks().chars().filter(c -> c == '/').count()).sum();
+                long open = frames.stream().filter(BowlingFrame::open).count();
                 int[] old = s.clone();
                 while (!over()) roll(s[STANDING]);
                 int maximum = bowlingFrames().getLast().cumulative();
@@ -493,15 +489,14 @@ public class Main {
                 String line = id+" "+names[x]+": ";
                 if (sport.equals("DARTS")) {
                     long average = s[DARTS+x] == 0 ? 0 : (long)s[SCORED+x]*300/s[DARTS+x];
-                    line += "darts "+s[DARTS+x]+" average "+average/100+"."+(average%100 < 10 ? "0" : "")+average%100+
+                    line += "darts "+s[DARTS+x]+" average "+String.format(Locale.ROOT,"%d.%02d",average/100,average%100)+
                         " busts "+s[BUSTS+x]+" high "+s[HIGH+x]+" tons "+s[TONS+x]+" 180s "+s[MAXIMUMS+x]+" doubles "+s[HITS+x]+"/"+s[ATTEMPTS+x];
                 } else {
                     line += "points "+s[POINTS+x]+" serve "+s[SERVEWON+x]+"/"+s[SERVED+x]+" run "+s[RUN+x];
                     if (tennis()) line += " holds "+s[HOLDS+x]+"/"+s[SERVICE+x]+" breaks "+s[BREAKS+x]+" break points "+s[BPW+x]+"/"+s[BPO+x];
                     if (sport.equals("VOLLEYBALL")) {
-                        List<String> lineup = new ArrayList<>();
-                        for (int i = 0; i < 6; i++) lineup.add(Integer.toString(s[LINEUP+x*6+i]));
-                        line += " subs "+s[SUBS+x]+" timeouts "+s[TIMEOUTS+x]+" lineup "+String.join(",",lineup);
+                        String lineup = String.join(",",Arrays.stream(s,LINEUP+x*6,LINEUP+x*6+6).mapToObj(String::valueOf).toList());
+                        line += " subs "+s[SUBS+x]+" timeouts "+s[TIMEOUTS+x]+" lineup "+lineup;
                     }
                 }
                 output.add(line);
@@ -512,8 +507,7 @@ public class Main {
             if (!over()) fail("match not finished");
             if (sport.equals("BOWLING")) return id+": "+names[0]+" "+bowlingFrames().getLast().cumulative();
             int winner = s[WINNER];
-            List<String> scores = new ArrayList<>();
-            for (Finished f : finished) scores.add(finishedScore(f,winner));
+            List<String> scores = finished.stream().map(f -> finishedScore(f,winner)).toList();
             return id+": "+names[winner]+" def. "+names[1-winner]+" "+String.join(" ",scores);
         }
     }
@@ -541,8 +535,7 @@ public class Main {
             }
             List<String> names = new ArrayList<>(totals.keySet());
             names.sort(Comparator.<String>comparingInt(name -> totals.get(name)[0]).reversed().thenComparingInt(name -> totals.get(name)[1]).thenComparing(name -> name));
-            List<String> records = new ArrayList<>();
-            for (String name : names) records.add(name+" "+totals.get(name)[0]+"-"+totals.get(name)[1]);
+            List<String> records = names.stream().map(name -> name+" "+totals.get(name)[0]+"-"+totals.get(name)[1]).toList();
             return List.of("standings: "+(records.isEmpty() ? "none" : String.join(", ",records)));
         }
         Match match = matches.get(t[1]);

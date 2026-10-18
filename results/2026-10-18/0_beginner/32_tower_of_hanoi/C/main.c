@@ -9,7 +9,6 @@ int hanoi(int n, char source, char target, char auxiliary) {
 }
 
 int main(void) {
-    int count = hanoi(4, 'A', 'C', 'B');
-    printf("total moves: %d\n", count);
+    printf("total moves: %d\n", hanoi(4, 'A', 'C', 'B'));
     return 0;
 }

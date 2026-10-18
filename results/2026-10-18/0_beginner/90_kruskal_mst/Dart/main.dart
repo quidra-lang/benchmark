@@ -1,8 +1,6 @@
-import 'dart:io';
 import 'dart:math' as math;
 
 void main() {
-    final out = StringBuffer();
     final edges = [(0, 1, 7), (2, 0, 4), (1, 2, 9), (1, 3, 14), (3, 2, 6), (2, 4, 3), (4, 3, 5),
         (5, 3, 11), (4, 6, 16), (6, 5, 8), (7, 5, 12), (6, 7, 2), (7, 4, 10)]..sort((a, b) => a.$3.compareTo(b.$3));
     final parent = List.generate(8, (i) => i);
@@ -23,10 +21,9 @@ void main() {
         parent[a] = b;
         accepted++;
         total += e.$3;
-        out.writeln('${String.fromCharCode(65+math.min(e.$1,e.$2))}-${String.fromCharCode(65+math.max(e.$1,e.$2))} ${e.$3}');
+        print('${String.fromCharCode(65+math.min(e.$1,e.$2))}-${String.fromCharCode(65+math.max(e.$1,e.$2))} ${e.$3}');
         if (accepted == 7)
             break;
     }
-    out.writeln('total weight: $total\nskipped: $skipped');
-    stdout.write(out);
+    print('total weight: $total\nskipped: $skipped');
 }

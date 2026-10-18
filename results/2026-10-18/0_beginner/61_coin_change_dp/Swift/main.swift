@@ -1,6 +1,3 @@
-import Foundation
-
-
 let coins = [1, 5, 6, 9]
 for amount in [8, 11, 15, 22, 33, 40] {
     var minimum = [Int](repeating: amount + 1, count: amount + 1)

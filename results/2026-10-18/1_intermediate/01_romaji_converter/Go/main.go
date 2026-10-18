@@ -4,6 +4,7 @@ import (
     "bufio"
     "fmt"
     "os"
+    "slices"
     "sort"
     "strconv"
     "strings"
@@ -33,12 +34,6 @@ var systems = []string{"HEPBURN", "TRADITIONAL", "KUNREI", "NIHON", "WAPURO"}
 var rows = []string{"a", "ka", "sa", "ta", "na", "ha", "ma", "ya", "ra", "wa", "ga", "za", "da", "ba", "pa"}
 var table []mora
 
-func index(items []string, s string) int {
-    for i, item := range items {
-        if item == s { return i }
-    }
-    return -1
-}
 func letter(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
 func vowel(c byte) bool { return c != 0 && strings.ContainsRune("aiueo", rune(c)) }
 func wordChar(c byte) bool { return letter(c) || c == '\'' || c == '-' }
@@ -88,9 +83,9 @@ func initialize() {
         m := &table[i]
         for s := 0; s < 5; s++ {
             p := m.id
-            k := index(special, m.id)
+            k := slices.Index(special, m.id)
             if k >= 0 && (s <= 1 || s == 4 && k < 5) { p = hepburn[k] }
-            k = index(kunreiFrom, m.id)
+            k = slices.Index(kunreiFrom, m.id)
             if s == 2 && k >= 0 { p = kunreiTo[k] }
             if len(m.dan) == 2 && (s <= 1 || s == 4) {
                 switch m.id[:2] {
@@ -279,13 +274,6 @@ func sequence(w word, loose bool) []int {
     }
     return result
 }
-func equal(a, b []int) bool {
-    if len(a) != len(b) { return false }
-    for i := range a {
-        if a[i] != b[i] { return false }
-    }
-    return true
-}
 func elements(w word) []element {
     var result []element
     for _, t := range w.tokens {
@@ -297,7 +285,7 @@ func elements(w word) []element {
             m := table[t.id]
             base := m.id
             if m.voice != 0 {
-                r := index([]string{"ga", "za", "da", "ba", "pa"}, m.row)
+                r := slices.Index([]string{"ga", "za", "da", "ba", "pa"}, m.row)
                 base = string("ksthh"[r]) + base[1:]
             }
             if len(m.dan) == 2 {
@@ -307,14 +295,14 @@ func elements(w word) []element {
     }
     return result
 }
-func key(w word, order int) [][]int {
+func key(w word, order int) [4][]int {
     ranks := strings.Fields("a i u e o ka ki ku ke ko sa si su se so ta ti tu te to na ni nu ne no ha hi hu he ho ma mi mu me mo ya yu yo ra ri ru re ro wa wi we wo N")
     if order == 1 { ranks = strings.Fields("i ro ha ni ho he to ti ri nu ru wo wa ka yo ta re so tu ne na ra mu u wi no o ku ya ma ke hu ko e te a sa ki yu me mi si we hi mo se su N") }
-    result := make([][]int, 4)
+    result := [4][]int{}
     for _, e := range elements(w) {
         id := "N"
         if e.id != moraN { id = table[e.id].id }
-        result[0] = append(result[0], index(ranks, id))
+        result[0] = append(result[0], slices.Index(ranks, id))
         result[1] = append(result[1], e.voice)
         result[2] = append(result[2], e.size)
     }
@@ -325,12 +313,11 @@ func key(w word, order int) [][]int {
     }
     return result
 }
-func less(a, b [][]int) bool {
+func less(a, b [4][]int) bool {
     for k := range a {
-        for i := 0; i < len(a[k]) && i < len(b[k]); i++ {
-            if a[k][i] != b[k][i] { return a[k][i] < b[k][i] }
+        if comparison := slices.Compare(a[k], b[k]); comparison != 0 {
+            return comparison < 0
         }
-        if len(a[k]) != len(b[k]) { return len(a[k]) < len(b[k]) }
     }
     return false
 }
@@ -372,7 +359,7 @@ func process(line string, config *settings) string {
     names := []string{"SET", "TABLE", "CONVERT", "NORMALIZE", "REVERSE", "VALID", "DETECT", "DIFF", "SAME", "MORAE", "SYLLABLES", "ROW", "STATS", "SORT", "INDEX", "FIND", "HAIKU", "KAIBUN", "SHIRITORI"}
     fixed := []int{2, 2, 2, 0, 1, 1, 0, 2, 2, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1}
     command, _, _ := strings.Cut(line, " ")
-    cmd := index(names, command)
+    cmd := slices.Index(names, command)
     if cmd < 0 { fail("unknown command " + command) }
     var args []string
     text := ""
@@ -392,10 +379,10 @@ func process(line string, config *settings) string {
         text = rest
     }
     if cmd == 0 {
-        option := index([]string{"LONG", "CASE", "ORDER"}, args[0])
+        option := slices.Index([]string{"LONG", "CASE", "ORDER"}, args[0])
         if option < 0 { fail("unknown option " + args[0]) }
         values := [][]string{{"KEEP", "DROP", "PASSPORT", "HYPHEN", "DOUBLE"}, {"KEEP", "LOWER", "UPPER", "TITLE"}, {"GOJUON", "IROHA"}}
-        value := index(values[option], args[1])
+        value := slices.Index(values[option], args[1])
         if value < 0 { fail("unknown value " + args[1]) }
         switch option {
         case 0: config.long = value
@@ -409,12 +396,12 @@ func process(line string, config *settings) string {
     if cmd == 2 || cmd == 7 || cmd == 8 { systemCount = 2 }
     sys := []int{-1, -1}
     for i := 0; i < systemCount; i++ {
-        sys[i] = index(systems, args[i])
+        sys[i] = slices.Index(systems, args[i])
         if sys[i] < 0 { fail("unknown system " + args[i]) }
     }
     source := sys[0]
     if cmd == 1 {
-        if index(rows, args[1]) < 0 { fail("unknown row " + args[1]) }
+        if slices.Index(rows, args[1]) < 0 { fail("unknown row " + args[1]) }
         var result []string
         for _, m := range table {
             if m.row == args[1] { result = append(result, m.spelling[source]) }
@@ -445,16 +432,15 @@ func process(line string, config *settings) string {
     if cmd == 6 {
         var output []string
         for s := 0; s < 5; s++ {
-            parsed := append([]word(nil), words...)
             verdict := "canonical"
-            for i := range parsed {
-                if parse(&parsed[i], s) != "" {
+            for i := range words {
+                if parse(&words[i], s) != "" {
                     verdict = "error"
                     break
                 }
             }
             if verdict != "error" {
-                for _, w := range parsed {
+                for _, w := range words {
                     if writeWord(w, s, true, *config) != w.original { verdict = "readable" }
                 }
             }
@@ -482,9 +468,7 @@ func process(line string, config *settings) string {
                         w.tokens[i].id = moraID(previous[len(previous)-1:])
                     }
                 }
-                for i, j := 0, len(w.tokens)-1; i < j; i, j = i+1, j-1 {
-                    w.tokens[i], w.tokens[j] = w.tokens[j], w.tokens[i]
-                }
+                slices.Reverse(w.tokens)
             }
             output.WriteString(writeWord(w, target, false, *config))
             pos = w.end
@@ -521,8 +505,8 @@ func process(line string, config *settings) string {
         left, right := words[:boundary], words[boundary:]
         exact := true
         for i := 0; i < len(left) && i < len(right); i++ {
-            if !equal(sequence(left[i], true), sequence(right[i], true)) { return fmt.Sprintf("DIFFERENT at word %d", i+1) }
-            if !equal(sequence(left[i], false), sequence(right[i], false)) { exact = false }
+            if !slices.Equal(sequence(left[i], true), sequence(right[i], true)) { return fmt.Sprintf("DIFFERENT at word %d", i+1) }
+            if !slices.Equal(sequence(left[i], false), sequence(right[i], false)) { exact = false }
         }
         if len(left) != len(right) { return fmt.Sprintf("DIFFERENT at word %d", min(len(left), len(right))+1) }
         if exact { return "EXACT" }
@@ -618,11 +602,11 @@ func process(line string, config *settings) string {
         return strings.Join(output, separator)
     }
     if cmd == 16 {
-        counts = make([]int, sections)
+        clear(counts)
         for _, w := range words { counts[w.section] += len(w.tokens) }
         expected := []int{5, 7, 5, 7, 7}[:sections]
         verdict, kind := "NG", "haiku"
-        if equal(counts, expected) { verdict = "OK" }
+        if slices.Equal(counts, expected) { verdict = "OK" }
         if sections == 5 { kind = "tanka" }
         var numbers []string
         for _, c := range counts { numbers = append(numbers, strconv.Itoa(c)) }
@@ -653,7 +637,7 @@ func process(line string, config *settings) string {
         prefix := fmt.Sprintf("NG %d: %s", i+1, w.original)
         if i > 0 && e[0].id != previousTail { return prefix+" must start with "+table[previousTail].spelling[source] }
         for j := 0; j < i; j++ {
-            if equal(sequence(w, false), sequence(words[j], false)) {
+            if slices.Equal(sequence(w, false), sequence(words[j], false)) {
                 return prefix+" is repeated"
             }
         }

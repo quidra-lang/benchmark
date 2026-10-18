@@ -11,6 +11,8 @@ let precisionTable = [
     "PLUSCODE":[2,4,6,8,10,11], "GARS":[5,6,7],
     "GEOREF":[2,4,8,10,12], "MESH":[4,6,8,9,10,11]
 ]
+let counts = ["ENCODE":4,"DECODE":2,"NEIGHBORS":2,"PARENT":2,"CHILDREN":2,"COMMON":3,
+        "CONTAINS":4,"COVER":6,"CONVERT":5,"STEPS":3,"PATH":3,"RELATE":4,"SIZE":2,"SHORTEN":3,"RECOVER":3]
 let meshScale = [1,8,80,160,320,640]
 let maiden = ["ABCDEFGHIJKLMNOPQR","0123456789","abcdefghijklmnopqrstuvwx","0123456789"]
 extension String {
@@ -98,12 +100,11 @@ func digits(_ s: String) throws -> Int {
     return Int(s)!
 }
 func pad(_ n: Int, _ width: Int) -> String {
-    let s = String(n)
-    return String(repeating:"0",count:max(0,width-s.count))+s
+    String(format: "%0*ld",locale: Locale(identifier: "en_US_POSIX"),width,n)
 }
 func power(_ n: Int) -> Int {
     var result = 1
-    if n > 0 { for _ in 0..<n { result *= 10 } }
+    for _ in 0..<n { result *= 10 }
     return result
 }
 func radix(_ value: Int, _ bases: [Int], _ count: Int) -> [Int] {
@@ -428,8 +429,6 @@ func auxiliary(_ t: [String]) throws -> String {
 func execute(_ line: String) throws -> String {
     let t = line.split(separator:" ").map(String.init)
     let command = t[0]
-    let counts = ["ENCODE":4,"DECODE":2,"NEIGHBORS":2,"PARENT":2,"CHILDREN":2,"COMMON":3,
-        "CONTAINS":4,"COVER":6,"CONVERT":5,"STEPS":3,"PATH":3,"RELATE":4,"SIZE":2,"SHORTEN":3,"RECOVER":3]
     if counts[command] == nil && command != "COMPACT" { return try auxiliary(t) }
     try need(command == "COMPACT" ? t.count >= 3 && t.count <= 102 : t.count == counts[command]!+1)
     if command == "SHORTEN" || command == "RECOVER" {
@@ -491,11 +490,8 @@ func execute(_ line: String) throws -> String {
         return result.joined(separator:" ")
     case "COMPACT":
         var cells = Set(try t.dropFirst(2).map { try decode(system,$0) })
-        var covered = Set<Cell>()
-        for c in cells {
-            for a in cells where a.level < c.level {
-                if try ancestor(c,a.level) == a { covered.insert(c) }
-            }
+        let covered = try cells.filter { c in
+            try cells.contains { a in try a.level < c.level && ancestor(c,a.level) == a }
         }
         cells.subtract(covered)
         var changed = true

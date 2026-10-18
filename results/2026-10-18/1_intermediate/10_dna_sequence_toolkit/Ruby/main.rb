@@ -46,7 +46,7 @@ ARITY = {
 class CommandError < StandardError; end
 
 def revcomp(s)
-  s.reverse.each_char.map { |b| COMPLEMENT[b] }.join
+  s.tr('ACGTRYWSKMBVDHN', 'TGCAYRWSMKVBHDN').reverse
 end
 
 def gc(s)
@@ -72,13 +72,7 @@ end
 
 def codons(s, frame)
   strand = frame.positive? ? s : revcomp(s)
-  result = []
-  i = frame.abs - 1
-  while i + 2 < strand.length
-    result << strand[i, 3]
-    i += 3
-  end
-  result
+  strand[(frame.abs - 1)..].to_s.scan(/.../)
 end
 
 def occurrences(s, motif)
@@ -384,12 +378,7 @@ class Toolkit
     amount = gc(s)
     tm = temperature(s)
     clamp = gc(s[-5, 5] || s)
-    run = 1
-    longest_run = 1
-    (1...n).each do |i|
-      run = s[i] == s[i - 1] ? run + 1 : 1
-      longest_run = [longest_run, run].max
-    end
+    longest_run = s.each_char.chunk(&:itself).map { |_, run| run.length }.max
     repeated = 0
     (0...(n - 1)).each do |i|
       repeated = [repeated, repeat_count(s, i, 2)].max if s[i] != s[i + 1]
@@ -535,7 +524,7 @@ class Toolkit
     when 'REVCOMP'
       emit(revcomp(s))
     when 'COMPLEMENT'
-      emit(s.each_char.map { |b| COMPLEMENT[b] }.join)
+      emit(s.tr('ACGT', 'TGCA'))
     when 'REVERSE'
       emit(s.reverse)
     when 'TRANSCRIBE'

@@ -7,16 +7,8 @@ const Hand = struct {
     len: usize
 };
 
-fn rank(c: u8) u8 {
-    return switch (c) {
-        '2'...'9' => c - '0',
-        'T' => 10,
-        'J' => 11,
-        'Q' => 12,
-        'K' => 13,
-        'A' => 14,
-        else => unreachable
-    };
+fn rankLess(counts: *const [15]u8, a: u8, b: u8) bool {
+    return if (counts[a] != counts[b]) counts[a] > counts[b] else a > b;
 }
 
 fn evaluate(original: []const u8) Hand {
@@ -25,7 +17,8 @@ fn evaluate(original: []const u8) Hand {
     var suit: u8 = 0;
     var tokens = std.mem.splitScalar(u8, original, ' ');
     while (tokens.next()) |card| {
-        counts[rank(card[0])] += 1;
+        const rank = std.mem.findScalar(u8, "23456789TJQKA", card[0]).? + 2;
+        counts[rank] += 1;
         if (suit == 0)
             suit = card[1];
         if (card[1] != suit)
@@ -50,16 +43,7 @@ fn evaluate(original: []const u8) Hand {
     }
     const wheel = len == 5 and counts[14] == 1 and counts[2] == 1 and counts[3] == 1 and counts[4] == 1 and counts[5] == 1;
     const straight = len == 5 and (wheel or sequence[4] - sequence[0] == 4);
-    for (0..len) |i| {
-        for (i + 1..len) |j| {
-            const a = sequence[i];
-            const b = sequence[j];
-            if (counts[b] > counts[a] or (counts[b] == counts[a] and b > a)) {
-                sequence[i] = b;
-                sequence[j] = a;
-            }
-        }
-    }
+    std.mem.sort(u8, sequence[0..len], @as(*const [15]u8, &counts), rankLess);
     if (wheel)
         sequence = .{ 5, 4, 3, 2, 1 };
     const category: u8 = if (straight and flush) 8 else if (four) 7 else if (triple and pairs == 1) 6 else if (flush) 5 else if (straight) 4 else if (triple) 3 else if (pairs == 2) 2 else if (pairs == 1) 1 else 0;

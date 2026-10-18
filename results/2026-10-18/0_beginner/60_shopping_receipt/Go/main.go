@@ -1,14 +1,12 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	items := []struct {
 		name string
 		price, quantity, category int
-	} {{"milk", 198, 2, 0}, {"notebook", 165, 3, 1}, {"bread", 248, 1, 0}, {"apple", 128, 4, 0}, {"detergent",
+	}{{"milk", 198, 2, 0}, {"notebook", 165, 3, 1}, {"bread", 248, 1, 0}, {"apple", 128, 4, 0}, {"detergent",
 		437, 1, 1}, {"eggs", 268, 1, 0}}
 	totals := [2]int{}
 	for _, item := range items {

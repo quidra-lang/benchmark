@@ -23,8 +23,6 @@ local systems = {{{2.0,-1.0,3.0,7.0},{4.0,1.0,-2.0,3.0},{-3.0,5.0,1.0,-4.0}},{{1
 for number,matrix in ipairs(systems) do
     io.write(string.format("system %d:\n",number))
     for i,value in ipairs(solve_system(matrix)) do
-        local rounded = math.floor(math.abs(value)*10000+0.5)/10000
-        if value < 0 then rounded = -rounded end
-        io.write(string.format("x%d = %.4f\n",i,rounded))
+        io.write(string.format("x%d = %.4f\n",i,value))
     end
 end

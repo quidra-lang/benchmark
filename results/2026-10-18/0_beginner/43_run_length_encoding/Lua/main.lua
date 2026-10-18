@@ -3,7 +3,8 @@ local function encode(source)
     while i <= #source do
         local j = i+1
         while j <= #source and source:sub(j,j) == source:sub(i,i) do j = j+1 end
-        result[#result+1] = tostring(j-i)..source:sub(i,i); i = j
+        result[#result+1] = tostring(j-i)..source:sub(i,i)
+        i = j
     end
     return table.concat(result)
 end

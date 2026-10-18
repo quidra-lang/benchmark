@@ -4,10 +4,7 @@ encode <- function(source) {
 }
 decode <- function(encoded) {
     runs <- regmatches(encoded,gregexpr("[0-9]+[A-Z]",encoded))[[1]]
-    paste(vapply(runs,function(run) {
-        size <- nchar(run)
-        strrep(substr(run,size,size),as.integer(substr(run,1,size-1)))
-    },character(1)),collapse="")
+    paste(strrep(sub("[0-9]+", "", runs), as.integer(sub("[A-Z]", "", runs))), collapse="")
 }
 for (source in c("AAABBBCCCD","WWWWWWWWWWWWBWWWWWWWWWWWWBBB","ALGORITHM","MISSISSIPPI","XXXXXXXXXXYYYYYYYYYYYYYYYYYYYYYZ")) {
     encoded <- encode(source)

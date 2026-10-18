@@ -1,6 +1,13 @@
 fn value(c: u8) -> i32 {
     match c {
-        b'I' => 1, b'V' => 5, b'X' => 10, b'L' => 50, b'C' => 100, b'D' => 500, b'M' => 1000, _ => 0
+        b'I' => 1,
+        b'V' => 5,
+        b'X' => 10,
+        b'L' => 50,
+        b'C' => 100,
+        b'D' => 500,
+        b'M' => 1000,
+        _ => 0,
     }
 }
 
@@ -21,11 +28,7 @@ fn main() {
         for i in 0..bytes.len() {
             let v = value(bytes[i]);
             let next = bytes.get(i + 1).map_or(0, |&c| value(c));
-            result += if v < next {
-                -v
-            } else {
-                v
-            };
+            result += if v < next { -v } else { v };
         }
         println!("{} -> {} -> {}", n, roman, result);
     }

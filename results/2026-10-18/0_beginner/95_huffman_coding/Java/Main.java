@@ -1,19 +1,11 @@
-import java.util.*;
-import java.math.*;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.PriorityQueue;
+import java.util.TreeMap;
 
 public class Main {
-    static class Node {
-        int weight, minimum;
-        Character symbol;
-        Node left, right;
-        Node(int weight, int minimum, Character symbol, Node left, Node right) {
-            this.weight = weight;
-            this.minimum = minimum;
-            this.symbol = symbol;
-            this.left = left;
-            this.right = right;
-        }
-    }
+    record Node(int weight, int minimum, Character symbol, Node left, Node right) {}
     static void codes(Node node, String prefix, Map<Character,String> result) {
         if (node.symbol != null) result.put(node.symbol,prefix);
         else {
@@ -34,14 +26,12 @@ public class Main {
         }
         Map<Character,String> codes = new HashMap<>();
         codes(queue.remove(),"",codes);
-        int bits = 0;
         for (var entry : frequencies.entrySet()) {
             char ch = entry.getKey();
             String code = codes.get(ch);
-            bits += entry.getValue() * code.length();
             System.out.println("'" + ch + "' freq=" + entry.getValue() + " code=" + code);
         }
-        System.out.println("encoded bits: " + bits);
+        System.out.println("encoded bits: " + frequencies.entrySet().stream().mapToInt(entry -> entry.getValue() * codes.get(entry.getKey()).length()).sum());
         System.out.println("fixed 8-bit: " + text.length() * 8);
     }
 }

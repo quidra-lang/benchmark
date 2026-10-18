@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	black := [11][11]bool{}
@@ -14,7 +12,7 @@ func main() {
 		} else {
 			d = (d + 1) % 4
 		}
-		black[r][c] = ! black[r][c]
+		black[r][c] = !black[r][c]
 		r, c = (r + dr[d] + 11) % 11, (c + dc[d] + 11) % 11
 	}
 	count := 0

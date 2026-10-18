@@ -5,11 +5,11 @@ import (
 	"sort"
 )
 
-func dfs(v int, graph * [9][9]bool, seen * [9]bool, order * []int) {
+func dfs(v int, graph *[9][9]bool, seen *[9]bool, order *[]int) {
 	seen[v] = true
-	* order = append(*order, v)
+	*order = append(*order, v)
 	for w := 0; w < 9; w++ {
-		if graph[v][w] && ! seen[w] {
+		if graph[v][w] && !seen[w] {
 			dfs(w, graph, seen, order)
 		}
 	}
@@ -36,7 +36,7 @@ func main() {
 		v := queue[head]
 		fmt.Printf(" %d", v)
 		for w := 0; w < 9; w++ {
-			if graph[v][w] && ! seen[w] {
+			if graph[v][w] && !seen[w] {
 				seen[w] = true
 				queue = append(queue, w)
 			}
@@ -46,7 +46,7 @@ func main() {
 	seen = [9]bool{}
 	components := [][]int{}
 	for v := 0; v < 9; v++ {
-		if ! seen[v] {
+		if !seen[v] {
 			component := []int{}
 			dfs(v, &graph, &seen, &component)
 			sort.Ints(component)

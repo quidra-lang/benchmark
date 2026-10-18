@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func hanoi(n int, source, target, auxiliary rune) int {
 	if n == 0 {
@@ -14,6 +12,5 @@ func hanoi(n int, source, target, auxiliary rune) int {
 }
 
 func main() {
-	count := hanoi(4, 'A', 'C', 'B')
-	fmt.Printf("total moves: %d\n", count)
+	fmt.Printf("total moves: %d\n", hanoi(4, 'A', 'C', 'B'))
 }

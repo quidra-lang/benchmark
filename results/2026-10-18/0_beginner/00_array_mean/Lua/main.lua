@@ -4,5 +4,4 @@ for _, value in ipairs(values) do
     total = total + value
 end
 local mean = total / #values
-local rounded = math.floor(mean * 100 + 0.5) / 100
-io.write(string.format("%.2f\n", rounded))
+io.write(string.format("%.2f\n", mean))

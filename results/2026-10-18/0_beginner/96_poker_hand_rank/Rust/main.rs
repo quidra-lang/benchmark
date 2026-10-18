@@ -1,7 +1,7 @@
 struct Hand {
     text: String,
     category: usize,
-    key: Vec<usize>
+    key: Vec<usize>,
 }
 
 fn evaluate(text: &str) -> Hand {
@@ -16,7 +16,7 @@ fn evaluate(text: &str) -> Hand {
             flush = false;
         }
     }
-    let mut key: Vec<usize> = (2..=14).filter(|&r| counts[r]> 0).rev().collect();
+    let mut key: Vec<usize> = (2..=14).filter(|&r| counts[r] > 0).rev().collect();
     let maximum = *counts.iter().max().unwrap();
     let pairs = counts.iter().filter(|&&c| c == 2).count();
     let wheel = key.len() == 5 && [14, 2, 3, 4, 5].iter().all(|&r| counts[r] > 0);
@@ -40,12 +40,14 @@ fn evaluate(text: &str) -> Hand {
     } else {
         0
     };
-    key.sort_by(|a, b| counts[ * b].cmp(&counts[ * a]).then(b.cmp(a)));
+    key.sort_by(|a, b| counts[*b].cmp(&counts[*a]).then(b.cmp(a)));
     if wheel && straight {
         key = (1..=5).rev().collect();
     }
     Hand {
-        text: text.to_string(), category, key
+        text: text.to_string(),
+        category,
+        key,
     }
 }
 

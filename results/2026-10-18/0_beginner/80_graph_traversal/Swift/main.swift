@@ -1,5 +1,3 @@
-import Foundation
-
 func dfs(_ v: Int, _ graph: [[Bool]], _ seen: inout [Bool], _ order: inout [Int]) {
     seen[v] = true
     order.append(v)

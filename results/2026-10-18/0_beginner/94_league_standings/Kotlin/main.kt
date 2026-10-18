@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val matches = listOf("Lions 0-3 Bears",
         "Tigers 2-2 Wolves",

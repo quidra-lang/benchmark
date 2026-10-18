@@ -19,6 +19,6 @@ function main()
     end
     println("max value: ",table[end,end])
     println("total weight: ",capacity-remaining)
-    println("items: ",join([items[i][1] for i in eachindex(items) if chosen[i]]," "))
+    println("items: ",join((items[i][1] for i in eachindex(items) if chosen[i])," "))
 end
 main()

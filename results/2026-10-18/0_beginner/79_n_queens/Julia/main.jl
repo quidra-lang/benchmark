@@ -1,29 +1,22 @@
 function solve_queens(n)
     columns = fill(-1,n)
     first_solution = Int[]
-    solutions = Ref(0)
+    solutions = 0
     function place(row)
         if row == n
-            solutions[] += 1
+            solutions += 1
             isempty(first_solution) && append!(first_solution,columns)
             return
         end
         for column in 0:n-1
-            valid = true
-            for previous in 0:row-1
-                if columns[previous+1] == column || abs(columns[previous+1]-column) == row-previous
-                    valid = false
-                    break
-                end
-            end
-            if valid
+            if all(previous -> columns[previous+1] != column && abs(columns[previous+1]-column) != row-previous, 0:row-1)
                 columns[row+1] = column
                 place(row+1)
             end
         end
     end
     place(0)
-    return solutions[],first_solution
+    return solutions,first_solution
 end
 function main()
     first_eight = Int[]

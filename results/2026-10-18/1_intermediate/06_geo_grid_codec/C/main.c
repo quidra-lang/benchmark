@@ -84,12 +84,11 @@ static Integer floor_ratio(Integer a, Integer b) {
     return q;
 }
 static Integer modulo(Integer a, Integer b) { return a - floor_ratio(a,b) * b; }
-static Integer absolute(Integer a) { return a < 0 ? -a : a; }
 static Integer minimum(Integer a, Integer b) { return a < b ? a : b; }
 static Integer maximum(Integer a, Integer b) { return a > b ? a : b; }
 static char *padded(Integer value, int width) { return format("%0*lld", width, value); }
 static char *coordinate(Integer value) {
-    Integer magnitude = absolute(value);
+    Integer magnitude = llabs(value);
     return format("%s%lld.%06lld", value < 0 ? "-" : "", magnitude / 1000000, magnitude % 1000000);
 }
 static bool digits(const char *s, int low, int high) {
@@ -104,9 +103,7 @@ static Integer integer(const char *s, Integer low, Integer high) {
     bool negative = s[0] == '-';
     const char *body = s + (negative ? 1 : 0);
     require(digits(body,1,9));
-    Integer value = 0;
-    for (const char *p = body; *p; ++p) value = value * 10 + *p - '0';
-    if (negative) value = -value;
+    Integer value = strtoll(s, NULL, 10);
     require(value >= low && value <= high);
     return value;
 }
@@ -168,7 +165,7 @@ static bool equal(Cell a, Cell b) { return a.precision == b.precision && a.x == 
 static char *encode(int system, Cell c) {
     int p = grids[system][c.precision].precision;
     Integer x = c.x, y = c.y;
-    Text result = {{0},0};
+    Text result = {0};
     if (system == 0) {
         int a = (5*p+1)/2, b = 5*p/2, value = 0;
         for (int i = 0; i < 5*p; ++i) {
@@ -427,7 +424,7 @@ static char *compact(int system, char **codes, int code_count) {
             Grid g = grids[system][c.precision], pg = grids[system][parent.precision];
             Integer needed = (g.width/pg.width)*(g.height/pg.height);
             if (needed > count) continue;
-            bool children[100] = {false};
+            bool children[100];
             int matches = 0;
             for (int j = 0; j < count; ++j) {
                 children[j] = cells[j].precision == c.precision && equal(ancestor(system,cells[j],parent.precision),parent);
@@ -444,7 +441,7 @@ static char *compact(int system, char **codes, int code_count) {
         if (!changed) break;
     }
     qsort(cells,(size_t)count,sizeof(*cells),cell_order);
-    Text result = {{0},0};
+    Text result = {0};
     for (int i = 0; i < count; ++i) item(&result,encode(system,cells[i]));
     return copy_text(&result);
 }
@@ -489,7 +486,7 @@ static const char *execute(char **a, int count) {
             Grid g = grids[system][precision];
             Integer columns = lon1 <= lon2 ? last.x-first.x+1 : minimum(g.width,last.x-first.x+1+g.width);
             if ((last.y-first.y+1)*columns > 100) return "TOO MANY";
-            Text result = {{0},0};
+            Text result = {0};
             for (Integer y = last.y; y >= first.y; --y) {
                 for (Integer i = 0; i < columns; ++i) item(&result,display(system,(Cell){precision,(first.x+i)%g.width,y}));
             }
@@ -512,7 +509,7 @@ static const char *execute(char **a, int count) {
         }
         if (command == 2) {
             const int dx[] = {0,1,1,1,0,-1,-1,-1}, dy[] = {1,1,0,-1,-1,-1,0,1};
-            Text result = {{0},0};
+            Text result = {0};
             for (int i = 0; i < 8; ++i) {
                 const char *code = c.y+dy[i] < 0 || c.y+dy[i] >= g.height ? "-" : display(system,(Cell){c.precision,modulo(c.x+dx[i],g.width),c.y+dy[i]});
                 item(&result,code);
@@ -525,7 +522,7 @@ static const char *execute(char **a, int count) {
             Grid next = grids[system][c.precision+1];
             Integer rx = next.width/g.width, ry = next.height/g.height;
             if (rx*ry > 100) return "TOO MANY";
-            Text result = {{0},0};
+            Text result = {0};
             for (Integer j = ry-1; j >= 0; --j) {
                 for (Integer i = 0; i < rx; ++i) item(&result,display(system,(Cell){c.precision+1,rx*c.x+i,ry*c.y+j}));
             }
@@ -558,9 +555,9 @@ static const char *execute(char **a, int count) {
         Integer dx = modulo(other.x-c.x,g.width), dy = other.y-c.y;
         if (dx > g.width/2) dx -= g.width;
         if (command == 10) return format("dx=%lld dy=%lld",dx,dy);
-        Integer n = maximum(absolute(dx),absolute(dy));
+        Integer n = maximum(llabs(dx),llabs(dy));
         if (n+1 > 100) return "TOO MANY";
-        Text result = {{0},0};
+        Text result = {0};
         for (Integer i = 0; i <= n; ++i) {
             Integer x = c.x+(n ? floor_ratio(2*i*dx+n,2*n) : 0), y = c.y+(n ? floor_ratio(2*i*dy+n,2*n) : 0);
             item(&result,display(system,(Cell){c.precision,modulo(x,g.width),y}));
@@ -589,8 +586,8 @@ static const char *execute(char **a, int count) {
         Integer cy = center_numerator(c.y,g.height,180000000), cx = center_numerator(c.x,g.width,360000000);
         Integer yd = 2*g.height, xd = 2*g.width;
         if (command == 14) {
-            if (absolute(cy-lat*yd) < 15000*yd && absolute(cx-lon*xd) < 15000*xd) return full+6;
-            if (absolute(cy-lat*yd) < 300000*yd && absolute(cx-lon*xd) < 300000*xd) return full+4;
+            if (llabs(cy-lat*yd) < 15000*yd && llabs(cx-lon*xd) < 15000*xd) return full+6;
+            if (llabs(cy-lat*yd) < 300000*yd && llabs(cx-lon*xd) < 300000*xd) return full+4;
             return full;
         }
         Integer distance = removed == 4 ? 1000000 : 50000;
@@ -659,7 +656,7 @@ static const char *execute(char **a, int count) {
     if (command == 21) {
         int z = (int)integer(a[3],1,23);
         Integer x = integer(a[1],0,(1LL<<z)-1), y = integer(a[2],0,(1LL<<z)-1);
-        Text key = {{0},0};
+        Text key = {0};
         for (int i = z-1; i >= 0; --i) character(&key,(char)('0'+(x>>i&1)+2*(y>>i&1)));
         return copy_text(&key);
     }

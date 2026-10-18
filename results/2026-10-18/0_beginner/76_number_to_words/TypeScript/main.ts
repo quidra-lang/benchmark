@@ -1,6 +1,6 @@
 const small = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(" ");
 const tens = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
-function underThousand(value) {
+function underThousand(value: number): string {
   const parts = [];
   if (value >= 100) parts.push(small[Math.floor(value / 100)] + " hundred");
   const remainder = value % 100;

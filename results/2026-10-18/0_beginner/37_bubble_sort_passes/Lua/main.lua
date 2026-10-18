@@ -4,7 +4,8 @@ for pass = 1, 7 do
     for j = 1, 8-pass do
         if numbers[j] > numbers[j+1] then
             numbers[j],numbers[j+1] = numbers[j+1],numbers[j]
-            total = total+1; changed = true
+            total = total+1
+            changed = true
         end
     end
     io.write(string.format("pass %d: %s\n",pass,table.concat(numbers," ")))

@@ -16,9 +16,7 @@ pub fn main(init: std.process.Init) !void {
             index = (index + p[1] - 1) % len;
             survivor = people[index];
             try out.print(" {d}", .{ survivor });
-            var j = index;
-            while (j + 1 < len) : (j += 1)
-                people[j] = people[j + 1];
+            std.mem.copyForwards(usize, people[index..len - 1], people[index + 1..len]);
             len -= 1;
         }
         try out.print("\nsurvivor: {d}\n", .{ survivor });

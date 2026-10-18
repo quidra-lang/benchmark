@@ -87,13 +87,8 @@ class Airline {
         if (target != null) f.occupied[target.id] = p
     }
     private fun select(p: Passenger, cabin: String): Seat? {
-        var first: Seat? = null
-        for (s in p.booking.flight.aircraft.cabins.getValue(cabin).seats) {
-            if (!fits(p,s)) continue
-            if (first == null) first = s
-            if (p.pref == s.kind) return s
-        }
-        return first
+        val candidates = p.booking.flight.aircraft.cabins.getValue(cabin).seats.filter { fits(p,it) }
+        return candidates.firstOrNull { it.kind == p.pref } ?: candidates.firstOrNull()
     }
     private fun reassign(f: Flight, output: MutableList<String>) {
         for (p in passengers(f)) {
@@ -107,10 +102,8 @@ class Airline {
         }
     }
     private fun candidate(people: List<Passenger>, positions: List<Seat>): Boolean {
-        val proposed = people.indices.associate { people[it] to positions[it] }
-        for (p in people) {
-            if (!fits(p,proposed.getValue(p),proposed = proposed)) return false
-        }
+        val proposed = people.zip(positions).toMap()
+        if (!people.all { fits(it,proposed.getValue(it),proposed = proposed) }) return false
         for (p in people) seat(p,proposed.getValue(p))
         return true
     }

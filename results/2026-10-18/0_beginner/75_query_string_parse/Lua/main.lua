@@ -1,19 +1,8 @@
 local function decode_component(source)
-    local output,i = {},1
-    while i <= #source do
-        local c = source:sub(i,i)
-        if c == "+" then
-            output[#output+1] = " "
-            i = i+1
-        elseif c == "%" then
-            output[#output+1] = string.char(tonumber(source:sub(i+1,i+2),16))
-            i = i+3
-        else
-            output[#output+1] = c
-            i = i+1
-        end
-    end
-    return table.concat(output)
+    source = source:gsub("%+", " ")
+    return (source:gsub("%%(%x%x)", function(hex)
+        return string.char(tonumber(hex, 16))
+    end))
 end
 local queries = {"name=Alice+Smith&age=30&city=New%20York","q=c%2B%2B+tutorial&page=2&sort=desc&page=3","msg=50%25+off%21&debug&lang=en&ref=&lang=ja","redirect=https%3a%2f%2fexample.com%2Fhome&token=abc==&item10=pen&item2=fish%26chips"}
 for number,query in ipairs(queries) do

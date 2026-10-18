@@ -1,3 +1,4 @@
+#include <charconv>
 #include <iostream>
 #include <string>
 #include <array>
@@ -13,12 +14,12 @@ int main() {
             encoded += std::to_string(j - i) + s[i];
             i = j;
         }
-        for (std::size_t i = 0; i < encoded.size();) {
-            int count = 0;
-            while (encoded[i] >= '0' && encoded[i] <= '9')
-                count = count * 10 + encoded[i++] - '0';
-            char c = encoded[i++];
-            decoded.append(count, c);
+        const char *end = encoded.data() + encoded.size();
+        for (const char *p = encoded.data(); p < end;) {
+            int count;
+            const char *next = std::from_chars(p, end, count).ptr;
+            decoded.append(count, *next);
+            p = next + 1;
         }
         std::cout << s << " -> " << encoded << " -> " << decoded << '\n';
     }

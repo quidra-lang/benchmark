@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:math' as math;
 
 class HNode {
@@ -9,7 +8,6 @@ class HNode {
 }
 
 void main() {
-    final out = StringBuffer();
     const text = 'she sells sea shells by the sea shore';
     final frequency = <int, int>{};
     for (final c in text.codeUnits)
@@ -22,7 +20,6 @@ void main() {
     while (active.length > 1) {
         active.sort(compare);
         final left = active.removeAt(0);
-        active.sort(compare);
         final right = active.removeAt(0);
         active.add(HNode(left.weight + right.weight, math.min(left.minimum, right.minimum), left: left,
             right: right));
@@ -40,9 +37,8 @@ void main() {
     final symbols = frequency.keys.toList()..sort();
     var bits = 0;
     for (final c in symbols) {
-        out.writeln("'${String.fromCharCode(c)}' freq=${frequency[c]} code=${codes[c]}");
+        print("'${String.fromCharCode(c)}' freq=${frequency[c]} code=${codes[c]}");
         bits += frequency[c]! * codes[c]!.length;
     }
-    out.writeln('encoded bits: $bits\nfixed 8-bit: ${text.length*8}');
-    stdout.write(out);
+    print('encoded bits: $bits\nfixed 8-bit: ${text.length*8}');
 }

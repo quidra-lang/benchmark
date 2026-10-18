@@ -3,7 +3,9 @@ package main
 import (
     "bufio"
     "fmt"
+    "maps"
     "os"
+    "slices"
     "sort"
     "strconv"
     "strings"
@@ -47,8 +49,8 @@ func integer(s string) int64 {
     return n
 }
 func amount(s string) int64 {
-    a := strings.Split(s, ".")
-    return integer(a[0])*100+integer(a[1])
+    whole, fraction, _ := strings.Cut(s, ".")
+    return integer(whole)*100+integer(fraction)
 }
 func money(n int64) string { return fmt.Sprintf("%d.%02d", n/100, n%100) }
 func signedMoney(n int64) string {
@@ -278,7 +280,7 @@ func chronological() []int {
     return order
 }
 func greedy(group []int, original []int64) []transfer {
-    values := append([]int64(nil), original...)
+    values := slices.Clone(original)
     var result []transfer
     for {
         from, to := -1, -1
@@ -298,18 +300,6 @@ func transferLines(transfers []transfer, indent string) []string {
     var result []string
     for _, t := range transfers { result = append(result, indent+members[t.from].name+" -> "+members[t.to].name+" "+money(t.amount)) }
     return result
-}
-func keys(m map[string]int64) []string {
-    var result []string
-    for k := range m { result = append(result, k) }
-    sort.Strings(result)
-    return result
-}
-func lexLess(a, b []int) bool {
-    for i := 0; i < len(a) && i < len(b); i++ {
-        if a[i] != b[i] { return a[i] < b[i] }
-    }
-    return len(a) < len(b)
 }
 func execute(line string) []string {
     a := strings.Split(line, " ")
@@ -333,8 +323,8 @@ func execute(line string) []string {
                 continue
             }
             copy := *original
-            copy.payers = append([]part(nil), original.payers...)
-            copy.participants = append([]part(nil), original.participants...)
+            copy.payers = slices.Clone(original.payers)
+            copy.participants = slices.Clone(original.participants)
             copy.id = original.id+"#"+strconv.FormatInt(original.copies+2, 10)
             copy.day = original.next
             serial++
@@ -415,7 +405,7 @@ func execute(line string) []string {
     case "DELETE":
         id := expenseID(a[1])
         checkFrozen(expenses[id])
-        expenses = append(expenses[:id], expenses[id+1:]...)
+        expenses = slices.Delete(expenses, id, id+1)
         out = append(out, "DELETE "+a[1])
     case "RECURRING":
         e := &expenses[expenseID(a[1])]
@@ -521,7 +511,7 @@ func execute(line string) []string {
             totals[e.category] += e.total
             total += e.total
         }
-        categories := keys(totals)
+        categories := slices.Sorted(maps.Keys(totals))
         sort.SliceStable(categories, func(i, j int) bool { return totals[categories[i]] > totals[categories[j]] })
         for _, category := range categories {
             out = append(out, "  "+category+" "+money(totals[category])+" "+percentage(totals[category], total))
@@ -541,7 +531,7 @@ func execute(line string) []string {
         }
     case "BUDGETS":
         out = append(out, "BUDGETS")
-        for _, category := range keys(budgets) {
+        for _, category := range slices.Sorted(maps.Keys(budgets)) {
             s, b := spent(category), budgets[category]
             suffix := " left "+money(b-s)
             if s > b { suffix = " over "+money(s-b) }
@@ -563,7 +553,7 @@ func execute(line string) []string {
             received[s.to] += s.total
         }
         for _, i := range orderedMembers(false) { out = append(out, "  "+members[i].name+" paid "+money(paid[i])+" share "+money(shares[i])+" sent "+money(sent[i])+" received "+money(received[i])) }
-        for _, currency := range keys(currencies) {
+        for _, currency := range slices.Sorted(maps.Keys(currencies)) {
             count := 0
             var original, base int64
             for _, e := range expenses {
@@ -618,9 +608,7 @@ func execute(line string) []string {
             g.total += e.total
             groups[i] = g
         }
-        var order []int64
-        for i := range groups { order = append(order, i) }
-        sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+        order := slices.Sorted(maps.Keys(groups))
         out = append(out, "PERIODS "+a[1])
         for _, i := range order { out = append(out, fmt.Sprintf("  days %d-%d expenses %d total %s", i*k+1, i*k+k, groups[i].count, money(groups[i].total))) }
     case "SHOW":
@@ -683,7 +671,7 @@ func execute(line string) []string {
                     for i := 0; i < n; i++ {
                         if sub&(1<<i) != 0 { list = append(list, i) }
                     }
-                    if chosen == 0 || lexLess(list, chosenList) { chosen, chosenList = sub, list }
+                    if chosen == 0 || slices.Compare(list, chosenList) < 0 { chosen, chosenList = sub, list }
                 }
                 var group []int
                 var names []string

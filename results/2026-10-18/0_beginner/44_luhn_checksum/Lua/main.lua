@@ -2,7 +2,10 @@ for _, number in ipairs({"688126340316","0128469655154","92181914514156","177332
     local total = 0
     for position = 1, #number do
         local digit = tonumber(number:sub(#number-position+1,#number-position+1))
-        if position % 2 == 0 then digit = digit*2; if digit > 9 then digit = digit-9 end end
+        if position % 2 == 0 then
+            digit = digit*2
+            if digit > 9 then digit = digit-9 end
+        end
         total = total+digit
     end
     if total % 10 == 0 then io.write(number,": valid\n")

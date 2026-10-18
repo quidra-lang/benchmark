@@ -1,6 +1,3 @@
-import Foundation
-
-
 let names = ["Sato","Suzuki","Takahashi","Tanaka","Ito","Watanabe"], usages = [85,120,254,300,438,176]
 var total = 0
 for i in names.indices {

@@ -7,11 +7,7 @@ fn main() {
         arrival += (x % 5) as i32 + 1;
         x = x * 48271 % 2147483647;
         let service = (x % 7) as i32 + 2;
-        let teller = if free_time[0] <= free_time[1] {
-            0
-        } else {
-            1
-        };
+        let teller = usize::from(free_time[1] < free_time[0]);
         let start = arrival.max(free_time[teller]);
         let end = start + service;
         let wait = start - arrival;
@@ -21,8 +17,6 @@ fn main() {
         println!("customer {}: arrive={} start={} end={} teller={} wait={}", k, arrival, start, end, teller + 1,
             wait);
     }
-    let average = f64::from(total_wait) / 20.0;
-    let q = (average * 100.0 + 0.5) as i32;
-    println!("average wait: {}.{:02}\nmax wait: {}\nlast departure: {}", q / 100, q % 100, maximum,
+    println!("average wait: {:.2}\nmax wait: {}\nlast departure: {}", f64::from(total_wait) / 20.0, maximum,
         free_time[0].max(free_time[1]));
 }

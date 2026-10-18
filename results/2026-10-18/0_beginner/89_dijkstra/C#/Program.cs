@@ -16,10 +16,7 @@ int[] previous = Enumerable.Repeat(-1,7).ToArray();
 distance[0] = 0;
 bool[] done = new bool[7];
 for (int count = 0; count < 7; count++) {
-    int u = -1;
-    for (int v = 0; v < 7; v++) {
-        if (!done[v] && (u < 0 || distance[v] < distance[u])) u = v;
-    }
+    int u = Enumerable.Range(0, 7).Where(v => !done[v]).MinBy(v => distance[v]);
     done[u] = true;
     for (int v = 0; v < 7; v++) {
         if (weight[u,v] > 0 && distance[u] + weight[u,v] < distance[v]) {

@@ -8,7 +8,7 @@ for (customer in 1:20) {
     arrival <- arrival+state %% 5+1
     state <- (state*48271) %% 2147483647
     service <- state %% 7+2
-    teller <- if (free_times[1] <= free_times[2]) 1 else 2
+    teller <- which.min(free_times)
     start <- max(arrival,free_times[teller])
     departure <- start+service
     wait <- start-arrival

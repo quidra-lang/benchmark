@@ -19,7 +19,7 @@ func main() {
 			}
 			redo = append(redo, buffer)
 			buffer = undo[len(undo) - 1]
-			undo = undo[: len(undo) - 1]
+			undo = undo[:len(undo)-1]
 		} else if command == "redo" {
 			if len(redo) == 0 {
 				fmt.Println("redo => nothing to redo")
@@ -27,7 +27,7 @@ func main() {
 			}
 			undo = append(undo, buffer)
 			buffer = redo[len(redo) - 1]
-			redo = redo[: len(redo) - 1]
+			redo = redo[:len(redo)-1]
 		} else {
 			undo = append(undo, buffer)
 			redo = nil
@@ -35,7 +35,7 @@ func main() {
 				buffer += command[5:]
 			} else {
 				count, _ := strconv.Atoi(command[7:])
-				buffer = buffer[: max(0, len(buffer) - count)]
+				buffer = buffer[:max(0, len(buffer)-count)]
 			}
 		}
 		fmt.Printf("%s => \"%s\"\n", command, buffer)

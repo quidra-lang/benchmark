@@ -2,11 +2,14 @@
 $names = str_split('ABCDEFG');
 $weights = array_fill(0,7,array_fill(0,7,0));
 foreach ([['A','B',7],['A','C',3],['A','D',9],['B','C',2],['C','E',6],['B','D',3],['D','E',4],['D','F',5],['E','F',3],['E','G',8],['F','G',4]] as [$a,$b,$weight]) {
-    $i = ord($a)-65; $j = ord($b)-65;
+    $i = ord($a)-65;
+    $j = ord($b)-65;
     $weights[$i][$j] = $weights[$j][$i] = $weight;
 }
-$distance = array_fill(0,7,PHP_INT_MAX); $distance[0] = 0;
-$previous = array_fill(0,7,-1); $finalized = array_fill(0,7,false);
+$distance = array_fill(0,7,PHP_INT_MAX);
+$distance[0] = 0;
+$previous = array_fill(0,7,-1);
+$finalized = array_fill(0,7,false);
 for ($step = 0; $step < 7; $step++) {
     $vertex = -1;
     for ($i = 0; $i < 7; $i++) {
@@ -22,7 +25,8 @@ for ($step = 0; $step < 7; $step++) {
     }
 }
 foreach ($names as $i => $name) {
-    $path = []; $vertex = $i;
+    $path = [];
+    $vertex = $i;
     while ($vertex >= 0) {
         array_unshift($path,$names[$vertex]);
         $vertex = $previous[$vertex];

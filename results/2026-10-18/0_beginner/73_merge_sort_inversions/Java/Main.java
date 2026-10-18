@@ -1,5 +1,4 @@
-import java.util.*;
-import java.math.*;
+import java.util.Arrays;
 
 public class Main {
     static int mergeSort(int[] values, int l, int r) {

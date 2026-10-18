@@ -1,6 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
 class Node(var key: Int, var left: Node? = null, var right: Node? = null)
 fun insert(node: Node?, key: Int): Node {
     if (node == null) return Node(key)

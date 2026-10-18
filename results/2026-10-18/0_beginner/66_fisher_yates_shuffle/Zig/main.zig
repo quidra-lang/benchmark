@@ -14,9 +14,7 @@ pub fn main(init: std.process.Init) !void {
     while (i > 0) : (i -= 1) {
         state = (state * 48271) % 2147483647;
         const j: usize = @intCast(state % (i + 1));
-        const temp = deck[i];
-        deck[i] = deck[j];
-        deck[j] = temp;
+        std.mem.swap([2]u8, &deck[i], &deck[j]);
     }
     for (deck, 0..) |card, k| {
         if (k % 13 > 0)

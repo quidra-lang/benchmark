@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
 
@@ -17,15 +16,14 @@ for (int i = 1; i <= 7; i++) {
     }
 }
 bool[] chosen = new bool[7];
-int remaining = 20, totalWeight = 0;
+int remaining = 20;
 for (int i = 7; i >= 1; i--) {
     if (dp[i,remaining] != dp[i - 1,remaining]) {
         chosen[i - 1] = true;
         remaining -= weights[i - 1];
-        totalWeight += weights[i - 1];
     }
 }
 var items = names.Where((_,i) => chosen[i]);
 Console.WriteLine($"max value: {dp[7,20]}");
-Console.WriteLine($"total weight: {totalWeight}");
+Console.WriteLine($"total weight: {20 - remaining}");
 Console.WriteLine($"items: {string.Join(" ",items)}");

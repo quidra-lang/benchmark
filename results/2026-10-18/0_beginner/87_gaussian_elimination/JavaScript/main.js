@@ -2,8 +2,8 @@ const systems = [
   [[2, -1, 3, 7], [4, 1, -2, 3], [-3, 5, 1, -4]],
   [[1, 3, -2, 4, 6], [5, -2, 1, 3, -7], [-2, 4, 6, -1, 9], [3, 1, -4, 2, 5]]
 ];
-systems.forEach((system, number) => {
-  const a = system.map(row => [...row]), n = a.length;
+systems.forEach((a, number) => {
+  const n = a.length;
   for (let k = 0; k < n; k++) {
     let pivot = k;
     for (let row = k + 1; row < n; row++) {

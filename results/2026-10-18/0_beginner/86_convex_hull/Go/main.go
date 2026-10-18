@@ -5,7 +5,7 @@ import (
 	"sort"
 )
 
-func cross(o, a, b[2]int) int {
+func cross(o, a, b [2]int) int {
 	return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
 }
 
@@ -21,18 +21,18 @@ func main() {
 	lower, upper := [][2]int{}, [][2]int{}
 	for _, p := range points {
 		for len(lower) >= 2 && cross(lower[len(lower) - 2], lower[len(lower) - 1], p) <= 0 {
-			lower = lower[: len(lower) - 1]
+			lower = lower[:len(lower)-1]
 		}
 		lower = append(lower, p)
 	}
 	for i := len(points) - 1; i >= 0; i-- {
 		p := points[i]
 		for len(upper) >= 2 && cross(upper[len(upper) - 2], upper[len(upper) - 1], p) <= 0 {
-			upper = upper[: len(upper) - 1]
+			upper = upper[:len(upper)-1]
 		}
 		upper = append(upper, p)
 	}
-	hull := append(lower[: len(lower) - 1], upper[: len(upper) - 1]...)
+	hull := append(lower[:len(lower)-1], upper[:len(upper)-1]...)
 	twice := 0
 	fmt.Printf("hull: %d points\n", len(hull))
 	for i, p := range hull {

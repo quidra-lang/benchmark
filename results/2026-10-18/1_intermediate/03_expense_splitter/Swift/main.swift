@@ -70,21 +70,18 @@ final class Splitter {
     var day = 1
     var serial = 0
     func fail(_ message: String) -> Problem { Problem(message: message) }
-    func money(_ s: String) -> Int {
-        let p = s.split(separator: ".")
-        return Int(p[0])!*100+Int(p[1])!
-    }
+    func money(_ s: String) -> Int { Int(s.replacingOccurrences(of: ".",with: ""))! }
     func amount(_ s: String) -> Amount {
         let p = s.split(separator: "@").map(String.init)
         return Amount(value: money(p[0]),currency: p.count == 2 ? p[1] : "")
     }
-    func pad(_ n: Int, _ width: Int) -> String {
-        let s = String(n)
-        return String(repeating: "0",count: max(0,width-s.count))+s
+    func fmt(_ n: Int) -> String {
+        String(format: "%ld.%02ld",locale: Locale(identifier: "en_US_POSIX"),n/100,n%100)
     }
-    func fmt(_ n: Int) -> String { "\(n/100)."+pad(n%100,2) }
     func signed(_ n: Int) -> String { n > 0 ? "+"+fmt(n) : (n < 0 ? "-"+fmt(-n) : "0.00") }
-    func rate(_ n: Int) -> String { "\(n/10000)."+pad(n%10000,4) }
+    func rate(_ n: Int) -> String {
+        String(format: "%ld.%04ld",locale: Locale(identifier: "en_US_POSIX"),n/10000,n%10000)
+    }
     func percent(_ p: Int, _ w: Int) -> String { fmt(p*10000/w)+"%" }
     func note(_ a: Amount) -> String { a.currency.isEmpty ? "" : " [\(fmt(a.value)) \(a.currency)]" }
     func registered(_ name: String) throws {
@@ -208,23 +205,12 @@ final class Splitter {
         var work = balances
         let names = work.keys.sorted()
         var result: [Transfer] = []
-        while true {
-            var from = ""
-            var to = ""
-            var minimum = 0
-            var maximum = 0
-            for name in names {
-                let value = work[name]!
-                if value < minimum {
-                    minimum = value
-                    from = name
-                }
-                if value > maximum {
-                    maximum = value
-                    to = name
-                }
-            }
-            if minimum == 0 { break }
+        while !work.isEmpty {
+            let from = names.min { work[$0]! < work[$1]! }!
+            let to = names.max { work[$0]! < work[$1]! }!
+            let minimum = work[from]!
+            let maximum = work[to]!
+            if minimum >= 0 { break }
             let value = min(-minimum,maximum)
             result.append(Transfer(from: from,to: to,amount: value))
             work[from] = minimum+value
@@ -264,12 +250,6 @@ final class Splitter {
         return result
     }
     func indexes(_ mask: Int, _ n: Int) -> [Int] { (0..<n).filter { mask & (1 << $0) != 0 } }
-    func lexLess(_ a: [Int], _ b: [Int]) -> Bool {
-        for i in 0..<min(a.count,b.count) {
-            if a[i] != b[i] { return a[i] < b[i] }
-        }
-        return a.count < b.count
-    }
     func execute(_ line: String) throws -> [String] {
         let t = line.split(separator: " ").map(String.init)
         let command = t[0]
@@ -406,7 +386,7 @@ final class Splitter {
                     let l = active.map { $0.count }.max()!
                     func cell(_ a: String, _ b: String) -> String { a == b ? "-" : fmt(max(0,debt[index[a]!][index[b]!])) }
                     let width = max(l,active.flatMap { a in active.map { cell(a,$0).count } }.max()!)
-                    func right(_ s: String) -> String { String(repeating: " ",count: width-s.count)+s }
+                    func right(_ s: String) -> String { String(format: "%*@",width,s) }
                     output.append(String(repeating: " ",count: l)+active.map { "  "+right($0) }.joined())
                     for a in active {
                         output.append(a+String(repeating: " ",count: l-a.count)+active.map { "  "+right(cell(a,$0)) }.joined())
@@ -561,7 +541,7 @@ final class Splitter {
                     var sub = remaining
                     while sub > 0 {
                         if sub & first != 0 && sums[sub] == 0 && 1+dp[remaining ^ sub] == dp[remaining] &&
-                            (best == 0 || lexLess(indexes(sub,n),indexes(best,n))) { best = sub }
+                            (best == 0 || indexes(sub,n).lexicographicallyPrecedes(indexes(best,n))) { best = sub }
                         sub = (sub-1) & remaining
                     }
                     groups.append(best)

@@ -1,16 +1,8 @@
 import Foundation
 
-func fixed(_ value: Double, _ places: Int) -> String {
-    var scale = 1
-    for _ in 0..<places { scale *= 10 }
-    let scaled = Int((abs(value) * Double(scale)).rounded(.toNearestOrAwayFromZero))
-    let fraction = String(scaled % scale)
-    return "\(value < 0 ? "-" : "")\(scaled / scale).\(String(repeating: "0", count: places - fraction.count))\(fraction)"
-}
-
 typealias Point = (x: Int, y: Int)
 func cross(_ o: Point, _ a: Point, _ b: Point) -> Int {
-    return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
 }
 func chain(_ points: [Point]) -> [Point] {
     var result = [Point]()
@@ -35,4 +27,4 @@ for i in lower.indices {
     print("(\(a.x), \(a.y))")
     crossSum += a.x * b.y - b.x * a.y
 }
-print("area: \(fixed(Double(crossSum) / 2,1))")
+print(String(format: "area: %.1f", locale: Locale(identifier: "en_US_POSIX"), Double(crossSum) / 2))

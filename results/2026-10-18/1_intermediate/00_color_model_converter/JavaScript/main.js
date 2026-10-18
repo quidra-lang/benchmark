@@ -315,9 +315,7 @@ function palette(colors, count) {
         component = widths.indexOf(width);
       }
     });
-    const sorted = boxes[chosen].map((color, index) => ({color, index}));
-    sorted.sort((a, b) => a.color[component] - b.color[component] || a.index - b.index);
-    const colorsInOrder = sorted.map(item => item.color);
+    const colorsInOrder = boxes[chosen].toSorted((a, b) => a[component] - b[component]);
     const middle = floorRatio(colorsInOrder.length, 2);
     boxes.splice(chosen, 1, colorsInOrder.slice(0, middle), colorsInOrder.slice(middle));
   }
@@ -589,12 +587,12 @@ function execute(line) {
     return palette(colors, count).map(box => hex(mean(box)) + ":" + box.length).join(" ");
   }
   if (command === "SORT") {
-    const records = args.map((token, index) => ({color: colorArgument(token), index}));
-    records.sort((a, b) => {
-      const first = hsl(a.color), second = hsl(b.color);
-      return first[0] - second[0] || first[1] - second[1] || first[2] - second[2] || a.index - b.index;
+    const colors = args.map(colorArgument);
+    colors.sort((a, b) => {
+      const first = hsl(a), second = hsl(b);
+      return first[0] - second[0] || first[1] - second[1] || first[2] - second[2];
     });
-    return records.map(record => hex(record.color)).join(" ");
+    return colors.map(hex).join(" ");
   }
   if (command === "DITHER") return dither(args.map(colorArgument));
   if (command === "RANDOM") {

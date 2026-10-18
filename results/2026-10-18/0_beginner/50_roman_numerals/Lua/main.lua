@@ -1,7 +1,10 @@
 local function to_roman(number)
     local result = ""
     for _, pair in ipairs({{1000,"M"},{900,"CM"},{500,"D"},{400,"CD"},{100,"C"},{90,"XC"},{50,"L"},{40,"XL"},{10,"X"},{9,"IX"},{5,"V"},{4,"IV"},{1,"I"}}) do
-        while number >= pair[1] do result = result..pair[2]; number = number-pair[1] end
+        while number >= pair[1] do
+            result = result..pair[2]
+            number = number-pair[1]
+        end
     end
     return result
 end

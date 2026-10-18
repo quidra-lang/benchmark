@@ -10,9 +10,7 @@ pub fn main(init: std.process.Init) !void {
         var swapped = false;
         for (0..8 - pass) |j| {
             if (a[j] > a[j + 1]) {
-                const t = a[j];
-                a[j] = a[j + 1];
-                a[j + 1] = t;
+                std.mem.swap(i32, &a[j], &a[j + 1]);
                 total += 1;
                 swapped = true;
             }

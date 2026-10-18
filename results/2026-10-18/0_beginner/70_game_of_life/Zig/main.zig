@@ -50,13 +50,9 @@ pub fn main(init: std.process.Init) !void {
         }
         board = next;
     }
-    var alive: u32 = 0;
-    for (board) |row| {
-        for (row) |cell| {
-            if (cell)
-                alive += 1;
-        }
-    }
+    var alive: usize = 0;
+    for (board) |row|
+        alive += std.mem.countScalar(bool, &row, true);
     try out.print("alive: {d}\n", .{ alive });
     try out.flush();
 }

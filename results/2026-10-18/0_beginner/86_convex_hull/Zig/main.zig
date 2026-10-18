@@ -1,21 +1,5 @@
 const std = @import("std");
 
-fn fixed(out: *std.Io.Writer, value: f64, places: usize) !void {
-    var scale: u64 = 1;
-    for (0..places) |_|
-        scale *= 10;
-    const scaled: u64 = @intFromFloat(@floor(@abs(value) * @as(f64, @floatFromInt(scale)) + 0.5));
-    if (value < 0)
-        try out.writeByte('-');
-    try out.print("{d}", .{ scaled / scale });
-    if (places > 0)
-        try out.writeByte('.');
-    var divisor = scale / 10;
-    while (divisor > 0) : (divisor /= 10) {
-        try out.writeByte('0' + @as(u8, @intCast((scaled / divisor) % 10)));
-    }
-}
-
 fn less(_: void, a: [2]i32, b: [2]i32) bool {
     return if (a[0] != b[0]) a[0] < b[0]else a[1] < b[1];
 }
@@ -56,25 +40,17 @@ pub fn main(init: std.process.Init) !void {
         lower[llen] = p;
         llen += 1;
     }
-    var i = points.len;
-    while (i > 0) {
-        i -= 1;
-        const p = points[i];
+    var reverse = std.mem.reverseIterator(&points);
+    while (reverse.next()) |p| {
         while (ulen >= 2 and cross(upper[ulen - 2], upper[ulen - 1], p) <= 0)
             ulen -= 1;
         upper[ulen] = p;
         ulen += 1;
     }
     var hull: [30][2]i32 = undefined;
-    var len: usize = 0;
-    for (lower[0..llen - 1]) |p| {
-        hull[len] = p;
-        len += 1;
-    }
-    for (upper[0..ulen - 1]) |p| {
-        hull[len] = p;
-        len += 1;
-    }
+    const len = llen + ulen - 2;
+    @memcpy(hull[0..llen - 1], lower[0..llen - 1]);
+    @memcpy(hull[llen - 1..len], upper[0..ulen - 1]);
     try out.print("hull: {d} points\n", .{ len });
     var twice: i32 = 0;
     for (hull[0..len], 0..) |p, k| {
@@ -82,8 +58,6 @@ pub fn main(init: std.process.Init) !void {
         const q = hull[(k + 1) % len];
         twice += p[0] * q[1] - q[0] * p[1];
     }
-    try out.writeAll("area: ");
-    try fixed(out, @as(f64, @floatFromInt(twice)) / 2.0, 1);
-    try out.writeByte('\n');
+    try out.print("area: {d:.1}\n", .{@as(f64, @floatFromInt(twice)) / 2.0});
     try out.flush();
 }

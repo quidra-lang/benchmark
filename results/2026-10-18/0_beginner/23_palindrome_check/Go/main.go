@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	for _, phrase := range []string{"Never odd or even", "Race a car", "Was it a car or a cat I saw?",

@@ -17,7 +17,7 @@ local function clone(value)
     return result
 end
 local function append_all(target, items)
-    for _, item in ipairs(items) do target[#target + 1] = item end
+    table.move(items, 1, #items, #target + 1, target)
 end
 local function sum(values)
     local total = 0
@@ -397,11 +397,7 @@ local function undo_event(m)
             end
         end
         if data[17] == 1 then
-            s.lineups = {{}, {}}
-            for index = 1, 6 do
-                s.lineups[1][index] = data[index + 18]
-                s.lineups[2][index] = data[index + 24]
-            end
+            s.lineups = {{table.unpack(data, 19, 24)}, {table.unpack(data, 25, 30)}}
             s.subs, s.timeouts = {data[31], data[32]}, {data[33], data[34]}
         end
         if data[18] == 1 then
@@ -641,8 +637,7 @@ local function execute(line)
     local m = matches[tokens[2]]
     if not m then score_error('unknown match') end
     if command == 'POINT' or command == 'ROLL' or command == 'THROW' or command == 'SUB' or command == 'TIMEOUT' then
-        local args = {}
-        for index = 3, #tokens do args[#args + 1] = tokens[index] end
+        local args = {table.unpack(tokens, 3)}
         event(m, command, args)
     elseif command == 'UNDO' then
         undo_event(m)

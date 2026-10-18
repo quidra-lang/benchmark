@@ -24,12 +24,9 @@ pub fn main(init: std.process.Init) !void {
     };
     for (boards, 0..) |board, i| {
         var cells: [9]u8 = undefined;
-        var empty = false;
-        for (0..9) |j| {
-            cells[j] = board[j / 3][j % 3];
-            if (cells[j] == '.')
-                empty = true;
-        }
+        for (board, 0..) |row, r|
+            @memcpy(cells[r * 3..][0..3], row);
+        const empty = std.mem.findScalar(u8, &cells, '.') != null;
         var winner: u8 = '.';
         for (lines) |line| {
             const mark = cells[line[0]];

@@ -75,12 +75,10 @@ class Codec
   end
 
   def digits(value, radices)
-    result = Array.new(radices.length)
-    (radices.length - 1).downto(0) do |i|
-      result[i] = value % radices[i]
-      value = value.div(radices[i])
-    end
-    result
+    radices.reverse.map do |radix|
+      value, digit = value.divmod(radix)
+      digit
+    end.reverse
   end
 
   def character(set, value)
@@ -282,7 +280,7 @@ class Codec
 
   def coordinate_text(value)
     magnitude = value.abs
-    "#{value.negative? ? '-' : ''}#{magnitude.div(1_000_000)}.#{(magnitude % 1_000_000).to_s.rjust(6, '0')}"
+    format("%s%d.%06d", value.negative? ? "-" : "", magnitude.div(1_000_000), magnitude % 1_000_000)
   end
 
   def center(cell, latitude)

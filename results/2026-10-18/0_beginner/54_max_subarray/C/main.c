@@ -6,7 +6,7 @@ int main(void) {
     for (int k = 0; k < 3; k++) {
         int current = arrays[k][0], best = current, start = 0, left = 0, right = 0;
         for (int i = 1; i < sizes[k]; i++) {
-            if (current + arrays[k][i] < arrays[k][i]) {
+            if (current < 0) {
                 current = arrays[k][i];
                 start = i;
             } else

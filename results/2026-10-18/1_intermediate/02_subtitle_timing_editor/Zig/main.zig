@@ -3,17 +3,12 @@ const Allocator = std.mem.Allocator;
 const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 const Strings = [][]const u8;
 
-fn equal(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
 fn unsigned(text: []const u8, limit: usize) ?i64 {
     if (text.len == 0 or text.len > limit) return null;
-    var value: i64 = 0;
     for (text) |c| {
-        if (c < '0' or c > '9') return null;
-        value = value * 10 + c - '0';
+        if (!std.ascii.isDigit(c)) return null;
     }
-    return value;
+    return std.fmt.parseInt(i64, text, 10) catch null;
 }
 fn timeValue(text: []const u8) ?i64 {
     if (text.len != 12 or text[2] != ':' or text[5] != ':' or text[8] != ',') return null;
@@ -46,17 +41,6 @@ fn decimal(gpa: Allocator, value: i64) Allocator.Error![]const u8 {
     const v: u64 = @intCast(value);
     return std.fmt.allocPrint(gpa, "{d}.{d:0>2}", .{ v / 100, v % 100 });
 }
-fn trim(text: []const u8) []const u8 {
-    return std.mem.trim(u8, text, " ");
-}
-fn join(gpa: Allocator, lines: []const []const u8, separator: []const u8) Allocator.Error![]const u8 {
-    var result: std.ArrayList(u8) = .empty;
-    for (lines, 0..) |line, i| {
-        if (i > 0) try result.appendSlice(gpa, separator);
-        try result.appendSlice(gpa, line);
-    }
-    return result.items;
-}
 fn split(gpa: Allocator, text: []const u8, delimiter: u8, skip_empty: bool) Allocator.Error!Strings {
     var result: std.ArrayList([]const u8) = .empty;
     var parts = std.mem.splitScalar(u8, text, delimiter);
@@ -83,12 +67,16 @@ fn wrap(gpa: Allocator, lines: []const []const u8, width: usize) Allocator.Error
 fn sameLines(a: []const []const u8, b: []const []const u8) bool {
     if (a.len != b.len) return false;
     for (a, b) |x, y| {
-        if (!equal(x, y)) return false;
+        if (!std.mem.eql(u8, x, y)) return false;
     }
     return true;
 }
 fn normalized(gpa: Allocator, text: []const u8) Allocator.Error![]const u8 {
-    return join(gpa, try split(gpa, text, ' ', true), " ");
+    return std.mem.join(gpa, " ", try split(gpa, text, ' ', true));
+}
+
+fn remainderLess(remainders: []const i64, a: usize, b: usize) bool {
+    return remainders[a] > remainders[b];
 }
 
 const Cue = struct {
@@ -192,7 +180,7 @@ const Editor = struct {
         var command = Command{ .op = op, .count = schema.len };
         for (schema, 0..) |kind, i| {
             const raw = if (string_last and i == schema.len - 1)
-                try join(self.gpa, fields[i + 1..], " ") else fields[i + 1];
+                try std.mem.join(self.gpa, " ", fields[i + 1..]) else fields[i + 1];
             var arg = Arg{};
             switch (kind) {
                 .string => arg.string = raw,
@@ -240,7 +228,7 @@ const Editor = struct {
         var end: ?i64 = null;
         var load_problem: ?[]const u8 = null;
         if (index == null) load_problem = "index" else if (block.len < 2 or block[1].len != 29 or
-            !equal(block[1][12..17], " --> ")) load_problem = "time" else {
+            !std.mem.eql(u8, block[1][12..17], " --> ")) load_problem = "time" else {
             start = timeValue(block[1][0..12]);
             end = timeValue(block[1][17..]);
             if (start == null or end == null) load_problem = "time" else if (block.len < 3) load_problem = "no text";
@@ -265,7 +253,7 @@ const Editor = struct {
         const c = self.cues[i];
         try out.print("{d} {d} {s} {s} {s}\n", .{ i + 1, c.index,
             try timeText(self.gpa, c.start, false), try timeText(self.gpa, c.end, false),
-            try join(self.gpa, c.text, "|") });
+            try std.mem.join(self.gpa, "|", c.text) });
     }
     fn problem(out: *std.Io.Writer, count: *usize, comptime fmt: []const u8, args: anytype) Error!void {
         try out.print(fmt, args);
@@ -280,8 +268,7 @@ const Editor = struct {
             return self.fail("sync points coincide");
         if (op == .UNDO) {
             if (self.history.items.len == 0) return self.fail("nothing to undo");
-            const entry = self.history.items[self.history.items.len - 1];
-            self.history.items.len -= 1;
+            const entry = self.history.pop().?;
             self.cues = entry.cues;
             try out.print("UNDO command={s}\n", .{@tagName(entry.op)});
             return;
@@ -360,7 +347,10 @@ const Editor = struct {
                     const d = @max(0, c.duration());
                     total += d;
                     if (d > 0) chars += c.characters();
-                    if (d > maximum) { maximum = d; longest = i; }
+                    if (d > maximum) {
+                        maximum = d;
+                        longest = i;
+                    }
                 }
                 try out.print("duration total={s} mean={s}\n", .{ try timeText(self.gpa, total, false),
                     try timeText(self.gpa, @divFloor(total, @as(i64, @intCast(self.cues.len))), false) });
@@ -372,7 +362,10 @@ const Editor = struct {
                     var i: usize = 1;
                     while (i + 1 < self.cues.len) : (i += 1) {
                         const candidate = self.cues[i + 1].start - self.cues[i].end;
-                        if (candidate > gap) { gap = candidate; position = i; }
+                        if (candidate > gap) {
+                            gap = candidate;
+                            position = i;
+                        }
                     }
                     try out.print("gap cue={d} ms={d}\n", .{ position + 1, gap });
                 }
@@ -399,7 +392,7 @@ const Editor = struct {
                             });
                             p += item.len;
                         }
-                        const converted = trim(bytes.items);
+                        const converted = std.mem.trim(u8, bytes.items, " ");
                         if (converted.len > 0) try lines.append(self.gpa, converted);
                     }
                     if (lines.items.len == 0) continue;
@@ -450,7 +443,10 @@ const Editor = struct {
                             .SNAP => roundRatio(roundRatio(t * args[0].a, 1000 * args[0].b) * 1000 * args[0].b, args[0].a),
                             else => t + command.n(if (op == .SHIFT) 0 else 1),
                         };
-                        if (value < 0) { value = 0; clamp = true; }
+                        if (value < 0) {
+                            value = 0;
+                            clamp = true;
+                        }
                         if (value != t) changed += 1;
                         after[i] = value;
                     }
@@ -469,7 +465,10 @@ const Editor = struct {
                 while (i + 1 < self.cues.len) : (i += 1) {
                     const candidate = self.cues[i + 1].start - command.n(0);
                     if (self.cues[i].end > candidate) {
-                        if (candidate > self.cues[i].start) { self.cues[i].end = candidate; fixed += 1; } else {
+                        if (candidate > self.cues[i].start) {
+                            self.cues[i].end = candidate;
+                            fixed += 1;
+                        } else {
                             try out.print("cue {d}: cannot fix\n", .{i + 1});
                             failed += 1;
                         }
@@ -484,7 +483,10 @@ const Editor = struct {
                     if (c.duration() < command.n(0)) {
                         var candidate = c.start + command.n(0);
                         if (i + 1 < self.cues.len) candidate = @min(candidate, self.cues[i + 1].start);
-                        if (candidate > c.end) { c.end = candidate; extended += 1; }
+                        if (candidate > c.end) {
+                            c.end = candidate;
+                            extended += 1;
+                        }
                     }
                     if (c.duration() < command.n(0)) short += 1;
                 }
@@ -496,21 +498,18 @@ const Editor = struct {
                 try out.print("TIME cue={d}\n", .{command.n(0)});
             },
             .SORT => {
-                const Entry = struct { cue: Cue, position: usize };
-                const ordered = try self.gpa.alloc(Entry, self.cues.len);
-                for (self.cues, 0..) |c, i| ordered[i] = .{ .cue = c, .position = i };
-                for (1..@max(1, ordered.len)) |i| {
-                    const entry = ordered[i];
-                    var j = i;
-                    while (j > 0) {
-                        const a = entry.cue;
-                        const b = ordered[j - 1].cue;
-                        if (a.start > b.start or (a.start == b.start and a.end >= b.end)) break;
-                        ordered[j] = ordered[j - 1];
-                        j -= 1;
+                const Entry = struct {
+                    cue: Cue,
+                    position: usize,
+
+                    fn less(_: void, a: @This(), b: @This()) bool {
+                        return if (a.cue.start != b.cue.start) a.cue.start < b.cue.start else a.cue.end < b.cue.end;
                     }
-                    ordered[j] = entry;
-                }
+                };
+                const ordered = try self.gpa.alloc(Entry, self.cues.len);
+                for (self.cues, 0..) |c, i|
+                    ordered[i] = .{ .cue = c, .position = i };
+                std.mem.sort(Entry, ordered, {}, Entry.less);
                 var moved: usize = 0;
                 for (ordered, 0..) |entry, i| {
                     if (entry.position != i) moved += 1;
@@ -521,7 +520,10 @@ const Editor = struct {
             .RENUMBER => {
                 var changed: usize = 0;
                 for (self.cues, 0..) |*c, i| {
-                    if (c.index != @as(i64, @intCast(i + 1))) { c.index = @intCast(i + 1); changed += 1; }
+                    if (c.index != @as(i64, @intCast(i + 1))) {
+                        c.index = @intCast(i + 1);
+                        changed += 1;
+                    }
                 }
                 try out.print("RENUMBER changed={d}\n", .{changed});
             },
@@ -531,10 +533,8 @@ const Editor = struct {
                 for (self.cues) |b| {
                     if (result.items.len > 0) {
                         const a = &result.items[result.items.len - 1];
-                        var combined: std.ArrayList([]const u8) = .empty;
-                        try combined.appendSlice(self.gpa, a.text);
-                        try combined.appendSlice(self.gpa, b.text);
-                        const wrapped = try wrap(self.gpa, combined.items, 42);
+                        const combined = try std.mem.concat(self.gpa, []const u8, &.{ a.text, b.text });
+                        const wrapped = try wrap(self.gpa, combined, 42);
                         if (b.start - a.end < command.n(0) and !a.dialogue() and !b.dialogue() and wrapped.len <= 2) {
                             a.end = @max(a.end, b.end);
                             a.text = wrapped;
@@ -552,14 +552,22 @@ const Editor = struct {
                 var count: usize = 0;
                 for (self.cues) |original| {
                     var c = original;
-                    if (c.duration() < 1 or c.dialogue()) { try result.append(self.gpa, c); continue; }
+                    if (c.duration() < 1 or c.dialogue()) {
+                        try result.append(self.gpa, c);
+                        continue;
+                    }
                     const lines = try wrap(self.gpa, c.text, @intCast(command.n(0)));
-                    if (lines.len <= 2) { c.text = lines; try result.append(self.gpa, c); continue; }
+                    if (lines.len <= 2) {
+                        c.text = lines;
+                        try result.append(self.gpa, c);
+                        continue;
+                    }
                     count += 1;
                     const len = (lines.len + 1) / 2;
                     const counts = try self.gpa.alloc(i64, len);
                     const times = try self.gpa.alloc(i64, len);
                     const order = try self.gpa.alloc(usize, len);
+                    const remainders = try self.gpa.alloc(i64, len);
                     var total: i64 = 0;
                     for (0..len) |i| {
                         counts[i] = 0;
@@ -568,16 +576,13 @@ const Editor = struct {
                         order[i] = i;
                     }
                     var allotted: i64 = 0;
-                    for (0..len) |i| { times[i] = @divFloor(c.duration() * counts[i], total); allotted += times[i]; }
-                    for (1..len) |i| {
-                        const entry = order[i];
-                        var j = i;
-                        while (j > 0 and @mod(c.duration() * counts[entry], total) > @mod(c.duration() * counts[order[j - 1]], total)) {
-                            order[j] = order[j - 1];
-                            j -= 1;
-                        }
-                        order[j] = entry;
+                    for (0..len) |i| {
+                        const share = c.duration() * counts[i];
+                        times[i] = @divFloor(share, total);
+                        remainders[i] = @mod(share, total);
+                        allotted += times[i];
                     }
+                    std.mem.sort(usize, order, @as([]const i64, remainders), remainderLess);
                     for (0..@as(usize, @intCast(c.duration() - allotted))) |i| times[order[i]] += 1;
                     var start = c.start;
                     for (0..len) |i| {
@@ -616,16 +621,19 @@ const Editor = struct {
                 var skipped: usize = 0;
                 var dialogue: usize = 0;
                 for (self.cues) |*c| {
-                    if (c.dialogue()) { dialogue += 1; continue; }
+                    if (c.dialogue()) {
+                        dialogue += 1;
+                        continue;
+                    }
                     const ws = try words(self.gpa, c.text);
-                    const text = try join(self.gpa, ws, " ");
+                    const text = try std.mem.join(self.gpa, " ", ws);
                     var candidate: ?Strings = null;
                     if (text.len <= 42) candidate = try self.gpa.dupe([]const u8, &.{text}) else {
                         var best_difference: usize = std.math.maxInt(usize);
                         var best_first: usize = std.math.maxInt(usize);
                         for (1..@max(1, ws.len)) |j| {
-                            const left = try join(self.gpa, ws[0..j], " ");
-                            const right = try join(self.gpa, ws[j..], " ");
+                            const left = try std.mem.join(self.gpa, " ", ws[0..j]);
+                            const right = try std.mem.join(self.gpa, " ", ws[j..]);
                             const difference = @max(left.len, right.len) - @min(left.len, right.len);
                             if (left.len <= 42 and right.len <= 42 and (difference < best_difference or
                                 (difference == best_difference and left.len < best_first))) {
@@ -636,7 +644,10 @@ const Editor = struct {
                         }
                     }
                     if (candidate) |lines| {
-                        if (!sameLines(c.text, lines)) { c.text = lines; changed += 1; }
+                        if (!sameLines(c.text, lines)) {
+                            c.text = lines;
+                            changed += 1;
+                        }
                     } else skipped += 1;
                 }
                 try out.print("BALANCE changed={d} skipped={d} dialogue={d}\n", .{ changed, skipped, dialogue });
@@ -662,13 +673,16 @@ const Editor = struct {
                             } else {
                                 const close: u8 = if (text[p] == '[') ']' else if (text[p] == '(') ')' else 0;
                                 const offset = if (close == 0) null else std.mem.findScalar(u8, text[p + 1..], close);
-                                if (offset) |end| { segments += 1; p += end + 2; } else {
+                                if (offset) |end| {
+                                    segments += 1;
+                                    p += end + 2;
+                                } else {
                                     try bytes.append(self.gpa, text[p]);
                                     p += 1;
                                 }
                             }
                         }
-                        var line_text = if (op == .STRIP) trim(bytes.items) else try normalized(self.gpa, bytes.items);
+                        var line_text = if (op == .STRIP) std.mem.trim(u8, bytes.items, " ") else try normalized(self.gpa, bytes.items);
                         if (op == .CLEANHI) {
                             const dialogue_prefix = std.mem.startsWith(u8, line_text, "- ");
                             const body = if (dialogue_prefix) line_text[2..] else line_text;
@@ -685,7 +699,7 @@ const Editor = struct {
                                 }
                             }
                         }
-                        if (line_text.len == 0 or (op == .CLEANHI and equal(line_text, "-"))) removed_lines += 1 else
+                        if (line_text.len == 0 or (op == .CLEANHI and std.mem.eql(u8, line_text, "-"))) removed_lines += 1 else
                             try lines.append(self.gpa, line_text);
                     }
                     if (lines.items.len == 0) removed_cues += 1 else {
@@ -705,17 +719,12 @@ const Editor = struct {
                 for (self.cues) |*c| {
                     var changed = false;
                     for (c.text) |*text| {
-                        var result: std.ArrayList(u8) = .empty;
-                        var p: usize = 0;
-                        while (p < text.len) {
-                            if (std.mem.startsWith(u8, text.*[p..], old)) {
-                                try result.appendSlice(self.gpa, replacement);
-                                p += old.len;
-                                count += 1;
-                                changed = true;
-                            } else { try result.append(self.gpa, text.*[p]); p += 1; }
+                        const replacements = std.mem.count(u8, text.*, old);
+                        if (replacements > 0) {
+                            count += replacements;
+                            changed = true;
+                            text.* = try std.mem.replaceOwned(u8, self.gpa, text.*, old, replacement);
                         }
-                        text.* = result.items;
                     }
                     if (changed) changed_cues += 1;
                 }
@@ -739,8 +748,14 @@ pub fn main(init: std.process.Init) !void {
     var block: std.ArrayList([]const u8) = .empty;
     while (true) {
         const line = try gpa.dupe(u8, (try input.interface.takeDelimiter('\n')).?);
-        if (equal(line, "###")) { try editor.load(block.items, out); break; }
-        if (line.len == 0) { try editor.load(block.items, out); block = .empty; } else try block.append(gpa, line);
+        if (std.mem.eql(u8, line, "###")) {
+            try editor.load(block.items, out);
+            break;
+        }
+        if (line.len == 0) {
+            try editor.load(block.items, out);
+            block = .empty;
+        } else try block.append(gpa, line);
     }
     try out.print("LOAD cues={d} bad={d}\n", .{ editor.cues.len, editor.bad });
     const count: usize = @intCast(unsigned((try input.interface.takeDelimiter('\n')).?, 9).?);

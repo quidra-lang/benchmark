@@ -1,7 +1,4 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-fun fixed(x: Double, places: Int): String = BigDecimal.valueOf(x).setScale(places, RoundingMode.HALF_UP).toPlainString()
+import java.util.Locale
 
 data class Point(val x: Int, val y: Int)
 fun cross(o: Point, a: Point, b: Point): Int =
@@ -10,7 +7,7 @@ fun chain(points: List<Point>): MutableList<Point> {
     val result = mutableListOf<Point>()
     for (point in points) {
         while (result.size >= 2 && cross(result[result.size - 2],result.last(),point) <= 0) {
-            result.removeAt(result.lastIndex)
+            result.removeLast()
         }
         result.add(point)
     }
@@ -34,8 +31,8 @@ fun main() {
         Point(-6,3)).sortedWith(compareBy<Point> { it.x }.thenBy { it.y })
     val lower = chain(points)
     val upper = chain(points.reversed())
-    lower.removeAt(lower.lastIndex)
-    upper.removeAt(upper.lastIndex)
+    lower.removeLast()
+    upper.removeLast()
     lower.addAll(upper)
     var crossSum = 0
     println("hull: ${lower.size} points")
@@ -45,5 +42,5 @@ fun main() {
         println("(${a.x}, ${a.y})")
         crossSum += a.x * b.y - b.x * a.y
     }
-    println("area: ${fixed(crossSum / 2.0,1)}")
+    println("area: %.1f".format(Locale.ROOT, crossSum / 2.0))
 }

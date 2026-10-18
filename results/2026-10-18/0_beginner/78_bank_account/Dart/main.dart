@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     final balances = { 'Nina': 12000, 'Leo': 3500, 'Emma': 800 };
     const commands = ['deposit Emma 1200', 'withdraw Leo 4000', 'transfer Nina Leo 5000', 'withdraw Leo 4000',
         'transfer Emma Nina 2500', 'transfer Emma Nina 2000', 'withdraw Emma 300', 'deposit Nina 750',
@@ -18,10 +15,9 @@ void main() {
             if (op == 'transfer')
                 balances[parts[2]] = balances[parts[2]]! + amount;
         }
-        out.writeln('op ${k+1}: ${commands[k]} ${success?'ok':'failed (insufficient funds)'}');
+        print('op ${k+1}: ${commands[k]} ${success?'ok':'failed (insufficient funds)'}');
     }
     final names = balances.keys.toList()..sort();
     for (final name in names)
-        out.writeln('$name: ${balances[name]}');
-    stdout.write(out);
+        print('$name: ${balances[name]}');
 }

@@ -23,5 +23,5 @@ for command in commands:
         if command.startswith("type "):
             buffer += command[5:]
         else:
-            buffer = buffer[:max(0, len(buffer) - int(command[7:]))]
+            buffer = buffer[:-int(command[7:])]
     print(f'{command} => "{buffer}"')

@@ -2,7 +2,7 @@
 #include <array>
 
 int main() {
-    const std::array<int, 16> a = {3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77};
+    std::array<int, 16> a = {3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77};
     for (int t : std::array<int, 6>{42, 3, 77, 31, 50, 1}) {
         int lo = 0, hi = 15, found = -1;
         std::cout << t << ": probes";

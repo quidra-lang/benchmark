@@ -1,9 +1,5 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Globalization;
-
-CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
 foreach (string id in new[] { "user_name","maxRetryCount","ShoppingCartItem","background-color","get_last_login_time","isEmailAddressValid" }) {
     string[] words = System.Text.RegularExpressions.Regex.Split(id,"[_-]|(?=[A-Z])").Where(w => w.Length > 0).Select(w => w.ToLowerInvariant()).ToArray();

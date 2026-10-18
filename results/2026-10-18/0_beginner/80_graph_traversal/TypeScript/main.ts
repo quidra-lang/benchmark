@@ -1,11 +1,11 @@
 const edges = [[5, 0], [3, 8], [7, 2], [1, 6], [0, 2], [5, 3], [7, 5], [6, 4], [8, 7]];
-const graph = Array.from({length: 9}, () => []);
+const graph: number[][] = Array.from({length: 9}, () => []);
 for (const [a, b] of edges) {
   graph[a].push(b);
   graph[b].push(a);
 }
 for (const neighbors of graph) neighbors.sort((a, b) => a - b);
-function dfs(vertex, seen, order) {
+function dfs(vertex: number, seen: Set<number>, order: number[]): void {
   seen.add(vertex);
   order.push(vertex);
   for (const neighbor of graph[vertex]) {
@@ -26,7 +26,8 @@ for (let head = 0; head < queue.length; head++) {
     }
   }
 }
-const components = [], seen = new Set();
+const components: number[][] = [];
+const seen = new Set<number>();
 for (let vertex = 0; vertex < 9; vertex++) {
   if (!seen.has(vertex)) {
     const component = [];

@@ -1,6 +1,7 @@
-const heap = [];
-const less = (a, b) => a.priority < b.priority || (a.priority === b.priority && a.sequence < b.sequence);
-function push(task) {
+type Task = { name: string; priority: number; sequence: number };
+const heap: Task[] = [];
+const less = (a: Task, b: Task): boolean => a.priority < b.priority || (a.priority === b.priority && a.sequence < b.sequence);
+function push(task: Task): void {
   heap.push(task);
   let index = heap.length - 1;
   while (index > 0) {
@@ -10,8 +11,8 @@ function push(task) {
     index = parent;
   }
 }
-function pop() {
-  const first = heap[0], last = heap.pop();
+function pop(): Task {
+  const first = heap[0], last = heap.pop()!;
   if (heap.length > 0) {
     heap[0] = last;
     let index = 0;

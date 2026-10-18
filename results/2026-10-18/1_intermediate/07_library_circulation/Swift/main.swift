@@ -7,32 +7,24 @@ func failIf(_ condition: Bool, _ reason: String) throws {
 func matches(_ s: String, _ pattern: String) -> Bool {
     s.range(of:"\\A(?:"+pattern+")\\z",options:.regularExpression) != nil
 }
+func checksum(_ s: String) -> Int {
+    s.utf8.enumerated().reduce(0) { $0+($1.offset%2 == 0 ? 1 : 3)*(Int($1.element)-48) }
+}
 func normalize(_ raw: String) throws -> String {
     let s = raw.replacingOccurrences(of:"-",with:"")
-    let a = Array(s.utf8)
     if matches(s,"[0-9]{9}[0-9X]") {
-        var sum = 0
-        for i in 0..<10 { sum += (10-i)*(a[i] == 88 ? 10 : Int(a[i])-48) }
+        let sum = s.utf8.enumerated().reduce(0) { $0+(10-$1.offset)*($1.element == 88 ? 10 : Int($1.element)-48) }
         try failIf(sum%11 != 0,"invalid isbn")
         let prefix = "978"+String(s.prefix(9))
-        let digits = Array(prefix.utf8)
-        sum = 0
-        for i in 0..<12 { sum += (i%2 == 0 ? 1 : 3)*(Int(digits[i])-48) }
-        return prefix+String((10-sum%10)%10)
+        return prefix+String((10-checksum(prefix)%10)%10)
     }
     try failIf(!matches(s,"97[89][0-9]{10}"),"invalid isbn")
-    var sum = 0
-    for i in 0..<13 { sum += (i%2 == 0 ? 1 : 3)*(Int(a[i])-48) }
-    try failIf(sum%10 != 0,"invalid isbn")
+    try failIf(checksum(s)%10 != 0,"invalid isbn")
     return s
 }
-func parseMoney(_ s: String) -> Int {
-    let p = s.split(separator:".")
-    return Int(p[0])!*100+Int(p[1])!
-}
-func money(_ n: Int) -> String { "\(n/100)."+(n%100 < 10 ? "0" : "")+String(n%100) }
-func lower(_ s: String) -> String {
-    String(bytes:s.utf8.map { $0 >= 65 && $0 <= 90 ? $0+32 : $0 },encoding:.utf8)!
+func parseMoney(_ s: String) -> Int { Int(s.replacingOccurrences(of: ".",with: ""))! }
+func money(_ n: Int) -> String {
+    String(format: "%ld.%02ld",locale: Locale(identifier: "en_US_POSIX"),n/100,n%100)
 }
 final class Item {
     let day: Int
@@ -125,7 +117,6 @@ final class Library {
     var closed = Set<Int>()
     var copies: [Copy] = []
     var output: [String] = []
-    func emit(_ line: String) { output.append(line) }
     func orderedTitles() -> [Title] { titles.keys.sorted().map { titles[$0]! } }
     func orderedMembers() -> [Member] { members.keys.sorted().map { members[$0]! } }
     func member(_ id: String) throws -> Member {
@@ -168,7 +159,7 @@ final class Library {
             c.owner = m
             c.expiry = open(day+3)
             m.holds[b.isbn] = c
-            emit("HOLD \(b.isbn) copy \(c.number) \(m.id) until \(c.expiry)")
+            output.append("HOLD \(b.isbn) copy \(c.number) \(m.id) until \(c.expiry)")
         }
     }
     func endLoan(_ c: Copy, _ loss: Bool) -> (Int,Int) {
@@ -189,11 +180,11 @@ final class Library {
         c.state = "LOST"
         c.owner = nil
         lost += 1
-        emit("\(heading) \(m.id) \(b.isbn) copy \(c.number) late \(l) fine \(money(f)) price \(money(b.price)) balance \(money(m.balance()))")
+        output.append("\(heading) \(m.id) \(b.isbn) copy \(c.number) late \(l) fine \(money(f)) price \(money(b.price)) balance \(money(m.balance()))")
         if b.holdings() == 0 {
             for queued in b.queue {
                 queued.queued -= 1
-                emit("DROPPED \(b.isbn) \(queued.id)")
+                output.append("DROPPED \(b.isbn) \(queued.id)")
             }
             b.queue.removeAll()
         }
@@ -208,7 +199,7 @@ final class Library {
         c.due = open(day+c.owner!.period)
         c.renewals += 1
         renewed += 1
-        emit("RENEW \(c.owner!.id) \(c.title.isbn) copy \(c.number) due \(c.due) renewals \(c.renewals)")
+        output.append("RENEW \(c.owner!.id) \(c.title.isbn) copy \(c.number) due \(c.due) renewals \(c.renewals)")
     }
     func orderedLoans(_ m: Member) -> [Copy] {
         m.loans.values.sorted {
@@ -223,15 +214,15 @@ final class Library {
         }
     }
     func showMember(_ m: Member) {
-        emit("MEMBER \(m.id) \(m.type) \(m.name)")
-        emit("STATUS loans \(m.loans.count)/\(m.limit) reservations \(m.reservations())/\(m.reservationLimit) balance \(money(m.balance())) \(m.status())")
+        output.append("MEMBER \(m.id) \(m.type) \(m.name)")
+        output.append("STATUS loans \(m.loans.count)/\(m.limit) reservations \(m.reservations())/\(m.reservationLimit) balance \(money(m.balance())) \(m.status())")
         for c in orderedLoans(m) {
-            emit("LOAN \(c.title.isbn) copy \(c.number) due \(c.due) renewals \(c.renewals)"+
+            output.append("LOAN \(c.title.isbn) copy \(c.number) due \(c.due) renewals \(c.renewals)"+
                 (c.due < day ? " late \(late(c)) fine \(money(fine(c)))" : ""))
         }
-        for c in orderedHolds(m) { emit("HOLD \(c.title.isbn) copy \(c.number) until \(c.expiry)") }
+        for c in orderedHolds(m) { output.append("HOLD \(c.title.isbn) copy \(c.number) until \(c.expiry)") }
         for b in orderedTitles() {
-            if let p = b.queue.firstIndex(where:{ $0 === m }) { emit("QUEUE \(b.isbn) position \(p+1)") }
+            if let p = b.queue.firstIndex(where:{ $0 === m }) { output.append("QUEUE \(b.isbn) position \(p+1)") }
         }
     }
     func execute(_ line: String) throws {
@@ -240,7 +231,7 @@ final class Library {
         case "DAY":
             let d = Int(t[1])!
             try failIf(d <= day,"invalid day")
-            emit("DAY \(d)")
+            output.append("DAY \(d)")
             while day < d {
                 day += 1
                 let losses = copies.filter { $0.state == "LOANED" && $0.due+365 <= day }.sorted {
@@ -256,7 +247,7 @@ final class Library {
                     let m = c.owner!
                     charge(m,"FEE",c.title,m.fee)
                     m.holds.removeValue(forKey:c.title.isbn)
-                    emit("EXPIRED \(c.title.isbn) copy \(c.number) \(m.id) fee \(money(m.fee))")
+                    output.append("EXPIRED \(c.title.isbn) copy \(c.number) \(m.id) fee \(money(m.fee))")
                     release(c)
                 }
             }
@@ -265,15 +256,15 @@ final class Library {
             try failIf(d <= day,"invalid day")
             try failIf(closed.contains(d),"already closed")
             closed.insert(d)
-            emit("CLOSED \(d)")
+            output.append("CLOSED \(d)")
             for b in orderedTitles() {
                 for c in b.copies {
                     if c.state == "LOANED" && c.due == d {
                         c.due = open(d)
-                        emit("MOVED \(b.isbn) copy \(c.number) \(c.owner!.id) due \(c.due)")
+                        output.append("MOVED \(b.isbn) copy \(c.number) \(c.owner!.id) due \(c.due)")
                     } else if c.state == "HOLD" && c.expiry == d {
                         c.expiry = open(d)
-                        emit("MOVED \(b.isbn) copy \(c.number) \(c.owner!.id) until \(c.expiry)")
+                        output.append("MOVED \(b.isbn) copy \(c.number) \(c.owner!.id) until \(c.expiry)")
                     }
                 }
             }
@@ -294,14 +285,14 @@ final class Library {
                 copies.append(c)
                 added.append(c)
             }
-            emit("ADDBOOK \(isbn) added \(count) total \(b.holdings())")
+            output.append("ADDBOOK \(isbn) added \(count) total \(b.holdings())")
             for c in added { release(c) }
         case "ADDMEMBER":
             try failIf(members[t[1]] != nil,"duplicate member")
             try failIf(t[2] != "STUDENT" && t[2] != "STAFF","unknown type")
             let m = Member(t[1],t[2],t.dropFirst(3).joined(separator:" "))
             members[m.id] = m
-            emit("ADDMEMBER \(m.id) \(m.type) loans \(m.limit) days \(m.period)")
+            output.append("ADDMEMBER \(m.id) \(m.type) loans \(m.limit) days \(m.period)")
         case "WITHDRAW":
             let b = try book(t[1])
             let n = Int(t[2])!
@@ -309,7 +300,7 @@ final class Library {
             let c = b.copies[n-1]
             try failIf(c.state != "AVAILABLE","copy not available")
             c.state = "WITHDRAWN"
-            emit("WITHDRAW \(b.isbn) copy \(n) total \(b.holdings())")
+            output.append("WITHDRAW \(b.isbn) copy \(n) total \(b.holdings())")
         case "BORROW":
             let m = try member(t[1])
             let b = try book(t[2])
@@ -330,14 +321,14 @@ final class Library {
             m.loans[b.isbn] = c
             b.borrowed += 1
             borrowed += 1
-            emit("BORROW \(m.id) \(b.isbn) copy \(c.number) due \(c.due)")
+            output.append("BORROW \(m.id) \(b.isbn) copy \(c.number) due \(c.due)")
         case "RETURN":
             let m = try member(t[1])
             let b = try book(t[2])
             let c = try loan(m,b)
             let (l,f) = endLoan(c,false)
             returned += 1
-            emit("RETURN \(m.id) \(b.isbn) copy \(c.number) late \(l) fine \(money(f)) balance \(money(m.balance()))")
+            output.append("RETURN \(m.id) \(b.isbn) copy \(c.number) late \(l) fine \(money(f)) balance \(money(m.balance()))")
             release(c)
         case "RENEW":
             let m = try member(t[1])
@@ -354,14 +345,14 @@ final class Library {
             for isbn in m.loans.keys.sorted() {
                 let c = m.loans[isbn]!
                 if let reason = renewalReason(c) {
-                    emit("SKIP \(c.title.isbn) \(reason)")
+                    output.append("SKIP \(c.title.isbn) \(reason)")
                     skipped += 1
                 } else {
                     renew(c)
                     done += 1
                 }
             }
-            emit("RENEWALL \(m.id) renewed \(done) skipped \(skipped)")
+            output.append("RENEWALL \(m.id) renewed \(done) skipped \(skipped)")
         case "RESERVE":
             let m = try member(t[1])
             let b = try book(t[2])
@@ -376,7 +367,7 @@ final class Library {
             let p = b.queue.count
             let dues = b.copies.filter { $0.state == "LOANED" }.map { $0.due }.sorted()
             let estimate = p <= dues.count ? String(dues[p-1]) : "none"
-            emit("RESERVE \(m.id) \(b.isbn) position \(p) estimate \(estimate)")
+            output.append("RESERVE \(m.id) \(b.isbn) position \(p) estimate \(estimate)")
         case "CANCEL":
             let m = try member(t[1])
             let b = try book(t[2])
@@ -386,10 +377,10 @@ final class Library {
             if let p {
                 b.queue.remove(at:p)
                 m.queued -= 1
-                emit("CANCEL \(m.id) \(b.isbn) queue")
+                output.append("CANCEL \(m.id) \(b.isbn) queue")
             } else {
                 m.holds.removeValue(forKey:b.isbn)
-                emit("CANCEL \(m.id) \(b.isbn) hold copy \(c!.number)")
+                output.append("CANCEL \(m.id) \(b.isbn) hold copy \(c!.number)")
                 release(c!)
             }
         case "LOST":
@@ -410,7 +401,7 @@ final class Library {
                 details.append("ITEM \(i+1) \(item.kind) paid \(money(applied)) remaining \(money(item.unpaid))")
             }
             paid += amount-rest
-            emit("PAYFINE \(m.id) paid \(money(amount-rest)) change \(money(rest)) balance \(money(m.balance()))")
+            output.append("PAYFINE \(m.id) paid \(money(amount-rest)) change \(money(rest)) balance \(money(m.balance()))")
             output.append(contentsOf:details)
         case "WAIVE":
             let m = try member(t[1])
@@ -421,30 +412,30 @@ final class Library {
             let amount = item.unpaid
             item.unpaid = 0
             waived += amount
-            emit("WAIVE \(m.id) item \(n) \(item.kind) amount \(money(amount)) balance \(money(m.balance()))")
+            output.append("WAIVE \(m.id) item \(n) \(item.kind) amount \(money(amount)) balance \(money(m.balance()))")
         case "FINES":
             let m = try member(t[1])
-            emit("FINES \(m.id) items \(m.items.filter { $0.unpaid > 0 }.count) balance \(money(m.balance()))")
+            output.append("FINES \(m.id) items \(m.items.filter { $0.unpaid > 0 }.count) balance \(money(m.balance()))")
             for (i,item) in m.items.enumerated() where item.unpaid > 0 {
-                emit("\(i+1) day \(item.day) \(item.kind) \(item.isbn) amount \(money(item.amount)) remaining \(money(item.unpaid))")
+                output.append("\(i+1) day \(item.day) \(item.kind) \(item.isbn) amount \(money(item.amount)) remaining \(money(item.unpaid))")
             }
         case "SEARCH":
-            let keyword = lower(t.dropFirst().joined(separator:" "))
-            let found = titles.values.filter { lower($0.name).contains(keyword) }.sorted {
-                let a = lower($0.name)
-                let b = lower($1.name)
+            let keyword = t.dropFirst().joined(separator:" ").lowercased()
+            let found = titles.values.filter { $0.name.lowercased().contains(keyword) }.sorted {
+                let a = $0.name.lowercased()
+                let b = $1.name.lowercased()
                 return a == b ? $0.isbn < $1.isbn : a < b
             }
-            emit("SEARCH \(found.count)")
-            for b in found { emit("\(b.isbn) \(b.count("AVAILABLE"))/\(b.holdings()) \(b.name)") }
+            output.append("SEARCH \(found.count)")
+            for b in found { output.append("\(b.isbn) \(b.count("AVAILABLE"))/\(b.holdings()) \(b.name)") }
         case "OVERDUE":
             let found = copies.filter { $0.state == "LOANED" && $0.due < day }.sorted {
                 if $0.due != $1.due { return $0.due < $1.due }
                 if $0.owner!.id != $1.owner!.id { return $0.owner!.id < $1.owner!.id }
                 return $0.title.isbn < $1.title.isbn
             }
-            emit("OVERDUE \(found.count)")
-            for c in found { emit("\(c.owner!.id) \(c.title.isbn) copy \(c.number) due \(c.due) late \(late(c)) fine \(money(fine(c)))") }
+            output.append("OVERDUE \(found.count)")
+            for c in found { output.append("\(c.owner!.id) \(c.title.isbn) copy \(c.number) due \(c.due) late \(late(c)) fine \(money(fine(c)))") }
         case "NOTICES":
             var notices: [String] = []
             for m in orderedMembers() {
@@ -453,50 +444,50 @@ final class Library {
                 for c in loans where c.due >= day && c.due <= day+2 { notices.append("DUESOON \(m.id) \(c.title.isbn) due \(c.due)") }
                 for c in orderedHolds(m) { notices.append("PICKUP \(m.id) \(c.title.isbn) until \(c.expiry)") }
             }
-            emit("NOTICES \(notices.count)")
+            output.append("NOTICES \(notices.count)")
             output.append(contentsOf:notices)
         case "MEMBER": try showMember(member(t[1]))
         case "MEMBERS":
-            emit("MEMBERS \(members.count)")
+            output.append("MEMBERS \(members.count)")
             for m in orderedMembers() {
-                emit("\(m.id) \(m.type) loans \(m.loans.count) reservations \(m.reservations()) balance \(money(m.balance())) \(m.status())")
+                output.append("\(m.id) \(m.type) loans \(m.loans.count) reservations \(m.reservations()) balance \(money(m.balance())) \(m.status())")
             }
         case "BOOK":
             let b = try book(t[1])
-            emit("BOOK \(b.isbn) \(b.name)")
-            emit("PRICE \(money(b.price)) copies \(b.holdings()) borrowed \(b.borrowed)")
+            output.append("BOOK \(b.isbn) \(b.name)")
+            output.append("PRICE \(money(b.price)) copies \(b.holdings()) borrowed \(b.borrowed)")
             for c in b.copies {
                 let detail: String
                 if c.state == "LOANED" { detail = " \(c.owner!.id) due \(c.due)" }
                 else if c.state == "HOLD" { detail = " \(c.owner!.id) until \(c.expiry)" }
                 else { detail = "" }
-                emit("COPY \(c.number) \(c.state)\(detail)")
+                output.append("COPY \(c.number) \(c.state)\(detail)")
             }
-            emit("QUEUE \(b.queue.count)"+(b.queue.isEmpty ? "" : " "+b.queue.map { $0.id }.joined(separator:" ")))
+            output.append("QUEUE \(b.queue.count)"+(b.queue.isEmpty ? "" : " "+b.queue.map { $0.id }.joined(separator:" ")))
         case "INVENTORY":
             let a = copies.filter { $0.state == "AVAILABLE" }.count
             let l = copies.filter { $0.state == "LOANED" }.count
             let h = copies.filter { $0.state == "HOLD" }.count
             let x = copies.filter { $0.state == "LOST" }.count
             let w = copies.filter { $0.state == "WITHDRAWN" }.count
-            emit("INVENTORY titles \(titles.count) copies \(a+l+h) available \(a) loaned \(l) hold \(h) lost \(x) withdrawn \(w)")
+            output.append("INVENTORY titles \(titles.count) copies \(a+l+h) available \(a) loaned \(l) hold \(h) lost \(x) withdrawn \(w)")
             for b in orderedTitles() {
-                emit("\(b.isbn) copies \(b.holdings()) available \(b.count("AVAILABLE")) loaned \(b.count("LOANED")) hold \(b.count("HOLD")) queue \(b.queue.count)")
+                output.append("\(b.isbn) copies \(b.holdings()) available \(b.count("AVAILABLE")) loaned \(b.count("LOANED")) hold \(b.count("HOLD")) queue \(b.queue.count)")
             }
         case "HISTORY":
             let m = try member(t[1])
-            emit("HISTORY \(m.id) \(m.history.count)")
+            output.append("HISTORY \(m.id) \(m.history.count)")
             output.append(contentsOf:m.history)
         case "STATS":
             let active = members.values.reduce(0) { $0+$1.loans.count }
             let outstanding = members.values.reduce(0) { $0+$1.balance() }
-            emit("STATS day \(day) titles \(titles.count) members \(members.count) closed \(closed.count)")
-            emit("LOANS borrowed \(borrowed) returned \(returned) renewed \(renewed) lost \(lost) active \(active)")
-            emit("MONEY fines \(money(fines)) fees \(money(fees)) charges \(money(charges)) paid \(money(paid)) waived \(money(waived)) outstanding \(money(outstanding))")
+            output.append("STATS day \(day) titles \(titles.count) members \(members.count) closed \(closed.count)")
+            output.append("LOANS borrowed \(borrowed) returned \(returned) renewed \(renewed) lost \(lost) active \(active)")
+            output.append("MONEY fines \(money(fines)) fees \(money(fees)) charges \(money(charges)) paid \(money(paid)) waived \(money(waived)) outstanding \(money(outstanding))")
             let top = titles.values.filter { $0.borrowed > 0 }.sorted {
                 $0.borrowed == $1.borrowed ? $0.isbn < $1.isbn : $0.borrowed > $1.borrowed
             }.prefix(3)
-            for (i,b) in top.enumerated() { emit("TOP \(i+1) \(b.isbn) \(b.borrowed) \(b.name)") }
+            for (i,b) in top.enumerated() { output.append("TOP \(i+1) \(b.isbn) \(b.borrowed) \(b.name)") }
         default: break
         }
     }

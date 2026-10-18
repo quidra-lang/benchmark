@@ -18,6 +18,5 @@ foreach (string operation in operations) {
         Console.WriteLine($"run: {name} (priority {priority.priority})");
     }
 }
-var remaining = new List<string>();
-while (queue.Count > 0) remaining.Add(queue.Dequeue());
+var remaining = queue.UnorderedItems.OrderBy(item => item.Priority).Select(item => item.Element);
 Console.WriteLine($"remaining: {string.Join(" ",remaining)}");

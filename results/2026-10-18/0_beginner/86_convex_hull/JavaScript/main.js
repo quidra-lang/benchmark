@@ -14,7 +14,7 @@ function chain(ordered) {
   return result;
 }
 const ordered = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-const hull = [...chain(ordered).slice(0, -1), ...chain([...ordered].reverse()).slice(0, -1)];
+const hull = [...chain(ordered).slice(0, -1), ...chain(ordered.toReversed()).slice(0, -1)];
 let areaTwice = 0;
 hull.forEach(([x, y], i) => {
   const [nextX, nextY] = hull[(i + 1) % hull.length];

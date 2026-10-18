@@ -1,5 +1,3 @@
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -45,7 +43,6 @@ private class Scorer {
     val players = sortedMapOf<String,Player>()
     val events = linkedMapOf<String,Event>()
     var output = mutableListOf<String>()
-    fun emit(s: String) { output.add(s) }
     fun player(id: String) = players[id] ?: throw Fault("unknown player")
     fun course(id: String) = courses[id] ?: throw Fault("unknown course")
     fun tee(c: Course, id: String) = c.tees[id] ?: throw Fault("unknown tee")
@@ -159,7 +156,7 @@ private class Scorer {
         return Match(statuses,result)
     }
     fun results(e: Event, d: EventData) {
-        emit("results ${e.id}: ${e.format} ${e.course.id} ${e.tee.id} day ${e.day} allowance ${e.allowance}")
+        output.add("results ${e.id}: ${e.format} ${e.course.id} ${e.tee.id} day ${e.day} allowance ${e.allowance}")
         val n = e.players.size
         val ids = e.players.map { it.id }
         when (e.format) {
@@ -171,19 +168,19 @@ private class Scorer {
                         "STABLEFORD" -> "points ${sum(d.points[i])}"
                         else -> status(sum(d.par[i]))
                     }
-                    emit("${r+1} ${ids[i]} $value hcp ${handicap(d.ph[i])}")
+                    output.add("${r+1} ${ids[i]} $value hcp ${handicap(d.ph[i])}")
                 }
                 if (e.format == "STROKE") {
-                    for (i in ids.indices.filter { it !in order }.sortedBy { ids[it] }) emit("NR ${ids[i]} hcp ${handicap(d.ph[i])}")
+                    for (i in ids.indices.filter { it !in order }.sortedBy { ids[it] }) output.add("NR ${ids[i]} hcp ${handicap(d.ph[i])}")
                     if (order.isNotEmpty()) {
                         val gross = Array(n) { d.rounds[it].scores }
                         val winner = rank(gross,order,false,ids)[0]
-                        emit("gross ${ids[winner]} ${sum(gross[winner])}")
+                        output.add("gross ${ids[winner]} ${sum(gross[winner])}")
                     }
                 }
             }
             "MATCH", "NASSAU", "FOURBALL" -> {
-                emit("strokes"+ids.indices.joinToString("") { " ${ids[it]} ${d.strokes[it]}" })
+                output.add("strokes"+ids.indices.joinToString("") { " ${ids[it]} ${d.strokes[it]}" })
                 val size = n/2
                 val a = ids.take(size).joinToString("+")
                 val b = ids.drop(size).joinToString("+")
@@ -193,19 +190,19 @@ private class Scorer {
                     right.compareTo(left)
                 }
                 if (e.format == "NASSAU") {
-                    emit("front ${match(wins,0,8,a,b).result}")
-                    emit("back ${match(wins,9,17,a,b).result}")
-                    emit("total ${match(wins,0,17,a,b).result}")
+                    output.add("front ${match(wins,0,8,a,b).result}")
+                    output.add("back ${match(wins,9,17,a,b).result}")
+                    output.add("total ${match(wins,0,17,a,b).result}")
                 } else {
                     val m = match(wins,0,17,a,b)
-                    emit("status "+m.statuses.joinToString(", "))
-                    emit("result ${m.result}")
+                    output.add("status "+m.statuses.joinToString(", "))
+                    output.add("result ${m.result}")
                 }
             }
             "BETTERBALL" -> {
                 val values = Array(n/2) { i -> IntArray(18) { h -> max(d.points[2*i][h],d.points[2*i+1][h]) } }
                 val order = rank(values,(0 until n/2).toList(),true,(0 until n/2).map { ids[2*it] })
-                for ((r,i) in order.withIndex()) emit("${r+1} ${ids[2*i]}+${ids[2*i+1]} points ${sum(values[i])} hcp ${handicap(d.ph[2*i])} ${handicap(d.ph[2*i+1])}")
+                for ((r,i) in order.withIndex()) output.add("${r+1} ${ids[2*i]}+${ids[2*i+1]} points ${sum(values[i])} hcp ${handicap(d.ph[2*i])} ${handicap(d.ph[2*i+1])}")
             }
             "SKINS" -> {
                 var carry = 0
@@ -217,7 +214,7 @@ private class Scorer {
                     tied = ids.indices.filter { d.nets[it][h] == minimum }
                     if (minimum != NO_NET && tied.size == 1) {
                         val i = tied[0]
-                        emit("hole ${h+1} ${ids[i]} $carry")
+                        output.add("hole ${h+1} ${ids[i]} $carry")
                         totals[i] += carry*100
                         carry = 0
                     }
@@ -225,33 +222,33 @@ private class Scorer {
                 if (carry > 0) {
                     tied = tied.sortedBy { ids[it] }
                     for (i in tied) totals[i] += carry*100/tied.size
-                    emit("carry $carry"+tied.joinToString("") { " ${ids[it]}" })
+                    output.add("carry $carry"+tied.joinToString("") { " ${ids[it]}" })
                 }
                 val order = ids.indices.sortedWith(compareByDescending<Int> { totals[it] }.thenBy { ids[it] })
-                for (i in order) emit("${ids[i]} ${cents(totals[i])}")
+                for (i in order) output.add("${ids[i]} ${cents(totals[i])}")
             }
         }
     }
     fun cardTotal(label: String, r: Round, strokes: IntArray, nets: IntArray, points: IntArray, from: Int, to: Int) {
         val complete = (from until to).none { r.scores[it] == NO_NET }
-        emit("$label ${sum(r.course.par,from,to)} "+(if (complete) sum(r.scores,from,to).toString() else "-")+
+        output.add("$label ${sum(r.course.par,from,to)} "+(if (complete) sum(r.scores,from,to).toString() else "-")+
             " ${sum(r.adjusted,from,to)} ${sum(strokes,from,to)} "+(if (complete) sum(nets,from,to).toString() else "-")+" ${sum(points,from,to)}")
     }
     fun card(p: Player, number: Int, r: Round) {
-        emit("card ${p.id} $number: ${r.course.id} ${r.tee.id} day ${r.day} handicap ${handicap(r.handicap)}")
+        output.add("card ${p.id} $number: ${r.course.id} ${r.tee.id} day ${r.day} handicap ${handicap(r.handicap)}")
         val strokes = allocate(r.course,r.handicap ?: 0)
         val nets = IntArray(18) { if (r.scores[it] == NO_NET) NO_NET else r.scores[it]-strokes[it] }
         val points = IntArray(18) { if (nets[it] == NO_NET) 0 else max(0,r.course.par[it]+2-nets[it]) }
         for (h in 0 until 18) {
             val net = if (nets[h] == NO_NET) "-" else nets[h].toString()
-            emit("${h+1} ${r.course.par[h]} ${r.course.si[h]} ${r.raw[h]} ${r.adjusted[h]} ${strokes[h]} $net ${points[h]}")
+            output.add("${h+1} ${r.course.par[h]} ${r.course.si[h]} ${r.raw[h]} ${r.adjusted[h]} ${strokes[h]} $net ${points[h]}")
             if (h == 8) cardTotal("OUT",r,strokes,nets,points,0,9)
             if (h == 17) {
                 cardTotal("IN",r,strokes,nets,points,9,18)
                 cardTotal("TOTAL",r,strokes,nets,points,0,18)
             }
         }
-        emit("ags ${r.ags} diff ${signed(r.diff)}")
+        output.add("ags ${r.ags} diff ${signed(r.diff)}")
     }
     fun statistics(p: Player) {
         val category = IntArray(7)
@@ -279,7 +276,7 @@ private class Scorer {
         val labels = listOf("eagles","birdies","pars","bogeys","doubles","others","pickups")
         for (i in 0..6) line += " ${labels[i]} ${category[i]}"
         for (i in 0..2) line += " par${i+3} ${average(totals[i],counts[i])}"
-        emit(line)
+        output.add(line)
     }
     fun execute(t: List<String>) {
         when (t[0]) {
@@ -331,7 +328,7 @@ private class Scorer {
                 p.rounds.add(r)
                 update(p,day)
                 p.index?.let { p.records.add(IndexRecord(day,it)) }
-                emit("round ${p.id} ${p.rounds.size}: ags $ags diff ${signed(diff)}"+(if (exceptional == 0) "" else " exceptional ${signed(-exceptional)}")+" index ${index(p.index)}")
+                output.add("round ${p.id} ${p.rounds.size}: ags $ags diff ${signed(diff)}"+(if (exceptional == 0) "" else " exceptional ${signed(-exceptional)}")+" index ${index(p.index)}")
             }
             "REMOVE" -> {
                 val p = player(t[1])
@@ -341,7 +338,7 @@ private class Scorer {
                 p.index = r.oldIndex
                 p.calculation = r.oldCalculation
                 p.records.subList(r.oldRecords,p.records.size).clear()
-                emit("removed ${p.id} $number: index ${index(p.index)}")
+                output.add("removed ${p.id} $number: index ${index(p.index)}")
             }
             "INDEX" -> {
                 val p = player(t[1])
@@ -349,15 +346,15 @@ private class Scorer {
                 val c = p.calculation
                 if (c != null) line += " lowest ${c.k} average ${signed(c.average)} adjustment ${signed(c.adjustment)}"+
                     (if (c.low == null) "" else " low ${index(c.low)}")+(if (c.hard) " hard cap" else if (c.soft) " soft cap" else "")+(if (c.maximum) " maximum" else "")
-                emit(line)
+                output.add(line)
             }
             "HISTORY" -> {
                 val p = player(t[1])
                 val e = eligible(p)
-                emit("history ${p.id}: rounds ${p.rounds.size}")
+                output.add("history ${p.id}: rounds ${p.rounds.size}")
                 for (i in e.adjusted.indices) {
                     val r = p.rounds[e.start+i]
-                    emit("${e.start+i+1} day ${r.day} ${r.course.id} ${r.tee.id} ags ${r.ags} diff ${signed(r.diff)}"+
+                    output.add("${e.start+i+1} day ${r.day} ${r.course.id} ${r.tee.id} ags ${r.ags} diff ${signed(r.diff)}"+
                         (if (r.diff == e.adjusted[i]) "" else " adjusted ${signed(e.adjusted[i])}")+(if (i in e.counting) " *" else ""))
                 }
             }
@@ -365,14 +362,14 @@ private class Scorer {
                 val p = player(t[1])
                 val day = t[2].toInt()
                 val r = low(p,day)
-                emit("lowindex ${p.id} $day: "+(if (r == null) "none" else "${index(r.value)} day ${r.day}"))
+                output.add("lowindex ${p.id} $day: "+(if (r == null) "none" else "${index(r.value)} day ${r.day}"))
             }
             "COURSEHCP" -> {
                 val p = player(t[1])
                 val c = course(t[2])
                 val tee = tee(c,t[3])
                 val h = courseHandicap(c,tee,p.index ?: throw Fault("no index"))
-                emit("coursehcp ${p.id} ${c.id} ${tee.id}: ${handicap(h)} strokes "+allocate(c,h).joinToString(" "))
+                output.add("coursehcp ${p.id} ${c.id} ${tee.id}: ${handicap(h)} strokes "+allocate(c,h).joinToString(" "))
             }
             "HCPTABLE" -> {
                 val c = course(t[1])
@@ -380,13 +377,13 @@ private class Scorer {
                 val first = t[3].toInt()
                 val last = t[4].toInt()
                 error(first < -100 || first > last || last > 540,"invalid index")
-                emit("hcptable ${c.id} ${tee.id}: ${index(first)} to ${index(last)}")
+                output.add("hcptable ${c.id} ${tee.id}: ${index(first)} to ${index(last)}")
                 var start = first
                 var h = courseHandicap(c,tee,first)
                 for (i in first+1..last+1) {
                     val next = if (i <= last) courseHandicap(c,tee,i) else h+1
                     if (next != h) {
-                        emit("${index(start)} to ${index(i-1)}: ${handicap(h)}")
+                        output.add("${index(start)} to ${index(i-1)}: ${handicap(h)}")
                         start = i
                         h = next
                     }
@@ -422,13 +419,13 @@ private class Scorer {
                     }
                 }
                 for ((i,h) in order.withIndex()) ranks[h] = i+1
-                emit("holestats ${c.id}: rounds ${rounds.size}")
-                for (h in 0 until 18) emit("${h+1} par ${c.par[h]} si ${c.si[h]} scores ${counts[h]} avg ${average(totals[h],counts[h])} rank ${ranks[h]}")
+                output.add("holestats ${c.id}: rounds ${rounds.size}")
+                for (h in 0 until 18) output.add("${h+1} par ${c.par[h]} si ${c.si[h]} scores ${counts[h]} avg ${average(totals[h],counts[h])} rank ${ranks[h]}")
             }
             "PLAYERS" -> {
                 val order = players.values.sortedWith(compareBy<Player> { it.index == null }.thenBy { it.index }.thenBy { it.id })
-                emit("players ${order.size}")
-                for (p in order) emit("${p.id} ${p.name} ${index(p.index)} rounds ${p.rounds.size}")
+                output.add("players ${order.size}")
+                for (p in order) output.add("${p.id} ${p.name} ${index(p.index)} rounds ${p.rounds.size}")
             }
             "EVENT" -> {
                 error(t[1] in events,"duplicate event")
@@ -467,10 +464,10 @@ private class Scorer {
                     }
                 }
                 val order = merit.keys.sortedWith(compareByDescending<String> { merit.getValue(it)[0] }.thenByDescending { merit.getValue(it)[1] }.thenBy { it })
-                emit("merit: events $count")
+                output.add("merit: events $count")
                 for ((i,id) in order.withIndex()) {
                     val a = merit.getValue(id)
-                    emit("${i+1} $id ${a[0]} wins ${a[1]} played ${a[2]}")
+                    output.add("${i+1} $id ${a[0]} wins ${a[1]} played ${a[2]}")
                 }
             }
         }
@@ -478,12 +475,12 @@ private class Scorer {
     fun process(line: String): List<String> {
         output = mutableListOf()
         try { execute(line.split(' ')) }
-        catch (f: Fault) { emit("ERROR ${f.message}") }
+        catch (f: Fault) { output.add("ERROR ${f.message}") }
         return output
     }
 }
 fun main() {
-    val input = BufferedReader(InputStreamReader(System.`in`))
+    val input = System.`in`.bufferedReader()
     val output = System.out.bufferedWriter()
     val scorer = Scorer()
     repeat(input.readLine().toInt()) {

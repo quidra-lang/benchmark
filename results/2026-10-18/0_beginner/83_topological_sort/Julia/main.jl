@@ -18,7 +18,7 @@ function topological(courses,edges)
             indegree[target] -= 1
         end
     end
-    return ordered,[course for course in alphabetical if !(course in taken)]
+    return ordered,setdiff(alphabetical,ordered)
 end
 courses1 = ["physics","algebra","graphics","programming","statistics","calculus","databases","algorithms"]
 edges1 = [("calculus","physics"),("algebra","calculus"),("programming","algorithms"),("algebra","statistics"),("algorithms","databases"),("statistics","databases"),("calculus","graphics"),("algorithms","graphics"),("physics","graphics")]

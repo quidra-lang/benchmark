@@ -29,7 +29,6 @@ struct Parser {
     std::size_t position = 0;
     const std::map<std::string, long long> &variables;
     std::string error;
-    Parser(std::vector<std::string> input, const std::map<std::string, long long> &values) : tokens(input), variables(values) {}
     long long unary() {
         std::string token = tokens[position++];
         if (token == "-")
@@ -80,7 +79,7 @@ int main() {
     for (const std::string &line : std::array<std::string, 9>{"width = 12", "height = width - 5", "area = width * height",
         "(area + 6) / 4", "shift = -area / 8 + 3", "height = 100 / (height - 7) + bonus", "volume = area * depth",
         "width = (width+3)*-(2-4)", "width * shift - height"}) {
-        Parser parser(tokenize(line), variables);
+        Parser parser{tokenize(line), 0, variables, {}};
         bool assignment = parser.tokens.size() > 1 && parser.tokens[1] == "=";
         if (assignment)
             parser.position = 2;

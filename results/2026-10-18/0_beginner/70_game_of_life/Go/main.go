@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	initial := []string{".#......", "..#.....", "###.....", "........", "........", "........", ".....###",
@@ -23,8 +21,8 @@ func main() {
 		for r := 0; r < 8; r++ {
 			for c := 0; c < 8; c++ {
 				neighbors := 0
-				for dr := - 1; dr <= 1; dr++ {
-					for dc := - 1; dc <= 1; dc++ {
+				for dr := -1; dr <= 1; dr++ {
+					for dc := -1; dc <= 1; dc++ {
 						rr, cc := r + dr, c + dc
 						if (dr != 0 || dc != 0) && rr >= 0 && rr < 8 && cc >= 0 && cc < 8 && board[rr][cc] == '#' {
 							neighbors++

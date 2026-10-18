@@ -1,9 +1,11 @@
 <?php
 $lines = ['date,region,product,quantity,unit_price','2026-04-01,north,notebook,10,200','2026-04-01,east,marker,6,150','2026-04-01,south,eraser,25,80','2026-04-02,west,stapler,4,600','2026-04-02,north,marker,8,150','2026-04-02,east,notebook,9,200','2026-04-03,south,stapler,3,600','2026-04-03,west,eraser,15,80','2026-04-03,north,eraser,20,80','2026-04-04,east,stapler,5,600','2026-04-04,south,notebook,6,200','2026-04-04,west,marker,8,150'];
-$regions = $products = $days = []; $total = 0;
+$regions = $products = $days = [];
+$total = 0;
 foreach (array_slice($lines,1) as $line) {
     [$date,$region,$product,$quantity,$price] = explode(',',$line);
-    $quantity = (int)$quantity; $price = (int)$price;
+    $quantity = (int)$quantity;
+    $price = (int)$price;
     $amount = $quantity*$price;
     $total += $amount;
     $regions[$region] = ($regions[$region] ?? 0)+$amount;

@@ -1,4 +1,4 @@
-function hanoi(n, source, target, auxiliary) {
+function hanoi(n: number, source: string, target: string, auxiliary: string): number {
   if (n === 0) return 0;
   const count = hanoi(n - 1, source, auxiliary, target);
   console.log(`move disk ${n} from ${source} to ${target}`);

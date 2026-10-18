@@ -25,16 +25,6 @@ cents=:3:0
   parts=.'.' split y
   (100*0".0{::parts)+0".1{::parts
 )
-folded=:3:0
-  upper=.'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-  lower=.'abcdefghijklmnopqrstuvwxyz'
-  result=.y
-  for_k. i.#y do.
-    at=.upper i.k{y
-    if. at<26 do. result=.(at{lower)k}result end.
-  end.
-  result
-)
 padded=:3:0
   text=.number y
   ((8-#text)#'0'),text
@@ -105,14 +95,10 @@ title_id=:3:0
   _1
 )
 title_order=:3:0
-  keys=.0$a:
-  for_k. i.#T do. keys=.keys,<k tget 0 end.
-  /:keys
+  /:0{::&>T
 )
 member_order=:3:0
-  keys=.0$a:
-  for_k. i.#P do. keys=.keys,<k pget 0 end.
-  /:keys
+  /:0{::&>P
 )
 rule=:4:0
   if. 'STUDENT' text_equal x pget 1 do. y{3 14 25 1000 2 50 else. y{10 28 10 2000 5 100 end.
@@ -128,12 +114,7 @@ balance=:3:0
 )
 counts=:3:0
   if. y<0 do. indices=.i.NC else. indices=.y tget 3 end.
-  result=.5#0
-  for_k. indices do.
-    status=.k cget 2
-    result=.(1+status{result)status}result
-  end.
-  result
+  +/(2{"1 indices{C)=/i.5
 )
 holdings=:3:0
   +/3{.counts y
@@ -186,7 +167,7 @@ charge=:3:0
     items=.person pget 3
     items=.items,DAY,kind,book,amount,amount
     (person,3)pset items
-    TOTAL=.(amount+(4+kind){TOTAL)(4+kind)}TOTAL
+    TOTAL=:(amount+(4+kind){TOTAL)(4+kind)}TOTAL
   end.
   EMPTY
 )
@@ -224,7 +205,7 @@ lose_copy=:4:0
   price=.book tget 2
   charge person,book,2,price
   (index,2)cset 3
-  TOTAL=.(1+3{TOTAL)3}TOTAL
+  TOTAL=:(1+3{TOTAL)3}TOTAL
   emit x,' ',(person pget 0),' ',(book tget 0),' copy ',(number index cget 1),' late ',(number late),' fine ',(money amount),' price ',(money price),' balance ',money balance person
   if. 0=holdings book do.
     for_person. book tget 4 do. emit 'DROPPED ',(book tget 0),' ',person pget 0 end.
@@ -283,7 +264,7 @@ renew_copy=:3:0
   (y,5)cset deadline
   renewals=.1+y cget 6
   (y,6)cset renewals
-  TOTAL=.(1+2{TOTAL)2}TOTAL
+  TOTAL=:(1+2{TOTAL)2}TOTAL
   emit 'RENEW ',(person pget 0),' ',((y cget 0)tget 0),' copy ',(number y cget 1),' due ',(number deadline),' renewals ',number renewals
 )
 command=:3:0
@@ -415,7 +396,7 @@ command=:3:0
         end.
       end.
       (person,3)pset items
-      TOTAL=.((7{TOTAL)+offered-remaining)7}TOTAL
+      TOTAL=:((7{TOTAL)+offered-remaining)7}TOTAL
       emit 'PAYFINE ',id,' paid ',(money offered-remaining),' change ',(money remaining),' balance ',money balance person
       for_detail. details do. emit >detail end.
       return.
@@ -429,7 +410,7 @@ command=:3:0
       kind=.(<k,1){items
       items=.0(<k,4)}items
       (person,3)pset items
-      TOTAL=.((8{TOTAL)+amount)8}TOTAL
+      TOTAL=:((8{TOTAL)+amount)8}TOTAL
       emit 'WAIVE ',id,' item ',(number copyno),' ',(kind{::;:'FINE FEE PRICE'),' amount ',(money amount),' balance ',money balance person
       return.
     case. 'FINES' do.
@@ -517,7 +498,7 @@ command=:3:0
       (index,5)cset deadline
       (index,6)cset 0
       (book,5)tset 1+book tget 5
-      TOTAL=.(1+0{TOTAL)0}TOTAL
+      TOTAL=:(1+0{TOTAL)0}TOTAL
       emit 'BORROW ',id,' ',normalized,' copy ',(number index cget 1),' due ',number deadline
     elseif. (<action)e.'RETURN';'LOST';'RENEW' do.
       if. loan<0 do. error_line 'not borrowed' return. end.
@@ -530,7 +511,7 @@ command=:3:0
         late=.late_days loan
         amount=.fine_amount loan
         0 end_loan loan
-        TOTAL=.(1+1{TOTAL)1}TOTAL
+        TOTAL=:(1+1{TOTAL)1}TOTAL
         emit 'RETURN ',id,' ',normalized,' copy ',(number loan cget 1),' late ',(number late),' fine ',(money amount),' balance ',money balance person
         release_copy loan
       end.
@@ -575,11 +556,11 @@ command=:3:0
       emit (person pget 0),' ',(person pget 1),' loans ',(number #member_copies person,1 0),' reservations ',(number reservations person),' balance ',(money outstanding),flag
     end.
   case. 'SEARCH' do.
-    keyword=.folded ' 'join }.words
+    keyword=.tolower ' 'join }.words
     found=.i.0
     keys=.0$a:
     for_book. i.#T do.
-      name=.folded book tget 1
+      name=.tolower book tget 1
       if. 1 e.keyword E.name do.
         found=.found,book
         keys=.keys,<name,LF,book tget 0
@@ -637,8 +618,7 @@ command=:3:0
     for_text. notices do. emit >text end.
   case. 'STATS' do.
     values=.counts _1
-    outstanding=.0
-    for_person. i.#P do. outstanding=.outstanding+balance person end.
+    outstanding=.+/balance"0 i.#P
     emit 'STATS day ',(number DAY),' titles ',(number #T),' members ',(number #P),' closed ',number #CLOSED
     emit 'LOANS borrowed ',(number 0{TOTAL),' returned ',(number 1{TOTAL),' renewed ',(number 2{TOTAL),' lost ',(number 3{TOTAL),' active ',number 1{values
     emit 'MONEY fines ',(money 4{TOTAL),' fees ',(money 5{TOTAL),' charges ',(money 6{TOTAL),' paid ',(money 7{TOTAL),' waived ',(money 8{TOTAL),' outstanding ',money outstanding

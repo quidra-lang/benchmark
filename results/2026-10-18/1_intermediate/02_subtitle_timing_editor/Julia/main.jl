@@ -21,7 +21,7 @@ const FORMAT_TAGS = Dict("<i>"=>raw"{\i1}", "</i>"=>raw"{\i0}", "<b>"=>raw"{\b1}
 
 bad_arguments() = throw(ArgumentError("bad arguments"))
 round_ratio(n,d) = fld(2*n+d,2*d)
-char_count(cue) = sum(length(line) for line in cue.lines)
+char_count(cue) = sum(length,cue.lines)
 dialogue(cue) = any(startswith(line,"- ") for line in cue.lines)
 cue_words(lines) = String.(split(join(lines," ")))
 trim_spaces(text) = String(strip(text,[' ']))
@@ -116,9 +116,9 @@ end
 function markup(line)
     items = Tuple{String,String,Int}[]
     p = 1
+    tags = collect(keys(FORMAT_TAGS))
     while p <= length(line)
         rest = SubString(line,p)
-        tags = collect(keys(FORMAT_TAGS))
         tag = findfirst(tag -> startswith(rest,tag),tags)
         if tag !== nothing
             text = tags[tag]
@@ -167,27 +167,10 @@ function converted_line(line,mode)
 end
 
 function clean_hi(line)
-    output = IOBuffer()
-    segments = 0
-    p = 1
-    while p <= length(line)
-        closing = '\0'
-        if line[p] == '['
-            closing = ']'
-        elseif line[p] == '('
-            closing = ')'
-        end
-        ending = closing == '\0' ? nothing : findnext(closing,line,p+1)
-        if ending !== nothing
-            segments += 1
-            p = ending+1
-        else
-            print(output,line[p])
-            p += 1
-        end
-    end
+    pattern = r"\[[^\]]*\]|\([^)]*\)"
+    segments = length(findall(pattern,line))
     normalize(text) = trim_spaces(replace(text,r" +"=>" "))
-    result = normalize(String(take!(output)))
+    result = normalize(replace(line,pattern=>""))
     prefix = startswith(result,"- ") ? "- " : ""
     body = isempty(prefix) ? result : result[3:end]
     matched = match(r"^[A-Z][A-Z0-9 ]*:",body)
@@ -294,7 +277,7 @@ function inspect(command,args,cues)
     elseif command == "TOASS"
         append!(output,["[Events]","Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"])
         for cue in cues
-            text = join([converted_line(line,"ASS")[1] for line in cue.lines],raw"\N")
+            text = join((converted_line(line,"ASS")[1] for line in cue.lines),raw"\N")
             push!(output,"Dialogue: 0,$(time_text(cue.start,"ASS")),$(time_text(cue.stop,"ASS")),Default,,0,0,0,,$text")
         end
     elseif command == "FRAMES"
@@ -535,7 +518,7 @@ function load_block(block,k,cues)
         length(block) >= 2 && length(block[2]) == 29 && block[2][13:17] == " --> " || bad_arguments()
         start,stop = time_value(block[2][1:12]),time_value(block[2][18:29])
         length(block) >= 3 || return "BAD CUE $k: no text"
-        push!(cues,SubtitleCue(parse(Int,block[1]),start,stop,copy(block[3:end])))
+        push!(cues,SubtitleCue(parse(Int,block[1]),start,stop,block[3:end]))
     catch exception
         exception isa ArgumentError || rethrow()
         return "BAD CUE $k: time"

@@ -7,10 +7,8 @@ pub fn main(init: std.process.Init) !void {
     const n: usize = 5;
     for (0..2 * n - 1) |row| {
         const i = if (row < n) row + 1 else 2 * n - 1 - row;
-        for (0..n - i) |_|
-            try out.writeByte(' ');
-        for (0..2 * i - 1) |_|
-            try out.writeByte('*');
+        try out.splatByteAll(' ', n - i);
+        try out.splatByteAll('*', 2 * i - 1);
         try out.writeByte('\n');
     }
     try out.flush();

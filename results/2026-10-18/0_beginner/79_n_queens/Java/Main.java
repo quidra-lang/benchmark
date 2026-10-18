@@ -1,5 +1,4 @@
-import java.util.*;
-import java.math.*;
+import java.util.Arrays;
 
 public class Main {
     static int queens(int[] positions, int row, int[] first) {

@@ -1,14 +1,12 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 type Node struct {
 	weight, minimum, left, right, symbol int
 }
 
-func pop(roots * []int, nodes[]Node) int {
+func pop(roots *[]int, nodes []Node) int {
 	best := 0
 	for i := 1; i < len(*roots); i++ {
 		a, b := nodes[(*roots)[i]], nodes[(*roots)[best]]
@@ -18,11 +16,11 @@ func pop(roots * []int, nodes[]Node) int {
 	}
 	result := (*roots)[best]
 	(*roots)[best] = (*roots)[len(*roots) - 1]
-	* roots = (*roots)[: len(*roots) - 1]
+	*roots = (*roots)[:len(*roots)-1]
 	return result
 }
 
-func assign(nodes[]Node, root int, prefix string, codes * [128]string) {
+func assign(nodes []Node, root int, prefix string, codes *[128]string) {
 	if nodes[root].symbol >= 0 {
 		codes[nodes[root].symbol] = prefix
 		return

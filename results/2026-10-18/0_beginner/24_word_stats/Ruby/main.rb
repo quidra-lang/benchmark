@@ -3,4 +3,4 @@ average = words.sum(&:length).fdiv(words.length)
 puts "words: #{words.length}"
 puts "longest: #{words.max_by(&:length)}"
 puts "shortest: #{words.min_by(&:length)}"
-puts format('average length: %.2f', average.round(2, half: :up))
+puts format('average length: %.2f', average)

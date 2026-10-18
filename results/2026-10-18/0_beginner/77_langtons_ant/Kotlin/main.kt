@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val black = Array(11) { BooleanArray(11) }
     var r = 5
@@ -15,15 +11,13 @@ fun main() {
         r = (r + dr[direction] + 11) % 11
         c = (c + dc[direction] + 11) % 11
     }
-    var count = 0
     for (row in 0 until 11) {
         val line = buildString {
             for (column in 0 until 11) {
-                if (black[row][column]) count++
                 append(if (row == r && column == c) 'A' else if (black[row][column]) '#' else '.')
             }
         }
         println(line)
     }
-    println("black: $count")
+    println("black: ${black.sumOf { row -> row.count { it } }}")
 }

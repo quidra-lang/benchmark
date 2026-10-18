@@ -1,5 +1,4 @@
-factorial = 1
+from math import factorial
+
 for n in range(13):
-    if n > 0:
-        factorial *= n
-    print(f"{n}! = {factorial}")
+    print(f"{n}! = {factorial(n)}")

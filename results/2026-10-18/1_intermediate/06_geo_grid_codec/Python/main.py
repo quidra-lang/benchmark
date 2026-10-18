@@ -1,6 +1,7 @@
 import re
 import sys
 from fractions import Fraction
+from math import floor
 
 
 GEOHASH_DIGITS = "0123456789bcdefghjkmnpqrstuvwxyz"
@@ -408,8 +409,8 @@ def decode(arguments):
     west = -180000000 + cell.x * 360000000 // cell.width
     east = -180000000 + (cell.x + 1) * 360000000 // cell.width
     latitude, longitude = cell.center()
-    latitude = latitude.numerator // latitude.denominator
-    longitude = longitude.numerator // longitude.denominator
+    latitude = floor(latitude)
+    longitude = floor(longitude)
     return (
         f"sw={coordinate_text(south)},{coordinate_text(west)} "
         f"ne={coordinate_text(north)},{coordinate_text(east)} "

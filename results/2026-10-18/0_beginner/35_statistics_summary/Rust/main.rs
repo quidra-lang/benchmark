@@ -9,16 +9,14 @@ fn main() {
         let d = f64::from(n) - mean;
         s += d * d;
     }
-    let (mut mode, mut best) = (sorted[0], 0);
-    for n in sorted {
-        let count = sorted.iter().filter(|&&v| v == n).count();
+    let (mut mode, mut best, mut count) = (sorted[0], 0, 0);
+    for i in 0..sorted.len() {
+        count = if i > 0 && sorted[i] == sorted[i - 1] { count + 1 } else { 1 };
         if count > best {
             best = count;
-            mode = n;
+            mode = sorted[i];
         }
     }
-    let m = (mean * 1000.0 + 0.5) as i32;
-    let sd = ((s / 11.0).sqrt() * 1000.0 + 0.5) as i32;
-    println!("mean: {}.{:03}\nmedian: {}\nmode: {}\nrange: {}\nstdev: {}.{:03}", m / 1000, m % 1000,
-        sorted[5], mode, sorted[10] - sorted[0], sd / 1000, sd % 1000);
+    println!("mean: {:.3}\nmedian: {}\nmode: {}\nrange: {}\nstdev: {:.3}",
+             mean, sorted[5], mode, sorted[10] - sorted[0], (s / 11.0).sqrt());
 }

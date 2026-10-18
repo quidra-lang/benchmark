@@ -1,28 +1,13 @@
 fn main() {
     for s in ["AAABBBCCCD", "WWWWWWWWWWWWBWWWWWWWWWWWWBBB", "ALGORITHM", "MISSISSIPPI", "XXXXXXXXXXYYYYYYYYYYYYYYYYYYYYYZ"] {
-        let bytes = s.as_bytes();
         let mut encoded = String::new();
-        let mut i = 0;
-        while i < bytes.len() {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j] == bytes[i] {
-                j += 1;
-            }
-            encoded.push_str(&format!("{}{}", j - i, bytes[i] as char));
-            i = j;
+        for run in s.as_bytes().chunk_by(|a, b| a == b) {
+            encoded.push_str(&format!("{}{}", run.len(), run[0] as char));
         }
-        let b = encoded.as_bytes();
         let mut decoded = String::new();
-        i = 0;
-        while i < b.len() {
-            let mut count = 0;
-            while b[i].is_ascii_digit() {
-                count = count * 10 + usize::from(b[i] - b'0');
-                i += 1;
-            }
-            let c = b[i] as char;
-            i += 1;
-            decoded.extend(std::iter::repeat(c).take(count));
+        for run in encoded.split_inclusive(|c: char| c.is_ascii_uppercase()) {
+            let (count, letter) = run.split_at(run.len() - 1);
+            decoded.push_str(&letter.repeat(count.parse::<usize>().unwrap()));
         }
         println!("{} -> {} -> {}", s, encoded, decoded);
     }

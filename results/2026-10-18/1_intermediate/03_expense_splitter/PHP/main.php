@@ -53,7 +53,7 @@ function currency_note(array $record): string
 
 function chronological(array $state): array
 {
-    $expenses = array_values($state['expenses']);
+    $expenses = $state['expenses'];
     usort($expenses, fn($a, $b) => [$a['day'], $a['record']] <=> [$b['day'], $b['record']]);
     return $expenses;
 }
@@ -235,22 +235,11 @@ function expense_net(array $expense): array
 
 function greedy_transfers(array $names, array $original): array
 {
-    $remaining = [];
-    foreach ($names as $name) {
-        $remaining[$name] = $original[$name];
-    }
+    $remaining = array_combine($names,array_map(fn($name) => $original[$name],$names));
     $output = [];
     while ($remaining !== [] && min($remaining) < 0) {
-        $sender = $names[0];
-        $receiver = $names[0];
-        foreach ($names as $name) {
-            if ($remaining[$name] < $remaining[$sender]) {
-                $sender = $name;
-            }
-            if ($remaining[$name] > $remaining[$receiver]) {
-                $receiver = $name;
-            }
-        }
+        $sender = array_search(min($remaining),$remaining,true);
+        $receiver = array_search(max($remaining),$remaining,true);
         $amount = min(-$remaining[$sender], $remaining[$receiver]);
         $output[] = [$sender, $receiver, $amount];
         $remaining[$sender] += $amount;
@@ -322,10 +311,7 @@ function expense_line(string $command, array $expense, bool $payers = false): st
 {
     $names = $payers ? $expense['payers'] : $expense['participants'];
     $amounts = $payers ? $expense['contributions'] : $expense['shares'];
-    $parts = [];
-    foreach ($names as $i => $name) {
-        $parts[] = $name . ' ' . amount_text($amounts[$i]);
-    }
+    $parts = array_map(fn($name,$amount) => $name.' '.amount_text($amount),$names,$amounts);
     return "$command $expense[id] " . amount_text($expense['total']) . currency_note($expense) . ' = ' . implode(' + ', $parts);
 }
 
@@ -343,12 +329,7 @@ function advance_day(array &$state, int $day): array
         usort($due, fn($a, $b) => [$a['next'], $a['record']] <=> [$b['next'], $b['record']]);
         $template = $due[0];
         $id = $template['id'];
-        $active = true;
-        foreach (expense_names($template) as $name) {
-            if (!$state['members'][$name]['active']) {
-                $active = false;
-            }
-        }
+        $active = array_all(expense_names($template),fn($name) => $state['members'][$name]['active']);
         if (!$active || converted($state, $template['amount'], $template['currency']) === 0) {
             $state['expenses'][$id]['interval'] = 0;
             $state['expenses'][$id]['next'] = 0;
@@ -548,16 +529,10 @@ function ledger_summary(string $command, array $args, string $line, array $state
             $sent = 0;
             $received = 0;
             foreach ($expenses as $expense) {
-                foreach ($expense['payers'] as $i => $payer) {
-                    if ($payer === $name) {
-                        $paid += $expense['contributions'][$i];
-                    }
-                }
-                foreach ($expense['participants'] as $i => $person) {
-                    if ($person === $name) {
-                        $share += $expense['shares'][$i];
-                    }
-                }
+                $payer = array_search($name,$expense['payers'],true);
+                $participant = array_search($name,$expense['participants'],true);
+                if ($payer !== false) $paid += $expense['contributions'][$payer];
+                if ($participant !== false) $share += $expense['shares'][$participant];
             }
             foreach ($state['settlements'] as $s) {
                 if ($s['sender'] === $name) {

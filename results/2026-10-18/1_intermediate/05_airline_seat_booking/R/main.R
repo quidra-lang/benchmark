@@ -231,11 +231,9 @@ execute <- function(line) {
     f <- get_flight(flight, TRUE)
     cabin(f, class)
     parsed <- lapply(t[5:length(t)], function(token) strsplit(token, ":", fixed = TRUE)[[1L]])
-    names <- character()
-    for (parts in parsed) {
-      if (parts[1L] %in% names) fail(paste("duplicate name", parts[1L], "in", pnr))
-      names <- c(names, parts[1L])
-    }
+    names <- vapply(parsed, `[`, character(1L), 1L)
+    duplicate <- anyDuplicated(names)
+    if (duplicate) fail(paste("duplicate name", names[duplicate], "in", pnr))
     aboard <- vapply(passengers(f), function(id) person(id)$name, character(1L))
     for (parts in parsed) {
       if (parts[1L] %in% aboard) fail(paste(parts[1L], "already on", flight))

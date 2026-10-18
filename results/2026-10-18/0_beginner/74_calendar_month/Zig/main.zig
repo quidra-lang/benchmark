@@ -26,10 +26,8 @@ pub fn main(init: std.process.Init) !void {
     for ([_][2]u32{ .{ 2024, 2 }, .{ 2026, 8 }, .{ 2026, 11 } }, 0..) |p, k| {
         const year = p[0];
         const month = p[1];
-        var days: u32 = 0;
-        for (1..year) |y|
-            days += if (leap(@intCast(y))) @as(u32, 366) else
-                365;
+        const prior_year = year - 1;
+        var days: u32 = 365 * prior_year + prior_year / 4 - prior_year / 100 + prior_year / 400;
         for (1..month) |m|
             days += if (m == 2 and leap(year)) @as(u32, 29) else
                 lengths[m - 1];
@@ -38,8 +36,7 @@ pub fn main(init: std.process.Init) !void {
         if (k > 0)
             try out.writeByte('\n');
         try out.print("{s} {d}\nSu Mo Tu We Th Fr Sa\n", .{ names[month - 1], year });
-        for (0..offset) |_|
-            try out.writeAll("   ");
+        try out.splatByteAll(' ', offset * 3);
         var day: u32 = 1;
         while (day <= last) : (day += 1) {
             try out.print("{d:>2}", .{ day });

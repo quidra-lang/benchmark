@@ -1,5 +1,3 @@
-import 'dart:io';
-
 class Team {
     final String name;
     int played = 0, wins = 0, draws = 0, losses = 0, gf = 0, ga = 0, points = 0;
@@ -8,7 +6,6 @@ class Team {
 }
 
 void main() {
-    final out = StringBuffer();
     final teams = {
         for (final name in ['Lions', 'Tigers', 'Eagles', 'Sharks', 'Wolves', 'Bears'])
             name: Team(name)
@@ -53,7 +50,6 @@ void main() {
     });
     for (var i = 0; i < order.length; i++) {
         final t = order[i];
-        out.writeln('${i+1}. ${t.name} P=${t.played} W=${t.wins} D=${t.draws} L=${t.losses} GF=${t.gf} GA=${t.ga} GD=${t.gd>0?'+':''}${t.gd} Pts=${t.points}');
+        print('${i+1}. ${t.name} P=${t.played} W=${t.wins} D=${t.draws} L=${t.losses} GF=${t.gf} GA=${t.ga} GD=${t.gd>0?'+':''}${t.gd} Pts=${t.points}');
     }
-    stdout.write(out);
 }

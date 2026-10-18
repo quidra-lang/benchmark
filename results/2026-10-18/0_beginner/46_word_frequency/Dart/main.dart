@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const text = 'The cat sat on the mat. The dog sat on the rug, and the cat watched the dog. A bird sang on the fence, and the Dog barked at the bird. The cat slept in the sun, the bird flew away, and the dog sat by the door.';
     final counts = <String, int>{};
     for (final match in RegExp('[a-z]+').allMatches(text.toLowerCase())) {
@@ -13,7 +10,6 @@ void main() {
         return c != 0 ? c : a.compareTo(b);
     });
     for (final word in words.take(5))
-        out.writeln('$word: ${counts[word]}');
-    out.writeln('distinct words: ${counts.length}');
-    stdout.write(out);
+        print('$word: ${counts[word]}');
+    print('distinct words: ${counts.length}');
 }

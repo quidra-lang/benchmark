@@ -5,7 +5,7 @@
 
 int main() {
     long long x = 42;
-    std::array<int, 2> free_time {};
+    std::array<int, 2> free_time{};
     int arrival = 0, total_wait = 0, maximum = 0;
     for (int k = 1; k <= 20; k++) {
         x = x * 48271 % 2147483647;
@@ -19,9 +19,7 @@ int main() {
         std::cout << "customer " << k << ": arrive=" << arrival << " start=" << start << " end=" << end
             << " teller=" << teller + 1 << " wait=" << wait << '\n';
     }
-    double average = total_wait / 20.0;
-    int q = static_cast<int>(average * 100 + 0.5);
-    std::cout << "average wait: " << q / 100 << '.' << std::setfill('0') << std::setw(2) << q % 100
+    std::cout << "average wait: " << std::fixed << std::setprecision(2) << total_wait / 20.0
         << "\nmax wait: " << maximum << "\nlast departure: " << std::max(free_time[0], free_time[1])
         << '\n';
 }

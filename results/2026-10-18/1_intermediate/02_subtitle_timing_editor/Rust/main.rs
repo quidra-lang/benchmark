@@ -17,7 +17,7 @@ struct Arguments {
     values: Vec<Integer>,
     denominator: Integer,
 }
-struct Markup { kind: usize, text: String, digit: usize }
+struct Markup<'a> { kind: usize, text: &'a str, digit: usize }
 
 fn unsigned(s: &str) -> Option<Integer> {
     if s.is_empty() || s.len() > 9 || !s.bytes().all(|c| c.is_ascii_digit()) { None }
@@ -58,13 +58,13 @@ fn half_up(mut a: Integer, mut b: Integer) -> Integer {
 }
 fn count_chars(c: &Cue) -> Integer { c.text.iter().map(|s| s.len() as Integer).sum() }
 fn dialogue(c: &Cue) -> bool { c.text.iter().any(|line| line.starts_with("- ")) }
-fn words(lines: &[String]) -> Vec<String> {
-    lines.iter().flat_map(|line| line.split(' ').filter(|s| !s.is_empty()).map(str::to_owned)).collect()
+fn words(lines: &[String]) -> Vec<&str> {
+    lines.iter().flat_map(|line| line.split(' ').filter(|s| !s.is_empty())).collect()
 }
 fn wrap(lines: &[String], width: usize) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
     for word in words(lines) {
-        if result.last().is_none_or(|s| s.len()+1+word.len() > width) { result.push(word); }
+        if result.last().is_none_or(|s| s.len()+1+word.len() > width) { result.push(word.to_owned()); }
         else {
             result.last_mut().unwrap().push(' ');
             result.last_mut().unwrap().push_str(&word);
@@ -72,7 +72,7 @@ fn wrap(lines: &[String], width: usize) -> Vec<String> {
     }
     result
 }
-fn scan_markup(line: &str) -> Vec<Markup> {
+fn scan_markup(line: &str) -> Vec<Markup<'_>> {
     let tags = ["<i>", "</i>", "<b>", "</b>", "<u>", "</u>"];
     let mut result = Vec::new();
     let mut p = 0;
@@ -101,7 +101,7 @@ fn scan_markup(line: &str) -> Vec<Markup> {
             kind = 3;
             digit = (b[p+4]-b'0') as usize;
         }
-        result.push(Markup { kind, text: line[p..p+size].to_owned(), digit });
+        result.push(Markup { kind, text: &line[p..p+size], digit });
         p += size;
     }
     result
@@ -117,20 +117,20 @@ fn converted(lines: &[String], mode: usize) -> (Vec<String>, usize, usize) {
             if m.kind == 3 && first == 0 { first = m.digit; }
             match mode {
                 0 => {
-                    if m.kind == 0 { output.push_str(&m.text); }
+                    if m.kind == 0 { output.push_str(m.text); }
                     else { removed += 1; }
                 }
                 1 => {
-                    if m.kind == 1 { output.push_str(&m.text); }
+                    if m.kind == 1 { output.push_str(m.text); }
                     if m.kind == 0 {
-                        output.push_str(match m.text.as_str() {
-                            "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", _ => &m.text,
+                        output.push_str(match m.text {
+                            "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", _ => m.text,
                         });
                     }
                 }
                 _ => {
                     if m.kind == 1 { output.push_str(ass[tags.iter().position(|&s| s == m.text).unwrap()]); }
-                    if m.kind == 0 || m.kind == 3 { output.push_str(&m.text); }
+                    if m.kind == 0 || m.kind == 3 { output.push_str(m.text); }
                 }
             }
         }
@@ -412,10 +412,10 @@ impl Editor {
                 out.push(format!("TIME cue={}", v[0]));
             }
             "SORT" => {
-                let mut order: Vec<usize> = (0..n).collect();
-                order.sort_by_key(|&i| (self.cues[i].start, self.cues[i].end));
-                let moved = order.iter().enumerate().filter(|&(i, j)| i != *j).count();
-                self.cues = order.iter().map(|&i| self.cues[i].clone()).collect();
+                let mut sorted: Vec<_> = std::mem::take(&mut self.cues).into_iter().enumerate().collect();
+                sorted.sort_by_key(|(_, c)| (c.start, c.end));
+                let moved = sorted.iter().enumerate().filter(|(i, (original, _))| i != original).count();
+                self.cues = sorted.into_iter().map(|(_, c)| c).collect();
                 out.push(format!("SORT moved={moved}"));
             }
             "RENUMBER" => {
@@ -429,9 +429,9 @@ impl Editor {
             "MERGE" => {
                 let mut result: Vec<Cue> = Vec::new();
                 let mut merged = 0;
-                for c in &self.cues {
+                for c in std::mem::take(&mut self.cues) {
                     if let Some(previous) = result.last_mut() {
-                        if c.start-previous.end < v[0] && !dialogue(previous) && !dialogue(c) {
+                        if c.start-previous.end < v[0] && !dialogue(previous) && !dialogue(&c) {
                             let mut lines = previous.text.clone();
                             lines.extend(c.text.iter().cloned());
                             let wrapped = wrap(&lines, 42);
@@ -443,7 +443,7 @@ impl Editor {
                             }
                         }
                     }
-                    result.push(c.clone());
+                    result.push(c);
                 }
                 self.cues = result;
                 out.push(format!("MERGE merged={merged} cues={}", self.cues.len()));
@@ -451,17 +451,16 @@ impl Editor {
             "SPLIT" => {
                 let mut result = Vec::new();
                 let mut split = 0;
-                for c in &self.cues {
+                for mut c in std::mem::take(&mut self.cues) {
                     let d = c.end-c.start;
-                    if d < 1 || dialogue(c) {
-                        result.push(c.clone());
+                    if d < 1 || dialogue(&c) {
+                        result.push(c);
                         continue;
                     }
                     let wrapped = wrap(&c.text, v[0] as usize);
                     if wrapped.len() <= 2 {
-                        let mut replacement = c.clone();
-                        replacement.text = wrapped;
-                        result.push(replacement);
+                        c.text = wrapped;
+                        result.push(c);
                         continue;
                     }
                     split += 1;
@@ -510,7 +509,7 @@ impl Editor {
                     let all = w.join(" ");
                     let mut candidate = None;
                     if all.len() <= 42 { candidate = Some(vec![all]); }
-                    else {
+                    else if all.len() <= 85 {
                         let mut best = (usize::MAX, usize::MAX);
                         for j in 1..w.len() {
                             let first = w[..j].join(" ");
@@ -532,7 +531,7 @@ impl Editor {
             "STRIP" | "CLEANHI" => {
                 let (mut removed_items, mut labels, mut removed_lines, mut removed_cues) = (0, 0, 0, 0);
                 let mut result = Vec::new();
-                for c in &self.cues {
+                for mut c in std::mem::take(&mut self.cues) {
                     let mut lines = Vec::new();
                     if name == "STRIP" {
                         let (converted, _, tags) = converted(&c.text, 0);
@@ -550,9 +549,8 @@ impl Editor {
                     }
                     if lines.is_empty() { removed_cues += 1; }
                     else {
-                        let mut replacement = c.clone();
-                        replacement.text = lines;
-                        result.push(replacement);
+                        c.text = lines;
+                        result.push(c);
                     }
                 }
                 self.cues = result;

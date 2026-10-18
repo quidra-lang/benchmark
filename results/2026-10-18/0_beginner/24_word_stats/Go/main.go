@@ -17,8 +17,6 @@ func main() {
 			shortest = w
 		}
 	}
-	avg := float64(total) / float64(len(words))
-	q := int(avg * 100 + 0.5)
-	fmt.Printf("words: %d\nlongest: %s\nshortest: %s\naverage length: %d.%02d\n", len(words), longest,
-		shortest, q / 100, q % 100)
+	fmt.Printf("words: %d\nlongest: %s\nshortest: %s\naverage length: %.2f\n",
+		len(words), longest, shortest, float64(total)/float64(len(words)))
 }

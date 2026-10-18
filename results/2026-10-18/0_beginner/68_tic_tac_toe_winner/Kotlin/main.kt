@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val boards = listOf(listOf("XXX","OO.","O.X"),listOf("X.O",".X.","O.."),
         listOf("XO.",".OX","XO."),listOf("XOX","XOO","OXX"),
@@ -10,14 +6,10 @@ fun main() {
         listOf(1,4,7),listOf(2,5,8),listOf(0,4,8),listOf(2,4,6))
     for ((i,board) in boards.withIndex()) {
         val cells = board.joinToString("")
-        var result = if ('.' in cells) "in progress" else "draw"
-        for (line in lines) {
-            val mark = cells[line[0]]
-            if (mark != '.' && mark == cells[line[1]] && mark == cells[line[2]]) {
-                result = "$mark wins"
-                break
-            }
+        val winning = lines.firstOrNull { line ->
+            cells[line[0]] != '.' && cells[line[0]] == cells[line[1]] && cells[line[0]] == cells[line[2]]
         }
+        val result = winning?.let { "${cells[it[0]]} wins" } ?: if ('.' in cells) "in progress" else "draw"
         println("board ${i + 1}: $result")
     }
 }

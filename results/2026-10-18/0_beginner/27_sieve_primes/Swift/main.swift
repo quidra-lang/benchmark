@@ -1,7 +1,6 @@
-import Foundation
-
-
-var prime = [Bool](repeating: true, count: 201); prime[0] = false; prime[1] = false
+var prime = [Bool](repeating: true, count: 201)
+prime[0] = false
+prime[1] = false
 for p in 2...200 where prime[p] {
     for m in stride(from: 2 * p, through: 200, by: p) { prime[m] = false }
 }

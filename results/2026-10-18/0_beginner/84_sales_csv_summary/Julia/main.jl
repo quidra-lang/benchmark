@@ -18,7 +18,7 @@ function main()
     for product in sort(collect(keys(products)))
         println(product,": ",products[product])
     end
-    best = sort(collect(keys(days));by=date -> (-days[date],date))[1]
+    best = argmax(date -> days[date],sort(collect(keys(days))))
     println("best day: ",best," (",days[best],")")
 end
 main()

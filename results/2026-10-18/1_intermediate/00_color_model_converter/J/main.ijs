@@ -6,9 +6,7 @@ rounded =: 4 : 0
   ((2*x)+y) floor_ratio 2*y
 )
 away =: 4 : 0
-  if. x<0 do. -((-x) rounded y)
-  else. x rounded y
-  end.
+  (*x) * (|x) rounded y
 )
 clamp =: 3 : 0
   255 <. 0 >. y
@@ -52,9 +50,7 @@ color_text =: 3 : 0
   '#',;2 hexadecimal&.> <"0 y
 )
 sequence_text =: 3 : 0
-  fields =. 0$<''
-  for_color. y do. fields =. fields,<color_text color end.
-  ' ' join fields
+  ' ' join <"1 color_text"1 y
 )
 hex_digit =: 3 : 0
   position =. '0123456789abcdefABCDEF' i. {.y
@@ -242,11 +238,7 @@ gradient =: 3 : 0
   'first second count' =. y
   result =. 0 3$0
   for_i. i.count do.
-    color =. first
-    for_channel. i.3 do.
-      value =. (channel{first)+(((channel{second)-channel{first)*i) away count-1
-      color =. value channel}color
-    end.
+    color =. first + ((second-first)*i) away count-1
     result =. result,color
   end.
   result

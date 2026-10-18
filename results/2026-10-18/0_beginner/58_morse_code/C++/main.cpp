@@ -27,8 +27,7 @@ int main() {
         if (token == "/")
             decoded += ' ';
         else {
-            std::size_t index = static_cast<std::size_t>(std::find(codes.begin(), codes.end(), token) - codes.begin());
-            decoded += symbols[index];
+            decoded += symbols[std::find(codes.begin(), codes.end(), token) - codes.begin()];
         }
     }
     std::cout << decoded << '\n';

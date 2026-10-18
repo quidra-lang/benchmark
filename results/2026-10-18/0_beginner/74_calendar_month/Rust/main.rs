@@ -2,7 +2,7 @@ fn main() {
     let names = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
         "October", "November", "December"];
     let lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    for (k, (y, m)) in [(2024, 2), (2026, 8), (2026, 11)].iter().copied().enumerate() {
+    for (k, &(y, m)) in [(2024, 2), (2026, 8), (2026, 11)].iter().enumerate() {
         let (mut yy, mut mm) = (y, m);
         if mm < 3 {
             mm += 12;

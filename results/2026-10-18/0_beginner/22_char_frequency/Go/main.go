@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	sentence := "Peter Piper picked a peck of pickled peppers!"

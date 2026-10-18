@@ -1,8 +1,8 @@
-import java.util.*;
-import java.math.*;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
 
 public class Main {
-
     public static void main(String[] args) {
         for (String id : new String[]{"user_name","maxRetryCount","ShoppingCartItem","background-color","get_last_login_time","isEmailAddressValid"}) {
             List<String> words = Arrays.stream(id.split("[_-]|(?=[A-Z])")).filter(w -> !w.isEmpty()).map(w -> w.toLowerCase(Locale.ROOT)).toList();

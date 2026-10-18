@@ -5,10 +5,10 @@ solve <- function() {
     for (row in 1:9) {
         for (column in 1:9) {
             if (board[row,column] == 0) {
+                block_row <- 3*((row-1) %/% 3)+1
+                block_column <- 3*((column-1) %/% 3)+1
                 for (digit in 1:9) {
                     if (digit %in% board[row,] || digit %in% board[,column]) next
-                    block_row <- 3*((row-1) %/% 3)+1
-                    block_column <- 3*((column-1) %/% 3)+1
                     if (digit %in% board[block_row:(block_row+2),block_column:(block_column+2)]) next
                     board[row,column] <<- digit
                     placements <<- placements+1

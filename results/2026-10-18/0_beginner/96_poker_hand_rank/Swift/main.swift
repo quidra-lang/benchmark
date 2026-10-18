@@ -1,5 +1,3 @@
-import Foundation
-
 struct Hand {
     let text: String
     let category: Int
@@ -33,9 +31,6 @@ let categories = ["high card", "one pair", "two pair", "three of a kind", "strai
     "flush", "full house", "four of a kind", "straight flush"]
 let hands = input.map(evaluate).sorted { a,b in
     if a.category != b.category { return a.category > b.category }
-    for (left,right) in zip(a.sequence,b.sequence) {
-        if left != right { return left > right }
-    }
-    return false
+    return b.sequence.lexicographicallyPrecedes(a.sequence)
 }
 for (i,hand) in hands.enumerated() { print("\(i + 1). \(hand.text): \(categories[hand.category])") }

@@ -1,5 +1,3 @@
-import 'dart:io';
-
 class Hand {
     final String original;
     final int category;
@@ -16,7 +14,7 @@ Hand evaluate(String original) {
     final wheel = ascending.length == 5 && [14, 2, 3, 4, 5].every((r) => counts[r] == 1), straight = ascending.length == 5
         && (wheel || ascending.last - ascending.first == 4);
     final pairs = counts.where((c) => c == 2).length, triple = counts.contains(3), four = counts.contains(4);
-    final sequence = ascending.toList()..sort((a, b) {
+    final sequence = ascending..sort((a, b) {
         final c = counts[b].compareTo(counts[a]);
         return c != 0 ? c : b.compareTo(a);
     });
@@ -29,7 +27,6 @@ Hand evaluate(String original) {
 }
 
 void main() {
-    final out = StringBuffer();
     final hands = ['9C 9D 5H QH 2C', '4D AH 3C 5S 2H', 'KS 8S 2S JS 6S', '7H 7D KC 7S KD', '3H 6C 4S 2D 5C',
         'JD TC 4H 8C AS', 'QC 6D QS 3S 6H', '9H KH 9S 8H 3D'].map(evaluate).toList()..sort((a, b) {
         var c = b.category.compareTo(a.category);
@@ -46,7 +43,6 @@ void main() {
         'full house', 'four of a kind', 'straight flush'];
     for (var i = 0; i < hands.length; i++) {
         final hand = hands[i];
-        out.writeln('${i+1}. ${hand.original}: ${categories[hand.category]}');
+        print('${i+1}. ${hand.original}: ${categories[hand.category]}');
     }
-    stdout.write(out);
 }

@@ -245,7 +245,7 @@ def apply_case(text, pattern):
     if pattern == "UPPER":
         return text.upper()
     if pattern == "TITLE":
-        return text[0].upper() + text[1:]
+        return text.capitalize()
     return text
 
 
@@ -412,15 +412,8 @@ class Converter:
         return apply_case(text, pattern)
 
     def rewrite_text(self, request, render):
-        pieces = []
-        position = 0
-        for word in request.words:
-            start = word.column - 1
-            pieces.append(request.text[position:start])
-            pieces.append(render(word))
-            position = start + len(word.text)
-        pieces.append(request.text[position:])
-        return "".join(pieces)
+        words = iter(request.words)
+        return WORD_PATTERN.sub(lambda match: render(next(words)), request.text)
 
     def set_option(self, request):
         option, value = request.args

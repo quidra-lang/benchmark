@@ -18,10 +18,6 @@ const Failure = error{
 };
 
 const Error = Failure || Allocator.Error || std.Io.Writer.Error;
-fn equal(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
-
 fn integer(text: []const u8) i64 {
     return std.fmt.parseInt(i64, text, 10) catch unreachable;
 }
@@ -102,7 +98,7 @@ const DartTable = struct {
 
     fn index(self: *const DartTable, name: []const u8) ?usize {
         for (self.items, 0..) |dart, i| {
-            if (equal(dart.name, name))
+            if (std.mem.eql(u8, dart.name, name))
                 return i;
         }
         return null;
@@ -363,10 +359,7 @@ const State = struct {
             self.server = side;
         if (config.sport == .VOLLEYBALL and self.server != side) {
             self.server = side;
-            const first = self.lineup[side][0];
-            for (0..5) |i|
-                self.lineup[side][i] = self.lineup[side][i + 1];
-            self.lineup[side][5] = first;
+            std.mem.rotate(i64, &self.lineup[side], 1);
         }
         const target: i64 = if (config.sport == .TABLETENNIS) 11 else if (config.sport == .BADMINTON) 21 else if (self.completed_len == 4) 15 else 25;
         if ((self.points[side] >= target and self.points[side] - self.points[1 - side] >= 2) or (config.sport == .BADMINTON
@@ -407,10 +400,9 @@ const State = struct {
             var later: [21]i64 = undefined;
             var later_len: usize = 0;
             for (i + 1..10) |j| {
-                for (self.frames[j][0..self.frame_lengths[j]]) |pins| {
-                    later[later_len] = pins;
-                    later_len += 1;
-                }
+                const count = self.frame_lengths[j];
+                @memcpy(later[later_len..][0..count], self.frames[j][0..count]);
+                later_len += count;
             }
             if (i == 9) {
                 if (self.finished) {
@@ -508,20 +500,12 @@ const State = struct {
             .ROLL => try self.roll(event.first),
             .THROW => self.throwDart(config, table, @intCast(event.first)),
             .SUB => {
-                var position: ?usize = null;
-                for (self.lineup[event.side], 0..) |number, i| {
-                    if (number == event.first)
-                        position = i;
-                }
-                if (position == null)
-                    return error.PlayerNotOnCourt;
-                for (self.lineup[event.side]) |number| {
-                    if (number == event.second)
-                        return error.PlayerAlreadyOnCourt;
-                }
+                const position = std.mem.findScalar(i64, &self.lineup[event.side], event.first) orelse return error.PlayerNotOnCourt;
+                if (std.mem.findScalar(i64, &self.lineup[event.side], event.second) != null)
+                    return error.PlayerAlreadyOnCourt;
                 if (self.substitutions[event.side] == 6)
                     return error.NoSubstitutionsLeft;
-                self.lineup[event.side][position.?] = event.second;
+                self.lineup[event.side][position] = event.second;
                 self.substitutions[event.side] += 1;
             },
             .TIMEOUT => {
@@ -665,12 +649,9 @@ const State = struct {
                 var spares: i64 = 0;
                 var open: i64 = 0;
                 for (0..10) |i| {
-                    for (self.marks[i][0..self.frame_lengths[i]]) |mark| {
-                        if (mark == 'X')
-                            strikes += 1;
-                        if (mark == '/')
-                            spares += 1;
-                    }
+                    const marks = self.marks[i][0..self.frame_lengths[i]];
+                    strikes += @intCast(std.mem.countScalar(u8, marks, 'X'));
+                    spares += @intCast(std.mem.countScalar(u8, marks, '/'));
                     if (self.frame_lengths[i] >= 2 and self.frames[i][0] != 10 and self.frames[i][0] + self.frames[i][1] < 10)
                         open += 1;
                 }
@@ -729,7 +710,7 @@ const Match = struct {
 
 fn oneOf(value: []const u8, choices: []const []const u8) bool {
     for (choices) |choice| {
-        if (equal(value, choice))
+        if (std.mem.eql(u8, value, choice))
             return true;
     }
     return false;
@@ -760,7 +741,7 @@ fn configure(gpa: Allocator, a: []const []const u8) Error!Config {
             return error.InvalidOption;
         var key: ?usize = null;
         for (keys, 0..) |name, i| {
-            if (equal(name, parts[0]))
+            if (std.mem.eql(u8, name, parts[0]))
                 key = i;
         }
         const index = key orelse return error.InvalidOption;
@@ -782,7 +763,7 @@ fn configure(gpa: Allocator, a: []const []const u8) Error!Config {
             1 => {
                 if (sport != .TENNIS or !oneOf(value, &.{ "AD", "NOAD" }))
                     return error.InvalidOption;
-                config.no_ad = equal(value, "NOAD");
+                config.no_ad = std.mem.eql(u8, value, "NOAD");
             },
             2 => {
                 if (sport != .TENNIS)
@@ -792,7 +773,7 @@ fn configure(gpa: Allocator, a: []const []const u8) Error!Config {
             3 => {
                 if (sport == .BOWLING or !oneOf(value, &.{ "A", "B" }))
                     return error.InvalidOption;
-                config.first = if (equal(value, "A")) 0 else 1;
+                config.first = if (std.mem.eql(u8, value, "A")) 0 else 1;
             },
             4 => {
                 if (sport != .TABLETENNIS or !oneOf(value, &.{ "5", "7" }))
@@ -818,56 +799,41 @@ fn configure(gpa: Allocator, a: []const []const u8) Error!Config {
 const Engine = struct {
     gpa: Allocator,
     darts: DartTable,
-    matches: std.ArrayList(*Match) = .empty,
-
-    fn find(self: *const Engine, id: []const u8) ?*Match {
-        for (self.matches.items) |match| {
-            if (equal(match.config.id, id))
-                return match;
-        }
-        return null;
-    }
+    matches: std.StringHashMapUnmanaged(*Match) = .empty,
 
     fn standings(self: *const Engine, out: *std.Io.Writer) Error!void {
         const Record = struct {
             name: []const u8,
             wins: i64 = 0,
-            losses: i64 = 0
+            losses: i64 = 0,
+
+            fn less(_: void, a: @This(), b: @This()) bool {
+                return a.wins > b.wins or (a.wins == b.wins and (a.losses < b.losses or
+                    (a.losses == b.losses and std.mem.order(u8, a.name, b.name) == .lt)));
+            }
         };
-        var records: std.ArrayList(Record) = .empty;
-        for (self.matches.items) |match| {
+        var totals: std.StringHashMapUnmanaged(Record) = .empty;
+        var matches = self.matches.valueIterator();
+        while (matches.next()) |entry| {
+            const match = entry.*;
             if (match.config.sport == .BOWLING or !match.state.finished)
                 continue;
             for (0..2) |side| {
                 const name = match.config.names[side];
-                var index: ?usize = null;
-                for (records.items, 0..) |r, i| {
-                    if (equal(r.name, name))
-                        index = i;
-                }
-                if (index == null) {
-                    try records.append(self.gpa, .{ .name = name });
-                    index = records.items.len - 1;
-                }
+                const record = try totals.getOrPut(self.gpa, name);
+                if (!record.found_existing)
+                    record.value_ptr.* = .{ .name = name };
                 if (side == match.state.winner)
-                    records.items[index.?].wins += 1 else
-                        records.items[index.?].losses += 1;
+                    record.value_ptr.wins += 1
+                else
+                    record.value_ptr.losses += 1;
             }
         }
-        for (1..@max(1, records.items.len)) |i| {
-            const entry = records.items[i];
-            var j = i;
-            while (j > 0) {
-                const b = records.items[j - 1];
-                const before = entry.wins > b.wins or (entry.wins == b.wins and (entry.losses < b.losses or (entry.losses == b.losses
-                    and std.mem.order(u8, entry.name, b.name) == .lt)));
-                if (!before)
-                    break;
-                records.items[j] = b;
-                j -= 1;
-            }
-            records.items[j] = entry;
-        }
+        var records: std.ArrayList(Record) = .empty;
+        var values = totals.valueIterator();
+        while (values.next()) |record|
+            try records.append(self.gpa, record.*);
+        std.mem.sort(Record, records.items, {}, Record.less);
         try out.writeAll("standings: ");
         if (records.items.len == 0)
             try out.writeAll("none");
@@ -887,31 +853,31 @@ const Engine = struct {
     fn execute(self: *Engine, line: []const u8, out: *std.Io.Writer) Error!void {
         const a = try split(self.gpa, line, ' ');
         const op = a[0];
-        if (equal(op, "MATCH")) {
-            if (self.find(a[1]) != null)
+        if (std.mem.eql(u8, op, "MATCH")) {
+            if (self.matches.get(a[1]) != null)
                 return error.DuplicateMatch;
             const config = try configure(self.gpa, a);
             const match = try self.gpa.create(Match);
             match.* = .{ .config = config, .state = State.init(config) };
-            try self.matches.append(self.gpa, match);
-        } else if (equal(op, "CHECKOUT")) {
+            try self.matches.put(self.gpa, a[1], match);
+        } else if (std.mem.eql(u8, op, "CHECKOUT")) {
             const score = integer(a[1]);
             try out.print("checkout {d}: ", .{ score });
             if (self.darts.checkout(score, 3)) |route|
                 try self.darts.write(out, route.darts[0..route.len]) else
                     try out.writeAll("none");
             try out.writeByte('\n');
-        } else if (equal(op, "STANDINGS")) try self.standings(out) else {
-            const match = self.find(a[1]) orelse return error.UnknownMatch;
-            if (equal(op, "UNDO")) {
+        } else if (std.mem.eql(u8, op, "STANDINGS")) try self.standings(out) else {
+            const match = self.matches.get(a[1]) orelse return error.UnknownMatch;
+            if (std.mem.eql(u8, op, "UNDO")) {
                 if (match.history.items.len == 0)
                     return error.NothingToUndo;
-                match.history.items.len -= 1;
+                _ = match.history.pop();
                 match.state = State.init(match.config);
                 for (match.history.items) |entry|
                     try match.state.apply(match.config, &self.darts, entry);
-            } else if (equal(op, "SCORE")) try match.state.writeScore(match.config, &self.darts, out) else if (equal(op,
-                "STATS")) try match.state.stats(match.config, out) else if (equal(op, "RESULT")) try match.state.writeResult(match.config,
+            } else if (std.mem.eql(u8, op, "SCORE")) try match.state.writeScore(match.config, &self.darts, out) else if (std.mem.eql(u8, op,
+                "STATS")) try match.state.stats(match.config, out) else if (std.mem.eql(u8, op, "RESULT")) try match.state.writeResult(match.config,
                 out) else {
                 const kind = std.meta.stringToEnum(EventKind, op).?;
                 const sport = match.config.sport;
@@ -931,7 +897,7 @@ const Engine = struct {
                     }
                 } else try self.event(match, .{
                     .kind = kind,
-                    .side = if (equal(a[2], "A")) 0 else 1,
+                    .side = if (std.mem.eql(u8, a[2], "A")) 0 else 1,
                     .first = if (kind == .SUB) integer(a[3]) else 0,
                     .second = if (kind == .SUB) integer(a[4]) else 0
                 });

@@ -143,15 +143,10 @@ build_expense <- function(state,id,payer,spec,category,mode,parts) {
 }
 
 expense_net <- function(expense) {
-    result <- setNames(rep(0,length(expense_names(expense))),expense_names(expense))
-    for (i in seq_along(expense$payers)) {
-        name <- expense$payers[i]
-        result[name] <- result[name]+expense$contributions[i]
-    }
-    for (i in seq_along(expense$participants)) {
-        name <- expense$participants[i]
-        result[name] <- result[name]-expense$shares[i]
-    }
+    people <- expense_names(expense)
+    result <- setNames(numeric(length(people)),people)
+    result[expense$payers] <- result[expense$payers]+expense$contributions
+    result[expense$participants] <- result[expense$participants]-expense$shares
     result
 }
 
@@ -212,13 +207,9 @@ debts <- function(state) {
 net_debt <- function(table,a,b) table[a,b]-table[b,a]
 
 category_totals <- function(state) {
-    result <- numeric(0)
-    for (expense in state$expenses) {
-        category <- expense$category
-        if (!category %in% names(result)) result[category] <- 0
-        result[category] <- result[category]+expense$total
-    }
-    result
+    if (length(state$expenses) == 0) return(numeric(0))
+    tapply(vapply(state$expenses,function(expense) expense$total,numeric(1)),
+        vapply(state$expenses,function(expense) expense$category,character(1)),sum)
 }
 
 budget_warning <- function(state,category) {
@@ -356,8 +347,6 @@ ledger_summary <- function(command,args,line,state) {
             if (expense_has(expense,name)) records[[length(records)+1]] <- list(day=expense$day,record=expense$record,label=expense$id,change=expense_net(expense)[[name]])
         }
         for (s in state$settlements) {
-            {
-        }
             if (name %in% c(s$sender,s$receiver)) {
                 change <- if (name == s$sender) s$total else -s$total
                 records[[length(records)+1]] <- list(day=s$day,record=s$record,label=paste0(s$sender,"->",s$receiver),change=change)
@@ -376,11 +365,10 @@ ledger_summary <- function(command,args,line,state) {
         cells <- lapply(active,function(a) vapply(active,function(b) if (a == b) "-" else amount_text(max(0,net_debt(table,a,b))),character(1)))
         left <- max(nchar(active))
         width <- max(left,max(nchar(unlist(cells,use.names=FALSE))))
-        pad_left <- function(text,width) paste0(strrep(" ",width-nchar(text)),text)
-        output <- c(output,paste0(strrep(" ",left),paste0("  ",vapply(active,pad_left,character(1),width),collapse="")))
+        output <- c(output,paste0(strrep(" ",left),paste0("  ",sprintf("%*s",width,active),collapse="")))
         for (i in seq_along(active)) {
-            row <- paste0(active[i],strrep(" ",left-nchar(active[i])))
-            output <- c(output,paste0(row,paste0("  ",vapply(cells[[i]],pad_left,character(1),width),collapse="")))
+            row <- sprintf("%-*s",left,active[i])
+            output <- c(output,paste0(row,paste0("  ",sprintf("%*s",width,cells[[i]]),collapse="")))
         }
     } else if (command == "CATEGORY") {
         totals <- category_totals(state)
@@ -423,8 +411,6 @@ ledger_summary <- function(command,args,line,state) {
                 share <- share+sum(expense$shares[expense$participants == name])
             }
             for (s in state$settlements) {
-                {
-            }
                 if (s$sender == name) sent <- sent+s$total
                 if (s$receiver == name) received <- received+s$total
             }

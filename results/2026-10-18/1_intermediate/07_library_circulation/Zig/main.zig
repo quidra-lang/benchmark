@@ -2,14 +2,6 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 const Error = error{ BadCommand } || Allocator.Error || std.Io.Writer.Error;
-fn equal(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
-
-fn less(a: []const u8, b: []const u8) bool {
-    return std.mem.order(u8, a, b) == .lt;
-}
-
 fn integer(text: []const u8) i64 {
     return std.fmt.parseInt(i64, text, 10) catch unreachable;
 }
@@ -32,42 +24,14 @@ fn split(gpa: Allocator, text: []const u8) Allocator.Error![][]const u8 {
     return result.items;
 }
 
-fn join(gpa: Allocator, parts: []const []const u8) Allocator.Error![]const u8 {
-    var result: std.ArrayList(u8) = .empty;
-    for (parts, 0..) |part, i| {
-        if (i > 0)
-            try result.append(gpa, ' ');
-        try result.appendSlice(gpa, part);
-    }
-    return result.items;
-}
-
-fn lowercase(gpa: Allocator, text: []const u8) Allocator.Error![]const u8 {
-    const result = try gpa.dupe(u8, text);
-    for (result) |*ch|
-        ch.* = std.ascii.toLower(ch.*);
-    return result;
-}
-
-fn digit(ch: u8) bool {
-    return ch >= '0' and ch <= '9';
-}
-
 fn normalizeISBN(gpa: Allocator, token: []const u8) (error{InvalidISBN} || Allocator.Error)![]const u8 {
-    var s: [17]u8 = undefined;
-    var len: usize = 0;
-    for (token) |ch| {
-        if (ch != '-') {
-            s[len] = ch;
-            len += 1;
-        }
-    }
-    if (len == 10) {
+    const s = try std.mem.replaceOwned(u8, gpa, token, "-", "");
+    if (s.len == 10) {
         for (s[0..9]) |ch| {
-            if (!digit(ch))
+            if (!std.ascii.isDigit(ch))
                 return error.InvalidISBN;
         }
-        if (!digit(s[9]) and s[9] != 'X')
+        if (!std.ascii.isDigit(s[9]) and s[9] != 'X')
             return error.InvalidISBN;
         var total: i64 = 0;
         for (s[0..10], 0..) |ch, i|
@@ -85,10 +49,10 @@ fn normalizeISBN(gpa: Allocator, token: []const u8) (error{InvalidISBN} || Alloc
         result[12] = @as(u8, @intCast((10 - sum % 10) % 10)) + '0';
         return result;
     }
-    if (len == 13 and (equal(s[0..3], "978") or equal(s[0..3], "979"))) {
+    if (s.len == 13 and (std.mem.eql(u8, s[0..3], "978") or std.mem.eql(u8, s[0..3], "979"))) {
         var sum: usize = 0;
         for (s[0..13], 0..) |ch, i| {
-            if (!digit(ch))
+            if (!std.ascii.isDigit(ch))
                 return error.InvalidISBN;
             sum += @as(usize, if (i % 2 == 0) 1 else 3) * (ch - '0');
         }
@@ -207,14 +171,6 @@ const LoanEnd = struct {
     fine: i64
 };
 
-fn queueIndex(t: *const Title, m: *Member) ?usize {
-    for (t.queue.items, 0..) |other, i| {
-        if (m == other)
-            return i;
-    }
-    return null;
-}
-
 fn titleCopy(m: *Member, t: *Title, state: CopyState) ?*Copy {
     for (t.copies.items) |c| {
         if (c.state == state and c.member == m)
@@ -226,9 +182,9 @@ fn titleCopy(m: *Member, t: *Title, state: CopyState) ?*Copy {
 const Library = struct {
     gpa: Allocator,
     day: i64 = 1,
-    titles: std.ArrayList(*Title) = .empty,
-    members: std.ArrayList(*Member) = .empty,
-    closed: std.ArrayList(i64) = .empty,
+    titles: std.StringArrayHashMapUnmanaged(*Title) = .empty,
+    members: std.StringArrayHashMapUnmanaged(*Member) = .empty,
+    closed: std.AutoHashMapUnmanaged(i64, void) = .empty,
     borrowed: usize = 0,
     returned: usize = 0,
     renewed: usize = 0,
@@ -251,65 +207,39 @@ const Library = struct {
         };
     }
 
-    fn findMember(self: *Library, id: []const u8) Error! * Member {
-        for (self.members.items) |m| {
-            if (equal(m.id, id))
-                return m;
-        }
-        return self.fail("unknown member");
+    fn findMember(self: *Library, id: []const u8) Error!*Member {
+        return self.members.get(id) orelse self.fail("unknown member");
     }
 
-    fn findTitle(self: *Library, token: []const u8) Error! * Title {
-        const isbn = try self.normalized(token);
-        for (self.titles.items) |t| {
-            if (equal(t.isbn, isbn))
-                return t;
-        }
-        return self.fail("unknown book");
+    fn findTitle(self: *Library, token: []const u8) Error!*Title {
+        return self.titles.get(try self.normalized(token)) orelse self.fail("unknown book");
     }
 
-    fn titlesSorted(self: *const Library) Allocator.Error![] * Title {
-        const result = try self.gpa.dupe(*Title, self.titles.items);
-        for (1..@max(1, result.len)) |i| {
-            const entry = result[i];
-            var j = i;
-            while (j > 0 and less(entry.isbn, result[j - 1].isbn)) {
-                result[j] = result[j - 1];
-                j -= 1;
-            }
-            result[j] = entry;
-        }
+    fn titlesSorted(self: *const Library) Allocator.Error![]*Title {
+        const result = try self.gpa.dupe(*Title, self.titles.values());
+        std.mem.sort(*Title, result, {}, titleLess);
         return result;
     }
 
-    fn membersSorted(self: *const Library) Allocator.Error![] * Member {
-        const result = try self.gpa.dupe(*Member, self.members.items);
-        for (1..@max(1, result.len)) |i| {
-            const entry = result[i];
-            var j = i;
-            while (j > 0 and less(entry.id, result[j - 1].id)) {
-                result[j] = result[j - 1];
-                j -= 1;
-            }
-            result[j] = entry;
-        }
+    fn membersSorted(self: *const Library) Allocator.Error![]*Member {
+        const result = try self.gpa.dupe(*Member, self.members.values());
+        std.mem.sort(*Member, result, {}, memberLess);
         return result;
     }
 
-    fn copiesInState(self: *const Library, state: CopyState, owner: ?*Member) Allocator.Error![] * Copy {
+    fn copiesInState(self: *const Library, state: CopyState, owner: ?*Member) Allocator.Error![]*Copy {
         var result: std.ArrayList(*Copy) = .empty;
-        for (self.titles.items) |t|
-            for (t.copies.items) | c | {
-                if (c.state == state and (owner == null or c.member == owner))
-                    try result.append(self.gpa, c);
+        for (self.titles.values()) |t| for (t.copies.items) |c| {
+            if (c.state == state and (owner == null or c.member == owner))
+                try result.append(self.gpa, c);
         };
         return result.items;
     }
 
     fn reservations(self: *const Library, m: *Member) usize {
         var count: usize = 0;
-        for (self.titles.items) |t| {
-            if (queueIndex(t, m) != null)
+        for (self.titles.values()) |t| {
+            if (std.mem.findScalar(*Member, t.queue.items, m) != null)
                 count += 1;
             for (t.copies.items) |c| {
                 if (c.state == .HOLD and c.member == m)
@@ -319,17 +249,9 @@ const Library = struct {
         return count;
     }
 
-    fn isClosed(self: *const Library, d: i64) bool {
-        for (self.closed.items) |other| {
-            if (d == other)
-                return true;
-        }
-        return false;
-    }
-
     fn openDay(self: *const Library, d: i64) i64 {
         var current = d;
-        while (self.isClosed(current))
+        while (self.closed.contains(current))
             current += 1;
         return current;
     }
@@ -411,7 +333,7 @@ const Library = struct {
         if (t.holdings() == 0) {
             for (t.queue.items) |member|
                 try out.print("DROPPED {s} {s}\n", .{ t.isbn, member.id });
-            t.queue.items.len = 0;
+            t.queue.clearRetainingCapacity();
         }
     }
 
@@ -433,60 +355,31 @@ const Library = struct {
             c.number, c.due, c.renewals });
     }
 
-    fn dueOrder(copies: [] * Copy, expiry: bool) void {
-        for (1..@max(1, copies.len)) |i| {
-            const entry = copies[i];
-            var j = i;
-            const x = if (expiry) entry.expiry else entry.due;
-            while (j > 0) {
-                const b = copies[j - 1];
-                const y = if (expiry) b.expiry else b.due;
-                if (!(x < y or (x == y and less(entry.title.isbn, b.title.isbn))))
-                    break;
-                copies[j] = b;
-                j -= 1;
-            }
-            copies[j] = entry;
-        }
-    }
-
     fn execute(self: *Library, line: []const u8, out: *std.Io.Writer) Error!void {
         const a = try split(self.gpa, line);
         const op = a[0];
-        if (equal(op, "DAY")) {
+        if (std.mem.eql(u8, op, "DAY")) {
             const target = integer(a[1]);
             if (target <= self.day)
                 return self.fail("invalid day");
             const ordered_titles = try self.titlesSorted();
+            const loan_order = try self.copiesInState(.LOANED, null);
+            std.mem.sort(*Copy, loan_order, {}, automaticLess);
             try out.print("DAY {d}\n", .{ target });
             while (self.day < target) {
                 self.day += 1;
                 var automatic: std.ArrayList(*Copy) = .empty;
-                for (try self.copiesInState(.LOANED, null)) |c| {
-                    if (c.due + 365 <= self.day)
+                for (loan_order) |c| {
+                    if (c.state == .LOANED and c.due + 365 <= self.day)
                         try automatic.append(self.gpa, c);
-                }
-                for (1..@max(1, automatic.items.len)) |i| {
-                    const entry = automatic.items[i];
-                    var j = i;
-                    while (j > 0) {
-                        const b = automatic.items[j - 1];
-                        if (!(less(entry.member.?.id, b.member.?.id) or (equal(entry.member.?.id, b.member.?.id) and less(entry.title.isbn,
-                            b.title.isbn))))
-                            break;
-                        automatic.items[j] = b;
-                        j -= 1;
-                    }
-                    automatic.items[j] = entry;
                 }
                 for (automatic.items) |c|
                     try self.processLoss(c, "AUTOLOST", out);
                 // Snapshot expiry targets after automatic losses, before releasing any hold.
                 var expired: std.ArrayList(*Copy) = .empty;
-                for (ordered_titles) |t|
-                    for (t.copies.items) | c | {
-                        if (c.state == .HOLD and c.expiry < self.day)
-                            try expired.append(self.gpa, c);
+                for (ordered_titles) |t| for (t.copies.items) |c| {
+                    if (c.state == .HOLD and c.expiry < self.day)
+                        try expired.append(self.gpa, c);
                 };
                 for (expired.items) |c| {
                     const m = c.member.?;
@@ -496,34 +389,29 @@ const Library = struct {
                     try self.release(c, out);
                 }
             }
-        } else if (equal(op, "CLOSED")) {
+        } else if (std.mem.eql(u8, op, "CLOSED")) {
             const target = integer(a[1]);
             if (target <= self.day)
                 return self.fail("invalid day");
-            if (self.isClosed(target))
+            if (self.closed.contains(target))
                 return self.fail("already closed");
-            try self.closed.append(self.gpa, target);
+            try self.closed.put(self.gpa, target, {});
             try out.print("CLOSED {d}\n", .{ target });
-            for (try self.titlesSorted()) |t|
-                for (t.copies.items) | c | {
-                    if (c.state == .LOANED and c.due == target) {
-                        c.due = self.openDay(target);
-                        try out.print("MOVED {s} copy {d} {s} due {d}\n", .{ t.isbn, c.number, c.member.?.id, c.due });
-                    } else if (c.state == .HOLD and c.expiry == target) {
-                        c.expiry = self.openDay(target);
-                        try out.print("MOVED {s} copy {d} {s} until {d}\n", .{ t.isbn, c.number, c.member.?.id, c.expiry });
-                    }
+            for (try self.titlesSorted()) |t| for (t.copies.items) |c| {
+                if (c.state == .LOANED and c.due == target) {
+                    c.due = self.openDay(target);
+                    try out.print("MOVED {s} copy {d} {s} due {d}\n", .{ t.isbn, c.number, c.member.?.id, c.due });
+                } else if (c.state == .HOLD and c.expiry == target) {
+                    c.expiry = self.openDay(target);
+                    try out.print("MOVED {s} copy {d} {s} until {d}\n", .{ t.isbn, c.number, c.member.?.id, c.expiry });
+                }
             };
-        } else if (equal(op, "ADDBOOK")) {
+        } else if (std.mem.eql(u8, op, "ADDBOOK")) {
             const isbn = try self.normalized(a[1]);
-            const name = try join(self.gpa, a[4..]);
-            var existing: ?*Title = null;
-            for (self.titles.items) |t| {
-                if (equal(t.isbn, isbn))
-                    existing = t;
-            }
+            const name = try std.mem.join(self.gpa, " ", a[4..]);
+            const existing = self.titles.get(isbn);
             if (existing) |t| {
-                if (!equal(t.name, name))
+                if (!std.mem.eql(u8, t.name, name))
                     return self.fail("title mismatch");
             }
             const t = existing orelse blk: {
@@ -531,10 +419,10 @@ const Library = struct {
                 title.* = .{
                     .isbn = isbn,
                     .name = name,
-                    .folded = try lowercase(self.gpa, name),
+                    .folded = try std.ascii.allocLowerString(self.gpa, name),
                     .price = amount(a[3])
                 };
-                try self.titles.append(self.gpa, title);
+                try self.titles.put(self.gpa, isbn, title);
                 break: blk title;
             };
             t.price = amount(a[3]);
@@ -548,18 +436,16 @@ const Library = struct {
             try out.print("ADDBOOK {s} added {d} total {d}\n", .{ isbn, count, t.holdings() });
             for (t.copies.items[first..]) |c|
                 try self.release(c, out);
-        } else if (equal(op, "ADDMEMBER")) {
-            for (self.members.items) |m| {
-                if (equal(m.id, a[1]))
-                    return self.fail("duplicate member");
-            }
+        } else if (std.mem.eql(u8, op, "ADDMEMBER")) {
+            if (self.members.contains(a[1]))
+                return self.fail("duplicate member");
             const kind = std.meta.stringToEnum(MemberType, a[2]) orelse return self.fail("unknown type");
             const m = try self.gpa.create(Member);
-            m.* = .{ .id = a[1], .kind = kind, .name = try join(self.gpa, a[3..]) };
-            try self.members.append(self.gpa, m);
+            m.* = .{ .id = a[1], .kind = kind, .name = try std.mem.join(self.gpa, " ", a[3..]) };
+            try self.members.put(self.gpa, m.id, m);
             try out.print("ADDMEMBER {s} {s} loans {d} days {d}\n", .{ m.id, @tagName(m.kind), m.loanLimit(),
                 m.period() });
-        } else if (equal(op, "WITHDRAW")) {
+        } else if (std.mem.eql(u8, op, "WITHDRAW")) {
             const t = try self.findTitle(a[1]);
             const n = integer(a[2]);
             if (n < 1 or n > @as(i64, @intCast(t.copies.items.len)))
@@ -569,14 +455,14 @@ const Library = struct {
                 return self.fail("copy not available");
             c.state = .WITHDRAWN;
             try out.print("WITHDRAW {s} copy {d} total {d}\n", .{ t.isbn, n, t.holdings() });
-        } else if (equal(op, "BORROW") or equal(op, "RETURN") or equal(op, "RENEW") or equal(op, "RESERVE") or equal(op,
-            "CANCEL") or equal(op, "LOST")) {
+        } else if (std.mem.eql(u8, op, "BORROW") or std.mem.eql(u8, op, "RETURN") or std.mem.eql(u8, op, "RENEW") or std.mem.eql(u8, op, "RESERVE") or std.mem.eql(u8, op,
+            "CANCEL") or std.mem.eql(u8, op, "LOST")) {
             const m = try self.findMember(a[1]);
             const t = try self.findTitle(a[2]);
             const current = titleCopy(m, t, .LOANED);
             const held = titleCopy(m, t, .HOLD);
-            if (equal(op, "BORROW")) {
-                if (self.isClosed(self.day))
+            if (std.mem.eql(u8, op, "BORROW")) {
+                if (self.closed.contains(self.day))
                     return self.fail("library closed");
                 if (current != null)
                     return self.fail("already borrowed");
@@ -590,12 +476,11 @@ const Library = struct {
                 if (loans.len >= m.loanLimit())
                     return self.fail("loan limit");
                 var selected = held;
-                if (selected == null)
-                    for (t.copies.items) | c | {
-                        if (c.state == .AVAILABLE) {
-                            selected = c;
-                            break;
-                        }
+                if (selected == null) for (t.copies.items) |c| {
+                    if (c.state == .AVAILABLE) {
+                        selected = c;
+                        break;
+                    }
                 };
                 const c = selected orelse return self.fail(if (t.countState(.HOLD) > 0) "all copies on hold" else "no copy available");
                 c.state = .LOANED;
@@ -606,9 +491,9 @@ const Library = struct {
                 t.borrowed += 1;
                 self.borrowed += 1;
                 try out.print("BORROW {s} {s} copy {d} due {d}\n", .{ m.id, t.isbn, c.number, c.due });
-            } else if (equal(op, "RETURN") or equal(op, "LOST")) {
+            } else if (std.mem.eql(u8, op, "RETURN") or std.mem.eql(u8, op, "LOST")) {
                 const c = current orelse return self.fail("not borrowed");
-                if (equal(op, "LOST"))
+                if (std.mem.eql(u8, op, "LOST"))
                     try self.processLoss(c, "LOST", out) else {
                         const result = try self.endLoan(c, "RETURNED");
                         self.returned += 1;
@@ -622,17 +507,17 @@ const Library = struct {
                         });
                         try self.release(c, out);
                     }
-            } else if (equal(op, "RENEW")) {
+            } else if (std.mem.eql(u8, op, "RENEW")) {
                 const c = current orelse return self.fail("not borrowed");
                 if (m.blocked())
                     return self.fail("member blocked");
                 if (self.renewalProblem(c)) |reason|
                     return self.fail(reason);
                 try self.performRenew(c, out);
-            } else if (equal(op, "RESERVE")) {
+            } else if (std.mem.eql(u8, op, "RESERVE")) {
                 if (current != null)
                     return self.fail("already borrowed");
-                if (queueIndex(t, m) != null or held != null)
+                if (std.mem.findScalar(*Member, t.queue.items, m) != null or held != null)
                     return self.fail("already reserved");
                 if (m.blocked())
                     return self.fail("member blocked");
@@ -649,21 +534,13 @@ const Library = struct {
                     if (c.state == .LOANED)
                         try due.append(self.gpa, c.due);
                 }
-                for (1..@max(1, due.items.len)) |i| {
-                    const entry = due.items[i];
-                    var j = i;
-                    while (j > 0 and entry < due.items[j - 1]) {
-                        due.items[j] = due.items[j - 1];
-                        j -= 1;
-                    }
-                    due.items[j] = entry;
-                }
+                std.mem.sort(i64, due.items, {}, std.sort.asc(i64));
                 try out.print("RESERVE {s} {s} position {d} estimate ", .{ m.id, t.isbn, p });
                 if (p <= due.items.len)
                     try out.print("{d}\n", .{ due.items[p - 1] }) else
                         try out.writeAll("none\n");
             } else {
-                const queued = queueIndex(t, m);
+                const queued = std.mem.findScalar(*Member, t.queue.items, m);
                 if (queued == null and held == null)
                     return self.fail("not reserved");
                 if (queued) |i| {
@@ -675,14 +552,14 @@ const Library = struct {
                     try self.release(c, out);
                 }
             }
-        } else if (equal(op, "RENEWALL")) {
+        } else if (std.mem.eql(u8, op, "RENEWALL")) {
             const m = try self.findMember(a[1]);
             const loans = try self.copiesInState(.LOANED, m);
             if (loans.len == 0)
                 return self.fail("no loans");
             if (m.blocked())
                 return self.fail("member blocked");
-            sortISBN(loans);
+            std.mem.sort(*Copy, loans, {}, copyISBNLess);
             var success: usize = 0;
             var skipped: usize = 0;
             for (loans) |c| {
@@ -695,7 +572,7 @@ const Library = struct {
                 }
             }
             try out.print("RENEWALL {s} renewed {d} skipped {d}\n", .{ m.id, success, skipped });
-        } else if (equal(op, "PAYFINE")) {
+        } else if (std.mem.eql(u8, op, "PAYFINE")) {
             const m = try self.findMember(a[1]);
             if (m.balance() == 0)
                 return self.fail("no fines");
@@ -732,7 +609,7 @@ const Library = struct {
                     try money(self.gpa, item.unpaid)
                 });
             }
-        } else if (equal(op, "WAIVE")) {
+        } else if (std.mem.eql(u8, op, "WAIVE")) {
             const m = try self.findMember(a[1]);
             const n = integer(a[2]);
             if (n < 1 or n > @as(i64, @intCast(m.items.items.len)))
@@ -750,7 +627,7 @@ const Library = struct {
                 try money(self.gpa, value),
                 try money(self.gpa, m.balance())
             });
-        } else if (equal(op, "FINES")) {
+        } else if (std.mem.eql(u8, op, "FINES")) {
             const m = try self.findMember(a[1]);
             var count: usize = 0;
             for (m.items.items) |item| {
@@ -769,45 +646,24 @@ const Library = struct {
                         try money(self.gpa, item.unpaid)
                     });
             }
-        } else if (equal(op, "SEARCH")) {
-            const keyword = try lowercase(self.gpa, try join(self.gpa, a[1..]));
+        } else if (std.mem.eql(u8, op, "SEARCH")) {
+            const keyword = try std.ascii.allocLowerString(self.gpa, try std.mem.join(self.gpa, " ", a[1..]));
             var selected: std.ArrayList(*Title) = .empty;
             for (try self.titlesSorted()) |t| {
                 if (std.mem.find(u8, t.folded, keyword) != null)
                     try selected.append(self.gpa, t);
             }
-            for (1..@max(1, selected.items.len)) |i| {
-                const entry = selected.items[i];
-                var j = i;
-                while (j > 0 and less(entry.folded, selected.items[j - 1].folded)) {
-                    selected.items[j] = selected.items[j - 1];
-                    j -= 1;
-                }
-                selected.items[j] = entry;
-            }
+            std.mem.sort(*Title, selected.items, {}, searchLess);
             try out.print("SEARCH {d}\n", .{ selected.items.len });
             for (selected.items) |t|
                 try out.print("{s} {d}/{d} {s}\n", .{ t.isbn, t.countState(.AVAILABLE), t.holdings(), t.name });
-        } else if (equal(op, "OVERDUE")) {
+        } else if (std.mem.eql(u8, op, "OVERDUE")) {
             var copies: std.ArrayList(*Copy) = .empty;
             for (try self.copiesInState(.LOANED, null)) |c| {
                 if (c.due < self.day)
                     try copies.append(self.gpa, c);
             }
-            for (1..@max(1, copies.items.len)) |i| {
-                const entry = copies.items[i];
-                var j = i;
-                while (j > 0) {
-                    const b = copies.items[j - 1];
-                    const before = entry.due < b.due or (entry.due == b.due and (less(entry.member.?.id, b.member.?.id) or (equal(entry.member.?.id,
-                        b.member.?.id) and less(entry.title.isbn, b.title.isbn))));
-                    if (!before)
-                        break;
-                    copies.items[j] = b;
-                    j -= 1;
-                }
-                copies.items[j] = entry;
-            }
+            std.mem.sort(*Copy, copies.items, {}, overdueLess);
             try out.print("OVERDUE {d}\n", .{ copies.items.len });
             for (copies.items) |c|
                 try out.print("{s} {s} copy {d} due {d} late {d} fine {s}\n", .{
@@ -818,11 +674,11 @@ const Library = struct {
                     self.daysLate(c),
                     try money(self.gpa, self.lateFine(c))
                 });
-        } else if (equal(op, "NOTICES")) {
+        } else if (std.mem.eql(u8, op, "NOTICES")) {
             var lines: std.ArrayList([]const u8) = .empty;
             for (try self.membersSorted()) |m| {
                 const loans = try self.copiesInState(.LOANED, m);
-                dueOrder(loans, false);
+                std.mem.sort(*Copy, loans, false, dueLess);
                 for (loans) |c| {
                     if (c.due < self.day)
                         try lines.append(self.gpa, try std.fmt.allocPrint(self.gpa, "OVERDUE {s} {s} due {d}", .{ m.id,
@@ -834,7 +690,7 @@ const Library = struct {
                             c.title.isbn, c.due }));
                 }
                 const holds = try self.copiesInState(.HOLD, m);
-                dueOrder(holds, true);
+                std.mem.sort(*Copy, holds, true, dueLess);
                 for (holds) |c|
                     try lines.append(self.gpa, try std.fmt.allocPrint(self.gpa, "PICKUP {s} {s} until {d}", .{ m.id,
                         c.title.isbn, c.expiry }));
@@ -842,14 +698,14 @@ const Library = struct {
             try out.print("NOTICES {d}\n", .{ lines.items.len });
             for (lines.items) |text|
                 try out.print("{s}\n", .{ text });
-        } else if (equal(op, "MEMBER") or equal(op, "MEMBERS")) {
-            const single = equal(op, "MEMBER");
+        } else if (std.mem.eql(u8, op, "MEMBER") or std.mem.eql(u8, op, "MEMBERS")) {
+            const single = std.mem.eql(u8, op, "MEMBER");
             const ms = if (single) try self.gpa.dupe(*Member, &.{ try self.findMember(a[1]) }) else try self.membersSorted();
             if (!single)
                 try out.print("MEMBERS {d}\n", .{ ms.len });
             for (ms) |m| {
                 const loans = try self.copiesInState(.LOANED, m);
-                dueOrder(loans, false);
+                std.mem.sort(*Copy, loans, false, dueLess);
                 const status: []const u8 = if (m.blocked()) "BLOCKED" else "OK";
                 if (!single) {
                     try out.print("{s} {s} loans {d} reservations {d} balance {s} {s}\n", .{
@@ -881,15 +737,15 @@ const Library = struct {
                     try out.writeByte('\n');
                 }
                 const holds = try self.copiesInState(.HOLD, m);
-                dueOrder(holds, true);
+                std.mem.sort(*Copy, holds, true, dueLess);
                 for (holds) |c|
                     try out.print("HOLD {s} copy {d} until {d}\n", .{ c.title.isbn, c.number, c.expiry });
                 for (try self.titlesSorted()) |t| {
-                    if (queueIndex(t, m)) |i|
+                    if (std.mem.findScalar(*Member, t.queue.items, m)) |i|
                         try out.print("QUEUE {s} position {d}\n", .{ t.isbn, i + 1 });
                 }
             }
-        } else if (equal(op, "BOOK")) {
+        } else if (std.mem.eql(u8, op, "BOOK")) {
             const t = try self.findTitle(a[1]);
             try out.print("BOOK {s} {s}\nPRICE {s} copies {d} borrowed {d}\n", .{
                 t.isbn,
@@ -909,15 +765,14 @@ const Library = struct {
             for (t.queue.items) |m|
                 try out.print(" {s}", .{ m.id });
             try out.writeByte('\n');
-        } else if (equal(op, "INVENTORY")) {
+        } else if (std.mem.eql(u8, op, "INVENTORY")) {
             var counts = [_]usize{ 0, 0, 0, 0, 0 };
-            for (self.titles.items) |t|
-                for (t.copies.items) | c | {
-                    counts[@intFromEnum(c.state)] += 1;
+            for (self.titles.values()) |t| for (t.copies.items) |c| {
+                counts[@intFromEnum(c.state)] += 1;
             };
             try out.print("INVENTORY titles {d} copies {d} available {d} loaned {d} hold {d} lost {d} withdrawn {d}\n",
                 .{
-                self.titles.items.len,
+                self.titles.values().len,
                 counts[0] + counts[1] + counts[2],
                 counts[0],
                 counts[1],
@@ -934,17 +789,17 @@ const Library = struct {
                     t.countState(.HOLD),
                     t.queue.items.len
                 });
-        } else if (equal(op, "HISTORY")) {
+        } else if (std.mem.eql(u8, op, "HISTORY")) {
             const m = try self.findMember(a[1]);
             try out.print("HISTORY {s} {d}\n", .{ m.id, m.history.items.len });
             for (m.history.items) |text|
                 try out.print("{s}\n", .{ text });
-        } else if (equal(op, "STATS")) {
+        } else if (std.mem.eql(u8, op, "STATS")) {
             try out.print("STATS day {d} titles {d} members {d} closed {d}\n", .{
                 self.day,
-                self.titles.items.len,
-                self.members.items.len,
-                self.closed.items.len
+                self.titles.values().len,
+                self.members.values().len,
+                self.closed.count()
             });
             try out.print("LOANS borrowed {d} returned {d} renewed {d} lost {d} active {d}\n", .{
                 self.borrowed,
@@ -954,7 +809,7 @@ const Library = struct {
                 (try self.copiesInState(.LOANED, null)).len
             });
             var outstanding: i64 = 0;
-            for (self.members.items) |m|
+            for (self.members.values()) |m|
                 outstanding += m.balance();
             try out.print("MONEY fines {s} fees {s} charges {s} paid {s} waived {s} outstanding {s}\n", .{
                 try money(self.gpa, self.charged[0]),
@@ -969,31 +824,40 @@ const Library = struct {
                 if (t.borrowed > 0)
                     try top.append(self.gpa, t);
             }
-            for (1..@max(1, top.items.len)) |i| {
-                const entry = top.items[i];
-                var j = i;
-                while (j > 0 and entry.borrowed > top.items[j - 1].borrowed) {
-                    top.items[j] = top.items[j - 1];
-                    j -= 1;
-                }
-                top.items[j] = entry;
-            }
+            std.mem.sort(*Title, top.items, {}, topLess);
             for (top.items[0..@min(3, top.items.len)], 0..) |t, i|
                 try out.print("TOP {d} {s} {d} {s}\n", .{ i + 1, t.isbn, t.borrowed, t.name });
         }
     }
 };
 
-fn sortISBN(copies: [] * Copy) void {
-    for (1..@max(1, copies.len)) |i| {
-        const entry = copies[i];
-        var j = i;
-        while (j > 0 and less(entry.title.isbn, copies[j - 1].title.isbn)) {
-            copies[j] = copies[j - 1];
-            j -= 1;
-        }
-        copies[j] = entry;
-    }
+fn titleLess(_: void, a: *Title, b: *Title) bool {
+    return std.mem.order(u8, a.isbn, b.isbn) == .lt;
+}
+fn memberLess(_: void, a: *Member, b: *Member) bool {
+    return std.mem.order(u8, a.id, b.id) == .lt;
+}
+fn copyISBNLess(_: void, a: *Copy, b: *Copy) bool {
+    return std.mem.order(u8, a.title.isbn, b.title.isbn) == .lt;
+}
+fn dueLess(expiry: bool, a: *Copy, b: *Copy) bool {
+    const x = if (expiry) a.expiry else a.due;
+    const y = if (expiry) b.expiry else b.due;
+    return x < y or (x == y and copyISBNLess({}, a, b));
+}
+fn automaticLess(_: void, a: *Copy, b: *Copy) bool {
+    const order = std.mem.order(u8, a.member.?.id, b.member.?.id);
+    return order == .lt or (order == .eq and copyISBNLess({}, a, b));
+}
+fn overdueLess(_: void, a: *Copy, b: *Copy) bool {
+    return a.due < b.due or (a.due == b.due and automaticLess({}, a, b));
+}
+fn searchLess(_: void, a: *Title, b: *Title) bool {
+    const order = std.mem.order(u8, a.folded, b.folded);
+    return order == .lt or (order == .eq and titleLess({}, a, b));
+}
+fn topLess(_: void, a: *Title, b: *Title) bool {
+    return a.borrowed > b.borrowed or (a.borrowed == b.borrowed and titleLess({}, a, b));
 }
 
 pub fn main(init: std.process.Init) !void {

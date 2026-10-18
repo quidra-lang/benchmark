@@ -1,19 +1,18 @@
 #include <iostream>
-#include <string>
 #include <array>
 #include <algorithm>
+#include <numeric>
 
 int main() {
-    std::array<int, 52> deck {};
-    for (int i = 0; i < 52; i++)
-        deck[i] = i;
+    std::array<int, 52> deck;
+    std::iota(deck.begin(), deck.end(), 0);
     long long x = 2026;
     for (int i = 51; i >= 1; i--) {
         x = x * 48271 % 2147483647;
         int j = static_cast<int>(x % (i + 1));
         std::swap(deck[i], deck[j]);
     }
-    const std::string ranks = "A23456789TJQK", suits = "SHDC";
+    const char *ranks = "A23456789TJQK", *suits = "SHDC";
     for (int i = 0; i < 52; i++) {
         if (i % 13)
             std::cout << ' ';

@@ -16,11 +16,7 @@ func main() {
 			twice += v[0] * w[1] - w[0] * v[1]
 			perimeter += math.Sqrt(float64(dx * dx + dy * dy))
 		}
-		if twice < 0 {
-			twice = -twice
-		}
-		q := int(perimeter * 1000 + 0.5)
-		fmt.Printf("polygon %d: area=%d.%d perimeter=%d.%03d\n", k + 1, twice / 2, twice % 2 * 5, q / 1000,
-			q % 1000)
+		fmt.Printf("polygon %d: area=%.1f perimeter=%.3f\n",
+			k+1, math.Abs(float64(twice))/2, perimeter)
 	}
 }

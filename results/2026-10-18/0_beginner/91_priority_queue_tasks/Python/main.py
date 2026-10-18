@@ -15,7 +15,4 @@ for operation in operations:
     else:
         priority, _, name = heappop(queue)
         print(f"run: {name} (priority {priority})")
-remaining = []
-while queue:
-    remaining.append(heappop(queue)[2])
-print("remaining:", *remaining)
+print("remaining:", *(name for _, _, name in sorted(queue)))

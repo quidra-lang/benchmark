@@ -3,7 +3,7 @@
 
 int main(void) {
     char sentence[] = "every program starts with a single line";
-    const size_t length = strlen(sentence);
+    size_t length = strlen(sentence);
     for (size_t i = length; i > 0; --i) putchar(sentence[i - 1]);
     putchar('\n');
     char *words[7];

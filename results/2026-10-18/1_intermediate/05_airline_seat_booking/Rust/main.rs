@@ -20,7 +20,7 @@ struct Aircraft {
 }
 impl Aircraft {
     fn new() -> Self {
-        Self { model: String::new(), base: 0, limit: 0, cabins: std::array::from_fn(|_| Cabin::default()), seats: Vec::new(), blocked: Vec::new(), lookup: [None; 2600], exits: [false; 100], capacity: [0; 3] }
+        Self { model: String::new(), base: 0, limit: 0, cabins: Default::default(), seats: Vec::new(), blocked: Vec::new(), lookup: [None; 2600], exits: [false; 100], capacity: [0; 3] }
     }
     fn seat_name(&self, seat: Option<usize>) -> String {
         seat.map_or_else(|| "UNASSIGNED".to_owned(), |i| format!("{}{}", self.seats[i].row, self.seats[i].letter as char))
@@ -169,14 +169,14 @@ impl World {
         let cabin = self.aircraft[model].cabins[c].clone();
         let count = ids.len();
         for stage in 0..3 {
+            let blocks = if stage == 1 { vec![cabin.blocks.concat()] } else { cabin.blocks.clone() };
             let heights = if stage == 2 { 2..=count } else { 1..=1 };
             for height in heights {
                 let width = if stage == 2 { count.div_ceil(height) } else { count };
                 let used_rows = count.div_ceil(width);
                 for row in cabin.from..=cabin.to {
                     if row+used_rows-1 > cabin.to { break; }
-                    let blocks = if stage == 1 { vec![cabin.blocks.concat()] } else { cabin.blocks.clone() };
-                    for block in blocks {
+                    for block in &blocks {
                         if block.len() < width { continue; }
                         for x in 0..=block.len()-width {
                             let candidate: Vec<usize> = (0..count).map(|j| self.aircraft[model].lookup[(row+j/width)*26+(block.as_bytes()[x+j%width]-b'A') as usize].unwrap()).collect();

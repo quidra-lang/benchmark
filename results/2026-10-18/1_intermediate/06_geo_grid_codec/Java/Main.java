@@ -11,6 +11,10 @@ public class Main {
         "GEOREF",new int[]{2,4,8,10,12},"MESH",new int[]{4,6,8,9,10,11});
     static final long[] MESH_SCALE={1,8,80,160,320,640};
     static final String[] MAIDEN={"ABCDEFGHIJKLMNOPQR","0123456789","abcdefghijklmnopqrstuvwx","0123456789"};
+    static final Map<String,Integer> counts=Map.ofEntries(Map.entry("ENCODE",4),Map.entry("DECODE",2),Map.entry("NEIGHBORS",2),
+            Map.entry("PARENT",2),Map.entry("CHILDREN",2),Map.entry("COMMON",3),Map.entry("CONTAINS",4),
+            Map.entry("COVER",6),Map.entry("CONVERT",5),Map.entry("STEPS",3),Map.entry("PATH",3),Map.entry("RELATE",4),
+            Map.entry("SIZE",2),Map.entry("SHORTEN",3),Map.entry("RECOVER",3));
     record Cell(String system, int level, long x, long y, long w, long h) {}
     static class Invalid extends RuntimeException {}
     static void require(boolean condition) { if (!condition) throw new Invalid(); }
@@ -39,20 +43,38 @@ public class Main {
         return result;
     }
     static int level(String system, long precision) {
-        int[] values = precisions(system);
-        for (int i = 0; i < values.length; i++) if (values[i] == precision) return i;
-        throw new Invalid();
+        int result = Arrays.binarySearch(precisions(system),(int)precision);
+        require(result >= 0);
+        return result;
     }
     static Cell grid(String system, int level, long x, long y) {
         int p = precisions(system)[level];
         long w, h;
         switch (system) {
-            case "GEOHASH" -> { w=1L<<((5*p+1)/2); h=1L<<(5*p/2); }
-            case "MAIDENHEAD" -> { w=(new long[]{18,180,4320,43200})[level]; h=w; }
-            case "PLUSCODE" -> { w=(new long[]{18,360,7200,144000,2880000,11520000})[level]; h=(new long[]{9,180,3600,72000,1440000,7200000})[level]; }
-            case "GARS" -> { w=(new long[]{720,1440,4320})[level]; h=(new long[]{360,720,2160})[level]; }
-            case "GEOREF" -> { w=(new long[]{24,360,21600,216000,2160000})[level]; h=(new long[]{12,180,10800,108000,1080000})[level]; }
-            default -> { w=360*MESH_SCALE[level]; h=270*MESH_SCALE[level]; }
+            case "GEOHASH" -> {
+                w=1L<<((5*p+1)/2);
+                h=1L<<(5*p/2);
+            }
+            case "MAIDENHEAD" -> {
+                w=(new long[]{18,180,4320,43200})[level];
+                h=w;
+            }
+            case "PLUSCODE" -> {
+                w=(new long[]{18,360,7200,144000,2880000,11520000})[level];
+                h=(new long[]{9,180,3600,72000,1440000,7200000})[level];
+            }
+            case "GARS" -> {
+                w=(new long[]{720,1440,4320})[level];
+                h=(new long[]{360,720,2160})[level];
+            }
+            case "GEOREF" -> {
+                w=(new long[]{24,360,21600,216000,2160000})[level];
+                h=(new long[]{12,180,10800,108000,1080000})[level];
+            }
+            default -> {
+                w=360*MESH_SCALE[level];
+                h=270*MESH_SCALE[level];
+            }
         }
         return new Cell(system,level,x,y,w,h);
     }
@@ -70,10 +92,7 @@ public class Main {
         require(!s.isEmpty() && s.chars().allMatch(c -> c >= '0' && c <= '9'));
         return Long.parseLong(s);
     }
-    static String pad(long n, int width) {
-        String s = Long.toString(n);
-        return "0".repeat(Math.max(0,width-s.length()))+s;
-    }
+    static String pad(long n, int width) { return String.format(Locale.ROOT,"%0"+width+"d",n); }
     static long power(int n) {
         long result = 1;
         for (int i = 0; i < n; i++) result *= 10;
@@ -381,10 +400,6 @@ public class Main {
     static String execute(String line) {
         String[] t=line.split(" ");
         String command=t[0];
-        Map<String,Integer> counts=Map.ofEntries(Map.entry("ENCODE",4),Map.entry("DECODE",2),Map.entry("NEIGHBORS",2),
-            Map.entry("PARENT",2),Map.entry("CHILDREN",2),Map.entry("COMMON",3),Map.entry("CONTAINS",4),
-            Map.entry("COVER",6),Map.entry("CONVERT",5),Map.entry("STEPS",3),Map.entry("PATH",3),Map.entry("RELATE",4),
-            Map.entry("SIZE",2),Map.entry("SHORTEN",3),Map.entry("RECOVER",3));
         if (!counts.containsKey(command) && !command.equals("COMPACT")) return auxiliary(t);
         if (command.equals("COMPACT")) require(t.length>=3 && t.length<=102);
         else require(t.length==counts.get(command)+1);
@@ -445,12 +460,8 @@ public class Main {
         if (command.equals("COMPACT")) {
             Set<Cell> cells=new HashSet<>();
             for (int i=2;i<t.length;i++) cells.add(decode(system,t[i]));
-            Set<Cell> covered = new HashSet<>();
-            for (Cell c : cells) {
-                for (Cell a : cells) {
-                    if (a.level()<c.level() && ancestor(c,a.level()).equals(a)) covered.add(c);
-                }
-            }
+            List<Cell> covered = cells.stream().filter(c -> cells.stream()
+                .anyMatch(a -> a.level()<c.level() && ancestor(c,a.level()).equals(a))).toList();
             cells.removeAll(covered);
             boolean changed=true;
             while (changed) {

@@ -538,18 +538,8 @@ execute =: 3 : 0
       end.
     end.
     ordered =. /:names
-    for_k. 1+i.0>.(#ordered)-1 do.
-      current =. k{ordered
-      p =. k
-      while. p>0 do.
-        previous =. (p-1){ordered
-        if. (previous{wins)>current{wins do. break. end.
-        if. ((previous{wins)=current{wins)*.(previous{losses)<:current{losses do. break. end.
-        ordered =. previous p}ordered
-        p =. p-1
-      end.
-      ordered =. current p}ordered
-    end.
+    keys =. (-wins),.losses
+    ordered =. ordered {~ /:ordered{keys
     items =. 0$<''
     for_k. ordered do. items =. items,<(k{::names),' ',pair (k{wins),k{losses end.
     if. 0=#items do. <'standings: none' else. <'standings: ',', ' join items end. return.

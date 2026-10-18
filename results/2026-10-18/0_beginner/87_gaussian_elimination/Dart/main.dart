@@ -1,18 +1,4 @@
-import 'dart:io';
-
-String fixed(double value, int places) {
-    var scale = 1;
-    for (var i = 0; i < places; i++)
-        scale *= 10;
-    final scaled = (value.abs() * scale + 0.5).floor();
-    final sign = value < 0 ? '-' : '';
-    if (places == 0)
-        return '$sign$scaled';
-    return '$sign${scaled ~/ scale}.${(scaled % scale).toString().padLeft(places, '0')}';
-}
-
 void main() {
-    final out = StringBuffer();
     const originals = [[[2, -1, 3, 7], [4, 1, -2, 3], [-3, 5, 1, -4]], [[1, 3, -2, 4, 6], [5, -2,
         1, 3, -7], [-2, 4, 6, -1, 9], [3, 1, -4, 2, 5]]];
     for (var system = 0; system < originals.length; system++) {
@@ -24,9 +10,9 @@ void main() {
                     pivot = i;
             }
             if (pivot != k) {
-                final temp = a[k];
+                final row = a[k];
                 a[k] = a[pivot];
-                a[pivot] = temp;
+                a[pivot] = row;
             }
             for (var i = k + 1; i < n; i++) {
                 final f = a[i][k] / a[k][k];
@@ -41,9 +27,8 @@ void main() {
                 s = s - a[i][j] * x[j];
             x[i] = s / a[i][i];
         }
-        out.writeln('system ${system+1}:');
+        print('system ${system+1}:');
         for (var i = 0; i < n; i++)
-            out.writeln('x${i+1} = ${fixed(x[i],4)}');
+            print('x${i+1} = ${x[i].toStringAsFixed(4)}');
     }
-    stdout.write(out);
 }

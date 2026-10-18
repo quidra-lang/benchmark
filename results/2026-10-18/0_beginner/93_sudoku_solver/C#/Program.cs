@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
 
@@ -9,11 +8,8 @@ static bool Solve(int[,] board, ref long placements) {
         for (int c = 0; c < 9; c++) {
             if (board[r,c] != 0) continue;
             for (int digit = 1; digit <= 9; digit++) {
-                bool valid = true;
-                for (int i = 0; i < 9; i++) {
-                    if (board[r,i] == digit || board[i,c] == digit ||
-                        board[r / 3 * 3 + i / 3,c / 3 * 3 + i % 3] == digit) valid = false;
-                }
+                bool valid = Enumerable.Range(0, 9).All(i => board[r,i] != digit && board[i,c] != digit &&
+                    board[r / 3 * 3 + i / 3,c / 3 * 3 + i % 3] != digit);
                 if (!valid) continue;
                 board[r,c] = digit;
                 placements++;

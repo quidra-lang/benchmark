@@ -1,5 +1,4 @@
-fn find(parent: &mut [usize],
-v: usize) -> usize {
+fn find(parent: &mut [usize], v: usize) -> usize {
     if parent[v] != v {
         let next = parent[v];
         parent[v] = find(parent, next);
@@ -8,7 +7,7 @@ v: usize) -> usize {
 }
 
 fn main() {
-    let mut edges = vec![('A', 'B', 7), ('C', 'A', 4), ('B', 'C', 9), ('B', 'D', 14), ('D', 'C', 6),
+    let mut edges = [('A', 'B', 7), ('C', 'A', 4), ('B', 'C', 9), ('B', 'D', 14), ('D', 'C', 6),
         ('C', 'E', 3), ('E', 'D', 5), ('F', 'D', 11), ('E', 'G', 16), ('G', 'F', 8), ('H', 'F', 12), ('G',
         'H', 2), ('H', 'E', 10)];
     edges.sort_by_key(|e| e.2);

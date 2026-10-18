@@ -15,7 +15,7 @@ local lower,upper = chain(points),chain(reversed)
 table.remove(lower)
 table.remove(upper)
 local hull = lower
-for _,point in ipairs(upper) do hull[#hull+1] = point end
+table.move(upper,1,#upper,#hull+1,hull)
 io.write(string.format("hull: %d points\n",#hull))
 local twice_area = 0
 for i,point in ipairs(hull) do

@@ -36,7 +36,9 @@ class Aircraft {
           final kind = b == 0 && x == 0 || b == blocks.length - 1 && x == blocks[b].length - 1 ? 'W' :
               x == 0 || x == blocks[b].length - 1 ? 'A' : 'M';
           final seat = Seat(row, blocks[b][x], cabin, b, kind);
-          byCode[seat.code] = seats.length; group.add(seats.length); seats.add(seat);
+          byCode[seat.code] = seats.length;
+          group.add(seats.length);
+          seats.add(seat);
         }
         groups.add(group);
       }
@@ -114,8 +116,12 @@ class Flight {
     return first;
   }
   String assign(Booking b, int cabin) {
-    final ps = b.passengers.where((p) => p.needsSeat).toList(), k = b.passengers.where((p) => p.needsSeat).length;
-    if (k == 1) { place(ps[0], choose(ps[0], cabin)); return 'SINGLE'; }
+    final ps = b.passengers.where((p) => p.needsSeat).toList();
+    final k = ps.length;
+    if (k == 1) {
+      place(ps[0], choose(ps[0], cabin));
+      return 'SINGLE';
+    }
     final layout = aircraft.cabins[cabin]!;
     bool adopt(List<int> ss) {
       if (!fits(ps, ss, cabin)) return false;
@@ -154,14 +160,22 @@ class Flight {
     for (final p in passengers) {
       if (!p.needsSeat || p.seat >= 0) continue;
       final seat = choose(p, p.cabin);
-      if (seat >= 0) { place(p, seat); out.writeln('REASSIGNED ${p.booking.pnr} ${p.name} ${result(p)}'); }
+      if (seat >= 0) {
+        place(p, seat);
+        out.writeln('REASSIGNED ${p.booking.pnr} ${p.name} ${result(p)}');
+      }
     }
   }
   void remove(Passenger p) {
     if (!p.active) return;
     if (p.carrying) remove(p.infant!);
-    if (p.guardian != null) { p.guardian!.infant = null; p.guardian = null; }
-    place(p, -1); p.active = false; volunteers.remove(p);
+    if (p.guardian != null) {
+      p.guardian!.infant = null;
+      p.guardian = null;
+    }
+    place(p, -1);
+    p.active = false;
+    volunteers.remove(p);
   }
 }
 
@@ -189,25 +203,45 @@ class Airline {
   }
   String execute(String line) {
     final a = line.split(' '), op = a[0], out = StringBuffer();
-    if (op == 'AIRCRAFT') { defining = Aircraft(a[1], int.parse(a[2]), int.parse(a[3])); return ''; }
-    if (op == 'CABIN') { defining!.addCabin(classes.indexOf(a[1]), int.parse(a[2]), int.parse(a[3]), a.sublist(4)); return ''; }
-    if (op == 'EXIT') { defining!.exits.addAll(a.skip(1).map(int.parse)); return ''; }
-    if (op == 'BLOCKED') { defining!.blocked.addAll(a.skip(1).map((s) => defining!.byCode[s]!)); return ''; }
+    if (op == 'AIRCRAFT') {
+      defining = Aircraft(a[1], int.parse(a[2]), int.parse(a[3]));
+      return '';
+    }
+    if (op == 'CABIN') {
+      defining!.addCabin(classes.indexOf(a[1]), int.parse(a[2]), int.parse(a[3]), a.sublist(4));
+      return '';
+    }
+    if (op == 'EXIT') {
+      defining!.exits.addAll(a.skip(1).map(int.parse));
+      return '';
+    }
+    if (op == 'BLOCKED') {
+      defining!.blocked.addAll(a.skip(1).map((s) => defining!.byCode[s]!));
+      return '';
+    }
     if (op == 'END') {
-      final model = defining!; models[model.name] = model; defining = null;
+      final model = defining!;
+      models[model.name] = model;
+      defining = null;
       out.writeln('AIRCRAFT ${model.name}${[for (var c = 0; c < 3; c++) if (model.cabins.containsKey(c)) ' ${classes[c]} ${model.capacity(c)}'].join()}');
     } else if (op == 'FLIGHT') {
       if (flights.containsKey(a[1])) fail('duplicate flight ${a[1]}');
       final model = models[a[2]];
       if (model == null) fail('unknown aircraft ${a[2]}');
-      final f = Flight(a[1], model, int.parse(a[3])); flights[f.name] = f;
+      final f = Flight(a[1], model, int.parse(a[3]));
+      flights[f.name] = f;
       out.writeln('FLIGHT ${f.name} ${model.name}${[for (var c = 0; c < 3; c++) if (model.cabins.containsKey(c)) ' ${classes[c]} ${model.capacity(c)}/${f.limits[c]}'].join()}');
     } else if (op == 'STATUS') {
-      status[a[1]] = tiers.indexOf(a[2]); out.writeln('STATUS ${a[1]} ${a[2]}');
+      status[a[1]] = tiers.indexOf(a[2]);
+      out.writeln('STATUS ${a[1]} ${a[2]}');
     } else if (op == 'BOOK') {
       if (bookings.containsKey(a[1])) fail('duplicate PNR ${a[1]}');
-      final f = flight(a[2], true), c = classes.indexOf(a[3]); hasCabin(f, c);
-      final ps = a.skip(4).map((token) { final s = token.split(':'); return Passenger(s[0], s[1], s.length == 3 ? s[2] : '', c); }).toList();
+      final f = flight(a[2], true), c = classes.indexOf(a[3]);
+      hasCabin(f, c);
+      final ps = a.skip(4).map((token) {
+        final s = token.split(':');
+        return Passenger(s[0], s[1], s.length == 3 ? s[2] : '', c);
+      }).toList();
       final seen = <String>{};
       for (final p in ps) if (!seen.add(p.name)) fail('duplicate name ${p.name} in ${a[1]}');
       for (final p in ps) if (f.passengers.any((q) => q.name == p.name)) fail('${p.name} already on ${f.name}');
@@ -215,8 +249,13 @@ class Airline {
       if (adults.isEmpty) fail('no adult in ${a[1]}');
       if (infants.length > adults.length) fail('too many infants in ${a[1]}');
       if (f.booked(c) + ps.where((p) => p.needsSeat).length > f.limits[c]) fail('limit exceeded for ${f.name} ${classes[c]}');
-      for (var i = 0; i < infants.length; i++) { adults[i].infant = infants[i]; infants[i].guardian = adults[i]; }
-      final b = Booking(a[1], f, ps); bookings[b.pnr] = b; f.bookings.add(b);
+      for (var i = 0; i < infants.length; i++) {
+        adults[i].infant = infants[i];
+        infants[i].guardian = adults[i];
+      }
+      final b = Booking(a[1], f, ps);
+      bookings[b.pnr] = b;
+      f.bookings.add(b);
       final method = f.assign(b, c);
       out.writeln('BOOKED ${b.pnr} ${f.name} ${classes[c]} $method ${ps.map((p) => '${p.name}:${f.result(p)}').join(' ')}');
     } else if (op == 'SEAT') {
@@ -228,8 +267,10 @@ class Airline {
       if (f.occupied[s] != null) fail('seat ${a[3]} is occupied');
       if ((p.type == 'CHILD' || p.carrying) && f.aircraft.exits.contains(f.aircraft.seats[s].row)) fail('exit row ${f.aircraft.seats[s].row} not allowed for ${p.name}');
       if (!f.fits([p], [s], p.cabin)) fail('infant limit reached at ${a[3]}');
-      final old = f.result(p); f.place(p, s);
-      out.writeln('MOVED ${b.pnr} ${p.name} $old -> ${a[3]}'); f.reassign(out);
+      final old = f.result(p);
+      f.place(p, s);
+      out.writeln('MOVED ${b.pnr} ${p.name} $old -> ${a[3]}');
+      f.reassign(out);
     } else if (op == 'SWAP') {
       final b = booking(a[1], true), p = passenger(b, a[2]);
       final d = booking(a[3], true), q = passenger(d, a[4]);
@@ -240,8 +281,12 @@ class Airline {
       for (final person in [p, q]) if (person.seat < 0) fail('${person.name} has no seat');
       final f = b.flight, old = p.seat, other = q.seat;
       if (!f.fits([p, q], [other, old], p.cabin)) fail('swap of ${p.name} and ${q.name} breaks seating rules');
-      f.place(p, -1); f.place(q, -1); f.place(p, other); f.place(q, old);
-      out.writeln('SWAPPED ${b.pnr} ${p.name} ${f.result(p)} ${d.pnr} ${q.name} ${f.result(q)}'); f.reassign(out);
+      f.place(p, -1);
+      f.place(q, -1);
+      f.place(p, other);
+      f.place(q, old);
+      out.writeln('SWAPPED ${b.pnr} ${p.name} ${f.result(p)} ${d.pnr} ${q.name} ${f.result(q)}');
+      f.reassign(out);
     } else if (op == 'CANCEL') {
       final b = booking(a[1], true), f = b.flight;
       final target = a.length == 2 ? null : passenger(b, a[2]);
@@ -255,30 +300,40 @@ class Airline {
       final b = booking(a[1], true), f = b.flight;
       if (op == 'CHECKIN') {
         if (b.checked) fail('${b.pnr} already checked in');
-        b.checked = true; out.writeln('CHECKIN ${b.pnr} ${b.passengers.length}');
+        b.checked = true;
+        out.writeln('CHECKIN ${b.pnr} ${b.passengers.length}');
       } else {
         final p = passenger(b, a[2]);
         if (p.type != 'ADULT' || p.carrying) fail('${p.name} cannot volunteer');
         if (p.seat < 0) fail('${p.name} has no seat');
         if (f.volunteers.contains(p)) fail('${p.name} already volunteered');
-        f.volunteers.add(p); out.writeln('VOLUNTEER ${b.pnr} ${p.name} ${f.result(p)}');
+        f.volunteers.add(p);
+        out.writeln('VOLUNTEER ${b.pnr} ${p.name} ${f.result(p)}');
       }
     } else if (op == 'UPGRADE') {
       final f = flight(a[1], true), cs = [for (var c = 0; c < 3; c++) if (f.aircraft.cabins.containsKey(c)) c];
       var count = 0;
       for (var i = 0; i + 1 < cs.length; i++) {
-        final higher = cs[i], lower = cs[i + 1], order = f.passengers.asMap();
-        final targets = order.values.where((p) => p.cabin == lower && p.type == 'ADULT' && !p.carrying && tier(p) < 3).toList();
-        targets.sort((p, q) => tier(p) != tier(q) ? tier(p).compareTo(tier(q)) : order.keys.firstWhere((i) => order[i] == p).compareTo(order.keys.firstWhere((i) => order[i] == q)));
-        for (final p in targets) {
+        final higher = cs[i], lower = cs[i + 1];
+        final targets = [
+          for (final (index, p) in f.passengers.indexed)
+            if (p.cabin == lower && p.type == 'ADULT' && !p.carrying && tier(p) < 3)
+              (passenger: p, index: index, tier: tier(p))
+        ]..sort((a, b) => a.tier != b.tier ? a.tier.compareTo(b.tier) : a.index.compareTo(b.index));
+        for (final target in targets) {
+          final p = target.passenger;
           if (f.booked(higher) >= f.limits[higher]) break;
           final seat = f.choose(p, higher);
           if (seat < 0) break;
-          final old = f.result(p); f.place(p, seat); p.cabin = higher; count++;
+          final old = f.result(p);
+          f.place(p, seat);
+          p.cabin = higher;
+          count++;
           out.writeln('UPGRADED ${p.booking.pnr} ${p.name} ${classes[lower]} $old -> ${classes[higher]} ${f.result(p)}');
         }
       }
-      f.reassign(out); out.writeln('UPGRADE ${f.name} $count');
+      f.reassign(out);
+      out.writeln('UPGRADE ${f.name} $count');
     } else if (op == 'CLOSE') {
       final f = flight(a[1], true);
       var denied = 0, compensation = 0;
@@ -292,18 +347,22 @@ class Airline {
         var value = [500, 300, 150][p.cabin] * (voluntary ? 1 : 2);
         if (p.type == 'CHILD') value ~/= 2;
         out.writeln('DENIED ${voluntary ? 'VOLUNTARY' : 'INVOLUNTARY'} ${p.booking.pnr} ${p.name} ${classes[p.cabin]} $value');
-        denied++; compensation += value; f.remove(p);
+        denied++;
+        compensation += value;
+        f.remove(p);
       }
       for (var c = 0; c < 3; c++) {
         final targets = f.volunteers.where((p) => p.active && p.seat >= 0 && p.cabin == c).toList();
         for (final p in targets) {
           if (f.passengers.any((q) => q.needsSeat && q.seat < 0 && q.cabin == c && f.fits([q], [p.seat], c, {p}))) {
-            deny(p, true); f.reassign(out);
+            deny(p, true);
+            f.reassign(out);
           }
         }
       }
       for (final p in f.passengers) if (p.needsSeat && p.seat < 0) deny(p, false);
-      f.closed = true; out.writeln('CLOSED ${f.name} denied $denied compensation $compensation');
+      f.closed = true;
+      out.writeln('CLOSED ${f.name} denied $denied compensation $compensation');
     } else if (op == 'BLOCK' || op == 'UNBLOCK') {
       final f = flight(a[1], true), seat = f.aircraft.byCode[a[2]];
       if (seat == null) fail('no seat ${a[2]} on ${f.name}');
@@ -314,7 +373,8 @@ class Airline {
         f.blocked.add(seat);
         final p = f.occupied[seat];
         if (p != null) {
-          f.place(p, -1); f.place(p, f.choose(p, p.cabin));
+          f.place(p, -1);
+          f.place(p, f.choose(p, p.cabin));
           out.writeln('DISPLACED ${p.booking.pnr} ${p.name} ${a[2]} -> ${f.result(p)}');
         }
       } else f.blocked.remove(seat);
@@ -332,8 +392,10 @@ class Airline {
       if (op == 'MAP') {
         out.writeln('MAP ${f.name}');
         for (var c = 0; c < 3; c++) {
-          final cabin = model.cabins[c]; if (cabin == null) continue;
-          out.writeln('CABIN ${classes[c]}'); out.writeln('   ${cabin.blocks.join(' ')}');
+          final cabin = model.cabins[c];
+          if (cabin == null) continue;
+          out.writeln('CABIN ${classes[c]}');
+          out.writeln('   ${cabin.blocks.join(' ')}');
           for (var row = cabin.first; row <= cabin.last; row++) {
             out.writeln('${row.toString().padLeft(2)} ${model.rows[row]!.map((block) => block.map((s) => f.blocked.contains(s) ? '#' : f.occupied[s] != null ? 'X' : model.exits.contains(row) ? 'E' : '.').join()).join(' ')}');
           }
@@ -346,12 +408,16 @@ class Airline {
       } else if (op == 'LOADFACTOR') {
         out.writeln('LOADFACTOR ${f.name}');
         var totalSeated = 0, totalSeats = 0;
-        String load(int count, int seats) { final q = count * 1000 ~/ seats; return '${q ~/ 10}.${q % 10}%'; }
+        String load(int count, int seats) {
+          final q = count * 1000 ~/ seats;
+          return '${q ~/ 10}.${q % 10}%';
+        }
         for (var c = 0; c < 3; c++) {
           if (!model.cabins.containsKey(c)) continue;
           final seats = model.seats.asMap().entries.where((e) => e.value.cabin == c && !f.blocked.contains(e.key)).length;
           final seated = f.passengers.where((p) => p.needsSeat && p.cabin == c && p.seat >= 0).length;
-          totalSeats += seats; totalSeated += seated;
+          totalSeats += seats;
+          totalSeated += seated;
           out.writeln('${classes[c]} $seated/$seats ${load(seated, seats)} booked ${f.booked(c)}/${f.limits[c]}');
         }
         out.writeln('ALL $totalSeated/$totalSeats ${load(totalSeated, totalSeats)}');
@@ -359,11 +425,13 @@ class Airline {
         var weight = 0, moment = 0;
         for (final p in f.passengers.where((p) => p.needsSeat && p.seat >= 0)) {
           final w = (p.type == 'ADULT' ? 80 : 40) + (p.carrying ? 10 : 0);
-          weight += w; moment += w * (model.seats[p.seat].row - model.base);
+          weight += w;
+          moment += w * (model.seats[p.seat].row - model.base);
         }
         out.writeln('BALANCE ${f.name} weight $weight moment $moment limit ${model.limit} ${moment < -model.limit ? 'NOSE-HEAVY' : moment > model.limit ? 'TAIL-HEAVY' : 'OK'}');
       } else if (op == 'AVAIL') {
-        final c = classes.indexOf(a[2]); hasCabin(f, c);
+        final c = classes.indexOf(a[2]);
+        hasCabin(f, c);
         final ss = [for (var i = 0; i < model.seats.length; i++) if (model.seats[i].cabin == c && !f.blocked.contains(i) && f.occupied[i] == null) model.seats[i]];
         out.writeln('AVAIL ${f.name} ${classes[c]} free ${ss.length} W ${ss.where((s) => s.kind == 'W').length} M ${ss.where((s) => s.kind == 'M').length} A ${ss.where((s) => s.kind == 'A').length} EXIT ${ss.where((s) => model.exits.contains(s.row)).length}');
       } else if (op == 'BOARDING') {
@@ -375,14 +443,17 @@ class Airline {
           if (tier(p) < 2) return (2, 0, s.row, 0, s.letter);
           return (3, -((s.row - model.cabins[2]!.first) ~/ 5 + 1), 'WMA'.indexOf(s.kind), -s.row, s.letter);
         }
-        ps.sort((p, q) {
-          final x = key(p), y = key(q), xs = [x.$1, x.$2, x.$3, x.$4], ys = [y.$1, y.$2, y.$3, y.$4];
-          for (var i = 0; i < 4; i++) if (xs[i] != ys[i]) return xs[i].compareTo(ys[i]);
-          return x.$5.compareTo(y.$5);
-        });
-        out.writeln('BOARDING ${f.name} ${ps.length}');
-        for (var i = 0; i < ps.length; i++) {
-          final p = ps[i], k = key(p), group = k.$1 == 3 ? 'ZONE${-k.$2}' : ['PRE', 'CABIN', 'TIER'][k.$1];
+        final ordered = ps.map((p) => (passenger: p, key: key(p))).toList()
+          ..sort((a, b) {
+            final x = a.key, y = b.key, xs = [x.$1, x.$2, x.$3, x.$4], ys = [y.$1, y.$2, y.$3, y.$4];
+            for (var i = 0; i < 4; i++)
+              if (xs[i] != ys[i]) return xs[i].compareTo(ys[i]);
+            return x.$5.compareTo(y.$5);
+          });
+        out.writeln('BOARDING ${f.name} ${ordered.length}');
+        for (var i = 0; i < ordered.length; i++) {
+          final p = ordered[i].passenger, k = ordered[i].key;
+          final group = k.$1 == 3 ? 'ZONE${-k.$2}' : ['PRE', 'CABIN', 'TIER'][k.$1];
           out.writeln('${i + 1} $group ${f.result(p)} ${p.booking.pnr} ${p.name}');
         }
       }
@@ -391,11 +462,13 @@ class Airline {
   }
 }
 void main() {
-  final airline = Airline(), output = StringBuffer(), count = int.parse(stdin.readLineSync()!);
+  final airline = Airline(), count = int.parse(stdin.readLineSync()!);
   for (var i = 0; i < count; i++) {
     final line = stdin.readLineSync()!;
-    try { output.write(airline.execute(line)); }
-    on BookingError catch (error) { output.writeln('ERROR ${error.message}'); }
+    try {
+      stdout.write(airline.execute(line));
+    } on BookingError catch (error) {
+      stdout.writeln('ERROR ${error.message}');
+    }
   }
-  stdout.write(output);
 }

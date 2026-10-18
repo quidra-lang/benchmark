@@ -1,8 +1,6 @@
-import java.util.*;
-import java.math.*;
+import java.util.Arrays;
 
 public class Main {
-
     public static void main(String[] args) {
         int[] coins = {1, 5, 6, 9};
         for (int amount : new int[]{8, 11, 15, 22, 33, 40}) {

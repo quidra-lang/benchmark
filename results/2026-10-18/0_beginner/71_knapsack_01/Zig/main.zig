@@ -18,15 +18,13 @@ pub fn main(init: std.process.Init) !void {
     var chosen = [_]bool{ false } ** 7;
     var capacity: usize = 20;
     var i: usize = 7;
-    var weight: usize = 0;
     while (i > 0) : (i -= 1) {
         if (dp[i][capacity] != dp[i - 1][capacity]) {
             chosen[i - 1] = true;
             capacity -= weights[i - 1];
-            weight += weights[i - 1];
         }
     }
-    try out.print("max value: {d}\ntotal weight: {d}\nitems:", .{ dp[7][20], weight });
+    try out.print("max value: {d}\ntotal weight: {d}\nitems:", .{ dp[7][20], 20 - capacity });
     for (names, chosen) |name, yes| {
         if (yes)
             try out.print(" {s}", .{ name });

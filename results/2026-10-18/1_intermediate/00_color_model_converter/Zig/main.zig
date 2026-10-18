@@ -56,13 +56,9 @@ const builtins = [_]Color{
     .{ 75, 0, 130 },
 };
 
-fn same(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
-
 fn oneOf(s: []const u8, choices: []const []const u8) bool {
     for (choices) |choice| {
-        if (same(s, choice))
+        if (std.mem.eql(u8, s, choice))
             return true;
     }
     return false;
@@ -82,10 +78,6 @@ fn clamp(x: i64) i64 {
 
 fn percent(n: i64, d: i64) i64 {
     return rounded(100 * n, d);
-}
-
-fn equal(a: Color, b: Color) bool {
-    return std.mem.eql(i64, &a, &b);
 }
 
 fn distance(a: Color, b: Color) i64 {
@@ -148,29 +140,15 @@ fn validName(s: []const u8) bool {
 }
 
 fn hexDigit(c: u8) Invalid!i64 {
-    if (c >= '0' and c <= '9')
-        return c - '0';
-    if (c >= 'a' and c <= 'f')
-        return c - 'a' + 10;
-    if (c >= 'A' and c <= 'F')
-        return c - 'A' + 10;
-    return error.Invalid;
-}
-
-fn maximum(c: Color) i64 {
-    return @max(c[0], c[1], c[2]);
-}
-
-fn minimum(c: Color) i64 {
-    return @min(c[0], c[1], c[2]);
+    return std.fmt.charToDigit(c, 16) catch return error.Invalid;
 }
 
 fn hue(c: Color) i64 {
     const r = c[0];
     const g = c[1];
     const b = c[2];
-    const m = maximum(c);
-    const d = m - minimum(c);
+    const m = std.mem.max(i64, &c);
+    const d = m - std.mem.min(i64, &c);
     if (d == 0)
         return 0;
     var numerator = if (m == r) 60 * (g - b) else if (m == g) 60 * (b - r) + 120 * d else 60 * (r - g) + 240 * d;
@@ -180,8 +158,8 @@ fn hue(c: Color) i64 {
 }
 
 fn hsl(c: Color) [3]i64 {
-    const m = maximum(c);
-    const n = minimum(c);
+    const m = std.mem.max(i64, &c);
+    const n = std.mem.min(i64, &c);
     const d = m - n;
     const delta = if (m + n >= 255) m + n - 255 else 255 - m - n;
     return .{
@@ -192,20 +170,20 @@ fn hsl(c: Color) [3]i64 {
 }
 
 fn hsv(c: Color) [3]i64 {
-    const m = maximum(c);
+    const m = std.mem.max(i64, &c);
     return .{
         hue(c),
-        if (m == 0) 0 else percent(m - minimum(c), m),
+        if (m == 0) 0 else percent(m - std.mem.min(i64, &c), m),
         percent(m, 255)
     };
 }
 
 fn hwb(c: Color) [3]i64 {
-    return .{ hue(c), percent(minimum(c), 255), percent(255 - maximum(c), 255) };
+    return .{ hue(c), percent(std.mem.min(i64, &c), 255), percent(255 - std.mem.max(i64, &c), 255) };
 }
 
 fn cmyk(c: Color) [4]i64 {
-    const m = maximum(c);
+    const m = std.mem.max(i64, &c);
     if (m == 0)
         return .{ 0, 0, 0, 100 };
     return .{
@@ -281,15 +259,15 @@ fn fromHwb(h: i64, w: i64, k: i64) Color {
 }
 
 fn writeModel(out: *std.Io.Writer, op: []const u8, c: Color) std.Io.Writer.Error!void {
-    if (same(op, "CMYK")) {
+    if (std.mem.eql(u8, op, "CMYK")) {
         const v = cmyk(c);
         try out.print("cmyk({d}%,{d}%,{d}%,{d}%)", .{ v[0], v[1], v[2], v[3] });
         return;
     }
-    const v = if (same(op, "HSL")) hsl(c) else if (same(op, "HSV")) hsv(c) else if (same(op, "HWB")) hwb(c) else if (same(op,
+    const v = if (std.mem.eql(u8, op, "HSL")) hsl(c) else if (std.mem.eql(u8, op, "HSV")) hsv(c) else if (std.mem.eql(u8, op, "HWB")) hwb(c) else if (std.mem.eql(u8, op,
         "YCBCR")) ycbcr(c) else yiq(c);
-    const label: []const u8 = if (same(op, "HSL")) "hsl" else if (same(op, "HSV")) "hsv" else if (same(op,
-        "HWB")) "hwb" else if (same(op, "YCBCR")) "ycbcr" else "yiq";
+    const label: []const u8 = if (std.mem.eql(u8, op, "HSL")) "hsl" else if (std.mem.eql(u8, op, "HSV")) "hsv" else if (std.mem.eql(u8, op,
+        "HWB")) "hwb" else if (std.mem.eql(u8, op, "YCBCR")) "ycbcr" else "yiq";
     const suffix: []const u8 = if (oneOf(op, &.{ "HSL", "HSV", "HWB" })) "%" else "";
     try out.print("{s}({d},{d}{s},{d}{s})", .{ label, v[0], v[1], suffix, v[2], suffix });
 }
@@ -379,12 +357,15 @@ const Box = struct {
     }
 };
 
+fn channelLess(component: usize, a: Color, b: Color) bool {
+    return a[component] < b[component];
+}
+
 fn palette(k: usize, colors: []const Color) [32]Box {
     var boxes: [32]Box = undefined;
     boxes[0] = Box{};
     boxes[0].len = colors.len;
-    for (colors, 0..) |c, i|
-        boxes[0].colors[i] = c;
+    @memcpy(boxes[0].colors[0..colors.len], colors);
     var len: usize = 1;
     while (len < k) {
         var selected: usize = 0;
@@ -406,27 +387,15 @@ fn palette(k: usize, colors: []const Color) [32]Box {
                 component = j;
         }
         var sorted = boxes[selected];
-        for (1..sorted.len) |i| {
-            const c = sorted.colors[i];
-            var j = i;
-            while (j > 0 and sorted.colors[j - 1][component] > c[component]) {
-                sorted.colors[j] = sorted.colors[j - 1];
-                j -= 1;
-            }
-            sorted.colors[j] = c;
-        }
+        std.mem.sort(Color, sorted.colors[0..sorted.len], component, channelLess);
         const middle = sorted.len / 2;
         var left = Box{};
         var right = Box{};
         left.len = middle;
         right.len = sorted.len - middle;
-        for (0..middle) |i|
-            left.colors[i] = sorted.colors[i];
-        for (middle..sorted.len) |i|
-            right.colors[i - middle] = sorted.colors[i];
-        var i = len;
-        while (i > selected + 1) : (i -= 1)
-            boxes[i] = boxes[i - 1];
+        @memcpy(left.colors[0..middle], sorted.colors[0..middle]);
+        @memcpy(right.colors[0..right.len], sorted.colors[middle..sorted.len]);
+        std.mem.copyBackwards(Box, boxes[selected + 2..len + 1], boxes[selected + 1..len]);
         boxes[selected] = left;
         boxes[selected + 1] = right;
         len += 1;
@@ -437,31 +406,31 @@ fn palette(k: usize, colors: []const Color) [32]Box {
 fn blendComponent(mode: []const u8, x: i64, y: i64) Invalid!i64 {
     const multiply = @divFloor(x * y, 255);
     const screen = 255 - @divFloor((255 - x) * (255 - y), 255);
-    if (same(mode, "MULTIPLY"))
+    if (std.mem.eql(u8, mode, "MULTIPLY"))
         return multiply;
-    if (same(mode, "SCREEN"))
+    if (std.mem.eql(u8, mode, "SCREEN"))
         return screen;
-    if (same(mode, "OVERLAY") or same(mode, "HARDLIGHT")) {
-        const low = if (same(mode, "OVERLAY")) x < 128 else y < 128;
+    if (std.mem.eql(u8, mode, "OVERLAY") or std.mem.eql(u8, mode, "HARDLIGHT")) {
+        const low = if (std.mem.eql(u8, mode, "OVERLAY")) x < 128 else y < 128;
         return if (low) @divFloor(2 * x * y, 255) else 255 - @divFloor(2 * (255 - x) * (255 - y), 255);
     }
-    if (same(mode, "SOFTLIGHT"))
+    if (std.mem.eql(u8, mode, "SOFTLIGHT"))
         return @divFloor((255 - x) * multiply + x * screen, 255);
-    if (same(mode, "DARKEN"))
+    if (std.mem.eql(u8, mode, "DARKEN"))
         return @min(x, y);
-    if (same(mode, "LIGHTEN"))
+    if (std.mem.eql(u8, mode, "LIGHTEN"))
         return @max(x, y);
-    if (same(mode, "DIFFERENCE"))
+    if (std.mem.eql(u8, mode, "DIFFERENCE"))
         return if (x >= y) x - y else y - x;
-    if (same(mode, "EXCLUSION"))
+    if (std.mem.eql(u8, mode, "EXCLUSION"))
         return x + y - @divFloor(2 * x * y, 255);
-    if (same(mode, "ADD"))
+    if (std.mem.eql(u8, mode, "ADD"))
         return @min(255, x + y);
-    if (same(mode, "SUBTRACT"))
+    if (std.mem.eql(u8, mode, "SUBTRACT"))
         return @max(0, x - y);
-    if (same(mode, "COLORDODGE"))
+    if (std.mem.eql(u8, mode, "COLORDODGE"))
         return if (y == 255) 255 else @min(255, @divFloor(255 * x, 255 - y));
-    if (same(mode, "COLORBURN"))
+    if (std.mem.eql(u8, mode, "COLORBURN"))
         return if (y == 0) 0 else @max(0, 255 - @divFloor(255 * (255 - x), y));
     return error.Invalid;
 }
@@ -480,9 +449,13 @@ const Engine = struct {
     entries: [500]Entry = undefined,
     len: usize = 0,
 
+    fn nameLess(self: *const Engine, a: usize, b: usize) bool {
+        return std.mem.order(u8, self.entries[a].getName(), self.entries[b].getName()) == .lt;
+    }
+
     fn registeredIndex(self: *const Engine, name: []const u8) ?usize {
         for (self.entries[0..self.len], 0..) |*entry, i| {
-            if (same(entry.getName(), name))
+            if (std.mem.eql(u8, entry.getName(), name))
                 return i;
         }
         return null;
@@ -500,7 +473,7 @@ const Engine = struct {
             }
             return result;
         }
-        if (s.len >= 5 and same(s[0..4], "rgb(") and s[s.len - 1] == ')') {
+        if (s.len >= 5 and std.mem.eql(u8, s[0..4], "rgb(") and s[s.len - 1] == ')') {
             var parts = std.mem.splitScalar(u8, s[4..s.len - 1], ',');
             var result: Color = undefined;
             var count: usize = 0;
@@ -519,7 +492,7 @@ const Engine = struct {
             return result;
         }
         for (names, builtins) |name, c| {
-            if (same(s, name))
+            if (std.mem.eql(u8, s, name))
                 return c;
         }
         if (self.registeredIndex(s)) |index|
@@ -536,12 +509,12 @@ const Engine = struct {
     fn execute(self: *Engine, words: []const []const u8, out: *std.Io.Writer) CommandError!void {
         const op = words[0];
         const a = words[1..];
-        if (same(op, "DEFINE")) {
+        if (std.mem.eql(u8, op, "DEFINE")) {
             try requireCount(a, 2);
             if (!validName(a[0]))
                 return error.Invalid;
             for (names) |name| {
-                if (same(name, a[0]))
+                if (std.mem.eql(u8, name, a[0]))
                     return error.Invalid;
             }
             const value = try self.color(a[1]);
@@ -549,8 +522,7 @@ const Engine = struct {
                 self.entries[index].color = value;
             } else {
                 var entry = Entry{ .color = value, .len = a[0].len };
-                for (a[0], 0..) |c, i|
-                    entry.name[i] = c;
+                @memcpy(entry.name[0..a[0].len], a[0]);
                 self.entries[self.len] = entry;
                 self.len += 1;
             }
@@ -558,19 +530,17 @@ const Engine = struct {
             try writeColor(out, value);
             return;
         }
-        if (same(op, "UNDEFINE")) {
+        if (std.mem.eql(u8, op, "UNDEFINE")) {
             try requireCount(a, 1);
             if (!validName(a[0]))
                 return error.Invalid;
             const index = self.registeredIndex(a[0]) orelse return error.Invalid;
-            var i = index;
-            while (i + 1 < self.len) : (i += 1)
-                self.entries[i] = self.entries[i + 1];
+            std.mem.copyForwards(Entry, self.entries[index..self.len - 1], self.entries[index + 1..self.len]);
             self.len -= 1;
             try out.print("{s} removed", .{ a[0] });
             return;
         }
-        if (same(op, "LIST")) {
+        if (std.mem.eql(u8, op, "LIST")) {
             try requireCount(a, 0);
             if (self.len == 0) {
                 try out.writeAll("NONE");
@@ -579,15 +549,7 @@ const Engine = struct {
             var order: [500]usize = undefined;
             for (0..self.len) |i|
                 order[i] = i;
-            for (1..self.len) |i| {
-                const index = order[i];
-                var j = i;
-                while (j > 0 and std.mem.order(u8, self.entries[order[j - 1]].getName(), self.entries[index].getName()) == .gt) {
-                    order[j] = order[j - 1];
-                    j -= 1;
-                }
-                order[j] = index;
-            }
+            std.mem.sort(usize, order[0..self.len], @as(*const Engine, self), nameLess);
             for (order[0..self.len], 0..) |index, i| {
                 if (i > 0)
                     try out.writeByte(' ');
@@ -599,20 +561,20 @@ const Engine = struct {
         if (oneOf(op, &.{ "HSL", "HSV", "HWB", "CMYK", "YCBCR", "YIQ", "PARSE" })) {
             try requireCount(a, 1);
             const c = try self.color(a[0]);
-            if (!same(op, "PARSE")) {
+            if (!std.mem.eql(u8, op, "PARSE")) {
                 try writeModel(out, op, c);
                 return;
             }
             var name: []const u8 = "-";
             for (names, builtins) |n, value| {
-                if (equal(c, value)) {
+                if (std.mem.eql(i64, &c, &value)) {
                     name = n;
                     break;
                 }
             }
-            if (same(name, "-")) {
+            if (std.mem.eql(u8, name, "-")) {
                 for (self.entries[0..self.len]) |*entry| {
-                    if (equal(c, entry.color)) {
+                    if (std.mem.eql(i64, &c, &entry.color)) {
                         name = entry.getName();
                         break;
                     }
@@ -632,11 +594,11 @@ const Engine = struct {
             const h = try number(a[0], 0, 359);
             const s = try number(a[1], 0, 100);
             const v = try number(a[2], 0, 100);
-            try writeColor(out, if (same(op, "FROMHSL")) fromHsl(h, s, v) else if (same(op, "FROMHSV")) fromHsv(h,
+            try writeColor(out, if (std.mem.eql(u8, op, "FROMHSL")) fromHsl(h, s, v) else if (std.mem.eql(u8, op, "FROMHSV")) fromHsv(h,
                 s, v) else fromHwb(h, s, v));
             return;
         }
-        if (same(op, "FROMCMYK")) {
+        if (std.mem.eql(u8, op, "FROMCMYK")) {
             try requireCount(a, 4);
             const c = try number(a[0], 0, 100);
             const m = try number(a[1], 0, 100);
@@ -649,9 +611,9 @@ const Engine = struct {
             });
             return;
         }
-        if (same(op, "FROMYCBCR") or same(op, "FROMYIQ")) {
+        if (std.mem.eql(u8, op, "FROMYCBCR") or std.mem.eql(u8, op, "FROMYIQ")) {
             try requireCount(a, 3);
-            const is_yiq = same(op, "FROMYIQ");
+            const is_yiq = std.mem.eql(u8, op, "FROMYIQ");
             const y = try number(a[0], 0, 255);
             const u = try number(a[1], if (is_yiq) -255 else 0, 255);
             const v = try number(a[2], if (is_yiq) -255 else 0, 255);
@@ -669,9 +631,9 @@ const Engine = struct {
             try writeColor(out, result);
             return;
         }
-        if (same(op, "FROM565")) {
+        if (std.mem.eql(u8, op, "FROM565")) {
             try requireCount(a, 1);
-            if (a[0].len != 6 or !same(a[0][0..2], "0x"))
+            if (a[0].len != 6 or !std.mem.eql(u8, a[0][0..2], "0x"))
                 return error.Invalid;
             var v: i64 = 0;
             for (a[0][2..]) |c|
@@ -683,12 +645,12 @@ const Engine = struct {
             });
             return;
         }
-        if (same(op, "FROMANSI")) {
+        if (std.mem.eql(u8, op, "FROMANSI")) {
             try requireCount(a, 1);
             try writeColor(out, ansi(try number(a[0], 0, 255)));
             return;
         }
-        if (same(op, "RGB565")) {
+        if (std.mem.eql(u8, op, "RGB565")) {
             try requireCount(a, 1);
             const c = try self.color(a[0]);
             const v = 2048 * rounded(31 * c[0], 255) + 32 * rounded(63 * c[1], 255) + rounded(31 * c[2],
@@ -696,7 +658,7 @@ const Engine = struct {
             try out.print("0x{X:0>4}", .{ @as(u16, @intCast(v)) });
             return;
         }
-        if (same(op, "ANSI")) {
+        if (std.mem.eql(u8, op, "ANSI")) {
             try requireCount(a, 1);
             const c = try self.color(a[0]);
             var best: i64 = 16;
@@ -710,35 +672,35 @@ const Engine = struct {
             try out.print(" {d}", .{ distance(c, ansi(best)) });
             return;
         }
-        if (same(op, "WEBSAFE") or same(op, "INVERT")) {
+        if (std.mem.eql(u8, op, "WEBSAFE") or std.mem.eql(u8, op, "INVERT")) {
             try requireCount(a, 1);
             const c = try self.color(a[0]);
             var result: Color = undefined;
             for (c, 0..) |x, j|
-                result[j] = if (same(op, "INVERT")) 255 - x else
+                result[j] = if (std.mem.eql(u8, op, "INVERT")) 255 - x else
                     51 * rounded(x, 51);
             try writeColor(out, result);
             return;
         }
-        if (same(op, "GRAY")) {
+        if (std.mem.eql(u8, op, "GRAY")) {
             try requireCount(a, 2);
             const c = try self.color(a[0]);
             const r = c[0];
             const g = c[1];
             const b = c[2];
-            const value = if (same(a[1], "LUMA")) rounded(299 * r + 587 * g + 114 * b, 1000) else if (same(a[1],
-                "AVERAGE")) rounded(r + g + b, 3) else if (same(a[1], "LIGHTNESS")) rounded(maximum(c) + minimum(c),
-                2) else if (same(a[1], "HSP")) squareRoot(@divTrunc(299 * r * r + 587 * g * g + 114 * b * b,
+            const value = if (std.mem.eql(u8, a[1], "LUMA")) rounded(299 * r + 587 * g + 114 * b, 1000) else if (std.mem.eql(u8, a[1],
+                "AVERAGE")) rounded(r + g + b, 3) else if (std.mem.eql(u8, a[1], "LIGHTNESS")) rounded(std.mem.max(i64, &c) + std.mem.min(i64, &c),
+                2) else if (std.mem.eql(u8, a[1], "HSP")) squareRoot(@divTrunc(299 * r * r + 587 * g * g + 114 * b * b,
                 1000)) else return error.Invalid;
             try writeColor(out, .{ value, value, value });
             return;
         }
-        if (same(op, "MIX") or same(op, "MIXHSL")) {
+        if (std.mem.eql(u8, op, "MIX") or std.mem.eql(u8, op, "MIXHSL")) {
             try requireCount(a, 3);
             const c1 = try self.color(a[0]);
             const c2 = try self.color(a[1]);
             const p = try number(a[2], 0, 100);
-            if (same(op, "MIX")) {
+            if (std.mem.eql(u8, op, "MIX")) {
                 var result: Color = undefined;
                 for (0..3) |j|
                     result[j] = rounded(c1[j] * (100 - p) + c2[j] * p, 100);
@@ -754,7 +716,7 @@ const Engine = struct {
                 100), v1[2] + away((v2[2] - v1[2]) * p, 100)));
             return;
         }
-        if (same(op, "GRADIENT")) {
+        if (std.mem.eql(u8, op, "GRADIENT")) {
             try requireCount(a, 3);
             const c1 = try self.color(a[0]);
             const c2 = try self.color(a[1]);
@@ -769,7 +731,7 @@ const Engine = struct {
             try requireCount(a, 2);
             const c = try self.color(a[0]);
             const n = try number(a[1], 1, 10);
-            const value: i64 = if (same(op, "TINTS")) 255 else if (same(op, "SHADES")) 0 else 128;
+            const value: i64 = if (std.mem.eql(u8, op, "TINTS")) 255 else if (std.mem.eql(u8, op, "SHADES")) 0 else 128;
             const target = Color{ value, value, value };
             var result: [10]Color = undefined;
             for (0..@as(usize, @intCast(n))) |i|
@@ -777,7 +739,7 @@ const Engine = struct {
             try writeColors(out, result[0..@as(usize, @intCast(n))]);
             return;
         }
-        if (same(op, "BLEND")) {
+        if (std.mem.eql(u8, op, "BLEND")) {
             try requireCount(a, 3);
             const mode = a[0];
             const base = try self.color(a[1]);
@@ -785,8 +747,8 @@ const Engine = struct {
             if (oneOf(mode, &.{ "HUE", "SATURATION", "COLOR", "LUMINOSITY" })) {
                 const v1 = hsl(base);
                 const v2 = hsl(top);
-                try writeColor(out, fromHsl(if (same(mode, "HUE") or same(mode, "COLOR")) v2[0] else v1[0], if (same(mode,
-                    "SATURATION") or same(mode, "COLOR")) v2[1] else v1[1], if (same(mode, "LUMINOSITY")) v2[2] else v1[2]));
+                try writeColor(out, fromHsl(if (std.mem.eql(u8, mode, "HUE") or std.mem.eql(u8, mode, "COLOR")) v2[0] else v1[0], if (std.mem.eql(u8, mode,
+                    "SATURATION") or std.mem.eql(u8, mode, "COLOR")) v2[1] else v1[1], if (std.mem.eql(u8, mode, "LUMINOSITY")) v2[2] else v1[2]));
                 return;
             }
             var result: Color = undefined;
@@ -795,7 +757,7 @@ const Engine = struct {
             try writeColor(out, result);
             return;
         }
-        if (same(op, "ALPHA")) {
+        if (std.mem.eql(u8, op, "ALPHA")) {
             try requireCount(a, 4);
             const fg = try self.color(a[0]);
             const p = try number(a[1], 0, 100);
@@ -811,16 +773,16 @@ const Engine = struct {
             try out.print(" {d}%", .{ rounded(opacity, 100) });
             return;
         }
-        if (same(op, "SIMULATE")) {
+        if (std.mem.eql(u8, op, "SIMULATE")) {
             try requireCount(a, 2);
             const c = try self.color(a[0]);
-            const coefficients: [3][3]i64 = if (same(a[1], "PROTANOPIA"))
+            const coefficients: [3][3]i64 = if (std.mem.eql(u8, a[1], "PROTANOPIA"))
                 .{ .{567, 433, 0}, .{558, 442, 0}, .{0, 242, 758} }
-            else if (same(a[1], "DEUTERANOPIA"))
+            else if (std.mem.eql(u8, a[1], "DEUTERANOPIA"))
                 .{ .{625, 375, 0}, .{700, 300, 0}, .{0, 300, 700} }
-            else if (same(a[1], "TRITANOPIA"))
+            else if (std.mem.eql(u8, a[1], "TRITANOPIA"))
                 .{ .{950, 50, 0}, .{0, 433, 567}, .{0, 475, 525} }
-            else if (same(a[1], "ACHROMATOPSIA"))
+            else if (std.mem.eql(u8, a[1], "ACHROMATOPSIA"))
                 .{ .{299, 587, 114}, .{299, 587, 114}, .{299, 587, 114} }
             else return error.Invalid;
             var result: Color = undefined;
@@ -829,7 +791,7 @@ const Engine = struct {
             try writeColor(out, result);
             return;
         }
-        if (same(op, "ROTATE")) {
+        if (std.mem.eql(u8, op, "ROTATE")) {
             try requireCount(a, 2);
             const c = try self.color(a[0]);
             const d = try number(a[1], -720, 720);
@@ -839,15 +801,15 @@ const Engine = struct {
         if (oneOf(op, &.{ "COMPLEMENT", "TRIADIC", "TETRADIC", "SPLITCOMP" })) {
             try requireCount(a, 1);
             const c = try self.color(a[0]);
-            const offsets: []const i64 = if (same(op, "COMPLEMENT")) &.{ 180 } else if (same(op, "TRIADIC")) &.{ 120,
-                240 } else if (same(op, "TETRADIC")) &.{ 90, 180, 270 } else &.{ 150, 210 };
+            const offsets: []const i64 = if (std.mem.eql(u8, op, "COMPLEMENT")) &.{ 180 } else if (std.mem.eql(u8, op, "TRIADIC")) &.{ 120,
+                240 } else if (std.mem.eql(u8, op, "TETRADIC")) &.{ 90, 180, 270 } else &.{ 150, 210 };
             var result: [3]Color = undefined;
             for (offsets, 0..) |d, i|
                 result[i] = rotated(c, d);
             try writeColors(out, result[0..offsets.len]);
             return;
         }
-        if (same(op, "ANALOGOUS")) {
+        if (std.mem.eql(u8, op, "ANALOGOUS")) {
             try requireCount(a, 3);
             const c = try self.color(a[0]);
             const k = try number(a[1], 1, 6);
@@ -868,12 +830,12 @@ const Engine = struct {
             try requireCount(a, 2);
             var v = hsl(try self.color(a[0]));
             const p = try number(a[1], 0, 100);
-            const j: usize = if (same(op, "LIGHTEN") or same(op, "DARKEN")) 2 else 1;
-            v[j] = if (same(op, "LIGHTEN") or same(op, "SATURATE")) @min(100, v[j] + p) else @max(0, v[j] - p);
+            const j: usize = if (std.mem.eql(u8, op, "LIGHTEN") or std.mem.eql(u8, op, "DARKEN")) 2 else 1;
+            v[j] = if (std.mem.eql(u8, op, "LIGHTEN") or std.mem.eql(u8, op, "SATURATE")) @min(100, v[j] + p) else @max(0, v[j] - p);
             try writeColor(out, fromHsl(v[0], v[1], v[2]));
             return;
         }
-        if (same(op, "NEAREST")) {
+        if (std.mem.eql(u8, op, "NEAREST")) {
             try requireCount(a, 1);
             const c = try self.color(a[0]);
             var best_name = names[0];
@@ -900,7 +862,7 @@ const Engine = struct {
             try out.print(" {d}", .{ d });
             return;
         }
-        if (same(op, "DISTANCE")) {
+        if (std.mem.eql(u8, op, "DISTANCE")) {
             try requireCount(a, 2);
             const c1 = try self.color(a[0]);
             const c2 = try self.color(a[1]);
@@ -911,19 +873,19 @@ const Engine = struct {
             try out.print("{d} {d}", .{ distance(c1, c2), squareRoot(@divTrunc(w, 512)) });
             return;
         }
-        if (same(op, "CONTRAST")) {
+        if (std.mem.eql(u8, op, "CONTRAST")) {
             try requireCount(a, 2);
             const c1 = try self.color(a[0]);
             const c2 = try self.color(a[1]);
             try writeContrast(out, c1, c2);
             return;
         }
-        if (same(op, "ACCESSIBLE")) {
+        if (std.mem.eql(u8, op, "ACCESSIBLE")) {
             try requireCount(a, 2);
             const fg = try self.color(a[0]);
             const bg = try self.color(a[1]);
             var result = fg;
-            if (same(contrast(fg, bg).verdict, "FAIL")) {
+            if (std.mem.eql(u8, contrast(fg, bg).verdict, "FAIL")) {
                 const v = hsl(fg);
                 var t: i64 = 1;
                 search: while (t <= 100) : (t += 1) {
@@ -931,7 +893,7 @@ const Engine = struct {
                         if (l < 0 or l > 100)
                             continue;
                         const candidate = fromHsl(v[0], v[1], l);
-                        if (!same(contrast(candidate, bg).verdict, "FAIL")) {
+                        if (!std.mem.eql(u8, contrast(candidate, bg).verdict, "FAIL")) {
                             result = candidate;
                             break :search;
                         }
@@ -943,7 +905,7 @@ const Engine = struct {
             try writeContrast(out, result, bg);
             return;
         }
-        if (same(op, "BEST")) {
+        if (std.mem.eql(u8, op, "BEST")) {
             if (a.len < 2 or a.len > 33)
                 return error.Invalid;
             var buffer: [33]Color = undefined;
@@ -959,7 +921,7 @@ const Engine = struct {
             try writeContrast(out, colors[best], bg);
             return;
         }
-        if (same(op, "DESCRIBE")) {
+        if (std.mem.eql(u8, op, "DESCRIBE")) {
             try requireCount(a, 1);
             const v = hsl(try self.color(a[0]));
             const h = v[0];
@@ -1000,14 +962,14 @@ const Engine = struct {
             });
             return;
         }
-        if (same(op, "PALETTE") or same(op, "KMEANS")) {
+        if (std.mem.eql(u8, op, "PALETTE") or std.mem.eql(u8, op, "KMEANS")) {
             if (a.len < 2 or a.len > 33)
                 return error.Invalid;
             const k: usize = @intCast(try number(a[0], 1, @intCast(a.len - 1)));
             var buffer: [33]Color = undefined;
             const colors = try self.resolveColors(a[1..], &buffer);
             const boxes = palette(k, colors);
-            if (same(op, "PALETTE")) {
+            if (std.mem.eql(u8, op, "PALETTE")) {
                 for (boxes[0..k], 0..) |box, j| {
                     if (j > 0)
                         try out.writeByte(' ');
@@ -1042,7 +1004,7 @@ const Engine = struct {
                         for (0..3) |channel|
                             next[j][channel] = rounded(sums[j][channel], counts[j]);
                     }
-                    if (!equal(next[j], representatives[j]))
+                    if (!std.mem.eql(i64, &next[j], &representatives[j]))
                         unchanged = false;
                 }
                 representatives = next;
@@ -1057,24 +1019,21 @@ const Engine = struct {
             }
             return;
         }
-        if (same(op, "SORT")) {
+        if (std.mem.eql(u8, op, "SORT")) {
             if (a.len < 1 or a.len > 32)
                 return error.Invalid;
             var buffer: [33]Color = undefined;
             const colors = try self.resolveColors(a, &buffer);
-            for (1..colors.len) |i| {
-                const c = colors[i];
-                var j = i;
-                while (j > 0 and hslLess(c, colors[j - 1])) {
-                    colors[j] = colors[j - 1];
-                    j -= 1;
-                }
-                colors[j] = c;
-            }
+            var sortable: [32]SortColor = undefined;
+            for (colors, 0..) |c, i|
+                sortable[i] = .{ .color = c, .key = hsl(c) };
+            std.mem.sort(SortColor, sortable[0..colors.len], {}, hslLess);
+            for (sortable[0..colors.len], 0..) |entry, i|
+                colors[i] = entry.color;
             try writeColors(out, colors);
             return;
         }
-        if (same(op, "DITHER")) {
+        if (std.mem.eql(u8, op, "DITHER")) {
             if (a.len < 1 or a.len > 32)
                 return error.Invalid;
             var buffer: [33]Color = undefined;
@@ -1097,7 +1056,7 @@ const Engine = struct {
             }
             return;
         }
-        if (same(op, "RANDOM")) {
+        if (std.mem.eql(u8, op, "RANDOM")) {
             try requireCount(a, 2);
             var state = try number(a[0], 1, 999999999);
             const n: usize = @intCast(try number(a[1], 1, 16));
@@ -1123,14 +1082,13 @@ fn requireCount(args: []const []const u8, n: usize) Invalid!void {
         return error.Invalid;
 }
 
-fn hslLess(a: Color, b: Color) bool {
-    const x = hsl(a);
-    const y = hsl(b);
-    for (0..3) |j| {
-        if (x[j] != y[j])
-            return x[j] < y[j];
-    }
-    return false;
+const SortColor = struct {
+    color: Color,
+    key: [3]i64,
+};
+
+fn hslLess(_: void, a: SortColor, b: SortColor) bool {
+    return std.mem.order(i64, &a.key, &b.key) == .lt;
 }
 
 pub fn main(init: std.process.Init) !void {

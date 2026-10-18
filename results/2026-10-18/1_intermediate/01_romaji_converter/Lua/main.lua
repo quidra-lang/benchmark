@@ -268,12 +268,7 @@ local function written(word, system, settings, canonical, ids, columns)
 end
 
 local function count_character(text, character)
-    local count = 0
-    for i = 1, #text do
-        if text:sub(i, i) == character then
-            count = count + 1
-        end
-    end
+    local _, count = text:gsub(character, "")
     return count
 end
 
@@ -371,9 +366,7 @@ local function pattern_tokens(pattern, system)
         if not valid then
             fail("invalid pattern")
         end
-        for _, id in ipairs(ids) do
-            tokens[#tokens + 1] = id
-        end
+        table.move(ids,1,#ids,#tokens+1,tokens)
         chunk = ""
     end
     for i = 1, #pattern do

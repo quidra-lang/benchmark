@@ -26,10 +26,8 @@ pub fn main(init: std.process.Init) !void {
         var len: usize = 0;
         for (values, symbols) |value, symbol| {
             while (remaining >= value) {
-                for (symbol) |c| {
-                    roman[len] = c;
-                    len += 1;
-                }
+                @memcpy(roman[len..][0..symbol.len], symbol);
+                len += symbol.len;
                 remaining -= value;
             }
         }

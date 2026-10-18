@@ -1,8 +1,4 @@
-import java.util.*;
-import java.math.*;
-
 public class Main {
-
     public static void main(String[] args) {
         String[] names = {"milk", "notebook", "bread", "apple", "detergent", "eggs"};
         int[] prices = {198, 165, 248, 128, 437, 268};

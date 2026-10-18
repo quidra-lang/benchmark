@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val matrix = Array(5) { IntArray(6) }
     val dr = intArrayOf(0,1,0,-1)

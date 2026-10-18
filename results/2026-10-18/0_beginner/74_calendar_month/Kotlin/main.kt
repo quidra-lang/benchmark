@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val names = listOf("January","February","March","April","May","June",
         "July","August","September","October","November","December")

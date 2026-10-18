@@ -1,24 +1,32 @@
+type HuffmanNode = {
+  weight: number;
+  minimum: string;
+  symbol: string | null;
+  left: HuffmanNode | null;
+  right: HuffmanNode | null;
+};
+
 const text = "she sells sea shells by the sea shore";
-const frequencies = new Map();
+const frequencies = new Map<string, number>();
 for (const symbol of text) frequencies.set(symbol, (frequencies.get(symbol) ?? 0) + 1);
-const trees = [...frequencies].map(([symbol, weight]) => ({
+const trees: HuffmanNode[] = [...frequencies].map(([symbol, weight]) => ({
   weight, minimum: symbol, symbol, left: null, right: null
 }));
 while (trees.length > 1) {
   trees.sort((a, b) => a.weight - b.weight || (a.minimum < b.minimum ? -1 : a.minimum > b.minimum ? 1 : 0));
-  const left = trees.shift(), right = trees.shift();
+  const left = trees.shift()!, right = trees.shift()!;
   trees.push({
     weight: left.weight + right.weight,
     minimum: left.minimum < right.minimum ? left.minimum : right.minimum,
     symbol: null, left, right
   });
 }
-const codes = new Map();
-function visit(tree, prefix) {
+const codes = new Map<string, string>();
+function visit(tree: HuffmanNode, prefix: string): void {
   if (tree.symbol !== null) codes.set(tree.symbol, prefix);
   else {
-    visit(tree.left, prefix + "0");
-    visit(tree.right, prefix + "1");
+    visit(tree.left!, prefix + "0");
+    visit(tree.right!, prefix + "1");
   }
 }
 visit(trees[0], "");

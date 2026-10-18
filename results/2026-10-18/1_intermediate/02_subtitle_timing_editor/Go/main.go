@@ -4,6 +4,7 @@ import (
     "bufio"
     "fmt"
     "os"
+    "slices"
     "sort"
     "strconv"
     "strings"
@@ -35,9 +36,9 @@ type markup struct {
 }
 
 func clone(cues []cue) []cue {
-    result := append([]cue(nil), cues...)
+    result := slices.Clone(cues)
     for i := range result {
-        result[i].text = append([]string(nil), result[i].text...)
+        result[i].text = slices.Clone(result[i].text)
     }
     return result
 }
@@ -101,13 +102,6 @@ func wrap(lines []string, width int) []string {
         } else { result[len(result)-1] += " " + w }
     }
     return result
-}
-func sameText(a, b []string) bool {
-    if len(a) != len(b) { return false }
-    for i := range a {
-        if a[i] != b[i] { return false }
-    }
-    return true
 }
 func scanMarkup(line string) []markup {
     tags := []string{"<i>", "</i>", "<b>", "</b>", "<u>", "</u>"}
@@ -470,7 +464,7 @@ func (e *editor) execute(line string) []string {
             if len(result) > 0 {
                 previous := &result[len(result)-1]
                 if c.start-previous.end < v[0] && !dialogue(*previous) && !dialogue(c) {
-                    lines := append(append([]string(nil), previous.text...), c.text...)
+                    lines := slices.Concat(previous.text, c.text)
                     wrapped := wrap(lines, 42)
                     if len(wrapped) <= 2 {
                         previous.end = max(previous.end, c.end)
@@ -529,14 +523,12 @@ func (e *editor) execute(line string) []string {
     case "INSERT":
         p := int(v[0]-1)
         c := cue{index: v[0], start: v[1], end: v[2], text: strings.Split(a.raw[3], "|")}
-        e.cues = append(e.cues, cue{})
-        copy(e.cues[p+1:], e.cues[p:n])
-        e.cues[p] = c
+        e.cues = slices.Insert(e.cues, p, c)
         output = append(output, fmt.Sprintf("INSERT cue=%d cues=%d", v[0], len(e.cues)))
     case "DELETE":
         p, q := int(v[0]-1), int(v[0])
         if len(v) == 2 { q = int(v[1]) }
-        e.cues = append(e.cues[:p], e.cues[q:]...)
+        e.cues = slices.Delete(e.cues, p, q)
         output = append(output, fmt.Sprintf("DELETE removed=%d cues=%d", q-p, len(e.cues)))
     case "TEXT":
         e.cues[v[0]-1].text = strings.Split(a.raw[1], "|")
@@ -551,7 +543,7 @@ func (e *editor) execute(line string) []string {
             w := words(c.text)
             text := strings.Join(w, " ")
             var candidate []string
-            if len(text) <= 42 { candidate = []string{text} } else {
+            if len(text) <= 42 { candidate = []string{text} } else if len(text) <= 85 {
                 bestDifference, bestFirst := int(^uint(0)>>1), int(^uint(0)>>1)
                 for j := 1; j < len(w); j++ {
                     first, second := strings.Join(w[:j], " "), strings.Join(w[j:], " ")
@@ -564,7 +556,7 @@ func (e *editor) execute(line string) []string {
                 }
             }
             if candidate == nil { skipped++ } else {
-                if !sameText(c.text, candidate) { changed++ }
+                if !slices.Equal(c.text, candidate) { changed++ }
                 e.cues[i].text = candidate
             }
         }
@@ -633,7 +625,7 @@ func loadBlock(block []string, position int, e *editor) string {
     }
     if !valid { return fmt.Sprintf("BAD CUE %d: time", position) }
     if len(block) < 3 { return fmt.Sprintf("BAD CUE %d: no text", position) }
-    e.cues = append(e.cues, cue{index, start, end, append([]string(nil), block[2:]...)})
+    e.cues = append(e.cues, cue{index, start, end, slices.Clone(block[2:])})
     return ""
 }
 func main() {

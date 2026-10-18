@@ -1,24 +1,20 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     final a = [27, 64, 13, 88, 41, 5, 72, 36];
     var total = 0;
     for (var pass = 1; pass <= 7; pass++) {
         var swapped = false;
         for (var j = 0; j < 8 - pass; j++) {
             if (a[j] > a[j + 1]) {
-                final t = a[j];
+                final value = a[j];
                 a[j] = a[j + 1];
-                a[j + 1] = t;
+                a[j + 1] = value;
                 total++;
                 swapped = true;
             }
         }
-        out.writeln('pass $pass: ${a.join(' ')}');
+        print('pass $pass: ${a.join(' ')}');
         if (!swapped)
             break;
     }
-    out.writeln('swaps: $total');
-    stdout.write(out);
+    print('swaps: $total');
 }

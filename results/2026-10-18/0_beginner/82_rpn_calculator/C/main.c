@@ -24,17 +24,17 @@ int main(void) {
                 }
                 switch (token[0]) {
                     case '+':
-                    v = a + b;
-                    break;
+                        v = a + b;
+                        break;
                     case '-':
-                    v = a - b;
-                    break;
+                        v = a - b;
+                        break;
                     case '*':
-                    v = a * b;
-                    break;
+                        v = a * b;
+                        break;
                     case '/':
-                    v = a / b;
-                    break;
+                        v = a / b;
+                        break;
                 }
                 stack[top++] = v;
             } else

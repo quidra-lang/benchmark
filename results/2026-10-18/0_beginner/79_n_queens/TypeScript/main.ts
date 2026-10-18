@@ -1,7 +1,8 @@
-function solve(n) {
-  const placement = [];
-  let count = 0, first = [];
-  function visit() {
+function solve(n: number): { count: number; first: number[] } {
+  const placement: number[] = [];
+  let count = 0;
+  let first: number[] = [];
+  function visit(): void {
     const row = placement.length;
     if (row === n) {
       count++;

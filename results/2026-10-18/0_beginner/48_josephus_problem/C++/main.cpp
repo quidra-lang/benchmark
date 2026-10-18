@@ -1,13 +1,13 @@
 #include <iostream>
 #include <vector>
-#include <array>
+#include <numeric>
 
 int main() {
-    for (const std::array<int, 2> &c : std::array<std::array<int, 2>, 3>{{{7, 3}, {10, 2}, {41, 3}}}) {
-        int n = c[0], k = c[1], index = 0, last = 0;
-        std::vector<int> people;
-        for (int i = 1; i <= n; i++)
-            people.push_back(i);
+    int cases[][2] = {{7, 3}, {10, 2}, {41, 3}};
+    for (auto [n, k] : cases) {
+        int index = 0, last = 0;
+        std::vector<int> people(n);
+        std::iota(people.begin(), people.end(), 1);
         std::cout << "n=" << n << " k=" << k << ':';
         while (!people.empty()) {
             index = (index + k - 1) % static_cast<int>(people.size());

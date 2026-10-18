@@ -22,10 +22,7 @@ class Splitter {
     private var day = 1L
     private var serial = 0L
     private fun fail(message: String): Nothing = throw Problem(message)
-    private fun money(s: String): Long {
-        val (a,b) = s.split('.')
-        return a.toLong()*100+b.toLong()
-    }
+    private fun money(s: String) = s.replace(".","").toLong()
     private fun amount(s: String): Amount {
         val parts = s.split('@')
         return Amount(money(parts[0]),parts.getOrElse(1) { "" })
@@ -142,22 +139,14 @@ class Splitter {
     private fun greedy(balances: Map<String,Long>): List<Transfer> {
         val work = TreeMap(balances)
         val result = mutableListOf<Transfer>()
-        while (true) {
-            var from = ""
-            var to = ""
-            var minimum = 0L
-            var maximum = 0L
-            for ((name,value) in work) {
-                if (value < minimum) {
-                    minimum = value
-                    from = name
-                }
-                if (value > maximum) {
-                    maximum = value
-                    to = name
-                }
-            }
-            if (minimum == 0L) break
+        while (work.isNotEmpty()) {
+            val sender = work.entries.minBy { it.value }
+            val receiver = work.entries.maxBy { it.value }
+            val minimum = sender.value
+            val maximum = receiver.value
+            if (minimum >= 0) break
+            val from = sender.key
+            val to = receiver.key
             val value = minOf(-minimum,maximum)
             result.add(Transfer(from,to,value))
             work[from] = minimum+value

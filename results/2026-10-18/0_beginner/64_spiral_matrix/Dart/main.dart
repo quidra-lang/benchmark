@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     final matrix = List.generate(5, (_) => List.filled(6, 0));
     const directions = [(0, 1), (1, 0), (0, -1), (-1, 0)];
     var r = 0, c = 0, d = 0;
@@ -19,6 +16,5 @@ void main() {
         c = nc;
     }
     for (final row in matrix)
-        out.writeln(row.map((v) => v.toString().padLeft(3)).join());
-    stdout.write(out);
+        print(row.map((v) => v.toString().padLeft(3)).join());
 }

@@ -1,5 +1,3 @@
-from decimal import Decimal, ROUND_HALF_UP
-
 systems = [
     [[2, -1, 3, 7], [4, 1, -2, 3], [-3, 5, 1, -4]],
     [[1, 3, -2, 4, 6], [5, -2, 1, 3, -7], [-2, 4, 6, -1, 9], [3, 1, -4, 2, 5]],
@@ -22,5 +20,4 @@ for number, system in enumerate(systems, 1):
         solution[i] = s / a[i][i]
     print(f"system {number}:")
     for i, value in enumerate(solution, 1):
-        rounded = Decimal.from_float(value).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-        print(f"x{i} = {rounded}")
+        print(f"x{i} = {value:.4f}")

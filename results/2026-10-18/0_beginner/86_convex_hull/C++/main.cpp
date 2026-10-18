@@ -18,7 +18,7 @@ int main() {
             lower.pop_back();
         lower.push_back(p);
     }
-    for (std::vector<Point>::reverse_iterator i = points.rbegin(); i != points.rend(); ++i) {
+    for (auto i = points.rbegin(); i != points.rend(); ++i) {
         Point p = *i;
         while (upper.size() >= 2 && cross(upper[upper.size() - 2], upper.back(), p) <= 0)
             upper.pop_back();

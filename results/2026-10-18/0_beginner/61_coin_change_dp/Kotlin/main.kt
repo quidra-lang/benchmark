@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val coins = intArrayOf(1, 5, 6, 9)
     for (amount in intArrayOf(8, 11, 15, 22, 33, 40)) {

@@ -1,9 +1,9 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <set>
-#include <sstream>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -30,6 +30,7 @@ const string osLetters = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
 const string bands = "CDEFGHJKLMNPQRSTUVWX";
 const string mgrsRows = "ABCDEFGHJKLMNPQRSTUV";
 const std::array<Integer, 6> meshScale = {1, 8, 80, 160, 320, 640};
+const std::array<string, 4> maidenAlphabets = {"ABCDEFGHIJKLMNOPQR", "0123456789", "abcdefghijklmnopqrstuvwx", "0123456789"};
 std::array<vector<Grid>, 6> grids;
 
 void require(bool condition) {
@@ -41,7 +42,6 @@ Integer floorRatio(Integer a, Integer b) {
     return q;
 }
 Integer modulo(Integer a, Integer b) { return a - floorRatio(a, b) * b; }
-Integer absolute(Integer a) { return a < 0 ? -a : a; }
 vector<string> split(const string &s, char delimiter = ' ') {
     vector<string> result;
     std::size_t start = 0;
@@ -66,7 +66,7 @@ string padded(Integer value, int width) {
     return string(std::max(0, width - int(s.size())), '0') + s;
 }
 string coordinate(Integer value) {
-    Integer magnitude = absolute(value);
+    Integer magnitude = std::abs(value);
     return string(value < 0 ? "-" : "") + std::to_string(magnitude / 1000000) + "." + padded(magnitude % 1000000, 6);
 }
 bool digits(const string &s, int minimum, int maximum) {
@@ -76,9 +76,7 @@ Integer integer(const string &s, Integer minimum, Integer maximum) {
     bool negative = !s.empty() && s[0] == '-';
     string body = negative ? s.substr(1) : s;
     require(digits(body, 1, 9));
-    Integer value = 0;
-    for (char c : body) value = value * 10 + c - '0';
-    if (negative) value = -value;
+    Integer value = std::stoll(s);
     require(value >= minimum && value <= maximum);
     return value;
 }
@@ -90,13 +88,8 @@ Integer location(const string &s, bool latitude) {
     require(digits(parts[0], 1, 3));
     string fraction = parts.size() == 2 ? parts[1] : "";
     if (parts.size() == 2) require(digits(fraction, 1, 6));
-    Integer value = 0;
-    for (char c : parts[0]) value = value * 10 + c - '0';
-    value *= 1000000;
-    fraction += string(6 - fraction.size(), '0');
-    Integer tail = 0;
-    for (char c : fraction) tail = tail * 10 + c - '0';
-    value += tail;
+    fraction.append(6 - fraction.size(), '0');
+    Integer value = std::stoll(parts[0]) * 1000000 + std::stoll(fraction);
     if (negative) value = -value;
     require(latitude ? value >= -90000000 && value <= 90000000 : value >= -180000000 && value < 180000000);
     return value;
@@ -156,9 +149,8 @@ string encode(int system, Cell c) {
             y /= 5;
         }
         vector<int> xd(count), yd(count);
-        const vector<string> alphabets = {"ABCDEFGHIJKLMNOPQR", "0123456789", "abcdefghijklmnopqrstuvwx", "0123456789"};
         for (int i = count - 1; i >= 0; --i) {
-            int rx = system == 1 ? int(alphabets[i].size()) : i == 0 ? 18 : 20;
+            int rx = system == 1 ? int(maidenAlphabets[i].size()) : i == 0 ? 18 : 20;
             int ry = system == 1 ? rx : i == 0 ? 9 : 20;
             xd[i] = int(x % rx);
             yd[i] = int(y % ry);
@@ -167,8 +159,8 @@ string encode(int system, Cell c) {
         }
         for (int i = 0; i < count; ++i) {
             if (system == 1) {
-                result += alphabets[i][xd[i]];
-                result += alphabets[i][yd[i]];
+                result += maidenAlphabets[i][xd[i]];
+                result += maidenAlphabets[i][yd[i]];
             } else {
                 result += plusAlphabet[yd[i]];
                 result += plusAlphabet[xd[i]];
@@ -234,10 +226,9 @@ Cell decode(int system, const string &code) {
         }
     } else if (system == 1) {
         precisionId(system, p);
-        const vector<string> alphabets = {"ABCDEFGHIJKLMNOPQR", "0123456789", "abcdefghijklmnopqrstuvwx", "0123456789"};
         for (int i = 0; i < p / 2; ++i) {
-            x = x * Integer(alphabets[i].size()) + digit(alphabets[i], code[2 * i]);
-            y = y * Integer(alphabets[i].size()) + digit(alphabets[i], code[2 * i + 1]);
+            x = x * Integer(maidenAlphabets[i].size()) + digit(maidenAlphabets[i], code[2 * i]);
+            y = y * Integer(maidenAlphabets[i].size()) + digit(maidenAlphabets[i], code[2 * i + 1]);
         }
     } else if (system == 2) {
         require(p >= 9 && code[8] == '+' && std::count(code.begin(), code.end(), '+') == 1);
@@ -402,13 +393,13 @@ Integer squareDigits(const vector<string> &a, int start, Integer &e, Integer &n)
     return scale;
 }
 string execute(const vector<string> &a) {
-    const vector<string> names = {
+    static const std::array<string, 23> names = {
         "ENCODE", "DECODE", "NEIGHBORS", "PARENT", "CHILDREN", "COMMON",
         "COMPACT", "CONTAINS", "COVER", "CONVERT", "STEPS", "PATH", "RELATE",
         "SIZE", "SHORTEN", "RECOVER", "UTMZONE", "OSGB", "UNOSGB", "MGRS",
         "UNMGRS", "QUADKEY", "UNQUADKEY"
     };
-    vector<string>::const_iterator found = std::find(names.begin(), names.end(), a[0]);
+    const auto found = std::find(names.begin(), names.end(), a[0]);
     require(found != names.end());
     int command = int(found - names.begin());
     const int lengths[] = {5,3,3,3,3,4,0,5,7,6,4,4,5,3,4,4,3,4,0,6,0,4,2};
@@ -495,7 +486,7 @@ string execute(const vector<string> &a) {
         Integer dx = modulo(other.x - c.x, g.width), dy = other.y - c.y;
         if (dx > g.width / 2) dx -= g.width;
         if (command == 10) return "dx=" + std::to_string(dx) + " dy=" + std::to_string(dy);
-        Integer n = std::max(absolute(dx), absolute(dy));
+        Integer n = std::max(std::abs(dx), std::abs(dy));
         if (n + 1 > 100) return "TOO MANY";
         vector<string> result;
         for (Integer i = 0; i <= n; ++i) {
@@ -523,8 +514,8 @@ string execute(const vector<string> &a) {
         Integer cy = centerNumerator(c.y, g.height, 180000000), cx = centerNumerator(c.x, g.width, 360000000);
         Integer yd = 2 * g.height, xd = 2 * g.width;
         if (command == 14) {
-            if (absolute(cy - lat * yd) < 15000 * yd && absolute(cx - lon * xd) < 15000 * xd) return full.substr(6);
-            if (absolute(cy - lat * yd) < 300000 * yd && absolute(cx - lon * xd) < 300000 * xd) return full.substr(4);
+            if (std::abs(cy - lat * yd) < 15000 * yd && std::abs(cx - lon * xd) < 15000 * xd) return full.substr(6);
+            if (std::abs(cy - lat * yd) < 300000 * yd && std::abs(cx - lon * xd) < 300000 * xd) return full.substr(4);
             return full;
         }
         Integer distance = removed == 4 ? 1000000 : 50000;
@@ -545,7 +536,7 @@ string execute(const vector<string> &a) {
         return std::to_string(zone) + band;
     }
     if (command == 17 || command == 19) {
-        Integer zone = 0, e, n;
+        Integer e, n;
         int d;
         string prefix;
         if (command == 17) {
@@ -554,7 +545,7 @@ string execute(const vector<string> &a) {
             d = int(integer(a[3], 0, 5));
             prefix = string(1, osLetters[5 * (3 - n / 500000) + 2 + e / 500000]) + osLetters[5 * (4 - n / 100000 % 5) + e / 100000 % 5];
         } else {
-            zone = integer(a[1], 1, 60);
+            Integer zone = integer(a[1], 1, 60);
             require(a[2].size() == 1);
             digit(bands, a[2][0]);
             e = integer(a[3], 100000, 899999);

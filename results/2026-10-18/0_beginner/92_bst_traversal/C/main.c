@@ -8,9 +8,7 @@ int used = 0;
 int insert(int root, int key) {
     if (root < 0) {
         int v = used++;
-        nodes[v] = (Node) {
-            key, -1, -1
-        };
+        nodes[v] = (Node){key, -1, -1};
         return v;
     }
     if (key < nodes[root].key)

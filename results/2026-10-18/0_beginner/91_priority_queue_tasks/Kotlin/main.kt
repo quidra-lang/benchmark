@@ -1,6 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
 data class Task(val name: String, val priority: Int, val sequence: Int)
 fun main() {
     val operations = listOf("add email 3", "add backup 5", "add deploy 1", "run", "add report 3", "add test 2",
@@ -16,7 +13,5 @@ fun main() {
             println("run: ${task.name} (priority ${task.priority})")
         }
     }
-    val remaining = mutableListOf<String>()
-    while (queue.isNotEmpty()) remaining.add(queue.remove().name)
-    println("remaining: ${remaining.joinToString(" ")}")
+    println("remaining: ${queue.sortedWith(queue.comparator()).joinToString(" ") { it.name }}")
 }

@@ -8,6 +8,5 @@ fn hanoi(n: i32, source: char, target: char, auxiliary: char) -> i32 {
 }
 
 fn main() {
-    let count = hanoi(4, 'A', 'C', 'B');
-    println!("total moves: {}", count);
+    println!("total moves: {}", hanoi(4, 'A', 'C', 'B'));
 }

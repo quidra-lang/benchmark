@@ -1,14 +1,8 @@
 caesar <- function(message, shift) {
-    codes <- utf8ToInt(message)
-    for (i in seq_along(codes)) {
-        code <- codes[i]
-        if (code >= 65 && code <= 90) {
-            codes[i] <- 65 + (code-65+shift) %% 26
-        } else if (code >= 97 && code <= 122) {
-            codes[i] <- 97 + (code-97+shift) %% 26
-        }
-    }
-    intToUtf8(codes)
+    indices <- (seq_along(letters) - 1 + shift) %% 26 + 1
+    alphabet <- paste0(c(LETTERS, letters), collapse = "")
+    shifted <- paste0(c(LETTERS[indices], letters[indices]), collapse = "")
+    chartr(alphabet, shifted, message)
 }
 ciphertext <- caesar("Zoe, meet Max by the Old Bridge at six!", 3)
 cat(ciphertext, "\n", caesar(ciphertext, -3), "\n", sep = "")

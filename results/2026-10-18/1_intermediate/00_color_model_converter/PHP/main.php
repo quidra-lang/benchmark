@@ -121,12 +121,7 @@ function color_sequence(array $colors): string
 
 function color_distance(array $a, array $b): int
 {
-    $total = 0;
-    for ($i = 0; $i < 3; ++$i) {
-        $difference = $a[$i] - $b[$i];
-        $total += $difference * $difference;
-    }
-    return $total;
+    return array_sum(array_map(fn($x,$y) => ($x-$y)**2,$a,$b));
 }
 
 function integer_arg(string $text, int $low, int $high): int
@@ -311,13 +306,8 @@ function root_ratio(int $n, int $d): int
 
 function nearest_index(array $color, array $colors): int
 {
-    $selected = 0;
-    for ($i = 1; $i < count($colors); ++$i) {
-        if (color_distance($color, $colors[$i]) < color_distance($color, $colors[$selected])) {
-            $selected = $i;
-        }
-    }
-    return $selected;
+    $distances = array_map(fn($other) => color_distance($color,$other),$colors);
+    return array_search(min($distances),$distances,true);
 }
 
 function contrast(array $a, array $b): array
@@ -358,57 +348,29 @@ function gradient(array $a, array $b, int $n): array
 
 function mean_color(array $colors): array
 {
-    $total = [0, 0, 0];
-    foreach ($colors as $color) {
-        for ($j = 0; $j < 3; ++$j) {
-            $total[$j] += $color[$j];
-        }
-    }
-    return array_map(fn($value) => round_ratio($value, count($colors)), $total);
+    return array_map(fn($j) => round_ratio(array_sum(array_column($colors,$j)),count($colors)),[0,1,2]);
 }
 
 function widths(array $colors): array
 {
-    $low = $colors[0];
-    $high = $colors[0];
-    foreach ($colors as $color) {
-        for ($j = 0; $j < 3; ++$j) {
-            $low[$j] = min($low[$j], $color[$j]);
-            $high[$j] = max($high[$j], $color[$j]);
-        }
-    }
-    return [$high[0] - $low[0], $high[1] - $low[1], $high[2] - $low[2]];
+    return array_map(function($j) use ($colors) {
+        $values = array_column($colors,$j);
+        return max($values)-min($values);
+    },[0,1,2]);
 }
 
 function palette(array $colors, int $k): array
 {
     $boxes = [$colors];
     while (count($boxes) < $k) {
-        $selected = 0;
-        $bestWidth = -1;
-        foreach ($boxes as $i => $box) {
-            if (count($box) >= 2) {
-                $width = max(widths($box));
-                if ($width > $bestWidth) {
-                    $selected = $i;
-                    $bestWidth = $width;
-                }
-            }
-        }
+        $boxWidths = array_map(fn($box) => count($box) >= 2 ? max(widths($box)) : -1,$boxes);
+        $selected = array_search(max($boxWidths),$boxWidths,true);
         $box = $boxes[$selected];
         $ranges = widths($box);
         $axis = array_search(max($ranges), $ranges, true);
-        $indexed = [];
-        foreach ($box as $i => $color) {
-            $indexed[] = ['color' => $color, 'index' => $i];
-        }
-        usort($indexed, function($a, $b) use ($axis) {
-            $comparison = $a['color'][$axis] <=> $b['color'][$axis];
-            return $comparison !== 0 ? $comparison : $a['index'] <=> $b['index'];
-        });
-        $ordered = array_column($indexed, 'color');
+        usort($box,fn($a,$b) => $a[$axis]<=>$b[$axis]);
         $middle = intdiv(count($box), 2);
-        array_splice($boxes, $selected, 1, [array_slice($ordered, 0, $middle), array_slice($ordered, $middle)]);
+        array_splice($boxes, $selected, 1, [array_slice($box, 0, $middle), array_slice($box, $middle)]);
     }
     return $boxes;
 }
@@ -515,13 +477,8 @@ function execute(string $command, array $raw, array &$registry): string
             $i = nearest_index($color, $colors);
             return sprintf('%s %s %d', $names[$i], hex_color($colors[$i]), color_distance($color, $colors[$i]));
         }
-        $exact = '-';
-        foreach ($colors as $i => $other) {
-            if ($other === $color) {
-                $exact = $names[$i];
-                break;
-            }
-        }
+        $index = array_search($color,$colors,true);
+        $exact = $index === false ? '-' : $names[$index];
         $parts = [hex_color($color), sprintf('rgb(%d,%d,%d)', ...$color)];
         foreach (['HSL', 'HSV', 'HWB', 'CMYK', 'YCBCR', 'YIQ'] as $model) {
             $parts[] = model_text($model, $color);

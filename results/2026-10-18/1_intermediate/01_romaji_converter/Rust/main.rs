@@ -14,9 +14,7 @@ struct Mora {
     base: usize,
     voice: usize,
 }
-#[derive(Clone)]
 struct Token { id: usize, col: usize }
-#[derive(Clone)]
 struct Word {
     original: String,
     start: usize,
@@ -51,7 +49,7 @@ fn initialize() -> Vec<Mora> {
         for id in line.split(' ') {
             table.push(Mora {
                 id: id.to_owned(), row: r, dan: id[id.len()-1..].to_owned(),
-                spelling: std::array::from_fn(|_| String::new()),
+                spelling: Default::default(),
                 base: base_rows[r], voice: if r == 14 { 2 } else if r >= 10 { 1 } else { 0 },
             });
         }
@@ -60,7 +58,7 @@ fn initialize() -> Vec<Mora> {
         for dan in ["ya", "yu", "yo"] {
             table.push(Mora {
                 id: format!("{}{dan}", &ROWS[r][..1]), row: r, dan: dan.to_owned(),
-                spelling: std::array::from_fn(|_| String::new()),
+                spelling: Default::default(),
                 base: base_rows[r], voice: if r == 14 { 2 } else if r >= 10 { 1 } else { 0 },
             });
         }
@@ -264,13 +262,13 @@ fn elements(table: &[Mora], w: &Word) -> Vec<Element> {
     }
     result
 }
-fn key(table: &[Mora], w: &Word, order: usize) -> Vec<Vec<usize>> {
+fn key(table: &[Mora], w: &Word, order: usize) -> [Vec<usize>; 4] {
     let ranks: Vec<&str> = if order == 0 {
         "a i u e o ka ki ku ke ko sa si su se so ta ti tu te to na ni nu ne no ha hi hu he ho ma mi mu me mo ya yu yo ra ri ru re ro wa wi we wo N"
     } else {
         "i ro ha ni ho he to ti ri nu ru wo wa ka yo ta re so tu ne na ra mu u wi no o ku ya ma ke hu ko e te a sa ki yu me mi si we hi mo se su N"
     }.split(' ').collect();
-    let mut result = vec![Vec::new(); 4];
+    let mut result: [Vec<usize>; 4] = Default::default();
     for e in elements(table, w) {
         result[0].push(index(&ranks, if e.id == N { "N" } else { &table[e.id].id }).unwrap());
         result[1].push(e.voice);
@@ -372,9 +370,8 @@ fn process(table: &[Mora], line: &str, config: &mut Settings) -> Result<String, 
     if cmd == 6 {
         let mut output = Vec::new();
         for (s, name) in SYSTEMS.iter().enumerate() {
-            let mut parsed = words.clone();
             let mut readable = true;
-            for w in &mut parsed {
+            for w in &mut words {
                 if parse(table, w, Some(s)).is_err() {
                     readable = false;
                     break;
@@ -383,7 +380,7 @@ fn process(table: &[Mora], line: &str, config: &mut Settings) -> Result<String, 
             let mut verdict = "error";
             if readable {
                 verdict = "canonical";
-                for w in &parsed {
+                for w in &words {
                     if write_word(table, w, s, true, config)? != w.original { verdict = "readable"; }
                 }
             }
@@ -512,7 +509,7 @@ fn process(table: &[Mora], line: &str, config: &mut Settings) -> Result<String, 
         return Ok(output.join(" "));
     }
     if cmd == 13 || cmd == 14 {
-        words.sort_by_key(|w| key(table, w, config.order));
+        words.sort_by_cached_key(|w| key(table, w, config.order));
         let mut output: Vec<String> = Vec::new();
         let mut previous = String::new();
         for w in &words {

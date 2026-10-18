@@ -4,7 +4,7 @@
 #include <sstream>
 
 int main() {
-    const std::string sentence = "we planted beans and carrots in the garden behind our old house";
+    std::string sentence = "we planted beans and carrots in the garden behind our old house";
     std::istringstream input(sentence);
     std::string longest, shortest;
     int count = 0, total = 0;
@@ -16,8 +16,7 @@ int main() {
         if (shortest.empty() || w.size() < shortest.size())
             shortest = w;
     }
-    double avg = static_cast<double>(total) / count;
-    int q = static_cast<int>(avg * 100 + 0.5);
-    std::cout << "words: " << count << "\nlongest: " << longest << "\nshortest: " << shortest << "\naverage length: "
-        << q / 100 << '.' << std::setfill('0') << std::setw(2) << q % 100 << '\n';
+    std::cout << "words: " << count << "\nlongest: " << longest << "\nshortest: " << shortest
+              << "\naverage length: " << std::fixed << std::setprecision(2)
+              << static_cast<double>(total) / count << '\n';
 }

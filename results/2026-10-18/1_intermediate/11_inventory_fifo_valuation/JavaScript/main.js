@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 
 
 const CATEGORIES = ["received", "returned", "adjusted-in", "adjusted-out", "shipped", "written-down", "expired", "recalled"];
-const lex = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const cents = (s) => BigInt(s.replace(".", ""));
 const value = (s) => BigInt(s.quantity) * s.cost;
@@ -514,7 +513,7 @@ class Inventory {
           const ids = [...rows.keys()].sort((a, b) => {
             const x = rows.get(a);
             const y = rows.get(b);
-            return compare(y.revenue - y.cogs, x.revenue - x.cogs) || compare(y.revenue, x.revenue) || lex(a, b);
+            return compare(y.revenue - y.cogs, x.revenue - x.cogs) || compare(y.revenue, x.revenue) || compare(a, b);
           });
           for (let i = 0; i < Math.min(ids.length, Number(a[0])); i++) {
             const row = rows.get(ids[i]);

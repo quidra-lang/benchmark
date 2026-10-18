@@ -1,15 +1,12 @@
-import Foundation
-
 @discardableResult
 func solve(_ board: inout [[Int]], _ placements: inout Int64) -> Bool {
     for r in 0..<9 {
         for c in 0..<9 {
             if board[r][c] != 0 { continue }
             for digit in 1...9 {
-                var valid = true
-                for i in 0..<9 {
-                    if board[r][i] == digit || board[i][c] == digit ||
-                        board[r / 3 * 3 + i / 3][c / 3 * 3 + i % 3] == digit { valid = false }
+                let valid = (0..<9).allSatisfy { i in
+                    board[r][i] != digit && board[i][c] != digit &&
+                        board[r / 3 * 3 + i / 3][c / 3 * 3 + i % 3] != digit
                 }
                 if !valid { continue }
                 board[r][c] = digit

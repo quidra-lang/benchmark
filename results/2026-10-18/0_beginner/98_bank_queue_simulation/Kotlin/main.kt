@@ -1,7 +1,5 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
+import java.util.Locale
 
-fun fixed(x: Double, places: Int): String = BigDecimal.valueOf(x).setScale(places, RoundingMode.HALF_UP).toPlainString()
 fun main() {
     var state = 42L
     val free = IntArray(2)
@@ -22,7 +20,7 @@ fun main() {
         maxWait = maxOf(maxWait,wait)
         println("customer $customer: arrive=$arrival start=$start end=$end teller=${teller + 1} wait=$wait")
     }
-    println("average wait: ${fixed(totalWait / 20.0,2)}")
+    println("average wait: %.2f".format(Locale.ROOT, totalWait / 20.0))
     println("max wait: $maxWait")
     println("last departure: ${free.max()}")
 }

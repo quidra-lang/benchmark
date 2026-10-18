@@ -1,3 +1,5 @@
+from textwrap import wrap
+
 paragraph = (
     "Good software is written for people first and for machines second. "
     "A clear program explains its purpose through careful names, small functions and honest tests. "
@@ -6,16 +8,7 @@ paragraph = (
     "with confidence instead of fear, week after week."
 )
 width = 30
-lines, line = [], []
-letters = 0
-for word in paragraph.split(" "):
-    if line and letters + len(line) + len(word) > width:
-        lines.append(line)
-        line = []
-        letters = 0
-    line.append(word)
-    letters += len(word)
-lines.append(line)
+lines = [line.split() for line in wrap(paragraph, width)]
 for index, words in enumerate(lines):
     if index == len(lines) - 1 or len(words) == 1:
         text = " ".join(words).ljust(width)

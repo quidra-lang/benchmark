@@ -24,8 +24,7 @@ pub fn main(init: std.process.Init) !void {
         try out.print("customer {d}: arrive={d} start={d} end={d} teller={d} wait={d}\n", .{ customer,
             arrival, start, end, teller + 1, wait });
     }
-    const hundredths = total_wait * 5;
-    try out.print("average wait: {d}.{d:0>2}\nmax wait: {d}\nlast departure: {d}\n", .{ hundredths / 100,
-        hundredths % 100, max_wait, @max(free[0], free[1]) });
+    try out.print("average wait: {d:.2}\nmax wait: {d}\nlast departure: {d}\n",
+        .{ @as(f64, @floatFromInt(total_wait)) / 20.0, max_wait, @max(free[0], free[1]) });
     try out.flush();
 }

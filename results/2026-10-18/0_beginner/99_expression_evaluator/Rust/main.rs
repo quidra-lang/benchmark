@@ -1,9 +1,9 @@
-struct Parser {
+struct Parser<'a> {
     tokens: Vec<String>,
     position: usize,
-    variables: std::collections::BTreeMap<String, i64>
+    variables: &'a std::collections::BTreeMap<String, i64>
 }
-impl Parser {
+impl Parser<'_> {
     fn unary(&mut self) -> Result<i64, String> {
         let token = self.tokens[self.position].clone();
         self.position += 1;
@@ -86,15 +86,12 @@ fn main() {
         let assignment = tokens.len() > 1 && tokens[1] == "=";
         let mut parser = Parser {
             tokens,
-            position: if assignment {
-                2
-            } else {
-                0
-            },
-            variables: variables.clone()
+            position: if assignment { 2 } else { 0 },
+            variables: &variables
         };
         match parser.sum() {
-            Err(error) => println!("error: {}", error), Ok(value) => {
+            Err(error) => println!("error: {}", error),
+            Ok(value) => {
                 if assignment {
                     let name = parser.tokens[0].clone();
                     variables.insert(name.clone(), value);

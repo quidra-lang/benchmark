@@ -5,22 +5,14 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [256]u8 = undefined;
     var writer = std.Io.File.stdout().writerStreaming(init.io, &buffer);
     const out = &writer.interface;
-    var index: usize = sentence.len;
-    while (index > 0) {
-        index -= 1;
-        try out.writeByte(sentence[index]);
-    }
-    try out.writeByte('\n');
-    var end: usize = sentence.len;
-    while (end > 0) {
-        var start = end;
-        while (start > 0 and sentence[start - 1] != ' ')
-            start -= 1;
-        try out.writeAll(sentence[start..end]);
-        if (start == 0)
-            break;
-        try out.writeByte(' ');
-        end = start - 1;
+    var reversed = sentence.*;
+    std.mem.reverse(u8, &reversed);
+    try out.print("{s}\n", .{reversed});
+    var words = std.mem.splitBackwardsScalar(u8, sentence, ' ');
+    var separator: []const u8 = "";
+    while (words.next()) |word| {
+        try out.print("{s}{s}", .{ separator, word });
+        separator = " ";
     }
     try out.writeByte('\n');
     try out.flush();

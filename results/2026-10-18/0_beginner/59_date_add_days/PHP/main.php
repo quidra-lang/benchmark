@@ -8,8 +8,12 @@ foreach ([['1999-12-25',10],['2000-02-27',3],['2021-02-20',14],['2023-11-15',120
     for ($step = 0; $step < $added; $step++) {
         $day++;
         if ($day > daysInMonth($year,$month)) {
-            $day = 1; $month++;
-            if ($month > 12) { $month = 1; $year++; }
+            $day = 1;
+            $month++;
+            if ($month > 12) {
+                $month = 1;
+                $year++;
+            }
         }
     }
     printf("%s + %d days = %04d-%02d-%02d\n",$original,$added,$year,$month,$day);

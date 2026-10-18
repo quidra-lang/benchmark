@@ -1,5 +1,3 @@
-import Foundation
-
 func courses(_ original: [String], _ edges: [(String,String)], _ showCycle: Bool) {
     let names = original.sorted(), n = names.count
     var degree = [Int](repeating: 0, count: n)

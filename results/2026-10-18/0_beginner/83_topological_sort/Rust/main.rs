@@ -1,6 +1,4 @@
-fn solve(names: &[&str],
-edges: &[(&str, &str)],
-show_cycle: bool) {
+fn solve(names: &[&str], edges: &[(&str, &str)], show_cycle: bool) {
     let n = names.len();
     let mut graph = vec![vec![false; n]; n];
     let mut indegree = vec![0; n];

@@ -2,7 +2,12 @@ to_roman <- function(number) {
     values <- c(1000,900,500,400,100,90,50,40,10,9,5,4,1)
     symbols <- c("M","CM","D","CD","C","XC","L","XL","X","IX","V","IV","I")
     result <- ""
-    for (i in seq_along(values)) while (number >= values[i]) { result <- paste0(result,symbols[i]); number <- number-values[i] }
+    for (i in seq_along(values)) {
+        while (number >= values[i]) {
+            result <- paste0(result,symbols[i])
+            number <- number-values[i]
+        }
+    }
     result
 }
 from_roman <- function(roman) {

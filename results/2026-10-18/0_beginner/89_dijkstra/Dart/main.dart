@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     final graph = List.generate(7, (_) => List.filled(7, 0));
     for (final e in [(0, 1, 7), (0, 2, 3), (0, 3, 9), (1, 2, 2), (2, 4, 6), (1, 3, 3), (3, 4, 4),
         (3, 5, 5), (4, 5, 3), (4, 6, 8), (5, 6, 4)]) {
@@ -35,7 +32,6 @@ void main() {
                 break;
             u = previous[u];
         }
-        out.writeln('${String.fromCharCode(65+v)}: distance=${distance[v]} path=${path.reversed.join('-')}');
+        print('${String.fromCharCode(65+v)}: distance=${distance[v]} path=${path.reversed.join('-')}');
     }
-    stdout.write(out);
 }

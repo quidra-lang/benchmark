@@ -434,8 +434,7 @@ class Library
       return output
     end
     if name == "INVENTORY"
-      states = Hash.new(0)
-      all_copies.each { |copy| states[copy[:state]] += 1 }
+      states = all_copies.map { |copy| copy[:state] }.tally(Hash.new(0))
       total = states["AVAILABLE"] + states["LOANED"] + states["HOLD"]
       output = ["INVENTORY titles #{@titles.length} copies #{total} available #{states['AVAILABLE']} " +
                 "loaned #{states['LOANED']} hold #{states['HOLD']} lost #{states['LOST']} withdrawn #{states['WITHDRAWN']}"]

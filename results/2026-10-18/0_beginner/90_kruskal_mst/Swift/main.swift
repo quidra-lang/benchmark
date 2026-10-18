@@ -1,5 +1,3 @@
-import Foundation
-
 func find(_ parent: inout [Int], _ v: Int) -> Int {
     if parent[v] != v {
         let previous = parent[v]

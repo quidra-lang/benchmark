@@ -1,5 +1,8 @@
-import java.util.*;
-import java.math.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.MatchResult;
+import java.util.regex.Pattern;
 
 public class Main {
     static class Parser {
@@ -54,10 +57,9 @@ public class Main {
             "shift = -area / 8 + 3", "height = 100 / (height - 7) + bonus", "volume = area * depth",
             "width = (width+3)*-(2-4)", "width * shift - height"};
         Map<String,Integer> variables = new HashMap<>();
+        var tokenPattern = Pattern.compile("[0-9]+|[a-z]+|[^ ]");
         for (String line : lines) {
-            List<String> tokens = new ArrayList<>();
-            var matcher = java.util.regex.Pattern.compile("[0-9]+|[a-z]+|[^ ]").matcher(line);
-            while (matcher.find()) tokens.add(matcher.group());
+            List<String> tokens = tokenPattern.matcher(line).results().map(MatchResult::group).toList();
             boolean assignment = tokens.size() > 1 && tokens.get(1).equals("=");
             String name = assignment ? tokens.get(0) : null;
             try {

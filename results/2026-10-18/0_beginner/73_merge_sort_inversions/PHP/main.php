@@ -16,7 +16,7 @@ function mergeSort(array &$numbers, int $lo, int $hi): int {
         }
     }
     $merged = array_merge($merged,array_slice($left,$i),array_slice($right,$j));
-    foreach ($merged as $offset => $value) $numbers[$lo+$offset] = $value;
+    array_splice($numbers,$lo,$hi-$lo+1,$merged);
     printf("merge [%d..%d]: %s\n",$lo,$hi,implode(' ',$merged));
     return $inversions;
 }

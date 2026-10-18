@@ -1,5 +1,3 @@
-import Foundation
-
 func mergeSort(_ values: inout [Int], _ l: Int, _ r: Int) -> Int {
     if l == r { return 0 }
     let m = (l + r) / 2
@@ -24,7 +22,7 @@ func mergeSort(_ values: inout [Int], _ l: Int, _ r: Int) -> Int {
         merged.append(values[j])
         j += 1
     }
-    for k in merged.indices { values[l + k] = merged[k] }
+    values.replaceSubrange(l...r, with: merged)
     print("merge [\(l)..\(r)]: \(merged.map(String.init).joined(separator: " "))")
     return inversions
 }

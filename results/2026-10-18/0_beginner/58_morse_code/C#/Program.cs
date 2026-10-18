@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
 
@@ -11,4 +10,5 @@ var reverse = Enumerable.Range(0,codes.Length).ToDictionary(i => codes[i],i => a
 string message = "MEET ME AT PIER 9 AT 1745";
 string encoded = string.Join(" / ",message.Split(' ').Select(word => string.Join(" ",word.Select(ch => codes[alphabet.IndexOf(ch)]))));
 string decoded = string.Join(" ",encoded.Split(" / ").Select(word => string.Concat(word.Split(' ').Select(code => reverse[code]))));
-Console.WriteLine(encoded); Console.WriteLine(decoded);
+Console.WriteLine(encoded);
+Console.WriteLine(decoded);

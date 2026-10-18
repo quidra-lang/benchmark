@@ -17,8 +17,8 @@ fn main() {
         for r in 0..8 {
             for c in 0..8 {
                 let mut neighbors = 0;
-                for dr in - 1..=1 {
-                    for dc in - 1..=1 {
+                for dr in -1..=1 {
+                    for dc in -1..=1 {
                         let rr = r as i32 + dr;
                         let cc = c as i32 + dc;
                         if (dr != 0 || dc != 0) && (0..8).contains(&rr) && (0..8).contains(&cc) && board[rr as usize][cc as usize] == b'#' {

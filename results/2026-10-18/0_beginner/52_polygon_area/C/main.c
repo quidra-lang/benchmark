@@ -14,9 +14,7 @@ int main(void) {
             perimeter += sqrt((double)(dx * dx + dy * dy));
         }
         twice = abs(twice);
-        int q = (int)(perimeter * 1000 + 0.5);
-        printf("polygon %d: area=%d.%d perimeter=%d.%03d\n", k + 1, twice / 2, (twice % 2) * 5, q / 1000,
-            q % 1000);
+        printf("polygon %d: area=%.1f perimeter=%.3f\n", k + 1, twice / 2.0, perimeter);
     }
     return 0;
 }

@@ -1,17 +1,15 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 type Node struct {
 	key, left, right int
 }
 
-func insert(nodes * []Node, root, key int) int {
+func insert(nodes *[]Node, root, key int) int {
 	if root < 0 {
-		* nodes = append(*nodes, Node{key, -1, -1})
-		return len(*nodes) - 1
+		*nodes = append(*nodes, Node{key, -1, -1})
+		return len(*nodes) -1
 	}
 	if key < (*nodes)[root].key {
 		child := insert(nodes, (*nodes)[root].left, key)
@@ -23,7 +21,7 @@ func insert(nodes * []Node, root, key int) int {
 	return root
 }
 
-func traverse(nodes[]Node, root, mode int) {
+func traverse(nodes []Node, root, mode int) {
 	if root < 0 {
 		return
 	}
@@ -40,14 +38,14 @@ func traverse(nodes[]Node, root, mode int) {
 	}
 }
 
-func height(nodes[]Node, root int) int {
+func height(nodes []Node, root int) int {
 	if root < 0 {
 		return 0
 	}
 	return 1 + max(height(nodes, nodes[root].left), height(nodes, nodes[root].right))
 }
 
-func erase(nodes[]Node, root, key int) int {
+func erase(nodes []Node, root, key int) int {
 	if root < 0 {
 		return root
 	}
@@ -74,7 +72,7 @@ func erase(nodes[]Node, root, key int) int {
 
 func main() {
 	nodes := []Node{}
-	root := - 1
+	root := -1
 	for _, key := range []int{50, 27, 74, 13, 39, 62, 88, 6, 31, 45, 70, 34} {
 		root = insert(&nodes, root, key)
 	}

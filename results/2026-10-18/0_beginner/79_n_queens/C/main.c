@@ -4,7 +4,7 @@
 
 void search(int n, int row, int *positions, int *count, int *first) {
     if (row == n) {
-        if (n == 8 && * count == 0)
+        if (n == 8 && *count == 0)
             memcpy(first, positions, 8 * sizeof(int));
         (*count)++;
         return;
@@ -26,7 +26,7 @@ void search(int n, int row, int *positions, int *count, int *first) {
 int main(void) {
     int first[8] = {0};
     for (int n = 4; n <= 8; n++) {
-        int positions[8] = {0}, count = 0;
+        int positions[8], count = 0;
         search(n, 0, positions, &count, first);
         printf("N=%d: %d solutions\n", n, count);
     }

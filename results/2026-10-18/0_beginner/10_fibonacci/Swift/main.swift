@@ -1,11 +1,8 @@
-import Foundation
-
-
-var a = 1, b = 1, sum = 0
+var a = 1, b = 1
 var terms = [Int]()
 for _ in 0..<30 {
-    terms.append(a); sum += a
-    let next = a + b; a = b; b = next
+    terms.append(a)
+    (a, b) = (b, a + b)
 }
 print(terms.map(String.init).joined(separator: " "))
-print("sum: \(sum)")
+print("sum: \(terms.reduce(0, +))")

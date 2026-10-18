@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	balance, month, totalInterest, totalPaid := 1000000, 0, 0, 0

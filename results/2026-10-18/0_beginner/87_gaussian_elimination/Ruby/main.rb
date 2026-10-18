@@ -21,6 +21,6 @@ systems.each_with_index do |system, number|
   end
   puts "system #{number + 1}:"
   solution.each_with_index do |value, i|
-    puts format('x%d = %.4f', i + 1, value.round(4, half: :up))
+    puts format('x%d = %.4f', i + 1, value)
   end
 end

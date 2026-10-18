@@ -71,12 +71,10 @@ class Cabin:
                     continue
                 for block_number, block in enumerate(blocks):
                     for start in range(len(block) - width + 1):
-                        candidate = []
-                        for index in range(count):
-                            row = first_row + index // width
-                            column = start + index % width
-                            candidate.append(self.rows[row][block_number][column])
-                        yield "STACK", candidate
+                        yield "STACK", [
+                            self.rows[first_row + i // width][block_number][start + i % width]
+                            for i in range(count)
+                        ]
 
 
 class Aircraft:
@@ -225,11 +223,10 @@ class Flight:
             seat for seat in self.aircraft.cabins[name].seats
             if self.can_sit(passenger, seat, name)
         ]
-        if passenger.preference is not None:
-            preferred = [s for s in candidates if s.kind == passenger.preference]
-            if preferred:
-                return preferred[0]
-        return candidates[0] if candidates else None
+        return next(
+            (seat for seat in candidates if seat.kind == passenger.preference),
+            candidates[0] if candidates else None,
+        )
 
     def vacate(self, passenger):
         if passenger.seat is not None:

@@ -1,5 +1,3 @@
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import kotlin.math.min
 
 private val types = arrayOf("MOTORCYCLE","CAR","ECAR","VAN","BUS")
@@ -45,7 +43,6 @@ private class Garage {
     val stats = Array(5) { IntArray(9) }
     val days = mutableMapOf<Int,Array<IntArray>>()
     var output = mutableListOf<String>()
-    fun emit(s: String) { output.add(s) }
     fun daily(date: Int) = days.getOrPut(date) { Array(5) { IntArray(4) } }
     fun pass(plate: String) = (passes[plate] ?: 0) >= now/1440+1
     fun vehicle(plate: String) = parked[plate] ?: throw Fault("$plate is not parked")
@@ -66,7 +63,7 @@ private class Garage {
             }
         } else {
             for (wanted in prefs[kind]) {
-                for (s in spots) if (s.kind == wanted && s.free()) return listOf(s)
+                spots.firstOrNull { it.kind == wanted && it.free() }?.let { return listOf(it) }
             }
         }
         return null
@@ -94,7 +91,7 @@ private class Garage {
             if (now-w.joined >= 30) {
                 queue.remove(w)
                 refuse(w.kind,w.joined+30)
-                emit("GIVEUP ${w.plate} ${types[w.kind]} ${time(w.joined+30)}")
+                output.add("GIVEUP ${w.plate} ${types[w.kind]} ${time(w.joined+30)}")
             }
         }
     }
@@ -104,7 +101,7 @@ private class Garage {
             if (assigned != null) {
                 queue.remove(w)
                 val v = park(w.plate,w.kind,assigned)
-                emit("ADMIT ${v.plate} ${types[v.kind]} ${v.location()} waited ${duration(now-w.joined)}")
+                output.add("ADMIT ${v.plate} ${types[v.kind]} ${v.location()} waited ${duration(now-w.joined)}")
             }
         }
     }
@@ -112,11 +109,9 @@ private class Garage {
         val total = now-start
         if (pass(v.plate) || total <= free) return intArrayOf(0,0)
         var parking = 0
-        var offset = 0
-        while (offset < total) {
+        for (offset in 0 until total step 1440) {
             val billable = min(total-offset,1440)-(if (offset == 0) free else 0)
             parking += min((billable+29)/30*rates[v.kind][0],rates[v.kind][1])
-            offset += 1440
         }
         return intArrayOf(parking,(now/1440-start/1440)*night)
     }
@@ -138,7 +133,7 @@ private class Garage {
         free(v)
         v.spots = target
         occupy(v)
-        emit("MOVE ${v.plate} $old -> ${v.location()}")
+        output.add("MOVE ${v.plate} $old -> ${v.location()}")
     }
     fun occupancy(target: List<Spot>): IntArray {
         val a = IntArray(9)
@@ -168,7 +163,7 @@ private class Garage {
                     }
                 }
                 levels.add(added)
-                emit("LEVEL ${levels.size} spots ${added.size} MOTO ${counts[0]} COMPACT ${counts[1]} LARGE ${counts[2]} EV ${counts[3]}")
+                output.add("LEVEL ${levels.size} spots ${added.size} MOTO ${counts[0]} COMPACT ${counts[1]} LARGE ${counts[2]} EV ${counts[3]}")
                 trigger = true
             }
             "CLOSE", "OPEN" -> {
@@ -182,7 +177,7 @@ private class Garage {
                     s.closed = false
                     trigger = true
                 }
-                emit("$command ${s.id()} ${kinds[s.kind]}")
+                output.add("$command ${s.id()} ${kinds[s.kind]}")
             }
             "RATE" -> {
                 val k = types.indexOf(t[3])
@@ -191,7 +186,7 @@ private class Garage {
                 val cap = t[5].toInt()
                 error(cap < rate,"cap below rate for ${t[3]}")
                 rates[k] = intArrayOf(rate,cap)
-                emit("RATE ${t[3]} $rate $cap")
+                output.add("RATE ${t[3]} $rate $cap")
             }
             "FEE" -> {
                 val amount = t[4].toInt()
@@ -201,7 +196,7 @@ private class Garage {
                     "LOST" -> lost = amount
                     else -> kwh = amount
                 }
-                emit("FEE ${t[3]} $amount")
+                output.add("FEE ${t[3]} $amount")
             }
             "ENTER" -> {
                 val plate = t[3]
@@ -211,19 +206,19 @@ private class Garage {
                 error(existing != null,"$plate is already parked at ${existing?.location()}")
                 error(queue.any { it.plate == plate },"$plate is already waiting")
                 val assigned = assign(k)
-                if (assigned != null) emit("ENTER $plate ${types[k]} ${park(plate,k,assigned).location()}")
+                if (assigned != null) output.add("ENTER $plate ${types[k]} ${park(plate,k,assigned).location()}")
                 else if (queue.size < 3) {
                     queue.add(Waiting(plate,k,now))
-                    emit("WAIT $plate ${types[k]} ${queue.size}")
+                    output.add("WAIT $plate ${types[k]} ${queue.size}")
                 } else {
                     refuse(k,now)
-                    emit("FULL $plate ${types[k]}")
+                    output.add("FULL $plate ${types[k]}")
                 }
             }
             "LEAVE" -> {
                 val w = queue.firstOrNull { it.plate == t[3] } ?: throw Fault("${t[3]} is not waiting")
                 queue.remove(w)
-                emit("LEAVE ${w.plate} ${types[w.kind]}")
+                output.add("LEAVE ${w.plate} ${types[w.kind]}")
             }
             "EXIT", "PAY", "QUOTE" -> {
                 val v = vehicle(t[3])
@@ -234,9 +229,9 @@ private class Garage {
                     v.paidAt = now
                     v.paidParking = f[0]
                     v.paidNight = f[1]
-                    emit("PAY ${v.plate} parking ${f[0]} night ${f[1]} charge ${f[3]} total ${f[4]}")
+                    output.add("PAY ${v.plate} parking ${f[0]} night ${f[1]} charge ${f[3]} total ${f[4]}")
                 } else {
-                    emit(feeLine(command,v,f))
+                    output.add(feeLine(command,v,f))
                     if (command == "EXIT") {
                         history.getOrPut(v.plate) { mutableListOf() }.add(Visit(v.entry,now,v.location(),v.kind,f[4],loss))
                         stats[v.kind][1]++
@@ -261,7 +256,7 @@ private class Garage {
                 val cost = energy*kwh
                 v.energy += energy
                 v.charge += cost
-                emit("CHARGE ${v.plate} kwh $energy cost $cost stay_kwh ${v.energy} stay_cost ${v.charge}")
+                output.add("CHARGE ${v.plate} kwh $energy cost $cost stay_kwh ${v.energy} stay_cost ${v.charge}")
             }
             "VALIDATE" -> {
                 val v = vehicle(t[3])
@@ -269,17 +264,17 @@ private class Garage {
                 val minutes = t[4].toInt()
                 error(v.validation+minutes > 180,"validation limit exceeded for ${v.plate}")
                 v.validation += minutes
-                emit("VALIDATE ${v.plate} $minutes total ${v.validation}")
+                output.add("VALIDATE ${v.plate} $minutes total ${v.validation}")
             }
             "PASS" -> {
                 val end = (if (pass(t[3])) passes.getValue(t[3]) else now/1440)+t[4].toInt()
                 passes[t[3]] = end
-                emit("PASS ${t[3]} until $end")
+                output.add("PASS ${t[3]} until $end")
             }
             "UNPASS" -> {
                 error(!pass(t[3]),"${t[3]} has no pass")
                 passes.remove(t[3])
-                emit("UNPASS ${t[3]}")
+                output.add("UNPASS ${t[3]}")
             }
             "MOVE" -> {
                 val v = vehicle(t[3])
@@ -302,7 +297,7 @@ private class Garage {
                         moved++
                     }
                 }
-                emit("REBALANCE $moved")
+                output.add("REBALANCE $moved")
                 trigger = true
             }
             "WHERE" -> {
@@ -310,31 +305,31 @@ private class Garage {
                 val p = queue.indexOfFirst { it.plate == t[3] }
                 val visits = history[t[3]]
                 error(v == null && p < 0 && visits == null,"unknown plate ${t[3]}")
-                if (v != null) emit("WHERE ${v.plate} ${v.location()} ${types[v.kind]} ${time(v.entry)} stay ${duration(now-v.entry)}${annotation(v)}")
-                else if (p >= 0) emit("WHERE ${t[3]} waiting ${p+1}")
-                else emit("WHERE ${t[3]} gone ${time(visits!!.last().exit)}")
+                if (v != null) output.add("WHERE ${v.plate} ${v.location()} ${types[v.kind]} ${time(v.entry)} stay ${duration(now-v.entry)}${annotation(v)}")
+                else if (p >= 0) output.add("WHERE ${t[3]} waiting ${p+1}")
+                else output.add("WHERE ${t[3]} gone ${time(visits!!.last().exit)}")
             }
             "LIST" -> {
                 val l = if (t.size == 4) t[3].toInt() else 0
                 error(l > levels.size,"unknown level $l")
                 val found = ordered().filter { l == 0 || it.spots[0].level == l }
-                emit("LIST ${found.size}")
-                for (v in found) emit("${v.location()} ${v.plate} ${types[v.kind]} ${time(v.entry)}${annotation(v)}")
+                output.add("LIST ${found.size}")
+                for (v in found) output.add("${v.location()} ${v.plate} ${types[v.kind]} ${time(v.entry)}${annotation(v)}")
             }
             "MAP" -> {
-                emit("MAP ${levels.size}")
+                output.add("MAP ${levels.size}")
                 for ((i,level) in levels.withIndex()) {
                     val symbols = level.map { s -> if (s.closed) '#' else if (s.occupant != null) kinds[s.kind][0] else kinds[s.kind][0].lowercaseChar() }.joinToString("")
-                    emit("L${i+1} "+symbols.chunked(10).joinToString(" "))
+                    output.add("L${i+1} "+symbols.chunked(10).joinToString(" "))
                 }
             }
             "OCCUPANCY" -> {
-                emit("OCCUPANCY vehicles ${parked.size} waiting ${queue.size}")
-                for ((i,level) in levels.withIndex()) emit(occupancyLine("L${i+1}",occupancy(level)))
+                output.add("OCCUPANCY vehicles ${parked.size} waiting ${queue.size}")
+                for ((i,level) in levels.withIndex()) output.add(occupancyLine("L${i+1}",occupancy(level)))
                 val a = occupancy(spots)
                 val used = a.take(4).sum()
                 val available = a.drop(4).take(4).sum()
-                emit(occupancyLine("TOTAL",a)+" rate ${tenths(if (available == 0) 0 else used*1000/available)}%")
+                output.add(occupancyLine("TOTAL",a)+" rate ${tenths(if (available == 0) 0 else used*1000/available)}%")
             }
             "SIGN" -> {
                 var line = "SIGN"
@@ -354,48 +349,48 @@ private class Garage {
                             }
                         }
                     } else {
-                        for (wanted in prefs[k]) count += spots.count { it.kind == wanted && it.free() }
+                        count = spots.count { it.kind in prefs[k] && it.free() }
                     }
                     line += " ${types[k]} "+(if (count == 0) "FULL" else count.toString())
                 }
-                emit(line)
+                output.add(line)
             }
             "RATES" -> {
-                emit("RATES")
-                for (k in 0..4) emit("${types[k]} ${rates[k][0]} ${rates[k][1]}")
-                emit("NIGHT $night LOST $lost KWH $kwh")
+                output.add("RATES")
+                for (k in 0..4) output.add("${types[k]} ${rates[k][0]} ${rates[k][1]}")
+                output.add("NIGHT $night LOST $lost KWH $kwh")
             }
             "PASSES" -> {
                 val found = passes.keys.filter { pass(it) }
-                emit("PASSES ${found.size}")
-                for (plate in found) emit("$plate until ${passes[plate]}"+(if (plate in parked) " IN" else ""))
+                output.add("PASSES ${found.size}")
+                for (plate in found) output.add("$plate until ${passes[plate]}"+(if (plate in parked) " IN" else ""))
             }
             "OVERSTAY" -> {
                 val hours = t[3].toInt()
                 val found = ordered().filter { now-it.entry >= hours*60 }.sortedBy { it.entry }
-                emit("OVERSTAY $hours ${found.size}")
-                for (v in found) emit("${v.location()} ${v.plate} ${types[v.kind]} ${time(v.entry)} stay ${duration(now-v.entry)}")
+                output.add("OVERSTAY $hours ${found.size}")
+                for (v in found) output.add("${v.location()} ${v.plate} ${types[v.kind]} ${time(v.entry)} stay ${duration(now-v.entry)}")
             }
             "HISTORY" -> {
                 val visits = history[t[3]] ?: throw Fault("no history for ${t[3]}")
-                emit("HISTORY ${t[3]} visits ${visits.size} paid ${visits.sumOf { it.total }}")
-                for (v in visits) emit("${time(v.entry)} ${time(v.exit)} ${v.location} ${types[v.kind]} ${v.total}"+(if (v.loss) " LOST" else ""))
+                output.add("HISTORY ${t[3]} visits ${visits.size} paid ${visits.sumOf { it.total }}")
+                for (v in visits) output.add("${time(v.entry)} ${time(v.exit)} ${v.location} ${types[v.kind]} ${v.total}"+(if (v.loss) " LOST" else ""))
             }
             "REVENUE" -> {
-                emit("REVENUE")
-                for (k in 0..4) emit(revenueLine(types[k],stats[k]))
-                emit(revenueLine("TOTAL",sum(stats,9)))
+                output.add("REVENUE")
+                for (k in 0..4) output.add(revenueLine(types[k],stats[k]))
+                output.add(revenueLine("TOTAL",sum(stats,9)))
             }
             "DAILY" -> {
                 val d = t[3].toInt()
                 val a = daily(d)
-                emit(dailyLine("DAILY $d",sum(a,4)))
-                for (k in 0..4) emit(dailyLine(types[k],a[k]))
+                output.add(dailyLine("DAILY $d",sum(a,4)))
+                for (k in 0..4) output.add(dailyLine(types[k],a[k]))
             }
             "STATS" -> {
-                emit("STATS parked ${parked.size} peak $peak at "+(if (peak == 0) "-" else time(peakAt)))
-                for (k in 0..4) emit(statsLine(types[k],stats[k]))
-                emit(statsLine("ALL",sum(stats,9)))
+                output.add("STATS parked ${parked.size} peak $peak at "+(if (peak == 0) "-" else time(peakAt)))
+                for (k in 0..4) output.add(statsLine(types[k],stats[k]))
+                output.add(statsLine("ALL",sum(stats,9)))
             }
         }
         if (trigger) admit()
@@ -407,12 +402,12 @@ private class Garage {
         output = mutableListOf()
         giveup()
         try { execute(t) }
-        catch (f: Fault) { emit("ERROR ${f.message}") }
+        catch (f: Fault) { output.add("ERROR ${f.message}") }
         return output
     }
 }
 fun main() {
-    val input = BufferedReader(InputStreamReader(System.`in`))
+    val input = System.`in`.bufferedReader()
     val output = System.out.bufferedWriter()
     val garage = Garage()
     repeat(input.readLine().toInt()) {

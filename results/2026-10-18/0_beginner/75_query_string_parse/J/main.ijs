@@ -1,24 +1,22 @@
 split =: 4 : 0
-  result =. 0$<''
-  start =. 0
-  for_position. I.x E.y do.
-    result =. result,< (position-start){.start}.y
-    start =. position+#x
-  end.
-  result,<start}.y
+  <;._1 x,y
 )
 decode =: 3 : 0
   result =. ''
   i =. 0
   while. i<#y do.
     char =. i{y
-    if. char='+' do. result =. result,' ' [ i =. i+1
+    if. char='+' do.
+      result =. result,' '
+      i =. i+1
     elseif. char='%' do.
       digits =. '0123456789abcdef' i. tolower (i+1 2){y
       value =. (16*0{digits)+1{digits
       result =. result,value{a.
       i =. i+3
-    else. result =. result,char [ i =. i+1
+    else.
+      result =. result,char
+      i =. i+1
     end.
   end.
   result

@@ -4,7 +4,9 @@ fn main() {
         let bytes = s.as_bytes();
         let mut encoded = String::new();
         for chunk in bytes.chunks(3) {
-            let bits = (u32::from(chunk[0]) << 16)|(u32::from(*chunk.get(1).unwrap_or(&0)) << 8)| u32::from(*chunk.get(2).unwrap_or(&0));
+            let bits = (u32::from(chunk[0]) << 16)
+                | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*chunk.get(2).unwrap_or(&0));
             encoded.push(alphabet[((bits >> 18) &63) as usize] as char);
             encoded.push(alphabet[((bits >> 12) &63) as usize] as char);
             encoded.push(if chunk.len() > 1 {

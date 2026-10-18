@@ -9,7 +9,7 @@ const edges = [
   {a: "H", b: "E", weight: 10}
 ];
 const parent = new Map([...vertices].map(vertex => [vertex, vertex]));
-function find(vertex) {
+function find(vertex: string): string {
   while (parent.get(vertex) !== vertex) {
     parent.set(vertex, parent.get(parent.get(vertex)));
     vertex = parent.get(vertex);

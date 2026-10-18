@@ -7,7 +7,7 @@ const rows = [
   "2026-04-03,north,eraser,20,80", "2026-04-04,east,stapler,5,600",
   "2026-04-04,south,notebook,6,200", "2026-04-04,west,marker,8,150"
 ];
-const regions = new Map(), products = new Map(), dates = new Map();
+const regions = new Map<string, number>(), products = new Map<string, number>(), dates = new Map<string, number>();
 let total = 0;
 for (const line of rows.slice(1)) {
   const [date, region, product, quantityText, priceText] = line.split(",");
@@ -17,7 +17,7 @@ for (const line of rows.slice(1)) {
   products.set(product, (products.get(product) ?? 0) + quantity);
   dates.set(date, (dates.get(date) ?? 0) + sales);
 }
-const alphabetical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+const alphabetical = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
 const regionOrder = [...regions.keys()].sort((a, b) => regions.get(b) - regions.get(a) || alphabetical(a, b));
 console.log(`total: ${total}`);
 for (const region of regionOrder) console.log(`${region}: ${regions.get(region)}`);

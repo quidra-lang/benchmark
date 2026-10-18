@@ -1,8 +1,7 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class Main {
-
     public static void main(String[] args) {
         List<String> cache = new ArrayList<>();
         int hits = 0, misses = 0;

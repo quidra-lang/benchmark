@@ -58,7 +58,7 @@ def round_exact(value):
 
 
 def round_ratio(numerator, denominator):
-    return round_exact(Fraction(numerator, denominator))
+    return (2 * numerator + denominator) // (2 * denominator)
 
 
 def away(value):
@@ -200,11 +200,11 @@ def contrast_notation(first, second):
 
 
 def color_mean(colors):
-    return tuple(round_ratio(sum(color[channel] for color in colors), len(colors)) for channel in range(3))
+    return tuple(round_ratio(sum(channel), len(colors)) for channel in zip(*colors))
 
 
 def box_widths(colors):
-    return [max(c[channel] for c in colors) - min(c[channel] for c in colors) for channel in range(3)]
+    return [max(channel) - min(channel) for channel in zip(*colors)]
 
 
 def palette(colors, count):

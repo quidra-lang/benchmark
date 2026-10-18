@@ -8,9 +8,8 @@ void main() {
     var k = 0;
     for (final p in [(2024, 2), (2026, 8), (2026, 11)]) {
         final year = p.$1, month = p.$2;
-        var days = 0;
-        for (var y = 1; y < year; y++)
-            days += leap(y) ? 366 : 365;
+        final priorYear = year - 1;
+        var days = 365 * priorYear + priorYear ~/ 4 - priorYear ~/ 100 + priorYear ~/ 400;
         for (var m = 1; m < month; m++)
             days += m == 2 && leap(year) ? 29 : lengths[m - 1];
         final offset = (days + 1) % 7, last = month == 2 && leap(year) ? 29 : lengths[month - 1];

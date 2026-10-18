@@ -137,17 +137,14 @@ static Integer integer(const char *s) { return strtoll(s, NULL, 10); }
 static Integer amount(const char *s) { return integer(s) * 100 + integer(strchr(s, '.') + 1); }
 static char *money(Integer value) { return format("%" PRId64 ".%02" PRId64, value / 100, value % 100); }
 static char *signed_money(Integer value) {
-    if (!value) return copy_string("0.00");
-    char *absolute = money(value > 0 ? value : -value);
-    char *result = format("%c%s", value > 0 ? '+' : '-', absolute);
-    free(absolute);
-    return result;
+    Integer magnitude = llabs(value);
+    return format("%s%" PRId64 ".%02" PRId64, value > 0 ? "+" : value < 0 ? "-" : "",
+                  magnitude / 100, magnitude % 100);
 }
 static char *rate_text(Integer rate) { return format("%" PRId64 ".%04" PRId64, rate / 10000, rate % 10000); }
 static char *percentage(Integer part, Integer whole) {
-    char *value = money(part * 10000 / whole), *result = format("%s%%", value);
-    free(value);
-    return result;
+    Integer value = part * 10000 / whole;
+    return format("%" PRId64 ".%02" PRId64 "%%", value / 100, value % 100);
 }
 static void amount_spec(const char *s, Integer *value, char *currency) {
     *value = amount(s);

@@ -4,6 +4,8 @@ import (
     "bufio"
     "fmt"
     "os"
+    "maps"
+    "slices"
     "sort"
     "strconv"
     "strings"
@@ -49,20 +51,8 @@ func absolute(a int64) int64 {
     if a < 0 { return -a }
     return a
 }
-func minimum(a,b int64) int64 {
-    if a < b { return a }
-    return b
-}
-func maximum(a,b int64) int64 {
-    if a > b { return a }
-    return b
-}
 func number(v int64) string { return strconv.FormatInt(v, 10) }
-func padded(v int64, width int) string {
-    s := number(v)
-    if len(s) < width { s = strings.Repeat("0", width-len(s)) + s }
-    return s
-}
+func padded(v int64, width int) string { return fmt.Sprintf("%0*d", width, v) }
 func coordinate(v int64) string {
     sign := ""
     if v < 0 { sign = "-" }
@@ -77,12 +67,9 @@ func digits(s string, low, high int) bool {
     return true
 }
 func integer(s string, low, high int64) int64 {
-    negative := strings.HasPrefix(s,"-")
-    if negative { s = s[1:] }
-    require(digits(s,1,9))
-    var v int64
-    for i := range s { v = 10*v + int64(s[i]-'0') }
-    if negative { v = -v }
+    body := strings.TrimPrefix(s,"-")
+    require(digits(body,1,9))
+    v, _ := strconv.ParseInt(s,10,64)
     require(v >= low && v <= high)
     return v
 }
@@ -105,10 +92,9 @@ func location(s string, latitude bool) int64 {
     return v
 }
 func systemID(s string) int {
-    for i, name := range systems {
-        if s == name { return i }
-    }
-    panic(invalid{})
+    id := slices.Index(systems,s)
+    require(id >= 0)
+    return id
 }
 func precisionID(system int, p int64) int {
     for i, g := range grids[system] {
@@ -124,7 +110,7 @@ func digit(alphabet string, c byte) int64 {
 }
 func point(system, precision int, latitude, longitude int64) cell {
     g := grids[system][precision]
-    return cell{precision, (longitude+180000000)*g.width/360000000, minimum((latitude+90000000)*g.height/180000000,g.height-1)}
+    return cell{precision, (longitude+180000000)*g.width/360000000, min((latitude+90000000)*g.height/180000000,g.height-1)}
 }
 func ancestor(system int, c cell, precision int) cell {
     g, parent := grids[system][c.precision], grids[system][precision]
@@ -396,8 +382,7 @@ func compact(system int, codes []string) string {
         }
         if !changed { break }
     }
-    ordered := []cell{}
-    for c := range cells { ordered = append(ordered,c) }
+    ordered := slices.Collect(maps.Keys(cells))
     sort.Slice(ordered,func(i,j int) bool {
         a,b := ordered[i],ordered[j]
         if a.precision != b.precision { return a.precision < b.precision }
@@ -429,10 +414,7 @@ func execute(a []string) string {
         "SIZE", "SHORTEN", "RECOVER", "UTMZONE", "OSGB", "UNOSGB", "MGRS",
         "UNMGRS", "QUADKEY", "UNQUADKEY",
     }
-    command := -1
-    for i,name := range names {
-        if a[0] == name { command = i }
-    }
+    command := slices.Index(names,a[0])
     require(command >= 0)
     lengths := []int{5,3,3,3,3,4,0,5,7,6,4,4,5,3,4,4,3,4,0,6,0,4,2}
     switch command {
@@ -457,7 +439,7 @@ func execute(a []string) string {
             first,last := point(system,precision,lat1,lon1),point(system,precision,lat2,lon2)
             g := grids[system][precision]
             columns := last.x-first.x+1
-            if lon1 > lon2 { columns = minimum(g.width,columns+g.width) }
+            if lon1 > lon2 { columns = min(g.width,columns+g.width) }
             if (last.y-first.y+1)*columns > 100 { return "TOO MANY" }
             result := []string{}
             for y:=last.y; y>=first.y; y-- {
@@ -521,7 +503,7 @@ func execute(a []string) string {
         }
         other := decode(system,a[3])
         if command == 5 {
-            for p:=int(minimum(int64(c.precision),int64(other.precision))); p>=0; p-- {
+            for p:=min(c.precision,other.precision); p>=0; p-- {
                 parent := ancestor(system,c,p)
                 if parent == ancestor(system,other,p) { return encode(system,parent) }
             }
@@ -531,7 +513,7 @@ func execute(a []string) string {
         dx,dy := modulo(other.x-c.x,g.width),other.y-c.y
         if dx > g.width/2 { dx -= g.width }
         if command == 10 { return "dx="+number(dx)+" dy="+number(dy) }
-        n := maximum(absolute(dx),absolute(dy))
+        n := max(absolute(dx),absolute(dy))
         if n+1 > 100 { return "TOO MANY" }
         result := []string{}
         for i:=int64(0); i<=n; i++ {
@@ -586,7 +568,7 @@ func execute(a []string) string {
     if command == 16 {
         lat,lon := location(a[1],true),location(a[2],false)
         if lat < -80000000 || lat >= 84000000 { return "NONE" }
-        band := bands[minimum((lat+80000000)/8000000,19)]
+        band := bands[min((lat+80000000)/8000000,19)]
         zone := (lon+180000000)/6000000+1
         if band == 'V' && lon >= 3000000 && lon < 12000000 { zone = 32 }
         if band == 'X' && lon >= 0 && lon < 42000000 {

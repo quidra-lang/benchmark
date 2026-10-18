@@ -1,5 +1,6 @@
-import java.util.*;
-import java.math.*;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.stream.IntStream;
 
 public class Main {
     static int find(int[] parent, int v) {
@@ -21,8 +22,7 @@ public class Main {
             {6,7,2},
             {7,4,10}};
         Arrays.sort(edges,Comparator.comparingInt(e -> e[2]));
-        int[] parent = new int[8];
-        for (int i = 0; i < 8; i++) parent[i] = i;
+        int[] parent = IntStream.range(0, 8).toArray();
         int accepted = 0, skipped = 0, total = 0;
         for (int[] edge : edges) {
             int a = find(parent,edge[0]), b = find(parent,edge[1]);

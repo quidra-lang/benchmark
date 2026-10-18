@@ -1,5 +1,6 @@
 <?php
-$cache = []; $hits = $misses = 0;
+$cache = [];
+$hits = $misses = 0;
 foreach (['B','A','C','B','D','A','B','E','A','D','D','C','A','E','B'] as $key) {
     $index = array_search($key,$cache,true);
     if ($index !== false) {

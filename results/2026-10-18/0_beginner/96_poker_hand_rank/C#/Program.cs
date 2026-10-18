@@ -1,10 +1,9 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
-static (string text,int category,List<int> sequence) Evaluate(string text) {
+static (string text,int category,int[] sequence) Evaluate(string text) {
     string[] cards = text.Split(' ');
     var counts = cards.GroupBy(card => "23456789TJQKA".IndexOf(card[0]) + 2)
         .ToDictionary(group => group.Key,group => group.Count());
@@ -23,8 +22,8 @@ static (string text,int category,List<int> sequence) Evaluate(string text) {
     else if (pairs == 2) category = 2;
     else if (pairs == 1) category = 1;
     else category = 0;
-    var sequence = counts.Keys.OrderByDescending(rank => counts[rank]).ThenByDescending(rank => rank).ToList();
-    if (wheel && straight) sequence = new List<int> { 5,4,3,2,1 };
+    var sequence = counts.Keys.OrderByDescending(rank => counts[rank]).ThenByDescending(rank => rank).ToArray();
+    if (wheel && straight) sequence = new[] { 5,4,3,2,1 };
     return (text,category,sequence);
 }
 string[] input = { "9C 9D 5H QH 2C", "4D AH 3C 5S 2H", "KS 8S 2S JS 6S", "7H 7D KC 7S KD",
@@ -32,14 +31,8 @@ string[] input = { "9C 9D 5H QH 2C", "4D AH 3C 5S 2H", "KS 8S 2S JS 6S", "7H 7D 
 string[] categories = { "high card", "one pair", "two pair", "three of a kind", "straight",
     "flush", "full house", "four of a kind", "straight flush" };
 var hands = input.Select(Evaluate).ToList();
-hands.Sort((a,b) => {
-    if (a.category != b.category) return b.category.CompareTo(a.category);
-    for (int i = 0; i < a.sequence.Count; i++) {
-        int comparison = b.sequence[i].CompareTo(a.sequence[i]);
-        if (comparison != 0) return comparison;
-    }
-    return 0;
-});
+hands.Sort((a,b) => a.category != b.category ? b.category.CompareTo(a.category) :
+    b.sequence.AsSpan().SequenceCompareTo(a.sequence));
 for (int i = 0; i < hands.Count; i++) {
     var hand = hands[i];
     Console.WriteLine($"{i + 1}. {hand.text}: {categories[hand.category]}");

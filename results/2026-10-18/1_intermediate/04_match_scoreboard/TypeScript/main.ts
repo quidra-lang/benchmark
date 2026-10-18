@@ -23,7 +23,7 @@ function fail(reason: string): never {
 }
 
 function pair(values: number[], reverse: boolean = false): string {
-    return (reverse ? [...values].reverse() : values).join("-");
+    return (reverse ? values.toReversed() : values).join("-");
 }
 
 function lex(a: string, b: string): number {
@@ -493,9 +493,9 @@ class Match {
         }
         const server = this.sport === "DARTS" ? s.player : this.server(s);
         const names = this.names.map((name, i) => name + (!s.done && i === server ? "*" : ""));
-        const items = s.finished.map(record => this.scoreRecord(record));
+        let items = s.finished.map(record => this.scoreRecord(record));
         if (this.sport === "DARTS") {
-            items.splice(0, items.length, "sets", pair(s.sets), "legs", pair(s.legs), "score", pair(s.remaining));
+            items = ["sets", pair(s.sets), "legs", pair(s.legs), "score", pair(s.remaining)];
             if (!s.done) {
                 if (s.turn.length) {
                     items.push("turn", ...s.turn);

@@ -1,6 +1,5 @@
 import Foundation
 
-
 var matrix = [[Int]](repeating: [Int](repeating: 0, count: 6), count: 5)
 let dr = [0,1,0,-1], dc = [1,0,-1,0]
 var r = 0, c = 0, direction = 0
@@ -13,5 +12,5 @@ for value in 1...30 {
     c += dc[direction]
 }
 for row in matrix {
-    print(row.map { String(repeating: " ", count: 3 - String($0).count) + String($0) }.joined())
+    print(row.map { String(format: "%3d", locale: Locale(identifier: "en_US_POSIX"), $0) }.joined())
 }

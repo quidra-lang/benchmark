@@ -233,7 +233,7 @@ final class Match {
                 for side in 0..<2 {
                     s[SUBS+side] = 0
                     s[TIMEOUTS+side] = 0
-                    for i in 0..<6 { s[LINEUP+side*6+i] = initial[side][i] }
+                    s.replaceSubrange((LINEUP+side*6)..<(LINEUP+side*6+6),with: initial[side])
                 }
                 s[SERVE] = first() ^ (finished.count%2)
             }
@@ -428,8 +428,10 @@ final class Match {
             if command == "SUB" {
                 let from = Int(tokens[3])!
                 let to = Int(tokens[4])!
-                for i in 0..<6 where s[LINEUP+side*6+i] == from { position = i }
-                guard position >= 0 else { throw Problem(message: "player not on court") }
+                guard let found = s[(LINEUP+side*6)..<(LINEUP+side*6+6)].firstIndex(of: from) else {
+                    throw Problem(message: "player not on court")
+                }
+                position = found-LINEUP-side*6
                 guard !(0..<6).contains(where: { s[LINEUP+side*6+$0] == to }) else { throw Problem(message: "player already on court") }
                 guard s[SUBS+side] < 6 else { throw Problem(message: "no substitutions left") }
             } else if s[TIMEOUTS+side] == 2 { throw Problem(message: "no timeouts left") }
@@ -542,8 +544,8 @@ final class Match {
             var line = id+" "+names[x]+": "
             if sport == "DARTS" {
                 let average = s[DARTS+x] == 0 ? 0 : s[SCORED+x]*300/s[DARTS+x]
-                let decimals = average%100 < 10 ? "0\(average%100)" : String(average%100)
-                line += "darts \(s[DARTS+x]) average \(average/100)."+decimals+
+                let formatted = String(format: "%ld.%02ld",locale: Locale(identifier: "en_US_POSIX"),average/100,average%100)
+                line += "darts \(s[DARTS+x]) average "+formatted+
                     " busts \(s[BUSTS+x]) high \(s[HIGH+x]) tons \(s[TONS+x]) 180s \(s[MAXIMUMS+x]) doubles \(s[HITS+x])/\(s[ATTEMPTS+x])"
             } else {
                 line += "points \(s[POINTS+x]) serve \(s[SERVEWON+x])/\(s[SERVED+x]) run \(s[RUN+x])"

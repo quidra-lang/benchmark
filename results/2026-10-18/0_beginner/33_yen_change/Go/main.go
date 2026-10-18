@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	for _, amount := range []int{3780, 15420, 99999, 506, 48263} {

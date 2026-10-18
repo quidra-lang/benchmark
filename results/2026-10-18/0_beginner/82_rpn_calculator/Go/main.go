@@ -17,8 +17,8 @@ func main() {
 					message = "stack underflow"
 					break
 				}
-				b, a := stack[len(stack) - 1], stack[len(stack) - 2]
-				stack = stack[: len(stack) - 2]
+				b, a := stack[len(stack)-1], stack[len(stack)-2]
+				stack = stack[:len(stack)-2]
 				if token == "/" && b == 0 {
 					message = "division by zero"
 					break

@@ -6,7 +6,6 @@ fn main() {
         for r in 0..6 {
             for c in 0..7 {
                 if obstacles && grid[r].as_bytes()[c] == b'#' {
-                    dp[r][c] = 0;
                     continue;
                 }
                 if r > 0 {
@@ -17,10 +16,6 @@ fn main() {
                 }
             }
         }
-        println!("{} obstacles: {}", if obstacles {
-            "with"
-        } else {
-            "without"
-        }, dp[5][6]);
+        println!("{} obstacles: {}", if obstacles { "with" } else { "without" }, dp[5][6]);
     }
 }

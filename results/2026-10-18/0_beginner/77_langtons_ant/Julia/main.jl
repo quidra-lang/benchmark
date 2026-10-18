@@ -9,7 +9,7 @@ function main()
         row,column = mod(row+dr,11),mod(column+dc,11)
     end
     for r in 0:10
-        println(join([r == row && c == column ? 'A' : board[r+1,c+1] ? '#' : '.' for c in 0:10]))
+        println(join(r == row && c == column ? 'A' : board[r+1,c+1] ? '#' : '.' for c in 0:10))
     end
     println("black: ",count(board))
 end

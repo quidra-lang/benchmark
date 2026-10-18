@@ -1,6 +1,3 @@
-import java.util.*;
-import java.math.*;
-
 public class Main {
     static int value(String token, int[] registers) {
         char first = token.charAt(0);

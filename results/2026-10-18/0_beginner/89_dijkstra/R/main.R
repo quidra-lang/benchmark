@@ -1,7 +1,8 @@
 names <- LETTERS[1:7]
 weights <- matrix(0,7,7)
 for (edge in list(c("A","B",7),c("A","C",3),c("A","D",9),c("B","C",2),c("C","E",6),c("B","D",3),c("D","E",4),c("D","F",5),c("E","F",3),c("E","G",8),c("F","G",4))) {
-    i <- match(edge[1],names); j <- match(edge[2],names)
+    i <- match(edge[1],names)
+    j <- match(edge[2],names)
     weights[i,j] <- weights[j,i] <- as.integer(edge[3])
 }
 distance <- rep(Inf,7)

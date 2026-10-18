@@ -4,11 +4,10 @@
 #include <algorithm>
 
 int main() {
-    const std::array<std::string, 12> words = {"listen", "stone", "night", "silent", "notes", "apple",
+    std::array<std::string, 12> words = {"listen", "stone", "night", "silent", "notes", "apple",
         "thing", "enlist", "earth", "onset", "heart", "tones"};
     std::array<std::string, 12> keys = words;
-    std::array<bool, 12> used {
-    };
+    std::array<bool, 12> used{};
     for (std::string &key : keys)
         std::sort(key.begin(), key.end());
     for (int i = 0; i < 12; i++)

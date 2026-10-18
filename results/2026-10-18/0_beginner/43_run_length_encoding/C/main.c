@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 int main(void) {
     const char *values[] = {"AAABBBCCCD", "WWWWWWWWWWWWBWWWWWWWWWWWWBBB", "ALGORITHM", "MISSISSIPPI",
@@ -15,13 +17,12 @@ int main(void) {
             i = j;
         }
         int d = 0;
-        for (int i = 0; encoded[i];) {
-            int count = 0;
-            while (encoded[i] >= '0' && encoded[i] <= '9')
-                count = count * 10 + encoded[i++] - '0';
-            char c = encoded[i++];
-            while (count--)
-                decoded[d++] = c;
+        for (char *p = encoded; *p;) {
+            char *end;
+            int count = (int)strtol(p, &end, 10);
+            memset(decoded + d, *end, (size_t)count);
+            d += count;
+            p = end + 1;
         }
         decoded[d] = '\0';
         printf("%s -> %s -> %s\n", s, encoded, decoded);

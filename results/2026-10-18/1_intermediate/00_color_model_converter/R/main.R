@@ -248,17 +248,9 @@ widths <- function(colors) {
 palette <- function(colors,k) {
     boxes <- list(colors)
     while (length(boxes) < k) {
-        selected <- 0
-        best_width <- -1
-        for (i in seq_along(boxes)) {
-            if (length(boxes[[i]]) >= 2) {
-                width <- max(widths(boxes[[i]]))
-                if (width > best_width) {
-                    selected <- i
-                    best_width <- width
-                }
-            }
-        }
+        selected <- which.max(vapply(boxes,function(box) {
+            if (length(box) >= 2) max(widths(box)) else -1
+        },numeric(1)))
         box <- boxes[[selected]]
         axis <- which.max(widths(box))
         indices <- order(vapply(box,function(color) color[axis],numeric(1)),seq_along(box))

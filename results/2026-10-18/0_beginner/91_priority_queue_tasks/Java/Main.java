@@ -1,5 +1,6 @@
-import java.util.*;
-import java.math.*;
+import java.util.Comparator;
+import java.util.List;
+import java.util.PriorityQueue;
 
 public class Main {
     record Task(String name, int priority, int sequence) {}
@@ -17,8 +18,7 @@ public class Main {
                 System.out.println("run: " + task.name() + " (priority " + task.priority() + ")");
             }
         }
-        List<String> remaining = new ArrayList<>();
-        while (!queue.isEmpty()) remaining.add(queue.remove().name());
+        List<String> remaining = queue.stream().sorted(queue.comparator()).map(Task::name).toList();
         System.out.println("remaining: " + String.join(" ",remaining));
     }
 }

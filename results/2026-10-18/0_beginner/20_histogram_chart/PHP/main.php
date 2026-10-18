@@ -1,4 +1,3 @@
 <?php
-$days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-$amounts = [7,12,4,15,9,18,11];
-foreach ($days as $i => $day) printf("%s | %s %d\n", $day, str_repeat('*', $amounts[$i]), $amounts[$i]);
+$counts = ['Mon'=>7, 'Tue'=>12, 'Wed'=>4, 'Thu'=>15, 'Fri'=>9, 'Sat'=>18, 'Sun'=>11];
+foreach ($counts as $day => $count) printf("%s | %s %d\n", $day, str_repeat('*', $count), $count);

@@ -154,11 +154,10 @@ class HotelDesk:
         return start, end
 
     def night_rate(self, room, day):
-        percentage = 100
-        for start, end, value in reversed(self.seasons):
-            if start <= day <= end:
-                percentage = value
-                break
+        percentage = next(
+            (value for start, end, value in reversed(self.seasons) if start <= day <= end),
+            100,
+        )
         return room.rate * percentage // 100
 
     def price(self, room, arrival, departure):
@@ -285,23 +284,17 @@ class HotelDesk:
         for day in range(start, end + 1):
             if (day, room.number) in self.occupied:
                 raise CommandError(f"room unavailable {number} {date_text(day)}")
-        added = 0
-        for day in range(start, end + 1):
-            key = day, room.number
-            if key not in self.blocks:
-                self.blocks.add(key)
-                added += 1
+        nights = {(day, room.number) for day in range(start, end + 1)}
+        added = len(nights - self.blocks)
+        self.blocks.update(nights)
         self.emit("BLOCK", number, first, "->", last, "added", added)
 
     def cmd_unblock(self, number, first, last):
         room = self.require_room(number)
         start, end = self.period(first, last, past_restricted=True)
-        removed = 0
-        for day in range(start, end + 1):
-            key = day, room.number
-            if key in self.blocks:
-                self.blocks.remove(key)
-                removed += 1
+        nights = {(day, room.number) for day in range(start, end + 1)}
+        removed = len(nights & self.blocks)
+        self.blocks.difference_update(nights)
         self.emit("UNBLOCK", number, first, "->", last, "removed", removed)
 
     def cmd_clean(self, number):

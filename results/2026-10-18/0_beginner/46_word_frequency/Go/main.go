@@ -26,7 +26,7 @@ func main() {
 		}
 		return a < b
 	})
-	for _, w := range entries[: 5] {
+	for _, w := range entries[:5] {
 		fmt.Printf("%s: %d\n", w, counts[w])
 	}
 	fmt.Printf("distinct words: %d\n", len(entries))

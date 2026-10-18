@@ -13,7 +13,7 @@ fn main() {
     }
     let mut chosen = [false; 7];
     let (mut capacity, mut total_weight) = (20, 0);
-    for i in(1..=7).rev() {
+    for i in (1..=7).rev() {
         if dp[i][capacity] != dp[i - 1][capacity] {
             chosen[i - 1] = true;
             capacity -= weights[i - 1];

@@ -1,8 +1,7 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayDeque;
+import java.util.Deque;
 
 public class Main {
-
     public static void main(String[] args) {
         String[] commands = {"undo", "type hello world", "delete 5", "type there", "undo", "undo", "redo",
             "type friend", "redo", "delete 20", "undo", "redo", "redo", "type see you"};

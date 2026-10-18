@@ -484,8 +484,7 @@ class PackingLab:
         for number, x, y, rectangle_width, rectangle_height, _ in placements:
             letter = chr(64 + number)
             for row in range(y, y + rectangle_height):
-                for column in range(x, x + rectangle_width):
-                    cells[row][column] = letter
+                cells[row][x:x + rectangle_width] = [letter] * rectangle_width
         for row in reversed(cells):
             self.emit("".join(row))
 
@@ -534,8 +533,7 @@ class PackingLab:
         for number, rectangle_width, rectangle_height in rectangles:
             x = min(range(width - rectangle_width + 1), key=lambda column: (max(heights[column:column + rectangle_width]), column))
             y = max(heights[x:x + rectangle_width])
-            for column in range(x, x + rectangle_width):
-                heights[column] = y + rectangle_height
+            heights[x:x + rectangle_width] = [y + rectangle_height] * rectangle_width
             placements.append((number, x, y, rectangle_width, rectangle_height, False))
         height = max(heights)
         self.emit(f"SKYLINE height={height} util={area * 100 // (width * height)}")

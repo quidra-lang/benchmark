@@ -6,7 +6,7 @@ typedef struct {
     const char *name;
     int played, wins, draws, losses, gf, ga, points;
 } Team;
-void record(Team * t, int gf, int ga) {
+void record(Team *t, int gf, int ga) {
     t->played++;
     t->gf += gf;
     t->ga += ga;
@@ -21,7 +21,7 @@ void record(Team * t, int gf, int ga) {
 }
 
 int compare(const void *a, const void *b) {
-    const Team * x = a, *y = b;
+    const Team *x = a, *y = b;
     if (x->points != y->points)
         return y->points - x->points;
     if (x->gf - x->ga != y->gf - y->ga)
@@ -38,9 +38,7 @@ int main(void) {
         "Tigers 2-1 Eagles", "Eagles 1-0 Bears", "Sharks 2-0 Tigers", "Wolves 2-1 Lions"};
     Team teams[6];
     for (int i = 0; i < 6; i++)
-        teams[i] = (Team) {
-            names[i], 0, 0, 0, 0, 0, 0, 0
-    };
+        teams[i] = (Team){.name = names[i]};
     for (int i = 0; i < 15; i++) {
         char home[32], away[32];
         int h, a;

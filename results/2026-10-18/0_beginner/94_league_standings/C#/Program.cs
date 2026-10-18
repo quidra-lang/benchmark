@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
 
@@ -45,7 +44,6 @@ int[] order = Enumerable.Range(0,6).OrderByDescending(i => 3 * stats[i,1] + stat
     .ThenBy(i => names[i],StringComparer.Ordinal).ToArray();
 for (int position = 0; position < 6; position++) {
     int i = order[position], gd = stats[i,4] - stats[i,5];
-    string difference = (gd > 0 ? "+" : "") + gd;
     Console.WriteLine($"{position + 1}. {names[i]} P={stats[i,0]} W={stats[i,1]} D={stats[i,2]} " +
-        $"L={stats[i,3]} GF={stats[i,4]} GA={stats[i,5]} GD={difference} Pts={3 * stats[i,1] + stats[i,2]}");
+        $"L={stats[i,3]} GF={stats[i,4]} GA={stats[i,5]} GD={gd:+0;-0;0} Pts={3 * stats[i,1] + stats[i,2]}");
 }

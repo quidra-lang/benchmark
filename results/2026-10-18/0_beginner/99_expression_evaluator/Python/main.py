@@ -36,8 +36,7 @@ class Parser:
             else:
                 if right == 0:
                     raise ValueError("division by zero")
-                quotient = abs(value) // abs(right)
-                value = -quotient if (value < 0) != (right < 0) else quotient
+                value = int(value / right)
         return value
 
     def expression(self):

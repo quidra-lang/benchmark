@@ -11,6 +11,10 @@ class Converter {
     private val rows = listOf("a","ka","sa","ta","na","ha","ma","ya","ra","wa","ga","za","da","ba","pa")
     private val gojuon = "a i u e o ka ki ku ke ko sa si su se so ta ti tu te to na ni nu ne no ha hi hu he ho ma mi mu me mo ya yu yo ra ri ru re ro wa wi we wo N"
     private val iroha = "i ro ha ni ho he to ti ri nu ru wo wa ka yo ta re so tu ne na ra mu u wi no o ku ya ma ke hu ko e te a sa ki yu me mi si we hi mo se su N"
+    private val counts = mapOf("CONVERT" to 2,"NORMALIZE" to 0,"REVERSE" to 1,"VALID" to 1,
+            "DETECT" to 0,"DIFF" to 2,"SAME" to 2,"MORAE" to 1,"SYLLABLES" to 1,
+            "ROW" to 1,"STATS" to 1,"SORT" to 1,"INDEX" to 1,"FIND" to 2,
+            "HAIKU" to 1,"KAIBUN" to 1,"SHIRITORI" to 1)
     private val metadata = linkedMapOf<String,Meta>()
     private val readers = mutableMapOf<String,MutableMap<String,String>>()
     private var longSetting = "KEEP"
@@ -300,9 +304,9 @@ class Converter {
             return listOf(collation.map { ranks.getValue(it.base) },collation.map { it.voice },
                 collation.map { it.size },word.morae.map { if (it.id == "L") 1 else 0 })
         }
-        return words.sortedWith { a,b ->
-            val left = key(a)
-            val right = key(b)
+        return words.map { it to key(it) }.sortedWith { a,b ->
+            val left = a.second
+            val right = b.second
             var result = 0
             for (i in 0 until 4) {
                 result = compare(left[i],right[i])
@@ -310,8 +314,8 @@ class Converter {
                     break
                 }
             }
-            if (result == 0) a.start.compareTo(b.start) else result
-        }
+            result
+        }.map { it.first }
     }
     private fun patternMorae(pattern: String, system: String): List<String> {
         if (!Regex("[a-z'?*\\-]+").matches(pattern)) {
@@ -360,10 +364,6 @@ class Converter {
     }
     fun execute(line: String): String {
         val command = line.substringBefore(' ')
-        val counts = mapOf("CONVERT" to 2,"NORMALIZE" to 0,"REVERSE" to 1,"VALID" to 1,
-            "DETECT" to 0,"DIFF" to 2,"SAME" to 2,"MORAE" to 1,"SYLLABLES" to 1,
-            "ROW" to 1,"STATS" to 1,"SORT" to 1,"INDEX" to 1,"FIND" to 2,
-            "HAIKU" to 1,"KAIBUN" to 1,"SHIRITORI" to 1)
         if (command !in counts && command !in setOf("SET","TABLE")) {
             fail("unknown command $command")
         }
@@ -548,48 +548,19 @@ class Converter {
                 else "${spelling(system,meta.id)}: ${meta.row} ${meta.dan}"
             }
             "STATS" -> {
-                val rowCounts = mutableMapOf<String,Int>()
-                var count = 0
-                var voiced = 0
-                var semivoiced = 0
-                var contracted = 0
-                var n = 0
-                var q = 0
-                var l = 0
-                for (mora in words.flatMap { it.morae }) {
-                    count++
-                    val meta = metadata[mora.id]
-                    if (meta == null) {
-                        if (mora.id == "N") {
-                            n++
-                        }
-                        if (mora.id == "Q") {
-                            q++
-                        }
-                        if (mora.id == "L") {
-                            l++
-                        }
-                    } else {
-                        val row = baseRow(meta.row)
-                        rowCounts[row] = rowCounts.getOrDefault(row,0)+1
-                        if (voice(meta.row) == 1) {
-                            voiced++
-                        }
-                        if (voice(meta.row) == 2) {
-                            semivoiced++
-                        }
-                        if (meta.contracted) {
-                            contracted++
-                        }
-                    }
-                }
-                val result = mutableListOf("morae=$count")
-                for (row in rows.take(10)) {
-                    if (row in rowCounts) {
-                        result.add("$row=${rowCounts.getValue(row)}")
-                    }
-                }
-                result.addAll(listOf("voiced=$voiced","semivoiced=$semivoiced","contracted=$contracted","N=$n","Q=$q","L=$l"))
+                val morae = words.flatMap { it.morae }
+                val regular = morae.mapNotNull { metadata[it.id] }
+                val rowCounts = regular.groupingBy { baseRow(it.row) }.eachCount()
+                val result = mutableListOf("morae=${morae.size}")
+                result += rows.take(10).filter { it in rowCounts }.map { "$it=${rowCounts.getValue(it)}" }
+                result += listOf(
+                    "voiced=${regular.count { voice(it.row) == 1 }}",
+                    "semivoiced=${regular.count { voice(it.row) == 2 }}",
+                    "contracted=${regular.count { it.contracted }}",
+                    "N=${morae.count { it.id == "N" }}",
+                    "Q=${morae.count { it.id == "Q" }}",
+                    "L=${morae.count { it.id == "L" }}"
+                )
                 return result.joinToString(" ")
             }
             "SORT", "INDEX" -> {
@@ -641,13 +612,12 @@ class Converter {
                     if (i > 0 && head != previous) {
                         return "$prefix must start with ${spelling(system,previous)}"
                     }
-                    if (ids(word) in seen) {
+                    if (!seen.add(ids(word))) {
                         return "$prefix is repeated"
                     }
                     if (tail == "N") {
                         return "$prefix ends with N"
                     }
-                    seen.add(ids(word))
                     previous = tail
                 }
                 return "OK ${words.size}"

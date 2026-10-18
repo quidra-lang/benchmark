@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	for _, start := range []int64{1, 6, 27, 97, 871} {
@@ -14,9 +12,7 @@ func main() {
 				n = 3 * n + 1
 			}
 			k++
-			if n > m {
-				m = n
-			}
+			m = max(m, n)
 		}
 		fmt.Printf("%d: steps=%d max=%d\n", start, k, m)
 	}

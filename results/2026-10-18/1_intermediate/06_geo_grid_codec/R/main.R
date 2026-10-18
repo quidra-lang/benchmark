@@ -19,7 +19,7 @@ fd <- function(a, b) {
 }
 md <- function(a, b) a - fd(a, b) * b
 num <- function(v) format(v, scientific = FALSE, trim = TRUE, digits = 22)
-char_at <- function(set, i) substr(set, i + 1, i + 1)
+char_at <- function(set, i) substring(set, i + 1, i + 1)
 chars <- function(text) strsplit(text, "", fixed = TRUE)[[1L]]
 index_char <- function(set, char) {
   i <- match(char, chars(set))
@@ -101,9 +101,7 @@ encode <- function(sys, p, x, y) {
     radices <- c(18,10,24,10)[seq_len(k)]
     xs <- radix_digits(x, radices)
     ys <- radix_digits(y, radices)
-    out <- ""
-    for (i in seq_len(k)) out <- paste0(out, char_at(mh[i], xs[i]), char_at(mh[i], ys[i]))
-    return(out)
+    return(paste0(char_at(mh[seq_len(k)], xs), char_at(mh[seq_len(k)], ys), collapse = ""))
   }
   if (sys == "PLUSCODE") {
     tail <- ""
@@ -118,9 +116,7 @@ encode <- function(sys, p, x, y) {
     xs <- radix_digits(x, radices)
     radices[1L] <- 9
     ys <- radix_digits(y, radices)
-    out <- ""
-    for (i in seq_len(k)) out <- paste0(out, char_at(pc, ys[i]), char_at(pc, xs[i]))
-    out <- paste0(out, tail)
+    out <- paste0(paste0(char_at(pc, ys), char_at(pc, xs), collapse = ""), tail)
     if (p < 8) return(paste0(out, strrep("0", 8-p), "+"))
     return(paste0(substr(out,1,8), "+", substring(out,9)))
   }

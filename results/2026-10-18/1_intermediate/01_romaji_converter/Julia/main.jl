@@ -93,10 +93,8 @@ is_vowel(id) = id in ("a","i","u","e","o")
 
 function match_syllable(word,position,system)
     position > length(word) && return nothing
-    for pair in READINGS[system]
-        startswith(SubString(word,position),pair.first) && return pair
-    end
-    return nothing
+    index = findfirst(pair -> startswith(SubString(word,position),pair.first),READINGS[system])
+    return index === nothing ? nothing : READINGS[system][index]
 end
 
 function parse_word(text,start,system)
@@ -239,7 +237,7 @@ function written(word,system,settings;canonical=false,ids=word.ids,columns=word.
     text = join(write_parts(ids,columns,system,mode))
     pattern = canonical || settings["CASE"] == "KEEP" ? word.pattern : settings["CASE"]
     pattern == "UPPER" && return uppercase(text)
-    pattern == "TITLE" && return uppercase(text[1:1])*text[2:end]
+    pattern == "TITLE" && return uppercasefirst(text)
     return text
 end
 
@@ -378,7 +376,7 @@ function execute(line,settings)
     elseif command == "TABLE"
         system,row = args
         row in ROWS || fail("unknown row $row")
-        return join([spelling(system,id) for id in IDS if ROW_OF[id] == row]," ")
+        return join((spelling(system,id) for id in IDS if ROW_OF[id] == row)," ")
     end
     tokens = command == "FIND" ? pattern_tokens(args[2],args[1]) : String[]
     slash_allowed = command in ("HAIKU","SAME")
@@ -530,7 +528,7 @@ function execute(line,settings)
         return join(output," ")
     elseif command in ("SORT","INDEX")
         ordered = sort(words;by=w -> collation(w,settings["ORDER"]))
-        command == "SORT" && return join([word.text for word in ordered]," ")
+        command == "SORT" && return join((word.text for word in ordered)," ")
         groups = String[]
         previous = ""
         for word in ordered

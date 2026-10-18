@@ -7,7 +7,8 @@ foreach ($matches as $match) {
     [$h,$a] = array_map('intval',explode('-',$score));
     foreach ([[$home,$h,$a],[$away,$a,$h]] as [$team,$gf,$ga]) {
         $records[$team][0]++;
-        $records[$team][4] += $gf; $records[$team][5] += $ga;
+        $records[$team][4] += $gf;
+        $records[$team][5] += $ga;
         if ($gf > $ga) {
             $records[$team][1]++;
             $records[$team][6] += 3;
@@ -20,7 +21,8 @@ foreach ($matches as $match) {
     }
 }
 usort($teams,function($a,$b) use ($records) {
-    $x = $records[$a]; $y = $records[$b];
+    $x = $records[$a];
+    $y = $records[$b];
     return ($y[6]<=>$x[6]) ?: (($y[4]-$y[5])<=>($x[4]-$x[5])) ?: ($y[4]<=>$x[4]) ?: strcmp($a,$b);
 });
 foreach ($teams as $position => $team) {

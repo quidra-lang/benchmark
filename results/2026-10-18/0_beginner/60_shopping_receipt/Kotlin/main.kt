@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val names = listOf("milk", "notebook", "bread", "apple", "detergent", "eggs")
     val prices = intArrayOf(198, 165, 248, 128, 437, 268)

@@ -6,7 +6,10 @@ main =: 3 : 0
     'year month' =. index{months
     y =. year
     m =. month
-    if. m<3 do. m =. m+12 [ y =. y-1 end.
+    if. m<3 do.
+      m =. m+12
+      y =. y-1
+    end.
     century =. <.y%100
     within =. 100|y
     h =. 7|1+(<.(13*(m+1))%5)+within+(<.within%4)+(<.century%4)+5*century

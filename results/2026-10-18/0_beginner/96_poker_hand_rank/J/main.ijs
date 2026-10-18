@@ -31,11 +31,8 @@ score =: 3 : 0
   sequence =. i.0
   if. straight*.wheel do. sequence =. 5 4 3 2 1
   else.
-    for_count. 4 3 2 1 do.
-      for_rank. |.2+i.13 do.
-        if. count=rank{counts do. sequence =. sequence,rank end.
-      end.
-    end.
+    sequence =. |.distinct
+    sequence =. sequence {~ \:sequence{counts
   end.
   category,5{.sequence
 )

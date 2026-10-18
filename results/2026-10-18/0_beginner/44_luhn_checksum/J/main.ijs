@@ -3,14 +3,8 @@ main =: 3 : 0
   for_box. numbers do.
     number =. >box
     digits =. '0123456789'i.number
-    transformed =. digits
-    for_i. i.#digits do.
-      if. 0=2|(#digits)-i do.
-        value =. 2*i{digits
-        if. value>9 do. value =. value-9 end.
-        transformed =. value i}transformed
-      end.
-    end.
+    doubled =. digits * 1 + 0 = 2 | (#digits) - i.#digits
+    transformed =. doubled - 9 * doubled > 9
     total =. +/transformed
     result =. 'valid'
     if. 0~:10|total do.

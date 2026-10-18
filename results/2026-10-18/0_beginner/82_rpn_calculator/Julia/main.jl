@@ -1,7 +1,7 @@
 function evaluate(expression)
     stack = Int[]
     for token in split(expression)
-        if token in ["+","-","*","/"]
+        if token in ("+","-","*","/")
             length(stack) < 2 && return "error: stack underflow"
             b = pop!(stack)
             a = pop!(stack)

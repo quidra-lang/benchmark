@@ -9,8 +9,7 @@ function main()
         if student.total != previous
             rank = position
         end
-        average = student.total/3
-        @printf("%d. %s total=%d average=%.2f\n",rank,student.name,student.total,floor(average*100+0.5)/100)
+        @printf("%d. %s total=%d average=%.2f\n",rank,student.name,student.total,student.total/3)
         previous = student.total
     end
 end

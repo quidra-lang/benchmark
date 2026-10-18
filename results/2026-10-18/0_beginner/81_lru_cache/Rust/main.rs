@@ -15,11 +15,7 @@ fn main() {
             }
         }
         cache.insert(0, key);
-        print!("{}: {}", key, if hit {
-            "hit"
-        } else {
-            "miss"
-        });
+        print!("{}: {}", key, if hit { "hit" } else { "miss" });
         if let Some(c) = evicted {
             print!(", evict {}", c);
         }

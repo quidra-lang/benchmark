@@ -14,11 +14,7 @@ pub fn main(init: std.process.Init) !void {
                 prime[m] = false;
         }
     }
-    var count: usize = 0;
-    for (prime) |p| {
-        if (p)
-            count += 1;
-    }
+    const count = std.mem.countScalar(bool, &prime, true);
     try out.print("count: {d}\n", .{ count });
     var printed: usize = 0;
     for (2..201) |p| {

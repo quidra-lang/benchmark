@@ -1,8 +1,4 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-fun fixed(value: Double): String =
-    BigDecimal.valueOf(value).setScale(3, RoundingMode.HALF_UP).toPlainString()
+import java.util.Locale
 
 fun main() {
     val radii = intArrayOf(3, 7, 12, 25, 41)
@@ -10,6 +6,6 @@ fun main() {
     for (radius in radii) {
         val area = pi * radius * radius
         val circumference = 2 * pi * radius
-        println("r=$radius area=${fixed(area)} circumference=${fixed(circumference)}")
+        println("r=%d area=%.3f circumference=%.3f".format(Locale.ROOT, radius, area, circumference))
     }
 }

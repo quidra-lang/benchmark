@@ -81,10 +81,8 @@ list_line =: 4 : 0
 )
 find_from =: 3 : 0
   'value needle start' =. y
-  for_k. start+i.0>.(#value)-start do.
-    if. needle text_equal (#needle){.k}.value do. k return. end.
-  end.
-  _1
+  matches =. I.needle E.start}.value
+  if. #matches do. start+{.matches else. _1 end.
 )
 markup =: 4 : 0
   tail =. x}.y
@@ -515,20 +513,11 @@ execute =: 3 : 0
     <result return.
   end.
   if. command text_equal 'SORT' do.
-    order =. i.0
-    for_k. i.n do.
-      order =. order,k
-      p =. k
-      while. p>0 do.
-        earlier =. ((p-1){order){::CUES
-        current =. k{::CUES
-        if. (1{::earlier)<1{::current do. break. end.
-        if. ((1{::earlier)=1{::current)*.(2{::earlier)<:2{::current do. break. end.
-        order =. ((p-1){order) p}order
-        p =. p-1
-      end.
-      order =. k p}order
+    keys =. 0 2$0
+    for_cue. CUES do.
+      keys =. keys,>1 2{>cue
     end.
+    order =. /:keys
     moved =. +/order~:i.n
     CUES =: order{CUES
     <'SORT moved=',number moved return.

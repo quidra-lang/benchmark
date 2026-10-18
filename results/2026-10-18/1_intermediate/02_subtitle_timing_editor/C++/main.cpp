@@ -112,13 +112,11 @@ Integer halfUp(Integer a, Integer b) {
     return floorRatio(2 * a + b, 2 * b);
 }
 Integer countChars(const Cue &cue) {
-    Integer result = 0;
-    for (const string &line : cue.text) result += Integer(line.size());
-    return result;
+    return std::accumulate(cue.text.begin(), cue.text.end(), Integer(0),
+        [](Integer total, const string &line) { return total + Integer(line.size()); });
 }
 bool dialogue(const Cue &cue) {
-    for (const string &line : cue.text) if (begins(line, "- ")) return true;
-    return false;
+    return std::any_of(cue.text.begin(), cue.text.end(), [](const string &line) { return begins(line, "- "); });
 }
 vector<string> words(const vector<string> &lines) {
     vector<string> result;
@@ -389,7 +387,9 @@ vector<string> execute(const string &line) {
         if (name == "TOVTT") out.insert(out.end(), {"WEBVTT", ""});
         for (const Cue &c : cues) {
             int code = 0, removed = 0, kind = name == "TOVTT" ? 1 : 0;
-            vector<string> lines = kind ? converted(c.text, 1, code, removed) : c.text;
+            vector<string> convertedLines;
+            if (kind) convertedLines = converted(c.text, 1, code, removed);
+            const vector<string> &lines = kind ? convertedLines : c.text;
             if (lines.empty()) continue;
             string setting;
             if (code >= 7) setting = " line:0";
@@ -485,7 +485,7 @@ vector<string> execute(const string &line) {
         vector<Cue> sorted;
         int moved = 0;
         for (int i = 0; i < n; ++i) {
-            sorted.push_back(cues[order[i]]);
+            sorted.push_back(std::move(cues[order[i]]));
             if (i != order[i]) ++moved;
         }
         cues = std::move(sorted);
@@ -500,7 +500,7 @@ vector<string> execute(const string &line) {
     } else if (name == "MERGE") {
         vector<Cue> result;
         int merged = 0;
-        for (const Cue &c : cues) {
+        for (Cue &c : cues) {
             if (!result.empty()) {
                 Cue &previous = result.back();
                 if (c.start - previous.end < v[0] && !dialogue(previous) && !dialogue(c)) {
@@ -515,23 +515,23 @@ vector<string> execute(const string &line) {
                     }
                 }
             }
-            result.push_back(c);
+            result.push_back(std::move(c));
         }
         cues = std::move(result);
         out.push_back(text("MERGE merged=", merged, " cues=", cues.size()));
     } else if (name == "SPLIT") {
         vector<Cue> result;
         int splitCount = 0;
-        for (Cue c : cues) {
+        for (Cue &c : cues) {
             Integer d = c.end - c.start;
             if (d < 1 || dialogue(c)) {
-                result.push_back(c);
+                result.push_back(std::move(c));
                 continue;
             }
             vector<string> wrapped = wrap(c.text, int(v[0]));
             if (wrapped.size() <= 2) {
                 c.text = std::move(wrapped);
-                result.push_back(c);
+                result.push_back(std::move(c));
                 continue;
             }
             ++splitCount;
@@ -541,7 +541,7 @@ vector<string> execute(const string &line) {
                 Cue part{c.index, 0, 0, {wrapped[i]}};
                 if (i + 1 < int(wrapped.size())) part.text.push_back(wrapped[i + 1]);
                 total += countChars(part);
-                parts.push_back(part);
+                parts.push_back(std::move(part));
             }
             vector<Integer> lengths(parts.size()), remainders(parts.size());
             vector<int> order(parts.size());
@@ -560,14 +560,13 @@ vector<string> execute(const string &line) {
                 parts[i].start = start;
                 parts[i].end = start + lengths[i];
                 start += lengths[i];
-                result.push_back(parts[i]);
+                result.push_back(std::move(parts[i]));
             }
         }
         cues = std::move(result);
         out.push_back(text("SPLIT split=", splitCount, " cues=", cues.size()));
     } else if (name == "INSERT") {
-        Cue c{v[0], v[1], v[2], split(a.raw[3], '|')};
-        cues.insert(cues.begin() + v[0] - 1, c);
+        cues.insert(cues.begin() + v[0] - 1, Cue{v[0], v[1], v[2], split(a.raw[3], '|')});
         out.push_back(text("INSERT cue=", v[0], " cues=", cues.size()));
     } else if (name == "DELETE") {
         int p = int(v[0] - 1), q = int(v.size() == 2 ? v[1] : v[0]);
@@ -586,7 +585,7 @@ vector<string> execute(const string &line) {
             vector<string> w = words(c.text), candidate;
             string all = join(w, " ");
             if (all.size() <= 42) candidate.push_back(all);
-            else {
+            else if (all.size() <= 85) {
                 int bestDifference = 1000000, bestFirst = 1000000;
                 for (int j = 1; j < int(w.size()); ++j) {
                     string first = join(vector<string>(w.begin(), w.begin() + j), " ");
@@ -609,7 +608,7 @@ vector<string> execute(const string &line) {
     } else if (name == "STRIP" || name == "CLEANHI") {
         int removedItems = 0, labels = 0, removedLines = 0, removedCues = 0;
         vector<Cue> result;
-        for (Cue c : cues) {
+        for (Cue &c : cues) {
             vector<string> lines;
             if (name == "STRIP") {
                 int first, tags;
@@ -629,7 +628,7 @@ vector<string> execute(const string &line) {
             if (lines.empty()) ++removedCues;
             else {
                 c.text = std::move(lines);
-                result.push_back(c);
+                result.push_back(std::move(c));
             }
         }
         cues = std::move(result);

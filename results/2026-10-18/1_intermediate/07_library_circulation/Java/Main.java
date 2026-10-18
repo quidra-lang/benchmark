@@ -1,5 +1,6 @@
 import java.io.*;
 import java.util.*;
+import java.util.stream.IntStream;
 
 public class Main {
     static class Fault extends RuntimeException {
@@ -70,7 +71,6 @@ public class Main {
         Set<Integer> closed=new HashSet<>();
         List<Copy> copies=new ArrayList<>();
         List<String> output;
-        void emit(String line) { output.add(line); }
         Member member(String id) {
             Member m=members.get(id);
             check(m==null,"unknown member");
@@ -117,7 +117,7 @@ public class Main {
                 c.owner=m;
                 c.expiry=open(day+3);
                 m.holds.put(b.isbn,c);
-                emit("HOLD "+b.isbn+" copy "+c.number+" "+m.id+" until "+c.expiry);
+                output.add("HOLD "+b.isbn+" copy "+c.number+" "+m.id+" until "+c.expiry);
             }
         }
         int[] endLoan(Copy c, boolean loss) {
@@ -138,12 +138,12 @@ public class Main {
             c.state="LOST";
             c.owner=null;
             lost++;
-            emit(heading+" "+m.id+" "+b.isbn+" copy "+c.number+" late "+values[0]+" fine "+money(values[1])+
+            output.add(heading+" "+m.id+" "+b.isbn+" copy "+c.number+" late "+values[0]+" fine "+money(values[1])+
                 " price "+money(b.price)+" balance "+money(m.balance()));
             if (b.holdings()==0) {
                 for (Member queued:b.queue) {
                     queued.queued--;
-                    emit("DROPPED "+b.isbn+" "+queued.id);
+                    output.add("DROPPED "+b.isbn+" "+queued.id);
                 }
                 b.queue.clear();
             }
@@ -158,7 +158,7 @@ public class Main {
             c.due=open(day+c.owner.period);
             c.renewals++;
             renewed++;
-            emit("RENEW "+c.owner.id+" "+c.title.isbn+" copy "+c.number+" due "+c.due+" renewals "+c.renewals);
+            output.add("RENEW "+c.owner.id+" "+c.title.isbn+" copy "+c.number+" due "+c.due+" renewals "+c.renewals);
         }
         List<Copy> orderedLoans(Member m) {
             return m.loans.values().stream().sorted(Comparator.comparingInt((Copy c) -> c.due).thenComparing(c -> c.title.isbn)).toList();
@@ -167,15 +167,15 @@ public class Main {
             return m.holds.values().stream().sorted(Comparator.comparingInt((Copy c) -> c.expiry).thenComparing(c -> c.title.isbn)).toList();
         }
         void showMember(Member m) {
-            emit("MEMBER "+m.id+" "+m.type+" "+m.name);
-            emit("STATUS loans "+m.loans.size()+"/"+m.limit+" reservations "+m.reservations()+"/"+m.reservationLimit+
+            output.add("MEMBER "+m.id+" "+m.type+" "+m.name);
+            output.add("STATUS loans "+m.loans.size()+"/"+m.limit+" reservations "+m.reservations()+"/"+m.reservationLimit+
                 " balance "+money(m.balance())+" "+m.status());
-            for (Copy c:orderedLoans(m)) emit("LOAN "+c.title.isbn+" copy "+c.number+" due "+c.due+" renewals "+c.renewals+
+            for (Copy c:orderedLoans(m)) output.add("LOAN "+c.title.isbn+" copy "+c.number+" due "+c.due+" renewals "+c.renewals+
                 (c.due<day ? " late "+late(c)+" fine "+money(fine(c)) : ""));
-            for (Copy c:orderedHolds(m)) emit("HOLD "+c.title.isbn+" copy "+c.number+" until "+c.expiry);
+            for (Copy c:orderedHolds(m)) output.add("HOLD "+c.title.isbn+" copy "+c.number+" until "+c.expiry);
             for (Title b:titles.values()) {
                 int p=b.queue.indexOf(m);
-                if (p>=0) emit("QUEUE "+b.isbn+" position "+(p+1));
+                if (p>=0) output.add("QUEUE "+b.isbn+" position "+(p+1));
             }
         }
         void execute(String line) {
@@ -184,7 +184,7 @@ public class Main {
                 case "DAY": {
                     int d=Integer.parseInt(t[1]);
                     check(d<=day,"invalid day");
-                    emit("DAY "+d);
+                    output.add("DAY "+d);
                     while (day<d) {
                         day++;
                         List<Copy> losses=copies.stream().filter(c -> c.state.equals("LOANED") && c.due+365<=day)
@@ -196,7 +196,7 @@ public class Main {
                             Member m=c.owner;
                             charge(m,"FEE",c.title,m.fee);
                             m.holds.remove(c.title.isbn);
-                            emit("EXPIRED "+c.title.isbn+" copy "+c.number+" "+m.id+" fee "+money(m.fee));
+                            output.add("EXPIRED "+c.title.isbn+" copy "+c.number+" "+m.id+" fee "+money(m.fee));
                             release(c);
                         }
                     }
@@ -207,15 +207,15 @@ public class Main {
                     check(d<=day,"invalid day");
                     check(closed.contains(d),"already closed");
                     closed.add(d);
-                    emit("CLOSED "+d);
+                    output.add("CLOSED "+d);
                     for (Title b:titles.values()) {
                         for (Copy c:b.copies) {
                             if (c.state.equals("LOANED") && c.due==d) {
                                 c.due=open(d);
-                                emit("MOVED "+b.isbn+" copy "+c.number+" "+c.owner.id+" due "+c.due);
+                                output.add("MOVED "+b.isbn+" copy "+c.number+" "+c.owner.id+" due "+c.due);
                             } else if (c.state.equals("HOLD") && c.expiry==d) {
                                 c.expiry=open(d);
-                                emit("MOVED "+b.isbn+" copy "+c.number+" "+c.owner.id+" until "+c.expiry);
+                                output.add("MOVED "+b.isbn+" copy "+c.number+" "+c.owner.id+" until "+c.expiry);
                             }
                         }
                     }
@@ -238,7 +238,7 @@ public class Main {
                         copies.add(c);
                         added.add(c);
                     }
-                    emit("ADDBOOK "+isbn+" added "+count+" total "+b.holdings());
+                    output.add("ADDBOOK "+isbn+" added "+count+" total "+b.holdings());
                     for (Copy c:added) release(c);
                     break;
                 }
@@ -247,7 +247,7 @@ public class Main {
                     check(!t[2].equals("STUDENT") && !t[2].equals("STAFF"),"unknown type");
                     Member m=new Member(t[1],t[2],String.join(" ",Arrays.copyOfRange(t,3,t.length)));
                     members.put(m.id,m);
-                    emit("ADDMEMBER "+m.id+" "+m.type+" loans "+m.limit+" days "+m.period);
+                    output.add("ADDMEMBER "+m.id+" "+m.type+" loans "+m.limit+" days "+m.period);
                     break;
                 }
                 case "WITHDRAW": {
@@ -257,7 +257,7 @@ public class Main {
                     Copy c=b.copies.get(n-1);
                     check(!c.state.equals("AVAILABLE"),"copy not available");
                     c.state="WITHDRAWN";
-                    emit("WITHDRAW "+b.isbn+" copy "+n+" total "+b.holdings());
+                    output.add("WITHDRAW "+b.isbn+" copy "+n+" total "+b.holdings());
                     break;
                 }
                 case "BORROW": {
@@ -280,7 +280,7 @@ public class Main {
                     m.loans.put(b.isbn,c);
                     b.borrowed++;
                     borrowed++;
-                    emit("BORROW "+m.id+" "+b.isbn+" copy "+c.number+" due "+c.due);
+                    output.add("BORROW "+m.id+" "+b.isbn+" copy "+c.number+" due "+c.due);
                     break;
                 }
                 case "RETURN": {
@@ -289,7 +289,7 @@ public class Main {
                     Copy c=loan(m,b);
                     int[] values=endLoan(c,false);
                     returned++;
-                    emit("RETURN "+m.id+" "+b.isbn+" copy "+c.number+" late "+values[0]+" fine "+money(values[1])+" balance "+money(m.balance()));
+                    output.add("RETURN "+m.id+" "+b.isbn+" copy "+c.number+" late "+values[0]+" fine "+money(values[1])+" balance "+money(m.balance()));
                     release(c);
                     break;
                 }
@@ -310,14 +310,14 @@ public class Main {
                     for (Copy c:m.loans.values()) {
                         String reason=renewalReason(c);
                         if (reason!=null) {
-                            emit("SKIP "+c.title.isbn+" "+reason);
+                            output.add("SKIP "+c.title.isbn+" "+reason);
                             skipped++;
                         } else {
                             renew(c);
                             done++;
                         }
                     }
-                    emit("RENEWALL "+m.id+" renewed "+done+" skipped "+skipped);
+                    output.add("RENEWALL "+m.id+" renewed "+done+" skipped "+skipped);
                     break;
                 }
                 case "RESERVE": {
@@ -333,7 +333,7 @@ public class Main {
                     m.queued++;
                     int p=b.queue.size();
                     List<Integer> dues=b.copies.stream().filter(c -> c.state.equals("LOANED")).map(c -> c.due).sorted().toList();
-                    emit("RESERVE "+m.id+" "+b.isbn+" position "+p+" estimate "+(p<=dues.size() ? dues.get(p-1).toString() : "none"));
+                    output.add("RESERVE "+m.id+" "+b.isbn+" position "+p+" estimate "+(p<=dues.size() ? dues.get(p-1).toString() : "none"));
                     break;
                 }
                 case "CANCEL": {
@@ -345,10 +345,10 @@ public class Main {
                     if (p>=0) {
                         b.queue.remove(p);
                         m.queued--;
-                        emit("CANCEL "+m.id+" "+b.isbn+" queue");
+                        output.add("CANCEL "+m.id+" "+b.isbn+" queue");
                     } else {
                         m.holds.remove(b.isbn);
-                        emit("CANCEL "+m.id+" "+b.isbn+" hold copy "+c.number);
+                        output.add("CANCEL "+m.id+" "+b.isbn+" hold copy "+c.number);
                         release(c);
                     }
                     break;
@@ -372,7 +372,7 @@ public class Main {
                         details.add("ITEM "+(i+1)+" "+item.kind+" paid "+money(applied)+" remaining "+money(item.unpaid));
                     }
                     paid+=amount-rest;
-                    emit("PAYFINE "+m.id+" paid "+money(amount-rest)+" change "+money(rest)+" balance "+money(m.balance()));
+                    output.add("PAYFINE "+m.id+" paid "+money(amount-rest)+" change "+money(rest)+" balance "+money(m.balance()));
                     output.addAll(details);
                     break;
                 }
@@ -385,31 +385,31 @@ public class Main {
                     int amount=item.unpaid;
                     item.unpaid=0;
                     waived+=amount;
-                    emit("WAIVE "+m.id+" item "+n+" "+item.kind+" amount "+money(amount)+" balance "+money(m.balance()));
+                    output.add("WAIVE "+m.id+" item "+n+" "+item.kind+" amount "+money(amount)+" balance "+money(m.balance()));
                     break;
                 }
                 case "FINES": {
                     Member m=member(t[1]);
-                    emit("FINES "+m.id+" items "+m.items.stream().filter(i -> i.unpaid>0).count()+" balance "+money(m.balance()));
+                    output.add("FINES "+m.id+" items "+m.items.stream().filter(i -> i.unpaid>0).count()+" balance "+money(m.balance()));
                     for (int i=0;i<m.items.size();i++) {
                         Item item=m.items.get(i);
-                        if (item.unpaid>0) emit((i+1)+" day "+item.day+" "+item.kind+" "+item.isbn+" amount "+money(item.amount)+" remaining "+money(item.unpaid));
+                        if (item.unpaid>0) output.add((i+1)+" day "+item.day+" "+item.kind+" "+item.isbn+" amount "+money(item.amount)+" remaining "+money(item.unpaid));
                     }
                     break;
                 }
                 case "SEARCH": {
-                    String keyword=lower(String.join(" ",Arrays.copyOfRange(t,1,t.length)));
-                    List<Title> found=titles.values().stream().filter(b -> lower(b.name).contains(keyword))
-                        .sorted(Comparator.comparing((Title b) -> lower(b.name)).thenComparing(b -> b.isbn)).toList();
-                    emit("SEARCH "+found.size());
-                    for (Title b:found) emit(b.isbn+" "+b.count("AVAILABLE")+"/"+b.holdings()+" "+b.name);
+                    String keyword=String.join(" ",Arrays.copyOfRange(t,1,t.length)).toLowerCase(Locale.ROOT);
+                    List<Title> found=titles.values().stream().filter(b -> b.name.toLowerCase(Locale.ROOT).contains(keyword))
+                        .sorted(Comparator.comparing((Title b) -> b.name.toLowerCase(Locale.ROOT)).thenComparing(b -> b.isbn)).toList();
+                    output.add("SEARCH "+found.size());
+                    for (Title b:found) output.add(b.isbn+" "+b.count("AVAILABLE")+"/"+b.holdings()+" "+b.name);
                     break;
                 }
                 case "OVERDUE": {
                     List<Copy> found=copies.stream().filter(c -> c.state.equals("LOANED") && c.due<day)
                         .sorted(Comparator.comparingInt((Copy c) -> c.due).thenComparing(c -> c.owner.id).thenComparing(c -> c.title.isbn)).toList();
-                    emit("OVERDUE "+found.size());
-                    for (Copy c:found) emit(c.owner.id+" "+c.title.isbn+" copy "+c.number+" due "+c.due+" late "+late(c)+" fine "+money(fine(c)));
+                    output.add("OVERDUE "+found.size());
+                    for (Copy c:found) output.add(c.owner.id+" "+c.title.isbn+" copy "+c.number+" due "+c.due+" late "+late(c)+" fine "+money(fine(c)));
                     break;
                 }
                 case "NOTICES": {
@@ -420,7 +420,7 @@ public class Main {
                         for (Copy c:loans) if (c.due>=day && c.due<=day+2) notices.add("DUESOON "+m.id+" "+c.title.isbn+" due "+c.due);
                         for (Copy c:orderedHolds(m)) notices.add("PICKUP "+m.id+" "+c.title.isbn+" until "+c.expiry);
                     }
-                    emit("NOTICES "+notices.size());
+                    output.add("NOTICES "+notices.size());
                     output.addAll(notices);
                     break;
                 }
@@ -428,51 +428,48 @@ public class Main {
                     showMember(member(t[1]));
                     break;
                 case "MEMBERS": {
-                    emit("MEMBERS "+members.size());
-                    for (Member m:members.values()) emit(m.id+" "+m.type+" loans "+m.loans.size()+" reservations "+m.reservations()+
+                    output.add("MEMBERS "+members.size());
+                    for (Member m:members.values()) output.add(m.id+" "+m.type+" loans "+m.loans.size()+" reservations "+m.reservations()+
                         " balance "+money(m.balance())+" "+m.status());
                     break;
                 }
                 case "BOOK": {
                     Title b=book(t[1]);
-                    emit("BOOK "+b.isbn+" "+b.name);
-                    emit("PRICE "+money(b.price)+" copies "+b.holdings()+" borrowed "+b.borrowed);
-                    for (Copy c:b.copies) emit("COPY "+c.number+" "+c.state+
+                    output.add("BOOK "+b.isbn+" "+b.name);
+                    output.add("PRICE "+money(b.price)+" copies "+b.holdings()+" borrowed "+b.borrowed);
+                    for (Copy c:b.copies) output.add("COPY "+c.number+" "+c.state+
                         (c.state.equals("LOANED") ? " "+c.owner.id+" due "+c.due : c.state.equals("HOLD") ? " "+c.owner.id+" until "+c.expiry : ""));
-                    emit("QUEUE "+b.queue.size()+(b.queue.isEmpty() ? "" : " "+String.join(" ",b.queue.stream().map(m -> m.id).toList())));
+                    output.add("QUEUE "+b.queue.size()+(b.queue.isEmpty() ? "" : " "+String.join(" ",b.queue.stream().map(m -> m.id).toList())));
                     break;
                 }
                 case "INVENTORY": {
-                    int a=0,l=0,h=0,x=0,w=0;
-                    for (Title b:titles.values()) {
-                        a+=b.count("AVAILABLE");
-                        l+=b.count("LOANED");
-                        h+=b.count("HOLD");
-                        x+=b.count("LOST");
-                        w+=b.count("WITHDRAWN");
-                    }
-                    emit("INVENTORY titles "+titles.size()+" copies "+(a+l+h)+" available "+a+" loaned "+l+" hold "+h+" lost "+x+" withdrawn "+w);
-                    for (Title b:titles.values()) emit(b.isbn+" copies "+b.holdings()+" available "+b.count("AVAILABLE")+" loaned "+b.count("LOANED")+
+                    long a=copies.stream().filter(c -> c.state.equals("AVAILABLE")).count();
+                    long l=copies.stream().filter(c -> c.state.equals("LOANED")).count();
+                    long h=copies.stream().filter(c -> c.state.equals("HOLD")).count();
+                    long x=copies.stream().filter(c -> c.state.equals("LOST")).count();
+                    long w=copies.stream().filter(c -> c.state.equals("WITHDRAWN")).count();
+                    output.add("INVENTORY titles "+titles.size()+" copies "+(a+l+h)+" available "+a+" loaned "+l+" hold "+h+" lost "+x+" withdrawn "+w);
+                    for (Title b:titles.values()) output.add(b.isbn+" copies "+b.holdings()+" available "+b.count("AVAILABLE")+" loaned "+b.count("LOANED")+
                         " hold "+b.count("HOLD")+" queue "+b.queue.size());
                     break;
                 }
                 case "HISTORY": {
                     Member m=member(t[1]);
-                    emit("HISTORY "+m.id+" "+m.history.size());
+                    output.add("HISTORY "+m.id+" "+m.history.size());
                     output.addAll(m.history);
                     break;
                 }
                 case "STATS": {
                     int active=members.values().stream().mapToInt(m -> m.loans.size()).sum();
                     int outstanding=members.values().stream().mapToInt(Member::balance).sum();
-                    emit("STATS day "+day+" titles "+titles.size()+" members "+members.size()+" closed "+closed.size());
-                    emit("LOANS borrowed "+borrowed+" returned "+returned+" renewed "+renewed+" lost "+lost+" active "+active);
-                    emit("MONEY fines "+money(fines)+" fees "+money(fees)+" charges "+money(charges)+" paid "+money(paid)+" waived "+money(waived)+" outstanding "+money(outstanding));
+                    output.add("STATS day "+day+" titles "+titles.size()+" members "+members.size()+" closed "+closed.size());
+                    output.add("LOANS borrowed "+borrowed+" returned "+returned+" renewed "+renewed+" lost "+lost+" active "+active);
+                    output.add("MONEY fines "+money(fines)+" fees "+money(fees)+" charges "+money(charges)+" paid "+money(paid)+" waived "+money(waived)+" outstanding "+money(outstanding));
                     List<Title> top=titles.values().stream().filter(b -> b.borrowed>0)
                         .sorted(Comparator.comparingInt((Title b) -> b.borrowed).reversed().thenComparing(b -> b.isbn)).limit(3).toList();
                     for (int i=0;i<top.size();i++) {
                         Title b=top.get(i);
-                        emit("TOP "+(i+1)+" "+b.isbn+" "+b.borrowed+" "+b.name);
+                        output.add("TOP "+(i+1)+" "+b.isbn+" "+b.borrowed+" "+b.name);
                     }
                     break;
                 }
@@ -485,29 +482,25 @@ public class Main {
             return output;
         }
     }
+    static int checksum(String s) {
+        return IntStream.range(0,s.length()).map(i -> (i%2==0 ? 1 : 3)*(s.charAt(i)-'0')).sum();
+    }
     static String normalize(String raw) {
         String s=raw.replace("-","");
         if (s.matches("[0-9]{9}[0-9X]")) {
-            int sum=0;
-            for (int i=0;i<10;i++) sum+=(10-i)*(s.charAt(i)=='X' ? 10 : s.charAt(i)-'0');
+            int sum=IntStream.range(0,10).map(i -> (10-i)*(s.charAt(i)=='X' ? 10 : s.charAt(i)-'0')).sum();
             check(sum%11!=0,"invalid isbn");
             String prefix="978"+s.substring(0,9);
-            sum=0;
-            for (int i=0;i<12;i++) sum+=(i%2==0 ? 1 : 3)*(prefix.charAt(i)-'0');
+            sum=checksum(prefix);
             return prefix+(10-sum%10)%10;
         }
         check(!s.matches("97[89][0-9]{10}"),"invalid isbn");
-        int sum=0;
-        for (int i=0;i<13;i++) sum+=(i%2==0 ? 1 : 3)*(s.charAt(i)-'0');
+        int sum=checksum(s);
         check(sum%10!=0,"invalid isbn");
         return s;
     }
-    static int parseMoney(String s) {
-        String[] p=s.split("\\.");
-        return Integer.parseInt(p[0])*100+Integer.parseInt(p[1]);
-    }
-    static String money(int n) { return n/100+"."+(n%100<10 ? "0" : "")+n%100; }
-    static String lower(String s) { return s.toLowerCase(Locale.ROOT); }
+    static int parseMoney(String s) { return Integer.parseInt(s.replace(".","")); }
+    static String money(int n) { return String.format(Locale.ROOT,"%d.%02d",n/100,n%100); }
     public static void main(String[] args) throws IOException {
         BufferedReader input=new BufferedReader(new InputStreamReader(System.in));
         PrintWriter output=new PrintWriter(new BufferedWriter(new OutputStreamWriter(System.out)));

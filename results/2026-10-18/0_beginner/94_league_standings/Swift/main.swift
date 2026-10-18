@@ -1,6 +1,3 @@
-import Foundation
-
-
 let matches = ["Lions 0-3 Bears",
     "Tigers 2-2 Wolves",
     "Eagles 4-0 Sharks",

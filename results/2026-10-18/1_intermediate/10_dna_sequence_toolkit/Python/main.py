@@ -1,5 +1,7 @@
 import re
 import sys
+from collections import Counter
+from itertools import groupby
 
 
 BASES = "ACGT"
@@ -76,13 +78,6 @@ def pct(a, b):
 
 def transition(a, b):
     return a != b and (a + b in ("AG", "GA", "CT", "TC"))
-
-
-def counts(sequence):
-    result = {}
-    for item in sequence:
-        result[item] = result.get(item, 0) + 1
-    return result
 
 
 def frequency_order(table):
@@ -251,7 +246,7 @@ class Toolkit:
         if command == "TRANSLATE":
             self.emit(protein or "none")
         elif command == "CODONS":
-            table = counts(triplets)
+            table = Counter(triplets)
             for codon in frequency_order(table):
                 self.emit(codon, CODE[codon], table[codon])
             if not table:
@@ -260,7 +255,7 @@ class Toolkit:
             protein = protein.split("*", 1)[0]
             if not protein:
                 raise CommandError("empty protein")
-            table = counts(protein)
+            table = Counter(protein)
             mass = sum(AMINO_MASS[amino] for amino in protein) + 18015
             charge = sum(protein.count(amino) for amino in "KR") - sum(protein.count(amino) for amino in "DE")
             self.emit(protein)
@@ -377,7 +372,7 @@ class Toolkit:
         profile = {base: [] for base in BASES}
         consensus, ambiguous = [], []
         for column in zip(*sequences):
-            table = counts(column)
+            table = Counter(column)
             for base in BASES:
                 profile[base].append(table.get(base, 0))
             largest = max(table.values())
@@ -394,10 +389,7 @@ class Toolkit:
         amount = gc(sequence)
         tm = temperature(sequence)
         clamp = gc(sequence[-5:])
-        longest_run = run = 1
-        for i in range(1, n):
-            run = run + 1 if sequence[i] == sequence[i - 1] else 1
-            longest_run = max(longest_run, run)
+        longest_run = max(len(list(run)) for _, run in groupby(sequence))
         repeated = max(
             (repeat_count(sequence, i, 2) for i in range(n - 1) if sequence[i] != sequence[i + 1]),
             default=0,
@@ -496,8 +488,7 @@ class Toolkit:
             return
         if command == "UNPACK":
             codes = []
-            for i in range(0, len(a[2]), 2):
-                value = int(a[2][i:i + 2], 16)
+            for value in bytes.fromhex(a[2]):
                 codes.extend((value // 64, value // 16 % 4, value // 4 % 4, value % 4))
             if any(codes[a[1]:]):
                 raise CommandError("invalid padding")
@@ -560,7 +551,7 @@ class Toolkit:
             width, limit = a[1:]
             if width > n:
                 raise CommandError("k too large")
-            table = counts(sequence[i:i + width] for i in range(n - width + 1))
+            table = Counter(sequence[i:i + width] for i in range(n - width + 1))
             self.emit(n - width + 1, "windows", len(table), "distinct")
             for word in frequency_order(table)[:limit]:
                 self.emit(word, table[word])

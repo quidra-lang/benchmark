@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	for _, p := range [][2]string{{"kitten", "sitting"}, {"flaw", "lawn"}, {"listen", "silent"}, {"intention",

@@ -1,5 +1,3 @@
-import 'dart:io';
-
 class EvaluationError implements Exception {
     final String message;
     EvaluationError(this.message);
@@ -49,14 +47,11 @@ class Parser {
         final token = tokens[position++];
         if (RegExp(r'^\d').hasMatch(token))
             return int.parse(token);
-        if (!variables.containsKey(token))
-            throw EvaluationError('undefined variable $token');
-        return variables[token]!;
+        return variables[token] ?? (throw EvaluationError('undefined variable $token'));
     }
 }
 
 void main() {
-    final out = StringBuffer();
     const lines = ['width = 12', 'height = width - 5', 'area = width * height', '(area + 6) / 4',
         'shift = -area / 8 + 3', 'height = 100 / (height - 7) + bonus', 'volume = area * depth', 'width = (width+3)*-(2-4)',
         'width * shift - height'];
@@ -69,13 +64,12 @@ void main() {
             final result = parser.expression();
             if (assignment) {
                 variables[tokens[0]] = result;
-                out.writeln('${tokens[0]} = $result');
+                print('${tokens[0]} = $result');
             } else {
-                out.writeln(result);
+                print(result);
             }
         } on EvaluationError catch (error) {
-            out.writeln('error: ${error.message}');
+            print('error: ${error.message}');
         }
     }
-    stdout.write(out);
 }

@@ -11,8 +11,7 @@ function main()
     finalized = falses(7)
     distance[1] = 0
     for step in 1:7
-        candidates = [i for i in 1:7 if !finalized[i]]
-        vertex = candidates[argmin(distance[candidates])]
+        vertex = argmin(i -> distance[i],findall(!,finalized))
         finalized[vertex] = true
         for neighbor in 1:7
             if weights[vertex,neighbor] > 0 && distance[vertex]+weights[vertex,neighbor] < distance[neighbor]

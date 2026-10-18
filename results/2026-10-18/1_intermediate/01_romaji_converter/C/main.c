@@ -39,9 +39,7 @@ static void append(Buffer *b, const char *s) {
     b->size += n;
 }
 static void number(Buffer *b, int value) {
-    char s[32];
-    snprintf(s, sizeof s, "%d", value);
-    append(b, s);
+    b->size += (size_t)snprintf(b->data + b->size, sizeof b->data - b->size, "%d", value);
 }
 static void item(Buffer *b, const char *s, const char *separator) {
     if (b->size) append(b, separator);
@@ -530,7 +528,7 @@ static void process(const char *line, Buffer *out) {
         return;
     }
     if (cmd == 7 || cmd == 15) {
-        Buffer selected = {{0}, 0};
+        Buffer selected = {0};
         int matches = 0;
         for (int i = 0; i < count; ++i) {
             if (cmd == 7) {
@@ -575,7 +573,7 @@ static void process(const char *line, Buffer *out) {
         return;
     }
     if (cmd == 9 || cmd == 10) {
-        Buffer body = {{0}, 0};
+        Buffer body = {0};
         int total = 0;
         for (int j = 0; j < count; ++j) {
             const Word *w = &words[j];
@@ -741,7 +739,7 @@ int main(void) {
         if (!fgets(line, sizeof line, stdin)) break;
         line[strcspn(line, "\r\n")] = '\0';
         if (setjmp(recovery) == 0) {
-            Buffer output = {{0}, 0};
+            Buffer output = {0};
             process(line, &output);
             puts(output.data);
         } else printf("ERROR %s\n", error_message);

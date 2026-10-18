@@ -1,6 +1,3 @@
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
 
@@ -42,29 +39,21 @@ private class Copy(val title: Title, val number: Int) {
     var renewals = 0
     var expiry = 0
 }
+private fun checksum(s: String) = s.mapIndexed { i,c -> (if (i%2 == 0) 1 else 3)*(c-'0') }.sum()
 private fun normalize(raw: String): String {
     val s = raw.replace("-","")
     if (s.matches(Regex("[0-9]{9}[0-9X]"))) {
-        var sum = 0
-        for (i in 0 until 10) sum += (10-i)*(if (s[i] == 'X') 10 else s[i]-'0')
+        val sum = s.mapIndexed { i,c -> (10-i)*(if (c == 'X') 10 else c-'0') }.sum()
         failIf(sum%11 != 0,"invalid isbn")
         val prefix = "978"+s.take(9)
-        sum = 0
-        for (i in 0 until 12) sum += (if (i%2 == 0) 1 else 3)*(prefix[i]-'0')
-        return prefix+((10-sum%10)%10)
+        return prefix+((10-checksum(prefix)%10)%10)
     }
     failIf(!s.matches(Regex("97[89][0-9]{10}")),"invalid isbn")
-    var sum = 0
-    for (i in 0 until 13) sum += (if (i%2 == 0) 1 else 3)*(s[i]-'0')
-    failIf(sum%10 != 0,"invalid isbn")
+    failIf(checksum(s)%10 != 0,"invalid isbn")
     return s
 }
-private fun parseMoney(s: String): Int {
-    val p = s.split('.')
-    return p[0].toInt()*100+p[1].toInt()
-}
+private fun parseMoney(s: String) = s.replace(".","").toInt()
 private fun money(n: Int) = "${n/100}.${(n%100).toString().padStart(2,'0')}"
-private fun lower(s: String) = s.lowercase(Locale.ROOT)
 private class Library {
     var day = 1
     var borrowed = 0
@@ -81,7 +70,6 @@ private class Library {
     val closed = mutableSetOf<Int>()
     val copies = mutableListOf<Copy>()
     var output = mutableListOf<String>()
-    fun emit(line: String) { output.add(line) }
     fun member(id: String): Member = members[id] ?: throw Fault("unknown member")
     fun book(raw: String): Title = titles[normalize(raw)] ?: throw Fault("unknown book")
     fun loan(m: Member, b: Title): Copy = m.loans[b.isbn] ?: throw Fault("not borrowed")
@@ -112,7 +100,7 @@ private class Library {
             c.owner = m
             c.expiry = open(day+3)
             m.holds[b.isbn] = c
-            emit("HOLD ${b.isbn} copy ${c.number} ${m.id} until ${c.expiry}")
+            output.add("HOLD ${b.isbn} copy ${c.number} ${m.id} until ${c.expiry}")
         }
     }
     fun endLoan(c: Copy, loss: Boolean): Pair<Int,Int> {
@@ -133,11 +121,11 @@ private class Library {
         c.state = "LOST"
         c.owner = null
         lost++
-        emit("$heading ${m.id} ${b.isbn} copy ${c.number} late $l fine ${money(f)} price ${money(b.price)} balance ${money(m.balance())}")
+        output.add("$heading ${m.id} ${b.isbn} copy ${c.number} late $l fine ${money(f)} price ${money(b.price)} balance ${money(m.balance())}")
         if (b.holdings() == 0) {
             for (queued in b.queue) {
                 queued.queued--
-                emit("DROPPED ${b.isbn} ${queued.id}")
+                output.add("DROPPED ${b.isbn} ${queued.id}")
             }
             b.queue.clear()
         }
@@ -152,19 +140,19 @@ private class Library {
         c.due = open(day+c.owner!!.period)
         c.renewals++
         renewed++
-        emit("RENEW ${c.owner!!.id} ${c.title.isbn} copy ${c.number} due ${c.due} renewals ${c.renewals}")
+        output.add("RENEW ${c.owner!!.id} ${c.title.isbn} copy ${c.number} due ${c.due} renewals ${c.renewals}")
     }
     fun orderedLoans(m: Member) = m.loans.values.sortedWith(compareBy<Copy> { it.due }.thenBy { it.title.isbn })
     fun orderedHolds(m: Member) = m.holds.values.sortedWith(compareBy<Copy> { it.expiry }.thenBy { it.title.isbn })
     fun showMember(m: Member) {
-        emit("MEMBER ${m.id} ${m.type} ${m.name}")
-        emit("STATUS loans ${m.loans.size}/${m.limit} reservations ${m.reservations()}/${m.reservationLimit} balance ${money(m.balance())} ${m.status()}")
-        for (c in orderedLoans(m)) emit("LOAN ${c.title.isbn} copy ${c.number} due ${c.due} renewals ${c.renewals}"+
+        output.add("MEMBER ${m.id} ${m.type} ${m.name}")
+        output.add("STATUS loans ${m.loans.size}/${m.limit} reservations ${m.reservations()}/${m.reservationLimit} balance ${money(m.balance())} ${m.status()}")
+        for (c in orderedLoans(m)) output.add("LOAN ${c.title.isbn} copy ${c.number} due ${c.due} renewals ${c.renewals}"+
             (if (c.due < day) " late ${late(c)} fine ${money(fine(c))}" else ""))
-        for (c in orderedHolds(m)) emit("HOLD ${c.title.isbn} copy ${c.number} until ${c.expiry}")
+        for (c in orderedHolds(m)) output.add("HOLD ${c.title.isbn} copy ${c.number} until ${c.expiry}")
         for (b in titles.values) {
             val p = b.queue.indexOf(m)
-            if (p >= 0) emit("QUEUE ${b.isbn} position ${p+1}")
+            if (p >= 0) output.add("QUEUE ${b.isbn} position ${p+1}")
         }
     }
     fun execute(line: String) {
@@ -173,7 +161,7 @@ private class Library {
             "DAY" -> {
                 val d = t[1].toInt()
                 failIf(d <= day,"invalid day")
-                emit("DAY $d")
+                output.add("DAY $d")
                 while (day < d) {
                     day++
                     val losses = copies.filter { it.state == "LOANED" && it.due+365 <= day }
@@ -185,7 +173,7 @@ private class Library {
                         val m = c.owner!!
                         charge(m,"FEE",c.title,m.fee)
                         m.holds.remove(c.title.isbn)
-                        emit("EXPIRED ${c.title.isbn} copy ${c.number} ${m.id} fee ${money(m.fee)}")
+                        output.add("EXPIRED ${c.title.isbn} copy ${c.number} ${m.id} fee ${money(m.fee)}")
                         release(c)
                     }
                 }
@@ -195,15 +183,15 @@ private class Library {
                 failIf(d <= day,"invalid day")
                 failIf(d in closed,"already closed")
                 closed.add(d)
-                emit("CLOSED $d")
+                output.add("CLOSED $d")
                 for (b in titles.values) {
                     for (c in b.copies) {
                         if (c.state == "LOANED" && c.due == d) {
                             c.due = open(d)
-                            emit("MOVED ${b.isbn} copy ${c.number} ${c.owner!!.id} due ${c.due}")
+                            output.add("MOVED ${b.isbn} copy ${c.number} ${c.owner!!.id} due ${c.due}")
                         } else if (c.state == "HOLD" && c.expiry == d) {
                             c.expiry = open(d)
-                            emit("MOVED ${b.isbn} copy ${c.number} ${c.owner!!.id} until ${c.expiry}")
+                            output.add("MOVED ${b.isbn} copy ${c.number} ${c.owner!!.id} until ${c.expiry}")
                         }
                     }
                 }
@@ -224,7 +212,7 @@ private class Library {
                     copies.add(c)
                     added.add(c)
                 }
-                emit("ADDBOOK $isbn added $count total ${b.holdings()}")
+                output.add("ADDBOOK $isbn added $count total ${b.holdings()}")
                 for (c in added) release(c)
             }
             "ADDMEMBER" -> {
@@ -232,7 +220,7 @@ private class Library {
                 failIf(t[2] != "STUDENT" && t[2] != "STAFF","unknown type")
                 val m = Member(t[1],t[2],t.drop(3).joinToString(" "))
                 members[m.id] = m
-                emit("ADDMEMBER ${m.id} ${m.type} loans ${m.limit} days ${m.period}")
+                output.add("ADDMEMBER ${m.id} ${m.type} loans ${m.limit} days ${m.period}")
             }
             "WITHDRAW" -> {
                 val b = book(t[1])
@@ -241,7 +229,7 @@ private class Library {
                 val c = b.copies[n-1]
                 failIf(c.state != "AVAILABLE","copy not available")
                 c.state = "WITHDRAWN"
-                emit("WITHDRAW ${b.isbn} copy $n total ${b.holdings()}")
+                output.add("WITHDRAW ${b.isbn} copy $n total ${b.holdings()}")
             }
             "BORROW" -> {
                 val m = member(t[1])
@@ -262,7 +250,7 @@ private class Library {
                 m.loans[b.isbn] = c
                 b.borrowed++
                 borrowed++
-                emit("BORROW ${m.id} ${b.isbn} copy ${c.number} due ${c.due}")
+                output.add("BORROW ${m.id} ${b.isbn} copy ${c.number} due ${c.due}")
             }
             "RETURN" -> {
                 val m = member(t[1])
@@ -270,7 +258,7 @@ private class Library {
                 val c = loan(m,b)
                 val (l,f) = endLoan(c,false)
                 returned++
-                emit("RETURN ${m.id} ${b.isbn} copy ${c.number} late $l fine ${money(f)} balance ${money(m.balance())}")
+                output.add("RETURN ${m.id} ${b.isbn} copy ${c.number} late $l fine ${money(f)} balance ${money(m.balance())}")
                 release(c)
             }
             "RENEW" -> {
@@ -289,14 +277,14 @@ private class Library {
                 for (c in m.loans.values) {
                     val reason = renewalReason(c)
                     if (reason != null) {
-                        emit("SKIP ${c.title.isbn} $reason")
+                        output.add("SKIP ${c.title.isbn} $reason")
                         skipped++
                     } else {
                         renew(c)
                         done++
                     }
                 }
-                emit("RENEWALL ${m.id} renewed $done skipped $skipped")
+                output.add("RENEWALL ${m.id} renewed $done skipped $skipped")
             }
             "RESERVE" -> {
                 val m = member(t[1])
@@ -312,7 +300,7 @@ private class Library {
                 val p = b.queue.size
                 val dues = b.copies.filter { it.state == "LOANED" }.map { it.due }.sorted()
                 val estimate = if (p <= dues.size) dues[p-1].toString() else "none"
-                emit("RESERVE ${m.id} ${b.isbn} position $p estimate $estimate")
+                output.add("RESERVE ${m.id} ${b.isbn} position $p estimate $estimate")
             }
             "CANCEL" -> {
                 val m = member(t[1])
@@ -323,10 +311,10 @@ private class Library {
                 if (p >= 0) {
                     b.queue.removeAt(p)
                     m.queued--
-                    emit("CANCEL ${m.id} ${b.isbn} queue")
+                    output.add("CANCEL ${m.id} ${b.isbn} queue")
                 } else {
                     m.holds.remove(b.isbn)
-                    emit("CANCEL ${m.id} ${b.isbn} hold copy ${c!!.number}")
+                    output.add("CANCEL ${m.id} ${b.isbn} hold copy ${c!!.number}")
                     release(c!!)
                 }
             }
@@ -349,7 +337,7 @@ private class Library {
                     details.add("ITEM ${i+1} ${item.kind} paid ${money(applied)} remaining ${money(item.unpaid)}")
                 }
                 paid += amount-rest
-                emit("PAYFINE ${m.id} paid ${money(amount-rest)} change ${money(rest)} balance ${money(m.balance())}")
+                output.add("PAYFINE ${m.id} paid ${money(amount-rest)} change ${money(rest)} balance ${money(m.balance())}")
                 output.addAll(details)
             }
             "WAIVE" -> {
@@ -361,27 +349,27 @@ private class Library {
                 val amount = item.unpaid
                 item.unpaid = 0
                 waived += amount
-                emit("WAIVE ${m.id} item $n ${item.kind} amount ${money(amount)} balance ${money(m.balance())}")
+                output.add("WAIVE ${m.id} item $n ${item.kind} amount ${money(amount)} balance ${money(m.balance())}")
             }
             "FINES" -> {
                 val m = member(t[1])
-                emit("FINES ${m.id} items ${m.items.count { it.unpaid > 0 }} balance ${money(m.balance())}")
+                output.add("FINES ${m.id} items ${m.items.count { it.unpaid > 0 }} balance ${money(m.balance())}")
                 for ((i,item) in m.items.withIndex()) {
-                    if (item.unpaid > 0) emit("${i+1} day ${item.day} ${item.kind} ${item.isbn} amount ${money(item.amount)} remaining ${money(item.unpaid)}")
+                    if (item.unpaid > 0) output.add("${i+1} day ${item.day} ${item.kind} ${item.isbn} amount ${money(item.amount)} remaining ${money(item.unpaid)}")
                 }
             }
             "SEARCH" -> {
-                val keyword = lower(t.drop(1).joinToString(" "))
-                val found = titles.values.filter { lower(it.name).contains(keyword) }
-                    .sortedWith(compareBy<Title> { lower(it.name) }.thenBy { it.isbn })
-                emit("SEARCH ${found.size}")
-                for (b in found) emit("${b.isbn} ${b.count("AVAILABLE")}/${b.holdings()} ${b.name}")
+                val keyword = t.drop(1).joinToString(" ").lowercase()
+                val found = titles.values.filter { it.name.lowercase().contains(keyword) }
+                    .sortedWith(compareBy<Title> { it.name.lowercase() }.thenBy { it.isbn })
+                output.add("SEARCH ${found.size}")
+                for (b in found) output.add("${b.isbn} ${b.count("AVAILABLE")}/${b.holdings()} ${b.name}")
             }
             "OVERDUE" -> {
                 val found = copies.filter { it.state == "LOANED" && it.due < day }
                     .sortedWith(compareBy<Copy> { it.due }.thenBy { it.owner!!.id }.thenBy { it.title.isbn })
-                emit("OVERDUE ${found.size}")
-                for (c in found) emit("${c.owner!!.id} ${c.title.isbn} copy ${c.number} due ${c.due} late ${late(c)} fine ${money(fine(c))}")
+                output.add("OVERDUE ${found.size}")
+                for (c in found) output.add("${c.owner!!.id} ${c.title.isbn} copy ${c.number} due ${c.due} late ${late(c)} fine ${money(fine(c))}")
             }
             "NOTICES" -> {
                 val notices = mutableListOf<String>()
@@ -391,27 +379,27 @@ private class Library {
                     for (c in loans) if (c.due >= day && c.due <= day+2) notices.add("DUESOON ${m.id} ${c.title.isbn} due ${c.due}")
                     for (c in orderedHolds(m)) notices.add("PICKUP ${m.id} ${c.title.isbn} until ${c.expiry}")
                 }
-                emit("NOTICES ${notices.size}")
+                output.add("NOTICES ${notices.size}")
                 output.addAll(notices)
             }
             "MEMBER" -> showMember(member(t[1]))
             "MEMBERS" -> {
-                emit("MEMBERS ${members.size}")
-                for (m in members.values) emit("${m.id} ${m.type} loans ${m.loans.size} reservations ${m.reservations()} balance ${money(m.balance())} ${m.status()}")
+                output.add("MEMBERS ${members.size}")
+                for (m in members.values) output.add("${m.id} ${m.type} loans ${m.loans.size} reservations ${m.reservations()} balance ${money(m.balance())} ${m.status()}")
             }
             "BOOK" -> {
                 val b = book(t[1])
-                emit("BOOK ${b.isbn} ${b.name}")
-                emit("PRICE ${money(b.price)} copies ${b.holdings()} borrowed ${b.borrowed}")
+                output.add("BOOK ${b.isbn} ${b.name}")
+                output.add("PRICE ${money(b.price)} copies ${b.holdings()} borrowed ${b.borrowed}")
                 for (c in b.copies) {
                     val detail = when (c.state) {
                         "LOANED" -> " ${c.owner!!.id} due ${c.due}"
                         "HOLD" -> " ${c.owner!!.id} until ${c.expiry}"
                         else -> ""
                     }
-                    emit("COPY ${c.number} ${c.state}$detail")
+                    output.add("COPY ${c.number} ${c.state}$detail")
                 }
-                emit("QUEUE ${b.queue.size}"+(if (b.queue.isEmpty()) "" else " "+b.queue.joinToString(" ") { it.id }))
+                output.add("QUEUE ${b.queue.size}"+(if (b.queue.isEmpty()) "" else " "+b.queue.joinToString(" ") { it.id }))
             }
             "INVENTORY" -> {
                 val a = copies.count { it.state == "AVAILABLE" }
@@ -419,22 +407,22 @@ private class Library {
                 val h = copies.count { it.state == "HOLD" }
                 val x = copies.count { it.state == "LOST" }
                 val w = copies.count { it.state == "WITHDRAWN" }
-                emit("INVENTORY titles ${titles.size} copies ${a+l+h} available $a loaned $l hold $h lost $x withdrawn $w")
-                for (b in titles.values) emit("${b.isbn} copies ${b.holdings()} available ${b.count("AVAILABLE")} loaned ${b.count("LOANED")} hold ${b.count("HOLD")} queue ${b.queue.size}")
+                output.add("INVENTORY titles ${titles.size} copies ${a+l+h} available $a loaned $l hold $h lost $x withdrawn $w")
+                for (b in titles.values) output.add("${b.isbn} copies ${b.holdings()} available ${b.count("AVAILABLE")} loaned ${b.count("LOANED")} hold ${b.count("HOLD")} queue ${b.queue.size}")
             }
             "HISTORY" -> {
                 val m = member(t[1])
-                emit("HISTORY ${m.id} ${m.history.size}")
+                output.add("HISTORY ${m.id} ${m.history.size}")
                 output.addAll(m.history)
             }
             "STATS" -> {
                 val active = members.values.sumOf { it.loans.size }
                 val outstanding = members.values.sumOf { it.balance() }
-                emit("STATS day $day titles ${titles.size} members ${members.size} closed ${closed.size}")
-                emit("LOANS borrowed $borrowed returned $returned renewed $renewed lost $lost active $active")
-                emit("MONEY fines ${money(fines)} fees ${money(fees)} charges ${money(charges)} paid ${money(paid)} waived ${money(waived)} outstanding ${money(outstanding)}")
+                output.add("STATS day $day titles ${titles.size} members ${members.size} closed ${closed.size}")
+                output.add("LOANS borrowed $borrowed returned $returned renewed $renewed lost $lost active $active")
+                output.add("MONEY fines ${money(fines)} fees ${money(fees)} charges ${money(charges)} paid ${money(paid)} waived ${money(waived)} outstanding ${money(outstanding)}")
                 val top = titles.values.filter { it.borrowed > 0 }.sortedWith(compareByDescending<Title> { it.borrowed }.thenBy { it.isbn }).take(3)
-                for ((i,b) in top.withIndex()) emit("TOP ${i+1} ${b.isbn} ${b.borrowed} ${b.name}")
+                for ((i,b) in top.withIndex()) output.add("TOP ${i+1} ${b.isbn} ${b.borrowed} ${b.name}")
             }
         }
     }
@@ -446,7 +434,7 @@ private class Library {
     }
 }
 fun main() {
-    val input = BufferedReader(InputStreamReader(System.`in`))
+    val input = System.`in`.bufferedReader()
     val output = System.out.bufferedWriter()
     val library = Library()
     repeat(input.readLine().toInt()) {

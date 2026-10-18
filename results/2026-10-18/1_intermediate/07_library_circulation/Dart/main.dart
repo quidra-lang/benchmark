@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 class LibraryError implements Exception {
   final String message;
@@ -14,23 +15,18 @@ String money(int n) => '${n ~/ 100}.${(n % 100).toString().padLeft(2, '0')}';
 String normalizeISBN(String text) {
   final s = text.replaceAll('-', '');
   bool digit(int c) => c >= 48 && c <= 57;
+  int checksum(String digits) => digits.codeUnits.indexed.fold(0,
+      (sum, entry) => sum + (entry.$1.isEven ? 1 : 3) * (entry.$2 - 48));
   if (s.length == 10 && s.substring(0, 9).codeUnits.every(digit) && (digit(s.codeUnitAt(9)) || s[9] == 'X')) {
-    var total = 0;
-    for (var i = 0; i < 10; i++)
-      total += (10 - i) * (s[i] == 'X' ? 10 : s.codeUnitAt(i) - 48);
+    final total = s.codeUnits.indexed.fold(0,
+        (sum, entry) => sum + (10 - entry.$1) * (entry.$2 == 88 ? 10 : entry.$2 - 48));
     if (total % 11 != 0)
       fail('invalid isbn');
     final prefix = '978${s.substring(0, 9)}';
-    var sum = 0;
-    for (var i = 0; i < 12; i++)
-      sum += (i % 2 == 0 ? 1 : 3) * (prefix.codeUnitAt(i) - 48);
-    return '$prefix${(10 - sum % 10) % 10}';
+    return '$prefix${(10 - checksum(prefix) % 10) % 10}';
   }
   if (s.length == 13 && s.codeUnits.every(digit) && (s.startsWith('978') || s.startsWith('979'))) {
-    var sum = 0;
-    for (var i = 0; i < 13; i++)
-      sum += (i % 2 == 0 ? 1 : 3) * (s.codeUnitAt(i) - 48);
-    if (sum % 10 == 0)
+    if (checksum(s) % 10 == 0)
       return s;
   }
   fail('invalid isbn');
@@ -59,10 +55,10 @@ class Member {
 }
 
 class Title {
-  final String isbn, name;
+  final String isbn, name, folded;
   int price, borrowed = 0;
   final copies = <Copy>[], queue = <Member>[];
-  Title(this.isbn, this.name, this.price);
+  Title(this.isbn, this.name, this.price): folded = name.toLowerCase();
   int get holdings => copies.where((c) => ['AVAILABLE', 'LOANED', 'HOLD'].contains(c.state)).length;
   int count(String state) => copies.where((c) => c.state == state).length;
 }
@@ -100,16 +96,8 @@ class Library {
       fail('unknown book');
     return t;
   }
-  Copy? loan(Member m, Title t) {
-    for (final c in t.copies)
-      if (c.state == 'LOANED' && c.member == m) return c;
-    return null;
-  }
-  Copy? hold(Member m, Title t) {
-    for (final c in t.copies)
-      if (c.state == 'HOLD' && c.member == m) return c;
-    return null;
-  }
+  Copy? loan(Member m, Title t) => t.copies.where((c) => c.state == 'LOANED' && c.member == m).firstOrNull;
+  Copy? hold(Member m, Title t) => t.copies.where((c) => c.state == 'HOLD' && c.member == m).firstOrNull;
 
   int openDay(int t) {
     while (closed.contains(t))
@@ -117,11 +105,8 @@ class Library {
     return t;
   }
 
-  int daysLate(Copy c) => day > c.due ? day - c.due : 0;
-  int fine(Copy c) {
-    final value = daysLate(c) * c.member!.rate;
-    return value < c.member!.cap ? value : c.member!.cap;
-  }
+  int daysLate(Copy c) => max(0, day - c.due);
+  int fine(Copy c) => min(daysLate(c) * c.member!.rate, c.member!.cap);
 
   void charge(Member m, Title t, String kind, int value) {
     if (value == 0)
@@ -141,7 +126,9 @@ class Library {
     c.member = m;
     c.expiry = openDay(day + 3);
     out.writeln('HOLD ${c.title.isbn} copy ${c.number} ${m.id} until ${c.expiry}');
-  }(int, int) endLoan(Copy c, String result) {
+  }
+
+  (int, int) endLoan(Copy c, String result) {
     final m = c.member!, late = daysLate(c), value = fine(c);
     charge(m, c.title, 'FINE', value);
     m.history.add('$result ${c.title.isbn} copy ${c.number} from ${c.loanDay} to $day late $late fine ${money(value)}');
@@ -180,13 +167,15 @@ class Library {
       final target = int.parse(a[1]);
       if (target <= day)
         fail('invalid day');
+      final loanOrder = loans()..sort((a, b) => a.member!.id != b.member!.id ? a.member!.id.compareTo(b.member!.id) : a.title.isbn.compareTo(b.title.isbn));
+      final copyOrder = books().expand((t) => t.copies).toList();
       out.writeln('DAY $target');
       while (day < target) {
         day++;
-        final automatic = loans().where((c) => c.due + 365 <= day).toList()..sort((a, b) => a.member!.id != b.member!.id ? a.member!.id.compareTo(b.member!.id) : a.title.isbn.compareTo(b.title.isbn));
+        final automatic = loanOrder.where((c) => c.state == 'LOANED' && c.due + 365 <= day).toList();
         for (final c in automatic)
           processLoss(c, 'AUTOLOST', out);
-        final expired = holds().where((c) => c.expiry < day).toList()..sort((a, b) => a.title.isbn != b.title.isbn ? a.title.isbn.compareTo(b.title.isbn) : a.number.compareTo(b.number));
+        final expired = copyOrder.where((c) => c.state == 'HOLD' && c.expiry < day).toList();
         for (final c in expired) {
           final m = c.member!;
           charge(m, c.title, 'FEE', m.fee);
@@ -251,11 +240,12 @@ class Library {
           fail('already borrowed');
         if (m.blocked)
           fail('member blocked');
-        if (loans(m).any((c) => c.due < day))
+        final activeLoans = loans(m);
+        if (activeLoans.any((c) => c.due < day))
           fail('overdue loans');
-        if (loans(m).length >= m.loanLimit)
+        if (activeLoans.length >= m.loanLimit)
           fail('loan limit');
-        final available = t.copies.where((c) => c.state == 'AVAILABLE').toList(), c = held ?? (available.isEmpty ? null : available.first);
+        final c = held ?? t.copies.where((c) => c.state == 'AVAILABLE').firstOrNull;
         if (c == null)
           fail(t.count('HOLD') > 0 ? 'all copies on hold' : 'no copy available');
         c.state = 'LOANED';
@@ -337,7 +327,7 @@ class Library {
       var remaining = amount(a[2]);
       final applied = <(int, int)>[];
       for (var i = 0; i < m.items.length && remaining > 0; i++) {
-        final item = m.items[i], value = item.unpaid < remaining ? item.unpaid : remaining;
+        final item = m.items[i], value = min(item.unpaid, remaining);
         if (value == 0)
           continue;
         item.unpaid -= value;
@@ -369,8 +359,8 @@ class Library {
           out.writeln('${i + 1} day ${item.day} ${item.kind} ${item.isbn} amount ${money(item.amount)} remaining ${money(item.unpaid)}');
       }
     } else if (op == 'SEARCH') {
-      final keyword = a.skip(1).join(' ').toLowerCase(), selected = titles.values.where((t) => t.name.toLowerCase().contains(keyword)).toList();
-      selected.sort((a, b) => a.name.toLowerCase() != b.name.toLowerCase() ? a.name.toLowerCase().compareTo(b.name.toLowerCase()) : a.isbn.compareTo(b.isbn));
+      final keyword = a.skip(1).join(' ').toLowerCase(), selected = titles.values.where((t) => t.folded.contains(keyword)).toList();
+      selected.sort((a, b) => a.folded != b.folded ? a.folded.compareTo(b.folded) : a.isbn.compareTo(b.isbn));
       out.writeln('SEARCH ${selected.length}');
       for (final t in selected)
         out.writeln('${t.isbn} ${t.count('AVAILABLE')}/${t.holdings} ${t.name}');
@@ -422,7 +412,7 @@ class Library {
     } else if (op == 'INVENTORY') {
       final cs = copies();
       int count(String state) => cs.where((c) => c.state == state).length;
-      out.writeln('INVENTORY titles ${titles.length} copies ${books().fold(0, (s, t) => s + t.holdings)} available ${count('AVAILABLE')} loaned ${count('LOANED')} hold ${count('HOLD')} lost ${count('LOST')} withdrawn ${count('WITHDRAWN')}');
+      out.writeln('INVENTORY titles ${titles.length} copies ${titles.values.fold(0, (s, t) => s + t.holdings)} available ${count('AVAILABLE')} loaned ${count('LOANED')} hold ${count('HOLD')} lost ${count('LOST')} withdrawn ${count('WITHDRAWN')}');
       for (final t in books())
         out.writeln('${t.isbn} copies ${t.holdings} available ${t.count('AVAILABLE')} loaned ${t.count('LOANED')} hold ${t.count('HOLD')} queue ${t.queue.length}');
     } else if (op == 'HISTORY') {
@@ -434,7 +424,7 @@ class Library {
       out.writeln('STATS day $day titles ${titles.length} members ${members.length} closed ${closed.length}');
       out.writeln('LOANS borrowed $borrowed returned $returned renewed $renewed lost $lost active ${loans().length}');
       out.writeln('MONEY fines ${money(charged['FINE']!)} fees ${money(charged['FEE']!)} charges ${money(charged['PRICE']!)} paid ${money(paid)} waived ${money(waived)} outstanding ${money(members.values.fold(0, (s, m) => s + m.balance))}');
-      final top = books().where((t) => t.borrowed > 0).toList()..sort((a, b) => a.borrowed != b.borrowed ? b.borrowed.compareTo(a.borrowed) : a.isbn.compareTo(b.isbn));
+      final top = titles.values.where((t) => t.borrowed > 0).toList()..sort((a, b) => a.borrowed != b.borrowed ? b.borrowed.compareTo(a.borrowed) : a.isbn.compareTo(b.isbn));
       for (var i = 0; i < top.length && i < 3; i++)
         out.writeln('TOP ${i + 1} ${top[i].isbn} ${top[i].borrowed} ${top[i].name}');
     }
@@ -443,14 +433,13 @@ class Library {
 }
 
 void main() {
-  final library = Library(), output = StringBuffer(), count = int.parse(stdin.readLineSync()!);
+  final library = Library(), count = int.parse(stdin.readLineSync()!);
   for (var i = 0; i < count; i++) {
     final line = stdin.readLineSync()!;
     try {
-      output.write(library.execute(line));
+      stdout.write(library.execute(line));
     } on LibraryError catch (error) {
-      output.writeln('ERROR ${error.message}');
+      stdout.writeln('ERROR ${error.message}');
     }
   }
-  stdout.write(output);
 }

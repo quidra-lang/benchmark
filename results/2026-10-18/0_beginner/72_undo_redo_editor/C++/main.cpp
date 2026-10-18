@@ -4,7 +4,7 @@
 #include <array>
 
 int main() {
-    const std::array<std::string, 14> commands = {"undo", "type hello world", "delete 5", "type there",
+    std::array<std::string, 14> commands = {"undo", "type hello world", "delete 5", "type there",
         "undo", "undo", "redo", "type friend", "redo", "delete 20", "undo", "redo", "redo", "type see you"};
     std::string buffer;
     std::vector<std::string> undo, redo;

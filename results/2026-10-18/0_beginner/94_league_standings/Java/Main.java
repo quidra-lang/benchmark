@@ -1,8 +1,9 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
 
 public class Main {
-
     public static void main(String[] args) {
         String[] matches = {"Lions 0-3 Bears",
             "Tigers 2-2 Wolves",

@@ -8,7 +8,7 @@ const directions = [
   {name: "W", dr: 0, dc: -1}, {name: "NW", dr: -1, dc: -1},
   {name: "N", dr: -1, dc: 0}, {name: "NE", dr: -1, dc: 1}
 ];
-function find(word) {
+function find(word: string): string {
   for (let row = 0; row < board.length; row++) {
     for (let column = 0; column < board[0].length; column++) {
       for (const {name, dr, dc} of directions) {

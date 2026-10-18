@@ -8,14 +8,7 @@ pub fn main(init: std.process.Init) !void {
     var unique: [values.len]i32 = undefined;
     var count: usize = 0;
     for (values) |v| {
-        var found = false;
-        for (unique[0..count]) |u| {
-            if (u == v) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
+        if (std.mem.findScalar(i32, unique[0..count], v) == null) {
             unique[count] = v;
             count += 1;
         }

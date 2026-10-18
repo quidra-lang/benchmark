@@ -226,25 +226,10 @@ converted_line <- function(line,mode) {
 }
 
 clean_hi <- function(line) {
-    output <- character(0)
-    segments <- 0
-    p <- 1
-    while (p <= nchar(line)) {
-        character <- substr(line,p,p)
-        closing <- ""
-        if (character == "[") closing <- "]"
-        if (character == "(") closing <- ")"
-        ending <- if (closing == "") -1 else regexpr(closing,substring(line,p+1),fixed=TRUE)[1]
-        if (ending != -1) {
-            segments <- segments+1
-            p <- p+ending+1
-        } else {
-            output <- c(output,character)
-            p <- p+1
-        }
-    }
+    pattern <- "\\[[^\\]]*\\]|\\([^)]*\\)"
+    segments <- sum(gregexpr(pattern,line,perl=TRUE)[[1]] > 0)
     normalize <- function(text) trim_spaces(gsub(" +"," ",text))
-    result <- normalize(paste(output,collapse=""))
+    result <- normalize(gsub(pattern,"",line,perl=TRUE))
     prefix <- if (startsWith(result,"- ")) "- " else ""
     body <- if (prefix == "") result else substring(result,3)
     label <- regexpr("^[A-Z][A-Z0-9 ]*:",body)
@@ -588,25 +573,12 @@ modify <- function(command,args,cues) {
         replacements <- 0
         changed <- 0
         for (p in seq_along(cues)) {
-            local_count <- 0
-            lines <- character(0)
-            for (line in cues[[p]]$lines) {
-                pieces <- character(0)
-                position <- 1
-                repeat {
-                    rest <- substring(line,position)
-                    first <- regexpr(old,rest,fixed=TRUE)[1]
-                    if (first == -1) {
-                        pieces <- c(pieces,rest)
-                        break
-                    }
-                    pieces <- c(pieces,substr(rest,1,first-1),new)
-                    position <- position+first-1+nchar(old)
-                    local_count <- local_count+1
-                }
-                lines <- c(lines,paste(pieces,collapse=""))
-            }
+            lines <- cues[[p]]$lines
+            matches <- gregexpr(old,lines,fixed=TRUE)
+            counts <- vapply(matches,function(positions) sum(positions > 0),numeric(1))
+            regmatches(lines,matches) <- lapply(counts,function(count) rep(new,count))
             cues[[p]]$lines <- lines
+            local_count <- sum(counts)
             replacements <- replacements+local_count
             changed <- changed+(local_count > 0)
         }

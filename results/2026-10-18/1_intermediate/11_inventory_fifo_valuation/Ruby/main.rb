@@ -476,10 +476,9 @@ class Inventory
       rows = sales
       if cmd == 'MARGIN'
         emit(0, 'MARGIN')
-        total = [0, 0, 0]
+        total = Array.new(3) { |i| rows.values.sum { |row| row[i] } }
         rows.keys.sort.each do |code|
           margin_line(code, rows[code])
-          3.times { |i| total[i] += rows[code][i] }
         end
         margin_line('total', total)
       else

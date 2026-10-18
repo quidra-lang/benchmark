@@ -47,12 +47,14 @@ String spelling(String id, int system) {
   }
   final hepburn = system == 0 || system == 1;
   const common = { 'si': 'shi', 'ti': 'chi', 'tu': 'tsu', 'hu': 'fu', 'zi': 'ji' };
-  if (common.containsKey(id))
-    return common[id]!;
+  final commonSpelling = common[id];
+  if (commonSpelling != null)
+    return commonSpelling;
   if (hepburn) {
     const extra = { 'di': 'ji', 'du': 'zu', 'wi': 'i', 'we': 'e', 'wo': 'o' };
-    if (extra.containsKey(id))
-      return extra[id]!;
+    final extraSpelling = extra[id];
+    if (extraSpelling != null)
+      return extraSpelling;
   }
   if (id.length == 3) {
     final prefix = id.substring(0, 2), last = id.substring(2);
@@ -82,6 +84,7 @@ class Word {
   int pattern = 0; // lowercase, title, uppercase
   List<Mora> morae = [];
   List<Element> elements = [];
+  late List<List<int>> sortKey;
   Word(this.original, this.start, this.end, this.ordinal);
 }
 
@@ -140,8 +143,8 @@ class Engine {
 
   (int, int)? match(String text, int position, int system) {
     (int, int)? best;
+    final choices = system == 5 ? [0, 2, 3, 4] : [system];
     for (var id = 0; id < table.length; id++) {
-      final choices = system == 5 ? [0, 2, 3, 4] : [system];
       for (final s in choices) {
         final candidate = spellings[s][id];
         if (text.startsWith(candidate, position) && (best == null || candidate.length > best.$2)) {
@@ -290,8 +293,8 @@ class Engine {
     return pattern == 0 ? raw : pattern == 1 ? raw[0].toUpperCase() + raw.substring(1) : raw.toUpperCase();
   }
 
-  bool sameMorae(List<Mora> a, List<Mora> b) => a.length == b.length && [for (var i = 0; i < a.length; i++) a[i].id == b[i].id].every((x)
-    => x);
+  bool sameMorae(List<Mora> a, List<Mora> b) => a.length == b.length &&
+    a.indexed.every((entry) => entry.$2.id == b[entry.$1].id);
   List<Mora> loose(Word word) {
     final long = longElements(word.morae);
     return [for (var i = 0; i < word.morae.length; i++) if (!long[i]) word.morae[i]];
@@ -339,13 +342,8 @@ class Engine {
   }
 
   int compareWords(Word a, Word b) {
-    final rank = [for (final base in gojuon) order == 'GOJUON' ? gojuon.indexOf(base) : iroha.indexOf(base)];
-    final sequencesA = [a.elements.map((e) => rank[e.base]).toList(), a.elements.map((e) => e.voice).toList(),
-      a.elements.map((e) => e.size).toList(), a.morae.map((m) => m.id == moraL ? 1 : 0).toList()];
-    final sequencesB = [b.elements.map((e) => rank[e.base]).toList(), b.elements.map((e) => e.voice).toList(),
-      b.elements.map((e) => e.size).toList(), b.morae.map((m) => m.id == moraL ? 1 : 0).toList()];
     for (var i = 0; i < 4; i++) {
-      final c = compareSequence(sequencesA[i], sequencesB[i]);
+      final c = compareSequence(a.sortKey[i], b.sortKey[i]);
       if (c != 0)
         return c;
     }
@@ -601,12 +599,22 @@ class Engine {
       for (final word in parsed)
         counts[text.substring(0, word.start).split('/').length - 1] += word.morae.length;
       const expected = [5, 7, 5, 7, 7];
-      final ok = [for (var i = 0; i < counts.length; i++) counts[i] == expected[i]].every((x) => x);
+      final ok = counts.indexed.every((entry) => entry.$2 == expected[entry.$1]);
       return '${ok ? 'OK' : 'NG'} ${counts.length == 3 ? 'haiku' : 'tanka'} ${counts.join('-')}';
     }
     for (final word in parsed)
       collate(word);
     if (op == 'SORT' || op == 'INDEX') {
+      final ranks = order == 'GOJUON' ? List.generate(gojuon.length, (i) => i) :
+        gojuon.map((base) => iroha.indexOf(base)).toList();
+      for (final word in parsed) {
+        word.sortKey = [
+          word.elements.map((e) => ranks[e.base]).toList(),
+          word.elements.map((e) => e.voice).toList(),
+          word.elements.map((e) => e.size).toList(),
+          word.morae.map((m) => m.id == moraL ? 1 : 0).toList(),
+        ];
+      }
       parsed.sort(compareWords);
       if (op == 'SORT')
         return parsed.map((w) => w.original).join(' ');
@@ -629,8 +637,8 @@ class Engine {
     }
     if (op == 'KAIBUN') {
       final sequence = parsed.expand((w) => w.elements).map((e) => e.base).toList();
-      final palindrome = [for (var i = 0; i < sequence.length ~/ 2; i++) sequence[i] == sequence[sequence.length - 1 - i]].every((x)
-        => x);
+      final palindrome = sequence.indexed.take(sequence.length ~/ 2).every((entry) =>
+        entry.$2 == sequence[sequence.length - 1 - entry.$1]);
       return '${palindrome ? 'YES' : 'NO'} ${sequence.map((b) => gojuon[b]).join('.')}';
     }
     for (var i = 0; i < parsed.length; i++) {

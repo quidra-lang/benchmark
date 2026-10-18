@@ -21,10 +21,4 @@ for ($generation = 0; $generation <= 4; $generation++) {
     }
     $board = $following;
 }
-$alive = 0;
-foreach ($board as $row) {
-    foreach ($row as $live) {
-        if ($live) $alive++;
-    }
-}
-printf("alive: %d\n",$alive);
+printf("alive: %d\n",array_sum(array_map('array_sum',$board)));

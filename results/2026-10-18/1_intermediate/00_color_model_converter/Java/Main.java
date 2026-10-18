@@ -1,6 +1,8 @@
 import java.io.*;
 import java.util.*;
 import java.util.regex.*;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 public class Main {
     record Entry(String name, int[] color) {}
@@ -43,11 +45,8 @@ public class Main {
     static int percent(long a, long b) {
         return round(100 * a, b);
     }
-    static int mod(int value, int modulus) {
-        return Math.floorMod(value, modulus);
-    }
     static int clamp(int value) {
-        return Math.max(0, Math.min(255, value));
+        return Math.clamp(value, 0, 255);
     }
     static int root(long numerator, long scale) {
         long value = numerator / scale;
@@ -66,10 +65,8 @@ public class Main {
         return String.format(Locale.ROOT, "#%02X%02X%02X", color[0], color[1], color[2]);
     }
     List<Entry> table() {
-        List<Entry> result = new ArrayList<>();
-        for (int i = 0; i < NAMES.length; i++) result.add(new Entry(NAMES[i], unpack(RGB[i])));
-        result.addAll(registered);
-        return result;
+        return Stream.concat(IntStream.range(0, NAMES.length).mapToObj(i -> new Entry(NAMES[i], unpack(RGB[i]))),
+                registered.stream()).toList();
     }
     int[] color(String text) {
         if (HEX.matcher(text).matches()) {
@@ -94,14 +91,9 @@ public class Main {
         }
         throw new Invalid();
     }
-    static int maximum(int[] c) {
-        return Math.max(c[0], Math.max(c[1], c[2]));
-    }
-    static int minimum(int[] c) {
-        return Math.min(c[0], Math.min(c[1], c[2]));
-    }
     static int hue(int[] c) {
-        int maximum = maximum(c), difference = maximum - minimum(c);
+        var statistics = Arrays.stream(c).summaryStatistics();
+        int maximum = statistics.getMax(), difference = maximum - statistics.getMin();
         if (difference == 0) return 0;
         long numerator;
         if (maximum == c[0]) {
@@ -112,7 +104,8 @@ public class Main {
         return round(numerator, difference) % 360;
     }
     static int[] hsl(int[] c) {
-        int maximum = maximum(c), minimum = minimum(c), difference = maximum - minimum;
+        var statistics = Arrays.stream(c).summaryStatistics();
+        int maximum = statistics.getMax(), minimum = statistics.getMin(), difference = maximum - minimum;
         int saturation = difference == 0 ? 0 : percent(difference, 255 - Math.abs(maximum + minimum - 255));
         return new int[]{hue(c), saturation, percent(maximum + minimum, 510)};
     }
@@ -134,7 +127,8 @@ public class Main {
         return result;
     }
     static String model(String command, int[] c) {
-        int r = c[0], g = c[1], b = c[2], m = maximum(c), n = minimum(c), d = m - n;
+        var statistics = Arrays.stream(c).summaryStatistics();
+        int r = c[0], g = c[1], b = c[2], m = statistics.getMax(), n = statistics.getMin(), d = m - n;
         return switch (command) {
             case "HSL" -> {
                 int[] v = hsl(c);
@@ -217,25 +211,14 @@ public class Main {
         return result;
     }
     static int[] mean(List<int[]> colors) {
-        int[] result = new int[3];
-        for (int component = 0; component < 3; component++) {
-            int sum = 0;
-            for (int[] color : colors) sum += color[component];
-            result[component] = round(sum,colors.size());
-        }
-        return result;
+        return IntStream.range(0, 3).map(component ->
+                round(colors.stream().mapToLong(color -> color[component]).sum(), colors.size())).toArray();
     }
     static int[] ranges(List<int[]> colors) {
-        int[] ranges = new int[3];
-        for (int i = 0; i < 3; i++) {
-            int low = 255, high = 0;
-            for (int[] color : colors) {
-                low = Math.min(low,color[i]);
-                high = Math.max(high,color[i]);
-            }
-            ranges[i] = high - low;
-        }
-        return ranges;
+        return IntStream.range(0, 3).map(component -> {
+            var statistics = colors.stream().mapToInt(color -> color[component]).summaryStatistics();
+            return statistics.getMax() - statistics.getMin();
+        }).toArray();
     }
     static List<Cluster> palette(int k, List<int[]> colors) {
         List<List<int[]>> boxes = new ArrayList<>();
@@ -244,7 +227,7 @@ public class Main {
             int selected = -1, width = -1;
             for (int i = 0; i < boxes.size(); i++) {
                 if (boxes.get(i).size() < 2) continue;
-                int candidate = maximum(ranges(boxes.get(i)));
+                int candidate = Arrays.stream(ranges(boxes.get(i))).max().orElseThrow();
                 if (candidate > width) {
                     width = candidate;
                     selected = i;
@@ -262,14 +245,10 @@ public class Main {
             boxes.set(selected,new ArrayList<>(box.subList(0,middle)));
             boxes.add(selected + 1,new ArrayList<>(box.subList(middle,box.size())));
         }
-        List<Cluster> result = new ArrayList<>();
-        for (List<int[]> box : boxes) result.add(new Cluster(mean(box),box.size()));
-        return result;
+        return boxes.stream().map(box -> new Cluster(mean(box), box.size())).toList();
     }
     static String clusterText(List<Cluster> clusters) {
-        List<String> result = new ArrayList<>();
-        for (Cluster cluster : clusters) result.add(hex(cluster.color()) + ":" + cluster.count());
-        return String.join(" ",result);
+        return String.join(" ", clusters.stream().map(cluster -> hex(cluster.color()) + ":" + cluster.count()).toList());
     }
     static String kmeans(int k, List<int[]> colors) {
         List<Cluster> initial = palette(k,colors);
@@ -301,9 +280,7 @@ public class Main {
         return iteration + " " + clusterText(result);
     }
     List<int[]> colors(String[] tokens, int start) {
-        List<int[]> result = new ArrayList<>();
-        for (int i = start; i < tokens.length; i++) result.add(color(tokens[i]));
-        return result;
+        return Arrays.stream(tokens, start, tokens.length).map(this::color).toList();
     }
     static String colorsText(List<int[]> colors) {
         return String.join(" ",colors.stream().map(Main::hex).toList());
@@ -346,13 +323,8 @@ public class Main {
             case "PARSE": {
                 arity(t,1);
                 int[] c = color(t[1]);
-                String name = "-";
-                for (Entry entry : table()) {
-                    if (Arrays.equals(c,entry.color())) {
-                        name = entry.name();
-                        break;
-                    }
-                }
+                String name = table().stream().filter(entry -> Arrays.equals(c, entry.color()))
+                        .map(Entry::name).findFirst().orElse("-");
                 return hex(c) + " rgb(" + c[0] + "," + c[1] + "," + c[2] + ") " +
                     model("HSL",c) + " " + model("HSV",c) + " " + model("HWB",c) + " " +
                     model("CMYK",c) + " " + model("YCBCR",c) + " " + model("YIQ",c) + " " + name;
@@ -431,10 +403,11 @@ public class Main {
             case "GRAY": {
                 arity(t,2);
                 int[] c = color(t[1]);
+                var statistics = Arrays.stream(c).summaryStatistics();
                 int value = switch (t[2]) {
                     case "LUMA" -> round(299L*c[0]+587L*c[1]+114L*c[2],1000);
-                    case "AVERAGE" -> round(c[0]+c[1]+c[2],3);
-                    case "LIGHTNESS" -> round(maximum(c)+minimum(c),2);
+                    case "AVERAGE" -> round(statistics.getSum(),3);
+                    case "LIGHTNESS" -> round(statistics.getMax()+statistics.getMin(),2);
                     case "HSP" -> root(299L*c[0]*c[0]+587L*c[1]*c[1]+114L*c[2]*c[2],1000);
                     default -> throw new Invalid();
                 };
@@ -449,9 +422,9 @@ public class Main {
                     for (int i = 0; i < 3; i++) result[i] = round((long)a[i]*(100-p)+(long)b[i]*p,100);
                 } else {
                     int[] first = hsl(a), second = hsl(b);
-                    int e = mod(second[0]-first[0],360);
+                    int e = Math.floorMod(second[0]-first[0],360);
                     if (e > 180) e -= 360;
-                    result = fromHsl(mod(first[0]+away((long)e*p,100),360),
+                    result = fromHsl(Math.floorMod(first[0]+away((long)e*p,100),360),
                         first[1]+away((long)(second[1]-first[1])*p,100),first[2]+away((long)(second[2]-first[2])*p,100));
                 }
                 return hex(result);
@@ -519,7 +492,7 @@ public class Main {
                     }
                 }
                 List<int[]> result = new ArrayList<>();
-                for (int d : rotations) result.add(fromHsl(mod(values[0]+d,360),values[1],values[2]));
+                for (int d : rotations) result.add(fromHsl(Math.floorMod(values[0]+d,360),values[1],values[2]));
                 return colorsText(result);
             }
             case "LIGHTEN", "DARKEN", "SATURATE", "DESATURATE": {
@@ -602,8 +575,8 @@ public class Main {
             case "SORT": {
                 require(t.length >= 2 && t.length <= 33);
                 List<int[]> options = colors(t,1);
-                options.sort(Comparator.<int[]>comparingInt(c -> hsl(c)[0])
-                    .thenComparingInt(c -> hsl(c)[1]).thenComparingInt(c -> hsl(c)[2]));
+                options = options.stream().sorted(Comparator.<int[]>comparingInt(c -> hsl(c)[0])
+                    .thenComparingInt(c -> hsl(c)[1]).thenComparingInt(c -> hsl(c)[2])).toList();
                 return colorsText(options);
             }
             case "DITHER": {

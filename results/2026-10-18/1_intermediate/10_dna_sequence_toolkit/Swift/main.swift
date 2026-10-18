@@ -3,7 +3,6 @@ import Foundation
 let bases = "ACGT"
 let symbols = "ACGTRYSWKMBDHVN"
 let complements = "TGCAYRSWMKVHDBN"
-let hexAlphabet = "0123456789ABCDEF"
 let masks = [1,2,4,8,5,10,6,9,12,3,14,13,11,7,15]
 let amino = "ACDEFGHIKLMNPQRSTVWY"
 let residues = [71079,103139,115089,129116,147177,57052,137141,113160,128174,113160,131193,114104,97117,128131,156188,87078,101105,99133,186213,163176]
@@ -66,8 +65,7 @@ func revcomp(_ s: String) -> String { String(complement(s).reversed()) }
 func complementBase(_ c: Character) -> Character { bases[3-Array(bases).firstIndex(of:c)!] }
 func gc(_ s: String) -> Int { s.utf8.filter { $0 == 71 || $0 == 67 }.count }
 func fixed(_ n: Int, _ divisor: Int, _ width: Int) -> String {
-    let fraction = String(n%divisor)
-    return "\(n/divisor)."+String(repeating:"0",count:width-fraction.count)+fraction
+    String(format:"%ld.%0*ld",locale:Locale(identifier:"en_US_POSIX"),n/divisor,width,n%divisor)
 }
 func pct(_ a: Int, _ b: Int) -> String { fixed(10000*a/b,100,2) }
 func milli(_ n: Int) -> String { fixed(n,1000,3) }
@@ -84,9 +82,7 @@ func codons(_ s: String, _ frame: Int) -> [String] {
 }
 func translation(_ codons: [String]) -> String { String(codons.map { genetic[$0]! }) }
 func wordCounts(_ words: [String]) -> [String:Int] {
-    var result: [String:Int] = [:]
-    for word in words { result[word,default:0] += 1 }
-    return result
+    Dictionary(grouping:words,by:{ $0 }).mapValues { $0.count }
 }
 func frequency(_ counts: [String:Int]) -> [String] { counts.keys.sorted { counts[$0] == counts[$1] ? $0 < $1 : counts[$0]! > counts[$1]! } }
 func occurrences(_ s: String, _ motif: String) -> [Int] {
@@ -94,11 +90,9 @@ func occurrences(_ s: String, _ motif: String) -> [Int] {
     let pattern = Array(motif).map { masks[Array(symbols).firstIndex(of:$0)!] }
     if pattern.count > sequence.count { return [] }
     let codes = sequence.map { 1 << Array(bases).firstIndex(of:$0)! }
-    var result: [Int] = []
-    for i in 0...(sequence.count-pattern.count) {
-        if pattern.indices.allSatisfy({ pattern[$0]&codes[i+$0] != 0 }) { result.append(i+1) }
-    }
-    return result
+    return (0...(sequence.count-pattern.count)).filter { i in
+        pattern.indices.allSatisfy { pattern[$0]&codes[i+$0] != 0 }
+    }.map { $0+1 }
 }
 func transition(_ a: Character, _ b: Character) -> Bool {
     a != b && ("AG".contains(a) && "AG".contains(b) || "CT".contains(a) && "CT".contains(b))
@@ -110,12 +104,7 @@ func repeatCount(_ s: String, _ i: Int, _ u: Int) -> Int {
     return count
 }
 func primitive(_ s: String) -> Bool {
-    if s.count > 1 {
-        for d in 1..<s.count where s.count%d == 0 {
-            if String(repeating:s.part(0,d),count:s.count/d) == s { return false }
-        }
-    }
-    return true
+    (1..<s.count).allSatisfy { s.count%$0 != 0 || String(repeating:s.part(0,$0),count:s.count/$0) != s }
 }
 func selfcomp(_ s: String) -> Int {
     let a = Array(s)
@@ -197,12 +186,11 @@ final class Toolkit {
         schemas[c] = args
         arities[c] = low...high
     }
-    func emit(_ s: String) { output.append(s) }
     func store(_ name: String, _ sequence: String) throws {
         try error(sequence.count > 500,"too long")
         let replacing = registry[name] != nil
         registry[name] = sequence
-        emit((replacing ? "replaced " : "stored ")+"\(name) \(sequence.count) nt")
+        output.append((replacing ? "replaced " : "stored ")+"\(name) \(sequence.count) nt")
     }
     func validate(_ command: String, _ a: [String], _ nums: inout [Int], _ sequences: inout [String]) throws {
         guard let schema = schemas[command] else { throw Fault.reason("unknown command "+command) }
@@ -264,7 +252,7 @@ final class Toolkit {
             best = h[m][n]
         }
         if local && best == 0 {
-            emit("score 0")
+            output.append("score 0")
             return
         }
         var i = bi
@@ -292,10 +280,10 @@ final class Toolkit {
         let middle: [Character] = left.indices.map { k in left[k] == "-" || right[k] == "-" ? "-" : left[k] == right[k] ? "|" : "*" }
         let identity = middle.filter { $0 == "|" }.count
         let gaps = middle.filter { $0 == "-" }.count
-        emit("score \(best) a \(i+1)-\(bi) b \(j+1)-\(bj) identity \(identity)/\(left.count) gaps \(gaps)")
-        emit(String(left))
-        emit(String(middle))
-        emit(String(right))
+        output.append("score \(best) a \(i+1)-\(bi) b \(j+1)-\(bj) identity \(identity)/\(left.count) gaps \(gaps)")
+        output.append(String(left))
+        output.append(String(middle))
+        output.append(String(right))
     }
     func pair(_ a: Character, _ b: Character) -> Bool { complementBase(a) == b || a == "G" && b == "T" || a == "T" && b == "G" }
     func value(_ f: [[Int]], _ i: Int, _ j: Int) -> Int { i > j ? 0 : f[i][j] }
@@ -330,8 +318,8 @@ final class Toolkit {
                 }
             }
         }
-        emit(String(structure))
-        emit("pairs \(f[0][n-1])")
+        output.append(String(structure))
+        output.append("pairs \(f[0][n-1])")
     }
     func primer(_ s: String) {
         let a = Array(s)
@@ -355,10 +343,10 @@ final class Toolkit {
         let ok = [n >= 18 && n <= 25,40*n <= 100*g && 100*g <= 60*n,temperature >= 520 && temperature <= 620,clamp >= 1 && clamp <= 3,bestRun <= 4,repeats <= 4,selfMatch <= 6]
         var failed: [String] = []
         for i in 0..<7 {
-            emit(names[i]+" "+values[i]+" "+(ok[i] ? "OK" : "FAIL"))
+            output.append(names[i]+" "+values[i]+" "+(ok[i] ? "OK" : "FAIL"))
             if !ok[i] { failed.append(names[i]) }
         }
-        emit(failed.isEmpty ? "PASS" : "FAIL "+list(failed))
+        output.append(failed.isEmpty ? "PASS" : "FAIL "+list(failed))
     }
     func assemble(_ name: String, _ minimum: Int, _ sequences: [String]) throws {
         var unique: [String] = []
@@ -390,11 +378,10 @@ final class Toolkit {
                 }
             }
         }
-        var longest = fragments[0]
-        for s in fragments where s.count > longest.count { longest = s }
+        let longest = fragments.max { $0.count < $1.count }!
         try error(longest.count > 500,"too long")
-        emit("contigs \(fragments.count)")
-        for s in fragments { emit("\(s.count) \(s)") }
+        output.append("contigs \(fragments.count)")
+        for s in fragments { output.append("\(s.count) \(s)") }
         try store(name,longest)
     }
     func execute(_ line: String) throws {
@@ -417,24 +404,24 @@ final class Toolkit {
             let next = a[2][0]
             try error(old == next,"no change")
             registry[a[0]] = s.part(0,nums[1]-1)+String(next)+s.part(nums[1],n)
-            emit("\(a[0]) \(old)\(nums[1])\(next) "+(transition(old,next) ? "transition" : "transversion"))
+            output.append("\(a[0]) \(old)\(nums[1])\(next) "+(transition(old,next) ? "transition" : "transversion"))
         case "DEL":
             registry.removeValue(forKey:a[0])
-            emit("deleted "+a[0])
+            output.append("deleted "+a[0])
         case "LIST":
-            if registry.isEmpty { emit("no sequences") }
-            for name in registry.keys.sorted() { emit("\(name) \(registry[name]!.count) nt") }
-        case "REVCOMP": emit(revcomp(s))
-        case "COMPLEMENT": emit(complement(s))
-        case "REVERSE": emit(String(s.reversed()))
-        case "TRANSCRIBE": emit(s.replacingOccurrences(of:"T",with:"U"))
+            if registry.isEmpty { output.append("no sequences") }
+            for name in registry.keys.sorted() { output.append("\(name) \(registry[name]!.count) nt") }
+        case "REVCOMP": output.append(revcomp(s))
+        case "COMPLEMENT": output.append(complement(s))
+        case "REVERSE": output.append(String(s.reversed()))
+        case "TRANSCRIBE": output.append(s.replacingOccurrences(of:"T",with:"U"))
         case "TRANSLATE":
             let protein = translation(codons(s,nums[1]))
-            emit(protein.isEmpty ? "none" : protein)
+            output.append(protein.isEmpty ? "none" : protein)
         case "CODONS":
             let counts = wordCounts(codons(s,nums[1]))
-            if counts.isEmpty { emit("none") }
-            for c in frequency(counts) { emit("\(c) \(genetic[c]!) \(counts[c]!)") }
+            if counts.isEmpty { output.append("none") }
+            for c in frequency(counts) { output.append("\(c) \(genetic[c]!) \(counts[c]!)") }
         case "PROTEIN":
             let full = translation(codons(s,nums[1]))
             let protein = String(full.prefix { $0 != "*" })
@@ -442,9 +429,9 @@ final class Toolkit {
             let weight = 18015+protein.reduce(0) { $0+residues[Array(amino).firstIndex(of:$1)!] }
             let charge = protein.filter { "KR".contains($0) }.count-protein.filter { "DE".contains($0) }.count
             let counts = wordCounts(protein.map { String($0) })
-            emit(protein)
-            emit("length \(protein.count) mass \(milli(weight)) charge "+(charge > 0 ? "+" : "")+String(charge))
-            emit(frequency(counts).map { "\($0)=\(counts[$0]!)" }.joined(separator:" "))
+            output.append(protein)
+            output.append("length \(protein.count) mass \(milli(weight)) charge "+(charge > 0 ? "+" : "")+String(charge))
+            output.append(frequency(counts).map { "\($0)=\(counts[$0]!)" }.joined(separator:" "))
         case "ORFS":
             var found: [Orf] = []
             for frame in [1,2,3,-1,-2,-3] {
@@ -462,37 +449,37 @@ final class Toolkit {
                     }
                 }
             }
-            if found.isEmpty { emit("none") }
-            for o in found.sorted(by:{ $0.left < $1.left }) { emit((o.frame > 0 ? "+" : "")+"\(o.frame) \(o.left) \(o.right) \(o.protein.count) \(o.protein)") }
+            if found.isEmpty { output.append("none") }
+            for o in found.sorted(by:{ $0.left < $1.left }) { output.append((o.frame > 0 ? "+" : "")+"\(o.frame) \(o.left) \(o.right) \(o.protein.count) \(o.protein)") }
         case "GC":
             let composition = bases.map { base in "\(base)=\(s.filter { $0 == base }.count)" }.joined(separator:" ")
-            emit(composition+" GC=\(pct(gc(s),n))%")
+            output.append(composition+" GC=\(pct(gc(s),n))%")
         case "GCWINDOW":
             try error(nums[1] > n,"window too large")
-            for i in stride(from:0,through:n-nums[1],by:nums[2]) { emit("\(i+1)-\(i+nums[1]) \(pct(gc(s.part(i,i+nums[1])),nums[1]))%") }
+            for i in stride(from:0,through:n-nums[1],by:nums[2]) { output.append("\(i+1)-\(i+nums[1]) \(pct(gc(s.part(i,i+nums[1])),nums[1]))%") }
         case "SKEW":
             var skew = [0]
             for c in s { skew.append(skew.last!+(c == "G" ? 1 : c == "C" ? -1 : 0)) }
             let low = skew.min()!
             let high = skew.max()!
-            emit("min \(low) at "+list(skew.indices.filter { skew[$0] == low }))
-            emit("max \(high) at "+list(skew.indices.filter { skew[$0] == high }))
+            output.append("min \(low) at "+list(skew.indices.filter { skew[$0] == low }))
+            output.append("max \(high) at "+list(skew.indices.filter { skew[$0] == high }))
         case "KMERS":
             try error(nums[1] > n,"k too large")
             let words = (0...(n-nums[1])).map { s.part($0,$0+nums[1]) }
             let counts = wordCounts(words)
-            emit("\(words.count) windows \(counts.count) distinct")
-            for word in frequency(counts).prefix(nums[2]) { emit("\(word) \(counts[word]!)") }
+            output.append("\(words.count) windows \(counts.count) distinct")
+            for word in frequency(counts).prefix(nums[2]) { output.append("\(word) \(counts[word]!)") }
         case "FIND":
-            emit("forward "+list(occurrences(s,a[1])))
-            emit("reverse "+list(occurrences(s,revcomp(a[1]))))
+            output.append("forward "+list(occurrences(s,a[1])))
+            output.append("reverse "+list(occurrences(s,revcomp(a[1]))))
         case "RESTRICT":
             var allCuts = Set<Int>()
             for enzyme in a.dropFirst() {
                 let e = enzymes.firstIndex(of:enzyme)!
                 let found = occurrences(s,sites[e]).map { $0+cuts[e]-1 }.filter { $0 >= 1 && $0 < n }
                 allCuts.formUnion(found)
-                emit(enzyme+" "+list(found))
+                output.append(enzyme+" "+list(found))
             }
             let ends = allCuts.sorted()+[n]
             var previous = 0
@@ -503,8 +490,8 @@ final class Toolkit {
                 sizes.append(end-previous)
                 previous = end
             }
-            emit("fragments "+list(fragments))
-            emit("sizes "+list(sizes.sorted(by:>)))
+            output.append("fragments "+list(fragments))
+            output.append("sizes "+list(sizes.sorted(by:>)))
         case "PALINDROMES":
             try error(nums[1] > nums[2],"invalid range")
             var count = 0
@@ -514,13 +501,13 @@ final class Toolkit {
                     for length in nums[1]...last {
                         let part = s.part(i,i+length)
                         if part == revcomp(part) {
-                            emit("\(i+1) \(length) \(part)")
+                            output.append("\(i+1) \(length) \(part)")
                             count += 1
                         }
                     }
                 }
             }
-            if count == 0 { emit("none") }
+            if count == 0 { output.append("none") }
         case "REPEATS":
             try error(nums[1] > nums[2],"invalid range")
             var found: [Repeat] = []
@@ -535,20 +522,15 @@ final class Toolkit {
                     } else { i += 1 }
                 }
             }
-            if found.isEmpty { emit("none") }
-            for r in found.sorted(by:{ $0.start == $1.start ? $0.unitLength < $1.unitLength : $0.start < $1.start }) { emit("\(r.start)-\(r.end) \(r.unit)x\(r.count)") }
+            if found.isEmpty { output.append("none") }
+            for r in found.sorted(by:{ $0.start == $1.start ? $0.unitLength < $1.unitLength : $0.start < $1.start }) { output.append("\(r.start)-\(r.end) \(r.unit)x\(r.count)") }
         case "HAMMING":
             let b = sequences[1]
             try error(n != b.count,"length mismatch")
-            let left = Array(s)
-            let right = Array(b)
-            var distance = 0
-            var transitions = 0
-            for i in left.indices where left[i] != right[i] {
-                distance += 1
-                if transition(left[i],right[i]) { transitions += 1 }
-            }
-            emit("distance \(distance) transitions \(transitions) transversions \(distance-transitions)")
+            let pairs = Array(zip(s,b))
+            let distance = pairs.filter { $0.0 != $0.1 }.count
+            let transitions = pairs.filter { transition($0.0,$0.1) }.count
+            output.append("distance \(distance) transitions \(transitions) transversions \(distance-transitions)")
         case "ALIGN": align(s,sequences[1],a[2] == "LOCAL",nums[3],nums[4],nums[5])
         case "CONSENSUS":
             try error(sequences.contains { $0.count != n },"length mismatch")
@@ -564,11 +546,11 @@ final class Toolkit {
                 let mask = winners.reduce(0) { $0+(1 << $1) }
                 iupac.append(symbols[masks.firstIndex(of:mask)!])
             }
-            for b in 0..<4 { emit("\(bases[b]) "+list(profile[b])) }
-            emit("consensus "+consensus)
-            emit("iupac "+iupac)
-        case "TM": emit("Tm \(fixed(tm(s),10,1)) "+(n < 14 ? "wallace" : "gc"))
-        case "MASS": emit("ss \(milli(mass(s))) ds \(milli(mass(s)+mass(revcomp(s))))")
+            for b in 0..<4 { output.append("\(bases[b]) "+list(profile[b])) }
+            output.append("consensus "+consensus)
+            output.append("iupac "+iupac)
+        case "TM": output.append("Tm \(fixed(tm(s),10,1)) "+(n < 14 ? "wallace" : "gc"))
+        case "MASS": output.append("ss \(milli(mass(s))) ds \(milli(mass(s)+mass(revcomp(s))))")
         case "PRIMER": primer(s)
         case "FOLD": try fold(s,nums[1])
         case "ASSEMBLE": try assemble(a[0],nums[1],sequences)
@@ -578,15 +560,13 @@ final class Toolkit {
             for i in stride(from:0,to:n,by:4) {
                 var value = 0
                 for j in 0..<4 { value = 4*value+(i+j < n ? Array(bases).firstIndex(of:sequence[i+j])! : 0) }
-                hex.append(hexAlphabet[value/16])
-                hex.append(hexAlphabet[value%16])
+                hex += String(format:"%02X",locale:Locale(identifier:"en_US_POSIX"),value)
             }
-            emit("\(n) \(hex)")
+            output.append("\(n) \(hex)")
         case "UNPACK":
-            let hex = Array(a[2])
             var decoded: [Character] = []
-            for i in stride(from:0,to:hex.count,by:2) {
-                let value = 16*Array(hexAlphabet).firstIndex(of:hex[i])!+Array(hexAlphabet).firstIndex(of:hex[i+1])!
+            for i in stride(from:0,to:a[2].count,by:2) {
+                let value = Int(a[2].part(i,i+2),radix:16)!
                 for shift in [6,4,2,0] { decoded.append(bases[(value >> shift)&3]) }
             }
             for i in nums[1]..<decoded.count { try error(decoded[i] != "A","invalid padding") }
@@ -599,7 +579,7 @@ final class Toolkit {
         do { try execute(line) }
         catch Fault.reason(let reason) {
             output = []
-            emit("ERROR "+reason)
+            output.append("ERROR "+reason)
         }
         catch { fatalError("Unexpected error") }
         return output

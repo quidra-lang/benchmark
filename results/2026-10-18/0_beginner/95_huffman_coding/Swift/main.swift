@@ -1,5 +1,3 @@
-import Foundation
-
 class Node {
     let weight: Int, minimum: Int
     let symbol: Character?
@@ -30,11 +28,9 @@ while trees.count > 1 {
 }
 var mapping = [Character:String]()
 codes(trees[0],"",&mapping)
-var bits = 0
 for ch in frequencies.keys.sorted() {
     let code = mapping[ch]!, count = frequencies[ch]!
-    bits += count * code.count
     print("'\(ch)' freq=\(count) code=\(code)")
 }
-print("encoded bits: \(bits)")
+print("encoded bits: \(frequencies.reduce(0) { $0 + $1.value * mapping[$1.key]!.count })")
 print("fixed 8-bit: \(text.count * 8)")

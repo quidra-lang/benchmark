@@ -21,16 +21,13 @@ fn mergeSort(out: *std.Io.Writer, a: *[10]i32, l: usize, r: usize, inversions: *
         }
         len += 1;
     }
-    while (i <= m) : (i += 1) {
-        temp[len] = a[i];
-        len += 1;
-    }
-    while (j <= r) : (j += 1) {
-        temp[len] = a[j];
-        len += 1;
-    }
-    for (temp[0..len], 0..) |v, k|
-        a[l + k] = v;
+    const left = m + 1 - i;
+    @memcpy(temp[len..][0..left], a[i..m + 1]);
+    len += left;
+    const right = r + 1 - j;
+    @memcpy(temp[len..][0..right], a[j..r + 1]);
+    len += right;
+    @memcpy(a[l..r + 1], temp[0..len]);
     try out.print("merge [{d}..{d}]:", .{ l, r });
     for (temp[0..len]) |v|
         try out.print(" {d}", .{ v });

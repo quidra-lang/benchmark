@@ -1,27 +1,16 @@
-fn solve(board: &mut [[u8; 9]; 9],
-placements: &mut u64) -> bool {
+fn solve(board: &mut [[u8; 9]; 9], placements: &mut u64) -> bool {
     let empty = (0..81).find(|&i| board[i / 9][i % 9] == 0);
     let Some(index) = empty else {
         return true;
     };
     let (row, col) = (index / 9, index % 9);
     for d in 1..=9 {
-        let mut safe = true;
-        for k in 0..9 {
-            if board[row][k] == d || board[k][col] == d {
-                safe = false;
-            }
-        }
-        for r in row / 3 * 3..row / 3 * 3 + 3 {
-            for c in col / 3 * 3..col / 3 * 3 + 3 {
-                if board[r][c] == d {
-                    safe = false;
-                }
-            }
-        }
+        let safe = (0..9).all(|k| board[row][k] != d && board[k][col] != d)
+            && (row / 3 * 3..row / 3 * 3 + 3).all(|r|
+                (col / 3 * 3..col / 3 * 3 + 3).all(|c| board[r][c] != d));
         if safe {
             board[row][col] = d;
-            * placements += 1;
+            *placements += 1;
             if solve(board, placements) {
                 return true;
             }

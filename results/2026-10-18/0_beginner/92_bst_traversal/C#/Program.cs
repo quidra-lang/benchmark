@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Globalization;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
@@ -58,8 +57,7 @@ var after = new List<int>();
 Traverse(root,1,after);
 Console.WriteLine($"preorder after deletions: {string.Join(" ",after)}");
 Console.WriteLine($"height after deletions: {Height(root)}");
-class Node {
-    public int Key;
+class Node(int key) {
+    public int Key = key;
     public Node? Left, Right;
-    public Node(int key) { Key = key; }
 }

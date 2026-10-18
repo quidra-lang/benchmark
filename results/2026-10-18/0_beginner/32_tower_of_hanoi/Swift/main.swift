@@ -1,5 +1,3 @@
-import Foundation
-
 func hanoi(_ n: Int, _ source: String, _ target: String, _ auxiliary: String) -> Int {
     if n == 0 { return 0 }
     let count = hanoi(n - 1, source, auxiliary, target)

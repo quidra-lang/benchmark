@@ -16,7 +16,10 @@ fn main() {
                     break;
                 }
                 let value = match token {
-                    "+" => a + b, "-" => a - b, "*" => a * b, _ => a / b
+                    "+" => a + b,
+                    "-" => a - b,
+                    "*" => a * b,
+                    _ => a / b,
                 };
                 stack.push(value);
             } else {

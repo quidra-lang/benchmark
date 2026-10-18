@@ -10,9 +10,7 @@ struct Node {
 std::vector<Node> nodes;
 int insert(int root, int key) {
     if (root < 0) {
-        nodes.push_back({
-            key, -1, -1
-        });
+        nodes.push_back({key});
         return static_cast<int>(nodes.size()) - 1;
     }
     if (key < nodes[root].key) {
@@ -67,7 +65,7 @@ int main() {
     int root = -1;
     for (int key : std::array<int, 12>{50, 27, 74, 13, 39, 62, 88, 6, 31, 45, 70, 34})
         root = insert(root, key);
-    const std::array<std::string, 3> labels = {"inorder", "preorder", "postorder"};
+    std::array<std::string, 3> labels = {"inorder", "preorder", "postorder"};
     for (int mode = 0; mode < 3; mode++) {
         std::cout << labels[mode] << ':';
         traverse(root, mode);

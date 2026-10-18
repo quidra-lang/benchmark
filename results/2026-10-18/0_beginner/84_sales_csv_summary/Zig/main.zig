@@ -65,17 +65,13 @@ pub fn main(init: std.process.Init) !void {
     }
     std.mem.sort(Entry, regions[0..rlen], {}, salesLess);
     std.mem.sort(Entry, products[0..plen], {}, nameLess);
-    std.mem.sort(Entry, dates[0..dlen], {}, nameLess);
+    std.mem.sort(Entry, dates[0..dlen], {}, salesLess);
     try out.print("total: {d}\n", .{ total });
     for (regions[0..rlen]) |e|
         try out.print("{s}: {d}\n", .{ e.name, e.value });
     for (products[0..plen]) |e|
         try out.print("{s}: {d}\n", .{ e.name, e.value });
-    var best = dates[0];
-    for (dates[1..dlen]) |e| {
-        if (e.value > best.value)
-            best = e;
-    }
+    const best = dates[0];
     try out.print("best day: {s} ({d})\n", .{ best.name, best.value });
     try out.flush();
 }

@@ -3,7 +3,7 @@ for (identifier in c("user_name","maxRetryCount","ShoppingCartItem","background-
     separated <- gsub("([A-Z])"," \\1",identifier)
     words <- strsplit(tolower(gsub("[_-]"," ",separated))," +")[[1]]
     words <- words[nzchar(words)]
-    capitals <- vapply(words,capitalize,character(1))
+    capitals <- capitalize(words)
     camel <- paste0(words[1],paste(capitals[-1],collapse=""))
     cat(sprintf("%s: snake=%s, camel=%s, pascal=%s, kebab=%s\n",identifier,paste(words,collapse="_"),camel,paste(capitals,collapse=""),paste(words,collapse="-")))
 }

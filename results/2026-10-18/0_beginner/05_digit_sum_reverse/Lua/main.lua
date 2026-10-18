@@ -1,12 +1,8 @@
 for _, original in ipairs({7, 98000, 4096, 50301, 2718281, 123456789}) do
-    local remaining = original
-    local count, digit_sum, reversed = 0, 0, 0
-    while remaining > 0 do
-        local digit = remaining % 10
-        count = count + 1
-        digit_sum = digit_sum + digit
-        reversed = reversed * 10 + digit
-        remaining = remaining // 10
+    local digits = tostring(original)
+    local digit_sum = 0
+    for digit in digits:gmatch("%d") do
+        digit_sum = digit_sum + tonumber(digit)
     end
-    io.write(string.format("%d: digits=%d sum=%d reversed=%d\n", original, count, digit_sum, reversed))
+    io.write(string.format("%d: digits=%d sum=%d reversed=%d\n", original, #digits, digit_sum, tonumber(digits:reverse())))
 end

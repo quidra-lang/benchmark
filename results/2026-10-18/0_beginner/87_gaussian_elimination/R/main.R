@@ -1,12 +1,7 @@
 solve_system <- function(values) {
     n <- nrow(values)
     for (k in seq_len(n)) {
-        pivot <- k
-        if (k < n) {
-            for (i in (k+1):n) {
-                if (abs(values[i,k]) > abs(values[pivot,k])) pivot <- i
-            }
-        }
+        pivot <- k-1 + which.max(abs(values[k:n,k]))
         if (pivot != k) values[c(k,pivot),] <- values[c(pivot,k),]
         if (k < n) {
             for (i in (k+1):n) {
@@ -33,9 +28,5 @@ systems <- list(matrix(c(2,-1,3,7,4,1,-2,3,-3,5,1,-4),nrow=3,byrow=TRUE),matrix(
 for (number in seq_along(systems)) {
     cat(sprintf("system %d:\n",number))
     solution <- solve_system(systems[[number]])
-    for (i in seq_along(solution)) {
-        value <- solution[i]
-        rounded <- sign(value)*floor(abs(value)*10000+0.5)/10000
-        cat(sprintf("x%d = %.4f\n",i,rounded))
-    }
+    cat(sprintf("x%d = %.4f\n",seq_along(solution),solution),sep="")
 }

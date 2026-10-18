@@ -298,12 +298,6 @@ passenger_error =: 4 : 0
   if. 0>booking person_id y do. 'ERROR no passenger ',y,' in ',x return. end.
   ''
 )
-lex_before =: 4 : 0
-  for_k. i.#x do.
-    if. (k{x)~:k{y do. (k{x)<k{y return. end.
-  end.
-  0
-)
 load_factor =: 4 : 0
   q =. (x*1000) floor_ratio y
   (number q floor_ratio 10),'.',(number 10|q),'%'
@@ -802,7 +796,7 @@ execute =: 3 : 0
     output return.
   end.
   NB. BOARDING: whole integer keys retain PRE and cabin precedence.
-  keys =. 0$<i.0
+  keys =. 0 5$0
   groups =. 0$<''
   order =. i.0
   y_first =. 1{::(plane cabin_id 2){::3{::plane
@@ -828,17 +822,10 @@ execute =: 3 : 0
       label =. label,number zone
     else. key =. group,0 0,row,seat_id_value
     end.
-    keys =. keys,<key
+    keys =. keys,key
     groups =. groups,<label
-    order =. order,k
-    p =. k
-    while. p>0 do.
-      if. -.key lex_before ((p-1){order){::keys do. break. end.
-      order =. ((p-1){order) p}order
-      p =. p-1
-    end.
-    order =. k p}order
   end.
+  order =. /:keys
   output =. ,<'BOARDING ',(1{::fields),' ',number #seated_people
   for_k. i.#order do.
     item =. k{order

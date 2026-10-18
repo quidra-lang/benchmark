@@ -9,9 +9,7 @@ int main(void) {
         do {
             bits[len++] = (char)('0' + v % 2);
             v /= 2;
-        }
-        while (v)
-            ;
+        } while (v);
         printf("%u: bin=", n);
         while (len)
             putchar(bits[--len]);

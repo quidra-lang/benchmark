@@ -1,5 +1,7 @@
 import java.io.*;
 import java.util.*;
+import java.util.stream.IntStream;
+import java.util.stream.Collectors;
 
 public class Main {
     static final int NO_NET=1000000;
@@ -10,14 +12,10 @@ public class Main {
     static String signed(int n) { return (n<0 ? "-" : "")+Math.abs(n)/10+"."+Math.abs(n)%10; }
     static String index(Integer n) { return n==null ? "none" : n<0 ? "+"+signed(-n) : signed(n); }
     static String handicap(Integer n) { return n==null ? "none" : n<0 ? "+"+(-n) : n.toString(); }
-    static String cents(int n) { return n/100+"."+(n%100<10 ? "0" : "")+n%100; }
+    static String cents(int n) { return String.format(Locale.ROOT,"%d.%02d",n/100,n%100); }
     static String average(int total, int count) { return count==0 ? "-" : cents(total*100/count); }
     static String numbers(int[] a) { return String.join(" ",Arrays.stream(a).mapToObj(Integer::toString).toList()); }
-    static int sum(int[] a, int from, int to) {
-        int result=0;
-        for (int i=from;i<to;i++) result+=a[i];
-        return result;
-    }
+    static int sum(int[] a, int from, int to) { return Arrays.stream(a,from,to).sum(); }
     record Tee(String id, int rating, int slope) {}
     static class Course {
         String id;
@@ -65,7 +63,6 @@ public class Main {
         TreeMap<String,Player> players=new TreeMap<>();
         LinkedHashMap<String,Event> events=new LinkedHashMap<>();
         List<String> output;
-        void emit(String s) { output.add(s); }
         Player player(String id) {
             Player p=players.get(id);
             error(p==null,"unknown player");
@@ -95,10 +92,9 @@ public class Main {
             }
             int k=n<3 ? 0 : n<=5 ? 1 : n<=8 ? 2 : n<=11 ? 3 : n<=14 ? 4 : n<=16 ? 5 : n<=18 ? 6 : n==19 ? 7 : 8;
             int adjustment=n==3 ? -20 : n==4 || n==6 ? -10 : 0;
-            List<Integer> order=new ArrayList<>();
-            for (int i=0;i<n;i++) order.add(i);
-            order.sort(Comparator.comparingInt((Integer i) -> adjusted[i]).thenComparing(Comparator.reverseOrder()));
-            return new Eligible(start,adjusted,new ArrayList<>(order.subList(0,k)),k,adjustment);
+            List<Integer> counting=IntStream.range(0,n).boxed().sorted(Comparator.comparingInt((Integer i) -> adjusted[i])
+                .thenComparing(Comparator.reverseOrder())).limit(k).toList();
+            return new Eligible(start,adjusted,counting,k,adjustment);
         }
         void update(Player p, int day) {
             Eligible e=eligible(p);
@@ -106,8 +102,7 @@ public class Main {
                 p.calculation=null;
                 return;
             }
-            int total=0;
-            for (int i:e.counting()) total+=e.adjusted()[i];
+            int total=e.counting().stream().mapToInt(i -> e.adjusted()[i]).sum();
             int a=away(total,e.k()), c=a+e.adjustment();
             IndexRecord record=low(p,day);
             Integer l=record==null ? null : record.value();
@@ -154,20 +149,14 @@ public class Main {
             return new EventData(e,rounds,ph,strokes,nets,points,par);
         }
         List<Integer> rank(int[][] values, List<Integer> candidates, boolean high, List<String> ids) {
-            List<Integer> result=new ArrayList<>(candidates);
-            result.sort((a,b) -> {
-                for (int start:new int[]{0,9,12,15,17}) {
-                    int cmp=Integer.compare(sum(values[a],start,18),sum(values[b],start,18));
-                    if (cmp!=0) return high ? -cmp : cmp;
-                }
-                return ids.get(a).compareTo(ids.get(b));
-            });
-            return result;
+            record Keyed(int index, int[] key) {}
+            return candidates.stream().map(i -> new Keyed(i,IntStream.of(0,9,12,15,17)
+                .map(start -> (high ? -1 : 1)*sum(values[i],start,18)).toArray()))
+                .sorted(Comparator.comparing(Keyed::key,Arrays::compare).thenComparing(k -> ids.get(k.index())))
+                .map(Keyed::index).toList();
         }
         List<Integer> all(int n) {
-            List<Integer> a=new ArrayList<>();
-            for (int i=0;i<n;i++) a.add(i);
-            return a;
+            return IntStream.range(0,n).boxed().collect(Collectors.toCollection(ArrayList::new));
         }
         List<Integer> ranked(EventData d) {
             List<Integer> candidates=all(d.ph().length);
@@ -189,7 +178,7 @@ public class Main {
             return new Match(statuses,result);
         }
         void results(Event e, EventData d) {
-            emit("results "+e.id()+": "+e.format()+" "+e.course().id+" "+e.tee().id()+" day "+e.day()+" allowance "+e.allowance());
+            output.add("results "+e.id()+": "+e.format()+" "+e.course().id+" "+e.tee().id()+" day "+e.day()+" allowance "+e.allowance());
             int n=e.players().size();
             List<String> ids=e.players().stream().map(p -> p.id).toList();
             if (List.of("STROKE","STABLEFORD","PAR").contains(e.format())) {
@@ -198,24 +187,23 @@ public class Main {
                     int i=order.get(r);
                     String value=e.format().equals("STROKE") ? "net "+sum(d.nets()[i],0,18)+" gross "+sum(d.rounds().get(i).scores,0,18) :
                         e.format().equals("STABLEFORD") ? "points "+sum(d.points()[i],0,18) : status(sum(d.par()[i],0,18));
-                    emit((r+1)+" "+ids.get(i)+" "+value+" hcp "+handicap(d.ph()[i]));
+                    output.add((r+1)+" "+ids.get(i)+" "+value+" hcp "+handicap(d.ph()[i]));
                 }
                 if (e.format().equals("STROKE")) {
                     List<Integer> nr=all(n);
                     nr.removeAll(order);
                     nr.sort(Comparator.comparing(ids::get));
-                    for (int i:nr) emit("NR "+ids.get(i)+" hcp "+handicap(d.ph()[i]));
+                    for (int i:nr) output.add("NR "+ids.get(i)+" hcp "+handicap(d.ph()[i]));
                     if (!order.isEmpty()) {
-                        int[][] gross=new int[n][];
-                        for (int i=0;i<n;i++) gross[i]=d.rounds().get(i).scores;
+                        int[][] gross=d.rounds().stream().map(r -> r.scores).toArray(int[][]::new);
                         int winner=rank(gross,order,false,ids).get(0);
-                        emit("gross "+ids.get(winner)+" "+sum(gross[winner],0,18));
+                        output.add("gross "+ids.get(winner)+" "+sum(gross[winner],0,18));
                     }
                 }
             } else if (List.of("MATCH","NASSAU","FOURBALL").contains(e.format())) {
                 String line="strokes";
                 for (int i=0;i<n;i++) line+=" "+ids.get(i)+" "+d.strokes()[i];
-                emit(line);
+                output.add(line);
                 int size=n/2;
                 String a=String.join("+",ids.subList(0,size)), b=String.join("+",ids.subList(size,n));
                 int[] wins=new int[18];
@@ -226,13 +214,13 @@ public class Main {
                     wins[h]=Integer.compare(right,left);
                 }
                 if (e.format().equals("NASSAU")) {
-                    emit("front "+match(wins,0,8,a,b).result());
-                    emit("back "+match(wins,9,17,a,b).result());
-                    emit("total "+match(wins,0,17,a,b).result());
+                    output.add("front "+match(wins,0,8,a,b).result());
+                    output.add("back "+match(wins,9,17,a,b).result());
+                    output.add("total "+match(wins,0,17,a,b).result());
                 } else {
                     Match m=match(wins,0,17,a,b);
-                    emit("status "+String.join(", ",m.statuses()));
-                    emit("result "+m.result());
+                    output.add("status "+String.join(", ",m.statuses()));
+                    output.add("result "+m.result());
                 }
             } else if (e.format().equals("BETTERBALL")) {
                 int[][] values=new int[n/2][18];
@@ -244,7 +232,7 @@ public class Main {
                 List<Integer> order=rank(values,all(n/2),true,keys);
                 for (int r=0;r<order.size();r++) {
                     int i=order.get(r);
-                    emit((r+1)+" "+ids.get(2*i)+"+"+ids.get(2*i+1)+" points "+sum(values[i],0,18)+" hcp "+handicap(d.ph()[2*i])+" "+handicap(d.ph()[2*i+1]));
+                    output.add((r+1)+" "+ids.get(2*i)+"+"+ids.get(2*i+1)+" points "+sum(values[i],0,18)+" hcp "+handicap(d.ph()[2*i])+" "+handicap(d.ph()[2*i+1]));
                 }
             } else {
                 int carry=0;
@@ -258,7 +246,7 @@ public class Main {
                     for (int i=0;i<n;i++) if (d.nets()[i][h]==minimum) tied.add(i);
                     if (minimum!=NO_NET && tied.size()==1) {
                         int i=tied.get(0);
-                        emit("hole "+(h+1)+" "+ids.get(i)+" "+carry);
+                        output.add("hole "+(h+1)+" "+ids.get(i)+" "+carry);
                         totals[i]+=carry*100;
                         carry=0;
                     }
@@ -270,32 +258,31 @@ public class Main {
                         line+=" "+ids.get(i);
                         totals[i]+=carry*100/tied.size();
                     }
-                    emit(line);
+                    output.add(line);
                 }
                 List<Integer> order=all(n);
                 order.sort(Comparator.comparingInt((Integer i) -> -totals[i]).thenComparing(ids::get));
-                for (int i:order) emit(ids.get(i)+" "+cents(totals[i]));
+                for (int i:order) output.add(ids.get(i)+" "+cents(totals[i]));
             }
         }
         void card(Player p, int number, Round r) {
-            emit("card "+p.id+" "+number+": "+r.course.id+" "+r.tee.id()+" day "+r.day+" handicap "+handicap(r.handicap));
+            output.add("card "+p.id+" "+number+": "+r.course.id+" "+r.tee.id()+" day "+r.day+" handicap "+handicap(r.handicap));
             int[] strokes=allocate(r.course,r.handicap==null ? 0 : r.handicap), nets=new int[18], points=new int[18];
             for (int h=0;h<18;h++) {
                 nets[h]=r.scores[h]==NO_NET ? NO_NET : r.scores[h]-strokes[h];
                 points[h]=nets[h]==NO_NET ? 0 : Math.max(0,r.course.par[h]+2-nets[h]);
-                emit((h+1)+" "+r.course.par[h]+" "+r.course.si[h]+" "+r.raw[h]+" "+r.adjusted[h]+" "+strokes[h]+" "+(nets[h]==NO_NET ? "-" : Integer.toString(nets[h]))+" "+points[h]);
+                output.add((h+1)+" "+r.course.par[h]+" "+r.course.si[h]+" "+r.raw[h]+" "+r.adjusted[h]+" "+strokes[h]+" "+(nets[h]==NO_NET ? "-" : Integer.toString(nets[h]))+" "+points[h]);
                 if (h==8) cardTotal("OUT",r,strokes,nets,points,0,9);
                 if (h==17) {
                     cardTotal("IN",r,strokes,nets,points,9,18);
                     cardTotal("TOTAL",r,strokes,nets,points,0,18);
                 }
             }
-            emit("ags "+r.ags+" diff "+signed(r.diff));
+            output.add("ags "+r.ags+" diff "+signed(r.diff));
         }
         void cardTotal(String label, Round r, int[] strokes, int[] nets, int[] points, int from, int to) {
-            boolean complete=true;
-            for (int h=from;h<to;h++) if (r.scores[h]==NO_NET) complete=false;
-            emit(label+" "+sum(r.course.par,from,to)+" "+(complete ? Integer.toString(sum(r.scores,from,to)) : "-")+" "+sum(r.adjusted,from,to)+
+            boolean complete=Arrays.stream(r.scores,from,to).noneMatch(score -> score==NO_NET);
+            output.add(label+" "+sum(r.course.par,from,to)+" "+(complete ? Integer.toString(sum(r.scores,from,to)) : "-")+" "+sum(r.adjusted,from,to)+
                 " "+sum(strokes,from,to)+" "+(complete ? Integer.toString(sum(nets,from,to)) : "-")+" "+sum(points,from,to));
         }
         void statistics(Player p) {
@@ -322,7 +309,7 @@ public class Main {
             String[] labels={"eagles","birdies","pars","bogeys","doubles","others","pickups"};
             for (int i=0;i<7;i++) line+=" "+labels[i]+" "+category[i];
             for (int i=0;i<3;i++) line+=" par"+(i+3)+" "+average(totals[i],counts[i]);
-            emit(line);
+            output.add(line);
         }
         void execute(String[] t) {
             switch (t[0]) {
@@ -383,7 +370,7 @@ public class Main {
                     p.rounds.add(r);
                     update(p,day);
                     if (p.index!=null) p.records.add(new IndexRecord(day,p.index));
-                    emit("round "+p.id+" "+p.rounds.size()+": ags "+r.ags+" diff "+signed(r.diff)+(r.exceptional==0 ? "" : " exceptional "+signed(-r.exceptional))+" index "+index(p.index));
+                    output.add("round "+p.id+" "+p.rounds.size()+": ags "+r.ags+" diff "+signed(r.diff)+(r.exceptional==0 ? "" : " exceptional "+signed(-r.exceptional))+" index "+index(p.index));
                     break;
                 }
                 case "REMOVE": {
@@ -394,7 +381,7 @@ public class Main {
                     p.index=r.oldIndex;
                     p.calculation=r.oldCalculation;
                     p.records.subList(r.oldRecords,p.records.size()).clear();
-                    emit("removed "+p.id+" "+number+": index "+index(p.index));
+                    output.add("removed "+p.id+" "+number+": index "+index(p.index));
                     break;
                 }
                 case "INDEX": {
@@ -403,16 +390,16 @@ public class Main {
                     Calculation c=p.calculation;
                     if (c!=null) line+=" lowest "+c.k()+" average "+signed(c.average())+" adjustment "+signed(c.adjustment())+
                         (c.low()==null ? "" : " low "+index(c.low()))+(c.hard() ? " hard cap" : c.soft() ? " soft cap" : "")+(c.maximum() ? " maximum" : "");
-                    emit(line);
+                    output.add(line);
                     break;
                 }
                 case "HISTORY": {
                     Player p=player(t[1]);
                     Eligible e=eligible(p);
-                    emit("history "+p.id+": rounds "+p.rounds.size());
+                    output.add("history "+p.id+": rounds "+p.rounds.size());
                     for (int i=0;i<e.adjusted().length;i++) {
                         Round r=p.rounds.get(e.start()+i);
-                        emit((e.start()+i+1)+" day "+r.day+" "+r.course.id+" "+r.tee.id()+" ags "+r.ags+" diff "+signed(r.diff)+
+                        output.add((e.start()+i+1)+" day "+r.day+" "+r.course.id+" "+r.tee.id()+" ags "+r.ags+" diff "+signed(r.diff)+
                             (r.diff==e.adjusted()[i] ? "" : " adjusted "+signed(e.adjusted()[i]))+(e.counting().contains(i) ? " *" : ""));
                     }
                     break;
@@ -421,7 +408,7 @@ public class Main {
                     Player p=player(t[1]);
                     int day=Integer.parseInt(t[2]);
                     IndexRecord r=low(p,day);
-                    emit("lowindex "+p.id+" "+day+": "+(r==null ? "none" : index(r.value())+" day "+r.day()));
+                    output.add("lowindex "+p.id+" "+day+": "+(r==null ? "none" : index(r.value())+" day "+r.day()));
                     break;
                 }
                 case "COURSEHCP": {
@@ -430,7 +417,7 @@ public class Main {
                     Tee tee=tee(c,t[3]);
                     error(p.index==null,"no index");
                     int h=courseHandicap(c,tee,p.index);
-                    emit("coursehcp "+p.id+" "+c.id+" "+tee.id()+": "+handicap(h)+" strokes "+numbers(allocate(c,h)));
+                    output.add("coursehcp "+p.id+" "+c.id+" "+tee.id()+": "+handicap(h)+" strokes "+numbers(allocate(c,h)));
                     break;
                 }
                 case "HCPTABLE": {
@@ -438,12 +425,12 @@ public class Main {
                     Tee tee=tee(c,t[2]);
                     int first=Integer.parseInt(t[3]),last=Integer.parseInt(t[4]);
                     error(first< -100 || first>last || last>540,"invalid index");
-                    emit("hcptable "+c.id+" "+tee.id()+": "+index(first)+" to "+index(last));
+                    output.add("hcptable "+c.id+" "+tee.id()+": "+index(first)+" to "+index(last));
                     int start=first,h=courseHandicap(c,tee,first);
                     for (int i=first+1;i<=last+1;i++) {
                         int next=i<=last ? courseHandicap(c,tee,i) : h+1;
                         if (next!=h) {
-                            emit(index(start)+" to "+index(i-1)+": "+handicap(h));
+                            output.add(index(start)+" to "+index(i-1)+": "+handicap(h));
                             start=i;
                             h=next;
                         }
@@ -479,15 +466,15 @@ public class Main {
                         return cmp==0 ? Integer.compare(a,b) : cmp;
                     });
                     for (int i=0;i<18;i++) ranks[order.get(i)]=i+1;
-                    emit("holestats "+c.id+": rounds "+rounds.size());
-                    for (int h=0;h<18;h++) emit((h+1)+" par "+c.par[h]+" si "+c.si[h]+" scores "+counts[h]+" avg "+average(totals[h],counts[h])+" rank "+ranks[h]);
+                    output.add("holestats "+c.id+": rounds "+rounds.size());
+                    for (int h=0;h<18;h++) output.add((h+1)+" par "+c.par[h]+" si "+c.si[h]+" scores "+counts[h]+" avg "+average(totals[h],counts[h])+" rank "+ranks[h]);
                     break;
                 }
                 case "PLAYERS": {
                     List<Player> order=new ArrayList<>(players.values());
                     order.sort(Comparator.comparing((Player p) -> p.index,Comparator.nullsLast(Comparator.naturalOrder())).thenComparing(p -> p.id));
-                    emit("players "+order.size());
-                    for (Player p:order) emit(p.id+" "+p.name+" "+index(p.index)+" rounds "+p.rounds.size());
+                    output.add("players "+order.size());
+                    for (Player p:order) output.add(p.id+" "+p.name+" "+index(p.index)+" rounds "+p.rounds.size());
                     break;
                 }
                 case "EVENT": {
@@ -496,8 +483,7 @@ public class Main {
                     Tee tee=tee(c,t[4]);
                     int allowance=Integer.parseInt(t[6]);
                     error(allowance<1 || allowance>100,"invalid allowance");
-                    List<Player> list=new ArrayList<>();
-                    for (int i=7;i<t.length;i++) list.add(player(t[i]));
+                    List<Player> list=Arrays.stream(t,7,t.length).map(this::player).toList();
                     int n=list.size();
                     boolean valid=switch(t[2]) { case "MATCH","NASSAU" -> n==2; case "FOURBALL" -> n==4; case "BETTERBALL" -> n==4 || n==6 || n==8; default -> n>=2 && n<=8; };
                     error(new HashSet<>(list).size()!=n || !valid,"invalid players");
@@ -531,11 +517,11 @@ public class Main {
                     }
                     List<String> order=new ArrayList<>(merit.keySet());
                     order.sort(Comparator.comparingInt((String id) -> -merit.get(id)[0]).thenComparingInt(id -> -merit.get(id)[1]).thenComparing(Comparator.naturalOrder()));
-                    emit("merit: events "+count);
+                    output.add("merit: events "+count);
                     for (int i=0;i<order.size();i++) {
                         String id=order.get(i);
                         int[] a=merit.get(id);
-                        emit((i+1)+" "+id+" "+a[0]+" wins "+a[1]+" played "+a[2]);
+                        output.add((i+1)+" "+id+" "+a[0]+" wins "+a[1]+" played "+a[2]);
                     }
                     break;
                 }
@@ -544,7 +530,7 @@ public class Main {
         List<String> process(String line) {
             output=new ArrayList<>();
             try { execute(line.split(" ")); }
-            catch (Fault f) { emit("ERROR "+f.getMessage()); }
+            catch (Fault f) { output.add("ERROR "+f.getMessage()); }
             return output;
         }
     }

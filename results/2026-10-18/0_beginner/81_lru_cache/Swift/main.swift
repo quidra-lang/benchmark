@@ -1,6 +1,3 @@
-import Foundation
-
-
 var cache = [Character](), hits = 0, misses = 0
 for key in "BACBDABEADDCAEB" {
     var status: String

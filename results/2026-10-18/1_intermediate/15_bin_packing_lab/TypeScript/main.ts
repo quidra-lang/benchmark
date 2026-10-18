@@ -12,7 +12,7 @@ type Shelf = {y: number; h: number; used: number; placements: Placement[]};
 type BoundRow = {alpha: number; j1: number; j2: number; j3: number; bound: number};
 const METHODS = ["NEXTFIT", "FIRSTFIT", "BESTFIT", "WORSTFIT", "ALMOSTWORST", "HARMONIC", "KBOUNDED", "FFD", "BFD", "WFD"];
 const total = (items: Item[]): number => items.reduce((v, i) => v + i.size, 0);
-const descending = (items: Item[]): Item[] => [...items].sort((a, b) => b.size - a.size || a.id - b.id);
+const descending = (items: Item[]): Item[] => items.toSorted((a, b) => b.size - a.size || a.id - b.id);
 const notation = (i: Item): string => i.id + ":" + i.size;
 const letter = (id: number): string => String.fromCharCode(64 + id);
 const ceil = (a: number, b: number): number => Math.floor((a + b - 1) / b);
@@ -63,7 +63,7 @@ function pack(items: Item[], capacity: number, method: string, k = 0): Packing {
     const fresh = destination < 0;
     if (fresh) {
       if (method === "KBOUNDED" && active.length === k) {
-        const index = [...active].sort((a, b) => bins[b].load - bins[a].load || a - b)[0];
+        const index = active.toSorted((a, b) => bins[b].load - bins[a].load || a - b)[0];
         active = active.filter(i => i !== index);
         closed = index + 1;
         closes++;
@@ -338,7 +338,7 @@ class Lab {
     const cells: string[][] = Array.from({length: height}, () => Array(width).fill("."));
     for (const p of placements) {
       for (let y = p.y; y < p.y + p.h; y++) {
-        for (let x = p.x; x < p.x + p.w; x++) cells[y][x] = letter(p.id);
+        cells[y].fill(letter(p.id), p.x, p.x + p.w);
       }
     }
     for (let y = height - 1; y >= 0; y--) this.emit(cells[y].join(""));
@@ -357,7 +357,7 @@ class Lab {
     for (const r of rectangles) {
       if (r.w === 0 || r.h === 0 || r.w > width) throw new CommandError("BAD RECT " + r.id);
     }
-    const order = [...rectangles].sort((a, b) => b.h - a.h || b.w - a.w || a.id - b.id);
+    const order = rectangles.toSorted((a, b) => b.h - a.h || b.w - a.w || a.id - b.id);
     const area = rectangles.reduce((v, r) => v + r.w * r.h, 0);
     this.emit("SHELF", "W=" + width, "rects=" + rectangles.length, "area=" + area);
     for (const method of ["NFDH", "FFDH", "BFDH"]) {
@@ -396,7 +396,7 @@ class Lab {
         }
       }
       placements.push({...r, x, y, rotated: false});
-      for (let column = x; column < x + r.w; column++) heights[column] = y + r.h;
+      heights.fill(y + r.h, x, x + r.w);
     }
     const height = Math.max(...heights);
     this.emit("SKYLINE", "height=" + height, "util=" + Math.floor(area * 100 / (width * height)));
@@ -413,7 +413,7 @@ class Lab {
     }
     const sheets: Sheet[] = [];
     let rotatedCount = 0;
-    for (const r of [...rectangles].sort((a, b) => b.w * b.h - a.w * a.h || a.id - b.id)) {
+    for (const r of rectangles.toSorted((a, b) => b.w * b.h - a.w * a.h || a.id - b.id)) {
       let chosenSheet = -1;
       let chosenFree = -1;
       let bestArea = Infinity;

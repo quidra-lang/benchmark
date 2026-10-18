@@ -3,6 +3,12 @@ import java.util.*;
 import java.util.regex.*;
 
 public class Main {
+    static final Map<String,Integer> counts = Map.ofEntries(
+            Map.entry("CONVERT",2),Map.entry("NORMALIZE",0),Map.entry("REVERSE",1),Map.entry("VALID",1),
+            Map.entry("DETECT",0),Map.entry("DIFF",2),Map.entry("SAME",2),Map.entry("MORAE",1),Map.entry("SYLLABLES",1),
+            Map.entry("ROW",1),Map.entry("STATS",1),Map.entry("SORT",1),Map.entry("INDEX",1),Map.entry("FIND",2),
+            Map.entry("HAIKU",1),Map.entry("KAIBUN",1),Map.entry("SHIRITORI",1));
+
     record Meta(String id, String row, String dan, boolean contracted) {}
     record Mora(String id, int column) {}
     record Word(String text, int start, int pattern, List<Mora> morae) {}
@@ -345,58 +351,34 @@ public class Main {
         }
         return result;
     }
-    static int compare(List<Integer> a, List<Integer> b) {
-        for (int i = 0; i < Math.min(a.size(),b.size()); i++) {
-            if (!a.get(i).equals(b.get(i))) {
-                return Integer.compare(a.get(i),b.get(i));
-            }
-        }
-        return Integer.compare(a.size(),b.size());
-    }
     List<Word> sorted(List<Word> words) {
         Map<String,Integer> ranks = new HashMap<>();
         String[] bases = (orderSetting.equals("GOJUON") ? GOJUON : IROHA).split(" ");
         for (int i = 0; i < bases.length; i++) {
             ranks.put(bases[i],i);
         }
-        List<Word> result = new ArrayList<>(words);
-        result.sort((a,b) -> {
-            List<Element> first = elements(a), second = elements(b);
-            List<List<Integer>> left = List.of(first.stream().map(e -> ranks.get(e.base())).toList(),
-                first.stream().map(Element::voice).toList(),first.stream().map(Element::size).toList(),
-                a.morae().stream().map(m -> m.id().equals("L") ? 1 : 0).toList());
-            List<List<Integer>> right = List.of(second.stream().map(e -> ranks.get(e.base())).toList(),
-                second.stream().map(Element::voice).toList(),second.stream().map(Element::size).toList(),
-                b.morae().stream().map(m -> m.id().equals("L") ? 1 : 0).toList());
-            for (int i = 0; i < 4; i++) {
-                int comparison = compare(left.get(i),right.get(i));
-                if (comparison != 0) {
-                    return comparison;
-                }
-            }
-            return Integer.compare(a.start(),b.start());
-        });
-        return result;
+        record Keyed(Word word, int[][] keys) {}
+        return words.stream().map(word -> {
+            List<Element> elements = elements(word);
+            return new Keyed(word,new int[][] {
+                elements.stream().mapToInt(e -> ranks.get(e.base())).toArray(),
+                elements.stream().mapToInt(Element::voice).toArray(),
+                elements.stream().mapToInt(Element::size).toArray(),
+                word.morae().stream().mapToInt(m -> m.id().equals("L") ? 1 : 0).toArray()
+            });
+        }).sorted((a,b) -> Arrays.compare(a.keys(),b.keys(),Arrays::compare)).map(Keyed::word).toList();
     }
     List<String> patternMorae(String pattern, String system) {
         if (!pattern.matches("[a-z'?*\\-]+")) {
             fail("invalid pattern");
         }
         List<String> result = new ArrayList<>();
-        int start = 0;
         try {
-            for (int i = 0; i <= pattern.length(); i++) {
-                if (i == pattern.length() || pattern.charAt(i) == '?' || pattern.charAt(i) == '*') {
-                    if (i > start) {
-                        Word part = new Word(pattern.substring(start,i),0,0,List.of());
-                        for (Mora mora : parse(part,system)) {
-                            result.add(mora.id());
-                        }
-                    }
-                    if (i < pattern.length()) {
-                        result.add(pattern.substring(i,i+1));
-                    }
-                    start = i+1;
+            for (String part : pattern.splitWithDelimiters("[?*]",0)) {
+                if (part.equals("?") || part.equals("*")) {
+                    result.add(part);
+                } else if (!part.isEmpty()) {
+                    result.addAll(parse(new Word(part,0,0,List.of()),system).stream().map(Mora::id).toList());
                 }
             }
         } catch (Problem problem) {
@@ -440,11 +422,6 @@ public class Main {
     }
     String execute(String line) {
         String command = line.split(" ",2)[0];
-        Map<String,Integer> counts = Map.ofEntries(
-            Map.entry("CONVERT",2),Map.entry("NORMALIZE",0),Map.entry("REVERSE",1),Map.entry("VALID",1),
-            Map.entry("DETECT",0),Map.entry("DIFF",2),Map.entry("SAME",2),Map.entry("MORAE",1),Map.entry("SYLLABLES",1),
-            Map.entry("ROW",1),Map.entry("STATS",1),Map.entry("SORT",1),Map.entry("INDEX",1),Map.entry("FIND",2),
-            Map.entry("HAIKU",1),Map.entry("KAIBUN",1),Map.entry("SHIRITORI",1));
         if (!counts.containsKey(command) && !command.equals("SET") && !command.equals("TABLE")) {
             fail("unknown command "+command);
         }
@@ -716,12 +693,7 @@ public class Main {
                 return String.join("; ",groups);
             }
             case "FIND": {
-                List<String> found = new ArrayList<>();
-                for (Word word : words) {
-                    if (matches(searchPattern,ids(word))) {
-                        found.add(word.text());
-                    }
-                }
+                List<String> found = words.stream().filter(w -> matches(searchPattern,ids(w))).map(Word::text).toList();
                 return found.size()+" of "+words.size()+(found.isEmpty() ? "" : ": "+String.join(" ",found));
             }
             case "HAIKU": {
@@ -735,14 +707,8 @@ public class Main {
                     String.join("-",Arrays.stream(totals).mapToObj(String::valueOf).toList());
             }
             case "KAIBUN": {
-                List<String> bases = new ArrayList<>();
-                for (Word word : words) {
-                    for (Element element : elements(word)) {
-                        bases.add(element.base());
-                    }
-                }
-                List<String> reversed = new ArrayList<>(bases);
-                Collections.reverse(reversed);
+                List<String> bases = words.stream().flatMap(w -> elements(w).stream()).map(Element::base).toList();
+                List<String> reversed = bases.reversed();
                 return (bases.equals(reversed) ? "YES " : "NO ")+String.join(".",bases);
             }
             case "SHIRITORI": {
@@ -756,13 +722,12 @@ public class Main {
                     if (i > 0 && !head.equals(previous)) {
                         return prefix+" must start with "+spelling(system,previous);
                     }
-                    if (seen.contains(ids(word))) {
+                    if (!seen.add(ids(word))) {
                         return prefix+" is repeated";
                     }
                     if (tail.equals("N")) {
                         return prefix+" ends with N";
                     }
-                    seen.add(ids(word));
                     previous = tail;
                 }
                 return "OK "+words.size();

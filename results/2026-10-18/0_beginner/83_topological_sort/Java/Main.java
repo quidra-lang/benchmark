@@ -1,10 +1,11 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.stream.IntStream;
 
 public class Main {
     static void courses(String[] original, String[][] edges, boolean showCycle) {
-        String[] names = original.clone();
-        Arrays.sort(names);
+        String[] names = Arrays.stream(original).sorted().toArray(String[]::new);
         int n = names.length;
         int[] degree = new int[n];
         boolean[][] graph = new boolean[n][n];
@@ -16,13 +17,7 @@ public class Main {
         boolean[] taken = new boolean[n];
         List<String> order = new ArrayList<>();
         while (true) {
-            int next = -1;
-            for (int i = 0; i < n; i++) {
-                if (!taken[i] && degree[i] == 0) {
-                    next = i;
-                    break;
-                }
-            }
+            int next = IntStream.range(0, n).filter(i -> !taken[i] && degree[i] == 0).findFirst().orElse(-1);
             if (next < 0) break;
             taken[next] = true;
             order.add(names[next]);
@@ -32,10 +27,7 @@ public class Main {
         }
         System.out.println("order: " + String.join(" -> ",order));
         if (showCycle) {
-            List<String> remaining = new ArrayList<>();
-            for (int i = 0; i < n; i++) {
-                if (!taken[i]) remaining.add(names[i]);
-            }
+            var remaining = IntStream.range(0, n).filter(i -> !taken[i]).mapToObj(i -> names[i]).toList();
             System.out.println("cycle: " + String.join(" ",remaining));
         }
     }

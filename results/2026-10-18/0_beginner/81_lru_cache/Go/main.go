@@ -2,29 +2,24 @@ package main
 
 import (
 	"fmt"
+	"slices"
 )
 
 func main() {
 	cache := []rune{}
 	hits, misses := 0, 0
 	for _, key := range "BACBDABEADDCAEB" {
-		position := - 1
-		for i, c := range cache {
-			if c == key {
-				position = i
-				break
-			}
-		}
+		position := slices.Index(cache, key)
 		hit := position >= 0
 		evicted := rune(0)
 		if hit {
 			hits++
-			cache = append(cache[: position], cache[position + 1:]...)
+			cache = slices.Delete(cache, position, position+1)
 		} else {
 			misses++
 			if len(cache) == 3 {
 				evicted = cache[2]
-				cache = cache[: 2]
+				cache = cache[:2]
 			}
 		}
 		cache = append([]rune{key}, cache...)

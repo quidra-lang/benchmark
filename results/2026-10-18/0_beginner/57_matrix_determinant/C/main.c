@@ -5,7 +5,7 @@ int det(int a[5][5], int n) {
         return a[0][0];
     int result = 0;
     for (int j = 0; j < n; j++) {
-        int minor[5][5] = {{0}};
+        int minor[5][5];
         for (int r = 1; r < n; r++) {
             int col = 0;
             for (int c = 0; c < n; c++)

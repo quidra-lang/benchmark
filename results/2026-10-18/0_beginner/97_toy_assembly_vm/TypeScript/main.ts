@@ -4,7 +4,7 @@ const program = [
   "SET B C", "JNZ B -4", "PRINT A", "HALT"
 ];
 const registers = new Map([..."ABCD"].map(register => [register, 0]));
-const value = token => registers.has(token) ? registers.get(token) : Number(token);
+const value = (token: string): number => registers.has(token) ? registers.get(token)! : Number(token);
 let pc = 0, executed = 0;
 while (pc >= 0 && pc < program.length) {
   const parts = program[pc].split(" "), operation = parts[0];

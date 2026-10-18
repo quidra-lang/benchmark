@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int main(void) {
@@ -9,16 +10,15 @@ int main(void) {
     for (int k = 0; k < 10; k++) {
         char op[16], from[16], to[16];
         int amount;
-        sscanf(transactions[k], "%15s %15s", op, from);
+        sscanf(transactions[k], "%15s %15s %15s %d", op, from, to, &amount);
+        if (strcmp(op, "transfer") != 0) amount = atoi(to);
         int a = 0, b = 0;
         while (strcmp(names[a], from))
             a++;
         if (strcmp(op, "transfer") == 0) {
-            sscanf(transactions[k], "%15s %15s %15s %d", op, from, to, &amount);
             while (strcmp(names[b], to))
                 b++;
-        } else
-            sscanf(transactions[k], "%15s %15s %d", op, from, &amount);
+        }
         int ok = strcmp(op, "deposit") == 0 || balances[a] >= amount;
         if (ok) {
             if (strcmp(op, "deposit") == 0)

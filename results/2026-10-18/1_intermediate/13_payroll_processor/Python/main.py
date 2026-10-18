@@ -59,11 +59,7 @@ def empty_totals():
 
 
 def sum_stubs(stubs):
-    result = empty_totals()
-    for stub in stubs:
-        for field in FIELDS:
-            result[field] += stub[field]
-    return result
+    return {field: sum(stub[field] for stub in stubs) for field in FIELDS}
 
 
 def progressive(table, amount):
@@ -178,11 +174,8 @@ class Payroll:
         return worked, regular, overtime, double, night, pto
 
     def weekly(self, employee, week):
-        totals = [0] * 5
-        for day in range(7 * week - 6, 7 * week + 1):
-            daily = self.daily(employee, day)
-            for index in range(5):
-                totals[index] += daily[index + 1]
+        days = (self.daily(employee, day)[1:] for day in range(7 * week - 6, 7 * week + 1))
+        totals = [sum(column) for column in zip(*days)]
         weekly_overtime = max(0, totals[0] - 2400)
         totals[0] -= weekly_overtime
         totals[1] += weekly_overtime

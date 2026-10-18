@@ -1,8 +1,8 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 public class Main {
-
     public static void main(String[] args) {
         String paragraph = "Good software is written for people first and for machines second. A clear program explains its purpose " +
             "through careful names, small functions and honest tests. When a team agrees on shared rules for " +
@@ -25,8 +25,7 @@ public class Main {
             List<String> words = lines.get(i);
             String text;
             if (i == lines.size() - 1 || words.size() == 1) {
-                text = String.join(" ",words);
-                text += " ".repeat(30 - text.length());
+                text = String.format(Locale.ROOT, "%-30s", String.join(" ", words));
             } else {
                 int spaces = 30 - words.stream().mapToInt(String::length).sum();
                 int gaps = words.size() - 1;

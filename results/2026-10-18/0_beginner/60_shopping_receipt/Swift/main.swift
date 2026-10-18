@@ -1,6 +1,3 @@
-import Foundation
-
-
 let names = ["milk", "notebook", "bread", "apple", "detergent", "eggs"]
 let prices = [198, 165, 248, 128, 437, 268], quantities = [2, 3, 1, 4, 1, 1]
 let food = [true, false, true, true, false, true]

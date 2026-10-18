@@ -7,4 +7,4 @@ for _, word in ipairs(words) do
     if #word < #shortest then shortest = word end
 end
 local average = total / #words
-io.write(string.format("words: %d\nlongest: %s\nshortest: %s\naverage length: %.2f\n", #words, longest, shortest, math.floor(average*100+0.5)/100))
+io.write(string.format("words: %d\nlongest: %s\nshortest: %s\naverage length: %.2f\n", #words, longest, shortest, average))

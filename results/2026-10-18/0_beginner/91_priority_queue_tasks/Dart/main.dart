@@ -1,5 +1,3 @@
-import 'dart:io';
-
 class Task {
     final String name;
     final int priority, sequence;
@@ -16,9 +14,9 @@ class Heap {
             final p = (i - 1) ~/ 2;
             if (!before(items[i], items[p]))
                 break;
-            final t = items[i];
+            final current = items[i];
             items[i] = items[p];
-            items[p] = t;
+            items[p] = current;
             i = p;
         }
     }
@@ -34,9 +32,9 @@ class Heap {
                     child++;
                 if (!before(items[child], items[i]))
                     break;
-                final t = items[i];
+                final current = items[i];
                 items[i] = items[child];
-                items[child] = t;
+                items[child] = current;
                 i = child;
             }
         }
@@ -45,7 +43,6 @@ class Heap {
 }
 
 void main() {
-    final out = StringBuffer();
     const operations = ['add email 3', 'add backup 5', 'add deploy 1', 'run', 'add report 3', 'add test 2',
         'add lint 3', 'run', 'run', 'add cleanup 5', 'add review 2', 'run', 'add build 1', 'add docs 4',
         'run', 'run'];
@@ -57,12 +54,11 @@ void main() {
             heap.push(Task(tokens[1], int.parse(tokens[2]), sequence++));
         } else {
             final task = heap.pop();
-            out.writeln('run: ${task.name} (priority ${task.priority})');
+            print('run: ${task.name} (priority ${task.priority})');
         }
     }
     final remaining = <String>[];
     while (heap.items.isNotEmpty)
         remaining.add(heap.pop().name);
-    out.writeln('remaining: ${remaining.join(' ')}');
-    stdout.write(out);
+    print('remaining: ${remaining.join(' ')}');
 }

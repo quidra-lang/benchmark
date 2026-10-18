@@ -1,5 +1,3 @@
-import Foundation
-
 func value(_ token: String, _ registers: [Int]) -> Int {
     let first = Int(token.utf8.first!)
     return first >= 65 && first <= 68 ? registers[first - 65] : Int(token)!

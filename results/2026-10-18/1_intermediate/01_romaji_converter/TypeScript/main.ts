@@ -116,14 +116,10 @@ function casePattern(word: string): string {
 }
 
 function scanWords(text: string): Word[] {
-    const words: Word[] = [];
-    for (const match of text.matchAll(/[A-Za-z'-]+/g)) {
-        words.push({
-            original: match[0], start: match.index!,
-            pattern: casePattern(match[0]), morae: []
-        });
-    }
-    return words;
+    return Array.from(text.matchAll(/[A-Za-z'-]+/g), match => ({
+        original: match[0], start: match.index!,
+        pattern: casePattern(match[0]), morae: []
+    }));
 }
 
 function parseWord(word: Word, system: string): Mora[] {
@@ -262,13 +258,8 @@ function writeWord(word: Word, system: string, settings: Settings, canonical: bo
 }
 
 function replaceWords(text: string, words: Word[], replacement: (word: Word) => string): string {
-    let result = "";
-    let position = 0;
-    for (const word of words) {
-        result += text.slice(position, word.start) + replacement(word);
-        position = word.start + word.original.length;
-    }
-    return result + text.slice(position);
+    let index = 0;
+    return text.replace(/[A-Za-z'-]+/g, () => replacement(words[index++]));
 }
 
 function devoice(id: string): string {
@@ -313,7 +304,7 @@ function compareSequence(a: number[], b: number[]): number {
 
 function sortedWords(words: Word[], order: string): Word[] {
     const ranks = new Map<string, number>(orders[order].map((base, rank): [string, number] => [base, rank]));
-    const entries = words.map((word, index) => {
+    const entries = words.map(word => {
         const cols = elements(word.morae);
         const keys = [
             cols.map(item => ranks.get(item.base)!),
@@ -321,7 +312,7 @@ function sortedWords(words: Word[], order: string): Word[] {
             cols.map(item => item.size),
             word.morae.map(mora => mora.id === "-" ? 1 : 0)
         ];
-        return { word, index, keys };
+        return { word, keys };
     });
     entries.sort((a, b) => {
         for (let i = 0; i < a.keys.length; i++) {
@@ -330,7 +321,7 @@ function sortedWords(words: Word[], order: string): Word[] {
                 return difference;
             }
         }
-        return a.index - b.index;
+        return 0;
     });
     return entries.map(entry => entry.word);
 }

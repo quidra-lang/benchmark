@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val paragraph = "Good software is written for people first and for machines second. A clear program explains its purpose " +
         "through careful names, small functions and honest tests. When a team agrees on shared rules for " +

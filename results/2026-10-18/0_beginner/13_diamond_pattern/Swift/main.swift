@@ -1,6 +1,3 @@
-import Foundation
-
-
 let n = 5
 for row in 1..<(2 * n) {
     let i = row <= n ? row : 2 * n - row

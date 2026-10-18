@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const initial = ['800025000', '070080005', '260400070', '000001900', '010000040', '600200000',
         '900010000', '700000004', '020000036'];
     final board = initial.join().codeUnits.map((c) => c - 48).toList();
@@ -31,7 +28,6 @@ void main() {
     }
     solve();
     for (var r = 0; r < 9; r++)
-        out.writeln(board.sublist(r * 9, r * 9 + 9).join(' '));
-    out.writeln('placements: $placements');
-    stdout.write(out);
+        print(board.sublist(r * 9, r * 9 + 9).join(' '));
+    print('placements: $placements');
 }

@@ -54,11 +54,10 @@ pub fn main(init: std.process.Init) !void {
             undo[ulen] = current;
             ulen += 1;
             rlen = 0;
-            if (command.len >= 5 and std.mem.eql(u8, command[0..5], "type ")) {
-                for (command[5..]) |c| {
-                    current.text[current.len] = c;
-                    current.len += 1;
-                }
+            if (std.mem.startsWith(u8, command, "type ")) {
+                const text = command[5..];
+                @memcpy(current.text[current.len..][0..text.len], text);
+                current.len += text.len;
             } else {
                 const n = try std.fmt.parseInt(usize, command[7..], 10);
                 current.len -= @min(current.len, n);

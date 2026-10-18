@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -12,17 +12,15 @@ func main() {
 	keys := make([]string, len(words))
 	for i, w := range words {
 		b := []byte(w)
-		sort.Slice(b, func(i, j int) bool {
-			return b[i] < b[j]
-		})
+		slices.Sort(b)
 		keys[i] = string(b)
 	}
 	used := make([]bool, len(words))
 	for i := range words {
-		if ! used[i] {
+		if !used[i] {
 			group := []string{}
 			for j := i; j < len(words); j++ {
-				if ! used[j] && keys[j] == keys[i] {
+				if !used[j] && keys[j] == keys[i] {
 					used[j] = true
 					group = append(group, words[j])
 				}

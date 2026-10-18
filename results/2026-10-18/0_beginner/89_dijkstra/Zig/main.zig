@@ -52,11 +52,11 @@ pub fn main(init: std.process.Init) !void {
                 break;
             u = previous[u];
         }
-        while (len > 0) {
-            len -= 1;
-            try out.writeByte('A' + @as(u8, @intCast(path[len])));
-            if (len > 0)
+        std.mem.reverse(usize, path[0..len]);
+        for (path[0..len], 0..) |vertex, i| {
+            if (i > 0)
                 try out.writeByte('-');
+            try out.writeByte('A' + @as(u8, @intCast(vertex)));
         }
         try out.writeByte('\n');
     }

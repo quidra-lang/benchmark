@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     String date(int y, int m, int d) => '${y.toString().padLeft(4,'0')}-${m.toString().padLeft(2,'0')}-${d.toString().padLeft(2,'0')}';
     for (final c in [[1999, 12, 25, 10], [2000, 2, 27, 3], [2021, 2, 20, 14], [2023, 11, 15, 120],
@@ -21,7 +18,6 @@ void main() {
                 }
             }
         }
-        out.writeln('${date(c[0],c[1],c[2])} + ${c[3]} days = ${date(y,m,d)}');
+        print('${date(c[0],c[1],c[2])} + ${c[3]} days = ${date(y,m,d)}');
     }
-    stdout.write(out);
 }

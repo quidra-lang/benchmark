@@ -9,8 +9,8 @@ end
 stdev = Math.sqrt(squares / values.length)
 counts = values.tally
 mode = counts.keys.min_by { |n| [-counts[n], n] }
-puts format('mean: %.3f', mean.round(3, half: :up))
+puts format('mean: %.3f', mean)
 puts "median: #{ordered[values.length / 2]}"
 puts "mode: #{mode}"
 puts "range: #{ordered[-1] - ordered[0]}"
-puts format('stdev: %.3f', stdev.round(3, half: :up))
+puts format('stdev: %.3f', stdev)

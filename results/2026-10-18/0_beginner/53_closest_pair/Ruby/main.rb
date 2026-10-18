@@ -9,5 +9,5 @@ points.each_index do |i|
   end
 end
 [['closest', closest], ['farthest', farthest]].each do |label, (squared, i, j)|
-  puts format('%s: P%d P%d %.4f', label, i, j, Math.sqrt(squared).round(4, half: :up))
+  puts format('%s: P%d P%d %.4f', label, i, j, Math.sqrt(squared))
 end

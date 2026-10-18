@@ -1,9 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Globalization;
 
-CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 static void Courses(string[] original, (string,string)[] edges, bool showCycle) {
     string[] names = original.Order(StringComparer.Ordinal).ToArray();
     int n = names.Length;
@@ -17,13 +15,7 @@ static void Courses(string[] original, (string,string)[] edges, bool showCycle) 
     bool[] taken = new bool[n];
     var order = new List<string>();
     while (true) {
-        int next = -1;
-        for (int i = 0; i < n; i++) {
-            if (!taken[i] && degree[i] == 0) {
-                next = i;
-                break;
-            }
-        }
+        int next = Enumerable.Range(0, n).FirstOrDefault(i => !taken[i] && degree[i] == 0, -1);
         if (next < 0) break;
         taken[next] = true;
         order.Add(names[next]);

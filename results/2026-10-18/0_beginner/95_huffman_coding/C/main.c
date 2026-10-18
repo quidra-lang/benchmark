@@ -4,9 +4,9 @@
 typedef struct {
     int weight, minimum, left, right, symbol;
 } Node;
-int pop(int *roots, int *length, Node * nodes) {
+int pop(int *roots, int *length, const Node *nodes) {
     int best = 0;
-    for (int i = 1; i < * length; i++) {
+    for (int i = 1; i < *length; i++) {
         Node a = nodes[roots[i]], b = nodes[roots[best]];
         if (a.weight < b.weight || (a.weight == b.weight && a.minimum < b.minimum))
             best = i;
@@ -16,7 +16,7 @@ int pop(int *roots, int *length, Node * nodes) {
     return result;
 }
 
-void assign(Node * nodes, int root, char *prefix, int depth, char codes[128][128]) {
+void assign(const Node *nodes, int root, char *prefix, int depth, char codes[128][128]) {
     if (nodes[root].symbol >= 0) {
         prefix[depth] = 0;
         strcpy(codes[nodes[root].symbol], prefix);
@@ -37,9 +37,7 @@ int main(void) {
     int roots[128], length = 0, used = 0;
     for (int c = 0; c < 128; c++)
         if (freq[c]) {
-            nodes[used] = (Node) {
-                freq[c], c, -1, -1, c
-            };
+            nodes[used] = (Node){freq[c], c, -1, -1, c};
             roots[length++] = used++;
         }
     while (length > 1) {
@@ -49,7 +47,7 @@ int main(void) {
         };
         roots[length++] = used++;
     }
-    char codes[128][128] = {{0}}, prefix[128];
+    char codes[128][128], prefix[128];
     assign(nodes, roots[0], prefix, 0, codes);
     int bits = 0;
     for (int c = 0; c < 128; c++)

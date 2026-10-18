@@ -16,15 +16,10 @@ pub fn main(init: std.process.Init) !void {
         "#############"
     };
     var maze: [117]u8 = undefined;
-    var start: usize = 0;
-    var goal: usize = 0;
-    for (0..117) |i| {
-        maze[i] = initial[i / 13][i % 13];
-        if (maze[i] == 'S')
-            start = i;
-        if (maze[i] == 'G')
-            goal = i;
-    }
+    for (initial, 0..) |row, r|
+        @memcpy(maze[r * 13..][0..13], row);
+    const start = std.mem.findScalar(u8, &maze, 'S').?;
+    const goal = std.mem.findScalar(u8, &maze, 'G').?;
     var parent = [_]i32{ -1 } ** 117;
     parent[start] = @intCast(start);
     var queue: [117]usize = undefined;

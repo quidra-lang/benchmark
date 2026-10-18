@@ -1,15 +1,13 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Globalization;
+using System.Linq;
+using System.Text.RegularExpressions;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
-
-string[] values = { "AAABBBCCCD", new string('W',12) + "B" + new string('W',12) + "BBB", "ALGORITHM", "MISSISSIPPI", new string('X',10) + new string('Y',21) + "Z" };
-foreach (string text in values) {
-    var encoded = new System.Text.StringBuilder();
-    for (int i = 0; i < text.Length;) { int j = i + 1; while (j < text.Length && text[j] == text[i]) j++; encoded.Append(j - i).Append(text[i]); i = j; }
-    var decoded = new System.Text.StringBuilder();
-    for (int i = 0; i < encoded.Length;) { int count = 0; while (encoded[i] >= '0' && encoded[i] <= '9') count = count * 10 + encoded[i++] - '0'; decoded.Append(encoded[i++],count); }
+string[] values = { "AAABBBCCCD", new string('W', 12) + "B" + new string('W', 12) + "BBB", "ALGORITHM", "MISSISSIPPI", new string('X', 10) + new string('Y', 21) + "Z" };
+foreach (string text in values)
+{
+    string encoded = string.Concat(Regex.Matches(text, @"(.)\1*").Select(m => $"{m.Length}{m.Value[0]}"));
+    string decoded = Regex.Replace(encoded, @"(\d+)([A-Z])", m => new string(m.Groups[2].Value[0], int.Parse(m.Groups[1].Value)));
     Console.WriteLine($"{text} -> {encoded} -> {decoded}");
 }

@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const board = ['MMONKENBIR', 'PMTIGERJPL', 'TGREJEDUZI', 'SPYUTEJDEC', 'WKAPSIDLBN', 'KUVNGSBPRO',
         'RIBSDACBAM', 'YWVAUAPKAH', 'KYCGTHHESR', 'OCCALAOKKR'];
     const directions = [(0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1)], names = ['E',
@@ -20,7 +17,7 @@ void main() {
                         }
                     }
                     if (matches) {
-                        out.writeln('$word: ($r, $c) ${names[d]}');
+                        print('$word: ($r, $c) ${names[d]}');
                         found = true;
                         break search;
                     }
@@ -28,7 +25,6 @@ void main() {
             }
         }
         if (!found)
-            out.writeln('$word: not found');
+            print('$word: not found');
     }
-    stdout.write(out);
 }

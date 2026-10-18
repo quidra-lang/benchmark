@@ -1,8 +1,7 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayDeque;
+import java.util.Deque;
 
 public class Main {
-
     public static void main(String[] args) {
         String[] expressions = {"3 4 + 2 *", "-17 5 / 4 -3 * -", "1 2 + * 3",
             "15 7 1 1 + - / 3 * 2 1 1 + + -", "4 2 5 * + 1 3 2 * - 5 + /",

@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const grid = ['.......', '..#....', '....#..', '.#.....', '...#.#.', '.......'];
     for (var mode = 0; mode < 2; mode++) {
         final dp = List.generate(6, (_) => List.filled(7, 0));
@@ -19,7 +16,6 @@ void main() {
                     dp[r][c] += dp[r][c - 1];
             }
         }
-        out.writeln('${mode==0?'without':'with'} obstacles: ${dp[5][6]}');
+        print('${mode==0?'without':'with'} obstacles: ${dp[5][6]}');
     }
-    stdout.write(out);
 }

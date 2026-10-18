@@ -1,6 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
 data class Hand(val text: String, val category: Int, val sequence: List<Int>)
 fun evaluate(text: String): Hand {
     val cards = text.split(' ')

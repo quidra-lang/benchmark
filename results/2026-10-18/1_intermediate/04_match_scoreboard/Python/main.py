@@ -1,6 +1,7 @@
 import sys
 from copy import deepcopy
 from functools import cache
+from itertools import product
 
 
 class Invalid(Exception):
@@ -25,22 +26,12 @@ CANDIDATES_B = [f"D{number}" for number in range(20, 0, -1)] + ["BULL"]
 
 @cache
 def checkout(score, maximum=3):
-    if maximum >= 1:
-        for last in CANDIDATES_B:
-            if DARTS[last][0] == score:
-                return (last,)
-    if maximum >= 2:
-        for first in CANDIDATES_A:
+    for count in range(1, maximum + 1):
+        for prefix in product(CANDIDATES_A, repeat=count - 1):
+            wanted = score - sum(DARTS[dart][0] for dart in prefix)
             for last in CANDIDATES_B:
-                if DARTS[first][0] + DARTS[last][0] == score:
-                    return first, last
-    if maximum >= 3:
-        for first in CANDIDATES_A:
-            for second in CANDIDATES_A:
-                wanted = score - DARTS[first][0] - DARTS[second][0]
-                for last in CANDIDATES_B:
-                    if DARTS[last][0] == wanted:
-                        return first, second, last
+                if DARTS[last][0] == wanted:
+                    return prefix + (last,)
     return None
 
 

@@ -12,22 +12,20 @@ int compare(const void *a, const void *b) {
     return c ? c: x->order - y->order;
 }
 
-int hex(char c) {
-    return c >= '0' && c <= '9' ? c - '0': c >= 'a' && c <= 'f' ? c - 'a' + 10: c - 'A' + 10;
-}
-
 void decode(const char *s, char *out) {
     while (*s) {
         if (*s == '+') {
-            * out++ = ' ';
+            *out++ = ' ';
             s++;
         } else if (*s == '%') {
-            * out++ = (char)(hex(s[1]) * 16 + hex(s[2]));
+            unsigned byte;
+            sscanf(s + 1, "%2x", &byte);
+            *out++ = (char)byte;
             s += 3;
         } else
-            * out++ = *s++;
+            *out++ = *s++;
     }
-    * out = 0;
+    *out = 0;
 }
 
 int main(void) {
@@ -41,7 +39,7 @@ int main(void) {
         for (char *item = strtok(query, "&"); item; item = strtok(NULL, "&")) {
             char *equal = strchr(item, '=');
             if (equal)
-                * equal++ = 0;
+                *equal++ = 0;
             decode(item, entries[count].key);
             decode(equal ? equal: "", entries[count].value);
             entries[count].order = count;

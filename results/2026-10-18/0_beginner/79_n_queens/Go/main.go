@@ -1,13 +1,11 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
-func search(n, row int, positions * [8]int, count *int, first * [8]int) {
+func search(n, row int, positions *[8]int, count *int, first *[8]int) {
 	if row == n {
-		if n == 8 && * count == 0 {
-			* first = *positions
+		if n == 8 && *count == 0 {
+			*first = *positions
 		}
 		(*count)++
 		return

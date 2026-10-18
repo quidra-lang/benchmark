@@ -1,17 +1,15 @@
 struct Node {
     key: i32,
     left: Option<usize>,
-    right: Option<usize>
+    right: Option<usize>,
 }
 
-fn insert(nodes: &mut Vec<Node>,
-root: Option<usize>,
-key: i32) -> usize {
+fn insert(nodes: &mut Vec<Node>, root: Option<usize>, key: i32) -> usize {
     let Some(v) = root else {
         nodes.push(Node {
             key,
             left: None,
-            right: None
+            right: None,
         });
         return nodes.len() - 1;
     };
@@ -27,9 +25,7 @@ key: i32) -> usize {
     v
 }
 
-fn traverse(nodes: &[Node],
-root: Option<usize>,
-mode: usize) {
+fn traverse(nodes: &[Node], root: Option<usize>, mode: usize) {
     if let Some(v) = root {
         if mode == 1 {
             print!(" {}", nodes[v].key);
@@ -45,14 +41,11 @@ mode: usize) {
     }
 }
 
-fn height(nodes: &[Node],
-root: Option<usize>) -> usize {
+fn height(nodes: &[Node], root: Option<usize>) -> usize {
     root.map_or(0, |v| 1 + height(nodes, nodes[v].left).max(height(nodes, nodes[v].right)))
 }
 
-fn erase(nodes: &mut [Node],
-root: Option<usize>,
-key: i32) -> Option<usize> {
+fn erase(nodes: &mut [Node], root: Option<usize>, key: i32) -> Option<usize> {
     let v = root?;
     if key < nodes[v].key {
         let left = nodes[v].left;

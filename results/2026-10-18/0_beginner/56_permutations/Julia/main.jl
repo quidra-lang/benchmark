@@ -1,11 +1,11 @@
 function main()
     characters = collect("ABCD")
     used = falses(4)
-    counter = Ref(0)
+    counter = 0
     function visit(prefix)
         if length(prefix) == 4
-            counter[] += 1
-            println(counter[],": ",prefix)
+            counter += 1
+            println(counter,": ",prefix)
             return
         end
         for i in 1:4

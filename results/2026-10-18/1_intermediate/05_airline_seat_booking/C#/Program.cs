@@ -4,9 +4,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 
-static class CollectionExtensions {
-    public static bool IsEmpty<T>(this ICollection<T> values) => values.Count == 0;
-}
 class Program {
     static readonly string[] Classes = { "F","J","Y" };
     record Seat(string Id, int Row, char Letter, int Block, string Cabin, string Kind);
@@ -53,7 +50,6 @@ class Program {
         public Problem(string message) : base(message) {}
     }
     static void Fail(string message) { throw new Problem(message); }
-    static int Compare(int a,int b) => a.CompareTo(b);
     readonly Dictionary<string,Aircraft> aircraft = new(StringComparer.Ordinal);
     readonly Dictionary<string,Flight> flights = new(StringComparer.Ordinal);
     readonly List<Flight> flightOrder = new();
@@ -72,7 +68,7 @@ class Program {
     }
     Booking GetBooking(string pnr, bool open) {
         Booking b = bookings.GetValueOrDefault(pnr);
-        if (b == null || b.passengers.IsEmpty()) Fail("unknown PNR "+pnr);
+        if (b == null || b.passengers.Count == 0) Fail("unknown PNR "+pnr);
         if (open && b.flight.closed) Fail("flight "+b.flight.name+" is closed");
         return b;
     }
@@ -121,13 +117,9 @@ class Program {
         if (target != null) f.occupied[target.Id] = p;
     }
     static Seat Select(Passenger p, string cabin) {
-        Seat first = null;
-        foreach (Seat s in p.booking.flight.aircraft.cabins[cabin].seats) {
-            if (!Fits(p,s,new HashSet<Passenger> {  },new Dictionary<Passenger,Seat>())) continue;
-            if (first == null) first = s;
-            if (p.pref != null && s.Kind.Equals(p.pref)) return s;
-        }
-        return first;
+        var candidates = p.booking.flight.aircraft.cabins[cabin].seats
+            .Where(s => Fits(p,s,new HashSet<Passenger>(),new Dictionary<Passenger,Seat>())).ToList();
+        return candidates.FirstOrDefault(s => s.Kind == p.pref) ?? candidates.FirstOrDefault();
     }
     static void Reassign(Flight f, List<string> output) {
         foreach (Passenger p in Passengers(f)) {
@@ -141,11 +133,8 @@ class Program {
         }
     }
     static bool Candidate(List<Passenger> people, List<Seat> positions) {
-        Dictionary<Passenger,Seat> proposed = new();
-        for (int i = 0; i < people.Count; i++) proposed[people[i]] = positions[i];
-        foreach (Passenger p in people) {
-            if (!Fits(p,proposed[p],new HashSet<Passenger> {  },proposed)) return false;
-        }
+        var proposed = people.Zip(positions).ToDictionary(pair => pair.First,pair => pair.Second);
+        if (!people.All(p => Fits(p,proposed[p],new HashSet<Passenger>(),proposed))) return false;
         foreach (Passenger p in people) PlaceSeat(p,proposed[p]);
         return true;
     }
@@ -301,12 +290,11 @@ class Program {
                     if (p.type.Equals("ADULT")) adults.Add(p);
                     if (p.type.Equals("INFANT")) infants.Add(p);
                 }
-                HashSet<string> present = new(StringComparer.Ordinal);
-                foreach (Passenger p in Passengers(f)) present.Add(p.name);
+                var present = Passengers(f).Select(p => p.name).ToHashSet(StringComparer.Ordinal);
                 foreach (Passenger p in b.passengers) {
                     if (present.Contains(p.name)) Fail(p.name+" already on "+f.name);
                 }
-                if (adults.IsEmpty()) Fail("no adult in "+b.pnr);
+                if (adults.Count == 0) Fail("no adult in "+b.pnr);
                 if (infants.Count > adults.Count) Fail("too many infants in "+b.pnr);
                 int count = b.passengers.Count(p => p.NeedsSeat());
                 if (Booked(f,t[3])+count > f.limits[t[3]]) Fail("limit exceeded for "+f.name+" "+t[3]);
@@ -374,7 +362,7 @@ class Program {
                     List<Passenger> selected = RemovalTargets(p);
                     targets = b.passengers.Where(selected.Contains).ToList();
                     List<Passenger> remaining = b.passengers.Where(q => !selected.Contains(q)).ToList();
-                    if (!remaining.IsEmpty() && !remaining.Any(q => q.type == "ADULT")) Fail(b.pnr+" would have no adult");
+                    if (remaining.Count != 0 && !remaining.Any(q => q.type == "ADULT")) Fail(b.pnr+" would have no adult");
                 }
                 string names = string.Join(" ",targets.Select(p => p.name).ToList());
                 Remove(targets);
@@ -430,7 +418,7 @@ class Program {
             case "CLOSE": {
                 Flight f = GetFlight(t[1],true);
                 foreach (Booking b in f.bookings) {
-                    if (!b.passengers.IsEmpty() && !b.Checked) {
+                    if (b.passengers.Count != 0 && !b.Checked) {
                         output.Add("NOSHOW "+b.pnr+" "+b.passengers.Count);
                         Remove(new List<Passenger>(b.passengers));
                     }
@@ -505,7 +493,7 @@ class Program {
                             }
                             blocks.Add(result.ToString());
                         }
-                        output.Add((row < 10 ? " " : "")+row+" "+string.Join(" ",blocks));
+                        output.Add($"{row,2} "+string.Join(" ",blocks));
                     }
                 }
                 break;
@@ -516,9 +504,7 @@ class Program {
                 List<Passenger> seated = all.Where(p => p.seat != null).OrderBy(p => p.seat.Row).ThenBy(p => p.seat.Letter).ToList();
                 List<Passenger> unassigned = all.Where(p => p.NeedsSeat() && p.seat == null).ToList();
                 output.Add("MANIFEST "+f.name+" seated "+seated.Count+" unassigned "+unassigned.Count+" infants "+all.Count(p => !p.NeedsSeat()));
-                List<Passenger> ordered = new List<Passenger>(seated);
-                ordered.AddRange(unassigned);
-                foreach (Passenger p in ordered) {
+                foreach (Passenger p in seated.Concat(unassigned)) {
                     string result = (p.seat == null ? "---" : p.seat.Id)+" "+p.cabin+" "+p.booking.pnr+" "+p.name+" "+p.type;
                     if (p.lap != null) result += " +"+p.lap.name;
                     if (!Tier(p).Equals("NONE")) result += " "+Tier(p);
@@ -561,13 +547,13 @@ class Program {
                 List<Passenger> ordered = Passengers(f).Where(p => p.seat != null).ToList();
                 ordered.Sort((a,b) => {
                     int ar = BoardingRank(a), br = BoardingRank(b);
-                    if (ar != br) return Compare(ar,br);
+                    if (ar != br) return ar.CompareTo(br);
                     if (ar < 3) return SeatOrder()(a,b);
-                    if (Zone(a) != Zone(b)) return Compare(Zone(b),Zone(a));
+                    if (Zone(a) != Zone(b)) return Zone(b).CompareTo(Zone(a));
                     int ak = "WMA".IndexOf(a.seat.Kind), bk = "WMA".IndexOf(b.seat.Kind);
-                    if (ak != bk) return Compare(ak,bk);
-                    if (a.seat.Row != b.seat.Row) return Compare(b.seat.Row,a.seat.Row);
-                    return Compare(a.seat.Letter,b.seat.Letter);
+                    if (ak != bk) return ak.CompareTo(bk);
+                    if (a.seat.Row != b.seat.Row) return b.seat.Row.CompareTo(a.seat.Row);
+                    return a.seat.Letter.CompareTo(b.seat.Letter);
                 });
                 output.Add("BOARDING "+f.name+" "+ordered.Count);
                 for (int i = 0; i < ordered.Count; i++) {
@@ -581,16 +567,10 @@ class Program {
             case "AVAIL": {
                 Flight f = GetFlight(t[1],false);
                 RequireCabin(f,t[2]);
-                int free = 0, window = 0, middle = 0, aisle = 0, exit = 0;
-                foreach (Seat s in f.aircraft.cabins[t[2]].seats) {
-                    if (f.blocked.Contains(s.Id) || f.occupied.ContainsKey(s.Id)) continue;
-                    free++;
-                    if (s.Kind.Equals("W")) window++;
-                    if (s.Kind.Equals("M")) middle++;
-                    if (s.Kind.Equals("A")) aisle++;
-                    if (f.aircraft.exits.Contains(s.Row)) exit++;
-                }
-                output.Add("AVAIL "+f.name+" "+t[2]+" free "+free+" W "+window+" M "+middle+" A "+aisle+" EXIT "+exit);
+                var free = f.aircraft.cabins[t[2]].seats.Where(s => !f.blocked.Contains(s.Id) && !f.occupied.ContainsKey(s.Id)).ToList();
+                output.Add("AVAIL "+f.name+" "+t[2]+" free "+free.Count+
+                    " W "+free.Count(s => s.Kind == "W")+" M "+free.Count(s => s.Kind == "M")+
+                    " A "+free.Count(s => s.Kind == "A")+" EXIT "+free.Count(s => f.aircraft.exits.Contains(s.Row)));
                 break;
             }
             case "INFO": {

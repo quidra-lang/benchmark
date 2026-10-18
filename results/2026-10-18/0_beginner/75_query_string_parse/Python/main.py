@@ -1,16 +1,4 @@
-def decode(text):
-    result = ""
-    i = 0
-    while i < len(text):
-        if text[i] == "+":
-            result += " "
-        elif text[i] == "%":
-            result += chr(int(text[i + 1:i + 3], 16))
-            i += 2
-        else:
-            result += text[i]
-        i += 1
-    return result
+from urllib.parse import parse_qs
 
 
 queries = [
@@ -20,10 +8,7 @@ queries = [
     "redirect=https%3a%2f%2fexample.com%2Fhome&token=abc==&item10=pen&item2=fish%26chips",
 ]
 for number, query in enumerate(queries, 1):
-    values = {}
-    for item in query.split("&"):
-        key, _, value = item.partition("=")
-        values.setdefault(decode(key), []).append(decode(value))
+    values = parse_qs(query, keep_blank_values=True)
     print(f"query {number}:")
     for key in sorted(values):
         quoted = ", ".join(f'"{value}"' for value in values[key])

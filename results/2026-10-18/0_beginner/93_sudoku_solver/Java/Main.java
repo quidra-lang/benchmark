@@ -1,5 +1,4 @@
-import java.util.*;
-import java.math.*;
+import java.util.Arrays;
 
 public class Main {
     static boolean solve(int[][] board, long[] placements) {

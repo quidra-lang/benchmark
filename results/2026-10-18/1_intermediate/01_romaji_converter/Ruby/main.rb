@@ -262,25 +262,19 @@ class Romaji
     when "UPPER"
       value.upcase
     when "TITLE"
-      value[0].upcase + value[1..]
+      value.capitalize
     else
       value
     end
   end
 
   def replace_words(text, words)
-    result = +""
-    position = 0
-    words.each do |word|
-      result << text[position...word[:start]] << yield(word)
-      position = word[:start] + word[:original].length
-    end
-    result << text[position..]
+    iterator = words.each
+    text.gsub(/[A-Za-z'-]+/) { yield(iterator.next) }
   end
 
   def devoice(id)
-    letters = { "g" => "k", "z" => "s", "d" => "t", "b" => "h", "p" => "h" }
-    letters.fetch(id[0], id[0]) + id[1..]
+    id[0].tr("gzdbp", "ksthh") + id[1..]
   end
 
   def collation_elements(morae)

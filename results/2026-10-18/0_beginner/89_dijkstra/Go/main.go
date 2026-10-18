@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -18,9 +19,9 @@ func main() {
 	}
 	distance[0] = 0
 	for step := 0; step < 7; step++ {
-		u := - 1
+		u := -1
 		for v := 0; v < 7; v++ {
-			if ! done[v] && (u < 0 || distance[v] < distance[u]) {
+			if !done[v] && (u < 0 || distance[v] < distance[u]) {
 				u = v
 			}
 		}
@@ -37,9 +38,7 @@ func main() {
 		for u := v; u >= 0; u = parent[u] {
 			path = append(path, string(rune('A' + u)))
 		}
-		for i, j := 0, len(path) - 1; i < j; i, j = i + 1, j - 1 {
-			path[i], path[j] = path[j], path[i]
-		}
+		slices.Reverse(path)
 		fmt.Printf("%c: distance=%d path=%s\n", 'A' + v, distance[v], strings.Join(path, "-"))
 	}
 }

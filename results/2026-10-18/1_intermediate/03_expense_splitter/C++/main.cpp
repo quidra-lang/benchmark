@@ -252,9 +252,12 @@ vector<vector<Integer>> debts() {
         }
     }
     for (const Settlement &s : settlements) result[s.from][s.to] -= s.total;
-    vector<vector<Integer>> raw = result;
     for (int i = 0; i < int(members.size()); ++i) {
-        for (int j = 0; j < int(members.size()); ++j) result[i][j] = raw[i][j] - raw[j][i];
+        for (int j = i + 1; j < int(members.size()); ++j) {
+            Integer value = result[i][j] - result[j][i];
+            result[i][j] = value;
+            result[j][i] = -value;
+        }
     }
     return result;
 }
@@ -492,7 +495,7 @@ vector<string> execute(const string &line) {
             total += e.total;
         }
         vector<string> categories;
-        for (const std::pair<const string, Integer> &entry : totals) categories.push_back(entry.first);
+        for (const auto &[category, total] : totals) categories.push_back(category);
         std::sort(categories.begin(), categories.end(), [&](const string &x, const string &y) { return totals[x] != totals[y] ? totals[x] > totals[y] : x < y; });
         for (const string &category : categories) {
             out.push_back("  " + category + " " + money(totals[category]) + " " + percentage(totals[category], total));
@@ -508,9 +511,9 @@ vector<string> execute(const string &line) {
         }
     } else if (command == "BUDGETS") {
         out.push_back("BUDGETS");
-        for (const std::pair<const string, Integer> &entry : budgets) {
-            Integer s = spent(entry.first), b = entry.second;
-            out.push_back("  " + entry.first + " spent " + money(s) + " budget " + money(b) + " used " + percentage(s, b) + (s <= b ? " left " + money(b - s) : " over " + money(s - b)));
+        for (const auto &[category, b] : budgets) {
+            Integer s = spent(category);
+            out.push_back("  " + category + " spent " + money(s) + " budget " + money(b) + " used " + percentage(s, b) + (s <= b ? " left " + money(b - s) : " over " + money(s - b)));
         }
     } else if (command == "TOTALS") {
         out.push_back("TOTALS");
@@ -527,17 +530,17 @@ vector<string> execute(const string &line) {
             received[s.to] += s.total;
         }
         for (int i : orderedMembers()) out.push_back("  " + members[i].name + " paid " + money(paid[i]) + " share " + money(shares[i]) + " sent " + money(sent[i]) + " received " + money(received[i]));
-        for (const std::pair<const string, Integer> &entry : currencies) {
+        for (const auto &[currency, rate] : currencies) {
             int count = 0;
             Integer original = 0, base = 0;
             for (const Expense &e : expenses) {
-                if (e.currency == entry.first) {
+                if (e.currency == currency) {
                     ++count;
                     original += e.amount;
                     base += e.total;
                 }
             }
-            if (count) out.push_back(text("  currency ", entry.first, " expenses ", count, " amount ", money(original), " base ", money(base)));
+            if (count) out.push_back(text("  currency ", currency, " expenses ", count, " amount ", money(original), " base ", money(base)));
         }
         out.push_back(text("  expenses ", expenses.size(), " total ", money(expenseTotal), " settlements ", settlements.size(), " total ", money(settlementTotal)));
     } else if (command == "MEMBERS") {
@@ -572,7 +575,8 @@ vector<string> execute(const string &line) {
             group.second += e.total;
         }
         out.push_back("PERIODS " + a[1]);
-        for (const std::pair<const Integer, std::pair<int, Integer>> &entry : groups) out.push_back(text("  days ", entry.first * k + 1, "-", entry.first * k + k, " expenses ", entry.second.first, " total ", money(entry.second.second)));
+        for (const auto &[period, group] : groups)
+            out.push_back(text("  days ", period * k + 1, "-", period * k + k, " expenses ", group.first, " total ", money(group.second)));
     } else if (command == "SHOW") {
         const Expense &e = expenses[expenseId(a[1])];
         out.push_back("SHOW " + a[1]);
@@ -642,7 +646,7 @@ vector<string> execute(const string &line) {
             }
         }
     }
-    const std::set<string> emptyMarker = {"BALANCES", "OWES", "HISTORY", "CATEGORY", "BUDGETS", "MEMBERS", "PERIODS"};
+    static const std::set<string> emptyMarker = {"BALANCES", "OWES", "HISTORY", "CATEGORY", "BUDGETS", "MEMBERS", "PERIODS"};
     if (emptyMarker.count(command) && out.size() == 1) out.push_back("  (none)");
     return out;
 }

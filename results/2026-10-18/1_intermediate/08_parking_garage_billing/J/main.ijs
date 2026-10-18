@@ -146,9 +146,9 @@ admit=:3:0
   row=.kind,target,NOW,0,0,0,_1,0,0,1,_1,0,0
   V=:row index}V
   index occupy target
-  STATS=.(1+(<kind,0){STATS)(<kind,0)}STATS
+  STATS=:(1+(<kind,0){STATS)(<kind,0)}STATS
   date=.1+NOW floor_ratio 1440
-  DAILY=.(1+(<date,kind,0){DAILY)(<date,kind,0)}DAILY
+  DAILY=:(1+(<date,kind,0){DAILY)(<date,kind,0)}DAILY
   PARKED=:PARKED+1
   if. PARKED>PEAK do.
     PEAK=:PARKED
@@ -159,8 +159,8 @@ admit=:3:0
 refusal=:4:0
   kind=.x
   date=.1+y floor_ratio 1440
-  STATS=.(1+(<kind,2){STATS)(<kind,2)}STATS
-  DAILY=.(1+(<date,kind,2){DAILY)(<date,kind,2)}DAILY
+  STATS=:(1+(<kind,2){STATS)(<kind,2)}STATS
+  DAILY=:(1+(<date,kind,2){DAILY)(<date,kind,2)}DAILY
   EMPTY
 )
 give_up=:3:0
@@ -433,13 +433,13 @@ command=:3:0
         NE=:NE+1
         vacate index
         PARKED=:PARKED-1
-        STATS=.(1+(<kind,1){STATS)(<kind,1)}STATS
-        STATS=.((NOW-index vget 2)+(<kind,3){STATS)(<kind,3)}STATS
+        STATS=:(1+(<kind,1){STATS)(<kind,1)}STATS
+        STATS=:((NOW-index vget 2)+(<kind,3){STATS)(<kind,3)}STATS
         date=.1+NOW floor_ratio 1440
-        DAILY=.(1+(<date,kind,1){DAILY)(<date,kind,1)}DAILY
-        DAILY=.((4{amounts)+(<date,kind,3){DAILY)(<date,kind,3)}DAILY
-        REVENUE=.(1+(<kind,0){REVENUE)(<kind,0)}REVENUE
-        for_k. i.5 do. REVENUE=.((k{amounts)+(<kind,(k+1)){REVENUE)(<kind,(k+1))}REVENUE end.
+        DAILY=:(1+(<date,kind,1){DAILY)(<date,kind,1)}DAILY
+        DAILY=:((4{amounts)+(<date,kind,3){DAILY)(<date,kind,3)}DAILY
+        REVENUE=:(1+(<kind,0){REVENUE)(<kind,0)}REVENUE
+        for_k. i.5 do. REVENUE=:((k{amounts)+(<kind,(k+1)){REVENUE)(<kind,(k+1))}REVENUE end.
         process_queue''
       end.
     end.
@@ -493,8 +493,7 @@ command=:3:0
       if. ((level=0)+.level=target sget 0)*.(NOW-index vget 2)>:60*hours do. found=.found,index end.
     end.
     if. 'OVERSTAY'text_equal action do.
-      times=.i.0
-      for_index. found do. times=.times,index vget 2 end.
+      times=.2{"1 found{V
       found=.( /:times){found
       emit 'OVERSTAY ',(number hours),' ',number #found
     else. emit 'LIST ',number #found end.
@@ -584,12 +583,7 @@ command=:3:0
     for_k. i.5 do. emit (k{::TYPES),' ',(number k{RATES),' ',number k{CAPS end.
     emit 'NIGHT ',(number 0{FEES),' LOST ',(number 1{FEES),' KWH ',number 2{FEES
   case. 'PASSES' do.
-    plates=.0$a:
-    for_k. i.#PASSPLATES do.
-      plate=.k{::PASSPLATES
-      if. plate valid_pass NOW do. plates=.plates,<plate end.
-    end.
-    plates=./:~plates
+    plates=./:~PASSPLATES#~LASTDAYS>:1+NOW floor_ratio 1440
     emit 'PASSES ',number #plates
     for_item. plates do.
       plate=.>item
@@ -599,15 +593,9 @@ command=:3:0
     end.
   case. 'HISTORY' do.
     plate=.3{::words
-    found=.i.0
-    total=.0
-    for_k. i.NE do.
-      index=.k{EXITS
-      if. plate text_equal index{::PLATES do.
-        found=.found,index
-        total=.total+index vget 11
-      end.
-    end.
+    visits=.NE{.EXITS
+    found=.visits#~(<,plate)=visits{PLATES
+    total=.+/11{"1 found{V
     if. 0=#found do. fail 'no history for ',plate return. end.
     emit 'HISTORY ',plate,' visits ',(number #found),' paid ',number total
     for_index. found do.

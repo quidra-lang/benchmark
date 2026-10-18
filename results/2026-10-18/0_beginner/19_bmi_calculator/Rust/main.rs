@@ -13,7 +13,6 @@ fn main() {
         } else {
             "obese"
         };
-        let q = (bmi * 10.0 + 0.5) as i32;
-        println!("{}: BMI {}.{} ({})", name, q / 10, q % 10, category);
+        println!("{}: BMI {:.1} ({})", name, bmi, category);
     }
 }

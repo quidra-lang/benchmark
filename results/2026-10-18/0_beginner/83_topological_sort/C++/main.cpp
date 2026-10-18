@@ -48,13 +48,9 @@ void solve(const std::vector<std::string> &names, const std::vector<std::array<s
 }
 
 int main() {
-    solve( {
-        "physics", "algebra", "graphics", "programming", "statistics", "calculus", "databases", "algorithms"
-    }, {{"calculus", "physics"}, {"algebra", "calculus"}, {"programming", "algorithms"}, {"algebra",
+    solve({"physics", "algebra", "graphics", "programming", "statistics", "calculus", "databases", "algorithms"}, {{"calculus", "physics"}, {"algebra", "calculus"}, {"programming", "algorithms"}, {"algebra",
         "statistics"}, {"algorithms", "databases"}, {"statistics", "databases"}, {"calculus", "graphics"},
         {"algorithms", "graphics"}, {"physics", "graphics"}}, false);
-    solve( {
-        "music", "ecology", "art", "geology", "biology", "chemistry"
-    }, {{"music", "art"}, {"art", "ecology"}, {"biology", "chemistry"}, {"chemistry", "ecology"}, {"ecology",
+    solve({"music", "ecology", "art", "geology", "biology", "chemistry"}, {{"music", "art"}, {"art", "ecology"}, {"biology", "chemistry"}, {"chemistry", "ecology"}, {"ecology",
         "geology"}, {"geology", "chemistry"}}, true);
 }

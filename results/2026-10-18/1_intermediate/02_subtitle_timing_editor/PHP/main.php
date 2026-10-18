@@ -36,12 +36,7 @@ function char_count(array $cue): int
 
 function dialogue(array $cue): bool
 {
-    foreach ($cue['lines'] as $line) {
-        if (str_starts_with($line, '- ')) {
-            return true;
-        }
-    }
-    return false;
+    return array_any($cue['lines'],fn($line) => str_starts_with($line,'- '));
 }
 
 function cue_words(array $lines): array
@@ -238,24 +233,9 @@ function converted_line(string $line, string $mode): array
 
 function clean_hi(string $line): array
 {
-    $output = '';
-    $segments = 0;
-    $p = 0;
-    while ($p < strlen($line)) {
-        $closing = match ($line[$p]) {
-            '[' => ']', '(' => ')', default => null
-        };
-        $ending = $closing === null ? false : strpos($line, $closing, $p + 1);
-        if ($ending !== false) {
-            ++$segments;
-            $p = $ending + 1;
-        } else {
-            $output .= $line[$p];
-            ++$p;
-        }
-    }
+    $cleaned = preg_replace('/\[[^\]]*\]|\([^)]*\)/','',$line,-1,$segments);
     $normalize = fn($text) => trim(preg_replace('/ +/', ' ', $text), ' ');
-    $result = $normalize($output);
+    $result = $normalize($cleaned);
     $prefix = str_starts_with($result, '- ') ? '- ' : '';
     $body = $prefix === '' ? $result : substr($result, 2);
     $labels = preg_match('/^[A-Z][A-Z0-9 ]*:/', $body, $matches);
@@ -316,11 +296,9 @@ function inspect(string $command, array $args, array $cues): array
         $output[] = 'VALIDATE problems=' . count($output);
     } elseif ($command === 'SEARCH') {
         foreach ($cues as $i => $cue) {
-            foreach ($cue['lines'] as $line) {
-                if (str_contains($line, $args[0])) {
-                    $output[] = ($i + 1) . ' ' . time_text($cue['start']) . ' ' . $line;
-                    break;
-                }
+            $line = array_find($cue['lines'],fn($line) => str_contains($line,$args[0]));
+            if ($line !== null) {
+                $output[] = ($i + 1) . ' ' . time_text($cue['start']) . ' ' . $line;
             }
         }
         $output[] = 'SEARCH found=' . count($output);
@@ -339,12 +317,7 @@ function inspect(string $command, array $args, array $cues): array
         }
         $durations = array_map(fn($cue) => max(0, $cue['stop'] - $cue['start']), $cues);
         $total = array_sum($durations);
-        $characters = 0;
-        foreach ($cues as $i => $cue) {
-            if ($durations[$i] > 0) {
-                $characters += char_count($cue);
-            }
-        }
+        $characters = array_sum(array_map(fn($cue,$duration) => $duration > 0 ? char_count($cue) : 0,$cues,$durations));
         $output[] = 'duration total=' . time_text($total) . ' mean=' . time_text(intdiv($total, $n));
         $output[] = $total === 0 ? 'speed -' : 'speed ' . two_decimal(intdiv($characters * 100000, $total));
         $i = array_search(max($durations), $durations, true);
@@ -646,11 +619,7 @@ function modify(string $command, array $args, array $cues): array
         $replacements = 0;
         $changed = 0;
         foreach ($cues as $i => $cue) {
-            $local = 0;
-            foreach ($cue['lines'] as $j => $line) {
-                $cues[$i]['lines'][$j] = str_replace($old, $new, $line, $count);
-                $local += $count;
-            }
+            $cues[$i]['lines'] = str_replace($old,$new,$cue['lines'],$local);
             $replacements += $local;
             $changed += $local > 0 ? 1 : 0;
         }

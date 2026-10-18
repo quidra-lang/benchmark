@@ -4,7 +4,7 @@ previous = nil
 rank = 0
 records.each_with_index do |(name, total), i|
   rank = i + 1 if total != previous
-  average = total.fdiv(3).round(2, half: :up)
+  average = total.fdiv(3)
   puts format('%d. %s total=%d average=%.2f', rank, name, total, average)
   previous = total
 end

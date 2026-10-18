@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const initial = ['#############', '#S..#.......#', '#.#.#.###.#.#', '#.#...#...#.#', '#.###.#.###.#',
         '#...#...#...#', '###.#####.#.#', '#.......#..G#', '#############'];
     final maze = initial.join().split(''), start = maze.indexOf('S'), goal = maze.indexOf('G'), parent = List.filled(117,
@@ -31,8 +28,7 @@ void main() {
         current = parent[current];
         steps++;
     }
-    out.writeln('steps: $steps');
+    print('steps: $steps');
     for (var r = 0; r < 9; r++)
-        out.writeln(maze.sublist(r * 13, r * 13 + 13).join());
-    stdout.write(out);
+        print(maze.sublist(r * 13, r * 13 + 13).join());
 }

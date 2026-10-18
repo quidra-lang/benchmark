@@ -15,32 +15,22 @@ pub fn main(init: std.process.Init) !void {
     const out = &writer.interface;
     const text = "The cat sat on the mat. The dog sat on the rug, and the cat watched the dog. A bird sang on the fence, and the Dog barked at the bird. The cat slept in the sun, the bird flew away, and the dog sat by the door.";
     var lower: [text.len]u8 = undefined;
-    for (text, 0..) |c, i|
-        lower[i] = std.ascii.toLower(c);
+    _ = std.ascii.lowerString(&lower, text);
+    var counts: std.StringHashMapUnmanaged(u32) = .empty;
+    defer counts.deinit(std.heap.page_allocator);
+    var words = std.mem.tokenizeAny(u8, &lower, " ,.");
+    while (words.next()) |word| {
+        const entry = try counts.getOrPut(std.heap.page_allocator, word);
+        if (!entry.found_existing)
+            entry.value_ptr.* = 0;
+        entry.value_ptr.* += 1;
+    }
     var entries: [100]Entry = undefined;
-    var len: usize = 0;
+    const len = counts.count();
+    var iterator = counts.iterator();
     var i: usize = 0;
-    while (i < lower.len) {
-        if (lower[i] < 'a' or lower[i] > 'z') {
-            i += 1;
-            continue;
-        }
-        const start = i;
-        while (i < lower.len and lower[i] >= 'a' and lower[i] <= 'z')
-            i += 1;
-        const word = lower[start..i];
-        var found = false;
-        for (entries[0..len]) | * entry| {
-            if (std.mem.eql(u8, entry.word, word)) {
-                entry.count += 1;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            entries[len] = .{ .word = word, .count = 1 };
-            len += 1;
-        }
+    while (iterator.next()) |entry| : (i += 1) {
+        entries[i] = .{ .word = entry.key_ptr.*, .count = entry.value_ptr.* };
     }
     std.mem.sort(Entry, entries[0..len], {}, less);
     for (entries[0..5]) |entry|

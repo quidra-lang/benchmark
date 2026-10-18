@@ -20,7 +20,7 @@ evaluate_tokens <- function(tokens,variables,start) {
             position <<- position+1
             right <- factor()
             if (operation == "/" && right == 0) stop("division by zero",call.=FALSE)
-            value <- if (operation == "*") value*right else sign(value)*sign(right)*(abs(value) %/% abs(right))
+            value <- if (operation == "*") value*right else trunc(value/right)
         }
         value
     }

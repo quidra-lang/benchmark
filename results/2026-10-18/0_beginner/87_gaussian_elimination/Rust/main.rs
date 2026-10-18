@@ -1,5 +1,5 @@
 fn main() {
-    let mut systems = vec![vec![vec![2.0, -1.0, 3.0, 7.0], vec![4.0, 1.0, -2.0, 3.0], vec![-3.0, 5.0,
+    let mut systems = [vec![vec![2.0, -1.0, 3.0, 7.0], vec![4.0, 1.0, -2.0, 3.0], vec![-3.0, 5.0,
         1.0, -4.0]], vec![vec![1.0, 3.0, -2.0, 4.0, 6.0], vec![5.0, -2.0, 1.0, 3.0, -7.0], vec![-2.0, 4.0,
         6.0, -1.0, 9.0], vec![3.0, 1.0, -4.0, 2.0, 5.0]]];
     for (s, a) in systems.iter_mut().enumerate() {
@@ -20,7 +20,7 @@ fn main() {
                 }
             }
         }
-        for i in(0..n).rev() {
+        for i in (0..n).rev() {
             let mut sum = a[i][n];
             for j in i + 1..n {
                 sum = sum - a[i][j] * x[j];
@@ -29,12 +29,7 @@ fn main() {
         }
         println!("system {}:", s + 1);
         for (i, value) in x.iter().enumerate() {
-            let q = (value.abs() * 10000.0 + 0.5) as i64;
-            println!("x{} = {}{}.{:04}", i + 1, if * value < 0.0 {
-                "-"
-            } else {
-                ""
-            }, q / 10000, q % 10000);
+            println!("x{} = {:.4}", i + 1, value);
         }
     }
 }

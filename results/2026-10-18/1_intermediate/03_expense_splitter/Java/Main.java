@@ -1,5 +1,6 @@
 import java.io.*;
 import java.util.*;
+import java.util.stream.IntStream;
 
 public class Main {
     record Amount(long value, String currency) {}
@@ -25,21 +26,14 @@ public class Main {
     final List<Settlement> settlements = new ArrayList<>();
     long day = 1, serial = 0;
     static void fail(String message) { throw new Problem(message); }
-    static long money(String s) {
-        int p = s.indexOf('.');
-        return Long.parseLong(s.substring(0,p))*100+Long.parseLong(s.substring(p+1));
-    }
+    static long money(String s) { return Long.parseLong(s.replace(".","")); }
     static Amount amount(String s) {
         String[] parts = s.split("@");
         return new Amount(money(parts[0]),parts.length == 2 ? parts[1] : "");
     }
-    static String pad(long n, int width) {
-        String s = Long.toString(n);
-        return "0".repeat(Math.max(0,width-s.length()))+s;
-    }
-    static String fmt(long n) { return n/100+"."+pad(n%100,2); }
+    static String fmt(long n) { return String.format(Locale.ROOT,"%d.%02d",n/100,n%100); }
     static String signed(long n) { return n > 0 ? "+"+fmt(n) : n < 0 ? "-"+fmt(-n) : "0.00"; }
-    static String rate(long n) { return n/10000+"."+pad(n%10000,4); }
+    static String rate(long n) { return String.format(Locale.ROOT,"%d.%04d",n/10000,n%10000); }
     static String percent(long p, long w) { return fmt(p*10000/w)+"%"; }
     static String note(Amount a) { return a.currency().isEmpty() ? "" : " ["+fmt(a.value())+" "+a.currency()+"]"; }
     void registered(String name) {
@@ -90,7 +84,7 @@ public class Main {
         long[] portions = new long[e.participants.size()];
         if (e.mode.equals("EXACT")) {
             if (sum != a) fail("splits do not add up");
-            for (int i = 0; i < portions.length; i++) portions[i] = e.participants.get(i).value();
+            portions = e.participants.stream().mapToLong(Part::value).toArray();
         } else if (e.mode.equals("PERCENT") || e.mode.equals("SHARES")) {
             if (e.mode.equals("PERCENT") && sum != 10000 || e.mode.equals("SHARES") && sum == 0) fail("splits do not add up");
             portions = distribute(a,weights(e.participants));
@@ -166,27 +160,17 @@ public class Main {
         if (budget != null && spent > budget) output.add("  WARNING "+e.category+" over budget by "+fmt(spent-budget));
     }
     static String pairs(List<Part> people, long[] values) {
-        List<String> parts = new ArrayList<>();
-        for (int i = 0; i < people.size(); i++) parts.add(people.get(i).name()+" "+fmt(values[i]));
-        return String.join(" + ",parts);
+        return String.join(" + ",IntStream.range(0,people.size()).mapToObj(i -> people.get(i).name()+" "+fmt(values[i])).toList());
     }
     static List<Transfer> greedy(Map<String,Long> balances) {
         TreeMap<String,Long> work = new TreeMap<>(balances);
         List<Transfer> result = new ArrayList<>();
-        while (true) {
-            String from = "", to = "";
-            long minimum = 0, maximum = 0;
-            for (var item : work.entrySet()) {
-                if (item.getValue() < minimum) {
-                    minimum = item.getValue();
-                    from = item.getKey();
-                }
-                if (item.getValue() > maximum) {
-                    maximum = item.getValue();
-                    to = item.getKey();
-                }
-            }
-            if (minimum == 0) break;
+        while (!work.isEmpty()) {
+            var sender = Collections.min(work.entrySet(),Map.Entry.comparingByValue());
+            var receiver = Collections.max(work.entrySet(),Map.Entry.comparingByValue());
+            long minimum = sender.getValue(), maximum = receiver.getValue();
+            if (minimum >= 0) break;
+            String from = sender.getKey(), to = receiver.getKey();
             long value = Math.min(-minimum,maximum);
             result.add(new Transfer(from,to,value));
             work.put(from,minimum+value);
@@ -223,18 +207,8 @@ public class Main {
         }
         return result;
     }
-    static List<Integer> indexes(int mask, int n) {
-        List<Integer> result = new ArrayList<>();
-        for (int i = 0; i < n; i++) {
-            if ((mask&(1<<i)) != 0) result.add(i);
-        }
-        return result;
-    }
-    static boolean lexLess(List<Integer> a, List<Integer> b) {
-        for (int i = 0; i < Math.min(a.size(),b.size()); i++) {
-            if (!a.get(i).equals(b.get(i))) return a.get(i) < b.get(i);
-        }
-        return a.size() < b.size();
+    static int[] indexes(int mask, int n) {
+        return IntStream.range(0,n).filter(i -> (mask&(1<<i)) != 0).toArray();
     }
     List<String> execute(String line) {
         String[] t = line.split(" ");
@@ -249,9 +223,8 @@ public class Main {
                     Expense template = expenses.values().stream().filter(e -> e.interval > 0 && e.next <= d)
                         .min(Comparator.comparingLong((Expense e) -> e.next).thenComparingLong(e -> e.record)).orElse(null);
                     if (template == null) break;
-                    boolean active = true;
-                    for (Part p : template.payers) active &= members.get(p.name()).active();
-                    for (Part p : template.participants) active &= members.get(p.name()).active();
+                    boolean active = template.payers.stream().allMatch(p -> members.get(p.name()).active()) &&
+                        template.participants.stream().allMatch(p -> members.get(p.name()).active());
                     if (!active || convert(template.amount) == 0) {
                         template.interval = 0;
                         out.add("  CANCEL "+template.id);
@@ -473,10 +446,8 @@ public class Main {
                             if (e.participants.get(i).name().equals(name)) share += e.shares[i];
                         }
                     }
-                    for (Settlement s : settlements) {
-                        if (s.from().equals(name)) sent += s.total();
-                        if (s.to().equals(name)) received += s.total();
-                    }
+                    sent = settlements.stream().filter(s -> s.from().equals(name)).mapToLong(Settlement::total).sum();
+                    received = settlements.stream().filter(s -> s.to().equals(name)).mapToLong(Settlement::total).sum();
                     out.add("  "+name+" paid "+fmt(paid)+" share "+fmt(share)+" sent "+fmt(sent)+" received "+fmt(received));
                 }
                 for (String currency : currencies.keySet()) {
@@ -576,7 +547,7 @@ public class Main {
                         int first = remaining&-remaining, best = 0;
                         for (int sub = remaining; sub > 0; sub = (sub-1)&remaining) {
                             if ((sub&first) != 0 && sums[sub] == 0 && 1+dp[remaining^sub] == dp[remaining] &&
-                                (best == 0 || lexLess(indexes(sub,n),indexes(best,n)))) best = sub;
+                                (best == 0 || Arrays.compare(indexes(sub,n),indexes(best,n)) < 0)) best = sub;
                         }
                         groups.add(best);
                         remaining ^= best;
@@ -589,7 +560,7 @@ public class Main {
                     }
                     out.add("SIMPLIFY OPTIMAL transfers "+transfers.stream().mapToInt(List::size).sum()+" groups "+groups.size());
                     for (int i = 0; i < groups.size(); i++) {
-                        List<String> groupNames = indexes(groups.get(i),n).stream().map(names::get).toList();
+                        List<String> groupNames = Arrays.stream(indexes(groups.get(i),n)).mapToObj(names::get).toList();
                         out.add("  group "+String.join(" ",groupNames));
                         for (Transfer x : transfers.get(i)) out.add("    "+x.from()+" -> "+x.to()+" "+fmt(x.amount()));
                     }

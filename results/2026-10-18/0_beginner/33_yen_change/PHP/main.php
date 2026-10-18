@@ -1,9 +1,15 @@
 <?php
 foreach ([3780,15420,99999,506,48263] as $amount) {
-    $remaining = $amount; $total = 0; $pieces = [];
+    $remaining = $amount;
+    $total = 0;
+    $pieces = [];
     foreach ([10000,5000,1000,500,100,50,10,5,1] as $face) {
-        $quantity = intdiv($remaining,$face); $remaining %= $face;
-        if ($quantity > 0) { $pieces[] = $face.'x'.$quantity; $total += $quantity; }
+        $quantity = intdiv($remaining,$face);
+        $remaining %= $face;
+        if ($quantity > 0) {
+            $pieces[] = $face.'x'.$quantity;
+            $total += $quantity;
+        }
     }
     printf("%d yen: %s (%d pieces)\n",$amount,implode(' ',$pieces),$total);
 }

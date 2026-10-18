@@ -72,14 +72,13 @@ class Splitter
   end
 
   def net(expense, name)
-    value = 0
-    expense[:payers].each_with_index do |person, i|
-      value += expense[:contributions][i] if person[:name] == name
+    paid = expense[:payers].each_with_index.sum do |person, i|
+      person[:name] == name ? expense[:contributions][i] : 0
     end
-    expense[:participants].each_with_index do |person, i|
-      value -= expense[:shares][i] if person[:name] == name
+    share = expense[:participants].each_with_index.sum do |person, i|
+      person[:name] == name ? expense[:shares][i] : 0
     end
-    value
+    paid - share
   end
 
   def get_expense(id, frozen = false)
@@ -222,11 +221,10 @@ class Splitter
     values = balances.dup
     result = []
     loop do
-      debtors = values.select { |_, value| value.negative? }.sort_by { |name, value| [value, name] }
-      creditors = values.select { |_, value| value.positive? }.sort_by { |name, value| [-value, name] }
+      debtors = values.select { |_, value| value.negative? }
       break if debtors.empty?
-      from, debt = debtors[0]
-      to, credit = creditors[0]
+      from, debt = debtors.min_by { |name, value| [value, name] }
+      to, credit = values.select { |_, value| value.positive? }.min_by { |name, value| [-value, name] }
       value = [-debt, credit].min
       result << { from: from, to: to, amount: value }
       values[from] += value
@@ -247,7 +245,7 @@ class Splitter
     sums = Array.new(full + 1, 0)
     (1..full).each do |mask|
       bit = mask & -mask
-      index = people.each_index.find { |i| bit == 1 << i }
+      index = bit.bit_length - 1
       sums[mask] = sums[mask ^ bit] + values[people[index]]
     end
     memo = { 0 => 0 }
@@ -463,13 +461,14 @@ class Splitter
       end
     when "CATEGORY"
       output << "CATEGORY"
-      categories = @expenses.map { |expense| expense[:category] }.uniq.sort_by { |category| [-spent(category), category] }
-      total = @expenses.sum { |expense| expense[:total] }
-      categories.each do |category|
-        value = spent(category)
+      groups = @expenses.group_by { |expense| expense[:category] }
+      category_totals = groups.transform_values { |group| group.sum { |expense| expense[:total] } }
+      total = category_totals.values.sum
+      category_totals.keys.sort_by { |category| [-category_totals[category], category] }.each do |category|
+        value = category_totals[category]
         output << "  #{category} #{money(value)} #{percent(value, total)}"
         totals = Hash.new(0)
-        @expenses.select { |expense| expense[:category] == category }.each do |expense|
+        groups[category].each do |expense|
           expense[:participants].each_with_index { |person, i| totals[person[:name]] += expense[:shares][i] }
         end
         totals.select { |_, share| share.positive? }.sort_by { |person, share| [-share, person] }.each do |person, share|

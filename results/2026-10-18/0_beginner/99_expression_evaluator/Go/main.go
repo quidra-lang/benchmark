@@ -31,7 +31,7 @@ func tokenize(line string) []string {
 		} else {
 			i++
 		}
-		tokens = append(tokens, line[start: i])
+		tokens = append(tokens, line[start:i])
 	}
 	return tokens
 }

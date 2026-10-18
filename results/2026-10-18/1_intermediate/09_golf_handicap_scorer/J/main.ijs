@@ -46,9 +46,7 @@ hundredths=:3:0
   (number y floor_ratio 100),'.',((2-#tail)#'0'),tail
 )
 integer_list=:3:0
-  parts=.0$a:
-  for_value. y do. parts=.parts,<number value end.
-  ' 'join parts
+  ' 'join number&.>y
 )
 sum_range=:4:0
   'first last'=.x
@@ -165,17 +163,10 @@ count_rule=:3:0
 )
 adjusted_differentials=:3:0
   ids=.y pget 3
-  first=.0>.(#ids)-20
-  adjusted=.((#ids)-first)#0
-  reduction=.0
-  position=.(#ids)-1
-  while. position>:first do.
-    index=.position{ids
-    reduction=.reduction+index rget 8
-    adjusted=.((index rget 7)-reduction)(position-first)}adjusted
-    position=.position-1
-  end.
-  adjusted
+  ids=.(0>.(#ids)-20)}.ids
+  differentials=.7{::&>ids{R
+  reductions=.8{::&>ids{R
+  differentials-|.+/\|.reductions
 )
 counting_order=:3:0
   keys=.y,.-i.#y
@@ -200,7 +191,7 @@ update_index=:4:0
   hard=.0
   if. low~:NONE do.
     if. (candidate-low)>30 do.
-      candidate=.low+30+(candidate-low-30)floor_ratio 2
+      candidate=.low+30+((candidate-low)-30)floor_ratio 2
       soft=.1
     end.
     if. (candidate-low)>50 do.
@@ -543,29 +534,13 @@ hole_statistics=:3:0
       end.
     end.
   end.
-  order=.i.18
-  for_k. 1+i.17 do.
-    hole=.k{order
-    position=.k
-    while. position>0 do.
-      previous=.(position-1){order
-      earlier=.0
-      if. 0<hole{counts do.
-        if. 0=previous{counts do. earlier=.1
-        else.
-          numerator=.(hole{sums)-(hole{pars)*hole{counts
-          oldnumerator=.(previous{sums)-(previous{pars)*previous{counts
-          earlier=.(numerator*previous{counts)>oldnumerator*hole{counts
-        end.
-      end.
-      if. -.earlier do. break. end.
-      order=.previous position}order
-      position=.position-1
-    end.
-    order=.hole position}order
-  end.
-  ranks=.18#0
-  for_k. i.18 do. ranks=.(k+1)(k{order)}ranks end.
+  played=.counts>0
+  holes=.I.played
+  relative=.18$0x
+  values=.((x:holes{sums)%x:holes{counts)-holes{pars
+  relative=.values holes}relative
+  order=./:(-.played),.-relative
+  ranks=.(1+i.18)order}18#0
   emit 'holestats ',(course cget 0),': rounds ',number considered
   for_hole. i.18 do.
     average=.'-'

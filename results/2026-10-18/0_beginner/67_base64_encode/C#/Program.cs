@@ -1,9 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Globalization;
-
-CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
 string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 foreach (string text in new[] { "Man", "Hello, World!", "", "<b>bold</b>", "a+b=c?" }) {

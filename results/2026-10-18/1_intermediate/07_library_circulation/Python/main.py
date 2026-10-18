@@ -1,4 +1,5 @@
 import sys
+from collections import Counter
 
 
 class Invalid(Exception):
@@ -30,7 +31,7 @@ def normalize_isbn(text):
     raw = text.replace("-", "")
     if (
         len(raw) == 10
-        and all("0" <= c <= "9" for c in raw[:9])
+        and raw[:9].isdigit()
         and raw[-1] in "0123456789X"
     ):
         total = sum(
@@ -47,7 +48,7 @@ def normalize_isbn(text):
         return prefix + str((10 - checksum % 10) % 10)
     if (
         len(raw) == 13 and raw[:3] in ("978", "979")
-        and all("0" <= c <= "9" for c in raw)
+        and raw.isdigit()
     ):
         total = sum(
             int(c) * (1 if i % 2 == 0 else 3)
@@ -535,9 +536,7 @@ class Library:
         return output
 
     def inventory(self):
-        states = dict.fromkeys(("AVAILABLE", "LOANED", "HOLD", "LOST", "WITHDRAWN"), 0)
-        for copy in self.all_copies():
-            states[copy["state"]] += 1
+        states = Counter(copy["state"] for copy in self.all_copies())
         total = states["AVAILABLE"] + states["LOANED"] + states["HOLD"]
         output = [
             f"INVENTORY titles {len(self.titles)} copies {total}"
@@ -546,10 +545,7 @@ class Library:
             f" withdrawn {states['WITHDRAWN']}"
         ]
         for title in sorted(self.titles.values(), key=lambda title: title["isbn"]):
-            count = {
-                state: sum(copy["state"] == state for copy in title["copies"])
-                for state in ("AVAILABLE", "LOANED", "HOLD")
-            }
+            count = Counter(copy["state"] for copy in title["copies"])
             output.append(
                 f"{title['isbn']} copies {holdings(title)}"
                 f" available {count['AVAILABLE']} loaned {count['LOANED']}"

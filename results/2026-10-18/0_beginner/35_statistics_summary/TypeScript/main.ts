@@ -7,7 +7,7 @@ for (const value of values) {
   squares += difference * difference;
 }
 const stdev = Math.sqrt(squares / values.length);
-const counts = new Map();
+const counts = new Map<number, number>();
 for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
 let mode = ordered[0];
 for (const value of ordered) if (counts.get(value) > counts.get(mode)) mode = value;

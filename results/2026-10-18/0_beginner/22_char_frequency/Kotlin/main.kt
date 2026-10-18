@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val counts = IntArray(26)
     val sentence = "Peter Piper picked a peck of pickled peppers!"

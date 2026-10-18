@@ -4,13 +4,13 @@
 #include <algorithm>
 
 int main() {
-    int graph[7][7] {};
-    const int edges[][3] = {{0, 1, 7}, {0, 2, 3}, {0, 3, 9}, {1, 2, 2}, {2, 4, 6}, {1, 3, 3}, {3, 4,
+    int graph[7][7]{};
+    int edges[][3] = {{0, 1, 7}, {0, 2, 3}, {0, 3, 9}, {1, 2, 2}, {2, 4, 6}, {1, 3, 3}, {3, 4,
         4}, {3, 5, 5}, {4, 5, 3}, {4, 6, 8}, {5, 6, 4}};
-    for (const int(&e)[3] : edges)
+    for (const int (&e)[3] : edges)
         graph[e[0]][e[1]] = graph[e[1]][e[0]] = e[2];
     std::array<int, 7> distance, parent;
-    std::array<bool, 7> done {};
+    std::array<bool, 7> done{};
     distance.fill(1000000);
     parent.fill(-1);
     distance[0] = 0;

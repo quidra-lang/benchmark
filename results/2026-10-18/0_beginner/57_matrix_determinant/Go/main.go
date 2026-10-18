@@ -1,10 +1,8 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
-func det(a[][]int) int {
+func det(a [][]int) int {
 	if len(a) == 1 {
 		return a[0][0]
 	}

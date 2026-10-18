@@ -1,6 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
 fun find(parent: IntArray, v: Int): Int {
     if (parent[v] != v) parent[v] = find(parent,parent[v])
     return parent[v]

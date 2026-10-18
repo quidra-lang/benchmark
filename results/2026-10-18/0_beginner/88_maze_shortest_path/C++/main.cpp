@@ -6,7 +6,7 @@
 int main() {
     std::array<std::string, 9> maze = {"#############", "#S..#.......#", "#.#.#.###.#.#", "#.#...#...#.#",
         "#.###.#.###.#", "#...#...#...#", "###.#####.#.#", "#.......#..G#", "#############"};
-    std::array<int, 117> parent {}, distance {};
+    std::array<int, 117> parent, distance{};
     parent.fill(-1);
     int start = -1, goal = -1;
     for (int i = 0; i < 117; i++) {
@@ -17,7 +17,7 @@ int main() {
     }
     std::vector<int> queue = {start};
     parent[start] = start;
-    const int dr[] = {-1, 1, 0, 0}, dc[] = {0, 0, -1, 1};
+    int dr[] = {-1, 1, 0, 0}, dc[] = {0, 0, -1, 1};
     for (std::size_t head = 0; head < queue.size(); head++) {
         int v = queue[head], r = v / 13, c = v % 13;
         for (int d = 0; d < 4; d++) {

@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
     for (final s in ['Man', 'Hello, World!', '', '<b>bold</b>', 'a+b=c?']) {
         final encoded = StringBuffer();
@@ -13,7 +10,6 @@ void main() {
             encoded.write(remaining > 1 ? alphabet[(value >> 6) &63] : '=');
             encoded.write(remaining > 2 ? alphabet[value &63] : '=');
         }
-        out.writeln('"$s" -> "$encoded"');
+        print('"$s" -> "$encoded"');
     }
-    stdout.write(out);
 }

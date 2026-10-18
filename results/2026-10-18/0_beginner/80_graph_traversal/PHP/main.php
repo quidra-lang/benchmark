@@ -13,11 +13,14 @@ function dfs(int $vertex, array $adjacency, array &$seen, array &$order): void {
         if (!$seen[$neighbor]) dfs($neighbor,$adjacency,$seen,$order);
     }
 }
-$seen = array_fill(0,9,false); $order = [];
+$seen = array_fill(0,9,false);
+$order = [];
 dfs(0,$adjacency,$seen,$order);
 echo 'DFS: ', implode(' ',$order), "\n";
-$seen = array_fill(0,9,false); $seen[0] = true;
-$queue = [0]; $head = 0;
+$seen = array_fill(0,9,false);
+$seen[0] = true;
+$queue = [0];
+$head = 0;
 while ($head < count($queue)) {
     $vertex = $queue[$head++];
     foreach ($adjacency[$vertex] as $neighbor) {
@@ -28,7 +31,8 @@ while ($head < count($queue)) {
     }
 }
 echo 'BFS: ', implode(' ',$queue), "\n";
-$seen = array_fill(0,9,false); $components = [];
+$seen = array_fill(0,9,false);
+$components = [];
 for ($vertex = 0; $vertex < 9; $vertex++) {
     if (!$seen[$vertex]) {
         $component = [];

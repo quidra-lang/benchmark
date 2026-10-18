@@ -2,15 +2,15 @@ grid = [".......", "..#....", "....#..", ".#.....", "...#.#.", "......."]
 
 
 def paths(blocked):
-    dp = [[0] * len(grid[0]) for _ in grid]
-    dp[0][0] = 1
-    for row in range(len(grid)):
-        for column in range(len(grid[0])):
-            if blocked and grid[row][column] == "#":
-                dp[row][column] = 0
-            elif row or column:
-                dp[row][column] = (dp[row - 1][column] if row else 0) + (dp[row][column - 1] if column else 0)
-    return dp[-1][-1]
+    dp = [0] * len(grid[0])
+    dp[0] = 1
+    for row in grid:
+        for column, cell in enumerate(row):
+            if blocked and cell == "#":
+                dp[column] = 0
+            elif column:
+                dp[column] += dp[column - 1]
+    return dp[-1]
 
 
 print(f"without obstacles: {paths(False)}")

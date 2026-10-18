@@ -8,8 +8,7 @@ Subscription = Struct.new(:id, :customer, :plan, :seats, :state, :start, :finish
 class CommandError < StandardError; end
 
 def cents(text)
-  whole, fraction = text.split('.')
-  whole.to_i * 100 + fraction.to_i
+  text.delete('.').to_i
 end
 
 def money(value)
@@ -520,14 +519,13 @@ class Billing
         emit(2, 'outstanding', money(invoices.sum { |i| i[:outstanding] }))
       end
     when 'MRR'
-      rows = {}
-      @subs.each do |s|
-        next unless %w[ACTIVE PAST_DUE].include?(s.state)
-        amount = fee(s.plan, s.seats)
-        mrr = s.plan.cycle == 'MONTHLY' ? amount : s.plan.cycle == 'YEARLY' ? amount / 12 : amount * 30 / 7
-        row = (rows[s.plan.name] ||= [0, 0])
-        row[0] += 1
-        row[1] += mrr
+      active = @subs.select { |s| %w[ACTIVE PAST_DUE].include?(s.state) }
+      rows = active.group_by { |s| s.plan.name }.transform_values do |subs|
+        monthly = subs.sum do |s|
+          amount = fee(s.plan, s.seats)
+          s.plan.cycle == 'MONTHLY' ? amount : s.plan.cycle == 'YEARLY' ? amount / 12 : amount * 30 / 7
+        end
+        [subs.length, monthly]
       end
       emit(0, 'MRR')
       rows.keys.sort.each { |name| emit(2, name, 'subs', rows[name][0], 'mrr', money(rows[name][1])) }

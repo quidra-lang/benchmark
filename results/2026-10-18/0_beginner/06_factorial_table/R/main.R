@@ -1,5 +1,4 @@
-value <- 1
+factorials <- cumprod(c(1, 1:12))
 for (n in 0:12) {
-    if (n > 0) value <- value * n
-    cat(sprintf("%d! = %d\n", n, value))
+    cat(sprintf("%d! = %d\n", n, factorials[n + 1]))
 }

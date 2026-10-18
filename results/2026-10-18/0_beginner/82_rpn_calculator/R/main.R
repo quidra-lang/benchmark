@@ -7,7 +7,7 @@ evaluate <- function(expression) {
             a <- stack[length(stack)-1]
             stack <- head(stack,-2)
             if (token == "/" && b == 0) return("error: division by zero")
-            value <- switch(token,"+"=a+b,"-"=a-b,"*"=a*b,"/"=sign(a)*sign(b)*(abs(a) %/% abs(b)))
+            value <- switch(token,"+"=a+b,"-"=a-b,"*"=a*b,"/"=trunc(a/b))
             stack <- c(stack,value)
         } else stack <- c(stack,as.numeric(token))
     }

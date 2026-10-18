@@ -240,14 +240,10 @@ class Garage:
             return 0, 0
         rate, cap = self.rates[vehicle.kind]
         parking = 0
-        segment = 0
-        remaining = stay
-        while remaining > 0:
-            minutes = min(remaining, 1440)
-            billable = minutes - free_minutes if segment == 0 else minutes
+        for offset in range(0, stay, 1440):
+            minutes = min(stay - offset, 1440)
+            billable = minutes - free_minutes if offset == 0 else minutes
             parking += min(((billable + 29) // 30) * rate, cap)
-            remaining -= minutes
-            segment += 1
         night = (date_of(end) - date_of(start)) * self.fees["NIGHT"]
         return parking, night
 

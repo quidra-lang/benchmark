@@ -25,8 +25,7 @@ expressions.each do |expression|
              when '-' then a - b
              when '*' then a * b
              else
-               quotient = a.abs / b.abs
-               (a.negative? != b.negative?) ? -quotient : quotient
+               a.quo(b).truncate
              end
     stack << result
   end

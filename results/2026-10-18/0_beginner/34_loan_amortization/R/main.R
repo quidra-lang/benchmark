@@ -1,4 +1,7 @@
-balance <- 1000000; month <- 0; total_interest <- 0; total_paid <- 0
+balance <- 1000000
+month <- 0
+total_interest <- 0
+total_paid <- 0
 while (balance > 0) {
     month <- month + 1
     interest <- balance %/% 100

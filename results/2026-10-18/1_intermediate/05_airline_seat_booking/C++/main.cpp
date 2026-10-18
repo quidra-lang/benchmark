@@ -11,7 +11,7 @@
 
 using std::string;
 using std::vector;
-struct Seat { int row, cabin, block, position, kind; char letter; };
+struct Seat { int row, cabin, block, kind; char letter; };
 struct Cabin { int from = 0, to = 0; vector<string> blocks; };
 struct Aircraft {
     string model;
@@ -87,9 +87,8 @@ int flightId(const string &name, bool open = false) {
     return it->second;
 }
 int activeCount(int booking) {
-    int count = 0;
-    for (int id : bookings[booking].people) count += people[id].active;
-    return count;
+    const vector<int> &ids = bookings[booking].people;
+    return std::count_if(ids.begin(), ids.end(), [](int id) { return people[id].active; });
 }
 int bookingId(const string &pnr, bool open = false) {
     std::map<string, int>::const_iterator it = bookingIds.find(pnr);
@@ -105,8 +104,8 @@ int passengerId(int booking, const string &name) {
 int resolve(const string &pnr, const string &name) { return passengerId(bookingId(pnr, true), name); }
 bool hasInfant(int id) { return people[id].type == 0 && people[id].lap >= 0 && people[people[id].lap].active; }
 bool bookingInfants(int booking) {
-    for (int id : bookings[booking].people) if (people[id].active && people[id].type == 2) return true;
-    return false;
+    const vector<int> &ids = bookings[booking].people;
+    return std::any_of(ids.begin(), ids.end(), [](int id) { return people[id].active && people[id].type == 2; });
 }
 int bookedCount(int flight, int cabin) {
     int count = 0;
@@ -125,9 +124,8 @@ bool infantAllowed(int flight, int id, int seat, const vector<int> &moving, cons
         int peer = a.lookup[s.row * 26 + letter - 'A'], owner = f.occupants[peer];
         if (owner >= 0 && owner != id && !contains(moving, owner) && hasInfant(owner)) return false;
     }
-    for (const std::pair<int, int> &assignment : proposed) {
-        int other = assignment.first;
-        const Seat &target = a.seats[assignment.second];
+    for (const auto &[other, seat] : proposed) {
+        const Seat &target = a.seats[seat];
         if (other != id && hasInfant(other) && target.row == s.row && target.block == s.block) return false;
     }
     return true;
@@ -194,19 +192,19 @@ string assignBooking(int flight, int cabin, const vector<int> &ids) {
     const Cabin &c = a.cabins[cabin];
     int count = int(ids.size());
     for (int stage = 0; stage < 3; ++stage) {
+        vector<string> blocks = stage == 1 ? vector<string>{join(c.blocks, "")} : c.blocks;
         int firstHeight = stage == 2 ? 2 : 1, lastHeight = stage == 2 ? count : 1;
         for (int height = firstHeight; height <= lastHeight; ++height) {
             int width = stage == 2 ? (count + height - 1) / height : count;
             int usedRows = (count + width - 1) / width;
             for (int row = c.from; row + usedRows - 1 <= c.to; ++row) {
-                vector<string> blocks = stage == 1 ? vector<string>{join(c.blocks, "")} : c.blocks;
                 for (const string &block : blocks) {
                     for (int x = 0; x + width <= int(block.size()); ++x) {
                         vector<int> candidate;
                         for (int j = 0; j < count; ++j) candidate.push_back(a.lookup[(row + j / width) * 26 + block[x + j % width] - 'A']);
                         if (!fits(flight, ids, candidate)) continue;
                         for (int j = 0; j < count; ++j) seatPerson(flight, ids[j], candidate[j]);
-                        return vector<string>{"BLOCK", "ROW", "STACK"}[stage];
+                        return std::array<const char *, 3>{"BLOCK", "ROW", "STACK"}[stage];
                     }
                 }
             }
@@ -236,7 +234,7 @@ vector<string> execute(const vector<string> &v) {
                     char letter = letters[position];
                     int kind = block == 0 && position == 0 || block + 1 == int(c.blocks.size()) && position + 1 == int(letters.size()) ? 0 : position == 0 || position + 1 == int(letters.size()) ? 2 : 1;
                     building.lookup[row * 26 + letter - 'A'] = int(building.seats.size());
-                    building.seats.push_back({row, cabin, block, position, kind, letter});
+                    building.seats.push_back({row, cabin, block, kind, letter});
                     building.blocked.push_back(false);
                 }
             }
@@ -459,10 +457,10 @@ vector<string> execute(const vector<string> &v) {
                 for (int id : f.volunteers) if (people[id].active && people[id].volunteer && people[id].seat >= 0 && people[id].cabin == cabin) targets.push_back(id);
                 for (int id : targets) {
                     int seat = people[id].seat;
-                    bool useful = false;
-                    for (int other : f.passengers) {
-                        if (people[other].active && people[other].type != 2 && people[other].cabin == cabin && people[other].seat < 0 && fits(flight, {other}, {seat}, {id})) useful = true;
-                    }
+                    bool useful = std::any_of(f.passengers.begin(), f.passengers.end(), [&](int other) {
+                        const Person &p = people[other];
+                        return p.active && p.type != 2 && p.cabin == cabin && p.seat < 0 && fits(flight, {other}, {seat}, {id});
+                    });
                     if (!useful) continue;
                     out.push_back(text("DENIED VOLUNTARY ", bookings[people[id].booking].pnr, " ", people[id].name, " ", classes[cabin], " ", voluntary[cabin]));
                     ++denied;
@@ -577,7 +575,7 @@ vector<string> execute(const vector<string> &v) {
             for (int i = 0; i < int(order.size()); ++i) {
                 const Item &item = order[i];
                 const Person &p = people[item.id];
-                string group = item.group == 3 ? text("ZONE", item.zone) : vector<string>{"PRE", "CABIN", "TIER"}[item.group];
+                string group = item.group == 3 ? text("ZONE", item.zone) : std::array<const char *, 3>{"PRE", "CABIN", "TIER"}[item.group];
                 out.push_back(text(i + 1, " ", group, " ", seatName(a, p.seat), " ", bookings[p.booking].pnr, " ", p.name));
             }
         } else if (command == "AVAIL") {

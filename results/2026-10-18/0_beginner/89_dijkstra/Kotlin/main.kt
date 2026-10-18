@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val edges = listOf(Triple(0,1,7),
         Triple(0,2,3),
@@ -24,10 +20,7 @@ fun main() {
     distance[0] = 0
     val done = BooleanArray(7)
     repeat(7) {
-        var u = -1
-        for (v in 0 until 7) {
-            if (!done[v] && (u < 0 || distance[v] < distance[u])) u = v
-        }
+        val u = (0 until 7).filter { !done[it] }.minBy { distance[it] }
         done[u] = true
         for (v in 0 until 7) {
             if (weight[u][v] > 0 && distance[u] + weight[u][v] < distance[v]) {

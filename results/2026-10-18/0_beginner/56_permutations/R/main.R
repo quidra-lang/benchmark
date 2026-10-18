@@ -6,7 +6,8 @@ visit <- function(prefix,used,counter) {
         return(counter)
     }
     for (i in seq_along(characters)) if (!used[i]) {
-        next_used <- used; next_used[i] <- TRUE
+        next_used <- used
+        next_used[i] <- TRUE
         counter <- visit(paste0(prefix,characters[i]),next_used,counter)
     }
     counter

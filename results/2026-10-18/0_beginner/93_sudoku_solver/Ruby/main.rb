@@ -5,18 +5,9 @@ rows = [
 board = rows.map { |row| row.chars.map(&:to_i) }
 placements = 0
 solve = lambda do
-  empty = nil
-  9.times do |row|
-    9.times do |column|
-      if board[row][column].zero?
-        empty = [row, column]
-        break
-      end
-    end
-    break if empty
-  end
-  next true if empty.nil?
-  row, column = empty
+  row = board.index { |line| line.include?(0) }
+  next true if row.nil?
+  column = board[row].index(0)
   solved = false
   (1..9).each do |digit|
     next if board[row].include?(digit) || board.any? { |line| line[column] == digit }

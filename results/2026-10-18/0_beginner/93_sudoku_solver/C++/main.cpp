@@ -34,9 +34,9 @@ bool solve(std::array<std::array<int, 9>, 9> &board, unsigned long long &placeme
 }
 
 int main() {
-    const std::array<std::string, 9> rows = {"800025000", "070080005", "260400070", "000001900", "010000040",
+    std::array<std::string, 9> rows = {"800025000", "070080005", "260400070", "000001900", "010000040",
         "600200000", "900010000", "700000004", "020000036"};
-    std::array<std::array<int, 9>, 9> board {};
+    std::array<std::array<int, 9>, 9> board;
     for (int r = 0; r < 9; r++)
         for (int c = 0; c < 9; c++)
             board[r][c] = rows[r][c] - '0';

@@ -89,10 +89,6 @@ function textLines(value) {
     return parts;
 }
 
-function clone(cues) {
-    return cues.map(cue => ({ ...cue, text: [...cue.text] }));
-}
-
 function chars(cue) {
     return cue.text.reduce((sum, line) => sum + line.length, 0);
 }
@@ -322,7 +318,7 @@ class Editor {
             return ["UNDO command=" + record.name];
         }
         if (modifying.has(name)) {
-            this.history.push({ name, cues: clone(this.cues) });
+            this.history.push({ name, cues: structuredClone(this.cues) });
         }
         return this.process(name, args, values, texts, rate, old, replacement);
     }
@@ -668,18 +664,10 @@ class Editor {
                         }
                         line = line.trim();
                     } else {
-                        let p = 0;
-                        while (p < original.length) {
-                            const close = original[p] === "[" ? "]" : original[p] === "(" ? ")" : "";
-                            const end = close ? original.indexOf(close, p + 1) : -1;
-                            if (end >= 0) {
-                                segments++;
-                                p = end + 1;
-                            } else {
-                                line += original[p];
-                                p++;
-                            }
-                        }
+                        line = original.replace(/\[.*?\]|\(.*?\)/g, () => {
+                            segments++;
+                            return "";
+                        });
                         line = line.replace(/ +/g, " ").trim();
                         const prefix = line.startsWith("- ") ? "- " : "";
                         const body = line.slice(prefix.length);

@@ -405,7 +405,7 @@ function event!(m,command,args)
         (command == "THROW" && m.sport == "DARTS") || (command in ("SUB","TIMEOUT") && m.sport == "VOLLEYBALL")
     correct || score_error("wrong event")
     if command == "POINT"
-        events = string.(collect(args[1]))
+        events = (string(c) for c in args[1])
     elseif command in ("SUB","TIMEOUT")
         events = [""]
     else

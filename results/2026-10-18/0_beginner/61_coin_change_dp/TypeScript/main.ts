@@ -14,7 +14,7 @@ for (const coin of coins) {
 }
 for (const amount of amounts) {
   let remaining = amount, greedy = 0;
-  for (const coin of [...coins].reverse()) {
+  for (const coin of coins.toReversed()) {
     while (remaining >= coin) {
       remaining -= coin;
       greedy++;

@@ -17,10 +17,8 @@ end
 
 ordered = points.sort
 hull = chain(ordered)[0...-1] + chain(ordered.reverse)[0...-1]
-area_twice = 0
-hull.each_with_index do |(x, y), i|
-  next_x, next_y = hull[(i + 1) % hull.length]
-  area_twice += x * next_y - next_x * y
+area_twice = (hull + [hull.first]).each_cons(2).sum do |(x, y), (next_x, next_y)|
+  x * next_y - next_x * y
 end
 puts "hull: #{hull.length} points"
 hull.each { |x, y| puts "(#{x}, #{y})" }

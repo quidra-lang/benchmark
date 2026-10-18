@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     final a = [52, 17, 38, 9, 61, 38, 24, 45];
     var total = 0;
     for (var i = 1; i < 8; i++) {
@@ -14,8 +11,7 @@ void main() {
         }
         a[j] = v;
         total += shifts;
-        out.writeln('i=$i shifts=$shifts: ${a.join(' ')}');
+        print('i=$i shifts=$shifts: ${a.join(' ')}');
     }
-    out.writeln('total shifts: $total');
-    stdout.write(out);
+    print('total shifts: $total');
 }

@@ -1,8 +1,13 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class Main {
-    record Hand(String text, int category, List<Integer> sequence) {}
+    record Hand(String text, int category, int[] sequence) {}
     static Hand evaluate(String text) {
         String[] cards = text.split(" ");
         Map<Integer,Integer> counts = new HashMap<>();
@@ -26,7 +31,7 @@ public class Main {
         else category = 0;
         ranks.sort(Comparator.<Integer>comparingInt(counts::get).reversed().thenComparing(Comparator.reverseOrder()));
         if (wheel && straight) ranks = new ArrayList<>(List.of(5,4,3,2,1));
-        return new Hand(text,category,ranks);
+        return new Hand(text,category,ranks.stream().mapToInt(Integer::intValue).toArray());
     }
     public static void main(String[] args) {
         String[] input = {"9C 9D 5H QH 2C", "4D AH 3C 5S 2H", "KS 8S 2S JS 6S", "7H 7D KC 7S KD",
@@ -35,14 +40,8 @@ public class Main {
             "flush", "full house", "four of a kind", "straight flush"};
         List<Hand> hands = new ArrayList<>();
         for (String text : input) hands.add(evaluate(text));
-        hands.sort((a,b) -> {
-            if (a.category() != b.category()) return Integer.compare(b.category(),a.category());
-            for (int i = 0; i < a.sequence().size(); i++) {
-                int comparison = Integer.compare(b.sequence().get(i),a.sequence().get(i));
-                if (comparison != 0) return comparison;
-            }
-            return 0;
-        });
+        hands.sort(Comparator.comparingInt(Hand::category).reversed()
+                .thenComparing(Hand::sequence, (a,b) -> Arrays.compare(b, a)));
         for (int i = 0; i < hands.size(); i++) {
             Hand hand = hands.get(i);
             System.out.println((i + 1) + ". " + hand.text() + ": " + categories[hand.category()]);

@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     final a = [47, 12, 85, 33, 6, 71, 29, 58, 90, 14];
     var inversions = 0;
     void mergeSort(int l, int r) {
@@ -20,15 +17,11 @@ void main() {
                 temp.add(a[j++]);
             }
         }
-        while (i <= m)
-            temp.add(a[i++]);
-        while (j <= r)
-            temp.add(a[j++]);
-        for (var k = 0; k < temp.length; k++)
-            a[l + k] = temp[k];
-        out.writeln('merge [$l..$r]: ${temp.join(' ')}');
+        temp.addAll(a.getRange(i, m + 1));
+        temp.addAll(a.getRange(j, r + 1));
+        a.setRange(l, r + 1, temp);
+        print('merge [$l..$r]: ${temp.join(' ')}');
     }
     mergeSort(0, 9);
-    out.writeln('sorted: ${a.join(' ')}\ninversions: $inversions');
-    stdout.write(out);
+    print('sorted: ${a.join(' ')}\ninversions: $inversions');
 }

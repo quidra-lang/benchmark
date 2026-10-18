@@ -1,8 +1,10 @@
 import java.io.*;
 import java.util.*;
+import java.util.stream.IntStream;
 
 public class Main {
-    static final String BASES="ACGT", SYMBOLS="ACGTRYSWKMBDHVN", COMPLEMENTS="TGCAYRSWMKVHDBN", HEX="0123456789ABCDEF";
+    static final String BASES="ACGT", SYMBOLS="ACGTRYSWKMBDHVN", COMPLEMENTS="TGCAYRSWMKVHDBN";
+    static final HexFormat HEX_FORMAT=HexFormat.of().withUpperCase();
     static final int[] MASKS={1,2,4,8,5,10,6,9,12,3,14,13,11,7,15};
     static final String AMINO="ACDEFGHIKLMNPQRSTVWY";
     static final int[] RESIDUES={71079,103139,115089,129116,147177,57052,137141,113160,128174,113160,131193,114104,97117,128131,156188,87078,101105,99133,186213,163176};
@@ -55,8 +57,7 @@ public class Main {
     static String revcomp(String s) { return reverse(complement(s)); }
     static int gc(String s) { return (int)s.chars().filter(c -> c=='G' || c=='C').count(); }
     static String fixed(int n, int divisor, int width) {
-        String fraction=Integer.toString(n%divisor);
-        return n/divisor+"."+"0".repeat(width-fraction.length())+fraction;
+        return String.format(Locale.ROOT,"%d.%0"+width+"d",n/divisor,n%divisor);
     }
     static String pct(int a, int b) { return fixed(10000*a/b,100,2); }
     static String milli(int n) { return fixed(n,1000,3); }
@@ -68,9 +69,7 @@ public class Main {
         return result;
     }
     static String translation(List<String> codons) {
-        StringBuilder out=new StringBuilder();
-        for (String c:codons) out.append(GENETIC.get(c));
-        return out.toString();
+        return String.join("",codons.stream().map(c -> GENETIC.get(c).toString()).toList());
     }
     static Map<String,Integer> counts(Collection<String> words) {
         Map<String,Integer> out=new HashMap<>();
@@ -83,18 +82,10 @@ public class Main {
         return out;
     }
     static List<Integer> occurrences(String s, String motif) {
-        List<Integer> out=new ArrayList<>();
-        for (int i=0;i+motif.length()<=s.length();i++) {
-            boolean matches=true;
-            for (int j=0;j<motif.length();j++) {
-                if ((MASKS[SYMBOLS.indexOf(motif.charAt(j))] & (1<<BASES.indexOf(s.charAt(i+j))))==0) {
-                    matches=false;
-                    break;
-                }
-            }
-            if (matches) out.add(i+1);
-        }
-        return out;
+        return IntStream.range(0,Math.max(0,s.length()-motif.length()+1))
+            .filter(i -> IntStream.range(0,motif.length()).allMatch(j ->
+                (MASKS[SYMBOLS.indexOf(motif.charAt(j))] & (1<<BASES.indexOf(s.charAt(i+j))))!=0))
+            .map(i -> i+1).boxed().toList();
     }
     static boolean transition(char a, char b) { return a!=b && ("AG".indexOf(a)>=0 && "AG".indexOf(b)>=0 || "CT".indexOf(a)>=0 && "CT".indexOf(b)>=0); }
     static int repeatCount(String s, int i, int u) {
@@ -125,9 +116,7 @@ public class Main {
         return n<14 ? 10*(2*(n-g)+4*g) : (649*n+410*g-6724)/n;
     }
     static int mass(String s) {
-        int result=-(s.length()-1)*18015;
-        for (char c:s.toCharArray()) result+=BASE_MASS[BASES.indexOf(c)];
-        return result;
+        return s.chars().map(c -> BASE_MASS[BASES.indexOf(c)]).sum()-(s.length()-1)*18015;
     }
     static int overlap(String a, String b) {
         String joined=b+"#"+a;
@@ -175,12 +164,11 @@ public class Main {
             schemas.put(c,args);
             arities.put(c,new int[]{low,high});
         }
-        void emit(String s) { output.add(s); }
         void store(String name, String sequence) {
             error(sequence.length()>500,"too long");
             boolean replacing=registry.containsKey(name);
             registry.put(name,sequence);
-            emit((replacing ? "replaced " : "stored ")+name+" "+sequence.length()+" nt");
+            output.add((replacing ? "replaced " : "stored ")+name+" "+sequence.length()+" nt");
         }
         void validate(String command, String[] a, int[] nums, String[] sequences) {
             error(!schemas.containsKey(command),"unknown command "+command);
@@ -255,7 +243,7 @@ public class Main {
                 best=h[m][n];
             }
             if (local && best==0) {
-                emit("score 0");
+                output.add("score 0");
                 return;
             }
             int i=bi,j=bj;
@@ -281,10 +269,10 @@ public class Main {
                 if (c=='|') identity++;
                 if (c=='-') gaps++;
             }
-            emit("score "+best+" a "+(i+1)+"-"+bi+" b "+(j+1)+"-"+bj+" identity "+identity+"/"+left.length()+" gaps "+gaps);
-            emit(left);
-            emit(middle.toString());
-            emit(right);
+            output.add("score "+best+" a "+(i+1)+"-"+bi+" b "+(j+1)+"-"+bj+" identity "+identity+"/"+left.length()+" gaps "+gaps);
+            output.add(left);
+            output.add(middle.toString());
+            output.add(right);
         }
         boolean pair(char a, char b) { return complementBase(a)==b || a=='G' && b=='T' || a=='T' && b=='G'; }
         int value(int[][] f, int i, int j) { return i>j ? 0 : f[i][j]; }
@@ -320,8 +308,8 @@ public class Main {
                     }
                 }
             }
-            emit(new String(structure));
-            emit("pairs "+f[0][n-1]);
+            output.add(new String(structure));
+            output.add("pairs "+f[0][n-1]);
         }
         void primer(String s) {
             int n=s.length(),g=gc(s),temperature=tm(s),clamp=gc(s.substring(Math.max(0,n-5))),run=1,bestRun=1,repeats=0;
@@ -336,10 +324,10 @@ public class Main {
             boolean[] ok={n>=18 && n<=25,40*n<=100*g && 100*g<=60*n,temperature>=520 && temperature<=620,clamp>=1 && clamp<=3,bestRun<=4,repeats<=4,self<=6};
             List<String> failed=new ArrayList<>();
             for (int i=0;i<7;i++) {
-                emit(names[i]+" "+values[i]+" "+(ok[i] ? "OK" : "FAIL"));
+                output.add(names[i]+" "+values[i]+" "+(ok[i] ? "OK" : "FAIL"));
                 if (!ok[i]) failed.add(names[i]);
             }
-            emit(failed.isEmpty() ? "PASS" : "FAIL "+list(failed));
+            output.add(failed.isEmpty() ? "PASS" : "FAIL "+list(failed));
         }
         void assemble(String name, int minimum, String[] sequences) {
             List<String> unique=new ArrayList<>(new LinkedHashSet<>(Arrays.asList(sequences).subList(2,sequences.length)));
@@ -371,11 +359,10 @@ public class Main {
                     }
                 }
             }
-            String longest=fragments.get(0);
-            for (String s:fragments) if (s.length()>longest.length()) longest=s;
+            String longest=Collections.max(fragments,Comparator.comparingInt(String::length));
             error(longest.length()>500,"too long");
-            emit("contigs "+fragments.size());
-            for (String s:fragments) emit(s.length()+" "+s);
+            output.add("contigs "+fragments.size());
+            for (String s:fragments) output.add(s.length()+" "+s);
             store(name,longest);
         }
         void execute(String line) {
@@ -403,54 +390,50 @@ public class Main {
                     char old=s.charAt(nums[1]-1),next=a[2].charAt(0);
                     error(old==next,"no change");
                     registry.put(a[0],s.substring(0,nums[1]-1)+next+s.substring(nums[1]));
-                    emit(a[0]+" "+old+nums[1]+next+" "+(transition(old,next) ? "transition" : "transversion"));
+                    output.add(a[0]+" "+old+nums[1]+next+" "+(transition(old,next) ? "transition" : "transversion"));
                     break;
                 }
                 case "DEL":
                     registry.remove(a[0]);
-                    emit("deleted "+a[0]);
+                    output.add("deleted "+a[0]);
                     break;
                 case "LIST":
-                    if (registry.isEmpty()) emit("no sequences");
-                    else for (String name:registry.keySet()) emit(name+" "+registry.get(name).length()+" nt");
+                    if (registry.isEmpty()) output.add("no sequences");
+                    else for (String name:registry.keySet()) output.add(name+" "+registry.get(name).length()+" nt");
                     break;
                 case "REVCOMP":
-                    emit(revcomp(s));
+                    output.add(revcomp(s));
                     break;
                 case "COMPLEMENT":
-                    emit(complement(s));
+                    output.add(complement(s));
                     break;
                 case "REVERSE":
-                    emit(reverse(s));
+                    output.add(reverse(s));
                     break;
                 case "TRANSCRIBE":
-                    emit(s.replace('T','U'));
+                    output.add(s.replace('T','U'));
                     break;
                 case "TRANSLATE": {
                     String protein=translation(codons(s,nums[1]));
-                    emit(protein.isEmpty() ? "none" : protein);
+                    output.add(protein.isEmpty() ? "none" : protein);
                     break;
                 }
                 case "CODONS": {
                     Map<String,Integer> counts=counts(codons(s,nums[1]));
-                    if (counts.isEmpty()) emit("none");
-                    for (String c:frequency(counts)) emit(c+" "+GENETIC.get(c)+" "+counts.get(c));
+                    if (counts.isEmpty()) output.add("none");
+                    for (String c:frequency(counts)) output.add(c+" "+GENETIC.get(c)+" "+counts.get(c));
                     break;
                 }
                 case "PROTEIN": {
                     String protein=translation(codons(s,nums[1])).split("\\*",-1)[0];
                     error(protein.isEmpty(),"empty protein");
-                    int mass=18015,charge=0;
-                    List<String> letters=new ArrayList<>();
-                    for (char c:protein.toCharArray()) {
-                        mass+=RESIDUES[AMINO.indexOf(c)];
-                        charge+="KR".indexOf(c)>=0 ? 1 : "DE".indexOf(c)>=0 ? -1 : 0;
-                        letters.add(Character.toString(c));
-                    }
-                    Map<String,Integer> counts=counts(letters);
-                    emit(protein);
-                    emit("length "+protein.length()+" mass "+milli(mass)+" charge "+(charge>0 ? "+" : "")+charge);
-                    emit(String.join(" ",frequency(counts).stream().map(c -> c+"="+counts.get(c)).toList()));
+                    int mass=18015+protein.chars().map(c -> RESIDUES[AMINO.indexOf(c)]).sum();
+                    long charge=protein.chars().filter(c -> "KR".indexOf(c)>=0).count()
+                        -protein.chars().filter(c -> "DE".indexOf(c)>=0).count();
+                    Map<String,Integer> counts=counts(protein.chars().mapToObj(Character::toString).toList());
+                    output.add(protein);
+                    output.add("length "+protein.length()+" mass "+milli(mass)+" charge "+(charge>0 ? "+" : "")+charge);
+                    output.add(String.join(" ",frequency(counts).stream().map(c -> c+"="+counts.get(c)).toList()));
                     break;
                 }
                 case "ORFS": {
@@ -470,44 +453,43 @@ public class Main {
                         }
                     }
                     found.sort(Comparator.comparingInt(Orf::left));
-                    if (found.isEmpty()) emit("none");
-                    for (Orf o:found) emit((o.frame()>0 ? "+" : "")+o.frame()+" "+o.left()+" "+o.right()+" "+o.protein().length()+" "+o.protein());
+                    if (found.isEmpty()) output.add("none");
+                    for (Orf o:found) output.add((o.frame()>0 ? "+" : "")+o.frame()+" "+o.left()+" "+o.right()+" "+o.protein().length()+" "+o.protein());
                     break;
                 }
                 case "GC": {
                     String lineOut="";
                     for (char c:BASES.toCharArray()) lineOut+=(lineOut.isEmpty() ? "" : " ")+c+"="+s.chars().filter(x -> x==c).count();
-                    emit(lineOut+" GC="+pct(gc(s),n)+"%");
+                    output.add(lineOut+" GC="+pct(gc(s),n)+"%");
                     break;
                 }
                 case "GCWINDOW":
                     error(nums[1]>n,"window too large");
-                    for (int i=0;i+nums[1]<=n;i+=nums[2]) emit((i+1)+"-"+(i+nums[1])+" "+pct(gc(s.substring(i,i+nums[1])),nums[1])+"%");
+                    for (int i=0;i+nums[1]<=n;i+=nums[2]) output.add((i+1)+"-"+(i+nums[1])+" "+pct(gc(s.substring(i,i+nums[1])),nums[1])+"%");
                     break;
                 case "SKEW": {
                     int[] skew=new int[n+1];
                     for (int i=0;i<n;i++) skew[i+1]=skew[i]+(s.charAt(i)=='G' ? 1 : s.charAt(i)=='C' ? -1 : 0);
                     for (boolean minimum:new boolean[]{true,false}) {
                         int v=minimum ? Arrays.stream(skew).min().orElse(0) : Arrays.stream(skew).max().orElse(0);
-                        List<Integer> at=new ArrayList<>();
-                        for (int i=0;i<=n;i++) if (skew[i]==v) at.add(i);
-                        emit((minimum ? "min " : "max ")+v+" at "+list(at));
+                        List<Integer> at=IntStream.rangeClosed(0,n).filter(i -> skew[i]==v).boxed().toList();
+                        output.add((minimum ? "min " : "max ")+v+" at "+list(at));
                     }
                     break;
                 }
                 case "KMERS": {
                     error(nums[1]>n,"k too large");
-                    List<String> words=new ArrayList<>();
-                    for (int i=0;i+nums[1]<=n;i++) words.add(s.substring(i,i+nums[1]));
+                    List<String> words=IntStream.rangeClosed(0,n-nums[1])
+                        .mapToObj(i -> s.substring(i,i+nums[1])).toList();
                     Map<String,Integer> counts=counts(words);
-                    emit(words.size()+" windows "+counts.size()+" distinct");
+                    output.add(words.size()+" windows "+counts.size()+" distinct");
                     List<String> order=frequency(counts);
-                    for (int i=0;i<Math.min(nums[2],order.size());i++) emit(order.get(i)+" "+counts.get(order.get(i)));
+                    for (int i=0;i<Math.min(nums[2],order.size());i++) output.add(order.get(i)+" "+counts.get(order.get(i)));
                     break;
                 }
                 case "FIND":
-                    emit("forward "+list(occurrences(s,a[1])));
-                    emit("reverse "+list(occurrences(s,revcomp(a[1]))));
+                    output.add("forward "+list(occurrences(s,a[1])));
+                    output.add("reverse "+list(occurrences(s,revcomp(a[1]))));
                     break;
                 case "RESTRICT": {
                     TreeSet<Integer> cuts=new TreeSet<>();
@@ -521,7 +503,7 @@ public class Main {
                                 cuts.add(c);
                             }
                         }
-                        emit(a[i]+" "+list(found));
+                        output.add(a[i]+" "+list(found));
                     }
                     List<String> fragments=new ArrayList<>();
                     List<Integer> sizes=new ArrayList<>(),ends=new ArrayList<>(cuts);
@@ -533,8 +515,8 @@ public class Main {
                         previous=end;
                     }
                     sizes.sort(Comparator.reverseOrder());
-                    emit("fragments "+list(fragments));
-                    emit("sizes "+list(sizes));
+                    output.add("fragments "+list(fragments));
+                    output.add("sizes "+list(sizes));
                     break;
                 }
                 case "PALINDROMES": {
@@ -544,12 +526,12 @@ public class Main {
                         for (int length=nums[1];length<=nums[2] && i+length<=n;length++) {
                             String part=s.substring(i,i+length);
                             if (part.equals(revcomp(part))) {
-                                emit((i+1)+" "+length+" "+part);
+                                output.add((i+1)+" "+length+" "+part);
                                 count++;
                             }
                         }
                     }
-                    if (count==0) emit("none");
+                    if (count==0) output.add("none");
                     break;
                 }
                 case "REPEATS": {
@@ -567,8 +549,8 @@ public class Main {
                         }
                     }
                     found.sort(Comparator.comparingInt(Repeat::start).thenComparingInt(Repeat::unitLength));
-                    if (found.isEmpty()) emit("none");
-                    for (Repeat r:found) emit(r.start()+"-"+r.end()+" "+r.unit()+"x"+r.count());
+                    if (found.isEmpty()) output.add("none");
+                    for (Repeat r:found) output.add(r.start()+"-"+r.end()+" "+r.unit()+"x"+r.count());
                     break;
                 }
                 case "HAMMING": {
@@ -581,7 +563,7 @@ public class Main {
                             if (transition(s.charAt(i),b.charAt(i))) transitions++;
                         }
                     }
-                    emit("distance "+distance+" transitions "+transitions+" transversions "+(distance-transitions));
+                    output.add("distance "+distance+" transitions "+transitions+" transversions "+(distance-transitions));
                     break;
                 }
                 case "ALIGN":
@@ -607,20 +589,16 @@ public class Main {
                         }
                         for (int j=0;j<MASKS.length;j++) if (MASKS[j]==mask) iupac.append(SYMBOLS.charAt(j));
                     }
-                    for (int b=0;b<4;b++) {
-                        List<Integer> row=new ArrayList<>();
-                        for (int count:profile[b]) row.add(count);
-                        emit(BASES.charAt(b)+" "+list(row));
-                    }
-                    emit("consensus "+consensus);
-                    emit("iupac "+iupac);
+                    for (int b=0;b<4;b++) output.add(BASES.charAt(b)+" "+list(Arrays.stream(profile[b]).boxed().toList()));
+                    output.add("consensus "+consensus);
+                    output.add("iupac "+iupac);
                     break;
                 }
                 case "TM":
-                    emit("Tm "+fixed(tm(s),10,1)+" "+(n<14 ? "wallace" : "gc"));
+                    output.add("Tm "+fixed(tm(s),10,1)+" "+(n<14 ? "wallace" : "gc"));
                     break;
                 case "MASS":
-                    emit("ss "+milli(mass(s))+" ds "+milli(mass(s)+mass(revcomp(s))));
+                    output.add("ss "+milli(mass(s))+" ds "+milli(mass(s)+mass(revcomp(s))));
                     break;
                 case "PRIMER":
                     primer(s);
@@ -636,15 +614,15 @@ public class Main {
                     for (int i=0;i<n;i+=4) {
                         int value=0;
                         for (int j=0;j<4;j++) value=4*value+(i+j<n ? BASES.indexOf(s.charAt(i+j)) : 0);
-                        hex.append(HEX.charAt(value/16)).append(HEX.charAt(value%16));
+                        hex.append(HEX_FORMAT.toHexDigits((byte)value));
                     }
-                    emit(n+" "+hex);
+                    output.add(n+" "+hex);
                     break;
                 }
                 case "UNPACK": {
                     StringBuilder decoded=new StringBuilder();
-                    for (int i=0;i<a[2].length();i+=2) {
-                        int value=16*HEX.indexOf(a[2].charAt(i))+HEX.indexOf(a[2].charAt(i+1));
+                    for (byte packed:HEX_FORMAT.parseHex(a[2])) {
+                        int value=Byte.toUnsignedInt(packed);
                         for (int shift:new int[]{6,4,2,0}) decoded.append(BASES.charAt(value>>shift&3));
                     }
                     for (int i=nums[1];i<decoded.length();i++) error(decoded.charAt(i)!='A',"invalid padding");
@@ -658,7 +636,7 @@ public class Main {
             try { execute(line); }
             catch (Fault fault) {
                 output.clear();
-                emit("ERROR "+fault.getMessage());
+                output.add("ERROR "+fault.getMessage());
             }
             return output;
         }

@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const program = ['SET A 1', 'SET B 1', 'SET D 8', 'MUL A B', 'PRINT A', 'ADD B 1', 'SUB D 1',
         'JNZ D -4', 'SET A 1071', 'SET B 462', 'SET C A', 'MOD C B', 'SET A B', 'SET B C', 'JNZ B -4',
         'PRINT A', 'HALT'];
@@ -14,7 +11,7 @@ void main() {
         if (op == 'HALT')
             break;
         if (op == 'PRINT') {
-            out.writeln(value(tokens[1]));
+            print(value(tokens[1]));
             pc++;
             continue;
         }
@@ -42,6 +39,5 @@ void main() {
         }
         pc++;
     }
-    out.writeln('executed: $executed');
-    stdout.write(out);
+    print('executed: $executed');
 }

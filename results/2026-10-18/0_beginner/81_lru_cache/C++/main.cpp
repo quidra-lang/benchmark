@@ -4,7 +4,7 @@
 #include <algorithm>
 
 int main() {
-    const std::string accesses = "BACBDABEADDCAEB";
+    std::string accesses = "BACBDABEADDCAEB";
     std::vector<char> cache;
     int hits = 0, misses = 0;
     for (char key : accesses) {

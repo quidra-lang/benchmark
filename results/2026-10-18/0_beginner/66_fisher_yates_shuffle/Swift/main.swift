@@ -1,10 +1,4 @@
-import Foundation
-
-
-var deck = [String]()
-for suit in "SHDC" {
-    for rank in "A23456789TJQK" { deck.append("\(rank)\(suit)") }
-}
+var deck = "SHDC".flatMap { suit in "A23456789TJQK".map { "\($0)\(suit)" } }
 var state: Int64 = 2026
 for i in stride(from: 51, through: 1, by: -1) {
     state = state * 48271 % 2147483647

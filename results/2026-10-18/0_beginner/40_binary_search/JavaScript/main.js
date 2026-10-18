@@ -5,7 +5,10 @@ for (const target of [42, 3, 77, 31, 50, 1]) {
   while (lo <= hi) {
     const mid = Math.floor((lo + hi) / 2);
     probes.push(mid);
-    if (values[mid] === target) { found = mid; break; }
+    if (values[mid] === target) {
+      found = mid;
+      break;
+    }
     if (values[mid] < target) lo = mid + 1;
     else hi = mid - 1;
   }

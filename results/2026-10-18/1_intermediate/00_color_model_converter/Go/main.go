@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,7 +72,7 @@ func distance(a, b Color) int64 {
 }
 
 func extrema(c Color) (int64, int64) {
-	return max(c[0], max(c[1], c[2])), min(c[0], min(c[1], c[2]))
+	return max(c[0], c[1], c[2]), min(c[0], c[1], c[2])
 }
 
 func hue(c Color) int64 {
@@ -248,7 +249,7 @@ func mean(colors []Color) Color {
 }
 
 func palette(colors []Color, wanted int) []Group {
-	boxes := [][]Color{append([]Color(nil),colors...)}
+	boxes := [][]Color{slices.Clone(colors)}
 	for len(boxes) < wanted {
 		chosen, channel, bestWidth := 0, 0, int64(-1)
 		for i, colors := range boxes {
@@ -264,14 +265,10 @@ func palette(colors []Color, wanted int) []Group {
 			}
 			if width > bestWidth { chosen, channel, bestWidth = i, component, width }
 		}
-		selected := append([]Color(nil),boxes[chosen]...)
+		selected := boxes[chosen]
 		sort.SliceStable(selected,func(i,j int) bool { return selected[i][channel] < selected[j][channel] })
 		middle := len(selected)/2
-		replacement := make([][]Color,0,len(boxes)+1)
-		replacement = append(replacement,boxes[:chosen]...)
-		replacement = append(replacement,selected[:middle],selected[middle:])
-		replacement = append(replacement,boxes[chosen+1:]...)
-		boxes = replacement
+		boxes = slices.Replace(boxes, chosen, chosen+1, selected[:middle], selected[middle:])
 	}
 	result := make([]Group,len(boxes))
 	for i, colors := range boxes { result[i] = Group{mean(colors),len(colors)} }
@@ -394,11 +391,8 @@ func prepare(spec Spec, words []string, registry []Entry) (Arguments, bool) {
 		case 'N':
 			if !validName(word) { return args,false }
 		case 'K':
-			found := false
-			for index, candidate := range strings.Split(spec.keywords,"|") {
-				if candidate == word { args.keyword, found = index,true; break }
-			}
-			if !found { return args,false }
+			args.keyword = slices.Index(strings.Split(spec.keywords, "|"), word)
+			if args.keyword < 0 { return args,false }
 		case 'W':
 			if len(word) != 6 || !strings.HasPrefix(word,"0x") { return args,false }
 			value := int64(0)
@@ -480,58 +474,58 @@ var builtins = [24]Entry{
 }
 
 var specs = [53]Spec{
-	{"PARSE", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"DEFINE", "NC", 2, 2, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"UNDEFINE", "N", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"LIST", "", 0, 0, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"HSL", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"FROMHSL", "III", 3, 3, [4]int64{0,0,0,0}, [4]int64{359,100,100,0}, ""},
-	{"HSV", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"FROMHSV", "III", 3, 3, [4]int64{0,0,0,0}, [4]int64{359,100,100,0}, ""},
-	{"HWB", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"FROMHWB", "III", 3, 3, [4]int64{0,0,0,0}, [4]int64{359,100,100,0}, ""},
-	{"CMYK", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"FROMCMYK", "IIII", 4, 4, [4]int64{0,0,0,0}, [4]int64{100,100,100,100}, ""},
-	{"YCBCR", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"FROMYCBCR", "III", 3, 3, [4]int64{0,0,0,0}, [4]int64{255,255,255,0}, ""},
-	{"YIQ", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
+	{"PARSE", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"DEFINE", "NC", 2, 2, [4]int64{}, [4]int64{}, ""},
+	{"UNDEFINE", "N", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"LIST", "", 0, 0, [4]int64{}, [4]int64{}, ""},
+	{"HSL", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"FROMHSL", "III", 3, 3, [4]int64{}, [4]int64{359,100,100,0}, ""},
+	{"HSV", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"FROMHSV", "III", 3, 3, [4]int64{}, [4]int64{359,100,100,0}, ""},
+	{"HWB", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"FROMHWB", "III", 3, 3, [4]int64{}, [4]int64{359,100,100,0}, ""},
+	{"CMYK", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"FROMCMYK", "IIII", 4, 4, [4]int64{}, [4]int64{100,100,100,100}, ""},
+	{"YCBCR", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"FROMYCBCR", "III", 3, 3, [4]int64{}, [4]int64{255,255,255,0}, ""},
+	{"YIQ", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
 	{"FROMYIQ", "III", 3, 3, [4]int64{0,-255,-255,0}, [4]int64{255,255,255,0}, ""},
-	{"RGB565", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"FROM565", "W", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"ANSI", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"FROMANSI", "I", 1, 1, [4]int64{0,0,0,0}, [4]int64{255,0,0,0}, ""},
-	{"WEBSAFE", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"GRAY", "CK", 2, 2, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, "LUMA|AVERAGE|LIGHTNESS|HSP"},
-	{"INVERT", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"MIX", "CCI", 3, 3, [4]int64{0,0,0,0}, [4]int64{0,0,100,0}, ""},
-	{"MIXHSL", "CCI", 3, 3, [4]int64{0,0,0,0}, [4]int64{0,0,100,0}, ""},
+	{"RGB565", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"FROM565", "W", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"ANSI", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"FROMANSI", "I", 1, 1, [4]int64{}, [4]int64{255,0,0,0}, ""},
+	{"WEBSAFE", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"GRAY", "CK", 2, 2, [4]int64{}, [4]int64{}, "LUMA|AVERAGE|LIGHTNESS|HSP"},
+	{"INVERT", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"MIX", "CCI", 3, 3, [4]int64{}, [4]int64{0,0,100,0}, ""},
+	{"MIXHSL", "CCI", 3, 3, [4]int64{}, [4]int64{0,0,100,0}, ""},
 	{"GRADIENT", "CCI", 3, 3, [4]int64{0,0,2,0}, [4]int64{0,0,16,0}, ""},
 	{"TINTS", "CI", 2, 2, [4]int64{0,1,0,0}, [4]int64{0,10,0,0}, ""},
 	{"SHADES", "CI", 2, 2, [4]int64{0,1,0,0}, [4]int64{0,10,0,0}, ""},
 	{"TONES", "CI", 2, 2, [4]int64{0,1,0,0}, [4]int64{0,10,0,0}, ""},
-	{"BLEND", "KCC", 3, 3, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, "MULTIPLY|SCREEN|OVERLAY|HARDLIGHT|SOFTLIGHT|DARKEN|LIGHTEN|DIFFERENCE|EXCLUSION|ADD|SUBTRACT|COLORDODGE|COLORBURN|HUE|SATURATION|COLOR|LUMINOSITY"},
-	{"ALPHA", "CICI", 4, 4, [4]int64{0,0,0,0}, [4]int64{0,100,0,100}, ""},
-	{"SIMULATE", "CK", 2, 2, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, "PROTANOPIA|DEUTERANOPIA|TRITANOPIA|ACHROMATOPSIA"},
+	{"BLEND", "KCC", 3, 3, [4]int64{}, [4]int64{}, "MULTIPLY|SCREEN|OVERLAY|HARDLIGHT|SOFTLIGHT|DARKEN|LIGHTEN|DIFFERENCE|EXCLUSION|ADD|SUBTRACT|COLORDODGE|COLORBURN|HUE|SATURATION|COLOR|LUMINOSITY"},
+	{"ALPHA", "CICI", 4, 4, [4]int64{}, [4]int64{0,100,0,100}, ""},
+	{"SIMULATE", "CK", 2, 2, [4]int64{}, [4]int64{}, "PROTANOPIA|DEUTERANOPIA|TRITANOPIA|ACHROMATOPSIA"},
 	{"ROTATE", "CI", 2, 2, [4]int64{0,-720,0,0}, [4]int64{0,720,0,0}, ""},
-	{"COMPLEMENT", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"TRIADIC", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"TETRADIC", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"SPLITCOMP", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
+	{"COMPLEMENT", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"TRIADIC", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"TETRADIC", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"SPLITCOMP", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
 	{"ANALOGOUS", "CII", 3, 3, [4]int64{0,1,1,0}, [4]int64{0,6,60,0}, ""},
-	{"LIGHTEN", "CI", 2, 2, [4]int64{0,0,0,0}, [4]int64{0,100,0,0}, ""},
-	{"DARKEN", "CI", 2, 2, [4]int64{0,0,0,0}, [4]int64{0,100,0,0}, ""},
-	{"SATURATE", "CI", 2, 2, [4]int64{0,0,0,0}, [4]int64{0,100,0,0}, ""},
-	{"DESATURATE", "CI", 2, 2, [4]int64{0,0,0,0}, [4]int64{0,100,0,0}, ""},
-	{"NEAREST", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"DISTANCE", "CC", 2, 2, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"CONTRAST", "CC", 2, 2, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"ACCESSIBLE", "CC", 2, 2, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"BEST", "*", 2, 33, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"DESCRIBE", "C", 1, 1, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"PALETTE", "P", 2, 33, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"KMEANS", "P", 2, 33, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"SORT", "*", 1, 32, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
-	{"DITHER", "*", 1, 32, [4]int64{0,0,0,0}, [4]int64{0,0,0,0}, ""},
+	{"LIGHTEN", "CI", 2, 2, [4]int64{}, [4]int64{0,100,0,0}, ""},
+	{"DARKEN", "CI", 2, 2, [4]int64{}, [4]int64{0,100,0,0}, ""},
+	{"SATURATE", "CI", 2, 2, [4]int64{}, [4]int64{0,100,0,0}, ""},
+	{"DESATURATE", "CI", 2, 2, [4]int64{}, [4]int64{0,100,0,0}, ""},
+	{"NEAREST", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"DISTANCE", "CC", 2, 2, [4]int64{}, [4]int64{}, ""},
+	{"CONTRAST", "CC", 2, 2, [4]int64{}, [4]int64{}, ""},
+	{"ACCESSIBLE", "CC", 2, 2, [4]int64{}, [4]int64{}, ""},
+	{"BEST", "*", 2, 33, [4]int64{}, [4]int64{}, ""},
+	{"DESCRIBE", "C", 1, 1, [4]int64{}, [4]int64{}, ""},
+	{"PALETTE", "P", 2, 33, [4]int64{}, [4]int64{}, ""},
+	{"KMEANS", "P", 2, 33, [4]int64{}, [4]int64{}, ""},
+	{"SORT", "*", 1, 32, [4]int64{}, [4]int64{}, ""},
+	{"DITHER", "*", 1, 32, [4]int64{}, [4]int64{}, ""},
 	{"RANDOM", "II", 2, 2, [4]int64{1,1,0,0}, [4]int64{999999999,16,0,0}, ""},
 }
 
@@ -559,12 +553,12 @@ func run(line string, registry *[]Entry) (string, bool) {
 		output = append(output,words[0]+" removed")
 		for i, entry := range *registry {
 			if entry.name == words[0] {
-				*registry = append((*registry)[:i],(*registry)[i+1:]...)
+				*registry = slices.Delete(*registry, i, i+1)
 				break
 			}
 		}
 	case "LIST":
-		sorted := append([]Entry(nil),(*registry)...)
+		sorted := slices.Clone(*registry)
 		sort.Slice(sorted,func(i,j int) bool { return sorted[i].name < sorted[j].name })
 		for _, entry := range sorted { output = append(output,entry.name+"="+hex(entry.color)) }
 		if len(output) == 0 { output = append(output,"NONE") }
@@ -757,11 +751,10 @@ func run(line string, registry *[]Entry) (string, bool) {
 		}
 		for _, group := range groups { output = append(output,fmt.Sprintf("%s:%d",hex(group.color),group.count)) }
 	case "SORT":
-		colors := append([]Color(nil),args.colors[:len(words)]...)
+		colors := slices.Clone(args.colors[:len(words)])
 		sort.SliceStable(colors,func(i,j int) bool {
 			a, b := hsl(colors[i]), hsl(colors[j])
-			for k := 0; k < 3; k++ { if a[k] != b[k] { return a[k] < b[k] } }
-			return false
+			return slices.Compare(a[:], b[:]) < 0
 		})
 		for _, color := range colors { output = append(output,hex(color)) }
 	case "DITHER":

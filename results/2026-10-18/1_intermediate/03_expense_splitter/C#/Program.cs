@@ -1,14 +1,9 @@
 using System;
-using System.IO;
 using System.Linq;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 
-static class CollectionExtensions {
-    public static bool IsEmpty<T>(this ICollection<T> values) => values.Count == 0;
-    public static bool IsEmpty(this string value) => value.Length == 0;
-}
 class Program {
     record Amount(long Value, string Currency);
     record Member(bool Active, long Day);
@@ -33,23 +28,16 @@ class Program {
     readonly List<Settlement> settlements = new();
     long day = 1, serial = 0;
     static void Fail(string message) { throw new Problem(message); }
-    static long Money(string s) {
-        int p = s.IndexOf('.');
-        return long.Parse(s.Substring(0,p))*100+long.Parse(s.Substring(p+1));
-    }
+    static long Money(string s) => long.Parse(s.Replace(".",""),CultureInfo.InvariantCulture);
     static Amount ParseAmount(string s) {
         string[] parts = s.Split('@');
         return new Amount(Money(parts[0]),parts.Length == 2 ? parts[1] : "");
     }
-    static string Pad(long n, int width) {
-        string s = System.Convert.ToString(n,CultureInfo.InvariantCulture);
-        return new string('0',Math.Max(0,width-s.Length))+s;
-    }
-    static string Fmt(long n) { return n/100+"."+Pad(n%100,2); }
-    static string Signed(long n) { return n > 0 ? "+"+Fmt(n) : n < 0 ? "-"+Fmt(-n) : "0.00"; }
-    static string Rate(long n) { return n/10000+"."+Pad(n%10000,4); }
+    static string Fmt(long n) => $"{n/100}.{n%100:D2}";
+    static string Signed(long n) => n > 0 ? "+"+Fmt(n) : n < 0 ? "-"+Fmt(-n) : "0.00";
+    static string Rate(long n) => $"{n/10000}.{n%10000:D4}";
     static string Percent(long p, long w) { return Fmt(p*10000/w)+"%"; }
-    static string Note(Amount a) { return a.Currency.IsEmpty() ? "" : " ["+Fmt(a.Value)+" "+a.Currency+"]"; }
+    static string Note(Amount a) { return a.Currency.Length == 0 ? "" : " ["+Fmt(a.Value)+" "+a.Currency+"]"; }
     void Registered(string name) {
         if (!members.ContainsKey(name)) Fail("unknown member "+name);
     }
@@ -58,7 +46,7 @@ class Program {
         if (!members[name].Active) Fail("inactive member "+name);
     }
     long ConvertAmount(Amount a) {
-        if (a.Currency.IsEmpty()) return a.Value;
+        if (a.Currency.Length == 0) return a.Value;
         if (!currencies.ContainsKey(a.Currency)) Fail("unknown currency "+a.Currency);
         return (a.Value*currencies[a.Currency]+5000)/10000;
     }
@@ -98,7 +86,7 @@ class Program {
         long[] portions = new long[e.participants.Count];
         if (e.mode.Equals("EXACT")) {
             if (sum != a) Fail("splits do not add up");
-            for (int i = 0; i < portions.Length; i++) portions[i] = e.participants[i].Value;
+            portions = e.participants.Select(p => p.Value).ToArray();
         } else if (e.mode.Equals("PERCENT") || e.mode.Equals("SHARES")) {
             if (e.mode.Equals("PERCENT") && sum != 10000 || e.mode.Equals("SHARES") && sum == 0) Fail("splits do not add up");
             portions = Distribute(a,Weights(e.participants));
@@ -178,28 +166,17 @@ class Program {
         long spent = CategoryTotals().GetValueOrDefault(e.category);
         if (budget != null && spent > budget.Value) output.Add("  WARNING "+e.category+" over budget by "+Fmt(spent-budget.Value));
     }
-    static string Pairs(List<Part> people, long[] values) {
-        List<string> parts = new();
-        for (int i = 0; i < people.Count; i++) parts.Add(people[i].Name+" "+Fmt(values[i]));
-        return string.Join(" + ",parts);
-    }
+    static string Pairs(List<Part> people, long[] values) =>
+        string.Join(" + ",people.Zip(values,(p,value) => p.Name+" "+Fmt(value)));
     static List<Transfer> Greedy(IDictionary<string,long> balances) {
         SortedDictionary<string,long> work = new SortedDictionary<string,long>(balances,StringComparer.Ordinal);
         List<Transfer> result = new();
-        while (true) {
-            string from = "", to = "";
-            long minimum = 0, maximum = 0;
-            foreach (var item in work) {
-                if (item.Value < minimum) {
-                    minimum = item.Value;
-                    from = item.Key;
-                }
-                if (item.Value > maximum) {
-                    maximum = item.Value;
-                    to = item.Key;
-                }
-            }
-            if (minimum == 0) break;
+        while (work.Count > 0) {
+            var sender = work.MinBy(p => p.Value);
+            var receiver = work.MaxBy(p => p.Value);
+            long minimum = sender.Value, maximum = receiver.Value;
+            if (minimum >= 0) break;
+            string from = sender.Key, to = receiver.Key;
             long value = Math.Min(-minimum,maximum);
             result.Add(new Transfer(from,to,value));
             work[from] = minimum+value;
@@ -236,19 +213,7 @@ class Program {
         }
         return result;
     }
-    static List<int> Indexes(int mask, int n) {
-        List<int> result = new();
-        for (int i = 0; i < n; i++) {
-            if ((mask&(1<<i)) != 0) result.Add(i);
-        }
-        return result;
-    }
-    static bool LexLess(List<int> a, List<int> b) {
-        for (int i = 0; i < Math.Min(a.Count,b.Count); i++) {
-            if (!a[i].Equals(b[i])) return a[i] < b[i];
-        }
-        return a.Count < b.Count;
-    }
+    static int[] Indexes(int mask, int n) => Enumerable.Range(0,n).Where(i => (mask&(1<<i)) != 0).ToArray();
     List<string> Execute(string line) {
         string[] t = line.Split(' ');
         string command = t[0];
@@ -262,9 +227,7 @@ class Program {
                     Expense template = expenses.Values.Where(e => e.interval > 0 && e.next <= d)
                         .OrderBy(e => e.next).ThenBy(e => e.record).FirstOrDefault();
                     if (template == null) break;
-                    bool active = true;
-                    foreach (Part p in template.payers) active &= members[p.Name].Active;
-                    foreach (Part p in template.participants) active &= members[p.Name].Active;
+                    bool active = template.payers.Concat(template.participants).All(p => members[p.Name].Active);
                     if (!active || ConvertAmount(template.amount) == 0) {
                         template.interval = 0;
                         output.Add("  CANCEL "+template.id);
@@ -408,20 +371,20 @@ class Program {
                     }
                 } else {
                     List<string> active = ActiveNames();
-                    if (active.IsEmpty()) output.Add("  (none)");
+                    if (active.Count == 0) output.Add("  (none)");
                     else {
                         int l = active.Max(name => name.Length), width = l;
                         foreach (string a in active) {
                             foreach (string b in active) width = Math.Max(width,a.Equals(b) ? 1 : Fmt(Math.Max(0,debt[names.IndexOf(a)][names.IndexOf(b)])).Length);
                         }
                         StringBuilder header = new StringBuilder(new string(' ',l));
-                        foreach (string name in active) header.Append("  ").Append(new string(' ',width-name.Length)).Append(name);
+                        foreach (string name in active) header.Append("  ").Append(name.PadLeft(width));
                         output.Add(header.ToString());
                         foreach (string a in active) {
-                            StringBuilder row = new StringBuilder(a+new string(' ',l-a.Length));
+                            StringBuilder row = new StringBuilder(a.PadRight(l));
                             foreach (string b in active) {
                                 string cell = a.Equals(b) ? "-" : Fmt(Math.Max(0,debt[names.IndexOf(a)][names.IndexOf(b)]));
-                                row.Append("  ").Append(new string(' ',width-cell.Length)).Append(cell);
+                                row.Append("  ").Append(cell.PadLeft(width));
                             }
                             output.Add(row.ToString());
                         }
@@ -489,15 +452,13 @@ class Program {
                             if (e.participants[i].Name.Equals(name)) share += e.shares[i];
                         }
                     }
-                    foreach (Settlement s in settlements) {
-                        if (s.From.Equals(name)) sent += s.Total;
-                        if (s.To.Equals(name)) received += s.Total;
-                    }
+                    sent = settlements.Where(s => s.From == name).Sum(s => s.Total);
+                    received = settlements.Where(s => s.To == name).Sum(s => s.Total);
                     output.Add("  "+name+" paid "+Fmt(paid)+" share "+Fmt(share)+" sent "+Fmt(sent)+" received "+Fmt(received));
                 }
                 foreach (string currency in currencies.Keys) {
                     List<Expense> group = expenses.Values.Where(e => e.amount.Currency == currency).ToList();
-                    if (!group.IsEmpty()) output.Add("  currency "+currency+" expenses "+group.Count+" amount "+Fmt(group.Sum(e => e.amount.Value))+" base "+Fmt(group.Sum(e => e.total)));
+                    if (group.Count != 0) output.Add("  currency "+currency+" expenses "+group.Count+" amount "+Fmt(group.Sum(e => e.amount.Value))+" base "+Fmt(group.Sum(e => e.total)));
                 }
                 output.Add("  expenses "+expenses.Count+" total "+Fmt(expenses.Values.Sum(e => e.total))+
                     " settlements "+settlements.Count+" total "+Fmt(settlements.Sum(s => s.Total)));
@@ -534,18 +495,10 @@ class Program {
             case "PERIODS": {
                 long k = long.Parse(t[1]);
                 output.Add("PERIODS "+k);
-                SortedDictionary<long,List<Expense>> groups = new();
-                foreach (Expense e in expenses.Values) {
-                    long key = (e.day-1)/k;
-                    if (!groups.TryGetValue(key,out var group)) {
-                        group = new List<Expense>();
-                        groups[key] = group;
-                    }
-                    group.Add(e);
-                }
+                var groups = expenses.Values.GroupBy(e => (e.day-1)/k).OrderBy(g => g.Key);
                 foreach (var group in groups) {
                     long i = group.Key;
-                    output.Add("  days "+(i*k+1)+"-"+(i*k+k)+" expenses "+group.Value.Count+" total "+Fmt(group.Value.Sum(e => e.total)));
+                    output.Add("  days "+(i*k+1)+"-"+(i*k+k)+" expenses "+group.Count()+" total "+Fmt(group.Sum(e => e.total)));
                 }
                 break;
             }
@@ -599,7 +552,7 @@ class Program {
                         int first = remaining&-remaining, best = 0;
                         for (int sub = remaining; sub > 0; sub = (sub-1)&remaining) {
                             if ((sub&first) != 0 && sums[sub] == 0 && 1+dp[remaining^sub] == dp[remaining] &&
-                                (best == 0 || LexLess(Indexes(sub,n),Indexes(best,n)))) best = sub;
+                                (best == 0 || Indexes(sub,n).AsSpan().SequenceCompareTo(Indexes(best,n)) < 0)) best = sub;
                         }
                         groups.Add(best);
                         remaining ^= best;

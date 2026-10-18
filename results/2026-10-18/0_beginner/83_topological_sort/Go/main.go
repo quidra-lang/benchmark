@@ -6,7 +6,7 @@ import (
 	"sort"
 )
 
-func solve(names []string, edges[][2]string, showCycle bool) {
+func solve(names []string, edges [][2]string, showCycle bool) {
 	n := len(names)
 	graph := make([][]bool, n)
 	indegree := make([]int, n)
@@ -23,9 +23,9 @@ func solve(names []string, edges[][2]string, showCycle bool) {
 	}
 	order := []string{}
 	for {
-		best := - 1
+		best := -1
 		for v := 0; v < n; v++ {
-			if ! taken[v] && indegree[v] == 0 && (best < 0 || names[v] < names[best]) {
+			if !taken[v] && indegree[v] == 0 && (best < 0 || names[v] < names[best]) {
 				best = v
 			}
 		}
@@ -44,7 +44,7 @@ func solve(names []string, edges[][2]string, showCycle bool) {
 	if showCycle {
 		remaining := []string{}
 		for i, name := range names {
-			if ! taken[i] {
+			if !taken[i] {
 				remaining = append(remaining, name)
 			}
 		}

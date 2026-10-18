@@ -36,7 +36,7 @@ struct Codec {
 }
 fn floor_ratio(a: Integer, b: Integer) -> Integer { a.div_euclid(b) }
 fn modulo(a: Integer, b: Integer) -> Integer { a.rem_euclid(b) }
-fn padded(value: Integer, width: usize) -> String { format!("{:0width$}", value, width = width) }
+fn padded(value: Integer, width: usize) -> String { format!("{value:0width$}") }
 fn coordinate(value: Integer) -> String {
     let magnitude = value.abs();
     format!("{}{}.{:06}", if value < 0 { "-" } else { "" }, magnitude / 1_000_000, magnitude % 1_000_000)
@@ -48,9 +48,7 @@ fn integer(s: &str, low: Integer, high: Integer) -> Answer<Integer> {
     let negative = s.starts_with('-');
     let body = if negative { &s[1..] } else { s };
     require!(digits(body, 1, 9));
-    let mut value = 0;
-    for c in body.bytes() { value = value * 10 + Integer::from(c - b'0'); }
-    if negative { value = -value; }
+    let value: Integer = s.parse().unwrap();
     require!(value >= low && value <= high);
     Ok(value)
 }
@@ -96,7 +94,7 @@ fn square_digits(a: &[&str], start: usize, e: &mut Integer, n: &mut Integer) -> 
 }
 impl Codec {
     fn new() -> Self {
-        let mut grids: [Vec<Grid>; 6] = std::array::from_fn(|_| Vec::new());
+        let mut grids: [Vec<Grid>; 6] = Default::default();
         for p in 1..=9 {
             grids[0].push(Grid { precision: p, width: 1 << ((5 * p + 1) / 2), height: 1 << (5 * p / 2) });
         }

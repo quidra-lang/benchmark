@@ -17,7 +17,7 @@ function main()
     end
     for (label,pair) in [("closest",nearest),("farthest",farthest)]
         distance = sqrt(Float64(pair[3]))
-        @printf("%s: P%d P%d %.4f\n",label,pair[1],pair[2],floor(distance*10000+0.5)/10000)
+        @printf("%s: P%d P%d %.4f\n",label,pair[1],pair[2],distance)
     end
 end
 main()

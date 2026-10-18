@@ -1,5 +1,7 @@
 import java.io.*;
 import java.util.*;
+import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 public class Main {
     record Cue(long index, long start, long end, List<String> text) {
@@ -47,18 +49,14 @@ public class Main {
         if (lines.stream().anyMatch(String::isEmpty)) bad();
         return lines;
     }
-    static String pad(long n, int width) {
-        String s = Long.toString(n);
-        return "0".repeat(Math.max(0,width-s.length()))+s;
-    }
     static String srt(long t) {
-        return pad(t/3600000,2)+":"+pad(t/60000%60,2)+":"+pad(t/1000%60,2)+","+pad(t%1000,3);
+        return String.format(Locale.ROOT,"%02d:%02d:%02d,%03d",t/3600000,t/60000%60,t/1000%60,t%1000);
     }
     static String ass(long t) {
         long c = (t+5)/10;
-        return c/360000+":"+pad(c/6000%60,2)+":"+pad(c/100%60,2)+"."+pad(c%100,2);
+        return String.format(Locale.ROOT,"%d:%02d:%02d.%02d",c/360000,c/6000%60,c/100%60,c%100);
     }
-    static String decimal(long v) { return v/100+"."+pad(v%100,2); }
+    static String decimal(long v) { return String.format(Locale.ROOT,"%d.%02d",v/100,v%100); }
     static long round(long a, long b) {
         if (b < 0) {
             a = -a;
@@ -81,42 +79,14 @@ public class Main {
         return result;
     }
     static String normalize(String s) { return String.join(" ",words(List.of(s))); }
+    static final Pattern MARKUP = Pattern.compile("</?[ibu]>|</font>|<font(?=[ >])[^>]*>|\\{\\\\an[1-9]\\}|.");
     static List<Item> markup(String line) {
-        List<Item> result = new ArrayList<>();
-        int p = 0;
-        while (p < line.length()) {
-            String token = null;
-            int kind = 0, digit = 0;
-            for (String tag : List.of("<i>","</i>","<b>","</b>","<u>","</u>")) {
-                if (line.startsWith(tag,p)) {
-                    token = tag;
-                    kind = 1;
-                    break;
-                }
-            }
-            if (token == null && line.startsWith("</font>",p)) {
-                token = "</font>";
-                kind = 2;
-            }
-            if (token == null && line.startsWith("<font",p) && p+5 < line.length() &&
-                (line.charAt(p+5) == ' ' || line.charAt(p+5) == '>')) {
-                int end = line.indexOf('>',p+5);
-                if (end >= 0) {
-                    token = line.substring(p,end+1);
-                    kind = 2;
-                }
-            }
-            if (token == null && p+6 <= line.length() && line.startsWith("{\\an",p) &&
-                line.charAt(p+4) >= '1' && line.charAt(p+4) <= '9' && line.charAt(p+5) == '}') {
-                token = line.substring(p,p+6);
-                kind = 3;
-                digit = line.charAt(p+4)-'0';
-            }
-            if (token == null) token = line.substring(p,p+1);
-            result.add(new Item(token,kind,digit));
-            p += token.length();
-        }
-        return result;
+        return MARKUP.matcher(line).results().map(match -> {
+            String text = match.group();
+            int kind = text.startsWith("{\\an") ? 3 :
+                text.startsWith("<font") || text.equals("</font>") ? 2 : text.length() > 1 ? 1 : 0;
+            return new Item(text,kind,kind == 3 ? text.charAt(4)-'0' : 0);
+        }).toList();
     }
     static String listing(int p, Cue c) {
         return p+" "+c.index()+" "+srt(c.start())+" "+srt(c.end())+" "+String.join("|",c.text());
@@ -247,26 +217,18 @@ public class Main {
             case "STATS": {
                 out.add("STATS cues="+n);
                 if (n == 0) break;
-                long total = 0, chars = 0, longest = -1, gap = Long.MIN_VALUE;
-                int position = 0, gapPosition = 0;
-                for (int i = 0; i < n; i++) {
-                    Cue c = cues.get(i);
-                    long d = Math.max(0,c.duration());
-                    total += d;
-                    if (d > 0) chars += c.chars();
-                    if (d > longest) {
-                        longest = d;
-                        position = i+1;
-                    }
-                    if (i+1 < n && cues.get(i+1).start()-c.end() > gap) {
-                        gap = cues.get(i+1).start()-c.end();
-                        gapPosition = i+1;
-                    }
-                }
+                List<Long> durations = cues.stream().map(c -> Math.max(0,c.duration())).toList();
+                long total = durations.stream().mapToLong(Long::longValue).sum(), longest = Collections.max(durations);
+                long chars = cues.stream().filter(c -> c.duration() > 0).mapToLong(Cue::chars).sum();
                 out.add("duration total="+srt(total)+" mean="+srt(total/n));
                 out.add("speed "+(total == 0 ? "-" : decimal(chars*100000/total)));
-                out.add("longest cue="+position+" duration="+srt(longest));
-                out.add(n == 1 ? "gap none" : "gap cue="+gapPosition+" ms="+gap);
+                out.add("longest cue="+(durations.indexOf(longest)+1)+" duration="+srt(longest));
+                if (n == 1) out.add("gap none");
+                else {
+                    List<Long> gaps = IntStream.range(0,n-1).mapToObj(i -> cues.get(i+1).start()-cues.get(i).end()).toList();
+                    long gap = Collections.max(gaps);
+                    out.add("gap cue="+(gaps.indexOf(gap)+1)+" ms="+gap);
+                }
                 break;
             }
             case "PRINT", "TOVTT", "TOASS": {
@@ -571,14 +533,9 @@ public class Main {
                     List<String> lines = new ArrayList<>();
                     int before = count;
                     for (String t : c.text()) {
-                        StringBuilder result = new StringBuilder();
-                        int cursor = 0, found;
-                        while ((found = t.indexOf(old,cursor)) >= 0) {
-                            result.append(t,cursor,found).append(replacement);
-                            cursor = found+old.length();
-                            count++;
-                        }
-                        lines.add(result.append(t.substring(cursor)).toString());
+                        String[] pieces = t.split(Pattern.quote(old),-1);
+                        count += pieces.length-1;
+                        lines.add(String.join(replacement,pieces));
                     }
                     if (count > before) changed++;
                     cues.set(i,new Cue(c.index(),c.start(),c.end(),lines));

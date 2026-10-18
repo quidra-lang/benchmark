@@ -1,17 +1,10 @@
 using System;
-using System.IO;
 using System.Linq;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
-static class CollectionExtensions {
-    public static bool IsEmpty<T>(this ICollection<T> items) => items.Count == 0;
-    public static bool IsEmpty(this string text) => text.Length == 0;
-    public static bool MatchesAt(this string text, string prefix, int position) =>
-        text.AsSpan(position).StartsWith(prefix.AsSpan(),StringComparison.Ordinal);
-}
 class Program {
     record Cue(long Index, long Start, long End, List<string> Text) {
         public long Duration() => End-Start;
@@ -87,18 +80,12 @@ class Program {
         if (lines.Any(x => x.Length == 0)) Bad();
         return lines;
     }
-    static string Pad(long n, int width) {
-        string s = Convert.ToString(n);
-        return new string('0',Math.Max(0,width-s.Length))+s;
-    }
-    static string Srt(long t) {
-        return Pad(t/3600000,2)+":"+Pad(t/60000%60,2)+":"+Pad(t/1000%60,2)+","+Pad(t%1000,3);
-    }
+    static string Srt(long t) => $"{t/3600000:D2}:{t/60000%60:D2}:{t/1000%60:D2},{t%1000:D3}";
     static string Ass(long t) {
         long c = (t+5)/10;
-        return c/360000+":"+Pad(c/6000%60,2)+":"+Pad(c/100%60,2)+"."+Pad(c%100,2);
+        return $"{c/360000}:{c/6000%60:D2}:{c/100%60:D2}.{c%100:D2}";
     }
-    static string Decimal(long v) { return v/100+"."+Pad(v%100,2); }
+    static string Decimal(long v) => $"{v/100}.{v%100:D2}";
     static long Round(long a, long b) {
         if (b < 0) {
             a = -a;
@@ -112,7 +99,7 @@ class Program {
     static List<string> Wrap(List<string> lines, long width) {
         List<string> result = new();
         foreach (string word in Words(lines)) {
-            if (result.IsEmpty() || result.Last().Length+1+word.Length > width) {
+            if (result.Count == 0 || result.Last().Length+1+word.Length > width) {
                 result.Add(word);
             } else {
                 result[result.Count-1] = result.Last()+" "+word;
@@ -121,43 +108,13 @@ class Program {
         return result;
     }
     static string Normalize(string s) { return string.Join(" ",Words(new List<string> {s})); }
-    static List<Item> Markup(string line) {
-        List<Item> result = new();
-        int p = 0;
-        while (p < line.Length) {
-            string token = null;
-            int kind = 0, digit = 0;
-            foreach (string tag in new List<string> {"<i>","</i>","<b>","</b>","<u>","</u>"}) {
-                if (line.MatchesAt(tag,p)) {
-                    token = tag;
-                    kind = 1;
-                    break;
-                }
-            }
-            if (token == null && line.MatchesAt("</font>",p)) {
-                token = "</font>";
-                kind = 2;
-            }
-            if (token == null && line.MatchesAt("<font",p) && p+5 < line.Length &&
-                (line[p+5] == ' ' || line[p+5] == '>')) {
-                int end = line.IndexOf('>',p+5);
-                if (end >= 0) {
-                    token = line.Substring(p,end+1-p);
-                    kind = 2;
-                }
-            }
-            if (token == null && p+6 <= line.Length && line.MatchesAt("{\\an",p) &&
-                line[p+4] >= '1' && line[p+4] <= '9' && line[p+5] == '}') {
-                token = line.Substring(p,6);
-                kind = 3;
-                digit = line[p+4]-'0';
-            }
-            if (token == null) token = line.Substring(p,1);
-            result.Add(new Item(token,kind,digit));
-            p += token.Length;
-        }
-        return result;
-    }
+    static readonly Regex MarkupTokens = new(@"</?[ibu]>|</font>|<font(?=[ >])[^>]*>|\{\\an[1-9]\}|.");
+    static List<Item> Markup(string line) => MarkupTokens.Matches(line).Select(match => {
+        string text = match.Value;
+        int kind = text.StartsWith("{\\an",StringComparison.Ordinal) ? 3 :
+            text.StartsWith("<font",StringComparison.Ordinal) || text == "</font>" ? 2 : text.Length > 1 ? 1 : 0;
+        return new Item(text,kind,kind == 3 ? text[4]-'0' : 0);
+    }).ToList();
     static string Listing(int p, Cue c) {
         return p+" "+c.Index+" "+Srt(c.Start)+" "+Srt(c.End)+" "+string.Join("|",c.Text);
     }
@@ -176,9 +133,9 @@ class Program {
                 } catch (Problem) {
                     reason = "time";
                 }
-                if (reason.IsEmpty() && block.Count < 3) reason = "no text";
+                if (reason.Length == 0 && block.Count < 3) reason = "no text";
             }
-            if (!reason.IsEmpty()) {
+            if (reason.Length != 0) {
                 output.Add("BAD CUE "+(i+1)+": "+reason);
                 bad++;
             } else {
@@ -205,7 +162,7 @@ class Program {
                 if (command.Equals("INSERT") || command.Equals("TEXT")) Text(args[i]);
                 if (command.Equals("REPLACE")) {
                     string[] parts = args[i].Split('|');
-                    if (parts.Length != 2 || parts[0].IsEmpty() || parts[1].IsEmpty()) Bad();
+                    if (parts.Length != 2 || parts[0].Length == 0 || parts[1].Length == 0) Bad();
                 }
             } else {
                 string raw = args[i];
@@ -287,26 +244,18 @@ class Program {
             case "STATS": {
                 output.Add("STATS cues="+n);
                 if (n == 0) break;
-                long total = 0, chars = 0, longest = -1, gap = long.MinValue;
-                int position = 0, gapPosition = 0;
-                for (int i = 0; i < n; i++) {
-                    Cue c = cues[i];
-                    long d = Math.Max(0,c.Duration());
-                    total += d;
-                    if (d > 0) chars += c.Chars();
-                    if (d > longest) {
-                        longest = d;
-                        position = i+1;
-                    }
-                    if (i+1 < n && cues[i+1].Start-c.End > gap) {
-                        gap = cues[i+1].Start-c.End;
-                        gapPosition = i+1;
-                    }
-                }
+                var durations = cues.Select(c => Math.Max(0,c.Duration())).ToArray();
+                long total = durations.Sum(), longest = durations.Max();
+                long chars = cues.Where(c => c.Duration() > 0).Sum(c => c.Chars());
                 output.Add("duration total="+Srt(total)+" mean="+Srt(total/n));
                 output.Add("speed "+(total == 0 ? "-" : Decimal(chars*100000/total)));
-                output.Add("longest cue="+position+" duration="+Srt(longest));
-                output.Add(n == 1 ? "gap none" : "gap cue="+gapPosition+" ms="+gap);
+                output.Add("longest cue="+(Array.IndexOf(durations,longest)+1)+" duration="+Srt(longest));
+                if (n == 1) output.Add("gap none");
+                else {
+                    var gaps = Enumerable.Range(0,n-1).Select(i => cues[i+1].Start-cues[i].End).ToArray();
+                    long gap = gaps.Max();
+                    output.Add("gap cue="+(Array.IndexOf(gaps,gap)+1)+" ms="+gap);
+                }
                 break;
             }
             case "PRINT":
@@ -337,11 +286,11 @@ class Program {
                         }
                         string convertedText = converted.ToString();
                         if (command.Equals("TOVTT")) convertedText = convertedText.Trim(' ');
-                        if (!command.Equals("TOVTT") || !convertedText.IsEmpty()) lines.Add(convertedText);
+                        if (!command.Equals("TOVTT") || convertedText.Length != 0) lines.Add(convertedText);
                     }
                     if (command.Equals("TOASS")) {
                         output.Add("Dialogue: 0,"+Ass(c.Start)+","+Ass(c.End)+",Default,,0,0,0,,"+string.Join("\\N",lines));
-                    } else if (!lines.IsEmpty()) {
+                    } else if (lines.Count != 0) {
                         string settings = "";
                         if (command.Equals("TOVTT") && code != 0) {
                             if (code >= 7) settings += " line:0";
@@ -458,11 +407,9 @@ class Program {
                 List<Cue> result = new();
                 int merged = 0;
                 foreach (Cue b in cues) {
-                    if (!result.IsEmpty()) {
+                    if (result.Count != 0) {
                         Cue a = result.Last();
-                        List<string> both = new List<string>(a.Text);
-                        both.AddRange(b.Text);
-                        List<string> wrapped = Wrap(both,42);
+                        List<string> wrapped = Wrap(a.Text.Concat(b.Text).ToList(),42);
                         if (b.Start-a.End < v && !a.Dialogue() && !b.Dialogue() && wrapped.Count <= 2) {
                             result[result.Count-1] = new Cue(a.Index,a.Start,Math.Max(a.End,b.End),wrapped);
                             merged++;
@@ -489,8 +436,7 @@ class Program {
                         continue;
                     }
                     split++;
-                    List<List<string>> parts = new();
-                    for (int i = 0; i < wrapped.Count; i += 2) parts.Add(wrapped.GetRange(i,Math.Min(2,wrapped.Count-i)));
+                    var parts = wrapped.Chunk(2).Select(part => part.ToList()).ToList();
                     long total = parts.Sum(part => (long)part.Sum(t => t.Length));
                     long[] durations = new long[parts.Count], remainders = new long[parts.Count];
                     List<int> order = new();
@@ -599,10 +545,10 @@ class Program {
                                 cleaned = Normalize(prefix+body.Substring(colon+1));
                             }
                         }
-                        if (cleaned.IsEmpty() || command.Equals("CLEANHI") && cleaned.Equals("-")) removed++;
+                        if (cleaned.Length == 0 || command.Equals("CLEANHI") && cleaned.Equals("-")) removed++;
                         else lines.Add(cleaned);
                     }
-                    if (!lines.IsEmpty()) result.Add(new Cue(c.Index,c.Start,c.End,lines));
+                    if (lines.Count != 0) result.Add(new Cue(c.Index,c.Start,c.End,lines));
                 }
                 int removedCues = n-result.Count;
                 cues = result;
@@ -619,14 +565,9 @@ class Program {
                     List<string> lines = new();
                     int before = count;
                     foreach (string t in c.Text) {
-                        StringBuilder result = new StringBuilder();
-                        int cursor = 0, found;
-                        while ((found = t.IndexOf(old,cursor,StringComparison.Ordinal)) >= 0) {
-                            result.Append(t,cursor,found-cursor).Append(replacement);
-                            cursor = found+old.Length;
-                            count++;
-                        }
-                        lines.Add(result.Append(t.Substring(cursor)).ToString());
+                        string[] pieces = t.Split(new[] { old },StringSplitOptions.None);
+                        count += pieces.Length-1;
+                        lines.Add(string.Join(replacement,pieces));
                     }
                     if (count > before) changed++;
                     cues[i] = new Cue(c.Index,c.Start,c.End,lines);

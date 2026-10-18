@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 type Seat = { id: string; row: number; letter: string; block: number; kind: string; cabin: string };
 type Cabin = { start: number; end: number; blocks: string[]; seats: string[] };
 type Model = { name: string; base: number; limit: number; cabins: Map<string, Cabin>; seats: Map<string, Seat>; exits: Set<number>; blocked: Set<string> };
-type Passenger = { name: string; type: string; pref: string; cabin: string; seat: string; infant: string; adult: string; pnr: string; order: number };
+type Passenger = { name: string; type: string; pref: string; cabin: string; seat: string; infant: string; adult: string; pnr: string };
 type Booking = { pnr: string; flight: string; passengers: Passenger[]; checked: boolean };
 type Flight = { name: string; model: Model; blocked: Set<string>; limits: Map<string, number>; closed: boolean; bookings: Booking[]; volunteers: Passenger[] };
 
@@ -34,9 +34,7 @@ class BookingSystem {
     flights = new Map<string, Flight>();
     bookings = new Map<string, Booking>();
     tiers = new Map<string, string>();
-    used = new Set<string>();
     defining: Model | null = null;
-    serial = 0;
 
     tier(name: string): string {
         return this.tiers.get(name) ?? "NONE";
@@ -248,14 +246,14 @@ class BookingSystem {
 
     book(args: string[]): string[] {
         const [pnr, flightName, cabinName] = args;
-        if (this.used.has(pnr)) {
+        if (this.bookings.has(pnr)) {
             fail("duplicate PNR " + pnr);
         }
         const flight = this.getFlight(flightName, true);
         this.cabin(flight, cabinName);
-        const people = args.slice(3).map((token, i) => {
+        const people = args.slice(3).map(token => {
             const [name, type, pref = ""] = token.split(":");
-            return { name, type, pref, cabin: cabinName, seat: "", infant: "", adult: "", pnr, order: this.serial * 10 + i };
+            return { name, type, pref, cabin: cabinName, seat: "", infant: "", adult: "", pnr };
         });
         const seen = new Set<string>();
         for (const person of people) {
@@ -287,10 +285,8 @@ class BookingSystem {
             adults[i].infant = infant.name;
         });
         const booking = { pnr, flight: flight.name, passengers: people, checked: false };
-        this.serial++;
         this.bookings.set(pnr, booking);
         flight.bookings.push(booking);
-        this.used.add(pnr);
         const method = this.assign(flight, seated, cabinName);
         return ["BOOKED " + pnr + " " + flight.name + " " + cabinName + " " + method + " " +
             people.map(person => person.name + ":" + display(person)).join(" ")];
@@ -486,7 +482,7 @@ class BookingSystem {
                 const [higher, lower] = cabins.slice(i, i + 2);
                 const targets = this.passengers(flight).filter(person => person.cabin === lower && person.type === "ADULT" &&
                     !person.infant && this.tier(person.name) !== "NONE");
-                targets.sort((a, b) => tierOrder.indexOf(this.tier(a.name)) - tierOrder.indexOf(this.tier(b.name)) || a.order - b.order);
+                targets.sort((a, b) => tierOrder.indexOf(this.tier(a.name)) - tierOrder.indexOf(this.tier(b.name)));
                 for (const person of targets) {
                     if (this.booked(flight, higher) >= flight.limits.get(higher)!) {
                         break;

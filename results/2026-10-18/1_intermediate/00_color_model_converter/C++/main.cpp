@@ -1,4 +1,7 @@
+#include <algorithm>
 #include <array>
+#include <cstdlib>
+#include <tuple>
 #include <cstdio>
 #include <cstring>
 #include <cstdarg>
@@ -33,10 +36,8 @@ struct Arguments {
 
 struct Entry { std::string name; Color color; };
 struct State { std::vector<Entry> entries; };
-struct Text { std::string value; };
-static const char *entry_name(const Entry *entry) { return entry->name.c_str(); }
+using Text = std::string;
 static int registered_count(const State *state) { return static_cast<int>(state->entries.size()); }
-static const Entry *registered_entry(const State *state, int i) { return &state->entries[i]; }
 static void registry_set(State *state, const char *name, Color color) {
     for (Entry &entry : state->entries) {
         if (entry.name == name) {
@@ -55,8 +56,8 @@ static void wordf(Text *output, const char *format, ...) {
     va_start(arguments, format);
     vsnprintf(buffer, sizeof buffer, format, arguments);
     va_end(arguments);
-    if (!output->value.empty()) output->value += ' ';
-    output->value += buffer;
+    if (!output->empty()) *output += ' ';
+    *output += buffer;
 }
 
 enum Operation {
@@ -116,58 +117,58 @@ enum Operation {
 };
 
 static const Spec specifications[] = {
-    {"PARSE", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"DEFINE", "NC", 2, 2, {0,0,0,0}, {0,0,0,0}, ""},
-    {"UNDEFINE", "N", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"LIST", "", 0, 0, {0,0,0,0}, {0,0,0,0}, ""},
-    {"HSL", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMHSL", "III", 3, 3, {0,0,0,0}, {359,100,100,0}, ""},
-    {"HSV", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMHSV", "III", 3, 3, {0,0,0,0}, {359,100,100,0}, ""},
-    {"HWB", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMHWB", "III", 3, 3, {0,0,0,0}, {359,100,100,0}, ""},
-    {"CMYK", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMCMYK", "IIII", 4, 4, {0,0,0,0}, {100,100,100,100}, ""},
-    {"YCBCR", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMYCBCR", "III", 3, 3, {0,0,0,0}, {255,255,255,0}, ""},
-    {"YIQ", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
+    {"PARSE", "C", 1, 1, {}, {}, ""},
+    {"DEFINE", "NC", 2, 2, {}, {}, ""},
+    {"UNDEFINE", "N", 1, 1, {}, {}, ""},
+    {"LIST", "", 0, 0, {}, {}, ""},
+    {"HSL", "C", 1, 1, {}, {}, ""},
+    {"FROMHSL", "III", 3, 3, {}, {359,100,100,0}, ""},
+    {"HSV", "C", 1, 1, {}, {}, ""},
+    {"FROMHSV", "III", 3, 3, {}, {359,100,100,0}, ""},
+    {"HWB", "C", 1, 1, {}, {}, ""},
+    {"FROMHWB", "III", 3, 3, {}, {359,100,100,0}, ""},
+    {"CMYK", "C", 1, 1, {}, {}, ""},
+    {"FROMCMYK", "IIII", 4, 4, {}, {100,100,100,100}, ""},
+    {"YCBCR", "C", 1, 1, {}, {}, ""},
+    {"FROMYCBCR", "III", 3, 3, {}, {255,255,255,0}, ""},
+    {"YIQ", "C", 1, 1, {}, {}, ""},
     {"FROMYIQ", "III", 3, 3, {0,-255,-255,0}, {255,255,255,0}, ""},
-    {"RGB565", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROM565", "W", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"ANSI", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMANSI", "I", 1, 1, {0,0,0,0}, {255,0,0,0}, ""},
-    {"WEBSAFE", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"GRAY", "CK", 2, 2, {0,0,0,0}, {0,0,0,0}, "LUMA|AVERAGE|LIGHTNESS|HSP"},
-    {"INVERT", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"MIX", "CCI", 3, 3, {0,0,0,0}, {0,0,100,0}, ""},
-    {"MIXHSL", "CCI", 3, 3, {0,0,0,0}, {0,0,100,0}, ""},
+    {"RGB565", "C", 1, 1, {}, {}, ""},
+    {"FROM565", "W", 1, 1, {}, {}, ""},
+    {"ANSI", "C", 1, 1, {}, {}, ""},
+    {"FROMANSI", "I", 1, 1, {}, {255,0,0,0}, ""},
+    {"WEBSAFE", "C", 1, 1, {}, {}, ""},
+    {"GRAY", "CK", 2, 2, {}, {}, "LUMA|AVERAGE|LIGHTNESS|HSP"},
+    {"INVERT", "C", 1, 1, {}, {}, ""},
+    {"MIX", "CCI", 3, 3, {}, {0,0,100,0}, ""},
+    {"MIXHSL", "CCI", 3, 3, {}, {0,0,100,0}, ""},
     {"GRADIENT", "CCI", 3, 3, {0,0,2,0}, {0,0,16,0}, ""},
     {"TINTS", "CI", 2, 2, {0,1,0,0}, {0,10,0,0}, ""},
     {"SHADES", "CI", 2, 2, {0,1,0,0}, {0,10,0,0}, ""},
     {"TONES", "CI", 2, 2, {0,1,0,0}, {0,10,0,0}, ""},
-    {"BLEND", "KCC", 3, 3, {0,0,0,0}, {0,0,0,0}, "MULTIPLY|SCREEN|OVERLAY|HARDLIGHT|SOFTLIGHT|DARKEN|LIGHTEN|DIFFERENCE|EXCLUSION|ADD|SUBTRACT|COLORDODGE|COLORBURN|HUE|SATURATION|COLOR|LUMINOSITY"},
-    {"ALPHA", "CICI", 4, 4, {0,0,0,0}, {0,100,0,100}, ""},
-    {"SIMULATE", "CK", 2, 2, {0,0,0,0}, {0,0,0,0}, "PROTANOPIA|DEUTERANOPIA|TRITANOPIA|ACHROMATOPSIA"},
+    {"BLEND", "KCC", 3, 3, {}, {}, "MULTIPLY|SCREEN|OVERLAY|HARDLIGHT|SOFTLIGHT|DARKEN|LIGHTEN|DIFFERENCE|EXCLUSION|ADD|SUBTRACT|COLORDODGE|COLORBURN|HUE|SATURATION|COLOR|LUMINOSITY"},
+    {"ALPHA", "CICI", 4, 4, {}, {0,100,0,100}, ""},
+    {"SIMULATE", "CK", 2, 2, {}, {}, "PROTANOPIA|DEUTERANOPIA|TRITANOPIA|ACHROMATOPSIA"},
     {"ROTATE", "CI", 2, 2, {0,-720,0,0}, {0,720,0,0}, ""},
-    {"COMPLEMENT", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"TRIADIC", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"TETRADIC", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"SPLITCOMP", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
+    {"COMPLEMENT", "C", 1, 1, {}, {}, ""},
+    {"TRIADIC", "C", 1, 1, {}, {}, ""},
+    {"TETRADIC", "C", 1, 1, {}, {}, ""},
+    {"SPLITCOMP", "C", 1, 1, {}, {}, ""},
     {"ANALOGOUS", "CII", 3, 3, {0,1,1,0}, {0,6,60,0}, ""},
-    {"LIGHTEN", "CI", 2, 2, {0,0,0,0}, {0,100,0,0}, ""},
-    {"DARKEN", "CI", 2, 2, {0,0,0,0}, {0,100,0,0}, ""},
-    {"SATURATE", "CI", 2, 2, {0,0,0,0}, {0,100,0,0}, ""},
-    {"DESATURATE", "CI", 2, 2, {0,0,0,0}, {0,100,0,0}, ""},
-    {"NEAREST", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"DISTANCE", "CC", 2, 2, {0,0,0,0}, {0,0,0,0}, ""},
-    {"CONTRAST", "CC", 2, 2, {0,0,0,0}, {0,0,0,0}, ""},
-    {"ACCESSIBLE", "CC", 2, 2, {0,0,0,0}, {0,0,0,0}, ""},
-    {"BEST", "*", 2, 33, {0,0,0,0}, {0,0,0,0}, ""},
-    {"DESCRIBE", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"PALETTE", "P", 2, 33, {0,0,0,0}, {0,0,0,0}, ""},
-    {"KMEANS", "P", 2, 33, {0,0,0,0}, {0,0,0,0}, ""},
-    {"SORT", "*", 1, 32, {0,0,0,0}, {0,0,0,0}, ""},
-    {"DITHER", "*", 1, 32, {0,0,0,0}, {0,0,0,0}, ""},
+    {"LIGHTEN", "CI", 2, 2, {}, {0,100,0,0}, ""},
+    {"DARKEN", "CI", 2, 2, {}, {0,100,0,0}, ""},
+    {"SATURATE", "CI", 2, 2, {}, {0,100,0,0}, ""},
+    {"DESATURATE", "CI", 2, 2, {}, {0,100,0,0}, ""},
+    {"NEAREST", "C", 1, 1, {}, {}, ""},
+    {"DISTANCE", "CC", 2, 2, {}, {}, ""},
+    {"CONTRAST", "CC", 2, 2, {}, {}, ""},
+    {"ACCESSIBLE", "CC", 2, 2, {}, {}, ""},
+    {"BEST", "*", 2, 33, {}, {}, ""},
+    {"DESCRIBE", "C", 1, 1, {}, {}, ""},
+    {"PALETTE", "P", 2, 33, {}, {}, ""},
+    {"KMEANS", "P", 2, 33, {}, {}, ""},
+    {"SORT", "*", 1, 32, {}, {}, ""},
+    {"DITHER", "*", 1, 32, {}, {}, ""},
     {"RANDOM", "II", 2, 2, {1,1,0,0}, {999999999,16,0,0}, ""},
 };
 
@@ -198,10 +199,7 @@ static const Entry builtins[] = {
     {"indigo", {{75, 0, 130}}},
 };
 
-static Int smaller(Int a, Int b) { return a < b ? a : b; }
-static Int larger(Int a, Int b) { return a > b ? a : b; }
-static Int magnitude(Int x) { return x < 0 ? -x : x; }
-static Int clamp(Int x) { return smaller(255, larger(0, x)); }
+static Int clamp(Int x) { return std::clamp<Int>(x, 0, 255); }
 
 static Int floor_div(Int a, Int b) {
     Int q = a / b;
@@ -223,12 +221,11 @@ static Int modulo(Int value, Int modulus) {
 }
 
 static Color rgb(Int r, Int g, Int b) {
-    Color result = {{r, g, b}};
-    return result;
+    return Color{{r, g, b}};
 }
 
 static int equal_color(Color a, Color b) {
-    return a.x[0] == b.x[0] && a.x[1] == b.x[1] && a.x[2] == b.x[2];
+    return a.x == b.x;
 }
 
 static Int distance(Color a, Color b) {
@@ -241,8 +238,8 @@ static Int distance(Color a, Color b) {
 }
 
 static void extrema(Color c, Int *maximum, Int *minimum) {
-    *maximum = larger(c.x[0], larger(c.x[1], c.x[2]));
-    *minimum = smaller(c.x[0], smaller(c.x[1], c.x[2]));
+    *maximum = std::max({c.x[0], c.x[1], c.x[2]});
+    *minimum = std::min({c.x[0], c.x[1], c.x[2]});
 }
 
 static Int hue(Color c) {
@@ -268,7 +265,7 @@ static Hsl hsl(Color c) {
     Int delta = maximum - minimum;
     Hsl result = {hue(c), 0, rounded(100 * (maximum + minimum), 510)};
     if (delta != 0)
-        result.s = rounded(100 * delta, 255 - magnitude(maximum + minimum - 255));
+        result.s = rounded(100 * delta, 255 - std::abs(maximum + minimum - 255));
     return result;
 }
 
@@ -288,7 +285,7 @@ static Color sector(Int h) {
 }
 
 static Color from_hsl(Int h, Int s, Int l) {
-    Int chroma = (100 - magnitude(2 * l - 100)) * s;
+    Int chroma = (100 - std::abs(2 * l - 100)) * s;
     Int offset = 30 * (200 * l - chroma);
     Color result = sector(h);
     for (int j = 0; j < 3; ++j)
@@ -345,8 +342,8 @@ static Int luminance(Color c) {
 
 static Contrast contrast(Color a, Color b) {
     Int y1 = luminance(a), y2 = luminance(b);
-    Int high = larger(y1, y2) + 32512500;
-    Int low = smaller(y1, y2) + 32512500;
+    Int high = std::max(y1, y2) + 32512500;
+    Int low = std::min(y1, y2) + 32512500;
     Contrast result = {rounded(100 * high, low), "FAIL"};
     if (high >= 7 * low) result.verdict = "AAA";
     else if (2 * high >= 9 * low) result.verdict = "AA";
@@ -390,14 +387,14 @@ static Color blend(int mode, Color base, Color top) {
                 value = ((255 - x) * multiply + x * screen) / 255;
                 break;
             }
-            case 5: value = smaller(x, y); break;
-            case 6: value = larger(x, y); break;
-            case 7: value = magnitude(x - y); break;
+            case 5: value = std::min(x, y); break;
+            case 6: value = std::max(x, y); break;
+            case 7: value = std::abs(x - y); break;
             case 8: value = x + y - 2 * x * y / 255; break;
-            case 9: value = smaller(255, x + y); break;
-            case 10: value = larger(0, x - y); break;
-            case 11: value = y == 255 ? 255 : smaller(255, 255 * x / (255 - y)); break;
-            case 12: value = y == 0 ? 0 : larger(0, 255 - 255 * (255 - x) / y); break;
+            case 9: value = std::min<Int>(255, x + y); break;
+            case 10: value = std::max<Int>(0, x - y); break;
+            case 11: value = y == 255 ? 255 : std::min<Int>(255, 255 * x / (255 - y)); break;
+            case 12: value = y == 0 ? 0 : std::max<Int>(0, 255 - 255 * (255 - x) / y); break;
         }
         result.x[j] = value;
     }
@@ -407,7 +404,7 @@ static Color blend(int mode, Color base, Color top) {
 static void palette(const Color *colors, int count, int wanted, Color *means, int *sizes) {
     Box boxes[32]{};
     boxes[0].count = count;
-    for (int i = 0; i < count; ++i) boxes[0].colors[i] = colors[i];
+    std::copy_n(colors, count, boxes[0].colors.begin());
     int box_count = 1;
     while (box_count < wanted) {
         int chosen = -1, channel = 0;
@@ -419,8 +416,8 @@ static void palette(const Color *colors, int count, int wanted, Color *means, in
             for (int j = 0; j < 3; ++j) {
                 Int minimum = 255, maximum = 0;
                 for (int p = 0; p < boxes[i].count; ++p) {
-                    minimum = smaller(minimum, boxes[i].colors[p].x[j]);
-                    maximum = larger(maximum, boxes[i].colors[p].x[j]);
+                    minimum = std::min(minimum, boxes[i].colors[p].x[j]);
+                    maximum = std::max(maximum, boxes[i].colors[p].x[j]);
                 }
                 if (maximum - minimum > width) {
                     width = maximum - minimum;
@@ -434,15 +431,8 @@ static void palette(const Color *colors, int count, int wanted, Color *means, in
             }
         }
         Box sorted = boxes[chosen];
-        for (int i = 1; i < sorted.count; ++i) {
-            Color value = sorted.colors[i];
-            int position = i;
-            while (position > 0 && sorted.colors[position - 1].x[channel] > value.x[channel]) {
-                sorted.colors[position] = sorted.colors[position - 1];
-                --position;
-            }
-            sorted.colors[position] = value;
-        }
+        std::stable_sort(sorted.colors.begin(), sorted.colors.begin() + sorted.count,
+            [channel](Color a, Color b) { return a.x[channel] < b.x[channel]; });
         for (int i = box_count; i > chosen + 1; --i) boxes[i] = boxes[i - 1];
         int middle = sorted.count / 2;
         boxes[chosen].count = middle;
@@ -520,12 +510,12 @@ static int valid_name(const char *text) {
 
 static int registry_find(const State *state, const char *name) {
     for (int i = 0; i < registered_count(state); ++i)
-        if (strcmp(entry_name(registered_entry(state, i)), name) == 0) return i;
+        if (state->entries[i].name == name) return i;
     return -1;
 }
 
 static const Entry *table_entry(const State *state, int index) {
-    return index < 24 ? &builtins[index] : registered_entry(state, index - 24);
+    return index < 24 ? &builtins[index] : &state->entries[index - 24];
 }
 
 static int parse_color(const State *state, const char *text, Color *result) {
@@ -558,7 +548,7 @@ static int parse_color(const State *state, const char *text, Color *result) {
     }
     for (int i = 0; i < 24 + registered_count(state); ++i) {
         const Entry *entry = table_entry(state, i);
-        if (strcmp(entry_name(entry), text) == 0) {
+        if (entry->name == text) {
             *result = entry->color;
             return 1;
         }
@@ -613,7 +603,7 @@ static int prepare(const State *state, const Spec *spec, int operation,
     if (spec->signature[0] == 'P' && arguments->numbers[0] > count - 1) return 0;
     if (operation == OP_DEFINE) {
         for (int i = 0; i < 24; ++i)
-            if (strcmp(words[0], entry_name(&builtins[i])) == 0) return 0;
+            if (builtins[i].name == words[0]) return 0;
     }
     if (operation == OP_UNDEFINE && registry_find(state, words[0]) < 0) return 0;
     return 1;
@@ -678,23 +668,16 @@ static void execute(State *state, int operation, const char **words, int count,
             registry_delete(state, registry_find(state, words[0]));
             break;
         case OP_LIST: {
-            int indices[500], length = registered_count(state);
-            for (int i = 0; i < length; ++i) indices[i] = i;
-            for (int i = 1; i < length; ++i) {
-                int value = indices[i], j = i;
-                while (j > 0 && strcmp(entry_name(registered_entry(state, indices[j - 1])),
-                                       entry_name(registered_entry(state, value))) > 0) {
-                    indices[j] = indices[j - 1];
-                    --j;
-                }
-                indices[j] = value;
-            }
-            if (length == 0) wordf(output, "NONE");
-            for (int i = 0; i < length; ++i) {
-                const Entry *entry = registered_entry(state, indices[i]);
+            std::vector<const Entry *> sorted;
+            for (const Entry &entry : state->entries) sorted.push_back(&entry);
+            std::sort(sorted.begin(), sorted.end(), [](const Entry *a, const Entry *b) {
+                return a->name < b->name;
+            });
+            if (sorted.empty()) wordf(output, "NONE");
+            for (const Entry *entry : sorted) {
                 char text[8];
                 color_text(entry->color, text);
-                wordf(output, "%s=%s", entry_name(entry), text);
+                wordf(output, "%s=%s", entry->name.c_str(), text);
             }
             break;
         }
@@ -707,7 +690,7 @@ static void execute(State *state, int operation, const char **words, int count,
             for (int i = 0; i < 24 + registered_count(state); ++i) {
                 const Entry *entry = table_entry(state, i);
                 if (equal_color(c, entry->color)) {
-                    name = entry_name(entry);
+                    name = entry->name.c_str();
                     break;
                 }
             }
@@ -840,10 +823,10 @@ static void execute(State *state, int operation, const char **words, int count,
             break;
         case OP_LIGHTEN: case OP_DARKEN: case OP_SATURATE: case OP_DESATURATE: {
             Hsl value = hsl(c);
-            if (operation == OP_LIGHTEN) value.l = smaller(100, value.l + b);
-            else if (operation == OP_DARKEN) value.l = larger(0, value.l - b);
-            else if (operation == OP_SATURATE) value.s = smaller(100, value.s + b);
-            else value.s = larger(0, value.s - b);
+            if (operation == OP_LIGHTEN) value.l = std::min<Int>(100, value.l + b);
+            else if (operation == OP_DARKEN) value.l = std::max<Int>(0, value.l - b);
+            else if (operation == OP_SATURATE) value.s = std::min<Int>(100, value.s + b);
+            else value.s = std::max<Int>(0, value.s - b);
             output_color(output, from_hsl(value.h, value.s, value.l));
             break;
         }
@@ -852,7 +835,7 @@ static void execute(State *state, int operation, const char **words, int count,
             for (int i = 1; i < 24 + registered_count(state); ++i)
                 if (distance(c, table_entry(state, i)->color) < distance(c, table_entry(state, best)->color)) best = i;
             const Entry *entry = table_entry(state, best);
-            wordf(output, "%s", entry_name(entry));
+            wordf(output, "%s", entry->name.c_str());
             output_color(output, entry->color);
             wordf(output, "%lld", distance(c, entry->color));
             break;
@@ -927,21 +910,11 @@ static void execute(State *state, int operation, const char **words, int count,
         }
         case OP_SORT: {
             Color colors[32];
-            for (int i = 0; i < count; ++i) colors[i] = args->colors[i];
-            for (int i = 1; i < count; ++i) {
-                Color value = colors[i];
-                Hsl key = hsl(value);
-                int j = i;
-                while (j > 0) {
-                    Hsl previous = hsl(colors[j - 1]);
-                    int greater = previous.h > key.h || (previous.h == key.h &&
-                        (previous.s > key.s || (previous.s == key.s && previous.l > key.l)));
-                    if (!greater) break;
-                    colors[j] = colors[j - 1];
-                    --j;
-                }
-                colors[j] = value;
-            }
+            std::copy_n(args->colors.begin(), count, colors);
+            std::stable_sort(colors, colors + count, [](Color a, Color b) {
+                Hsl x = hsl(a), y = hsl(b);
+                return std::tie(x.h, x.s, x.l) < std::tie(y.h, y.s, y.l);
+            });
             for (int i = 0; i < count; ++i) output_color(output, colors[i]);
             break;
         }
@@ -953,7 +926,7 @@ static void execute(State *state, int operation, const char **words, int count,
                 int best = 0;
                 for (int j = 1; j < 16; ++j)
                     if (distance(target, builtins[j].color) < distance(target, builtins[best].color)) best = j;
-                wordf(output, "%s", entry_name(&builtins[best]));
+                wordf(output, "%s", builtins[best].name.c_str());
                 for (int j = 0; j < 3; ++j) error.x[j] = target.x[j] - builtins[best].color.x[j];
             }
             break;
@@ -1002,7 +975,7 @@ int main() {
         for (const std::string &word : words) tokens.push_back(word.c_str());
         Text output;
         if (process(&state, tokens.data(), static_cast<int>(tokens.size()), &output))
-            std::cout << output.value << '\n';
+            std::cout << output << '\n';
         else std::cout << "INVALID\n";
     }
 }

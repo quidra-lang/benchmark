@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -25,12 +26,7 @@ func main() {
 	for _, w := range strings.Split(encoded, " / ") {
 		word := ""
 		for _, token := range strings.Split(w, " ") {
-			for i, code := range codes {
-				if code == token {
-					word += string(symbols[i])
-					break
-				}
-			}
+			word += string(symbols[slices.Index(codes, token)])
 		}
 		decoded = append(decoded, word)
 	}

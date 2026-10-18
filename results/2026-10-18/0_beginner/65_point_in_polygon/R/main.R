@@ -6,8 +6,10 @@ for (point in points) {
     crossings <- 0
     for (i in seq_len(nrow(polygon))) {
         j <- i %% nrow(polygon)+1
-        x1 <- polygon[i,1]; y1 <- polygon[i,2]
-        x2 <- polygon[j,1]; y2 <- polygon[j,2]
+        x1 <- polygon[i,1]
+        y1 <- polygon[i,2]
+        x2 <- polygon[j,1]
+        y2 <- polygon[j,2]
         if ((y1 > py) != (y2 > py)) {
             intersection <- x1+(x2-x1)*(py-y1)/(y2-y1)
             if (intersection > px) crossings <- crossings+1

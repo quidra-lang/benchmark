@@ -198,7 +198,7 @@ class Scoreboard {
                     for (side in 0..1) {
                         s[SUBS+side] = 0
                         s[TIMEOUTS+side] = 0
-                        for (i in 0 until 6) s[LINEUP+side*6+i] = initial[side][i]
+                        initial[side].copyInto(s,LINEUP+side*6)
                     }
                     s[SERVE] = first() xor (finished.size%2)
                 }
@@ -246,7 +246,7 @@ class Scoreboard {
             if (sport == "VOLLEYBALL" && s[SERVE] != x) {
                 val start = LINEUP+x*6
                 val old = s[start]
-                for (i in 0 until 5) s[start+i] = s[start+i+1]
+                s.copyInto(s,start,start+1,start+6)
                 s[start+5] = old
                 s[SERVE] = x
             }
@@ -414,7 +414,7 @@ class Scoreboard {
             if (history.isEmpty()) fail("nothing to undo")
             val undo = history.removeLast()
             for (i in 1 until undo.size step 2) s[undo[i]] = undo[i+1]
-            while (finished.size > undo[0]) finished.removeAt(finished.lastIndex)
+            finished.subList(undo[0],finished.size).clear()
         }
         private fun situation(x: Int): String {
             val old = s.copyOf()
@@ -430,7 +430,7 @@ class Scoreboard {
                 else -> ""
             }
             s = old
-            while (finished.size > count) finished.removeAt(finished.lastIndex)
+            finished.subList(count,finished.size).clear()
             return result
         }
         private fun finishedScore(f: Finished, first: Int): String {

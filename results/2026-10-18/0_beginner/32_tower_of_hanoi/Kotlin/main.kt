@@ -1,6 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
 fun hanoi(n: Int, source: Char, target: Char, auxiliary: Char): Int {
     if (n == 0) return 0
     val count = hanoi(n - 1, source, auxiliary, target)

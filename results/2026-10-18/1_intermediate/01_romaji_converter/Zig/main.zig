@@ -67,6 +67,7 @@ const Word = struct {
     pattern: usize = 0,
     morae: []Mora = &.{},
     elements: []Element = &.{},
+    sort_key: [4][]usize = undefined,
 };
 
 const Match = struct {
@@ -74,32 +75,16 @@ const Match = struct {
     len: usize
 };
 
-fn same(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
-
 fn choice(value: []const u8, values: []const []const u8) ?usize {
     for (values, 0..) |candidate, i| {
-        if (same(value, candidate))
+        if (std.mem.eql(u8, value, candidate))
             return i;
     }
     return null;
 }
 
-fn oneOf(value: []const u8, values: []const []const u8) bool {
-    return choice(value, values) != null;
-}
-
-fn letter(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');
-}
-
-fn upper(c: u8) bool {
-    return c >= 'A' and c <= 'Z';
-}
-
 fn wordCharacter(c: u8) bool {
-    return letter(c) or c == '\'' or c == '-';
+    return std.ascii.isAlphabetic(c) or c == '\'' or c == '-';
 }
 
 fn vowel(c: u8) bool {
@@ -147,11 +132,11 @@ fn spelling(gpa: Allocator, id: []const u8, system: usize) Allocator.Error![]con
     }
     if (id.len == 3) {
         const prefix = id[0..2];
-        if (same(prefix, "sy"))
+        if (std.mem.eql(u8, prefix, "sy"))
             return std.fmt.allocPrint(gpa, "sh{s}", .{ id[2..] });
-        if (same(prefix, "ty"))
+        if (std.mem.eql(u8, prefix, "ty"))
             return std.fmt.allocPrint(gpa, "ch{s}", .{ id[2..] });
-        if (same(prefix, "zy") or (hepburn and same(prefix, "dy")))
+        if (std.mem.eql(u8, prefix, "zy") or (hepburn and std.mem.eql(u8, prefix, "dy")))
             return std.fmt.allocPrint(gpa, "j{s}", .{ id[2..] });
     }
     return id;
@@ -178,17 +163,6 @@ fn tokenizeWords(gpa: Allocator, text: []const u8) Allocator.Error![]Word {
     return result.items;
 }
 
-fn compareSequence(a: []const usize, b: []const usize) std.math.Order {
-    const len = @min(a.len, b.len);
-    for (0..len) |i| {
-        if (a[i] < b[i])
-            return .lt;
-        if (a[i] > b[i])
-            return .gt;
-    }
-    return std.math.order(a.len, b.len);
-}
-
 const Engine = struct {
     table: [108]Syllable = undefined,
     spellings: [5][108][]const u8 = undefined,
@@ -212,7 +186,7 @@ const Engine = struct {
         for ([_]usize{ 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14 }) |row| {
             var stem: []const u8 = undefined;
             for (self.table[0..72]) |m| {
-                if (m.row == row and same(m.dan, "i")) {
+                if (m.row == row and std.mem.eql(u8, m.dan, "i")) {
                     stem = m.id;
                     break;
                 }
@@ -252,14 +226,14 @@ const Engine = struct {
 
     fn idIndex(self: *const Engine, id: []const u8) usize {
         for (self.table, 0..) |m, i| {
-            if (same(m.id, id))
+            if (std.mem.eql(u8, m.id, id))
                 return i;
         }
         unreachable;
     }
 
     fn baseIndex(self: *const Engine, id: []const u8) usize {
-        return if (same(id, "N")) 47 else self.idIndex(id);
+        return if (std.mem.eql(u8, id, "N")) 47 else self.idIndex(id);
     }
 
     fn baseName(self: *const Engine, base: usize) []const u8 {
@@ -275,9 +249,9 @@ const Engine = struct {
         var letters: usize = 0;
         var uppers: usize = 0;
         for (word.original) |c| {
-            if (letter(c)) {
+            if (std.ascii.isAlphabetic(c)) {
                 letters += 1;
-                if (upper(c))
+                if (std.ascii.isUpper(c))
                     uppers += 1;
             }
         }
@@ -285,7 +259,7 @@ const Engine = struct {
             word.pattern = 0;
             return;
         }
-        if (upper(word.original[0]) and uppers == 1) {
+        if (std.ascii.isUpper(word.original[0]) and uppers == 1) {
             word.pattern = 1;
             return;
         }
@@ -298,8 +272,8 @@ const Engine = struct {
 
     fn matchAt(self: *const Engine, text: []const u8, position: usize, system: usize) ?Match {
         var best: ?Match = null;
+        const choices: []const usize = if (system == 5) &.{ 0, 2, 3, 4 } else &.{ system };
         for (0..108) |id| {
-            const choices: []const usize = if (system == 5) &.{ 0, 2, 3, 4 } else &.{ system };
             for (choices) |s| {
                 const candidate = self.spellings[s][id];
                 if (std.mem.startsWith(u8, text[position..], candidate) and (best == null or candidate.len > best.?.len))
@@ -310,9 +284,7 @@ const Engine = struct {
     }
 
     fn parse(self: *Engine, gpa: Allocator, original: []const u8, start: usize, system: usize) CommandError![]Mora {
-        const text = try gpa.dupe(u8, original);
-        for (text) |*c|
-            c.* = std.ascii.toLower(c.*);
+        const text = try std.ascii.allocLowerString(gpa, original);
         var result: std.ArrayList(Mora) = .empty;
         var p: usize = 0;
         while (p < text.len) {
@@ -360,7 +332,7 @@ const Engine = struct {
                 p += 1;
                 continue;
             }
-            if (letter(c) and std.mem.findScalar(u8, "aiueon", c) == null and next == c and self.matchAt(text,
+            if (std.ascii.isAlphabetic(c) and std.mem.findScalar(u8, "aiueon", c) == null and next == c and self.matchAt(text,
                 p + 1, system) != null) {
                 try result.append(gpa, .{ .id = mora_q, .column = column });
                 p += 1;
@@ -457,17 +429,13 @@ const Engine = struct {
 
     fn writeWord(self: *Engine, gpa: Allocator, word: Word, target: usize, canonical: bool, morae: []const Mora) CommandError![]const u8 {
         const pieces = try self.parts(gpa, morae, target, if (canonical) 0 else self.long_mode);
-        var result: std.ArrayList(u8) = .empty;
-        for (pieces) |piece|
-            try result.appendSlice(gpa, piece);
+        const result = try std.mem.concat(gpa, u8, pieces);
         const pattern: usize = if (canonical or self.case_mode == 0) word.pattern else if (self.case_mode == 1) 0 else if (self.case_mode == 3) 1 else 2;
         if (pattern == 1)
-            result.items[0] = std.ascii.toUpper(result.items[0]);
-        if (pattern == 2) {
-            for (result.items) |*c|
-                c.* = std.ascii.toUpper(c.*);
-        }
-        return result.items;
+            result[0] = std.ascii.toUpper(result[0]);
+        if (pattern == 2)
+            _ = std.ascii.upperString(result, result);
+        return result;
     }
 
     fn loose(self: *const Engine, gpa: Allocator, word: Word) Allocator.Error![]Mora {
@@ -517,34 +485,31 @@ const Engine = struct {
         word.elements = result.items;
     }
 
-    fn compareWords(self: *const Engine, a: Word, b: Word) std.math.Order {
-        var left: [400]usize = undefined;
-        var right: [400]usize = undefined;
+    fn prepareSortKey(self: *const Engine, gpa: Allocator, word: *Word) Allocator.Error!void {
         for (0..3) |criterion| {
-            for (a.elements, 0..) |e, i| {
-                left[i] = switch (criterion) {
+            const key = try gpa.alloc(usize, word.elements.len);
+            for (word.elements, 0..) |e, i| {
+                key[i] = switch (criterion) {
                     0 => if (self.iroha) self.iroha_rank[e.base] else e.base,
                     1 => e.voice,
                     else => e.size,
                 };
             }
-            for (b.elements, 0..) |e, i| {
-                right[i] = switch (criterion) {
-                    0 => if (self.iroha) self.iroha_rank[e.base] else e.base,
-                    1 => e.voice,
-                    else => e.size,
-                };
-            }
-            const result = compareSequence(left[0..a.elements.len], right[0..b.elements.len]);
-            if (result != .eq)
-                return result;
+            word.sort_key[criterion] = key;
         }
-        for (a.morae, 0..) |m, i|
-            left[i] = if (m.id == mora_l) 1 else 0;
-        for (b.morae, 0..) |m, i|
-            right[i] = if (m.id == mora_l) 1 else 0;
-        const result = compareSequence(left[0..a.morae.len], right[0..b.morae.len]);
-        return if (result != .eq) result else std.math.order(a.ordinal, b.ordinal);
+        const long = try gpa.alloc(usize, word.morae.len);
+        for (word.morae, 0..) |m, i|
+            long[i] = if (m.id == mora_l) 1 else 0;
+        word.sort_key[3] = long;
+    }
+
+    fn wordLess(_: void, a: Word, b: Word) bool {
+        for (a.sort_key, b.sort_key) |left, right| {
+            const order = std.mem.order(usize, left, right);
+            if (order != .eq)
+                return order == .lt;
+        }
+        return a.ordinal < b.ordinal;
     }
 
     fn parsePattern(self: *Engine, gpa: Allocator, text: []const u8, system: usize) CommandError![]i32 {
@@ -613,11 +578,11 @@ const Engine = struct {
         };
         const first_space = std.mem.findScalar(u8, line, ' ');
         const op = if (first_space) |position| line[0..position] else line;
-        if (!oneOf(op, &commands))
+        if (choice(op, &commands) == null)
             return self.failFmt("unknown command {s}", .{ op });
-        const fixed = same(op, "SET") or same(op, "TABLE");
-        const argument_count: usize = if (oneOf(op, &.{ "CONVERT", "DIFF", "SAME", "FIND" })) 2 else if (oneOf(op,
-            &.{ "NORMALIZE", "DETECT" })) 0 else 1;
+        const fixed = std.mem.eql(u8, op, "SET") or std.mem.eql(u8, op, "TABLE");
+        const argument_count: usize = if (choice(op, &.{ "CONVERT", "DIFF", "SAME", "FIND" }) != null) 2 else if (choice(op,
+            &.{ "NORMALIZE", "DETECT" }) != null) 0 else 1;
         var args: [2][]const u8 = undefined;
         var text: []const u8 = "";
         if (fixed) {
@@ -644,8 +609,8 @@ const Engine = struct {
         }
         var system: usize = 0;
         var target: usize = 0;
-        const system_count: usize = if (same(op, "TABLE")) 1 else if (fixed or oneOf(op, &.{ "NORMALIZE",
-            "DETECT" })) 0 else if (oneOf(op, &.{ "CONVERT", "DIFF", "SAME" })) 2 else 1;
+        const system_count: usize = if (std.mem.eql(u8, op, "TABLE")) 1 else if (fixed or choice(op, &.{ "NORMALIZE",
+            "DETECT" }) != null) 0 else if (choice(op, &.{ "CONVERT", "DIFF", "SAME" }) != null) 2 else 1;
         for (0..system_count) |i| {
             const value = choice(args[i], &systems) orelse return self.failFmt("unknown system {s}", .{ args[i] });
             if (i == 0) {
@@ -654,7 +619,7 @@ const Engine = struct {
                 target = value;
             }
         }
-        if (same(op, "SET")) {
+        if (std.mem.eql(u8, op, "SET")) {
             const options = [_][]const u8{ "LONG", "CASE", "ORDER" };
             const option = choice(args[0], &options) orelse return self.failFmt("unknown option {s}", .{ args[0] });
             const values: []const []const u8 = switch (option) {
@@ -671,7 +636,7 @@ const Engine = struct {
             try out.print("{s}={s}", .{ args[0], args[1] });
             return;
         }
-        if (same(op, "TABLE")) {
+        if (std.mem.eql(u8, op, "TABLE")) {
             const row = choice(args[1], &row_names) orelse return self.failFmt("unknown row {s}", .{ args[1] });
             var first = true;
             for (self.table, 0..) |m, i| {
@@ -684,8 +649,8 @@ const Engine = struct {
             }
             return;
         }
-        const find_pattern: []const i32 = if (same(op, "FIND")) try self.parsePattern(gpa, args[1], system) else &.{};
-        const allow_slash = same(op, "SAME") or same(op, "HAIKU");
+        const find_pattern: []const i32 = if (std.mem.eql(u8, op, "FIND")) try self.parsePattern(gpa, args[1], system) else &.{};
+        const allow_slash = std.mem.eql(u8, op, "SAME") or std.mem.eql(u8, op, "HAIKU");
         for (text, 0..) |c, i| {
             if (!wordCharacter(c) and std.mem.findScalar(u8, " 0123456789.,!?;:()\"", c) == null and !(allow_slash
                 and c == '/'))
@@ -700,15 +665,15 @@ const Engine = struct {
             if (!hasWord(segment))
                 empty_line = true;
         }
-        if (same(op, "SAME") and (line_count != 2 or empty_line))
+        if (std.mem.eql(u8, op, "SAME") and (line_count != 2 or empty_line))
             return self.fail("expected two texts");
-        if (same(op, "HAIKU") and (!(line_count == 3 or line_count == 5) or empty_line))
+        if (std.mem.eql(u8, op, "HAIKU") and (!(line_count == 3 or line_count == 5) or empty_line))
             return self.fail("expected 3 or 5 lines");
         if (words.len == 0)
             return self.fail("no words");
         for (words) |*word|
             try self.checkCase(word);
-        if (same(op, "DETECT")) {
+        if (std.mem.eql(u8, op, "DETECT")) {
             for (0..5) |s| {
                 var verdict: []const u8 = "canonical";
                 for (words) |*word| {
@@ -720,10 +685,10 @@ const Engine = struct {
                         return err;
                     };
                 }
-                if (!same(verdict, "error")) {
+                if (!std.mem.eql(u8, verdict, "error")) {
                     for (words) |word| {
                         const canonical = try self.writeWord(gpa, word, s, true, word.morae);
-                        if (!same(canonical, word.original))
+                        if (!std.mem.eql(u8, canonical, word.original))
                             verdict = "readable";
                     }
                 }
@@ -733,17 +698,17 @@ const Engine = struct {
             }
             return;
         }
-        const slash_position = if (same(op, "SAME")) std.mem.findScalar(u8, text, '/').? else text.len;
+        const slash_position = if (std.mem.eql(u8, op, "SAME")) std.mem.findScalar(u8, text, '/').? else text.len;
         for (words) |*word|
-            word.morae = try self.parse(gpa, word.original, word.start, if (same(op, "NORMALIZE")) 5 else if (same(op,
+            word.morae = try self.parse(gpa, word.original, word.start, if (std.mem.eql(u8, op, "NORMALIZE")) 5 else if (std.mem.eql(u8, op,
                 "SAME") and word.start > slash_position) target else
                 system);
-        if (oneOf(op, &.{ "CONVERT", "NORMALIZE", "REVERSE" })) {
+        if (choice(op, &.{ "CONVERT", "NORMALIZE", "REVERSE" }) != null) {
             var cursor: usize = 0;
             for (words) |word| {
                 try out.writeAll(text[cursor..word.start]);
                 var morae: []const Mora = word.morae;
-                if (same(op, "REVERSE")) {
+                if (std.mem.eql(u8, op, "REVERSE")) {
                     const reversed = try gpa.alloc(Mora, word.morae.len);
                     for (word.morae, 0..) |m, i| {
                         var replacement = m;
@@ -755,7 +720,7 @@ const Engine = struct {
                     }
                     morae = reversed;
                 }
-                const written = try self.writeWord(gpa, word, if (same(op, "NORMALIZE")) 0 else if (same(op,
+                const written = try self.writeWord(gpa, word, if (std.mem.eql(u8, op, "NORMALIZE")) 0 else if (std.mem.eql(u8, op,
                     "REVERSE")) system else target, false, morae);
                 try out.writeAll(written);
                 cursor = word.end;
@@ -763,10 +728,10 @@ const Engine = struct {
             try out.writeAll(text[cursor..]);
             return;
         }
-        if (same(op, "VALID")) {
+        if (std.mem.eql(u8, op, "VALID")) {
             for (words) |word| {
                 const canonical = try self.writeWord(gpa, word, system, true, word.morae);
-                if (same(canonical, word.original))
+                if (std.mem.eql(u8, canonical, word.original))
                     continue;
                 var i: usize = 0;
                 while (i < canonical.len and i < word.original.len and canonical[i] == word.original[i])
@@ -777,7 +742,7 @@ const Engine = struct {
             try out.writeAll("VALID");
             return;
         }
-        if (same(op, "DIFF")) {
+        if (std.mem.eql(u8, op, "DIFF")) {
             const Difference = struct {
                 a: []const u8,
                 b: []const u8
@@ -786,7 +751,7 @@ const Engine = struct {
             for (words) |word| {
                 const a = try self.writeWord(gpa, word, system, false, word.morae);
                 const b = try self.writeWord(gpa, word, target, false, word.morae);
-                if (!same(a, b))
+                if (!std.mem.eql(u8, a, b))
                     try differences.append(gpa, .{ .a = a, .b = b });
             }
             try out.print("{d} of {d}", .{ differences.items.len, words.len });
@@ -800,7 +765,7 @@ const Engine = struct {
             }
             return;
         }
-        if (same(op, "SAME")) {
+        if (std.mem.eql(u8, op, "SAME")) {
             var split: usize = 0;
             while (split < words.len and words[split].start < slash_position)
                 split += 1;
@@ -822,7 +787,7 @@ const Engine = struct {
             try out.writeAll(if (exact) "EXACT" else "LOOSE");
             return;
         }
-        if (same(op, "MORAE")) {
+        if (std.mem.eql(u8, op, "MORAE")) {
             var total: usize = 0;
             for (words) |word|
                 total += word.morae.len;
@@ -838,7 +803,7 @@ const Engine = struct {
             }
             return;
         }
-        if (same(op, "SYLLABLES")) {
+        if (std.mem.eql(u8, op, "SYLLABLES")) {
             var total: usize = 0;
             const result = try gpa.alloc([]const u8, words.len);
             for (words, 0..) |word, w| {
@@ -863,7 +828,7 @@ const Engine = struct {
             }
             return;
         }
-        if (same(op, "ROW")) {
+        if (std.mem.eql(u8, op, "ROW")) {
             var first = true;
             for (words) |word| {
                 for (word.morae) |m| {
@@ -885,7 +850,7 @@ const Engine = struct {
             }
             return;
         }
-        if (same(op, "STATS")) {
+        if (std.mem.eql(u8, op, "STATS")) {
             var total: usize = 0;
             var voiced: usize = 0;
             var semi: usize = 0;
@@ -918,7 +883,7 @@ const Engine = struct {
                 contracted, special[0], special[1], special[2] });
             return;
         }
-        if (same(op, "FIND")) {
+        if (std.mem.eql(u8, op, "FIND")) {
             var found: std.ArrayList(Word) = .empty;
             for (words) |word| {
                 if (try matches(gpa, find_pattern, word.morae))
@@ -935,22 +900,14 @@ const Engine = struct {
             }
             return;
         }
-        if (same(op, "HAIKU")) {
+        if (std.mem.eql(u8, op, "HAIKU")) {
             var counts = [_]usize{ 0 } ** 5;
             for (words) |word| {
-                var part: usize = 0;
-                for (text[0..word.start]) |c| {
-                    if (c == '/')
-                        part += 1;
-                }
+                const part = std.mem.countScalar(u8, text[0..word.start], '/');
                 counts[part] += word.morae.len;
             }
             const expected = [_]usize{ 5, 7, 5, 7, 7 };
-            var ok = true;
-            for (0..line_count) |i| {
-                if (counts[i] != expected[i])
-                    ok = false;
-            }
+            const ok = std.mem.eql(usize, counts[0..line_count], expected[0..line_count]);
             const verdict: []const u8 = if (ok) "OK" else "NG";
             const poem: []const u8 = if (line_count == 3) "haiku" else "tanka";
             try out.print("{s} {s} ", .{verdict, poem});
@@ -963,17 +920,11 @@ const Engine = struct {
         }
         for (words) |*word|
             try self.collate(gpa, word);
-        if (same(op, "SORT") or same(op, "INDEX")) {
-            for (1..words.len) |i| {
-                const word = words[i];
-                var j = i;
-                while (j > 0 and self.compareWords(word, words[j - 1]) == .lt) {
-                    words[j] = words[j - 1];
-                    j -= 1;
-                }
-                words[j] = word;
-            }
-            if (same(op, "SORT")) {
+        if (std.mem.eql(u8, op, "SORT") or std.mem.eql(u8, op, "INDEX")) {
+            for (words) |*word|
+                try self.prepareSortKey(gpa, word);
+            std.mem.sort(Word, words, {}, wordLess);
+            if (std.mem.eql(u8, op, "SORT")) {
                 for (words, 0..) |word, i| {
                     if (i > 0)
                         try out.writeByte(' ');
@@ -985,7 +936,7 @@ const Engine = struct {
             for (words, 0..) |word, i| {
                 const base = word.elements[0].base;
                 const heading = if (self.iroha or base == 47) self.baseName(base) else row_names[self.table[base].row];
-                if (!same(previous, heading)) {
+                if (!std.mem.eql(u8, previous, heading)) {
                     if (i > 0)
                         try out.writeAll("; ");
                     try out.print("{s}:", .{ heading });
@@ -995,7 +946,7 @@ const Engine = struct {
             }
             return;
         }
-        if (same(op, "KAIBUN")) {
+        if (std.mem.eql(u8, op, "KAIBUN")) {
             var sequence: std.ArrayList(usize) = .empty;
             for (words) |word| {
                 for (word.elements) |e|

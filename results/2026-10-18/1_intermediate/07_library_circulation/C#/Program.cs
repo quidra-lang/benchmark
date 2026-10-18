@@ -73,7 +73,6 @@ class Program {
         public HashSet<int> closed=new();
         public List<Copy> copies=new();
         public List<string> output;
-        public void emit(string line) { output.Add(line); }
         public Member member(string id) {
             Member m=members.GetValueOrDefault(id);
             check(m==null,"unknown member");
@@ -123,7 +122,7 @@ class Program {
                 c.owner=m;
                 c.expiry=open(day+3);
                 m.holds[b.isbn]=c;
-                emit("HOLD "+b.isbn+" copy "+c.number+" "+m.id+" until "+c.expiry);
+                output.Add("HOLD "+b.isbn+" copy "+c.number+" "+m.id+" until "+c.expiry);
             }
         }
         public int[] endLoan(Copy c, bool loss) {
@@ -144,12 +143,12 @@ class Program {
             c.state="LOST";
             c.owner=null;
             lost++;
-            emit(heading+" "+m.id+" "+b.isbn+" copy "+c.number+" late "+values[0]+" fine "+money(values[1])+
+            output.Add(heading+" "+m.id+" "+b.isbn+" copy "+c.number+" late "+values[0]+" fine "+money(values[1])+
                 " price "+money(b.price)+" balance "+money(m.balance()));
             if (b.holdings()==0) {
                 foreach (Member queued in b.queue) {
                     queued.queued--;
-                    emit("DROPPED "+b.isbn+" "+queued.id);
+                    output.Add("DROPPED "+b.isbn+" "+queued.id);
                 }
                 b.queue.Clear();
             }
@@ -164,7 +163,7 @@ class Program {
             c.due=open(day+c.owner.period);
             c.renewals++;
             renewed++;
-            emit("RENEW "+c.owner.id+" "+c.title.isbn+" copy "+c.number+" due "+c.due+" renewals "+c.renewals);
+            output.Add("RENEW "+c.owner.id+" "+c.title.isbn+" copy "+c.number+" due "+c.due+" renewals "+c.renewals);
         }
         public List<Copy> orderedLoans(Member m) {
             return m.loans.Values.OrderBy(c => c.due).ThenBy(c => c.title.isbn,StringComparer.Ordinal).ToList();
@@ -173,15 +172,15 @@ class Program {
             return m.holds.Values.OrderBy(c => c.expiry).ThenBy(c => c.title.isbn,StringComparer.Ordinal).ToList();
         }
         public void showMember(Member m) {
-            emit("MEMBER "+m.id+" "+m.type+" "+m.name);
-            emit("STATUS loans "+m.loans.Count+"/"+m.limit+" reservations "+m.reservations()+"/"+m.reservationLimit+
+            output.Add("MEMBER "+m.id+" "+m.type+" "+m.name);
+            output.Add("STATUS loans "+m.loans.Count+"/"+m.limit+" reservations "+m.reservations()+"/"+m.reservationLimit+
                 " balance "+money(m.balance())+" "+m.status());
-            foreach (Copy c in orderedLoans(m)) emit("LOAN "+c.title.isbn+" copy "+c.number+" due "+c.due+" renewals "+c.renewals+
+            foreach (Copy c in orderedLoans(m)) output.Add("LOAN "+c.title.isbn+" copy "+c.number+" due "+c.due+" renewals "+c.renewals+
                 (c.due<day ? " late "+late(c)+" fine "+money(fine(c)) : ""));
-            foreach (Copy c in orderedHolds(m)) emit("HOLD "+c.title.isbn+" copy "+c.number+" until "+c.expiry);
+            foreach (Copy c in orderedHolds(m)) output.Add("HOLD "+c.title.isbn+" copy "+c.number+" until "+c.expiry);
             foreach (Title b in titles.Values) {
                 int p=b.queue.IndexOf(m);
-                if (p>=0) emit("QUEUE "+b.isbn+" position "+(p+1));
+                if (p>=0) output.Add("QUEUE "+b.isbn+" position "+(p+1));
             }
         }
         public void execute(string line) {
@@ -190,7 +189,7 @@ class Program {
                 case "DAY": {
                     int d=int.Parse(t[1]);
                     check(d<=day,"invalid day");
-                    emit("DAY "+d);
+                    output.Add("DAY "+d);
                     while (day<d) {
                         day++;
                         List<Copy> losses=copies.Where(c => c.state.Equals("LOANED") && c.due+365<=day)
@@ -202,7 +201,7 @@ class Program {
                             Member m=c.owner;
                             charge(m,"FEE",c.title,m.fee);
                             m.holds.Remove(c.title.isbn);
-                            emit("EXPIRED "+c.title.isbn+" copy "+c.number+" "+m.id+" fee "+money(m.fee));
+                            output.Add("EXPIRED "+c.title.isbn+" copy "+c.number+" "+m.id+" fee "+money(m.fee));
                             release(c);
                         }
                     }
@@ -213,15 +212,15 @@ class Program {
                     check(d<=day,"invalid day");
                     check(closed.Contains(d),"already closed");
                     closed.Add(d);
-                    emit("CLOSED "+d);
+                    output.Add("CLOSED "+d);
                     foreach (Title b in titles.Values) {
                         foreach (Copy c in b.copies) {
                             if (c.state.Equals("LOANED") && c.due==d) {
                                 c.due=open(d);
-                                emit("MOVED "+b.isbn+" copy "+c.number+" "+c.owner.id+" due "+c.due);
+                                output.Add("MOVED "+b.isbn+" copy "+c.number+" "+c.owner.id+" due "+c.due);
                             } else if (c.state.Equals("HOLD") && c.expiry==d) {
                                 c.expiry=open(d);
-                                emit("MOVED "+b.isbn+" copy "+c.number+" "+c.owner.id+" until "+c.expiry);
+                                output.Add("MOVED "+b.isbn+" copy "+c.number+" "+c.owner.id+" until "+c.expiry);
                             }
                         }
                     }
@@ -244,7 +243,7 @@ class Program {
                         copies.Add(c);
                         added.Add(c);
                     }
-                    emit("ADDBOOK "+isbn+" added "+count+" total "+b.holdings());
+                    output.Add("ADDBOOK "+isbn+" added "+count+" total "+b.holdings());
                     foreach (Copy c in added) release(c);
                     break;
                 }
@@ -253,7 +252,7 @@ class Program {
                     check(!t[2].Equals("STUDENT") && !t[2].Equals("STAFF"),"unknown type");
                     Member m=new Member(t[1],t[2],string.Join(" ",t.Skip(3)));
                     members[m.id]=m;
-                    emit("ADDMEMBER "+m.id+" "+m.type+" loans "+m.limit+" days "+m.period);
+                    output.Add("ADDMEMBER "+m.id+" "+m.type+" loans "+m.limit+" days "+m.period);
                     break;
                 }
                 case "WITHDRAW": {
@@ -263,7 +262,7 @@ class Program {
                     Copy c=b.copies[n-1];
                     check(!c.state.Equals("AVAILABLE"),"copy not available");
                     c.state="WITHDRAWN";
-                    emit("WITHDRAW "+b.isbn+" copy "+n+" total "+b.holdings());
+                    output.Add("WITHDRAW "+b.isbn+" copy "+n+" total "+b.holdings());
                     break;
                 }
                 case "BORROW": {
@@ -286,7 +285,7 @@ class Program {
                     m.loans[b.isbn]=c;
                     b.borrowed++;
                     borrowed++;
-                    emit("BORROW "+m.id+" "+b.isbn+" copy "+c.number+" due "+c.due);
+                    output.Add("BORROW "+m.id+" "+b.isbn+" copy "+c.number+" due "+c.due);
                     break;
                 }
                 case "RETURN": {
@@ -295,7 +294,7 @@ class Program {
                     Copy c=loan(m,b);
                     int[] values=endLoan(c,false);
                     returned++;
-                    emit("RETURN "+m.id+" "+b.isbn+" copy "+c.number+" late "+values[0]+" fine "+money(values[1])+" balance "+money(m.balance()));
+                    output.Add("RETURN "+m.id+" "+b.isbn+" copy "+c.number+" late "+values[0]+" fine "+money(values[1])+" balance "+money(m.balance()));
                     release(c);
                     break;
                 }
@@ -316,14 +315,14 @@ class Program {
                     foreach (Copy c in m.loans.Values) {
                         string reason=renewalReason(c);
                         if (reason!=null) {
-                            emit("SKIP "+c.title.isbn+" "+reason);
+                            output.Add("SKIP "+c.title.isbn+" "+reason);
                             skipped++;
                         } else {
                             renew(c);
                             done++;
                         }
                     }
-                    emit("RENEWALL "+m.id+" renewed "+done+" skipped "+skipped);
+                    output.Add("RENEWALL "+m.id+" renewed "+done+" skipped "+skipped);
                     break;
                 }
                 case "RESERVE": {
@@ -339,7 +338,7 @@ class Program {
                     m.queued++;
                     int p=b.queue.Count;
                     List<int> dues=b.copies.Where(c => c.state.Equals("LOANED")).Select(c => c.due).OrderBy(d => d).ToList();
-                    emit("RESERVE "+m.id+" "+b.isbn+" position "+p+" estimate "+(p<=dues.Count ? dues[p-1].ToString() : "none"));
+                    output.Add("RESERVE "+m.id+" "+b.isbn+" position "+p+" estimate "+(p<=dues.Count ? dues[p-1].ToString() : "none"));
                     break;
                 }
                 case "CANCEL": {
@@ -351,10 +350,10 @@ class Program {
                     if (p>=0) {
                         b.queue.RemoveAt(p);
                         m.queued--;
-                        emit("CANCEL "+m.id+" "+b.isbn+" queue");
+                        output.Add("CANCEL "+m.id+" "+b.isbn+" queue");
                     } else {
                         m.holds.Remove(b.isbn);
-                        emit("CANCEL "+m.id+" "+b.isbn+" hold copy "+c.number);
+                        output.Add("CANCEL "+m.id+" "+b.isbn+" hold copy "+c.number);
                         release(c);
                     }
                     break;
@@ -378,7 +377,7 @@ class Program {
                         details.Add("ITEM "+(i+1)+" "+item.kind+" paid "+money(applied)+" remaining "+money(item.unpaid));
                     }
                     paid+=amount-rest;
-                    emit("PAYFINE "+m.id+" paid "+money(amount-rest)+" change "+money(rest)+" balance "+money(m.balance()));
+                    output.Add("PAYFINE "+m.id+" paid "+money(amount-rest)+" change "+money(rest)+" balance "+money(m.balance()));
                     output.AddRange(details);
                     break;
                 }
@@ -391,31 +390,31 @@ class Program {
                     int amount=item.unpaid;
                     item.unpaid=0;
                     waived+=amount;
-                    emit("WAIVE "+m.id+" item "+n+" "+item.kind+" amount "+money(amount)+" balance "+money(m.balance()));
+                    output.Add("WAIVE "+m.id+" item "+n+" "+item.kind+" amount "+money(amount)+" balance "+money(m.balance()));
                     break;
                 }
                 case "FINES": {
                     Member m=member(t[1]);
-                    emit("FINES "+m.id+" items "+m.items.Count(i => i.unpaid>0)+" balance "+money(m.balance()));
+                    output.Add("FINES "+m.id+" items "+m.items.Count(i => i.unpaid>0)+" balance "+money(m.balance()));
                     for (int i=0;i<m.items.Count;i++) {
                         Item item=m.items[i];
-                        if (item.unpaid>0) emit((i+1)+" day "+item.day+" "+item.kind+" "+item.isbn+" amount "+money(item.amount)+" remaining "+money(item.unpaid));
+                        if (item.unpaid>0) output.Add((i+1)+" day "+item.day+" "+item.kind+" "+item.isbn+" amount "+money(item.amount)+" remaining "+money(item.unpaid));
                     }
                     break;
                 }
                 case "SEARCH": {
-                    string keyword=lower(string.Join(" ",t.Skip(1)));
-                    List<Title> found=titles.Values.Where(b => lower(b.name).Contains(keyword))
-                        .OrderBy(b => lower(b.name),StringComparer.Ordinal).ThenBy(b => b.isbn,StringComparer.Ordinal).ToList();
-                    emit("SEARCH "+found.Count);
-                    foreach (Title b in found) emit(b.isbn+" "+b.count("AVAILABLE")+"/"+b.holdings()+" "+b.name);
+                    string keyword=string.Join(" ",t.Skip(1)).ToLowerInvariant();
+                    List<Title> found=titles.Values.Where(b => b.name.ToLowerInvariant().Contains(keyword))
+                        .OrderBy(b => b.name.ToLowerInvariant(),StringComparer.Ordinal).ThenBy(b => b.isbn,StringComparer.Ordinal).ToList();
+                    output.Add("SEARCH "+found.Count);
+                    foreach (Title b in found) output.Add(b.isbn+" "+b.count("AVAILABLE")+"/"+b.holdings()+" "+b.name);
                     break;
                 }
                 case "OVERDUE": {
                     List<Copy> found=copies.Where(c => c.state.Equals("LOANED") && c.due<day)
                         .OrderBy(c => c.due).ThenBy(c => c.owner.id,StringComparer.Ordinal).ThenBy(c => c.title.isbn,StringComparer.Ordinal).ToList();
-                    emit("OVERDUE "+found.Count);
-                    foreach (Copy c in found) emit(c.owner.id+" "+c.title.isbn+" copy "+c.number+" due "+c.due+" late "+late(c)+" fine "+money(fine(c)));
+                    output.Add("OVERDUE "+found.Count);
+                    foreach (Copy c in found) output.Add(c.owner.id+" "+c.title.isbn+" copy "+c.number+" due "+c.due+" late "+late(c)+" fine "+money(fine(c)));
                     break;
                 }
                 case "NOTICES": {
@@ -426,7 +425,7 @@ class Program {
                         foreach (Copy c in loans) if (c.due>=day && c.due<=day+2) notices.Add("DUESOON "+m.id+" "+c.title.isbn+" due "+c.due);
                         foreach (Copy c in orderedHolds(m)) notices.Add("PICKUP "+m.id+" "+c.title.isbn+" until "+c.expiry);
                     }
-                    emit("NOTICES "+notices.Count);
+                    output.Add("NOTICES "+notices.Count);
                     output.AddRange(notices);
                     break;
                 }
@@ -434,51 +433,46 @@ class Program {
                     showMember(member(t[1]));
                     break;
                 case "MEMBERS": {
-                    emit("MEMBERS "+members.Count);
-                    foreach (Member m in members.Values) emit(m.id+" "+m.type+" loans "+m.loans.Count+" reservations "+m.reservations()+
+                    output.Add("MEMBERS "+members.Count);
+                    foreach (Member m in members.Values) output.Add(m.id+" "+m.type+" loans "+m.loans.Count+" reservations "+m.reservations()+
                         " balance "+money(m.balance())+" "+m.status());
                     break;
                 }
                 case "BOOK": {
                     Title b=book(t[1]);
-                    emit("BOOK "+b.isbn+" "+b.name);
-                    emit("PRICE "+money(b.price)+" copies "+b.holdings()+" borrowed "+b.borrowed);
-                    foreach (Copy c in b.copies) emit("COPY "+c.number+" "+c.state+
+                    output.Add("BOOK "+b.isbn+" "+b.name);
+                    output.Add("PRICE "+money(b.price)+" copies "+b.holdings()+" borrowed "+b.borrowed);
+                    foreach (Copy c in b.copies) output.Add("COPY "+c.number+" "+c.state+
                         (c.state.Equals("LOANED") ? " "+c.owner.id+" due "+c.due : c.state.Equals("HOLD") ? " "+c.owner.id+" until "+c.expiry : ""));
-                    emit("QUEUE "+b.queue.Count+(b.queue.Count==0 ? "" : " "+string.Join(" ",b.queue.Select(m => m.id))));
+                    output.Add("QUEUE "+b.queue.Count+(b.queue.Count==0 ? "" : " "+string.Join(" ",b.queue.Select(m => m.id))));
                     break;
                 }
                 case "INVENTORY": {
-                    int a=0,l=0,h=0,x=0,w=0;
-                    foreach (Title b in titles.Values) {
-                        a+=b.count("AVAILABLE");
-                        l+=b.count("LOANED");
-                        h+=b.count("HOLD");
-                        x+=b.count("LOST");
-                        w+=b.count("WITHDRAWN");
-                    }
-                    emit("INVENTORY titles "+titles.Count+" copies "+(a+l+h)+" available "+a+" loaned "+l+" hold "+h+" lost "+x+" withdrawn "+w);
-                    foreach (Title b in titles.Values) emit(b.isbn+" copies "+b.holdings()+" available "+b.count("AVAILABLE")+" loaned "+b.count("LOANED")+
+                    int a=copies.Count(c => c.state == "AVAILABLE"), l=copies.Count(c => c.state == "LOANED");
+                    int h=copies.Count(c => c.state == "HOLD"), x=copies.Count(c => c.state == "LOST");
+                    int w=copies.Count(c => c.state == "WITHDRAWN");
+                    output.Add("INVENTORY titles "+titles.Count+" copies "+(a+l+h)+" available "+a+" loaned "+l+" hold "+h+" lost "+x+" withdrawn "+w);
+                    foreach (Title b in titles.Values) output.Add(b.isbn+" copies "+b.holdings()+" available "+b.count("AVAILABLE")+" loaned "+b.count("LOANED")+
                         " hold "+b.count("HOLD")+" queue "+b.queue.Count);
                     break;
                 }
                 case "HISTORY": {
                     Member m=member(t[1]);
-                    emit("HISTORY "+m.id+" "+m.history.Count);
+                    output.Add("HISTORY "+m.id+" "+m.history.Count);
                     output.AddRange(m.history);
                     break;
                 }
                 case "STATS": {
                     int active=members.Values.Sum(m => m.loans.Count);
                     int outstanding=members.Values.Sum(m => m.balance());
-                    emit("STATS day "+day+" titles "+titles.Count+" members "+members.Count+" closed "+closed.Count);
-                    emit("LOANS borrowed "+borrowed+" returned "+returned+" renewed "+renewed+" lost "+lost+" active "+active);
-                    emit("MONEY fines "+money(fines)+" fees "+money(fees)+" charges "+money(charges)+" paid "+money(paid)+" waived "+money(waived)+" outstanding "+money(outstanding));
+                    output.Add("STATS day "+day+" titles "+titles.Count+" members "+members.Count+" closed "+closed.Count);
+                    output.Add("LOANS borrowed "+borrowed+" returned "+returned+" renewed "+renewed+" lost "+lost+" active "+active);
+                    output.Add("MONEY fines "+money(fines)+" fees "+money(fees)+" charges "+money(charges)+" paid "+money(paid)+" waived "+money(waived)+" outstanding "+money(outstanding));
                     List<Title> top=titles.Values.Where(b => b.borrowed>0)
                         .OrderByDescending(b => b.borrowed).ThenBy(b => b.isbn,StringComparer.Ordinal).Take(3).ToList();
                     for (int i=0;i<top.Count;i++) {
                         Title b=top[i];
-                        emit("TOP "+(i+1)+" "+b.isbn+" "+b.borrowed+" "+b.name);
+                        output.Add("TOP "+(i+1)+" "+b.isbn+" "+b.borrowed+" "+b.name);
                     }
                     break;
                 }
@@ -491,29 +485,23 @@ class Program {
             return output;
         }
     }
+    static int checksum(string s) => s.Select((c,i) => (i%2==0 ? 1 : 3)*(c-'0')).Sum();
     static string normalize(string raw) {
         string s=raw.Replace("-","");
         if (matches(s,"[0-9]{9}[0-9X]")) {
-            int sum=0;
-            for (int i=0;i<10;i++) sum+=(10-i)*(s[i]=='X' ? 10 : s[i]-'0');
+            int sum=s.Select((c,i) => (10-i)*(c=='X' ? 10 : c-'0')).Sum();
             check(sum%11!=0,"invalid isbn");
             string prefix="978"+s.Substring(0,9);
-            sum=0;
-            for (int i=0;i<12;i++) sum+=(i%2==0 ? 1 : 3)*(prefix[i]-'0');
+            sum=checksum(prefix);
             return prefix+(10-sum%10)%10;
         }
         check(!matches(s,"97[89][0-9]{10}"),"invalid isbn");
-        int sum13=0;
-        for (int i=0;i<13;i++) sum13+=(i%2==0 ? 1 : 3)*(s[i]-'0');
+        int sum13=checksum(s);
         check(sum13%10!=0,"invalid isbn");
         return s;
     }
-    static int parseMoney(string s) {
-        string[] p=s.Split('.');
-        return int.Parse(p[0])*100+int.Parse(p[1]);
-    }
-    static string money(int n) { return n/100+"."+(n%100<10 ? "0" : "")+n%100; }
-    static string lower(string s) { return s.ToLowerInvariant(); }
+    static int parseMoney(string s) => int.Parse(s.Replace(".",""),CultureInfo.InvariantCulture);
+    static string money(int n) => $"{n/100}.{n%100:D2}";
     static bool matches(string s, string pattern) => Regex.IsMatch(s,"\\A(?:"+pattern+")\\z",RegexOptions.CultureInvariant);
     static void Main() {
         CultureInfo.CurrentCulture=CultureInfo.InvariantCulture;

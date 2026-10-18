@@ -1,5 +1,3 @@
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -15,6 +13,9 @@ private val precisionTable = mapOf(
     "PLUSCODE" to intArrayOf(2,4,6,8,10,11), "GARS" to intArrayOf(5,6,7),
     "GEOREF" to intArrayOf(2,4,8,10,12), "MESH" to intArrayOf(4,6,8,9,10,11)
 )
+private val counts = mapOf("ENCODE" to 4,"DECODE" to 2,"NEIGHBORS" to 2,"PARENT" to 2,"CHILDREN" to 2,
+        "COMMON" to 3,"CONTAINS" to 4,"COVER" to 6,"CONVERT" to 5,"STEPS" to 3,"PATH" to 3,
+        "RELATE" to 4,"SIZE" to 2,"SHORTEN" to 3,"RECOVER" to 3)
 private val meshScale = longArrayOf(1,8,80,160,320,640)
 private val maiden = arrayOf("ABCDEFGHIJKLMNOPQR","0123456789","abcdefghijklmnopqrstuvwx","0123456789")
 private data class Cell(val system: String, val level: Int, val x: Long, val y: Long, val w: Long, val h: Long)
@@ -276,9 +277,8 @@ private fun boundary(c: Cell, latitude: Boolean, offset: Int, center: Boolean): 
 private fun compare(a: Long, ad: Long, b: Long, bd: Long) = (a*bd).compareTo(b*ad)
 private fun inside(a: Cell, b: Cell) = compare(a.x,a.w,b.x,b.w) >= 0 && compare(a.x+1,a.w,b.x+1,b.w) <= 0 &&
     compare(a.y,a.h,b.y,b.h) >= 0 && compare(a.y+1,a.h,b.y+1,b.h) <= 0
-private fun mod(a: Long, n: Long) = Math.floorMod(a,n)
 private fun steps(a: Cell, b: Cell): LongArray {
-    var dx = mod(b.x-a.x,a.w)
+    var dx = Math.floorMod(b.x-a.x,a.w)
     if (dx > a.w/2) dx -= a.w
     return longArrayOf(dx,b.y-a.y)
 }
@@ -353,7 +353,7 @@ private fun auxiliary(t: List<String>): String {
             val b = digit(t[2][1],MROWS)
             val offset = if (zone%2 == 0L) 5 else 0
             var e = 100000L*(a+1)
-            var north = 100000*mod((b-offset).toLong(),20)
+            var north = 100000*Math.floorMod((b-offset).toLong(),20)
             var size = 100000L
             if (n == 4) {
                 val values = detail(t[3],t[4])
@@ -387,9 +387,6 @@ private fun auxiliary(t: List<String>): String {
 private fun execute(line: String): String {
     val t = line.split(' ')
     val command = t[0]
-    val counts = mapOf("ENCODE" to 4,"DECODE" to 2,"NEIGHBORS" to 2,"PARENT" to 2,"CHILDREN" to 2,
-        "COMMON" to 3,"CONTAINS" to 4,"COVER" to 6,"CONVERT" to 5,"STEPS" to 3,"PATH" to 3,
-        "RELATE" to 4,"SIZE" to 2,"SHORTEN" to 3,"RECOVER" to 3)
     if (command !in counts && command != "COMPACT") return auxiliary(t)
     need(if (command == "COMPACT") t.size in 3..102 else t.size == counts.getValue(command)+1)
     if (command == "SHORTEN" || command == "RECOVER") {
@@ -421,8 +418,8 @@ private fun execute(line: String): String {
         val mx = d*c.w/360000000
         if ((lat+d/2)*2*c.h < yn && yn-d*2*c.h >= -90000000*2*c.h) y -= my
         else if ((lat-d/2)*2*c.h > yn && yn+d*2*c.h <= 90000000*2*c.h) y += my
-        if ((lon+d/2)*2*c.w < xn) x = mod(x-mx,c.w)
-        else if ((lon-d/2)*2*c.w > xn) x = mod(x+mx,c.w)
+        if ((lon+d/2)*2*c.w < xn) x = Math.floorMod(x-mx,c.w)
+        else if ((lon-d/2)*2*c.w > xn) x = Math.floorMod(x+mx,c.w)
         return code(grid("PLUSCODE",c.level,x,y))!!
     }
     val system = t[1]
@@ -489,7 +486,7 @@ private fun execute(line: String): String {
         "NEIGHBORS" -> {
             val dx = intArrayOf(0,1,1,1,0,-1,-1,-1)
             val dy = intArrayOf(1,1,0,-1,-1,-1,0,1)
-            return (0..7).joinToString(" ") { i -> if (a.y+dy[i] < 0 || a.y+dy[i] >= a.h) "-" else shown(grid(system,a.level,mod(a.x+dx[i],a.w),a.y+dy[i])) }
+            return (0..7).joinToString(" ") { i -> if (a.y+dy[i] < 0 || a.y+dy[i] >= a.h) "-" else shown(grid(system,a.level,Math.floorMod(a.x+dx[i],a.w),a.y+dy[i])) }
         }
         "PARENT" -> return if (a.level == 0) "NONE" else code(ancestor(a,a.level-1))!!
         "CHILDREN" -> {
@@ -528,7 +525,7 @@ private fun execute(line: String): String {
             return (0L..n).joinToString(" ") { i ->
                 val dx = if (n == 0L) 0 else Math.floorDiv(2*i*delta[0]+n,2*n)
                 val dy = if (n == 0L) 0 else Math.floorDiv(2*i*delta[1]+n,2*n)
-                shown(grid(system,a.level,mod(a.x+dx,a.w),a.y+dy))
+                shown(grid(system,a.level,Math.floorMod(a.x+dx,a.w),a.y+dy))
             }
         }
         "RELATE" -> {
@@ -550,7 +547,7 @@ private fun execute(line: String): String {
     }
 }
 fun main() {
-    val input = BufferedReader(InputStreamReader(System.`in`))
+    val input = System.`in`.bufferedReader()
     val output = System.out.bufferedWriter()
     repeat(input.readLine().toInt()) {
         val result = try { execute(input.readLine()) } catch (_: Invalid) { "INVALID" }

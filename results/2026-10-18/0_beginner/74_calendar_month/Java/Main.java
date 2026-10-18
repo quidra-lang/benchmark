@@ -1,8 +1,8 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 public class Main {
-
     public static void main(String[] args) {
         String[] names = {"January","February","March","April","May","June",
             "July","August","September","October","November","December"};
@@ -17,8 +17,7 @@ public class Main {
             if (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) lengths[1] = 29;
             System.out.println(names[month - 1] + " " + year);
             System.out.println("Su Mo Tu We Th Fr Sa");
-            List<String> week = new ArrayList<>();
-            for (int i = 0; i < weekday; i++) week.add("  ");
+            List<String> week = new ArrayList<>(java.util.Collections.nCopies(weekday, "  "));
             for (int day = 1; day <= lengths[month - 1]; day++) {
                 week.add(String.format(Locale.ROOT,"%2d",day));
                 if (week.size() == 7) {

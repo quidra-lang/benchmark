@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val games = listOf(intArrayOf(8,1,10,7,3,9,0,10,10,2,6,6,4,0,9,10,7,2),
         intArrayOf(3,4,5,2,7,1,0,6,8,1,4,4,2,3,6,2,9,0,1,5),

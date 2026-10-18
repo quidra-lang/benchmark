@@ -1,8 +1,6 @@
-import 'dart:io';
 import 'dart:math' as math;
 
 void main() {
-    final out = StringBuffer();
     var total = 0;
     for (final p in [('Sato', 85), ('Suzuki', 120), ('Takahashi', 254), ('Tanaka', 300), ('Ito',
         438), ('Watanabe', 176)]) {
@@ -13,8 +11,7 @@ void main() {
         if (usage > 300)
             bill += (usage - 300) * 40;
         total += bill;
-        out.writeln('${p.$1}: $usage kWh, $bill yen');
+        print('${p.$1}: $usage kWh, $bill yen');
     }
-    out.writeln('total: $total yen');
-    stdout.write(out);
+    print('total: $total yen');
 }

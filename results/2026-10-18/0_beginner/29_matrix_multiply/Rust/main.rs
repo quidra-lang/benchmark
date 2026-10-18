@@ -3,10 +3,7 @@ fn main() {
     let b = [[1, 4], [-5, 2], [6, -1], [0, 7]];
     for i in 0..3 {
         for j in 0..2 {
-            let mut sum = 0;
-            for k in 0..4 {
-                sum += a[i][k] * b[k][j];
-            }
+            let sum: i32 = (0..4).map(|k| a[i][k] * b[k][j]).sum();
             print!("{:5}", sum);
         }
         println!();

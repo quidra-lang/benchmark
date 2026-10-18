@@ -1,14 +1,16 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 static int Determinant(int[][] matrix) {
-    int n = matrix.Length; if (n == 1) return matrix[0][0]; int result = 0;
+    int n = matrix.Length;
+    if (n == 1) return matrix[0][0];
+    int result = 0;
     for (int column = 0; column < n; column++) {
         int[][] minor = matrix.Skip(1).Select(row => row.Where((_,c) => c != column).ToArray()).ToArray();
-        int term = matrix[0][column] * Determinant(minor); result += column % 2 == 0 ? term : -term;
+        int term = matrix[0][column] * Determinant(minor);
+        result += column % 2 == 0 ? term : -term;
     }
     return result;
 }

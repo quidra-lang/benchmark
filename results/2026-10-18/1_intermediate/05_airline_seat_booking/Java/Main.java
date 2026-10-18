@@ -1,5 +1,6 @@
 import java.io.*;
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class Main {
     static final List<String> CLASSES = List.of("F","J","Y");
@@ -114,13 +115,9 @@ public class Main {
         if (target != null) f.occupied.put(target.id(),p);
     }
     static Seat select(Passenger p, String cabin) {
-        Seat first = null;
-        for (Seat s : p.booking.flight.aircraft.cabins.get(cabin).seats) {
-            if (!fits(p,s,Set.of(),Map.of())) continue;
-            if (first == null) first = s;
-            if (p.pref != null && s.kind().equals(p.pref)) return s;
-        }
-        return first;
+        List<Seat> candidates = p.booking.flight.aircraft.cabins.get(cabin).seats.stream()
+            .filter(s -> fits(p,s,Set.of(),Map.of())).toList();
+        return candidates.stream().filter(s -> s.kind().equals(p.pref)).findFirst().orElse(candidates.isEmpty() ? null : candidates.getFirst());
     }
     static void reassign(Flight f, List<String> out) {
         for (Passenger p : passengers(f)) {
@@ -136,9 +133,7 @@ public class Main {
     static boolean candidate(List<Passenger> people, List<Seat> positions) {
         Map<Passenger,Seat> proposed = new HashMap<>();
         for (int i = 0; i < people.size(); i++) proposed.put(people.get(i),positions.get(i));
-        for (Passenger p : people) {
-            if (!fits(p,proposed.get(p),Set.of(),proposed)) return false;
-        }
+        if (!people.stream().allMatch(p -> fits(p,proposed.get(p),Set.of(),proposed))) return false;
         for (Passenger p : people) seat(p,proposed.get(p));
         return true;
     }
@@ -293,8 +288,7 @@ public class Main {
                     if (p.type.equals("ADULT")) adults.add(p);
                     if (p.type.equals("INFANT")) infants.add(p);
                 }
-                Set<String> present = new HashSet<>();
-                for (Passenger p : passengers(f)) present.add(p.name);
+                Set<String> present = passengers(f).stream().map(p -> p.name).collect(Collectors.toSet());
                 for (Passenger p : b.passengers) {
                     if (present.contains(p.name)) fail(p.name+" already on "+f.name);
                 }
@@ -496,7 +490,7 @@ public class Main {
                             }
                             blocks.add(result.toString());
                         }
-                        out.add((row < 10 ? " " : "")+row+" "+String.join(" ",blocks));
+                        out.add(String.format(Locale.ROOT,"%2d %s",row,String.join(" ",blocks)));
                     }
                 }
                 break;
@@ -572,16 +566,13 @@ public class Main {
             case "AVAIL": {
                 Flight f = flight(t[1],false);
                 requireCabin(f,t[2]);
-                int free = 0, window = 0, middle = 0, aisle = 0, exit = 0;
-                for (Seat s : f.aircraft.cabins.get(t[2]).seats) {
-                    if (f.blocked.contains(s.id()) || f.occupied.containsKey(s.id())) continue;
-                    free++;
-                    if (s.kind().equals("W")) window++;
-                    if (s.kind().equals("M")) middle++;
-                    if (s.kind().equals("A")) aisle++;
-                    if (f.aircraft.exits.contains(s.row())) exit++;
-                }
-                out.add("AVAIL "+f.name+" "+t[2]+" free "+free+" W "+window+" M "+middle+" A "+aisle+" EXIT "+exit);
+                List<Seat> free = f.aircraft.cabins.get(t[2]).seats.stream()
+                    .filter(s -> !f.blocked.contains(s.id()) && !f.occupied.containsKey(s.id())).toList();
+                out.add("AVAIL "+f.name+" "+t[2]+" free "+free.size()+
+                    " W "+free.stream().filter(s -> s.kind().equals("W")).count()+
+                    " M "+free.stream().filter(s -> s.kind().equals("M")).count()+
+                    " A "+free.stream().filter(s -> s.kind().equals("A")).count()+
+                    " EXIT "+free.stream().filter(s -> f.aircraft.exits.contains(s.row())).count());
                 break;
             }
             case "INFO": {

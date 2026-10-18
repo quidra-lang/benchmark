@@ -1,8 +1,6 @@
-import java.util.*;
-import java.math.*;
+import java.util.Locale;
 
 public class Main {
-    static String fixed(double x, int places) { return BigDecimal.valueOf(x).setScale(places, RoundingMode.HALF_UP).toPlainString(); }
     public static void main(String[] args) {
         long state = 42;
         int[] free = {0,0};
@@ -20,7 +18,7 @@ public class Main {
             System.out.println("customer " + customer + ": arrive=" + arrival + " start=" + start + " end=" + end +
                 " teller=" + (teller + 1) + " wait=" + wait);
         }
-        System.out.println("average wait: " + fixed(totalWait / 20.0,2));
+        System.out.printf(Locale.ROOT, "average wait: %.2f%n", totalWait / 20.0);
         System.out.println("max wait: " + maxWait);
         System.out.println("last departure: " + Math.max(free[0],free[1]));
     }

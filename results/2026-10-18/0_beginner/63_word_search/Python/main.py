@@ -10,13 +10,11 @@ def find(word):
     for row in range(len(board)):
         for column in range(len(board[0])):
             for name, dr, dc in directions:
-                matches = True
-                for i, char in enumerate(word):
-                    r, c = row + dr * i, column + dc * i
-                    if not (0 <= r < len(board) and 0 <= c < len(board[0])) or board[r][c] != char:
-                        matches = False
-                        break
-                if matches:
+                last_row = row + dr * (len(word) - 1)
+                last_column = column + dc * (len(word) - 1)
+                if not (0 <= last_row < len(board) and 0 <= last_column < len(board[0])):
+                    continue
+                if all(board[row + dr * i][column + dc * i] == char for i, char in enumerate(word)):
                     return f"({row}, {column}) {name}"
     return "not found"
 

@@ -19,7 +19,9 @@ func handicap(_ n: Int?) -> String {
     guard let n else { return "none" }
     return n < 0 ? "+\(-n)" : String(n)
 }
-func cents(_ n: Int) -> String { "\(n/100)."+(n%100 < 10 ? "0" : "")+String(n%100) }
+func cents(_ n: Int) -> String {
+    String(format: "%ld.%02ld",locale: Locale(identifier: "en_US_POSIX"),n/100,n%100)
+}
 func average(_ total: Int, _ count: Int) -> String { count == 0 ? "-" : cents(total*100/count) }
 func sum(_ a: [Int], _ from: Int = 0, _ to: Int = 18) -> Int { a[from..<to].reduce(0,+) }
 final class Tee {
@@ -127,7 +129,6 @@ final class Scorer {
     var events: [String:Event] = [:]
     var eventOrder: [Event] = []
     var output: [String] = []
-    func emit(_ s: String) { output.append(s) }
     func player(_ id: String) throws -> Player {
         guard let p = players[id] else { throw Fault.reason("unknown player") }
         return p
@@ -230,14 +231,11 @@ final class Scorer {
         return EventData(e:e,rounds:rounds,ph:ph,strokes:strokes,nets:nets,points:points,par:par)
     }
     func rank(_ values: [[Int]], _ candidates: [Int], _ high: Bool, _ ids: [String]) -> [Int] {
-        candidates.sorted { a,b in
-            for start in [0,9,12,15,17] {
-                let left = sum(values[a],start)
-                let right = sum(values[b],start)
-                if left != right { return high ? left > right : left < right }
-            }
-            return ids[a] < ids[b]
-        }
+        candidates.map { i in
+            (index:i,key:[0,9,12,15,17].map { (high ? -1 : 1)*sum(values[i],$0) })
+        }.sorted { a,b in
+            a.key == b.key ? ids[a.index] < ids[b.index] : a.key.lexicographicallyPrecedes(b.key)
+        }.map { $0.index }
     }
     func ranked(_ d: EventData) -> [Int] {
         let candidates = d.ph.indices.filter { d.e.format != "STROKE" || !d.rounds[$0].scores.contains(noNet) }
@@ -259,7 +257,7 @@ final class Scorer {
         return Match(statuses:statuses,result:result)
     }
     func results(_ e: Event, _ d: EventData) {
-        emit("results \(e.id): \(e.format) \(e.course.id) \(e.tee.id) day \(e.day) allowance \(e.allowance)")
+        output.append("results \(e.id): \(e.format) \(e.course.id) \(e.tee.id) day \(e.day) allowance \(e.allowance)")
         let n = e.players.count
         let ids = e.players.map { $0.id }
         switch e.format {
@@ -270,20 +268,20 @@ final class Scorer {
                 if e.format == "STROKE" { value = "net \(sum(d.nets[i])) gross \(sum(d.rounds[i].scores))" }
                 else if e.format == "STABLEFORD" { value = "points \(sum(d.points[i]))" }
                 else { value = status(sum(d.par[i])) }
-                emit("\(r+1) \(ids[i]) \(value) hcp \(handicap(d.ph[i]))")
+                output.append("\(r+1) \(ids[i]) \(value) hcp \(handicap(d.ph[i]))")
             }
             if e.format == "STROKE" {
                 for i in ids.indices.filter({ !order.contains($0) }).sorted(by:{ ids[$0] < ids[$1] }) {
-                    emit("NR \(ids[i]) hcp \(handicap(d.ph[i]))")
+                    output.append("NR \(ids[i]) hcp \(handicap(d.ph[i]))")
                 }
                 if !order.isEmpty {
                     let gross = d.rounds.map { $0.scores }
                     let winner = rank(gross,order,false,ids)[0]
-                    emit("gross \(ids[winner]) \(sum(gross[winner]))")
+                    output.append("gross \(ids[winner]) \(sum(gross[winner]))")
                 }
             }
         case "MATCH", "NASSAU", "FOURBALL":
-            emit("strokes"+ids.indices.map { " \(ids[$0]) \(d.strokes[$0])" }.joined())
+            output.append("strokes"+ids.indices.map { " \(ids[$0]) \(d.strokes[$0])" }.joined())
             let size = n/2
             let a = ids.prefix(size).joined(separator:"+")
             let b = ids.dropFirst(size).joined(separator:"+")
@@ -293,19 +291,19 @@ final class Scorer {
                 return right < left ? -1 : right > left ? 1 : 0
             }
             if e.format == "NASSAU" {
-                emit("front "+match(wins,0,8,a,b).result)
-                emit("back "+match(wins,9,17,a,b).result)
-                emit("total "+match(wins,0,17,a,b).result)
+                output.append("front "+match(wins,0,8,a,b).result)
+                output.append("back "+match(wins,9,17,a,b).result)
+                output.append("total "+match(wins,0,17,a,b).result)
             } else {
                 let m = match(wins,0,17,a,b)
-                emit("status "+m.statuses.joined(separator:", "))
-                emit("result "+m.result)
+                output.append("status "+m.statuses.joined(separator:", "))
+                output.append("result "+m.result)
             }
         case "BETTERBALL":
             let values = (0..<n/2).map { i in (0..<18).map { h in max(d.points[2*i][h],d.points[2*i+1][h]) } }
             let order = rank(values,Array(0..<n/2),true,(0..<n/2).map { ids[2*$0] })
             for (r,i) in order.enumerated() {
-                emit("\(r+1) \(ids[2*i])+\(ids[2*i+1]) points \(sum(values[i])) hcp \(handicap(d.ph[2*i])) \(handicap(d.ph[2*i+1]))")
+                output.append("\(r+1) \(ids[2*i])+\(ids[2*i+1]) points \(sum(values[i])) hcp \(handicap(d.ph[2*i])) \(handicap(d.ph[2*i+1]))")
             }
         case "SKINS":
             var carry = 0
@@ -317,7 +315,7 @@ final class Scorer {
                 tied = ids.indices.filter { d.nets[$0][h] == minimum }
                 if minimum != noNet && tied.count == 1 {
                     let i = tied[0]
-                    emit("hole \(h+1) \(ids[i]) \(carry)")
+                    output.append("hole \(h+1) \(ids[i]) \(carry)")
                     totals[i] += carry*100
                     carry = 0
                 }
@@ -325,10 +323,10 @@ final class Scorer {
             if carry > 0 {
                 tied.sort { ids[$0] < ids[$1] }
                 for i in tied { totals[i] += carry*100/tied.count }
-                emit("carry \(carry)"+tied.map { " \(ids[$0])" }.joined())
+                output.append("carry \(carry)"+tied.map { " \(ids[$0])" }.joined())
             }
             let order = ids.indices.sorted { totals[$0] == totals[$1] ? ids[$0] < ids[$1] : totals[$0] > totals[$1] }
-            for i in order { emit("\(ids[i]) \(cents(totals[i]))") }
+            for i in order { output.append("\(ids[i]) \(cents(totals[i]))") }
         default: break
         }
     }
@@ -336,23 +334,23 @@ final class Scorer {
         let complete = !r.scores[from..<to].contains(noNet)
         let gross = complete ? String(sum(r.scores,from,to)) : "-"
         let net = complete ? String(sum(nets,from,to)) : "-"
-        emit("\(label) \(sum(r.course.par,from,to)) \(gross) \(sum(r.adjusted,from,to)) \(sum(strokes,from,to)) \(net) \(sum(points,from,to))")
+        output.append("\(label) \(sum(r.course.par,from,to)) \(gross) \(sum(r.adjusted,from,to)) \(sum(strokes,from,to)) \(net) \(sum(points,from,to))")
     }
     func card(_ p: Player, _ number: Int, _ r: Round) {
-        emit("card \(p.id) \(number): \(r.course.id) \(r.tee.id) day \(r.day) handicap \(handicap(r.handicap))")
+        output.append("card \(p.id) \(number): \(r.course.id) \(r.tee.id) day \(r.day) handicap \(handicap(r.handicap))")
         let strokes = allocate(r.course,r.handicap ?? 0)
         let nets = (0..<18).map { r.scores[$0] == noNet ? noNet : r.scores[$0]-strokes[$0] }
         let points = (0..<18).map { nets[$0] == noNet ? 0 : max(0,r.course.par[$0]+2-nets[$0]) }
         for h in 0..<18 {
             let net = nets[h] == noNet ? "-" : String(nets[h])
-            emit("\(h+1) \(r.course.par[h]) \(r.course.si[h]) \(r.raw[h]) \(r.adjusted[h]) \(strokes[h]) \(net) \(points[h])")
+            output.append("\(h+1) \(r.course.par[h]) \(r.course.si[h]) \(r.raw[h]) \(r.adjusted[h]) \(strokes[h]) \(net) \(points[h])")
             if h == 8 { cardTotal("OUT",r,strokes,nets,points,0,9) }
             if h == 17 {
                 cardTotal("IN",r,strokes,nets,points,9,18)
                 cardTotal("TOTAL",r,strokes,nets,points,0,18)
             }
         }
-        emit("ags \(r.ags) diff \(signed(r.diff))")
+        output.append("ags \(r.ags) diff \(signed(r.diff))")
     }
     func statistics(_ p: Player) {
         var category = Array(repeating:0,count:7)
@@ -381,7 +379,7 @@ final class Scorer {
         let labels = ["eagles","birdies","pars","bogeys","doubles","others","pickups"]
         for i in 0..<7 { line += " \(labels[i]) \(category[i])" }
         for i in 0..<3 { line += " par\(i+3) \(average(totals[i],counts[i]))" }
-        emit(line)
+        output.append(line)
     }
     func execute(_ t: [String]) throws {
         switch t[0] {
@@ -429,7 +427,7 @@ final class Scorer {
             p.rounds.append(r)
             update(p,day)
             if let i = p.index { p.records.append(IndexRecord(day:day,value:i)) }
-            emit("round \(p.id) \(p.rounds.count): ags \(ags) diff \(signed(diff))"+(exceptional == 0 ? "" : " exceptional \(signed(-exceptional))")+" index \(index(p.index))")
+            output.append("round \(p.id) \(p.rounds.count): ags \(ags) diff \(signed(diff))"+(exceptional == 0 ? "" : " exceptional \(signed(-exceptional))")+" index \(index(p.index))")
         case "REMOVE":
             let p = try player(t[1])
             try error(p.rounds.isEmpty,"no rounds")
@@ -438,7 +436,7 @@ final class Scorer {
             p.index = r.oldIndex
             p.calculation = r.oldCalculation
             p.records.removeSubrange(r.oldRecords..<p.records.count)
-            emit("removed \(p.id) \(number): index \(index(p.index))")
+            output.append("removed \(p.id) \(number): index \(index(p.index))")
         case "INDEX":
             let p = try player(t[1])
             var line = "index \(p.id): \(index(p.index)) rounds \(p.rounds.count)"
@@ -446,41 +444,41 @@ final class Scorer {
                 line += " lowest \(c.k) average \(signed(c.average)) adjustment \(signed(c.adjustment))"+
                     (c.low == nil ? "" : " low \(index(c.low))")+(c.hard ? " hard cap" : c.soft ? " soft cap" : "")+(c.maximum ? " maximum" : "")
             }
-            emit(line)
+            output.append(line)
         case "HISTORY":
             let p = try player(t[1])
             let e = eligible(p)
-            emit("history \(p.id): rounds \(p.rounds.count)")
+            output.append("history \(p.id): rounds \(p.rounds.count)")
             for i in e.adjusted.indices {
                 let r = p.rounds[e.start+i]
-                emit("\(e.start+i+1) day \(r.day) \(r.course.id) \(r.tee.id) ags \(r.ags) diff \(signed(r.diff))"+
+                output.append("\(e.start+i+1) day \(r.day) \(r.course.id) \(r.tee.id) ags \(r.ags) diff \(signed(r.diff))"+
                     (r.diff == e.adjusted[i] ? "" : " adjusted \(signed(e.adjusted[i]))")+(e.counting.contains(i) ? " *" : ""))
             }
         case "LOWINDEX":
             let p = try player(t[1])
             let day = Int(t[2])!
             let r = low(p,day)
-            emit("lowindex \(p.id) \(day): "+(r == nil ? "none" : "\(index(r!.value)) day \(r!.day)"))
+            output.append("lowindex \(p.id) \(day): "+(r == nil ? "none" : "\(index(r!.value)) day \(r!.day)"))
         case "COURSEHCP":
             let p = try player(t[1])
             let c = try course(t[2])
             let tee = try tee(c,t[3])
             guard let i = p.index else { throw Fault.reason("no index") }
             let h = courseHandicap(c,tee,i)
-            emit("coursehcp \(p.id) \(c.id) \(tee.id): \(handicap(h)) strokes "+allocate(c,h).map(String.init).joined(separator:" "))
+            output.append("coursehcp \(p.id) \(c.id) \(tee.id): \(handicap(h)) strokes "+allocate(c,h).map(String.init).joined(separator:" "))
         case "HCPTABLE":
             let c = try course(t[1])
             let tee = try tee(c,t[2])
             let first = Int(t[3])!
             let last = Int(t[4])!
             try error(first < -100 || first > last || last > 540,"invalid index")
-            emit("hcptable \(c.id) \(tee.id): \(index(first)) to \(index(last))")
+            output.append("hcptable \(c.id) \(tee.id): \(index(first)) to \(index(last))")
             var start = first
             var h = courseHandicap(c,tee,first)
             for i in (first+1)...(last+1) {
                 let next = i <= last ? courseHandicap(c,tee,i) : h+1
                 if next != h {
-                    emit("\(index(start)) to \(index(i-1)): \(handicap(h))")
+                    output.append("\(index(start)) to \(index(i-1)): \(handicap(h))")
                     start = i
                     h = next
                 }
@@ -512,15 +510,15 @@ final class Scorer {
                 return left == right ? a < b : left > right
             }
             for (i,h) in order.enumerated() { ranks[h] = i+1 }
-            emit("holestats \(c.id): rounds \(rounds.count)")
-            for h in 0..<18 { emit("\(h+1) par \(c.par[h]) si \(c.si[h]) scores \(counts[h]) avg \(average(totals[h],counts[h])) rank \(ranks[h])") }
+            output.append("holestats \(c.id): rounds \(rounds.count)")
+            for h in 0..<18 { output.append("\(h+1) par \(c.par[h]) si \(c.si[h]) scores \(counts[h]) avg \(average(totals[h],counts[h])) rank \(ranks[h])") }
         case "PLAYERS":
             let order = players.values.sorted { a,b in
                 if a.index == nil || b.index == nil { return a.index == b.index ? a.id < b.id : a.index != nil }
                 return a.index == b.index ? a.id < b.id : a.index! < b.index!
             }
-            emit("players \(order.count)")
-            for p in order { emit("\(p.id) \(p.name) \(index(p.index)) rounds \(p.rounds.count)") }
+            output.append("players \(order.count)")
+            for p in order { output.append("\(p.id) \(p.name) \(index(p.index)) rounds \(p.rounds.count)") }
         case "EVENT":
             try error(events[t[1]] != nil,"duplicate event")
             let c = try course(t[3])
@@ -562,10 +560,10 @@ final class Scorer {
                 if merit[a]![1] != merit[b]![1] { return merit[a]![1] > merit[b]![1] }
                 return a < b
             }
-            emit("merit: events \(count)")
+            output.append("merit: events \(count)")
             for (i,id) in order.enumerated() {
                 let a = merit[id]!
-                emit("\(i+1) \(id) \(a[0]) wins \(a[1]) played \(a[2])")
+                output.append("\(i+1) \(id) \(a[0]) wins \(a[1]) played \(a[2])")
             }
         default: break
         }
@@ -573,7 +571,7 @@ final class Scorer {
     func process(_ line: String) -> [String] {
         output = []
         do { try execute(line.split(separator:" ").map(String.init)) }
-        catch Fault.reason(let reason) { emit("ERROR "+reason) }
+        catch Fault.reason(let reason) { output.append("ERROR "+reason) }
         catch { fatalError("Unexpected error") }
         return output
     }

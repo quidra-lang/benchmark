@@ -23,5 +23,5 @@ function solveSystem(array $matrix): array {
 $systems = [[[2.0,-1.0,3.0,7.0],[4.0,1.0,-2.0,3.0],[-3.0,5.0,1.0,-4.0]],[[1.0,3.0,-2.0,4.0,6.0],[5.0,-2.0,1.0,3.0,-7.0],[-2.0,4.0,6.0,-1.0,9.0],[3.0,1.0,-4.0,2.0,5.0]]];
 foreach ($systems as $number => $matrix) {
     printf("system %d:\n",$number+1);
-    foreach (solveSystem($matrix) as $i => $value) printf("x%d = %.4F\n",$i+1,round($value,4,PHP_ROUND_HALF_UP));
+    foreach (solveSystem($matrix) as $i => $value) printf("x%d = %.4F\n",$i+1,$value);
 }

@@ -1,6 +1,9 @@
 sets <- list(c(3,8,5),c(6,6,6),c(5,8,5),c(13,5,12),c(2,9,4),c(7,4,7),c(8,6,7),c(4,9,6))
 for (sides in sets) {
-    ordered <- sort(sides); a <- ordered[1]; b <- ordered[2]; c_value <- ordered[3]
+    ordered <- sort(sides)
+    a <- ordered[1]
+    b <- ordered[2]
+    c_value <- ordered[3]
     if (a+b <= c_value) {
         result <- "not a triangle"
     } else {

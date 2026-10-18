@@ -1,18 +1,7 @@
 import Foundation
 
 func decode(_ text: String) -> String {
-    let bytes = Array(text.utf8)
-    var result = [UInt8](), i = 0
-    while i < bytes.count {
-        if bytes[i] == 43 { result.append(32) }
-        else if bytes[i] == 37 {
-            let hex = String(bytes: bytes[(i + 1)...(i + 2)], encoding: .utf8)!
-            result.append(UInt8(hex, radix: 16)!)
-            i += 2
-        } else { result.append(bytes[i]) }
-        i += 1
-    }
-    return String(bytes: result, encoding: .utf8)!
+    text.replacingOccurrences(of: "+", with: " ").removingPercentEncoding!
 }
 let queries = ["name=Alice+Smith&age=30&city=New%20York",
     "q=c%2B%2B+tutorial&page=2&sort=desc&page=3",

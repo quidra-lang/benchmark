@@ -1,6 +1,3 @@
-import Foundation
-
-
 let grades = ["A", "B", "C", "D", "F"]
 var counts = [Int](repeating: 0, count: 5)
 for score in [78, 90, 100, 59, 80, 85, 89, 70, 45, 93] {

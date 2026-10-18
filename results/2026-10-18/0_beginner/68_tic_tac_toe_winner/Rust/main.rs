@@ -4,9 +4,9 @@ fn main() {
     let lines = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4,
         6]];
     for (k, b) in boards.iter().enumerate() {
-        let cells: Vec<u8> = b.iter().flat_map(|r| r.bytes()).collect();
+        let cells = b.concat().into_bytes();
         let mut winner = None;
-        for[a, b, c] in lines {
+        for [a, b, c] in lines {
             if cells[a] != b'.' && cells[a] == cells[b] && cells[b] == cells[c] {
                 winner = Some(cells[a] as char);
             }

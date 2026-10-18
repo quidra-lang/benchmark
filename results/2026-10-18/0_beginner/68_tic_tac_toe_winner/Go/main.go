@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 )
 
 func main() {
@@ -21,13 +22,8 @@ func main() {
 		result := "draw"
 		if winner != 0 {
 			result = fmt.Sprintf("%c wins", winner)
-		} else {
-			for i := range cells {
-				if cells[i] == '.' {
-					result = "in progress"
-					break
-				}
-			}
+		} else if strings.ContainsRune(cells, '.') {
+			result = "in progress"
 		}
 		fmt.Printf("board %d: %s\n", k + 1, result)
 	}

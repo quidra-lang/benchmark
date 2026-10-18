@@ -19,9 +19,6 @@ typedef struct { Color colors[33]; Int numbers[33]; int keyword; } Arguments;
 typedef struct { char name[13]; Color color; } Entry;
 typedef struct { Entry entries[500]; int count; } State;
 typedef struct { char data[32768]; size_t length; } Text;
-static const char *entry_name(const Entry *entry) { return entry->name; }
-static int registered_count(const State *state) { return state->count; }
-static const Entry *registered_entry(const State *state, int i) { return &state->entries[i]; }
 static void registry_set(State *state, const char *name, Color color) {
     int i = 0;
     while (i < state->count && strcmp(state->entries[i].name, name) != 0) ++i;
@@ -32,7 +29,8 @@ static void registry_set(State *state, const char *name, Color color) {
     state->entries[i].color = color;
 }
 static void registry_delete(State *state, int index) {
-    for (int i = index; i + 1 < state->count; ++i) state->entries[i] = state->entries[i + 1];
+    memmove(state->entries + index, state->entries + index + 1,
+            (state->count - index - 1) * sizeof *state->entries);
     --state->count;
 }
 static void wordf(Text *output, const char *format, ...) {
@@ -102,58 +100,58 @@ enum Operation {
 };
 
 static const Spec specifications[] = {
-    {"PARSE", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"DEFINE", "NC", 2, 2, {0,0,0,0}, {0,0,0,0}, ""},
-    {"UNDEFINE", "N", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"LIST", "", 0, 0, {0,0,0,0}, {0,0,0,0}, ""},
-    {"HSL", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMHSL", "III", 3, 3, {0,0,0,0}, {359,100,100,0}, ""},
-    {"HSV", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMHSV", "III", 3, 3, {0,0,0,0}, {359,100,100,0}, ""},
-    {"HWB", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMHWB", "III", 3, 3, {0,0,0,0}, {359,100,100,0}, ""},
-    {"CMYK", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMCMYK", "IIII", 4, 4, {0,0,0,0}, {100,100,100,100}, ""},
-    {"YCBCR", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMYCBCR", "III", 3, 3, {0,0,0,0}, {255,255,255,0}, ""},
-    {"YIQ", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
+    {"PARSE", "C", 1, 1, {0}, {0}, ""},
+    {"DEFINE", "NC", 2, 2, {0}, {0}, ""},
+    {"UNDEFINE", "N", 1, 1, {0}, {0}, ""},
+    {"LIST", "", 0, 0, {0}, {0}, ""},
+    {"HSL", "C", 1, 1, {0}, {0}, ""},
+    {"FROMHSL", "III", 3, 3, {0}, {359,100,100,0}, ""},
+    {"HSV", "C", 1, 1, {0}, {0}, ""},
+    {"FROMHSV", "III", 3, 3, {0}, {359,100,100,0}, ""},
+    {"HWB", "C", 1, 1, {0}, {0}, ""},
+    {"FROMHWB", "III", 3, 3, {0}, {359,100,100,0}, ""},
+    {"CMYK", "C", 1, 1, {0}, {0}, ""},
+    {"FROMCMYK", "IIII", 4, 4, {0}, {100,100,100,100}, ""},
+    {"YCBCR", "C", 1, 1, {0}, {0}, ""},
+    {"FROMYCBCR", "III", 3, 3, {0}, {255,255,255,0}, ""},
+    {"YIQ", "C", 1, 1, {0}, {0}, ""},
     {"FROMYIQ", "III", 3, 3, {0,-255,-255,0}, {255,255,255,0}, ""},
-    {"RGB565", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROM565", "W", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"ANSI", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"FROMANSI", "I", 1, 1, {0,0,0,0}, {255,0,0,0}, ""},
-    {"WEBSAFE", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"GRAY", "CK", 2, 2, {0,0,0,0}, {0,0,0,0}, "LUMA|AVERAGE|LIGHTNESS|HSP"},
-    {"INVERT", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"MIX", "CCI", 3, 3, {0,0,0,0}, {0,0,100,0}, ""},
-    {"MIXHSL", "CCI", 3, 3, {0,0,0,0}, {0,0,100,0}, ""},
+    {"RGB565", "C", 1, 1, {0}, {0}, ""},
+    {"FROM565", "W", 1, 1, {0}, {0}, ""},
+    {"ANSI", "C", 1, 1, {0}, {0}, ""},
+    {"FROMANSI", "I", 1, 1, {0}, {255,0,0,0}, ""},
+    {"WEBSAFE", "C", 1, 1, {0}, {0}, ""},
+    {"GRAY", "CK", 2, 2, {0}, {0}, "LUMA|AVERAGE|LIGHTNESS|HSP"},
+    {"INVERT", "C", 1, 1, {0}, {0}, ""},
+    {"MIX", "CCI", 3, 3, {0}, {0,0,100,0}, ""},
+    {"MIXHSL", "CCI", 3, 3, {0}, {0,0,100,0}, ""},
     {"GRADIENT", "CCI", 3, 3, {0,0,2,0}, {0,0,16,0}, ""},
     {"TINTS", "CI", 2, 2, {0,1,0,0}, {0,10,0,0}, ""},
     {"SHADES", "CI", 2, 2, {0,1,0,0}, {0,10,0,0}, ""},
     {"TONES", "CI", 2, 2, {0,1,0,0}, {0,10,0,0}, ""},
-    {"BLEND", "KCC", 3, 3, {0,0,0,0}, {0,0,0,0}, "MULTIPLY|SCREEN|OVERLAY|HARDLIGHT|SOFTLIGHT|DARKEN|LIGHTEN|DIFFERENCE|EXCLUSION|ADD|SUBTRACT|COLORDODGE|COLORBURN|HUE|SATURATION|COLOR|LUMINOSITY"},
-    {"ALPHA", "CICI", 4, 4, {0,0,0,0}, {0,100,0,100}, ""},
-    {"SIMULATE", "CK", 2, 2, {0,0,0,0}, {0,0,0,0}, "PROTANOPIA|DEUTERANOPIA|TRITANOPIA|ACHROMATOPSIA"},
+    {"BLEND", "KCC", 3, 3, {0}, {0}, "MULTIPLY|SCREEN|OVERLAY|HARDLIGHT|SOFTLIGHT|DARKEN|LIGHTEN|DIFFERENCE|EXCLUSION|ADD|SUBTRACT|COLORDODGE|COLORBURN|HUE|SATURATION|COLOR|LUMINOSITY"},
+    {"ALPHA", "CICI", 4, 4, {0}, {0,100,0,100}, ""},
+    {"SIMULATE", "CK", 2, 2, {0}, {0}, "PROTANOPIA|DEUTERANOPIA|TRITANOPIA|ACHROMATOPSIA"},
     {"ROTATE", "CI", 2, 2, {0,-720,0,0}, {0,720,0,0}, ""},
-    {"COMPLEMENT", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"TRIADIC", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"TETRADIC", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"SPLITCOMP", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
+    {"COMPLEMENT", "C", 1, 1, {0}, {0}, ""},
+    {"TRIADIC", "C", 1, 1, {0}, {0}, ""},
+    {"TETRADIC", "C", 1, 1, {0}, {0}, ""},
+    {"SPLITCOMP", "C", 1, 1, {0}, {0}, ""},
     {"ANALOGOUS", "CII", 3, 3, {0,1,1,0}, {0,6,60,0}, ""},
-    {"LIGHTEN", "CI", 2, 2, {0,0,0,0}, {0,100,0,0}, ""},
-    {"DARKEN", "CI", 2, 2, {0,0,0,0}, {0,100,0,0}, ""},
-    {"SATURATE", "CI", 2, 2, {0,0,0,0}, {0,100,0,0}, ""},
-    {"DESATURATE", "CI", 2, 2, {0,0,0,0}, {0,100,0,0}, ""},
-    {"NEAREST", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"DISTANCE", "CC", 2, 2, {0,0,0,0}, {0,0,0,0}, ""},
-    {"CONTRAST", "CC", 2, 2, {0,0,0,0}, {0,0,0,0}, ""},
-    {"ACCESSIBLE", "CC", 2, 2, {0,0,0,0}, {0,0,0,0}, ""},
-    {"BEST", "*", 2, 33, {0,0,0,0}, {0,0,0,0}, ""},
-    {"DESCRIBE", "C", 1, 1, {0,0,0,0}, {0,0,0,0}, ""},
-    {"PALETTE", "P", 2, 33, {0,0,0,0}, {0,0,0,0}, ""},
-    {"KMEANS", "P", 2, 33, {0,0,0,0}, {0,0,0,0}, ""},
-    {"SORT", "*", 1, 32, {0,0,0,0}, {0,0,0,0}, ""},
-    {"DITHER", "*", 1, 32, {0,0,0,0}, {0,0,0,0}, ""},
+    {"LIGHTEN", "CI", 2, 2, {0}, {0,100,0,0}, ""},
+    {"DARKEN", "CI", 2, 2, {0}, {0,100,0,0}, ""},
+    {"SATURATE", "CI", 2, 2, {0}, {0,100,0,0}, ""},
+    {"DESATURATE", "CI", 2, 2, {0}, {0,100,0,0}, ""},
+    {"NEAREST", "C", 1, 1, {0}, {0}, ""},
+    {"DISTANCE", "CC", 2, 2, {0}, {0}, ""},
+    {"CONTRAST", "CC", 2, 2, {0}, {0}, ""},
+    {"ACCESSIBLE", "CC", 2, 2, {0}, {0}, ""},
+    {"BEST", "*", 2, 33, {0}, {0}, ""},
+    {"DESCRIBE", "C", 1, 1, {0}, {0}, ""},
+    {"PALETTE", "P", 2, 33, {0}, {0}, ""},
+    {"KMEANS", "P", 2, 33, {0}, {0}, ""},
+    {"SORT", "*", 1, 32, {0}, {0}, ""},
+    {"DITHER", "*", 1, 32, {0}, {0}, ""},
     {"RANDOM", "II", 2, 2, {1,1,0,0}, {999999999,16,0,0}, ""},
 };
 
@@ -186,7 +184,6 @@ static const Entry builtins[] = {
 
 static Int smaller(Int a, Int b) { return a < b ? a : b; }
 static Int larger(Int a, Int b) { return a > b ? a : b; }
-static Int magnitude(Int x) { return x < 0 ? -x : x; }
 static Int clamp(Int x) { return smaller(255, larger(0, x)); }
 
 static Int floor_div(Int a, Int b) {
@@ -209,8 +206,7 @@ static Int modulo(Int value, Int modulus) {
 }
 
 static Color rgb(Int r, Int g, Int b) {
-    Color result = {{r, g, b}};
-    return result;
+    return (Color){{r, g, b}};
 }
 
 static int equal_color(Color a, Color b) {
@@ -254,7 +250,7 @@ static Hsl hsl(Color c) {
     Int delta = maximum - minimum;
     Hsl result = {hue(c), 0, rounded(100 * (maximum + minimum), 510)};
     if (delta != 0)
-        result.s = rounded(100 * delta, 255 - magnitude(maximum + minimum - 255));
+        result.s = rounded(100 * delta, 255 - llabs(maximum + minimum - 255));
     return result;
 }
 
@@ -274,7 +270,7 @@ static Color sector(Int h) {
 }
 
 static Color from_hsl(Int h, Int s, Int l) {
-    Int chroma = (100 - magnitude(2 * l - 100)) * s;
+    Int chroma = (100 - llabs(2 * l - 100)) * s;
     Int offset = 30 * (200 * l - chroma);
     Color result = sector(h);
     for (int j = 0; j < 3; ++j)
@@ -378,7 +374,7 @@ static Color blend(int mode, Color base, Color top) {
             }
             case 5: value = smaller(x, y); break;
             case 6: value = larger(x, y); break;
-            case 7: value = magnitude(x - y); break;
+            case 7: value = llabs(x - y); break;
             case 8: value = x + y - 2 * x * y / 255; break;
             case 9: value = smaller(255, x + y); break;
             case 10: value = larger(0, x - y); break;
@@ -393,7 +389,7 @@ static Color blend(int mode, Color base, Color top) {
 static void palette(const Color *colors, int count, int wanted, Color *means, int *sizes) {
     Box boxes[32] = {0};
     boxes[0].count = count;
-    for (int i = 0; i < count; ++i) boxes[0].colors[i] = colors[i];
+    memcpy(boxes[0].colors, colors, count * sizeof *colors);
     int box_count = 1;
     while (box_count < wanted) {
         int chosen = -1, channel = 0;
@@ -505,13 +501,13 @@ static int valid_name(const char *text) {
 }
 
 static int registry_find(const State *state, const char *name) {
-    for (int i = 0; i < registered_count(state); ++i)
-        if (strcmp(entry_name(registered_entry(state, i)), name) == 0) return i;
+    for (int i = 0; i < state->count; ++i)
+        if (strcmp(state->entries[i].name, name) == 0) return i;
     return -1;
 }
 
 static const Entry *table_entry(const State *state, int index) {
-    return index < 24 ? &builtins[index] : registered_entry(state, index - 24);
+    return index < 24 ? &builtins[index] : &state->entries[index - 24];
 }
 
 static int parse_color(const State *state, const char *text, Color *result) {
@@ -542,9 +538,9 @@ static int parse_color(const State *state, const char *text, Color *result) {
         }
         return text[position] == '\0';
     }
-    for (int i = 0; i < 24 + registered_count(state); ++i) {
+    for (int i = 0; i < 24 + state->count; ++i) {
         const Entry *entry = table_entry(state, i);
-        if (strcmp(entry_name(entry), text) == 0) {
+        if (strcmp(entry->name, text) == 0) {
             *result = entry->color;
             return 1;
         }
@@ -599,7 +595,7 @@ static int prepare(const State *state, const Spec *spec, int operation,
     if (spec->signature[0] == 'P' && arguments->numbers[0] > count - 1) return 0;
     if (operation == OP_DEFINE) {
         for (int i = 0; i < 24; ++i)
-            if (strcmp(words[0], entry_name(&builtins[i])) == 0) return 0;
+            if (strcmp(words[0], builtins[i].name) == 0) return 0;
     }
     if (operation == OP_UNDEFINE && registry_find(state, words[0]) < 0) return 0;
     return 1;
@@ -664,12 +660,12 @@ static void execute(State *state, int operation, const char **words, int count,
             registry_delete(state, registry_find(state, words[0]));
             break;
         case OP_LIST: {
-            int indices[500], length = registered_count(state);
+            int indices[500], length = state->count;
             for (int i = 0; i < length; ++i) indices[i] = i;
             for (int i = 1; i < length; ++i) {
                 int value = indices[i], j = i;
-                while (j > 0 && strcmp(entry_name(registered_entry(state, indices[j - 1])),
-                                       entry_name(registered_entry(state, value))) > 0) {
+                while (j > 0 && strcmp(state->entries[indices[j - 1]].name,
+                                       state->entries[value].name) > 0) {
                     indices[j] = indices[j - 1];
                     --j;
                 }
@@ -677,10 +673,10 @@ static void execute(State *state, int operation, const char **words, int count,
             }
             if (length == 0) wordf(output, "NONE");
             for (int i = 0; i < length; ++i) {
-                const Entry *entry = registered_entry(state, indices[i]);
+                const Entry *entry = &state->entries[indices[i]];
                 char text[8];
                 color_text(entry->color, text);
-                wordf(output, "%s=%s", entry_name(entry), text);
+                wordf(output, "%s=%s", entry->name, text);
             }
             break;
         }
@@ -690,10 +686,10 @@ static void execute(State *state, int operation, const char **words, int count,
             const int models[] = {OP_HSL, OP_HSV, OP_HWB, OP_CMYK, OP_YCBCR, OP_YIQ};
             for (int i = 0; i < 6; ++i) output_model(output, models[i], c);
             const char *name = "-";
-            for (int i = 0; i < 24 + registered_count(state); ++i) {
+            for (int i = 0; i < 24 + state->count; ++i) {
                 const Entry *entry = table_entry(state, i);
                 if (equal_color(c, entry->color)) {
-                    name = entry_name(entry);
+                    name = entry->name;
                     break;
                 }
             }
@@ -835,10 +831,10 @@ static void execute(State *state, int operation, const char **words, int count,
         }
         case OP_NEAREST: {
             int best = 0;
-            for (int i = 1; i < 24 + registered_count(state); ++i)
+            for (int i = 1; i < 24 + state->count; ++i)
                 if (distance(c, table_entry(state, i)->color) < distance(c, table_entry(state, best)->color)) best = i;
             const Entry *entry = table_entry(state, best);
-            wordf(output, "%s", entry_name(entry));
+            wordf(output, "%s", entry->name);
             output_color(output, entry->color);
             wordf(output, "%lld", distance(c, entry->color));
             break;
@@ -913,7 +909,7 @@ static void execute(State *state, int operation, const char **words, int count,
         }
         case OP_SORT: {
             Color colors[32];
-            for (int i = 0; i < count; ++i) colors[i] = args->colors[i];
+            memcpy(colors, args->colors, count * sizeof *colors);
             for (int i = 1; i < count; ++i) {
                 Color value = colors[i];
                 Hsl key = hsl(value);
@@ -939,7 +935,7 @@ static void execute(State *state, int operation, const char **words, int count,
                 int best = 0;
                 for (int j = 1; j < 16; ++j)
                     if (distance(target, builtins[j].color) < distance(target, builtins[best].color)) best = j;
-                wordf(output, "%s", entry_name(&builtins[best]));
+                wordf(output, "%s", builtins[best].name);
                 for (int j = 0; j < 3; ++j) error.x[j] = target.x[j] - builtins[best].color.x[j];
             }
             break;

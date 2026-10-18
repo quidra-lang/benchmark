@@ -1,5 +1,3 @@
-import 'dart:io';
-
 const ones = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
     'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen',
     'nineteen'], tens = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty',
@@ -15,7 +13,6 @@ String under(int n) {
 }
 
 void main() {
-    final out = StringBuffer();
     for (final n in [0, 13, 40, 100, 568, 71000, 300019, 999999]) {
         final parts = <String>[];
         if (n == 0)
@@ -24,7 +21,6 @@ void main() {
             parts.add('${under(n~/1000)} thousand');
         if (n % 1000 > 0)
             parts.add(under(n % 1000));
-        out.writeln('$n: ${parts.join(' ')}');
+        print('$n: ${parts.join(' ')}');
     }
-    stdout.write(out);
 }

@@ -92,10 +92,7 @@ class Hotel {
   }
 
   rate(r, day) {
-    let percent = 100n;
-    for (const season of this.seasons) {
-      if (season.start <= day && day <= season.end) percent = season.percent;
-    }
+    const percent = this.seasons.findLast(season => season.start <= day && day <= season.end)?.percent ?? 100n;
     return r.base * percent / 100n;
   }
 
@@ -280,13 +277,10 @@ class Hotel {
             if (r.occupied.has(day)) throw new CommandError("room unavailable " + r.number + " " + dateText(day));
           }
         }
-        let count = 0;
-        for (let day = start; day <= end; day++) {
-          if (cmd === "BLOCK") {
-            if (!r.blocks.has(day)) count++;
-            r.blocks.add(day);
-          } else if (r.blocks.delete(day)) count++;
-        }
+        const nights = new Set(Array.from({length: end - start + 1}, (_, i) => start + i));
+        const previous = r.blocks.size;
+        r.blocks = cmd === "BLOCK" ? r.blocks.union(nights) : r.blocks.difference(nights);
+        const count = Math.abs(r.blocks.size - previous);
         this.emit(0, cmd, r.number, a[1], "->", a[2], cmd === "BLOCK" ? "added" : "removed", count);
         break;
       }

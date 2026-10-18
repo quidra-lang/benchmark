@@ -1,6 +1,3 @@
-import java.util.*;
-import java.math.*;
-
 public class Main {
     static String cipher(String text, int shift) {
         StringBuilder result = new StringBuilder();

@@ -7,12 +7,7 @@ let placements = 0;
 function allowed(row, column, digit) {
   if (board[row].includes(digit) || board.some(line => line[column] === digit)) return false;
   const top = Math.floor(row / 3) * 3, left = Math.floor(column / 3) * 3;
-  for (let r = top; r < top + 3; r++) {
-    for (let c = left; c < left + 3; c++) {
-      if (board[r][c] === digit) return false;
-    }
-  }
-  return true;
+  return !board.slice(top, top + 3).some(line => line.slice(left, left + 3).includes(digit));
 }
 function solve() {
   for (let row = 0; row < 9; row++) {

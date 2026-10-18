@@ -2,14 +2,14 @@ package main
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 )
 
 func main() {
 	for _, p := range [][3]int{{3, 8, 5}, {6, 6, 6}, {5, 8, 5}, {13, 5, 12}, {2, 9, 4}, {7, 4, 7}, {8,
 		6, 7}, {4, 9, 6}} {
 		a := p
-		sort.Ints(a[:])
+		slices.Sort(a[:])
 		fmt.Printf("%d %d %d: ", p[0], p[1], p[2])
 		if a[0] + a[1] <= a[2] {
 			fmt.Println("not a triangle")

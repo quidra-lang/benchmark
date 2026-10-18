@@ -10,8 +10,12 @@ for _, pair in ipairs({{"1999-12-25",10},{"2000-02-27",3},{"2021-02-20",14},{"20
     for step = 1,added do
         day = day+1
         if day > days_in_month(year,month) then
-            day = 1; month = month+1
-            if month > 12 then month = 1; year = year+1 end
+            day = 1
+            month = month+1
+            if month > 12 then
+                month = 1
+                year = year+1
+            end
         end
     end
     io.write(string.format("%s + %d days = %04d-%02d-%02d\n",original,added,year,month,day))

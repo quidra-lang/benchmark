@@ -19,10 +19,10 @@ def chain(ordered):
 
 ordered = sorted(points)
 hull = chain(ordered)[:-1] + chain(reversed(ordered))[:-1]
-area_twice = 0
-for i, (x, y) in enumerate(hull):
-    next_x, next_y = hull[(i + 1) % len(hull)]
-    area_twice += x * next_y - next_x * y
+area_twice = sum(
+    x * next_y - next_x * y
+    for (x, y), (next_x, next_y) in zip(hull, hull[1:] + hull[:1])
+)
 print(f"hull: {len(hull)} points")
 for x, y in hull:
     print(f"({x}, {y})")

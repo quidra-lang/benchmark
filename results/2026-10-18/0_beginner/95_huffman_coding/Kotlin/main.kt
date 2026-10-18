@@ -1,6 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
 data class Node(val weight: Int, val minimum: Int, val symbol: Char? = null,
     val left: Node? = null, val right: Node? = null)
 fun codes(node: Node, prefix: String, result: MutableMap<Char,String>) {
@@ -22,12 +19,10 @@ fun main() {
     }
     val mapping = mutableMapOf<Char,String>()
     codes(queue.remove(),"",mapping)
-    var bits = 0
     for ((ch,count) in frequencies) {
         val code = mapping.getValue(ch)
-        bits += count * code.length
         println("'$ch' freq=$count code=$code")
     }
-    println("encoded bits: $bits")
+    println("encoded bits: ${frequencies.entries.sumOf { it.value * mapping.getValue(it.key).length }}")
     println("fixed 8-bit: ${text.length * 8}")
 }

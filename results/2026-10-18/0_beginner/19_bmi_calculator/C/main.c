@@ -7,8 +7,7 @@ int main(void) {
         int numerator = weights[i] * 10000, denominator = heights[i] * heights[i];
         double bmi = (double) numerator / denominator;
         const char *category = bmi < 18.5 ? "underweight": bmi < 25 ? "normal": bmi < 30 ? "overweight": "obese";
-        int q = (int)(bmi * 10 + 0.5);
-        printf("%s: BMI %d.%d (%s)\n", names[i], q / 10, q % 10, category);
+        printf("%s: BMI %.1f (%s)\n", names[i], bmi, category);
     }
     return 0;
 }

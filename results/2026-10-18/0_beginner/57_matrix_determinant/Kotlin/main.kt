@@ -1,12 +1,10 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
 fun determinant(matrix: List<List<Int>>): Int {
     if (matrix.size == 1) return matrix[0][0]
     var result = 0
     for (column in matrix.indices) {
         val minor = matrix.drop(1).map { row -> row.filterIndexed { c,_ -> c != column } }
-        val term = matrix[0][column] * determinant(minor); result += if (column % 2 == 0) term else -term
+        val term = matrix[0][column] * determinant(minor)
+        result += if (column % 2 == 0) term else -term
     }
     return result
 }

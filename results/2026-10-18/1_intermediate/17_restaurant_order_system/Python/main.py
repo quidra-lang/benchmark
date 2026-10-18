@@ -10,8 +10,7 @@ class CommandError(Exception):
 
 
 def cents(text):
-    whole, fraction = text.split(".")
-    return int(whole) * 100 + int(fraction)
+    return int(text.replace(".", ""))
 
 
 def money(value):
@@ -208,8 +207,7 @@ class Restaurant:
         amounts = check.amounts()
         for line in check.active():
             self.sales[line.course] += line.amount()
-        for index in range(5):
-            self.totals[index] += amounts[index]
+        self.totals = [total + value for total, value in zip(self.totals, amounts)]
         stay = self.time - check.since
         self.closed += 1
         self.stay_total += stay

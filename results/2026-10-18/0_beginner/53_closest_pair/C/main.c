@@ -15,8 +15,7 @@ int main(void) {
                 }
         }
     for (int k = 0; k < 2; k++) {
-        int q = (int)(sqrt((double) best[k]) * 10000 + 0.5);
-        printf("%s: P%d P%d %d.%04d\n", k ? "farthest": "closest", bi[k], bj[k], q / 10000, q % 10000);
+        printf("%s: P%d P%d %.4f\n", k ? "farthest" : "closest", bi[k], bj[k], sqrt((double)best[k]));
     }
     return 0;
 }

@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func mergeSort(a []int, l, r int) int {
 	if l == r {
@@ -23,17 +21,11 @@ func mergeSort(a []int, l, r int) int {
 			count += m - i + 1
 		}
 	}
-	for i <= m {
-		temp = append(temp, a[i])
-		i++
-	}
-	for j <= r {
-		temp = append(temp, a[j])
-		j++
-	}
-	copy(a[l: r + 1], temp)
+	temp = append(temp, a[i:m+1]...)
+	temp = append(temp, a[j:r+1]...)
+	copy(a[l:r+1], temp)
 	fmt.Printf("merge [%d..%d]:", l, r)
-	for _, n := range a[l: r + 1] {
+	for _, n := range a[l:r+1] {
 		fmt.Printf(" %d", n)
 	}
 	fmt.Println()

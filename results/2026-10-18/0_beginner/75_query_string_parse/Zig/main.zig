@@ -11,25 +11,15 @@ fn less(_: void, a: Entry, b: Entry) bool {
     return std.mem.order(u8, a.key[0..a.klen], b.key[0..b.klen]) == .lt;
 }
 
-fn hex(c: u8) u8 {
-    return if (c >= '0' and c <= '9') c - '0' else std.ascii.toLower(c) - 'a' + 10;
-}
-
 fn decode(s: []const u8, buffer: *[256]u8) usize {
-    var i: usize = 0;
-    var len: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (s[i] == '+') {
-            buffer[len] = ' ';
-        } else if (s[i] == '%') {
-            buffer[len] = hex(s[i + 1]) * 16 + hex(s[i + 2]);
-            i += 2;
-        } else {
-            buffer[len] = s[i];
-        }
-        len += 1;
+    const component = buffer[0..s.len];
+    @memcpy(component, s);
+    for (component) |*ch| {
+        if (ch.* == '+') ch.* = ' ';
     }
-    return len;
+    const decoded = std.Uri.percentDecodeInPlace(component);
+    std.mem.copyForwards(u8, buffer[0..decoded.len], decoded);
+    return decoded.len;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -47,9 +37,7 @@ pub fn main(init: std.process.Init) !void {
         var len: usize = 0;
         var items = std.mem.splitScalar(u8, query, '&');
         while (items.next()) |item| {
-            var split: usize = 0;
-            while (split < item.len and item[split] != '=')
-                split += 1;
+            const split = std.mem.findScalar(u8, item, '=') orelse item.len;
             entries[len].klen = decode(item[0..split], &entries[len].key);
             entries[len].vlen = decode(if (split < item.len) item[split + 1..]else "", &entries[len].value);
             len += 1;

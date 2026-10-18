@@ -1,21 +1,4 @@
-decode_component <- function(source) {
-    output <- ""
-    i <- 1
-    while (i <= nchar(source)) {
-        character <- substr(source,i,i)
-        if (character == "+") {
-            output <- paste0(output," ")
-            i <- i+1
-        } else if (character == "%") {
-            output <- paste0(output,intToUtf8(strtoi(substr(source,i+1,i+2),base=16)))
-            i <- i+3
-        } else {
-            output <- paste0(output,character)
-            i <- i+1
-        }
-    }
-    output
-}
+decode_component <- function(source) utils::URLdecode(gsub("+", " ", source, fixed = TRUE))
 queries <- c("name=Alice+Smith&age=30&city=New%20York","q=c%2B%2B+tutorial&page=2&sort=desc&page=3","msg=50%25+off%21&debug&lang=en&ref=&lang=ja","redirect=https%3a%2f%2fexample.com%2Fhome&token=abc==&item10=pen&item2=fish%26chips")
 for (number in seq_along(queries)) {
     parameters <- list()

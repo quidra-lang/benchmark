@@ -19,6 +19,12 @@ class Program {
     static readonly string[] Rows = { "a","ka","sa","ta","na","ha","ma","ya","ra","wa","ga","za","da","ba","pa" };
     const string Gojuon = "a i u e o ka ki ku ke ko sa si su se so ta ti tu te to na ni nu ne no ha hi hu he ho ma mi mu me mo ya yu yo ra ri ru re ro wa wi we wo N";
     const string Iroha = "i ro ha ni ho he to ti ri nu ru wo wa ka yo ta re so tu ne na ra mu u wi no o ku ya ma ke hu ko e te a sa ki yu me mi si we hi mo se su N";
+    static readonly Dictionary<string,int> counts = new(StringComparer.Ordinal) {
+            ["CONVERT"] = 2, ["NORMALIZE"] = 0, ["REVERSE"] = 1, ["VALID"] = 1,
+            ["DETECT"] = 0, ["DIFF"] = 2, ["SAME"] = 2, ["MORAE"] = 1, ["SYLLABLES"] = 1,
+            ["ROW"] = 1, ["STATS"] = 1, ["SORT"] = 1, ["INDEX"] = 1, ["FIND"] = 2,
+            ["HAIKU"] = 1, ["KAIBUN"] = 1, ["SHIRITORI"] = 1
+        };
     readonly List<Meta> table = new();
     readonly Dictionary<string,Meta> metadata = new(StringComparer.Ordinal);
     readonly Dictionary<string,Dictionary<string,string>> readers = new(StringComparer.Ordinal);
@@ -65,7 +71,6 @@ class Program {
     static bool Begins(string text, string choices) => text.Length > 0 && choices.Contains(text[0]);
     bool Regular(string id) => metadata.ContainsKey(id);
     static bool Vowel(string id) => id.Length == 1 && "aiueo".Contains(id,StringComparison.Ordinal);
-    static char Last(string id) => id[^1];
     static string Devoice(string id) {
         int index = "gzdbp".IndexOf(id[0]);
         return index < 0 ? id : "ksthh"[index]+id[1..];
@@ -84,13 +89,13 @@ class Program {
                 _ => id
             };
             if (id.StartsWith("sy",StringComparison.Ordinal)) {
-                return "sh"+Last(id);
+                return "sh"+id[^1];
             }
             if (id.StartsWith("ty",StringComparison.Ordinal)) {
-                return "ch"+Last(id);
+                return "ch"+id[^1];
             }
             if (id.StartsWith("zy",StringComparison.Ordinal) || hepburn && id.StartsWith("dy",StringComparison.Ordinal)) {
-                return "j"+Last(id);
+                return "j"+id[^1];
             }
             return result;
         }
@@ -193,14 +198,14 @@ class Program {
         for (int i = 0; i < morae.Count; i++) {
             if (morae[i].Id == "L") {
                 elements[i] = true;
-                vowels[i] = Last(morae[i-1].Id);
+                vowels[i] = morae[i-1].Id[^1];
             }
         }
         int p = 0;
         while (p+1 < morae.Count) {
             string a = morae[p].Id, b = morae[p+1].Id;
-            char v = Last(a);
-            if (Regular(a) && Vowel(b) && (v == Last(b) || v == 'o' && b == "u" || v == 'e' && b == "i")) {
+            char v = a[^1];
+            if (Regular(a) && Vowel(b) && (v == b[^1] || v == 'o' && b == "u" || v == 'e' && b == "i")) {
                 paired[p+1] = true;
                 if (v == 'o' && (b == "o" || b == "u") || v == 'u' && b == "u") {
                     elements[p+1] = true;
@@ -286,7 +291,7 @@ class Program {
                 Meta meta = metadata[id];
                 if (meta.Contracted) {
                     result.Add(new Element(Devoice(meta.Row[..1]+"i"),Voice(meta.Row),0));
-                    result.Add(new Element("y"+Last(id),0,1));
+                    result.Add(new Element("y"+id[^1],0,1));
                 } else {
                     result.Add(new Element(Devoice(id),Voice(meta.Row),0));
                 }
@@ -294,52 +299,34 @@ class Program {
         }
         return result;
     }
-    static int Compare(List<int> a, List<int> b) {
-        for (int i = 0; i < Math.Min(a.Count,b.Count); i++) {
-            if (a[i] != b[i]) {
-                return a[i].CompareTo(b[i]);
-            }
-        }
-        return a.Count.CompareTo(b.Count);
-    }
     List<Word> Sorted(List<Word> words) {
         var ranks = (orderSetting == "GOJUON" ? Gojuon : Iroha).Split(' ')
-            .Select((name,index) => (name,index)).ToDictionary(p => p.name,p => p.index,StringComparer.Ordinal);
-        var result = words.ToList();
-        result.Sort((a,b) => {
-            var first = Elements(a);
-            var second = Elements(b);
-            List<int>[] left = { first.Select(e => ranks[e.Base]).ToList(),first.Select(e => e.Voice).ToList(),
-                first.Select(e => e.Size).ToList(),a.Morae.Select(m => m.Id == "L" ? 1 : 0).ToList() };
-            List<int>[] right = { second.Select(e => ranks[e.Base]).ToList(),second.Select(e => e.Voice).ToList(),
-                second.Select(e => e.Size).ToList(),b.Morae.Select(m => m.Id == "L" ? 1 : 0).ToList() };
-            for (int i = 0; i < 4; i++) {
-                int comparison = Compare(left[i],right[i]);
-                if (comparison != 0) {
-                    return comparison;
-                }
-            }
-            return a.Start.CompareTo(b.Start);
+            .Select((value,index) => (value,index)).ToDictionary(x => x.value,x => x.index);
+        var comparer = Comparer<int[]>.Create((a,b) => a.AsSpan().SequenceCompareTo(b));
+        var keyed = words.Select(word => {
+            var elements = Elements(word);
+            return new {
+                Word = word,
+                Ranks = elements.Select(e => ranks[e.Base]).ToArray(),
+                Voices = elements.Select(e => e.Voice).ToArray(),
+                Sizes = elements.Select(e => e.Size).ToArray(),
+                Longs = word.Morae.Select(m => m.Id == "L" ? 1 : 0).ToArray()
+            };
         });
-        return result;
+        return keyed.OrderBy(k => k.Ranks,comparer).ThenBy(k => k.Voices,comparer)
+            .ThenBy(k => k.Sizes,comparer).ThenBy(k => k.Longs,comparer).Select(k => k.Word).ToList();
     }
     List<string> PatternMorae(string pattern, string system) {
         if (!Regex.IsMatch(pattern,@"\A[a-z'?*\-]+\z")) {
             Fail("invalid pattern");
         }
         var result = new List<string>();
-        int start = 0;
         try {
-            for (int i = 0; i <= pattern.Length; i++) {
-                if (i == pattern.Length || pattern[i] == '?' || pattern[i] == '*') {
-                    if (i > start) {
-                        var part = new Word(pattern[start..i],0,0,new List<Mora>());
-                        result.AddRange(Parse(part,system).Select(m => m.Id));
-                    }
-                    if (i < pattern.Length) {
-                        result.Add(pattern[i].ToString());
-                    }
-                    start = i+1;
+            foreach (string part in Regex.Split(pattern,"([?*])")) {
+                if (part is "?" or "*") {
+                    result.Add(part);
+                } else if (part.Length > 0) {
+                    result.AddRange(Parse(new Word(part,0,0,new List<Mora>()),system).Select(m => m.Id));
                 }
             }
         } catch (Problem) {
@@ -380,12 +367,6 @@ class Program {
     }
     string Execute(string line) {
         string command = line.Split(new[] { ' ' },2,StringSplitOptions.None)[0];
-        var counts = new Dictionary<string,int>(StringComparer.Ordinal) {
-            ["CONVERT"] = 2, ["NORMALIZE"] = 0, ["REVERSE"] = 1, ["VALID"] = 1,
-            ["DETECT"] = 0, ["DIFF"] = 2, ["SAME"] = 2, ["MORAE"] = 1, ["SYLLABLES"] = 1,
-            ["ROW"] = 1, ["STATS"] = 1, ["SORT"] = 1, ["INDEX"] = 1, ["FIND"] = 2,
-            ["HAIKU"] = 1, ["KAIBUN"] = 1, ["SHIRITORI"] = 1
-        };
         if (!counts.ContainsKey(command) && command is not "SET" and not "TABLE") {
             Fail("unknown command "+command);
         }
@@ -495,7 +476,7 @@ class Program {
                         var reversed = new List<Mora>();
                         for (int i = 0; i < word.Morae.Count; i++) {
                             Mora mora = word.Morae[i];
-                            string id = mora.Id == "L" ? Last(word.Morae[i-1].Id).ToString() : mora.Id;
+                            string id = mora.Id == "L" ? word.Morae[i-1].Id[^1].ToString() : mora.Id;
                             reversed.Add(new Mora(id,mora.Column));
                         }
                         reversed.Reverse();
@@ -588,43 +569,19 @@ class Program {
                 return string.Join(", ",result);
             }
             case "STATS": {
-                var rowCounts = new Dictionary<string,int>(StringComparer.Ordinal);
-                int count = 0, voiced = 0, semivoiced = 0, contracted = 0, n = 0, q = 0, l = 0;
-                foreach (Word word in words) {
-                    foreach (Mora mora in word.Morae) {
-                        count++;
-                        if (!metadata.TryGetValue(mora.Id,out Meta? meta)) {
-                            if (mora.Id == "N") {
-                                n++;
-                            }
-                            if (mora.Id == "Q") {
-                                q++;
-                            }
-                            if (mora.Id == "L") {
-                                l++;
-                            }
-                        } else {
-                            string row = BaseRow(meta.Row);
-                            rowCounts[row] = rowCounts.GetValueOrDefault(row)+1;
-                            if (Voice(meta.Row) == 1) {
-                                voiced++;
-                            }
-                            if (Voice(meta.Row) == 2) {
-                                semivoiced++;
-                            }
-                            if (meta.Contracted) {
-                                contracted++;
-                            }
-                        }
-                    }
-                }
-                var result = new List<string> { $"morae={count}" };
-                foreach (string row in Rows.Take(10)) {
-                    if (rowCounts.ContainsKey(row)) {
-                        result.Add($"{row}={rowCounts[row]}");
-                    }
-                }
-                result.AddRange(new[] { $"voiced={voiced}",$"semivoiced={semivoiced}",$"contracted={contracted}",$"N={n}",$"Q={q}",$"L={l}" });
+                var morae = words.SelectMany(w => w.Morae).ToList();
+                var regular = morae.Where(m => Regular(m.Id)).Select(m => metadata[m.Id]).ToList();
+                var rowCounts = regular.GroupBy(m => BaseRow(m.Row)).ToDictionary(g => g.Key,g => g.Count());
+                var result = new List<string> { $"morae={morae.Count}" };
+                result.AddRange(Rows.Take(10).Where(rowCounts.ContainsKey).Select(row => $"{row}={rowCounts[row]}"));
+                result.AddRange(new[] {
+                    $"voiced={regular.Count(m => Voice(m.Row) == 1)}",
+                    $"semivoiced={regular.Count(m => Voice(m.Row) == 2)}",
+                    $"contracted={regular.Count(m => m.Contracted)}",
+                    $"N={morae.Count(m => m.Id == "N")}",
+                    $"Q={morae.Count(m => m.Id == "Q")}",
+                    $"L={morae.Count(m => m.Id == "L")}"
+                });
                 return string.Join(" ",result);
             }
             case "SORT":
@@ -677,13 +634,12 @@ class Program {
                         return prefix+" must start with "+Spelling(system,previous);
                     }
                     string key = string.Join(".",Ids(word));
-                    if (seen.Contains(key)) {
+                    if (!seen.Add(key)) {
                         return prefix+" is repeated";
                     }
                     if (tail == "N") {
                         return prefix+" ends with N";
                     }
-                    seen.Add(key);
                     previous = tail;
                 }
                 return $"OK {words.Count}";

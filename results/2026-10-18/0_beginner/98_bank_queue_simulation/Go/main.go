@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	x := int64(42)
@@ -26,8 +24,6 @@ func main() {
 		fmt.Printf("customer %d: arrive=%d start=%d end=%d teller=%d wait=%d\n", k, arrival, start, end,
 			teller + 1, wait)
 	}
-	average := float64(totalWait) / 20.0
-	q := int(average * 100 + 0.5)
-	fmt.Printf("average wait: %d.%02d\nmax wait: %d\nlast departure: %d\n", q / 100, q % 100, maximum,
+	fmt.Printf("average wait: %.2f\nmax wait: %d\nlast departure: %d\n", float64(totalWait) / 20.0, maximum,
 		max(freeTime[0], freeTime[1]))
 }

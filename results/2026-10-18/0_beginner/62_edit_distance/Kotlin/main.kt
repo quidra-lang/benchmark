@@ -1,7 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
-
 fun main() {
     val pairs = listOf("kitten" to "sitting", "flaw" to "lawn", "listen" to "silent",
         "intention" to "execution", "algorithm" to "altruistic")

@@ -1,6 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
 fun value(token: String, registers: IntArray): Int =
     if (token[0] in 'A'..'D') registers[token[0] - 'A'] else token.toInt()
 fun main() {

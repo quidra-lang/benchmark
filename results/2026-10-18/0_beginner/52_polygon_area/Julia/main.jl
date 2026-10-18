@@ -10,7 +10,7 @@ function main()
             dx,dy = x-next_x,y-next_y
             perimeter += sqrt(Float64(dx*dx+dy*dy))
         end
-        @printf("polygon %d: area=%.1f perimeter=%.3f\n",number,abs(twice_area)/2,floor(perimeter*1000+0.5)/1000)
+        @printf("polygon %d: area=%.1f perimeter=%.3f\n",number,abs(twice_area)/2,perimeter)
     end
 end
 main()

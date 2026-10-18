@@ -1,5 +1,6 @@
 <?php
-$state = 42; $arrival = $totalWait = $maxWait = 0;
+$state = 42;
+$arrival = $totalWait = $maxWait = 0;
 $freeTimes = [0,0];
 for ($customer = 1; $customer <= 20; $customer++) {
     $state = ($state*48271)%2147483647;
@@ -11,7 +12,8 @@ for ($customer = 1; $customer <= 20; $customer++) {
     $departure = $start+$service;
     $wait = $start-$arrival;
     $freeTimes[$teller] = $departure;
-    $totalWait += $wait; $maxWait = max($maxWait,$wait);
+    $totalWait += $wait;
+    $maxWait = max($maxWait,$wait);
     printf("customer %d: arrive=%d start=%d end=%d teller=%d wait=%d\n",$customer,$arrival,$start,$departure,$teller+1,$wait);
 }
 printf("average wait: %.2F\nmax wait: %d\nlast departure: %d\n",$totalWait/20,$maxWait,max($freeTimes));

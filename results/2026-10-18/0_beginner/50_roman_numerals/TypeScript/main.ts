@@ -3,7 +3,10 @@ const values = new Map([["I", 1], ["V", 5], ["X", 10], ["L", 50], ["C", 100], ["
 for (const n of [9, 14, 49, 94, 444, 1994, 2768, 3999]) {
   let remaining = n, roman = "";
   for (const [value, symbol] of pairs) {
-    while (remaining >= value) { roman += symbol; remaining -= value; }
+    while (remaining >= value) {
+      roman += symbol;
+      remaining -= value;
+    }
   }
   let decoded = 0;
   for (let i = 0; i < roman.length; i++) {

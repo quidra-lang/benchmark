@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	names := []string{"Sato", "Suzuki", "Takahashi", "Tanaka", "Ito", "Watanabe"}

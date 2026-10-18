@@ -1,16 +1,12 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     final items = [('milk', 198, 2, true), ('notebook', 165, 3, false), ('bread', 248, 1, true),
         ('apple', 128, 4, true), ('detergent', 437, 1, false), ('eggs', 268, 1, true)];
     final totals = [0, 0];
     for (final p in items) {
         final subtotal = p.$2 * p.$3;
         totals[p.$4 ? 0 : 1] += subtotal;
-        out.writeln('${p.$1} ${p.$2} x ${p.$3} = $subtotal');
+        print('${p.$1} ${p.$2} x ${p.$3} = $subtotal');
     }
     final foodTax = totals[0] * 8 ~/ 100, generalTax = totals[1] * 10 ~/ 100;
-    out.writeln('food: ${totals[0]} yen, tax $foodTax yen\ngeneral: ${totals[1]} yen, tax $generalTax yen\ntotal: ${totals[0]+totals[1]+foodTax+generalTax} yen');
-    stdout.write(out);
+    print('food: ${totals[0]} yen, tax $foodTax yen\ngeneral: ${totals[1]} yen, tax $generalTax yen\ntotal: ${totals[0]+totals[1]+foodTax+generalTax} yen');
 }

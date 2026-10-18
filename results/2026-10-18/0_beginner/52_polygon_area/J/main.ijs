@@ -1,9 +1,3 @@
-fixed =: 4 : 0
-  scale =. 10 ^ x
-  rounded =. (*y) * <. 0.5 + scale * |y
-  , (":x) 8!:2 rounded % scale
-)
-
 main =: 3 : 0
   polygons =. (4 2$0 0 5 0 6 4 1 3);(5 2$2 1 0 4 3 7 7 6 8 2);(7 2$0 0 8 0 8 6 5 6 4 3 3 6 0 6)
   for_k. i.3 do.
@@ -21,7 +15,7 @@ main =: 3 : 0
       perimeter =. perimeter+edge
     end.
     area =. (|crosssum)%2
-    smoutput 'polygon ',(":>:k),': area=',(1 fixed area),' perimeter=',3 fixed perimeter
+    smoutput 'polygon ',(":>:k),': area=',(, '1' 8!:2 area),' perimeter=',, '3' 8!:2 perimeter
   end.
 )
 main ''

@@ -8,8 +8,12 @@ for (const [initialYear, initialMonth, initialDay, added] of cases) {
     const lengths = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     day++;
     if (day > lengths[month - 1]) {
-      day = 1; month++;
-      if (month > 12) { month = 1; year++; }
+      day = 1;
+      month++;
+      if (month > 12) {
+        month = 1;
+        year++;
+      }
     }
   }
   console.log(`${original} + ${added} days = ${formatDate(year, month, day)}`);

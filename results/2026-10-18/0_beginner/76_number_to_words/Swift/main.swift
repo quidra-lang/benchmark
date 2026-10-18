@@ -1,5 +1,3 @@
-import Foundation
-
 func underThousand(_ n: Int) -> String {
     let ones = ["zero","one","two","three","four","five","six","seven","eight","nine",
         "ten","eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen"]

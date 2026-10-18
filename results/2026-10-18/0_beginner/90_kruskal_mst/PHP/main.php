@@ -16,8 +16,10 @@ foreach ($edges as [$a,$b,$weight]) {
     if ($first === $second) $skipped++;
     else {
         $parents[$second] = $first;
-        $accepted++; $total += $weight;
-        $endpoints = [$a,$b]; sort($endpoints,SORT_STRING);
+        $accepted++;
+        $total += $weight;
+        $endpoints = [$a,$b];
+        sort($endpoints,SORT_STRING);
         printf("%s-%s %d\n",$endpoints[0],$endpoints[1],$weight);
         if ($accepted === 7) break;
     }

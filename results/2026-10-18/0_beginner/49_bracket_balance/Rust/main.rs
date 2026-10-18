@@ -5,23 +5,27 @@ fn main() {
         let mut error = None;
         for (i, c) in s.bytes().enumerate() {
             match c {
-                b'('|b'['| b'{' => stack.push(c), b')'|b']'| b'}' => {
+                b'(' | b'[' | b'{' => stack.push(c),
+                b')' | b']' | b'}' => {
                     let expected = match c {
-                        b')' => b'(', b']' => b'[', _ => b'{'
+                        b')' => b'(',
+                        b']' => b'[',
+                        _ => b'{',
                     };
                     if stack.pop() != Some(expected) {
                         error = Some(i);
                         break;
                     }
-                }, _ => {
                 }
+                _ => {}
             }
         }
         if error.is_none() && !stack.is_empty() {
             error = Some(s.len());
         }
         match error {
-            None => println!("{} -> balanced", s), Some(i) => println!("{} -> error at index {}", s, i)
+            None => println!("{} -> balanced", s),
+            Some(i) => println!("{} -> error at index {}", s, i),
         }
     }
 }

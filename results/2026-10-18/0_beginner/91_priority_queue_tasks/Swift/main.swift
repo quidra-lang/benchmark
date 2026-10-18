@@ -1,11 +1,9 @@
-import Foundation
-
 struct Task {
     let name: String
     let priority: Int
     let sequence: Int
     func precedes(_ other: Task) -> Bool {
-        return priority == other.priority ? sequence < other.sequence : priority < other.priority
+        priority == other.priority ? sequence < other.sequence : priority < other.priority
     }
 }
 struct Heap {
@@ -49,6 +47,5 @@ for operation in operations {
         print("run: \(task.name) (priority \(task.priority))")
     }
 }
-var remaining = [String]()
-while !queue.tasks.isEmpty { remaining.append(queue.pop().name) }
+let remaining = queue.tasks.sorted { $0.precedes($1) }.map { $0.name }
 print("remaining: \(remaining.joined(separator: " "))")

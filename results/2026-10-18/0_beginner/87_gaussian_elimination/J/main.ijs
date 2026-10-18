@@ -1,9 +1,3 @@
-fixed =: 4 : 0
-  scale =. 10 ^ x
-  rounded =. (*y) * <. 0.5 + scale * |y
-  , (":x) 8!:2 rounded % scale
-)
-
 main =: 3 : 0
   systems =. (3 4$2 _1 3 7 4 1 _2 3 _3 5 1 _4);(4 5$1 3 _2 4 6 5 _2 1 3 _7 _2 4 6 _1 9 3 1 _4 2 5)
   for_system. i.2 do.
@@ -36,7 +30,7 @@ main =: 3 : 0
       solution =. (sum%(<i,i){a) i}solution
     end.
     smoutput 'system ',(":>:system),':'
-    for_i. i.n do. smoutput 'x',(":>:i),' = ',4 fixed i{solution end.
+    for_i. i.n do. smoutput 'x',(":>:i),' = ',, '4' 8!:2 i{solution end.
   end.
 )
 main ''

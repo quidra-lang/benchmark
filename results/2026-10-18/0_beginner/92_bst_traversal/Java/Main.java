@@ -1,5 +1,7 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
 
 public class Main {
     static class Node {

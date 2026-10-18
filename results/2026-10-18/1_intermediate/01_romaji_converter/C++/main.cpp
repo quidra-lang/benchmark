@@ -80,13 +80,15 @@ void initialize() {
     }
     const int contractedRows[] = {1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14};
     for (int r : contractedRows) {
-        for (const string &dan : vector<string>{"ya", "yu", "yo"}) {
+        for (const char *dan : {"ya", "yu", "yo"}) {
             string id = rows[r].substr(0, 1) + dan;
             table.push_back({id, rows[r], dan, {}, baseRows[r], r >= 10 ? (r == 14 ? 2 : 1) : 0});
         }
     }
     const vector<string> special = {"si", "ti", "tu", "hu", "zi", "di", "du", "wi", "we", "wo"};
     const vector<string> hepburn = {"shi", "chi", "tsu", "fu", "ji", "ji", "zu", "i", "e", "o"};
+    const vector<string> from = {"di", "du", "wi", "we", "wo", "dya", "dyu", "dyo"};
+    const vector<string> to = {"zi", "zu", "i", "e", "o", "zya", "zyu", "zyo"};
     for (Mora &m : table) {
         for (int s = 0; s < 5; ++s) {
             string spelling = m.id;
@@ -94,8 +96,6 @@ void initialize() {
             if (s <= 1 && k >= 0) spelling = hepburn[k];
             if (s == 4 && k >= 0 && k < 5) spelling = hepburn[k];
             if (s == 2) {
-                const vector<string> from = {"di", "du", "wi", "we", "wo", "dya", "dyu", "dyo"};
-                const vector<string> to = {"zi", "zu", "i", "e", "o", "zya", "zyu", "zyo"};
                 k = lookup(from, m.id);
                 if (k >= 0) spelling = to[k];
             }
@@ -187,7 +187,7 @@ void parse(Word &w, int system) {
                 id = N;
             } else if (letter(c) && !vowel(c) && c != 'n' && c2 == c && match(s, p + 1, system).first >= 0) {
                 id = Q;
-            } else if ((system <= 1 || system < 0) && c == 't' && s.compare(p + 1, 2, "ch") == 0 && match(s, p + 1, system).first >= 0) {
+            } else if (system <= 1 && c == 't' && s.compare(p + 1, 2, "ch") == 0 && match(s, p + 1, system).first >= 0) {
                 id = Q;
             } else columnError(w.start + p + 1, "unknown syllable");
         }
@@ -284,12 +284,12 @@ vector<Element> elements(const Word &w) {
     }
     return result;
 }
-vector<vector<int>> key(const Word &w) {
+std::array<vector<int>, 4> key(const Word &w) {
     string order = orderMode == 0
         ? "a i u e o ka ki ku ke ko sa si su se so ta ti tu te to na ni nu ne no ha hi hu he ho ma mi mu me mo ya yu yo ra ri ru re ro wa wi we wo N"
         : "i ro ha ni ho he to ti ri nu ru wo wa ka yo ta re so tu ne na ra mu u wi no o ku ya ma ke hu ko e te a sa ki yu me mi si we hi mo se su N";
     vector<string> rank = split(order);
-    vector<vector<int>> result(4);
+    std::array<vector<int>, 4> result;
     for (Element e : elements(w)) {
         result[0].push_back(lookup(rank, e.id == N ? "N" : table[e.id].id));
         result[1].push_back(e.voice);
@@ -330,7 +330,7 @@ bool glob(const vector<int> &pattern, const Word &w) {
         } else {
             for (int j = 1; j < int(dp.size()); ++j) next[j] = dp[j - 1] && (p == -1 || p == w.tokens[j - 1].id);
         }
-        dp = next;
+        dp.swap(next);
     }
     return dp.back();
 }
@@ -403,9 +403,8 @@ string process(const string &line) {
         for (int s = 0; s < 5; ++s) {
             string verdict = "canonical";
             try {
-                vector<Word> parsed = words;
-                for (Word &w : parsed) parse(w, s);
-                for (const Word &w : parsed) if (write(w, s, true) != w.original) verdict = "readable";
+                for (Word &w : words) parse(w, s);
+                for (const Word &w : words) if (write(w, s, true) != w.original) verdict = "readable";
             } catch (const std::runtime_error &) { verdict = "error"; }
             verdicts.push_back(systems[s] + "=" + verdict);
         }
@@ -415,7 +414,7 @@ string process(const string &line) {
     if (cmd == 2 || cmd == 3 || cmd == 4) {
         string result;
         int pos = 0;
-        for (Word w : words) {
+        for (Word &w : words) {
             result += text.substr(pos, w.start - pos);
             if (cmd == 4) {
                 for (int i = 0; i < int(w.tokens.size()); ++i) {
@@ -548,9 +547,8 @@ string process(const string &line) {
                 output.push_back(e.id == N ? "N" : table[e.id].id);
             }
         }
-        vector<int> reversed = kana;
-        std::reverse(reversed.begin(), reversed.end());
-        return string(kana == reversed ? "YES " : "NO ") + join(output, ".");
+        bool palindrome = std::equal(kana.begin(), kana.end(), kana.rbegin());
+        return string(palindrome ? "YES " : "NO ") + join(output, ".");
     }
     int previousTail = -1;
     for (int i = 0; i < int(words.size()); ++i) {

@@ -14,9 +14,7 @@ int main(void) {
         if (!shortest || len < (int) strlen(shortest))
             shortest = w;
     }
-    double avg = (double) total / count;
-    int q = (int)(avg * 100 + 0.5);
-    printf("words: %d\nlongest: %s\nshortest: %s\naverage length: %d.%02d\n", count, longest, shortest,
-        q / 100, q % 100);
+    printf("words: %d\nlongest: %s\nshortest: %s\naverage length: %.2f\n",
+           count, longest, shortest, (double)total / count);
     return 0;
 }

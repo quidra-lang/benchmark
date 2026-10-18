@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const lines = ['date,region,product,quantity,unit_price', '2026-04-01,north,notebook,10,200',
         '2026-04-01,east,marker,6,150', '2026-04-01,south,eraser,25,80', '2026-04-02,west,stapler,4,600',
         '2026-04-02,north,marker,8,150', '2026-04-02,east,notebook,9,200', '2026-04-03,south,stapler,3,600',
@@ -10,8 +7,9 @@ void main() {
     final regions = <String, int>{}, products = <String, int>{}, dates = <String, int>{};
     var total = 0;
     for (final line in lines.skip(1)) {
-        final f = line.split(','), quantity = int.parse(line.split(',')[3]), price = int.parse(line.split(',')[4]);
-        final sales = quantity * price;
+        final f = line.split(',');
+        final quantity = int.parse(f[3]);
+        final sales = quantity * int.parse(f[4]);
         total += sales;
         regions[f[1]] = (regions[f[1]] ?? 0) + sales;
         products[f[2]] = (products[f[2]] ?? 0) + quantity;
@@ -21,16 +19,11 @@ void main() {
         final c = regions[b]!.compareTo(regions[a]!);
         return c != 0 ? c : a.compareTo(b);
     }), productNames = products.keys.toList()..sort(), dateNames = dates.keys.toList()..sort();
-    out.writeln('total: $total');
+    print('total: $total');
     for (final name in regionNames)
-        out.writeln('$name: ${regions[name]}');
+        print('$name: ${regions[name]}');
     for (final name in productNames)
-        out.writeln('$name: ${products[name]}');
-    var best = dateNames.first;
-    for (final date in dateNames) {
-        if (dates[date]! > dates[best]!)
-            best = date;
-    }
-    out.writeln('best day: $best (${dates[best]})');
-    stdout.write(out);
+        print('$name: ${products[name]}');
+    final best = dateNames.reduce((a, b) => dates[a]! >= dates[b]! ? a : b);
+    print('best day: $best (${dates[best]})');
 }

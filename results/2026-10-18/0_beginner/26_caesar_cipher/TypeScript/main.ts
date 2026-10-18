@@ -1,4 +1,4 @@
-function caesar(text, shift) {
+function caesar(text: string, shift: number): string {
   return text.replace(/[A-Za-z]/g, char => {
     const base = char <= "Z" ? 65 : 97;
     return String.fromCharCode(base + (char.charCodeAt(0) - base + shift + 26) % 26);

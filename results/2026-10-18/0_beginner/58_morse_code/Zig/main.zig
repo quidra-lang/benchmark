@@ -49,8 +49,8 @@ pub fn main(init: std.process.Init) !void {
     var need_space = false;
     for (message) |c| {
         if (c == ' ') {
-            const part = try std.fmt.bufPrint(encoded[len..], " / ", .{});
-            len += part.len;
+            @memcpy(encoded[len..][0..3], " / ");
+            len += 3;
             need_space = false;
             continue;
         }
@@ -59,10 +59,8 @@ pub fn main(init: std.process.Init) !void {
             len += 1;
         }
         const index: usize = if (c >= 'A' and c <= 'Z') c - 'A' else 26 + c - '0';
-        for (codes[index]) |v| {
-            encoded[len] = v;
-            len += 1;
-        }
+        @memcpy(encoded[len..][0..codes[index].len], codes[index]);
+        len += codes[index].len;
         need_space = true;
     }
     try out.print("{s}\n", .{ encoded[0..len] });

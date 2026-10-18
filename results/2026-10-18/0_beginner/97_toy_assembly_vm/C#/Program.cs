@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Globalization;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
@@ -25,11 +23,21 @@ while (pc >= 0 && pc < program.Length) {
     else {
         int target = parts[1][0] - 'A', operand = Value(parts[2],registers);
         switch (parts[0]) {
-            case "SET": registers[target] = operand; break;
-            case "ADD": registers[target] += operand; break;
-            case "SUB": registers[target] -= operand; break;
-            case "MUL": registers[target] *= operand; break;
-            case "MOD": registers[target] %= operand; break;
+            case "SET":
+                registers[target] = operand;
+                break;
+            case "ADD":
+                registers[target] += operand;
+                break;
+            case "SUB":
+                registers[target] -= operand;
+                break;
+            case "MUL":
+                registers[target] *= operand;
+                break;
+            case "MOD":
+                registers[target] %= operand;
+                break;
         }
     }
     pc++;

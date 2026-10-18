@@ -1,3 +1,4 @@
+import re
 import sys
 
 
@@ -22,8 +23,7 @@ def rate_text(count, capacity):
 
 
 def course_word(word):
-    prefix, suffix = word[:-3], word[-3:]
-    return 2 <= len(prefix) <= 4 and all("A" <= char <= "Z" for char in prefix) and len(suffix) == 3 and all("0" <= char <= "9" for char in suffix)
+    return re.fullmatch(r"[A-Z]{2,4}[0-9]{3}", word) is not None
 
 
 def year_word(word):
@@ -74,23 +74,11 @@ def combine(kind, children):
 
 class PrerequisiteParser:
     def __init__(self, text):
-        self.tokens = []
+        self.tokens = re.findall(r"[A-Z0-9]+|[&|()]", text)
         self.position = 0
-        index = 0
-        while index < len(text):
-            if text[index] in "&|()":
-                self.tokens.append(text[index])
-                index += 1
-                continue
-            start = index
-            while index < len(text) and ("A" <= text[index] <= "Z" or "0" <= text[index] <= "9"):
-                index += 1
-            if start == index:
+        for token in self.tokens:
+            if token not in "&|()" and not (course_word(token) or year_word(token)):
                 raise ParseError()
-            word = text[start:index]
-            if not (course_word(word) or year_word(word)):
-                raise ParseError()
-            self.tokens.append(word)
 
     def peek(self):
         return self.tokens[self.position] if self.position < len(self.tokens) else None

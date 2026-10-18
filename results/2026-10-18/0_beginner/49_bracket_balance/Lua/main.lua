@@ -6,7 +6,10 @@ for _, text in ipairs(strings) do
         local c = text:sub(position,position)
         if matching[c] then stack[#stack+1] = c
         elseif c == ")" or c == "]" or c == "}" then
-            if #stack == 0 or matching[stack[#stack]] ~= c then error_index = position-1; break end
+            if #stack == 0 or matching[stack[#stack]] ~= c then
+                error_index = position-1
+                break
+            end
             table.remove(stack)
         end
     end

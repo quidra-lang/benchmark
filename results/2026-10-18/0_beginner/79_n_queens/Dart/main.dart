@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     List<int> ? first;
     for (var n = 4; n <= 8; n++) {
         final queens = List.filled(n, 0);
@@ -14,13 +11,8 @@ void main() {
                 return;
             }
             for (var col = 0; col < n; col++) {
-                var safe = true;
-                for (var r = 0; r < row; r++) {
-                    if (queens[r] == col || (queens[r] - col).abs() == row - r) {
-                        safe = false;
-                        break;
-                    }
-                }
+                final safe = queens.take(row).indexed.every((queen) =>
+                    queen.$2 != col && (queen.$2 - col).abs() != row - queen.$1);
                 if (safe) {
                     queens[row] = col;
                     solve(row + 1);
@@ -28,9 +20,8 @@ void main() {
             }
         }
         solve(0);
-        out.writeln('N=$n: $count solutions');
+        print('N=$n: $count solutions');
     }
     for (var r = 0; r < 8; r++)
-        out.writeln([for (var c = 0; c < 8; c++) first![r] == c ? 'Q' : '.'].join());
-    stdout.write(out);
+        print([for (var c = 0; c < 8; c++) first![r] == c ? 'Q' : '.'].join());
 }

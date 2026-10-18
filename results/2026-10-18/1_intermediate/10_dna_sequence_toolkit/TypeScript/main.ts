@@ -63,9 +63,7 @@ function frequencyOrder(table: Map<string, number>): string[] {
 
 function codons(s: string, frame: number): string[] {
   const strand = frame > 0 ? s : revcomp(s);
-  const result: string[] = [];
-  for (let i = Math.abs(frame) - 1; i + 2 < strand.length; i += 3) result.push(strand.slice(i, i + 3));
-  return result;
+  return strand.slice(Math.abs(frame) - 1).match(/.../g) ?? [];
 }
 
 function occurrences(s: string, motif: string): number[] {
@@ -357,13 +355,8 @@ class Toolkit {
     const amount = gc(s);
     const tm = temperature(s);
     const clamp = gc(s.slice(-5));
-    let run = 1;
-    let longestRun = 1;
+    const longestRun = Math.max(...s.match(/(.)\1*/g)!.map(run => run.length));
     let repeated = 0;
-    for (let i = 1; i < n; i++) {
-      run = s[i] === s[i - 1] ? run + 1 : 1;
-      longestRun = Math.max(longestRun, run);
-    }
     for (let i = 0; i + 1 < n; i++) {
       if (s[i] !== s[i + 1]) repeated = Math.max(repeated, repeatCount(s, i, 2));
     }
@@ -453,10 +446,7 @@ class Toolkit {
       const merged = fragments[chosenI] + fragments[chosenJ].slice(best);
       fragments = fragments.flatMap((s, i) => i === chosenI ? [merged] : i === chosenJ || merged.includes(s) ? [] : [s]);
     }
-    let longest = fragments[0];
-    for (const s of fragments) {
-      if (s.length > longest.length) longest = s;
-    }
+    const longest = fragments.reduce((best, s) => s.length > best.length ? s : best);
     const registration = this.store(name, longest);
     this.emit("contigs", fragments.length);
     for (const s of fragments) this.emit(s.length, s);

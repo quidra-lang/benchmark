@@ -4,6 +4,7 @@ import (
     "bufio"
     "fmt"
     "os"
+    "slices"
     "sort"
     "strconv"
     "strings"
@@ -64,12 +65,6 @@ func fail(message string) { panic(message) }
 func number(s string) int {
     n, _ := strconv.Atoi(s)
     return n
-}
-func index(items []string, s string) int {
-    for i, value := range items {
-        if value == s { return i }
-    }
-    return -1
 }
 func pairText(p [2]int, first int) string { return fmt.Sprintf("%d-%d", p[first], p[1-first]) }
 func initializeDarts() {
@@ -442,7 +437,7 @@ func result(m *match) string {
 }
 func createMatch(a []string) {
     if _, exists := matches[a[1]]; exists { fail("duplicate match") }
-    m := &match{id: a[1], sport: index([]string{"TENNIS", "TABLETENNIS", "BADMINTON", "VOLLEYBALL", "BOWLING", "DARTS"}, a[2]), sets: 3, games: 5, start: 501, legs: 1}
+    m := &match{id: a[1], sport: slices.Index([]string{"TENNIS", "TABLETENNIS", "BADMINTON", "VOLLEYBALL", "BOWLING", "DARTS"}, a[2]), sets: 3, games: 5, start: 501, legs: 1}
     m.names[0] = a[3]
     if m.sport != bowling { m.names[1] = a[4] }
     if m.sport == dartsSport { m.sets = 1 }
@@ -463,16 +458,16 @@ func createMatch(a []string) {
         pair := strings.Split(item, "=")
         if len(pair) != 2 { fail("invalid option") }
         values, exists := allowed[pair[0]]
-        if !exists || seen[pair[0]] || index(values, pair[1]) < 0 { fail("invalid option") }
+        if !exists || seen[pair[0]] || slices.Index(values, pair[1]) < 0 { fail("invalid option") }
         seen[pair[0]] = true
         switch pair[0] {
-        case "FIRST": m.first = index(values, pair[1])
+        case "FIRST": m.first = slices.Index(values, pair[1])
         case "SETS": m.sets = number(pair[1])
         case "GAMES": m.games = number(pair[1])
         case "START": m.start = number(pair[1])
         case "LEGS": m.legs = number(pair[1])
         case "DEUCE": m.noAd = pair[1] == "NOAD"
-        case "FINAL": m.final = index(values, pair[1])
+        case "FINAL": m.final = slices.Index(values, pair[1])
         }
     }
     switch m.sport {
@@ -554,8 +549,7 @@ func execute(a []string) []string {
             value = number(a[i+2])
             if value > describeBowling(m.state.(bowlingState)).standing { fail("too many pins") }
         case "THROW":
-            value = -1
-            for j, dart := range dartKinds { if dart.name == a[i+2] { value = j } }
+            value = slices.IndexFunc(dartKinds, func(d dart) bool { return d.name == a[i+2] })
             if value < 0 { fail("invalid dart") }
         case "SUB", "TIMEOUT":
             if a[2] == "B" { side = 1 }
@@ -565,9 +559,9 @@ func execute(a []string) []string {
             } else {
                 leaving := number(a[3])
                 value = number(a[4])
-                for j, player := range s.lineup[side] { if player == leaving { position = j } }
+                position = slices.Index(s.lineup[side][:], leaving)
                 if position < 0 { fail("player not on court") }
-                for _, player := range s.lineup[side] { if player == value { fail("player already on court") } }
+                if slices.Contains(s.lineup[side][:], value) { fail("player already on court") }
                 if s.substitutions[side] >= 6 { fail("no substitutions left") }
             }
         }

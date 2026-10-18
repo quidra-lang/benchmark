@@ -8,10 +8,10 @@ int value(const std::string &token, const std::array<int, 4> &registers) {
 }
 
 int main() {
-    const std::array<std::string, 17> program = {"SET A 1", "SET B 1", "SET D 8", "MUL A B", "PRINT A",
+    std::array<std::string, 17> program = {"SET A 1", "SET B 1", "SET D 8", "MUL A B", "PRINT A",
         "ADD B 1", "SUB D 1", "JNZ D -4", "SET A 1071", "SET B 462", "SET C A", "MOD C B", "SET A B", "SET B C",
         "JNZ B -4", "PRINT A", "HALT"};
-    std::array<int, 4> registers {};
+    std::array<int, 4> registers{};
     int pc = 0, executed = 0;
     while (pc >= 0 && pc < 17) {
         std::istringstream input(program[pc]);

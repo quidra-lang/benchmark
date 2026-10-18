@@ -180,12 +180,8 @@ function greedy_transfers(names,original)
     remaining = Dict(name=>original[name] for name in names)
     output = Tuple{String,String,Int}[]
     while any(remaining[name] < 0 for name in names)
-        sender = names[1]
-        receiver = names[1]
-        for name in names
-            remaining[name] < remaining[sender] && (sender = name)
-            remaining[name] > remaining[receiver] && (receiver = name)
-        end
+        sender = argmin(name -> remaining[name],names)
+        receiver = argmax(name -> remaining[name],names)
         amount = min(-remaining[sender],remaining[receiver])
         push!(output,(sender,receiver,amount))
         remaining[sender] += amount
@@ -249,8 +245,7 @@ function advance_day!(state,day)
     while true
         due = [expense for expense in values(state.expenses) if expense.interval > 0 && expense.next_day <= day]
         isempty(due) && break
-        sort!(due;by=e -> (e.next_day,e.record))
-        template = due[1]
+        template = argmin(e -> (e.next_day,e.record),due)
         active = all(state.members[name][1] for name in expense_names(template))
         if !active || converted(state,template.amount,template.currency) == 0
             template.interval = 0
@@ -373,9 +368,9 @@ function ledger_summary(command,args,line,state)
         cells = [[a == b ? "-" : amount_text(max(0,net_debt(table,a,b))) for b in active] for a in active]
         left = maximum(length,active)
         width = max(left,maximum(length(cell) for row in cells for cell in row))
-        push!(output,repeat(" ",left)*join(["  "*lpad(name,width) for name in active]))
+        push!(output,repeat(" ",left)*join("  "*lpad(name,width) for name in active))
         for (i,name) in enumerate(active)
-            push!(output,rpad(name,left)*join(["  "*lpad(cell,width) for cell in cells[i]]))
+            push!(output,rpad(name,left)*join("  "*lpad(cell,width) for cell in cells[i]))
         end
     elseif command == "CATEGORY"
         totals = category_totals(state)

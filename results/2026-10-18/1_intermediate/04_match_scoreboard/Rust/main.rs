@@ -333,9 +333,9 @@ impl Match {
         }
         let over = self.finished();
         let server = match self.state { State::Darts(s) => s.server, State::Rally(s) => rally_server(&self.config, &s), _ => unreachable!() };
-        let mut names = self.names.clone();
-        if !over { names[server].push('*'); }
-        let mut line = format!("{}: {} vs {}", self.id, names[0], names[1]);
+        let mut line = format!("{}: {}{} vs {}{}", self.id, self.names[0],
+            if !over && server == 0 { "*" } else { "" }, self.names[1],
+            if !over && server == 1 { "*" } else { "" });
         match self.state {
             State::Darts(s) => {
                 line.push_str(&format!(" sets {} legs {} score {}", pair_text(s.sets, 0), pair_text(s.legs, 0), pair_text(s.remaining, 0)));

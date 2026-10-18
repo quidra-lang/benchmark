@@ -45,9 +45,7 @@ is_vowel <- function(id) id %in% c("a","i","u","e","o")
 
 last_letter <- function(text) substr(text,nchar(text),nchar(text))
 
-character_at <- function(text,position) {
-    if (position > nchar(text)) "" else substr(text,position,position)
-}
+character_at <- function(text,position) substr(text,position,position)
 
 spelling <- function(system,id) {
     if (system %in% c("HEPBURN","TRADITIONAL","WAPURO")) {
@@ -87,12 +85,8 @@ for (system in c(systems,"NORMAL")) {
 match_syllable <- function(word,position,system) {
     if (position > nchar(word)) return(NULL)
     entries <- readings[[system]]
-    for (text in names(entries)) {
-        if (startsWith(substring(word,position),text)) {
-            return(list(text=text,id=entries[[text]]))
-        }
-    }
-    NULL
+    index <- match(TRUE,startsWith(substring(word,position),names(entries)))
+    if (is.na(index)) NULL else list(text=names(entries)[index],id=entries[[index]])
 }
 
 parse_word <- function(text,start,system) {

@@ -7,7 +7,10 @@ for (const text of strings) {
     const char = text[i];
     if ("([{".includes(char)) stack.push(char);
     else if (matching.has(char)) {
-      if (stack.length === 0 || stack.at(-1) !== matching.get(char)) { error = i; break; }
+      if (stack.length === 0 || stack.at(-1) !== matching.get(char)) {
+        error = i;
+        break;
+      }
       stack.pop();
     }
   }

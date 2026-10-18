@@ -1,23 +1,7 @@
 const std = @import("std");
 
 const EvalError = error{ DivisionByZero, UndefinedVariable };
-const Table = struct {
-    names: [16][]const u8 = undefined,
-    values: [16]i64 = undefined,
-    len: usize = 0,
-
-    fn set(self: *Table, name: []const u8, v: i64) void {
-        for (self.names[0..self.len], 0..) |n, i| {
-            if (std.mem.eql(u8, n, name)) {
-                self.values[i] = v;
-                return;
-            }
-        }
-        self.names[self.len] = name;
-        self.values[self.len] = v;
-        self.len += 1;
-    }
-};
+const Table = std.StringHashMapUnmanaged(i64);
 
 const Parser = struct {
     tokens: []const []const u8,
@@ -70,12 +54,10 @@ const Parser = struct {
         }
         const token = self.tokens[self.position];
         self.position += 1;
-        if (token[0] >= '0' and token[0] <= '9')
+        if (std.ascii.isDigit(token[0]))
             return std.fmt.parseInt(i64, token, 10) catch unreachable;
-        for (self.variables.names[0..self.variables.len], 0..) |name, i| {
-            if (std.mem.eql(u8, name, token))
-                return self.variables.values[i];
-        }
+        if (self.variables.get(token)) |value|
+            return value;
         self.missing = token;
         return error.UndefinedVariable;
     }
@@ -96,7 +78,8 @@ pub fn main(init: std.process.Init) !void {
         "width = (width+3)*-(2-4)",
         "width * shift - height"
     };
-    var variables = Table{};
+    var variables: Table = .empty;
+    defer variables.deinit(std.heap.page_allocator);
     for (lines) |line| {
         var tokens: [128][]const u8 = undefined;
         var len: usize = 0;
@@ -107,14 +90,14 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             }
             const start = i;
-            const digit = line[i] >= '0' and line[i] <= '9';
-            const letter = line[i] >= 'a' and line[i] <= 'z';
+            const digit = std.ascii.isDigit(line[i]);
+            const letter = std.ascii.isLower(line[i]);
             i += 1;
             if (digit) {
-                while (i < line.len and line[i] >= '0' and line[i] <= '9')
+                while (i < line.len and std.ascii.isDigit(line[i]))
                     i += 1;
             } else if (letter) {
-                while (i < line.len and line[i] >= 'a' and line[i] <= 'z')
+                while (i < line.len and std.ascii.isLower(line[i]))
                     i += 1;
             }
             tokens[len] = line[start..i];
@@ -134,7 +117,7 @@ pub fn main(init: std.process.Init) !void {
             continue;
         };
         if (assignment) {
-            variables.set(tokens[0], result);
+            try variables.put(std.heap.page_allocator, tokens[0], result);
             try out.print("{s} = {d}\n", .{ tokens[0], result });
         } else {
             try out.print("{d}\n", .{ result });

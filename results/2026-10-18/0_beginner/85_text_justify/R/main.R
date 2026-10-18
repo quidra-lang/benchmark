@@ -15,15 +15,14 @@ lines[[length(lines)+1]] <- current
 for (number in seq_along(lines)) {
     words <- lines[[number]]
     if (number == length(lines) || length(words) == 1) {
-        line <- paste(words,collapse=" ")
-        line <- paste0(line,strrep(" ",30-nchar(line)))
+        line <- sprintf("%-30s",paste(words,collapse=" "))
     } else {
         spaces <- 30-sum(nchar(words))
         gaps <- length(words)-1
         base <- spaces %/% gaps
         extra <- spaces %% gaps
-        line <- words[1]
-        for (i in seq_len(gaps)) line <- paste0(line,strrep(" ",base+as.integer(i <= extra)),words[i+1])
+        padding <- strrep(" ",c(base + (seq_len(gaps) <= extra),0))
+        line <- paste0(words,padding,collapse="")
     }
     cat("|",line,"|\n",sep="")
 }

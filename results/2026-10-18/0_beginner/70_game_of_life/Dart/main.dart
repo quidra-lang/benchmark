@@ -1,14 +1,11 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const initial = ['.#......', '..#.....', '###.....', '........', '........', '........', '.....###',
         '........'];
     var board = [for (final row in initial)[for (final c in row.split('')) c == '#']];
     for (var g = 0; g <= 4; g++) {
-        out.writeln('generation $g');
+        print('generation $g');
         for (final row in board)
-            out.writeln(row.map((v) => v ? '#' : '.').join());
+            print(row.map((v) => v ? '#' : '.').join());
         if (g == 4)
             break;
         final next = List.generate(8, (_) => List.filled(8, false));
@@ -29,6 +26,5 @@ void main() {
         }
         board = next;
     }
-    out.writeln('alive: ${board.expand((row)=>row).where((v)=>v).length}');
-    stdout.write(out);
+    print('alive: ${board.expand((row)=>row).where((v)=>v).length}');
 }

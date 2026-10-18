@@ -4,11 +4,7 @@ fn main() {
     let dc = [0, 1, 0, -1];
     let (mut r, mut c, mut d) = (5_i32, 5_i32, 0);
     for _ in 0..300 {
-        d = (d + if black[r as usize][c as usize] {
-            3
-        } else {
-            1
-        }) % 4;
+        d = (d + if black[r as usize][c as usize] { 3 } else { 1 }) % 4;
         black[r as usize][c as usize] = !black[r as usize][c as usize];
         r = (r + dr[d] + 11) % 11;
         c = (c + dc[d] + 11) % 11;

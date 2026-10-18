@@ -1,3 +1,4 @@
+#include <cctype>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -9,7 +10,7 @@ int main() {
         std::vector<std::string> words;
         std::string word;
         for (char c : id) {
-            if (c == '_' || c == '-' || (c >= 'A' && c <= 'Z')) {
+            if (c == '_' || c == '-' || std::isupper(static_cast<unsigned char>(c))) {
                 if (!word.empty()) {
                     words.push_back(word);
                     word.clear();
@@ -17,7 +18,7 @@ int main() {
                 if (c == '_' || c == '-')
                     continue;
             }
-            word += c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+            word += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         }
         if (!word.empty())
             words.push_back(word);
@@ -30,7 +31,7 @@ int main() {
             snake += words[i];
             kebab += words[i];
             std::string cap = words[i];
-            cap[0] = static_cast<char>(cap[0] - 'a' + 'A');
+            cap[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(cap[0])));
             pascal += cap;
             camel += i ? cap : words[i];
         }

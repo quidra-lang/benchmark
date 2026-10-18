@@ -103,10 +103,7 @@ function create_match(array $tokens): array
     } else {
         $firstOption = 5;
     }
-    $options = [];
-    foreach (OPTION_RULES[$sport] as $key => $values) {
-        $options[$key] = $values[0];
-    }
+    $options = array_map(fn($values) => $values[0], OPTION_RULES[$sport]);
     $seen = [];
     foreach (array_slice($tokens, $firstOption) as $token) {
         $parts = explode('=', $token);
@@ -341,10 +338,7 @@ function bowling_scores(array $s): array
         if ($rolls === []) {
             continue;
         }
-        $later = [];
-        for ($i = $frame + 1; $i <= 10; ++$i) {
-            $later = [...$later, ...$s['frames'][$i]];
-        }
+        $later = array_merge(...array_slice($s['frames'], $frame));
         if ($frame === 10) {
             if ($s['winner'] !== 0) {
                 $scores[$frame] = array_sum($rolls);
@@ -675,14 +669,9 @@ function stats_lines(array $m): array
     $s = $m['state'];
     $stats = $s['stats'];
     if ($m['sport'] === 'BOWLING') {
-        $marks = [];
-        $open = 0;
-        foreach ($s['frames'] as $frame => $rolls) {
-            $marks = [...$marks, ...$s['marks'][$frame]];
-            if (count($rolls) >= 2 && $rolls[0] !== 10 && $rolls[0] + $rolls[1] < 10) {
-                ++$open;
-            }
-        }
+        $marks = array_merge(...$s['marks']);
+        $open = count(array_filter($s['frames'], fn($rolls) =>
+            count($rolls) >= 2 && $rolls[0] !== 10 && $rolls[0] + $rolls[1] < 10));
         $future = $s;
         while ($future['winner'] === 0) {
             roll_event($future, $future['standing']);

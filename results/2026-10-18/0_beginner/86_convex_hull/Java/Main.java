@@ -1,8 +1,9 @@
-import java.util.*;
-import java.math.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
 
 public class Main {
-    static String fixed(double x, int places) { return BigDecimal.valueOf(x).setScale(places, RoundingMode.HALF_UP).toPlainString(); }
 
     record Point(int x, int y) {}
     static int cross(Point o, Point a, Point b) {
@@ -36,9 +37,7 @@ public class Main {
             new Point(-6,3)));
         points.sort(Comparator.comparingInt(Point::x).thenComparingInt(Point::y));
         List<Point> lower = chain(points);
-        List<Point> reverse = new ArrayList<>(points);
-        Collections.reverse(reverse);
-        List<Point> upper = chain(reverse);
+        List<Point> upper = chain(points.reversed());
         lower.removeLast();
         upper.removeLast();
         lower.addAll(upper);
@@ -49,6 +48,6 @@ public class Main {
             System.out.println("(" + a.x() + ", " + a.y() + ")");
             crossSum += a.x() * b.y() - b.x() * a.y();
         }
-        System.out.println("area: " + fixed(crossSum / 2.0,1));
+        System.out.printf(Locale.ROOT, "area: %.1f%n", crossSum / 2.0);
     }
 }

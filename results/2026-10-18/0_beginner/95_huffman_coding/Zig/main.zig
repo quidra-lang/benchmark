@@ -8,30 +8,18 @@ const Node = struct {
     right: ?usize = null
 };
 
-fn before(a: Node, b: Node) bool {
-    return if (a.weight != b.weight) a.weight < b.weight else a.minimum < b.minimum;
-}
-
-fn take(active: *[64]usize, len: *usize, nodes: *const [64]Node) usize {
-    var best: usize = 0;
-    for (1..len.*) |i| {
-        if (before(nodes[active[i]], nodes[active[best]]))
-            best = i;
-    }
-    const result = active[best];
-    var i = best;
-    while (i + 1 < len.*) : (i += 1)
-        active[i] = active[i + 1];
-    len.* -= 1;
-    return result;
+fn compare(nodes: *const [64]Node, a: usize, b: usize) std.math.Order {
+    return if (nodes[a].weight != nodes[b].weight)
+        std.math.order(nodes[a].weight, nodes[b].weight)
+    else
+        std.math.order(nodes[a].minimum, nodes[b].minimum);
 }
 
 fn assign(nodes: *const [64]Node, index: usize, path: *[64]u8, depth: usize, codes: *[128][64]u8,
     lengths: *[128]usize) void {
     const node = nodes[index];
     if (node.symbol) |c| {
-        for (path[0..depth], 0..) |bit, i|
-            codes[c][i] = bit;
+        @memcpy(codes[c][0..depth], path[0..depth]);
         lengths[c] = depth;
         return;
     }
@@ -51,33 +39,31 @@ pub fn main(init: std.process.Init) !void {
         frequency[c] += 1;
     var nodes: [64]Node = undefined;
     var nlen: usize = 0;
-    var active: [64]usize = undefined;
-    var alen: usize = 0;
+    var active = std.PriorityQueue(usize, *const [64]Node, compare).initContext(&nodes);
+    defer active.deinit(std.heap.page_allocator);
     for (frequency, 0..) |freq, c| {
         if (freq > 0) {
             nodes[nlen] = .{ .weight = freq, .minimum = @intCast(c), .symbol = @intCast(c) };
-            active[alen] = nlen;
-            alen += 1;
+            try active.push(std.heap.page_allocator, nlen);
             nlen += 1;
         }
     }
-    while (alen > 1) {
-        const left = take(&active, &alen, &nodes);
-        const right = take(&active, &alen, &nodes);
+    while (active.count() > 1) {
+        const left = active.pop().?;
+        const right = active.pop().?;
         nodes[nlen] = .{
             .weight = nodes[left].weight + nodes[right].weight,
             .minimum = @min(nodes[left].minimum, nodes[right].minimum),
             .left = left,
             .right = right
         };
-        active[alen] = nlen;
-        alen += 1;
+        try active.push(std.heap.page_allocator, nlen);
         nlen += 1;
     }
     var codes: [128][64]u8 = undefined;
     var lengths = [_]usize{ 0 } ** 128;
     var path: [64]u8 = undefined;
-    assign(&nodes, active[0], &path, 0, &codes, &lengths);
+    assign(&nodes, active.pop().?, &path, 0, &codes, &lengths);
     var bits: usize = 0;
     for (frequency, 0..) |freq, c| {
         if (freq > 0) {

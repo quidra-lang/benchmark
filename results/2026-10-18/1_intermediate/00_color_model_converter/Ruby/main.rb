@@ -102,7 +102,7 @@ class ColorConverter
   end
 
   def round_ratio(numerator, denominator)
-    round_exact(Rational(numerator, denominator))
+    (2 * numerator + denominator) / (2 * denominator)
   end
 
   def away_ratio(numerator, denominator)
@@ -110,7 +110,7 @@ class ColorConverter
   end
 
   def clamp(value)
-    [[value, 0].max, 255].min
+    value.clamp(0, 255)
   end
 
   def distance(a, b)
@@ -357,15 +357,7 @@ class ColorConverter
     20.times do
       groups = Array.new(count) { [] }
       colors.each do |color|
-        selected = 0
-        best = distance(color, representatives[0])
-        (1...count).each do |j|
-          value = distance(color, representatives[j])
-          if value < best
-            selected = j
-            best = value
-          end
-        end
+        selected = (0...count).min_by { |j| distance(color, representatives[j]) }
         groups[selected] << color
       end
       following = groups.each_with_index.map do |group, j|
@@ -387,15 +379,7 @@ class ColorConverter
     entries = BUILTINS.first(16)
     colors.each do |color|
       adjusted = color.each_with_index.map { |value, component| clamp(value + error[component]) }
-      selected = 0
-      best = distance(adjusted, entries[0][1])
-      (1...16).each do |j|
-        value = distance(adjusted, entries[j][1])
-        if value < best
-          selected = j
-          best = value
-        end
-      end
+      selected = (0...16).min_by { |j| distance(adjusted, entries[j][1]) }
       names << entries[selected][0]
       error = adjusted.each_with_index.map { |value, component| value - entries[selected][1][component] }
     end
@@ -468,15 +452,8 @@ class ColorConverter
       format('0x%04X', value)
     when 'ANSI'
       color = color_argument(args[0])
-      selected = 16
-      best = distance(color, ansi_color(16))
-      (17..255).each do |code|
-        value = distance(color, ansi_color(code))
-        if value < best
-          selected = code
-          best = value
-        end
-      end
+      selected = (16..255).min_by { |code| distance(color, ansi_color(code)) }
+      best = distance(color, ansi_color(selected))
       "#{selected} #{hex(ansi_color(selected))} #{best}"
     when 'WEBSAFE'
       hex(color_argument(args[0]).map { |value| 51 * round_ratio(value, 51) })
@@ -562,15 +539,8 @@ class ColorConverter
       hex(from_hsl(h, s, l))
     when 'NEAREST'
       color = color_argument(args[0])
-      selected = table.first
+      selected = table.min_by { |entry| distance(color, entry[1]) }
       best = distance(color, selected[1])
-      table.drop(1).each do |entry|
-        value = distance(color, entry[1])
-        if value < best
-          selected = entry
-          best = value
-        end
-      end
       "#{selected[0]} #{hex(selected[1])} #{best}"
     when 'DISTANCE'
       a, b = color_argument(args[0]), color_argument(args[1])
@@ -585,15 +555,8 @@ class ColorConverter
       "#{hex(result)} #{contrast_text(contrast(result, background))}"
     when 'BEST'
       background, *colors = args.map { |token| color_argument(token) }
-      chosen = colors.first
+      chosen = colors.max_by { |color| contrast(color, background)[0] }
       info = contrast(chosen, background)
-      colors.drop(1).each do |color|
-        candidate = contrast(color, background)
-        if candidate[0] > info[0]
-          chosen = color
-          info = candidate
-        end
-      end
       "#{hex(chosen)} #{contrast_text(info)}"
     when 'DESCRIBE'
       describe(color_argument(args[0]))

@@ -510,10 +510,7 @@ local function execute(command, raw, registry)
         if #registry.order == 0 then
             return "NONE"
         end
-        local names, output = {}, {}
-        for i, name in ipairs(registry.order) do
-            names[i] = name
-        end
+        local names, output = {table.unpack(registry.order)}, {}
         table.sort(names)
         for i, name in ipairs(names) do
             output[i] = name .. "=" .. hex_color(registry.colors[name])
@@ -521,10 +518,7 @@ local function execute(command, raw, registry)
         return table.concat(output, " ")
     elseif command == "PARSE" or command == "NEAREST" then
         local color = args[1]
-        local names, colors = {}, {}
-        for i, name in ipairs(builtin_names) do
-            names[i], colors[i] = name, builtin_colors[i]
-        end
+        local names, colors = {table.unpack(builtin_names)}, {table.unpack(builtin_colors)}
         for _, name in ipairs(registry.order) do
             names[#names + 1] = name
             colors[#colors + 1] = registry.colors[name]
@@ -869,10 +863,7 @@ local function execute(command, raw, registry)
         return color_sequence(output)
     elseif command == "DITHER" then
         local error_color = {0, 0, 0}
-        local colors, output = {}, {}
-        for i = 1, 16 do
-            colors[i] = builtin_colors[i]
-        end
+        local colors, output = {table.unpack(builtin_colors,1,16)}, {}
         for _, color in ipairs(args[1]) do
             local adjusted = {}
             for j = 1, 3 do

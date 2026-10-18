@@ -6,10 +6,16 @@ main =: 3 : 0
     start =. beststart =. bestend =. 0
     for_i. >:i.<:#values do.
       value =. i{values
-      if. value>current+value do. current =. value [ start =. i
+      if. value>current+value do.
+        current =. value
+        start =. i
       else. current =. current+value
       end.
-      if. current>best do. best =. current [ beststart =. start [ bestend =. i end.
+      if. current>best do.
+        best =. current
+        beststart =. start
+        bestend =. i
+      end.
     end.
     smoutput 'max sum ',(":best),' at [',(":beststart),', ',(":bestend),']'
   end.

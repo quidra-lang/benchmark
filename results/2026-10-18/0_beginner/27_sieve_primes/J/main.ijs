@@ -3,9 +3,8 @@ main =: 3 : 0
   prime =. 0 (0 1)}prime
   for_p. 2+i.199 do.
     if. (p{prime) *. (p*p)<:200 do.
-      for_multiple. (p*p) + p * i. >: <. (200-p*p)%p do.
-        prime =. 0 multiple}prime
-      end.
+      multiples =. (p*p) + p * i. >: <. (200-p*p)%p
+      prime =. 0 multiples}prime
     end.
   end.
   primes =. I.prime

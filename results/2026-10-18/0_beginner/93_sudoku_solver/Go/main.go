@@ -1,11 +1,9 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
-func solve(board * [9][9]int, placements *uint64) bool {
-	row, col := - 1, -1
+func solve(board *[9][9]int, placements *uint64) bool {
+	row, col := -1, -1
 	for r := 0; r < 9 && row < 0; r++ {
 		for c := 0; c < 9; c++ {
 			if board[r][c] == 0 {

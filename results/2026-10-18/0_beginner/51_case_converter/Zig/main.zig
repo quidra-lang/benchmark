@@ -14,8 +14,7 @@ pub fn main(init: std.process.Init) !void {
     };
     for (identifiers) |id| {
         var lower: [100]u8 = undefined;
-        for (id, 0..) |c, i|
-            lower[i] = std.ascii.toLower(c);
+        _ = std.ascii.lowerString(lower[0..id.len], id);
         var words: [10][]const u8 = undefined;
         var count: usize = 0;
         var start: usize = 0;
@@ -26,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
                     count += 1;
                 }
                 start = i + 1;
-            } else if (c >= 'A' and c <= 'Z' and i > start) {
+            } else if (std.ascii.isUpper(c) and i > start) {
                 words[count] = lower[start..i];
                 count += 1;
                 start = i;

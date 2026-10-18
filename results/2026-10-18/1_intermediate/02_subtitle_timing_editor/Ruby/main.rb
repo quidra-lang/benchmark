@@ -572,17 +572,9 @@ class Editor
             end
             line = line.strip
           else
-            p = 0
-            while p < original.length
-              close = original[p] == "[" ? "]" : original[p] == "(" ? ")" : nil
-              ending = close && original.index(close, p + 1)
-              if ending
-                segments += 1
-                p = ending + 1
-              else
-                line << original[p]
-                p += 1
-              end
+            line = original.gsub(/\[.*?\]|\(.*?\)/) do
+              segments += 1
+              ""
             end
             line = line.gsub(/ +/, " ").strip
             prefix = line.start_with?("- ") ? "- " : ""

@@ -25,10 +25,8 @@ int main(void) {
     for (int i = 0; i < 6; i++) {
         if (i == 0 || students[i].total != students[i - 1].total)
             rank = i + 1;
-        double avg = students[i].total / 3.0;
-        int q = (int)(avg * 100 + 0.5);
-        printf("%d. %s total=%d average=%d.%02d\n", rank, students[i].name, students[i].total, q / 100,
-            q % 100);
+        printf("%d. %s total=%d average=%.2f\n",
+               rank, students[i].name, students[i].total, students[i].total / 3.0);
     }
     return 0;
 }

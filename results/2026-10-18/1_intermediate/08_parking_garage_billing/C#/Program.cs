@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Globalization;
 
 class Program {
@@ -10,10 +9,8 @@ class Program {
     static readonly int[][] PREFS={new[]{0,1,2},new[]{1,2},new[]{3,1,2},new[]{2},new[]{2}};
     class Fault  : Exception { public Fault(string message) : base(message) {} }
     static void error(bool condition, string message) { if (condition) throw new Fault(message); }
-    static int index(string[] values, string value) { return Array.IndexOf(values,value); }
-    static string two(int n) { return (n<10 ? "0" : "")+n; }
-    static string time(int n) { return (n/1440+1)+"-"+two(n/60%24)+":"+two(n%60); }
-    static string duration(int n) { return n/60+":"+two(n%60); }
+    static string time(int n) => $"{n/1440+1}-{n/60%24:D2}:{n%60:D2}";
+    static string duration(int n) => $"{n/60}:{n%60:D2}";
     static string tenths(int n) { return n/10+"."+n%10; }
     class Spot {
         public int level, number, kind, order;
@@ -55,9 +52,7 @@ class Program {
         public int[][] stats=Enumerable.Range(0,5).Select(_ => new int[9]).ToArray();
         public Dictionary<int,int[][]> days=new();
         public List<string> output;
-        public void emit(string s) { output.Add(s); }
-        public int[][] daily(int date) { return dailyData(date); }
-        int[][] dailyData(int date) {
+        public int[][] daily(int date) {
             if (!days.TryGetValue(date,out int[][] data)) {
                 data=Enumerable.Range(0,5).Select(_ => new int[4]).ToArray();
                 days[date]=data;
@@ -88,12 +83,13 @@ class Program {
                 foreach (List<Spot> level in levels) {
                     for (int i=0;i+2<level.Count;i++) {
                         List<Spot> triple=level.GetRange(i,3);
-                        if (triple.All(s => s.kind==2 && s.free())) return triple.ToList();
+                        if (triple.All(s => s.kind==2 && s.free())) return triple;
                     }
                 }
             } else {
                 foreach (int wanted in PREFS[kind]) {
-                    foreach (Spot s in spots) if (s.kind==wanted && s.free()) return new List<Spot>{s};
+                    Spot first=spots.FirstOrDefault(s => s.kind==wanted && s.free());
+                    if (first!=null) return new List<Spot>{first};
                 }
             }
             return null;
@@ -121,7 +117,7 @@ class Program {
                 if (now-w.joined>=30) {
                     queue.Remove(w);
                     refuse(w.kind,w.joined+30);
-                    emit("GIVEUP "+w.plate+" "+TYPES[w.kind]+" "+time(w.joined+30));
+                    output.Add("GIVEUP "+w.plate+" "+TYPES[w.kind]+" "+time(w.joined+30));
                 }
             }
         }
@@ -131,7 +127,7 @@ class Program {
                 if (assigned!=null) {
                     queue.Remove(w);
                     Vehicle v=park(w.plate,w.kind,assigned);
-                    emit("ADMIT "+v.plate+" "+TYPES[v.kind]+" "+v.location()+" waited "+duration(now-w.joined));
+                    output.Add("ADMIT "+v.plate+" "+TYPES[v.kind]+" "+v.location()+" waited "+duration(now-w.joined));
                 }
             }
         }
@@ -169,7 +165,7 @@ class Program {
             free(v);
             v.spots=target;
             occupy(v);
-            emit("MOVE "+v.plate+" "+old+" -> "+v.location());
+            output.Add("MOVE "+v.plate+" "+old+" -> "+v.location());
         }
         public int[] occupancy(List<Spot> target) {
             int[] result=new int[9];
@@ -192,13 +188,7 @@ class Program {
             return label+" entries "+a[0]+" exits "+a[1]+" refused "+a[2]+" avg_stay "+tenths(a[1]==0 ? 0 : a[3]*10/a[1]);
         }
         public string dailyLine(string label, int[] a) { return label+" entries "+a[0]+" exits "+a[1]+" refused "+a[2]+" revenue "+a[3]; }
-        public int[] sum(int[][] a, int width) {
-            int[] result=new int[width];
-            foreach (int[] row in a) {
-                for (int i=0;i<width;i++) result[i]+=row[i];
-            }
-            return result;
-        }
+        public int[] sum(int[][] a, int width) => Enumerable.Range(0,width).Select(i => a.Sum(row => row[i])).ToArray();
         public void execute(string[] t) {
             bool trigger=false;
             string command=t[2];
@@ -215,7 +205,7 @@ class Program {
                         }
                     }
                     levels.Add(added);
-                    emit("LEVEL "+levels.Count+" spots "+added.Count+" MOTO "+counts[0]+" COMPACT "+counts[1]+" LARGE "+counts[2]+" EV "+counts[3]);
+                    output.Add("LEVEL "+levels.Count+" spots "+added.Count+" MOTO "+counts[0]+" COMPACT "+counts[1]+" LARGE "+counts[2]+" EV "+counts[3]);
                     trigger=true;
                     break;
                 }
@@ -231,16 +221,16 @@ class Program {
                         s.closed=false;
                         trigger=true;
                     }
-                    emit(command+" "+s.id()+" "+KINDS[s.kind]);
+                    output.Add(command+" "+s.id()+" "+KINDS[s.kind]);
                     break;
                 }
                 case "RATE": {
-                    int k=index(TYPES,t[3]);
+                    int k=Array.IndexOf(TYPES,t[3]);
                     error(k<0,"unknown type "+t[3]);
                     int rate=int.Parse(t[4]), cap=int.Parse(t[5]);
                     error(cap<rate,"cap below rate for "+t[3]);
                     rates[k]=new int[]{rate,cap};
-                    emit("RATE "+t[3]+" "+rate+" "+cap);
+                    output.Add("RATE "+t[3]+" "+rate+" "+cap);
                     break;
                 }
                 case "FEE": {
@@ -257,24 +247,24 @@ class Program {
                             kwh=amount;
                             break;
                     }
-                    emit("FEE "+t[3]+" "+amount);
+                    output.Add("FEE "+t[3]+" "+amount);
                     break;
                 }
                 case "ENTER": {
                     string plate=t[3];
-                    int k=index(TYPES,t[4]);
+                    int k=Array.IndexOf(TYPES,t[4]);
                     error(k<0,"unknown type "+t[4]);
                     Vehicle existing=parked.GetValueOrDefault(plate);
                     error(existing!=null,plate+" is already parked at "+(existing==null ? "" : existing.location()));
                     error(queue.Any(w => w.plate.Equals(plate)),plate+" is already waiting");
                     List<Spot> assigned=assign(k);
-                    if (assigned!=null) emit("ENTER "+plate+" "+TYPES[k]+" "+park(plate,k,assigned).location());
+                    if (assigned!=null) output.Add("ENTER "+plate+" "+TYPES[k]+" "+park(plate,k,assigned).location());
                     else if (queue.Count<3) {
                         queue.Add(new Waiting(plate,k,now));
-                        emit("WAIT "+plate+" "+TYPES[k]+" "+queue.Count);
+                        output.Add("WAIT "+plate+" "+TYPES[k]+" "+queue.Count);
                     } else {
                         refuse(k,now);
-                        emit("FULL "+plate+" "+TYPES[k]);
+                        output.Add("FULL "+plate+" "+TYPES[k]);
                     }
                     break;
                 }
@@ -282,7 +272,7 @@ class Program {
                     Waiting w=queue.FirstOrDefault(x => x.plate.Equals(t[3]));
                     error(w==null,t[3]+" is not waiting");
                     queue.Remove(w);
-                    emit("LEAVE "+w.plate+" "+TYPES[w.kind]);
+                    output.Add("LEAVE "+w.plate+" "+TYPES[w.kind]);
                     break;
                 }
                 case "EXIT":
@@ -296,9 +286,9 @@ class Program {
                         v.paidAt=now;
                         v.paidParking=f[0];
                         v.paidNight=f[1];
-                        emit("PAY "+v.plate+" parking "+f[0]+" night "+f[1]+" charge "+f[3]+" total "+f[4]);
+                        output.Add("PAY "+v.plate+" parking "+f[0]+" night "+f[1]+" charge "+f[3]+" total "+f[4]);
                     } else {
-                        emit(feeLine(command,v,f));
+                        output.Add(feeLine(command,v,f));
                         if (command.Equals("EXIT")) {
                             visitsFor(v.plate).Add(new Visit(v.entry,now,v.location(),v.kind,f[4],loss));
                             stats[v.kind][1]++;
@@ -324,7 +314,7 @@ class Program {
                     int cost=energy*kwh;
                     v.energy+=energy;
                     v.charge+=cost;
-                    emit("CHARGE "+v.plate+" kwh "+energy+" cost "+cost+" stay_kwh "+v.energy+" stay_cost "+v.charge);
+                    output.Add("CHARGE "+v.plate+" kwh "+energy+" cost "+cost+" stay_kwh "+v.energy+" stay_cost "+v.charge);
                     break;
                 }
                 case "VALIDATE": {
@@ -333,19 +323,19 @@ class Program {
                     int minutes=int.Parse(t[4]);
                     error(v.validation+minutes>180,"validation limit exceeded for "+v.plate);
                     v.validation+=minutes;
-                    emit("VALIDATE "+v.plate+" "+minutes+" total "+v.validation);
+                    output.Add("VALIDATE "+v.plate+" "+minutes+" total "+v.validation);
                     break;
                 }
                 case "PASS": {
                     int end=(pass(t[3]) ? passes[t[3]] : now/1440)+int.Parse(t[4]);
                     passes[t[3]]=end;
-                    emit("PASS "+t[3]+" until "+end);
+                    output.Add("PASS "+t[3]+" until "+end);
                     break;
                 }
                 case "UNPASS": {
                     error(!pass(t[3]),t[3]+" has no pass");
                     passes.Remove(t[3]);
-                    emit("UNPASS "+t[3]);
+                    output.Add("UNPASS "+t[3]);
                     break;
                 }
                 case "MOVE": {
@@ -371,50 +361,43 @@ class Program {
                             moved++;
                         }
                     }
-                    emit("REBALANCE "+moved);
+                    output.Add("REBALANCE "+moved);
                     trigger=true;
                     break;
                 }
                 case "WHERE": {
                     Vehicle v=parked.GetValueOrDefault(t[3]);
-                    int p=-1;
-                    for (int i=0;i<queue.Count;i++) if (queue[i].plate.Equals(t[3])) p=i;
+                    int p=queue.FindIndex(w => w.plate == t[3]);
                     List<Visit> visits=history.GetValueOrDefault(t[3]);
                     error(v==null && p<0 && visits==null,"unknown plate "+t[3]);
-                    if (v!=null) emit("WHERE "+v.plate+" "+v.location()+" "+TYPES[v.kind]+" "+time(v.entry)+" stay "+duration(now-v.entry)+annotation(v));
-                    else if (p>=0) emit("WHERE "+t[3]+" waiting "+(p+1));
-                    else emit("WHERE "+t[3]+" gone "+time(visits[visits.Count-1].exit));
+                    if (v!=null) output.Add("WHERE "+v.plate+" "+v.location()+" "+TYPES[v.kind]+" "+time(v.entry)+" stay "+duration(now-v.entry)+annotation(v));
+                    else if (p>=0) output.Add("WHERE "+t[3]+" waiting "+(p+1));
+                    else output.Add("WHERE "+t[3]+" gone "+time(visits[visits.Count-1].exit));
                     break;
                 }
                 case "LIST": {
                     int l=t.Length==4 ? int.Parse(t[3]) : 0;
                     error(l>levels.Count,"unknown level "+l);
                     List<Vehicle> found=ordered().Where(v => l==0 || v.spots[0].level==l).ToList();
-                    emit("LIST "+found.Count);
-                    foreach (Vehicle v in found) emit(v.location()+" "+v.plate+" "+TYPES[v.kind]+" "+time(v.entry)+annotation(v));
+                    output.Add("LIST "+found.Count);
+                    foreach (Vehicle v in found) output.Add(v.location()+" "+v.plate+" "+TYPES[v.kind]+" "+time(v.entry)+annotation(v));
                     break;
                 }
                 case "MAP": {
-                    emit("MAP "+levels.Count);
+                    output.Add("MAP "+levels.Count);
                     for (int i=0;i<levels.Count;i++) {
-                        List<string> chunks=new();
-                        StringBuilder symbols=new StringBuilder();
-                        foreach (Spot s in levels[i]) symbols.Append(s.closed ? '#' : s.occupant!=null ? KINDS[s.kind][0] : char.ToLowerInvariant(KINDS[s.kind][0]));
-                        for (int j=0;j<symbols.Length;j+=10) chunks.Add(symbols.ToString(j,Math.Min(10,symbols.Length-j)));
-                        emit("L"+(i+1)+" "+string.Join(" ",chunks));
+                        var symbols=levels[i].Select(s => s.closed ? '#' : s.occupant!=null ? KINDS[s.kind][0] : char.ToLowerInvariant(KINDS[s.kind][0]));
+                        var chunks=symbols.Chunk(10).Select(chars => new string(chars));
+                        output.Add("L"+(i+1)+" "+string.Join(" ",chunks));
                     }
                     break;
                 }
                 case "OCCUPANCY": {
-                    emit("OCCUPANCY vehicles "+parked.Count+" waiting "+queue.Count);
-                    for (int i=0;i<levels.Count;i++) emit(occupancyLine("L"+(i+1),occupancy(levels[i])));
+                    output.Add("OCCUPANCY vehicles "+parked.Count+" waiting "+queue.Count);
+                    for (int i=0;i<levels.Count;i++) output.Add(occupancyLine("L"+(i+1),occupancy(levels[i])));
                     int[] a=occupancy(spots);
-                    int used=0, available=0;
-                    for (int i=0;i<4;i++) {
-                        used+=a[i];
-                        available+=a[i+4];
-                    }
-                    emit(occupancyLine("TOTAL",a)+" rate "+tenths(available==0 ? 0 : used*1000/available)+"%");
+                    int used=a.Take(4).Sum(), available=a.Skip(4).Take(4).Sum();
+                    output.Add(occupancyLine("TOTAL",a)+" rate "+tenths(available==0 ? 0 : used*1000/available)+"%");
                     break;
                 }
                 case "SIGN": {
@@ -435,58 +418,56 @@ class Program {
                                 }
                             }
                         } else {
-                            foreach (int wanted in PREFS[k]) {
-                                foreach (Spot s in spots) if (s.kind==wanted && s.free()) count++;
-                            }
+                            count=spots.Count(s => PREFS[k].Contains(s.kind) && s.free());
                         }
                         line+=" "+TYPES[k]+" "+(count==0 ? "FULL" : count.ToString());
                     }
-                    emit(line);
+                    output.Add(line);
                     break;
                 }
                 case "RATES": {
-                    emit("RATES");
-                    for (int k=0;k<5;k++) emit(TYPES[k]+" "+rates[k][0]+" "+rates[k][1]);
-                    emit("NIGHT "+night+" LOST "+lost+" KWH "+kwh);
+                    output.Add("RATES");
+                    for (int k=0;k<5;k++) output.Add(TYPES[k]+" "+rates[k][0]+" "+rates[k][1]);
+                    output.Add("NIGHT "+night+" LOST "+lost+" KWH "+kwh);
                     break;
                 }
                 case "PASSES": {
                     List<string> found=passes.Keys.Where(pass).ToList();
-                    emit("PASSES "+found.Count);
-                    foreach (string plate in found) emit(plate+" until "+passes[plate]+(parked.ContainsKey(plate) ? " IN" : ""));
+                    output.Add("PASSES "+found.Count);
+                    foreach (string plate in found) output.Add(plate+" until "+passes[plate]+(parked.ContainsKey(plate) ? " IN" : ""));
                     break;
                 }
                 case "OVERSTAY": {
                     int hours=int.Parse(t[3]);
                     List<Vehicle> found=ordered().Where(v => now-v.entry>=hours*60).OrderBy(v => v.entry).ToList();
-                    emit("OVERSTAY "+hours+" "+found.Count);
-                    foreach (Vehicle v in found) emit(v.location()+" "+v.plate+" "+TYPES[v.kind]+" "+time(v.entry)+" stay "+duration(now-v.entry));
+                    output.Add("OVERSTAY "+hours+" "+found.Count);
+                    foreach (Vehicle v in found) output.Add(v.location()+" "+v.plate+" "+TYPES[v.kind]+" "+time(v.entry)+" stay "+duration(now-v.entry));
                     break;
                 }
                 case "HISTORY": {
                     List<Visit> visits=history.GetValueOrDefault(t[3]);
                     error(visits==null,"no history for "+t[3]);
-                    emit("HISTORY "+t[3]+" visits "+visits.Count+" paid "+visits.Sum(v => v.total));
-                    foreach (Visit v in visits) emit(time(v.entry)+" "+time(v.exit)+" "+v.location+" "+TYPES[v.kind]+" "+v.total+(v.loss ? " LOST" : ""));
+                    output.Add("HISTORY "+t[3]+" visits "+visits.Count+" paid "+visits.Sum(v => v.total));
+                    foreach (Visit v in visits) output.Add(time(v.entry)+" "+time(v.exit)+" "+v.location+" "+TYPES[v.kind]+" "+v.total+(v.loss ? " LOST" : ""));
                     break;
                 }
                 case "REVENUE": {
-                    emit("REVENUE");
-                    for (int k=0;k<5;k++) emit(revenueLine(TYPES[k],stats[k]));
-                    emit(revenueLine("TOTAL",sum(stats,9)));
+                    output.Add("REVENUE");
+                    for (int k=0;k<5;k++) output.Add(revenueLine(TYPES[k],stats[k]));
+                    output.Add(revenueLine("TOTAL",sum(stats,9)));
                     break;
                 }
                 case "DAILY": {
                     int d=int.Parse(t[3]);
                     int[][] a=daily(d);
-                    emit(dailyLine("DAILY "+d,sum(a,4)));
-                    for (int k=0;k<5;k++) emit(dailyLine(TYPES[k],a[k]));
+                    output.Add(dailyLine("DAILY "+d,sum(a,4)));
+                    for (int k=0;k<5;k++) output.Add(dailyLine(TYPES[k],a[k]));
                     break;
                 }
                 case "STATS": {
-                    emit("STATS parked "+parked.Count+" peak "+peak+" at "+(peak==0 ? "-" : time(peakAt)));
-                    for (int k=0;k<5;k++) emit(statsLine(TYPES[k],stats[k]));
-                    emit(statsLine("ALL",sum(stats,9)));
+                    output.Add("STATS parked "+parked.Count+" peak "+peak+" at "+(peak==0 ? "-" : time(peakAt)));
+                    for (int k=0;k<5;k++) output.Add(statsLine(TYPES[k],stats[k]));
+                    output.Add(statsLine("ALL",sum(stats,9)));
                     break;
                 }
             }
@@ -498,7 +479,7 @@ class Program {
             output=new();
             giveup();
             try { execute(t); }
-            catch (Fault f) { emit("ERROR "+f.Message); }
+            catch (Fault f) { output.Add("ERROR "+f.Message); }
             return output;
         }
     }

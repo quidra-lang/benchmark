@@ -6,13 +6,13 @@ import (
 )
 
 func main() {
-	systems := [][][] float64 {
+	systems := [][][]float64{
 		{{2, -1, 3, 7}, {4, 1, -2, 3}, {-3, 5, 1, -4}}, {{1, 3, -2, 4, 6}, {5, -2, 1, 3, -7}, {-2, 4, 6,
 			-1, 9}, {3, 1, -4, 2, 5}},
 	}
 	for s, a := range systems {
 		n := len(a)
-		x := make([] float64, n)
+		x := make([]float64, n)
 		for k := 0; k < n; k++ {
 			pivot := k
 			for i := k + 1; i < n; i++ {
@@ -37,12 +37,7 @@ func main() {
 		}
 		fmt.Printf("system %d:\n", s + 1)
 		for i, value := range x {
-			q := int64(math.Abs(value) * 10000 + 0.5)
-			sign := ""
-			if value < 0 {
-				sign = "-"
-			}
-			fmt.Printf("x%d = %s%d.%04d\n", i + 1, sign, q / 10000, q % 10000)
+			fmt.Printf("x%d = %.4f\n", i + 1, value)
 		}
 	}
 }

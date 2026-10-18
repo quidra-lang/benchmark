@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	for _, n := range []int{0, 10, 255, 1000, 43981, 65535} {

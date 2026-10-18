@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sort"
 )
@@ -81,12 +82,7 @@ func main() {
 		if a.category != b.category {
 			return a.category > b.category
 		}
-		for k := range a.key {
-			if a.key[k] != b.key[k] {
-				return a.key[k] > b.key[k]
-			}
-		}
-		return false
+		return slices.Compare(a.key, b.key) > 0
 	})
 	categories := []string{"high card", "one pair", "two pair", "three of a kind", "straight", "flush",
 		"full house", "four of a kind", "straight flush"}

@@ -17,8 +17,7 @@ int main(void) {
         if (k)
             putchar('\n');
         printf("%s %d\nSu Mo Tu We Th Fr Sa\n", names[m - 1], y);
-        for (int i = 0; i < start; i++)
-            printf("   ");
+        printf("%*s", start * 3, "");
         for (int d = 1; d <= days; d++) {
             int col = (start + d - 1) % 7;
             if (d > 1 && col)

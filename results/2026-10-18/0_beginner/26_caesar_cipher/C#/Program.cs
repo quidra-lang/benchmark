@@ -1,9 +1,6 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Globalization;
 
-CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 static string Cipher(string text, int shift) => string.Concat(text.Select(ch => {
     int basis = ch >= 'A' && ch <= 'Z' ? 'A' : ch >= 'a' && ch <= 'z' ? 'a' : -1;
     return basis < 0 ? ch : (char)(basis + (ch - basis + shift + 26) % 26);

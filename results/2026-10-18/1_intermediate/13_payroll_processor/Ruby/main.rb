@@ -45,11 +45,7 @@ def empty_totals
 end
 
 def sum_stubs(stubs)
-  total = empty_totals
-  stubs.each do |stub|
-    FIELDS.each { |field| total[field] += stub[field] }
-  end
-  total
+  FIELDS.to_h { |field| [field, stubs.sum { |stub| stub[field] }] }
 end
 
 def progressive(table, amount)
@@ -162,11 +158,7 @@ class Payroll
   end
 
   def weekly(e, week)
-    values = Array.new(5, 0)
-    (7 * week - 6..7 * week).each do |day|
-      daily = daily(e, day)
-      5.times { |i| values[i] += daily[i + 1] }
-    end
+    values = (7 * week - 6..7 * week).map { |day| daily(e, day).drop(1) }.transpose.map(&:sum)
     overtime = [0, values[0] - 2400].max
     values[0] -= overtime
     values[1] += overtime
@@ -491,14 +483,9 @@ class Payroll
       raise CommandError, "no run #{a[0]}" unless (1..@closed).cover?(period)
       journal(period)
     when 'REPORT'
-      departments = {}
-      all = []
-      @employees.each_value do |e|
-        e.stubs.each_value do |s, department|
-          (departments[department] ||= []) << s
-          all << s
-        end
-      end
+      saved = @employees.values.flat_map { |e| e.stubs.values }
+      departments = saved.group_by(&:last).transform_values { |rows| rows.map(&:first) }
+      all = saved.map(&:first)
       emit(0, 'REPORT', 'period', @closed)
       departments.keys.sort.each { |department| report_line(department, departments[department]) }
       report_line('total', all)

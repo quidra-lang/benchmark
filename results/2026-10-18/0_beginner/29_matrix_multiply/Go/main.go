@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	a := [3][4]int{{3, -2, 5, 1}, {-4, 7, 0, 6}, {2, 9, -8, -3}}

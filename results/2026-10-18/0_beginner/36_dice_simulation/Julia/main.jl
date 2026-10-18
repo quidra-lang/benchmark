@@ -8,13 +8,9 @@ function main()
         second_die = state % 6 + 1
         counts[first_die+second_die+1] += 1
     end
-    best = 2
     for total in 2:12
         println(total, ": ", counts[total+1])
-        if counts[total+1] > counts[best+1]
-            best = total
-        end
     end
-    println("most frequent: ", best)
+    println("most frequent: ", argmax(counts[3:13])+1)
 end
 main()

@@ -14,8 +14,7 @@ fn main() {
             nr = r + dr[d];
             nc = c + dc[d];
         }
-        r = nr;
-        c = nc;
+        (r, c) = (nr, nc);
     }
     for row in matrix {
         for n in row {

@@ -7,9 +7,7 @@ pub fn main(init: std.process.Init) !void {
     const out = &writer.interface;
     for (temperatures) |celsius| {
         const fahrenheit = @as(f64, @floatFromInt(celsius)) * 9.0 / 5.0 + 32.0;
-        const tenths: u64 = @intFromFloat(@floor(@abs(fahrenheit) * 10.0 + 0.5));
-        const sign: []const u8 = if (fahrenheit < 0.0) "-" else "";
-        try out.print("{d} C = {s}{d}.{d} F\n", .{ celsius, sign, tenths / 10, tenths % 10 });
+        try out.print("{d} C = {d:.1} F\n", .{ celsius, fahrenheit });
     }
     try out.flush();
 }

@@ -109,14 +109,10 @@ function casePattern(word) {
 }
 
 function scanWords(text) {
-    const words = [];
-    for (const match of text.matchAll(/[A-Za-z'-]+/g)) {
-        words.push({
-            original: match[0], start: match.index,
-            pattern: casePattern(match[0]), morae: []
-        });
-    }
-    return words;
+    return Array.from(text.matchAll(/[A-Za-z'-]+/g), match => ({
+        original: match[0], start: match.index,
+        pattern: casePattern(match[0]), morae: []
+    }));
 }
 
 function parseWord(word, system) {
@@ -255,13 +251,8 @@ function writeWord(word, system, settings, canonical = false, morae = word.morae
 }
 
 function replaceWords(text, words, replacement) {
-    let result = "";
-    let position = 0;
-    for (const word of words) {
-        result += text.slice(position, word.start) + replacement(word);
-        position = word.start + word.original.length;
-    }
-    return result + text.slice(position);
+    let index = 0;
+    return text.replace(/[A-Za-z'-]+/g, () => replacement(words[index++]));
 }
 
 function devoice(id) {
@@ -306,7 +297,7 @@ function compareSequence(a, b) {
 
 function sortedWords(words, order) {
     const ranks = new Map(orders[order].map((base, rank) => [base, rank]));
-    const entries = words.map((word, index) => {
+    const entries = words.map(word => {
         const cols = elements(word.morae);
         const keys = [
             cols.map(item => ranks.get(item.base)),
@@ -314,7 +305,7 @@ function sortedWords(words, order) {
             cols.map(item => item.size),
             word.morae.map(mora => mora.id === "-" ? 1 : 0)
         ];
-        return { word, index, keys };
+        return { word, keys };
     });
     entries.sort((a, b) => {
         for (let i = 0; i < a.keys.length; i++) {
@@ -323,7 +314,7 @@ function sortedWords(words, order) {
                 return difference;
             }
         }
-        return a.index - b.index;
+        return 0;
     });
     return entries.map(entry => entry.word);
 }

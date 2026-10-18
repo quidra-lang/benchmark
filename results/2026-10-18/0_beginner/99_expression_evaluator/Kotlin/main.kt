@@ -1,6 +1,3 @@
-import java.math.BigDecimal
-import java.math.RoundingMode
-
 class Parser(private val tokens: List<String>, private var position: Int, private val variables: Map<String,Int>) {
     private fun take(token: String): Boolean {
         if (position >= tokens.size || tokens[position] != token) return false
@@ -43,8 +40,9 @@ fun main() {
         "shift = -area / 8 + 3", "height = 100 / (height - 7) + bonus", "volume = area * depth",
         "width = (width+3)*-(2-4)", "width * shift - height")
     val variables = mutableMapOf<String,Int>()
+    val tokenPattern = Regex("[0-9]+|[a-z]+|[^ ]")
     for (line in lines) {
-        val tokens = Regex("[0-9]+|[a-z]+|[^ ]").findAll(line).map { it.value }.toList()
+        val tokens = tokenPattern.findAll(line).map { it.value }.toList()
         val assignment = tokens.size > 1 && tokens[1] == "="
         val name = if (assignment) tokens[0] else null
         try {

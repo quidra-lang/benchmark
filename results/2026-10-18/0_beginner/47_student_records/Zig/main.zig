@@ -1,21 +1,5 @@
 const std = @import("std");
 
-fn fixed(out: *std.Io.Writer, value: f64, places: usize) !void {
-    var scale: u64 = 1;
-    for (0..places) |_|
-        scale *= 10;
-    const scaled: u64 = @intFromFloat(@floor(@abs(value) * @as(f64, @floatFromInt(scale)) + 0.5));
-    if (value < 0)
-        try out.writeByte('-');
-    try out.print("{d}", .{ scaled / scale });
-    if (places > 0)
-        try out.writeByte('.');
-    var divisor = scale / 10;
-    while (divisor > 0) : (divisor /= 10) {
-        try out.writeByte('0' + @as(u8, @intCast((scaled / divisor) % 10)));
-    }
-}
-
 const Student = struct {
     name: []const u8,
     scores: [3]u32
@@ -49,9 +33,8 @@ pub fn main(init: std.process.Init) !void {
         if (i == 0 or t != previous)
             rank = i + 1;
         previous = t;
-        try out.print("{d}. {s} total={d} average=", .{ rank, s.name, t });
-        try fixed(out, @as(f64, @floatFromInt(t)) / 3.0, 2);
-        try out.writeByte('\n');
+        try out.print("{d}. {s} total={d} average={d:.2}\n",
+            .{ rank, s.name, t, @as(f64, @floatFromInt(t)) / 3.0 });
     }
     try out.flush();
 }

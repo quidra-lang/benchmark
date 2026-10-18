@@ -1,11 +1,8 @@
 pairs = [("kitten", "sitting"), ("flaw", "lawn"), ("listen", "silent"),
          ("intention", "execution"), ("algorithm", "altruistic")]
 for a, b in pairs:
-    dp = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
-    for i in range(len(a) + 1):
-        dp[i][0] = i
-    for j in range(len(b) + 1):
-        dp[0][j] = j
+    dp = [[i] + [0] * len(b) for i in range(len(a) + 1)]
+    dp[0] = list(range(len(b) + 1))
     for i in range(1, len(a) + 1):
         for j in range(1, len(b) + 1):
             cost = int(a[i - 1] != b[j - 1])

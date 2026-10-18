@@ -8,7 +8,7 @@ fn main() {
         }
     }
     for (i, n) in counts.iter().enumerate() {
-        if * n > 0 {
+        if *n > 0 {
             println!("{}: {}", (b'a' + i as u8) as char, n);
         }
     }

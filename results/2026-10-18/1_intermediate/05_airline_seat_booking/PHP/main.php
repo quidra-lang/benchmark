@@ -75,14 +75,8 @@ function cabin(object $f, string $class): object
 function booked(object $f, string $class): int
 {
     global $people;
-    $count = 0;
-    foreach (passengers($f) as $id) {
-        $p = $people[$id];
-        if ($p->type !== 'INFANT' && $p->class === $class) {
-            ++$count;
-        }
-    }
-    return $count;
+    return count(array_filter(passengers($f), fn($id) =>
+        $people[$id]->type !== 'INFANT' && $people[$id]->class === $class));
 }
 function allowed(object $f, object $p, string $seat, string $class, array $vacated = [], array $assignments = []): bool
 {
@@ -420,7 +414,7 @@ function execute(string $line): array
                 $p = get_person($b, $t[2]);
                 $targets = removal_targets($p);
                 $remaining = array_values(array_diff(members($b), $targets));
-                if ($remaining !== [] && !array_filter($remaining, fn($id) => $people[$id]->type === 'ADULT')) {
+                if ($remaining !== [] && !array_any($remaining, fn($id) => $people[$id]->type === 'ADULT')) {
                     fail("$b->pnr would have no adult");
                 }
                 $targets = array_values(array_intersect(members($b), $targets));
@@ -550,14 +544,11 @@ function execute(string $line): array
                 $targets = array_values(array_filter($f->volunteers, fn($id) => $people[$id]->active && $people[$id]->volunteer && $people[$id]->seat !== '' && $people[$id]->class === $class));
                 foreach ($targets as $id) {
                     $p = $people[$id];
-                    $useful = false;
-                    foreach (passengers($f) as $waitingId) {
+                    $useful = array_any(passengers($f), function($waitingId) use ($people, $f, $p, $class, $id) {
                         $waiting = $people[$waitingId];
-                        if ($waiting->type !== 'INFANT' && $waiting->class === $class && $waiting->seat === '' && allowed($f, $waiting, $p->seat, $class, [$id => true])) {
-                            $useful = true;
-                            break;
-                        }
-                    }
+                        return $waiting->type !== 'INFANT' && $waiting->class === $class && $waiting->seat === ''
+                            && allowed($f, $waiting, $p->seat, $class, [$id => true]);
+                    });
                     if ($useful) {
                         $amount = $rates[$class];
                         $output[] = "DENIED VOLUNTARY $p->pnr $p->name $class $amount";
@@ -673,7 +664,7 @@ function execute(string $line): array
                 foreach ($seated as $id) {
                     $p = $people[$id];
                     $s = $f->model->seats[$p->seat];
-                    $hasInfant = count(array_filter(members($bookings[$p->pnr]), fn($member) => $people[$member]->type === 'INFANT')) > 0;
+                    $hasInfant = array_any(members($bookings[$p->pnr]), fn($member) => $people[$member]->type === 'INFANT');
                     if ($hasInfant) {
                         $group = 'PRE';
                         $key = [0, $s->row, $s->letter];

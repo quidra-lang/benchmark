@@ -160,17 +160,12 @@ class Garage
   end
 
   def interval(v, start, finish, grace)
-    remaining = finish - start
-    return [0, 0] if pass?(v.plate, finish) || remaining <= grace
+    stay = finish - start
+    return [0, 0] if pass?(v.plate, finish) || stay <= grace
     rate, cap = @rates[v.kind]
-    parking = 0
-    first = true
-    while remaining.positive?
-      minutes = [remaining, 1440].min
-      billable = minutes - (first ? grace : 0)
-      parking += [((billable + 29) / 30) * rate, cap].min
-      remaining -= minutes
-      first = false
+    parking = (0...stay).step(1440).sum do |offset|
+      billable = [stay - offset, 1440].min - (offset.zero? ? grace : 0)
+      [((billable + 29) / 30) * rate, cap].min
     end
     [parking, (date_of(finish) - date_of(start)) * @fees['NIGHT']]
   end
@@ -450,17 +445,10 @@ class Garage
       TYPES.each do |kind|
         count = 0
         if kind == 'BUS'
-          @levels.each do |level|
-            run = 0
-            level.each do |s|
-              if s.kind == 'LARGE' && s.free?
-                run += 1
-              else
-                count += run / 3
-                run = 0
-              end
+          count = @levels.sum do |level|
+            level.chunk { |s| s.kind == 'LARGE' && s.free? }.sum do |available, run|
+              available ? run.length / 3 : 0
             end
-            count += run / 3
           end
         else
           count = @spots.count { |s| s.free? && PREF[kind].include?(s.kind) }

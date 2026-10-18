@@ -38,7 +38,6 @@ class Converter {
     private fun round(n: Int, d: Int): Int = round(n.toLong(), d.toLong())
     private fun away(n: Long, d: Int): Int = if (n < 0) -round(-n,d) else round(n,d)
     private fun percent(a: Int, b: Int): Int = round(100L*a,b)
-    private fun mod(value: Int, modulus: Int): Int = Math.floorMod(value,modulus)
     private fun clamp(value: Int): Int = value.coerceIn(0,255)
     private fun root(numerator: Long, scale: Long): Int {
         val value = numerator / scale
@@ -67,11 +66,9 @@ class Converter {
         }
         return table().firstOrNull { it.name == text }?.color ?: throw Invalid()
     }
-    private fun maximum(c: IntArray): Int = c.max()
-    private fun minimum(c: IntArray): Int = c.min()
     private fun hue(c: IntArray): Int {
-        val largest = maximum(c)
-        val difference = largest - minimum(c)
+        val largest = c.max()
+        val difference = largest - c.min()
         if (difference == 0) return 0
         var numerator = when (largest) {
             c[0] -> 60L * (c[1] - c[2])
@@ -82,8 +79,8 @@ class Converter {
         return round(numerator,difference) % 360
     }
     private fun hsl(c: IntArray): IntArray {
-        val largest = maximum(c)
-        val smallest = minimum(c)
+        val largest = c.max()
+        val smallest = c.min()
         val difference = largest - smallest
         val saturation = if (difference == 0) 0 else percent(difference,255 - kotlin.math.abs(largest + smallest - 255))
         return intArrayOf(hue(c),saturation,percent(largest + smallest,510))
@@ -107,8 +104,8 @@ class Converter {
         val r = c[0]
         val g = c[1]
         val b = c[2]
-        val m = maximum(c)
-        val n = minimum(c)
+        val m = c.max()
+        val n = c.min()
         val d = m - n
         return when (command) {
             "HSL" -> {
@@ -191,28 +188,15 @@ class Converter {
         colors.maxOf { it[component] } - colors.minOf { it[component] }
     }
     private fun palette(k: Int, colors: List<IntArray>): List<Cluster> {
-        val boxes = mutableListOf(colors.toMutableList())
+        val boxes = mutableListOf(colors)
         while (boxes.size < k) {
-            var selected = -1
-            var width = -1
-            for (i in boxes.indices) {
-                if (boxes[i].size < 2) continue
-                val candidate = ranges(boxes[i]).max()
-                if (candidate > width) {
-                    width = candidate
-                    selected = i
-                }
-            }
+            val selected = boxes.indices.filter { boxes[it].size > 1 }.maxBy { ranges(boxes[it]).max() }
             val range = ranges(boxes[selected])
-            var component = 0
-            for (i in 1..2) {
-                if (range[i] > range[component]) component = i
-            }
-            val axis = component
-            val sorted = boxes[selected].sortedBy { it[axis] }
+            val component = range.indices.maxBy { range[it] }
+            val sorted = boxes[selected].sortedBy { it[component] }
             val middle = sorted.size / 2
-            boxes[selected] = sorted.take(middle).toMutableList()
-            boxes.add(selected + 1,sorted.drop(middle).toMutableList())
+            boxes[selected] = sorted.take(middle)
+            boxes.add(selected + 1,sorted.drop(middle))
         }
         return boxes.map { Cluster(mean(it),it.size) }
     }
@@ -226,10 +210,7 @@ class Converter {
             iteration++
             val groups = List(k) { mutableListOf<IntArray>() }
             for (color in colors) {
-                var best = 0
-                for (j in 1 until k) {
-                    if (distance(color,representatives[j]) < distance(color,representatives[best])) best = j
-                }
+                val best = (0 until k).minBy { distance(color, representatives[it]) }
                 groups[best].add(color)
             }
             result = groups.indices.map { j ->
@@ -329,10 +310,7 @@ class Converter {
             "ANSI" -> {
                 arity(t,1)
                 val c = color(t[1])
-                var best = 16
-                for (i in 17..255) {
-                    if (distance(c,ansi(i)) < distance(c,ansi(best))) best = i
-                }
+                val best = (16..255).minBy { distance(c, ansi(it)) }
                 return "$best ${hex(ansi(best))} ${distance(c,ansi(best))}"
             }
             "WEBSAFE", "INVERT" -> {
@@ -346,7 +324,7 @@ class Converter {
                 val value = when (t[2]) {
                     "LUMA" -> round(299L*c[0]+587L*c[1]+114L*c[2],1000)
                     "AVERAGE" -> round(c.sum(),3)
-                    "LIGHTNESS" -> round(maximum(c)+minimum(c),2)
+                    "LIGHTNESS" -> round(c.max()+c.min(),2)
                     "HSP" -> root(299L*c[0]*c[0]+587L*c[1]*c[1]+114L*c[2]*c[2],1000)
                     else -> throw Invalid()
                 }
@@ -360,9 +338,9 @@ class Converter {
                 if (command == "MIX") return hex(IntArray(3) { round(a[it].toLong()*(100-p)+b[it].toLong()*p,100) })
                 val first = hsl(a)
                 val second = hsl(b)
-                var e = mod(second[0]-first[0],360)
+                var e = Math.floorMod(second[0]-first[0],360)
                 if (e > 180) e -= 360
-                return hex(fromHsl(mod(first[0]+away(e.toLong()*p,100),360),
+                return hex(fromHsl(Math.floorMod(first[0]+away(e.toLong()*p,100),360),
                     first[1]+away((second[1]-first[1]).toLong()*p,100),first[2]+away((second[2]-first[2]).toLong()*p,100)))
             }
             "GRADIENT", "TINTS", "SHADES", "TONES" -> {
@@ -422,7 +400,7 @@ class Converter {
                         (-k..k).filter { it != 0 }.map { it*step }
                     }
                 }
-                return colorsText(rotations.map { fromHsl(mod(values[0]+it,360),values[1],values[2]) })
+                return colorsText(rotations.map { fromHsl(Math.floorMod(values[0]+it,360),values[1],values[2]) })
             }
             "LIGHTEN", "DARKEN", "SATURATE", "DESATURATE" -> {
                 arity(t,2)
@@ -439,11 +417,7 @@ class Converter {
             "NEAREST" -> {
                 arity(t,1)
                 val c = color(t[1])
-                val entries = table()
-                var best = entries.first()
-                for (entry in entries) {
-                    if (distance(c,entry.color) < distance(c,best.color)) best = entry
-                }
+                val best = table().minBy { distance(c, it.color) }
                 return "${best.name} ${hex(best.color)} ${distance(c,best.color)}"
             }
             "DISTANCE" -> {
@@ -479,10 +453,7 @@ class Converter {
                 check(t.size in 3..34)
                 val bg = color(t[1])
                 val options = colors(t,2)
-                var best = options.first()
-                for (c in options) {
-                    if (ratio(c,bg) > ratio(best,bg)) best = c
-                }
+                val best = options.maxBy { ratio(it, bg) }
                 return "${hex(best)} ${contrastText(best,bg)}"
             }
             "DESCRIBE" -> {
@@ -522,10 +493,7 @@ class Converter {
                 val result = mutableListOf<String>()
                 for (c in options) {
                     val adjusted = IntArray(3) { clamp(c[it]+error[it]) }
-                    var best = 0
-                    for (i in 1 until 16) {
-                        if (distance(adjusted,unpack(rgb[i])) < distance(adjusted,unpack(rgb[best]))) best = i
-                    }
+                    val best = (0 until 16).minBy { distance(adjusted, unpack(rgb[it])) }
                     result.add(names[best])
                     val chosen = unpack(rgb[best])
                     for (i in 0..2) error[i] = adjusted[i]-chosen[i]

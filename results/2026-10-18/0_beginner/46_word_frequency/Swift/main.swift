@@ -1,6 +1,3 @@
-import Foundation
-
-
 let text = "The cat sat on the mat. The dog sat on the rug, and the cat watched the dog. A bird sang on the fence, and the Dog barked at the bird. The cat slept in the sun, the bird flew away, and the dog sat by the door."
 var counts = [String:Int]()
 for word in text.lowercased().split(whereSeparator: { $0 < "a" || $0 > "z" }) { counts[String(word), default: 0] += 1 }

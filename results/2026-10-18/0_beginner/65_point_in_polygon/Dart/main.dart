@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const vertices = [(1, 1), (11, 2), (13, 9), (9, 7), (7, 12), (5, 6), (2, 10), (3, 5)];
     for (final p in [(4, 8), (6, 4), (10, 8), (7, 11), (14, 3), (12, 8)]) {
         var inside = false;
@@ -13,7 +10,6 @@ void main() {
                     inside = !inside;
             }
         }
-        out.writeln('(${p.$1}, ${p.$2}): ${inside?'inside':'outside'}');
+        print('(${p.$1}, ${p.$2}): ${inside?'inside':'outside'}');
     }
-    stdout.write(out);
 }

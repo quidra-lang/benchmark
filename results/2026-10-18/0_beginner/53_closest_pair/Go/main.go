@@ -21,7 +21,6 @@ func main() {
 		}
 	}
 	for k, label := range []string{"closest", "farthest"} {
-		q := int(math.Sqrt(float64(best[k])) * 10000 + 0.5)
-		fmt.Printf("%s: P%d P%d %d.%04d\n", label, bi[k], bj[k], q / 10000, q % 10000)
+		fmt.Printf("%s: P%d P%d %.4f\n", label, bi[k], bj[k], math.Sqrt(float64(best[k])))
 	}
 }

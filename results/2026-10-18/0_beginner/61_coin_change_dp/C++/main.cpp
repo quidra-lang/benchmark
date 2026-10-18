@@ -4,8 +4,7 @@
 
 int main() {
     const std::array<int, 4> coins = {1, 5, 6, 9};
-    std::array<int, 41> minimum {}, ways {};
-    ways[0] = 1;
+    std::array<int, 41> minimum{}, ways{1};
     for (int amount = 1; amount <= 40; amount++) {
         minimum[amount] = 1000;
         for (int coin : coins)

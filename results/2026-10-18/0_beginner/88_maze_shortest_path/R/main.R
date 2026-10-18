@@ -13,7 +13,8 @@ while (head_index <= length(queue)) {
     if (all(cell == goal)) break
     for (direction in list(c(-1,0),c(1,0),c(0,-1),c(0,1))) {
         next_cell <- cell+direction
-        r <- next_cell[1]; c_value <- next_cell[2]
+        r <- next_cell[1]
+        c_value <- next_cell[2]
         if (r >= 1 && r <= 9 && c_value >= 1 && c_value <= 13 && maze[r,c_value] != "#" && !seen[r,c_value]) {
             seen[r,c_value] <- TRUE
             parent_row[r,c_value] <- cell[1]
@@ -25,7 +26,8 @@ while (head_index <= length(queue)) {
 cell <- goal
 steps <- 0
 while (!all(cell == start)) {
-    r <- cell[1]; c_value <- cell[2]
+    r <- cell[1]
+    c_value <- cell[2]
     if (maze[r,c_value] == ".") maze[r,c_value] <- "*"
     cell <- c(parent_row[r,c_value],parent_column[r,c_value])
     steps <- steps+1

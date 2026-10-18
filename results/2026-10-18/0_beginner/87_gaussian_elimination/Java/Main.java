@@ -1,8 +1,6 @@
-import java.util.*;
-import java.math.*;
+import java.util.Locale;
 
 public class Main {
-    static String fixed(double x, int places) { return BigDecimal.valueOf(x).setScale(places, RoundingMode.HALF_UP).toPlainString(); }
     public static void main(String[] args) {
         double[][][] systems = {{{2,-1,3,7},{4,1,-2,3},{-3,5,1,-4}},
             {{1,3,-2,4,6},{5,-2,1,3,-7},{-2,4,6,-1,9},{3,1,-4,2,5}}};
@@ -29,7 +27,7 @@ public class Main {
                 x[i] = sum / a[i][i];
             }
             System.out.println("system " + (system + 1) + ":");
-            for (int i = 0; i < n; i++) System.out.println("x" + (i + 1) + " = " + fixed(x[i],4));
+            for (int i = 0; i < n; i++) System.out.printf(Locale.ROOT, "x%d = %.4f%n", i + 1, x[i]);
         }
     }
 }

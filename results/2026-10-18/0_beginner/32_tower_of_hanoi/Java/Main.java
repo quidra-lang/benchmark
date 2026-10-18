@@ -1,6 +1,3 @@
-import java.util.*;
-import java.math.*;
-
 public class Main {
     static int hanoi(int n, char source, char target, char auxiliary) {
         if (n == 0) return 0;

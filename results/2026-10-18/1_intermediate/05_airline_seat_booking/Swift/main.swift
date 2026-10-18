@@ -145,13 +145,8 @@ final class Airline {
         if let target { f.occupied[target.id] = p }
     }
     func select(_ p: Passenger, _ cabin: String) -> Seat? {
-        var first: Seat? = nil
-        for s in p.booking.flight.aircraft.cabins[cabin]!.seats {
-            if !fits(p,s) { continue }
-            if first == nil { first = s }
-            if p.pref == s.kind { return s }
-        }
-        return first
+        let candidates = p.booking.flight.aircraft.cabins[cabin]!.seats.filter { fits(p,$0) }
+        return candidates.first { $0.kind == p.pref } ?? candidates.first
     }
     func reassign(_ f: Flight, _ output: inout [String]) {
         for p in passengers(f) where p.needsSeat && p.seat == nil {
@@ -163,9 +158,7 @@ final class Airline {
     }
     func candidate(_ people: [Passenger], _ positions: [Seat]) -> Bool {
         let proposed = Dictionary(uniqueKeysWithValues: zip(people,positions))
-        for p in people {
-            if !fits(p,proposed[p]!,[],proposed) { return false }
-        }
+        guard people.allSatisfy({ fits($0,proposed[$0]!,[],proposed) }) else { return false }
         for p in people { seat(p,proposed[p]!) }
         return true
     }
@@ -463,7 +456,7 @@ final class Airline {
                         let id = String(row)+String(letter)
                         return f.blocked.contains(id) ? Character("#") : (f.occupied[id] != nil ? Character("X") : (f.aircraft.exits.contains(row) ? Character("E") : Character(".")))
                     }) }
-                    output.append((row < 10 ? " " : "")+String(row)+" "+blocks.joined(separator: " "))
+                    output.append(String(format: "%2ld %@",row,blocks.joined(separator: " ")))
                 }
             }
         case "MANIFEST":

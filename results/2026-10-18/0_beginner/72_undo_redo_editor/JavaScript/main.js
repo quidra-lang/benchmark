@@ -23,7 +23,7 @@ for (const command of commands) {
     undoStack.push(buffer);
     redoStack.length = 0;
     if (command.startsWith("type ")) buffer += command.slice(5);
-    else buffer = buffer.slice(0, Math.max(0, buffer.length - Number(command.slice(7))));
+    else buffer = buffer.slice(0, -Number(command.slice(7)));
   }
   console.log(`${command} => "${buffer}"`);
 }

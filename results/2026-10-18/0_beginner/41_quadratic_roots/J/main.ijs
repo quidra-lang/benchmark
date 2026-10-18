@@ -1,7 +1,5 @@
-fixed =: 4 : 0
-  scale =. 10 ^ x
-  rounded =. (*y) * <. 0.5 + scale * |y
-  , (":x) 8!:2 rounded % scale
+fixed =: 3 : 0
+  , '4' 8!:2 y
 )
 
 main =: 3 : 0
@@ -16,14 +14,14 @@ main =: 3 : 0
       root =. %:0.0+d
       first =. ((-b)+root)%denominator
       second =. ((-b)-root)%denominator
-      smoutput prefix,'x1 = ',(4 fixed first>.second),', x2 = ',4 fixed first<.second
+      smoutput prefix,'x1 = ',(fixed first>.second),', x2 = ',fixed first<.second
     elseif. d=0 do.
-      smoutput prefix,'x = ',4 fixed (-b)%denominator
+      smoutput prefix,'x = ',fixed (-b)%denominator
     else.
       p =. (-b)%denominator
       imaginary =. (%:-d) % 2.0*|a
-      realtext =. 4 fixed p
-      imaginarytext =. 4 fixed imaginary
+      realtext =. fixed p
+      imaginarytext =. fixed imaginary
       smoutput prefix,'x = ',realtext,' + ',imaginarytext,'i, ',realtext,' - ',imaginarytext,'i'
     end.
   end.

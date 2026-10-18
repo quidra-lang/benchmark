@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func cipher(s string, shift byte) string {
 	out := []byte(s)

@@ -33,8 +33,7 @@ class Parser
         value *= right
       else
         raise 'division by zero' if right.zero?
-        quotient = value.abs / right.abs
-        value = value.negative? != right.negative? ? -quotient : quotient
+        value = value.quo(right).truncate
       end
     end
     value

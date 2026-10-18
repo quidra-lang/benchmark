@@ -1,6 +1,9 @@
 local function topological(courses,edges)
     local indegree,adjacency = {},{}
-    for _,course in ipairs(courses) do indegree[course] = 0; adjacency[course] = {} end
+    for _,course in ipairs(courses) do
+        indegree[course] = 0
+        adjacency[course] = {}
+    end
     for _,edge in ipairs(edges) do
         local source,target = table.unpack(edge)
         adjacency[source][#adjacency[source]+1] = target

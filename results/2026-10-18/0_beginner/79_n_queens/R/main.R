@@ -8,17 +8,9 @@ solve_queens <- function(n) {
             if (length(first_solution) == 0) first_solution <<- columns
             return(invisible(NULL))
         }
+        previous <- seq_len(row)
         for (column in 0:(n-1)) {
-            valid <- TRUE
-            if (row > 0) {
-                for (previous in 0:(row-1)) {
-                    if (columns[previous+1] == column || abs(columns[previous+1]-column) == row-previous) {
-                        valid <- FALSE
-                        break
-                    }
-                }
-            }
-            if (valid) {
+            if (all(columns[previous] != column & abs(columns[previous]-column) != row+1-previous)) {
                 columns[row+1] <<- column
                 place(row+1)
             }

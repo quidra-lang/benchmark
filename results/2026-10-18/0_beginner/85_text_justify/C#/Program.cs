@@ -1,9 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Globalization;
-
-CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
 string paragraph = "Good software is written for people first and for machines second. A clear program explains its purpose " +
     "through careful names, small functions and honest tests. When a team agrees on shared rules for " +

@@ -1,6 +1,3 @@
-import Foundation
-
-
 var counts = [Int](repeating: 0, count: 26)
 let sentence = "Peter Piper picked a peck of pickled peppers!"
 for byte in sentence.lowercased().utf8 where byte >= 97 && byte <= 122 { counts[Int(byte) - 97] += 1 }

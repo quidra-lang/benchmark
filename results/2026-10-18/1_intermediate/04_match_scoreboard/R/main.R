@@ -76,10 +76,10 @@ create_match <- function(tokens) {
   seen <- character()
   if (first_option <= length(tokens)) {
     for (token in tokens[first_option:length(tokens)]) {
-      parts <- strsplit(paste0(token, "!"), "=", fixed = TRUE)[[1L]]
-      if (length(parts) != 2L) score_error("invalid option")
-      key <- parts[1L]
-      value <- substr(parts[2L], 1L, nchar(parts[2L]) - 1L)
+      parts <- regmatches(token, regexec("^([^=]+)=([^=]+)$", token))[[1L]]
+      if (length(parts) != 3L) score_error("invalid option")
+      key <- parts[2L]
+      value <- parts[3L]
       if (is.null(rules[[key]]) || !(value %in% rules[[key]]) || key %in% seen) score_error("invalid option")
       seen <- c(seen, key)
       m$options[[key]] <- value

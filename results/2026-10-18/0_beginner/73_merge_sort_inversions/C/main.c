@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 
 int merge_sort(int *a, int l, int r) {
     if (l == r)
@@ -18,8 +19,7 @@ int merge_sort(int *a, int l, int r) {
         temp[k++] = a[i++];
     while (j <= r)
         temp[k++] = a[j++];
-    for (k = 0; k <= r - l; k++)
-        a[l + k] = temp[k];
+    memcpy(a + l, temp, (size_t)(r - l + 1) * sizeof(*a));
     printf("merge [%d..%d]:", l, r);
     for (k = l; k <= r; k++)
         printf(" %d", a[k]);

@@ -44,8 +44,8 @@ func main() {
 		for teams[y].name != away {
 			y++
 		}
-		record(& teams[x], h, a)
-		record(& teams[y], a, h)
+		record(&teams[x], h, a)
+		record(&teams[y], a, h)
 	}
 	sort.Slice(teams, func(i, j int) bool {
 		a, b := teams[i], teams[j]

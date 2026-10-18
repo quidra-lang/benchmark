@@ -9,7 +9,9 @@ accepted <- 0
 skipped <- 0
 total <- 0
 for (edge in edges) {
-    a <- edge[1]; b <- edge[2]; weight <- as.integer(edge[3])
+    a <- edge[1]
+    b <- edge[2]
+    weight <- as.integer(edge[3])
     first_root <- find_root(a)
     second_root <- find_root(b)
     if (first_root == second_root) {

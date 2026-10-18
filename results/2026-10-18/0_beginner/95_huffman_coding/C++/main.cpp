@@ -9,15 +9,12 @@ struct Node {
 };
 
 int pop(std::vector<int>& roots, const std::vector<Node>& nodes) {
-    std::size_t best = 0;
-    for (std::size_t i = 1; i < roots.size(); ++i) {
-        const Node& a = nodes[roots[i]];
-        const Node& b = nodes[roots[best]];
-        if (a.weight < b.weight || (a.weight == b.weight && a.minimum < b.minimum))
-            best = i;
-    }
-    int result = roots[best];
-    roots.erase(roots.begin() + best);
+    auto best = std::min_element(roots.begin(), roots.end(), [&nodes](int x, int y) {
+        const Node &a = nodes[x], &b = nodes[y];
+        return a.weight < b.weight || (a.weight == b.weight && a.minimum < b.minimum);
+    });
+    int result = *best;
+    roots.erase(best);
     return result;
 }
 
@@ -32,7 +29,7 @@ void assign(const std::vector<Node>& nodes, int root, const std::string& prefix,
 }
 
 int main() {
-    const std::string text = "she sells sea shells by the sea shore";
+    std::string text = "she sells sea shells by the sea shore";
     std::array<int, 128> freq{};
     for (unsigned char c : text)
         ++freq[c];

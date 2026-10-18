@@ -5,8 +5,8 @@ local function laplace(matrix)
     for j = 1,n do
         local minor = {}
         for row = 2,n do
-            local values = {}
-            for column = 1,n do if column ~= j then values[#values+1] = matrix[row][column] end end
+            local values = {table.unpack(matrix[row])}
+            table.remove(values,j)
             minor[#minor+1] = values
         end
         local term = matrix[1][j]*laplace(minor)

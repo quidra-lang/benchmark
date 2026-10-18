@@ -8,9 +8,7 @@ void main() {
             out.write(' ');
         out.write(a);
         sum += a;
-        final next = a + b;
-        a = b;
-        b = next;
+        (a, b) = (b, a + b);
     }
     out.writeln('\nsum: $sum');
     stdout.write(out);

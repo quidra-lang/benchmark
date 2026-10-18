@@ -23,6 +23,7 @@ struct Expense {
 }
 struct Settlement { from: usize, to: usize, amount: Integer, total: Integer, day: Integer, serial: Integer, currency: String }
 struct Transfer { from: usize, to: usize, amount: Integer }
+#[derive(Default)]
 struct Engine {
     members: Vec<Member>,
     expenses: Vec<Expense>,
@@ -310,17 +311,19 @@ impl Engine {
                     Some(i)
                 };
                 let mut e = self.draft_expense(&a, previous.map(|i| &self.expenses[i]))?;
-                if let Some(i) = previous { self.expenses[i] = e.clone(); }
+                let position = previous.unwrap_or(self.expenses.len());
+                if let Some(i) = previous { self.expenses[i] = e; }
                 else {
                     e.id = a[1].to_owned();
                     e.day = self.day;
                     self.serial += 1;
                     e.serial = self.serial;
                     self.used.insert(e.id.clone());
-                    self.expenses.push(e.clone());
+                    self.expenses.push(e);
                 }
+                let e = &self.expenses[position];
                 out.push(format!("{command} {} {}{} = {}", e.id, money(e.total), note(e.amount, &e.currency), self.parts_text(&e.participants)));
-                self.warning(&e, &mut out);
+                self.warning(e, &mut out);
             }
             "PAYERS" => {
                 let i = self.expense_id(a[1])?;
@@ -607,10 +610,7 @@ impl Engine {
     }
 }
 fn main() {
-    let mut engine = Engine {
-        members: Vec::new(), expenses: Vec::new(), settlements: Vec::new(),
-        currencies: BTreeMap::new(), budgets: BTreeMap::new(), used: HashSet::new(), day: 1, serial: 0,
-    };
+    let mut engine = Engine { day: 1, ..Engine::default() };
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
     let count: usize = lines.next().unwrap().unwrap().parse().unwrap();

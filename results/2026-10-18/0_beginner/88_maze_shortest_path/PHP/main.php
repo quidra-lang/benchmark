@@ -9,12 +9,15 @@ foreach ($maze as $row => $values) {
     }
 }
 $key = fn($cell) => $cell[0].','.$cell[1];
-$queue = [$start]; $parents = [$key($start)=>$start]; $head = 0;
+$queue = [$start];
+$parents = [$key($start)=>$start];
+$head = 0;
 while ($head < count($queue)) {
     $cell = $queue[$head++];
     if ($cell === $goal) break;
     foreach ([[-1,0],[1,0],[0,-1],[0,1]] as [$dr,$dc]) {
-        $r = $cell[0]+$dr; $c = $cell[1]+$dc;
+        $r = $cell[0]+$dr;
+        $c = $cell[1]+$dc;
         $next = [$r,$c];
         if ($r >= 0 && $r < 9 && $c >= 0 && $c < 13 && $maze[$r][$c] !== '#' && !isset($parents[$key($next)])) {
             $parents[$key($next)] = $cell;
@@ -22,7 +25,8 @@ while ($head < count($queue)) {
         }
     }
 }
-$cell = $goal; $steps = 0;
+$cell = $goal;
+$steps = 0;
 while ($cell !== $start) {
     [$r,$c] = $cell;
     if ($maze[$r][$c] === '.') $maze[$r][$c] = '*';

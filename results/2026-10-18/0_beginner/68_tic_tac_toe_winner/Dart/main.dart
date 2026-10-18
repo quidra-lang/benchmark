@@ -1,7 +1,4 @@
-import 'dart:io';
-
 void main() {
-    final out = StringBuffer();
     const boards = [['XXX', 'OO.', 'O.X'], ['X.O', '.X.', 'O..'], ['XO.', '.OX', 'XO.'], ['XOX',
         'XOO', 'OXX'], ['X.O', 'XO.', 'O.X'], ['XOX', 'OXO', 'OXX']];
     const lines = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2,
@@ -17,7 +14,6 @@ void main() {
             }
         }
         final result = winner == 'X' ? 'X wins' : winner == 'O' ? 'O wins' : cells.contains('.') ? 'in progress' : 'draw';
-        out.writeln('board ${i+1}: $result');
+        print('board ${i+1}: $result');
     }
-    stdout.write(out);
 }

@@ -1,5 +1,3 @@
-import Foundation
-
 func queens(_ positions: inout [Int], _ row: Int, _ first: inout [Int], _ found: inout Bool) -> Int {
     if row == positions.count {
         if !found { first = positions }
@@ -8,12 +6,8 @@ func queens(_ positions: inout [Int], _ row: Int, _ first: inout [Int], _ found:
     }
     var count = 0
     for column in positions.indices {
-        var safe = true
-        for previous in 0..<row {
-            if positions[previous] == column || abs(positions[previous] - column) == row - previous {
-                safe = false
-                break
-            }
+        let safe = (0..<row).allSatisfy { previous in
+            positions[previous] != column && abs(positions[previous] - column) != row - previous
         }
         if safe {
             positions[row] = column

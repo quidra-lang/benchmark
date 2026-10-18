@@ -1,7 +1,9 @@
 local a, b = {}, {}
 for _, n in ipairs({12,5,8,21,5,17,3,12,9}) do a[n] = true end
 for _, n in ipairs({8,14,21,6,14,3,25,6}) do b[n] = true end
-local all = {}; for n in pairs(a) do all[n] = true end; for n in pairs(b) do all[n] = true end
+local all = {}
+for n in pairs(a) do all[n] = true end
+for n in pairs(b) do all[n] = true end
 local results = {{},{},{},{}}
 for n in pairs(all) do
     results[1][#results[1]+1] = n

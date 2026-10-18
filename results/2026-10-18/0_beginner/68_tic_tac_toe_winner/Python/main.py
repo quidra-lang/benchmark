@@ -4,7 +4,7 @@ boards = [
 ]
 for number, board in enumerate(boards, 1):
     lines = list(board)
-    lines += ["".join(board[row][column] for row in range(3)) for column in range(3)]
+    lines += ["".join(column) for column in zip(*board)]
     lines += ["".join(board[i][i] for i in range(3)), "".join(board[i][2 - i] for i in range(3))]
     winner = next((line[0] for line in lines if line[0] != "." and len(set(line)) == 1), None)
     if winner:

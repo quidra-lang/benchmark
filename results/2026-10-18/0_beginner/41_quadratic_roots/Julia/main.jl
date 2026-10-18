@@ -1,5 +1,4 @@
 using Printf
-half_up(x) = copysign(floor(abs(x)*10000+0.5)/10000, x)
 function main()
     for (a,b,c) in [(1,-3,-10),(-2,5,4),(3,1,-2),(4,-12,9),(1,2,5),(-2,3,-4)]
         discriminant = b*b - 4*a*c
@@ -7,13 +6,13 @@ function main()
         if discriminant > 0
             first = (-b + sqrt(Float64(discriminant))) / (2*a)
             second = (-b - sqrt(Float64(discriminant))) / (2*a)
-            @printf("x1 = %.4f, x2 = %.4f\n",half_up(max(first,second)),half_up(min(first,second)))
+            @printf("x1 = %.4f, x2 = %.4f\n",max(first,second),min(first,second))
         elseif discriminant == 0
-            @printf("x = %.4f\n",half_up(-b/(2*a)))
+            @printf("x = %.4f\n",-b/(2*a))
         else
             real = -b/(2*a)
             imaginary = sqrt(Float64(-discriminant))/(2*abs(a))
-            @printf("x = %.4f + %.4fi, %.4f - %.4fi\n",half_up(real),half_up(imaginary),half_up(real),half_up(imaginary))
+            @printf("x = %.4f + %.4fi, %.4f - %.4fi\n",real,imaginary,real,imaginary)
         end
     end
 end

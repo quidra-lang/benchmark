@@ -430,18 +430,18 @@ class Splitter:
 
     def categories(self):
         output = ["CATEGORY"]
-        categories = {expense["category"] for expense in self.expenses.values()}
-        total = sum(expense["total"] for expense in self.expenses.values())
-        for category in sorted(categories, key=lambda item: (-self.spent(item), item)):
-            spent = self.spent(category)
+        groups = defaultdict(list)
+        for expense in self.expenses.values():
+            groups[expense["category"]].append(expense)
+        totals = {category: sum(expense["total"] for expense in group) for category, group in groups.items()}
+        total = sum(totals.values())
+        for category in sorted(totals, key=lambda category: (-totals[category], category)):
+            spent = totals[category]
             output.append(f"  {category} {money(spent)} {percentage(spent, total)}")
             shares = defaultdict(int)
-            for expense in self.expenses.values():
-                if expense["category"] == category:
-                    for (name, _), value in zip(
-                        expense["participants"], expense["shares"]
-                    ):
-                        shares[name] += value
+            for expense in groups[category]:
+                for (name, _), value in zip(expense["participants"], expense["shares"]):
+                    shares[name] += value
             ordered = sorted(shares, key=lambda name: (-shares[name], name))
             for name in ordered:
                 value = shares[name]

@@ -8,13 +8,6 @@ offsets = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4]
   lengths = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
   puts "#{names[month - 1]} #{year}"
   puts 'Su Mo Tu We Th Fr Sa'
-  week = Array.new(weekday, '  ')
-  (1..lengths[month - 1]).each do |day|
-    week << format('%2d', day)
-    if week.length == 7
-      puts week.join(' ')
-      week = []
-    end
-  end
-  puts week.join(' ') unless week.empty?
+  fields = Array.new(weekday, '  ') + (1..lengths[month - 1]).map { |day| format('%2d', day) }
+  fields.each_slice(7) { |week| puts week.join(' ') }
 end

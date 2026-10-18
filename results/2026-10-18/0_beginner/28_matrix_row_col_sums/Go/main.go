@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func main() {
 	matrix := [4][5]int{{125, 340, 78, 912, 456}, {603, 27, 819, 150, 384}, {0, 765, 231, 498, 62},

@@ -4,13 +4,14 @@ import (
     "bufio"
     "fmt"
     "os"
+    "slices"
     "sort"
     "strconv"
     "strings"
 )
 
 type seat struct {
-    row, cabin, block, position, kind int
+    row, cabin, block, kind int
     letter byte
 }
 type cabin struct {
@@ -64,10 +65,6 @@ func number(s string) int {
     value, _ := strconv.Atoi(s)
     return value
 }
-func index(values []string, s string) int {
-    for i, value := range values { if value == s { return i } }
-    return -1
-}
 func cabinID(s string) int { return strings.IndexByte(classes, s[0]) }
 func tier(id int) int {
     if value, exists := tiers[people[id].name]; exists { return value }
@@ -118,10 +115,6 @@ func bookedCount(f, c int) int {
     }
     return count
 }
-func contains(values []int, value int) bool {
-    for _, item := range values { if item == value { return true } }
-    return false
-}
 func exitAllowed(id int, a *aircraft, target int) bool {
     return !a.exits[a.seats[target].row] || people[id].kind == 0 && !hasInfant(id)
 }
@@ -132,7 +125,7 @@ func infantAllowed(f, id, target int, moving, ids, assigned []int) bool {
     for _, letter := range plane.cabins[s.cabin].blocks[s.block] {
         peer := plane.lookup[s.row*26+int(letter-'A')]
         owner := flights[f].occupants[peer]
-        if owner >= 0 && owner != id && !contains(moving, owner) && hasInfant(owner) { return false }
+        if owner >= 0 && owner != id && !slices.Contains(moving, owner) && hasInfant(owner) { return false }
     }
     for i, other := range ids {
         t := plane.seats[assigned[i]]
@@ -142,11 +135,11 @@ func infantAllowed(f, id, target int, moving, ids, assigned []int) bool {
 }
 func fits(f int, ids, assigned, vacated []int) bool {
     plane := aircrafts[flights[f].model]
-    moving := append(append([]int(nil), ids...), vacated...)
+    moving := slices.Concat(ids, vacated)
     for i, id := range ids {
         target := assigned[i]
         owner := flights[f].occupants[target]
-        if flights[f].blocked[target] || owner >= 0 && !contains(moving, owner) || !exitAllowed(id, plane, target) || !infantAllowed(f, id, target, moving, ids, assigned) { return false }
+        if flights[f].blocked[target] || owner >= 0 && !slices.Contains(moving, owner) || !exitAllowed(id, plane, target) || !infantAllowed(f, id, target, moving, ids, assigned) { return false }
     }
     return true
 }
@@ -201,6 +194,8 @@ func assignBooking(f, c int, ids []int) string {
     cabin := plane.cabins[c]
     count := len(ids)
     for stage := 0; stage < 3; stage++ {
+        blocks := cabin.blocks
+        if stage == 1 { blocks = []string{strings.Join(cabin.blocks, "")} }
         firstHeight, lastHeight := 1, 1
         if stage == 2 { firstHeight, lastHeight = 2, count }
         for height := firstHeight; height <= lastHeight; height++ {
@@ -208,8 +203,6 @@ func assignBooking(f, c int, ids []int) string {
             if stage == 2 { width = (count+height-1)/height }
             rows := (count+width-1)/width
             for row := cabin.from; row+rows-1 <= cabin.to; row++ {
-                blocks := cabin.blocks
-                if stage == 1 { blocks = []string{strings.Join(cabin.blocks, "")} }
                 for _, block := range blocks {
                     for x := 0; x+width <= len(block); x++ {
                         candidate := make([]int, count)
@@ -234,7 +227,7 @@ func execute(v []string) []string {
         for i := range building.lookup { building.lookup[i] = -1 }
     case "CABIN":
         c := cabinID(v[1])
-        building.cabins[c] = cabin{number(v[2]), number(v[3]), append([]string(nil), v[4:]...)}
+        building.cabins[c] = cabin{number(v[2]), number(v[3]), slices.Clone(v[4:])}
         definition := building.cabins[c]
         for row := definition.from; row <= definition.to; row++ {
             for b, block := range definition.blocks {
@@ -243,7 +236,7 @@ func execute(v []string) []string {
                     if b == 0 && position == 0 || b == len(definition.blocks)-1 && position == len(block)-1 { kind = 0 } else if position == 0 || position == len(block)-1 { kind = 2 }
                     letter := block[position]
                     building.lookup[row*26+int(letter-'A')] = len(building.seats)
-                    building.seats = append(building.seats, seat{row, c, b, position, kind, letter})
+                    building.seats = append(building.seats, seat{row, c, b, kind, letter})
                     building.blocked = append(building.blocked, false)
                 }
             }
@@ -268,7 +261,7 @@ func execute(v []string) []string {
         model, exists := modelIDs[v[2]]
         if !exists { fail("unknown aircraft "+v[2]) }
         plane := aircrafts[model]
-        f := &flight{name: v[1], model: model, blocked: append([]bool(nil), plane.blocked...), occupants: make([]int, len(plane.seats))}
+        f := &flight{name: v[1], model: model, blocked: slices.Clone(plane.blocked), occupants: make([]int, len(plane.seats))}
         for i := range f.occupants { f.occupants[i] = -1 }
         line := "FLIGHT "+f.name+" "+plane.model
         for c := 0; c < 3; c++ {
@@ -290,7 +283,7 @@ func execute(v []string) []string {
             fields := strings.Split(item, ":")
             if seen[fields[0]] { fail("duplicate name "+fields[0]+" in "+v[1]) }
             seen[fields[0]] = true
-            p := &person{name: fields[0], booking: len(bookings), kind: index(typeNames, fields[1]), cabin: c, preference: -1, seat: -1, lap: -1, active: true}
+            p := &person{name: fields[0], booking: len(bookings), kind: slices.Index(typeNames, fields[1]), cabin: c, preference: -1, seat: -1, lap: -1, active: true}
             if len(fields) == 3 { p.preference = strings.IndexByte("WMA", fields[2][0]) }
             if p.kind == 0 { adults = append(adults, len(draft)) }
             if p.kind == 2 { infants = append(infants, len(draft)) }
@@ -325,7 +318,7 @@ func execute(v []string) []string {
         for _, id := range b.people { line += " "+people[id].name+":"+passengerResult(id) }
         out = append(out, line)
     case "STATUS":
-        tiers[v[1]] = index(tierNames, v[2])
+        tiers[v[1]] = slices.Index(tierNames, v[2])
         out = append(out, "STATUS "+v[1]+" "+v[2])
     case "FIND":
         membership := 3
@@ -389,7 +382,7 @@ func execute(v []string) []string {
         }
         remaining, adults := 0, 0
         for _, id := range bookings[b].people {
-            if people[id].active && !contains(removed, id) {
+            if people[id].active && !slices.Contains(removed, id) {
                 remaining++
                 if people[id].kind == 0 { adults++ }
             }
@@ -494,7 +487,10 @@ func execute(v []string) []string {
                     useful := false
                     for _, other := range flight.passengers {
                         p := people[other]
-                        if p.active && p.kind != 2 && p.cabin == c && p.seat < 0 && fits(f, []int{other}, []int{target}, []int{id}) { useful = true }
+                        if p.active && p.kind != 2 && p.cabin == c && p.seat < 0 && fits(f, []int{other}, []int{target}, []int{id}) {
+                            useful = true
+                            break
+                        }
                     }
                     if !useful { continue }
                     out = append(out, fmt.Sprintf("DENIED VOLUNTARY %s %s %c %d", bookings[people[id].booking].pnr, people[id].name, classes[c], voluntary[c]))

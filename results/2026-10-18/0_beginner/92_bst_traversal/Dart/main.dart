@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:math' as math;
 
 class Node {
@@ -38,7 +37,6 @@ Node? remove(Node? node, int key) {
 }
 
 void main() {
-    final out = StringBuffer();
     Node? root;
     for (final key in [50, 27, 74, 13, 39, 62, 88, 6, 31, 45, 70, 34]) {
         root = insert(root, key);
@@ -46,23 +44,26 @@ void main() {
     List<int> traverse(Node? node, int mode) {
         if (node == null)
             return [];
-        return [...(mode == 1 ? [node.key] : <int>[]),...traverse(node.left, mode),...(mode == 0 ? [node.key] : <int>[]),
-            ...traverse(node.right, mode),...(mode == 2 ? [node.key] : <int>[])];
+        return [
+            if (mode == 1) node.key,
+            ...traverse(node.left, mode),
+            if (mode == 0) node.key,
+            ...traverse(node.right, mode),
+            if (mode == 2) node.key,
+        ];
     }
     for (var mode = 0; mode < 3; mode++)
-        out.writeln('${['inorder','preorder','postorder'][mode]}: ${traverse(root,mode).join(' ')}');
-    final queue = [root!], level = <int>[];
+        print('${['inorder','preorder','postorder'][mode]}: ${traverse(root,mode).join(' ')}');
+    final queue = [root!];
     for (var h = 0; h < queue.length; h++) {
         final node = queue[h];
-        level.add(node.key);
         if (node.left != null)
             queue.add(node.left!);
         if (node.right != null)
             queue.add(node.right!);
     }
-    out.writeln('levelorder: ${level.join(' ')}\nheight: ${height(root)}');
+    print('levelorder: ${queue.map((node) => node.key).join(' ')}\nheight: ${height(root)}');
     root = remove(root, 6);
     root = remove(root, 27);
-    out.writeln('preorder after deletions: ${traverse(root,1).join(' ')}\nheight after deletions: ${height(root)}');
-    stdout.write(out);
+    print('preorder after deletions: ${traverse(root,1).join(' ')}\nheight after deletions: ${height(root)}');
 }

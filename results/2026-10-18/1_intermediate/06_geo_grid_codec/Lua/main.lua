@@ -82,11 +82,6 @@ local function digits(value, radices)
     end
     return out
 end
-local function prefix(values, count)
-    local result = {}
-    for index = 1,count do result[index] = values[index] end
-    return result
-end
 local function encode(sys,p,x,y)
     if sys == 'GEOHASH' then
         local a,b = (5*p+1)//2,(5*p)//2
@@ -110,7 +105,7 @@ local function encode(sys,p,x,y)
     end
     if sys == 'MAIDENHEAD' then
         local k = p//2
-        local radices = prefix({18,10,24,10},k)
+        local radices = {table.unpack({18,10,24,10},1,k)}
         local xs,ys = digits(x,radices),digits(y,radices)
         local out = ''
         for index = 1,k do out = out .. char_at(MH[index],xs[index]) .. char_at(MH[index],ys[index]) end
@@ -165,7 +160,7 @@ local function encode(sys,p,x,y)
     local scale = ({1,8,80,160,320,640})[level]
     local u,v = x-280*scale,y-135*scale
     if u < 0 or u >= 80*scale or v < 0 or v >= 100*scale then return '-' end
-    local radices = prefix({80,8,10,2,2,2},level)
+    local radices = {table.unpack({80,8,10,2,2,2},1,level)}
     local us = digits(u,radices)
     radices[1] = 100
     local vs = digits(v,radices)

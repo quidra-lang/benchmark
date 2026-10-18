@@ -1,6 +1,5 @@
 import Foundation
 
-
 let names = ["January","February","March","April","May","June",
     "July","August","September","October","November","December"]
 let offsets = [0,3,2,5,0,3,5,1,4,6,2,4]
@@ -14,7 +13,7 @@ for (index,pair) in [(2024,2),(2026,8),(2026,11)].enumerated() {
     print("Su Mo Tu We Th Fr Sa")
     var week = [String](repeating: "  ", count: weekday)
     for day in 1...lengths[month - 1] {
-        week.append((day < 10 ? " " : "") + String(day))
+        week.append(String(format: "%2d", locale: Locale(identifier: "en_US_POSIX"), day))
         if week.count == 7 {
             print(week.joined(separator: " "))
             week.removeAll()

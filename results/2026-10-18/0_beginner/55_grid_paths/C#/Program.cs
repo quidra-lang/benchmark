@@ -1,16 +1,19 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Globalization;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
 string[] grid = { ".......","..#....","....#..",".#.....","...#.#.","......." };
 foreach (bool obstacles in new[] { false,true }) {
-    int[,] dp = new int[6,7]; dp[0,0] = 1;
+    int[,] dp = new int[6,7];
+    dp[0,0] = 1;
     for (int r = 0; r < 6; r++) for (int c = 0; c < 7; c++) {
-        if (obstacles && grid[r][c] == '#') { dp[r,c] = 0; continue; }
-        if (r > 0) dp[r,c] += dp[r - 1,c]; if (c > 0) dp[r,c] += dp[r,c - 1];
+        if (obstacles && grid[r][c] == '#') {
+            dp[r,c] = 0;
+            continue;
+        }
+        if (r > 0) dp[r,c] += dp[r - 1,c];
+        if (c > 0) dp[r,c] += dp[r,c - 1];
     }
     Console.WriteLine($"{(obstacles ? "with" : "without")} obstacles: {dp[5,6]}");
 }

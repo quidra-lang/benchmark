@@ -66,35 +66,17 @@ class Editor {
         }
         return result
     }
-    private fun markup(line: String): List<Item> {
-        val result = mutableListOf<Item>()
-        var p = 0
-        while (p < line.length) {
-            var token = listOf("<i>","</i>","<b>","</b>","<u>","</u>").firstOrNull { line.startsWith(it,p) }
-            var kind = if (token == null) 0 else 1
-            var digit = 0
-            if (token == null && line.startsWith("</font>",p)) {
-                token = "</font>"
-                kind = 2
-            }
-            if (token == null && line.startsWith("<font",p) && p+5 < line.length && line[p+5] in " >") {
-                val end = line.indexOf('>',p+5)
-                if (end >= 0) {
-                    token = line.substring(p,end+1)
-                    kind = 2
-                }
-            }
-            if (token == null && p+6 <= line.length && line.startsWith("{\\an",p) && line[p+4] in '1'..'9' && line[p+5] == '}') {
-                token = line.substring(p,p+6)
-                kind = 3
-                digit = line[p+4]-'0'
-            }
-            val item = token ?: line.substring(p,p+1)
-            result.add(Item(item,kind,digit))
-            p += item.length
+    private val markupTokens = Regex("""</?[ibu]>|</font>|<font(?=[ >])[^>]*>|\{\\an[1-9]\}|.""")
+    private fun markup(line: String): List<Item> = markupTokens.findAll(line).map { match ->
+        val text = match.value
+        val kind = when {
+            text.startsWith("{\\an") -> 3
+            text.startsWith("<font") || text == "</font>" -> 2
+            text.length > 1 -> 1
+            else -> 0
         }
-        return result
-    }
+        Item(text,kind,if (kind == 3) text[4]-'0' else 0)
+    }.toList()
     private fun listing(position: Int, cue: Cue) = "$position ${cue.index} ${srt(cue.start)} ${srt(cue.end)} ${cue.text.joinToString("|")}"
     fun load(blocks: List<List<String>>): List<String> {
         val output = mutableListOf<String>()
@@ -518,16 +500,9 @@ class Editor {
                 for ((i,c) in cues.withIndex()) {
                     val before = count
                     val lines = c.text.map { t ->
-                        val result = StringBuilder()
-                        var cursor = 0
-                        while (true) {
-                            val found = t.indexOf(old,cursor)
-                            if (found < 0) break
-                            result.append(t.substring(cursor,found)).append(replacement)
-                            cursor = found+old.length
-                            count++
-                        }
-                        result.append(t.substring(cursor)).toString()
+                        val pieces = t.split(old)
+                        count += pieces.size-1
+                        pieces.joinToString(replacement)
                     }
                     if (count > before) changed++
                     cues[i] = c.copy(text = lines)

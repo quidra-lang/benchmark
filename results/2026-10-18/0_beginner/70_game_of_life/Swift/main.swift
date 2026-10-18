@@ -1,6 +1,3 @@
-import Foundation
-
-
 let initial = [".#......", "..#.....", "###.....", "........",
     "........", "........", ".....###", "........"]
 var board = initial.map { $0.map { $0 == "#" } }
@@ -24,5 +21,5 @@ for generation in 0...4 {
     }
     board = next
 }
-let alive = board.reduce(0) { $0 + $1.filter { $0 }.count }
+let alive = board.joined().filter { $0 }.count
 print("alive: \(alive)")

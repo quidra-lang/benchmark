@@ -1,6 +1,3 @@
-import Foundation
-
-
 let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
 for text in ["Man", "Hello, World!", "", "<b>bold</b>", "a+b=c?"] {
     let bytes = Array(text.utf8)

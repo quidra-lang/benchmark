@@ -3,9 +3,7 @@ $puzzle = ['800025000','070080005','260400070','000001900','010000040','60020000
 $board = array_map(fn($row) => array_map('intval',str_split($row)),$puzzle);
 $placements = 0;
 function valid(array $board, int $row, int $column, int $digit): bool {
-    for ($i = 0; $i < 9; $i++) {
-        if ($board[$row][$i] === $digit || $board[$i][$column] === $digit) return false;
-    }
+    if (in_array($digit,$board[$row],true) || in_array($digit,array_column($board,$column),true)) return false;
     $blockRow = intdiv($row,3)*3;
     $blockColumn = intdiv($column,3)*3;
     for ($r = $blockRow; $r < $blockRow+3; $r++) {

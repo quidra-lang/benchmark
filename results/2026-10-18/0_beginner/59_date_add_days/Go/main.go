@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func days(y, m int) int {
 	lengths := []int{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}

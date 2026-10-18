@@ -3,9 +3,9 @@ fn main() {
     let mut counts = std::collections::BTreeMap::new();
     let lower = text.to_ascii_lowercase();
     for w in lower.split(|c: char| !c.is_ascii_alphabetic()).filter(|w| !w.is_empty()) {
-        * counts.entry(w).or_insert(0) += 1;
+        *counts.entry(w).or_default() += 1;
     }
-    let mut entries: Vec<(&str, i32) >= counts.into_iter().collect();
+    let mut entries: Vec<(&str, i32)> = counts.into_iter().collect();
     entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     for (w, c) in entries.iter().take(5) {
         println!("{}: {}", w, c);

@@ -516,9 +516,9 @@ static void execute(const char *line, Strings *out) {
         for (int i = 0; i < n; ++i) {
             const Cue *c = &cues.items[i];
             int code = 0, removed = 0;
-            Strings lines = cmd == 7 ? converted(&c->text, 1, &code, &removed) : clone_strings(&c->text);
+            Strings lines = cmd == 7 ? converted(&c->text, 1, &code, &removed) : c->text;
             if (!lines.count) {
-                free_strings(&lines);
+                if (cmd == 7) free_strings(&lines);
                 continue;
             }
             char setting[64] = "";
@@ -533,7 +533,7 @@ static void execute(const char *line, Strings *out) {
             free(end);
             for (int j = 0; j < lines.count; ++j) push(out, lines.items[j]);
             push(out, "");
-            free_strings(&lines);
+            if (cmd == 7) free_strings(&lines);
         }
     } else if (cmd == 8) {
         push(out, "[Events]");
@@ -758,7 +758,7 @@ static void execute(const char *line, Strings *out) {
             Strings w = words(&c->text), candidate = {0};
             char *all = join(&w, " ");
             if (strlen(all) <= 42) push(&candidate, all);
-            else {
+            else if (strlen(all) <= 85) {
                 size_t best_difference = SIZE_MAX, best_first = SIZE_MAX;
                 for (int j = 1; j < w.count; ++j) {
                     Strings left = {w.items, j, j}, right = {w.items + j, w.count - j, w.count - j};

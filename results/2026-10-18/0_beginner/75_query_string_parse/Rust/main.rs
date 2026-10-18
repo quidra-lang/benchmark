@@ -27,14 +27,8 @@ fn main() {
         }
         println!("query {}:", k + 1);
         for (key, items) in values {
-            print!("  {}: ", key);
-            for (i, value) in items.iter().enumerate() {
-                if i > 0 {
-                    print!(", ");
-                }
-                print!("\"{}\"", value);
-            }
-            println!();
+            let quoted = items.iter().map(|value| format!("\"{}\"", value)).collect::<Vec<_>>().join(", ");
+            println!("  {}: {}", key, quoted);
         }
     }
 }

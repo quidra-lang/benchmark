@@ -10,8 +10,8 @@ struct Hand {
     std::vector<int> key;
 };
 Hand evaluate(const std::string &text) {
-    const std::string ranks = "23456789TJQKA";
-    std::array<int, 15> counts {};
+    std::string ranks = "23456789TJQKA";
+    std::array<int, 15> counts{};
     bool flush = true;
     for (int i = 0; i < 5; i++) {
         int rank = static_cast<int>(ranks.find(text[i * 3])) + 2;
@@ -19,9 +19,7 @@ Hand evaluate(const std::string &text) {
         if (text[i * 3 + 1] != text[1])
             flush = false;
     }
-    Hand h {
-        text, 0, {}
-    };
+    Hand h{text, 0, {}};
     int maximum = 0, pairs = 0;
     for (int r = 14; r >= 2; r--)
         if (counts[r]) {
@@ -57,7 +55,7 @@ int main() {
     std::sort(hands.begin(), hands.end(), [](const Hand &a, const Hand &b) {
         return a.category != b.category ? a.category > b.category : a.key > b.key;
     });
-    const std::array<std::string, 9> categories = {"high card", "one pair", "two pair", "three of a kind",
+    std::array<std::string, 9> categories = {"high card", "one pair", "two pair", "three of a kind",
         "straight", "flush", "full house", "four of a kind", "straight flush"};
     for (std::size_t i = 0; i < hands.size(); i++)
         std::cout << i + 1 << ". " << hands[i].text << ": " << categories[hands[i].category] << '\n';

@@ -22,17 +22,15 @@ string[] lines = {
 var regions = new Dictionary<string,int>();
 var products = new SortedDictionary<string,int>(StringComparer.Ordinal);
 var days = new SortedDictionary<string,int>(StringComparer.Ordinal);
-int total = 0;
 foreach (string line in lines.Skip(1)) {
     string[] fields = line.Split(',');
     int quantity = int.Parse(fields[3],CultureInfo.InvariantCulture);
     int amount = quantity * int.Parse(fields[4],CultureInfo.InvariantCulture);
-    total += amount;
     regions[fields[1]] = regions.GetValueOrDefault(fields[1]) + amount;
     products[fields[2]] = products.GetValueOrDefault(fields[2]) + quantity;
     days[fields[0]] = days.GetValueOrDefault(fields[0]) + amount;
 }
-Console.WriteLine($"total: {total}");
+Console.WriteLine($"total: {days.Values.Sum()}");
 foreach (var pair in regions.OrderByDescending(p => p.Value).ThenBy(p => p.Key,StringComparer.Ordinal)) {
     Console.WriteLine($"{pair.Key}: {pair.Value}");
 }

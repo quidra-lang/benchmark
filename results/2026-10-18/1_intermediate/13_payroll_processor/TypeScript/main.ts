@@ -30,11 +30,7 @@ const emptyTotals = (): Totals => Object.fromEntries(FIELDS.map(f => [f, 0n]));
 class CommandError extends Error {}
 
 function sumStubs(stubs: Totals[]): Totals {
-  const total = emptyTotals();
-  for (const s of stubs) {
-    for (const f of FIELDS) total[f] += s[f];
-  }
-  return total;
+  return Object.fromEntries(FIELDS.map(field => [field, stubs.reduce((total, stub) => total + stub[field], 0n)]));
 }
 
 function progressive(table: Map<bigint, bigint>, amount: bigint): bigint {
@@ -506,18 +502,13 @@ class Payroll {
         break;
       }
       case "REPORT": {
-        const departments = new Map<string, Totals[]>();
-        const all: Totals[] = [];
-        for (const e of this.employees.values()) {
-          for (const saved of e.stubs.values()) {
-            if (!departments.has(saved.department)) departments.set(saved.department, []);
-            departments.get(saved.department)!.push(saved.values);
-            all.push(saved.values);
-          }
-        }
+        const saved = [...this.employees.values()].flatMap(e => [...e.stubs.values()]);
+        const departments = Map.groupBy(saved, stub => stub.department);
         this.emit(0, "REPORT", "period", this.closed);
-        for (const department of [...departments.keys()].sort()) this.reportLine(department, departments.get(department)!);
-        this.reportLine("total", all);
+        for (const department of [...departments.keys()].sort()) {
+          this.reportLine(department, departments.get(department)!.map(stub => stub.values));
+        }
+        this.reportLine("total", saved.map(stub => stub.values));
         break;
       }
       case "TOP": {

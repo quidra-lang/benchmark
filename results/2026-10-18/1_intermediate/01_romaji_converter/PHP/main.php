@@ -112,12 +112,7 @@ function match_syllable(string $word, int $position, string $system): ?array
     if ($position >= strlen($word)) {
         return null;
     }
-    foreach ($readings[$system] as $entry) {
-        if (substr_compare($word, $entry['text'], $position, strlen($entry['text'])) === 0) {
-            return $entry;
-        }
-    }
-    return null;
+    return array_find($readings[$system],fn($entry) => substr_compare($word,$entry['text'],$position,strlen($entry['text'])) === 0);
 }
 
 function parse_word(string $text, int $start, string $system): array
@@ -461,7 +456,7 @@ function execute(string $line, array &$settings): string
             fail('expected 3 or 5 lines');
         }
         for ($i = 1; $i <= $lines; ++$i) {
-            if (array_filter($words, fn($w) => $w['part'] === $i) === []) {
+            if (!array_any($words, fn($w) => $w['part'] === $i)) {
                 fail('expected 3 or 5 lines');
             }
         }

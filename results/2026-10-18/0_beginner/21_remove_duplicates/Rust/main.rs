@@ -6,11 +6,6 @@ fn main() {
             unique.push(n);
         }
     }
-    for (i, n) in unique.iter().enumerate() {
-        if i > 0 {
-            print!(" ");
-        }
-        print!("{}", n);
-    }
-    println!("\nremoved: {}", values.len() - unique.len());
+    println!("{}", unique.iter().map(i32::to_string).collect::<Vec<_>>().join(" "));
+    println!("removed: {}", values.len() - unique.len());
 }

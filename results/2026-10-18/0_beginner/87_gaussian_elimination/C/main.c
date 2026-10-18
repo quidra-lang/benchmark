@@ -6,7 +6,7 @@ int main(void) {
         -2, 1, 3, -7}, {-2, 4, 6, -1, 9}, {3, 1, -4, 2, 5}}};
     for (int s = 0; s < 2; s++) {
         int n = s + 3;
-        double(*a)[5] = systems[s], x[4];
+        double (*a)[5] = systems[s], x[4];
         for (int k = 0; k < n; k++) {
             int pivot = k;
             for (int i = k + 1; i < n; i++)
@@ -31,10 +31,8 @@ int main(void) {
             x[i] = sum / a[i][i];
         }
         printf("system %d:\n", s + 1);
-        for (int i = 0; i < n; i++) {
-            long long q = (long long)(fabs(x[i]) * 10000 + 0.5);
-            printf("x%d = %s%lld.%04lld\n", i + 1, x[i] < 0 ? "-": "", q / 10000, q % 10000);
-        }
+        for (int i = 0; i < n; i++)
+            printf("x%d = %.4f\n", i + 1, x[i]);
     }
     return 0;
 }

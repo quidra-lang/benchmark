@@ -13,7 +13,8 @@ while ($pc >= 0 && $pc < count($program)) {
         continue;
     } elseif ($operation === 'PRINT') printf("%d\n",$value($parts[1]));
     else {
-        $register = $parts[1]; $operand = $value($parts[2]);
+        $register = $parts[1];
+        $operand = $value($parts[2]);
         $registers[$register] = match ($operation) {
             'SET' => $operand, 'ADD' => $registers[$register]+$operand,
             'SUB' => $registers[$register]-$operand, 'MUL' => $registers[$register]*$operand,

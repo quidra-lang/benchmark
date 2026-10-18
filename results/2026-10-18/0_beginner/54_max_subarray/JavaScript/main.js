@@ -2,9 +2,16 @@ const arrays = [[3, -5, 8, -2, 6, -9, 4, 1, -7, 5, -3, 2], [-4, 7, -1, 3, -8, 10
 for (const values of arrays) {
   let current = values[0], best = values[0], start = 0, bestStart = 0, bestEnd = 0;
   for (let i = 1; i < values.length; i++) {
-    if (current + values[i] < values[i]) { current = values[i]; start = i; }
+    if (current + values[i] < values[i]) {
+      current = values[i];
+      start = i;
+    }
     else current += values[i];
-    if (current > best) { best = current; bestStart = start; bestEnd = i; }
+    if (current > best) {
+      best = current;
+      bestStart = start;
+      bestEnd = i;
+    }
   }
   console.log(`max sum ${best} at [${bestStart}, ${bestEnd}]`);
 }

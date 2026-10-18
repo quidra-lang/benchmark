@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
 
@@ -12,13 +11,8 @@ static int Queens(int[] positions, int row, int[] first, ref bool found) {
     }
     int count = 0;
     for (int column = 0; column < positions.Length; column++) {
-        bool safe = true;
-        for (int previous = 0; previous < row; previous++) {
-            if (positions[previous] == column || Math.Abs(positions[previous] - column) == row - previous) {
-                safe = false;
-                break;
-            }
-        }
+        bool safe = Enumerable.Range(0, row).All(previous =>
+            positions[previous] != column && Math.Abs(positions[previous] - column) != row - previous);
         if (safe) {
             positions[row] = column;
             count += Queens(positions,row + 1,first,ref found);
