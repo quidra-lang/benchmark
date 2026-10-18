@@ -197,10 +197,9 @@ def _identifier_chunks(name: str) -> list[str]:
 def tokenize(source: str) -> list[Token]:
     """Split source into tokens under one language-independent rule set.
 
-    Each numeric digit is a token; outside strings, identifiers split at '_'
-    and word-case boundaries. Alphanumeric words like real32 remain intact.
-    Inside strings, consecutive ASCII letters form one token, while digits,
-    punctuation and spaces are split normally. String delimiters are tokens.
+    Each numeric digit is a token; identifiers split at '_' and word-case
+    boundaries. Alphanumeric words like real32 remain intact. The same token
+    boundaries apply inside strings; their delimiters are separate tokens.
     Four leading ASCII spaces count as one indentation token; LF and blank
     lines count as tokens as well. Comments are counted, not discarded.
     """
@@ -238,6 +237,9 @@ def tokenize(source: str) -> list[Token]:
             continue
 
         ch = source[i]
+        # Apply identical lexical rules inside and outside quoted literals,
+        # without matching a token across the literal's closing delimiter.
+        token_limit = literal_close_start if literal_close_start is not None else n
         if ch == "\n":
             emit("newline", i + 1)
             continue
@@ -251,23 +253,8 @@ def tokenize(source: str) -> list[Token]:
             emit("space", i + 1)
             continue
 
-        if literal_close_start is not None:
-            # Literal content is *data*, not code: do not parse nested quotes,
-            # identifiers with numeric suffixes, or language keywords here.
-            if ch.isascii() and ch.isalpha():
-                end = i + 1
-                while end < literal_close_start and source[end].isascii() and source[end].isalpha():
-                    end += 1
-                emit("word", end)
-                continue
-            if ch.isdecimal():
-                emit("digit", i + 1)
-                continue
-            # Symbols, including escaped quotes, are individual source marks.
-            emit("symbol", i + 1)
-            continue
-
-        bounds = _literal_regions(source, i)
+        # Do not interpret quote marks inside a literal as nested literals.
+        bounds = _literal_regions(source, i) if literal_close_start is None else None
         if bounds is not None:
             prefix_end, opener_end, literal_close_start, literal_end = bounds
             if prefix_end > i:
@@ -279,9 +266,9 @@ def tokenize(source: str) -> list[Token]:
         # for_i. is decomposed through the generic identifier path below.
         matched = False
         for word in J_WORDS_BY_START.get(ch, ()):
-            if source.startswith(word, i):
-                after = i + len(word)
-                if after == n or not _id_start(source[after]):
+            after = i + len(word)
+            if after <= token_limit and source.startswith(word, i):
+                if after == token_limit or not _id_start(source[after]):
                     emit("operator_word", after)
                     matched = True
                     break
@@ -291,8 +278,8 @@ def tokenize(source: str) -> list[Token]:
         # Recognize the whole numeric spelling, but emit each digit as its
         # own token. Otherwise a suffix such as e12, xFF or u64 would be
         # mistaken for an ordinary alphanumeric identifier.
-        if ch.isdecimal() or (ch == "." and i + 1 < n and source[i + 1].isdecimal()):
-            m = RE_NUMBER.match(source, i)
+        if ch.isdecimal() or (ch == "." and i + 1 < token_limit and source[i + 1].isdecimal()):
+            m = RE_NUMBER.match(source, i, token_limit)
             if m:
                 number_end = m.end()
                 hex_literal = source.startswith(("0x", "0X"), i)
@@ -322,13 +309,13 @@ def tokenize(source: str) -> list[Token]:
             continue
         # J uses _ for negative numeric literals; Python identifiers like
         # _137 consequently follow exactly the same neutral textual rules.
-        if ch == "_" and i + 1 < n and source[i + 1].isdecimal():
+        if ch == "_" and i + 1 < token_limit and source[i + 1].isdecimal():
             emit("symbol", i + 1)
             continue
 
         if _id_start(ch):
             end = i + 1
-            while end < n and _id_continue(source[end]):
+            while end < token_limit and _id_continue(source[end]):
                 end += 1
             # Apply the same identifier boundaries to every language. Never
             # split an alphanumeric word such as real32 solely at its digits.
@@ -346,17 +333,17 @@ def tokenize(source: str) -> list[Token]:
 
         # Julia permits broadcast of Unicode operators, e.g. .⊗ .√ .∈.
         # The same lexical rule is applied to *all* supported languages.
-        if ch == "." and i + 1 < n:
+        if ch == "." and i + 1 < token_limit:
             next_cat = unicodedata.category(source[i + 1])
             if next_cat.startswith("S") and not _id_start(source[i + 1]):
                 end = i + 2
-                while end < n and unicodedata.category(source[end]).startswith("S"):
+                while end < token_limit and unicodedata.category(source[end]).startswith("S"):
                     end += 1
                 emit("operator", end)
                 continue
 
         for op in OPERATORS_BY_START.get(ch, ()):
-            if source.startswith(op, i):
+            if i + len(op) <= token_limit and source.startswith(op, i):
                 emit("operator", i + len(op))
                 matched = True
                 break
