@@ -1,0 +1,12 @@
+const std = @import("std");
+
+
+pub fn main(init: std.process.Init) !void {
+    var output_buffer: [8192]u8 = undefined;
+    var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
+    const out = &writer.interface;
+    for ([_]u32{ 0, 59, 3725, 45296, 86400, 312047 }) |s| {
+        try out.print("{d} seconds = {d:0>2}:{d:0>2}:{d:0>2}\n", .{s, s / 3600, (s / 60) % 60, s % 60});
+    }
+    try out.flush();
+}

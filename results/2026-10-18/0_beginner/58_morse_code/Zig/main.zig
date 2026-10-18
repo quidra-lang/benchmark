@@ -1,0 +1,22 @@
+const std = @import("std");
+
+
+pub fn main(init: std.process.Init) !void {
+    var output_buffer: [8192]u8 = undefined;
+    var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
+    const out = &writer.interface;
+    const codes=[_] []const u8{".-","-...","-.-.","-..",".","..-.","--.","....","..",".---","-.-",".-..","--","-.","---",".--.","--.-",".-.","...","-","..-","...-",".--","-..-","-.--","--..","-----",".----","..---","...--","....-",".....","-....","--...","---..","----."};
+    const alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";const message="MEET ME AT PIER 9 AT 1745";
+    var encoded:[512]u8=undefined;var len:usize=0;var need_space=false;
+    for(message) |c| {
+        if(c==' ') {const part=try std.fmt.bufPrint(encoded[len..]," / ", .{});len+=part.len;need_space=false;continue;}
+        if(need_space) {encoded[len]=' ';len+=1;}
+        const index:usize=if(c>='A' and c<='Z') c-'A' else 26+c-'0';
+        for(codes[index]) |v| {encoded[len]=v;len+=1;}need_space=true;
+    }
+    try out.print("{s}\n", .{encoded[0..len]});
+    var tokens=std.mem.splitScalar(u8,encoded[0..len],' ');
+    while(tokens.next()) |token| {if(std.mem.eql(u8,token,"/")) {try out.writeByte(' ');}else{for(codes,0..) |code,i| {if(std.mem.eql(u8,code,token)) {try out.writeByte(alphabet[i]);break;}}}}
+    try out.writeByte('\n');
+    try out.flush();
+}
