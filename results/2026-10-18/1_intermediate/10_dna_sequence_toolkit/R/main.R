@@ -279,8 +279,9 @@ translation <- function(command, name, frame) {
         emit(codon, genetic_code[[codon]], counts[[codon]])
     }
   } else {
-    protein <- strsplit(protein, "*", fixed = TRUE)[[1]][1]
-    if (is.na(protein) || nchar(protein) == 0) fail("empty protein")
+    stop_at <- regexpr("*", protein, fixed = TRUE)[1]
+    if (stop_at > 0) protein <- substr(protein, 1, stop_at - 1)
+    if (nchar(protein) == 0) fail("empty protein")
     letters <- chars(protein)
     counts <- table(letters)
     mass <- sum(amino_mass[letters]) + 18015
