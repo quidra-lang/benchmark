@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -360,7 +361,7 @@ class Toolkit {
             for (const string& codon : frequency_order(counts))
                 emit(codon, code.at(codon), counts.at(codon));
         } else {
-            protein.erase(protein.find('*'));
+            protein = protein.substr(0, protein.find('*'));
             if (protein.empty()) throw CommandError("empty protein");
             map<char, int> counts;
             int mass = 18015, charge = 0;
