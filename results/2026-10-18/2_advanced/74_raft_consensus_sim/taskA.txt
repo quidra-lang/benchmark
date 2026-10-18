@@ -1,0 +1,498 @@
+[Overview]
+Write a program that reproduces, as a discrete-time simulation, a cluster of several servers (hereafter "nodes") running the Raft consensus algorithm.
+The input is three files in the input/ folder (cluster settings, network settings, script of events). Following the Raft rules, each node performs: starting an election when its election timer expires and voting (including the check of whether the candidate's log is sufficiently up to date); heartbeats and log replication by the leader (the consistency check using the preceding entry, and moving the send position back when they do not match); commitment that targets only entries of the current term replicated on a majority; and application of committed commands to a key-value store (the state machine). In addition, the program also handles a leader voluntarily stepping down when it can no longer communicate with a majority (the quorum check), and leadership transfer (the immediate election request).
+Messages between nodes pass through the network and arrive after a delay fixed for each link. Messages may be lost because of partitions, drop rules, periodic loss, or the destination being down. The script contains, with times, client requests (a node that is not the leader redirects the client to the leader), network partitions and their healing, node crashes and restarts (the term, the vote and the log are kept), and leadership transfer instructions. The length of the election timer is determined by the specified MINSTD random numbers.
+During the simulation, five safety properties are checked: election safety, leader completeness, log matching, state machine safety, and retention of committed entries. As results, the program writes to five files in the output/ folder: the record of events (the trace), the history of leaders by term, the final log of each node, the contents of each node's state machine together with the results of the client requests, and the safety check results together with network statistics. Nothing is written to standard output.
+All computation is done in integers; no real numbers are used. Only the specified MINSTD generator is used for random numbers, and the order of every step is fully specified, so the result is uniquely determined.
+
+[Input files]
+There are three input files: input/cluster.txt, input/network.txt and input/script.txt. Every file consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). There are no empty lines and no spaces at the start or end of a line. The items within a line are separated by one ASCII space. Integers are written in decimal, without extra leading zeros, without + on positive numbers, and with - only on negative numbers (-0 does not appear). In the descriptions below, <...> denotes a part filled in with a value; the symbols < and > themselves appear in neither the input nor the output.
+
+* input/cluster.txt (cluster settings)
+It consists of the following 10 lines, in this order.
+- NODES <N>: the number of nodes. The nodes are numbered from 1 to N.
+- ELECTION <Emin> <Emax>: the range of the election timeout ([Processing] section 3).
+- HEARTBEAT <H>: the interval at which the leader sends heartbeats (section 12).
+- BATCH <B>: the maximum number of entries carried by one append request (section 10).
+- QUORUM <Q>: the interval at which the leader performs the quorum check (section 12).
+- SEED <s>: the seed of the MINSTD random numbers (section 3).
+- END <T>: the final time of the simulation. Times 0 through T are processed.
+- RETRY <R>: the time until a client retries a rejected request (section 7).
+- ATTEMPTS <A>: the maximum number of attempts made for one request (section 7).
+- SAMPLE <S>: the time interval at which the TIMELINE lines of output/leaders.txt are written (section 15).
+
+* input/network.txt (network settings)
+The first line is "DEFAULT <d>", the default link delay. Each line from the second line on has one of the following 3 forms, and the lines may appear in any order.
+- DELAY <a> <b> <d>: sets the delay of the link from a to b to d.
+- LOSS <a> <b> <k>: on the link from a to b, loses one message out of every k (section 4).
+- DROP <a> <b> <type> <t1> <t2>: loses every message of the specified type sent on the link from a to b at a time at least t1 and at most t2 (section 4).
+<a> and <b> are each a node number or the symbol *, and * matches every node. <type> is one of the message types RV, RVR, AE, AER, TN (section 4), or ALL, which matches every type.
+A "link" is a one-way communication channel from a to b, represented by an ordered pair of two distinct nodes a, b (a != b). There are N * (N - 1) links, and the link from a to b is written a->b. A line "matches" a link when the line's a matches the link's source and the line's b matches the link's destination.
+- The delay of a link is the d of the last line in the file among the DELAY lines matching that link. If no DELAY line matches, it is the d of DEFAULT.
+- The loss period of a link is the k of the last line in the file among the LOSS lines matching that link. If no LOSS line matches, it is 0 (no loss).
+- All matching DROP lines are in effect.
+
+* input/script.txt (script of events)
+Each line starts with a time <t> and has one of the following 6 forms. The lines are in increasing order of time (the order among lines with the same time is arbitrary).
+- <t> REQUEST <v> <command>: at time t, a client sends a request to node v (section 7).
+- <t> CRASH <v>: at time t, node v crashes (stops).
+- <t> RESTART <v>: at time t, node v restarts.
+- <t> PARTITION <group1> <group2> ...: at time t, partitions the network. Each group is node numbers joined by commas (,) (example: 1,4 2,3,5).
+- <t> HEAL: at time t, removes the partition.
+- <t> TRANSFER <a> <b>: at time t, instructs node a to transfer leadership to node b (section 13).
+<command> has one of the following 4 forms. <key> is a string of 1 to 8 lowercase English letters, and <value> and <increment> are integers.
+- SET <key> <value>: sets the key to the value.
+- ADD <key> <increment>: adds the increment to the value of the key.
+- DEL <key>: deletes the key.
+- GET <key>: reads the value of the key.
+The REQUEST lines are given request numbers 1, 2, 3, ... in order of appearance in the file. The request with request number q is called "request rq", and in the output it is written r<q> (example: r7). Lines of the 5 forms other than REQUEST are called "control events".
+
+[Processing]
+== 1. Notation and common rules ==
+- Times are integers >= 0. The simulation advances by 1 from time 0 to time T (section 5). In the descriptions below, t denotes the current time.
+- The node with number i is called "node i", and in the output it is written n<i> (example: n3). "Node order" means increasing order of node number.
+- When a "set of nodes" is output, it is written as the n<i> in node order joined by commas (,) (example: n1,n3,n4). The empty set is written -.
+- A "majority" is a count satisfying 2 * count > N (with N = 5, 3 or more).
+- A "log" is a sequence of entries, indexed 1, 2, 3, ... in order from the first entry. Each entry has three things: a term, a command and a request number. The entry added when a leader takes office is called a NOOP entry; its command is NOOP and its request number is 0. An entry made from a client request has that request's command and request number. Two entries are "the same" when their terms, commands and request numbers are all equal.
+- The number of entries in a log is called its "last index", and the term of its last entry its "last term" (both are 0 if the log is empty). The term of the entry at index k of a log is written term(k), and term(0) = 0.
+- Log X is "at least as up to date as" log Y when the last term of X is greater than the last term of Y, or the last terms are equal and the last index of X is greater than or equal to the last index of Y.
+- "Write to the trace" means appending one line to output/trace.txt. Each trace line has the form "<time> <content>", where the time is the value of t at the moment of writing. Below, trace lines are shown with the time omitted, giving only the content (example: "HEAL" is actually written like "1580 HEAL").
+- When sending something to each node other than itself, a node sends in node order.
+
+== 2. Node state ==
+Each node has the following state.
+(1) Persistent state (not lost on a crash): the current term (initial value 0), the votedFor (the node voted for in the current term; initial value "none"), and the log (initially empty).
+(2) Volatile state (reset to initial values on a crash): the role (one of FOLLOWER, CANDIDATE, LEADER; initial value FOLLOWER), the commit index (initial value 0), the applied index (initial value 0), the key-value store (a mapping from keys to integers; initially empty), the known leader (initial value "none"), the vote set (initially empty), the election deadline (initial value "none"), and the state used only by a leader (next[j] and match[j] for each node j other than itself, the heartbeat deadline, the quorum check deadline, the set of nodes heard from, and the transfer state).
+(3) Running state: up or down. At time 0, every node is up.
+(4) Statistics values (not lost on a crash; all initially 0): the number of elections started, the number of times it became leader, the number of votes granted, the number of time steps during which it was leader (leader ticks), the number of append requests whose consistency check succeeded (ae_ok), the number of append requests whose consistency check failed (ae_fail), the number of entries added to the log while processing append requests (appended), the number of entries removed by truncation (truncated), and the number of times an entry was applied to the state machine (applies).
+A node that is down does nothing. It receives no messages and processes no timers.
+
+== 3. Random numbers and the election timer ==
+Initialize the state x of the MINSTD generator with the seed s. Each time a value is drawn, update x to (48271 * x) mod 2147483647, and the updated x is the drawn value.
+"Set the election timer" means drawing one value x, letting D = Emin + (x mod (Emax - Emin + 1)), and setting the election deadline to t + D. The election timer is set only in the following cases, and each time one value is drawn.
+- Initialization at time 0 (section 5).
+- When a node restarts (section 6).
+- When a node starts an election (section 9 (1)).
+- When a node grants a vote (section 9 (2)).
+- When a node accepts an append request (section 10 (2)).
+- When a leader steps down (section 8, section 12).
+The election deadline is used only while the role is FOLLOWER or CANDIDATE. The total number of values drawn is written to output/safety.txt.
+
+== 4. Network ==
+There are the following 5 message types. Every message has a source, a destination and a term (the source's current term at the time of sending).
+- RV (vote request): carries the candidate's last index and last term.
+- RVR (vote response): carries whether the vote was granted.
+- AE (append request): carries the preceding index prev, the preceding term prevTerm, a sequence of entries (0 or more), and the leader's commit index commit. The entries are copies of entries of the leader's log.
+- AER (append response): carries success or failure, and an integer m. On success m is the last index whose consistency was confirmed; on failure it is a hint for the leader.
+- TN (immediate election request): has no content other than the term.
+
+When a node sends a message, the following are checked in this order.
+(1) If the source and destination are in different groups (PARTITION in section 6), the message is lost (reason partition).
+(2) Otherwise, if there is at least one DROP line that matches the link, whose type is the message's type or ALL, and with t1 <= t <= t2, the message is lost (reason rule).
+(3) Otherwise, increment the link's pass count (a counter per link; initial value 0) by 1. If the link's loss period k is 1 or more and the pass count is a multiple of k, the message is lost (reason loss).
+(4) Otherwise, the message is scheduled to arrive at time "t + the link's delay" and waits for delivery.
+
+In phase 3 of each time step (section 5), the messages scheduled to arrive at time t are taken out one at a time, in increasing order of source number, and for the same source in the order they were sent, and handled as follows.
+- If the destination node is down, the message is lost (reason down).
+- Otherwise, if the source and destination are in different groups, the message is lost (reason partition).
+- Otherwise, the message is delivered and the destination node processes it (section 8).
+Messages sent during processing are never delivered at the same time step, because delays are at least 1. Messages are counted by type and by link: the number sent, the number delivered, and the number lost for each reason (section 16).
+Interactions between clients and nodes (section 7) do not go through the network and are not affected by partitions, delays or drops.
+
+== 5. Advancing time ==
+At the beginning of time 0, set the election timer on each node in node order, and each time write "START n<i> deadline <election deadline>" to the trace.
+After that, at each time t = 0, 1, 2, ..., T, perform the following 5 phases in this order.
+- Phase 1: execute the control events at time t, in file order (section 6).
+- Phase 2: make the attempts of the requests whose scheduled attempt time is t, in increasing order of request number (section 7).
+- Phase 3: deliver the messages scheduled to arrive at time t (section 4).
+- Phase 4: process the timers of each up node, in node order (section 12).
+- Phase 5: perform the end-of-time-step checks and statistics (section 15).
+
+== 6. Control events ==
+- CRASH v: write "CRASH n<v> <role> term <current term>" to the trace (the role and term are those just before the crash). If the role of node v is LEADER, its leadership ends with reason CRASH (section 9 (5)). Then make node v down and reset all its volatile state to initial values.
+- RESTART v: make node v up (the volatile state stays at its initial values), set the election timer, and write "RESTART n<v> term <current term> length <last index> deadline <election deadline>" to the trace.
+- PARTITION <group1> <group2> ...: make each node belong to the group in which it is written. Only nodes in the same group can communicate. Write "PARTITION <group1> <group2> ..." to the trace. Each group is written as a set of nodes (section 1), and the groups are listed in the order written in the script.
+- HEAL: put all nodes back into a single group. Write "HEAL" to the trace. At time 0, all nodes belong to a single group.
+- TRANSFER a b: defined in section 13.
+
+== 7. Client requests ==
+Each request has a scheduled attempt time, a destination (the node visited first in the next attempt), an attempt count and a redirect count. Initially the scheduled time is the time of the REQUEST line, the destination is the node of the REQUEST line, and the attempt count and redirect count are 0. A request is attempted at each scheduled time until it is "accepted" or "abandoned".
+One attempt is made as follows. First, increment the attempt count by 1. Next, visit the destination node, and with i being the visited node, check the following (1) to (4).
+(1) If node i is down, the request is rejected with reason down.
+(2) If the role of node i is LEADER: if node i is transferring (section 13), the request is rejected with reason transfer. If it is not transferring, the request is accepted. Node i appends to the end of its log an entry with its own current term, the request's command and the request number, increments by 1 the append count of the leader record for that term (section 9 (4)), and writes "ACCEPT r<q> n<i> index <index of the appended entry> term <current term>" to the trace. The request remembers the index and term of the accepted entry.
+(3) If the known leader of node i is "none", or if the request has already been redirected N - 1 times in this attempt, the request is rejected with reason noleader (the latter never actually happens).
+(4) Otherwise: with j being the known leader of node i, write "REDIRECT r<q> n<i> n<j>" to the trace, increment the redirect count by 1, visit node j, and continue checking from (1).
+When the request is rejected, let i be the rejecting node (the last node visited). If the attempt count is less than A, set the destination to (i mod N) + 1 and the scheduled time to t + R, and write "REJECT r<q> n<i> <reason> retry n<destination> at <scheduled time>" to the trace. If the attempt count equals A, the request is abandoned, and "REJECT r<q> n<i> <reason> giveup" is written to the trace.
+Accepted and abandoned requests are not attempted again. A leader does not send any message immediately when it accepts a request. The appended entry is sent in later append requests.
+
+== 8. Message processing and term update ==
+When a node receives a delivered message whose term is greater than its own current term, it performs the following "term update" before the type-specific processing.
+- Write "TERM n<i> <old term>-><new term> <type> n<source> <role>" to the trace. The role is the one before the update.
+- If the role is LEADER, its leadership ends with reason STEPDOWN before the term is changed (section 9 (5)).
+- Set the current term to the message's term, set the votedFor and the known leader to "none", and set the role to FOLLOWER.
+- If the role before the update was LEADER, set the election timer. If it was CANDIDATE or FOLLOWER, do not change the election deadline.
+After that (or immediately, if no term update was done), perform the processing according to the type: section 9 for RV and RVR, section 10 for AE and AER, and section 13 for TN.
+
+== 9. Elections ==
+(1) Starting an election: when a node starts an election, it increments its current term by 1, sets its role to CANDIDATE, its votedFor to itself, its vote set to the set consisting only of itself, and its known leader to "none", sets the election timer, and increments its number of elections started by 1. It creates an election record (time, node, term, trigger). The trigger is timeout for an election started by the election deadline (section 12), and transfer for an election started by a TN (section 13). It writes "ELECTION n<i> term <new term> last <last index>/<last term> deadline <election deadline>" to the trace, and sends an RV (carrying its own last index and last term) to each node other than itself.
+(2) Processing an RV: a node that receives an RV checks the following in this order. If the message's term is less than its own current term, it rejects with reason term. Otherwise, if its votedFor is neither "none" nor the source of the RV, it rejects with reason voted. Otherwise, if the candidate's log (the log represented by the last index and last term carried by the RV) is not at least as up to date as its own log, it rejects with reason log. Otherwise, it grants the vote.
+When granting, it sets its votedFor to the source, increments its number of votes granted by 1, sets the election timer, and writes "VOTE n<i> n<c> term <current term> deadline <election deadline>" to the trace (i is itself, c is the source). When rejecting, it writes "DENY n<i> n<c> term <current term> <reason>" to the trace. In both cases, it finally sends an RVR (whether the vote was granted) to the source.
+(3) Processing an RVR: if the receiving node's role is CANDIDATE, the message's term equals its own current term, and the response grants the vote, it adds the source to its vote set. If, as a result, the size of the vote set becomes a majority, it becomes leader. Any other RVR is ignored.
+(4) Becoming leader: set the role to LEADER and the known leader to itself. For each node j other than itself, set next[j] to "the last index at this moment + 1" and match[j] to 0. Next, append a NOOP entry with the current term to the end of the log (next[j] equals the index of the NOOP entry). Increment the number of times it became leader by 1, and record "won" and the time it became leader in this node's latest election record. Perform the safety checks (section 14 (1) and (2)). Create the leader record for that term (node, time taking office, vote set, append count 1). Write "LEADER n<i> term <current term> votes <vote set> noop <index of the NOOP entry>" to the trace, and send an AE (section 10 (1)) to each node other than itself. Set the heartbeat deadline to t + H and the quorum check deadline to t + Q, and empty the set of nodes heard from.
+(5) End of leadership: when leadership ends, record the end time t, the reason, and the commit index at that moment in the leader record of the term in which the node is leader (its current term at that moment), and if it is transferring, cancel the transfer (nothing is written to the trace). The reason is one of CRASH (section 6), STEPDOWN (section 8), QUORUM (section 12).
+
+== 10. Log replication ==
+(1) Creating an AE: when the leader sends an AE to node j, prev = next[j] - 1, prevTerm = term(prev), the sequence of entries is the entries of the leader's log from index prev + 1 to min(prev + B, last index) (empty if prev equals the last index), and commit is the leader's commit index.
+(2) Processing an AE: a node that receives an AE processes it as follows.
+- If the message's term is less than its own current term: send a failure AER (m = 0) to the source. Do nothing else (neither ae_ok nor ae_fail changes).
+- Otherwise (when the terms are equal): if the role is CANDIDATE, set the role to FOLLOWER and write "YIELD n<i> term <current term> n<source>" to the trace. Set the known leader to the source and set the election timer (this is called "accepting the append request"). Next, perform the consistency check. The check fails if prev is greater than its own last index, or if term(prev) differs from prevTerm. In that case, increment ae_fail by 1 and send a failure AER to the source. Its m is its own last index if prev is greater than the last index, and prev - 1 otherwise.
+If the check succeeds, increment ae_ok by 1, and handle the entries of the AE in order from the first, with their indices k = prev + 1, prev + 2, ..., as follows. First, if k is less than or equal to its own last index and term(k) differs from that entry's term, remove all entries at index k and after (truncation; (3)). Then, if k is greater than its own last index, append the entry to the end of the log and increment appended by 1 (if k is less than or equal to the last index and the terms are equal, do nothing). After all entries have been handled, let M = prev + (the number of entries in the AE), and if min(commit, M) is greater than its own commit index, advance the commit index to min(commit, M) (section 11). Finally, send a success AER (m = M) to the source.
+(Since there is at most one leader per term, a node whose role is LEADER never receives an AE with the same term as its own.)
+(3) Truncation: when a node removes the entries at index k and after from its log, it adds the number of removed entries to truncated, performs the safety check (section 14 (5)) on the removed entries, and writes "TRUNCATE n<i> from <k> removed <number of removed entries>" to the trace.
+(4) Processing an AER: an AER is processed only when the receiving node's role is LEADER and the message's term equals its own current term; otherwise it is ignored. Let j be the source, and add j to the set of nodes heard from.
+- For a success AER: set match[j] to max(match[j], m) and next[j] to max(next[j], m + 1), and perform the commit check ((5)). After that, if node j is the transfer target (section 13), the TN has not been sent yet, and match[j] equals the last index, send a TN to j (section 13). Otherwise, if next[j] is less than or equal to the last index, send an AE to j.
+- For a failure AER: set next[j] to max(match[j] + 1, min(next[j] - 1, m + 1)), write "BACKTRACK n<i> n<j> next <new next[j]>" to the trace, and send an AE to j.
+(5) Commit check: the leader examines index k, decreasing by 1 from the last index down to "commit index + 1", as follows. If term(k) differs from the current term, the check ends there (the commit index does not change). If term(k) equals the current term and the count of itself together with the nodes j other than itself with match[j] >= k is a majority, write "COMMIT n<i> <old commit index + 1>-<k> term <current term>" to the trace, advance the commit index to k (section 11), and end the check. When k becomes less than "commit index + 1", the check ends.
+(Since terms in a log never decrease as the index increases, this check commits up to "the largest index, among entries of the current term, that is replicated on a majority".)
+
+== 11. Commitment and the state machine ==
+When a node's commit index is advanced from c to c' (c' > c), do the following.
+- For each index from c + 1 to c', if it is not yet recorded as committed, keep the term of the entry at that index in this node's log and the current time t as the committed record (section 14).
+- Set the commit index to c'.
+- Apply the entries from index "applied index + 1" to c' to the state machine one at a time, in increasing order of index. Each time one is applied, increment applies by 1 and perform the safety check (section 14 (4)). When all have been applied, set the applied index to c' and write "APPLY n<i> <first applied index>-<c'>" to the trace.
+Since entries are applied immediately when the commit index is advanced, the applied index is always equal to the commit index.
+Commands are applied to the node's key-value store as follows. Each "result" is used as the result of the client request (section 16).
+- NOOP: does nothing. The result is not used.
+- SET <key> <value>: sets the value of the key to <value> (adds the key if it does not exist). The result is ok.
+- ADD <key> <increment>: adds <increment> to the value of the key. If the key does not exist, its value is first taken as 0 and then added to (the key is added). The result is the value after the addition.
+- DEL <key>: if the key exists, deletes it, and the result is deleted. If the key does not exist, does nothing, and the result is missing.
+- GET <key>: changes nothing. The result is the value of the key, or missing if the key does not exist.
+
+== 12. Timers ==
+In phase 4, each up node is processed in node order as follows.
+- A node whose role is LEADER:
+(1) If the quorum check deadline is t, check whether the count of itself together with the set of nodes heard from is a majority. If it is not a majority, the leader steps down. Write "STEPDOWN n<i> term <current term> heard <set of nodes heard from>" to the trace, its leadership ends with reason QUORUM (section 9 (5)), set the role to FOLLOWER and the known leader to "none", and set the election timer (the term and votedFor are not changed). The phase 4 processing of this node ends here. If it is a majority, empty the set of nodes heard from and set the quorum check deadline to t + Q.
+(2) If it is transferring and the transfer deadline is t, write "TRANSFER n<i> n<transfer target> abort" to the trace and cancel the transfer.
+(3) If the heartbeat deadline is t, send an AE to each node other than itself and set the heartbeat deadline to t + H.
+- A node whose role is FOLLOWER or CANDIDATE: if the election deadline is t, it starts an election (trigger timeout).
+Deadlines are always set to a time later than the time at which they are set, so deadlines are checked by "whether the deadline equals t".
+
+== 13. Leadership transfer ==
+- TRANSFER a b (phase 1): if any of the following holds: node a is down, the role of node a is not LEADER, node a is already transferring, or a = b, write "TRANSFER n<a> n<b> ignored" to the trace and do nothing else. Otherwise, write "TRANSFER n<a> n<b> start match <match[b]>/<last index>" to the trace and make node a transferring (transfer target b, TN not yet sent, transfer deadline t + Emin). Then, if match[b] equals the last index, immediately send a TN to b; otherwise send an AE to b. It does not matter if node b is down.
+- When sending a TN: write "TIMEOUTNOW n<a> n<b> term <current term> index <last index>" to the trace, mark the TN as sent, and send a TN to b. Even after sending the TN, the node remains transferring.
+- A transferring leader rejects client requests with reason transfer (section 7). The transfer continues until the leadership ends (section 9 (5)) or it is canceled at the transfer deadline (section 12).
+- Processing a TN: if the message's term differs from its own current term, or its role is not FOLLOWER, a node that receives a TN writes "IGNORE n<i> TN n<source> term <message term>" to the trace and does nothing else. Otherwise, it immediately starts an election (trigger transfer).
+
+== 14. Safety checks ==
+Throughout the whole simulation, keep the following 3 records.
+- The leader of each term (the node that first became leader in that term).
+- The committed records: for each index, the term and time when it was first recorded (section 11).
+- The apply records: for each index, the entry first applied at that index and the result at that time (section 11).
+Using these, check the following 5 properties and count the violations.
+(1) Election safety (ELECTION_SAFETY): when a node becomes leader, if a different node is recorded as the leader of that term, count 1 violation. If there is no record, record that node as the leader of that term.
+(2) Leader completeness (LEADER_COMPLETENESS): when a node becomes leader (after appending the NOOP entry), if there is at least one index with a committed record that is greater than the new leader's last index, or whose term in the new leader's log differs from the recorded term, count 1 violation (at most 1 per time a node becomes leader).
+(3) Log matching (LOG_MATCHING): in phase 5, for each pair of nodes (a pair of two nodes i, j with i < j; nodes that are down are included), let L be the smaller of the last indices of the two logs, and let G be the largest k with 1 <= k <= L such that term(k) of the two logs are equal (G = 0 if there is no such k). If, at some index from 1 to G, the entries of the two logs are not the same, count 1 violation.
+(4) State machine safety (STATE_MACHINE_SAFETY): each time an entry is applied, if there is no apply record for that index, record the entry and the result. If there is a record and the recorded entry and the applied entry are not the same, count 1 violation.
+(5) Retention of committed entries (COMMITTED_KEPT): for each entry removed by truncation, if there is a committed record at that index and the recorded term equals that entry's term, count 1 violation.
+
+== 15. End-of-time-step checks and statistics (phase 5) ==
+- Perform the log matching check (section 14 (3)).
+- For each node that is up and whose role is LEADER, increment its number of leader ticks by 1. Count the time steps with one or more such nodes as "time steps with a leader", and those with two or more as "time steps with multiple leaders". A maximal run of consecutive time steps (one that cannot be extended further) that are not time steps with a leader is called a "gap".
+- If t is a multiple of S (including 0), record each node's running state, role and current term at this moment, for the TIMELINE lines of output/leaders.txt.
+
+== 16. Statistics after the end ==
+After phase 5 of time T is finished, compute the following values and write the 5 files in the output/ folder.
+- Messages waiting for delivery are counted as "in flight" (inflight). For each type and for each link, the number sent equals the sum of the number delivered, the number in flight, and the numbers lost for each reason.
+- Let K be the maximum of the current terms of all nodes.
+- Let C be the number of indices with a committed record. The indices with a committed record are exactly 1 through C, and the indices with an apply record are also 1 through C.
+- The "reference state" is the state obtained by applying, to an empty key-value store, the entries in the apply records at indices 1 through C in order of index. Similarly, "the reference state up to index a" is the state obtained by applying the entries at indices 1 through a.
+- For an accepted request, let p be the index and u the term of the accepted entry, and determine its status as follows. If there is a committed record at index p and its term equals u, the status is COMMITTED. Otherwise, if there is at least one node (nodes that are down are included) whose last index is p or more and with term(p) = u, the status is UNCOMMITTED. If neither, the status is LOST.
+- The status of an abandoned request is FAILED, and the status of a request that is neither accepted nor abandoned (one whose next scheduled attempt time is later than T) is WAITING.
+- The "latency" of a COMMITTED request is the time of the committed record at index p minus the time of the REQUEST line, and its "result" is the result in the apply record at index p.
+
+[Output files]
+Write the following 5 files in the output/ folder. Every file consists of ASCII characters only, and every line ends with a newline (LF). There are no empty lines, no spaces at the start or end of a line, and the items within a line are separated by one ASCII space. Integers are written in decimal, with - only on negative numbers. In the formats below, sets of nodes, n<i> and r<q> are written as in [Processing] section 1.
+
+* output/trace.txt
+The trace lines defined in [Processing], in the order written. Each line has the form "<time> <content>", and the content is one of the following (the section defining it is in parentheses).
+START n<i> deadline <deadline> (section 5)
+CRASH n<i> <role> term <term> (section 6)
+RESTART n<i> term <term> length <last index> deadline <deadline> (section 6)
+PARTITION <group1> <group2> ... (section 6)
+HEAL (section 6)
+ACCEPT r<q> n<i> index <index> term <term> (section 7)
+REDIRECT r<q> n<i> n<j> (section 7)
+REJECT r<q> n<i> <reason> retry n<j> at <scheduled time> (section 7)
+REJECT r<q> n<i> <reason> giveup (section 7)
+TERM n<i> <old term>-><new term> <type> n<j> <role> (section 8)
+ELECTION n<i> term <term> last <last index>/<last term> deadline <deadline> (section 9)
+VOTE n<i> n<c> term <term> deadline <deadline> (section 9)
+DENY n<i> n<c> term <term> <reason> (section 9)
+LEADER n<i> term <term> votes <vote set> noop <index> (section 9)
+YIELD n<i> term <term> n<j> (section 10)
+TRUNCATE n<i> from <index> removed <count> (section 10)
+BACKTRACK n<i> n<j> next <value> (section 10)
+COMMIT n<i> <index>-<index> term <term> (section 10)
+APPLY n<i> <index>-<index> (section 11)
+STEPDOWN n<i> term <term> heard <set of nodes> (section 12)
+TRANSFER n<a> n<b> start match <value>/<last index> (section 13)
+TRANSFER n<a> n<b> ignored (section 13)
+TRANSFER n<a> n<b> abort (section 13)
+TIMEOUTNOW n<a> n<b> term <term> index <last index> (section 13)
+IGNORE n<i> TN n<j> term <term> (section 13)
+The role is one of FOLLOWER, CANDIDATE, LEADER; the reason of REJECT is one of down, noleader, transfer; the reason of DENY is one of term, voted, log; and the type is one of RV, RVR, AE, AER, TN. The ranges of COMMIT and APPLY are written like "5-5" even when both ends are equal.
+
+* output/leaders.txt
+Write the following lines (1) to (6) in this order.
+(1) One line per election record, in the order the elections were started.
+ELECTION <time> n<i> term <term> trigger <trigger> votes <vote count> <outcome>
+The trigger is timeout or transfer. The vote count is the number of nodes that entered the vote set in that election (including itself). The outcome is "WON <time it became leader>" if it won that election, and "LOST" otherwise (it is also LOST if the node is still a candidate at the final time).
+(2) One line for each term from 1 to K, in increasing order of term. When there is a leader record for that term, it is
+TERM <term> LEADER n<i> elected <time taking office> votes <vote set> ended <end time> <reason> appended <append count> commit <commit index> candidates <set of candidates> started <start time> wait <waiting time>
+and when there is no leader record, it is
+TERM <term> NONE candidates <set of candidates>
+The vote set is the one at the moment it became leader. The end time and reason are those recorded in section 9 (5); if the node is still leader at the final time, the end time is written - and the reason ACTIVE. The append count is the number of entries the leader added to its log in that term (the NOOP entry and the entries of accepted requests). The commit index is the commit index at the moment the leadership ended, or, for ACTIVE, the commit index at the end of the final time step. The set of candidates is the set of nodes that started an election and thereby entered that term. The start time is the time of the first election started for that term, and the waiting time is the time taking office minus the start time.
+(3) One line for each node, in node order.
+NODE n<i> elections <number of elections started> leader_terms <number of times it became leader> leader_ticks <number of leader ticks> votes_granted <number of votes granted>
+(4) One line for each of the times t = 0, S, 2S, ... (not exceeding T) recorded in section 15, in increasing order of time.
+TIMELINE <time> <field of node 1> <field of node 2> ... <field of node N>
+Each node's field is D if it is down at that moment, or the initial letter of its role (one of F, C, L) if it is up, followed by its current term (examples: L4, D3).
+(5) One line per gap (section 15), in increasing order of time.
+GAP <first time>-<last time> length <number of time steps>
+(6) Finally, one line.
+SUMMARY terms <K> leaders <number of terms with a leader record> elections <total number of elections started> leader_ticks <number of time steps with a leader> multi_ticks <number of time steps with multiple leaders> ticks <T + 1> gaps <number of gaps> longest <number of time steps in the longest gap>
+If there are no gaps, longest is 0.
+
+* output/logs.txt
+Write the following lines (1) to (3) in this order.
+(1) For each node in node order, first write
+NODE n<i> <status> term <current term> voted <votedFor> commit <commit index> applied <applied index> length <last index>
+and then one line for each entry of its log, in increasing order of index. The status is DOWN if it is down, or its role if it is up. The votedFor is in the form n<j>, or - if it is "none". An entry line is
+<index> <term> NOOP
+for a NOOP entry, and
+<index> <term> <command> r<q>
+for a request entry. The command is the words written in the REQUEST line of script.txt joined by one ASCII space (example: SET kiwi -5).
+(2) Write one line.
+AGREE prefix <P> committed <C>
+P is the largest p (>= 0) such that the last index of every node is p or more and the entries at indices 1 through p are the same on every node.
+(3) One line for each node, in node order.
+DIFF n<i> common <common length> behind <C - common length> extra <last index - common length> ae_ok <ae_ok> ae_fail <ae_fail> appended <appended> truncated <truncated> applies <applies>
+The common length is the largest value (>= 0) not exceeding min(last index, C) such that, at every index from 1 to that value, the term in this node's log equals the term of the committed record.
+
+* output/state.txt
+Write the following lines (1) to (5) in this order.
+(1) For each node in node order, first write
+NODE n<i> <UP or DOWN> applied <applied index> keys <number of keys> replay <match or mismatch>
+and then, for each key of the key-value store, a line "<key> <value>", in lexicographic order of the keys (increasing character code). UP means up and DOWN means down. replay is match if the contents of the key-value store agree with "the reference state up to index <applied index>" (section 16) in both the set of keys and all the values, and mismatch otherwise.
+(2) One line for each request, in increasing order of request number.
+REQUEST r<q> at <time of the REQUEST line> n<node of the REQUEST line> <command> attempts <attempt count> redirects <redirect count> <status field>
+The command is written as in logs.txt. The status field is one of the following depending on the status (p and u are as in section 16).
+COMMITTED index <p> term <u> latency <latency> result <result>
+UNCOMMITTED index <p> term <u>
+LOST index <p> term <u>
+FAILED
+WAITING next <next scheduled attempt time>
+(3) One line for each key that appears in the command of any request, in lexicographic order of the keys.
+KEY <key> requests <number of requests using that key> committed <number of those whose status is COMMITTED> final <value of the key in the reference state>
+If the key does not exist in the reference state, write missing in place of the value.
+(4) Write one line.
+REQUESTS total <number of requests> committed <count> uncommitted <count> lost <count> failed <count> waiting <count>
+Each count is the number of requests with that status.
+(5) Write one line.
+LATENCY count <number of COMMITTED requests> total <sum of latencies> min <minimum latency> max <maximum latency>
+If there are no COMMITTED requests, min and max are 0.
+
+* output/safety.txt
+Write the following lines (1) to (6) in this order.
+(1) One line for each of the 5 properties, in the order ELECTION_SAFETY, LEADER_COMPLETENESS, LOG_MATCHING, STATE_MACHINE_SAFETY, COMMITTED_KEPT.
+<property name> <verdict> violations <number of violations> <details>
+The verdict is OK if the number of violations is 0, and FAIL otherwise. The details for each property are as follows.
+ELECTION_SAFETY: terms <K> leaders <number of terms with a recorded leader> elected <total number of times nodes became leader>
+LEADER_COMPLETENESS: checks <number of checks (the total number of times nodes became leader)> committed <C>
+LOG_MATCHING: checks <number of time steps checked (T + 1)> pairs <total number of node pairs checked, counted over all time steps>
+STATE_MACHINE_SAFETY: applies <total number of times entries were applied (all nodes, including re-application after restarts)> indices <number of indices with an apply record>
+COMMITTED_KEPT: truncations <number of truncations> removed <total number of entries removed by truncation>
+(2) One line for all messages.
+MESSAGES sent <number sent> delivered <number delivered> inflight <number in flight> partition <count> rule <count> loss <count> down <count>
+partition, rule, loss and down are the numbers of messages lost for each of those reasons.
+(3) One line for each type, in the order RV, RVR, AE, AER, TN.
+TYPE <type> sent <count> delivered <count> inflight <count> partition <count> rule <count> loss <count> down <count>
+(4) One line for each link, in increasing order of source number, and for the same source in increasing order of destination number.
+LINK n<a>->n<b> delay <delay> loss <loss period> sent <number sent> delivered <number delivered> dropped <number lost>
+The number lost is the total number lost for the 4 reasons.
+(5) Write one line.
+DRAWS <total number of values drawn from MINSTD>
+(6) Finally, write one line. It is "RESULT SAFE" if the numbers of violations of the 5 properties are all 0, and "RESULT UNSAFE" otherwise.
+
+[Source files]
+Organize the program into the following 6 source files (name the files according to each language's conventions).
+- main: holds the overall flow and the core of the processing. It calls the input reading, performs the initialization at time 0 and the 5 phases of each time step, executes control events, makes the attempts of client requests (redirect, acceptance, rejection and retry), delivers messages and performs term updates, processes RV, RVR, AE, AER and TN, starts elections and takes office as leader, creates AEs, performs truncation, the commit check, advancing the commit index and applying, the timers (quorum check, transfer cancellation, heartbeat, election deadline), leadership transfer, the leader records and election records, the end-of-time-step statistics, the statistics after the end (request statuses, the reference state), and builds and writes the lines of all output files (trace.txt, leaders.txt, logs.txt, state.txt, safety.txt).
+- minstd: is responsible for the MINSTD generator (drawing values, converting to a value in a range, counting the values drawn).
+- network: is responsible for reading network.txt, determining link delays and loss periods, matching DROP lines, the partition groups, the checks at send time and the queue of messages waiting for delivery (taken out by arrival time, source, and send order), and the message statistics by type and by link.
+- raft_node: is responsible for representing entries and node state (persistent state, volatile state, statistics values), the reset on a crash, log queries (last index, last term, term(k)), comparing how up to date logs are, and applying commands in the state machine and their results.
+- cluster: is responsible for reading cluster.txt and script.txt, the settings, representing control events and client requests (including their attempt state), and parsing the PARTITION groups.
+- checker: is responsible for the 5 safety checks (including the leader of each term, the committed records and the apply records) and for building the lines of the 5 properties in safety.txt.
+
+[Constraints]
+- 3 <= N <= 7.
+- 1 <= Emin <= Emax <= 1000, 1 <= H <= 1000, 1 <= B <= 100, 1 <= Q <= 10000, 1 <= s <= 2147483646, 1 <= T <= 10000, 1 <= R <= 1000, 1 <= A <= 10, 1 <= S <= T.
+- network.txt has at most 100 lines. The delay d is at least 1 and at most 100, and the loss period k is at least 1 and at most 1000. The times of DROP lines satisfy 0 <= t1 <= t2 <= T. The a and b of DELAY, LOSS and DROP lines are each a number from 1 to N or *, and when both are numbers, a != b.
+- The times in script.txt are at least 0 and at most T. There are at most 1000 REQUEST lines and at most 100 control events. The v of a REQUEST line is at least 1 and at most N. <value> and <increment> are at least -1000 and at most 1000.
+- CRASH v appears only for a node that is up at that moment, and RESTART v only for a node that is down at that moment. A PARTITION line has one or more groups, and each number from 1 to N appears exactly once. The a and b of a TRANSFER line are at least 1 and at most N (a = b is possible).
+- Every integer appearing in the computation has absolute value less than 2^31, except the products that appear in the middle of the random number computation (less than 2^47). Use 64-bit integers (or a type that can represent integers less than 2^53 exactly) for the random number computation.
+
+[Example]
+The following is a small example (it differs from the actual input/ data; there are 3 nodes and the final time is 120).
+File input/cluster.txt:
+NODES 3
+ELECTION 20 40
+HEARTBEAT 8
+BATCH 2
+QUORUM 45
+SEED 12345
+END 120
+RETRY 10
+ATTEMPTS 2
+SAMPLE 30
+File input/network.txt:
+DEFAULT 3
+DELAY 1 2 2
+DELAY * 3 4
+LOSS 2 1 6
+DROP 3 * AE 90 95
+File input/script.txt:
+5 REQUEST 1 SET x 5
+30 REQUEST 2 ADD x 3
+33 REQUEST 3 GET x
+45 CRASH 1
+50 REQUEST 1 SET y 7
+70 RESTART 1
+80 TRANSFER 2 3
+90 REQUEST 3 DEL x
+File output/trace.txt:
+0 START n1 deadline 23
+0 START n2 deadline 21
+0 START n3 deadline 37
+5 REJECT r1 n1 noleader retry n2 at 15
+15 REJECT r1 n2 noleader giveup
+21 ELECTION n2 term 1 last 0/0 deadline 48
+23 ELECTION n1 term 1 last 0/0 deadline 61
+24 DENY n1 n2 term 1 voted
+25 DENY n2 n1 term 1 voted
+25 TERM n3 0->1 RV n2 FOLLOWER
+25 VOTE n3 n2 term 1 deadline 56
+27 DENY n3 n1 term 1 voted
+28 LEADER n2 term 1 votes n2,n3 noop 1
+30 ACCEPT r2 n2 index 2 term 1
+31 YIELD n1 term 1 n2
+33 REDIRECT r3 n3 n2
+33 ACCEPT r3 n2 index 3 term 1
+33 COMMIT n2 1-1 term 1
+33 APPLY n2 1-1
+36 APPLY n1 1-1
+38 COMMIT n2 2-3 term 1
+38 APPLY n2 2-3
+39 APPLY n3 1-1
+45 CRASH n1 FOLLOWER term 1
+48 APPLY n3 2-3
+50 REJECT r4 n1 down retry n2 at 60
+60 ACCEPT r4 n2 index 4 term 1
+67 COMMIT n2 4-4 term 1
+67 APPLY n2 4-4
+70 RESTART n1 term 1 length 3 deadline 103
+71 APPLY n1 1-4
+72 APPLY n3 4-4
+80 TRANSFER n2 n3 start match 4/4
+80 TIMEOUTNOW n2 n3 term 1 index 4
+84 ELECTION n3 term 2 last 4/1 deadline 109
+87 TERM n1 1->2 RV n3 FOLLOWER
+87 VOTE n1 n3 term 2 deadline 112
+87 TERM n2 1->2 RV n3 LEADER
+87 VOTE n2 n3 term 2 deadline 111
+90 REJECT r5 n3 noleader retry n1 at 100
+91 LEADER n3 term 2 votes n1,n3 noop 5
+100 REJECT r5 n1 noleader giveup
+106 COMMIT n3 5-5 term 2
+106 APPLY n3 5-5
+110 APPLY n1 5-5
+110 APPLY n2 5-5
+File output/leaders.txt:
+ELECTION 21 n2 term 1 trigger timeout votes 2 WON 28
+ELECTION 23 n1 term 1 trigger timeout votes 1 LOST
+ELECTION 84 n3 term 2 trigger transfer votes 2 WON 91
+TERM 1 LEADER n2 elected 28 votes n2,n3 ended 87 STEPDOWN appended 4 commit 4 candidates n1,n2 started 21 wait 7
+TERM 2 LEADER n3 elected 91 votes n1,n3 ended - ACTIVE appended 1 commit 5 candidates n3 started 84 wait 7
+NODE n1 elections 1 leader_terms 0 leader_ticks 0 votes_granted 1
+NODE n2 elections 1 leader_terms 1 leader_ticks 59 votes_granted 1
+NODE n3 elections 1 leader_terms 1 leader_ticks 30 votes_granted 1
+TIMELINE 0 F0 F0 F0
+TIMELINE 30 C1 L1 F1
+TIMELINE 60 D1 L1 F1
+TIMELINE 90 F2 F2 C2
+TIMELINE 120 F2 F2 L2
+GAP 0-27 length 28
+GAP 87-90 length 4
+SUMMARY terms 2 leaders 2 elections 3 leader_ticks 89 multi_ticks 0 ticks 121 gaps 2 longest 28
+File output/logs.txt:
+NODE n1 FOLLOWER term 2 voted n3 commit 5 applied 5 length 5
+1 1 NOOP
+2 1 ADD x 3 r2
+3 1 GET x r3
+4 1 SET y 7 r4
+5 2 NOOP
+NODE n2 FOLLOWER term 2 voted n3 commit 5 applied 5 length 5
+1 1 NOOP
+2 1 ADD x 3 r2
+3 1 GET x r3
+4 1 SET y 7 r4
+5 2 NOOP
+NODE n3 LEADER term 2 voted n3 commit 5 applied 5 length 5
+1 1 NOOP
+2 1 ADD x 3 r2
+3 1 GET x r3
+4 1 SET y 7 r4
+5 2 NOOP
+AGREE prefix 5 committed 5
+DIFF n1 common 5 behind 0 extra 0 ae_ok 9 ae_fail 0 appended 5 truncated 0 applies 6
+DIFF n2 common 5 behind 0 extra 0 ae_ok 3 ae_fail 0 appended 1 truncated 0 applies 5
+DIFF n3 common 5 behind 0 extra 0 ae_ok 8 ae_fail 0 appended 4 truncated 0 applies 5
+File output/state.txt:
+NODE n1 UP applied 5 keys 2 replay match
+x 3
+y 7
+NODE n2 UP applied 5 keys 2 replay match
+x 3
+y 7
+NODE n3 UP applied 5 keys 2 replay match
+x 3
+y 7
+REQUEST r1 at 5 n1 SET x 5 attempts 2 redirects 0 FAILED
+REQUEST r2 at 30 n2 ADD x 3 attempts 1 redirects 0 COMMITTED index 2 term 1 latency 8 result 3
+REQUEST r3 at 33 n3 GET x attempts 1 redirects 1 COMMITTED index 3 term 1 latency 5 result 3
+REQUEST r4 at 50 n1 SET y 7 attempts 2 redirects 0 COMMITTED index 4 term 1 latency 17 result ok
+REQUEST r5 at 90 n3 DEL x attempts 2 redirects 0 FAILED
+KEY x requests 4 committed 2 final 3
+KEY y requests 1 committed 1 final 7
+REQUESTS total 5 committed 3 uncommitted 0 lost 0 failed 2 waiting 0
+LATENCY count 3 total 30 min 5 max 17
+File output/safety.txt:
+ELECTION_SAFETY OK violations 0 terms 2 leaders 2 elected 2
+LEADER_COMPLETENESS OK violations 0 checks 2 committed 5
+LOG_MATCHING OK violations 0 checks 121 pairs 363
+STATE_MACHINE_SAFETY OK violations 0 applies 16 indices 5
+COMMITTED_KEPT OK violations 0 truncations 0 removed 0
+MESSAGES sent 60 delivered 53 inflight 2 partition 0 rule 2 loss 1 down 2
+TYPE RV sent 6 delivered 6 inflight 0 partition 0 rule 0 loss 0 down 0
+TYPE RVR sent 6 delivered 6 inflight 0 partition 0 rule 0 loss 0 down 0
+TYPE AE sent 26 delivered 21 inflight 0 partition 0 rule 2 loss 1 down 2
+TYPE AER sent 21 delivered 19 inflight 2 partition 0 rule 0 loss 0 down 0
+TYPE TN sent 1 delivered 1 inflight 0 partition 0 rule 0 loss 0 down 0
+LINK n1->n2 delay 2 loss 0 sent 8 delivered 8 dropped 0
+LINK n1->n3 delay 4 loss 0 sent 5 delivered 4 dropped 0
+LINK n2->n1 delay 3 loss 6 sent 11 delivered 8 dropped 3
+LINK n2->n3 delay 4 loss 0 sent 15 delivered 14 dropped 0
+LINK n3->n1 delay 3 loss 0 sent 6 delivered 5 dropped 1
+LINK n3->n2 delay 3 loss 0 sent 15 delivered 14 dropped 1
+DRAWS 31
+RESULT SAFE
+In this example, at times 21 and 23, n2 and n1 start elections in the same term 1; since each has voted for itself, they reject each other's RV with reason voted. n3 votes for the RV of n2, which arrives first, and n2 wins. At time 91, the RVRs of n1 and n2 arrive at n3 at the same time, but a majority (2 votes) is reached as soon as the RVR of n1, the source with the smaller number, is processed first, so the vote set is n1,n3. The AE sent by n3 at time 91 is lost because of a DROP line, so the NOOP entry is committed only after the next heartbeat.

@@ -1,0 +1,378 @@
+[Overview]
+Write a program that implements a signal-processing pipeline for mono audio that works with integer arithmetic only.
+The program reads the two files in the input/ folder (signal data and a processing script) and executes the commands written in the processing script one line at a time, from top to bottom. The commands include signal processing such as test-signal generation, gain, mixing, delay, echo, FIR filters, fixed-point biquad (second-order) IIR filters, moving average, DC removal, resampling by linear interpolation, fades, normalization, a noise gate, an envelope follower and a compressor; analysis such as peak, RMS, zero crossings, clipped-sample count, crest factor and pitch estimation by autocorrelation; detection of sounding segments and of onsets; and output such as waveform plots drawn with ASCII characters. Some lines of the processing script contain errors; for such a line the program writes the error to the log and skips the line.
+The program writes five files to the output/ folder: the processing log, a table of analysis results, sample excerpts, plots, and the saved signals. It prints nothing to standard output.
+Samples are integers in the same range as 16-bit PCM (from -32768 to 32767 inclusive). All computation is done with integers; floating-point numbers are not used. Use the standard library only.
+
+[Input files]
+Both input files consist of ASCII characters only, and every line ends with a newline (LF).
+
+== input/signals.txt ==
+One or more signals, listed one after another from the beginning of the file. One signal consists of the following lines.
+- The header line: "SIGNAL", the name, the sampling rate and the number of samples, in this order, separated by single spaces
+- The following ceil(number of samples / 16) lines: the sample values in order from the first one, 16 per line (the last line holds all the remaining ones), separated by single spaces
+Names satisfy the name rule of section 2 and are all different within the file. The sampling rate (in Hz) and the number of samples are positive integers, and the sample values are integers. Every integer is written in decimal without superfluous leading zeros, with a leading "-" only for negative numbers. The file consists of these lines only and has no empty lines. output/signals_out.txt is written in this same format.
+
+== input/pipeline.txt ==
+The processing script. Each line is one of the following.
+- An empty line, or a line beginning with "#" (a comment): does nothing.
+- A command line: one or more tokens separated by single spaces. There is no space at the beginning or at the end of the line, and there are never two or more consecutive spaces. The first token is the command name, and the remaining tokens are the arguments.
+Lines are numbered 1, 2, 3, ... from the beginning of the file (empty lines and comment lines are counted too). Command lines may contain errors.
+
+[Processing]
+== 0. Notation and common rules ==
+- All computation is done with integers. floor(x) is the largest integer not greater than x, and ceil(x) is the smallest integer not less than x.
+- For an integer a and a positive integer b, a div b = floor(a / b) and a mod b = a - b * (a div b). Even when a is negative, the quotient is rounded toward negative infinity (examples: -7 div 2 = -4, -6 div 3 = -2). Take care in languages whose integer division truncates toward zero.
+- For an integer a and a positive integer b, rdiv(a, b) = (2 * a + b) div (2 * b). This is a / b rounded to the nearest integer, with exact halves rounded to the larger value (examples: rdiv(5, 2) = 3, rdiv(-5, 2) = -2, rdiv(7, 4) = 2, rdiv(-7, 4) = -2).
+- For an integer v, sat(v) = max(-32768, min(32767, v)); this is called the saturation of v. When v < -32768 or v > 32767 (when the saturation changes the value), the saturation is said to have "clipped".
+- For an integer n >= 0, isqrt(n) is the largest integer r >= 0 with r * r <= n.
+- A signal is the combination of a name, a sampling rate rate (in Hz) and a sample sequence x[0], x[1], ..., x[L - 1] of length L (L >= 1); all sample values are from -32768 to 32767 inclusive. Unless stated otherwise, every sum is taken in increasing order of index.
+- For an integer sequence x of length L, the following values are defined.
+ peak(x): the maximum of |x[i]| (i = 0, ..., L - 1). For x[i] = -32768, |x[i]| is 32768.
+ sum(x): the sum of x[i]
+ energy(x): the sum of x[i]^2
+ rms(x): isqrt(energy(x) div L)
+ zero_crossings(x): the number of i with 1 <= i <= L - 1 such that one of x[i - 1] and x[i] is negative and the other is 0 or greater
+ clipped(x): the number of i such that x[i] equals 32767 or -32768
+- For a sample index n of a signal with sampling rate rate, n * 1000 div rate is called "the milliseconds of n".
+- Two-decimal notation: for an integer h >= 0, the decimal notation of h div 100, ".", and the 2-digit decimal notation of h mod 100 (with a leading 0 if it has one digit), concatenated in this order, is called the two-decimal notation of h (examples: 12500 is 125.00, 14815 is 148.15, 24012 is 240.12).
+- Envelope: from a sequence x (length L), an attack coefficient A and a release coefficient R (both from 1 to 32768 inclusive), the sequence env of length L is computed as follows. Starting with e = 0, for n = 0, 1, ..., L - 1 in this order: let a = min(|x[n]|, 32767); let c = A if a > e, and c = R otherwise; replace e by e + rdiv((a - e) * c, 32768); and let env[n] be the value of e after the replacement.
+- Autocorrelation: for a sequence x of length L and an integer tau with 1 <= tau <= L - 1, r(tau) is the sum of x[n] * x[n + tau] over n = 0, ..., L - 1 - tau.
+- Lag range: for a sampling rate rate and positive integers min_hz and max_hz, let lo = ceil(rate / max_hz) and hi = floor(rate / min_hz); the values from lo to hi inclusive are called the lag range.
+- Pitch lag: for a sequence x of length L and a lag range lo, hi with 1 <= lo <= hi <= L - 1, choose the tau with lo <= tau <= hi for which r(tau) is largest (if several tau attain the maximum, choose the smallest one). If r(tau) of the chosen tau is positive, that tau is the pitch lag; if it is 0 or less, the pitch lag is "none". For a pitch lag tau of a signal with sampling rate rate, the two-decimal notation of rdiv(100 * rate, tau) is called "the frequency of tau" (example: for rate = 8000 and tau = 64 it is 125.00).
+
+== 1. The signal table and the variable table ==
+- The program has a "signal table" that looks up signals by name and a "variable table" that looks up integers by name. The names of the two tables are unrelated to each other.
+- First, all signals of input/signals.txt are registered in the signal table in file order. The variable table starts empty.
+- A command marked "generate" in section 3 registers the resulting signal in the signal table under the name given by the argument dst. If a signal with the same name already exists, it is replaced by the new signal. The content of a registered signal never changes afterwards.
+- Every signal has an "origin" and "ingredients". A signal read from input/signals.txt has the origin input and no ingredients. A signal created by a command has the origin "line {line number} {command name}" (example: line 46 ECHO), and its ingredients are the signals specified by the arguments written as src in that command's syntax, in argument order (if the same signal is specified twice, it is listed twice). The ingredients refer to the signals themselves as they were when the command was executed, and they do not change even if a signal with the same name is replaced later.
+
+== 2. Checking and executing command lines ==
+The command lines are processed from top to bottom by the following steps. When an error is found at some step, an error line is written to the log and the processing of that command line ends. A command line with an error changes neither the signal table, nor the variable table, nor the content of any output file (it only writes one error line to the log).
+ 1. If the command name is not one of the commands of section 3, the error is "unknown command {command name}".
+ 2. If the number of arguments does not match the syntax in section 3, the error is "wrong number of arguments".
+ 3. The arguments are checked from left to right, according to the kind of each argument determined by the syntax in section 3, as follows.
+  - Name (arguments written as dst or var in the syntax): if the token does not satisfy the name rule, the error is "bad name {token}". The name rule: the length is from 1 to 16 characters, the first character is a lowercase letter (a-z), and each character from the second on is a lowercase letter, a digit (0-9) or "_".
+  - Signal (arguments written as src in the syntax): if the signal table has no signal with the same name as the token, the error is "unknown signal {token}". If it has one, that signal is the value of the argument.
+  - Metric (arguments written as metric in the syntax): if the token is none of samples, peak, rms, sum, zero_crossings, clipped, the error is "unknown metric {token}".
+  - Operator (arguments written as op in the syntax): if the token is not one of +, -, *, / for SET, or not one of eq, ne, lt, le, gt, ge for EXPECT, the error is "unknown operator {token}".
+  - Integer (all arguments not listed above): if the token begins with "$", then the error is "undefined variable {token}" if the variable table has no variable with the same name as the part after "$", and otherwise the value of that variable is the value of the argument. If the token does not begin with "$", then the error is "bad integer {token}" if the token does not satisfy the integer rule, and otherwise the integer the token represents is the value of the argument. The integer rule: an optional "-" followed by 1 to 10 digits (0-9), where the first digit is not 0 if there are two or more digits, and the whole token is not "-0" either (examples: 0, -5 and 2147483646 satisfy the rule; 007, -0, +5, 1.5, 12a and 12345678901 do not). Once a value is obtained, if it is not within the range defined for that argument in section 3, the error is "{argument name} out of range" (example: in out of range). When a range depends on the values of earlier arguments, the values of those earlier arguments, which have already been checked, are used. When the lower bound of a range is greater than its upper bound, every value is out of range.
+ 4. The conditions listed as "Checks" for the command in section 3 are examined in the order written.
+ 5. If there is no error, the command is executed and a success line is written to the log.
+In error messages, {command name} and {token} are the input token written as is.
+
+== 3. Commands ==
+For each command, the syntax, arguments, ranges, checks, processing and log are given. In the syntax, [ ] marks a part that can be omitted or repeated; how many times is stated in the "Arguments" item. A range "a to b" means from a to b inclusive. The following rules are used throughout.
+- In a command with src, x, L and rate are the sample sequence, the length and the sampling rate of the signal of the first src.
+- A command marked "Processing (generate)" creates a signal with the sample sequence y and registers it in the signal table under the name dst. Unless stated otherwise, the length of y is L and the sampling rate is rate. Its log is "{dst} rate={sampling rate of the created signal} samples={length of y} peak={peak(y)} sum={sum(y)}", and for a command with "Extra items", " {item name}={value}" follows for each item, in the order listed.
+- "Log" is the {details} part of the success line in the log (see output/log.txt under [Output files]). Where a log placeholder holds an argument name (such as {start}), write the value of the argument for an integer argument (when a variable is referenced with "$", the value of that variable), and the input token as is for a name, signal, metric or operator argument.
+- The number 20000 is the upper limit of the length of a signal.
+
+3.1 Variables
+* SET var value [op operand]
+ Arguments: 2 (var value) or 4 (var value op operand)
+ Ranges: value -10000000 to 10000000; operand -10000000 to 10000000
+ Checks: (1) If there are 4 arguments, op is / and operand = 0: "division by zero". (2) If there are 4 arguments and the absolute value of the result below is greater than 10000000: "value out of range".
+ Processing: the result is value with 2 arguments, and value op operand with 4 arguments (+ is value + operand, - is value - operand, * is value * operand, / is floor(value / operand)); the value of var in the variable table is set to the result (if a variable with the same name exists, its value is replaced). With /, operand may be negative; even then the quotient is rounded toward negative infinity (examples: the result of 7 / -2 is -4, and the result of -7 / -2 is 3).
+ Log: "{var}={result}"
+
+3.2 Test signals
+* IMPULSE dst rate count pos amp
+ Ranges: rate 1000 to 48000; count 1 to 20000; pos 0 to count - 1; amp -32768 to 32767
+ Processing (generate): the signal with sampling rate rate and length count, with y[pos] = amp and y[i] = 0 for every other i.
+* STEP dst rate count pos amp
+ Ranges: the same as IMPULSE.
+ Processing (generate): the signal with sampling rate rate and length count, with y[i] = amp for i >= pos and y[i] = 0 for i < pos.
+* NOISE dst rate count seed
+ Ranges: rate 1000 to 48000; count 1 to 20000; seed 1 to 2147483646
+ Processing (generate): the signal with sampling rate rate and length count. Starting with s = seed, for i = 0, 1, ..., count - 1 in this order, replace s by (48271 * s) mod 2147483647 and then let y[i] = (s mod 65536) - 32768 (white noise from the MINSTD random number generator).
+
+3.3 Effects
+* GAIN dst src num den
+ Ranges: num -65536 to 65536; den 1 to 65536
+ Processing (generate): y[i] = sat(rdiv(x[i] * num, den))
+ Extra items: clipped (the number of saturations used to compute y that clipped)
+* MIX dst den src weight [src weight ...]
+ Arguments: dst and den, followed by 1 to 8 pairs of src and weight
+ Ranges: den 1 to 65536; weight -65536 to 65536
+ Checks: If the signals of all src do not have the same sampling rate: "rate mismatch".
+ Processing (generate): number the pairs k = 1, 2, ... in argument order, and let x_k be the sample sequence of the signal of the k-th pair and w_k its weight. The length of y is the maximum of the lengths of the x_k, its sampling rate is the common value of the src, and y[i] = sat(rdiv(sum over k of w_k * x_k[i], den)). If i is greater than or equal to the length of x_k, x_k[i] = 0.
+ Extra items: clipped
+* DELAY dst src samples
+ Ranges: samples 0 to 20000
+ Checks: If L + samples > 20000: "result too long".
+ Processing (generate): the signal of length L + samples consisting of samples zeros followed by x[0], ..., x[L - 1].
+* ECHO dst src delay num den tail
+ Ranges: delay 1 to 20000; num -65536 to 65536; den 1 to 65536; tail 0 to 20000
+ Checks: (1) If |num| >= den: "unstable feedback". (2) If L + tail > 20000: "result too long".
+ Processing (generate): let M = L + tail. First fill the sequence y of length M with y[i] = x[i] for i < L and y[i] = 0 for i >= L, then, for i = delay, delay + 1, ..., M - 1 in this order, replace y[i] by sat(y[i] + rdiv(num * y[i - delay], den)) (y[i - delay] is the value after the replacement has been done; if delay >= M, there is no replacement).
+ Extra items: clipped (the number of saturations in the replacements that clipped)
+* RESAMPLE dst src new_rate
+ Ranges: new_rate 1000 to 48000
+ Checks: Let r1 = rate and r2 = new_rate; if M = (L - 1) * r2 div r1 + 1 is greater than 20000: "result too long".
+ Processing (generate): the signal with sampling rate r2 and length M. For j = 0, ..., M - 1, let p = (j * r1) div r2 and q = (j * r1) mod r2; y[j] = x[p] if q = 0, and y[j] = x[p] + rdiv((x[p + 1] - x[p]) * q, r2) if q > 0.
+* FADE dst src in out
+ Ranges: in 0 to L; out 0 to L
+ Processing (generate): let y be a copy of x. First, for i = 0, ..., in - 1, replace y[i] by rdiv(y[i] * i, in); then, for i = L - out, ..., L - 1, replace y[i] by rdiv(y[i] * (L - 1 - i), out). Where the two intervals overlap, the value replaced by the fade-in is replaced again by the fade-out.
+* TRIM dst src start count
+ Ranges: start 0 to L - 1; count 1 to L - start
+ Processing (generate): the signal of length count consisting of x[start], x[start + 1], ..., x[start + count - 1].
+* CONCAT dst src src [src ...]
+ Arguments: dst, followed by 2 to 8 src
+ Checks: (1) If the signals of all src do not have the same sampling rate: "rate mismatch". (2) If the total length of the src signals is greater than 20000: "result too long".
+ Processing (generate): the signal formed by concatenating the sample sequences of the src signals in argument order. Its sampling rate is the common value of the src.
+
+3.4 Filters
+* FIR dst src divisor tap [tap ...]
+ Arguments: dst, src and divisor, followed by 1 to 64 taps. The taps, in order, are h[0], h[1], ..., h[m - 1].
+ Ranges: divisor 1 to 1000000; tap -32768 to 32767
+ Processing (generate): for n = 0, ..., L - 1, y[n] = sat((sum over k = 0, ..., m - 1 of h[k] * x[n - k]) div divisor). x with a negative index is 0.
+ Extra items: clipped
+* BIQUAD dst src b0 b1 b2 a1 a2 [b0 b1 b2 a1 a2 ...]
+ Arguments: dst and src, followed by 1 to 4 groups of five values b0 b1 b2 a1 a2 (sections)
+ Ranges: b0, b1, b2, a1 and a2 are all -65536 to 65536
+ Processing (generate): the sections are connected in cascade and applied in argument order. The input u of the first section is x, the output v of each section is the input of the next section, and the output of the last section is y. In each section, for n = 0, 1, ..., L - 1 in this order, compute v[n] = sat((b0 * u[n] + b1 * u[n - 1] + b2 * u[n - 2] - a1 * v[n - 1] - a2 * v[n - 2]) div 16384). u and v with a negative index are 0 (the coefficients are Q14 fixed-point numbers with 16384 representing 1.0).
+ Extra items: sections (the number of sections), clipped (the total number of saturations, over all sections, that clipped)
+* MOVAVG dst src width
+ Ranges: width 1 to 1000
+ Processing (generate): y[n] = rdiv(sum over k = 0, ..., width - 1 of x[n - k], width). x with a negative index is 0.
+* DCBLOCK dst src num den
+ Ranges: num 0 to 65535; den num + 1 to 65536
+ Processing (generate): for n = 0, 1, ..., L - 1 in this order, compute y[n] = sat(x[n] - x[n - 1] + rdiv(num * y[n - 1], den)), with x[-1] = y[-1] = 0.
+ Extra items: clipped
+
+3.5 Dynamics
+* NORMALIZE dst src target
+ Ranges: target 1 to 32767
+ Processing (generate): let P = peak(x); y[i] = x[i] if P = 0, and y[i] = rdiv(x[i] * target, P) if P > 0.
+ Extra items: source_peak (P)
+* GATE dst src threshold hold
+ Ranges: threshold 1 to 32768; hold 0 to 20000
+ Processing (generate): for each i, the gate is "open" if some j with max(0, i - hold) <= j <= i has |x[j]| >= threshold, and "closed" otherwise; y[i] = x[i] if it is open, and y[i] = 0 if it is closed.
+ Extra items: muted (the number of i for which the gate is closed)
+* ENVELOPE dst src attack release
+ Ranges: attack 1 to 32768; release 1 to 32768
+ Processing (generate): y is the envelope of x (A = attack, R = release).
+* COMPRESS dst src threshold ratio_num ratio_den attack release
+ Ranges: threshold 1 to 32767; ratio_num 1 to 100; ratio_den 1 to ratio_num; attack 1 to 32768; release 1 to 32768
+ Processing (generate): let env be the envelope of x (A = attack, R = release). Starting with g = 32768, do the following for n = 0, 1, ..., L - 1 in this order (g is a gain with 32768 representing 1.0).
+  1. Let e = env[n]. If e > threshold, let d = threshold + rdiv((e - threshold) * ratio_den, ratio_num) and t = rdiv(d * 32768, e); otherwise let t = 32768.
+  2. If t < g, replace g by t; otherwise replace g by g + rdiv((t - g) * release, 32768).
+  3. Let gain[n] = g and y[n] = rdiv(x[n] * g, 32768).
+ Extra items: min_gain (the minimum of gain[n]), reduced (the number of n with gain[n] < 32768)
+
+3.6 Analysis and output
+* ANALYZE src min_hz max_hz
+ Ranges: min_hz 1 to rate div 2 - 1; max_hz min_hz + 1 to rate div 2
+ Checks: for the lag range lo, hi computed from rate, min_hz and max_hz: (1) If lo > hi: "empty lag range". (2) If hi >= L: "signal too short".
+ Processing: appends one line for this signal to output/analysis.csv.
+ Log: "{src} lags={lo}-{hi}"
+* COMPARE src src
+ Checks: If the two signals have different sampling rates: "rate mismatch".
+ Processing: let a be the sample sequence of the first signal and b that of the second, let N be the larger of the two lengths, and for i = 0, ..., N - 1 let d[i] = a[i] - b[i] (a sample whose index is greater than or equal to the length is 0).
+ Log: "{first name} {second name} differing={number of i with d[i] != 0} max_diff={maximum of |d[i]|} first={smallest i with d[i] != 0, or none if there is no such i} error_energy={sum of d[i]^2}"
+* EXPECT src metric op value
+ Ranges: value -1000000000 to 1000000000
+ Processing: let v be the value of the metric of the signal. The metric samples is L, and the metrics peak, rms, sum, zero_crossings and clipped are peak(x), rms(x), sum(x), zero_crossings(x) and clipped(x), respectively. If "v op value" holds (eq is v = value, ne is v != value, lt is v < value, le is v <= value, gt is v > value, ge is v >= value), the result is pass; otherwise it is fail. Even on fail, the command line is processed successfully.
+ Log: "{src} {metric}={v} {op} {value} {result}"
+* SEGMENTS src threshold gap min_length
+ Ranges: threshold 1 to 32768; gap 1 to 20000; min_length 1 to 20000
+ Processing: an i with |x[i]| >= threshold is called a "large sample". Examine the large samples in increasing order of i: if the difference from the previous large sample (i minus the i of the previous large sample) is gap or less, put the sample in the same segment as the previous sample; otherwise (and also for the first large sample) start a new segment. The start a and the end b of a segment are the i of the first and of the last large sample of that segment. Only the segments satisfying b - a + 1 >= min_length are reported, numbered 1, 2, ... in increasing order of a.
+ Log: "{src} segments={number of reported segments}". In the log, this line is followed by one line per reported segment: "  segment {number} start={a} end={b} start_ms={milliseconds of a} end_ms={milliseconds of b} peak={p} rms={q} crossings={z}" (the line begins with 2 spaces). p, q and z are the peak, rms and zero_crossings of the sequence x[a], ..., x[b].
+* ONSETS src attack release threshold min_gap
+ Ranges: attack 1 to 32768; release 1 to 32768; threshold 1 to 32767; min_gap 1 to 20000
+ Processing: let env be the envelope of x (A = attack, R = release). Examine n = 0, 1, ..., L - 1 in this order; when env[n] >= threshold and either n = 0 or env[n - 1] < threshold, n is an onset if there is no onset yet or if the difference n minus the previous onset is min_gap or more. Let K be the number of onsets. If K >= 2, let m be the element at position (K - 2) div 2 (counting from 0) of the list of differences between adjacent onsets (the later onset minus the earlier one; K - 1 values) sorted in increasing order, and the tempo (beats per minute) is the two-decimal notation of rdiv(6000 * rate, m). If K < 2, the tempo is none.
+ Log: "{src} onsets={K} tempo={tempo}". In the log, this line is followed by one line per onset, in order: "  onset {number (from 1)} sample={n} ms={milliseconds of n} interval={difference from the previous onset; none for the first onset}" (the line begins with 2 spaces).
+* PITCHTRACK src frame hop min_hz max_hz threshold
+ Ranges: frame 16 to L; hop 1 to frame; min_hz 1 to rate div 2 - 1; max_hz min_hz + 1 to rate div 2; threshold 0 to 32767
+ Checks: for the lag range lo, hi computed from rate, min_hz and max_hz: (1) If lo > hi: "empty lag range". (2) If hi >= frame: "frame too short".
+ Processing: make T = (L - frame) div hop + 1 frames. Frame t (t = 0, ..., T - 1) is the sequence x[t * hop], ..., x[t * hop + frame - 1]. For each frame, let level be its rms; if level < threshold, the frame is unvoiced. Otherwise, find the pitch lag of the frame's sequence (with the lag range lo, hi); if it is "none", the frame is unvoiced, and otherwise it is voiced. Appends a pitch plot to output/waveforms.txt.
+ Log: "{src} frames={T} voiced={number of voiced frames}"
+* EXCERPT src start count
+ Ranges: start 0 to L - 1; count 1 to 1000
+ Processing: let c = min(count, L - start), and append x[start], ..., x[start + c - 1] to output/excerpts.txt.
+ Log: "{src} start={start} count={c}"
+* PLOT src start count columns half attack release
+ Ranges: start 0 to L - 1; count 1 to L - start; columns 8 to min(120, count); half 2 to 20; attack 1 to 32768; release 1 to 32768
+ Processing: appends a waveform plot to output/waveforms.txt.
+ Log: "{src} start={start} count={count} columns={columns} rows={2 * half + 1}"
+* METER src block
+ Ranges: block 1 to 20000
+ Processing: appends a level-meter plot to output/waveforms.txt.
+ Log: "{src} block={block}"
+* HISTOGRAM src bins
+ Ranges: bins 2 to 64
+ Processing: appends an amplitude histogram to output/waveforms.txt.
+ Log: "{src} bins={bins}"
+* TRACE src
+ Processing: writes the tree that traces the origins of the signal. Writing a signal s at depth k means writing one line consisting of 2 * k spaces, the name of s, " <- " and the origin of s, in this order, and then writing each ingredient of s, in ingredient order, at depth k + 1.
+ Log: "{src}". In the log, this line is followed by the lines that write the signal of src at depth 1.
+* SAVE src
+ Processing: appends the signal as it is at this point to output/signals_out.txt.
+ Log: "{src} samples={L}"
+
+== 4. Final processing ==
+After all lines have been processed, write the last part of the log (the signal lines and the summary line) and write out the five output files.
+
+[Output files]
+Common format:
+- Everything is ASCII characters, and every line ends with a newline (LF). No line has trailing spaces, and there are no empty lines.
+- Integers are written in decimal without superfluous leading zeros, with "-" for negative numbers.
+- "Right-aligned in w characters" means padding the decimal notation on the left with spaces to w characters (with the given input, it never exceeds w characters).
+- All five files are always created. A file with no lines to write is empty (0 bytes).
+- In the formats below, a part enclosed in { } is replaced by a value, and every other character is written as is.
+
+== output/log.txt ==
+Write the following lines in this order.
+1. For each signal of input/signals.txt, in file order: "load {name} rate={rate} samples={L} peak={peak(x)}"
+2. For each command line, in line-number order: on success "line {line number}: {command name} {details}", on error "line {line number}: error: {message}". {details} is as given in the "Log" of each command in section 3 (for generating commands, as given by the common rule of section 3). For SEGMENTS, ONSETS and TRACE, the success line is followed by the lines described in section 3. Nothing is written for empty lines and comment lines.
+3. For each signal in the signal table when processing has finished, in ascending order of name (lexicographic order comparing ASCII character codes from the first character): "signal {name} rate={rate} samples={L} peak={peak(x)} rms={rms(x)}"
+4. The last line: "summary steps={number of successful command lines} errors={number of command lines with an error} signals={number of signals in the signal table} passed={number of EXPECT with result pass} failed={number of EXPECT with result fail}"
+
+== output/analysis.csv ==
+Line 1 is signal,peak,rms,zero_crossings,clipped,crest,pitch_lag,pitch_hz. Then, for each successful ANALYZE command line, in order, write one line "{name},{peak(x)},{rms(x)},{zero_crossings(x)},{clipped(x)},{crest},{pitch_lag},{pitch_hz}".
+- crest: none if energy(x) = 0. Otherwise, let N = peak(x)^2 * L and D = energy(x), let N' and D' be N and D each divided by the greatest common divisor of N and D, and write "{N'}/{D'}" (the square of the crest factor as an irreducible fraction).
+- pitch_lag and pitch_hz: find the pitch lag of x with the lag range lo, hi of the ANALYZE; if it is tau, pitch_lag is tau and pitch_hz is the frequency of tau. If it is "none", both are none.
+
+== output/excerpts.txt ==
+For each successful EXCERPT command line, in order, write the following lines.
+- "EXCERPT {name} rate={rate} samples={L} start={start} count={c}"
+- Then split the c excerpted values, from the first, into groups of 8 (the last group holds all the remaining ones), and write one line per group: the sample index of the group's first value right-aligned in 5 characters, ":", and, for each value of the group, one space followed by the value right-aligned in 6 characters, in this order
+
+== output/waveforms.txt ==
+For each successful PLOT, METER, HISTOGRAM and PITCHTRACK command line, in order, write the following plot.
+
+(1) PLOT (waveform plot)
+The plotted data is w[j] = x[start + j] (j = 0, ..., count - 1). Let env be the envelope (A = attack, R = release) of the whole x (from sample 0), and ev[j] = env[start + j]. Let rows = 2 * half + 1 be the number of rows, S = max(1, peak(w)) the scale, and row(v) = rdiv((S - v) * (rows - 1), 2 * S) the row number of a value v (if -S <= v <= S, then 0 <= row(v) <= rows - 1, and row(0) = half).
+Column c (c = 0, ..., columns - 1) covers the j with c * count div columns <= j < (c + 1) * count div columns. Let top be the maximum and bottom the minimum of the w[j] covered by column c, and let ec be the smaller of S and the maximum of the ev[j] covered by column c.
+The character at row r (r = 0, ..., rows - 1) and column c is "*" if r = row(ec) or r = row(-ec); otherwise "#" if row(top) <= r <= row(bottom); otherwise "-" if r = half; and a space if none of these holds.
+Lines to write:
+- "PLOT {name} rate={rate} start={start} count={count} columns={columns} rows={rows} scale={S} attack={attack} release={release}"
+- rows lines, for r = 0, ..., rows - 1 in order: the label right-aligned in 6 characters, " |", the characters of columns 0, ..., columns - 1, and "|", in this order. The label is the decimal notation of S if r = 0, of 0 if r = half, and of -S if r = rows - 1; in the other rows it is empty (right-aligned in 6 characters, it becomes 6 spaces).
+- The axis line: 7 spaces, "+", then, for each c = 0, ..., columns - 1, "+" if c mod 10 = 0 and "-" otherwise, and finally "+", in this order
+- The time line: a line that starts with "    ms" (4 spaces and ms) and in which, for each c = 0, 10, 20, ... (less than columns), the decimal notation of the milliseconds of sample index start + c * count div columns is placed so that its first character is at position 8 + c counted from the beginning of the line (the first character of the line is position 0). Positions where no character is placed are filled with spaces, and nothing follows the last digit.
+
+(2) METER (level meter)
+Let B = ceil(L / block), and let block b (b = 0, ..., B - 1) be the sequence x[b * block], ..., x[min((b + 1) * block, L) - 1]. For each block, let p be its peak, q its rms and k its clipped, and let np = rdiv(p * 40, 32768) and nq = rdiv(q * 40, 32768). The bar is the 40 characters whose character at position j (j = 0, ..., 39) is "#" if j < nq, "-" if nq <= j < np, and a space otherwise.
+Lines to write:
+- "METER {name} rate={rate} samples={L} block={block} blocks={B}"
+- B lines, in block order: the milliseconds of sample index b * block right-aligned in 6 characters, " |", the bar, and "| peak={p} rms={q} clipped={k}", in this order
+
+(3) HISTOGRAM (amplitude histogram)
+The bin of a value v is (v + 32768) * bins div 65536, and the count n_b of bin b (b = 0, ..., bins - 1) is the number of samples of x whose bin is b. Let lo_b = ceil(b * 65536 / bins) - 32768 (b = 0, ..., bins); the lower end of bin b is lo_b and its upper end is hi_b = lo_(b+1) - 1. Let nmax be the maximum of the counts n_b.
+Lines to write:
+- "HISTOGRAM {name} rate={rate} samples={L} bins={bins} max={nmax}"
+- bins lines, for b = 0, ..., bins - 1 in order: lo_b right-aligned in 6 characters, one space, hi_b right-aligned in 6 characters, one space, n_b right-aligned in 5 characters, " |", and rdiv(n_b * 50, nmax) "#" characters, in this order
+
+(4) PITCHTRACK (pitch plot)
+Lines to write:
+- "PITCHTRACK {name} rate={rate} frame={frame} hop={hop} lags={lo}-{hi} threshold={threshold} frames={T} voiced={number of voiced frames}"
+- T lines, in frame order: the milliseconds of sample index t * hop right-aligned in 6 characters, " |", a 41-character scale, "|", and then " unvoiced rms={level}" for an unvoiced frame or " lag={tau} hz={frequency of tau} rms={level}" for a voiced frame, in this order (tau is the pitch lag of that frame). For an unvoiced frame, the scale is 41 spaces. For a voiced frame, let pos = rdiv((hi - tau) * 40, hi - lo) if hi > lo, and pos = 0 if hi = lo; position pos (counted from 0) is "o", and the other 40 positions are spaces.
+
+== output/signals_out.txt ==
+For each successful SAVE command line, in order, write that signal in the same format as input/signals.txt (the header line "SIGNAL {name} {rate} {L}" and ceil(L / 16) lines with the sample values, 16 per line, separated by single spaces).
+
+[Source files]
+Split the source into the following six files (name the files according to the conventions of each language).
+- main: handles the overall flow (from reading the two input files to writing the five output files). It holds the command table (the kinds, number and ranges of the arguments of each command), the splitting of command lines and the checks of section 2 (the name and integer rules, variable references, ranges, the per-command checks) with the error messages, the dispatching of the execution of each command (including recording origins and ingredients, and the slicing and concatenation of TRIM and CONCAT) and the building of the log lines, the processing of SET, COMPARE, EXPECT, SEGMENTS, ONSETS, PITCHTRACK and TRACE, the analysis.csv lines, the excerpts, the building of the waveform, level-meter, histogram and pitch plots, and the signal and summary lines. Most of the processing goes in this file.
+- signals: holds the signal type (name, sampling rate, sample sequence, origin, ingredients), rdiv, saturation and counting of clips, peak, reading input/signals.txt and formatting in the output/signals_out.txt format, and the generation of IMPULSE, STEP and NOISE.
+- effects: holds the sample computations of GAIN, MIX, DELAY, ECHO, RESAMPLE and FADE.
+- filters: holds the sample computations of FIR, BIQUAD (cascade of Q14 sections), MOVAVG and DCBLOCK.
+- dynamics: holds the envelope and the sample computations of NORMALIZE, GATE and COMPRESS.
+- analysis: holds energy, rms via isqrt, zero_crossings, clipped, the irreducible fraction of the crest factor, and the autocorrelation and the pitch lag.
+
+[Constraints]
+- input/signals.txt has from 1 to 10 signals. The sampling rate of each signal is from 1000 to 48000, the number of samples is from 1 to 20000, and the sample values are from -32768 to 32767.
+- input/pipeline.txt has at most 300 lines, and each line consists only of at most 200 printable ASCII characters (character codes 32 to 126).
+- A single TRACE writes at most 100 tree lines.
+- Within the ranges of section 3, the absolute value of every integer that appears during the computation is less than 2^47. Therefore, the computation can be done exactly with 64-bit integers, and the integers are also represented exactly in languages that represent integers as double-precision floating-point numbers.
+- No floating-point computation is needed. All output is uniquely determined by integer computation alone.
+
+[Example]
+The following is a small example showing the formats. It uses data different from the given input, and the output shown is the correct output for this example's input.
+
+input/signals.txt (example):
+SIGNAL tone 8000 40
+779 4767 4026 4068 -3894 -12180 -9553 -5572 4673 12180 9553 5572 -4673 -12180 -9553 -5572
+4673 12180 9553 5572 -4673 -12180 -9553 -5572 4673 12180 9553 5572 -4673 -12180 -9553 -5121
+3738 8845 5132 3316 -1869 -4397 -711 -1512
+
+input/pipeline.txt (example):
+# example
+SET g 3
+GAIN loud tone $g 2
+ECHO wet loud 5 -1 2 4
+FADE short tone 50 0
+ANALYZE tone 400 2000
+EXCERPT wet 0 12
+SEGMENTS wet 9000 3 2
+PLOT tone 0 40 20 2 16384 2048
+METER tone 16
+HISTOGRAM tone 4
+PITCHTRACK tone 24 8 400 2000 7500
+EXPECT wet peak gt 20000
+TRACE wet
+SAVE wet
+
+output/log.txt (example):
+load tone rate=8000 samples=40 peak=12180
+line 2: SET g=3
+line 3: GAIN loud rate=8000 samples=40 peak=18270 sum=-6839 clipped=0
+line 4: ECHO wet rate=8000 samples=44 peak=24924 sum=-9956 clipped=0
+line 5: error: in out of range
+line 6: ANALYZE tone lags=4-20
+line 7: EXCERPT wet start=0 count=12
+line 8: SEGMENTS wet segments=1
+  segment 1 start=5 end=35 start_ms=0 end_ms=4 peak=24924 rms=17369 crossings=7
+line 9: PLOT tone start=0 count=40 columns=20 rows=5
+line 10: METER tone block=16
+line 11: HISTOGRAM tone bins=4
+line 12: PITCHTRACK tone frames=3 voiced=2
+line 13: EXPECT wet peak=24924 gt 20000 pass
+line 14: TRACE wet
+  wet <- line 4 ECHO
+    loud <- line 3 GAIN
+      tone <- input
+line 15: SAVE wet samples=44
+signal loud rate=8000 samples=40 peak=18270 rms=11243
+signal tone rate=8000 samples=40 peak=12180 rms=7495
+signal wet rate=8000 samples=44 peak=24924 rms=14942
+summary steps=13 errors=1 signals=3 passed=1 failed=0
+
+output/analysis.csv (example):
+signal,peak,rms,zero_crossings,clipped,crest,pitch_lag,pitch_hz
+tone,12180,7495,9,0,5151125/1950716,8,1000.00
+
+output/excerpts.txt (example):
+EXCERPT wet rate=8000 samples=44 start=0 count=12
+    0:   1169   7151   6039   6102  -5841 -18854 -17904 -11377
+    8:   3959  21191  23757  17310
+
+output/waveforms.txt (example):
+PLOT tone rate=8000 start=0 count=40 columns=20 rows=5 scale=12180 attack=16384 release=2048
+ 12180 |    **************  |
+       |#***##  ##  ##  ##**|
+     0 |*-----------------##|
+       | ***  ##  ##  ##  **|
+-12180 |  ##**************  |
+       ++---------+---------+
+    ms  0         2
+METER tone rate=8000 samples=40 block=16 blocks=3
+     0 |#########------                         | peak=12180 rms=7611 clipped=0
+     2 |##########-----                         | peak=12180 rms=8533 clipped=0
+     4 |#####------                             | peak=8845 rms=4403 clipped=0
+HISTOGRAM tone rate=8000 samples=40 bins=4 max=20
+-32768 -16385     0 |
+-16384     -1    20 |##################################################
+     0  16383    20 |##################################################
+ 16384  32767     0 |
+PITCHTRACK tone rate=8000 frame=24 hop=8 lags=4-20 threshold=7500 frames=3 voiced=2
+     0 |                              o          | lag=8 hz=1000.00 rms=7936
+     1 |                              o          | lag=8 hz=1000.00 rms=8539
+     2 |                                         | unvoiced rms=7417
+
+output/signals_out.txt (example):
+SIGNAL wet 8000 44
+1169 7151 6039 6102 -5841 -18854 -17904 -11377 3959 21191 23757 17310 -1320 -20249 -24924 -20236
+-1645 18930 24455 20820 3109 -17447 -23794 -20585 -3400 16716 23054 20255 3284 -16570 -22687 -19208
+-4520 11626 15983 16318 6801 -4335 -6879 -10259 -8159 -3400 2168 3440

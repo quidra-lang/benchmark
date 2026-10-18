@@ -1,0 +1,247 @@
+[Overview]
+Write a program that manages the order book of a single stock and works as a matching engine that matches buy orders against sell orders to execute trades. The program reads commands from standard input one line at a time and writes the result of each command to standard output in a specified format.
+All prices are handled as integers counted in price ticks, and floating-point numbers are not used. Orders are matched by price priority and then time priority, and the trade price is the price of the order that was on the book first. The supported orders are limit orders (including ones with an IOC, FOK, or post-only condition), market orders, stop orders (ones that become a market order when triggered and ones that become a limit order), and iceberg orders, which show only part of their quantity on the book. In addition, the program handles order cancellation and modification, self-trade prevention, trading halts, per-trader risk limits, maker-taker fees, price bands, and tick size and lot size restrictions, and it displays the quotes of the book, order status and history, positions and profit/loss, trade statistics, and so on.
+
+[Input format]
+The first line contains N, the number of command lines that follow. The N lines starting from line 2 each contain one command. Each line is a sequence of tokens separated by a single ASCII space, with no whitespace at the beginning or end of the line. The program ends after all N commands have been processed.
+
+The token formats are as follows.
+- Order ID: 1 to 8 characters consisting only of uppercase letters (A-Z) and digits (0-9), starting with an uppercase letter (e.g. B1, ICE7).
+- Trader name: 1 to 8 characters consisting only of lowercase letters (a-z) (e.g. alice).
+- Side: BUY (buy) or SELL (sell).
+- Condition: one of IOC, FOK, POSTONLY.
+- Fee rate: a decimal integer. A negative number has a leading "-" (e.g. 2, 0, -1). There are no extra leading zeros, and "-0" is never written.
+- Other numbers (price, trigger price, quantity, peak, limit, width, tick size, lot size, n, k): non-negative decimal integers with no extra leading zeros.
+
+There are the following 30 commands. Each part in < > is replaced by a token in the format above. A part enclosed in [ ] may be omitted (the symbols [ ] themselves never appear in the input).
+LIMIT <order ID> <trader name> <side> <price> <quantity> [<condition>]
+MARKET <order ID> <trader name> <side> <quantity>
+STOP <order ID> <trader name> <side> <trigger price> <quantity>
+STOPLIMIT <order ID> <trader name> <side> <trigger price> <price> <quantity>
+ICEBERG <order ID> <trader name> <side> <price> <quantity> <peak>
+CANCEL <order ID>
+REPLACE <order ID> <price> <quantity>
+CANCELALL <trader name>
+HALT
+RESUME
+RISK <trader name> <limit>
+FEE <maker fee rate> <taker fee rate>
+BAND <width>
+TICK <tick size>
+LOT <lot size>
+BOOK <n>
+ORDERS <trader name>
+STATUS <order ID>
+HISTORY <order ID>
+POSITION <trader name>
+FILLS <trader name>
+LAST
+VWAP
+SPREAD
+IMPACT <side> <quantity>
+TRADES <k>
+BARS <k>
+RANK
+FLOW
+SUMMARY
+
+[Processing]
+* State and initial state
+- Books: there is a buy book that holds buy orders and a sell book that holds sell orders. Initially both are empty.
+- Orders: accepted orders (orders from LIMIT, MARKET, STOP, STOPLIMIT, ICEBERG commands that did not produce an error) are managed by order ID. Initially there are none. An order that produced an error is not recorded, so its order ID can later be used for another order.
+  Each order has an order ID, trader name, type, side, condition, limit price, trigger price, peak, order quantity, remaining quantity, visible quantity, filled quantity, filled value, priority number, acceptance number, status, and history. The type is the name of the accepted command (one of LIMIT, MARKET, STOP, STOPLIMIT, ICEBERG). The condition is the <condition> of a LIMIT command; a LIMIT with <condition> omitted and every order other than LIMIT have no condition. The limit price is the command's <price> for LIMIT, ICEBERG and STOPLIMIT; MARKET and STOP have no limit price. Only STOP and STOPLIMIT have a trigger price, and only ICEBERG has a peak.
+  When an order is accepted, its order quantity and remaining quantity are the command's quantity, its filled quantity and filled value are 0, and its history consists of the single line "ACCEPT". The acceptance number is assigned as 1, 2, 3, ... in the order in which orders are accepted.
+- Status: the status of an order is one of the following five.
+  PENDING: a stop order waiting to be triggered.
+  OPEN: on the book, with filled quantity 0.
+  PARTIAL: on the book, with filled quantity 1 or more.
+  FILLED: filled until no remaining quantity was left.
+  CANCELLED: cancelled.
+  An order whose status is PENDING, OPEN or PARTIAL is called an "active order". An order whose status is OPEN or PARTIAL is exactly an order that is placed on the book, and is called a "resting order".
+- Pending stop orders: the collection of orders whose status is PENDING. Initially it is empty.
+- Trade records: one record is added each time a trade occurs. Each trade record has a trade number (a serial number starting from 1), trade price, trade quantity, the order ID of the buy order, the order ID of the sell order, the order ID of the taker (the order on the side that caused that trade), the buy side's fee, and the sell side's fee. Initially there are none. The "last trade price" is the trade price of the last trade record; if there are no trade records, there is no last trade price ("none").
+- Traders: initially no trader is registered. A trader is registered when an order of that trader is accepted for the first time, or when that trader is specified in RISK. Each trader has a bought quantity, sold quantity, cash, and total fees, all of which are 0 at registration.
+- Risk limits: a risk limit may be set per trader. Initially no trader has one (unlimited).
+- Fee rates: there is a maker fee rate and a taker fee rate, both initially 0.
+- Band width: initially 0. When the band width is 0, no price band restriction is applied.
+- Tick size and lot size: both are initially 1.
+- Trading halt: initially trading is not halted.
+- Priority number: when an order is "given a new priority number", it receives the value of a counter that starts from 1, and the counter is increased by 1.
+A command that produces an error does not change the state at all; it only outputs one error line.
+
+* Terms
+- Opposite side: the opposite side of BUY is SELL, and the opposite side of SELL is BUY. The opposite book for a buy order is the sell book, and the opposite book for a sell order is the buy book.
+- Best order: in the sell book, the order with the smallest priority number among the orders with the lowest limit price; in the buy book, the order with the smallest priority number among the orders with the highest limit price (price priority, then time priority). If the book is empty, there is no best order. The limit price of the best order is called the "best quote" of that book.
+- Matchable: for a buy order with limit price p, a sell order at price x is matchable when x <= p. For a sell order with limit price p, a buy order at price x is matchable when x >= p. For an order without a limit price (MARKET and a triggered STOP), every price is matchable.
+- Place on the book: give the order a new priority number, set its visible quantity to its remaining quantity (for ICEBERG, min(peak, remaining quantity)), add it to the book for its side, set its status to OPEN or PARTIAL, and append "REST <limit price> <visible quantity>" to its history.
+- Net, PnL, volume: a trader's net is bought quantity - sold quantity, PnL is cash + net * L (L is the last trade price, or 0 if there is none), and volume is bought quantity + sold quantity.
+- Exposure: the BUY-side exposure of trader t is t's net plus the total remaining quantity of t's active buy orders. The SELL-side exposure of t is t's net with its sign reversed, plus the total remaining quantity of t's active sell orders.
+- Risk limit exceeded: when trader t places an order with side s and quantity q, it is "risk limit exceeded" if t has a risk limit M set and (t's exposure on side s) + q > M. A trader with no risk limit set (including an unregistered trader) never exceeds it.
+- Outside the band: a price p is "outside the band" when the band width w is 1 or more, a last trade price L exists, and |p - L| > w.
+- Two-decimal notation: for an integer x >= 0, the integer part of x / 100 (a decimal number without extra leading zeros), ".", and x mod 100 as two digits (with a leading 0 when it has one digit), written in this order (e.g. 123.45 for x = 12345, and 9.07 for x = 907).
+
+* Execution
+To "execute" an order X, repeat steps 1-4 until X's remaining quantity becomes 0 or execution ends in step 1 below. While X is being executed, it is not on the book.
+1. Let Y be the best order of the book on X's opposite side. If there is no Y, or Y's limit price is not matchable for X, end the execution.
+2. If Y's trader is the same as X's trader (self-trade prevention), output "STP <Y's order ID> <Y's remaining quantity>", append "STP <Y's remaining quantity>" to Y's history, remove Y from the book, and set Y's remaining quantity to 0 and its status to CANCELLED. Then go back to step 1. X is not cancelled.
+3. Otherwise, with q = min(X's remaining quantity, Y's visible quantity) and trade price x = Y's limit price, do the following.
+  - Create a new trade record. Its trade number is the number of trade records so far + 1, and its taker is X. The fee paid by X's trader is q * taker fee rate, and the fee paid by Y's trader is q * maker fee rate (a negative value means receiving).
+  - For each of X and Y, subtract q from the remaining quantity, add q to the filled quantity, and add q * x to the filled value. Also subtract q from Y's visible quantity.
+  - Add q to the bought quantity of the buying trader and subtract q * x from that trader's cash; add q to the sold quantity of the selling trader and add q * x to that trader's cash. Furthermore, for each of X's trader and Y's trader, subtract the fee that the trader pays from the trader's cash and add it to the trader's total fees.
+  - Output a TRADE line, and append "FILL <trade number> <x> <q>" to the histories of X and Y.
+4. If Y's remaining quantity is 0, remove Y from the book and set its status to FILLED. Otherwise, if Y's visible quantity is 0 (iceberg replenishment), give Y a new priority number (it moves to the back among the orders at the same price) and set its visible quantity to min(peak, remaining quantity). With h = remaining quantity - visible quantity, append "REFRESH <visible quantity> <h>" to Y's history and output "REFRESH <Y's order ID> <visible quantity> <h>".
+For resting orders other than iceberg orders, the visible quantity is always equal to the remaining quantity.
+
+* Post-processing
+After executing an order X (for a POSTONLY LIMIT, without executing it), do the following.
+- If X's remaining quantity is 0, set its status to FILLED.
+- Otherwise, if X is an "order that stays on the book", place X on the book.
+- Otherwise, append "EXPIRE <remaining quantity>" to X's history, and set its remaining quantity to 0 and its status to CANCELLED.
+- Finally, output an ORDER line.
+The orders that stay on the book are LIMIT orders whose condition is not IOC, ICEBERG orders, triggered STOPLIMIT orders, and orders that lost priority in REPLACE. MARKET orders, LIMIT orders whose condition is IOC, and triggered STOP orders do not stay on the book.
+
+* Triggering stop orders
+In the processing of LIMIT, MARKET, ICEBERG, and REPLACE that lost priority, the following triggering process is performed after the ORDER line of the post-processing has been output.
+1. If there are no trade records, end. Let L be the last trade price.
+2. From the pending stop orders, select all orders whose side is BUY and L >= trigger price, and all orders whose side is SELL and L <= trigger price. If there are none, end.
+3. Remove all selected orders from the pending stop orders. Then process the selected orders one at a time in increasing order of acceptance number, as follows: output "TRIGGER <order ID>", append "TRIGGER" to its history, execute the order (a STOP is executed without a limit price, and a STOPLIMIT with its limit price), and perform the post-processing. All orders selected together are processed in this order, even if the last trade price changes along the way.
+4. Go back to step 1.
+
+* Processing of each command
+Error checks are performed in the order written, and only the first applicable error is output. An error of LIMIT, MARKET, STOP, STOPLIMIT, ICEBERG, CANCEL or REPLACE is the single line "REJECT <order ID of the command> <reason>", and an error of any other command is the single line "ERROR <reason>". <reason> is the English text shown below.
+For new orders (LIMIT, MARKET, STOP, STOPLIMIT, ICEBERG), the following common checks are performed first, in this order.
+  (a) Trading is halted: halted
+  (b) The command's order ID is the same as the order ID of an already accepted order: duplicate id
+  (c) The price is 0 (for STOP, the trigger price is 0; for STOPLIMIT, at least one of the trigger price and the price is 0; MARKET has no such check): invalid price
+  (d) The quantity is 0: invalid quantity
+  (e) At least one of the prices examined in (c) (the price for LIMIT and ICEBERG, the trigger price for STOP, the trigger price and the price for STOPLIMIT) is not a multiple of the tick size: invalid tick (MARKET has no such check)
+  (f) The quantity is not a multiple of the lot size: invalid lot
+When a new order is accepted, the trader is registered if not yet registered, and a new order is created as described under "Orders" in [Processing].
+
+1. LIMIT id t s p q [c]: after (a)-(f), check the following in this order. (g) p is outside the band: outside band. (h) Risk limit exceeded: risk limit. (i) c is POSTONLY, the opposite book has a best order, and its limit price is matchable for this order: would cross. (j) c is FOK, and the total remaining quantity (including the hidden part of iceberg orders) of the orders in the opposite book whose trader is not t and whose limit price is matchable for this order is less than q: unfillable.
+If there is no error, the order is accepted. If c is not POSTONLY, the order is executed. Then the post-processing and the triggering process are performed. Because of check (i), a POSTONLY order is placed on the book without trading, and because of check (j), a FOK order is always filled completely.
+2. MARKET id t s q: after (a), (b), (d), (f), check (g) risk limit exceeded: risk limit. If there is no error, the order is accepted and executed, and the post-processing and the triggering process are performed.
+3. STOP id t s r q: after (a)-(f), check the following in this order. (g) A last trade price L exists, and either "s is BUY and r <= L" or "s is SELL and r >= L" (the trigger condition is already satisfied): invalid trigger. (h) Risk limit exceeded: risk limit.
+If there is no error, the order is accepted, its status is set to PENDING, it is added to the pending stop orders, and an ORDER line is output.
+4. STOPLIMIT id t s r p q: after (a)-(f), check the following in this order. (g) Same as (g) of STOP: invalid trigger. (h) p is outside the band: outside band. (i) Risk limit exceeded: risk limit.
+If there is no error, the order is accepted in the same way as STOP. When triggered, it is executed as an order with limit price p.
+5. ICEBERG id t s p q k: after (a)-(f), check the following in this order. (g) k is 0, k > q, or k is not a multiple of the lot size: invalid peak. (h) p is outside the band: outside band. (i) Risk limit exceeded: risk limit.
+If there is no error, an order with peak k is accepted and executed, and the post-processing and the triggering process are performed. During execution, the entire remaining quantity is used for trading, regardless of the peak.
+6. CANCEL id: check the following in this order. (a) id is not the order ID of any accepted order: unknown order. (b) That order is not an active order: not open.
+If there is no error, remove the order from the book or from the pending stop orders, append "CANCEL <remaining quantity>" to its history, then set its remaining quantity to 0 and its status to CANCELLED, and output an ORDER line. This command can be executed even while trading is halted.
+7. REPLACE id p q: with o the order whose order ID is id, check the following in this order. (a) Trading is halted: halted. (b) id is not the order ID of any accepted order: unknown order. (c) o is not a resting order: not open. (d) p is 0: invalid price. (e) q is 0: invalid quantity. (f) p differs from o's limit price and p is not a multiple of the tick size: invalid tick. (g) q is not a multiple of the lot size: invalid lot. (h) p equals o's limit price and q equals o's remaining quantity: no change. (i) p differs from o's limit price and p is outside the band: outside band. (j) q is greater than o's remaining quantity, and o's trader placing an order with o's side and quantity q would be risk limit exceeded (however, o's own remaining quantity is not included in the exposure computed in this case): risk limit.
+If there is no error, set o's order quantity to (o's filled quantity + q), and then do one of the following.
+  - If p equals o's limit price and q is less than o's remaining quantity (priority is kept): set o's remaining quantity to q and its visible quantity to min(visible quantity, q), append "REPLACE <p> <q> kept" to its history, and output "REPLACE <id> kept" and an ORDER line in this order. The priority number does not change.
+  - Otherwise (priority is lost): remove o from the book, set its limit price to p and its remaining quantity to q, append "REPLACE <p> <q> lost" to its history, and output "REPLACE <id> lost". Then execute o in the same way as a newly arrived order (it trades if there are matchable orders, and self-trade prevention also applies), and perform the post-processing (o is an order that stays on the book) and the triggering process.
+An order targeted by REPLACE is processed as written here, regardless of the condition (POSTONLY) it had when accepted. Its type, side, peak, and acceptance number do not change.
+8. CANCELALL t: if t is not registered, the error is unknown trader. Otherwise, with k the number of t's active orders, output "CANCELALL <t> <k>", then cancel those orders one at a time in increasing order of acceptance number in the same way as CANCEL, outputting the ORDER line of each. This command can be executed even while trading is halted.
+9. HALT: if trading is halted, the error is already halted. Otherwise, halt trading.
+10. RESUME: if trading is not halted, the error is not halted. Otherwise, lift the trading halt.
+11. RISK t m: there are no errors. If t is not registered, register t, and set t's risk limit to m (replacing it if one is already set).
+12. FEE a b: if a + b < 0, the error is invalid fee. Otherwise, set the maker fee rate to a and the taker fee rate to b. The new fee rates apply to subsequent trades.
+13. BAND w: there are no errors. Set the band width to w.
+14. TICK u, LOT u: if u is 0, the error is invalid size. Otherwise, TICK sets the tick size to u, and LOT sets the lot size to u. This does not affect orders already on the book or pending stop orders.
+15. BOOK n: if n is 0, the error is invalid depth.
+16. ORDERS t, POSITION t, FILLS t: if t is not registered, the error is unknown trader.
+17. STATUS id, HISTORY id: if id is not the order ID of any accepted order, the error is unknown order.
+18. IMPACT s q: if q is 0, the error is invalid quantity.
+19. TRADES k, BARS k: if k is 0, the error is invalid count.
+20. LAST, VWAP, SPREAD, RANK, FLOW, SUMMARY: there are no errors.
+Commands 15-20 do not change the state. The only commands that cannot be executed while trading is halted are new orders and REPLACE.
+
+[Output format]
+For each command, output one or more lines in the formats below. Text in double quotes is written exactly as shown, in ASCII characters, and each part in < > is replaced by a value. Every space between tokens is a single ASCII space. The output consists only of ASCII characters, no line has trailing whitespace, and every line ends with a newline (LF). No blank lines are output.
+Numbers are written as decimal integers without extra leading zeros, except where another notation such as two-decimal notation is specified, and negative numbers have a leading "-".
+Ascending order of trader names is lexicographic order by character code (ASCII) (when one name is a prefix of the other, the shorter one comes first).
+
+* Common lines
+- TRADE line: "TRADE <trade number> <trade price> <trade quantity> <order ID of the buy order> <trader name of the buy order> <order ID of the sell order> <trader name of the sell order>"
+- ORDER line: "ORDER <order ID> <status> <filled quantity>/<order quantity>" (format example: ORDER Q9 PARTIAL 4/10)
+- The STP, REFRESH, TRIGGER, REPLACE, REJECT and ERROR lines are as shown in [Processing].
+- Order details: "<order ID> <trader name> <type> <side> <limit price> <status> <filled quantity>/<order quantity> avg <average fill price>". For an order without a limit price, <limit price> is written as "-". The average fill price is "-" if the filled quantity is 0, and otherwise the two-decimal notation of floor(filled value * 100 / filled quantity) (this is the value with the third and later decimal places truncated). For STOP and STOPLIMIT orders, " trigger <trigger price>" is further appended after this.
+- POSITION line: "POSITION <trader name> bought <bought quantity> sold <sold quantity> net <net> cash <cash> fees <total fees> pnl <PnL>"
+
+* Output of each command (on success)
+- LIMIT, MARKET, ICEBERG: the TRADE, STP and REFRESH lines output during execution (in the order they occurred), the ORDER line of the post-processing, and the output of the triggering process (TRIGGER lines and the output of the execution and post-processing of the triggered orders), in this order.
+- STOP, STOPLIMIT, CANCEL: one ORDER line.
+- REPLACE: the lines shown in [Processing]. When priority is lost, "REPLACE <id> lost" is followed, as with LIMIT, by the lines output during execution, the ORDER line of the post-processing, and the output of the triggering process, in this order.
+- CANCELALL: the lines shown in [Processing].
+- HALT: "HALT"
+- RESUME: "RESUME"
+- RISK: "RISK <t> <m> exposure buy <BUY-side exposure of t> sell <SELL-side exposure of t>" (the exposures are the values after the setting)
+- FEE: "FEE maker <a> taker <b>"
+- BAND: "BAND <w>"
+- TICK: "TICK <u>"
+- LOT: "LOT <u>"
+- BOOK: group the orders on the book by limit price, and for each price compute the total visible quantity and the number of orders (quantities that are not visible are not included). The first line is "BOOK bids <number of distinct prices in the buy book> asks <number of distinct prices in the sell book>". Then output up to n of the lowest prices in the sell book, in descending order of price, in the form "ASK <price> <total visible quantity> <number of orders>", followed by up to n of the highest prices in the buy book, in descending order of price, in the form "BID <price> <total visible quantity> <number of orders>".
+- ORDERS: with k the number of t's active orders, output "ORDERS <t> <k>", followed by the order details of those orders, one per line, in increasing order of acceptance number.
+- STATUS: "STATUS <order details>"
+- HISTORY: output "HISTORY <order ID> <number of history lines>", followed by each history line in the order in which it was added. A history line is a line in the format shown in [Processing] that starts with one of ACCEPT, REST, FILL, REFRESH, TRIGGER, REPLACE, STP, CANCEL, EXPIRE.
+- POSITION: the POSITION line of t.
+- FILLS: with k the number of trade records in which t's order is the buy side or the sell side, output "FILLS <t> <k>", followed by those trade records, one per line, in increasing order of trade number, in the form "<trade number> <side of t's order> <trade price> <trade quantity> <order ID of t's order> <role> fee <fee paid by t> net <cumulative net>". The role is TAKER if t's order is the taker of that trade, and MAKER otherwise. The cumulative net is the sum of t's trade quantities up to and including that line, added for buys and subtracted for sells. Because of self-trade prevention, the buy side and the sell side of one trade record are never the same trader.
+- LAST: "LAST <last trade price> <trade quantity of the last trade record>" if there are trade records, otherwise "LAST none".
+- VWAP: if there are trade records, with T their number, V the total trade quantity, and A the sum of trade price * trade quantity, "VWAP <two-decimal notation of floor(A * 100 / V)> volume <V> trades <T>"; otherwise "VWAP none".
+- SPREAD: when both the buy book and the sell book have orders, with b the best quote of the buy book and a the best quote of the sell book, "SPREAD bid <b> ask <a> spread <a-b> mid <midpoint>". The midpoint is (a + b) / 2 written with one decimal place: if a + b is even, (a + b) / 2 followed by ".0"; if odd, floor((a + b) / 2) followed by ".5". When either book is empty, "SPREAD bid <b> ask <a>", where the quote of an empty book is written as "none".
+- IMPACT: an estimate assuming that a market order with side s and quantity q were placed against the current book; the book is not changed. Starting with remainder r = q and cost C = 0, look at the prices of the book on the opposite side of s one at a time from the best (lowest first for the sell book, highest first for the buy book), and stop when r becomes 0. At each price x, with v the total visible quantity at that price and u = min(r, v), subtract u from r and add u * x to C. If r is still 1 or more after looking at all prices, output "IMPACT <s> <q> insufficient <grand total of the visible quantities of the opposite book>"; otherwise output "IMPACT <s> <q> avg <two-decimal notation of floor(C * 100 / q)> worst <last price from which quantity was taken> levels <number of prices from which quantity was taken>". Self-trade prevention is not considered, and orders of every trader are counted.
+- TRADES: with T the number of trade records and m = min(k, T), output "TRADES <m> of <T>", followed by the last m trade records in increasing order of trade number, in the TRADE line format.
+- BARS: divide the trade records, in order of trade number from the first, into groups of k records each (the last group may have fewer than k records). With g the number of groups, output "BARS <g>", followed for each i-th group (counting from 1) by "<i> open <first trade price> high <highest trade price> low <lowest trade price> close <last trade price> volume <total trade quantity>".
+- RANK: with k the number of registered traders, output "RANK <k>", followed by all traders sorted in descending order of PnL, ties broken by descending volume, and remaining ties broken by ascending trader name, one per line as "<rank> <trader name> pnl <PnL> volume <volume>". The rank is 1, 2, 3, ... in the sorted order (tied traders do not share a rank).
+- FLOW: with B the total trade quantity of the trade records whose taker is a buy order and S the total of those whose taker is a sell order, "FLOW buy <B> sell <S> net <B-S>".
+- SUMMARY: if there are trade records, output "SUMMARY trades <number of trade records> volume <total trade quantity> open <first trade price> high <highest trade price> low <lowest trade price> close <last trade price> fees <grand total of the buy-side and sell-side fees of all trade records>", otherwise output "SUMMARY trades 0". Then output the POSITION lines of all registered traders in ascending order of trader name.
+
+[Constraints]
+- 1 <= N <= 1000.
+- Command names and the number and format of tokens are always correct. Numbers may be 0, and order IDs that have not been accepted or trader names that are not registered may be specified.
+- Price, trigger price, quantity, peak, limit, width, tick size, lot size, n, and k are between 0 and 100000 inclusive, and fee rates are between -100 and 100 inclusive.
+- Every integer appearing in the computation (including the values multiplied by 100 in the computation of the average fill price, VWAP and IMPACT) has an absolute value less than 2^31.
+
+[Example]
+Input:
+13
+LIMIT S1 bob SELL 101 5
+ICEBERG S2 carol SELL 101 8 3
+LIMIT S3 dave SELL 102 4
+LIMIT B1 alice BUY 99 6
+STOP T1 erin BUY 101 4
+LIMIT B2 alice BUY 101 7
+BOOK 2
+LIMIT S4 alice SELL 99 2 POSTONLY
+MARKET M1 alice SELL 3
+POSITION alice
+HISTORY S2
+VWAP
+SPREAD
+
+Output:
+ORDER S1 OPEN 0/5
+ORDER S2 OPEN 0/8
+ORDER S3 OPEN 0/4
+ORDER B1 OPEN 0/6
+ORDER T1 PENDING 0/4
+TRADE 1 101 5 B2 alice S1 bob
+TRADE 2 101 2 B2 alice S2 carol
+ORDER B2 FILLED 7/7
+TRIGGER T1
+TRADE 3 101 1 T1 erin S2 carol
+REFRESH S2 3 2
+TRADE 4 101 3 T1 erin S2 carol
+REFRESH S2 2 0
+ORDER T1 FILLED 4/4
+BOOK bids 1 asks 2
+ASK 102 4 1
+ASK 101 2 1
+BID 99 6 1
+REJECT S4 would cross
+STP B1 6
+ORDER M1 CANCELLED 0/3
+POSITION alice bought 7 sold 0 net 7 cash -707 fees 0 pnl 0
+HISTORY S2 7
+ACCEPT
+REST 101 3
+FILL 2 101 2
+FILL 3 101 1
+REFRESH 3 2
+FILL 4 101 3
+REFRESH 2 0
+VWAP 101.00 volume 11 trades 4
+SPREAD bid none ask 101

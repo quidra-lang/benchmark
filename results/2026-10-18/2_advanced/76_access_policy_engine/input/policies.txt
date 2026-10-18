@@ -1,0 +1,152 @@
+# Acme access control policies
+
+POLICYSET corp first-applicable
+  OBLIGATION DENY audit_denial user=subject.id; resource=resource.id
+  ADVICE PERMIT session_roles roles=subject.role
+  POLICY breakglass permit-overrides
+    TARGET environment.breakglass == true
+    RULE bg_officer PERMIT
+      CONDITION "security_officer" in subject.role or subject.clearance >= 3
+      OBLIGATION PERMIT alert_security user=subject.id; ticket=environment.ticket
+    END
+  END
+
+  # regular evaluation
+  POLICYSET main deny-overrides
+    POLICY baseline deny-overrides
+      TARGET subject.clearance >= 0
+      RULE intern_sensitive DENY
+        TARGET subject.employment == "intern"
+        CONDITION resource.classification >= 2
+      END
+      RULE contractor_hours DENY
+        TARGET subject.employment == "contract"
+        CONDITION environment.hour < 8 or environment.hour >= 18
+        ADVICE DENY office_hours from=8; to=18
+      END
+      RULE clearance_check DENY
+        TARGET resource.classification >= 1
+        CONDITION subject.clearance < resource.classification
+        OBLIGATION DENY report_clearance gap=resource.classification - subject.clearance
+      END
+      RULE quarter_freeze DENY
+        TARGET action.id == "write" | action.id == "delete" | action.id == "approve"
+        TARGET resource.type == "ledger" | resource.type == "payment"
+        CONDITION environment.day >= 88 and environment.day <= 92
+        OBLIGATION DENY notify_freeze days_left=92 - environment.day
+      END
+    END
+    POLICYSET domains only-one-applicable
+      POLICY finance first-applicable
+        TARGET resource.type == "invoice" | resource.type == "payment" | resource.type == "ledger"
+        RULE fin_self_approval DENY
+          TARGET action.id == "approve"
+          CONDITION resource.owner == subject.id
+          ADVICE DENY four_eyes owner=resource.owner
+        END
+        RULE fin_limit DENY
+          TARGET action.id == "approve" & resource.type == "payment"
+          CONDITION resource.amount > 20000 * subject.clearance + 5000
+          OBLIGATION DENY escalate amount=resource.amount; limit=20000 * subject.clearance + 5000
+        END
+        RULE fin_department PERMIT
+          CONDITION subject.rbac and (subject.department == "finance" or "auditor" in subject.role)
+          OBLIGATION PERMIT log_finance level=resource.classification; actor=subject.id
+        END
+        RULE fin_owner_read PERMIT
+          TARGET action.id == "read"
+          CONDITION resource.owner == subject.id
+        END
+        RULE fin_default DENY
+          ADVICE DENY contact_finance department=resource.department
+        END
+        RULE fin_public_read PERMIT
+          TARGET action.id == "read" & resource.classification == 0
+        END
+      END
+      POLICY hr deny-unless-permit
+        TARGET resource.type == "personnel" | resource.type == "payroll"
+        TARGET resource.department! == "hr"
+        OBLIGATION PERMIT record_purpose purpose=environment.purpose
+        RULE hr_staff PERMIT
+          CONDITION subject.rbac and subject.department == "hr"
+          OBLIGATION PERMIT mask_fields fields=["ssn","bank_account"]
+        END
+        RULE hr_self PERMIT
+          TARGET action.id == "read" & resource.type == "personnel"
+          CONDITION resource.owner == subject.id
+        END
+        RULE hr_payroll_finance PERMIT
+          TARGET resource.type == "payroll" & action.id == "read"
+          CONDITION "finance_manager" in subject.role and subject.clearance >= 3
+        END
+        RULE hr_reviewer PERMIT
+          TARGET environment.purpose ^= "review" & action.id == "read"
+          CONDITION "auditor" in subject.role
+        END
+      END
+      POLICY engineering permit-overrides
+        TARGET resource.type == "source" | resource.type == "change" | resource.type == "service"
+        RULE eng_contractor_core DENY
+          TARGET subject.employment == "contract"
+          CONDITION "core" in resource.tags
+        END
+        RULE eng_project PERMIT
+          TARGET action.id == "read" | action.id == "write"
+          CONDITION subject.rbac and any_of(subject.projects, starts_with(resource.project, it))
+        END
+        RULE eng_approve PERMIT
+          TARGET action.id == "approve" & resource.type == "change"
+          CONDITION subject.rbac and resource.owner != subject.id
+          OBLIGATION PERMIT record_approval change=resource.id; approver=subject.id
+        END
+        RULE eng_late_deploy DENY
+          TARGET action.id == "deploy" & resource.tags == "prod"
+          CONDITION environment.hour >= 16
+          ADVICE DENY deploy_window until=16
+        END
+        RULE eng_deploy PERMIT
+          TARGET action.id == "deploy"
+          CONDITION subject.rbac and all_of(resource.requires, it in subject.trained)
+          OBLIGATION PERMIT notify_oncall service=resource.id; trainings=size(subject.trained)
+        END
+      END
+      POLICY security first-applicable
+        TARGET resource.type == "log" | resource.tags == "security"
+        RULE log_security PERMIT
+          CONDITION subject.rbac and subject.department == "security"
+          OBLIGATION PERMIT watermark by=subject.id
+        END
+        RULE log_ops_read PERMIT
+          TARGET action.id == "read"
+          CONDITION subject.rbac and environment.net == "internal"
+        END
+        RULE log_export_strict PERMIT
+          TARGET action.id == "export"
+          CONDITION subject.clearance > 3 and subject.clearance < 2
+        END
+        RULE log_default DENY
+        END
+      END
+      POLICY general permit-unless-deny
+        TARGET resource.type == "document"
+        RULE doc_rbac DENY
+          CONDITION not subject.rbac
+          ADVICE DENY request_role action=action.id; type=resource.type
+        END
+        RULE doc_confidential DENY
+          TARGET resource.classification! >= 2
+          CONDITION resource.department != subject.department
+        END
+        RULE doc_write_owner DENY
+          TARGET action.id == "write" | action.id == "delete"
+          CONDITION not present(resource.owner) or resource.owner != subject.id
+        END
+        RULE doc_external DENY
+          TARGET environment.net == "external"
+          CONDITION size(subject.role) < 3 or -subject.clearance > -2
+        END
+      END
+    END
+  END
+END

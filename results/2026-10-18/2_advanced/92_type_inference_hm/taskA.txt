@@ -1,0 +1,378 @@
+[Overview]
+Write a type checker and evaluator for a small ML-like functional language (called "mini-ML" below). The program reads input/prelude.ml, which contains a library, and input/program.ml, which contains the user's program, in this order, splits each of them into top-level "items", and for each item performs lexical analysis, parsing, formatting, Hindley-Milner type inference (Algorithm W), type signature checking, static checks (warnings) and evaluation. Type inference provides unification of type variables managed with union-find, the occurs check, and polymorphism through generalization at let (let-polymorphism), and reports type errors (type mismatches, infinite types, undefined variables, etc.) together with their positions. Types are printed with their type variables renamed 'a, 'b, ... in order of appearance. Well-typed items are evaluated with call-by-value, and function values are represented by closures. Errors during evaluation (division by zero, pattern match failure, etc.) are also reported together with their positions. The results are written to 4 files: the types of the top-level bindings (output/types.txt), the evaluated values (output/values.txt), the errors and warnings (output/errors.txt) and the formatted source (output/formatted.ml). The program is run in a directory that contains, besides the source files, input/ holding the input files and an empty output/, and it prints nothing to standard output.
+
+[Input files]
+* input/prelude.ml, input/program.ml
+Text files containing mini-ML source. prelude.ml is the library and is processed first. program.ml is the user's program and is processed after prelude.ml. The 2 files are written in the same grammar and are processed by the same rules. Every line ends with a newline (LF), and only printable ASCII characters (character codes 32 to 126) appear on a line. Tabs do not appear, and no line has trailing spaces.
+A position in a file is expressed as a pair of a line number (the first line of the file is 1) and a column number (the first character of a line is 1). The position after the last newline of the file is called the "end of file"; its line number is the number of lines of the file plus 1, and its column number is 1.
+
+[Processing]
+* 1. Lexical analysis
+Read each file from the beginning and split it into "tokens". The position of each token is the position of its first character. Below, "letter" means A to Z and a to z, "lowercase letter" means a to z, and "digit" means 0 to 9. Depending on the character at the current position, perform the first applicable case among (1) to (8) below, and repeat this until the end of the file.
+(1) A space or a newline: skip it.
+(2) The 2 characters "(*": the start of a comment. The comment extends up to the first "*)" found when searching from the character following the "(*", and the whole comment is skipped. A comment may span multiple lines and does not nest (a "(*" inside a comment has no meaning). If no "*)" is found, place the invalid token "unterminated comment" at the position of the "(*" and end the lexical analysis of that file.
+(3) A digit: the longest run of digits is an "integer literal", and its value is the run read as a decimal number (leading zeros are allowed). If the value is greater than 2147483647, the whole run becomes the invalid token "integer literal too large".
+(4) A letter or "_": the longest run of letters, digits, "_" and "'" is one word. If the word is one of the following 14, it is a "keyword"; otherwise it is an "identifier".
+    let rec and in fun if then else match with true false mod val
+  An identifier consisting of the single character "_" is called a "wildcard", and an identifier other than the wildcard is called a "name". int, bool, string and list are names, but inside a type expression (2(1)) they denote types.
+(5) A "'" whose next character is a lowercase letter: the "'" followed by the longest run of letters, digits and "_" is a "type variable token" (e.g. 'a, 'elem).
+(6) A double quote ("): the start of a "string literal". Starting from the next character, advance until a double quote or a newline appears. While doing so, a "\" and the character after it are consumed together as one pair of 2 characters, unless that next character is a newline (so the double quote in the 2 characters \" does not end the literal).
+  - If a newline is reached before a double quote appears, place the invalid token "unterminated string" at the position of the opening double quote, and continue lexical analysis from the position of that newline.
+  - If a double quote appears, everything from the opening double quote through that double quote is one token. A "\" and the following character consumed as a pair are called an "escape"; "\n" denotes a newline (character code 10), "\t" a tab (character code 9), "\\" a single "\", and "\"" a single double quote. Every character that is not part of an escape denotes itself. If there is even one escape other than these 4 kinds (for example "\q"), the whole token becomes the invalid token "invalid escape sequence" (its position is the position of the opening double quote). Otherwise it is a string literal whose value is the string of the denoted characters in order (it may be empty).
+(7) The text starts with one of the following "symbols": that symbol is one token. When several symbols match, choose the longer one (for example, ";;" is one symbol, not 2 ";" symbols, and "->", "::", "<=" and "<>" are also one symbol each).
+    ;;  ->  ::  :  ||  &&  <=  >=  <>  ;  =  <  >  +  -  *  /  ^  (  )  [  ]  ,  |
+(8) None of the above (for example "#", ".", a lone "&", or a "'" whose next character is not a lowercase letter): that single character becomes the invalid token "illegal character 'c'" (c is that character), and lexical analysis continues from the next character.
+Finally, place a token that represents the end of the file (called "EOF" below). Its position is the end-of-file position. The strings of invalid tokens, such as "unterminated comment", are used as syntax error messages in 3.
+
+* 2. Syntax
+(1) Grammar
+Read the token sequence as a sequence of "items" according to the following grammar. In the grammar, something enclosed in double quotes denotes the keyword or symbol with that spelling ("int", "bool", "string" and "list" inside type expressions denote the names with that spelling). [ ] denotes an optional part, { } zero or more repetitions, and | a choice. integer-literal, string-literal, name, wildcard and type-variable each denote the corresponding token of 1.
+  item ::= "val" name ":" type-expr ";;"
+         | "let" ["rec"] binding {"and" binding} ";;"
+         | expr ";;"
+  binding ::= name {param} "=" expr
+  param ::= name | wildcard
+  expr ::= "let" ["rec"] binding {"and" binding} "in" expr
+         | "fun" param {param} "->" expr
+         | "if" expr "then" expr "else" expr
+         | "match" expr "with" ["|"] arm {"|" arm}
+         | unary-expr {binary-operator unary-expr}
+  arm ::= pattern "->" expr
+  unary-expr ::= "-" unary-expr | atomic-expr {atomic-expr}
+  atomic-expr ::= integer-literal | string-literal | "true" | "false" | name
+                | "(" expr ")" | "(" expr "," expr ")" | "[" "]" | "[" expr {";" expr} "]"
+  pattern ::= atomic-pattern ["::" pattern]
+  atomic-pattern ::= wildcard | name | integer-literal | "-" integer-literal | string-literal | "true" | "false"
+                   | "[" "]" | "[" pattern {";" pattern} "]" | "(" pattern ")" | "(" pattern "," pattern ")"
+  type-expr ::= product-type ["->" type-expr]
+  product-type ::= list-type ["*" list-type]
+  list-type ::= type-atom {"list"}
+  type-atom ::= "int" | "bool" | "string" | type-variable | "(" type-expr ")"
+The binary operators (binary-operator) are the following 15, with precedence and associativity as follows (a larger precedence number binds more tightly).
+  precedence 1: || (right-associative)
+  precedence 2: && (right-associative)
+  precedence 3: =, <>, <, >, <=, >= (left-associative)
+  precedence 4: ::, ^ (right-associative)
+  precedence 5: +, - (left-associative)
+  precedence 6: *, /, mod (left-associative)
+For example, "a - b + c" is "(a - b) + c", "a :: b :: c" is "a :: (b :: c)", "a ^ b :: c" is "a ^ (b :: c)", "a = b = c" is "(a = b) = c", and "a || b && c" is "a || (b && c)".
+(2) Notes on reading
+- A sequence of 2 or more atomic expressions in "atomic-expr {atomic-expr}" is a function "application" and is left-associative ("f x y" is "(f x) y"). Unary "-" binds more weakly than application and more tightly than binary operators. "-f x" is "-(f x)", "a - -b" is "a - (-b)", and "a * -b" is "a * (-b)".
+- Expressions that start with let, fun, if or match (called "prefix expressions" below) cannot be written directly as an operand of a binary operator, as the operand of unary "-", or as the function or an argument of an application (they must be enclosed in parentheses). For example, "1 + if c then 2 else 3" is a syntax error.
+- A prefix expression extends as far to the right as possible. The body of a fun, the expression after the "in" of let ... in, the expression after the "else" of an if, and the expression of the last arm of a match include all the tokens that can follow them. In particular, a match written inside the expression of an arm takes all the arms that follow it with "|" as its own arms.
+- "( expr )" only groups an expression. "( expr , expr )" is a "pair" of 2 elements; pairs of 3 or more elements cannot be written. "[ ... ]" is a "list".
+- A binding "name param1 ... paramn = expr" (n >= 1) means the same as "name = fun param1 ... paramn -> expr", and "fun param1 param2 ... paramn -> expr" means the same as "fun param1 -> fun param2 -> ... -> fun paramn -> expr". Below, only fun expressions with exactly 1 parameter are considered, and these ways of writing are not distinguished (the formatting result is also the same). A fun whose parameter is a wildcard is a function that does not give its parameter a name. Below, "the expression" of a binding means the expression with its parameters converted into funs in this way.
+- The "-" integer-literal of a pattern is a negative integer constant (e.g. -1).
+- In type expressions, "list" binds most tightly, "*" next, and "->" most weakly. "->" is right-associative ("int -> int -> int" is "int -> (int -> int)"). "*" does not associate, so "int * int * int" is a syntax error (write it like "(int * int) * int").
+- An item that starts with "val" is called a "signature", an item that starts with "let", does not contain "in" and ends with ";;" is called a "declaration", and every other item (including expressions of the form "let ... in ...") is called an "expression item". The bindings of a declaration are called "top-level bindings", and the bindings of a let inside an expression are called "local bindings".
+(3) Positions of expressions and patterns
+The position of an expression is the position of its first token, ignoring parentheses that only group an expression (the position of "(f x) y" is the position of "f", and the position of "(fun x -> x)" is the position of "fun"). The position of a binary operator expression is the position of its left operand, the position of an application is the position of its function, the position of a pair is the position of its "(", and the position of a list is the position of its "[". Likewise, the position of a pattern is the position of its first token, ignoring parentheses that only group a pattern. In addition, for binary operators and unary "-", the position of the operator token is called the "operator position".
+
+* 3. Syntax errors and recovery
+Read the tokens of each file from the beginning, as items. If the current token is EOF, finish processing that file. Otherwise, read one item starting from the current token.
+Examine the tokens in order from the first token of the item; the first token such that "the sequence from the start of the item through that token is not a prefix of any valid item of the grammar in 2" is called the "error token". Invalid tokens and EOF never appear in any item, so if there is no error token before them, they always become the error token. If ";;" is reached without an error token, the item has been read correctly. (In ordinary recursive descent parsing, the token at which you find, by looking at the next token, that you cannot proceed is the error token.)
+If there is an error token T, report a "syntax error" at the position of T. The message is the string of T if T is an invalid token (e.g. "illegal character '#'"), "unexpected end of file" if T is EOF, and "unexpected 'X'" otherwise. X is the spelling of T exactly as in the source (for an integer literal, the digits as written; for a string literal, the spelling as written including the double quotes at both ends and the escapes; for a type variable token, the spelling including the "'").
+Then recover. If T is the symbol ";;", read the next item starting from the token after it. Otherwise, search from T onward for the first ";;", and read the next item starting from the token after it. If EOF is reached without a ";;" appearing, finish processing that file. An item with a syntax error also counts toward the number of items.
+
+* 4. Processing flow of items
+Keep one type environment (a mapping from names to type schemes) and one value environment (a mapping from names to values). Both initially contain only the built-in functions (10(8)). Process the items of prelude.ml in order, then the items of program.ml in order. The 2 environments carry over across files. Also keep, per file, the "pending signatures" (a mapping from names to signatures), which are emptied at the start of each file.
+Process each item by the following steps. "Reports" of errors and warnings are written to output/errors.txt in the order in which they are reported.
+(1) Read the item. If there is a syntax error, report it and recover as described in 3, and go on to the next item.
+(2) Add the one formatted line of the item (12) to the content to be written to formatted.ml.
+(3) For a signature "val x : t;;": if x already has a pending signature, report the warning "signature for 'x' is never used" at the position of the name x in that old signature. Then make this new signature the pending signature of x, and go on to the next item.
+(4) For a declaration: in binding order, take out the pending signature of each binding's name, if there is one (a signature taken out is no longer pending, regardless of the results afterwards). Then infer the types of the binding group in the current type environment (6(6)), and check the signatures taken out (7).
+  For an expression item: infer the type of the expression in the current type environment (6(3)).
+  If a type error occurs, report it, skip the rest of the processing of that item, and go on to the next item (the 2 environments do not change). Only one type error, the first one found, is reported per item.
+(5) Write the types to types.txt ([Output files]).
+(6) Report the warnings (8).
+(7) Evaluate (10). For a declaration, evaluate the binding group in the current value environment; for an expression item, evaluate the expression. If a runtime error occurs, report it, skip the rest of the processing of that item, and go on to the next item (the 2 environments do not change).
+(8) Write the values to values.txt. For a declaration, add the name and type scheme (obtained in (4)) of each binding to the type environment, and the name and value of each binding to the value environment (replacing any existing entry with the same name).
+After all items of a file have been processed, for each remaining pending signature, report the warning "signature for 'x' is never used" at the position of its name x, in order of position.
+
+* 5. Types and type printing
+(1) A type is one of int, bool, string, "t list" (a list whose elements have type t), "t1 * t2" (a pair whose first component has type t1 and whose second component has type t2), "t1 -> t2" (a function whose argument type is t1 and whose result type is t2), or a type variable. A "type scheme" is a pair of a type and the set of "quantified" type variables among the type variables appearing in that type. The quantified type variables are replaced by fresh type variables each time the type scheme is used (6(3)).
+(2) A type is turned into a string by the following rules.
+  - int, bool and string are their spellings.
+  - "t list" is the string of t followed by " list". If t is a pair or function type, the string of t is enclosed in parentheses.
+  - "t1 * t2" is the strings of t1 and t2 joined by " * ". Each of t1 and t2 is enclosed in parentheses if it is a pair or function type.
+  - "t1 -> t2" is the strings of t1 and t2 joined by " -> ". If t1 is a function type, the string of t1 is enclosed in parentheses (t2 is not).
+  - Type variables are named 'a, 'b, ..., 'z, 'a1, 'b1, ..., 'z1, 'a2, ... in the order in which they first appear from left to right in the string. That is, the name of the type variable that appears k-th, counting from 0, is "'" followed by the (k mod 26)-th lowercase letter counting from a (a is the 0th), followed, if k is 26 or more, by the decimal representation of k div 26. The same type variable gets the same name.
+  The naming scope is each line in types.txt, and each message in reports. When several types appear in one message, the names are assigned continuously across the types, from left to right in the message string. For example, with type variables alpha and beta in order of appearance, "(alpha -> beta) -> alpha list -> beta list" becomes "('a -> 'b) -> 'a list -> 'b list".
+(3) In the types of local bindings written to types.txt, the type variables quantified in the binding's type scheme get the names of (2), and the type variables that are not quantified get names starting with "'_" instead of "'". The letter and digit part is determined by the order of appearance under the rule of (2), without distinguishing quantified and unquantified type variables (e.g. "'a -> '_b * 'a").
+
+* 6. Type inference
+(1) Type variables and unification
+Type inference proceeds by "binding" types to type variables. "Resolving" a type means replacing each bound type variable in the type with the type it is bound to (itself resolved). A type variable that is not bound is called a "free type variable". Below, all comparisons and printing of types are done on the type as resolved at that moment. (Type variables are usually managed with union-find, but any method is acceptable as long as the results are the same as this description.)
+Two types E (the "expected type") and F (the "found type") are "unified" as follows.
+  1. For each of E and F, while it is a bound type variable, replace it with the type it is bound to.
+  2. If E and F are the same type variable, succeed.
+  3. If E is a type variable: if E occurs in F, it is an "occurs check failure". Otherwise, bind E to F and succeed.
+  4. If F is a type variable: if F occurs in E, it is an "occurs check failure". Otherwise, bind F to E and succeed.
+  5. If E and F are types of the same kind (both int, both bool, both string, both lists, both pairs, both functions), unify their components in the following order: for lists, the element types; for pairs, the first components, then the second components; for functions, the argument types, then the result types. In the unification of components too, the component of E is the expected type and the component of F is the found type. If a unification of components fails, the whole unification fails at that point.
+  6. Otherwise, it is a "mismatch failure".
+Bindings made before a failure are not undone after the failure (this affects the reported types). The pair of E and F at step 3, 4 or 6 where the failure was detected is called the "failed pair".
+(2) Type checks
+"Checking F against expected E (at position p)" means unifying E and F, and reporting a type error at position p if the unification fails. The message of the report is
+  expected E but found F
+followed, for an occurs check failure, by " (infinite type V = T)" (V is the type variable of the failed pair, and T is the other type), and, for a mismatch failure whose failed pair is not the initial pair of E and F (that is, it failed in a unification of components), by " (E' vs F')" (E' and F' are the expected type and the found type of the failed pair). Here E and F are the 2 types the unification was started with. Every type is the one resolved at the moment of the failure, printed by the rules of 5(2), with the type variable names assigned continuously across the whole message.
+Examples: "expected int list but found string list (int vs string)", "expected 'a but found 'a -> 'b (infinite type 'a = 'a -> 'b)".
+(3) Types of expressions
+Under a type environment Gamma, the type of an expression is obtained as follows. A "fresh type variable" is a free type variable that has not appeared anywhere before. Once a type error has been reported, the type inference of that item ends there.
+  - The type of an integer literal is int, the type of a string literal is string, and the type of true and false is bool.
+  - A name x: if x is not in Gamma, report the type error "unbound variable 'x'" at the position of x (but if there is a candidate y of 6(8), append " (did you mean 'y'?)" to it). If it is, the type of x is the type of x's type scheme in Gamma with each quantified type variable replaced by a fresh type variable (the same type variable is replaced by the same fresh type variable).
+  - fun x -> e: create a fresh type variable alpha, and obtain the type tau of e under the type environment obtained by adding x:alpha (a type scheme with no quantified type variables) to Gamma. The resulting type is "alpha -> tau". If the parameter is a wildcard, nothing is added to Gamma.
+  - Application e1 e2: obtain the type of e1 and resolve it. If it is a type variable, create fresh type variables alpha and beta, and bind that type variable to "alpha -> beta". If it is a function type "alpha -> beta", use that alpha and beta. If it is any other type T, report the type error "expected a function but found T" at the position of e1. Then obtain the type of e2 and check it against expected alpha (at the position of e2). The resulting type is beta.
+  - Binary operator e1 op e2: let "t1 -> t2 -> r" be the type obtained by replacing the quantified type variables of the type scheme of op (table below) with fresh type variables. Obtain the type of e1 and check it against expected t1 (at the position of e1), then obtain the type of e2 and check it against expected t2 (at the position of e2). The resulting type is r.
+      +, -, *, /, mod : int -> int -> int
+      ^ : string -> string -> string
+      &&, || : bool -> bool -> bool
+      =, <>, <, >, <=, >= : 'a -> 'a -> bool ('a is a quantified type variable)
+      :: : 'a -> 'a list -> 'a list ('a is a quantified type variable)
+  - -e: obtain the type of e and check it against expected int (at the position of e). The resulting type is int.
+  - if c then a else b: obtain the type of c and check it against expected bool (at the position of c). Then obtain the type tau_a of a and the type tau_b of b, in this order, and check tau_b against expected tau_a (at the position of b). The resulting type is tau_a.
+  - (e1, e2): obtain the type tau1 of e1 and the type tau2 of e2, in this order. The resulting type is "tau1 * tau2".
+  - [e1; ...; en]: create a fresh type variable alpha, and for i = 1, ..., n in order, obtain the type of ei and check it against expected alpha (at the position of ei). The resulting type is "alpha list". The type of "[]" is also "alpha list" for a fresh type variable alpha.
+  - match e with p1 -> e1 | ... | pn -> en: obtain the type tau of e and create a fresh type variable rho. For i = 1, ..., n in order, obtain the type theta_i and the bindings Delta_i of the pattern pi (6(5)), check theta_i against expected tau (at the position of pi), then obtain the type of ei under the type environment obtained by adding Delta_i to Gamma and check it against expected rho (at the position of ei). The resulting type is rho.
+  - let [rec] binding group in e: process the binding group under Gamma (6(6)), and obtain the type of e under the resulting type environment.
+(4) Generalization
+The "generalization of a type tau with respect to Gamma" means creating the type scheme in which all type variables that appear in the resolved tau and do not appear free in any type scheme of Gamma are quantified. A type variable "appears free" in a type scheme when it appears in the resolved type of that type scheme and is not quantified in that type scheme.
+(5) Types of patterns
+The type of a pattern and the "bindings" Delta of the names in the pattern (a collection of pairs of a name and a type; initially empty) are obtained as follows. A pattern is processed from left to right.
+  - Wildcard: the type is a fresh type variable.
+  - A name x: if x is already in Delta, report the type error "variable 'x' is bound twice in this pattern" at the position of this x. Otherwise, create a fresh type variable alpha, add x:alpha to Delta, and let the type be alpha.
+  - The type of an integer constant (including negative ones) is int, the type of a string literal is string, and the type of true and false is bool.
+  - []: "alpha list" for a fresh type variable alpha.
+  - p1 :: p2: the same procedure as for the binary operator "::" in expressions. That is, create a fresh type variable alpha, obtain the type of p1 and check it against expected alpha (at the position of p1), then obtain the type of p2 and check it against expected "alpha list" (at the position of p2), and let the type be "alpha list".
+  - [p1; ...; pn]: the same procedure as for list expressions.
+  - (p1, p2): obtain the type theta1 of p1 and the type theta2 of p2, in this order, and let the type be "theta1 * theta2".
+The types in Delta are not quantified (inside the expression of an arm, the types of the pattern's names are monomorphic).
+(6) Binding groups
+A binding group "[rec] binding1 and ... and bindingn" (let xi be the name and ei the expression of binding i) is processed under a type environment Gamma as follows. This is the same for local lets and for declarations.
+  1. For i = 1, ..., n in order, check the following 2 points in this order. If xi is the same as the name of an earlier binding, report the type error "variable 'x' is bound twice in this let" (x is that name) at the position of xi. If there is rec and ei is not a fun expression, report the type error "'x' in let rec must be a function" at the position of xi.
+  2. Without rec: for i = 1, ..., n in order, obtain the type tau_i of ei under Gamma.
+     With rec: create fresh type variables alpha_1, ..., alpha_n, and make the type environment Gamma_r by adding x1:alpha_1, ..., xn:alpha_n (all of them type schemes with no quantified type variables) to Gamma. For i = 1, ..., n in order, obtain the type of ei under Gamma_r and check it against expected alpha_i (at the position of xi). Let tau_i = alpha_i.
+  3. After the types of all bindings have been obtained, make the generalization sigma_i of each tau_i with respect to Gamma. Gamma with x1:sigma_1, ..., xn:sigma_n added (replacing any existing entry with the same name) is the resulting type environment of the processing.
+For each binding of a local let, record its name, position and type scheme sigma_i, to be written to types.txt.
+(7) Types of items
+For a declaration, process the binding group under the current type environment (6(6)) to obtain the type scheme of each binding. For an expression item, obtain the type of the expression under the current type environment. The types written to types.txt (including the types of local bindings) are resolved at the moment when the type inference and the signature checking of that item have all finished.
+(8) Name candidates
+The candidates for a name x that is not in the type environment Gamma are those names in Gamma (built-in functions, top-level bindings, and the local bindings, parameters and pattern names visible at that position) whose edit distance d from x (the minimum number of operations needed to change one into the other, where inserting, deleting or substituting one character each counts as 1) is at most 2 and is smaller than the number of characters of x. If there are candidates, choose, among those with the smallest d, the name that is smallest in lexicographic order of ASCII character codes.
+
+* 7. Signatures
+When a pending signature "val x : t;;" has been taken out for a binding x of a declaration, check it as follows, in binding order, after the type inference of the binding group has finished without errors.
+  - Convert the type expression t into a type D. Type variable tokens with the same spelling are the same type variable, and those with different spellings are different type variables. During the check, the type variables of D are treated as constants that differ from every other type.
+  - Let tau be the type of x's type scheme (since x is a top-level binding, all type variables of tau are quantified). If tau can be made exactly the same type as D by assigning a type to each type variable of tau (assigning the same type to the same type variable), the check succeeds. This check does not bind type variables (other types, such as the types of local bindings, are not changed by the check).
+  - If the check fails, report the type error "'x' has type tau but its signature is D" at the position of the binding's name x (the type variable names are assigned continuously across the whole message).
+  - If the check succeeds, replace x's type scheme with "the type scheme in which all type variables of D are quantified" (so D is what is written to types.txt).
+
+* 8. Warnings
+For an item whose type inference and signature checking finished without errors, check for the following 4 kinds of warnings and report them. The warnings of one item are reported in order of position (line, then column), and at the same position in the order (1) to (4) below.
+(1) "this match is not exhaustive" (the position is the position of the match): a match expression for which some value of the type of the matched expression matches none of the patterns of the arms.
+(2) "this match case is unused" (the position is the position of that arm's pattern): an arm of a match, second or later, such that every value matching its pattern also matches the pattern of at least one earlier arm (the earlier arm may differ from value to value; for example, the third arm of "match l with _ :: _ -> 1 | [] -> 0 | x -> 2" is unused).
+  In (1) and (2), the type of the matched expression is its type at the moment when the type inference of the item has finished; the types int and string have infinitely many values, the type bool has the 2 values true and false, the values of a list type are lists of any length, the values of a pair type are all combinations of values of the components, and function types and type variables have at least 1 value. Matching between patterns and values is as in 10(6). (Only wildcard and name patterns appear at the parts corresponding to type variables or function types, so the decision is determined by the patterns alone.)
+(3) "unused rec flag" (the position is the position of the "rec"): a binding group with rec (both local ones and declarations) in which the expressions of the bindings of the group contain no reference to any name of the group.
+(4) "unused variable 'x'" (the position is the position of that name): a fun parameter (including the parameters of bindings), a local binding name or a pattern name that is never referenced. However, names starting with "_" and the names of top-level bindings are excluded.
+  A "reference" in (3) and (4) is an occurrence of a name as an expression that refers to that name under the static scope rules. The scope of a fun parameter is its body; the scope of the names of a let without rec is only the expression after the "in"; the scope of the names of a let with rec is the expressions of all bindings of the group and the expression after the "in" (for a declaration, the expressions of all bindings of the group); and the scope of a pattern's names is the expression of that arm. An inner name hides an outer name with the same name.
+
+* 9. Recursion classification
+Each binding of a binding group with rec (both local ones and declarations) gets the following classification.
+  - The "body" is the binding's expression with all its leading funs removed (the parameters of the removed funs may hide names of the group inside the body).
+  - The body is in "tail position". The a and b of an "if c then a else b" in tail position, the e1, ..., en of a "match e with p1 -> e1 | ... | pn -> en" in tail position, the e of a "let ... in e" in tail position, and the e2 of an "e1 && e2" or "e1 || e2" in tail position are also in tail position. Subexpressions other than these (the body of a fun, the function and arguments of an application, the operands of other binary operators and of unary "-", the elements of pairs and lists, the condition of an if, the matched expression of a match, the expressions of let bindings) are not in tail position.
+  - Each reference to a name of the group in the body (in the same sense as 8(3)) is a "tail call" when the name is the leading function of an application sequence "name a1 ... an" (n >= 1) and that whole application sequence (the outermost application) is in tail position. Other references (references that are not applied, and references in applications that are not in tail position) are not tail calls.
+  - If the body contains no reference to a name of the group, there is no classification; if there are such references and all of them are tail calls, it is "tail recursive"; otherwise it is "recursive".
+
+* 10. Evaluation
+(1) A value is an integer (from -2147483648 to 2147483647 inclusive), a boolean, a string, a pair, a list or a function. A function value is either a "closure" (a combination of a parameter, a body expression and the value environment at the time of its creation) or a built-in function. The value environment of a closure is the one at the time of its creation and is not affected by bindings added to the value environment afterwards (including replacements of the same name).
+(2) Expressions are evaluated with call-by-value as follows.
+  - A literal evaluates to its value, and a name to its value in the value environment.
+  - fun x -> e: the closure consisting of the parameter x, the body e and the current value environment.
+  - Application e1 e2: evaluate e1, then e2, to obtain a function value f and an argument value v, and "apply" f to v. If f is a closure, the result is the value of its body evaluated under its value environment with the parameter name and v added (nothing is added if the parameter is a wildcard). If f is a built-in function, the result is the result of its behavior. Every time f is applied to v, increment the "call count" by 1 before computing the result (applications in which a runtime error occurs inside f or in the behavior of a built-in function are counted too).
+  - e1 && e2: evaluate e1; if it is false, the result is false without evaluating e2; if it is true, the result is the value of e2. e1 || e2: evaluate e1; if it is true, the result is true without evaluating e2; if it is false, the result is the value of e2.
+  - Other binary operators: evaluate e1, then e2, and perform the operation of (3).
+  - -e: evaluate e; the result is the integer with its sign inverted. If the result is outside the range of (1), report the runtime error "integer overflow" at the operator position.
+  - if c then a else b: evaluate c; the result is the value of a if it is true, or the value of b if it is false.
+  - (e1, e2): the pair of the values of e1 and e2 evaluated in this order. [e1; ...; en]: the list of the values evaluated in order from e1 to en.
+  - match e with ...: evaluate e and examine the arms in order; the result is the value of the expression of the first arm whose pattern matches the value ((6)), evaluated under the value environment with the pattern's names and their values added. If no arm matches, report the runtime error "match failure" at the position of the match.
+  - let binding group in e: evaluate the binding group ((5)); the result is the value of e evaluated under the resulting value environment.
+(3) The operations of the binary operators are as follows. The position of a runtime error is the operator position.
+  - +, -, *: the sum, difference and product of the integers. If the result is outside the range of (1), it is the runtime error "integer overflow".
+  - /: if the right value is 0, it is the runtime error "division by zero". Otherwise, it is the quotient truncated toward 0 (e.g. -17 / 5 is -3). If the result is out of range, it is "integer overflow".
+  - mod: if the right value is 0, it is the runtime error "division by zero". Otherwise, a mod b is "a - b * (a / b)" (/ is the truncated quotient above), and when it is not 0 its sign is the same as the sign of the left value (e.g. -17 mod 5 is -2, 17 mod -5 is 2).
+  - ^: the string obtained by concatenating the 2 strings.
+  - "::": the list obtained by adding the left value to the front of the right list.
+  - =, <>, <, >, <=, >=: true if the result of comparing the 2 values by (4) is, respectively, "equal", "not equal", "the left is smaller", "the left is larger", "the left is smaller or equal", "the left is larger or equal"; otherwise false.
+(4) Two values of the same type are compared as follows. Integers are compared by magnitude; for booleans, false is smaller than true; strings are compared in lexicographic order of character codes (if one is a prefix of the other, the shorter one is smaller). Pairs are compared by their first components, and if those are equal, by their second components. For lists, if both are empty they are equal; if only one is empty, that one is smaller; otherwise the first elements are compared, and if they are equal, the remaining lists are compared. If two function values have to be compared during the comparison, it is the runtime error "functional value compared". The comparison ends as soon as the order is determined, and later components and elements are not examined (for example, "(1, f) < (2, g)" is true and is not an error).
+(5) A binding group is evaluated under a value environment V as follows. Without rec, evaluate e1 to en in this order under V to obtain the values v1, ..., vn; the result is V with x1:v1, ..., xn:vn added (replacing any existing entry with the same name). With rec, every ei is a fun expression, so for each binding create a closure consisting of the parameter and body of ei. The value environment of every one of these closures is "V with x1, ..., xn and their respective closures added" (all the closures share this value environment, so that mutual recursion is possible), and this value environment is the result. Evaluating a declaration means evaluating its binding group under the current value environment.
+(6) Matching patterns against values: a wildcard and a name match any value, and a name stands for that value. Integer, string and boolean constants match when the values are equal; [] matches the empty list; "p1 :: p2" matches a non-empty list whose first element matches p1 and whose remaining list matches p2; "[p1; ...; pn]" matches a list of exactly n elements whose elements match p1, ..., pn in order; and "(p1, p2)" matches a pair whose components match p1 and p2 in order.
+(7) When a runtime error occurs, the evaluation of that item ends there.
+(8) There are the following 5 built-in functions. The 'a and 'b in the types are quantified type variables.
+  - fst: the type is "'a * 'b -> 'a". Returns the first component of a pair.
+  - snd: the type is "'a * 'b -> 'b". Returns the second component of a pair.
+  - not: the type is "bool -> bool". Inverts a boolean.
+  - string_of_int: the type is "int -> string". Returns the string of the decimal representation of an integer (with a leading "-" for a negative number).
+  - failwith: the type is "string -> 'a". Reports the runtime error "failure S" at the position of the expression that applied it (that application expression e1 e2). S is the argument string printed by the rules of 11 (e.g. failure "hd").
+
+* 11. Printing values
+Values are turned into strings as follows.
+  - Integer: the decimal representation (with a leading "-" for a negative number).
+  - Boolean: true or false.
+  - String: enclosed in double quotes. Inside the string, "\" is written as "\\", a double quote as "\"", a newline as "\n" and a tab as "\t"; every other character is written as it is.
+  - Pair: "(v1, v2)" (v1 and v2 are the printed components).
+  - List: "[v1; v2; ...; vn]". The empty list is "[]".
+  - Function: "<fun>".
+
+* 12. Formatting
+Each item read without a syntax error is turned into a one-line string by the following rules.
+(1) Items
+  - Signature: "val x : T;;". T is the type expression written with the same parenthesization rules as 5(2), with each type variable written with its spelling as written (without renaming).
+  - Declaration: "let " ("let rec " if there is rec), followed by the strings of the bindings joined by " and ", followed by ";;".
+  - Expression item: the string of the expression followed by ";;".
+(2) Binding: the name, the parameters, "=" and the body, separated by single spaces. Here the parameters are all the parameters of the funs that consecutively lead the binding's expression (a wildcard is "_"), and the body is the string of the expression with those funs removed (written in a place of strength 0 or more). If there are no parameters, it is "name = body". Therefore "let f = fun x -> e" and "let f x = e" both become "let f x = e".
+(3) Expressions: each expression has the following "strength". let, fun, if and match expressions have 0, a binary operator expression has the precedence of its operator (1 to 6), a unary "-" expression has 7, an application has 8, and everything else (literals, names, pairs, lists) has 9. Below, "write in a place of strength k or more" means: if the strength of the expression is less than k, write its string enclosed in "(" and ")"; otherwise write it as it is.
+  - An integer literal is the decimal representation of its value, a string literal is its value printed by the rules of 11, and true, false and names are their spellings.
+  - fun: "fun ", the parameter list, " -> " and the body, in this order. The parameter list consists of all the parameters of that fun and of the funs that directly follow as its body, separated by single spaces (a wildcard is "_"), and the body is the expression with those funs removed, written in a place of strength 0 or more.
+  - Application: the function written in a place of strength 8 or more and the argument written in a place of strength 9 or more, joined by a single space.
+  - Binary operator: the left operand, the operator and the right operand, separated by single spaces. When the precedence of the operator is k, for a left-associative operator write the left operand in a place of strength k or more and the right operand in a place of strength k+1 or more; for a right-associative operator write the left operand in a place of strength k+1 or more and the right operand in a place of strength k or more.
+  - Unary "-": right after the "-", with no space, write the operand in a place of strength 7 or more (e.g. -x, -(a + b), --x).
+  - if: "if ", the condition, " then ", an expression, " else ", an expression, in this order. All 3 expressions are written in places of strength 0 or more.
+  - Pair: "(", the first element, ", ", the second element, ")", in this order. List: "[", the elements joined by "; ", "]", in this order. All elements are written in places of strength 0 or more.
+  - let: as for the declaration in (1), "let " or "let rec " followed by the bindings joined by " and ", then " in " and the body (written in a place of strength 0 or more).
+  - match: "match ", the matched expression (written in a place of strength 0 or more), " with ", followed by "pattern -> expression" of each arm joined by " | " (the leading "|" is not written). The expression of an arm is written in a place of strength 0 or more, but for an arm other than the last arm, if the expression of the arm "ends with a match", the whole expression of that arm is enclosed in "(" and ")". An expression "ends with a match" if it is a match expression, a let expression whose body (the expression after the "in") ends with a match, a fun expression whose body ends with a match, or an if expression whose expression after the "else" ends with a match.
+(4) Patterns: a wildcard is "_", a name is its spelling, an integer constant is its decimal representation (with a leading "-" for a negative number), string constants and true and false are as for expressions, the empty list is "[]", a list pattern is "[p1; p2; ...; pn]", a pair pattern is "(p1, p2)", and a "::" pattern is "p1 :: p2". If the p1 of "p1 :: p2" is a "::" pattern, p1 is enclosed in "(" and ")".
+
+[Output files]
+* output/types.txt
+For each file, first write the line "== prelude.ml ==" ("== program.ml ==" for program.ml), and then, for each item whose type inference and signature checking finished without errors, write the following lines, in item order.
+  - Declaration: in binding order, for each binding, the line "x : T" (x is the name of the binding, and T is the type of its type scheme). For a binding of a group with rec whose classification in 9 is "tail recursive" or "recursive", append " (tail recursive)" or " (recursive)" to the end of the line.
+  - Expression item: the line "- : T" (T is the type of the expression).
+  - Then, for all local bindings in that item, in order of the positions of the binding names, the line "  x (L:C) : T" (2 leading spaces; x is the name of the binding, L and C are the line and column of the position of that name, and T is the type of its type scheme written by the rules of 5(3)). For bindings of a group with rec, the classification is appended to the end of the line in the same way as for declarations.
+Nothing is written for signature items or for items that had a syntax error or a type error. For an item that had a runtime error, the types are still written (the evaluation is done after the types are written).
+
+* output/values.txt
+For each file, first write the line "== prelude.ml ==" ("== program.ml ==" for program.ml), and then, for each item whose evaluation finished without errors, in item order, write the line "x = V" for each binding in binding order for a declaration, or the line "- = V" for an expression item. V is the value printed by the rules of 11.
+
+* output/errors.txt
+Write the reports in the order in which they were reported. One report consists of the following 3 lines.
+  Line 1: "F:L:C: kind: message". F is the file name of the position (prelude.ml or program.ml), L and C are the line and column of the position, kind is one of "syntax error", "type error", "runtime error" and "warning", and message is the string defined in each section.
+  Line 2: 4 spaces followed by line L of file F exactly as it is.
+  Line 3: (C+3) spaces followed by "^" (the "^" comes directly below the character in column C of line L).
+However, when the position is the end of file, lines 2 and 3 are not written. The file of a report's position may differ from the file of the item being processed (for example, when a runtime error occurs inside a function defined in prelude.ml during the evaluation of an item of program.ml, the position is in prelude.ml).
+After all reports, write the line "== summary ==", followed by one line each for prelude.ml and program.ml, in this order, as follows.
+  F: items=N1 bindings=N2 syntax=N3 type=N4 runtime=N5 warnings=N6 calls=N7
+F is the file name, N1 is the number of items of that file (including items with syntax errors and signatures), N2 is the number of top-level bindings added to the environments in 4(8) (bindings that bind the same name again are counted too), N3, N4, N5 and N6 are the numbers of syntax errors, type errors, runtime errors and warnings reported while processing that file (counted by the file being processed, not by the file of the position), and N7 is the total call count of the evaluation of that file's items (including calls made in evaluations that ended with a runtime error).
+
+* output/formatted.ml
+For each file, first write the line "(* prelude.ml *)" ("(* program.ml *)" for program.ml), and then write the formatted lines (12) of the items read without a syntax error, in item order.
+
+[Source files]
+Split the source files into the following 6 roles (file names may follow the conventions of each language).
+- main: the overall flow. Reading the 2 input files, iterating over the items and recovering from syntax errors, managing the type environment, the value environment and the pending signatures (4), the types and behavior of the built-in functions (10(8)), converting types to strings and naming type variables (5), building type error messages and name candidates (6(2), (8)), converting signatures to types and checking them (7), checking warnings (deciding exhaustiveness and unused arms, unused rec, unused names) (8), recursion classification (9), printing values (11), formatting (12), and the report format and writing of the 4 output files. It handles the largest part of the processing.
+- lexer: token kinds, spellings and positions, and lexical analysis (1).
+- parser: the definitions of the syntax tree (expressions, patterns, items, type expressions), recursive descent parsing of items, expressions, patterns and type expressions, detection of the error token (2, 3), conversion of binding parameters into funs, and the positions of expressions and patterns.
+- unifier: the representation of types (type variables and type constructors) and type schemes, resolving type variables with union-find, the occurs check, unification with information about the failed pair (6(1)), and generalization and instantiation.
+- inference: type inference of expressions and patterns by Algorithm W (6(3), (5)), processing of binding groups (6(6)), the types of the binary operators, the kinds of type errors, and recording of local bindings.
+- evaluator: the representation of values (closures and built-in functions), evaluation of expressions (10(2)), the operations of the binary operators and integer range checks, comparison of values, pattern matching, evaluation of binding groups, runtime errors, and counting calls.
+
+[Constraints]
+- prelude.ml and program.ml each have at most 300 lines, and each line has at most 120 characters.
+- Names have at most 30 characters, and the values of string literals have at most 100 characters.
+- The nesting depth of expressions, of patterns and of type expressions is at most 50 each.
+- The number of applications in progress at the same time during evaluation (the nesting depth of applications) is at most 150. Strings that appear during evaluation have at most 1000 characters, lists have at most 1000 elements, and the total call count of each file is at most 100000.
+- At most 26 type variables appear in one line of types.txt, and at most 26 in the message of one report.
+
+[Example]
+The outputs for the following input are shown below (the content of each file is shown starting from the line after its "file name:" line, and one empty line is inserted between files as a separator. These separator empty lines are not part of the file contents).
+
+input/prelude.ml:
+(* small prelude *)
+let rec map f l = match l with [] -> [] | x :: rest -> f x :: map f rest;;
+val hd : 'a list -> 'a;;
+let hd l = match l with x :: _ -> x;;
+
+input/program.ml:
+let double x = x * 2;;
+let pair = let id y = y in (id 1, id "one");;
+let tag x = let mk y = (x, y) in mk;;
+map double [1; 2; 3];;
+let rec loop n acc = if n = 0 then acc else loop (n - 1) (acc + n);;
+loop 10 0;;
+hd [];;
+let bad = double "two";;
+doubel 3;;
+let count l = match l with [] -> 0 | x :: _ -> 1;;
+let oops = (1 +;;
+(* unterminated
+
+output/types.txt:
+== prelude.ml ==
+map : ('a -> 'b) -> 'a list -> 'b list (recursive)
+hd : 'a list -> 'a
+== program.ml ==
+double : int -> int
+pair : int * string
+  id (2:16) : 'a -> 'a
+tag : 'a -> 'b -> 'a * 'b
+  mk (3:17) : 'a -> '_b * 'a
+- : int list
+loop : int -> int -> int (tail recursive)
+- : int
+- : 'a
+count : 'a list -> int
+
+output/values.txt:
+== prelude.ml ==
+map = <fun>
+hd = <fun>
+== program.ml ==
+double = <fun>
+pair = (1, "one")
+tag = <fun>
+- = [2; 4; 6]
+loop = <fun>
+- = 55
+count = <fun>
+
+output/errors.txt:
+prelude.ml:4:12: warning: this match is not exhaustive
+    let hd l = match l with x :: _ -> x;;
+               ^
+prelude.ml:4:12: runtime error: match failure
+    let hd l = match l with x :: _ -> x;;
+               ^
+program.ml:8:18: type error: expected int but found string
+    let bad = double "two";;
+                     ^
+program.ml:9:1: type error: unbound variable 'doubel' (did you mean 'double'?)
+    doubel 3;;
+    ^
+program.ml:10:38: warning: unused variable 'x'
+    let count l = match l with [] -> 0 | x :: _ -> 1;;
+                                         ^
+program.ml:11:16: syntax error: unexpected ';;'
+    let oops = (1 +;;
+                   ^
+program.ml:12:1: syntax error: unterminated comment
+    (* unterminated
+    ^
+== summary ==
+prelude.ml: items=3 bindings=2 syntax=0 type=0 runtime=0 warnings=1 calls=0
+program.ml: items=12 bindings=5 syntax=2 type=2 runtime=1 warnings=1 calls=36
+
+output/formatted.ml:
+(* prelude.ml *)
+let rec map f l = match l with [] -> [] | x :: rest -> f x :: map f rest;;
+val hd : 'a list -> 'a;;
+let hd l = match l with x :: _ -> x;;
+(* program.ml *)
+let double x = x * 2;;
+let pair = let id y = y in (id 1, id "one");;
+let tag x = let mk y = (x, y) in mk;;
+map double [1; 2; 3];;
+let rec loop n acc = if n = 0 then acc else loop (n - 1) (acc + n);;
+loop 10 0;;
+hd [];;
+let bad = double "two";;
+doubel 3;;
+let count l = match l with [] -> 0 | x :: _ -> 1;;
+
+In this example, the match of hd in prelude.ml has no [] arm, so it gets a warning, and "hd [];;" in program.ml causes a runtime error during evaluation at the position of that match in prelude.ml (its type is written and its value is not). The local binding id of pair is generalized and used polymorphically, while for the local binding mk of tag, the type of the parameter x is not generalized at the let of mk, so it is printed as '_b. The references to loop in loop are all tail calls, so loop is "tail recursive", and map is "recursive" because the application of map in "f x :: map f rest" is not in tail position. For "doubel", the name candidate double is shown. In count, the unused pattern name x is warned about. "let oops = (1 +;;" causes a syntax error at the position of ";;", and the comment on the last line is not closed, so it becomes an invalid token. The 2 items with syntax errors are not written to formatted.ml. The call count is 2 for pair, 11 for map double [1; 2; 3], 22 for loop 10 0 and 1 for hd [], 36 in total.

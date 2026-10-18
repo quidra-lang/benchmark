@@ -1,0 +1,362 @@
+[Overview]
+Write a regular-expression engine without using the regular-expression facilities found in each language's standard library or elsewhere. The program parses patterns written in a Perl-like notation consisting only of ASCII characters into a syntax tree, compiles them into a sequence of instructions (a program), and runs the program on two kinds of virtual machines (VMs). One is a backtracking VM that uses an explicit stack; the other is a Pike VM that advances a list of threads simultaneously while preserving their priority order. Both match by the "leftmost-first" rule, and for patterns that the Pike VM can run, the program checks every time that the two results agree, including the spans of the capturing groups.
+The program is run in a directory that contains, besides the source files, input/ holding the input files and an empty output/. There are three inputs: the pattern file (input/patterns.txt), the subject string file (input/subjects.txt) and the command file (input/commands.txt). The results are written to four files under output/ (results.txt, programs.txt, steps.csv, errors.txt). Nothing is written to standard output.
+The flow of processing is as follows (the numbers in parentheses are subsection numbers of [Processing]).
+- Parsing patterns (1): each pattern is turned into a syntax tree. If there is an error, the kind of error and its column are recorded.
+- Compilation (2, 3): the syntax tree is turned into a sequence of instructions.
+- Program properties (4): the range of match lengths and the set of characters that can begin a match are computed.
+- Matching (5 to 8): the two VMs perform full matching, searching and scanning (finding all matches in order). Both VMs count the number of instructions executed (the step count), and the backtracking VM gives up when the step count exceeds a limit.
+- Commands (9, 10): the commands MATCH, SEARCH, FINDALL, REPLACE, SPLIT and LIST are executed, and the results of the two VMs are cross-checked and written out.
+
+[Input files]
+All three input files consist only of printable ASCII characters (codes 32 to 126) and newlines (LF), and every line (including the last one) ends with a newline. There are no empty lines. Items within a line are separated by a single space.
+
+* input/patterns.txt
+One pattern per line, in the form "<pattern name> <flags> <pattern>".
+- Pattern name: a string of 1 to 16 characters that starts with a lowercase letter and consists of lowercase letters, digits and "_". Pattern names are all distinct.
+- Flags: "-" (no flags), or a string of one or more of i, m, s in this order (e.g. "i", "ms", "ims"). i means case-insensitive matching, m means multi-line mode, and s means the mode in which "." also matches a newline (see 5).
+- Pattern: everything from the character after the second space to the end of the line (it may contain spaces). Its length is between 1 and 80 characters inclusive, and its last character is not a space. A location in the pattern is expressed as a "column"; the first character of the pattern is column 1.
+
+* input/subjects.txt
+One subject string per line, in the form "<subject name> <quoted string>". Subject names follow the same rules as pattern names and are all distinct (a subject name may be the same as a pattern name).
+A quoted string starts with a double quote (") and ends with a double quote ("), and the content of the string is written between them in the following notation. "\n" stands for a newline (code 10), "\t" for a tab (code 9), "\\" for "\", and "\"" for a double quote ("); every other character (a printable character other than "\" and the double quote) stands for itself. A "\" is always followed by one of n, t, \, ". The string a quoted string represents is called the "subject string". A subject string consists of characters with codes 9, 10 and 32 to 126, and its length is between 0 and 120 inclusive.
+
+* input/commands.txt
+One command per line. The commands are numbered 1, 2, 3, ... in the order written. There are the following six kinds of commands, where <P> is a pattern name and <S> is a subject name (each always exists in its file).
+- "MATCH <P> <S>": checks whether the whole subject string matches the pattern.
+- "SEARCH <P> <S>": finds the first match.
+- "FINDALL <P> <S>": finds all matches in order.
+- "REPLACE ALL <P> <S> <quoted string>", "REPLACE FIRST <P> <S> <quoted string>": replaces all matches (ALL) or the first match (FIRST) with the expansion of the replacement template. The quoted string is everything from the character after the fourth space to the end of the line (it may contain spaces), and represents the replacement template in the same notation as subject strings.
+- "SPLIT <P> <S>": splits the subject string where it matches.
+- "LIST <P>": writes out the program of the pattern.
+
+Below, for a subject string T, its length is written |T| and its k-th character (counting from 0) is written T[k]. A "position" in T is an integer between 0 and |T| inclusive; position k denotes the point between T[k-1] and T[k]. The substring T[a..b) from position a to position b (a <= b) is the string T[a], ..., T[b-1] in this order. A "letter" means one of A to Z and a to z, and a "digit" means one of 0 to 9.
+
+[Processing]
+* 1. Parsing the pattern
+The pattern is read from left to right, and a syntax tree is built by the following rules. "The next character" is the first character not yet read. After the whole pattern has been read, we say "there is no next character". As soon as an error is found, parsing of that pattern ends, and the error message and the error column are recorded. The error message is the English sentence in quotes below. The error column is the column of the character specified in each case; the column of "the end of the pattern" is the length of the pattern + 1.
+The "quantifier characters" are the four characters *, +, ?, {.
+
+(1) Whole: read an alternation (2). If any characters remain after it (that character is always ")"), it is the error "unmatched )", and the column is that ")".
+(2) Alternation: read a concatenation (3), and while the next character is "|", repeat reading the "|" and then reading a concatenation. If one concatenation was read, that concatenation is the result; if two or more were read, an "alternation" node holding them in order is the result.
+(3) Concatenation: repeat reading a quantified element (4) until there is no next character or the next character is "|" or ")". If there is one element, that element is the result; if there are zero or two or more, a "concatenation" node holding them in order is the result (a concatenation with zero elements is called an "empty concatenation").
+(4) Quantified element:
+  - If the next character is a quantifier character, it is the error "nothing to repeat" (column: that character).
+  - Read an element (5). If the next character is not a quantifier character (including when there is no next character), that element is the result.
+  - If the node of the element read is an assertion ("^", "$", "\b", "\B") or a lookahead node, it is the error "nothing to repeat" (column: the next character). A non-capturing group whose content is only an assertion (e.g. "(?:^)") also falls under this, because the resulting node is the assertion.
+  - Read the quantifier and determine the lower bound m and the upper bound n of the repetition count. "*" gives m = 0, n = infinity; "+" gives m = 1, n = infinity; "?" gives m = 0, n = 1. A quantifier starting with "{" is read by (6).
+  - If the next character is "?", read it and set the kind to "lazy"; if it is "+", read it and set the kind to "possessive"; otherwise set the kind to "greedy".
+  - If the next character at this point is a quantifier character, it is the error "nested quantifier" (column: that character).
+  - The result is a "repetition (element, m, n, kind)" node.
+(5) Element: determined by the next character.
+  - "(": group (7).
+  - "[": character class (8).
+  - "\": escape (9).
+  - ".": read it; an "any character" node is the result.
+  - "^": read it; an assertion BOL node is the result. "$": read it; an assertion EOL node is the result.
+  - Any other character (including "]", "}", a space, and so on): read it; a "literal" node for that character is the result.
+(6) Quantifier starting with "{": read the "{". Next, read the longest possible run of digits (at least one character) and let its value be m. If the next character is "}", n = m. If it is ",", read it; then, if the next character is "}", n = infinity; otherwise read the longest possible run of digits (at least one character) and let its value be n. Finally read the "}". If there is no digit where a digit is required, or there is no "}" at the end, it is the error "invalid quantifier". If everything could be read, then if m exceeds 100, or n is not infinity and exceeds 100, it is the error "quantifier too large". Otherwise, if n is not infinity and m > n, it is the error "quantifier range out of order". The column of all three of these errors is that "{".
+(7) Group: read the "(".
+  - If the next character is not "?", it is a capturing group.
+  - If it is "?", read it; then, if the next character is ":", it is a non-capturing group; if "=", a positive lookahead; if "!", a negative lookahead; if "<", a named group; and that character is read. If the next character is none of these (or there is no next character), it is the error "invalid group" (column: the "(" of this group).
+  - For a named group, then read a name (10). If that name is the same as the name of a named group read earlier, it is the error "duplicate group name" (column: the first character of the name).
+  - Capturing groups and named groups are given a group number at this point. Group numbers start at 1 and increase by 1 each time such a "(" is read. Let G be the number of groups in the whole pattern.
+  - Read an alternation (2); if the next character is ")", read it. Otherwise (when there is no next character), it is the error "missing )" (column: the "(" of this group).
+  - The result is a "group (number, content)" node for a capturing group or a named group, the content node itself for a non-capturing group, and a "lookahead (positive or negative, content)" node for a lookahead.
+(8) Character class: read the "[". If the next character is "^", read it and make the class "negated". If the next character at this point is "]", it is the error "empty class" (column: that "]"). Starting with an empty character set S, repeat the following.
+  - If there is no next character, it is the error "missing ]" (column: the "[" of this class).
+  - If the next character is "]", read it and end the repetition.
+  - Read an item x.
+  - If the next character is "-", and the character after it exists and is not "]", it is a range. Read the "-". If x is a set, it is the error "invalid range". Then read an item y; if y is a set, or the character code of x is greater than the character code of y, it is the error "invalid range" (for both "invalid range" errors, the column is that "-"). Add to S the characters of every character code from x to y.
+  - If it is not a range, add x (a single character or a set) to S.
+  Reading an item: if the next character is not "\", read that one character; that character is the item. If it is "\": if there is no character after it, it is the error "trailing backslash" (column: that "\"). If the character after it is one of d, D, w, W, s, S, the item is a set defined later. If it is n, the item is the single character newline; if it is t, the single character tab. If it is any other letter or digit, it is the error "invalid escape" (column: that "\"). If it is a character that is neither a letter nor a digit, that single character is the item. In every case, the two characters "\" and the character after it are read.
+  Inside a class, "[", ".", "$", "|", "(", ")", the quantifier characters, "^" other than at the start, and so on are ordinary characters.
+  The result is a "character class (S, negated or not)" node.
+(9) Escape (outside a class): read the "\". If there is no next character, it is the error "trailing backslash" (column: that "\"). Read the next character c, and depending on c:
+  - d, D, w, W, s, S: a character class node is the result. d is (S_d, not negated), D is (S_d, negated), and likewise w and W (S_w), and s and S (S_s).
+  - b: an assertion WORD node. B: an assertion NOTWORD node.
+  - n: a literal newline (code 10). t: a literal tab (code 9).
+  - A digit from 1 to 9: also read the digits that follow it, as many as possible; a "numbered backreference" node with the value k of the digit sequence starting at c is the result.
+  - k: if the next character is not "<", it is the error "invalid escape" (column: that "\"). Read the "<", read a name (10), and a "named backreference" node with that name is the result.
+  - Any other letter or digit (including "0"): the error "invalid escape" (column: that "\").
+  - A character that is neither a letter nor a digit (including a space): a literal of that character.
+(10) Name: if the next character is a letter or "_", read the longest possible run of letters, digits and "_" as the name (otherwise the name is empty). If the name is empty, or the character after the name is not ">" (or there is no next character), it is the error "invalid group name", and the column is the character right after the name (if the name is empty, the character at the point where reading the name started; if there is no such character, the end of the pattern). Finally read the ">".
+(11) Backreference check: if (1) finished without an error, examine all backreferences in the order they appear in the pattern, and record the first of the following errors found. For a numbered backreference, if k is greater than G, it is the error "invalid group reference". For a named backreference, if the name is not the name of any named group, it is the error "unknown group name". In both cases the column is the "\" of that backreference. A backreference may refer to a group that comes after it. A named backreference is treated as a backreference by the number k of the group with that name.
+
+The sets S_d, S_w, S_s are as follows. S_d is the set of digits (codes 48 to 57), S_w is the set of letters, digits and "_", and S_s is the set of characters with codes 9, 10, 11, 12, 13, 32. The class items D, W, S are the complements of S_d, S_w, S_s, respectively, within the range of codes 0 to 127 (the items d, w, s are S_d, S_w, S_s themselves).
+
+* 2. Programs and instructions
+A program is a sequence of instructions, and the instructions are numbered 0, 1, 2, ... from the start. There are the following 10 kinds of instructions (their exact behavior is defined in 5 to 7).
+- CHAR c: if the character at the position matches c, advance one character.
+- ANY: if the character at the position matches ".", advance one character.
+- CLASS (S, negated or not): if the character at the position matches the class, advance one character.
+- SPLIT x, y: branch to both instruction x and instruction y. The x side has priority.
+- JMP x: move to instruction x.
+- SAVE k: record the current position in element k of the capture array.
+- ASSERT kind: if the assertion (one of BOL, EOL, WORD, NOTWORD) holds, proceed to the next instruction.
+- BACKREF k: if the same string as the one captured by group k follows, advance by its length.
+- LOOK kind x: the kind is one of AHEAD (positive lookahead), NOT (negative lookahead), ATOMIC (possessive repetition). The instructions from the one after this instruction up to instruction x-1 are called the "body", and the last instruction of the body (instruction x-1) is MATCH. Depending on the result of executing the body, proceed to instruction x.
+- MATCH: represents a successful match.
+
+* 3. Compilation
+For a pattern without errors, let E be the root of its syntax tree; the program is "SAVE 0; C(E); SAVE 1; MATCH". C(e) is the sequence of instructions built from node e, defined as follows (in these sequences, ";" separates consecutive parts). Instruction numbers are the actual numbers in the program, and "the number right after X" means the number of the instruction placed next after X.
+- Literal c: CHAR c.
+- Any character: ANY.
+- Character class (S, negated or not): CLASS (S, negated or not).
+- Assertion: ASSERT kind (the kind is BOL, EOL, WORD or NOTWORD).
+- Backreference (number k): BACKREF k.
+- Group (k, e): SAVE 2k; C(e); SAVE 2k+1.
+- Lookahead (positive or negative, e): LOOK AHEAD x (LOOK NOT x if negative); C(e); MATCH. x is the number right after this MATCH.
+- Concatenation: the C of each element, in order. An empty concatenation produces no instructions.
+- Alternation (e1, ..., er) (r >= 2): for i = 1, ..., r-1 in this order, place "SPLIT a, b; C(ei); JMP z", and finally place C(er). a is the number right after that SPLIT, b is the number right after that JMP, and z is the number right after C(er) (shared by all the JMPs).
+- Repetition (e, m, n, possessive): LOOK ATOMIC x; C(repetition (e, m, n, greedy)); MATCH. x is the number right after this MATCH.
+- Repetition (e, m, n, greedy or lazy): below, "SPLIT<p, q>" means SPLIT p, q if greedy and SPLIT q, p if lazy (p is the side that continues the repetition and q is the side that stops it).
+  - n = infinity, m = 0: "SPLIT<h+1, z>; C(e); JMP h". h is the number of this SPLIT, and z is the number right after this JMP.
+  - n = infinity, m >= 1: place C(e) m-1 times, followed by "C(e); SPLIT<h, z>". h is the number of the first instruction of this last C(e) (the number of this SPLIT if C(e) produces no instructions), and z is the number right after this SPLIT.
+  - n is not infinity: place C(e) m times, followed by "SPLIT<a, z>; C(e)" n-m times. a is the number right after each SPLIT, and z is the number right after the last C(e) (shared by the n-m SPLITs). If n = m, no SPLIT is placed.
+  When C(e) is placed more than once, new instructions are created each time (the targets of the SPLIT, JMP and LOOK instructions inside it become numbers within each copy).
+A program that contains no BACKREF or LOOK instruction at all is called "Pike-compatible".
+Example: the program for the pattern "(a|b)*c{1,2}?" is 0 SAVE 0; 1 SPLIT 2, 9; 2 SAVE 2; 3 SPLIT 4, 6; 4 CHAR a; 5 JMP 7; 6 CHAR b; 7 SAVE 3; 8 JMP 1; 9 CHAR c; 10 SPLIT 12, 11; 11 CHAR c; 12 SAVE 1; 13 MATCH. The program for the pattern "a++b" is 0 SAVE 0; 1 LOOK ATOMIC 5; 2 CHAR a; 3 SPLIT 2, 4; 4 MATCH; 5 CHAR b; 6 SAVE 1; 7 MATCH.
+
+* 4. Program properties
+The following two properties of the root E of the syntax tree, which the LIST command outputs, are computed.
+(1) Length range L(e) = (minimum, maximum) (the maximum may be infinity):
+  - Literal, any character, character class: (1, 1).
+  - Assertion, lookahead, empty concatenation: (0, 0).
+  - Backreference: (0, infinity).
+  - Group: the L of its content.
+  - Concatenation: the minimum is the sum of the minimums of the elements, and the maximum is the sum of the maximums of the elements (infinity if any of them is infinity).
+  - Alternation: the minimum is the smallest of the minimums of the alternatives, and the maximum is the largest of the maximums of the alternatives (infinity if any of them is infinity).
+  - Repetition (e, m, n, kind): with L(e) = (a, b), the minimum is m * a. The maximum is 0 if b = 0; otherwise infinity if b = infinity or n = infinity; otherwise n * b.
+(2) First-character set F(e) = (set, nullable): the set is a set of characters with codes 0 to 127, and "nullable" (whether the match can be empty) is "yes" or "no".
+  - Literal c: the set is just c (if flag i is present and c is a letter, the two characters c and c with its case swapped); nullable is "no".
+  - Any character: the set is all of codes 0 to 127 if flag s is present, and otherwise all of them except newline. "no".
+  - Character class: the set is every character with code 0 to 127 that satisfies the class-matching condition of 5. "no".
+  - Assertion, lookahead: the empty set, "yes".
+  - Backreference: all of codes 0 to 127, "yes".
+  - Group: the F of its content.
+  - Concatenation: look at the elements in order from the first, taking the union of their sets, and stop after adding the set of an element whose nullable is "no". If there is such an element, "no"; otherwise (including the empty concatenation), "yes".
+  - Alternation: the union of the sets of all the alternatives. "yes" if any alternative is "yes", otherwise "no".
+  - Repetition (e, m, n, kind): if n = 0, the empty set, "yes". Otherwise the set is the set of F(e), and it is "yes" if F(e) is "yes" or m = 0, otherwise "no".
+
+* 5. Character and position tests, capture arrays
+For the subject string T and the flags of the pattern, the following are defined.
+- Two characters a, b "match" when a = b, or when flag i is present and a and b are the same letter apart from case.
+- CHAR c matches at position q when q < |T| and T[q] matches c.
+- ANY matches at position q when q < |T| and either flag s is present or T[q] is not a newline.
+- CLASS (S, negated or not) matches at position q when q < |T| and whether the following condition A holds differs from whether the class is "negated" (that is, when A holds if the class is not negated, and when A does not hold if it is negated). A: T[q] is contained in S, or flag i is present, T[q] is a letter, and T[q] with its case swapped is contained in S.
+- Assertions are tested at position q. BOL holds when q = 0, or when flag m is present and T[q-1] is a newline. EOL holds when q = |T|, or when flag m is present and T[q] is a newline. WORD holds when w(q-1) and w(q) differ, and NOTWORD when they are equal. Here w(k) is "true" when 0 <= k < |T| and T[k] is contained in S_w, and "false" otherwise.
+- The capture array C is an array of 2G+2 elements, each of which is a position or "unset". Initially all of them are unset. When elements 2k and 2k+1 are both not unset, we say "group k is set"; its span is from position C[2k] to position C[2k+1], and its captured string is T[C[2k]..C[2k+1]) (in a capture array obtained as a match, a set group always satisfies C[2k] <= C[2k+1]). Group 0 represents the whole match.
+- When a capture array or a set is given to a state or a thread, a copy of its value at that moment is given. It is not affected by later changes made in another state or thread.
+- Tests are always made on the whole of T, regardless of the search start position (e.g. even if the search start position is 3, BOL holds only at position 0 and, with flag m, right after a newline).
+
+* 6. Backtracking VM
+A state is a tuple (instruction number p, position q, capture array C, set V). V is a set of SPLIT instruction numbers; it represents the SPLITs executed, along the path that led to the state, after the position last advanced.
+"Execution" R(p0, q0, C0, partial) is the following procedure, which returns success (a pair of a capture array and a position) or failure. "partial" tells whether the body of a LOOK is being executed (yes/no).
+(1) Create an empty stack and push the state (p0, q0, C0, empty set).
+(2) If the stack is empty, return failure. Otherwise, pop the top state of the stack and make it the current state (p, q, C, V).
+(3) Increase the step count by 1. If the step count exceeds 200000 (that is, becomes 200001), the whole execution of the backtracking VM for that command is aborted immediately at that point (see 10).
+(4) Depending on instruction p, do the following. Where "fail" is written, go back to (2); otherwise, go back to (3).
+  - CHAR, ANY, CLASS: if it matches at position q, increase q by 1, increase p by 1, and make V the empty set. If it does not match, fail.
+  - SPLIT x, y: if p is contained in V, fail. Otherwise, add p to V, push the state (y, q, C, V) on the stack, and set p to x.
+  - JMP x: set p to x.
+  - SAVE k: set element k of C to q, and increase p by 1.
+  - ASSERT: if the assertion holds at position q, increase p by 1; if it does not hold, fail.
+  - BACKREF k: if group k is not set, or C[2k] > C[2k+1], fail. Otherwise, let u be the captured string and d its length; if q+d <= |T| and T[q+j] matches the j-th character of u for every j with 0 <= j < d, increase q by d, increase p by 1, and make V the empty set if d > 0. Otherwise, fail.
+  - LOOK kind x: execute R(p+1, q, C, yes) (the steps in it are counted in the same step count; that execution uses its own stack and does not affect the stack of the current state). If the kind is AHEAD: on success, set C to the capture array of its result and set p to x; on failure, fail. If NOT: on failure, set p to x (C is not changed); on success, fail. If ATOMIC: on success, set C to the capture array of its result and q to the position of its result (make V the empty set if q increased), and set p to x. On failure, fail.
+  - MATCH: if "partial" is "yes", or the search kind is not "full match", or q = |T|, return success (C, q). Otherwise, fail.
+Search (start position s): for b = 0 only in the case of a full match, and otherwise for b = s, s+1, ..., |T| in this order, execute R(0, b, a capture array with all elements unset, no). The capture array of the first success is the match. If it fails for every b, there is no match.
+
+* 7. Pike VM
+A thread is a pair (instruction number, capture array). A thread list consists of a sequence of threads and a set of "marks" attached to instruction numbers.
+Add A(L, p, C, q):
+- If p is marked in list L, do nothing (the step count is not increased either).
+- Otherwise, mark p and increase the step count by 1. Then, depending on instruction p: for JMP x, A(L, x, C, q). For SPLIT x, y, A(L, x, C, q) and then A(L, y, C, q). For SAVE k, A(L, p+1, C', q) with the capture array C' that is C with element k set to q. For ASSERT, A(L, p+1, C, q) only when the assertion holds at position q. For CHAR, ANY, CLASS, MATCH, append the thread (p, C) to the end of the sequence of L.
+Since the Pike VM runs only Pike-compatible programs, BACKREF and LOOK do not appear.
+Search (start position s):
+(1) Assume that there is no match yet; let L be an empty list and q = s.
+(2) If there is no match yet, and either the search kind is not full match or q = s, perform A(L, 0, a capture array with all elements unset, q).
+(3) Create an empty list N, and process the threads (p, C) of the sequence of L in order from the first. For each thread, increase the step count by 1. If instruction p is MATCH: when the search is not a full match or q = |T|, take C as the match (discarding any earlier match), and go to (4) without processing the remaining threads of L; otherwise, do nothing and go on to the next thread. If instruction p is CHAR, ANY or CLASS, perform A(N, p+1, C, q+1) only when it matches at position q.
+(4) If q = |T|, finish. If the sequence of N is empty and either there is a match or the search kind is full match, finish. Otherwise, set L to N, increase q by 1, and go back to (2).
+The match at the time of finishing (no match if there is none) is the result.
+
+* 8. Search kinds and scanning
+The search kind is "full match" for the MATCH command and "normal" for the other commands. A full-match search is performed only once, at start position 0.
+Scanning builds a sequence of matches by the following procedure. Let position s be 0, and while s <= |T|, perform a normal search at start position s. If there is no match, end the scan. If there is a match (capture array C), append it to the end of the sequence of matches, and set s to C[1] if C[1] > C[0], or to C[1]+1 if C[1] = C[0] (an empty match).
+
+* 9. Replacement templates
+The replacement template (the string represented by the quoted string) is read in order from the start and turned into the following sequence of parts.
+- "$$": the character "$".
+- "$" and one digit d: a reference to group d.
+- "${", the part t up to the first "}" after it (not including the "}"), and that "}": if t consists only of one or more digits, it is a reference to the group whose number is that value. If t is the name of a named group of the pattern, it is a reference to that group. If neither (including when t is empty and when there is no "}" after the "${"), it is a template error.
+- Any other "$" (including when it is the last character of the template): a template error.
+- A character other than "$": that character.
+It is also a template error when the number of a referenced group exceeds G (a reference to group 0 is the whole match).
+The expansion of the template for a match (capture array C) is the string formed by concatenating the parts in order. A group reference is the captured string if that group is set, and the empty string if it is not set.
+
+* 10. Executing commands
+For each command, with its pattern (flags and program) and its subject string T, execute as follows.
+(1) If the pattern has an error, the engines are not run. The LIST command does not run the engines either. For a REPLACE command whose pattern has no error, the replacement template is first read as in 9, and if it has an error, the engines are not run.
+(2) Otherwise, compute the "sequence of matches" of the command. MATCH is one full-match search, and SEARCH and REPLACE FIRST are one normal search at start position 0; the sequence consists of that one match if there is a match, and is empty otherwise. FINDALL, REPLACE ALL and SPLIT use the sequence of matches obtained by scanning. This is done with the backtracking VM and, if the program is Pike-compatible, also with the Pike VM (also when the backtracking VM was aborted). The step count starts from 0 for each command and each VM, and is counted across all the searches of that command (including the executions of LOOK bodies).
+(3) The result is determined as follows.
+  - Pike-compatible, and the backtracking VM was not aborted: compare the two sequences of matches (the number of matches, and every element of every capture array). If they are equal, the result is that sequence of matches, and the engine label is "both". If they are not equal, it is a "mismatch" (this does not happen in a correct implementation).
+  - Pike-compatible, and the backtracking VM was aborted: the result is the Pike VM's sequence of matches, and the engine label is "pike (backtrack: TOO_MANY_STEPS)".
+  - Not Pike-compatible, and not aborted: the result is the backtracking VM's sequence of matches, and the engine label is "backtrack".
+  - Not Pike-compatible, and aborted: there is no result (TOO_MANY_STEPS).
+(4) Let the resulting sequence of matches be M1, ..., Mr (r >= 0; each Mi is a capture array). The result string of REPLACE is the concatenation, in this order, of T[0..M1[0]), the expansion for M1, T[M1[1]..M2[0]), the expansion for M2, ..., T[M(r-1)[1]..Mr[0]), the expansion for Mr, and T[Mr[1]..|T|) (T itself if r = 0). The pieces of SPLIT are the r+1 strings T[0..M1[0]), T[M1[1]..M2[0]), ..., T[Mr[1]..|T|) (just T if r = 0).
+
+[Output files]
+Every line of the four files ends with a newline (LF), and there are no trailing spaces. Below, "the quote of x" is the string x enclosed in double quotes ("), with "\" written as "\\", the double quote as "\"", newline as "\n", tab as "\t", and every other character written as is. "The span of group k" is "<C[2k]>-<C[2k+1]> <quote of the captured string>" (e.g. "4-8 "2024"").
+
+* output/results.txt
+For each command (in order of number), first output "#<command number> <command line>" (the command line is the line of input/commands.txt as it is). Then output the line(s) of the first of the following that applies (for example, a REPLACE command whose pattern has an error gives "invalid pattern" regardless of the template).
+- The pattern has an error: "invalid pattern".
+- LIST: "instructions <number of instructions>".
+- REPLACE whose template has an error: "invalid template".
+- Mismatch: "MISMATCH".
+- No result (TOO_MANY_STEPS): "TOO_MANY_STEPS".
+- Otherwise: "engine <engine label>" and the result lines.
+The result lines depend on the command as follows.
+- MATCH, SEARCH: "no match" if there is no match; otherwise the "match lines" of that match.
+- Match lines: for a match C, output "match <span of group 0>", then, for k = 1, ..., G in order, "group <k> <span of group k>" if group k is set, or "group <k> -" if it is not set.
+- FINDALL: output "matches <r>", then the match lines of each of M1, ..., Mr in order.
+- REPLACE: the two lines "replacements <r>" and "result <quote of the result string>".
+- SPLIT: output "pieces <r+1>" and "piece <quote of the piece>" for the first piece. Then, for i = 1, ..., r in order: for Mi, for k = 1, ..., G in order, output "group <k> <quote of the captured string>" if group k is set, or "group <k> -" if it is not set; after that, output "piece <quote of the piece>" for the (i+1)-th piece.
+
+* output/programs.txt
+For each LIST command on a pattern without errors (in order of number), output the following lines (if there are several LIST commands for the same pattern, output them each time). If there is no such LIST command at all, output only the single line "no programs".
+Line 1: "=== <pattern name>".
+Line 2: "flags=<flags> groups=<G> names=<name list> length=<min>..<max> first=<first-character set> pike=<yes or no> size=<number of instructions>". The flags are as written in input/patterns.txt. The name list is "<name>:<group number>" of each named group, joined by "," in order of group number ("-" if there are no named groups). min and max are L(E), and max is written as "inf" if it is infinity. The first-character set is the "set notation" of the set of F(E), written as a non-negated set, or "-" if it is the empty set. pike is yes if the program is Pike-compatible, and no otherwise.
+Lines 3 onward: for each instruction (in order of number), "<instruction number> <instruction notation>". The instruction notation is "CHAR <display of c>" for CHAR c, "ANY" for ANY, "CLASS <set notation>" for CLASS, "SPLIT <x>, <y>" for SPLIT, "JMP <x>" for JMP, "SAVE <k>" for SAVE, "ASSERT <kind>" for ASSERT, "BACKREF <k>" for BACKREF, "LOOK <kind> <x>" for LOOK, and "MATCH" for MATCH.
+Character display: a character with code 33 to 126 other than "\", "]", "^", "-" is shown as the character itself; any other character (a space, newline, tab, these four characters, and so on) is shown as "\x" followed by its character code as two hexadecimal digits (A to F in uppercase) (e.g. a space is "\x20", and "-" is "\x2D").
+Set notation: "[", "^" if negated, the set content, and "]", in this order. The set content is formed by looking at the codes (0 to 127) of the characters contained in the set in increasing order and, for each longest possible run of characters with consecutive codes, with a the first character and b the last character of the run, writing the display of a if the run has length 1, the display of a and the display of b if it has length 2, and the display of a, "-" and the display of b if it has length 3 or more, and concatenating these (e.g. "[0-9A-Z_a-z]", "[^\x09\x0A]").
+
+* output/steps.csv
+Line 1 is "command,engine,steps". For each command that ran the engines (in order of number), output "<command number>,backtrack,<step count of the backtracking VM>", followed, if the Pike VM was also run, by "<command number>,pike,<step count of the Pike VM>". The step count of the backtracking VM when it was aborted is 200001.
+
+* output/errors.txt
+In the order of input/patterns.txt, output the following three lines for each pattern with an error. If no pattern has an error, output only the single line "no errors".
+Line 1: "<pattern name>: <error message> at column <column>".
+Line 2: two spaces, followed by the pattern.
+Line 3: two spaces, (column-1) spaces, and "^".
+
+[Source files]
+Split the source files into the following five roles (the file names may follow each language's conventions).
+- main: the overall flow. Reading the three input files and decoding quoted strings, parsing patterns (1: syntax tree nodes, group numbers and names, error messages and columns, the backreference check), compilation (3), program properties (4), search kinds and scanning (8), interpreting and expanding replacement templates (9), executing commands and cross-checking the two engines (10), and writing the four output files. It handles the largest part of the processing.
+- charset: character sets (codes 0 to 127) and S_d, S_w, S_s, case swapping, testing character matches and class matches, testing word characters and assertions (5).
+- formatter: character display, set notation, instruction notation (the instruction lines of programs.txt), quoting for output.
+- backtrack_vm: the backtracking VM (6). States and the stack, execution R, the partial execution of LOOK, search, the step count and aborting.
+- pike_vm: the Pike VM (7). Thread lists and marks, add A, search, the step count.
+
+[Constraints]
+- input/patterns.txt and input/subjects.txt each have between 1 and 100 lines, and input/commands.txt has between 1 and 300 lines.
+- The digit sequences of quantifiers and of numbered backreferences, and the digit sequence between "${" and "}" in replacement templates, are all at most 3 characters long.
+- The length of a replacement template is at most 40.
+- For a pattern without errors, G is at most 20 and the number of instructions of the program is at most 300.
+- All values handled are integers; there are no floating-point computations.
+
+[Example]
+The output for the following input is shown (below, the contents of each file are shown starting on the line after the "file name:" line, and one empty line is inserted between files as a separator; these separator empty lines are not part of the file contents).
+
+input/patterns.txt:
+pair - (\d+)-(?<b>\d+)
+vowel i [aeiou]+|x*
+bad - (a|b
+tag - <(\w+)>[^<]*</\1>
+nest - (a+)+b
+
+input/subjects.txt:
+s1 "Due 2024-10, \"7-3\""
+s2 "Queue\tAx"
+s3 "<b>hi</b> <i>yo</b>"
+s4 "aaaaaaaaaaaaaaaaaaaaaaaa"
+
+input/commands.txt:
+LIST pair
+SEARCH pair s1
+REPLACE ALL pair s1 "${b}/$1"
+FINDALL vowel s2
+SPLIT pair s1
+MATCH bad s1
+FINDALL tag s3
+SEARCH nest s4
+REPLACE FIRST vowel s2 "$2"
+
+output/results.txt:
+#1 LIST pair
+instructions 12
+#2 SEARCH pair s1
+engine both
+match 4-11 "2024-10"
+group 1 4-8 "2024"
+group 2 9-11 "10"
+#3 REPLACE ALL pair s1 "${b}/$1"
+engine both
+replacements 2
+result "Due 10/2024, \"3/7\""
+#4 FINDALL vowel s2
+engine both
+matches 6
+match 0-0 ""
+match 1-5 "ueue"
+match 5-5 ""
+match 6-7 "A"
+match 7-8 "x"
+match 8-8 ""
+#5 SPLIT pair s1
+engine both
+pieces 3
+piece "Due "
+group 1 "2024"
+group 2 "10"
+piece ", \""
+group 1 "7"
+group 2 "3"
+piece "\""
+#6 MATCH bad s1
+invalid pattern
+#7 FINDALL tag s3
+engine backtrack
+matches 1
+match 0-9 "<b>hi</b>"
+group 1 1-2 "b"
+#8 SEARCH nest s4
+engine pike (backtrack: TOO_MANY_STEPS)
+no match
+#9 REPLACE FIRST vowel s2 "$2"
+invalid template
+
+output/programs.txt:
+=== pair
+flags=- groups=2 names=b:2 length=3..inf first=[0-9] pike=yes size=12
+0 SAVE 0
+1 SAVE 2
+2 CLASS [0-9]
+3 SPLIT 2, 4
+4 SAVE 3
+5 CHAR \x2D
+6 SAVE 4
+7 CLASS [0-9]
+8 SPLIT 7, 9
+9 SAVE 5
+10 SAVE 1
+11 MATCH
+
+output/steps.csv:
+command,engine,steps
+2,backtrack,34
+2,pike,79
+3,backtrack,63
+3,pike,131
+4,backtrack,53
+4,pike,102
+5,backtrack,63
+5,pike,131
+7,backtrack,65
+8,backtrack,200001
+8,pike,220
+
+output/errors.txt:
+bad: missing ) at column 1
+  (a|b
+  ^

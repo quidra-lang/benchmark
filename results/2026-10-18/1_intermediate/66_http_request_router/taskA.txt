@@ -1,0 +1,360 @@
+[Overview]
+Write a program that simulates an HTTP/1.1 request router (a mechanism that dispatches each incoming request to the route that handles it, according to its path and method) and the responses it produces. No real communication takes place; everything is text processing on standard input and standard output. The program first reads the configuration (routes, tokens, redirect rules, allowed origins, a rate limit, and the types each route can return). It then reads a sequence of requests and, for each request, performs syntax checks, method override, rate limiting, path normalization, redirection, routing, authorization, content negotiation and conditional-request evaluation in a fixed order, and prints the response (status line, response headers, body). For each URLFOR line written between the requests, it builds a URL from a route name and arguments (reverse routing). Finally, it prints statistics per status code, per route and per client.
+
+[Input format]
+The input consists of the configuration part, the REQUESTS line, the request part and the END line, in this order. The REQUESTS line and the END line are lines consisting of exactly that string.
+
+Each line of the configuration part is one configuration command: the command name and its arguments separated by single spaces. There are the following six forms of configuration command (a part enclosed in [ ] may be omitted, and ... means that the preceding argument is repeated one or more times).
+
+  ROUTE name methods pattern [ROLE role]
+  TOKEN value role
+  REDIRECT from to code
+  ORIGIN origin
+  LIMIT n seconds
+  TYPES name type ...
+
+However, the configuration part may contain lines whose command name is none of these six, or whose number of arguments or argument values are incorrect; how they are handled is defined in [Processing].
+
+The request part is a sequence of "request blocks" and "URLFOR lines" in any order.
+- A request block consists of one "request line", zero or more "header lines" and one blank line (a line of 0 characters), in this order. The blank line marks the end of the request block. Header lines are not empty.
+- A URLFOR line consists of URLFOR, a single space and a route name in this order, followed by zero or more arguments, each preceded by a single space. The route name and the arguments are strings of one or more characters that contain no space.
+Every line of the request part that is not the second or a later line of a request block (from the line after the request line through the blank line) is non-empty, and is classified as follows: if the string is END, it is the END line; if it contains a space and the part before the first space is URLFOR, it is a URLFOR line; otherwise it is a request line (the start of a request block).
+Request blocks are numbered 1, 2, 3, ... in order of appearance, and the k-th request block is called "request k".
+
+[Processing]
+1. Terms
+- A "letter" is an uppercase letter A to Z or a lowercase letter a to z, and a "digit" is 0 to 9. To "lowercase" a string means to change each uppercase letter in it to the corresponding lowercase letter.
+- An "unreserved character" is a letter, a digit, or one of the four symbols - . _ ~.
+- Strings are compared in lexicographic order by character code (ASCII). Characters are compared one by one from the beginning, and the string whose character code is smaller at the first differing character is the smaller one; when one string equals the beginning of the other, the shorter one is the smaller one. "Character-code order" means ascending order under this ordering.
+- A "valid name" is a string of 1 to 20 characters that starts with a lowercase letter and consists only of lowercase letters, digits and _. A "role name" is a string of 1 to 16 characters consisting only of lowercase letters.
+- The "decimal notation" of an integer is its representation using digits only, without leading zeros except for 0 itself.
+- A "segment" is a string of one or more characters consisting only of unreserved characters that is neither "." nor "..". A "canonical path" is either the string consisting of / alone, or the concatenation of one or more segments, each preceded by / (e.g. /users/me).
+- A "media type" is a string of the form "maintype/subtype", where the main type and the subtype are each strings of one or more characters consisting only of lowercase letters, digits and the symbols . + - (e.g. application/json, text/plain).
+- An "escape" is a sequence of 3 characters: % followed by 2 hexadecimal digits (0 to 9, A to F, a to f). It represents the character whose character code is the value of those 2 characters read as a hexadecimal number. For example, %41 and %4a represent A and J respectively, and %2F and %2f both represent /.
+- To "decode" a string means to find the escapes in the string from left to right without overlapping, and replace each one with the character it represents. A character produced by a replacement never becomes part of a new escape (for example, decoding %2541 gives %41).
+- To "encode" a string means to replace each character in the string that is not an unreserved character with 3 characters: % followed by its character code written as 2 hexadecimal digits with uppercase letters (for example, encoding a b/c&d gives a%20b%2Fc%26d).
+
+2. Configuration commands
+Process the lines of the configuration part from top to bottom. For each line, check the conditions below in the order written; for the first condition that applies, with its message M, output "CONFIG ERROR <line number>: M" and ignore the line (register nothing). <line number> is the number of the line in the whole input (the first line is 1). If no condition applies, register as described for each command. In a message, <x> stands for the argument x exactly as written in the input.
+First, for every command, check the following two conditions.
+(1) The command name is none of the six: unknown command <command name>
+(2) The number of arguments is incorrect: wrong number of arguments
+The correct number of arguments is 3 or 5 for ROUTE, 2 for TOKEN, 3 for REDIRECT, 1 for ORIGIN, 2 for LIMIT, and 2 or more for TYPES. Then check the following for each command.
+
+ROUTE name methods pattern [ROLE role]
+(3) name is not a valid name: bad route name <name>
+(4) A route named name is already registered: duplicate route <name>
+(5) One of the parts of methods split by , is none of GET, POST, PUT, PATCH, DELETE, or the same part appears two or more times: bad methods <methods>
+(6) pattern is not a pattern as defined below: bad pattern <pattern>
+(7) There are 5 arguments and the 4th argument is not ROLE: unknown option <4th argument>
+(8) There are 5 arguments and role is not a role name: bad role <role>
+Register a route with name name, method set (the set of the parts of methods), pattern pattern, and role (role if there are 5 arguments, "none" if there are 3). Routes are given registration numbers in the order of registration. A route also has a "type list", which is initially unset.
+A pattern is a string that satisfies all of the following conditions.
+- It starts with /. The pattern consisting of / alone has no pieces. In any other pattern, each part of the string after the leading / split by / is called a "piece", and each piece is one of the following 5 kinds, where p is a valid name and is the name of that parameter.
+  Literal: a segment (e.g. users).
+  {p}: an untyped parameter.
+  {p:int}: an int parameter.
+  {p:slug}: a slug parameter.
+  {*p}: a wildcard.
+- A wildcard can appear only as the last piece.
+- The names of all parameters (including the wildcard) within one pattern are distinct.
+Int parameters and slug parameters are together called "typed parameters". For example, /, /users/{id:int}/posts/{slug:slug} and /files/{*path} are patterns, and a/b, /a/, /a//b, /a/{*x}/b, /a/{id}/{id} and /a/{n:float} are not patterns.
+
+TOKEN value role
+(3) value is not a string of 1 to 32 characters consisting only of letters, digits and the symbols . _ -: bad token <value>
+(4) A token whose value is the same string as value is already registered: duplicate token <value>
+(5) role is not a role name: bad role <role>
+Register the token value as having the role role.
+
+REDIRECT from to code
+A "rule path" is either a canonical path, or a canonical path other than / followed by /*. The latter is called a "prefix rule path", and the part without the trailing /* is its "base". For a rule path that is not a prefix rule path, the whole string is its base.
+(3) from is not a rule path: bad path <from>
+(4) to is not a rule path: bad path <to>
+(5) Exactly one of from and to is a prefix rule path: wildcard mismatch
+(6) code is none of 301, 302, 307, 308: bad redirect code <code>
+(7) A rule whose from is the same string as from is already registered: duplicate redirect <from>
+Register a redirect rule with from, to and code. A rule whose from is a prefix rule path is called a "prefix rule".
+
+ORIGIN origin
+(3) origin is not http:// or https:// followed by a string of one or more characters consisting only of lowercase letters, digits and the symbols ".", "-" and ":": bad origin <origin>
+(4) origin is already registered: duplicate origin <origin>
+Register origin as an allowed origin.
+
+LIMIT n seconds
+(3) n is not the decimal notation of an integer from 1 to 100, or seconds is not the decimal notation of an integer from 1 to 3600: bad limit
+(4) A rate limit is already set: duplicate limit
+Set a rate limit with capacity n and period seconds (step 7).
+
+TYPES name type ...
+(3) No route named name is registered: unknown route <name>
+(4) The type list of that route is already set: duplicate types <name>
+(5) Examining the types from left to right, there is one that is not a media type, or one for which the same string appears further to the left: taking the first such one found as t, bad media type <t> in the former case, duplicate media type <t> in the latter case
+Set the type list of that route to the list of the types in the order written.
+
+When the REQUESTS line is reached, output the following line.
+  CONFIG routes=<number of routes> tokens=<number of tokens> redirects=<number of redirect rules> origins=<number of allowed origins> limit=<rate limit> errors=<number of CONFIG ERROR lines output>
+<rate limit> is n/seconds if a rate limit is set (e.g. 3/6), and none if not.
+From this point on, each route whose type list is still unset is treated as having the type list consisting of application/json alone.
+Next, sort the routes in descending order of priority, and for the r-th route (r counted from 1) output the following line.
+  TABLE <r> <name> <method list> <pattern> role=<role> types=<type list>
+<method list> is the elements of the method set (with HEAD added if it contains GET) sorted in character-code order and joined by ,. <role> is the role, or - when it is none. <type list> is the types of the type list joined in order by ,.
+The priority of routes is determined by comparing the following in order.
+(1) The route with more literal pieces has higher priority.
+(2) The route with more typed-parameter pieces has higher priority.
+(3) The route without a wildcard has higher priority.
+(4) The route with the smaller registration number has higher priority.
+
+3. Processing requests
+For each request block, perform steps 1 to 14 in order to determine one response. Once a step determines the response, the later steps are not performed. A response consists of a status code, some response headers, and a body (a string of one line; 204 and 304 responses have no body). Below, "a C response with body B" means the response with status code C and body B; besides the response headers listed there, it has Content-Type and Content-Length (see [Output format]). A response header is sometimes written in the form "Name: value".
+The only state that changes through processing requests is the rate-limit records (step 7), the selection count of each route (step 10), and the counts used for the statistics; these carry over from the start of the request part.
+
+Step 1 (request line)
+If the request line does not satisfy all of the following, the response is a 400 response with body "bad request: request line".
+- It contains exactly 2 spaces. The 3 parts of the request line split at these spaces are called, in order, the "method", the "target" and the "version".
+- The method is a string of 1 to 16 characters consisting only of uppercase letters.
+- The target starts with / and does not contain #.
+- The version is HTTP/1.1.
+
+Step 2 (escape check)
+If the target contains at least one % that is not immediately followed by 2 hexadecimal digits, or for which the value of the 2 characters immediately following it, read as a hexadecimal number, is not between 32 and 126 inclusive, the response is a 400 response with body "bad request: percent escape". In a target that passes this step, every % is the start of an escape.
+
+Step 3 (header line check)
+Examine the header lines one at a time from top to bottom, performing both of the following checks on a line before moving on to the next line. If the i-th header line (i counted from 1) does not contain :, or the part before the first : (the header name) is not a string of one or more characters consisting only of letters, digits and -, the response is a 400 response with body "bad request: header line <i>". Otherwise, if the lowercased header name equals the lowercased header name of a header line above it, the response is a 400 response with body "bad request: duplicate header <lowercased header name>".
+The value of each header is the part of the header line after the first :, with all leading and trailing spaces removed. Below, "header X" means the header line whose lowercased header name equals X lowercased (for example, host: a.test is header Host, with value a.test). A header with an empty value also counts as being present.
+
+Step 4 (method check)
+If the method is none of GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, the response is a 501 response with body "not implemented: <method>".
+
+Step 5 (Host check)
+If header Host is absent or its value is empty, the response is a 400 response with body "bad request: missing host".
+
+Step 6 (method override)
+The "effective method" is initially the method. If header X-HTTP-Method-Override is present: if the method is POST and its value is one of PUT, PATCH, DELETE, set the effective method to that value; otherwise, the response is a 400 response with body "bad request: method override".
+
+Step 7 (rate limiting)
+Do the following only when header X-Client is present and its value c is not empty. c is the "client" of this request, and the value of header X-Time read as an integer is the time t.
+When a rate limit is set, let n be its capacity and s its period. For each client, record an integer "level" u and a "last time" l. On the first request of a client, start with u=n*s and l=t.
+(a) Set u to min(n*s, u+(t-l)*n), and set l to t.
+(b) If u >= s, subtract s from u and pass this step. Otherwise, find the smallest integer w such that u+w*n >= s, and the response is a 429 response with body "too many requests: client <c>" and response header Retry-After: <w> (in this case u keeps the value from (a)).
+This is the scheme of a bucket holding at most n tokens, refilled with one token every s/n seconds, where each request uses one token, computed in integers by multiplying the number of tokens by s.
+When no rate limit is set, the request always passes.
+For each client, count the number of times it passed this step (allowed) and the number of times it got a 429 response (limited).
+
+Step 8 (path normalization)
+Split the target at the first ? into two parts; the part before is the "path" and the part after is the "query". If there is no ?, the whole target is the path and there is no query. The "query suffix" is ? followed by the query if there is a ? (just ? if the query is empty), and the empty string otherwise.
+The "normalized path" is the path changed as follows.
+(a) For each escape in the path, if the character it represents is an unreserved character, replace the escape with that one character; otherwise, uppercase the 2 characters after % (digits stay as they are).
+(b) Split the part of the result of (a) after the leading / by /, and process the parts from left to right, starting with an empty list, as follows. If the part is the empty string or ., do nothing. If it is .., remove the last element of the list if the list is not empty. Otherwise, append it to the end of the list.
+(c) The normalized path is / followed by the elements of the list joined by / (/ if the list is empty).
+If the normalized path differs from the path, the response is a 308 response with body "redirect to <value of Location>" and response header Location: <normalized path><query suffix>.
+For example, the normalized path of /a/./b/../c//d/ is /a/c/d, that of /%7euser/%2fx is /~user/%2Fx, that of /%2E%2E/a is /a, and that of /.. is /.
+For a request that passes this step, the path and the normalized path are equal.
+
+Step 9 (redirection)
+Examine the redirect rules in registration order, and for the first rule that applies, the response is a response with that rule's code as its status code, body "redirect to <destination>" and response header Location: <destination>. Let B be the base of from; a rule that is not a prefix rule applies when the path equals B, and a prefix rule applies when the path equals B or starts with B/. The destination is the base of to, followed by the rest of the path after removing the leading B, followed by the query suffix.
+For example, the rule REDIRECT /old/* /new/* 301 applies to /old?x=1 with destination /new?x=1 and to /old/a/b with destination /new/a/b, and does not apply to /older.
+
+Step 10 (routing)
+If the path is /, the "request segment sequence" is the empty sequence; otherwise it is the sequence of the parts of the path after the leading / split by /. For a route, let m be the number of pieces of its pattern other than the wildcard. A route "matches" the request when all of the following hold.
+- For a route without a wildcard, the length of the request segment sequence is exactly m; for a route with a wildcard, it is m or more.
+- For each j=1, 2, ..., m, the j-th piece of the pattern and the j-th element x of the request segment sequence fit as follows. A literal fits if it equals x. An untyped parameter always fits. An int parameter fits if x consists only of 1 to 9 digits. A slug parameter fits if x consists only of lowercase letters, digits and -.
+A route that matches the request is called a "matching route". If there is no matching route, the response is a 404 response with body "not found: <path>".
+The "allowed set" is the union of the method sets of all matching routes, with OPTIONS added, and with HEAD also added if it contains GET; the "allow list" is its elements sorted in character-code order and joined by ", " (, and a single space).
+If the effective method is OPTIONS, the response is a 204 response with response header Allow: <allow list>.
+Otherwise, the "lookup method" is GET if the effective method is HEAD, and the effective method otherwise. Among the matching routes whose method set contains the lookup method, the one with the highest priority is the "selected route". If there is no such route, the response is a 405 response with body "method not allowed: <effective method>" and response header Allow: <allow list>.
+For a request whose selected route has been determined, increase the "selection count" of the selected route by 1, regardless of the results of the later steps.
+The values of the parameters of the selected route are as follows (j and x have the same meaning as above).
+- Untyped parameter: x decoded.
+- Int parameter: the decimal notation of the value of x read as a decimal number (for example, 7 if x is 007).
+- Slug parameter: x itself.
+- Wildcard: the elements from the (m+1)-th onward of the request segment sequence, each decoded, joined by / (the empty string if there are no such elements).
+
+Step 11 (authorization)
+If the role r of the selected route is not "none", check the following in order.
+- If header Authorization is absent, the response is a 401 response with body "unauthorized: missing token" and response header WWW-Authenticate: Bearer realm="api".
+- Split the value of header Authorization at the first space into two parts; the part before is the "scheme" and the part after is the "token part" (if there is no space, the whole value is the scheme and the token part is the empty string). If the lowercased scheme is not bearer, or the token part is not a registered token, the response is a 401 response with body "unauthorized: invalid token" and response header WWW-Authenticate: Bearer realm="api", error="invalid_token".
+- If the role of the token in the token part is neither r nor admin, the response is a 403 response with body "forbidden: requires role <r>".
+
+Step 12 (content negotiation)
+Let T be the type list of the selected route. When T has 2 or more types, the response determined in steps 12 to 14 has the response header Vary: Accept.
+If header Accept is absent, the first type of T is the "selected type".
+If header Accept is present (even with an empty value), each part of its value split by , is an "element", and each element is interpreted as follows.
+- Split the element by ; and remove the leading and trailing spaces of each part. The first part lowercased is the "range", and the remaining parts are the "parameters".
+- The range must be */*, "maintype/*", or a media type, where maintype is a string satisfying the same conditions as the main type of a media type. Otherwise, the element is ignored.
+- For each parameter that contains =, the part before the first = with leading and trailing spaces removed and then lowercased is the parameter name, and the part after it with leading and trailing spaces removed is the value. The value of the leftmost parameter whose parameter name is q is the q-value; other parameters are not used. The q-value must be 0 or 1, followed either by nothing or by . and 0 to 3 digits, and the digits following 1 must all be 0. If the q-value is valid, the integer obtained by multiplying it by 1000 is the "weight" of the element (for example, 500 for 0.5, 250 for 0.25, 1000 for 1 and 1.000, and 0 for 0.). If the q-value is invalid, the element is ignored. If there is no parameter whose parameter name is q, the weight is 1000.
+- The "specificity" of the range */* is 1, that of maintype/* is 2, and that of a media type is 3. The range */* fits every type, the range "maintype/*" fits the types with an equal main type, and a media-type range fits the type equal to it.
+For each type of T, the weight of that type is the weight of the element with the greatest specificity among the non-ignored elements that fit the type (the leftmost one if there are several such elements). If no element fits, the weight of the type is 0. Among the types with a positive weight, the one with the greatest weight (the earliest in T if there are several) is the selected type. If no type has a positive weight, the response is a 406 response with body "not acceptable: <the types of T joined in order by ", ">".
+
+Step 13 (conditional request)
+Compute the body for the selected type and its ETag value according to section 4. If header If-None-Match is present, remove the leading and trailing spaces of each part of its value split by ",", and further, if the result starts with W/, remove those 2 characters. If any of the results is * or equals the ETag value, then: if the lookup method is GET, the response is a 304 response with response header ETag: <ETag value>; otherwise, the response is a 412 response with body "precondition failed: <ETag value>".
+
+Step 14 (success)
+The response is a 200 response whose body is the body computed in section 4, with response header ETag: <ETag value>.
+
+CORS (cross-origin access permission)
+For a request whose response was determined in steps 4 to 14 (that is, a request other than those that got a 400 response in steps 1 to 3), if header Origin is present and its value equals one of the allowed origins, add the response header Access-Control-Allow-Origin: <that value> to the response. If a response to which Access-Control-Allow-Origin was added in this way is a 204 response and header Access-Control-Request-Method is present, also add the response header Access-Control-Allow-Methods: <allow list> (it is not added to a response to which Access-Control-Allow-Origin was not added).
+
+4. Body and ETag value
+Let R be the name of the selected route, and build the following three lists. The elements of the lists are (name, value) pairs.
+- Parameter list: the (parameter name, value) of each parameter of the selected route, sorted by name in character-code order.
+- Query list: empty if there is no query. If there is a query, split it by & and, for each non-empty part from left to right, form a pair whose name is the part before the first = and whose value is the part after it (for a part that contains no =, the whole part is the name and the value is the empty string). The name and the value are each taken after replacing every + with a space and then decoding.
+- Cookie list: empty if header Cookie is absent. If it is present, split its value by ; and remove the leading and trailing spaces of each part; for each part that contains = and whose part before the first = is not empty, form a pair whose name is the part before the first = and whose value is the part after it. If two or more pairs have the same name, keep only the leftmost one, and sort the pairs by name in character-code order.
+The body is the following single line, depending on the selected type.
+- When the selected type is application/json:
+  {"route":<R>,"params":{<pair>,...},"query":[<pair>,...],"cookies":{<pair>,...}}
+  Each <pair> in "params" and "cookies" has the form <name>:<value>, and each <pair> in "query" has the form [<name>,<value>]; the pairs are joined by , (if a list is empty, it becomes {} or []). Here <R>, <name> and <value> are the respective strings with each \ replaced by \\ and each " replaced by \", enclosed in ".
+  Example: {"route":"item","params":{"id":"5"},"query":[["q","a b"],["q",""]],"cookies":{}}
+- When the selected type is text/html:
+  <dl><dt>route</dt><dd>R</dd>, followed by <dt>param N</dt><dd>V</dd> for each pair of the parameter list, <dt>query N</dt><dd>V</dd> for each pair of the query list, and <dt>cookie N</dt><dd>V</dd> for each pair of the cookie list, in this order, and finally </dl>. Here N and V are the name and the value of the pair, and R, N and V are the respective strings with each & replaced by &amp;, each < by &lt;, each > by &gt;, and each " by &quot;.
+  Example: <dl><dt>route</dt><dd>item</dd><dt>param id</dt><dd>5</dd><dt>query q</dt><dd>a &amp; b</dd></dl>
+- Otherwise:
+  route=R params=<list> query=<list> cookies=<list>
+  <list> is the pairs, each written as "<encoded name>=<encoded value>", joined by & (- if the list is empty).
+  Example: route=item params=id=5 query=q=a%20b&q= cookies=-
+The ETag value of the body is computed with Adler-32. Start with A=1 and B=0, and for the character code c of each character of the body, from left to right, set A=(A+c) mod 65521 and B=(B+A) mod 65521. Write the final B and A each as 4 hexadecimal digits with lowercase letters (padded with leading 0s if shorter than 4 digits), concatenate them in this order, and enclose the result in "; these 10 characters are the ETag value (e.g. "0a3f01c2").
+
+5. URLFOR lines
+Let N be the route name of the URLFOR line. Perform the following checks in order, and for the first error found output "URLFOR ERROR <message>".
+(1) No route named N is registered: unknown route <N>
+(2) Examining the arguments from left to right, there is one that matches either of the following: the message for the first one that matches. The part of an argument before the first = is its "argument name", and the part after it is its "argument value".
+  - It contains no =, or its argument name is empty: bad argument <argument>
+  - Its argument name equals one of the names of the route's parameters, and there is an argument with the same argument name further to the left: duplicate parameter <argument name>
+(3) Examining the parameter pieces of the pattern from left to right, there is one that matches either of the following: the message for the first one that matches. p is the name of the parameter, and v is the argument value of the argument whose argument name is the parameter's name.
+  - It is not a wildcard and there is no argument whose argument name is p: missing parameter <p>
+  - v does not satisfy the following condition: bad value for <p>. The condition is: for an untyped parameter, v is not empty and is neither "." nor "..". For an int parameter, v consists only of 1 to 9 digits. For a slug parameter, v is a string of one or more characters consisting only of lowercase letters, digits and -. For a wildcard, there is no such argument, or v is empty, or every part of v split by / is non-empty and neither "." nor "..".
+If there is no error, replace each piece of the pattern from left to right as follows and concatenate them, each preceded by / (just / if there is nothing). A literal stays as it is; an untyped, int or slug parameter becomes v encoded; a wildcard becomes the parts of v split by /, each encoded, joined by / (if there is no such argument or v is empty, that piece is removed, and no / is put before it). If there are arguments whose argument name equals none of the names of the route's parameters (query arguments), append ? followed by the query arguments in the order written, each written as "<encoded argument name>=<encoded argument value>", joined by &. Output "URLFOR <N> <URL>" using the URL built in this way.
+URLFOR lines do not affect the processing of requests.
+
+[Output format]
+Output the following in this order.
+(1) The CONFIG ERROR lines output while processing the configuration part.
+(2) The CONFIG line and the TABLE lines (section 2).
+(3) For each request block and each URLFOR line of the request part, in order of appearance, the response (below) or the URLFOR line (section 5).
+(4) The statistics when the END line is reached (below).
+
+The response to request k is output in the following form.
+  REQUEST <k>
+  HTTP/1.1 <status code> <reason phrase>
+  <response header lines>
+  <body line>
+<response header lines> are lines, one per response header of the response, each written in the form "Name: value", in the following order.
+  Location, Allow, Retry-After, WWW-Authenticate, Access-Control-Allow-Origin, Access-Control-Allow-Methods, Vary, ETag, Content-Type, Content-Length
+Every response other than 204 and 304 has Content-Type and Content-Length. The value of Content-Type is the selected type for a 200 response and text/plain for any other response. The value of Content-Length is the number of characters of the body.
+<body line> is the body itself. However, for 204 and 304 responses and for responses to a "HEAD request", the body line is not output (Content-Length is still output with its unchanged value). A HEAD request is a request that passes step 1 and whose method is HEAD. A request that got a 400 response in step 1 has its body line output even if its request line starts with HEAD.
+The status codes and reason phrases correspond as follows.
+  200 OK
+  204 No Content
+  301 Moved Permanently
+  302 Found
+  304 Not Modified
+  307 Temporary Redirect
+  308 Permanent Redirect
+  400 Bad Request
+  401 Unauthorized
+  403 Forbidden
+  404 Not Found
+  405 Method Not Allowed
+  406 Not Acceptable
+  412 Precondition Failed
+  429 Too Many Requests
+  501 Not Implemented
+
+The statistics are the following lines in this order.
+  SUMMARY requests=<number of request blocks> urlfor_ok=<number of URLFOR lines output that are not URLFOR ERROR lines> urlfor_error=<number of URLFOR ERROR lines>
+Then, for each status code that occurred in at least one response, in ascending order, output one line:
+  STATUS <status code> <number of responses with that status code>
+Then, for every route in registration order, output one line:
+  ROUTE <name> <selection count>
+Finally, for each string c that has been a client in step 7, in character-code order, output one line:
+  CLIENT <c> allowed=<allowed count of c> limited=<limited count of c>
+
+[Constraints]
+- Each input line has 0 to 200 characters, consists only of characters with character codes 32 to 126 (ASCII printable characters), and does not end with a space.
+- The configuration part has 1 to 100 lines. Each line of the configuration part is non-empty, does not start with a space, and never contains two or more consecutive spaces. The configuration part contains no line consisting of END alone.
+- The REQUESTS line and the END line each appear exactly once, and the END line is the last line of the input. The END line never appears in the middle of a request block (the END line comes after the blank line of the last request block).
+- There are 1 to 300 request blocks, each request block has at most 20 header lines, and there are at most 100 URLFOR lines. A URLFOR line never contains two or more consecutive spaces.
+- The value of header X-Client is either empty or a string of at most 16 characters consisting only of letters, digits, - and _. A request that reaches step 7 with a non-empty value of header X-Client has header X-Time, whose value is the decimal notation of an integer from 0 to 1000000. The times of the requests of the same client never decrease in order of appearance.
+- Every integer appearing in the computation fits in a 32-bit signed integer.
+
+[Example]
+Input:
+ROUTE home GET /
+ROUTE user GET /users/{id:int} ROLE member
+ROUTE user_name GET,POST /users/{name}
+ROUTE broken GET /users/
+TYPES user application/json text/plain
+TOKEN t-1 member
+REDIRECT /old/* /users/* 301
+LIMIT 2 10
+REQUESTS
+GET /users/007?tab=a+b HTTP/1.1
+Host: example.test
+Authorization: Bearer t-1
+Accept: text/plain
+
+HEAD /users/42 HTTP/1.1
+Host: example.test
+
+DELETE /users/bob HTTP/1.1
+Host: example.test
+
+URLFOR user id=5 tab=a&b
+GET /old/bob/ HTTP/1.1
+host: example.test
+
+GET /old/bob HTTP/1.1
+Host: example.test
+X-Client: c1
+X-Time: 10
+
+END
+
+Output:
+CONFIG ERROR 4: bad pattern /users/
+CONFIG routes=3 tokens=1 redirects=1 origins=0 limit=2/10 errors=1
+TABLE 1 user GET,HEAD /users/{id:int} role=member types=application/json,text/plain
+TABLE 2 user_name GET,HEAD,POST /users/{name} role=- types=application/json
+TABLE 3 home GET,HEAD / role=- types=application/json
+REQUEST 1
+HTTP/1.1 200 OK
+Vary: Accept
+ETag: "b5641116"
+Content-Type: text/plain
+Content-Length: 48
+route=user params=id=7 query=tab=a%20b cookies=-
+REQUEST 2
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="api"
+Content-Type: text/plain
+Content-Length: 27
+REQUEST 3
+HTTP/1.1 405 Method Not Allowed
+Allow: GET, HEAD, OPTIONS, POST
+Content-Type: text/plain
+Content-Length: 26
+method not allowed: DELETE
+URLFOR user /users/5?tab=a%26b
+REQUEST 4
+HTTP/1.1 308 Permanent Redirect
+Location: /old/bob
+Content-Type: text/plain
+Content-Length: 20
+redirect to /old/bob
+REQUEST 5
+HTTP/1.1 301 Moved Permanently
+Location: /users/bob
+Content-Type: text/plain
+Content-Length: 22
+redirect to /users/bob
+SUMMARY requests=5 urlfor_ok=1 urlfor_error=0
+STATUS 200 1
+STATUS 301 1
+STATUS 308 1
+STATUS 401 1
+STATUS 405 1
+ROUTE home 0
+ROUTE user 2
+ROUTE user_name 0
+CLIENT c1 allowed=1 limited=0
+
+The blank lines in the example input are the blank lines that mark the end of a request block. Line 4 is an error because its pattern ends with /, so broken is not registered. user and user_name each have one literal piece, but user, which has a typed parameter, has the higher priority. In request 1, the int parameter 007 becomes 7, text/plain is selected because of Accept, and the + in the query becomes a space and is then encoded. Request 2 is a HEAD request, so the body line of the 401 response is not output. In request 3, /users/bob matches only user_name, whose method set does not contain DELETE, so the response is 405. Request 4 gets a 308 because normalization removes the trailing /, and the already-normalized request 5 is redirected to /users/bob by the prefix rule.
