@@ -766,9 +766,10 @@ execute <- function(inv, line) {
   )
 }
 
-n <- as.integer(readLines("stdin", n = 1))
+input <- readLines(stdin(), warn = FALSE)
+n <- as.integer(input[1])
 inv <- inventory()
 for (i in seq_len(n)) {
-  execute(inv, readLines("stdin", n = 1))
+  execute(inv, input[i + 1])
 }
 cat(paste(inv$output, collapse = "\n"), "\n", sep = "")
