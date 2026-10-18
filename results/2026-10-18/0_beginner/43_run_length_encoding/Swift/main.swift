@@ -1,0 +1,11 @@
+import Foundation
+
+
+let values = ["AAABBBCCCD", String(repeating: "W",count: 12) + "B" + String(repeating: "W",count: 12) + "BBB", "ALGORITHM", "MISSISSIPPI", String(repeating: "X",count: 10) + String(repeating: "Y",count: 21) + "Z"]
+for text in values {
+    let chars = Array(text); var encoded = "", i = 0
+    while i < chars.count { var j = i + 1; while j < chars.count && chars[j] == chars[i] { j += 1 }; encoded += String(j - i) + String(chars[i]); i = j }
+    let bytes = Array(encoded.utf8); var decoded = ""; i = 0
+    while i < bytes.count { var count = 0; while bytes[i] >= 48 && bytes[i] <= 57 { count = count * 10 + Int(bytes[i]) - 48; i += 1 }; decoded += String(repeating: String(UnicodeScalar(bytes[i])), count: count); i += 1 }
+    print("\(text) -> \(encoded) -> \(decoded)")
+}

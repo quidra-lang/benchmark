@@ -1,0 +1,8 @@
+import Foundation
+
+
+let n = 5
+for row in 1..<(2 * n) {
+    let i = row <= n ? row : 2 * n - row
+    print(String(repeating: " ", count: n - i) + String(repeating: "*", count: 2 * i - 1))
+}
