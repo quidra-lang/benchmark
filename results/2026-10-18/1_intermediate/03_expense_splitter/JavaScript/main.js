@@ -510,11 +510,16 @@ class Splitter {
             }
         } else if (name === "CATEGORY") {
             output.push("CATEGORY");
-            const categories = [...new Set(this.expenses.map(expense => expense.category))];
-            categories.sort((a, b) => this.spent(b) - this.spent(a) || lex(a, b));
-            const total = this.expenses.reduce((sum, expense) => sum + expense.total, 0);
+            const categoryTotals = new Map();
+            let total = 0;
+            for (const expense of this.expenses) {
+                categoryTotals.set(expense.category, (categoryTotals.get(expense.category) ?? 0) + expense.total);
+                total += expense.total;
+            }
+            const categories = [...categoryTotals.keys()];
+            categories.sort((a, b) => categoryTotals.get(b) - categoryTotals.get(a) || lex(a, b));
             for (const category of categories) {
-                const spent = this.spent(category);
+                const spent = categoryTotals.get(category);
                 output.push("  " + category + " " + money(spent) + " " + percent(spent, total));
                 const totals = new Map();
                 for (const expense of this.expenses.filter(expense => expense.category === category)) {
