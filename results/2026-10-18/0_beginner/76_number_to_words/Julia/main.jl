@@ -1,0 +1,26 @@
+function small_words(number)
+    units = split("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen")
+    tens = split("zero ten twenty thirty forty fifty sixty seventy eighty ninety")
+    parts = String[]
+    hundreds,remainder = divrem(number,100)
+    hundreds > 0 && push!(parts,string(units[hundreds+1]," hundred"))
+    if remainder >= 20
+        phrase = String(tens[div(remainder,10)+1])
+        remainder%10 > 0 && (phrase *= string("-",units[remainder%10+1]))
+        push!(parts,phrase)
+    elseif remainder > 0
+        push!(parts,units[remainder+1])
+    end
+    return join(parts," ")
+end
+function number_words(number)
+    number == 0 && return "zero"
+    thousands,remainder = divrem(number,1000)
+    parts = String[]
+    thousands > 0 && push!(parts,string(small_words(thousands)," thousand"))
+    remainder > 0 && push!(parts,small_words(remainder))
+    return join(parts," ")
+end
+for number in [0,13,40,100,568,71000,300019,999999]
+    println(number,": ",number_words(number))
+end
