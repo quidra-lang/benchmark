@@ -292,11 +292,16 @@ class Ledger {
         for (var i = 0; i < ns.length; i++) out.writeln('${ns[i].padRight(l)}${cells[i].map((s) => '  ${s.padLeft(w)}').join()}');
       case 'CATEGORY':
         out.writeln('CATEGORY');
-        final categories = expenses.map((e) => e.category).toSet().toList();
-        categories.sort((a, b) => spent(a) != spent(b) ? spent(b).compareTo(spent(a)) : a.compareTo(b));
-        final total = expenses.fold(0, (sum, e) => sum + e.total);
+        final categoryTotals = <String, int>{};
+        for (final e in expenses) {
+          categoryTotals[e.category] = (categoryTotals[e.category] ?? 0) + e.total;
+        }
+        final categories = categoryTotals.keys.toList();
+        categories.sort((a, b) => categoryTotals[a] != categoryTotals[b]
+            ? categoryTotals[b]!.compareTo(categoryTotals[a]!) : a.compareTo(b));
+        final total = categoryTotals.values.fold(0, (sum, value) => sum + value);
         for (final c in categories) {
-          final categoryTotal = spent(c), shares = {for (final n in names()) n: 0};
+          final categoryTotal = categoryTotals[c]!, shares = {for (final n in names()) n: 0};
           for (final e in expenses.where((e) => e.category == c)) {
             for (var i = 0; i < e.participants.length; i++) shares[e.participants[i].name] = shares[e.participants[i].name]! + e.shares[i];
           }

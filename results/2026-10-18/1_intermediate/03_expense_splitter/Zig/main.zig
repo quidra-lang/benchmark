@@ -541,20 +541,34 @@ const Ledger = struct {
             }
         } else if (equal(op, "CATEGORY")) {
             try out.writeAll("CATEGORY\n");
-            var categories: std.ArrayList([]const u8) = .empty;
+            const CategoryTotal = struct { name: []const u8, value: i64 };
+            var totals = std.StringHashMap(i64).init(self.gpa);
+            defer totals.deinit();
             var total: i64 = 0;
-            for (self.expenses.items) |e| { try addUnique(self.gpa, &categories, e.category); total += e.total; }
+            for (self.expenses.items) |e| {
+                const entry = try totals.getOrPut(e.category);
+                if (!entry.found_existing) entry.value_ptr.* = 0;
+                entry.value_ptr.* += e.total;
+                total += e.total;
+            }
+            var categories: std.ArrayList(CategoryTotal) = .empty;
+            var iterator = totals.iterator();
+            while (iterator.next()) |entry| {
+                try categories.append(self.gpa, .{ .name = entry.key_ptr.*, .value = entry.value_ptr.* });
+            }
             for (1..@max(1, categories.items.len)) |i| {
                 const entry = categories.items[i];
                 var j = i;
-                while (j > 0 and (self.spent(entry) > self.spent(categories.items[j - 1]) or
-                    (self.spent(entry) == self.spent(categories.items[j - 1]) and less(entry, categories.items[j - 1])))) {
-                    categories.items[j] = categories.items[j - 1]; j -= 1;
+                while (j > 0 and (entry.value > categories.items[j - 1].value or
+                    (entry.value == categories.items[j - 1].value and less(entry.name, categories.items[j - 1].name)))) {
+                    categories.items[j] = categories.items[j - 1];
+                    j -= 1;
                 }
                 categories.items[j] = entry;
             }
-            for (categories.items) |category| {
-                const subtotal = self.spent(category);
+            for (categories.items) |cached| {
+                const category = cached.name;
+                const subtotal = cached.value;
                 try out.print("  {s} {s} {s}\n", .{ category, try money(self.gpa, subtotal), try percentage(self.gpa, subtotal, total) });
                 const shares = try self.gpa.alloc(i64, self.members.items.len);
                 @memset(shares, 0);
