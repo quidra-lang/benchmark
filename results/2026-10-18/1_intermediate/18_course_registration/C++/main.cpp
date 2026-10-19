@@ -399,16 +399,9 @@ class Registrar {
 
     [[noreturn]] void fail_request(const Decision& decision,
                                    const Student& s, const Course& c) {
-        throw CommandError(decision.kind + " " + s.id + " " + c.code +
-                           (decision.extra.empty() ? "" : " " +
-                            [&]() {
-                                string extras;
-                                for (const string& value : decision.extra) {
-                                    if (!extras.empty()) extras += " ";
-                                    extras += value;
-                                }
-                                return extras;
-                            }()));
+        string message = words(decision.kind, s.id, c.code);
+        for (const string& extra : decision.extra) message += " " + extra;
+        throw CommandError(message);
     }
 
     void enroll(Student& s, Course& c) {
