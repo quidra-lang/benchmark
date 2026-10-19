@@ -575,25 +575,25 @@ function run_command!(r::Restaurant, command::String, a::Vector{String})
         amounts = check_amounts(check)
         amounts.due == 0 && fail("nothing to split for table $(a[1])")
         if a[2] == "EVEN"
-            count = parse(Int, a[3])
-            count > check.size && fail("cannot split table $(a[1]) $count ways")
-            emit!(r, "SPLIT", "table", check.table.number, "EVEN", count,
+            ways = parse(Int, a[3])
+            ways > check.size && fail("cannot split table $(a[1]) $ways ways")
+            emit!(r, "SPLIT", "table", check.table.number, "EVEN", ways,
                   "due", money(amounts.due))
-            quotient, remainder = divrem(amounts.due, count)
-            for index in 1:count
+            quotient, remainder = divrem(amounts.due, ways)
+            for index in 1:ways
                 emit!(r, "PAYER", index, money(quotient + (index <= remainder ? 1 : 0)))
             end
         else
             check.paid > 0 && fail("table $(a[1]) has payments")
-            values = seat_totals(check)
-            discounts = allocate(values, check.discount)
-            after = Dict(seat => subtotal - discounts[seat] for (seat, subtotal) in values)
+            seatValues = seat_totals(check)
+            discounts = allocate(seatValues, check.discount)
+            after = Dict(seat => subtotal - discounts[seat] for (seat, subtotal) in seatValues)
             services = allocate(after, check.size >= 6 ? 18 : 0)
             taxes = allocate(after, 8)
             emit!(r, "SPLIT", "table", check.table.number, "BYSEAT",
                   "total", money(amounts.total))
-            for seat in sort(collect(keys(values)))
-                emit!(r, "SEAT", seat, "subtotal", money(values[seat]),
+            for seat in sort(collect(keys(seatValues)))
+                emit!(r, "SEAT", seat, "subtotal", money(seatValues[seat]),
                       "discount", money(discounts[seat]), "service", money(services[seat]),
                       "tax", money(taxes[seat]),
                       "total", money(after[seat]+services[seat]+taxes[seat]))
