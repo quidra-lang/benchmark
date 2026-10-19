@@ -1,8 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
-#include <stdint.h>
 
 typedef long long Amount;
 
@@ -137,11 +135,6 @@ static const char *clock_text(int minutes) {
     char *target = buffer[used++ % 32];
     snprintf(target, 16, "%02d:%02d", minutes / 60, minutes % 60);
     return target;
-}
-static int clock_minutes(const char *text) {
-    int hour = 0, minute = 0;
-    sscanf(text, "%d:%d", &hour, &minute);
-    return hour * 60 + minute;
 }
 static int valid_clock(const char *text, int *time) {
     int hour = 0, minute = 0;
@@ -639,7 +632,7 @@ static void config(void) {
                rate_text(tiers.rows[i].rate));
 }
 
-static void execute(char **a, int n) {
+static void execute(char **a) {
     const char *command = a[0];
     if (!strcmp(command, "SET")) {
         int setting = setting_index(a[1]);
@@ -909,7 +902,7 @@ int main(void) {
              token = strtok(NULL, " \t\r\n")) {
             args[count++] = token;
         }
-        if (count) execute(args, count);
+        if (count) execute(args);
     }
     return 0;
 }
