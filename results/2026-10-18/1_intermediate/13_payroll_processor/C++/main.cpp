@@ -1,15 +1,16 @@
 #include <algorithm>
 #include <array>
-#include <cstdint>
+#include <cctype>
 #include <iomanip>
+#include <iterator>
 #include <iostream>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -589,7 +590,9 @@ class Payroll {
             if (cmd == "TIME") {
                 int start = time_check(a[2]), end = time_check(a[3]);
                 if (start >= end) fail("invalid shift " + a[2] + "-" + a[3]);
-                vector<Shift> shifts = person.shifts[day];
+                auto shift_it = person.shifts.find(day);
+                vector<Shift> shifts = shift_it == person.shifts.end() ?
+                    vector<Shift>{} : shift_it->second;
                 sort(shifts.begin(), shifts.end(), [](const Shift& a, const Shift& b) {
                     return a.start < b.start;
                 });
