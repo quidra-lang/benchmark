@@ -289,14 +289,14 @@ class ExactSearch {
         }
         const Item item = ordered[index];
         set<int> seen_loads;
-        for (Bin& bin : live) {
-            int old_load = bin.load;
+        for (int i = 0; i < count; ++i) {
+            int old_load = live[i].load;
             if (!seen_loads.insert(old_load).second || old_load + item.size > capacity)
                 continue;
-            bin.put(item);
+            live[i].put(item);
             visit(index + 1);
-            bin.items.pop_back();
-            bin.load = old_load;
+            live[i].items.pop_back();
+            live[i].load = old_load;
             if (!status.empty()) return;
         }
         if (count + 1 < static_cast<int>(best.size())) {
@@ -845,7 +845,9 @@ class PackingLab {
                 fail("BAD RECT " + to_string(rectangle.id));
         }
         sort(ordered.begin(), ordered.end(), [](const Rectangle& a, const Rectangle& b) {
-            return tie(a.height, a.width, b.id) > tie(b.height, b.width, a.id);
+            if (a.height != b.height) return a.height > b.height;
+            if (a.width != b.width) return a.width > b.width;
+            return a.id < b.id;
         });
         int area = 0;
         for (const Rectangle& rectangle : ordered)
