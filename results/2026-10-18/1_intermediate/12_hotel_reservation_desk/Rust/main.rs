@@ -785,7 +785,7 @@ impl HotelDesk {
                                 !self.blocks.contains(&(day, **number)) &&
                                 !self.occupied.contains_key(&(day, **number)))
                         .map(|(number, _)| *number).collect();
-                    let suffix: String = free.iter().map(|number| format!(" {number}")).collect();
+                    let suffix = free.iter().map(|number| format!(" {number}")).collect::<Vec<_>>().concat();
                     self.emit(format!("{} free {}{suffix}", date_weekday(day), free.len()), true);
                 }
             }
@@ -836,7 +836,7 @@ impl HotelDesk {
                     );
                     if let Some(upcoming) = self.reservations.values()
                         .filter(|r| r.status == "booked" && r.room == room.number)
-                        .min_by_key(|r| (r.arrival, &r.id)) {
+                        .min_by(|a, b| (a.arrival, &a.id).cmp(&(b.arrival, &b.id))) {
                         line += &format!(" next {} {}", upcoming.id, date_text(upcoming.arrival));
                     }
                     self.emit(line, true);
@@ -845,7 +845,7 @@ impl HotelDesk {
             "LIST" => {
                 let mut reservations: Vec<Reservation> = self.reservations.values()
                     .filter(|r| r.status == a[0]).cloned().collect();
-                reservations.sort_by_key(|r| (r.arrival, &r.id));
+                reservations.sort_by(|a, b| (a.arrival, &a.id).cmp(&(b.arrival, &b.id)));
                 self.emit(format!("LIST {} {}", a[0], reservations.len()), false);
                 for reservation in reservations {
                     let line = format!("{} {} room {} {} -> {}",
