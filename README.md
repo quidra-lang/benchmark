@@ -44,20 +44,126 @@ The source code must follow these rules:
 
 **Task B — Understanding (`taskB.txt` and `list-up.txt`)**
 
-`taskB.txt` describes a question about the program created for Task A. The question can involve either **code comprehension** (such as explaining an algorithm, tracing data, or identifying program behavior) or **modification analysis** (explaining which parts would need to change and how to satisfy proposed requirements).
+`taskB.txt` contains a question about the program created for Task A. Questions fall into two categories:
+- **Code comprehension:** Explain an algorithm, trace data, or identify program behavior or side effects.
+- **Modification analysis:** Explain which parts would need to change and how to satisfy proposed new requirements.
 
-Assume the existing program is bug-free. Task B does not implement the proposed modification or alter the Task A source code.
+Task B does not implement modifications or alter the Task A source code.
 
-`list-up.txt` contains the smallest set of source-code lines that an LLM would need to read to accurately answer the question. Select these lines from the existing Task A program. Task B measures only the tokens in the selected source code; natural-language explanations and modified source code are not counted.
+#### Assumptions
 
-Rules for `list-up.txt`:
-- **Minimal selection:** Include a line only when its omission would prevent an accurate answer based on the remaining selected lines. Avoid unnecessary context.
-- **Exact extraction:** Copy complete lines exactly as written in the Task A source code. Do not rewrite, shorten, reformat, combine, or extract only part of a line.
-- **Dependencies:** Include relevant declarations, types, operations, and dependencies whenever they are necessary to answer the question.
-- **Modification analysis:** Include all source lines needed to identify and explain the required changes, including affected callers or dependent code when necessary. Do not include unaffected code unless it is required to understand the changes.
-- **Order and uniqueness:** Include each selected line only once per source location. Group lines from the same file together, preserving their original order within that file. No particular order between files is required.
-- **Scope:** Include only lines written for Task A. Do not include implementations of standard-library functions or external libraries. Do not add filenames, headings, or separators.
-- **Consistency:** Apply the same selection criteria across all programming languages, regardless of their syntax or code structure.
+- Every Task A program compiles successfully, is bug-free, and satisfies all Task A requirements.
+- There is no need to verify build success, implementation correctness, potential bugs, or compliance with Task A requirements.
+- Do not read additional source code solely to investigate hypothetical bugs or implementations that would contradict these assumptions.
+- The language specification and known semantics of its standard library may be used as prior knowledge when understanding the program.
+
+#### Purpose of `list-up.txt`
+
+`list-up.txt` contains the set of complete lines from the Task A source code with the **minimum token count necessary** for an LLM to answer the Task B question accurately.
+
+The answer must be derivable from the selected source code together with the language specification and known standard-library semantics. Do not omit source evidence that is required to understand the program merely because Task A requirements describe the intended behavior.
+
+Task B counts only tokens in the selected source code. The question, natural-language answer, modified source code, and selection rationale are excluded from the token count.
+
+#### Selection rules for `list-up.txt`
+
+1. **Information necessary to answer the question**
+
+   Select only lines that contain information necessary to answer the question accurately.
+
+   Include relevant declarations, types, branches, operations, data dependencies, and call relationships when needed.
+
+   Exclude code that is unrelated to the answer or merely provides extra context.
+
+2. **Use guarantees of the programming language**
+
+   Facts guaranteed by static typing, mutation authority, value semantics, control flow, or other language rules may be inferred directly from those guarantees.
+
+   When declarations, types, or call syntax establish a fact needed for the answer, do not include a function's implementation merely to reconfirm that fact.
+
+   Do not assume properties that the language does not guarantee. If necessary behavior or side effects cannot be established, inspect the relevant implementation.
+
+   Apply these principles equally to all programming languages.
+
+3. **Trace dependencies only as needed**
+
+   Include a called function's implementation only when the already selected code and available language semantics are insufficient to answer the question accurately.
+
+   Even when a called implementation is necessary, select only the lines required for the answer; do not automatically include the entire function.
+
+   Use the documented semantics of standard and external libraries without including their implementation source code.
+
+4. **Modification analysis**
+
+   Select lines sufficient to identify the changes needed for the proposed requirement and explain how to make them.
+
+   Include affected callers or dependent processing when they are necessary to explain the changes.
+
+   Do not include unaffected code that is unnecessary to understand the proposed change.
+
+   Do not produce modified source code.
+
+5. **Minimum token count**
+
+   When several line sets permit an accurate answer, choose the set with the lowest token count.
+
+   Do not stop after removing unnecessary lines from a single candidate. Consider alternative sets of lines that convey the same necessary information using fewer tokens.
+
+   Minimize the token count reported by `metric/tokenizer.py`, not the number of source lines.
+
+6. **Preserve the original code**
+
+   Copy complete lines verbatim from the Task A source code.
+
+   Do not extract part of a line, abbreviate, rewrite, reformat, or combine lines.
+
+   Preserve their original text and indentation.
+
+7. **Order and uniqueness**
+
+   Include each selected source line only once per source location.
+
+   Preserve the original order of selected lines within each source file.
+
+   For a program with multiple files, group selected lines from the same file together. No specific order between files is required.
+
+   If identical lines occur at different source locations and both are necessary, include both.
+
+   Do not add filenames, line numbers, headings, or separators to `list-up.txt`.
+
+8. **Fairness across languages**
+
+   Use the same answer requirements and selection criteria for every programming language.
+
+   Different required source lines due to language-specific syntax, types, or semantics are acceptable.
+
+   Do not change the criteria for deciding whether a line is necessary to favor or disadvantage a particular language.
+
+#### Validate the selection
+
+Before finalizing `list-up.txt`:
+
+1. Break the Task B question into individual answer requirements. Define a common set of requirements before selecting excerpts for individual languages.
+2. Verify that every requirement can be answered accurately using only the selected source code and the language specification and known standard-library semantics.
+3. Review each selected line and remove it if doing so does not lose information necessary for the answer.
+4. Consider whether a different set of lines can support the same answer with fewer tokens.
+5. Independently verify that the final excerpt alone supports a correct explanation of every required fact.
+
+During independent validation, do not use Task A implementation details absent from the excerpt. The stated assumptions, language specification, and known standard-library semantics remain available.
+
+#### Count tokens
+
+Measure the finalized `list-up.txt` with the repository's `metric/tokenizer.py`:
+
+```sh
+python3 metric/tokenizer.py --html "$LANG_DIR/taskB.html" "$LANG_DIR/list-up.txt"
+```
+
+Record the resulting number of tokens as `taskB` in that topic's `tokens.csv`.
+
+Use the generated `taskB.html` to inspect token boundaries in the selected code.
+
+**The Task B metric is the minimum number of source-code tokens needed to answer the question accurately.**
 
 ### 2.2. Update affected programs
 
