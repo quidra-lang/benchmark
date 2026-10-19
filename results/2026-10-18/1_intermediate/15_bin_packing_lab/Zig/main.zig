@@ -529,7 +529,7 @@ const Lab = struct {
                 return std.mem.order(u8, a.method, b.method) == .lt;
             }
         };
-        std.mem.sort(Packing, &packings, {}, Ctx.less);
+        std.mem.sort(Packing, packings[0..], {}, Ctx.less);
         try self.out.print("COMPARE k={d} L1={d} L2={d}\n", .{ parameter, lower.l1, lower.l2 });
         for (packings) |result| {
             try self.out.print("{s} bins={d} gap={d} waste={d} inspections={d}\n", .{
