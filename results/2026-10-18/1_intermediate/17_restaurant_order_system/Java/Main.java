@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.StringJoiner;
@@ -27,12 +28,12 @@ public final class Main {
     }
 
     private static String money(long amount) {
-        return amount / 100 + "." + String.format("%02d", amount % 100);
+        return amount / 100 + "." + String.format(Locale.ROOT, "%02d", amount % 100);
     }
 
     private static String clock(int elapsed) {
         int minutes = elapsed + 660;
-        return String.format("%02d:%02d", minutes / 60, minutes % 60);
+        return String.format(Locale.ROOT, "%02d:%02d", minutes / 60, minutes % 60);
     }
 
     private static long rounded(long amount, int rate) {
