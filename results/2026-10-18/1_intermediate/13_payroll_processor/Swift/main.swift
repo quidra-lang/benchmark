@@ -242,7 +242,7 @@ final class Payroll {
     private func breakdown(_ employee: Employee, _ period: Int) -> [Int] {
         let first = weekly(employee, 2 * period - 1).0
         let second = weekly(employee, 2 * period).0
-        return zip(first, second).map(+)
+        return zip(first, second).map { $0.0 + $0.1 }
     }
 
     private func calculate(_ employee: Employee, _ period: Int) -> Stub? {
