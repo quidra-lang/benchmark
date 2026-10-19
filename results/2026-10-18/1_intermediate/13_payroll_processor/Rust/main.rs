@@ -78,7 +78,7 @@ fn progressive(table: &BTreeMap<i64, i64>, amount: i64) -> i64 {
             break;
         }
         let upper = pairs.get(i + 1).map_or(amount, |next| next.0);
-        numerator += rate * (amount.min(upper) - lower);
+        numerator += *rate * (amount.min(upper) - *lower);
     }
     numerator / 10000
 }
