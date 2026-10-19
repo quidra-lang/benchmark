@@ -590,7 +590,7 @@ class Othello:
             return
         if command == "LOAD":
             valid = len(args) == 2 and len(args[0]) == 64 and \
-                    set(args[0]) <= set(".BW") and args[1] in "BW"
+                    set(args[0]) <= set(".BW") and args[1] in ("B", "W")
             if not valid:
                 self.emit("ERROR", "bad board")
                 return
