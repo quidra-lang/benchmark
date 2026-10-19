@@ -14,7 +14,13 @@ clock <- function(time) {
   sprintf("%02d:%02d", as.integer(floor(minutes / 60)), as.integer(minutes %% 60))
 }
 rounded <- function(amount, rate) floor((amount * rate + 50) / 100)
-fail <- function(reason) stop(reason, call. = FALSE)
+fail <- function(reason) {
+  condition <- structure(
+    list(message = reason, call = NULL),
+    class = c("CommandError", "error", "condition")
+  )
+  stop(condition)
+}
 
 state <- object(
   now = 0, tables = list(), servers = list(), waiting = list(),
@@ -402,7 +408,7 @@ run_command <- function(command, a) {
     if (!is.null(item$stock) && item$stock < quantity)
       fail(paste("only", item$stock, item$name, "left"))
     happy <- item$course == "DRINK" && state$now < state$happy_end
-    price <- item$price - if (happy) rounded(item$price, state$happy_rate) else 0
+    price <- item$price - (if (happy) rounded(item$price, state$happy_rate) else 0)
     line <- object(
       id = length(state$lines) + 1, check = check, seat = seat,
       item = item$name, quantity = quantity, station = item$station,
@@ -656,14 +662,7 @@ for (i in seq_len(count)) {
   arguments <- words[-1]
   tryCatch(
     run_command(command, arguments),
-    error = function(e) {
-      reason <- conditionMessage(e)
-      if (grepl("^(unknown table|table |check for table |unknown line |#|unknown station |unknown course |unknown item |seat |only |no table for party |no server on duty|nothing |fire |station |cannot split|is already |[A-Za-z0-9_]+ is already|[A-Za-z0-9_]+ is not waiting)", reason)) {
-        emit("ERROR", reason)
-      } else {
-        stop(e)
-      }
-    }
+    CommandError = function(e) emit("ERROR", conditionMessage(e))
   )
 }
 if (length(state$output)) cat(paste(state$output, collapse = "\n"), "\n", sep = "")
