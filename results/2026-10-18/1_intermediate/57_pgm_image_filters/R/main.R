@@ -154,8 +154,12 @@ circle_points <- function(cx,cy,radius) {
       cx-a,cy-b, cx-b,cy-a, cx+b,cy-a, cx+a,cy-b
     ),ncol=2L,byrow=TRUE)
     b <- b+1L
-    if(err<0L) err <- err+2L*b+1L
-    else { a <- a-1L; err <- err+2L*(b-a)+1L }
+    if(err<0L) {
+      err <- err+2L*b+1L
+    } else {
+      a <- a-1L
+      err <- err+2L*(b-a)+1L
+    }
   }
   do.call(rbind,points)
 }
@@ -170,8 +174,11 @@ disc_points <- function(img,outline) {
     if(lo>hi) next
     points[[length(points)+1L]] <- cbind(lo:hi,rep.int(y,hi-lo+1L))
   }
-  if(!length(points)) matrix(integer(0),ncol=2L)
-  else do.call(rbind,points)
+  if(!length(points)) {
+    matrix(integer(0),ncol=2L)
+  } else {
+    do.call(rbind,points)
+  }
 }
 flood_points <- function(img,x,y) {
   wanted <- get_pixel(img,x,y)
