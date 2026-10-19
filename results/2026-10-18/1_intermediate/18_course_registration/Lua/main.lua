@@ -108,7 +108,7 @@ local function prerequisite(code, text)
             tokens[#tokens + 1] = symbol
             position = position + 1
         else
-            local word = text:match("^([A-Z0-9]+)", position)
+            local word = text:sub(position):match("^([A-Z0-9]+)")
             if not word or not (course_word(word) or year_word(word)) then
                 fail("invalid prereq " .. code)
             end
