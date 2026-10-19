@@ -47,7 +47,8 @@ end
 local function variation(values)
     local squares = 0
     for _, value in ipairs(values) do squares = squares + value * value end
-    return #values * squares - sum(values) ^ 2
+    local total = sum(values)
+    return #values * squares - total * total
 end
 
 local function tokens(line)
@@ -679,7 +680,8 @@ local function command(name, args)
         sim.stages[index].lot = lot
         emit("BATCH", args[1], lot)
     elseif name == "CAPACITY" then
-        local index = args[1] == "PLANT" and nil or stage_index(args[1])
+        local index
+        if args[1] ~= "PLANT" then index = stage_index(args[1]) end
         local capacity = args[2] == "OFF" and nil or tonumber(args[2])
         if capacity and capacity > 10000 then fail("invalid capacity " .. args[2]) end
         if index == nil then sim.plant_capacity = capacity
