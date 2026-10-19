@@ -24,10 +24,6 @@ fn descItem(_: void, a: Item, b: Item) bool {
 fn ascNumber(_: void, a: i64, b: i64) bool {
     return a < b;
 }
-fn maxInt(a: i64, b: i64) i64 {
-    return @max(a, b);
-}
-
 const Item = struct {
     id: usize,
     size: i64,
@@ -571,7 +567,9 @@ const Lab = struct {
             if (label == 0) return self.fail("BAD ASSIGNMENT");
             labels[i] = label;
             var has = false;
-            for (distinct.items) |existing| if (existing == label) { has = true; break; };
+            for (distinct.items) |existing| {
+                if (existing == label) { has = true; break; }
+            }
             if (!has) try distinct.append(self.gpa, label);
         }
         std.mem.sort(i64, distinct.items, {}, ascNumber);
@@ -648,10 +646,12 @@ const Lab = struct {
             try self.out.print("MACHINE {d} load={d} items=", .{ index + 1, bin.load });
             if (bin.items.items.len == 0) {
                 try self.out.writeAll("-");
-            } else for (bin.items.items, 0..) |item, j| {
-                if (j > 0) try self.out.writeAll(" ");
-                try self.out.print("{d}:{d}", .{ item.id, item.size });
-            };
+            } else {
+                for (bin.items.items, 0..) |item, j| {
+                    if (j > 0) try self.out.writeAll(" ");
+                    try self.out.print("{d}:{d}", .{ item.id, item.size });
+                }
+            }
             try self.out.writeAll("\n");
         }
     }
@@ -718,7 +718,9 @@ const Lab = struct {
         for (pieces.items, 0..) |piece, index| remaining[index] = piece.demand;
         while (true) {
             var pending = false;
-            for (remaining[0..pieces.items.len]) |need| if (need > 0) { pending = true; break; };
+            for (remaining[0..pieces.items.len]) |need| {
+                if (need > 0) { pending = true; break; }
+            }
             if (!pending) break;
             var chosen: usize = 0;
             var best: i64 = -1;
@@ -826,7 +828,7 @@ const Lab = struct {
                 chosen = shelves.items.len;
                 try shelves.append(self.gpa, .{ .bottom = bottom, .height = rect.h });
             }
-            var shelf = &shelves.items[chosen.?];
+            const shelf = &shelves.items[chosen.?];
             const placement: Placement = .{
                 .rect = rect, .x = shelf.used, .y = shelf.bottom, .w = rect.w, .h = rect.h,
             };
@@ -936,7 +938,7 @@ const Lab = struct {
                 try sheets.append(self.gpa, sheet);
                 chosen_free = 0;
             }
-            var sheet = &sheets.items[chosen_sheet.?];
+            const sheet = &sheets.items[chosen_sheet.?];
             const free = sheet.free.orderedRemove(chosen_free);
             const was_rotated = !(rect.w <= free.w and rect.h <= free.h);
             const pw = if (was_rotated) rect.h else rect.w;
@@ -980,10 +982,12 @@ const Lab = struct {
             try self.out.writeAll("FREE ");
             if (sheet.free.items.len == 0) {
                 try self.out.writeAll("none");
-            } else for (sheet.free.items, 0..) |free, j| {
-                if (j > 0) try self.out.writeAll(" ");
-                try self.out.print("{d},{d},{d}x{d}", .{ free.x, free.y, free.w, free.h });
-            };
+            } else {
+                for (sheet.free.items, 0..) |free, j| {
+                    if (j > 0) try self.out.writeAll(" ");
+                    try self.out.print("{d},{d},{d}x{d}", .{ free.x, free.y, free.w, free.h });
+                }
+            }
             try self.out.writeAll("\n");
             try self.drawing(width, height, sheet.placed.items);
         }
