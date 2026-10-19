@@ -477,12 +477,20 @@ func distanceMap(im *Image, threshold int) *Image {
 	w, h := im.Width, im.Height
 	far := w + h
 	distances := make([]int, len(im.Pixels))
+	hasBackground := false
 	for i, p := range im.Pixels {
 		if p < threshold {
+			hasBackground = true
 			distances[i] = 0
 		} else {
 			distances[i] = far
 		}
+	}
+	if !hasBackground {
+		for i := range distances {
+			distances[i] = im.Maxval
+		}
+		return im.withPixels(distances)
 	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {

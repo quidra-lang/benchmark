@@ -410,8 +410,14 @@ end
 local function distance_map(image, threshold)
     local w, h = image.width, image.height
     local far, distances = w + h, {}
+    local has_background = false
     for i, pixel in ipairs(image.pixels) do
+        if pixel < threshold then has_background = true end
         distances[i] = pixel < threshold and 0 or far
+    end
+    if not has_background then
+        for i = 1, #distances do distances[i] = image.maxval end
+        return image:with_pixels(distances)
     end
     for y = 0, h - 1 do
         for x = 0, w - 1 do
