@@ -45,8 +45,7 @@ local function usage_charge(plan, units)
             end
         else
             if units <= lower then break end
-            local upper = last or tier.upper == nil and units or tier.upper
-            if last then upper = units end
+            local upper = (last or tier.upper == nil) and units or tier.upper
             total = total + (math.min(units, upper) - lower) * tier.unit + tier.flat
             if last or tier.upper == nil then break end
             lower = tier.upper
