@@ -159,7 +159,7 @@ private fun policyOrder(
         val policy = stage.policy
         val args = policy.args
         val currentWeek = week + 1
-        val signal = signal(index, currentWeek, incoming)
+        val observed = signal(index, currentWeek, incoming)
         return when (policy.name) {
             "FIXED" -> args[0].toLong()
             "PASS" -> incoming[index]
@@ -174,7 +174,7 @@ private fun policyOrder(
                 maxOf(0L, args[1].toLong() + forecast * delay - position)
             }
             "SMOOTH" -> maxOf(
-                0L, signal + Math.floorDiv(args[1].toLong() - position, args[0].toLong())
+                0L, observed + Math.floorDiv(args[1].toLong() - position, args[0].toLong())
             )
             else -> {
                 val theta = args[0]
@@ -182,7 +182,7 @@ private fun policyOrder(
                 val beta = args[2]
                 val target = args[3]
                 stage.expected = Math.floorDiv(
-                    100L * theta * signal + (100 - theta) * stage.expected, 100L
+                    100L * theta * observed + (100 - theta) * stage.expected, 100L
                 )
                 val net = stage.inventory - stage.backlog
                 maxOf(
@@ -499,9 +499,9 @@ private class Game(settings: List<List<String>>) {
             }
             emit(
                 stageNames[index], "max_inv", maximumInventory,
-                "week", if (maximumInventory != 0) inventories.indexOf(maximumInventory) + 1 else "-",
+                "week", if (maximumInventory != 0L) inventories.indexOf(maximumInventory) + 1 else "-",
                 "max_back", maximumBacklog, "week",
-                if (maximumBacklog != 0) backlogs.indexOf(maximumBacklog) + 1 else "-",
+                if (maximumBacklog != 0L) backlogs.indexOf(maximumBacklog) + 1 else "-",
                 "longest_stockout", if (longest != 0) "$longest weeks $bestStart-$bestEnd" else "0"
             )
         }
@@ -523,7 +523,7 @@ private class Game(settings: List<List<String>>) {
         val leads = mutableListOf<Int>()
         for ((t, r) in stage.records.withIndex()) {
             ordered += r.order
-            if (r.order == 0) continue
+            if (r.order == 0L) continue
             count++
             for (u in t + 1 until stage.records.size) {
                 if (cumulative[u] >= ordered) {
@@ -581,9 +581,9 @@ private class Game(settings: List<List<String>>) {
                     val records = s.step()
                     for ((index, r) in records.withIndex()) {
                         cost += r.cost
-                        if (r.before == 0 && r.backlog > 0) {
+                        if (r.before == 0L && r.backlog > 0L) {
                             emit("STOCKOUT", stageNames[index], "week", s.week, "backlog", r.backlog)
-                        } else if (r.before > 0 && r.backlog == 0) {
+                        } else if (r.before > 0L && r.backlog == 0L) {
                             emit("RECOVER", stageNames[index], "week", s.week)
                         }
                     }
@@ -714,7 +714,7 @@ private class Game(settings: List<List<String>>) {
                         "avg_inv", decimal(stage.records.sumOf { it.inventory }, s.week.toLong(), 2),
                         "avg_back", decimal(stage.records.sumOf { it.backlog }, s.week.toLong(), 2),
                         "orders", orders.sum(), "min", orders.min(), "max", orders.max(),
-                        "zero_weeks", orders.count { it == 0 }
+                        "zero_weeks", orders.count { it == 0L }
                     )
                 }
             }
@@ -779,12 +779,9 @@ private class Game(settings: List<List<String>>) {
                     emit("HISTOGRAM", a[0], a[1], "width", width, "weeks", "1-${s.week}")
                     for (bucket in histogram.keys.min()..histogram.keys.max()) {
                         val count = histogram[bucket] ?: 0
-                        emit(
-                            "${bucket * width}..${bucket * width + width - 1}", count,
-                            if (count != 0) " " + "*".repeat(count) else ""
-                        )
-                        if (count != 0) output[output.lastIndex] = output.last().replace("  *", " *")
-                        else output[output.lastIndex] = output.last().trimEnd()
+                        val range = "${bucket * width}..${bucket * width + width - 1}"
+                        if (count > 0) emit(range, count, "*".repeat(count))
+                        else emit(range, count)
                     }
                 }
             }
