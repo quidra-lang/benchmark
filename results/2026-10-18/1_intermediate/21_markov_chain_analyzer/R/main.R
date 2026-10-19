@@ -292,11 +292,11 @@ regular_exponent <- function(chain) {
 chains <- new.env(parent = emptyenv(), hash = TRUE)
 output <- character()
 emit <- function(...) {
-  values <- unlist(list(...), use.names = FALSE)
-  text <- vapply(values, function(x) {
-    if (is.numeric(x)) text_number(x) else as.character(x)
-  }, character(1))
-  output <<- c(output, paste(text, collapse = " "))
+  fields <- lapply(list(...), function(part) {
+    if (is.numeric(part)) vapply(part, text_number, character(1))
+    else as.character(part)
+  })
+  output <<- c(output, paste(unlist(fields, use.names = FALSE), collapse = " "))
 }
 display_matrix <- function(names, values, label = "ROW") {
   emit("STATES", names)
