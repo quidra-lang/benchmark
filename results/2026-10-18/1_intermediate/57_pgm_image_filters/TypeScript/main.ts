@@ -327,7 +327,7 @@ function componentText(image: Image, threshold: number, group: Point[]): string 
 
 function distanceMap(image: Image, threshold: number): Image {
   const w = image.width, h = image.height;
-  const far = w + h;
+  const far = Math.max(w + h, image.maxval);
   const distances = image.pixels.map(pixel => pixel < threshold ? 0 : far);
   for (let y = 0; y < h; ++y) {
     for (let x = 0; x < w; ++x) {
