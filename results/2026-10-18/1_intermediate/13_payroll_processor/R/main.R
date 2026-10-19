@@ -227,7 +227,7 @@ calculate <- function(payroll, employee, period) {
     if (is.null(sales)) sales <- 0
     stub$sales <- sales
     stub$commission <- progressive(payroll$tiers, stub$sales)
-    stub$earnings <- stub$commission + if (employee$active) employee$base else 0
+    stub$earnings <- stub$commission + (if (employee$active) employee$base else 0)
   }
 
   stub$bonus <- employee$bonus
@@ -427,8 +427,11 @@ journal <- function(payroll, period) {
   for (row in rows) {
     amount <- number(row[3])
     emit(payroll, 2, row[1], row[2], money(amount))
-    if (row[1] == "debit") debit <- debit + amount
-    else credit <- credit + amount
+    if (row[1] == "debit") {
+      debit <- debit + amount
+    } else {
+      credit <- credit + amount
+    }
   }
   emit(payroll, 2, "total", "debit", money(debit), "credit", money(credit))
 }
