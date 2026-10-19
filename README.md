@@ -29,11 +29,11 @@ Do not update an unapproved language merely because a newer version exists.
 
 ## 2. Benchmark execution
 
-### 2.1. Dataset and tasks
+### 2.1. Dataset
 
-Under `results/YYYY-MM-DD`, each programming language has three difficulty levels, with 100 programming topics per level. Each topic has two tasks:
+Under `results/YYYY-MM-DD`, each programming language has three difficulty levels, with 100 programming topics per level. Each topic has two tasks: Task A (Generation) and Task B (Understanding).
 
-**Task A — Generation (`taskA.txt`)**
+### 2.2. Task A — Generation (`taskA.txt`)
 
 `taskA.txt` describes a program to create. The corresponding source code is stored within that language's directory.
 
@@ -42,7 +42,11 @@ The source code must follow these rules:
 - When several implementations are reasonable, prefer one that is concise and conveys the required meaning clearly. Do not shorten code at the expense of important type information or clarity. For example, do not use C++ `auto` indiscriminately when an explicit type would better communicate the program's meaning.
 - Preserve the intended behavior of the task.
 
-**Task B — Understanding (`taskB.txt` and `list-up.txt`)**
+#### Review and testing
+
+**Compiling, building, executing, or testing Task A programs is not required, either after initial creation or after updates.** Review the source code for consistency with the target language version and the intended task behavior. This review does not establish or imply that a program has actually been compiled, run, tested, or verified.
+
+### 2.3. Task B — Understanding (`taskB.txt` and `list-up.txt`)
 
 `taskB.txt` contains a question about the program created for Task A. Questions fall into two categories:
 - **Code comprehension:** Explain an algorithm, trace data, or identify program behavior or side effects.
@@ -52,7 +56,8 @@ Task B does not implement modifications or alter the Task A source code.
 
 #### Assumptions
 
-- Every Task A program compiles successfully, is bug-free, and satisfies all Task A requirements.
+For **Task B analysis only**, treat every Task A program **as if** it compiles successfully, is bug-free, and satisfies all Task A requirements. **This is an assumption for evaluating code understanding, not a guarantee or a claim that compilation, execution, or correctness has actually been checked.**
+
 - There is no need to verify build success, implementation correctness, potential bugs, or compliance with Task A requirements.
 - Do not read additional source code solely to investigate hypothetical bugs or implementations that would contradict these assumptions.
 - The language specification and known semantics of its standard library may be used as prior knowledge when understanding the program.
@@ -151,21 +156,9 @@ Before finalizing `list-up.txt`:
 
 During independent validation, do not use Task A implementation details absent from the excerpt. The stated assumptions, language specification, and known standard-library semantics remain available.
 
-#### Count tokens
-
-Measure the finalized `list-up.txt` with the repository's `metric/tokenizer.py`:
-
-```sh
-python3 metric/tokenizer.py --html "$LANG_DIR/taskB.html" "$LANG_DIR/list-up.txt"
-```
-
-Record the resulting number of tokens as `taskB` in that topic's `tokens.csv`.
-
-Use the generated `taskB.html` to inspect token boundaries in the selected code.
-
 **The Task B metric is the minimum number of source-code tokens needed to answer the question accurately.**
 
-### 2.2. Update affected programs
+### 2.4. Update affected programs
 
 For each language approved in Step 1:
 
@@ -173,11 +166,11 @@ For each language approved in Step 1:
 2. For each affected topic, make the minimum necessary changes to its source code and, where needed, its `list-up.txt` file. Ensure the Task B selection still accurately reflects the source lines required to answer a comprehension question or identify and understand a requested modification.
 3. Leave all unaffected topics unchanged.
 
-Building and executing programs is not required for this benchmark update. Nevertheless, review edited code for consistency with the target language version and the intended task behavior.
+**Building, running, and testing updated Task A programs are not required.** Review edited code for consistency with the target language version and the intended task behavior, without presenting that review as proof of compilation or correctness.
 
-### 2.3. Recalculate token counts
+### 2.5. Recalculate token counts
 
-For each language/topic updated in Step 2.2, use `metric/tokenizer.py` to recalculate:
+For each language/topic updated in Step 2.4, use `metric/tokenizer.py` to recalculate:
 
 - `taskA`: tokens in the complete Task A source code for that topic.
 - `taskB`: tokens in that topic's `list-up.txt` file.
