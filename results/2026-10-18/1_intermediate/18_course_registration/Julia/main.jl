@@ -59,7 +59,6 @@ peek(parser::Parser) =
 
 function parse_factor!(parser::Parser)
     token = peek(parser)
-    token == "" || token in ("&", "|", ")") && throw(ParseError())
     if token == "" || token in ("&", "|", ")")
         throw(ParseError())
     end
@@ -180,8 +179,8 @@ end
 
 function Student(id::String, year::Int, limit::Int,
                  records::Dict{String, Tuple{Char, Int}})
-    passed = Dict(code => grade for (code, (grade, _)) in records
-                  if grade in ('A', 'B', 'C'))
+    passed = Dict{String, Char}(code => grade for (code, (grade, _)) in records
+                                if grade in ('A', 'B', 'C'))
     Student(id, year, limit, records, passed, Set{String}(),
             Set{String}(), 0, Tuple{Int, String}[])
 end
