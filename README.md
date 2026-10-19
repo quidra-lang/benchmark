@@ -44,15 +44,20 @@ The source code must follow these rules:
 
 **Task B — Understanding (`taskB.txt` and `list-up.txt`)**
 
-`taskB.txt` describes a question about the program created for Task A. The question can involve either **code comprehension** (such as explaining an algorithm, tracing data, or identifying program behavior) or **modification analysis** (explaining which parts would need to change and how to satisfy proposed requirements). Assume the existing program is bug-free. Task B does not implement the proposed modification or alter the Task A source code.
+`taskB.txt` describes a question about the program created for Task A. The question can involve either **code comprehension** (such as explaining an algorithm, tracing data, or identifying program behavior) or **modification analysis** (explaining which parts would need to change and how to satisfy proposed requirements).
 
-`list-up.txt` contains the smallest set of lines from the Task A source code that an LLM would need to read to accurately answer the comprehension question or explain the changes required by a proposed modification. Select these lines from the existing program. Task B measures only the source code that must be read; the explanation is not counted, and no modified source code is produced.
+Assume the existing program is bug-free. Task B does not implement the proposed modification or alter the Task A source code.
+
+`list-up.txt` contains the smallest set of source-code lines that an LLM would need to read to accurately answer the question. Select these lines from the existing Task A program. Task B measures only the tokens in the selected source code; natural-language explanations and modified source code are not counted.
 
 Rules for `list-up.txt`:
-- Include all source lines necessary to answer the comprehension question or understand the requested modification, including relevant declarations or dependencies when needed.
-- Include each required line only once, preferably in source order.
-- Include only code written for Task A. Do not include the implementations of standard-library functions or external libraries.
-- Do not include unrelated lines merely to provide additional context.
+- **Minimal selection:** Include a line only when its omission would prevent an accurate answer based on the remaining selected lines. Avoid unnecessary context.
+- **Exact extraction:** Copy complete lines exactly as written in the Task A source code. Do not rewrite, shorten, reformat, combine, or extract only part of a line.
+- **Dependencies:** Include relevant declarations, types, operations, and dependencies whenever they are necessary to answer the question.
+- **Modification analysis:** Include all source lines needed to identify and explain the required changes, including affected callers or dependent code when necessary. Do not include unaffected code unless it is required to understand the changes.
+- **Order and uniqueness:** Include each selected line only once per source location. Group lines from the same file together, preserving their original order within that file. No particular order between files is required.
+- **Scope:** Include only lines written for Task A. Do not include implementations of standard-library functions or external libraries. Do not add filenames, headings, or separators.
+- **Consistency:** Apply the same selection criteria across all programming languages, regardless of their syntax or code structure.
 
 ### 2.2. Update affected programs
 
