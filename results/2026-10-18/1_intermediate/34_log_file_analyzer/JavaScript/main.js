@@ -219,9 +219,10 @@ function apdexScore(records, threshold) {
   const tolerating = records.filter(r => r.status < 500 && r.latency > threshold && r.latency <= 4 * threshold).length;
   const frustrated = records.length - satisfied - tolerating;
   const points = 2 * satisfied + tolerating, total = 2 * records.length;
-  const ratio = points / total;
-  const rating = ratio >= 0.94 ? 'excellent' : ratio >= 0.85 ? 'good' :
-    ratio >= 0.70 ? 'fair' : ratio >= 0.50 ? 'poor' : 'unacceptable';
+  const rating = points * 100 >= 94 * total ? 'excellent' :
+    points * 100 >= 85 * total ? 'good' :
+    points * 100 >= 70 * total ? 'fair' :
+    points * 100 >= 50 * total ? 'poor' : 'unacceptable';
   return {count: records.length, satisfied, tolerating, frustrated, points, total,
     notation: decimal(points, total, 3), rating};
 }
@@ -405,7 +406,7 @@ class LogAnalyzer {
           'frustrated', overall.frustrated);
         const paths = [...grouped(records, 'path')].map(([path, rows]) => ({path, ...apdexScore(rows, threshold)}));
         paths.sort((x, y) => x.points * y.total - y.points * x.total || y.count - x.count ||
-          x.path.localeCompare(y.path, 'en'));
+          (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
         for (const row of paths) this.emit(row.path, row.notation, row.rating, row.count);
         break;
       }
