@@ -306,7 +306,7 @@ impl Payroll {
                     let salary = employee.base / 26;
                     let leave = employee.leave.iter()
                         .filter(|day| period_of(**day) == period &&
-                                !self.holidays.contains(day)).count() as i64;
+                                !self.holidays.contains(*day)).count() as i64;
                     let deduction = leave * (employee.base / 260);
                     set(&mut stub, "salary", salary);
                     set(&mut stub, "leave", leave);
@@ -342,10 +342,11 @@ impl Payroll {
         let taxable = (base_taxable - employee.allowances * self.setting("ALLOWANCE")).max(0);
         deduct(&mut stub, &mut remaining, "federal",
                progressive(&self.brackets, taxable) + employee.extra);
+        let wage_base = value(&stub, "W");
         deduct(&mut stub, &mut remaining, "supplemental",
-               (value(&stub, "W") - base_taxable) * self.setting("SUPP") / 10000);
+               (wage_base - base_taxable) * self.setting("SUPP") / 10000);
         deduct(&mut stub, &mut remaining, "state",
-               value(&stub, "W") * self.setting("STATE") / 10000);
+               wage_base * self.setting("STATE") / 10000);
 
         let medicare_wages = gross - value(&stub, "health");
         let social_wages = medicare_wages.min((self.setting("SSBASE") - value(ytd, "Y")).max(0));
@@ -382,15 +383,16 @@ impl Payroll {
         let eligible_match = value(&stub, "retirement")
             .min(gross * self.setting("MATCHMAX") / 10000);
         set(&mut stub, "match", eligible_match * self.setting("MATCH") / 10000);
-        set(&mut stub, "employer",
+        let employer_total: i64 =
             ["employer_social", "employer_medicare", "unemployment", "match"]
-                .iter().map(|f| value(&stub, f)).sum());
+                .iter().map(|f| value(&stub, f)).sum();
+        set(&mut stub, "employer", employer_total);
         if employee.kind == "HOURLY" {
-            set(&mut stub, "accrued",
-                (960 - employee.pto_balance)
-                    .min((value(&stub, "R") + value(&stub, "O") + value(&stub, "D")) / 20));
+            let minutes = value(&stub, "R") + value(&stub, "O") + value(&stub, "D");
+            set(&mut stub, "accrued", (960 - employee.pto_balance).min(minutes / 20));
         }
-        set(&mut stub, "pto_balance", employee.pto_balance + value(&stub, "accrued"));
+        let post_pto = employee.pto_balance + value(&stub, "accrued");
+        set(&mut stub, "pto_balance", post_pto);
         Some(Calculation { stub, balances })
     }
 
