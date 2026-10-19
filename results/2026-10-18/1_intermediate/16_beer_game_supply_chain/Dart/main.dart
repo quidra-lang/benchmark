@@ -796,9 +796,7 @@ class Game {
           final keys = bins.keys.toList()..sort();
           for (var bucket = keys.first; bucket <= keys.last; bucket++) {
             final count = bins[bucket] ?? 0;
-            final parts = <Object>['${bucket * width}-${bucket * width + width - 1}', count];
-            // A histogram interval is written using two dots, unlike a date range.
-            parts[0] = '${bucket * width}..${bucket * width + width - 1}';
+            final parts = <Object>['${bucket * width}..${bucket * width + width - 1}', count];
             if (count != 0) parts.add(List.filled(count, '*').join());
             emit(parts);
           }
