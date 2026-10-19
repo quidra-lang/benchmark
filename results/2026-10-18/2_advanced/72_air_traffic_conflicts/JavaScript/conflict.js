@@ -1,6 +1,7 @@
 "use strict";
 
 const {position} = require("./trajectory");
+const asciiCompare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 
 function lossInterval(p, w, t1, t2, dh, dv) {
   const [px, py, pz] = p, [wx, wy, wz] = w;
@@ -78,8 +79,8 @@ function allConflicts(trajectories, dh, dv) {
     }
   }
   result.sort((a, b) =>
-    a.start - b.start || a.pair[0].localeCompare(b.pair[0]) ||
-    a.pair[1].localeCompare(b.pair[1])
+    a.start - b.start || asciiCompare(a.pair[0], b.pair[0]) ||
+    asciiCompare(a.pair[1], b.pair[1])
   );
   return result;
 }

@@ -10,6 +10,7 @@ const {priorityOrder, manoeuvres, propose} = require("./resolution");
 const {decimal: d, named, chart, signed, writeLines} = require("./report");
 
 const PI = 3.141592653589793;
+const asciiCompare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const entries = object => Object.entries(object);
 const names = object => Object.keys(object).sort();
 
@@ -40,7 +41,7 @@ function blockers(changed, candidate, partner, trajectories, ignored, start, par
     }
   }
   blocked.sort((a, b) =>
-    a.start - b.start || a.name.localeCompare(b.name)
+    a.start - b.start || asciiCompare(a.name, b.name)
   );
   return blocked.length ? blocked[0] : null;
 }
@@ -545,7 +546,7 @@ function alerts(trajectories, conflicts, params) {
       });
     }
   }
-  found.sort((a, b) => a.first - b.first || a.pair.localeCompare(b.pair));
+  found.sort((a, b) => a.first - b.first || asciiCompare(a.pair, b.pair));
   const detected = new Set();
   for (const item of found) {
     const indices = [];
