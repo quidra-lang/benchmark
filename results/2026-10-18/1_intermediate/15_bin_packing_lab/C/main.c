@@ -722,7 +722,10 @@ static void run_cutstock(char **args, int count) {
     int k = 0;
     for (int j = 0; j < piece_count; ++j)
         for (int n = 0; n < pieces[j].demand; ++n)
-            comparison[k++] = (Item){k, pieces[j].size};
+            {
+                comparison[k] = (Item){k + 1, pieces[j].size};
+            k++;
+            }
     Packing firstfit = pack(comparison, k, cap, FIRSTFIT, 0);
     printf("FFD bars=%d waste=%d\n", firstfit.count, firstfit.count * cap - quantity);
     printf("LOWER bars=%d\n", ceiling(quantity, cap));
