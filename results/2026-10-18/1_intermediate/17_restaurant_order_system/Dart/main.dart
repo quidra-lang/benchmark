@@ -824,11 +824,10 @@ class Restaurant {
 }
 
 void main() {
-  final lines = stdin.readAsLinesSync();
-  final count = int.parse(lines.first);
+  final count = int.parse(stdin.readLineSync()!);
   final restaurant = Restaurant();
-  for (var i = 1; i <= count; i++) {
-    restaurant.execute(lines[i]);
+  for (var i = 0; i < count; i++) {
+    restaurant.execute(stdin.readLineSync()!);
   }
   stdout.write(restaurant.result());
 }
