@@ -1,774 +1,760 @@
-"""Deterministic SAT benchmarking: CNF, DPLL, enumeration and encodings.
+"""Deterministic SAT solver, model enumeration, and combinatorial puzzle reports.
 
-Run from the topic directory: python3 Python/main.py
-The inputs are under input/, and the four outputs are under output/.
-All choices and traversal orders are defined by taskA.txt.
+Run as python3 Python/main.py from the task directory. The complete solver
+reads input/jobs.txt, input/graphs.txt, and referenced input/*.cnf files;
+its only external outputs are the four required files in output/.
 """
 
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 import re
 
 from cnf_io import model_lines, read_dimacs, valid_number
-from dpll import search
+from dpll import run_round
 from encoders import (
-    canonical_coloring, coloring, decode_positions, pigeon,
-    queen_variants, queens,
+    canonical_coloring, coloring, pigeon, positions, queens,
+    queens_symmetries,
 )
-from preprocess import preprocess, removed_count
+from preprocess import preprocess
 from report import (
-    frequency, heading, number_list, queen_board, record,
+    frequency, heading, named, number_list, queens_board,
     save_lines, save_paragraphs,
 )
 
 
-COMMAND_ARGS = {
+COMMANDS = ("SOLVE", "ENUM", "CORE", "QUEENS", "PIGEON", "COLOR", "CHROMATIC")
+ARGUMENT_TYPES = {
     "SOLVE": ("file",),
     "ENUM": ("file", "limit"),
     "CORE": ("file",),
-    "QUEENS": ("queens", "limit"),
-    "PIGEON": ("pigeons", "holes", "limit"),
-    "COLOR": ("graph", "colors", "limit"),
-    "CHROMATIC": ("graph", "colors"),
+    "QUEENS": ("small", "limit"),
+    "PIGEON": ("small", "small", "limit"),
+    "COLOR": ("graph", "color", "limit"),
+    "CHROMATIC": ("graph", "color"),
 }
-COMMAND_ORDER = tuple(COMMAND_ARGS)
 NAME = re.compile(r"[a-z0-9_]{1,20}\Z")
-FILE = re.compile(r"[a-z0-9_]{1,20}\.cnf\Z")
-RANGES = {
-    "queens": (1, 8), "pigeons": (1, 8), "holes": (1, 8),
-    "colors": (1, 6), "limit": (1, 200),
-}
-STATISTICS = (
-    "decisions", "propagations", "conflicts", "max_depth",
-)
 
 
-def read_jobs():
-    """Assign job numbers only to nonempty and noncomment lines."""
-    lines = Path("input/jobs.txt").read_text(encoding="ascii").splitlines()
-    jobs = []
-    for line in lines:
-        if line and not line.startswith("#"):
-            jobs.append({
-                "number": len(jobs) + 1,
-                "text": line,
-                "words": line.split(" "),
-            })
-    return jobs
-
-
-def read_graphs():
-    """Preserve each graph's first edge-format error and its file line."""
-    lines = Path("input/graphs.txt").read_text(encoding="ascii").splitlines()
+def load_graphs(filename="input/graphs.txt"):
+    """Preserve first edge-error per graph with absolute source-line numbers."""
     graphs = {}
+    lines = Path(filename).read_text(encoding="ascii").splitlines()
     current = None
-    seen = set()
     for lineno, line in enumerate(lines, 1):
         if current is None:
             if not line or line.startswith("#"):
                 continue
-            _, name, size = line.split(" ")
+            label, graph_name, count = line.split(" ")
+            if label != "GRAPH":
+                raise ValueError("malformed graph block")
             current = {
-                "name": name, "vertices": int(size),
-                "edges": [], "error": None,
+                "name": graph_name, "vertices": int(count),
+                "edges": [], "invalid": None,
             }
-            seen = set()
             continue
         if line == "END":
             current["edges"].sort()
             graphs[current["name"]] = current
             current = None
             continue
-        if current["error"] is not None:
+        if current["invalid"] is not None:
             continue
-        fields = line.split(" ")
-        if len(fields) != 2 or not all(valid_number(word) for word in fields):
+        tokens = line.split(" ")
+        reason = None
+        if len(tokens) != 2 or not all(valid_number(t) for t in tokens):
             reason = "bad edge line"
         else:
-            a, b = map(int, fields)
-            if not (1 <= a <= current["vertices"]
-                    and 1 <= b <= current["vertices"]):
+            first, second = map(int, tokens)
+            if not (1 <= first <= current["vertices"]
+                    and 1 <= second <= current["vertices"]):
                 reason = "vertex out of range"
-            elif a == b:
+            elif first == second:
                 reason = "self loop"
-            elif tuple(sorted((a, b))) in seen:
+            elif (min(first, second), max(first, second)) in current["edges"]:
                 reason = "duplicate edge"
             else:
-                reason = None
-        if reason is not None:
-            current["error"] = f"{reason} at line {lineno}"
-            continue
-        edge = tuple(sorted((a, b)))
-        seen.add(edge)
-        current["edges"].append(edge)
+                current["edges"].append(
+                    (min(first, second), max(first, second))
+                )
+        if reason:
+            current["invalid"] = f"{reason} at line {lineno}"
     return graphs
 
 
+def load_jobs(filename="input/jobs.txt"):
+    """Discard blank/comment lines while retaining exact original job text."""
+    jobs = []
+    for raw in Path(filename).read_text(encoding="ascii").splitlines():
+        if not raw or raw.startswith("#"):
+            continue
+        tokens = raw.split(" ")
+        jobs.append({
+            "number": len(jobs) + 1,
+            "text": raw,
+            "command": tokens[0],
+            "args": tokens[1:],
+        })
+    return jobs
+
+
 def validate_job(job, graphs):
-    """Check command, arity and each argument from left to right."""
-    words = job["words"]
-    command, arguments = words[0], words[1:]
-    if command not in COMMAND_ARGS:
+    """Validate syntax and arguments in the prescribed left-to-right order."""
+    command = job["command"]
+    if command not in ARGUMENT_TYPES:
         return f"unknown command {command}"
-    names = COMMAND_ARGS[command]
-    if len(names) != len(arguments):
+    types = ARGUMENT_TYPES[command]
+    if len(job["args"]) != len(types):
         return "wrong argument count"
-    parsed = {}
-    for name, argument in zip(names, arguments):
-        if name == "file":
-            if FILE.fullmatch(argument) is None:
+    for argument, kind in zip(job["args"], types):
+        if kind == "file":
+            if not argument.endswith(".cnf") or NAME.fullmatch(argument[:-4]) is None:
                 return f"bad file name {argument}"
-            parsed[name] = argument
-        elif name == "graph":
+        elif kind == "graph":
             if argument not in graphs:
                 return f"unknown graph {argument}"
-            if graphs[argument]["error"] is not None:
-                return f"invalid graph {argument}: {graphs[argument]['error']}"
-            parsed[name] = argument
+            if graphs[argument]["invalid"] is not None:
+                return f"invalid graph {argument}: {graphs[argument]['invalid']}"
         else:
             if not valid_number(argument):
                 return f"bad number {argument}"
             number = int(argument)
-            low, high = RANGES[name]
-            if not low <= number <= high:
+            maximum = {"small": 8, "color": 6, "limit": 200}[kind]
+            if not 1 <= number <= maximum:
                 return f"out of range {argument}"
-            parsed[name] = number
-    job["command"] = command
-    job["args"] = parsed
-    if command in ("SOLVE", "ENUM", "CORE"):
-        try:
-            variable_count, clauses = read_dimacs(parsed["file"])
-        except ValueError as error:
-            return str(error)
-        job["formula"] = (variable_count, clauses)
     return None
 
 
-def empty_search_stats():
+def greedy_coloring(graph):
+    """Degree-descending greedy coloring, ties in vertex-number order."""
+    degree = [0] * (graph["vertices"] + 1)
+    neighbors = defaultdict(set)
+    for a, b in graph["edges"]:
+        degree[a] += 1
+        degree[b] += 1
+        neighbors[a].add(b)
+        neighbors[b].add(a)
+    order = sorted(range(1, graph["vertices"] + 1),
+                   key=lambda vertex: (-degree[vertex], vertex))
+    colors = [0] * (graph["vertices"] + 1)
+    for vertex in order:
+        used = {colors[n] for n in neighbors[vertex] if colors[n]}
+        candidate = 1
+        while candidate in used:
+            candidate += 1
+        colors[vertex] = candidate
+    return colors[1:]
+
+
+def solved_statistics():
     return {
-        "decisions": 0,
-        "propagations": 0,
-        "conflicts": 0,
-        "max_depth": 0,
+        "decisions": 0, "propagations": 0,
+        "conflicts": 0, "max_depth": 0,
     }
 
 
-def combine_search_stats(left, right):
-    for name in ("decisions", "propagations", "conflicts"):
-        left[name] += right[name]
-    left["max_depth"] = max(left["max_depth"], right["max_depth"])
-    return left
-
-
-def solve(variable_count, original, limit):
-    """Preprocess once and run deterministic DPLL rounds with blocking clauses."""
-    simplified = preprocess(variable_count, original, limit == 1)
-    statistics = empty_search_stats()
-    result = {
-        "variables": variable_count,
-        "clauses": original,
-        "preprocess": simplified,
-        "models": [],
-        "stats": statistics,
-        "rounds": 0,
-        "trace": [],
-        "stop": None,
-    }
-    if simplified["empty"] is not None:
-        result["stop"] = "preprocess"
-        result["status"] = "UNSAT"
-        return result
-    blocked = []
-    active = simplified["active"]
-    while len(result["models"]) < limit:
-        clauses = simplified["clauses"] + blocked
-        model, search_stats = search(variable_count, clauses)
-        result["rounds"] += 1
-        if result["rounds"] == 1:
-            result["trace"] = search_stats["trace"]
-        combine_search_stats(statistics, search_stats)
-        if model is None:
-            result["stop"] = "all"
-            break
-        complete = [False] * (variable_count + 1)
-        for x in range(1, variable_count + 1):
-            complete[x] = simplified["fixed"].get(x, model[x])
-        result["models"].append(complete)
-        blocked.append([-x if complete[x] else x for x in active])
-    if result["stop"] is None:
-        result["stop"] = "limit"
-    result["status"] = "SAT" if result["models"] else "UNSAT"
-    return result
-
-
-def clause_truth_count(clause, assignment):
-    return sum(
-        assignment[abs(literal)] == (literal > 0) for literal in clause
+def accumulate_stats(destination, source):
+    """Sums event counters, but keeps the largest encountered search depth."""
+    for key in ("decisions", "propagations", "conflicts"):
+        destination[key] += source[key]
+    destination["max_depth"] = max(
+        destination["max_depth"], source["max_depth"]
     )
 
 
-def model_is_valid(clauses, assignment):
-    return all(clause_truth_count(clause, assignment) > 0 for clause in clauses)
+def solve_formula(variables, original_clauses, limit):
+    """Preprocess once, then repeat watched-literal search with blocking."""
+    preparation = preprocess(variables, original_clauses, limit == 1)
+    models = []
+    stats = solved_statistics()
+    rounds = 0
+    trace = []
+    blocking = []
+    if preparation["empty_clause"] is not None:
+        stop = "preprocess"
+    else:
+        while len(models) < limit:
+            rounds += 1
+            model, events, counters = run_round(
+                variables, preparation["clauses"] + blocking
+            )
+            if rounds == 1:
+                trace = events
+            accumulate_stats(stats, counters)
+            if model is None:
+                stop = "all"
+                break
+            for variable, value in preparation["fixed"].items():
+                model[variable] = value
+            models.append(model)
+            blocking.append([
+                -variable if model[variable] else variable
+                for variable in preparation["active"]
+            ])
+        else:
+            stop = "limit"
+    return {
+        "variables": variables,
+        "clauses": original_clauses,
+        "models": models,
+        "status": "SAT" if models else "UNSAT",
+        "rounds": rounds,
+        "stop": stop,
+        "trace": trace,
+        "stats": stats,
+        "preparation": preparation,
+        "removed": preparation["counts"]["removed"],
+    }
 
 
-def analyze_models(result):
-    """Verification, literal frequencies, safe flips, diversity and backbone."""
-    original = result["clauses"]
-    models = result["models"]
+def true_literal(model, literal):
+    return model[abs(literal)] if literal > 0 else not model[abs(literal)]
+
+
+def satisfies(model, clauses):
+    return all(
+        any(true_literal(model, literal) for literal in clause)
+        for clause in clauses
+    )
+
+
+def analyze_models(solution):
+    """Original-clause verification, flips, diversity and backbone."""
+    models = solution["models"]
     if not models:
         return None
-    bad = None
+    clauses = solution["clauses"]
+    count = solution["variables"]
+    failure = None
     for model_number, model in enumerate(models, 1):
-        for clause_number, clause in enumerate(original, 1):
-            if clause_truth_count(clause, model) == 0:
-                bad = (model_number, clause_number)
+        for clause_number, clause in enumerate(clauses, 1):
+            if not any(true_literal(model, lit) for lit in clause):
+                failure = model_number, clause_number
                 break
-        if bad is not None:
+        if failure:
             break
     first = models[0]
-    frequencies = frequency([
-        clause_truth_count(clause, first) for clause in original
-    ])
-    flips = []
-    for x in range(1, result["variables"] + 1):
-        flipped = first.copy()
-        flipped[x] = not flipped[x]
-        if model_is_valid(original, flipped):
-            flips.append(x)
-    distances = []
-    for i, left in enumerate(models):
-        for right in models[i + 1:]:
-            distances.append(
-                sum(left[x] != right[x] for x in range(1, len(left)))
+    true_distribution = [
+        sum(true_literal(first, lit) for lit in clause)
+        for clause in clauses
+    ]
+    safe = []
+    for variable in range(1, count + 1):
+        inverted = first.copy()
+        inverted[variable] = not inverted[variable]
+        if satisfies(inverted, clauses):
+            safe.append(variable)
+    diversity = []
+    for i in range(len(models)):
+        for j in range(i + 1, len(models)):
+            diversity.append(
+                sum(models[i][v] != models[j][v]
+                    for v in range(1, count + 1))
             )
-    backbone = []
-    if result["stop"] == "all":
-        for x in range(1, result["variables"] + 1):
-            if all(model[x] == first[x] for model in models):
-                backbone.append(x if first[x] else -x)
+    backbone = [
+        variable if first[variable] else -variable
+        for variable in range(1, count + 1)
+        if all(model[variable] == first[variable] for model in models)
+    ]
     return {
-        "bad": bad,
-        "true_frequency": frequencies,
-        "safe_flips": flips,
-        "distances": distances,
+        "failure": failure,
+        "true_distribution": true_distribution,
+        "safe": safe,
+        "diversity": diversity,
         "backbone": backbone,
     }
 
 
-def extract_core(variable_count, original):
-    """Sequential deletion-based unsatisfiable core using full solver calls."""
-    numbers = list(range(1, len(original) + 1))
-    decisions = conflicts = 0
-    for clause_number in range(1, len(original) + 1):
-        trial = [original[i - 1] for i in numbers if i != clause_number]
-        attempt = solve(variable_count, trial, 1)
-        decisions += attempt["stats"]["decisions"]
-        conflicts += attempt["stats"]["conflicts"]
-        if attempt["status"] == "UNSAT":
-            numbers.remove(clause_number)
-    return {
-        "clauses": numbers, "decisions": decisions, "conflicts": conflicts,
-    }
-
-
-def graph_degrees(graph):
-    degrees = [0] * (graph["vertices"] + 1)
-    for first, second in graph["edges"]:
-        degrees[first] += 1
-        degrees[second] += 1
-    return degrees
-
-
-def greedy_coloring(graph):
-    """Degree-descending graph coloring, breaking ties by original vertex."""
-    degrees = graph_degrees(graph)
-    order = sorted(range(1, graph["vertices"] + 1),
-                   key=lambda x: (-degrees[x], x))
-    adjacency = {x: set() for x in range(1, graph["vertices"] + 1)}
-    for a, b in graph["edges"]:
-        adjacency[a].add(b)
-        adjacency[b].add(a)
-    colors = [0] * (graph["vertices"] + 1)
-    for vertex in order:
-        unavailable = {colors[other] for other in adjacency[vertex]}
-        choice = 1
-        while choice in unavailable:
-            choice += 1
-        colors[vertex] = choice
-    return colors[1:]
-
-
-def graph_details(graph):
-    degrees = graph_degrees(graph)
-    assigned = greedy_coloring(graph)
-    return {
-        "vertices": graph["vertices"],
-        "edges": len(graph["edges"]),
-        "max_degree": max(degrees[1:]),
-        "greedy": max(assigned),
-        "greedy_colors": assigned,
-    }
-
-
-def prepare_formula(job, graphs):
-    command, args = job["command"], job["args"]
-    if "formula" in job:
-        return job["formula"]
-    if command == "QUEENS":
-        return queens(args["queens"])
-    if command == "PIGEON":
-        return pigeon(args["pigeons"], args["holes"])
-    if command == "COLOR":
-        return coloring(graphs[args["graph"]], args["colors"])
-    raise ValueError("CHROMATIC requires repeated attempts")
-
-
-def run_job(job, graphs):
-    """Execute the solver or repeated chromatic attempts for one valid job."""
-    command, args = job["command"], job["args"]
-    if command != "CHROMATIC":
-        variable_count, original = prepare_formula(job, graphs)
-        limit = 1 if command in ("SOLVE", "CORE") else args["limit"]
-        result = solve(variable_count, original, limit)
-        result["analysis"] = analyze_models(result)
-        if command == "CORE" and result["status"] == "UNSAT":
-            result["core"] = extract_core(variable_count, original)
-        if command == "COLOR":
-            result["graph_info"] = graph_details(graphs[args["graph"]])
-        result["job"] = job
-        return result
-    graph = graphs[args["graph"]]
-    attempts = []
-    stats = empty_search_stats()
-    rounds = 0
-    removed = 0
-    for color_count in range(1, args["colors"] + 1):
-        variable_count, original = coloring(graph, color_count)
-        attempt = solve(variable_count, original, 1)
-        attempts.append(attempt)
-        combine_search_stats(stats, attempt["stats"])
-        rounds += attempt["rounds"]
-        removed += removed_count(attempt["preprocess"])
-        if attempt["status"] == "SAT":
-            break
-    last = attempts[-1]
-    result = {
-        **last,
-        "job": job,
-        "analysis": analyze_models(last),
-        "attempts": attempts,
-        "chromatic": len(attempts) if last["status"] == "SAT" else "-",
-        "graph_info": graph_details(graph),
-        "stats": stats,
-        "rounds": rounds,
-        "removed_override": removed,
-    }
-    return result
-
-
-def count_removed(result):
-    return result.get("removed_override",
-                      removed_count(result["preprocess"]))
-
-
-def statistics_row(result):
-    job, stats = result["job"], result["stats"]
-    return [
-        job["number"], job["command"], result["status"],
-        result["variables"], len(result["clauses"]), count_removed(result),
-        stats["decisions"], stats["propagations"], stats["conflicts"],
-        stats["max_depth"], len(result["models"]), result["rounds"],
-    ]
-
-
-def graph_summary_line(details):
-    return "graph " + record(
-        vertices=details["vertices"], edges=details["edges"],
-        max_degree=details["max_degree"], greedy=details["greedy"],
-    )
-
-
-def model_analysis_lines(result):
-    """Common verification and safe-flip lines for SAT jobs."""
-    data = result["analysis"]
-    if data is None:
-        return []
-    if data["bad"] is not None:
-        first, second = data["bad"]
-        lines = [f"verify failed model={first} clause={second}"]
-    else:
-        lines = [
-            "verify " + record(
-                ok="", models=len(result["models"]), clauses=len(result["clauses"]),
-                true_literals=data["true_frequency"]
-            ).replace("ok= ", "ok ", 1)
+def unsat_core(variables, clauses):
+    """Deletion-based irreducible core; execute exactly M tests."""
+    remaining = set(range(1, len(clauses) + 1))
+    decisions = 0
+    conflicts = 0
+    for removed_number in range(1, len(clauses) + 1):
+        candidates = [
+            clause for number, clause in enumerate(clauses, 1)
+            if number in remaining and number != removed_number
         ]
-    flips = data["safe_flips"]
-    lines.append(
-        "flips " + record(safe=len(flips), variables=number_list(flips))
+        test = solve_formula(variables, candidates, 1)
+        decisions += test["stats"]["decisions"]
+        conflicts += test["stats"]["conflicts"]
+        if test["status"] == "UNSAT":
+            remaining.discard(removed_number)
+    return {
+        "clauses": sorted(remaining),
+        "decisions": decisions,
+        "conflicts": conflicts,
+    }
+
+
+def execute_chromatic(job, graphs):
+    """Find the first color count with a model, aggregating all attempts."""
+    graph = graphs[job["args"][0]]
+    bound = int(job["args"][1])
+    attempts = []
+    summary = solved_statistics()
+    total_rounds = 0
+    removed_total = 0
+    last = None
+    for colors in range(1, bound + 1):
+        count, clauses = coloring(graph, colors)
+        solution = solve_formula(count, clauses, 1)
+        solution["colors"] = colors
+        attempts.append(solution)
+        accumulate_stats(summary, solution["stats"])
+        total_rounds += solution["rounds"]
+        removed_total += solution["removed"]
+        last = solution
+        if solution["status"] == "SAT":
+            break
+    job["attempts"] = attempts
+    job["chromatic"] = last["colors"] if last["models"] else None
+    job["solution"] = last
+    job["aggregate_stats"] = summary
+    job["aggregate_rounds"] = total_rounds
+    job["aggregate_removed"] = removed_total
+    job["colors"] = last["colors"]
+    job["graph"] = graph
+
+
+def execute_standard(job, graphs):
+    """Read or encode the formula, choose its limit, and solve."""
+    command = job["command"]
+    args = job["args"]
+    if command in ("SOLVE", "ENUM", "CORE"):
+        variables, clauses = read_dimacs(args[0])
+        limit = int(args[1]) if command == "ENUM" else 1
+    elif command == "QUEENS":
+        variables, clauses = queens(int(args[0]))
+        limit = int(args[1])
+    elif command == "PIGEON":
+        variables, clauses = pigeon(int(args[0]), int(args[1]))
+        limit = int(args[2])
+    else:
+        job["graph"] = graphs[args[0]]
+        job["colors"] = int(args[1])
+        variables, clauses = coloring(job["graph"], job["colors"])
+        limit = int(args[2])
+    solution = solve_formula(variables, clauses, limit)
+    job["solution"] = solution
+    job["aggregate_stats"] = solution["stats"]
+    job["aggregate_rounds"] = solution["rounds"]
+    job["aggregate_removed"] = solution["removed"]
+    if command == "CORE" and solution["status"] == "UNSAT":
+        job["core"] = unsat_core(variables, clauses)
+
+
+def execute_jobs(jobs, graphs):
+    for job in jobs:
+        error = validate_job(job, graphs)
+        if error is not None:
+            job["error"] = error
+            continue
+        try:
+            if job["command"] == "CHROMATIC":
+                execute_chromatic(job, graphs)
+            else:
+                execute_standard(job, graphs)
+        except ValueError as exception:
+            job["error"] = str(exception)
+            continue
+        job["analysis"] = analyze_models(job["solution"])
+    return jobs
+
+
+def summarize_formula(variables, clauses):
+    lengths = [len(clause) for clause in clauses]
+    return named(
+        variables=variables, clauses=len(clauses),
+        literals=sum(lengths), lengths=frequency(lengths),
     )
+
+
+def graph_summary(graph):
+    degree = Counter()
+    for a, b in graph["edges"]:
+        degree[a] += 1
+        degree[b] += 1
+    greedy = greedy_coloring(graph)
+    return named(
+        vertices=graph["vertices"], edges=len(graph["edges"]),
+        max_degree=max(degree.values(), default=0),
+        greedy=max(greedy),
+    )
+
+
+def preprocessing_report(preparation):
+    """Render all ordered preprocessing statistics and removed-clause IDs."""
+    counts = preparation["counts"]
+    records = preparation["records"]
+    lines = [
+        "preprocess " + named(
+            pure="on" if preparation["pure"] else "off",
+            tautologies=counts["tautologies"],
+            duplicate_literals=counts["duplicate_literals"],
+            unit_fixed=counts["unit_fixed"], unit_removed=counts["unit_removed"],
+            subsumed=counts["subsumed"], pure_fixed=counts["pure_fixed"],
+            pure_removed=counts["pure_removed"], removed=counts["removed"],
+        ),
+        "removed_clauses " + named(
+            tautology=number_list(records["tautology"]),
+            unit=number_list(records["unit"]),
+            subsumed=number_list(records["subsumed"]),
+            pure=number_list(records["pure"]),
+        ),
+    ]
+    if preparation["empty_clause"] is not None:
+        lines.append(
+            f"simplified empty_clause={preparation['empty_clause']}"
+        )
+    else:
+        lengths = [len(clause) for clause in preparation["clauses"]]
+        lines.append("simplified " + named(
+            clauses=len(lengths), literals=sum(lengths),
+            lengths=frequency(lengths), fixed=len(preparation["fixed"]),
+            active=len(preparation["active"]),
+        ))
+        fixed_literals = [
+            variable if preparation["fixed"][variable] else -variable
+            for variable in sorted(preparation["fixed"])
+        ]
+        lines.append("fixed " + named(literals=number_list(fixed_literals)))
     return lines
 
 
-def search_line(stats):
-    return "search " + record(
+def search_report(stats):
+    return "search " + named(
         decisions=stats["decisions"], propagations=stats["propagations"],
         conflicts=stats["conflicts"], max_depth=stats["max_depth"],
     )
 
 
-def form_line(variable_count, clauses):
-    return "formula " + record(
-        variables=variable_count, clauses=len(clauses),
-        literals=sum(map(len, clauses)),
-        lengths=frequency([len(clause) for clause in clauses]),
-    )
+def verification_report(solution, analysis):
+    if analysis is None:
+        return []
+    failure = analysis["failure"]
+    if failure is not None:
+        return [f"verify failed model={failure[0]} clause={failure[1]}"]
+    return ["verify ok " + named(
+        models=len(solution["models"]), clauses=len(solution["clauses"]),
+        true_literals=frequency(analysis["true_distribution"]),
+    )]
 
 
-def preprocessing_lines(result):
-    """All fixed assignments, removed-clause reasons and normalized clauses."""
-    prep = result["preprocess"]
-    counts = prep["stats"]
+def analysis_report(solution, analysis):
+    """Only emit model-dependent sections when they are meaningful."""
+    if analysis is None:
+        return []
+    safe = analysis["safe"]
     lines = [
-        "preprocess " + record(
-            pure="on" if prep["pure"] else "off",
-            tautologies=counts["tautologies"],
-            duplicate_literals=counts["duplicate_literals"],
-            unit_fixed=counts["unit_fixed"],
-            unit_removed=counts["unit_removed"],
-            subsumed=counts["subsumed"],
-            pure_fixed=counts["pure_fixed"],
-            pure_removed=counts["pure_removed"],
-            removed=removed_count(prep),
-        ),
-        "removed_clauses " + record(
-            tautology=number_list(sorted(counts["removed"]["tautology"])),
-            unit=number_list(sorted(counts["removed"]["unit"])),
-            subsumed=number_list(sorted(counts["removed"]["subsumed"])),
-            pure=number_list(sorted(counts["removed"]["pure"])),
-        ),
+        "flips " + named(safe=len(safe), variables=number_list(safe)),
     ]
-    if prep["empty"] is not None:
-        lines.append(f"simplified empty_clause={prep['empty']}")
-    else:
-        clauses = prep["clauses"]
-        lines.append(
-            "simplified " + record(
-                clauses=len(clauses),
-                literals=sum(map(len, clauses)),
-                lengths=frequency([len(clause) for clause in clauses]),
-                fixed=len(prep["fixed"]), active=len(prep["active"]),
-            )
-        )
-        lines.append(
-            "fixed " + record(literals=number_list(
-                x if prep["fixed"][x] else -x for x in sorted(prep["fixed"])
-            ))
-        )
+    distances = analysis["diversity"]
+    if distances:
+        lines.append("diversity " + named(
+            pairs=len(distances), min_distance=min(distances),
+            max_distance=max(distances),
+        ))
+    if solution["stop"] == "all":
+        backbone = analysis["backbone"]
+        lines.append("backbone " + named(
+            size=len(backbone), literals=number_list(backbone),
+        ))
     return lines
 
 
-def trace_line(events):
-    shown = events[:12]
-    text = " ".join(shown) if shown else "-"
-    if len(events) > 12:
-        text += f" +{len(events) - 12}"
-    return "trace " + text
+def trace_report(events):
+    if not events:
+        return "trace -"
+    initial = events[:12]
+    remaining = len(events) - len(initial)
+    text = " ".join(initial)
+    return "trace " + text + (f" +{remaining}" if remaining else "")
 
 
-def render_regular_result(result):
-    """Full result paragraph for SOLVE, ENUM, CORE and encoded problems."""
-    job = result["job"]
-    lines = [heading(job)]
+def standard_result(job):
+    solution = job["solution"]
+    preprocessing = solution["preparation"]
+    result = [heading(job)]
     if job["command"] == "COLOR":
-        lines.append(graph_summary_line(result["graph_info"]))
-    lines.append(form_line(result["variables"], result["clauses"]))
-    lines.extend(preprocessing_lines(result))
-    lines.append(
-        "result " + record(
-            status=result["status"], models=len(result["models"]),
-            rounds=result["rounds"], stop=result["stop"],
-        ).replace("status=", "", 1)
+        result.append("graph " + graph_summary(job["graph"]))
+    result.append("formula " + summarize_formula(
+        solution["variables"], solution["clauses"]
+    ))
+    result.extend(preprocessing_report(preprocessing))
+    result.append("result " + named(
+        S=solution["status"], models=len(solution["models"]),
+        rounds=solution["rounds"], stop=solution["stop"],
+    ).replace("S=", "", 1))
+    result.append(search_report(solution["stats"]))
+    if solution["rounds"]:
+        result.append(trace_report(solution["trace"]))
+    result.extend(verification_report(solution, job["analysis"]))
+    result.extend(analysis_report(solution, job["analysis"]))
+    if "core" in job:
+        core = job["core"]
+        result.append("core " + named(
+            size=len(core["clauses"]), decisions=core["decisions"],
+            conflicts=core["conflicts"], clauses=number_list(core["clauses"]),
+        ))
+    return result
+
+
+def chromatic_result(job):
+    result = [heading(job), "graph " + graph_summary(job["graph"])]
+    for attempt in job["attempts"]:
+        result.append("attempt " + named(
+            k=attempt["colors"], clauses=len(attempt["clauses"]),
+            removed=attempt["removed"], result=attempt["status"],
+            stop=attempt["stop"],
+            decisions=attempt["stats"]["decisions"],
+            propagations=attempt["stats"]["propagations"],
+            conflicts=attempt["stats"]["conflicts"],
+            max_depth=attempt["stats"]["max_depth"],
+        ))
+    result.append(
+        f"result {job['solution']['status']} "
+        f"chromatic={job['chromatic'] if job['chromatic'] else '-'} "
+        f"attempts={len(job['attempts'])}"
     )
-    lines.append(search_line(result["stats"]))
-    if result["rounds"]:
-        lines.append(trace_line(result["trace"]))
-    lines.extend(model_analysis_lines(result))
-    analysis = result["analysis"]
-    if analysis and len(result["models"]) >= 2:
-        distances = analysis["distances"]
-        lines.append(
-            "diversity " + record(
-                pairs=len(distances), min_distance=min(distances),
-                max_distance=max(distances),
-            )
-        )
-    if analysis and result["stop"] == "all":
-        literals = analysis["backbone"]
-        lines.append(
-            "backbone " + record(size=len(literals),
-                                 literals=number_list(literals))
-        )
-    if "core" in result:
-        core = result["core"]
-        lines.append(
-            "core " + record(
-                size=len(core["clauses"]), decisions=core["decisions"],
-                conflicts=core["conflicts"],
-                clauses=number_list(core["clauses"]),
-            )
-        )
-    return lines
+    result.append(search_report(job["aggregate_stats"]))
+    if job["solution"]["status"] == "SAT":
+        result.extend(verification_report(job["solution"], job["analysis"]))
+        safe = job["analysis"]["safe"]
+        result.append("flips " + named(
+            safe=len(safe), variables=number_list(safe),
+        ))
+    return result
 
 
-def render_chromatic_result(result):
-    """CHROMATIC omits the ordinary formula and preprocessing paragraphs."""
-    lines = [heading(result["job"]), graph_summary_line(result["graph_info"])]
-    for k, attempt in enumerate(result["attempts"], 1):
-        stats = attempt["stats"]
-        lines.append(
-            "attempt " + record(
-                k=k, clauses=len(attempt["clauses"]),
-                removed=removed_count(attempt["preprocess"]),
-                result=attempt["status"], stop=attempt["stop"],
-                decisions=stats["decisions"], propagations=stats["propagations"],
-                conflicts=stats["conflicts"], max_depth=stats["max_depth"],
-            )
-        )
-    lines.append(
-        "result " + result["status"] + " " + record(
-            chromatic=result["chromatic"], attempts=len(result["attempts"])
-        )
-    )
-    lines.append(search_line(result["stats"]))
-    if result["status"] == "SAT":
-        lines.extend(model_analysis_lines(result))
-    return lines
+def valid_jobs(jobs):
+    return [job for job in jobs if "error" not in job]
 
 
-def render_results(results, error_jobs, all_jobs):
-    """Produce the ordered job paragraphs and the final aggregate summary."""
-    successes = {result["job"]["number"]: result for result in results}
-    errors = {job["number"]: job for job in error_jobs}
-    paragraphs = []
-    for job in all_jobs:
-        number = job["number"]
-        if number in errors:
-            paragraphs.append([heading(job), "error " + job["error"]])
-        else:
-            result = successes[number]
-            if job["command"] == "CHROMATIC":
-                paragraphs.append(render_chromatic_result(result))
-            else:
-                paragraphs.append(render_regular_result(result))
-    stats = [result["stats"] for result in results]
-    sat = sum(result["status"] == "SAT" for result in results)
-    unsat = sum(result["status"] == "UNSAT" for result in results)
-    summary = [
-        f"SUMMARY jobs={len(all_jobs)} sat={sat} unsat={unsat} "
-        f"error={len(error_jobs)}",
-        "totals " + record(
-            models=sum(len(r["models"]) for r in results),
-            rounds=sum(r["rounds"] for r in results),
-            decisions=sum(s["decisions"] for s in stats),
-            propagations=sum(s["propagations"] for s in stats),
-            conflicts=sum(s["conflicts"] for s in stats),
-            removed_clauses=sum(count_removed(r) for r in results),
+def results_summary(jobs):
+    valid = valid_jobs(jobs)
+    sat = sum(job["solution"]["status"] == "SAT" for job in valid)
+    result = [
+        "SUMMARY " + named(
+            jobs=len(jobs), sat=sat, unsat=len(valid) - sat,
+            error=len(jobs) - len(valid),
+        ),
+        "totals " + named(
+            models=sum(len(job["solution"]["models"]) for job in valid),
+            rounds=sum(job["aggregate_rounds"] for job in valid),
+            decisions=sum(job["aggregate_stats"]["decisions"] for job in valid),
+            propagations=sum(job["aggregate_stats"]["propagations"] for job in valid),
+            conflicts=sum(job["aggregate_stats"]["conflicts"] for job in valid),
+            removed_clauses=sum(job["aggregate_removed"] for job in valid),
         ),
     ]
-    for command in COMMAND_ORDER:
-        members = [r for r in results if r["job"]["command"] == command]
+    for command in COMMANDS:
+        members = [job for job in valid if job["command"] == command]
         if not members:
             continue
-        summary.append(
-            "command " + command + " " + record(
+        result.append(
+            f"command {command} " + named(
                 jobs=len(members),
-                sat=sum(r["status"] == "SAT" for r in members),
-                unsat=sum(r["status"] == "UNSAT" for r in members),
-                decisions=sum(r["stats"]["decisions"] for r in members),
-                propagations=sum(r["stats"]["propagations"] for r in members),
-                conflicts=sum(r["stats"]["conflicts"] for r in members),
+                sat=sum(job["solution"]["status"] == "SAT" for job in members),
+                unsat=sum(job["solution"]["status"] == "UNSAT" for job in members),
+                decisions=sum(job["aggregate_stats"]["decisions"] for job in members),
+                propagations=sum(job["aggregate_stats"]["propagations"]
+                                 for job in members),
+                conflicts=sum(job["aggregate_stats"]["conflicts"] for job in members),
             )
         )
-    if results:
-        for name, label, metric in (
-                ("hardest", "conflicts", "conflicts"),
-                ("deepest", "max_depth", "max_depth"),
-                ("busiest", "propagations", "propagations")):
-            winner = min(
-                results, key=lambda r: (-r["stats"][metric], r["job"]["number"])
-            )
-            summary.append(
-                f"{name} job={winner['job']['number']} "
-                f"{label}={winner['stats'][metric]}"
-            )
-    paragraphs.append(summary)
+    for label, key in (("hardest", "conflicts"),
+                       ("deepest", "max_depth"),
+                       ("busiest", "propagations")):
+        if not valid:
+            break
+        job = max(
+            valid, key=lambda item: (item["aggregate_stats"][key], -item["number"])
+        )
+        result.append(
+            f"{label} job={job['number']} {key}={job['aggregate_stats'][key]}"
+        )
+    return result
+
+
+def result_paragraphs(jobs):
+    paragraphs = []
+    for job in jobs:
+        if "error" in job:
+            paragraphs.append([heading(job), "error " + job["error"]])
+        elif job["command"] == "CHROMATIC":
+            paragraphs.append(chromatic_result(job))
+        else:
+            paragraphs.append(standard_result(job))
+    paragraphs.append(results_summary(jobs))
     return paragraphs
 
 
-def render_models(result):
-    """One paragraph per solved job with signed literals in groups of ten."""
-    lines = [heading(result["job"])]
-    for index, model in enumerate(result["models"], 1):
-        lines.append(f"model {index}")
-        lines.extend(model_lines(model))
-    return lines
+def model_paragraphs(jobs):
+    paragraphs = []
+    for job in valid_jobs(jobs):
+        models = job["solution"]["models"]
+        if not models:
+            continue
+        lines = [heading(job)]
+        for number, model in enumerate(models, 1):
+            lines.append(f"model {number}")
+            lines.extend(model_lines(model))
+        paragraphs.append(lines)
+    return paragraphs
 
 
-def board_queens(result):
-    """Canonical dihedral classes, their orbits and first-class boards."""
-    job = result["job"]
-    n = job["args"]["queens"]
+def classes_for_models(columns, canonicalize):
+    classes = {}
+    assignments = []
+    for index, value in enumerate(columns, 1):
+        canonical, orbit = canonicalize(value)
+        if canonical not in classes:
+            classes[canonical] = {
+                "number": len(classes) + 1,
+                "first": index, "found": 0,
+                "canonical": canonical, "orbit": orbit,
+            }
+        group = classes[canonical]
+        group["found"] += 1
+        assignments.append((value, group["number"], index == group["first"]))
+    return assignments, list(classes.values())
+
+
+def queens_boards(job):
+    n = int(job["args"][0])
+    models = job["solution"]["models"]
+    columns = [positions(model, n, n) for model in models]
+
+    def canonical(cols):
+        variants = queens_symmetries(cols)
+        return min(variants), len(set(variants))
+
+    assignments, classes = classes_for_models(columns, canonical)
     lines = [f"QUEENS job={job['number']} n={n}"]
-    classes = {}
-    for number, model in enumerate(result["models"], 1):
-        columns = decode_positions(model, n, n)
-        forms = queen_variants(columns)
-        key = min(forms)
-        if key not in classes:
-            classes[key] = {
-                "number": len(classes) + 1,
-                "first": number,
-                "found": 0,
-                "orbit": len(set(forms)),
-            }
-        group = classes[key]
-        group["found"] += 1
+    for index, (value, group, is_first) in enumerate(assignments, 1):
         lines.append(
-            f"solution {number} columns={number_list(columns)} "
-            f"class={group['number']}"
+            f"solution {index} columns={number_list(value)} class={group}"
         )
-        if group["first"] == number:
-            lines.extend(queen_board(columns))
-    for key, value in classes.items():
+        if is_first:
+            lines.extend(queens_board(value))
+    for group in classes:
         lines.append(
-            f"class {value['number']} orbit={value['orbit']} "
-            f"found={value['found']} first={value['first']} "
-            f"canonical={number_list(key)}"
+            "class " + named(
+                C=group["number"], orbit=group["orbit"],
+                found=group["found"], first=group["first"],
+                canonical=number_list(group["canonical"]),
+            ).replace("C=", "", 1)
         )
-    lines.append(
-        f"summary solutions={len(result['models'])} stop={result['stop']} "
-        f"classes={len(classes)}"
-    )
+    lines.append("summary " + named(
+        solutions=len(models), stop=job["solution"]["stop"],
+        classes=len(classes),
+    ))
     return lines
 
 
-def board_pigeon(result):
-    """Assignments, empty holes and the falling-factorial expected count."""
-    job = result["job"]
-    p, h = job["args"]["pigeons"], job["args"]["holes"]
+def pigeon_boards(job):
+    p, h = map(int, job["args"][:2])
+    models = job["solution"]["models"]
     lines = [f"PIGEON job={job['number']} pigeons={p} holes={h}"]
-    for number, model in enumerate(result["models"], 1):
-        choices = decode_positions(model, p, h)
-        vacant = [hole for hole in range(1, h + 1) if hole not in choices]
+    for index, model in enumerate(models, 1):
+        places = positions(model, p, h)
+        empty = [hole for hole in range(1, h + 1) if hole not in places]
         lines.append(
-            f"assignment {number} holes={number_list(choices)} "
-            f"empty={number_list(vacant)}"
+            f"assignment {index} holes={number_list(places)} "
+            f"empty={number_list(empty)}"
         )
-    expected = 0 if p > h else 1
-    if p <= h:
-        for i in range(p):
-            expected *= h - i
-    lines.append(
-        f"summary assignments={len(result['models'])} "
-        f"stop={result['stop']} expected={expected}"
-    )
+    expected = 1
+    if p > h:
+        expected = 0
+    else:
+        for value in range(h, h - p, -1):
+            expected *= value
+    lines.append("summary " + named(
+        assignments=len(models), stop=job["solution"]["stop"],
+        expected=expected,
+    ))
     return lines
 
 
-def board_coloring(result, graphs):
-    """Color-renaming equivalence classes and deterministic greedy baseline."""
-    job = result["job"]
-    graph = graphs[job["args"]["graph"]]
-    color_count = (len(result["attempts"]) if "attempts" in result else
-                   job["args"]["colors"])
-    kind = job["command"]
-    info = result["graph_info"]
+def coloring_boards(job):
+    graph = job["graph"]
+    count = graph["vertices"]
+    colors = job["colors"]
+    models = job["solution"]["models"]
+    decoded = [positions(model, count, colors) for model in models]
+
+    def canonical(value):
+        return canonical_coloring(value), None
+
+    assignments, classes = classes_for_models(decoded, canonical)
+    command = job["command"]
     lines = [
-        f"{kind} job={job['number']} graph={graph['name']} "
-        f"vertices={graph['vertices']} edges={len(graph['edges'])} "
-        f"colors={color_count}",
-        f"greedy used={info['greedy']} "
-        f"colors={number_list(info['greedy_colors'])}",
+        f"{command} job={job['number']} graph={graph['name']} "
+        f"vertices={count} edges={len(graph['edges'])} colors={colors}"
     ]
-    classes = {}
-    for number, model in enumerate(result["models"], 1):
-        assigned = decode_positions(model, graph["vertices"], color_count)
-        key = canonical_coloring(assigned)
-        if key not in classes:
-            classes[key] = {
-                "number": len(classes) + 1,
-                "first": number, "found": 0,
-            }
-        group = classes[key]
-        group["found"] += 1
-        sizes = [assigned.count(color) for color in range(1, color_count + 1)]
-        lines.append(
-            f"coloring {number} colors={number_list(assigned)} "
-            f"used={len(set(assigned))} sizes={number_list(sizes)} "
-            f"class={group['number']}"
-        )
-    for key, value in classes.items():
-        lines.append(
-            f"class {value['number']} found={value['found']} "
-            f"first={value['first']} canonical={number_list(key)}"
-        )
-    stop = result["attempts"][-1]["stop"] if "attempts" in result else result["stop"]
+    greedy = greedy_coloring(graph)
     lines.append(
-        f"summary colorings={len(result['models'])} "
-        f"stop={stop} classes={len(classes)}"
+        f"greedy used={max(greedy)} colors={number_list(greedy)}"
     )
+    for index, (value, group, _) in enumerate(assignments, 1):
+        size = [value.count(color) for color in range(1, colors + 1)]
+        lines.append(
+            f"coloring {index} colors={number_list(value)} "
+            f"used={len(set(value))} sizes={number_list(size)} class={group}"
+        )
+    for group in classes:
+        lines.append(
+            f"class {group['number']} found={group['found']} "
+            f"first={group['first']} "
+            f"canonical={number_list(group['canonical'])}"
+        )
+    lines.append("summary " + named(
+        colorings=len(models), stop=job["solution"]["stop"],
+        classes=len(classes),
+    ))
     return lines
 
 
-def render_boards(result, graphs):
-    command = result["job"]["command"]
-    if command == "QUEENS":
-        return board_queens(result)
-    if command == "PIGEON":
-        return board_pigeon(result)
-    return board_coloring(result, graphs)
+def boards_paragraphs(jobs):
+    result = []
+    for job in valid_jobs(jobs):
+        command = job["command"]
+        if command == "QUEENS":
+            result.append(queens_boards(job))
+        elif command == "PIGEON":
+            result.append(pigeon_boards(job))
+        elif command in ("COLOR", "CHROMATIC"):
+            result.append(coloring_boards(job))
+    return result
 
 
-def write_outputs(results, error_jobs, jobs, graphs):
-    """Create the four requested files and no additional output artifacts."""
-    save_paragraphs(
-        "results.txt", render_results(results, error_jobs, jobs)
-    )
-    save_paragraphs(
-        "models.txt", [
-            render_models(result) for result in results if result["models"]
-        ],
-    )
-    save_paragraphs(
-        "boards.txt", [
-            render_boards(result, graphs) for result in results
-            if result["job"]["command"] in (
-                "QUEENS", "PIGEON", "COLOR", "CHROMATIC"
-            )
-        ],
-    )
-    rows = [
+def stats_lines(jobs):
+    result = [
         "job,command,status,variables,clauses,removed_clauses,"
         "decisions,propagations,conflicts,max_depth,models,rounds"
     ]
-    rows.extend(",".join(map(str, statistics_row(result))) for result in results)
-    save_lines("stats.csv", rows)
+    for job in valid_jobs(jobs):
+        solution = job["solution"]
+        stats = job["aggregate_stats"]
+        record = [
+            job["number"], job["command"], solution["status"],
+            solution["variables"], len(solution["clauses"]),
+            job["aggregate_removed"], stats["decisions"],
+            stats["propagations"], stats["conflicts"],
+            stats["max_depth"], len(solution["models"]),
+            job["aggregate_rounds"],
+        ]
+        result.append(",".join(map(str, record)))
+    return result
 
 
 def main():
-    graphs = read_graphs()
-    jobs = read_jobs()
-    valid_results = []
-    errors = []
-    for job in jobs:
-        error = validate_job(job, graphs)
-        if error is not None:
-            job["error"] = error
-            errors.append(job)
-            continue
-        valid_results.append(run_job(job, graphs))
-    write_outputs(valid_results, errors, jobs, graphs)
+    graphs = load_graphs()
+    jobs = execute_jobs(load_jobs(), graphs)
+    save_paragraphs("results.txt", result_paragraphs(jobs))
+    save_paragraphs("models.txt", model_paragraphs(jobs))
+    save_paragraphs("boards.txt", boards_paragraphs(jobs))
+    save_lines("stats.csv", stats_lines(jobs))
 
 
 if __name__ == "__main__":

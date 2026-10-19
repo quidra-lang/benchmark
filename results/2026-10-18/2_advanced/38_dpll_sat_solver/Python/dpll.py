@@ -1,134 +1,123 @@
-"""Iterative DPLL with two watched literals, DLIS and chronological flips."""
+"""Explicit-trail DPLL with two watched literals and DLIS decisions."""
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 
 
-def search(variable_count, source_clauses):
-    """Run one round; never recurse and never mutate the supplied clauses."""
-    clauses = [list(clause) for clause in source_clauses]
-    values = [None] * (variable_count + 1)
+def run_round(variable_count, search_clauses):
+    """Run one fresh DPLL search, returning a model, event trace and statistics."""
+    clauses = [list(clause) for clause in search_clauses]
+    assignment = [None] * (variable_count + 1)
+    watches = defaultdict(list)
     trail = []
-    propagation_position = 0
-    watched = defaultdict(list)
+    queue_head = 0
     trace = []
-    decisions = 0
-    propagations = 0
-    conflicts = 0
-    max_depth = 0
+    stats = {"decisions": 0, "propagations": 0,
+             "conflicts": 0, "max_depth": 0}
 
-    def state(literal):
-        value = values[abs(literal)]
-        if value is None:
-            return None
-        return value if literal > 0 else not value
+    def value(literal):
+        val = assignment[abs(literal)]
+        return None if val is None else (val if literal > 0 else not val)
 
     def assign(literal, kind):
-        values[abs(literal)] = literal > 0
+        assignment[abs(literal)] = literal > 0
         trail.append((literal, kind))
-        trace.append({"decision": "D", "flip": "F",
-                      "propagation": "P"}[kind] + str(literal))
+        trace.append({"decision": "D", "flip": "F", "propagation": "P"}[kind]
+                     + str(literal))
 
-    def stats():
-        return {
-            "decisions": decisions,
-            "propagations": propagations,
-            "conflicts": conflicts,
-            "max_depth": max_depth,
-            "trace": trace,
-        }
+    def conflict():
+        stats["conflicts"] += 1
+        trace.append("C")
 
-    for i, clause in enumerate(clauses):
+    for index, clause in enumerate(clauses):
         if len(clause) >= 2:
-            watched[clause[0]].append(i)
-            watched[clause[1]].append(i)
+            watches[clause[0]].append(index)
+            watches[clause[1]].append(index)
 
     for clause in clauses:
         if not clause:
-            conflicts += 1
-            trace.append("C")
-            return None, stats()
-        if len(clause) != 1:
-            continue
-        literal = clause[0]
-        if state(literal) is False:
-            conflicts += 1
-            trace.append("C")
-            return None, stats()
-        if state(literal) is None:
-            assign(literal, "propagation")
-            propagations += 1
+            conflict()
+            return None, trace, stats
+        if len(clause) == 1:
+            literal = clause[0]
+            truth = value(literal)
+            if truth is False:
+                conflict()
+                return None, trace, stats
+            if truth is None:
+                assign(literal, "propagation")
+                stats["propagations"] += 1
 
     while True:
-        contradiction = False
-        while propagation_position < len(trail) and not contradiction:
-            literal, _ = trail[propagation_position]
-            propagation_position += 1
-            false_literal = -literal
-            queue = watched[false_literal]
-            position = 0
-            while position < len(queue):
-                index = queue[position]
-                clause = clauses[index]
+        found_conflict = False
+        while queue_head < len(trail):
+            true_literal = trail[queue_head][0]
+            queue_head += 1
+            false_literal = -true_literal
+            watch_list = watches[false_literal]
+            index = 0
+            while index < len(watch_list):
+                clause_id = watch_list[index]
+                clause = clauses[clause_id]
                 if clause[0] == false_literal:
                     clause[0], clause[1] = clause[1], clause[0]
                 other = clause[0]
-                if state(other) is True:
-                    position += 1
+                if value(other) is True:
+                    index += 1
                     continue
-                replacement = next(
-                    (j for j in range(2, len(clause))
-                     if state(clause[j]) is not False),
-                    None,
-                )
-                if replacement is not None:
-                    clause[1], clause[replacement] = (
-                        clause[replacement], clause[1]
-                    )
-                    queue.pop(position)
-                    watched[clause[1]].append(index)
-                    continue
-                if state(other) is False:
-                    conflicts += 1
-                    trace.append("C")
-                    contradiction = True
-                    break
-                if state(other) is None:
-                    assign(other, "propagation")
-                    propagations += 1
-                position += 1
 
-        if contradiction:
+                substitute = None
+                for j in range(2, len(clause)):
+                    if value(clause[j]) is not False:
+                        substitute = j
+                        break
+                if substitute is not None:
+                    clause[1], clause[substitute] = clause[substitute], clause[1]
+                    # Removing this watch preserves the order of the remaining
+                    # entries; the new watch is appended to its literal's list.
+                    watch_list.pop(index)
+                    watches[clause[1]].append(clause_id)
+                    continue
+
+                other_value = value(other)
+                if other_value is False:
+                    conflict()
+                    found_conflict = True
+                    break
+                if other_value is None:
+                    assign(other, "propagation")
+                    stats["propagations"] += 1
+                index += 1
+            if found_conflict:
+                break
+
+        if found_conflict:
+            # Remove propagations and exhausted flips to the nearest decision.
             while trail and trail[-1][1] != "decision":
-                literal, kind = trail.pop()
-                values[abs(literal)] = None
+                literal, _ = trail.pop()
+                assignment[abs(literal)] = None
             if not trail:
-                return None, stats()
-            last_decision, _ = trail.pop()
-            values[abs(last_decision)] = None
-            assign(-last_decision, "flip")
-            propagation_position = len(trail) - 1
+                return None, trace, stats
+            decision, _ = trail.pop()
+            assignment[abs(decision)] = None
+            assign(-decision, "flip")
+            queue_head = len(trail) - 1
             continue
 
-        occurrences = Counter()
+        counts = defaultdict(int)
         for clause in clauses:
-            if any(state(lit) is True for lit in clause):
+            if any(value(literal) is True for literal in clause):
                 continue
             for literal in clause:
-                if state(literal) is None:
-                    occurrences[literal] += 1
-        if not occurrences:
-            model = [False] * (variable_count + 1)
-            for variable in range(1, variable_count + 1):
-                model[variable] = bool(values[variable])
-            return model, stats()
+                if value(literal) is None:
+                    counts[literal] += 1
+        if not counts:
+            return [False if x is None else x for x in assignment], trace, stats
 
-        chosen = min(
-            occurrences, key=lambda lit: (
-                -occurrences[lit], abs(lit), lit < 0
-            )
+        best = max(
+            counts, key=lambda literal:
+            (counts[literal], -abs(literal), literal > 0)
         )
-        assign(chosen, "decision")
-        decisions += 1
+        assign(best, "decision")
+        stats["decisions"] += 1
         depth = sum(kind in ("decision", "flip") for _, kind in trail)
-        if depth > max_depth:
-            max_depth = depth
+        stats["max_depth"] = max(stats["max_depth"], depth)
