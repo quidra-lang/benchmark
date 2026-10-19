@@ -857,7 +857,7 @@ impl Lab {
         ));
         for (index, pattern) in patterns.iter().enumerate() {
             let breakdown = pattern.counts.iter().enumerate()
-                .filter(|(_, &count)| count > 0)
+                .filter(|(_, count)| **count > 0)
                 .map(|(i, count)| format!("{}x{}", count, pieces[i].length))
                 .collect::<Vec<_>>().join("+");
             self.emit(format!(
