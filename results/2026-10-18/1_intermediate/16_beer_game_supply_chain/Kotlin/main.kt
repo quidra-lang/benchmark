@@ -6,7 +6,6 @@ private val parameters = mapOf(
     "FIXED" to 1, "PASS" to 0, "BASESTOCK" to 1, "MINMAX" to 2,
     "MOVAVG" to 2, "SMOOTH" to 2, "STERMAN" to 4
 )
-private val modes = mapOf("ORDERS" to "order", "INV" to "inventory", "BACK" to "backlog")
 
 private class CommandError(message: String) : RuntimeException(message)
 
