@@ -481,8 +481,7 @@ class Restaurant {
         if (happy) text += " HAPPY";
         emit(text);
         if (item.stock) {
-            --*item.stock;
-            *item.stock -= quantity - 1;
+            *item.stock -= quantity;
             if (*item.stock == 0) emit("SOLDOUT", item.name);
         }
     }
@@ -773,7 +772,8 @@ class Restaurant {
 
     void cmd_floor(const vector<string>&) {
         int occupied = 0;
-        for (auto [number, table] : tables) if (table.check) ++occupied;
+        for (const auto& [number, table] : tables)
+            if (table.check) ++occupied;
         emit("FLOOR", clock_text(now), "free", tables.size() - occupied,
              "seated", occupied, "waiting", waiting.size());
         for (auto& [number, table] : tables) {
