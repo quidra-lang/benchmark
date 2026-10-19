@@ -332,7 +332,7 @@ sealed class BillingService
         Totals totals = InvoiceTotals(subscription, items);
         var invoice = new Invoice(invoices.Count + 1, subscription, day, kind, items, totals);
         if (CouponUsable(subscription, invoice.Subtotal) && subscription.Remaining.HasValue)
-            --subscription.Remaining;
+            subscription.Remaining = subscription.Remaining.Value - 1;
         invoices.Add(invoice);
         subscription.Invoices.Add(invoice);
         subscription.Customer.Invoices.Add(invoice);
@@ -443,7 +443,7 @@ sealed class BillingService
                 Issue(subscription, "first", OpeningItems(subscription, day));
             }
         }
-        if (subscription.State is "ACTIVE" or "PAST_DUE" or "UNPAID"
+        if ((subscription.State is "ACTIVE" or "PAST_DUE" or "UNPAID")
             && subscription.End == day)
         {
             if (subscription.CancelEnd)
