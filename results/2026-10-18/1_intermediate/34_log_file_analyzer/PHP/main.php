@@ -1,313 +1,263 @@
 <?php
+
 declare(strict_types=1);
 
 const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'];
 const REASONS = ['fields', 'date', 'time', 'ip', 'method', 'path', 'status', 'bytes', 'latency'];
-const CLASSES = ['1xx', '2xx', '3xx', '4xx', '5xx'];
-const FILTER_KEYS = ['METHOD', 'STATUS', 'IP', 'PATH'];
 const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-const FORMS = [
+const STATUS_CLASSES = ['1xx', '2xx', '3xx', '4xx', '5xx'];
+const FILTER_KEYS = ['METHOD', 'STATUS', 'IP', 'PATH'];
+const QUERY_FORMS = [
     'SUMMARY' => [], 'MALFORMED' => [], 'STATUS' => [], 'METHODS' => [],
     'TOP' => ['kind', 'limit'], 'HOURLY' => [], 'TIMELINE' => ['minutes'],
     'BANDWIDTH' => [], 'VISITORS' => [], 'LATENCY' => ['path'],
     'HISTOGRAM' => ['width'], 'APDEX' => ['threshold'], 'ERRORS' => [],
     'SLOWEST' => ['limit'], 'SESSIONS' => ['ip', 'minutes'],
-    'BURST' => ['length', 'times'], 'PEAK' => ['length'], 'GAPS' => ['length'],
-    'IP' => ['ip'], 'RANGE' => ['date', 'time', 'date', 'time'],
-    'FILTER' => ['key', 'value'], 'UNFILTER' => ['subject'],
-    'RESET' => [], 'STATE' => []
+    'BURST' => ['length', 'times'], 'PEAK' => ['length'],
+    'GAPS' => ['length'], 'IP' => ['ip'],
+    'RANGE' => ['date', 'time', 'date', 'time'], 'FILTER' => ['key', 'value'],
+    'UNFILTER' => ['subject'], 'RESET' => [], 'STATE' => [],
 ];
-const REQUIRES_RECORDS = [
-    'STATUS', 'METHODS', 'TOP', 'HOURLY', 'TIMELINE', 'BANDWIDTH',
-    'VISITORS', 'HISTOGRAM', 'APDEX', 'ERRORS', 'SLOWEST', 'BURST', 'PEAK', 'GAPS'
+const ARGUMENT_RANGES = [
+    'limit' => [1, 100], 'minutes' => [1, 1440], 'width' => [1, 100000],
+    'threshold' => [1, 100000], 'length' => [1, 86400], 'times' => [1, 1000],
 ];
-const RANGES = [
-    'limit' => [1, 100], 'minutes' => [1, 1440],
-    'width' => [1, 100000], 'threshold' => [1, 100000],
-    'length' => [1, 86400], 'times' => [1, 1000]
-];
-const ERRORS = [
+const ARGUMENT_ERRORS = [
     'limit' => 'invalid number', 'minutes' => 'invalid number',
     'width' => 'invalid number', 'threshold' => 'invalid number',
     'length' => 'invalid number', 'times' => 'invalid number',
     'kind' => 'invalid kind', 'path' => 'invalid path', 'ip' => 'invalid ip',
     'date' => 'invalid timestamp', 'time' => 'invalid timestamp',
-    'key' => 'invalid key', 'subject' => 'invalid key', 'value' => 'invalid value'
+    'key' => 'invalid key', 'subject' => 'invalid key', 'value' => 'invalid value',
+];
+const OPTIONAL_LAST = ['LATENCY', 'SESSIONS'];
+const NEEDS_TARGETS = [
+    'STATUS', 'METHODS', 'TOP', 'HOURLY', 'TIMELINE', 'BANDWIDTH',
+    'VISITORS', 'HISTOGRAM', 'APDEX', 'ERRORS', 'SLOWEST', 'BURST',
+    'PEAK', 'GAPS',
 ];
 
-final class QueryError extends RuntimeException {}
+final class CommandError extends RuntimeException {}
 
-function require_condition(bool $ok, string $message): void
+function check(bool $condition, string $reason): void
 {
-    if (!$ok) {
-        throw new QueryError($message);
-    }
+    if (!$condition) throw new CommandError($reason);
 }
 
-function tokens(string $line): array
+function validDigits(string $text): bool
 {
-    $line = trim($line);
-    return $line === '' ? [] : preg_split('/\s+/', $line);
+    return preg_match('/\A[0-9]+\z/', $text) === 1;
 }
 
-function digits(string $value): bool
+function canonicalInteger(string $text, int $maxLength): bool
 {
-    return preg_match('/^[0-9]+$/D', $value) === 1;
+    return validDigits($text) && strlen($text) <= $maxLength &&
+        (strlen($text) === 1 || $text[0] !== '0');
 }
 
-function canonical(string $value, int $maximum): bool
-{
-    return $value !== '' && strlen($value) <= $maximum && digits($value) &&
-        (strlen($value) === 1 || $value[0] !== '0');
-}
-
-function leap_year(int $year): bool
+function leapYear(int $year): bool
 {
     return $year % 4 === 0 && ($year % 100 !== 0 || $year % 400 === 0);
 }
 
-function year_days(int $year): int
+function daysInYear(int $year): int
 {
-    return leap_year($year) ? 366 : 365;
+    return leapYear($year) ? 366 : 365;
 }
 
-function month_days(int $year, int $month): int
+function daysInMonth(int $year, int $month): int
 {
-    return $month === 2 && leap_year($year) ? 29 : MONTH_DAYS[$month - 1];
+    return $month === 2 && leapYear($year) ? 29 : MONTH_DAYS[$month - 1];
 }
 
-function valid_date(string $value): bool
+function validDate(string $text): bool
 {
-    if (preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/D', $value) !== 1) {
-        return false;
-    }
-    $year = (int)substr($value, 0, 4);
-    $month = (int)substr($value, 5, 2);
-    $day = (int)substr($value, 8, 2);
+    if (preg_match('/\A[0-9]{4}-[0-9]{2}-[0-9]{2}\z/', $text) !== 1) return false;
+    [$year, $month, $day] = array_map('intval', explode('-', $text));
     return $year >= 2000 && $year <= 2059 && $month >= 1 && $month <= 12 &&
-        $day >= 1 && $day <= month_days($year, $month);
+        $day >= 1 && $day <= daysInMonth($year, $month);
 }
 
-function valid_time(string $value): bool
+function validTime(string $text): bool
 {
-    return preg_match('/^[0-9]{2}:[0-9]{2}:[0-9]{2}$/D', $value) === 1 &&
-        (int)substr($value, 0, 2) <= 23 &&
-        (int)substr($value, 3, 2) <= 59 &&
-        (int)substr($value, 6, 2) <= 59;
+    if (preg_match('/\A[0-9]{2}:[0-9]{2}:[0-9]{2}\z/', $text) !== 1) return false;
+    [$hour, $minute, $second] = array_map('intval', explode(':', $text));
+    return $hour <= 23 && $minute <= 59 && $second <= 59;
 }
 
-function valid_ip(string $ip): bool
+function validIP(string $text): bool
 {
-    $parts = explode('.', $ip);
-    if (count($parts) !== 4) {
-        return false;
-    }
+    $parts = explode('.', $text);
+    if (count($parts) !== 4) return false;
     foreach ($parts as $part) {
-        if (!canonical($part, 3) || (int)$part > 255) {
-            return false;
-        }
+        if (!canonicalInteger($part, 3) || (int)$part > 255) return false;
     }
     return true;
 }
 
-function valid_status(string $value): bool
+function validStatus(string $text): bool
 {
-    return preg_match('/^[0-9]{3}$/D', $value) === 1 &&
-        (int)$value >= 100 && (int)$value <= 599;
+    return preg_match('/\A[0-9]{3}\z/', $text) === 1 &&
+        (int)$text >= 100 && (int)$text <= 599;
 }
 
-function filter_value(string $key, string $value): bool
+function validFilter(string $key, string $value): bool
 {
     return match ($key) {
         'METHOD' => in_array($value, METHODS, true),
-        'STATUS' => in_array($value, CLASSES, true) || valid_status($value),
-        'IP' => valid_ip($value),
-        default => str_starts_with($value, '/')
+        'STATUS' => in_array($value, STATUS_CLASSES, true) || validStatus($value),
+        'IP' => validIP($value),
+        default => str_starts_with($value, '/'),
     };
 }
 
-function valid_argument(string $type, string $value, array $args): bool
+function validArgument(string $type, string $text, array $arguments): bool
 {
-    if (array_key_exists($type, RANGES)) {
-        [$lower, $upper] = RANGES[$type];
-        return canonical($value, 6) && (int)$value >= $lower && (int)$value <= $upper;
+    if (isset(ARGUMENT_RANGES[$type])) {
+        [$low, $high] = ARGUMENT_RANGES[$type];
+        return canonicalInteger($text, 6) && (int)$text >= $low && (int)$text <= $high;
     }
     return match ($type) {
-        'kind' => $value === 'PATHS' || $value === 'IPS',
-        'path' => str_starts_with($value, '/'),
-        'ip' => valid_ip($value),
-        'date' => valid_date($value),
-        'time' => valid_time($value),
-        'key' => in_array($value, FILTER_KEYS, true),
-        'subject' => $value === 'RANGE' || in_array($value, FILTER_KEYS, true),
-        default => filter_value($args[0], $value)
+        'kind' => in_array($text, ['PATHS', 'IPS'], true),
+        'path' => str_starts_with($text, '/'),
+        'ip' => validIP($text),
+        'date' => validDate($text),
+        'time' => validTime($text),
+        'key' => in_array($text, FILTER_KEYS, true),
+        'subject' => $text === 'RANGE' || in_array($text, FILTER_KEYS, true),
+        default => validFilter($arguments[0], $text),
     };
 }
 
-function malformed_reason(array $fields): ?string
+function malformedReason(array $fields): ?string
 {
     if (count($fields) !== 8) return 'fields';
-    if (!valid_date($fields[0])) return 'date';
-    if (!valid_time($fields[1])) return 'time';
-    if (!valid_ip($fields[2])) return 'ip';
-    if (!in_array($fields[3], METHODS, true)) return 'method';
-    if (!str_starts_with($fields[4], '/')) return 'path';
-    if (!valid_status($fields[5])) return 'status';
-    if (!canonical($fields[6], 8)) return 'bytes';
-    if (!canonical($fields[7], 6)) return 'latency';
+    [$date, $clock, $ip, $method, $path, $status, $bytes, $latency] = $fields;
+    if (!validDate($date)) return 'date';
+    if (!validTime($clock)) return 'time';
+    if (!validIP($ip)) return 'ip';
+    if (!in_array($method, METHODS, true)) return 'method';
+    if (!str_starts_with($path, '/')) return 'path';
+    if (!validStatus($status)) return 'status';
+    if (!canonicalInteger($bytes, 8)) return 'bytes';
+    if (!canonicalInteger($latency, 6)) return 'latency';
     return null;
 }
 
-function seconds_of(string $date, string $clock): int
+function secondsOf(string $date, string $clock): int
 {
-    $year = (int)substr($date, 0, 4);
-    $month = (int)substr($date, 5, 2);
-    $days = (int)substr($date, 8, 2) - 1;
-    for ($y = 2000; $y < $year; $y++) $days += year_days($y);
-    for ($m = 1; $m < $month; $m++) $days += month_days($year, $m);
-    return $days * 86400 + (int)substr($clock, 0, 2) * 3600 +
-        (int)substr($clock, 3, 2) * 60 + (int)substr($clock, 6, 2);
+    [$year, $month, $day] = array_map('intval', explode('-', $date));
+    [$hour, $minute, $second] = array_map('intval', explode(':', $clock));
+    $days = $day - 1;
+    for ($y = 2000; $y < $year; ++$y) $days += daysInYear($y);
+    for ($m = 1; $m < $month; ++$m) $days += daysInMonth($year, $m);
+    return $days * 86400 + $hour * 3600 + $minute * 60 + $second;
 }
 
-function interval_label(int $seconds): string
+function intervalLabel(int $seconds): string
 {
     $days = intdiv($seconds, 86400);
-    $minutes = intdiv($seconds % 86400, 60);
+    $rest = $seconds % 86400;
     $year = 2000;
-    while ($days >= year_days($year)) {
-        $days -= year_days($year);
-        $year++;
-    }
+    while ($days >= daysInYear($year)) $days -= daysInYear($year++);
     $month = 1;
-    while ($days >= month_days($year, $month)) {
-        $days -= month_days($year, $month);
-        $month++;
-    }
-    return sprintf('%04d-%02d-%02d %02d:%02d', $year, $month,
-        $days + 1, intdiv($minutes, 60), $minutes % 60);
+    while ($days >= daysInMonth($year, $month)) $days -= daysInMonth($year, $month++);
+    return sprintf('%d-%02d-%02d %02d:%02d', $year, $month, $days + 1,
+        intdiv($rest, 3600), intdiv($rest % 3600, 60));
 }
 
-function normalize_path(string $path): string
+function normalizePath(string $raw): string
 {
     $parts = [];
-    foreach (explode('/', explode('?', $path, 2)[0]) as $part) {
-        if ($part === '..') {
-            array_pop($parts);
-        } elseif ($part !== '' && $part !== '.') {
-            $parts[] = $part;
-        }
+    foreach (explode('/', explode('?', $raw, 2)[0]) as $part) {
+        if ($part === '..') array_pop($parts);
+        elseif ($part !== '' && $part !== '.') $parts[] = $part;
     }
-    foreach ($parts as &$part) {
-        if (digits($part)) {
-            $part = '{id}';
-        } elseif (strlen($part) >= 8 &&
-            preg_match('/^[0-9a-f]+$/D', $part) === 1 &&
-            preg_match('/[0-9]/', $part) === 1) {
-            $part = '{hex}';
-        }
-    }
-    unset($part);
-    return '/' . implode('/', $parts);
+    return '/' . implode('/', array_map(static function (string $part): string {
+        if (validDigits($part)) return '{id}';
+        if (strlen($part) >= 8 && preg_match('/\A[0-9a-f]+\z/', $part) === 1 &&
+            preg_match('/[0-9]/', $part) === 1) return '{hex}';
+        return $part;
+    }, $parts));
 }
 
-function compare_ip(string $a, string $b): int
+function compareIP(string $a, string $b): int
 {
-    $x = array_map('intval', explode('.', $a));
-    $y = array_map('intval', explode('.', $b));
-    for ($i = 0; $i < 4; $i++) {
-        if ($x[$i] !== $y[$i]) return $x[$i] <=> $y[$i];
+    $left = array_map('intval', explode('.', $a));
+    $right = array_map('intval', explode('.', $b));
+    for ($i = 0; $i < 4; ++$i) {
+        if ($left[$i] !== $right[$i]) return $left[$i] <=> $right[$i];
     }
     return 0;
 }
 
-function status_matches(string $filter, int $status): bool
-{
-    return in_array($filter, CLASSES, true) ?
-        intdiv($status, 100) === (int)$filter[0] : $status === (int)$filter;
-}
-
-function decimal_value(int $numerator, int $denominator, int $places): string
+function decimal(int $numerator, int $denominator, int $places): string
 {
     $scale = 10 ** $places;
     $value = intdiv($numerator * $scale, $denominator);
-    return intdiv($value, $scale) . '.' .
-        str_pad((string)($value % $scale), $places, '0', STR_PAD_LEFT);
+    return intdiv($value, $scale) . '.' . str_pad((string)($value % $scale), $places, '0', STR_PAD_LEFT);
 }
 
-function percentage(int $part, int $total): string
+function percentage(int $numerator, int $denominator): string
 {
-    return decimal_value($part * 100, $total, 2) . '%';
+    return decimal($numerator * 100, $denominator, 2) . '%';
 }
 
-function bar(int $count, int $max): string
+function bar(int $count, int $maximum): string
 {
-    return str_repeat('#', intdiv($count * 30 + $max - 1, $max));
+    return str_repeat('#', intdiv($count * 30 + $maximum - 1, $maximum));
 }
 
-function bytes_text(int $bytes): string
+function sizeNotation(int $bytes): string
 {
-    foreach ([[1073741824, 'GB'], [1048576, 'MB'], [1024, 'KB']] as [$unit, $label]) {
-        if ($bytes >= $unit) return decimal_value($bytes, $unit, 1) . $label;
+    foreach ([[1073741824, 'GB'], [1048576, 'MB'], [1024, 'KB']] as [$base, $unit]) {
+        if ($bytes >= $base) return decimal($bytes, $base, 1) . $unit;
     }
     return $bytes . 'B';
 }
 
-function sum_property(array $rows, string $key): int
+function statusCounts(array $records): array
 {
-    $sum = 0;
-    foreach ($rows as $row) $sum += $row[$key];
-    return $sum;
+    $counts = array_fill(0, 5, 0);
+    foreach ($records as $r) ++$counts[intdiv($r->status, 100) - 1];
+    return $counts;
 }
 
-function tallied(array $values): array
+function tally(array $records, callable $key): array
 {
-    $result = [];
-    foreach ($values as $value) {
-        $result[$value] = ($result[$value] ?? 0) + 1;
+    $counts = [];
+    foreach ($records as $r) {
+        $value = $key($r);
+        $counts[$value] = ($counts[$value] ?? 0) + 1;
     }
-    return $result;
+    return $counts;
 }
 
-function field_values(array $rows, string $field): array
+function grouped(array $records, callable $key): array
 {
-    return array_map(static fn($row) => $row[$field], $rows);
+    $groups = [];
+    foreach ($records as $r) $groups[$key($r)][] = $r;
+    return $groups;
 }
 
-function grouped(array $rows, callable $key): array
-{
-    $result = [];
-    foreach ($rows as $row) {
-        $value = $key($row);
-        $result[$value][] = $row;
-    }
-    return $result;
-}
-
-function by_count(array $counts, ?callable $compare = null): array
+function orderedByCount(array $counts, ?callable $tie = null): array
 {
     $keys = array_keys($counts);
-    $compare ??= 'strcmp';
-    usort($keys, static function ($a, $b) use ($counts, $compare): int {
-        $n = $counts[$b] <=> $counts[$a];
-        return $n !== 0 ? $n : $compare((string)$a, (string)$b);
+    usort($keys, static function ($a, $b) use ($counts, $tie): int {
+        $cmp = $counts[$b] <=> $counts[$a];
+        if ($cmp !== 0) return $cmp;
+        return $tie ? $tie((string)$a, (string)$b) : strcmp((string)$a, (string)$b);
     });
     return $keys;
-}
-
-function class_counts(array $rows): array
-{
-    $counts = [0, 0, 0, 0, 0];
-    foreach ($rows as $row) $counts[intdiv($row['status'], 100) - 1]++;
-    return $counts;
 }
 
 function buckets(array $numbers): array
 {
     $first = min($numbers);
-    $length = max($numbers) - $first + 1;
-    require_condition($length <= 60, 'too many buckets');
-    $counts = array_fill(0, $length, 0);
-    foreach ($numbers as $number) $counts[$number - $first]++;
+    $last = max($numbers);
+    check($last - $first + 1 <= 60, 'too many buckets');
+    $counts = array_fill(0, $last - $first + 1, 0);
+    foreach ($numbers as $n) ++$counts[$n - $first];
     return [$first, $counts];
 }
 
@@ -316,533 +266,446 @@ function percentile(array $sorted, int $rank): int
     return $sorted[intdiv($rank * count($sorted) + 99, 100) - 1];
 }
 
-function window_peak(array $rows, int $length): array
+function bestWindow(array $records, int $length): array
 {
-    $best = 0;
-    $start = 0;
-    $end = 0;
+    $size = 0;
+    $start = $end = null;
     $first = 0;
-    $size = count($rows);
-    for ($i = 0; $i < $size; $i++) {
-        while ($rows[$i]['seconds'] - $rows[$first]['seconds'] >= $length) $first++;
-        if ($i - $first + 1 > $best) {
-            $best = $i - $first + 1;
-            $start = $first;
-            $end = $i;
+    foreach ($records as $last => $r) {
+        while ($r->seconds - $records[$first]->seconds >= $length) ++$first;
+        if ($last - $first + 1 > $size) {
+            $size = $last - $first + 1;
+            $start = $records[$first];
+            $end = $r;
         }
     }
-    return ['count' => $best, 'start' => $rows[$start], 'end' => $rows[$end]];
+    return [$size, $start, $end];
 }
 
-function apdex_score(array $rows, int $threshold): array
+function apdex(array $records, int $threshold): array
 {
-    $satisfied = 0;
-    $tolerating = 0;
-    foreach ($rows as $row) {
-        if ($row['status'] >= 500) continue;
-        if ($row['latency'] <= $threshold) $satisfied++;
-        elseif ($row['latency'] <= 4 * $threshold) $tolerating++;
+    $sat = $tol = 0;
+    foreach ($records as $r) {
+        if ($r->status >= 500) continue;
+        if ($r->latency <= $threshold) ++$sat;
+        elseif ($r->latency <= 4 * $threshold) ++$tol;
     }
-    $size = count($rows);
-    $points = 2 * $satisfied + $tolerating;
-    $total = 2 * $size;
-    $rating = match (true) {
-        $points * 100 >= 94 * $total => 'excellent',
-        $points * 100 >= 85 * $total => 'good',
-        $points * 100 >= 70 * $total => 'fair',
-        $points * 100 >= 50 * $total => 'poor',
-        default => 'unacceptable'
-    };
-    return [
-        'count' => $size, 'satisfied' => $satisfied, 'tolerating' => $tolerating,
-        'frustrated' => $size - $satisfied - $tolerating, 'points' => $points,
-        'total' => $total, 'notation' => decimal_value($points, $total, 3),
-        'rating' => $rating
-    ];
+    $count = count($records);
+    $frustrated = $count - $sat - $tol;
+    $points = 2 * $sat + $tol;
+    $total = 2 * $count;
+    $rating = 'unacceptable';
+    foreach ([[94, 'excellent'], [85, 'good'], [70, 'fair'], [50, 'poor']] as [$minimum, $name]) {
+        if ($points * 100 >= $minimum * $total) { $rating = $name; break; }
+    }
+    return [decimal($points, $total, 3), $rating, $sat, $tol,
+        $frustrated, $count, $points, $total];
+}
+
+final class LogRecord
+{
+    public string $date;
+    public string $timestamp;
+    public string $ip;
+    public string $method;
+    public string $path;
+    public int $hour;
+    public int $seconds;
+    public int $status;
+    public int $size;
+    public int $latency;
+
+    public function __construct(public int $line, array $fields)
+    {
+        [$date, $clock, $this->ip, $this->method, $rawPath, $status, $size, $latency] = $fields;
+        $this->date = $date;
+        $this->timestamp = $date . ' ' . $clock;
+        $this->hour = (int)substr($clock, 0, 2);
+        $this->seconds = secondsOf($date, $clock);
+        $this->path = normalizePath($rawPath);
+        $this->status = (int)$status;
+        $this->size = (int)$size;
+        $this->latency = (int)$latency;
+    }
 }
 
 final class LogAnalyzer
 {
     private array $records = [];
     private array $malformed = [];
+    private array $conditions = [];
+    private ?array $range = null;
+    private array $output = [];
     private int $lineCount;
-    private array $conditions = ['METHOD' => null, 'STATUS' => null, 'IP' => null, 'PATH' => null];
-    private ?int $rangeStart = null;
-    private ?int $rangeEnd = null;
-    private ?string $startLabel = null;
-    private ?string $endLabel = null;
-    public array $output = [];
 
     public function __construct(array $lines)
     {
         $this->lineCount = count($lines);
-        foreach ($lines as $i => $line) {
-            $fields = tokens($line);
-            $reason = malformed_reason($fields);
-            if ($reason !== null) {
-                $this->malformed[] = ['line' => $i + 1, 'reason' => $reason];
-                continue;
-            }
-            $this->records[] = [
-                'line' => $i + 1, 'date' => $fields[0],
-                'timestamp' => $fields[0] . ' ' . $fields[1],
-                'hour' => (int)substr($fields[1], 0, 2),
-                'seconds' => seconds_of($fields[0], $fields[1]),
-                'ip' => $fields[2], 'method' => $fields[3],
-                'path' => normalize_path($fields[4]), 'status' => (int)$fields[5],
-                'bytes' => (int)$fields[6], 'latency' => (int)$fields[7]
-            ];
+        foreach ($lines as $index => $line) {
+            $fields = preg_split('/\s+/', trim($line));
+            $reason = malformedReason($fields);
+            if ($reason === null) $this->records[] = new LogRecord($index + 1, $fields);
+            else $this->malformed[] = [$index + 1, $reason];
         }
-        usort($this->records, static fn($a, $b) =>
-            ($a['seconds'] <=> $b['seconds']) ?: ($a['line'] <=> $b['line']));
+        usort($this->records, static fn(LogRecord $a, LogRecord $b): int =>
+            ($a->seconds <=> $b->seconds) ?: ($a->line <=> $b->line));
+        foreach (FILTER_KEYS as $key) $this->conditions[$key] = null;
     }
 
-    private function emit(mixed ...$parts): void
+    private function emit(...$parts): void
     {
         $this->output[] = implode(' ', array_map('strval', $parts));
     }
 
+    private function barLine(string $label, int $count, int $maximum): void
+    {
+        if ($count) $this->emit($label, $count, bar($count, $maximum));
+        else $this->emit($label, 0);
+    }
+
     private function selected(): array
     {
-        return array_values(array_filter($this->records, function ($row): bool {
-            if ($this->rangeStart !== null &&
-                ($row['seconds'] < $this->rangeStart ||
-                 $row['seconds'] > $this->rangeEnd)) return false;
-            if ($this->conditions['METHOD'] !== null &&
-                $row['method'] !== $this->conditions['METHOD']) return false;
-            if ($this->conditions['STATUS'] !== null &&
-                !status_matches($this->conditions['STATUS'], $row['status'])) return false;
-            if ($this->conditions['IP'] !== null &&
-                $row['ip'] !== $this->conditions['IP']) return false;
-            return $this->conditions['PATH'] === null ||
-                $row['path'] === $this->conditions['PATH'];
+        return array_values(array_filter($this->records, function (LogRecord $r): bool {
+            if ($this->range !== null &&
+                ($r->seconds < $this->range[2] || $r->seconds > $this->range[3])) return false;
+            if ($this->conditions['METHOD'] !== null && $r->method !== $this->conditions['METHOD']) return false;
+            if ($this->conditions['STATUS'] !== null) {
+                $status = $this->conditions['STATUS'];
+                if (in_array($status, STATUS_CLASSES, true)) {
+                    if (intdiv($r->status, 100) !== (int)$status[0]) return false;
+                } elseif ($r->status !== (int)$status) return false;
+            }
+            if ($this->conditions['IP'] !== null && $r->ip !== $this->conditions['IP']) return false;
+            return $this->conditions['PATH'] === null || $r->path === $this->conditions['PATH'];
         }));
     }
 
-    private function barLine(string $label, int $count, int $maximum): void
+    public function run(string $line): void
     {
-        if ($count === 0) $this->emit($label, $count);
-        else $this->emit($label, $count, bar($count, $maximum));
-    }
-
-    public function execute(string $line): void
-    {
-        $fields = tokens($line);
-        $name = array_shift($fields) ?? '';
-        $args = $fields;
+        $tokens = preg_split('/\s+/', trim($line));
+        $name = array_shift($tokens);
         try {
-            require_condition(array_key_exists($name, FORMS), 'unknown query');
-            $form = FORMS[$name];
-            $optional = ($name === 'LATENCY' || $name === 'SESSIONS') &&
-                count($args) === count($form) - 1;
-            require_condition(count($args) === count($form) || $optional, 'wrong arguments');
-            foreach ($args as $i => $arg) {
-                require_condition(valid_argument($form[$i], $arg, $args), ERRORS[$form[$i]]);
+            check(array_key_exists($name, QUERY_FORMS), 'unknown query');
+            $form = QUERY_FORMS[$name];
+            $size = count($form);
+            $optional = in_array($name, OPTIONAL_LAST, true) && count($tokens) === $size - 1;
+            check(count($tokens) === $size || $optional, 'wrong arguments');
+            foreach ($tokens as $i => $argument) {
+                $kind = $form[$i];
+                check(validArgument($kind, $argument, $tokens), ARGUMENT_ERRORS[$kind]);
             }
-            $rows = $this->selected();
-            if (in_array($name, REQUIRES_RECORDS, true) && $rows === []) {
+            $records = $this->selected();
+            if (in_array($name, NEEDS_TARGETS, true) && !$records) {
                 $this->emit($name, 'no records');
                 return;
             }
-            $this->run($name, $args, $rows);
-        } catch (QueryError $error) {
+            $this->command($name, $tokens, $records);
+        } catch (CommandError $error) {
             $this->emit('ERROR', $error->getMessage());
         }
     }
 
-    private function run(string $name, array $a, array $rows): void
+    private function command(string $name, array $a, array $records): void
     {
+        $count = count($records);
         switch ($name) {
             case 'SUMMARY':
-                $this->emit('SUMMARY', 'lines', $this->lineCount, 'valid',
-                    count($this->records), 'malformed', count($this->malformed));
-                $this->emit('requests', count($rows), 'bytes', sum_property($rows, 'bytes'),
-                    'ips', count(array_unique(field_values($rows, 'ip'))),
-                    'paths', count(array_unique(field_values($rows, 'path'))));
-                if ($rows === []) $this->emit('span', 'none');
-                else $this->emit('span', $rows[0]['timestamp'], $rows[count($rows)-1]['timestamp'],
-                    $rows[count($rows)-1]['seconds'] - $rows[0]['seconds']);
+                $this->emit('SUMMARY', 'lines', $this->lineCount, 'valid', count($this->records),
+                    'malformed', count($this->malformed));
+                $this->emit('requests', $count, 'bytes', array_sum(array_map(static fn($r) => $r->size, $records)),
+                    'ips', count(array_unique(array_map(static fn($r) => $r->ip, $records))),
+                    'paths', count(array_unique(array_map(static fn($r) => $r->path, $records))));
+                if (!$records) $this->emit('span', 'none');
+                else {
+                    $last = $records[$count - 1];
+                    $this->emit('span', $records[0]->timestamp, $last->timestamp, $last->seconds - $records[0]->seconds);
+                }
                 break;
-
             case 'MALFORMED':
                 $this->emit('MALFORMED', count($this->malformed));
                 foreach (REASONS as $reason) {
-                    $lines = array_column(array_values(array_filter($this->malformed,
-                        static fn($row) => $row['reason'] === $reason)), 'line');
-                    if ($lines !== []) $this->emit($reason, count($lines), ...$lines);
+                    $numbers = [];
+                    foreach ($this->malformed as [$index, $cause]) {
+                        if ($cause === $reason) $numbers[] = $index;
+                    }
+                    if ($numbers) $this->emit($reason, count($numbers), ...$numbers);
                 }
                 break;
-
             case 'STATUS':
-                $this->emit('STATUS', count($rows));
-                $classes = class_counts($rows);
-                foreach (CLASSES as $i => $label) {
-                    $this->emit($label, $classes[$i], percentage($classes[$i], count($rows)));
+                $this->emit('STATUS', $count);
+                foreach (statusCounts($records) as $i => $total) {
+                    $this->emit(STATUS_CLASSES[$i], $total, percentage($total, $count));
                 }
-                $statuses = tallied(field_values($rows, 'status'));
+                $statuses = tally($records, static fn($r) => $r->status);
                 ksort($statuses, SORT_NUMERIC);
-                foreach ($statuses as $status => $count) {
-                    $this->emit($status, $count, percentage($count, count($rows)));
-                }
+                foreach ($statuses as $status => $total) $this->emit($status, $total, percentage($total, $count));
                 break;
-
             case 'METHODS':
-                $counts = tallied(field_values($rows, 'method'));
-                $this->emit('METHODS', count($rows));
-                foreach (by_count($counts) as $method) {
-                    $this->emit($method, $counts[$method],
-                        percentage($counts[$method], count($rows)));
+                $totals = tally($records, static fn($r) => $r->method);
+                $this->emit('METHODS', $count);
+                foreach (orderedByCount($totals) as $method) {
+                    $this->emit($method, $totals[$method], percentage($totals[$method], $count));
                 }
                 break;
-
             case 'TOP':
-                $kind = $a[0];
-                $counts = tallied(array_map(
-                    static fn($row) => $kind === 'PATHS' ? $row['path'] : $row['ip'], $rows));
-                $keys = by_count($counts, $kind === 'IPS' ? 'compare_ip' : null);
-                $limit = min((int)$a[1], count($keys));
-                $this->emit('TOP', $kind, $limit, 'of', count($keys));
+                [$kind, $limit] = $a;
+                $totals = tally($records, static fn($r) => $kind === 'PATHS' ? $r->path : $r->ip);
+                $keys = orderedByCount($totals, $kind === 'IPS' ? 'compareIP' : null);
+                $shown = min((int)$limit, count($keys));
+                $this->emit('TOP', $kind, $shown, 'of', count($keys));
                 $rank = 0;
-                for ($i = 0; $i < $limit; $i++) {
-                    if ($i === 0 || $counts[$keys[$i]] !== $counts[$keys[$i-1]]) $rank = $i+1;
-                    $this->emit($rank, $keys[$i], $counts[$keys[$i]],
-                        percentage($counts[$keys[$i]], count($rows)));
+                for ($i = 0; $i < $shown; ++$i) {
+                    $key = $keys[$i];
+                    if ($i === 0 || $totals[$key] !== $totals[$keys[$i - 1]]) $rank = $i + 1;
+                    $this->emit($rank, $key, $totals[$key], percentage($totals[$key], $count));
                 }
                 break;
-
             case 'HOURLY':
-                $counts = array_fill(0, 24, 0);
-                foreach ($rows as $row) $counts[$row['hour']]++;
-                $maximum = max($counts);
-                $this->emit('HOURLY', count($rows), 'peak',
-                    sprintf('%02d', array_search($maximum, $counts, true)), $maximum);
-                foreach ($counts as $h => $count) {
-                    $this->barLine(sprintf('%02d', $h), $count, $maximum);
-                }
+                $totals = array_fill(0, 24, 0);
+                foreach ($records as $r) ++$totals[$r->hour];
+                $largest = max($totals);
+                $this->emit('HOURLY', $count, 'peak', sprintf('%02d', array_search($largest, $totals, true)), $largest);
+                foreach ($totals as $hour => $total) $this->barLine(sprintf('%02d', $hour), $total, $largest);
                 break;
-
             case 'TIMELINE':
                 $minutes = (int)$a[0];
                 $width = $minutes * 60;
-                [$first, $counts] = buckets(array_map(
-                    static fn($r) => intdiv($r['seconds'], $width), $rows));
-                $this->emit('TIMELINE', $minutes, count($counts));
-                $maximum = max($counts);
-                foreach ($counts as $i => $count) {
-                    $this->barLine(interval_label(($first+$i)*$width), $count, $maximum);
-                }
+                [$first, $totals] = buckets(array_map(static fn($r) => intdiv($r->seconds, $width), $records));
+                $this->emit('TIMELINE', $minutes, count($totals));
+                $largest = max($totals);
+                foreach ($totals as $i => $total) $this->barLine(intervalLabel(($first + $i) * $width), $total, $largest);
                 break;
-
             case 'BANDWIDTH':
-                $days = grouped($rows, static fn($r) => $r['date']);
-                $total = sum_property($rows, 'bytes');
-                $this->emit('BANDWIDTH', count($days), $total, bytes_text($total));
+                $days = grouped($records, static fn($r) => $r->date);
+                $bytes = array_sum(array_map(static fn($r) => $r->size, $records));
+                $this->emit('BANDWIDTH', count($days), $bytes, sizeNotation($bytes));
                 ksort($days, SORT_STRING);
                 foreach ($days as $date => $items) {
-                    $bytes = sum_property($items, 'bytes');
-                    $this->emit($date, count($items), $bytes, bytes_text($bytes));
+                    $amount = array_sum(array_map(static fn($r) => $r->size, $items));
+                    $this->emit($date, count($items), $amount, sizeNotation($amount));
                 }
                 break;
-
             case 'VISITORS':
                 $first = [];
-                foreach ($rows as $row) {
-                    if (!isset($first[$row['ip']]) ||
-                        strcmp($row['date'], $first[$row['ip']]) < 0) {
-                        $first[$row['ip']] = $row['date'];
-                    }
+                foreach ($records as $r) {
+                    if (!isset($first[$r->ip]) || strcmp($r->date, $first[$r->ip]) < 0) $first[$r->ip] = $r->date;
                 }
-                $days = grouped($rows, static fn($r) => $r['date']);
+                $days = grouped($records, static fn($r) => $r->date);
                 $this->emit('VISITORS', count($days), count($first));
                 ksort($days, SORT_STRING);
                 foreach ($days as $date => $items) {
-                    $ips = array_unique(field_values($items, 'ip'));
-                    $new = 0;
-                    foreach ($ips as $ip) if ($first[$ip] === $date) $new++;
-                    $this->emit($date, 'unique', count($ips), 'new', $new,
-                        'returning', count($ips) - $new);
+                    $ips = array_unique(array_map(static fn($r) => $r->ip, $items));
+                    $new = count(array_filter($ips, static fn($ip) => $first[$ip] === $date));
+                    $this->emit($date, 'unique', count($ips), 'new', $new, 'returning', count($ips) - $new);
                 }
                 break;
-
             case 'LATENCY':
-                $label = $a === [] ? 'all' : normalize_path($a[0]);
-                $selected = $a === [] ? $rows : array_values(array_filter(
-                    $rows, static fn($r) => $r['path'] === $label));
-                if ($selected === []) {
-                    $this->emit('LATENCY', 'no records');
-                    break;
-                }
-                $values = field_values($selected, 'latency');
-                sort($values, SORT_NUMERIC);
-                $count = count($values);
-                $trim = intdiv($count, 10);
-                $trimmed = array_slice($values, $trim, $count-2*$trim);
-                $this->emit('LATENCY', $label, 'count', $count,
-                    'min', $values[0], 'p50', percentile($values, 50),
-                    'p90', percentile($values, 90), 'p99', percentile($values, 99),
-                    'max', $values[$count-1],
-                    'mean', decimal_value(array_sum($values), $count, 2),
-                    'trimmed', decimal_value(array_sum($trimmed), count($trimmed), 2));
+                $label = $a ? normalizePath($a[0]) : 'all';
+                $items = $a ? array_values(array_filter($records, static fn($r) => $r->path === $label)) : $records;
+                if (!$items) { $this->emit('LATENCY', 'no records'); break; }
+                $times = array_map(static fn($r) => $r->latency, $items);
+                sort($times, SORT_NUMERIC);
+                $n = count($times);
+                $trim = intdiv($n, 10);
+                $trimmed = array_slice($times, $trim, $n - 2 * $trim);
+                $this->emit('LATENCY', $label, 'count', $n, 'min', $times[0],
+                    'p50', percentile($times, 50), 'p90', percentile($times, 90),
+                    'p99', percentile($times, 99), 'max', $times[$n - 1],
+                    'mean', decimal(array_sum($times), $n, 2),
+                    'trimmed', decimal(array_sum($trimmed), count($trimmed), 2));
                 break;
-
             case 'HISTOGRAM':
                 $width = (int)$a[0];
-                [$first, $counts] = buckets(array_map(
-                    static fn($r) => intdiv($r['latency'], $width), $rows));
-                $this->emit('HISTOGRAM', $width, count($counts));
-                $maximum = max($counts);
-                foreach ($counts as $i => $count) {
-                    $lo = ($first+$i)*$width;
-                    $this->barLine($lo . '-' . ($lo+$width-1), $count, $maximum);
+                [$first, $totals] = buckets(array_map(static fn($r) => intdiv($r->latency, $width), $records));
+                $this->emit('HISTOGRAM', $width, count($totals));
+                $largest = max($totals);
+                foreach ($totals as $i => $total) {
+                    $low = ($first + $i) * $width;
+                    $this->barLine($low . '-' . ($low + $width - 1), $total, $largest);
                 }
                 break;
-
             case 'APDEX':
                 $threshold = (int)$a[0];
-                $overall = apdex_score($rows, $threshold);
-                $this->emit('APDEX', $threshold, $overall['notation'], $overall['rating'],
-                    'satisfied', $overall['satisfied'], 'tolerating',
-                    $overall['tolerating'], 'frustrated', $overall['frustrated']);
-                $paths = [];
-                foreach (grouped($rows, static fn($r) => $r['path']) as $path => $items) {
-                    $paths[] = ['path' => $path] + apdex_score($items, $threshold);
-                }
-                usort($paths, static function ($x, $y) {
-                    $order = $x['points']*$y['total'] <=> $y['points']*$x['total'];
-                    return $order ?: (($y['count'] <=> $x['count']) ?:
-                        strcmp($x['path'], $y['path']));
+                [$notation, $rating, $sat, $tol, $frustrated] = apdex($records, $threshold);
+                $this->emit('APDEX', $threshold, $notation, $rating, 'satisfied', $sat,
+                    'tolerating', $tol, 'frustrated', $frustrated);
+                $groups = grouped($records, static fn($r) => $r->path);
+                $scores = [];
+                foreach ($groups as $path => $items) $scores[] = [$path, apdex($items, $threshold)];
+                usort($scores, static function (array $a, array $b): int {
+                    $x = $a[1]; $y = $b[1];
+                    return ($x[6] * $y[7] <=> $y[6] * $x[7]) ?: ($y[5] <=> $x[5]) ?: strcmp($a[0], $b[0]);
                 });
-                foreach ($paths as $row) {
-                    $this->emit($row['path'], $row['notation'], $row['rating'], $row['count']);
-                }
+                foreach ($scores as [$path, $score]) $this->emit($path, $score[0], $score[1], $score[5]);
                 break;
-
             case 'ERRORS':
-                $failed = count(array_filter($rows, static fn($r) => $r['status'] >= 400));
-                $this->emit('ERRORS', $failed, 'of', count($rows),
-                    percentage($failed, count($rows)));
-                $paths = [];
-                foreach (grouped($rows, static fn($r) => $r['path']) as $path => $items) {
-                    $client = 0;
-                    $server = 0;
-                    foreach ($items as $row) {
-                        if (intdiv($row['status'], 100) === 4) $client++;
-                        if (intdiv($row['status'], 100) === 5) $server++;
-                    }
-                    if ($client+$server > 0) {
-                        $paths[] = ['path'=>$path, 'count'=>count($items),
-                            'client'=>$client, 'server'=>$server];
-                    }
+                $failed = count(array_filter($records, static fn($r) => $r->status >= 400));
+                $this->emit('ERRORS', $failed, 'of', $count, percentage($failed, $count));
+                $groups = grouped($records, static fn($r) => $r->path);
+                $rows = [];
+                foreach ($groups as $path => $items) {
+                    $client = count(array_filter($items, static fn($r) => intdiv($r->status, 100) === 4));
+                    $server = count(array_filter($items, static fn($r) => intdiv($r->status, 100) === 5));
+                    if ($client + $server > 0) $rows[] = [$path, count($items), $client, $server];
                 }
-                usort($paths, static function ($x, $y) {
-                    $xf = $x['client'] + $x['server'];
-                    $yf = $y['client'] + $y['server'];
-                    return ($yf*$x['count'] <=> $xf*$y['count']) ?:
-                        (($yf <=> $xf) ?: strcmp($x['path'], $y['path']));
+                usort($rows, static function (array $a, array $b): int {
+                    $f1 = $a[2] + $a[3];
+                    $f2 = $b[2] + $b[3];
+                    return ($f2 * $a[1] <=> $f1 * $b[1]) ?: ($f2 <=> $f1) ?: strcmp($a[0], $b[0]);
                 });
-                foreach ($paths as $row) {
-                    $this->emit($row['path'], $row['count'], $row['client'],
-                        $row['server'], percentage(
-                            $row['client']+$row['server'], $row['count']));
+                foreach ($rows as [$path, $n, $client, $server]) {
+                    $this->emit($path, $n, $client, $server, percentage($client + $server, $n));
                 }
                 break;
-
             case 'SLOWEST':
-                $endpointGroups = grouped($rows, static fn($r) =>
-                    $r['method'] . "\x01" . $r['path']);
-                $endpoints = [];
-                foreach ($endpointGroups as $name => $items) {
-                    [$method, $path] = explode("\x01", $name, 2);
-                    $endpoints[] = ['method'=>$method, 'path'=>$path,
-                        'count'=>count($items), 'sum'=>sum_property($items, 'latency'),
-                        'maximum'=>max(field_values($items, 'latency'))];
+                $groups = grouped($records, static fn($r) => $r->method . "\x1F" . $r->path);
+                $rows = [];
+                foreach ($groups as $key => $items) {
+                    [$method, $path] = explode("\x1F", $key, 2);
+                    $rows[] = [$method, $path, count($items),
+                        array_sum(array_map(static fn($r) => $r->latency, $items)),
+                        max(array_map(static fn($r) => $r->latency, $items))];
                 }
-                usort($endpoints, static function ($x, $y) {
-                    $n = $y['sum']*$x['count'] <=> $x['sum']*$y['count'];
-                    if ($n !== 0) return $n;
-                    $n = $y['maximum'] <=> $x['maximum'];
-                    if ($n !== 0) return $n;
-                    return strcmp($x['path'], $y['path']) ?:
-                        strcmp($x['method'], $y['method']);
-                });
-                $limit = min((int)$a[0], count($endpoints));
-                $this->emit('SLOWEST', $limit, 'of', count($endpoints));
-                for ($i=0; $i<$limit; $i++) {
-                    $row=$endpoints[$i];
-                    $this->emit($i+1, $row['method'], $row['path'],
-                        'count', $row['count'],
-                        'avg', decimal_value($row['sum'], $row['count'], 2),
-                        'max', $row['maximum']);
+                usort($rows, static fn(array $a, array $b): int =>
+                    ($b[3] * $a[2] <=> $a[3] * $b[2]) ?: ($b[4] <=> $a[4]) ?:
+                    strcmp($a[1], $b[1]) ?: strcmp($a[0], $b[0]));
+                $shown = min((int)$a[0], count($rows));
+                $this->emit('SLOWEST', $shown, 'of', count($rows));
+                foreach (array_slice($rows, 0, $shown) as $i => [$method, $path, $n, $sum, $max]) {
+                    $this->emit($i + 1, $method, $path, 'count', $n,
+                        'avg', decimal($sum, $n, 2), 'max', $max);
                 }
                 break;
-
             case 'SESSIONS':
                 $ip = $a[0];
-                $minutes = count($a)>1 ? (int)$a[1] : 30;
-                $found = array_values(array_filter($rows,
-                    static fn($r) => $r['ip'] === $ip));
-                if ($found === []) {
-                    $this->emit('SESSIONS', 'no records');
-                    break;
+                $minutes = isset($a[1]) ? (int)$a[1] : 30;
+                $items = array_values(array_filter($records, static fn($r) => $r->ip === $ip));
+                if (!$items) { $this->emit('SESSIONS', 'no records'); break; }
+                $sessions = [[$items[0]]];
+                for ($i = 1, $n = count($items); $i < $n; ++$i) {
+                    $last = count($sessions) - 1;
+                    if ($items[$i]->seconds - $items[$i - 1]->seconds <= $minutes * 60)
+                        $sessions[$last][] = $items[$i];
+                    else $sessions[] = [$items[$i]];
                 }
-                $sessions = [[$found[0]]];
-                for ($i=1; $i<count($found); $i++) {
-                    $j = count($sessions)-1;
-                    if ($found[$i]['seconds']-$found[$i-1]['seconds'] <= $minutes*60) {
-                        $sessions[$j][] = $found[$i];
-                    } else $sessions[] = [$found[$i]];
-                }
-                $duration = 0;
-                foreach ($sessions as $session) {
-                    $duration += $session[count($session)-1]['seconds']-$session[0]['seconds'];
-                }
-                $this->emit('SESSIONS', $ip, 'timeout', $minutes,
-                    'count', count($sessions), 'requests', count($found),
-                    'avg_duration', decimal_value($duration, count($sessions), 1),
-                    'avg_requests', decimal_value(count($found), count($sessions), 1));
+                $durations = 0;
+                foreach ($sessions as $session) $durations += end($session)->seconds - $session[0]->seconds;
+                $this->emit('SESSIONS', $ip, 'timeout', $minutes, 'count', count($sessions),
+                    'requests', count($items), 'avg_duration', decimal($durations, count($sessions), 1),
+                    'avg_requests', decimal(count($items), count($sessions), 1));
                 foreach ($sessions as $i => $session) {
-                    $first = $session[0];
-                    $last = $session[count($session)-1];
-                    $this->emit($i+1, $first['timestamp'], $last['timestamp'],
-                        $last['seconds']-$first['seconds'], count($session),
-                        count(array_unique(field_values($session, 'path'))));
+                    $first = $session[0]; $last = end($session);
+                    $paths = array_unique(array_map(static fn($r) => $r->path, $session));
+                    $this->emit($i + 1, $first->timestamp, $last->timestamp,
+                        $last->seconds - $first->seconds, count($session), count($paths));
                 }
                 break;
-
             case 'BURST':
-                $length = (int)$a[0];
-                $threshold = (int)$a[1];
-                $groups = grouped(array_values(array_filter($rows,
-                    static fn($r) => $r['status'] >= 400)), static fn($r) => $r['ip']);
-                $peaks = [];
+                [$length, $times] = array_map('intval', $a);
+                $groups = grouped(array_values(array_filter($records, static fn($r) => $r->status >= 400)),
+                    static fn($r) => $r->ip);
+                $rows = [];
                 foreach ($groups as $ip => $items) {
-                    $window = window_peak($items, $length);
-                    if ($window['count'] >= $threshold) {
-                        $peaks[] = ['ip'=>$ip] + $window;
-                    }
+                    [$size, $first, $last] = bestWindow($items, $length);
+                    if ($size >= $times) $rows[] = [$ip, $size, $first, $last];
                 }
-                usort($peaks, static fn($x, $y) =>
-                    ($y['count'] <=> $x['count']) ?: compare_ip($x['ip'], $y['ip']));
-                $this->emit('BURST', $length, $threshold, count($peaks));
-                foreach ($peaks as $p) {
-                    $this->emit($p['ip'], $p['count'],
-                        $p['start']['timestamp'], $p['end']['timestamp']);
+                usort($rows, static fn(array $a, array $b): int =>
+                    ($b[1] <=> $a[1]) ?: compareIP($a[0], $b[0]));
+                $this->emit('BURST', $length, $times, count($rows));
+                foreach ($rows as [$ip, $size, $first, $last]) {
+                    $this->emit($ip, $size, $first->timestamp, $last->timestamp);
                 }
                 break;
-
             case 'PEAK':
                 $length = (int)$a[0];
-                $peak = window_peak($rows, $length);
-                $this->emit('PEAK', $length, $peak['count'],
-                    $peak['start']['timestamp'], $peak['end']['timestamp']);
+                [$size, $first, $last] = bestWindow($records, $length);
+                $this->emit('PEAK', $length, $size, $first->timestamp, $last->timestamp);
                 break;
-
             case 'GAPS':
                 $length = (int)$a[0];
                 $gaps = [];
-                for ($i=1; $i<count($rows); $i++) {
-                    if ($rows[$i]['seconds']-$rows[$i-1]['seconds'] >= $length) {
-                        $gaps[] = [$rows[$i-1], $rows[$i]];
-                    }
+                for ($i = 1; $i < $count; ++$i) {
+                    if ($records[$i]->seconds - $records[$i - 1]->seconds >= $length)
+                        $gaps[] = [$records[$i - 1], $records[$i]];
                 }
                 $this->emit('GAPS', $length, count($gaps));
                 foreach ($gaps as [$before, $after]) {
-                    $this->emit($before['timestamp'], $after['timestamp'],
-                        $after['seconds']-$before['seconds']);
+                    $this->emit($before->timestamp, $after->timestamp, $after->seconds - $before->seconds);
                 }
                 break;
-
             case 'IP':
                 $ip = $a[0];
-                $found = array_values(array_filter($rows,
-                    static fn($r) => $r['ip'] === $ip));
-                if ($found === []) {
-                    $this->emit('IP', 'no records');
-                    break;
-                }
-                $paths = tallied(field_values($found, 'path'));
-                $this->emit('IP', $ip, 'requests', count($found),
-                    'bytes', sum_property($found, 'bytes'),
-                    'errors', count(array_filter($found, static fn($r) => $r['status'] >= 400)),
+                $items = array_values(array_filter($records, static fn($r) => $r->ip === $ip));
+                if (!$items) { $this->emit('IP', 'no records'); break; }
+                $paths = tally($items, static fn($r) => $r->path);
+                $this->emit('IP', $ip, 'requests', count($items),
+                    'bytes', array_sum(array_map(static fn($r) => $r->size, $items)),
+                    'errors', count(array_filter($items, static fn($r) => $r->status >= 400)),
                     'paths', count($paths));
-                $this->emit('first', $found[0]['timestamp'], 'last',
-                    $found[count($found)-1]['timestamp']);
-                $methods = tallied(field_values($found, 'method'));
-                $line = ['methods'];
-                foreach (by_count($methods) as $method) {
-                    $line[] = $method;
-                    $line[] = $methods[$method];
-                }
-                $this->emit(...$line);
-                $line = ['classes'];
-                foreach (class_counts($found) as $i=>$count) {
-                    $line[] = CLASSES[$i];
-                    $line[] = $count;
-                }
-                $this->emit(...$line);
-                foreach (array_slice(by_count($paths), 0, 3) as $path) {
+                $this->emit('first', $items[0]->timestamp, 'last', end($items)->timestamp);
+                $methods = tally($items, static fn($r) => $r->method);
+                $parts = ['methods'];
+                foreach (orderedByCount($methods) as $method) array_push($parts, $method, $methods[$method]);
+                $this->emit(...$parts);
+                $parts = ['classes'];
+                foreach (statusCounts($items) as $i => $total) array_push($parts, STATUS_CLASSES[$i], $total);
+                $this->emit(...$parts);
+                foreach (array_slice(orderedByCount($paths), 0, 3) as $path) {
                     $this->emit('path', $path, $paths[$path]);
                 }
                 break;
-
             case 'RANGE':
-                $from = seconds_of($a[0], $a[1]);
-                $to = seconds_of($a[2], $a[3]);
-                require_condition($from <= $to, 'invalid range');
-                $this->rangeStart = $from;
-                $this->rangeEnd = $to;
-                $this->startLabel = $a[0] . ' ' . $a[1];
-                $this->endLabel = $a[2] . ' ' . $a[3];
-                $this->emit('RANGE', $this->startLabel, $this->endLabel,
-                    'active', count($this->selected()));
+                $start = $a[0] . ' ' . $a[1];
+                $end = $a[2] . ' ' . $a[3];
+                $first = secondsOf($a[0], $a[1]);
+                $last = secondsOf($a[2], $a[3]);
+                check($first <= $last, 'invalid range');
+                $this->range = [$start, $end, $first, $last];
+                $this->emit('RANGE', $start, $end, 'active', count($this->selected()));
                 break;
-
             case 'FILTER':
-                $key = $a[0];
-                $value = $key === 'PATH' ? normalize_path($a[1]) : $a[1];
+                [$key, $value] = $a;
+                if ($key === 'PATH') $value = normalizePath($value);
                 $this->conditions[$key] = $value;
                 $this->emit('FILTER', $key, $value, 'active', count($this->selected()));
                 break;
-
             case 'UNFILTER':
                 $key = $a[0];
                 if ($key === 'RANGE') {
-                    require_condition($this->rangeStart !== null, 'not filtered');
-                    $this->rangeStart = $this->rangeEnd = null;
-                    $this->startLabel = $this->endLabel = null;
+                    check($this->range !== null, 'not filtered');
+                    $this->range = null;
                 } else {
-                    require_condition($this->conditions[$key] !== null, 'not filtered');
+                    check($this->conditions[$key] !== null, 'not filtered');
                     $this->conditions[$key] = null;
                 }
                 $this->emit('UNFILTER', $key, 'active', count($this->selected()));
                 break;
-
             case 'RESET':
-                $this->rangeStart = $this->rangeEnd = null;
-                $this->startLabel = $this->endLabel = null;
+                $this->range = null;
                 foreach (FILTER_KEYS as $key) $this->conditions[$key] = null;
                 $this->emit('RESET', 'active', count($this->selected()));
                 break;
-
             case 'STATE':
-                $parts = ['STATE', 'active', count($rows), 'range',
-                    $this->rangeStart === null ? '-' :
-                        $this->startLabel . ' ' . $this->endLabel];
+                $parts = ['STATE', 'active', $count, 'range'];
+                if ($this->range === null) $parts[] = '-';
+                else array_push($parts, $this->range[0], $this->range[1]);
                 foreach (FILTER_KEYS as $key) {
-                    $parts[] = strtolower($key);
-                    $parts[] = $this->conditions[$key] ?? '-';
+                    array_push($parts, strtolower($key), $this->conditions[$key] ?? '-');
                 }
                 $this->emit(...$parts);
                 break;
         }
     }
+
+    public function output(): void
+    {
+        if ($this->output) echo implode("\n", $this->output) . "\n";
+    }
 }
 
 $lines = file('php://stdin', FILE_IGNORE_NEW_LINES);
 $separator = array_search('---', $lines, true);
-$end = array_search('END', $lines, true);
+$finish = array_search('END', array_slice($lines, $separator + 1), true) + $separator + 1;
 $analyzer = new LogAnalyzer(array_slice($lines, 0, $separator));
-for ($i=$separator+1; $i<$end; $i++) $analyzer->execute($lines[$i]);
-if ($analyzer->output !== []) {
-    echo implode("\n", $analyzer->output), "\n";
-}
+for ($i = $separator + 1; $i < $finish; ++$i) $analyzer->run($lines[$i]);
+$analyzer->output();
