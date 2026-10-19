@@ -1,12 +1,14 @@
 #include <algorithm>
 #include <array>
 #include <deque>
+#include <cstdlib>
 #include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -926,7 +928,8 @@ class Game {
                 array<Policy, 4> selected;
                 selected.fill(policies[i]);
                 Simulation s = trial(selected);
-                Number cost = total(vector<Number>(s.costs().begin(), s.costs().end()));
+                auto costs = s.costs();
+                Number cost = accumulate(costs.begin(), costs.end(), Number{0});
                 Fill f = fill_text(s.stages[0].records);
                 Number demand_var = variation(s.demands);
                 vector<Number> factory_orders;
