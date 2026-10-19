@@ -1,3 +1,5 @@
+options(scipen = 999)
+
 methods <- c(
   "NEXTFIT", "FIRSTFIT", "BESTFIT", "WORSTFIT", "ALMOSTWORST",
   "HARMONIC", "KBOUNDED", "FFD", "BFD", "WFD"
