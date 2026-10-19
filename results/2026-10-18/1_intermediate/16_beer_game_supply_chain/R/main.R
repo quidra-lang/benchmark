@@ -308,8 +308,8 @@ generate <- function(arguments) {
   spread <- as.numeric(arguments[3])
   seed <- as.numeric(arguments[4])
   changes <- list()
-  positions <- seq.int(5, length(arguments), by = 3)
-  if (length(arguments) < 5) positions <- integer()
+  positions <- if (length(arguments) > 4)
+    seq.int(5, length(arguments), by = 3) else integer()
   for (position in positions) {
     change <- list(kind = arguments[position],
                    week = as.numeric(arguments[position + 1]),
@@ -322,12 +322,13 @@ generate <- function(arguments) {
   for (week in seq_len(weeks)) {
     level <- base
     for (change in changes) {
-      if (change$kind == "STEP" && week >= change$week)
+      if (change$kind == "STEP" && week >= change$week) {
         level <- level + change$amount
-      else if (change$kind == "PULSE" && week == change$week)
+      } else if (change$kind == "PULSE" && week == change$week) {
         level <- level + change$amount
-      else if (change$kind == "RAMP" && week >= change$week)
+      } else if (change$kind == "RAMP" && week >= change$week) {
         level <- level + change$amount * (week - change$week + 1)
+      }
     }
     if (level < 0) fail(paste("negative level at week", week))
     levels[week] <- level
@@ -564,11 +565,12 @@ run_command <- function(command, a) {
       for (index in 1:4) {
         record <- records[[index]]
         total_cost <- total_cost + record$cost
-        if (record$before == 0 && record$backlog > 0)
+        if (record$before == 0 && record$backlog > 0) {
           emit("STOCKOUT", stage_names[index], "week", simulation$week,
                "backlog", record$backlog)
-        else if (record$before > 0 && record$backlog == 0)
+        } else if (record$before > 0 && record$backlog == 0) {
           emit("RECOVER", stage_names[index], "week", simulation$week)
+        }
       }
     }
     emit("RUN", paste0(first, "-", simulation$week), "demand",
@@ -604,8 +606,11 @@ run_command <- function(command, a) {
     capacity <- if (a[2] == "OFF") NULL else as.numeric(a[2])
     if (!is.null(capacity) && capacity > 10000)
       fail(paste("invalid capacity", a[2]))
-    if (is.na(index)) simulation$plant_capacity <- capacity
-    else simulation$stages[[index]]$capacity <- capacity
+    if (is.na(index)) {
+      simulation$plant_capacity <- capacity
+    } else {
+      simulation$stages[[index]]$capacity <- capacity
+    }
     emit("CAPACITY", a[1], a[2])
   } else if (command == "COST") {
     index <- stage_index(a[1])
@@ -798,8 +803,9 @@ run_command <- function(command, a) {
   }
 }
 
+input <- file("stdin", "r")
 settings <- lapply(1:4, function(index)
-  strsplit(readLines(file("stdin"), n = 1), " ", fixed = TRUE)[[1]])
+  strsplit(readLines(input, n = 1), " ", fixed = TRUE)[[1]])
 game$initials <- lapply(settings, function(tokens)
   list(inventory = as.numeric(tokens[2]),
        quantity = as.numeric(tokens[3]),
@@ -809,7 +815,6 @@ game$initials <- lapply(settings, function(tokens)
        backlog = as.numeric(tokens[7]),
        policy = parse_policy(tokens[-(1:7)])))
 initialize()
-input <- file("stdin", "r")
 repeat {
   line <- readLines(input, n = 1)
   if (!length(line) || line == "END") break
