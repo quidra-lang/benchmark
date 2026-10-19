@@ -23,9 +23,9 @@ private fun decimal(numerator: Long, denominator: Long, places: Int): String {
         (value % scale).toString().padStart(places, '0')
 }
 
-private fun variation(values: List<Int>): Long {
-    val sum = values.sumOf { it.toLong() }
-    val squares = values.sumOf { it.toLong() * it }
+private fun variation(values: List<Long>): Long {
+    val sum = values.sum()
+    val squares = values.sumOf { it * it }
     return values.size.toLong() * squares - sum * sum
 }
 
@@ -63,37 +63,38 @@ private data class Initial(
 )
 
 private data class Record(
-    val received: Int,
-    val incoming: Int,
-    val shipped: Int,
-    val before: Int,
-    val ontime: Int,
-    val inventory: Int,
-    val backlog: Int,
-    var order: Int = 0,
+    val received: Long,
+    val incoming: Long,
+    val shipped: Long,
+    val before: Long,
+    val ontime: Long,
+    val inventory: Long,
+    val backlog: Long,
+    var order: Long = 0,
     var holding: Long = 0,
     var backlogCost: Long = 0,
     var cost: Long = 0
 )
 
-private data class PlantRecord(val incoming: Int, val produced: Int, val backlog: Int)
+private data class PlantRecord(val incoming: Long, val produced: Long, val backlog: Long)
 
 private class Stage(initial: Initial) {
-    var inventory = initial.inventory
-    var backlog = 0
-    val shipping = MutableList(initial.shippingDelay) { initial.quantity }
-    val orders = MutableList(initial.orderDelay) { initial.quantity }
+    var inventory = initial.inventory.toLong()
+    var backlog = 0L
+    val shipping = MutableList(initial.shippingDelay) { initial.quantity.toLong() }
+    val orders = MutableList(initial.orderDelay) { initial.quantity.toLong() }
     var policy = initial.policy
-    var expected = 100 * initial.quantity
+    var expected = 100L * initial.quantity
     var holding = initial.holding
     var backlogRate = initial.backlogRate
     var lot = 1
-    var capacity: Int? = null
+    var capacity: Long? = null
     val records = mutableListOf<Record>()
 
     fun copy(): Stage {
-        val initial = Initial(inventory, 0, 0, 0, holding, backlogRate, policy)
+        val initial = Initial(0, 0, 0, 0, holding, backlogRate, policy)
         val result = Stage(initial)
+        result.inventory = inventory
         result.backlog = backlog
         result.shipping.addAll(shipping)
         result.orders.addAll(orders)
@@ -109,8 +110,8 @@ private class Simulation(val initials: List<Initial>, demands: List<Int>) {
     var week = 0
     val demands = demands.toMutableList()
     val stages = initials.map { Stage(it) }.toMutableList()
-    var plantBacklog = 0
-    var plantCapacity: Int? = null
+    var plantBacklog = 0L
+    var plantCapacity: Long? = null
     val plantRecords = mutableListOf<PlantRecord>()
     var visibility = "OFF"
 
@@ -125,8 +126,8 @@ private class Simulation(val initials: List<Initial>, demands: List<Int>) {
         return result
     }
 
-    fun signal(index: Int, observedWeek: Int, current: List<Int>? = null): Int {
-        if (visibility == "ON") return demands[observedWeek - 1]
+fun signal(index: Int, observedWeek: Int, current: List<Long>? = null): Long {
+        if (visibility == "ON") return demands[observedWeek - 1].toLong()
         if (current != null && observedWeek == week + 1) return current[index]
         return stages[index].records[observedWeek - 1].incoming
     }
@@ -135,13 +136,13 @@ private class Simulation(val initials: List<Initial>, demands: List<Int>) {
         val stage = stages[index]
         stage.policy = policy
         if (policy.name == "STERMAN") {
-            stage.expected = 100 * if (week != 0) signal(index, week) else initials[index].quantity
+            stage.expected = 100L * (if (week != 0) signal(index, week) else initials[index].quantity.toLong())
         }
     }
 
-    fun positions(): Pair<List<Int>, List<Int>> {
-        val supply = mutableListOf<Int>()
-        val positions = mutableListOf<Int>()
+fun positions(): Pair<List<Long>, List<Long>> {
+        val supply = mutableListOf<Long>()
+        val positions = mutableListOf<Long>()
         for ((index, stage) in stages.withIndex()) {
             val upstreamBacklog = if (index < 3) stages[index + 1].backlog else plantBacklog
             val line = stage.orders.sum() + upstreamBacklog + stage.shipping.sum()
@@ -151,54 +152,59 @@ private class Simulation(val initials: List<Initial>, demands: List<Int>) {
         return supply to positions
     }
 
-    private fun policyOrder(index: Int, incoming: List<Int>, line: Int, position: Int): Int {
+private fun policyOrder(
+        index: Int, incoming: List<Long>, line: Long, position: Long
+    ): Long {
         val stage = stages[index]
         val policy = stage.policy
         val args = policy.args
         val currentWeek = week + 1
         val signal = signal(index, currentWeek, incoming)
         return when (policy.name) {
-            "FIXED" -> args[0]
+            "FIXED" -> args[0].toLong()
             "PASS" -> incoming[index]
-            "BASESTOCK" -> maxOf(0, args[0] - position)
-            "MINMAX" -> if (position <= args[0]) args[1] - position else 0
+            "BASESTOCK" -> maxOf(0L, args[0].toLong() - position)
+            "MINMAX" -> if (position <= args[0].toLong()) args[1].toLong() - position else 0L
             "MOVAVG" -> {
                 val k = minOf(args[0], currentWeek)
                 val forecast = (currentWeek - k + 1..currentWeek).sumOf {
                     signal(index, it, incoming)
                 } / k
                 val delay = initials[index].shippingDelay + initials[index].orderDelay
-                maxOf(0, args[1] + forecast * delay - position)
+                maxOf(0L, args[1].toLong() + forecast * delay - position)
             }
-            "SMOOTH" -> maxOf(0, signal + Math.floorDiv(args[1] - position, args[0]))
+            "SMOOTH" -> maxOf(
+                0L, signal + Math.floorDiv(args[1].toLong() - position, args[0].toLong())
+            )
             else -> {
                 val theta = args[0]
                 val alpha = args[1]
                 val beta = args[2]
                 val target = args[3]
-                stage.expected =
-                    (100 * theta * signal + (100 - theta) * stage.expected) / 100
+                stage.expected = Math.floorDiv(
+                    100L * theta * signal + (100 - theta) * stage.expected, 100L
+                )
                 val net = stage.inventory - stage.backlog
                 maxOf(
-                    0,
+                    0L,
                     Math.floorDiv(
                         100L * stage.expected +
                         alpha.toLong() * (100L * (target - net) - beta.toLong() * line),
                         10000L
-                    ).toInt()
+                    )
                 )
             }
         }
     }
 
-    fun step(): List<Record> {
-        val received = mutableListOf<Int>()
+fun step(): List<Record> {
+        val received = mutableListOf<Long>()
         for (stage in stages) {
             val amount = stage.shipping.removeAt(0)
             stage.inventory += amount
             received.add(amount)
         }
-        val incoming = mutableListOf(demands[week])
+        val incoming = mutableListOf(demands[week].toLong())
         for (i in 0..2) incoming.add(stages[i].orders.removeAt(0))
         val plantIncoming = stages[3].orders.removeAt(0)
 
@@ -214,7 +220,7 @@ private class Simulation(val initials: List<Initial>, demands: List<Int>) {
             records.add(
                 Record(
                     received[index], incoming[index], shipped, before,
-                    minOf(maxOf(0, shipped - before), incoming[index]),
+                    minOf(maxOf(0L, shipped - before), incoming[index]),
                     stage.inventory, stage.backlog
                 )
             )
@@ -227,12 +233,13 @@ private class Simulation(val initials: List<Initial>, demands: List<Int>) {
         val (supply, positions) = positions()
         val orders = stages.indices.map { policyOrder(it, incoming, supply[it], positions[it]) }
         for ((index, stage) in stages.withIndex()) {
-            val quantity = (orders[index] + stage.lot - 1) / stage.lot * stage.lot
+            val lot = stage.lot.toLong()
+            val quantity = (orders[index] + lot - 1) / lot * lot
             stage.orders.add(quantity)
             records[index].apply {
                 order = quantity
-                holding = stage.holding.toLong() * stage.inventory
-                backlogCost = stage.backlogRate.toLong() * stage.backlog
+                holding = stage.holding * stage.inventory
+                backlogCost = stage.backlogRate * stage.backlog
                 cost = holding + backlogCost
             }
             stage.records.add(records[index])
@@ -288,7 +295,7 @@ private class Game(settings: List<List<String>>) {
         if (mode !in listOf("ORDERS", "INV", "BACK", "NET")) fail("unknown mode $mode")
     }
 
-    private fun values(index: Int, mode: String): List<Int> =
+    private fun values(index: Int, mode: String): List<Long> =
         simulation.stages[index].records.map {
             when (mode) {
                 "NET" -> it.inventory - it.backlog
@@ -433,11 +440,11 @@ private class Game(settings: List<List<String>>) {
         )
     }
 
-    private fun fillText(records: List<Record>): Triple<Int, Int, String> {
+    private fun fillText(records: List<Record>): Triple<Long, Long, String> {
         val ordered = records.sumOf { it.incoming }
         val ontime = records.sumOf { it.ontime }
-        val fill = if (ordered == 0) "n/a" else
-            decimal(ontime.toLong() * 100, ordered.toLong(), 2) + "%"
+        val fill = if (ordered == 0L) "n/a" else
+            decimal(ontime * 100, ordered, 2) + "%"
         return Triple(ordered, ontime, fill)
     }
 
@@ -445,7 +452,7 @@ private class Game(settings: List<List<String>>) {
         val s = simulation
         val n = s.week
         val demand = s.demands.take(n)
-        val demandVar = variation(demand)
+        val demandVar = variation(demand.map { it.toLong() })
         emit(
             "BULLWHIP", "weeks", "1-$n", "demand", "mean",
             decimal(demand.sumOf { it.toLong() }, n.toLong(), 4),
@@ -505,13 +512,13 @@ private class Game(settings: List<List<String>>) {
         val stage = s.stages[index]
         val initial = initials[index]
         val nominal = initial.shippingDelay + initial.orderDelay
-        val cumulative = mutableListOf<Int>()
-        var received = 0
+        val cumulative = mutableListOf<Long>()
+        var received = 0L
         for (record in stage.records) {
             received += record.received
-            cumulative.add(received - nominal * initial.quantity)
+            cumulative.add(received - nominal.toLong() * initial.quantity)
         }
-        var ordered = 0
+        var ordered = 0L
         var count = 0
         val leads = mutableListOf<Int>()
         for ((t, r) in stage.records.withIndex()) {
@@ -542,7 +549,7 @@ private class Game(settings: List<List<String>>) {
             val scale = values.maxOf { kotlin.math.abs(it) }
             for ((index0, value) in values.withIndex()) {
                 val week = first + index0
-                val length = if (scale != 0) kotlin.math.abs(value) * 25 / scale else 0
+                val length = if (scale != 0L) (kotlin.math.abs(value) * 25 / scale).toInt() else 0
                 val left = if (value < 0) " ".repeat(25 - length) + "-".repeat(length)
                            else " ".repeat(25)
                 val right = if (value > 0) "+".repeat(length) else ""
@@ -552,7 +559,7 @@ private class Game(settings: List<List<String>>) {
             emit("PLOT", stageNames[index], mode, "$first-$last", "max", maximum)
             for ((index0, value) in values.withIndex()) {
                 val week = first + index0
-                val length = if (maximum != 0) value * 50 / maximum else 0
+                val length = if (maximum != 0L) (value * 50 / maximum).toInt() else 0
                 emit(week.toString().padStart(3) + " |" + "#".repeat(length) + " $value")
             }
         }
@@ -615,8 +622,8 @@ private class Game(settings: List<List<String>>) {
             }
             "CAPACITY" -> {
                 val index = if (a[0] == "PLANT") null else stageIndex(a[0])
-                val capacity = if (a[1] == "OFF") null else a[1].toInt()
-                if (capacity != null && capacity > 10000) fail("invalid capacity ${a[1]}")
+                val capacity = if (a[1] == "OFF") null else a[1].toLong()
+                if (capacity != null && capacity > 10000L) fail("invalid capacity ${a[1]}")
                 if (index == null) s.plantCapacity = capacity else s.stages[index].capacity = capacity
                 emit("CAPACITY", a[0], a[1])
             }
@@ -704,8 +711,8 @@ private class Game(settings: List<List<String>>) {
                     val orders = stage.records.map { it.order }
                     emit(
                         stageNames[index],
-                        "avg_inv", decimal(stage.records.sumOf { it.inventory.toLong() }, s.week.toLong(), 2),
-                        "avg_back", decimal(stage.records.sumOf { it.backlog.toLong() }, s.week.toLong(), 2),
+                        "avg_inv", decimal(stage.records.sumOf { it.inventory }, s.week.toLong(), 2),
+                        "avg_back", decimal(stage.records.sumOf { it.backlog }, s.week.toLong(), 2),
                         "orders", orders.sum(), "min", orders.min(), "max", orders.max(),
                         "zero_weeks", orders.count { it == 0 }
                     )
@@ -768,7 +775,7 @@ private class Game(settings: List<List<String>>) {
                     val (first, last) = rangeCheck(a.drop(2), s.week)
                     plot(index, a[1], first, last)
                 } else {
-                    val histogram = values(index, a[1]).groupingBy { Math.floorDiv(it, width) }.eachCount()
+                    val histogram = values(index, a[1]).groupingBy { Math.floorDiv(it, width.toLong()) }.eachCount()
                     emit("HISTOGRAM", a[0], a[1], "width", width, "weeks", "1-${s.week}")
                     for (bucket in histogram.keys.min()..histogram.keys.max()) {
                         val count = histogram[bucket] ?: 0
@@ -794,7 +801,7 @@ private class Game(settings: List<List<String>>) {
                     val trial = trial(List(4) { policy })
                     val costs = trial.costs().sum()
                     val fill = fillText(trial.stages[0].records).third
-                    val demandVariation = variation(trial.demands)
+                    val demandVariation = variation(trial.demands.map { it.toLong() })
                     val factoryVariation = variation(trial.stages[3].records.map { it.order })
                     val ratio = if (demandVariation == 0L) "n/a" else
                         decimal(factoryVariation, demandVariation, 4)
