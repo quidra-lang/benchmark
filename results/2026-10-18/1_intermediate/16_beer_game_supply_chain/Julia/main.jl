@@ -493,13 +493,13 @@ function plot!(g::Game, index::Int, mode::String, first::Int, last::Int)
             left = value < 0 ?
                 repeat(" ", 25 - length_) * repeat("-", length_) : repeat(" ", 25)
             right = value > 0 ? repeat("+", length_) : ""
-            emit!(g, "$(lpad(first + week - 1, 3)) $left|$right $value")
+            emit!(g, "$(lpad(string(first + week - 1), 3)) $left|$right $value")
         end
     else
         emit!(g, "PLOT", NAMES[index], mode, "$first-$last", "max", maximum_value)
         for (week, value) in enumerate(displayed)
             length_ = maximum_value == 0 ? 0 : fld(value * 50, maximum_value)
-            emit!(g, "$(lpad(first + week - 1, 3)) |$(repeat("#", length_)) $value")
+            emit!(g, "$(lpad(string(first + week - 1), 3)) |$(repeat("#", length_)) $value")
         end
     end
 end
@@ -618,8 +618,8 @@ function command!(g::Game, command::String, args::Vector{String})
                  join(lpad.(NAMES, 11), " "))
         for week in first:last
             orders = [r.records[week]["order"] for r in s.stages]
-            emit!(g, "$(lpad(week, 4)) $(lpad(s.demands[week], 6)) " *
-                join((lpad(v, 11) for v in orders), " "))
+            emit!(g, "$(lpad(string(week), 4)) $(lpad(string(s.demands[week]), 6)) " *
+                join((lpad(string(v), 11) for v in orders), " "))
         end
     elseif command == "DEMANDS"
         first, last = range_check(args, length(s.demands))
@@ -703,7 +703,7 @@ function command!(g::Game, command::String, args::Vector{String})
     elseif command == "COMPARE"
         policies = Policy[]
         first = 1
-        for last in 1:length(args)+1
+        for last in 1:(length(args)+1)
             if last > length(args) || args[last] == "/"
                 push!(policies, parse_policy(args[first:last-1]))
                 first = last + 1
@@ -739,7 +739,8 @@ function command!(g::Game, command::String, args::Vector{String})
             simulated = trial(g, policies)
             costs_ = costs(simulated)
             candidate = (sum(costs_[indices]), level, sum(costs_))
-            if best === nothing || candidate[1:2] < best[1:2]
+            if best === nothing || candidate[1] < best[1] ||
+               (candidate[1] == best[1] && candidate[2] < best[2])
                 best = candidate
             end
         end
