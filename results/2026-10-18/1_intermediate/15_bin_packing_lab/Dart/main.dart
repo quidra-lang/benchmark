@@ -121,8 +121,8 @@ Packing pack(List<Item> items, int capacity, String method, [int k = 0]) {
       if (method == 'KBOUNDED' && active.length == k) {
         closed = active[0];
         for (final index in active.skip(1)) {
-          if (result.bins[index].load > result.bins[closed].load ||
-              (result.bins[index].load == result.bins[closed].load && index < closed)) {
+          if (result.bins[index].load > result.bins[closed!].load ||
+              (result.bins[index].load == result.bins[closed!].load && index < closed!)) {
             closed = index;
           }
         }
@@ -131,8 +131,8 @@ Packing pack(List<Item> items, int capacity, String method, [int k = 0]) {
       }
       chosen = result.bins.length;
       result.bins.add(Bin(category));
-      if (method == 'KBOUNDED') active.add(chosen);
-      if (method == 'HARMONIC') current[category!] = chosen;
+      if (method == 'KBOUNDED') active.add(chosen!);
+      if (method == 'HARMONIC') current[category!] = chosen!;
     }
     result.bins[chosen!].put(item);
     result.steps.add(Step(item, chosen, result.inspections - before, opened, closed, category));
