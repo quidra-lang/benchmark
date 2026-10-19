@@ -612,11 +612,11 @@ group_counts <- function(selected) {
 }
 
 cmd_report <- function(a) {
-  names <- keys(courses)
-  all_courses <- lapply(names, function(code) fetch(courses, code))
-  emit("REPORT", "courses", length(names), group_counts(all_courses))
+  codes <- keys(courses)
+  all_courses <- lapply(codes, function(code) fetch(courses, code))
+  emit("REPORT", "courses", length(codes), group_counts(all_courses))
   departments <- list()
-  for (code in names) {
+  for (code in codes) {
     course <- fetch(courses, code)
     emit(code, status(course),
          paste0(length(course$enrolled), "/", course$capacity),
