@@ -843,8 +843,8 @@ impl HotelDesk {
                 }
             }
             "LIST" => {
-                let mut reservations: Vec<&Reservation> = self.reservations.values()
-                    .filter(|r| r.status == a[0]).collect();
+                let mut reservations: Vec<Reservation> = self.reservations.values()
+                    .filter(|r| r.status == a[0]).cloned().collect();
                 reservations.sort_by_key(|r| (r.arrival, &r.id));
                 self.emit(format!("LIST {} {}", a[0], reservations.len()), false);
                 for reservation in reservations {
