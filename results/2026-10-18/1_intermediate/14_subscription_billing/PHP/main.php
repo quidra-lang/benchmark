@@ -324,8 +324,8 @@ final class BillingService
     private function invoiceTotals(Subscription $subscription, array $items): array
     {
         $subtotal = 0;
-        foreach ($items as [$description, $amount]) {
-            $subtotal += $amount;
+        foreach ($items as $item) {
+            $subtotal += $item[1];
         }
         $discount = 0;
         if ($this->couponUsable($subscription, $subtotal)) {
@@ -1156,8 +1156,8 @@ final class BillingService
 
     public function execute(string $line): void
     {
-        [$command, $arguments] = [strtok($line, ' '), preg_split('/ +/', $line)];
-        array_shift($arguments);
+        $arguments = explode(' ', $line);
+        $command = array_shift($arguments);
         try {
             switch ($command) {
                 case 'PLAN':       $this->cmdPlan($arguments);       break;
