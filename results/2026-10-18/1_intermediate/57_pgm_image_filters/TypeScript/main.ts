@@ -326,11 +326,11 @@ function componentText(image: Image, threshold: number, group: Point[]): string 
 }
 
 function distanceMap(image: Image, threshold: number): Image {
-  if (!image.pixels.some(pixel => pixel < threshold)) {
+  if (image.pixels.every(pixel => pixel >= threshold)) {
     return image.withPixels(Array(image.pixels.length).fill(image.maxval));
   }
   const w = image.width, h = image.height;
-  const far = Math.max(w + h, image.maxval);
+  const far = w + h;
   const distances = image.pixels.map(pixel => pixel < threshold ? 0 : far);
   for (let y = 0; y < h; ++y) {
     for (let x = 0; x < w; ++x) {
