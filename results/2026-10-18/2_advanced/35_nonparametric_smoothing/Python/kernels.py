@@ -1,63 +1,80 @@
-KERNEL_CONSTANTS = {"epanechnikov": 0.75, "biweight": 0.9375, "triweight": 1.09375}
+"""Nadaraya-Watson and local-linear fits with exact support comparisons."""
+
+from selection import ordered_sum
 
 
-def kernel_value(kernel, t):
-    if kernel == "epanechnikov":
-        return 0.75 * t
-    if kernel == "biweight":
-        return 0.9375 * t * t
-    return 1.09375 * t * t * t
+KAPPA = {"epanechnikov": 0.75, "biweight": 0.9375, "triweight": 1.09375}
 
 
-class KernelEstimate:
-    def __init__(self, points, kernel, bandwidth, position, local_linear):
-        h = bandwidth / 100
-        x0 = position / 100
-        self.n = points.n
-        self.kappa = KERNEL_CONSTANTS[kernel]
+class KernelFit:
+    def __init__(self, positions, values, bandwidth, kernel, local_linear,
+                 diagnostics=True):
+        self.positions = positions
+        self.x = [position / 100 for position in positions]
+        self.y = values
+        self.bandwidth = bandwidth
+        self.kernel = kernel
         self.local_linear = local_linear
-        self.used = []
-        self.factors = []
-        self.offsets = []
-        self.s0 = 0.0
-        self.s1 = 0.0
-        self.s2 = 0.0
-        self.t0 = 0.0
-        self.t1 = 0.0
-        for j in range(points.n):
-            if abs(points.X[j] - position) >= bandwidth:
-                continue
-            u = (points.x[j] - x0) / h
-            factor = kernel_value(kernel, 1 - u * u)
-            d = points.x[j] - x0
-            self.used.append(j)
-            self.factors.append(factor)
-            self.offsets.append(d)
-            self.s0 += factor
-            self.s1 += factor * d
-            self.s2 += factor * d * d
-            self.t0 += factor * points.y[j]
-            self.t1 += factor * d * points.y[j]
-        self.q = self.s0 * self.s2 - self.s1 * self.s1
-        self.defined = len(self.used) >= (2 if local_linear else 1)
+        self.cache = {}
+        self.fitted = None
+        self.leverage = None
+        self.edf = None
+        if not diagnostics:
+            return
+        pairs = [self.evaluate(position) for position in positions]
+        self.fitted = [value for value, _ in pairs]
+        if any(value is None for value in self.fitted):
+            self.fitted = None
+        else:
+            self.leverage = [weights[i] for i, (_, weights) in enumerate(pairs)]
+            self.edf = ordered_sum(self.leverage)
 
-    def value(self):
-        if not self.defined:
-            return None
+    def evaluate(self, position):
+        if position in self.cache:
+            return self.cache[position]
+        used = [i for i, value in enumerate(self.positions)
+                if abs(value - position) < self.bandwidth]
+        minimum = 2 if self.local_linear else 1
+        if len(used) < minimum:
+            self.cache[position] = None, None
+            return None, None
+        x0 = position / 100
+        h = self.bandwidth / 100
+        kernel_values = []
+        differences = []
+        for i in used:
+            delta = self.x[i] - x0
+            u = delta / h
+            t = 1 - u * u
+            weight = KAPPA[self.kernel] * t
+            if self.kernel != "epanechnikov":
+                weight *= t
+            if self.kernel == "triweight":
+                weight *= t
+            differences.append(delta)
+            kernel_values.append(weight)
+        s0 = ordered_sum(kernel_values)
+        t0 = ordered_sum(weight * self.y[i]
+                         for i, weight in zip(used, kernel_values))
+        weights = [0.0] * len(self.positions)
         if self.local_linear:
-            return (self.s2 * self.t0 - self.s1 * self.t1) / self.q
-        return self.t0 / self.s0
+            s1 = ordered_sum(k * d for k, d in zip(kernel_values, differences))
+            s2 = ordered_sum(k * d * d for k, d in zip(kernel_values, differences))
+            t1 = ordered_sum(k * d * self.y[i]
+                             for i, k, d in zip(used, kernel_values, differences))
+            determinant = s0 * s2 - s1 * s1
+            estimate = (s2 * t0 - s1 * t1) / determinant
+            for i, k, d in zip(used, kernel_values, differences):
+                weights[i] = k * (s2 - s1 * d) / determinant
+        else:
+            estimate = t0 / s0
+            for i, weight in zip(used, kernel_values):
+                weights[i] = weight / s0
+        self.cache[position] = estimate, weights
+        return estimate, weights
 
-    def leverage(self):
-        if self.local_linear:
-            return self.kappa * self.s2 / self.q
-        return self.kappa / self.s0
+    def estimate(self, position):
+        return self.evaluate(position)[0]
 
-    def weights(self):
-        weights = [0.0] * self.n
-        for j, factor, d in zip(self.used, self.factors, self.offsets):
-            if self.local_linear:
-                weights[j] = factor * (self.s2 - self.s1 * d) / self.q
-            else:
-                weights[j] = factor / self.s0
-        return weights
+    def weights(self, position):
+        return self.evaluate(position)[1]
