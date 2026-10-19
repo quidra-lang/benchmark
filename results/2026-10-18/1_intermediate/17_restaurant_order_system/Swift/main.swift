@@ -429,7 +429,7 @@ final class Restaurant {
         }
         for item in sorted {
             emit(item.course, item.name, item.station, item.prep,
-                 money(item.price), item.stock.map(String.init) ?? "-")
+                 money(item.price), item.stock.map { String($0) } ?? "-")
         }
     }
 
