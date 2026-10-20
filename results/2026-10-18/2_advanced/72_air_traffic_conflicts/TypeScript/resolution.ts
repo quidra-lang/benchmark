@@ -1,0 +1,6 @@
+import { clonePlan, levelList } from './flight_plans.ts';
+import type { Plan, AircraftType, Parameters } from './flight_plans.ts';
+export interface Manoeuvre { name: string; kind: 'level' | 'speed' | 'delay'; amount: number }
+export function manoeuvres(maxDelay: number) { const choices: Manoeuvre[] = [{ name: 'level_up', kind: 'level', amount: 10 }, { name: 'level_down', kind: 'level', amount: -10 }, { name: 'speed_down', kind: 'speed', amount: 0 }]; for (let delay = 60; delay <= maxDelay; delay += 60) choices.push({ name: `delay_${delay}`, kind: 'delay', amount: delay }); return choices; }
+export function propose(plan: Plan, choice: Manoeuvre, types: Record<string, AircraftType>, p: Parameters) { const next = clonePlan(plan); if (choice.kind === 'level') { next.offset += choice.amount; if (levelList(next).some(v => v < p.levelMin || v > p.levelMax)) return null; } else if (choice.kind === 'speed') { next.speed = Math.floor(next.speed * 9 / 10); if (next.speed < types[next.type].minimum) return null; } else next.delay += choice.amount; return next; }
+export function priorityOrder(a: Plan, b: Plan) { const da = a.departure + a.delay, db = b.departure + b.delay; return da > db || (da === db && a.callsign > b.callsign) ? [a.callsign, b.callsign] : [b.callsign, a.callsign]; }
