@@ -881,21 +881,21 @@ func (app *App) command(w []string) {
 }
 
 func main() {
-	in := bufio.NewScanner(os.Stdin)
-	in.Buffer(make([]byte, 4096), 1<<20)
-	in.Scan()
-	n := integer(in.Text())
+	in := bufio.NewReader(os.Stdin)
+	first, _ := in.ReadString('\n')
+	n := integer(strings.TrimSpace(first))
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
 	app := App{map[string]Process{}, out}
-	for i := 0; i < n && in.Scan(); i++ {
+	for i := 0; i < n; i++ {
+		line, _ := in.ReadString('\n')
 		func() {
 			defer func() {
 				if e := recover(); e != nil {
 					app.emit("ERROR", e)
 				}
 			}()
-			app.command(strings.Fields(in.Text()))
+			app.command(strings.Fields(line))
 		}()
 	}
 }
