@@ -8,13 +8,18 @@ export function runClue(line: readonly CellState[]): Clue {
   let length = 0;
   for (const state of line) {
     if (state === FILLED) length++;
-    else if (length > 0) { blocks.push(length); length = 0; }
+    else if (length > 0) {
+      blocks.push(length);
+      length = 0;
+    }
   }
   if (length > 0) blocks.push(length);
   return blocks;
 }
-export const spaceForm = (clue: readonly number[]): string => clue.length === 0 ? '0' : clue.join(' ');
-export const commaForm = (clue: readonly number[]): string => clue.length === 0 ? '0' : clue.join(',');
+export const spaceForm = (clue: readonly number[]): string =>
+  clue.length === 0 ? '0' : clue.join(' ');
+export const commaForm = (clue: readonly number[]): string =>
+  clue.length === 0 ? '0' : clue.join(',');
 
 export function parseClue(text: string): Clue | null {
   if (text === '0') return [];
@@ -24,4 +29,5 @@ export function parseClue(text: string): Clue | null {
 export function minimumLength(clue: readonly number[]): number {
   return clue.length === 0 ? 0 : clue.reduce((sum, block) => sum + block, clue.length - 1);
 }
-export const fits = (clue: readonly number[], length: number): boolean => minimumLength(clue) <= length;
+export const fits = (clue: readonly number[], length: number): boolean =>
+  minimumLength(clue) <= length;

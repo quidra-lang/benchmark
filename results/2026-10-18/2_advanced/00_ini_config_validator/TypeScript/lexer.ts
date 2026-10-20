@@ -1,7 +1,19 @@
-export interface RawValue { text: string; literals: Set<number> }
-export interface Segment extends RawValue { quoted: boolean }
-export interface LineError { code: string; message: string }
-export interface LogicalLine { line: number; segments: Segment[]; error: LineError | null }
+export interface RawValue {
+  text: string;
+  literals: Set<number>;
+}
+export interface Segment extends RawValue {
+  quoted: boolean;
+}
+export interface LineError {
+  code: string;
+  message: string;
+}
+export interface LogicalLine {
+  line: number;
+  segments: Segment[];
+  error: LineError | null;
+}
 
 function segment(quoted: boolean): Segment {
   return { quoted, text: '', literals: new Set() };
@@ -12,9 +24,13 @@ export function logicalLines(text: string): LogicalLine[] {
   const result: LogicalLine[] = [];
   const escapes: Record<string, string> = { '\\': '\\', '"': '"', n: '\n', t: '\t', $: '$' };
   for (let row = 0; row < physical.length; row++) {
-    const line = row + 1, segments = [segment(false)];
-    let current = segments[0], source = physical[row], position = 0;
-    let inside = false, error: LineError | null = null;
+    const line = row + 1;
+    const segments = [segment(false)];
+    let current = segments[0];
+    let source = physical[row];
+    let position = 0;
+    let inside = false;
+    let error: LineError | null = null;
     while (position < source.length) {
       const character = source[position];
       if (character === '\\' && position + 1 === source.length) {
@@ -42,7 +58,9 @@ export function logicalLines(text: string): LogicalLine[] {
         position++;
       }
     }
-    if (inside && error === null) error = { code: 'E_UNTERMINATED', message: 'unterminated string' };
+    if (inside && error === null) {
+      error = { code: 'E_UNTERMINATED', message: 'unterminated string' };
+    }
     result.push({ line, segments, error });
   }
   return result;

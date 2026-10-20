@@ -1,11 +1,24 @@
 export type TermKind = 'unigrams' | 'bigrams';
-export interface Tokens { raw: number; stopped: number; short: number; unigrams: string[]; pairs: string[]; bigrams: string[] }
-export interface Document { tokens: Tokens }
-export interface LabelledDocument extends Document { label: number }
+export interface Tokens {
+  raw: number;
+  stopped: number;
+  short: number;
+  unigrams: string[];
+  pairs: string[];
+  bigrams: string[];
+}
+export interface Document {
+  tokens: Tokens;
+}
+export interface LabelledDocument extends Document {
+  label: number;
+}
 export function tokenize(text: string, stopwords: Set<string>): Tokens {
-  const words = (text.match(/[A-Za-z0-9]+/g) ?? []).map(w => w.toLowerCase());
-  const unigrams: string[] = [], pairs: string[] = [];
-  let stopped = 0, short = 0;
+  const words = (text.match(/[A-Za-z0-9]+/g) ?? []).map((w) => w.toLowerCase());
+  const unigrams: string[] = [];
+  const pairs: string[] = [];
+  let stopped = 0;
+  let short = 0;
   for (const word of words) {
     if (stopwords.has(word)) stopped++;
     else if (word.length === 1) short++;

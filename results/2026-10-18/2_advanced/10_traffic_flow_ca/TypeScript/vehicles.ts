@@ -12,8 +12,13 @@ export interface Source {
 }
 
 export class VehicleClass {
-  constructor(readonly name: string, readonly maximum: number, readonly weight: number,
-    readonly overtake: boolean, readonly stops: boolean) {}
+  constructor(
+    readonly name: string,
+    readonly maximum: number,
+    readonly weight: number,
+    readonly overtake: boolean,
+    readonly stops: boolean,
+  ) {}
 }
 
 export class Vehicle {
@@ -35,19 +40,30 @@ export class Vehicle {
   completedStops = new Set<string>();
   trajectory: string[] | null = null;
 
-  constructor(readonly number: number, readonly type: VehicleClass,
-    readonly source: Source, readonly arrival: number) {}
+  constructor(
+    readonly number: number,
+    readonly type: VehicleClass,
+    readonly source: Source,
+    readonly arrival: number,
+  ) {}
 
   road(): Segment {
     if (this.segment === null) throw new Error('Vehicle is not on a road');
     return this.segment;
   }
 
-  maximumSpeed(): number { return Math.min(this.type.maximum, this.road().limit); }
+  maximumSpeed(): number {
+    return Math.min(this.type.maximum, this.road().limit);
+  }
 
   headingForStop(): boolean {
-    return this.segment !== null && this.type.stops && this.segment.stop !== null
-      && !this.completedStops.has(this.segment.id) && this.cell <= this.segment.stop.cell;
+    return (
+      this.segment !== null &&
+      this.type.stops &&
+      this.segment.stop !== null &&
+      !this.completedStops.has(this.segment.id) &&
+      this.cell <= this.segment.stop.cell
+    );
   }
 
   place(segment: Segment, lane: number, cell: number): void {
@@ -64,8 +80,13 @@ export class Vehicle {
   }
 }
 
-export function randomSlowdown(proposed: number, previous: number, p: number, p0: number,
-  generator: Minstd): number {
+export function randomSlowdown(
+  proposed: number,
+  previous: number,
+  p: number,
+  p0: number,
+  generator: Minstd,
+): number {
   const random = generator.draw();
   return proposed > 0 && random % 1000 < (previous === 0 ? p0 : p) ? proposed - 1 : proposed;
 }

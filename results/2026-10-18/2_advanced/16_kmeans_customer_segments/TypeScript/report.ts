@@ -8,7 +8,12 @@ export function real(value: number | null): string {
 export const rounded = (value: number) => Number(real(value));
 export function amount(value: number): string {
   const magnitude = Math.abs(value);
-  return (value < 0 ? '-' : '') + Math.floor(magnitude / 100) + '.' + String(magnitude % 100).padStart(2, '0');
+  return (
+    (value < 0 ? '-' : '') +
+    Math.floor(magnitude / 100) +
+    '.' +
+    String(magnitude % 100).padStart(2, '0')
+  );
 }
 export function writeReport(name: string, lines: string[]) {
   mkdirSync('output', { recursive: true });

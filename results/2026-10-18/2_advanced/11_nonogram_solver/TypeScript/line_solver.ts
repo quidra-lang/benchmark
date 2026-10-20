@@ -5,43 +5,63 @@ export type CellState = typeof UNKNOWN | typeof FILLED | typeof EMPTY;
 export type Grid = CellState[][];
 export type SolveKind = 'simple' | 'precise';
 interface PlacementInfo {
-  possibleFilled: boolean[]; possibleEmpty: boolean[]; minimum: number[]; maximum: number[];
+  possibleFilled: boolean[];
+  possibleEmpty: boolean[];
+  minimum: number[];
+  maximum: number[];
 }
-export interface LineResult { line: CellState[]; gain: number }
+export interface LineResult {
+  line: CellState[];
+  gain: number;
+}
 const cache = new Map<string, PlacementInfo | null>();
 
 function placementInfo(line: readonly CellState[], clue: readonly number[]): PlacementInfo | null {
   const key = line.join('') + '/' + clue.join(',');
   const known = cache.get(key);
   if (known !== undefined) return known;
-  const n = line.length, count = clue.length;
-  const filledPrefix = Array<number>(n + 1).fill(0), emptyPrefix = Array<number>(n + 1).fill(0);
+  const n = line.length;
+  const count = clue.length;
+  const filledPrefix = Array<number>(n + 1).fill(0);
+  const emptyPrefix = Array<number>(n + 1).fill(0);
   for (let p = 0; p < n; p++) {
     filledPrefix[p + 1] = filledPrefix[p] + (line[p] === FILLED ? 1 : 0);
     emptyPrefix[p + 1] = emptyPrefix[p] + (line[p] === EMPTY ? 1 : 0);
   }
   const reserve = Array<number>(count).fill(0);
-  for (let b = count - 1; b >= 0; b--) reserve[b] = clue[b] + (b + 1 < count ? 1 + reserve[b + 1] : 0);
+  for (let b = count - 1; b >= 0; b--) {
+    reserve[b] = clue[b] + (b + 1 < count ? 1 + reserve[b + 1] : 0);
+  }
   const feasible = Array.from({ length: count + 1 }, () => Array<boolean>(n + 1).fill(false));
   for (let p = 0; p <= n; p++) feasible[count][p] = filledPrefix[n] === filledPrefix[p];
-  const nextPosition = (b: number, start: number): number => start + clue[b] + (b + 1 < count ? 1 : 0);
+  const nextPosition = (b: number, start: number): number =>
+    start + clue[b] + (b + 1 < count ? 1 : 0);
   function transition(b: number, position: number, start: number): boolean {
     const end = start + clue[b];
-    return filledPrefix[start] === filledPrefix[position] && emptyPrefix[end] === emptyPrefix[start]
-      && (b + 1 === count || line[end] !== FILLED) && feasible[b + 1][nextPosition(b, start)];
+    return (
+      filledPrefix[start] === filledPrefix[position] &&
+      emptyPrefix[end] === emptyPrefix[start] &&
+      (b + 1 === count || line[end] !== FILLED) &&
+      feasible[b + 1][nextPosition(b, start)]
+    );
   }
   // Suffix feasibility includes the empty gap preceding each block and its separator.
   for (let b = count - 1; b >= 0; b--) {
     for (let p = n; p >= 0; p--) {
       for (let start = p; start <= n - reserve[b]; start++) {
-        if (transition(b, p, start)) { feasible[b][p] = true; break; }
+        if (transition(b, p, start)) {
+          feasible[b][p] = true;
+          break;
+        }
       }
     }
   }
   let info: PlacementInfo | null = null;
   if (feasible[0][0]) {
-    const possibleFilled = Array<boolean>(n).fill(false), possibleEmpty = Array<boolean>(n).fill(false);
-    const minimum = Array<number>(count).fill(n), maximum = Array<number>(count).fill(-1);
+    const possibleFilled = Array<boolean>(n).fill(false);
+    const possibleEmpty = Array<boolean>(n).fill(false);
+    const minimum = Array<number>(count).fill(n);
+    const maximum = Array<number>(count).fill(-1);
     const reachable = Array.from({ length: count + 1 }, () => Array<boolean>(n + 1).fill(false));
     reachable[0][0] = true;
     // A reachable transition with a feasible suffix belongs to a full consistent placement.
@@ -74,7 +94,11 @@ export function hasPlacement(line: readonly CellState[], clue: readonly number[]
   return placementInfo(line, clue) !== null;
 }
 
-export function solveLine(line: readonly CellState[], clue: readonly number[], kind: SolveKind): LineResult | null {
+export function solveLine(
+  line: readonly CellState[],
+  clue: readonly number[],
+  kind: SolveKind,
+): LineResult | null {
   const info = placementInfo(line, clue);
   if (info === null) return null;
   const result = line.slice();
@@ -85,7 +109,8 @@ export function solveLine(line: readonly CellState[], clue: readonly number[], k
       if (!info.possibleEmpty[p]) result[p] = FILLED;
       else if (!info.possibleFilled[p]) result[p] = EMPTY;
     } else {
-      let covered = false, overlap = false;
+      let covered = false;
+      let overlap = false;
       for (let b = 0; b < clue.length; b++) {
         if (info.minimum[b] <= p && p < info.maximum[b] + clue[b]) covered = true;
         if (info.maximum[b] <= p && p < info.minimum[b] + clue[b]) overlap = true;

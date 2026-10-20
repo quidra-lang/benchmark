@@ -4,8 +4,17 @@ import type { Junction } from './signals';
 export const OBSTACLE = Symbol('obstacle');
 export type Cell = Vehicle | typeof OBSTACLE | null;
 export type ChangeKind = 'overtaking' | 'return' | 'avoidance';
-export interface Turn { to: Segment; weight: number; vehicles: number }
-export interface BusStop { segment: Segment; cell: number; dwell: number; buses: number }
+export interface Turn {
+  to: Segment;
+  weight: number;
+  vehicles: number;
+}
+export interface BusStop {
+  segment: Segment;
+  cell: number;
+  dwell: number;
+  buses: number;
+}
 
 export class Segment {
   readonly cells: Cell[][];
@@ -25,17 +34,27 @@ export class Segment {
   maximumQueue = 0;
   failures = 0;
 
-  constructor(readonly id: string, readonly from: string, readonly to: string,
-    readonly length: number, readonly lanes: number, readonly limit: number) {
+  constructor(
+    readonly id: string,
+    readonly from: string,
+    readonly to: string,
+    readonly length: number,
+    readonly lanes: number,
+    readonly limit: number,
+  ) {
     this.cells = Array.from({ length: lanes }, () => Array<Cell>(length).fill(null));
   }
 
-  get(lane: number, cell: number): Cell { return this.cells[lane - 1][cell]; }
+  get(lane: number, cell: number): Cell {
+    return this.cells[lane - 1][cell];
+  }
 
   free(lane: number, cell: number, maximum: number): number {
     const row = this.cells[lane - 1];
     let count = 0;
-    while (count < maximum && cell + count + 1 < this.length && row[cell + count + 1] === null) count++;
+    while (count < maximum && cell + count + 1 < this.length && row[cell + count + 1] === null) {
+      count++;
+    }
     return count;
   }
 
@@ -52,7 +71,9 @@ export class Segment {
   }
 
   diagram(lane: number): string {
-    return this.cells[lane - 1].map(cell => cell === null ? '.' : cell === OBSTACLE ? '#' : String(cell.speed)).join('');
+    return this.cells[lane - 1]
+      .map((cell) => (cell === null ? '.' : cell === OBSTACLE ? '#' : String(cell.speed)))
+      .join('');
   }
 }
 
@@ -61,8 +82,13 @@ export class Incident {
   activeStart: number | null = null;
   activeEnd: number | null = null;
 
-  constructor(readonly segment: Segment, readonly lane: number, readonly cell: number,
-    readonly start: number, readonly end: number) {}
+  constructor(
+    readonly segment: Segment,
+    readonly lane: number,
+    readonly cell: number,
+    readonly start: number,
+    readonly end: number,
+  ) {}
 
   update(step: number): 'INCIDENT_START' | 'INCIDENT_END' | null {
     const row = this.segment.cells[this.lane - 1];

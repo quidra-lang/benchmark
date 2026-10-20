@@ -3,33 +3,62 @@ import type { Grid, CellState } from './line_solver';
 import type { Clue } from './clues';
 import { propagate, determinedCount } from './propagation';
 
-export interface Coordinate { r: number; c: number }
+export interface Coordinate {
+  r: number;
+  c: number;
+}
 export interface GuessRecord extends Coordinate {
-  number: number; depth: number; value: CellState; solves: number; known: number; outcome: string;
+  number: number;
+  depth: number;
+  value: CellState;
+  solves: number;
+  known: number;
+  outcome: string;
 }
 export interface SearchResult {
-  guesses: number; maxDepth: number; backtracks: number; lineSolves: number; record: GuessRecord[]; solutions: Grid[];
+  guesses: number;
+  maxDepth: number;
+  backtracks: number;
+  lineSolves: number;
+  record: GuessRecord[];
+  solutions: Grid[];
 }
 
 export function chooseCell(grid: Grid): Coordinate | null {
-  const h = grid.length, w = grid[0].length;
-  const rowUnknown = Array<number>(h).fill(0), columnUnknown = Array<number>(w).fill(0);
-  for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
-    if (grid[r][c] === UNKNOWN) { rowUnknown[r]++; columnUnknown[c]++; }
+  const h = grid.length;
+  const w = grid[0].length;
+  const rowUnknown = Array<number>(h).fill(0);
+  const columnUnknown = Array<number>(w).fill(0);
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      if (grid[r][c] === UNKNOWN) {
+        rowUnknown[r]++;
+        columnUnknown[c]++;
+      }
+    }
   }
   let best = h + w + 1;
   let chosen: Coordinate | null = null;
-  for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
-    if (grid[r][c] === UNKNOWN && rowUnknown[r] + columnUnknown[c] < best) {
-      best = rowUnknown[r] + columnUnknown[c];
-      chosen = { r, c };
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      if (grid[r][c] === UNKNOWN && rowUnknown[r] + columnUnknown[c] < best) {
+        best = rowUnknown[r] + columnUnknown[c];
+        chosen = { r, c };
+      }
     }
   }
   return chosen;
 }
 
 export function search(grid: Grid, rows: Clue[], columns: Clue[]): SearchResult {
-  const result: SearchResult = { guesses: 0, maxDepth: 0, backtracks: 0, lineSolves: 0, record: [], solutions: [] };
+  const result: SearchResult = {
+    guesses: 0,
+    maxDepth: 0,
+    backtracks: 0,
+    lineSolves: 0,
+    record: [],
+    solutions: [],
+  };
   function visit(parent: Grid, depth: number): boolean {
     const chosen = chooseCell(parent);
     if (chosen === null) throw new Error('Search requires an unknown cell');
@@ -38,13 +67,15 @@ export function search(grid: Grid, rows: Clue[], columns: Clue[]): SearchResult 
     for (const value of values) {
       const number = ++result.guesses;
       result.maxDepth = Math.max(result.maxDepth, depth);
-      const child = parent.map(row => row.slice());
+      const child = parent.map((row) => row.slice());
       child[r][c] = value;
-      const rowMarks = rows.map(() => false), columnMarks = columns.map(() => false);
+      const rowMarks = rows.map(() => false);
+      const columnMarks = columns.map(() => false);
       rowMarks[r] = true;
       columnMarks[c] = true;
       const propagation = propagate(child, rows, columns, 'precise', rowMarks, columnMarks);
-      const known = determinedCount(child), solves = propagation.record.length;
+      const known = determinedCount(child);
+      const solves = propagation.record.length;
       result.lineSolves += solves;
       let outcome: string;
       if (propagation.conflict !== null) {

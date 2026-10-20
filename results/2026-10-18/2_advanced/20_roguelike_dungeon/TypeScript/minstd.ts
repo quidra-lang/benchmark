@@ -7,7 +7,9 @@ export class Minstd {
     this.state = (48271 * this.state) % 2147483647;
     return this.state;
   }
-  rnd(n: number): number { return this.next() % n; }
+  rnd(n: number): number {
+    return this.next() % n;
+  }
   roll(dice: Dice): number {
     let sum = 0;
     for (let i = 0; i < dice.count; i++) sum += 1 + this.rnd(dice.sides);

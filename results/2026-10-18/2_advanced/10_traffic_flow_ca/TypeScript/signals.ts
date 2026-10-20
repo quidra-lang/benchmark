@@ -7,7 +7,11 @@ export interface Phase {
 export class Junction {
   readonly cycle: number;
 
-  constructor(readonly node: string, readonly offset: number, readonly phases: Phase[]) {
+  constructor(
+    readonly node: string,
+    readonly offset: number,
+    readonly phases: Phase[],
+  ) {
     this.cycle = phases.reduce((sum, phase) => sum + phase.duration, 0);
   }
 

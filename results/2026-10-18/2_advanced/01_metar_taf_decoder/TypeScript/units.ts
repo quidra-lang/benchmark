@@ -1,15 +1,30 @@
 import type { Visibility } from './groups.ts';
 
 export type Fraction = [number, number];
-export interface Period { start: number; end: number }
+export interface Period {
+  start: number;
+  end: number;
+}
 export function floorDiv(numerator: number, denominator: number): number {
-  const n = BigInt(numerator), d = BigInt(denominator), quotient = n / d;
+  const n = BigInt(numerator);
+  const d = BigInt(denominator);
+  const quotient = n / d;
   return Number(quotient - (n < 0n && n % d !== 0n ? 1n : 0n));
 }
 export const pad = (value: number, width: number) => String(value).padStart(width, '0');
 export const modulo = (value: number, divisor: number) => ((value % divisor) + divisor) % divisor;
-const SINE: Record<number, number> = { 0: 0, 10: 174, 20: 342, 30: 500, 40: 643, 50: 766,
-  60: 866, 70: 940, 80: 985, 90: 1000 };
+const SINE: Record<number, number> = {
+  0: 0,
+  10: 174,
+  20: 342,
+  30: 500,
+  40: 643,
+  50: 766,
+  60: 866,
+  70: 940,
+  80: 985,
+  90: 1000,
+};
 export function sin(angle: number): number {
   const y = modulo(angle, 360);
   if (y <= 90) return SINE[y];
@@ -33,7 +48,9 @@ export class Calendar {
   readonly nextMonth: number;
   readonly nextDays: number;
   constructor(year: number, month: number) {
-    this.year = year; this.month = month; this.days = daysInMonth(year, month);
+    this.year = year;
+    this.month = month;
+    this.days = daysInMonth(year, month);
     this.nextYear = month === 12 ? year + 1 : year;
     this.nextMonth = month === 12 ? 1 : month + 1;
     this.nextDays = daysInMonth(this.nextYear, this.nextMonth);
@@ -55,8 +72,16 @@ export class Calendar {
     if (!match) return null;
     const [firstDay, firstHour, lastDay, lastHour] = match.slice(1).map(Number);
     if (firstHour > 23 || lastHour < 1 || lastHour > 24) return null;
-    const start = this.dayTime(firstDay, firstHour, 0, issueDay), end = this.dayTime(lastDay, lastHour, 0, issueDay);
-    if (start === null || end === null || start >= end || maximum !== null && end - start > maximum) return null;
+    const start = this.dayTime(firstDay, firstHour, 0, issueDay);
+    const end = this.dayTime(lastDay, lastHour, 0, issueDay);
+    if (
+      start === null ||
+      end === null ||
+      start >= end ||
+      (maximum !== null && end - start > maximum)
+    ) {
+      return null;
+    }
     return { start, end };
   }
   changeTime(word: string, issueDay: number): number | null {
@@ -66,9 +91,12 @@ export class Calendar {
     return hour > 23 || minute > 59 ? null : this.dayTime(day, hour, minute, issueDay);
   }
   stamp(time: number): string {
-    const following = time >= this.days * 1440, value = time - (following ? this.days * 1440 : 0);
-    return `${pad(following ? this.nextYear : this.year, 4)}-${pad(following ? this.nextMonth : this.month, 2)}`
-      + `-${pad(floorDiv(value, 1440) + 1, 2)}T${pad(floorDiv(value % 1440, 60), 2)}:${pad(value % 60, 2)}Z`;
+    const following = time >= this.days * 1440;
+    const value = time - (following ? this.days * 1440 : 0);
+    return (
+      `${pad(following ? this.nextYear : this.year, 4)}-${pad(following ? this.nextMonth : this.month, 2)}` +
+      `-${pad(floorDiv(value, 1440) + 1, 2)}T${pad(floorDiv(value % 1440, 60), 2)}:${pad(value % 60, 2)}Z`
+    );
   }
 }
 export function mileFraction(visibility: Visibility): Fraction {
@@ -82,12 +110,14 @@ export function meterValue(visibility: Visibility): number {
   return floorDiv(1609344 * numerator, 1000 * denominator);
 }
 export function compareVisibility(first: Visibility, second: Visibility): number {
-  const [a, b] = mileFraction(first), [c, d] = mileFraction(second);
+  const [a, b] = mileFraction(first);
+  const [c, d] = mileFraction(second);
   return a * d - c * b;
 }
 export function fraction(numerator: number, denominator: number): string {
   if (denominator === 0) return 'undefined';
-  let first = Math.abs(numerator), second = denominator;
+  let first = Math.abs(numerator);
+  let second = denominator;
   while (second !== 0) [first, second] = [second, first % second];
   return `${floorDiv(numerator, first)}/${floorDiv(denominator, first)}`;
 }

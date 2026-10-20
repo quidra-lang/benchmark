@@ -2,101 +2,756 @@ import { loadAll, clonePlan } from './flight_plans.ts';
 import type { Plan, AircraftType, Sector, Parameters } from './flight_plans.ts';
 import { buildTrajectory, position, activeSegment, currentPosition } from './trajectory.ts';
 import type { Trajectory, Segment, Vector } from './trajectory.ts';
-import { allConflicts, pairConflicts, lossInterval, subtract, asciiCompare, conflictOrder } from './conflict.ts';
+import {
+  allConflicts,
+  pairConflicts,
+  lossInterval,
+  subtract,
+  asciiCompare,
+  conflictOrder,
+} from './conflict.ts';
 import type { Conflict } from './conflict.ts';
 import { manoeuvres, propose, priorityOrder } from './resolution.ts';
 import { decimal as d, chart, signed, writeLines } from './report.ts';
 
-interface Accepted { flight: string; name: string }
-type Trial = Accepted & ({ status: 'infeasible' | 'accepted' } | { status: 'blocked'; blocker: Conflict });
-interface Round { number: number; target: Conflict; trials: Trial[]; accepted: Accepted | null }
-interface Classified extends Conflict { levelA: number; levelB: number; trackA: number; trackB: number; angle: number; geometry: 'head_on' | 'crossing' | 'trailing'; severity: 'HIGH' | 'MEDIUM' | 'LOW'; sector: string; outcome: 'remaining' | 'resolved' | 'indirect' }
-interface Transit { flight: string; sector: Sector; entry: number; exit: number; previous: string; next: string }
-interface Alert { pair: [string, string]; name: string; first: number; last: number; samples: number; predicted: number; minimum: number; lead: number | null }
+interface Accepted {
+  flight: string;
+  name: string;
+}
+type Trial = Accepted &
+  ({ status: 'infeasible' | 'accepted' } | { status: 'blocked'; blocker: Conflict });
+interface Round {
+  number: number;
+  target: Conflict;
+  trials: Trial[];
+  accepted: Accepted | null;
+}
+interface Classified extends Conflict {
+  levelA: number;
+  levelB: number;
+  trackA: number;
+  trackB: number;
+  angle: number;
+  geometry: 'head_on' | 'crossing' | 'trailing';
+  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  sector: string;
+  outcome: 'remaining' | 'resolved' | 'indirect';
+}
+interface Transit {
+  flight: string;
+  sector: Sector;
+  entry: number;
+  exit: number;
+  previous: string;
+  next: string;
+}
+interface Alert {
+  pair: [string, string];
+  name: string;
+  first: number;
+  last: number;
+  samples: number;
+  predicted: number;
+  minimum: number;
+  lead: number | null;
+}
 const names = <T>(items: Record<string, T>) => Object.keys(items).sort();
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
-function samples(p: Parameters) { const times: number[] = []; for (let t = p.sampleStart; t < p.sampleEnd; t += 60) times.push(t); return times; }
-function blockers(changed: string, candidate: Trajectory, partner: string, paths: Record<string, Trajectory>, ignored: Set<string>, start: number, p: Parameters) {
-    const blocked: Conflict[] = []; for (const other of names(paths)) { if (other === changed) continue; const pair = [changed, other].sort(); if (ignored.has(pair.join('-'))) continue; const a = pair[0] === changed ? candidate : paths[pair[0]], b = pair[1] === changed ? candidate : paths[pair[1]]; for (const c of pairConflicts(pair[0], a, pair[1], b, p.dh, p.dv)) if (other === partner || c.start < start + p.lookahead) blocked.push(c); } return blocked.sort(conflictOrder)[0] ?? null;
+function samples(p: Parameters) {
+  const times: number[] = [];
+  for (let t = p.sampleStart; t < p.sampleEnd; t += 60) times.push(t);
+  return times;
 }
-function resolve(initial: Record<string, Plan>, types: Record<string, AircraftType>, p: Parameters) {
-    const plans: Record<string, Plan> = {}, paths: Record<string, Trajectory> = {}; for (const code of names(initial)) { plans[code] = clonePlan(initial[code]); paths[code] = buildTrajectory(plans[code], types); }
-    const unresolved = new Set<string>(), resolved = new Set<string>(), rounds: Round[] = [], unresolvedConflicts: Conflict[] = [];
-    while (true) {
-        const target = allConflicts(paths, p.dh, p.dv).find(c => !unresolved.has(c.name)); if (!target) break;
-        const [low, high] = priorityOrder(plans[target.pair[0]], plans[target.pair[1]]), round: Round = { number: rounds.length + 1, target, trials: [], accepted: null };
-        for (const [flight, partner] of [[low, high], [high, low]]) { if (round.accepted) break; for (const choice of manoeuvres(p.maxDelay)) { const next = propose(plans[flight], choice, types, p), base = { flight, name: choice.name }; let trial: Trial;
-                if (!next) trial = { ...base, status: 'infeasible' };
-                else { const path = buildTrajectory(next, types), blocker = blockers(flight, path, partner, paths, unresolved, target.start, p); if (blocker) trial = { ...base, status: 'blocked', blocker }; else { trial = { ...base, status: 'accepted' }; next.history.push(choice.name); plans[flight] = next; paths[flight] = path; round.accepted = base; } }
-                round.trials.push(trial); if (round.accepted) break;
-            } }
-        if (round.accepted) resolved.add(target.name); else { unresolved.add(target.name); unresolvedConflicts.push(target); } rounds.push(round);
-    } return { plans, paths, rounds, resolved, unresolvedConflicts };
+function blockers(
+  changed: string,
+  candidate: Trajectory,
+  partner: string,
+  paths: Record<string, Trajectory>,
+  ignored: Set<string>,
+  start: number,
+  p: Parameters,
+) {
+  const blocked: Conflict[] = [];
+  for (const other of names(paths)) {
+    if (other === changed) continue;
+    const pair = [changed, other].sort();
+    if (ignored.has(pair.join('-'))) continue;
+    const a = pair[0] === changed ? candidate : paths[pair[0]];
+    const b = pair[1] === changed ? candidate : paths[pair[1]];
+    for (const c of pairConflicts(pair[0], a, pair[1], b, p.dh, p.dv)) {
+      if (other === partner || c.start < start + p.lookahead) blocked.push(c);
+    }
+  }
+  return blocked.sort(conflictOrder)[0] ?? null;
+}
+function resolve(
+  initial: Record<string, Plan>,
+  types: Record<string, AircraftType>,
+  p: Parameters,
+) {
+  const plans: Record<string, Plan> = {};
+  const paths: Record<string, Trajectory> = {};
+  for (const code of names(initial)) {
+    plans[code] = clonePlan(initial[code]);
+    paths[code] = buildTrajectory(plans[code], types);
+  }
+  const unresolved = new Set<string>();
+  const resolved = new Set<string>();
+  const rounds: Round[] = [];
+  const unresolvedConflicts: Conflict[] = [];
+  while (true) {
+    const target = allConflicts(paths, p.dh, p.dv).find((c) => !unresolved.has(c.name));
+    if (!target) break;
+    const [low, high] = priorityOrder(plans[target.pair[0]], plans[target.pair[1]]);
+    const round: Round = { number: rounds.length + 1, target, trials: [], accepted: null };
+    for (const [flight, partner] of [
+      [low, high],
+      [high, low],
+    ]) {
+      if (round.accepted) break;
+      for (const choice of manoeuvres(p.maxDelay)) {
+        const next = propose(plans[flight], choice, types, p);
+        const base = { flight, name: choice.name };
+        let trial: Trial;
+        if (!next) trial = { ...base, status: 'infeasible' };
+        else {
+          const path = buildTrajectory(next, types);
+          const blocker = blockers(flight, path, partner, paths, unresolved, target.start, p);
+          if (blocker) trial = { ...base, status: 'blocked', blocker };
+          else {
+            trial = { ...base, status: 'accepted' };
+            next.history.push(choice.name);
+            plans[flight] = next;
+            paths[flight] = path;
+            round.accepted = base;
+          }
+        }
+        round.trials.push(trial);
+        if (round.accepted) break;
+      }
+    }
+    if (round.accepted) resolved.add(target.name);
+    else {
+      unresolved.add(target.name);
+      unresolvedConflicts.push(target);
+    }
+    rounds.push(round);
+  }
+  return { plans, paths, rounds, resolved, unresolvedConflicts };
 }
 type Resolution = ReturnType<typeof resolve>;
-function track(s: Segment) { let theta = Math.atan2(s.velocity[0], s.velocity[1]) * 180 / 3.141592653589793; if (theta < 0) theta += 360; return theta; }
-const contains = (s: Sector, v: Vector) => s.x1 / 10 <= v[0] && v[0] < s.x2 / 10 && s.y1 / 10 <= v[1] && v[1] < s.y2 / 10 && s.lower * 100 <= v[2] && v[2] < s.upper * 100;
-function classify(conflicts: Conflict[], sectors: Sector[], remaining: Set<string>, resolved: Set<string>, dh: number): Classified[] {
-    return conflicts.map((c): Classified => { const piece = c.closest, a = piece.aSegment, b = piece.bSegment, pa = position(a, piece.tc), pb = position(b, piece.tc), trackA = track(a), trackB = track(b), g = Math.abs(trackA - trackB), dot = a.velocity[0] * b.velocity[0] + a.velocity[1] * b.velocity[1], cross = a.velocity[0] * b.velocity[1] - a.velocity[1] * b.velocity[0], mid: Vector = [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2, (pa[2] + pb[2]) / 2]; return { ...c, levelA: pa[2] / 100, levelB: pb[2] / 100, trackA, trackB, angle: g > 180 ? 360 - g : g, geometry: dot * dot > cross * cross ? dot < 0 ? 'head_on' : 'trailing' : 'crossing', severity: 10 * piece.distance < 4 * dh ? 'HIGH' : 10 * piece.distance < 7 * dh ? 'MEDIUM' : 'LOW', sector: sectors.find(s => contains(s, mid))?.name ?? '-', outcome: remaining.has(c.name) ? 'remaining' : resolved.has(c.name) ? 'resolved' : 'indirect' }; });
+function track(s: Segment) {
+  let theta = (Math.atan2(s.velocity[0], s.velocity[1]) * 180) / 3.141592653589793;
+  if (theta < 0) theta += 360;
+  return theta;
 }
-const activeConflicts = (conflicts: Conflict[], time: number) => conflicts.filter(c => c.start <= time && time < c.end);
-const involving = <T extends Conflict>(conflicts: T[], code: string) => conflicts.filter(c => c.pair.includes(code));
-function trajectoryRows(paths: Record<string, Trajectory>) { const lines = ['callsign,segment,leg,phase,t_start,t_end,x_start,y_start,fl_start,x_end,y_end,fl_end']; for (const code of names(paths)) for (const s of paths[code].segments) lines.push([code, s.number, s.leg, s.phase, d(s.ts), d(s.te), d(s.start[0]), d(s.start[1]), s.start[2] / 100, d(s.end[0]), d(s.end[1]), s.end[2] / 100].join(',')); return lines; }
-function conflictReport(label: string, conflicts: Classified[], paths: Record<string, Trajectory>, p: Parameters) {
-    const lines = [`CONFLICTS plan=${label} count=${conflicts.length}`], geometry = { head_on: 0, crossing: 0, trailing: 0 }, severity = { HIGH: 0, MEDIUM: 0, LOW: 0 };
-    conflicts.forEach((c, i) => { const q = c.closest; geometry[c.geometry]++; severity[c.severity]++; lines.push(`CONFLICT ${i + 1} ${c.name} start=${d(c.start)} end=${d(c.end)} duration=${d(c.end - c.start)} outcome=${c.outcome}`, `  CPA t=${d(q.tc)} dist=${d(q.distance)} vert=${d(q.vertical, 1)} levels=${d(c.levelA, 2)}/${d(c.levelB, 2)} tracks=${d(c.trackA, 1)}/${d(c.trackB, 1)} angle=${d(c.angle, 1)}`, `  TYPE geometry=${c.geometry} phases=${q.aSegment.phase}/${q.bSegment.phase} segments=${q.aSegment.number}/${q.bSegment.number} sector=${c.sector} severity=${c.severity}`); for (const piece of c.pieces) lines.push(`  PIECE ${piece.aSegment.number}/${piece.bSegment.number} ${d(piece.lo)} ${d(piece.hi)}`); });
-    lines.push(`SUMMARY count=${conflicts.length} total=${d(sum(conflicts.map(c => c.end - c.start)))} min_dist=${conflicts.length ? d(Math.min(...conflicts.map(c => c.closest.distance))) : '-'} head_on=${geometry.head_on} crossing=${geometry.crossing} trailing=${geometry.trailing} high=${severity.HIGH} medium=${severity.MEDIUM} low=${severity.LOW}`);
-    const codes = names(paths).filter(code => involving(conflicts, code).length); for (const code of codes) { const group = involving(conflicts, code), partners = [...new Set(group.flatMap(c => c.pair.filter(s => s !== code)))].sort(); lines.push(`FLIGHT ${code} conflicts=${group.length} first=${d(Math.min(...group.map(c => c.start)))} partners=${partners.join(',')}`); }
-    lines.push(`TIMELINE from=${p.sampleStart} to=${p.sampleEnd} step=60`); for (const code of codes) lines.push(`${code} ${samples(p).map(t => !activeSegment(paths[code], t) ? '.' : involving(activeConflicts(conflicts, t), code).length ? 'X' : '-').join('')}`); return lines;
+const contains = (s: Sector, v: Vector) =>
+  s.x1 / 10 <= v[0] &&
+  v[0] < s.x2 / 10 &&
+  s.y1 / 10 <= v[1] &&
+  v[1] < s.y2 / 10 &&
+  s.lower * 100 <= v[2] &&
+  v[2] < s.upper * 100;
+function classify(
+  conflicts: Conflict[],
+  sectors: Sector[],
+  remaining: Set<string>,
+  resolved: Set<string>,
+  dh: number,
+): Classified[] {
+  return conflicts.map((c): Classified => {
+    const piece = c.closest;
+    const a = piece.aSegment;
+    const b = piece.bSegment;
+    const pa = position(a, piece.tc);
+    const pb = position(b, piece.tc);
+    const trackA = track(a);
+    const trackB = track(b);
+    const g = Math.abs(trackA - trackB);
+    const dot = a.velocity[0] * b.velocity[0] + a.velocity[1] * b.velocity[1];
+    const cross = a.velocity[0] * b.velocity[1] - a.velocity[1] * b.velocity[0];
+    const mid: Vector = [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2, (pa[2] + pb[2]) / 2];
+    return {
+      ...c,
+      levelA: pa[2] / 100,
+      levelB: pb[2] / 100,
+      trackA,
+      trackB,
+      angle: g > 180 ? 360 - g : g,
+      geometry: dot * dot > cross * cross ? (dot < 0 ? 'head_on' : 'trailing') : 'crossing',
+      severity:
+        10 * piece.distance < 4 * dh ? 'HIGH' : 10 * piece.distance < 7 * dh ? 'MEDIUM' : 'LOW',
+      sector: sectors.find((s) => contains(s, mid))?.name ?? '-',
+      outcome: remaining.has(c.name) ? 'remaining' : resolved.has(c.name) ? 'resolved' : 'indirect',
+    };
+  });
 }
-function resolutionReport(result: Resolution, initial: Record<string, Trajectory>, first: Conflict[], last: Conflict[]) {
-    const lines: string[] = []; let level = 0, speed = 0, delay = 0, trials = 0, infeasible = 0, blocked = 0, accepted = 0;
-    for (const round of result.rounds) { const c = round.target; lines.push(`ROUND ${round.number} ${c.name} start=${d(c.start)} end=${d(c.end)} dist=${d(c.closest.distance)}`); for (const t of round.trials) { trials++; if (t.status === 'infeasible') infeasible++; if (t.status === 'blocked') blocked++; lines.push(`  TRY ${t.flight} ${t.name} ${t.status}` + (t.status === 'blocked' ? ` ${t.blocker.name} start=${d(t.blocker.start)}` : '')); } if (round.accepted) { accepted++; const a = round.accepted; if (a.name.startsWith('level_')) level++; else if (a.name === 'speed_down') speed++; else delay++; lines.push(`  RESULT resolved ${a.flight} ${a.name}`); } else lines.push('  RESULT unresolved'); }
-    let totalDelay = 0, totalExtra = 0; for (const code of names(result.plans)) { const plan = result.plans[code], a = initial[code], b = result.paths[code], extra = b.arrival - a.arrival; totalDelay += plan.delay; totalExtra += extra; lines.push(`FLIGHT ${code} departure=${plan.departure + plan.delay} delay=${plan.delay} level=${signed(plan.offset)} speed=${plan.speedInitial}->${plan.speed} arrival=${d(a.arrival)}->${d(b.arrival)} extra=${d(extra)} length=${d(b.length)} conflicts=${involving(first, code).length}->${involving(last, code).length} manoeuvres=${plan.history.join(',') || '-'}`); }
-    for (const c of result.unresolvedConflicts) lines.push(`UNRESOLVED ${c.name} start=${d(c.start)} dist=${d(c.closest.distance)}`); lines.push(`TOTAL rounds=${result.rounds.length} resolved=${accepted} unresolved=${result.unresolvedConflicts.length} level=${level} speed=${speed} delay=${delay} total_delay=${totalDelay} total_extra=${d(totalExtra)} trials=${trials} infeasible=${infeasible} blocked=${blocked}`); return lines;
+const activeConflicts = (conflicts: Conflict[], time: number) =>
+  conflicts.filter((c) => c.start <= time && time < c.end);
+const involving = <T extends Conflict>(conflicts: T[], code: string) =>
+  conflicts.filter((c) => c.pair.includes(code));
+function trajectoryRows(paths: Record<string, Trajectory>) {
+  const lines = [
+    'callsign,segment,leg,phase,t_start,t_end,x_start,y_start,fl_start,x_end,y_end,fl_end',
+  ];
+  for (const code of names(paths)) {
+    for (const s of paths[code].segments) {
+      lines.push(
+        [
+          code,
+          s.number,
+          s.leg,
+          s.phase,
+          d(s.ts),
+          d(s.te),
+          d(s.start[0]),
+          d(s.start[1]),
+          s.start[2] / 100,
+          d(s.end[0]),
+          d(s.end[1]),
+          s.end[2] / 100,
+        ].join(','),
+      );
+    }
+  }
+  return lines;
+}
+function conflictReport(
+  label: string,
+  conflicts: Classified[],
+  paths: Record<string, Trajectory>,
+  p: Parameters,
+) {
+  const lines = [`CONFLICTS plan=${label} count=${conflicts.length}`];
+  const geometry = { head_on: 0, crossing: 0, trailing: 0 };
+  const severity = { HIGH: 0, MEDIUM: 0, LOW: 0 };
+  conflicts.forEach((c, i) => {
+    const q = c.closest;
+    geometry[c.geometry]++;
+    severity[c.severity]++;
+    lines.push(
+      `CONFLICT ${i + 1} ${c.name} start=${d(c.start)} end=${d(c.end)} duration=${d(c.end - c.start)} outcome=${c.outcome}`,
+      `  CPA t=${d(q.tc)} dist=${d(q.distance)} vert=${d(q.vertical, 1)} levels=${d(c.levelA, 2)}/${d(c.levelB, 2)} tracks=${d(c.trackA, 1)}/${d(c.trackB, 1)} angle=${d(c.angle, 1)}`,
+      `  TYPE geometry=${c.geometry} phases=${q.aSegment.phase}/${q.bSegment.phase} segments=${q.aSegment.number}/${q.bSegment.number} sector=${c.sector} severity=${c.severity}`,
+    );
+    for (const piece of c.pieces) {
+      lines.push(
+        `  PIECE ${piece.aSegment.number}/${piece.bSegment.number} ${d(piece.lo)} ${d(piece.hi)}`,
+      );
+    }
+  });
+  lines.push(
+    `SUMMARY count=${conflicts.length} total=${d(sum(conflicts.map((c) => c.end - c.start)))} min_dist=${conflicts.length ? d(Math.min(...conflicts.map((c) => c.closest.distance))) : '-'} head_on=${geometry.head_on} crossing=${geometry.crossing} trailing=${geometry.trailing} high=${severity.HIGH} medium=${severity.MEDIUM} low=${severity.LOW}`,
+  );
+  const codes = names(paths).filter((code) => involving(conflicts, code).length);
+  for (const code of codes) {
+    const group = involving(conflicts, code);
+    const partners = [...new Set(group.flatMap((c) => c.pair.filter((s) => s !== code)))].sort();
+    lines.push(
+      `FLIGHT ${code} conflicts=${group.length} first=${d(Math.min(...group.map((c) => c.start)))} partners=${partners.join(',')}`,
+    );
+  }
+  lines.push(`TIMELINE from=${p.sampleStart} to=${p.sampleEnd} step=60`);
+  for (const code of codes) {
+    lines.push(
+      `${code} ${samples(p)
+        .map((t) =>
+          !activeSegment(paths[code], t)
+            ? '.'
+            : involving(activeConflicts(conflicts, t), code).length
+              ? 'X'
+              : '-',
+        )
+        .join('')}`,
+    );
+  }
+  return lines;
+}
+function resolutionReport(
+  result: Resolution,
+  initial: Record<string, Trajectory>,
+  first: Conflict[],
+  last: Conflict[],
+) {
+  const lines: string[] = [];
+  let level = 0;
+  let speed = 0;
+  let delay = 0;
+  let trials = 0;
+  let infeasible = 0;
+  let blocked = 0;
+  let accepted = 0;
+  for (const round of result.rounds) {
+    const c = round.target;
+    lines.push(
+      `ROUND ${round.number} ${c.name} start=${d(c.start)} end=${d(c.end)} dist=${d(c.closest.distance)}`,
+    );
+    for (const t of round.trials) {
+      trials++;
+      if (t.status === 'infeasible') infeasible++;
+      if (t.status === 'blocked') blocked++;
+      lines.push(
+        `  TRY ${t.flight} ${t.name} ${t.status}` +
+          (t.status === 'blocked' ? ` ${t.blocker.name} start=${d(t.blocker.start)}` : ''),
+      );
+    }
+    if (round.accepted) {
+      accepted++;
+      const a = round.accepted;
+      if (a.name.startsWith('level_')) level++;
+      else if (a.name === 'speed_down') speed++;
+      else delay++;
+      lines.push(`  RESULT resolved ${a.flight} ${a.name}`);
+    } else lines.push('  RESULT unresolved');
+  }
+  let totalDelay = 0;
+  let totalExtra = 0;
+  for (const code of names(result.plans)) {
+    const plan = result.plans[code];
+    const a = initial[code];
+    const b = result.paths[code];
+    const extra = b.arrival - a.arrival;
+    totalDelay += plan.delay;
+    totalExtra += extra;
+    lines.push(
+      `FLIGHT ${code} departure=${plan.departure + plan.delay} delay=${plan.delay} level=${signed(plan.offset)} speed=${plan.speedInitial}->${plan.speed} arrival=${d(a.arrival)}->${d(b.arrival)} extra=${d(extra)} length=${d(b.length)} conflicts=${involving(first, code).length}->${involving(last, code).length} manoeuvres=${plan.history.join(',') || '-'}`,
+    );
+  }
+  for (const c of result.unresolvedConflicts) {
+    lines.push(`UNRESOLVED ${c.name} start=${d(c.start)} dist=${d(c.closest.distance)}`);
+  }
+  lines.push(
+    `TOTAL rounds=${result.rounds.length} resolved=${accepted} unresolved=${result.unresolvedConflicts.length} level=${level} speed=${speed} delay=${delay} total_delay=${totalDelay} total_extra=${d(totalExtra)} trials=${trials} infeasible=${infeasible} blocked=${blocked}`,
+  );
+  return lines;
 }
 function insideTime(s: Segment, sector: Sector) {
-    let lo = s.ts, hi = s.te; const ranges = [[sector.x1 / 10, sector.x2 / 10], [sector.y1 / 10, sector.y2 / 10], [sector.lower * 100, sector.upper * 100]];
-    for (let i = 0; i < 3; i++) { const [a, b] = ranges[i], p = s.start[i], v = s.velocity[i]; if (v === 0) { if (!(a <= p && p < b)) return null; } else { const r1 = (a - p) / v, r2 = (b - p) / v; lo = Math.max(lo, s.ts + Math.min(r1, r2)); hi = Math.min(hi, s.ts + Math.max(r1, r2)); } } return hi - lo > 1e-6 ? { lo, hi } : null;
+  let lo = s.ts;
+  let hi = s.te;
+  const ranges = [
+    [sector.x1 / 10, sector.x2 / 10],
+    [sector.y1 / 10, sector.y2 / 10],
+    [sector.lower * 100, sector.upper * 100],
+  ];
+  for (let i = 0; i < 3; i++) {
+    const [a, b] = ranges[i];
+    const p = s.start[i];
+    const v = s.velocity[i];
+    if (v === 0) {
+      if (!(a <= p && p < b)) return null;
+    } else {
+      const r1 = (a - p) / v;
+      const r2 = (b - p) / v;
+      lo = Math.max(lo, s.ts + Math.min(r1, r2));
+      hi = Math.min(hi, s.ts + Math.max(r1, r2));
+    }
+  }
+  return hi - lo > 1e-6 ? { lo, hi } : null;
 }
 function transits(paths: Record<string, Trajectory>, sectors: Sector[]) {
-    const all: Transit[] = []; for (const flight of names(paths)) { const group: Transit[] = []; for (const sector of sectors) { const joined: Transit[] = []; for (const segment of paths[flight].segments) { const interval = insideTime(segment, sector); if (!interval) continue; const last = joined[joined.length - 1]; if (last && interval.lo - last.exit <= 1e-6) last.exit = interval.hi; else joined.push({ flight, sector, entry: interval.lo, exit: interval.hi, previous: '-', next: '-' }); } group.push(...joined); } group.sort((a, b) => a.entry - b.entry || a.sector.index - b.sector.index); for (let i = 1; i < group.length; i++) if (Math.abs(group[i].entry - group[i - 1].exit) <= 1e-6) { group[i].previous = group[i - 1].sector.name; group[i - 1].next = group[i].sector.name; } all.push(...group); } return all;
-}
-function occupancy(paths: Record<string, Trajectory>, sectors: Sector[], times: number[]) { return sectors.map(sector => times.map(time => { let count = 0; for (const code of names(paths)) { const current = currentPosition(paths[code], time); if (current && contains(sector, current.point)) count++; } return count; })); }
-function periods(values: number[], transits: Transit[], sector: Sector, p: Parameters) { const result: { start: number; end: number; peak: number; mean: number; entries: number }[] = []; for (let i = 0; i < values.length; i += 5) { const start = p.sampleStart + 60 * i, end = start + 300, group = values.slice(i, i + 5); result.push({ start, end, peak: Math.max(...group), mean: sum(group) / 5, entries: transits.filter(t => t.sector === sector && start <= t.entry && t.entry < end).length }); } return result; }
-function sectorStatistics(transit: Transit[], conflicts: Classified[], sector: Sector, values: number[], p: Parameters) { const group = transit.filter(t => t.sector === sector), time = sum(group.map(t => t.exit - t.entry)); return { entries: group.length, time, mean: group.length ? d(time / group.length) : '-', peak: Math.max(...values), over: periods(values, transit, sector, p).filter(q => q.peak > sector.capacity).length, conflicts: conflicts.filter(c => c.sector === sector.name).length }; }
-function levelUsage(paths: Record<string, Trajectory>) { const levels = new Map<number, { flights: Set<string>; time: number }>(); for (const code of names(paths)) for (const s of paths[code].segments) if (s.phase === 'LVL') { const level = s.start[2] / 100; let entry = levels.get(level); if (!entry) { entry = { flights: new Set<string>(), time: 0 }; levels.set(level, entry); } entry.flights.add(code); entry.time += s.te - s.ts; } return levels; }
-function sectorReports(firstPaths: Record<string, Trajectory>, lastPaths: Record<string, Trajectory>, sectors: Sector[], first: Classified[], last: Classified[], p: Parameters) {
-    const initial = transits(firstPaths, sectors), final = transits(lastPaths, sectors), times = samples(p), oi = occupancy(firstPaths, sectors, times), of = occupancy(lastPaths, sectors, times), load = ['sector,period,start,end,entries_initial,entries_final,peak_initial,peak_final,mean_final,capacity,status'], report: string[] = [];
-    for (const s of sectors) { const a = periods(oi[s.index], initial, s, p), b = periods(of[s.index], final, s, p); for (let i = 0; i < a.length; i++) load.push([s.name, i + 1, a[i].start, a[i].end, a[i].entries, b[i].entries, a[i].peak, b[i].peak, d(b[i].mean, 1), s.capacity, b[i].peak > s.capacity ? 'OVER' : a[i].peak > s.capacity ? 'RELIEVED' : 'OK'].join(',')); report.push(`SECTOR ${s.name} x=${s.x1}..${s.x2} y=${s.y1}..${s.y2} fl=${s.lower}..${s.upper} capacity=${s.capacity}`);
-        for (const item of [{ name: 'INITIAL', transit: initial, conflicts: first, values: oi[s.index] }, { name: 'FINAL', transit: final, conflicts: last, values: of[s.index] }]) { const st = sectorStatistics(item.transit, item.conflicts, s, item.values, p); report.push(`${item.name} entries=${st.entries} time=${d(st.time)} mean=${st.mean} peak=${st.peak} over=${st.over} conflicts=${st.conflicts}`); }
-        const rows: string[] = []; for (let k = Math.max(s.capacity + 1, ...of[s.index]); k >= 1; k--) rows.push(of[s.index].map(n => n >= k ? '#' : k === s.capacity ? '-' : '.').join('')); report.push(...chart(rows));
+  const all: Transit[] = [];
+  for (const flight of names(paths)) {
+    const group: Transit[] = [];
+    for (const sector of sectors) {
+      const joined: Transit[] = [];
+      for (const segment of paths[flight].segments) {
+        const interval = insideTime(segment, sector);
+        if (!interval) continue;
+        const last = joined[joined.length - 1];
+        if (last && interval.lo - last.exit <= 1e-6) last.exit = interval.hi;
+        else {
+          joined.push({
+            flight,
+            sector,
+            entry: interval.lo,
+            exit: interval.hi,
+            previous: '-',
+            next: '-',
+          });
+        }
+      }
+      group.push(...joined);
     }
-    const li = levelUsage(firstPaths), lf = levelUsage(lastPaths), levels = [...new Set([...li.keys(), ...lf.keys()])].sort((a, b) => b - a); report.push('LEVELS'); for (const level of levels) report.push(`LEVEL ${level} flights=${li.get(level)?.flights.size ?? 0}->${lf.get(level)?.flights.size ?? 0} time=${d(li.get(level)?.time ?? 0)}->${d(lf.get(level)?.time ?? 0)}`);
-    const handoffs = final.filter(t => t.next !== '-'); report.push(`HANDOFFS plan=final count=${handoffs.length}`); for (const a of sectors) for (const b of sectors) { const count = handoffs.filter(t => t.sector === a && t.next === b.name).length; if (count) report.push(`HANDOFF ${a.name} ${b.name} ${count}`); }
-    return { final, load, report, rows: ['callsign,sector,entry,exit,duration,from,to', ...final.map(t => [t.flight, t.sector.name, d(t.entry), d(t.exit), d(t.exit - t.entry), t.previous, t.next].join(','))] };
+    group.sort((a, b) => a.entry - b.entry || a.sector.index - b.sector.index);
+    for (let i = 1; i < group.length; i++) {
+      if (Math.abs(group[i].entry - group[i - 1].exit) <= 1e-6) {
+        group[i].previous = group[i - 1].sector.name;
+        group[i - 1].next = group[i].sector.name;
+      }
+    }
+    all.push(...group);
+  }
+  return all;
 }
-function alertReport(label: string, paths: Record<string, Trajectory>, conflicts: Classified[], p: Parameters) {
-    const codes = names(paths), grouped = new Map<string, Alert[]>();
-    for (const u of samples(p)) for (let i = 0; i < codes.length; i++) { const a = currentPosition(paths[codes[i]], u); if (!a) continue; for (let j = i + 1; j < codes.length; j++) { const b = currentPosition(paths[codes[j]], u); if (!b) continue; const loss = lossInterval(subtract(a.point, b.point), subtract(a.segment.velocity, b.segment.velocity), 0, p.alert, p.dh, p.dv); if (!loss) continue; const name = `${codes[i]}-${codes[j]}`, group = grouped.get(name) ?? [], last = group[group.length - 1]; if (last && u - last.last === 60) { last.last = u; last.samples++; last.minimum = Math.min(last.minimum, loss.distance); } else group.push({ pair: [codes[i], codes[j]], name, first: u, last: u, samples: 1, predicted: u + loss.lo, minimum: loss.distance, lead: null }); grouped.set(name, group); } }
-    const alerts = [...grouped.values()].flat().sort((a, b) => a.first - b.first || asciiCompare(a.pair[0], b.pair[0]) || asciiCompare(a.pair[1], b.pair[1])), detected = new Set<Classified>();
-    for (const a of alerts) { const matches = conflicts.filter(c => c.name === a.name && c.start < a.last + p.alert && c.end > a.first); if (matches.length) { a.lead = matches[0].start - a.first; for (const c of matches) detected.add(c); } }
-    const trueAlerts = alerts.filter(a => a.lead !== null), missed = conflicts.filter(c => !detected.has(c)), lines = [`ALERTS plan=${label} horizon=${p.alert} count=${alerts.length}`]; alerts.forEach((a, i) => lines.push(`ALERT ${i + 1} ${a.name} first=${a.first} last=${a.last} samples=${a.samples} predicted=${d(a.predicted)} min_dist=${d(a.minimum)} status=${a.lead === null ? 'false lead=-' : `true lead=${d(a.lead)}`}`)); for (const c of missed) lines.push(`MISSED ${c.name} start=${d(c.start)} end=${d(c.end)}`); lines.push(`SUMMARY alerts=${alerts.length} true=${trueAlerts.length} false=${alerts.length - trueAlerts.length} missed=${missed.length} mean_lead=${trueAlerts.length ? d(sum(trueAlerts.map(a => a.lead ?? 0)) / trueAlerts.length) : '-'}`); return lines;
+function occupancy(paths: Record<string, Trajectory>, sectors: Sector[], times: number[]) {
+  return sectors.map((sector) =>
+    times.map((time) => {
+      let count = 0;
+      for (const code of names(paths)) {
+        const current = currentPosition(paths[code], time);
+        if (current && contains(sector, current.point)) count++;
+      }
+      return count;
+    }),
+  );
 }
-function screen(point: Vector, p: Parameters): [number, number] | null { const [x0, y0, x1, y1, w, h] = p.radar, col = Math.floor((10 * point[0] - x0) * w / (x1 - x0)), r = Math.floor((10 * point[1] - y0) * h / (y1 - y0)); return col >= 0 && col < w && r >= 0 && r < h ? [col, h - 1 - r] : null; }
-function radarImage(label: string, time: number, paths: Record<string, Trajectory>, conflicts: Classified[], p: Parameters) {
-    const [, , , , w, h] = p.radar, grid: string[][] = Array.from({ length: h }, () => Array(w).fill('.')), cells: string[][][] = Array.from({ length: h }, () => Array.from({ length: w }, () => [])), inFlight = names(paths).flatMap(code => { const current = currentPosition(paths[code], time); return current ? [{ code, ...current, cell: screen(current.point, p) }] : []; }), active = activeConflicts(conflicts, time);
-    for (const a of inFlight) if (a.cell) cells[a.cell[1]][a.cell[0]].push(a.code); for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) { const group = cells[r][c]; if (group.length > 1) grid[r][c] = String(group.length); else if (group.length === 1) grid[r][c] = involving(active, group[0]).length ? group[0][0].toLowerCase() : group[0][0]; }
-    for (const a of inFlight) { const later = currentPosition(paths[a.code], time + p.leader), cell = later ? screen(later.point, p) : null; if (cell && grid[cell[1]][cell[0]] === '.') grid[cell[1]][cell[0]] = '*'; }
-    const lines = [`RADAR plan=${label} t=${time} aircraft=${inFlight.length} conflicts=${active.length}`, ...chart(grid.map(row => row.join('')))]; for (const a of inFlight) lines.push(`${a.code} x=${d(a.point[0])} y=${d(a.point[1])} fl=${d(a.point[2] / 100, 2)} track=${d(track(a.segment), 1)} phase=${a.segment.phase} cell=${a.cell ? a.cell.join(',') : 'outside'}`);
-    for (const c of active) { const a = currentPosition(paths[c.pair[0]], time)!, b = currentPosition(paths[c.pair[1]], time)!, dx = a.point[0] - b.point[0], dy = a.point[1] - b.point[1]; lines.push(`CONFLICT ${c.name} dist=${d(Math.sqrt(dx * dx + dy * dy))} vert=${d(Math.abs(a.point[2] - b.point[2]), 1)}`); } return lines;
+function periods(values: number[], transits: Transit[], sector: Sector, p: Parameters) {
+  const result: { start: number; end: number; peak: number; mean: number; entries: number }[] = [];
+  for (let i = 0; i < values.length; i += 5) {
+    const start = p.sampleStart + 60 * i;
+    const end = start + 300;
+    const group = values.slice(i, i + 5);
+    result.push({
+      start,
+      end,
+      peak: Math.max(...group),
+      mean: sum(group) / 5,
+      entries: transits.filter((t) => t.sector === sector && start <= t.entry && t.entry < end)
+        .length,
+    });
+  }
+  return result;
 }
-function density(label: string, paths: Record<string, Trajectory>, p: Parameters) { const [, , , , w, h] = p.radar, counts: number[][] = Array.from({ length: h }, () => Array(w).fill(0)); for (const time of samples(p)) for (const code of names(paths)) { const a = currentPosition(paths[code], time), cell = a ? screen(a.point, p) : null; if (cell) counts[cell[1]][cell[0]]++; } const maximum = Math.max(...counts.flat()); return [`DENSITY plan=${label} from=${p.sampleStart} to=${p.sampleEnd} step=60 max=${maximum}`, ...chart(counts.map(row => row.map(n => !n ? '.' : n < 10 ? String(n) : '#').join('')))]; }
-function strips(plans: Record<string, Plan>, initial: Record<string, Trajectory>, final: Record<string, Trajectory>, transits: Transit[]) { const lines: string[] = []; for (const code of names(plans)) { const p = plans[code]; lines.push(`STRIP ${code} type=${p.type} waypoints=${p.waypoints.length} length=${d(final[code].length)} manoeuvres=${p.history.join(',') || '-'}`); p.waypoints.forEach((w, k) => { const a = initial[code].waypointTimes[k], b = final[code].waypointTimes[k]; lines.push(`WPT ${k} at=${w.x}:${w.y} eta=${d(a[0])}->${d(b[0])} fl=${a[1]}->${b[1]}`); }); lines.push(`SECTORS ${transits.filter(t => t.flight === code).map(t => `${t.sector.name}@${d(t.entry)}`).join(',') || '-'}`); } return lines; }
+function sectorStatistics(
+  transit: Transit[],
+  conflicts: Classified[],
+  sector: Sector,
+  values: number[],
+  p: Parameters,
+) {
+  const group = transit.filter((t) => t.sector === sector);
+  const time = sum(group.map((t) => t.exit - t.entry));
+  return {
+    entries: group.length,
+    time,
+    mean: group.length ? d(time / group.length) : '-',
+    peak: Math.max(...values),
+    over: periods(values, transit, sector, p).filter((q) => q.peak > sector.capacity).length,
+    conflicts: conflicts.filter((c) => c.sector === sector.name).length,
+  };
+}
+function levelUsage(paths: Record<string, Trajectory>) {
+  const levels = new Map<number, { flights: Set<string>; time: number }>();
+  for (const code of names(paths)) {
+    for (const s of paths[code].segments) {
+      if (s.phase === 'LVL') {
+        const level = s.start[2] / 100;
+        let entry = levels.get(level);
+        if (!entry) {
+          entry = { flights: new Set<string>(), time: 0 };
+          levels.set(level, entry);
+        }
+        entry.flights.add(code);
+        entry.time += s.te - s.ts;
+      }
+    }
+  }
+  return levels;
+}
+function sectorReports(
+  firstPaths: Record<string, Trajectory>,
+  lastPaths: Record<string, Trajectory>,
+  sectors: Sector[],
+  first: Classified[],
+  last: Classified[],
+  p: Parameters,
+) {
+  const initial = transits(firstPaths, sectors);
+  const final = transits(lastPaths, sectors);
+  const times = samples(p);
+  const oi = occupancy(firstPaths, sectors, times);
+  const of = occupancy(lastPaths, sectors, times);
+  const load = [
+    'sector,period,start,end,entries_initial,entries_final,peak_initial,peak_final,mean_final,capacity,status',
+  ];
+  const report: string[] = [];
+  for (const s of sectors) {
+    const a = periods(oi[s.index], initial, s, p);
+    const b = periods(of[s.index], final, s, p);
+    for (let i = 0; i < a.length; i++) {
+      load.push(
+        [
+          s.name,
+          i + 1,
+          a[i].start,
+          a[i].end,
+          a[i].entries,
+          b[i].entries,
+          a[i].peak,
+          b[i].peak,
+          d(b[i].mean, 1),
+          s.capacity,
+          b[i].peak > s.capacity ? 'OVER' : a[i].peak > s.capacity ? 'RELIEVED' : 'OK',
+        ].join(','),
+      );
+    }
+    report.push(
+      `SECTOR ${s.name} x=${s.x1}..${s.x2} y=${s.y1}..${s.y2} fl=${s.lower}..${s.upper} capacity=${s.capacity}`,
+    );
+    for (const item of [
+      { name: 'INITIAL', transit: initial, conflicts: first, values: oi[s.index] },
+      { name: 'FINAL', transit: final, conflicts: last, values: of[s.index] },
+    ]) {
+      const st = sectorStatistics(item.transit, item.conflicts, s, item.values, p);
+      report.push(
+        `${item.name} entries=${st.entries} time=${d(st.time)} mean=${st.mean} peak=${st.peak} over=${st.over} conflicts=${st.conflicts}`,
+      );
+    }
+    const rows: string[] = [];
+    for (let k = Math.max(s.capacity + 1, ...of[s.index]); k >= 1; k--) {
+      rows.push(of[s.index].map((n) => (n >= k ? '#' : k === s.capacity ? '-' : '.')).join(''));
+    }
+    report.push(...chart(rows));
+  }
+  const li = levelUsage(firstPaths);
+  const lf = levelUsage(lastPaths);
+  const levels = [...new Set([...li.keys(), ...lf.keys()])].sort((a, b) => b - a);
+  report.push('LEVELS');
+  for (const level of levels) {
+    report.push(
+      `LEVEL ${level} flights=${li.get(level)?.flights.size ?? 0}->${lf.get(level)?.flights.size ?? 0} time=${d(li.get(level)?.time ?? 0)}->${d(lf.get(level)?.time ?? 0)}`,
+    );
+  }
+  const handoffs = final.filter((t) => t.next !== '-');
+  report.push(`HANDOFFS plan=final count=${handoffs.length}`);
+  for (const a of sectors) {
+    for (const b of sectors) {
+      const count = handoffs.filter((t) => t.sector === a && t.next === b.name).length;
+      if (count) report.push(`HANDOFF ${a.name} ${b.name} ${count}`);
+    }
+  }
+  return {
+    final,
+    load,
+    report,
+    rows: [
+      'callsign,sector,entry,exit,duration,from,to',
+      ...final.map((t) =>
+        [
+          t.flight,
+          t.sector.name,
+          d(t.entry),
+          d(t.exit),
+          d(t.exit - t.entry),
+          t.previous,
+          t.next,
+        ].join(','),
+      ),
+    ],
+  };
+}
+function alertReport(
+  label: string,
+  paths: Record<string, Trajectory>,
+  conflicts: Classified[],
+  p: Parameters,
+) {
+  const codes = names(paths);
+  const grouped = new Map<string, Alert[]>();
+  for (const u of samples(p)) {
+    for (let i = 0; i < codes.length; i++) {
+      const a = currentPosition(paths[codes[i]], u);
+      if (!a) continue;
+      for (let j = i + 1; j < codes.length; j++) {
+        const b = currentPosition(paths[codes[j]], u);
+        if (!b) continue;
+        const loss = lossInterval(
+          subtract(a.point, b.point),
+          subtract(a.segment.velocity, b.segment.velocity),
+          0,
+          p.alert,
+          p.dh,
+          p.dv,
+        );
+        if (!loss) continue;
+        const name = `${codes[i]}-${codes[j]}`;
+        const group = grouped.get(name) ?? [];
+        const last = group[group.length - 1];
+        if (last && u - last.last === 60) {
+          last.last = u;
+          last.samples++;
+          last.minimum = Math.min(last.minimum, loss.distance);
+        } else {
+          group.push({
+            pair: [codes[i], codes[j]],
+            name,
+            first: u,
+            last: u,
+            samples: 1,
+            predicted: u + loss.lo,
+            minimum: loss.distance,
+            lead: null,
+          });
+        }
+        grouped.set(name, group);
+      }
+    }
+  }
+  const alerts = [...grouped.values()]
+    .flat()
+    .sort(
+      (a, b) =>
+        a.first - b.first ||
+        asciiCompare(a.pair[0], b.pair[0]) ||
+        asciiCompare(a.pair[1], b.pair[1]),
+    );
+  const detected = new Set<Classified>();
+  for (const a of alerts) {
+    const matches = conflicts.filter(
+      (c) => c.name === a.name && c.start < a.last + p.alert && c.end > a.first,
+    );
+    if (matches.length) {
+      a.lead = matches[0].start - a.first;
+      for (const c of matches) detected.add(c);
+    }
+  }
+  const trueAlerts = alerts.filter((a) => a.lead !== null);
+  const missed = conflicts.filter((c) => !detected.has(c));
+  const lines = [`ALERTS plan=${label} horizon=${p.alert} count=${alerts.length}`];
+  alerts.forEach((a, i) =>
+    lines.push(
+      `ALERT ${i + 1} ${a.name} first=${a.first} last=${a.last} samples=${a.samples} predicted=${d(a.predicted)} min_dist=${d(a.minimum)} status=${a.lead === null ? 'false lead=-' : `true lead=${d(a.lead)}`}`,
+    ),
+  );
+  for (const c of missed) lines.push(`MISSED ${c.name} start=${d(c.start)} end=${d(c.end)}`);
+  lines.push(
+    `SUMMARY alerts=${alerts.length} true=${trueAlerts.length} false=${alerts.length - trueAlerts.length} missed=${missed.length} mean_lead=${trueAlerts.length ? d(sum(trueAlerts.map((a) => a.lead ?? 0)) / trueAlerts.length) : '-'}`,
+  );
+  return lines;
+}
+function screen(point: Vector, p: Parameters): [number, number] | null {
+  const [x0, y0, x1, y1, w, h] = p.radar;
+  const col = Math.floor(((10 * point[0] - x0) * w) / (x1 - x0));
+  const r = Math.floor(((10 * point[1] - y0) * h) / (y1 - y0));
+  return col >= 0 && col < w && r >= 0 && r < h ? [col, h - 1 - r] : null;
+}
+function radarImage(
+  label: string,
+  time: number,
+  paths: Record<string, Trajectory>,
+  conflicts: Classified[],
+  p: Parameters,
+) {
+  const [, , , , w, h] = p.radar;
+  const grid: string[][] = Array.from({ length: h }, () => Array(w).fill('.'));
+  const cells: string[][][] = Array.from({ length: h }, () => Array.from({ length: w }, () => []));
+  const inFlight = names(paths).flatMap((code) => {
+    const current = currentPosition(paths[code], time);
+    return current ? [{ code, ...current, cell: screen(current.point, p) }] : [];
+  });
+  const active = activeConflicts(conflicts, time);
+  for (const a of inFlight) if (a.cell) cells[a.cell[1]][a.cell[0]].push(a.code);
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      const group = cells[r][c];
+      if (group.length > 1) grid[r][c] = String(group.length);
+      else if (group.length === 1) {
+        grid[r][c] = involving(active, group[0]).length ? group[0][0].toLowerCase() : group[0][0];
+      }
+    }
+  }
+  for (const a of inFlight) {
+    const later = currentPosition(paths[a.code], time + p.leader);
+    const cell = later ? screen(later.point, p) : null;
+    if (cell && grid[cell[1]][cell[0]] === '.') grid[cell[1]][cell[0]] = '*';
+  }
+  const lines = [
+    `RADAR plan=${label} t=${time} aircraft=${inFlight.length} conflicts=${active.length}`,
+    ...chart(grid.map((row) => row.join(''))),
+  ];
+  for (const a of inFlight) {
+    lines.push(
+      `${a.code} x=${d(a.point[0])} y=${d(a.point[1])} fl=${d(a.point[2] / 100, 2)} track=${d(track(a.segment), 1)} phase=${a.segment.phase} cell=${a.cell ? a.cell.join(',') : 'outside'}`,
+    );
+  }
+  for (const c of active) {
+    const a = currentPosition(paths[c.pair[0]], time)!;
+    const b = currentPosition(paths[c.pair[1]], time)!;
+    const dx = a.point[0] - b.point[0];
+    const dy = a.point[1] - b.point[1];
+    lines.push(
+      `CONFLICT ${c.name} dist=${d(Math.sqrt(dx * dx + dy * dy))} vert=${d(Math.abs(a.point[2] - b.point[2]), 1)}`,
+    );
+  }
+  return lines;
+}
+function density(label: string, paths: Record<string, Trajectory>, p: Parameters) {
+  const [, , , , w, h] = p.radar;
+  const counts: number[][] = Array.from({ length: h }, () => Array(w).fill(0));
+  for (const time of samples(p)) {
+    for (const code of names(paths)) {
+      const a = currentPosition(paths[code], time);
+      const cell = a ? screen(a.point, p) : null;
+      if (cell) counts[cell[1]][cell[0]]++;
+    }
+  }
+  const maximum = Math.max(...counts.flat());
+  return [
+    `DENSITY plan=${label} from=${p.sampleStart} to=${p.sampleEnd} step=60 max=${maximum}`,
+    ...chart(counts.map((row) => row.map((n) => (!n ? '.' : n < 10 ? String(n) : '#')).join(''))),
+  ];
+}
+function strips(
+  plans: Record<string, Plan>,
+  initial: Record<string, Trajectory>,
+  final: Record<string, Trajectory>,
+  transits: Transit[],
+) {
+  const lines: string[] = [];
+  for (const code of names(plans)) {
+    const p = plans[code];
+    lines.push(
+      `STRIP ${code} type=${p.type} waypoints=${p.waypoints.length} length=${d(final[code].length)} manoeuvres=${p.history.join(',') || '-'}`,
+    );
+    p.waypoints.forEach((w, k) => {
+      const a = initial[code].waypointTimes[k];
+      const b = final[code].waypointTimes[k];
+      lines.push(`WPT ${k} at=${w.x}:${w.y} eta=${d(a[0])}->${d(b[0])} fl=${a[1]}->${b[1]}`);
+    });
+    lines.push(
+      `SECTORS ${
+        transits
+          .filter((t) => t.flight === code)
+          .map((t) => `${t.sector.name}@${d(t.entry)}`)
+          .join(',') || '-'
+      }`,
+    );
+  }
+  return lines;
+}
 function main() {
-    const { flights, types, sectors, params: p } = loadAll(), initial: Record<string, Trajectory> = {}; for (const code of names(flights)) initial[code] = buildTrajectory(flights[code], types);
-    const rawFirst = allConflicts(initial, p.dh, p.dv), result = resolve(flights, types, p), rawLast = allConflicts(result.paths, p.dh, p.dv), remaining = new Set(rawLast.map(c => c.name)), first = classify(rawFirst, sectors, remaining, result.resolved, p.dh), last = classify(rawLast, sectors, remaining, result.resolved, p.dh), sector = sectorReports(initial, result.paths, sectors, first, last, p);
-    writeLines('trajectories.csv', trajectoryRows(result.paths)); writeLines('conflicts.txt', [...conflictReport('initial', first, initial, p), ...conflictReport('final', last, result.paths, p)]); writeLines('resolutions.txt', resolutionReport(result, initial, first, last)); writeLines('sector_transits.csv', sector.rows); writeLines('sector_load.csv', sector.load); writeLines('sector_report.txt', sector.report); writeLines('alerts.txt', [...alertReport('initial', initial, first, p), ...alertReport('final', result.paths, last, p)]);
-    const radar: string[] = []; for (const time of p.snapshots) radar.push(...radarImage('initial', time, initial, first, p), ...radarImage('final', time, result.paths, last, p)); radar.push(...density('initial', initial, p), ...density('final', result.paths, p)); writeLines('radar.txt', radar); writeLines('strips.txt', strips(result.plans, initial, result.paths, sector.final));
+  const { flights, types, sectors, params: p } = loadAll();
+  const initial: Record<string, Trajectory> = {};
+  for (const code of names(flights)) initial[code] = buildTrajectory(flights[code], types);
+  const rawFirst = allConflicts(initial, p.dh, p.dv);
+  const result = resolve(flights, types, p);
+  const rawLast = allConflicts(result.paths, p.dh, p.dv);
+  const remaining = new Set(rawLast.map((c) => c.name));
+  const first = classify(rawFirst, sectors, remaining, result.resolved, p.dh);
+  const last = classify(rawLast, sectors, remaining, result.resolved, p.dh);
+  const sector = sectorReports(initial, result.paths, sectors, first, last, p);
+  writeLines('trajectories.csv', trajectoryRows(result.paths));
+  writeLines('conflicts.txt', [
+    ...conflictReport('initial', first, initial, p),
+    ...conflictReport('final', last, result.paths, p),
+  ]);
+  writeLines('resolutions.txt', resolutionReport(result, initial, first, last));
+  writeLines('sector_transits.csv', sector.rows);
+  writeLines('sector_load.csv', sector.load);
+  writeLines('sector_report.txt', sector.report);
+  writeLines('alerts.txt', [
+    ...alertReport('initial', initial, first, p),
+    ...alertReport('final', result.paths, last, p),
+  ]);
+  const radar: string[] = [];
+  for (const time of p.snapshots) {
+    radar.push(
+      ...radarImage('initial', time, initial, first, p),
+      ...radarImage('final', time, result.paths, last, p),
+    );
+  }
+  radar.push(...density('initial', initial, p), ...density('final', result.paths, p));
+  writeLines('radar.txt', radar);
+  writeLines('strips.txt', strips(result.plans, initial, result.paths, sector.final));
 }
 main();

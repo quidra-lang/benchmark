@@ -22,8 +22,11 @@ export function prepareVectors(original: Matrix, standardize: boolean) {
     }
     deviations.push(Math.sqrt(squared / (count - 1)));
   }
-  const vectors = original.map(vector => vector.map((value, feature) =>
-    standardize ? (value - means[feature]) / deviations[feature] : value));
+  const vectors = original.map((vector) =>
+    vector.map((value, feature) =>
+      standardize ? (value - means[feature]) / deviations[feature] : value,
+    ),
+  );
   return { means, deviations, vectors };
 }
 
@@ -43,15 +46,20 @@ export function distance(first: number[], second: number[], type: DistanceType):
     for (let f = 0; f < first.length; f++) total += Math.abs(first[f] - second[f]);
     return total;
   }
-  let firstTotal = 0, secondTotal = 0;
+  let firstTotal = 0;
+  let secondTotal = 0;
   for (let f = 0; f < first.length; f++) {
     firstTotal += first[f];
     secondTotal += second[f];
   }
-  const firstMean = firstTotal / first.length, secondMean = secondTotal / second.length;
-  let cross = 0, firstSquared = 0, secondSquared = 0;
+  const firstMean = firstTotal / first.length;
+  const secondMean = secondTotal / second.length;
+  let cross = 0;
+  let firstSquared = 0;
+  let secondSquared = 0;
   for (let f = 0; f < first.length; f++) {
-    const a = first[f] - firstMean, b = second[f] - secondMean;
+    const a = first[f] - firstMean;
+    const b = second[f] - secondMean;
     cross += a * b;
     firstSquared += a * a;
     secondSquared += b * b;
@@ -61,8 +69,10 @@ export function distance(first: number[], second: number[], type: DistanceType):
 
 export function distanceMatrix(vectors: Matrix, type: DistanceType): Matrix {
   const matrix = vectors.map(() => Array<number>(vectors.length).fill(0));
-  for (let i = 0; i < vectors.length; i++) for (let j = i + 1; j < vectors.length; j++) {
-    matrix[i][j] = matrix[j][i] = distance(vectors[i], vectors[j], type);
+  for (let i = 0; i < vectors.length; i++) {
+    for (let j = i + 1; j < vectors.length; j++) {
+      matrix[i][j] = matrix[j][i] = distance(vectors[i], vectors[j], type);
+    }
   }
   return matrix;
 }

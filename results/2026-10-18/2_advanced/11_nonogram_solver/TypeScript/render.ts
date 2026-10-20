@@ -3,20 +3,29 @@ import type { Grid, CellState } from './line_solver';
 import { spaceForm } from './clues';
 import type { Clue } from './clues';
 
-export interface NamedGrid { name: string; grid: Grid }
-export const stateChar = (state: CellState): string => state === UNKNOWN ? '?' : state === FILLED ? '#' : '.';
+export interface NamedGrid {
+  name: string;
+  grid: Grid;
+}
+export const stateChar = (state: CellState): string =>
+  state === UNKNOWN ? '?' : state === FILLED ? '#' : '.';
 export const stateString = (line: readonly CellState[]): string => line.map(stateChar).join('');
 
 export function sideBySide(grids: NamedGrid[]): string[] {
   if (grids.length === 0) return [];
-  const lines = ['grid ' + grids.map(item => item.name).join(' ')];
-  for (let r = 0; r < grids[0].grid.length; r++) lines.push(grids.map(item => stateString(item.grid[r])).join(' | '));
+  const lines = ['grid ' + grids.map((item) => item.name).join(' ')];
+  for (let r = 0; r < grids[0].grid.length; r++) {
+    lines.push(grids.map((item) => stateString(item.grid[r])).join(' | '));
+  }
   return lines;
 }
 
 export function answerSheet(grid: Grid, rows: Clue[], columns: Clue[]): string[] {
-  const tokens = columns.map(clue => spaceForm(clue).split(' ')), rowText = rows.map(spaceForm);
-  let width = 0, depth = 0, prefix = 0;
+  const tokens = columns.map((clue) => spaceForm(clue).split(' '));
+  const rowText = rows.map(spaceForm);
+  let width = 0;
+  let depth = 0;
+  let prefix = 0;
   for (const column of tokens) {
     depth = Math.max(depth, column.length);
     for (const token of column) width = Math.max(width, token.length + 1);
