@@ -30,8 +30,8 @@ literal_error =: 4 : 'fail x,'' at column '',number y'
 hex_digits =: 3 : 'if. #y do. ,Hex{~16 16#:y else. '''' end.'
 hex_text =: 3 : 'if. #y do. hex_digits y else. ''-'' end.'
 byte_text =: 3 : '''<'',(hex_digits y),''>'''
-valid_hex =: 3 : '(y-:''-'')+.((0<#y)*.(0=2|#y)*.*./y e.Hex)'
-unhex =: 3 : 'if. (0=#y)+.y-:''-'' do. i.0 else. 16#._2]\Hex i.y end.'
+valid_hex =: 3 : '((,y)-:,''-'')+.((0<#y)*.(0=2|#y)*.*./y e.Hex)'
+unhex =: 3 : 'if. (0=#y)+.((,y)-:,''-'') do. i.0 else. 16#._2]\Hex i.y end.'
 is_message =: 3 : '(<y)e.MessageNames'
 is_enum =: 3 : '(<y)e.EnumNames'
 wire_type =: 3 : 0
@@ -421,7 +421,7 @@ tokenize =: 3 : 0
         if. c=' ' do. i =. >:i continue. end.
         column =. >:i
         if. c e.'{}[]:,' do.
-            kind =. ,c
+            kind =. c
             value =. ''
             i =. >:i
         elseif. c=Quote do.
