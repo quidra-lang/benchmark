@@ -65,6 +65,12 @@ pmul =: 4 : 0
     trim result
 )
 ppower =: 4 : 0
+    if. y=0 do. One return. end.
+    if. 0=#x do. Zero return. end.
+    if. (1=#x)*.1=|{.x do.
+        if. 2|y do. x return. end.
+        One return.
+    end.
     result =. One
     for_i. i.y do. result =. result pmul x end.
     result
