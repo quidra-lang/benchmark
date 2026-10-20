@@ -1,0 +1,12 @@
+import * as board from './board.ts';
+import type { Grid, Tile, Word, Direction } from './board.ts';
+export const RACK_SIZE = 7, BINGO = 50;
+export interface TileValue { value: number; count: number; weight: number }
+export type Table = Map<string, TileValue>;
+export interface ScoredWord extends Word { score: number }
+export interface ScoredMove extends Word { tiles: Tile[]; words: ScoredWord[]; score: number }
+export const tileKind = (letter: string) => letter >= 'a' && letter <= 'z' ? '?' : letter;
+export const squares = (move: Word): Tile[] => Array.from(move.word, (letter, i) => ({ row: move.row + (move.direction === 'down' ? i : 0), column: move.column + (move.direction === 'across' ? i : 0), letter }));
+export function crossWord(grid: Grid, tile: Tile, direction: Direction): Word { const dr = direction === 'down' ? 1 : 0, dc = direction === 'across' ? 1 : 0; let row = tile.row, column = tile.column; while (board.occupied(grid, row - dr, column - dc)) { row -= dr; column -= dc; } const start = { row, column, direction }; let word = ''; while (board.inside(row, column) && ((row === tile.row && column === tile.column) || board.occupied(grid, row, column))) { word += row === tile.row && column === tile.column ? tile.letter : grid[row][column]; row += dr; column += dc; } return { ...start, word }; }
+export function wordScore(grid: Grid, word: Word, table: Table) { let total = 0, multiplier = 1; for (const tile of squares(word)) { let points = table.get(tileKind(tile.letter))!.value; if (grid[tile.row][tile.column] === '.') { const premium = board.PREMIUMS[tile.row][tile.column]; if (premium === '+') points *= 2; if (premium === '^') points *= 3; if (premium === '*') multiplier *= 2; if (premium === '#') multiplier *= 3; } total += points; } return total * multiplier; }
+export function score(grid: Grid, move: Word, table: Table): ScoredMove { const tiles = squares(move).filter(t => grid[t.row][t.column] === '.'), words: Word[] = [{ row: move.row, column: move.column, direction: move.direction, word: move.word }], perpendicular = move.direction === 'across' ? 'down' : 'across'; for (const tile of tiles) { const cross = crossWord(grid, tile, perpendicular); if (cross.word.length >= 2) words.push(cross); } let total = tiles.length === RACK_SIZE ? BINGO : 0; const scored = words.map(word => { const points = wordScore(grid, word, table); total += points; return { ...word, score: points }; }); return { ...move, tiles, words: scored, score: total }; }
