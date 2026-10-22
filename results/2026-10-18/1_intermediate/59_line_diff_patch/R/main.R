@@ -791,7 +791,8 @@ region_at <- function(lines, kinds, start) {
     ours <- lines_between(lines, start, base_marker)
     base <- lines_between(lines, base_marker, middle)
   }
-  list(start = start, end = end, ours = ours, base = base, theirs = lines_between(lines, middle, end))
+  theirs <- lines_between(lines, middle, end)
+  list(start = start, end = end, ours = ours, base = base, theirs = theirs)
 }
 
 conflict_regions <- function(lines) {
