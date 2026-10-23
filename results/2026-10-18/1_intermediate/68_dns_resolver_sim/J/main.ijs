@@ -190,7 +190,7 @@ parseRecord =: 3 : 0
     groups=.i.0
     minimum=.0
     select. kind
-    case. 'A' do. number=.ipv4 0{::fields
+    case. (,'A') do. number=.ipv4 0{::fields
         data=.ip4text number
     case. 'AAAA' do. groups=.ipv6 0{::fields
         data=.ip6text groups
@@ -227,7 +227,7 @@ parseRecord =: 3 : 0
 recordText =: 3 : '(rOwner y),'' '',(num rTTL y),'' '',(rKind y),'' '',rData y'
 dataLess =: 4 : 0
     select. rKind x
-    case. 'A' do. (rNumber x)<rNumber y
+    case. (,'A') do. (rNumber x)<rNumber y
     case. 'AAAA' do. (0={./:(rGroups x);rGroups y)*.-.(rGroups x)-:rGroups y
     case. 'NS';'CNAME';'PTR' do. (rTarget x)nameLess rTarget y
     case. 'MX' do.
@@ -370,7 +370,7 @@ respond =: 3 : 0
         ns=.zone atOwner point;'NS'
         if. #ns do.
             glue=.0$a:
-            for_r. ns do. glue=.glue,zone atOwner (rTarget >r);'A' end.
+            for_r. ns do. glue=.glue,zone atOwner (rTarget >r);(,'A') end.
             result=.response 'REFERRAL'
             (<point)4}(<glue)3}(<ns)2}result
             return.
@@ -486,16 +486,16 @@ lookup =: 3 : 0
             for_host. nameSort servers do.
                 host=.>host
                 addresses=.i.0
-                at=.entryIndex host;'A';1
+                at=.entryIndex host;(,'A');1
                 if. at>:0 do. addresses=.rNumber&>3{::at{::Cache
                 else.
-                    pair=.host;'A'
+                    pair=.host;(,'A')
                     if. (<pair)e.pending do. depth trace 'GLUELESS ',host,' -> LOOP'
                     else.
                         depth trace 'GLUELESS ',host
-                        'status answer'=.resolve (<host),(<'A'),(<depth+1),<pending
+                        'status answer'=.resolve (<host),(<(,'A')),(<depth+1),<pending
                         if. status-:'NOERROR' do.
-                            for_r. answer do. if. 'A'-:rKind >r do. addresses=.addresses,rNumber >r end. end.
+                            for_r. answer do. if. (,'A')-:rKind >r do. addresses=.addresses,rNumber >r end. end.
                         end.
                     end.
                 end.
@@ -565,7 +565,7 @@ report =: 4 : 0
 )
 addressResolution =: 3 : 0
     addresses=.0$a:
-    for_kind. 'A';'AAAA' do.
+    for_kind. (,'A');'AAAA' do.
         kind=.>kind
         'status answer'=.resolve (<y),(<kind),(<0),<0$a:
         if. status-:'NOERROR' do.

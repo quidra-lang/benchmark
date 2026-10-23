@@ -399,9 +399,9 @@ filterHolds =: 4 : 0
     else. less=.a<b
         more=.a>b end.
     select. op
-    case. '<' do. less
+    case. (,'<') do. less
     case. '<=' do. -.more
-    case. '>' do. more
+    case. (,'>') do. more
     case. do. -.less
     end.
 )
@@ -576,7 +576,7 @@ execute =: 3 : 0
         'bad arguments'check (4=#args)~:operator-:'EXISTS'
         path=.0 parsePath 0{::args
         Field=:1 parsePath 1{::args
-        'bad operator'check (<operator)e.'==';'!=';'<';'<=';'>';'>=';'EXISTS'
+        'bad operator'check (<operator)e.'==';'!=';(,'<');'<=';(,'>');'>=';'EXISTS'
         if. 4=#args do. reference=.parseJson 3{::args end.
     elseif. command-:'SORT' do.
         args=.1 3 words argument

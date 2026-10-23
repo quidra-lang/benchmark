@@ -8,6 +8,7 @@ fail =: 3 : 0
 )
 check =: 4 : 'if. -.y do. fail x end.'
 split =: 4 : 0
+    x=.,x
     result=.0$a:
     at=.0
     start=.0
@@ -81,7 +82,7 @@ parseTerm =: 3 : 0
     pattern=.y
     for_symbol. '>=';'<=';'>';'<';'=';'^';'~' do.
         symbol=.>symbol
-        if. symbol-:(#symbol){.y do. op=.symbol
+        if. (,symbol)-:(#symbol){.y do. op=.symbol
             pattern=.(#symbol)}.y
             break. end.
     end.
@@ -103,7 +104,7 @@ parseTerm =: 3 : 0
             part=.>part
             if. (numberPart part)*.-.wildcard do. core=.(0".part)count}core
                 count=.count+1
-            elseif. (<part)e.'x';'*' do. wildcard=.1
+            elseif. (<part)e.(<,'x'),<,'*' do. wildcard=.1
             else. a: return. end.
         end.
         lower=.(<core),<0$a:
