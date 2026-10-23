@@ -328,7 +328,8 @@ fix =: 3 : 0
         pieces =. pieces , (i {:: gaps) , result
     end.
     tail =. (+/ #&> texts , gaps) }. y
-    counts =. ('removed' field removed) ; ('replaced' field replaced) ; ('recased' field recased) , ':'
+    counts =. ('removed' field removed) ; ('replaced' field replaced)
+    counts =. counts , < ('recased' field recased) , ':'
     say 'FIX' ; counts , < pieces , tail
 )
 
@@ -345,7 +346,8 @@ profile =: 3 : 0
     else.
         'rate average longest' =. '0.0' ; '0.00' ; '-'
     end.
-    line =. 'PROFILE' ; ('words' field count) ; ('distinct' field # ~. words) ; 'unknown' field unknown
+    line =. 'PROFILE' ; ('words' field count) ; 'distinct' field # ~. words
+    line =. line , < 'unknown' field unknown
     line =. line , ('rate' field rate) ; ('avglen' field average) ; 'longest' field longest
     say line , < 'sentences' field +/ sentences
 )
