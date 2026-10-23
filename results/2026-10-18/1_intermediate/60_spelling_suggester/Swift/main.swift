@@ -676,7 +676,8 @@ final class SpellChecker {
             "STATS", "words=\(dictionary.count)", "total=\(dictionary.values.reduce(0, +))",
             "avglen=\(decimalText(characters, dictionary.count, 2))", "top=\(top.key):\(top.value)",
             "ignored=\(ignored.count)", "rules=\(rules.count)",
-            "keyboard=\(keyboard ? "ON" : "OFF")", "limit=\(limit)", "suggestions=\(suggestionCount)", "undo=\(undoHistory.count)",
+            "keyboard=\(keyboard ? "ON" : "OFF")", "limit=\(limit)",
+            "suggestions=\(suggestionCount)", "undo=\(undoHistory.count)",
         ])
         emit(["SESSION"] + counterNames.map { "\($0)=\(counters[$0, default: 0])" })
     }
