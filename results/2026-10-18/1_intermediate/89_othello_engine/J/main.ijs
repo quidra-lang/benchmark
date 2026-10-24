@@ -282,7 +282,7 @@ validSquare =: 3 : '(2=#y)*.(({.y)e.''abcdefgh'')*.({:y)e.''12345678'''
 validRecord =: 3 : 0
     if. (0=#y)+.(120<#y)+.2|#y do. 0 return. end.
     for_i. i.<.((#y)%2) do.
-        if. -.validSquare (2*i)+2{.y do. 0 return. end.
+        if. -.validSquare ((2*i)+i.2){y do. 0 return. end.
     end.
     1
 )
@@ -303,7 +303,7 @@ record =: 3 : 0
     moves =. i.0
     passes =. 0
     for_i. i.<.((#text)%2) do.
-        sq =. (2*i)+2{.text
+        sq =. ((2*i)+i.2){text
         p =. square sq
         why =. reason p
         if. #why do.
@@ -560,7 +560,7 @@ execute =: 3 : 0
     case. 'PLAY' do.
         recordText =. 0{::args
         for_i. i.<.((#recordText)%2) do.
-            word =. (2*i)+2{.recordText
+            word =. ((2*i)+i.2){recordText
             p =. square word
             why =. reason p
             if. #why do.
