@@ -1,6 +1,6 @@
-import type { Signal, Route, Section, SignalAspect } from './types.ts';
+import type { Signal, Route, Section } from './types.ts';
 
-export function decideSignals(signals: Signal[], routes: Route[], occupied: (section: Section) => boolean): SignalAspect[] {
+export function decideSignals(signals: Signal[], routes: Route[], occupied: (section: Section) => boolean): string[] {
   const cleared = new Map<Signal, Route>();
   for (const route of routes) {
     if (route.state !== 'LOCKED') continue;
@@ -8,7 +8,7 @@ export function decideSignals(signals: Signal[], routes: Route[], occupied: (sec
     if (route.sections.some(occupied) || route.overlap.some(occupied)) continue;
     cleared.set(route.start, route);
   }
-  return signals.map((signal): SignalAspect => {
+  return signals.map(signal => {
     const route = cleared.get(signal);
     if (!route) return 'RED';
     if (route.finish.kind === 'boundary') return 'GREEN';

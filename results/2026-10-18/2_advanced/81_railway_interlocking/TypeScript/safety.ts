@@ -1,4 +1,4 @@
-import type { Train, Signal, Layout, Route } from './types.ts';
+import type { Layout, Train, Signal, Route } from './types.ts';
 
 const PROPERTIES = ['OCCUPANCY', 'POINT_MOTION', 'CONFLICT', 'SIGNAL_PASSING'];
 
@@ -10,7 +10,7 @@ export class Safety {
     this.violations = [];
   }
   check(time: number, property: string, details: string | null = null): void {
-    const counts = this.counts.get(property)!; counts.checks++;
+    const counts = this.counts.get(property); counts.checks++;
     if (details !== null) {
       counts.violations++;
       this.violations.push(`VIOLATION ${time} ${property} ${details}`);
@@ -39,7 +39,7 @@ export class Safety {
   }
   report(): string[] {
     const lines = PROPERTIES.map(property => {
-      const counts = this.counts.get(property)!;
+      const counts = this.counts.get(property);
       return `${property} ${counts.violations === 0 ? 'OK' : 'FAIL'} checks ${counts.checks} violations ${counts.violations}`;
     });
     const safe = Array.from(this.counts.values()).every(counts => counts.violations === 0);

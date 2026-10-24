@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
-import type { Layout, Route, PointRequirement, Section } from './types.ts';
+import type { Layout, PointRequirement, Route, Section } from './types.ts';
+
+import * as fs from 'node:fs';
 const list = (text: string): string[] => text === '-' ? [] : text.split(',');
 
 export class Interlocking {
@@ -7,26 +8,25 @@ export class Interlocking {
   routes: Route[];
   byName: Map<string, Route>;
   constructor(path: string, layout: Layout) {
-    this.layout = layout; this.routes = []; this.byName = new Map<string, Route>();
+    this.layout = layout; this.routes = []; this.byName = new Map();
     for (const section of layout.sections) { section.routeLock = null; section.overlapLocks = new Set(); }
     for (const point of layout.points) point.locks = [];
     const requirements = (text: string): PointRequirement[] => list(text).map(item => {
       const [name, position] = item.split(':');
       return { point: layout.pointByName.get(name)!, position };
     });
-    for (const line of readFileSync(path, 'ascii').split('\n').slice(0, -1)) {
+    for (const line of fs.readFileSync(path, 'ascii').split('\n').slice(0, -1)) {
       const [, name, start, finish, points, sections, overlap, flank, conflicts, approach] = line.split(' ');
       const signal = layout.signalByName.get(start)!;
       const route: Route = { name, start: signal, finish: layout.features.get(finish)!, direction: signal.direction,
-        points: requirements(points), flank: requirements(flank), sections: list(sections).map(value => layout.sectionByName.get(value)!),
-        overlap: list(overlap).map(value => layout.sectionByName.get(value)!), conflictNames: list(conflicts), approach: Number(approach),
-        state: null, passed: new Set(), overlapLocked: false, overlapCounter: 0, releaseTime: null,
-        conflicts: [], requirements: [],
+        points: requirements(points), flank: requirements(flank), sections: list(sections).map(value => layout.sectionByName.get(value)),
+        overlap: list(overlap).map(value => layout.sectionByName.get(value)), conflictNames: list(conflicts), approach: Number(approach),
+        state: null, passed: new Set(), overlapLocked: false, overlapCounter: 0, releaseTime: null, conflicts: [], requirements: [],
         stats: { requests: 0, grants: 0, uses: 0, cancels: 0, wait: 0, maxwait: 0, locked: 0 } };
       this.routes.push(route); this.byName.set(name, route);
     }
     for (const route of this.routes) {
-      route.conflicts = route.conflictNames.map(name => this.byName.get(name)!);
+      route.conflicts = route.conflictNames.map(name => this.byName.get(name));
       route.requirements = route.points.concat(route.flank);
     }
   }

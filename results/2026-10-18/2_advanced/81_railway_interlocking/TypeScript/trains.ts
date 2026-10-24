@@ -1,11 +1,10 @@
-import { readFileSync } from 'node:fs';
-import type { Layout, Train, Route, RouteRequest, Stop } from './types.ts';
+import type { Layout, Route, Train, ScheduleRequest } from './types.ts';
 
-export function readTrains(path: string, layout: Layout, routes: Map<string, Route>): {trains: Train[]; requests: Map<number, RouteRequest[]>} {
-  const trains: Train[] = [];
-  const byName = new Map<string, Train>();
-  const requests = new Map<number, RouteRequest[]>();
-  for (const line of readFileSync(path, 'ascii').split('\n').slice(0, -1)) {
+import * as fs from 'node:fs';
+
+export function readTrains(path: string, layout: Layout, routes: Map<string, Route>): {trains: Train[]; requests: Map<number, ScheduleRequest[]>} {
+  const trains: Train[] = [], byName = new Map<string, Train>(), requests = new Map<number, ScheduleRequest[]>();
+  for (const line of fs.readFileSync(path, 'ascii').split('\n').slice(0, -1)) {
     const [kind, name, ...fields] = line.split(' ');
     if (kind === 'TRAIN') {
       const [length, acceleration, deceleration, maximum, entry, scheduled, speed] = fields;
@@ -17,16 +16,16 @@ export function readTrains(path: string, layout: Layout, routes: Map<string, Rou
         emergency: false, crossed: null, stats: { distance: 0, maxspeed: 0, standing: 0, passes: 0 } };
       trains.push(train); byName.set(name, train);
     } else {
-      const train = byName.get(name)!;
+      const train = byName.get(name);
       if (kind === 'REQUEST') {
         const time = Number(fields[1]);
         if (!requests.has(time)) requests.set(time, []);
-        requests.get(time)!.push({ train, route: routes.get(fields[0])! });
+        requests.get(time).push({ train, route: routes.get(fields[0]) });
       } else if (kind === 'EXIT') {
         train.exit = layout.boundaryByName.get(fields[0])!; train.scheduledExit = Number(fields[1]);
       } else {
         const [section, dwell, arrival, departure] = fields;
-        train.stops.push({ section: layout.sectionByName.get(section)!, turn: kind === 'TURN', dwell: Number(dwell),
+        train.stops.push({ section: layout.sectionByName.get(section), turn: kind === 'TURN', dwell: Number(dwell),
           scheduledArrival: Number(arrival), scheduledDeparture: Number(departure), arrival: null, departure: null });
       }
     }

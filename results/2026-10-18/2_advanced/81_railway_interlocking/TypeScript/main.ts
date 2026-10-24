@@ -1,31 +1,21 @@
-import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import type {
+  Layout, Section, Point, Signal, Route, Train, PathPart,
+  Request, Params, UserEvent, ScheduleRequest, Punctuality, Stop
+} from './types.ts';
+
+import * as fs from 'node:fs';
 import { readLayout, beyond } from './layout.ts';
 import { Interlocking } from './interlocking.ts';
 import { decideSignals } from './signals.ts';
 import { readTrains, selectSpeed } from './trains.ts';
 import { Safety } from './safety.ts';
-import type {
-  Layout, Section, Point, Signal, Boundary, Route, Train, RouteRequest,
-  Event, Params, QueueRequest, Stop, PathEntry, OccupiedPart, Punctuality, SignalAspect, TrainState
-} from './types.ts';
 
-interface Input {
-  layout: Layout;
-  interlocking: Interlocking;
-  trains: Train[];
-  requests: Map<number, RouteRequest[]>;
-  params: Params;
-  events: Map<number, Event[]>;
-}
-
-const readLines = (path: string): string[] => readFileSync(path, 'ascii').split('\n').slice(0, -1);
+const readLines = (path: string): string[] => fs.readFileSync(path, 'ascii').split('\n').slice(0, -1);
 const trackOccupied = (section: Section): boolean => section.failed || section.occupants.length > 0;
 
-function readInputs(): Input {
+function readInputs(): {layout: Layout; interlocking: Interlocking; trains: Train[]; requests: Map<number, ScheduleRequest[]>; params: Params; events: Map<number, UserEvent[]>} {
   const layout = readLayout('input/layout.txt'), interlocking = new Interlocking('input/routes.txt', layout);
-  const plan = readTrains('input/trains.txt', layout, interlocking.byName);
-  const params = {} as Params & Record<string, number | Set<number>>;
-  const events = new Map<number, Event[]>();
+  const plan = readTrains('input/trains.txt', layout, interlocking.byName), params: Partial<Params> = {}, events = new Map<number, UserEvent[]>();
   for (const line of readLines('input/params.txt')) {
     const [key, ...values] = line.split(' ');
     params[key] = key === 'SNAPSHOTS' ? new Set(values.map(Number)) : Number(values[0]);
@@ -33,19 +23,19 @@ function readInputs(): Input {
   for (const line of readLines('input/events.txt')) {
     const [when, kind, ...args] = line.split(' '), time = Number(when);
     if (!events.has(time)) events.set(time, []);
-    events.get(time)!.push({ kind, args });
+    events.get(time).push({ kind, args });
   }
-  return { layout, interlocking, ...plan, params, events };
+  return { layout, interlocking, ...plan, params: params as Params, events };
 }
 
-function headEntry(train: Train): PathEntry {
+function headEntry(train: Train): PathPart {
   for (let i = train.path.length - 1; i >= 0; i--) if (train.path[i].start < train.head) return train.path[i];
   return train.path[0];
 }
 
-function occupiedParts(train: Train): OccupiedPart[] {
+function occupiedParts(train: Train): (PathPart & {lo: number; hi: number})[] {
   if (train.state !== 'RUNNING') return [];
-  const parts: OccupiedPart[] = [], tail = train.head - train.length;
+  const parts = [], tail = train.head - train.length;
   for (const entry of train.path) {
     const end = entry.start + entry.section.length;
     if (entry.start < train.head && end > tail) {
@@ -60,19 +50,18 @@ class Simulation {
   interlocking: Interlocking;
   routes: Route[];
   trains: Train[];
-  planRequests: Map<number, RouteRequest[]>;
-  events: Map<number, Event[]>;
+  planRequests: Map<number, ScheduleRequest[]>;
+  events: Map<number, UserEvent[]>;
   params: Params;
   time: number;
-  queue: QueueRequest[];
+  queue: Request[];
   requestCount: number;
   granted: number;
   dropped: number;
   eventLines: string[];
   snapshotLines: string[];
   safety: Safety;
-
-  constructor(input: Input) {
+  constructor(input: ReturnType<typeof readInputs>) {
     this.layout = input.layout; this.interlocking = input.interlocking; this.routes = input.interlocking.routes;
     this.trains = input.trains; this.planRequests = input.requests; this.events = input.events; this.params = input.params;
     this.time = 0; this.queue = []; this.requestCount = 0; this.granted = 0; this.dropped = 0;
@@ -85,7 +74,7 @@ class Simulation {
   }
   completeThrows(): void {
     for (const point of this.layout.points) if (point.moving && point.completion === this.time) {
-      point.position = point.target!; point.moving = false; point.completion = null;
+      point.position = point.target; point.moving = false; point.completion = null;
       this.log(`POINT ${point.name} ${point.position}`); point.stats.throws++;
     }
   }
@@ -104,7 +93,7 @@ class Simulation {
     for (const other of route.conflicts) {
       if (other.state === 'LOCKED' || other.state === 'APPROACH') return 'conflict ' + other.name;
     }
-    const opposite = (other: Route): boolean => other.direction !== route.direction;
+    const opposite = other => other.direction !== route.direction;
     for (const section of route.sections) {
       if (trackOccupied(section)) return 'occupied ' + section.name;
       if (section.routeLock !== null || Array.from(section.overlapLocks).some(opposite)) return 'locked ' + section.name;
@@ -123,7 +112,7 @@ class Simulation {
     return null;
   }
   judgeRequests(): void {
-    const remaining: QueueRequest[] = [];
+    const remaining = [];
     for (const request of this.queue) {
       const route = request.route, reason = this.reason(route);
       if (reason !== null) {
@@ -157,25 +146,25 @@ class Simulation {
       } else { this.interlocking.release(route); this.log(`CANCEL ${route.name} released`); }
     } else this.log(`CANCEL ${route.name} ${route.state === null ? 'none' : 'refused'}`);
   }
-  executeEvent(event: Event): void {
+  executeEvent(event: UserEvent): void {
     const { kind, args } = event;
-    if (kind === 'REQUEST') this.addRequest(this.interlocking.byName.get(args[0])!, 'OPERATOR');
-    else if (kind === 'CANCEL') this.cancel(this.interlocking.byName.get(args[0])!);
+    if (kind === 'REQUEST') this.addRequest(this.interlocking.byName.get(args[0]), 'OPERATOR');
+    else if (kind === 'CANCEL') this.cancel(this.interlocking.byName.get(args[0]));
     else if (kind === 'THROW') {
-      const point = this.layout.pointByName.get(args[0])!, position = args[1];
+      const point = this.layout.pointByName.get(args[0]), position = args[1];
       const result = point.locks.length > 0 ? 'locked' : point.failed ? 'failed' : point.moving ? 'moving' :
         trackOccupied(point.common) ? 'occupied' : point.position === position ? 'none' : 'start';
       this.log(`THROW ${point.name} ${position} ${result}`);
       if (result === 'start') this.startThrow(point, position);
     } else if (kind === 'TCFAIL' || kind === 'TCFIX') {
-      const section = this.layout.sectionByName.get(args[0])!;
+      const section = this.layout.sectionByName.get(args[0]);
       section.failed = kind === 'TCFAIL'; this.log(kind + ' ' + section.name);
     } else {
-      const point = this.layout.pointByName.get(args[0])!;
+      const point = this.layout.pointByName.get(args[0]);
       point.failed = kind === 'POINTFAIL'; this.log(kind + ' ' + point.name);
       if (point.moving) {
         if (point.failed) point.completion = null;
-        else this.startThrow(point, point.target!);
+        else this.startThrow(point, point.target);
       }
     }
   }
@@ -200,10 +189,10 @@ class Simulation {
     const entry = headEntry(train), stop = train.stops[train.nextStop];
     let section = entry.section, distance = entry.start + section.length - train.head;
     while (true) {
-      const signal = section.signals[train.direction!];
+      const signal = section.signals[train.direction];
       if (signal && signal.aspect === 'RED') return distance;
       if (stop && stop.section === section) return distance;
-      const next = beyond(section, train.direction!);
+      const next = beyond(section, train.direction);
       if (next.kind === 'boundary') return null;
       if (next.kind === 'buffer' || next.kind === 'impassable') return distance;
       section = next.section; distance += section.length;
@@ -226,7 +215,7 @@ class Simulation {
       const end = entry.start + entry.section.length;
       if (train.head + remaining <= end) { train.head += remaining; break; }
       remaining -= end - train.head; train.head = end;
-      const signal = entry.section.signals[train.direction!];
+      const signal = entry.section.signals[train.direction];
       if (signal) this.passSignal(train, signal);
       if (train.pendingDeparture !== null && train.pendingDeparture.section === entry.section) {
         this.log(`DEPART ${train.name} ${entry.section.name}`);
@@ -234,13 +223,10 @@ class Simulation {
       }
       const next = beyond(entry.section, train.direction);
       if (next.kind === 'boundary') train.crossed = { boundary: next, coordinate: end };
-      else if (next.kind !== 'impassable') {
-        entry = { section: next.section, start: end };
-        train.path.push(entry);
-      } else break;
+      else { entry = { section: next.section, start: end }; train.path.push(entry); }
     }
   }
-  runTrain(train: Train, entered: Set<Boundary>): void {
+  runTrain(train: Train, entered: Set<import('./types.ts').Feature>): void {
     if (train.state === 'EXITED') return;
     if (train.state === 'WAITING') {
       if (this.time < train.scheduledEntry || trackOccupied(train.entry.section) || entered.has(train.entry)) return;
@@ -251,7 +237,7 @@ class Simulation {
     }
     if (train.dwelling) {
       const stop = train.stops[train.nextStop];
-      if (this.time < stop.arrival! + stop.dwell || this.time < stop.scheduledDeparture) return;
+      if (this.time < stop.arrival + stop.dwell || this.time < stop.scheduledDeparture) return;
       train.dwelling = false; train.pendingDeparture = stop; train.nextStop++;
       if (stop.turn) this.reverse(train, stop);
     }
@@ -321,7 +307,7 @@ class Simulation {
       for (const event of this.events.get(this.time) || []) this.executeEvent(event);
       this.judgeRequests();
       this.setSignals();
-      const entered = new Set<Boundary>();
+      const entered = new Set();
       for (const train of this.trains) this.runTrain(train, entered);
       this.recomputeOccupancy();
       this.releaseSections();
@@ -335,11 +321,11 @@ class Simulation {
 function snapshot(simulation: Simulation): string[] {
   const { layout, trains, routes } = simulation;
   let height = 0, width = 0;
-  const include = (row: number, col: number): void => { height = Math.max(height, row + 1); width = Math.max(width, col + 1); };
+  const include = (row, col) => { height = Math.max(height, row + 1); width = Math.max(width, col + 1); };
   for (const section of layout.sections) include(section.row, section.col2);
   for (const item of [...layout.points, ...layout.signals, ...layout.buffers]) include(item.row, item.col);
   for (const label of layout.labels) include(label.row, label.col + label.text.length - 1);
-  const grid: string[][] = Array.from({ length: height }, () => Array<string>(width).fill(' '));
+  const grid = Array.from({ length: height }, () => Array(width).fill(' '));
   for (const label of layout.labels) {
     for (let i = 0; i < label.text.length; i++) grid[label.row][label.col + i] = label.text[i];
   }
@@ -360,7 +346,7 @@ function snapshot(simulation: Simulation): string[] {
   }
   for (const buffer of layout.buffers) grid[buffer.row][buffer.col] = '|';
   for (const point of layout.points) grid[point.row][point.col] = point.moving || point.failed ? '?' : point.position;
-  for (const signal of layout.signals) grid[signal.row][signal.col] = ({ RED: 'X', YELLOW: 'Y', GREEN: 'G' } as Record<SignalAspect, string>)[signal.aspect];
+  for (const signal of layout.signals) grid[signal.row][signal.col] = { RED: 'X', YELLOW: 'Y', GREEN: 'G' }[signal.aspect];
   const lines = ['SNAPSHOT ' + simulation.time, ...grid.map(row => row.join('').replace(/ +$/, ''))];
   for (const train of trains) if (train.state === 'RUNNING') {
     const sections = occupiedParts(train).map(part => part.section.name).join(',');
@@ -374,7 +360,7 @@ function snapshot(simulation: Simulation): string[] {
 function trainLog(trains: Train[]): {lines: string[]; punctuality: Punctuality} {
   const lines = ['train,location,scheduled,actual,delay'];
   const punctuality = { onTime: 0, late: 0, missing: 0, totalDelay: 0, maxDelay: 0 };
-  const record = (train: Train, location: string, scheduled: number | null, actual: number | null): void => {
+  const record = (train: Train, location: string, scheduled: number, actual: number | null): void => {
     if (actual === null) { lines.push(`${train.name},${location},${scheduled},-,-`); punctuality.missing++; }
     else {
       const delay = actual - scheduled;
@@ -413,7 +399,7 @@ function summaryReport(simulation: Simulation, punctuality: Punctuality): string
     const stats = signal.stats;
     lines.push(`SIGNAL ${signal.name} red ${stats.RED} yellow ${stats.YELLOW} green ${stats.GREEN} passes ${stats.passes}`);
   }
-  const states: Record<TrainState, number> = { WAITING: 0, RUNNING: 0, EXITED: 0 };
+  const states = { WAITING: 0, RUNNING: 0, EXITED: 0 };
   for (const train of simulation.trains) {
     const stats = train.stats; states[train.state]++;
     lines.push(`TRAIN ${train.name} ${train.symbol} ${train.state} distance ${stats.distance} maxspeed ${stats.maxspeed} standing ${stats.standing} passes ${stats.passes}`);
@@ -432,8 +418,8 @@ function main(): void {
     ['events.txt', simulation.eventLines], ['snapshots.txt', simulation.snapshotLines], ['train_log.csv', log.lines],
     ['safety.txt', simulation.safety.report()], ['summary.txt', summaryReport(simulation, log.punctuality)],
   ];
-  mkdirSync('output', { recursive: true });
-  for (const [name, lines] of reports) writeFileSync('output/' + name, lines.length ? lines.join('\n') + '\n' : '', 'ascii');
+  fs.mkdirSync('output', { recursive: true });
+  for (const [name, lines] of reports) fs.writeFileSync('output/' + name, lines.length ? lines.join('\n') + '\n' : '', 'ascii');
 }
 
 main();

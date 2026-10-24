@@ -1,21 +1,16 @@
-export type Direction = 'UP' | 'DOWN';
-export type SignalAspect = 'RED' | 'YELLOW' | 'GREEN';
-export type RouteState = 'LOCKED' | 'APPROACH' | 'USED' | null;
-export type TrainState = 'WAITING' | 'RUNNING' | 'EXITED';
-
 export interface Section {
   name: string;
   length: number;
   row: number;
   col1: number;
   col2: number;
-  ends: Record<string, Connection>;
-  signals: Partial<Record<Direction, Signal>>;
+  ends: Record<string, any>;
+  signals: Record<string, Signal>;
   failed: boolean;
   occupants: Train[];
-  stats: {occupied: number; locked: number; trains: Set<Train>};
   routeLock: Route | null;
   overlapLocks: Set<Route>;
+  stats: {occupied: number; locked: number; trains: Set<Train>};
 }
 
 export interface Point {
@@ -31,23 +26,23 @@ export interface Point {
   target: string | null;
   completion: number | null;
   failed: boolean;
-  stats: {throws: number; locked: number; moving: number};
   locks: {route: Route; position: string}[];
+  stats: {throws: number; locked: number; moving: number};
 }
 
 export interface Signal {
-  kind: 'signal';
+  kind: string;
   name: string;
   section: Section;
-  direction: Direction;
+  direction: string;
   row: number;
   col: number;
-  aspect: SignalAspect;
-  stats: Record<SignalAspect, number> & {passes: number};
+  aspect: string;
+  stats: Record<string, number>;
 }
 
-export interface BufferEnd {
-  kind: 'buffer';
+export interface Feature {
+  kind: string;
   name: string;
   section: Section;
   end: string;
@@ -55,59 +50,35 @@ export interface BufferEnd {
   col: number;
 }
 
-export interface Boundary {
-  kind: 'boundary';
-  name: string;
-  section: Section;
-  end: string;
-}
-
-export type Feature = Signal | BufferEnd | Boundary;
-export type Connection =
-  | {kind: 'section'; section: Section}
-  | {kind: 'point'; point: Point}
-  | BufferEnd
-  | Boundary;
-export type NextConnection =
-  | {kind: 'section'; section: Section}
-  | BufferEnd
-  | Boundary
-  | {kind: 'impassable'};
-
-export interface Layout {
-  sections: Section[];
-  points: Point[];
-  signals: Signal[];
-  buffers: BufferEnd[];
-  boundaries: Boundary[];
-  labels: {row: number; col: number; text: string}[];
-  sectionByName: Map<string, Section>;
-  pointByName: Map<string, Point>;
-  signalByName: Map<string, Signal>;
-  boundaryByName: Map<string, Boundary>;
-  features: Map<string, Feature>;
-}
-
-export interface PointRequirement {point: Point; position: string}
 export interface Route {
   name: string;
   start: Signal;
-  finish: Feature;
-  direction: Direction;
+  finish: Feature | Signal;
+  direction: string;
   points: PointRequirement[];
   flank: PointRequirement[];
-  requirements: PointRequirement[];
   sections: Section[];
   overlap: Section[];
   conflictNames: string[];
-  conflicts: Route[];
   approach: number;
-  state: RouteState;
+  state: string | null;
   passed: Set<Section>;
   overlapLocked: boolean;
   overlapCounter: number;
   releaseTime: number | null;
+  conflicts: Route[];
+  requirements: PointRequirement[];
   stats: {requests: number; grants: number; uses: number; cancels: number; wait: number; maxwait: number; locked: number};
+}
+
+export interface PointRequirement {
+  point: Point;
+  position: string;
+}
+
+export interface PathPart {
+  section: Section;
+  start: number;
 }
 
 export interface Stop {
@@ -120,8 +91,6 @@ export interface Stop {
   departure: number | null;
 }
 
-export interface PathEntry {section: Section; start: number}
-export interface OccupiedPart extends PathEntry {lo: number; hi: number}
 export interface Train {
   name: string;
   symbol: string;
@@ -129,34 +98,70 @@ export interface Train {
   acceleration: number;
   deceleration: number;
   maximum: number;
-  entry: Boundary;
+  entry: Feature;
   scheduledEntry: number;
   entrySpeed: number;
   stops: Stop[];
-  exit: Boundary | null;
+  exit: Feature | null;
   scheduledExit: number | null;
   actualEntry: number | null;
   actualExit: number | null;
-  state: TrainState;
-  direction: Direction | null;
-  path: PathEntry[];
+  state: string;
+  direction: string | null;
+  path: PathPart[];
   head: number;
   speed: number;
   nextStop: number;
   dwelling: boolean;
   pendingDeparture: Stop | null;
   emergency: boolean;
-  crossed: {boundary: Boundary; coordinate: number} | null;
+  crossed: {boundary: any; coordinate: number} | null;
   stats: {distance: number; maxspeed: number; standing: number; passes: number};
 }
 
-export interface RouteRequest {train: Train; route: Route}
-export interface Event {kind: string; args: string[]}
+export interface Layout {
+  sections: Section[];
+  points: Point[];
+  signals: Signal[];
+  buffers: Feature[];
+  boundaries: Feature[];
+  labels: {row: number; col: number; text: string}[];
+  sectionByName: Map<string, Section>;
+  pointByName: Map<string, Point>;
+  signalByName: Map<string, Signal>;
+  boundaryByName: Map<string, Feature>;
+  features: Map<string, Feature | Signal>;
+}
+
+export interface Request {
+  number: number;
+  route: Route;
+  time: number;
+  lastReason: string | null;
+}
+
 export interface Params {
+  END: number;
   THROW: number;
   OVERLAP: number;
-  END: number;
   SNAPSHOTS: Set<number>;
+  [key: string]: number | Set<number>;
 }
-export interface QueueRequest {number: number; route: Route; time: number; lastReason: string | null}
-export interface Punctuality {onTime: number; late: number; missing: number; totalDelay: number; maxDelay: number}
+
+export interface UserEvent {
+  kind: string;
+  args: string[];
+}
+
+export interface ScheduleRequest {
+  train: Train;
+  route: Route;
+}
+
+export interface Punctuality {
+  onTime: number;
+  late: number;
+  missing: number;
+  totalDelay: number;
+  maxDelay: number;
+}
