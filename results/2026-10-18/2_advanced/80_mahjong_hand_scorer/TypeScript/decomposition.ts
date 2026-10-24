@@ -80,10 +80,10 @@ export function waiting(hand: Tile[], melds: Meld[]): number[] {
 export function waitShape(type: string, block: Block | null, win: number, handCounts: number[]): string {
   if (type === 'chiitoitsu') return 'tanki';
   if (type === 'kokushi') return tiles.orphans.every(kind => handCounts[kind] === 1) ? 'thirteen' : 'single';
-  if (block.type === 'pair') return 'tanki';
-  if (block.type === 'triplet') return 'shanpon';
-  if (win === block.start + 1) return 'kanchan';
-  if ((block.start % 9 === 0 && win === block.start + 2) || (block.start % 9 === 6 && win === block.start)) return 'penchan';
+  if (block!.type === 'pair') return 'tanki';
+  if (block!.type === 'triplet') return 'shanpon';
+  if (win === block!.start + 1) return 'kanchan';
+  if ((block!.start % 9 === 0 && win === block!.start + 2) || (block!.start % 9 === 6 && win === block!.start)) return 'penchan';
   return 'ryanmen';
 }
 

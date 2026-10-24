@@ -14,11 +14,11 @@ export function fu(candidate: Candidate, situation: HandSituation, found: Set<st
   const items = [{name: 'base', value: 20}];
   if (situation.closed && situation.by === 'ron') items.push({name: 'closed_ron', value: 10});
   if (situation.by === 'tsumo' && !found.has('pinfu')) items.push({name: 'tsumo', value: 2});
-  let pair = candidate.pair >= 31 ? 2 : 0;
-  if (candidate.pair === tiles.windKind(situation.seat)) pair += 2;
-  if (candidate.pair === tiles.windKind(situation.round)) pair += 2;
-  if (pair > 0) items.push({name: 'pair ' + tiles.block([candidate.pair, candidate.pair]), value: pair});
-  for (const block of candidate.triplets) items.push(tripletFu(block));
+  let pair = candidate.pair! >= 31 ? 2 : 0;
+  if (candidate.pair! === tiles.windKind(situation.seat)) pair += 2;
+  if (candidate.pair! === tiles.windKind(situation.round)) pair += 2;
+  if (pair > 0) items.push({name: 'pair ' + tiles.block([candidate.pair!, candidate.pair!]), value: pair});
+  for (const block of candidate.triplets!) items.push(tripletFu(block));
   if (['kanchan', 'penchan', 'tanki'].includes(candidate.wait)) items.push({name: 'wait ' + candidate.wait, value: 2});
   let total = 0;
   for (const item of items) total += item.value;

@@ -25,7 +25,7 @@ function readRecords(name: string): RawRecord[] {
 function readRules(): Rule[] {
   return readRecords('rules.txt').map(record => {
     const rule: Rule = {name: record.label, honba: Number(record.honba), open_tanyao: false, red_fives: false, double_yakuman: false, kazoe_yakuman: false, kiriage: false};
-    for (const key of ['open_tanyao', 'red_fives', 'double_yakuman', 'kazoe_yakuman', 'kiriage']) {
+    for (const key of ['open_tanyao', 'red_fives', 'double_yakuman', 'kazoe_yakuman', 'kiriage'] as const) {
       rule[key] = record[key] === 'yes';
     }
     return rule;
@@ -51,7 +51,7 @@ function copyError(values: Tile[], rule: Rule): string | null {
   return null;
 }
 
-function context(situation: HandSituation): HandSituation {
+function context(situation: any): HandSituation {
   situation.closed = !situation.melds.some(meld => ['C', 'P', 'K'].includes(meld.letter));
   situation.handCounts = tiles.counts(situation.hand);
   situation.concealedCounts = situation.handCounts.slice();
@@ -59,7 +59,7 @@ function context(situation: HandSituation): HandSituation {
   situation.allTiles = situation.hand.concat([situation.win]);
   for (const meld of situation.melds) for (const tile of meld.tiles) situation.allTiles.push(tile);
   situation.allCounts = tiles.counts(situation.allTiles);
-  return situation;
+  return situation as HandSituation;
 }
 
 function checkSituation(raw: RawRecord, rule: Rule): HandSituation | {error: string} {
@@ -69,8 +69,8 @@ function checkSituation(raw: RawRecord, rule: Rule): HandSituation | {error: str
   const ura = tiles.parse(raw.ura, true);
   const discards = tiles.parse(raw.discards, true);
   const melds = raw.melds === '-' ? [] : raw.melds.split(',').map(text =>
-    ({letter: text[0], tiles: tiles.parse(text.slice(1))}));
-  if ([hand, winning, dora, ura, discards].some(value => value === null) ||
+    ({letter: text[0], tiles: tiles.parse(text.slice(1))!}));
+  if (hand === null || winning === null || dora === null || ura === null || discards === null ||
       melds.some(meld => meld.tiles === null) || winning.length !== 1) return {error: 'bad tile notation'};
   if (melds.length >= 5 || melds.some(meld => !validMeld(meld))) return {error: 'bad meld'};
   if (hand.length !== 13 - 3 * melds.length) return {error: 'wrong tile count'};
@@ -83,7 +83,7 @@ function checkSituation(raw: RawRecord, rule: Rule): HandSituation | {error: str
   const flags = situation.flags;
   const riichi = flags.has('riichi') || flags.has('double_riichi');
   const kans = melds.filter(meld => meld.letter === 'K' || meld.letter === 'A').length;
-  const validFlags = {
+  const validFlags: Record<string, boolean> = {
     riichi: situation.closed,
     double_riichi: situation.closed && !flags.has('riichi'),
     ippatsu: riichi && !flags.has('rinshan'),
@@ -167,22 +167,22 @@ function ordinaryYaku(candidate: Candidate, situation: HandSituation): Set<strin
   if (numberSuits.size === 1 && !hasHonor) found.add('chinitsu');
   if (candidate.type === 'chiitoitsu') found.add('chiitoitsu');
   if (candidate.type !== 'standard') return found;
-  const triplets = candidate.triplets;
-  const sequences = candidate.sequences;
+  const triplets = candidate.triplets!;
+  const sequences = candidate.sequences!;
   const tripletKinds = new Set(triplets.map(block => block.start));
   const sequenceStarts = new Set(sequences.map(block => block.start));
   const concealedCount = triplets.filter(block => block.concealed).length;
   const kans = triplets.filter(block => block.type === 'kan').length;
   const dragonCount = triplets.filter(block => block.start >= 31).length;
-  const yakuhaiPair = candidate.pair >= 31 || candidate.pair === tiles.windKind(situation.seat) ||
-    candidate.pair === tiles.windKind(situation.round);
-  if (situation.closed && situation.melds.length === 0 && candidate.sets.every(block => block.type === 'sequence') &&
+  const yakuhaiPair = candidate.pair! >= 31 || candidate.pair! === tiles.windKind(situation.seat) ||
+    candidate.pair! === tiles.windKind(situation.round);
+  if (situation.closed && situation.melds.length === 0 && candidate.sets!.every(block => block.type === 'sequence') &&
       !yakuhaiPair && candidate.wait === 'ryanmen') found.add('pinfu');
   const repetitions = new Map();
-  for (const block of candidate.sets) {
+  for (const block of candidate.sets!) {
     if (block.type === 'sequence') repetitions.set(block.start, (repetitions.get(block.start) || 0) + 1);
   }
-  if (situation.closed && candidate.sets.length === 4 && candidate.sets.every(block => block.type === 'sequence') &&
+  if (situation.closed && candidate.sets!.length === 4 && candidate.sets!.every(block => block.type === 'sequence') &&
       [...repetitions.values()].every(count => count % 2 === 0)) found.add('ryanpeikou');
   if (situation.closed && !found.has('ryanpeikou') && [...repetitions.values()].some(count => count >= 2)) found.add('iipeikou');
   for (const [kind, name] of [[31, 'haku'], [32, 'hatsu'], [33, 'chun']]) if (tripletKinds.has(kind)) found.add(name);
@@ -199,11 +199,11 @@ function ordinaryYaku(candidate: Candidate, situation: HandSituation): Set<strin
   for (const suit of [0, 9, 18]) {
     if ([0, 3, 6].every(start => sequenceStarts.has(suit + start))) found.add('ittsu');
   }
-  if (sequences.length > 0 && candidate.blocks.every(block => block.kinds.some(tiles.yaochuu))) {
+  if (sequences.length > 0 && candidate.blocks!.every(block => block.kinds.some(tiles.yaochuu))) {
     found.add(hasHonor ? 'chanta' : 'junchan');
   }
   if (kans === 3) found.add('sankantsu');
-  if (dragonCount === 2 && candidate.pair >= 31) found.add('shousangen');
+  if (dragonCount === 2 && candidate.pair! >= 31) found.add('shousangen');
   return found;
 }
 
@@ -225,7 +225,7 @@ function yakumanYaku(candidate: Candidate, situation: HandSituation): Set<string
   }
   if (candidate.type === 'kokushi') found.add(candidate.wait === 'thirteen' ? 'kokushi_13' : 'kokushi');
   if (candidate.type !== 'standard') return found;
-  const triplets = candidate.triplets;
+  const triplets = candidate.triplets!;
   const concealedCount = triplets.filter(block => block.concealed).length;
   const dragonCount = triplets.filter(block => block.start >= 31).length;
   const windCount = triplets.filter(block => block.start >= 27 && block.start <= 30).length;
@@ -233,7 +233,7 @@ function yakumanYaku(candidate: Candidate, situation: HandSituation): Set<string
   if (concealedCount === 4) found.add(candidate.wait === 'tanki' ? 'suuankou_tanki' : 'suuankou');
   if (dragonCount === 3) found.add('daisangen');
   if (windCount === 4) found.add('daisuushii');
-  if (windCount === 3 && candidate.pair >= 27 && candidate.pair <= 30) found.add('shousuushii');
+  if (windCount === 3 && candidate.pair! >= 27 && candidate.pair! <= 30) found.add('shousuushii');
   if (kans === 4) found.add('suukantsu');
   return found;
 }
@@ -272,8 +272,8 @@ function better(first: ScoredCandidate, second: ScoredCandidate | null): boolean
   if (first.base !== second.base) return first.base > second.base;
   if (first.yakuman !== second.yakuman) return first.yakuman;
   if (!first.yakuman) {
-    if (first.han !== second.han) return first.han > second.han;
-    if (first.fu !== second.fu) return first.fu > second.fu;
+    if (first.han !== second.han) return first.han! > second.han!;
+    if (first.fu !== second.fu) return first.fu! > second.fu!;
   }
   return first.form < second.form;
 }
@@ -319,11 +319,11 @@ function winLines(situation: HandSituation, candidate: ScoredCandidate, payment:
   lines.push(`TOTAL points ${payment.points} gain ${gain}`);
   const delta = Object.fromEntries([...tiles.winds].map(wind => [wind, 0]));
   delta[situation.seat] = gain;
-  if (situation.by === 'ron') delta[situation.from] = -(payment.ron + honba);
+  if (situation.by === 'ron') delta[situation.from] = -(payment.ron! + honba);
   else {
     for (const wind of tiles.winds) {
       if (wind === situation.seat) continue;
-      const amount = payment.kind === 'all' ? payment.all : wind === 'E' ? payment.dealer : payment.nondealer;
+      const amount = payment.kind === 'all' ? payment.all! : wind === 'E' ? payment.dealer! : payment.nondealer!;
       delta[wind] = -(amount + honba / 3);
     }
   }
@@ -359,7 +359,7 @@ function recordWin(stats: ScoreStatistics, situation: HandSituation, candidate: 
     stats.maximum = points;
     stats.hand = situation.label;
   }
-  const rule = stats.rules.get(situation.rule.name);
+  const rule = stats.rules.get(situation.rule.name)!;
   rule.wins++;
   rule.points += points;
 }
@@ -371,12 +371,12 @@ function statisticLines(stats: ScoreStatistics, total: number, rules: Rule[]): s
   for (const han of [...stats.han.keys()].sort((a, b) => a - b)) lines.push(`HAN_COUNT ${han} ${stats.han.get(han)}`);
   for (const fu of [...stats.fu.keys()].sort((a, b) => a - b)) lines.push(`FU_COUNT ${fu} ${stats.fu.get(fu)}`);
   for (const category of yaku.categories) lines.push(`LIMIT ${category} ${stats.categories.get(category)}`);
-  for (const [name] of yaku.ordinaryTable.concat(yaku.yakumanTable)) {
+  for (const [name] of [...yaku.ordinaryTable, ...yaku.yakumanTable]) {
     if (stats.yaku.has(name)) lines.push(`YAKU_COUNT ${name} ${stats.yaku.get(name)}`);
   }
   lines.push(`POINTS total ${stats.points} max ${stats.maximum} hand ${stats.hand}`);
   for (const rule of rules) {
-    const counts = stats.rules.get(rule.name);
+    const counts = stats.rules.get(rule.name)!;
     lines.push(`RULE ${rule.name} hands ${counts.hands} wins ${counts.wins} points ${counts.points}`);
   }
   return lines;
@@ -388,9 +388,9 @@ function scoreHands(records: RawRecord[], rules: Rule[], byName: Map<string, Rul
   const stats = scoreStatistics(rules);
   for (const raw of records) {
     lines.push('HAND ' + raw.label);
-    stats.rules.get(raw.rules).hands++;
-    const situation = checkSituation(raw, byName.get(raw.rules));
-    if (situation.error) {
+    stats.rules.get(raw.rules)!.hands++;
+    const situation = checkSituation(raw, byName.get(raw.rules)!);
+    if ('error' in situation) {
       lines.push('ERROR ' + situation.error);
       summary.push(`${raw.label},-,-,0,ERROR`);
       stats.errors++;
@@ -429,7 +429,7 @@ function checkHand(raw: RawRecord, rule: Rule): WaitingHand | {error: string} {
   const dora = tiles.parse(raw.dora);
   const discards = tiles.parse(raw.discards, true);
   const visible = tiles.parse(raw.visible, true);
-  if ([hand, dora, discards, visible].some(value => value === null)) return {error: 'bad tile notation'};
+  if (hand === null || dora === null || discards === null || visible === null) return {error: 'bad tile notation'};
   if (hand.length !== 13) return {error: 'wrong tile count'};
   const known = hand.concat(dora, discards, visible);
   const copies = copyError(known, rule);
@@ -451,7 +451,7 @@ function acceptanceTiles(hand: WaitingHand, calculator: Calculator, shanten: num
 }
 
 function hypotheticalPoints(hand: WaitingHand, kind: number, by: string): number | 'no_yaku' {
-  const situation = context({rule: hand.rule, hand: hand.hand, win: {kind, red: false}, melds: [],
+  const situation = context({rule: hand.rule, hand: hand.hand, win: {kind, red: false}, melds: [], honba: 0, sticks: 0,
     by, seat: hand.seat, round: hand.round, flags: new Set(hand.riichi === 'yes' ? ['riichi'] : []),
     dora: hand.dora, ura: [], discards: []});
   const best = bestCandidate(evaluatedCandidates(situation));
@@ -469,7 +469,7 @@ function tenpaiLines(hand: WaitingHand, acceptance: {kind: number; left: number}
     if (typeof ron === 'number' && (bestRon === null || ron > bestRon.points)) bestRon = {kind: tile.kind, points: ron};
     if (typeof tsumo === 'number' && (bestTsumo === null || tsumo > bestTsumo.points)) bestTsumo = {kind: tile.kind, points: tsumo};
   }
-  const text = best => best === null ? 'none' : `${tiles.name(best.kind)} ${best.points}`;
+  const text = (best: {kind: number; points: number} | null): string => best === null ? 'none' : `${tiles.name(best.kind)} ${best.points}`;
   lines.push(`BEST ron ${text(bestRon)} tsumo ${text(bestTsumo)}`);
   return lines;
 }
@@ -482,8 +482,8 @@ function analyzeHands(records: RawRecord[], rules: Map<string, Rule>): string[] 
   let furitenCount = 0;
   for (const raw of records) {
     lines.push('HAND ' + raw.label);
-    const hand = checkHand(raw, rules.get(raw.rules));
-    if (hand.error) {
+    const hand = checkHand(raw, rules.get(raw.rules)!);
+    if ('error' in hand) {
       lines.push('ERROR ' + hand.error);
       errors++;
       continue;
@@ -518,7 +518,7 @@ function main(): void {
   const scores = scoreHands(readRecords('hands.txt'), rules, byName);
   const waits = analyzeHands(readRecords('waits.txt'), byName);
   fs.mkdirSync('output', {recursive: true});
-  const files = {'scores.txt': scores.lines, 'waits.txt': waits, 'summary.csv': scores.summary};
+  const files: Record<string, string[]> = {'scores.txt': scores.lines, 'waits.txt': waits, 'summary.csv': scores.summary};
   for (const [name, lines] of Object.entries(files)) fs.writeFileSync('output/' + name, lines.join('\n') + '\n', 'ascii');
 }
 

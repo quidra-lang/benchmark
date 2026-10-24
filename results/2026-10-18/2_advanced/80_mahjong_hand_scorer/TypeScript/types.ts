@@ -48,11 +48,11 @@ export interface HandSituation {
   flags: Set<string>;
   honba: number;
   sticks: number;
-  closed?: boolean;
-  handCounts?: number[];
-  concealedCounts?: number[];
-  allTiles?: Tile[];
-  allCounts?: number[];
+  closed: boolean;
+  handCounts: number[];
+  concealedCounts: number[];
+  allTiles: Tile[];
+  allCounts: number[];
 }
 
 export interface Candidate {
