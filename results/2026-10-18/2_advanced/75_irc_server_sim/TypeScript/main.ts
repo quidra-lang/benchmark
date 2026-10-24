@@ -1,21 +1,34 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import type { Settings, TrafficRecord, DisconnectKind } from './types.ts';
+import type { Ban } from './channels.ts';
+
+interface NumericContext {
+  target?: string;
+  channel?: Channel;
+  user?: Client;
+  command?: string;
+  character?: string;
+  ban?: Ban;
+  names?: string;
+  motd?: string;
+}
+
+import * as fs from 'node:fs';
 import * as protocol from './protocol.ts';
 import * as masks from './masks.ts';
 import * as modes from './modes.ts';
 import { Client } from './clients.ts';
 import { Channel } from './channels.ts';
-import type { DisconnectionKind, NumericContext, ServerSettings, TrafficRecord } from './types.ts';
 
-function readInputs(): {settings: ServerSettings; traffic: TrafficRecord[]} {
-  const lines = (path: string): string[] => readFileSync(path, 'ascii').slice(0, -1).split('\n');
-  const rawSettings: Record<string, string | number | string[]> = {MOTD: []};
+function readInputs(): {settings: Settings; traffic: TrafficRecord[]} {
+  const lines = (path: string): string[] => fs.readFileSync(path, 'ascii').slice(0, -1).split('\n');
+  const settings: {MOTD: string[]} & Record<string, string | number | string[]> = {MOTD: []};
   for (const line of lines('input/server.txt')) {
     const separator = line.indexOf(' ');
     const key = line.slice(0, separator);
     const value = line.slice(separator + 1);
-    if (key === 'MOTD') (rawSettings.MOTD as string[]).push(value);
-    else if (['NAME', 'VERSION', 'CREATED', 'DESCRIPTION'].includes(key)) rawSettings[key] = value;
-    else rawSettings[key] = Number(value);
+    if (key === 'MOTD') settings.MOTD.push(value);
+    else if (['NAME', 'VERSION', 'CREATED', 'DESCRIPTION'].includes(key)) settings[key] = value;
+    else settings[key] = Number(value);
   }
   const traffic: TrafficRecord[] = lines('input/traffic.txt').map(line => {
     const first = line.indexOf(' ');
@@ -25,11 +38,11 @@ function readInputs(): {settings: ServerSettings; traffic: TrafficRecord[]} {
       body === 'DISCONNECT' ? 'disconnect' : 'messages';
     return {time: Number(line.slice(0, first)), id: line.slice(first + 1, second), body, kind};
   });
-  return {settings: rawSettings as unknown as ServerSettings, traffic};
+  return {settings: settings as Settings, traffic};
 }
 
 class Simulator {
-  settings: ServerSettings;
+  settings: Settings;
   traffic: TrafficRecord[];
   endTime: number;
   time: number;
@@ -39,24 +52,23 @@ class Simulator {
   commands: Map<string, number>;
   numerics: Map<number, number>;
   gone: {time: number; id: string; addressee: string; reason: string}[];
-  lines: {total: number; connect: number; disconnect: number; messages: number};
+  lines: Record<TrafficRecord['kind'] | 'total', number>;
   messages: {dropped: number; queued: number; processed: number; discarded: number; empty: number};
   sentCounts: {numerics: number; pings: number; errors: number};
-  disconnections: Record<DisconnectionKind, number>;
+  disconnections: Record<DisconnectKind, number>;
   registeredCount: number;
   connectionPeak: {count: number; time: number};
   registrationPeak: {count: number; time: number};
-
-  constructor(settings: ServerSettings, traffic: TrafficRecord[]) {
+  constructor(settings: Settings, traffic: TrafficRecord[]) {
     this.settings = settings;
     this.traffic = traffic;
-    this.endTime = traffic.at(-1)!.time;
+    this.endTime = traffic.at(-1).time;
     this.time = 0;
-    this.clients = new Map<string, Client>();
-    this.channels = new Map<string, Channel>();
+    this.clients = new Map();
+    this.channels = new Map();
     this.sent = [];
-    this.commands = new Map<string, number>();
-    this.numerics = new Map<number, number>();
+    this.commands = new Map();
+    this.numerics = new Map();
     this.gone = [];
     this.lines = {total: traffic.length, connect: 0, disconnect: 0, messages: 0};
     for (const record of traffic) this.lines[record.kind]++;
@@ -75,14 +87,14 @@ class Simulator {
         client.refill(this.time, this.settings);
         while (client.active && client.queue.length > 0 && client.tokens >= 1) {
           client.useToken(this.time, this.settings);
-          this.process(client, client.queue.shift()!);
+          this.process(client, client.queue.shift());
         }
       }
       while (next < this.traffic.length && this.traffic[next].time === this.time) {
         this.arrive(this.traffic[next++]);
       }
       for (const client of Array.from(this.clients.values())) {
-        if (client.pingSent && this.time - client.pingTime! >= this.settings.TIMEOUT) {
+        if (client.pingSent && this.time - client.pingTime >= this.settings.TIMEOUT) {
           this.disconnect(client, `Ping timeout: ${this.time - client.lastReceived} seconds`, 'timeout');
         } else if (!client.pingSent && this.time - client.lastReceived >= this.settings.PINGFREQ) {
           this.send(client, `PING :${this.settings.NAME}`);
@@ -154,7 +166,7 @@ class Simulator {
       case 311: content = `${user.nickname} ${user.username} ${user.host} * :${user.realName}`; break;
       case 312: content = `${user.nickname} ${server.NAME} :${server.DESCRIPTION}`; break;
       case 317:
-        content = `${user.nickname} ${this.time - user.lastSpeaking!} ${user.registrationTime} ` +
+        content = `${user.nickname} ${this.time - user.lastSpeaking} ${user.registrationTime} ` +
           ':seconds idle, signon time';
         break;
       case 318: content = `${target} :End of /WHOIS list.`; break;
@@ -212,7 +224,7 @@ class Simulator {
   }
 
   sendPeers(client: Client, line: string): void {
-    const peers = new Set<Client>();
+    const peers = new Set();
     for (const channel of client.channels) {
       for (const member of channel.members) {
         if (member.client !== client) peers.add(member.client);
@@ -231,7 +243,7 @@ class Simulator {
     }
   }
 
-  disconnect(client: Client, reason: string, kind: DisconnectionKind): void {
+  disconnect(client: Client, reason: string, kind: DisconnectKind): void {
     if (kind !== 'closed') {
       this.send(client, `ERROR :Closing Link: ${client.addressee()}[${client.host}] (${reason})`);
       this.sentCounts.errors++;
@@ -424,7 +436,7 @@ class Simulator {
   }
 
   message(client: Client, command: string, parameters: string[]): void {
-    const reply = (number: number, context: NumericContext = {}): void => {
+    const reply = (number, context = {}) => {
       if (command === 'PRIVMSG') this.numeric(client, number, context);
     };
     if (command === 'PRIVMSG') client.lastSpeaking = this.time;
@@ -522,7 +534,7 @@ class Simulator {
     if (parameters.length === 1) return this.numeric(client, 221);
     let sign = '+';
     let unknown = false;
-    const changes: modes.ModeChange[] = [];
+    const changes = [];
     for (const character of parameters[1]) {
       if (character === '+' || character === '-') sign = character;
       else if (character !== 'i') unknown = true;
@@ -549,7 +561,7 @@ class Simulator {
     const operator = channel.member(client)?.operator === true;
     let listedBans = false;
     let denied = false;
-    const changes: modes.ModeChange[] = [];
+    const changes = [];
     for (const {sign, character, argument} of items) {
       if (!'biklmnotv'.includes(character)) {
         this.numeric(client, 472, {channel, character});
@@ -566,7 +578,7 @@ class Simulator {
         if (!denied) this.numeric(client, 482, {channel});
         denied = true;
       } else if (character === 'o' || character === 'v') {
-        const user = this.findUser(argument!);
+        const user = this.findUser(argument);
         if (!user) this.numeric(client, 401, {target: argument});
         else {
           const member = channel.member(user);
@@ -580,10 +592,10 @@ class Simulator {
           }
         }
       } else if (character === 'b') {
-        const mask = masks.normalize(argument!);
+        const mask = masks.normalize(argument);
         const index = channel.bans.findIndex(ban => protocol.fold(ban.mask) === protocol.fold(mask));
         if (sign === '+' && index < 0) {
-          channel.bans.push({mask, setter: client.nickname!, time: this.time});
+          channel.bans.push({mask, setter: client.nickname, time: this.time});
           changes.push({sign, character, argument: mask});
         } else if (sign === '-' && index >= 0) {
           const removed = channel.bans.splice(index, 1)[0];
@@ -686,15 +698,12 @@ class Simulator {
   }
 
   writeReports(): void {
-    mkdirSync('output', {recursive: true});
-    const reports: Record<string, string[]> = {
-      sent: this.sent,
-      channels: this.channelReport(),
-      clients: this.clientReport(),
-      stats: this.statsReport(),
-    };
-    for (const [name, lines] of Object.entries(reports)) {
-      writeFileSync(`output/${name}.txt`, lines.join('\n') + (lines.length ? '\n' : ''), 'ascii');
+    fs.mkdirSync('output', {recursive: true});
+    for (const [name, lines] of [
+      ['sent', this.sent], ['channels', this.channelReport()],
+      ['clients', this.clientReport()], ['stats', this.statsReport()]
+    ] as Array<[string, string[]]>) {
+      fs.writeFileSync(`output/${name}.txt`, lines.join('\n') + (lines.length ? '\n' : ''), 'ascii');
     }
   }
 }

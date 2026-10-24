@@ -1,26 +1,26 @@
-import { matches } from './masks.ts';
 import type { Client } from './clients.ts';
 
-export interface Member {
+export interface ChannelMember {
   client: Client;
   operator: boolean;
   voice: boolean;
 }
-
 export interface Ban {
   mask: string;
   setter: string;
   time: number;
 }
 
-function privilege(member: Member): string {
+import { matches } from './masks.ts';
+
+function privilege(member: ChannelMember): string {
   return member.operator ? '@' : member.voice ? '+' : '';
 }
 
 export class Channel {
   name: string;
   creationTime: number;
-  members: Member[];
+  members: ChannelMember[];
   topic: string;
   topicSetter: string | null;
   topicTime: number | null;
@@ -30,7 +30,6 @@ export class Channel {
   limit: number;
   peak: number;
   messages: number;
-
   constructor(name: string, time: number) {
     this.name = name;
     this.creationTime = time;
@@ -46,7 +45,7 @@ export class Channel {
     this.messages = 0;
   }
 
-  member(client: Client): Member | undefined {
+  member(client: Client): ChannelMember | undefined {
     return this.members.find(member => member.client === client);
   }
 
@@ -69,7 +68,7 @@ export class Channel {
   }
 
   labelFor(client: Client): string {
-    return privilege(this.member(client)!) + this.name;
+    return privilege(this.member(client)) + this.name;
   }
 
   banned(client: Client): boolean {

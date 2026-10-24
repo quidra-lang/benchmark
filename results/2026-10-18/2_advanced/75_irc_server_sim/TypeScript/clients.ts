@@ -1,5 +1,5 @@
+import type { Settings } from './types.ts';
 import type { Channel } from './channels.ts';
-import type { ServerSettings } from './types.ts';
 
 export class Client {
   id: string;
@@ -24,7 +24,6 @@ export class Client {
   received: number;
   sent: number;
   active: boolean;
-
   constructor(id: string, host: string, time: number, bucket: number) {
     this.id = id;
     this.host = host;
@@ -62,12 +61,12 @@ export class Client {
     return this.invisible ? '+i' : '+';
   }
 
-  useToken(time: number, settings: ServerSettings): void {
+  useToken(time: number, settings: Settings): void {
     if (this.tokens === settings.BUCKET) this.refillTime = time + settings.REFILL;
     this.tokens--;
   }
 
-  refill(time: number, settings: ServerSettings): void {
+  refill(time: number, settings: Settings): void {
     if (this.refillTime !== time) return;
     this.tokens++;
     this.refillTime = this.tokens < settings.BUCKET ? time + settings.REFILL : null;

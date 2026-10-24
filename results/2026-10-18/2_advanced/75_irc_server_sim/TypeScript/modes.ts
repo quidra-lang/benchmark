@@ -1,10 +1,10 @@
-import { digits } from './protocol.ts';
-
 export interface ModeChange {
   sign: string;
   character: string;
   argument?: string;
 }
+
+import { digits } from './protocol.ts';
 
 export function items(mode: string, argumentsList: string[]): ModeChange[] {
   let sign = '+';
@@ -16,7 +16,7 @@ export function items(mode: string, argumentsList: string[]): ModeChange[] {
       sign = character;
       continue;
     }
-    let argument: string | undefined;
+    let argument;
     if ('ovb'.includes(character)) argument = take();
     else if (character === 'k') {
       argument = take();
@@ -33,8 +33,8 @@ export function items(mode: string, argumentsList: string[]): ModeChange[] {
 
 export function changeString(changes: ModeChange[]): string {
   let result = '';
-  let previousSign: string | null = null;
-  const argumentsList: string[] = [];
+  let previousSign = null;
+  const argumentsList = [];
   for (const change of changes) {
     if (change.sign !== previousSign) {
       result += change.sign;

@@ -1,7 +1,4 @@
-import type { Client } from './clients.ts';
-import type { Channel, Ban } from './channels.ts';
-
-export interface ServerSettings {
+export interface Settings {
   NAME: string;
   VERSION: string;
   CREATED: string;
@@ -19,6 +16,7 @@ export interface ServerSettings {
 }
 
 export type TrafficKind = 'connect' | 'disconnect' | 'messages';
+
 export interface TrafficRecord {
   time: number;
   id: string;
@@ -26,15 +24,4 @@ export interface TrafficRecord {
   kind: TrafficKind;
 }
 
-export type DisconnectionKind = 'quit' | 'closed' | 'flood' | 'timeout';
-
-export interface NumericContext {
-  target?: string;
-  channel?: Channel;
-  user?: Client;
-  command?: string;
-  character?: string;
-  ban?: Ban;
-  names?: string;
-  motd?: string;
-}
+export type DisconnectKind = 'quit' | 'closed' | 'flood' | 'timeout';
