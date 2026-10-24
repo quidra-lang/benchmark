@@ -1,0 +1,634 @@
+[Overview]
+Write a program that tracks multiple targets from noisy position measurements and evaluates the result against the true trajectories.
+The measurements are, for each scan (a time at which measurements are taken), a set of points in the plane. Besides measurements consisting of a target's position plus noise, there are false measurements unrelated to any target (clutter), and a target's measurement may also be missing. Each track (a hypothesis that one target is being tracked) estimates its state with a linear Kalman filter. For each scan, measurements are associated with tracks by gating with the Mahalanobis distance and by global nearest neighbour assignment with the Hungarian method (also compared with a greedy assignment), tracks are confirmed by an M-of-N rule, and tracks that go without measurements for consecutive scans are deleted.
+For every track that was ever confirmed, five estimates are computed on the same sequence of associated measurements: Kalman filters with the constant-velocity (CV) model and the constant-acceleration (CA) model, an alpha-beta-gamma filter, an IMM filter that mixes two CV models, and RTS smoothing. These are compared with the true trajectories to obtain the RMSE, the OSPA distance, track breaks and swaps, filter consistency (NEES and NIS), and more.
+The input is three files in the input/ folder (measurements, true trajectories, settings), and the results are written to five files in the output/ folder. Nothing is printed to standard output. No random numbers are used.
+
+[Input files]
+There are three input files: input/measurements.csv, input/truth.csv and input/params.txt. Every file consists of ASCII characters only, and every line (including the last one) ends with a newline (LF). No line has leading or trailing spaces. Values are separated by a comma in the CSV files and by a single space in params.txt.
+A decimal number is a base-10 number made of, in this order, "-" (only when negative), a sequence of one or more digits (integer part), ".", and a sequence of one or more digits (fractional part) (e.g. 12.5, -0.28, 0.002). An integer is a base-10 number without extra leading zeros.
+
+* input/measurements.csv (measurements)
+The first line is a header line, the string scan,time,x,y. Each following line represents one measurement and consists of the scan number (a positive integer), the time of that scan (a decimal number), and the x and y coordinates of the measured position (decimal numbers), in this order, separated by commas.
+- The lines are sorted by scan number in increasing order. Let S be the maximum scan number; for every scan number from 1 to S there is at least one line.
+- All lines of the same scan have the same time. The time of scan k is written t_k. The times increase in scan-number order (t_1 < t_2 < ... < t_S).
+- Let m_k be the number of lines of scan k. The measurements of scan k are numbered 1, 2, ..., m_k in the order of their lines in the file. This number is called the "measurement number", and the position of measurement j of scan k is written z_(k,j).
+Measurements from targets and clutter are mixed without distinction.
+
+* input/truth.csv (true trajectories)
+The first line is a header line, the string target,scan,x,y. Each following line consists of the target number (a positive integer), the scan number, and the x and y coordinates of the target's true position in that scan (decimal numbers), in this order, separated by commas.
+- The lines are sorted by target number in increasing order, and for the same target by scan number in increasing order.
+- Each target has exactly one line for every scan in a contiguous range from some scan number to another scan number, with no gaps. Scan numbers are between 1 and S inclusive.
+- For a scan k that has a line for target b, we say "target b exists in scan k", and its true position is written g_b(k). "Target order" is increasing order of target number.
+The true trajectories are used only for evaluation (steps 9 and 10 of [Processing]), never for tracking.
+
+* input/params.txt (settings)
+It consists of the following 20 lines, in this order. Each line is a keyword followed by values.
+- MODEL m: the motion model used for tracking, CV (constant-velocity model) or CA (constant-acceleration model). This is called the "primary model".
+- Q_CV q: spectral density of the process noise of the CV model (positive decimal number).
+- Q_CA q: spectral density of the process noise of the CA model (positive decimal number).
+- SIGMA sigma: standard deviation of the measurement noise (positive decimal number).
+- INIT_VELOCITY_VARIANCE V: variance of the velocity of a newly started estimate (positive decimal number).
+- INIT_ACCELERATION_VARIANCE A: variance of the acceleration of a newly started estimate (positive decimal number; used only by the CA model).
+- GATE G: the gate value (positive decimal number).
+- CONFIRM M N: M and N of the M-of-N rule that confirms tracks (integers with 2 <= M <= N).
+- DELETE D: the number of consecutive misses after which a confirmed track is deleted (positive integer).
+- ABG alpha beta gamma: the three coefficients of the alpha-beta-gamma filter (positive decimal numbers).
+- IMM_Q q1 q2: spectral densities of model 1 and model 2 of the IMM filter (positive decimal numbers; q1 < q2).
+- IMM_TRANSITION p11 p12 p21 p22: the model transition probabilities of the IMM filter. p_ij is the probability of moving from model i to model j (positive decimal numbers; p11 + p12 and p21 + p22 are each exactly 1 as decimal numbers).
+- IMM_INITIAL mu1 mu2: initial model probabilities of the IMM filter (positive decimal numbers; their sum is exactly 1 as decimal numbers).
+- MATCH_DISTANCE delta: the distance threshold for the per-scan association (positive decimal number).
+- OSPA_CUTOFF c: the cutoff value of the OSPA distance (positive decimal number).
+- CONSISTENCY_BOUND chi: the upper bound for NIS and NEES (positive decimal number).
+- NIS_EDGES e_1 e_2 ... e_r: the bin edges of the NIS histogram (r positive decimal numbers, in increasing order).
+- PLOT_X xmin xmax: the x range of the plot (decimal numbers; xmin < xmax).
+- PLOT_Y ymin ymax: the y range of the plot (decimal numbers; ymin < ymax).
+- PLOT_SIZE W H: the number of columns W and the number of rows H of the plot (positive integers).
+
+[Processing]
+* 1. Notation and computation rules
+- Indices of vectors and matrices start at 1. A[i][j] is the element in row i, column j of matrix A, v[i] is element i of vector v, and A^T is the transpose of A.
+- ln is the natural logarithm, exp is the exponential function, sqrt is the square root, pi is the circle constant, floor(t) is the largest integer not greater than t, and min(s, t) is the smaller of s and t.
+- Expressions are evaluated with the usual precedence: * and / are evaluated before + and -, and operations of the same precedence are evaluated from left to right. For example, q * T * T * T / 3 is ((q * T) * T) * T divided by 3.
+- Unless stated otherwise, a sum is accumulated one term at a time from the first term, in increasing order of index, number or scan number.
+- The "distance" between two points (x1, y1) and (x2, y2) is sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)).
+- The "4-decimal value" of a real number v is v rounded to 4 decimal places (the same as the value written to the output files).
+- Every rule that selects a maximum or minimum is accompanied by how to choose among equal values.
+- Comparisons and selections of a maximum or minimum use the computed values before rounding, except where the use of 4-decimal values is stated (the best filter in 9 (6)).
+
+* 2. Matrix computations
+- Product: the product C = A * B of an a-by-b matrix A and a b-by-c matrix B is C[i][j] = A[i][1] * B[1][j] + A[i][2] * B[2][j] + ... + A[i][b] * B[b][j]. A matrix-vector product is computed in the same way, treating the vector as a one-column matrix. A product of three, A * B * C, is computed in the order (A * B) * C.
+- Sums and differences are computed element by element. I_n is the identity matrix of order n.
+- Inverse: the inverse of a square matrix A of order n is obtained by applying the following Gauss-Jordan elimination to the n-by-2n matrix X formed by placing I_n to the right of A. Rows are never swapped.
+  For c = 1, 2, ..., n in this order:
+  (1) Let p = X[c][c], and divide each of the 2n elements of row c by p.
+  (2) For each row i other than c (in increasing order of i), let f = X[i][c], and replace each element X[i][j] (j = 1, ..., 2n) of row i with X[i][j] - f * X[c][j].
+  When this finishes, the right n columns of X are the inverse. Every matrix inverted in this task is symmetric and positive definite, so p is never 0.
+- The determinant of a 2x2 matrix U is det(U) = U[1][1] * U[2][2] - U[1][2] * U[2][1].
+- The quadratic form u^T U u of a 2-dimensional vector u and a 2x2 matrix U is computed as u[1] * (U[1][1] * u[1] + U[1][2] * u[2]) + u[2] * (U[2][1] * u[1] + U[2][2] * u[2]).
+
+* 3. Motion models
+The state vector is 4-dimensional (x, y, vx, vy) for the CV model and 6-dimensional (x, y, vx, vy, ax, ay) for the CA model (position, velocity, acceleration). Let n be the dimension of the state. The position, velocity and acceleration of the x axis are elements 1, 3 and 5 of the state, and those of the y axis are elements 2, 4 and 6.
+For a time interval T (T > 0) and a spectral density q, the following matrices are defined. Elements not mentioned here are 0.
+- State transition matrix F(T): a matrix of order n whose diagonal elements are all 1. For the CV model F[1][3] = F[2][4] = T; for the CA model F[1][3] = F[2][4] = T, F[1][5] = F[2][6] = T * T / 2, and F[3][5] = F[4][6] = T.
+- Process noise covariance matrix Q(T, q): a matrix of order n. For each of the x axis and the y axis, the value v of the "quantity 1 and quantity 2" entry of the table below is placed at both Q[i][j] and Q[j][i], where i is the index of quantity 1 and j is the index of quantity 2 on that axis (when i = j, Q[i][i] = v). Elements that pair different axes are 0.
+  CV model (white noise acceleration model)
+    position and position: q * T * T * T / 3
+    position and velocity: q * T * T / 2
+    velocity and velocity: q * T
+  CA model (white noise jerk model)
+    position and position: q * T * T * T * T * T / 20
+    position and velocity: q * T * T * T * T / 8
+    position and acceleration: q * T * T * T / 6
+    velocity and velocity: q * T * T * T / 3
+    velocity and acceleration: q * T * T / 2
+    acceleration and acceleration: q * T
+  For example, "position and velocity" of the CV model means Q[1][3] = Q[3][1] = Q[2][4] = Q[4][2] = q * T * T / 2.
+- Measurement matrix H: 2 rows and n columns, with H[1][1] = H[2][2] = 1 and all other elements 0.
+- Measurement noise covariance matrix R: 2x2, with R[1][1] = R[2][2] = sigma * sigma and R[1][2] = R[2][1] = 0.
+- Initialization: from a measured position (zx, zy), build the state x = (zx, zy, 0, 0) ((zx, zy, 0, 0, 0, 0) for the CA model) and the covariance matrix P whose diagonal elements are (sigma * sigma, sigma * sigma, V, V) ((sigma * sigma, sigma * sigma, V, V, A, A) for the CA model) and whose other elements are 0.
+
+* 4. Kalman filter
+For a state x and a covariance matrix P, the following computations are defined.
+- Prediction (time interval T, spectral density q): with F = F(T) and Q = Q(T, q), compute the predicted state xp = F * x and the predicted covariance matrix Pp = F * P * F^T + Q.
+- Innovation (measurement z = (zx, zy)): compute nu = z - H * xp (a 2-dimensional vector), S = H * Pp * H^T + R (a 2x2 matrix), Si = (the inverse of S, computed by the method of 2), and d2 = nu^T Si nu (the quadratic form of 2). d2 is called the "squared Mahalanobis distance". (H * Pp * H^T equals the upper-left 2x2 part of Pp.)
+- Update (Joseph form): after computing the innovation, let K = Pp * H^T * Si and J = I_n - K * H, and compute the new state x = xp + K * nu and the new covariance matrix P = J * Pp * J^T + K * R * K^T.
+- Log-likelihood: for the innovation used in the update, l = -ln(2 * pi) - ln(det(S)) / 2 - d2 / 2.
+When no update follows the prediction (when there is no measurement), xp and Pp are taken as the new state and covariance matrix as they are.
+
+* 5. Optimal assignment
+Suppose rows are numbered 1..a and columns 1..b, and some of the row-column pairs are given as "usable pairs", each with a real "cost". An "assignment" is a set of usable pairs in which every row and every column is contained in at most one pair. The "optimal assignment" is, among the assignments with the maximum number of pairs, the one with the minimum total cost.
+In the given data, every optimal assignment required in this task is unique, and its total cost differs by more than 0.000001 from the second-smallest total cost among the assignments with the maximum number of pairs. The optimal assignment can be obtained by setting the cost of unusable pairs to a large value (for example 1000000) in the a-by-b cost matrix, finding with the Hungarian method the row-column correspondence that minimizes the total cost, and removing the unusable pairs from that correspondence.
+
+* 6. Tracking
+Tracks are numbered 1, 2, 3, ... in order of creation. "Track order" is increasing order of track number. Each track has a state x and a covariance matrix P of the primary model, a status (one of tentative, confirmed, deleted), a birth scan, a hit count and a consecutive miss count. Let q_m be the spectral density of the primary model (the value of Q_CV if MODEL is CV, the value of Q_CA if it is CA).
+For scans k = 1, 2, ..., S in this order, perform the following (1) to (7).
+(1) The tracks whose status is tentative or confirmed, arranged in track order, are the "live tracks" (for k = 1 there are none).
+(2) Prediction: if k >= 2, let T = t_k - t_(k-1) and predict every live track with the primary model and spectral density q_m (4).
+(3) Gating: for every pair of a live track i and a measurement j (measurement number), compute the innovation from the predicted state and z_(k,j), and obtain the squared Mahalanobis distance d2(i, j). A pair with d2(i, j) <= G is called a "gated pair".
+  The number of measurements that form gated pairs with two or more live tracks is the "number of conflicting measurements", and the number of live tracks that form gated pairs with two or more measurements is the "number of conflicting tracks".
+(4) Assignment: with the live tracks as rows, the measurements as columns, the gated pairs as usable pairs and d2(i, j) as the cost, find the optimal assignment (5). For a pair (i, j) of the optimal assignment we say "measurement j is assigned to track i".
+  For comparison, a greedy assignment is also computed. Take all gated pairs as candidates, and repeat until no candidates remain: select the candidate pair with the smallest d2(i, j) (if equal, the one with the smaller track number; if that is also equal, the one with the smaller measurement number), and remove from the candidates every candidate that contains the same track or the same measurement (including the selected pair itself). The set of selected pairs is the greedy assignment. The greedy assignment is used only for logging and comparison, never for tracking.
+(5) Update: a track i to which measurement j is assigned is updated with z_(k,j) (4), its hit count is increased by 1, and its consecutive miss count is set to 0. The d2(i, j) at this time is called the "NIS" of track i in scan k. A live track to which no measurement is assigned keeps the predicted state and covariance matrix, and its consecutive miss count is increased by 1. This is called a "miss".
+(6) Status change: for each live track, do the following.
+  - A track whose status is confirmed: if its consecutive miss count is D or more, set it to deleted.
+  - A track whose status is tentative: if its hit count is M or more, set it to confirmed. Otherwise, if k - (birth scan) + 1 >= N, set it to deleted.
+  The scan in which a track's status becomes confirmed is called its "confirmation scan", and the scan in which it becomes deleted is called its "deletion scan". A track whose status has become deleted is not processed at all in later scans.
+(7) New tracks: for each measurement not assigned to any track, in measurement-number order, create one new track. Its state and covariance matrix are initialized from the position of that measurement with the primary model (3), its status is tentative, its birth scan is k, its hit count is 1, and its consecutive miss count is 0.
+The live tracks of (1) together with the tracks created in (7) are called the "tracks processed in scan k".
+
+* 7. Evaluated tracks
+The tracks whose status ever became confirmed are called the "evaluated tracks", arranged in track order. For an evaluated track a, the following are defined.
+- Last hit scan e: the last of a's birth scan and the scans in which a measurement was assigned to a.
+- Span: the contiguous scans from a's birth scan b to e.
+- Measurement sequence: for each scan k of the span, in scan order, the position of the measurement that created a if k = b, and if k > b the position of the measurement assigned to a in scan k ("absent" if there was no assignment).
+- Hit count: the number of entries of the measurement sequence that are not "absent" (the measurement that created a is also counted). Miss count: the number of "absent" entries. Longest gap: the maximum number of consecutive "absent" entries (0 if there is no "absent" entry).
+- NIS sequence: the NIS of each scan in the span after the birth scan in which a measurement was assigned to a, in scan order (there are (hit count - 1) of them).
+
+* 8. Compared filters
+For each evaluated track, an estimate (the four values position x, y and velocity vx, vy) is computed for each scan of the span from the measurement sequence with the following five filters. The filters are named cv, ca, abg, imm and rts, and this order is "filter order". The "primary filter" is cv if the primary model is CV, and ca if it is CA.
+cv, ca, abg and imm are initialized at the first scan b of the span from the first measurement of the measurement sequence; in each later scan k they predict with T = t_k - t_(k-1), and if the value of the measurement sequence for that scan is not "absent", they update with that measurement.
+(1) cv and ca: Kalman filters (4) with the CV model (spectral density Q_CV) and the CA model (spectral density Q_CA), respectively. The estimate is elements 1 to 4 of the state after the processing of each scan. The primary filter performs the same computation as tracking (6), so its estimates equal the states of that track in each scan during tracking.
+  In addition, the sum (in scan order) of the log-likelihoods l of all scans after the birth scan in which an update was performed is the "model log-likelihood" of that filter.
+(2) abg: the alpha-beta-gamma filter. For each of the x axis and the y axis, it holds three values: position p, velocity v and acceleration w.
+  - Initialization: p is that axis's coordinate of the measurement, v = 0, w = 0.
+  - Prediction: set p to p + T * v + T * T * w / 2 and v to v + T * w (p, v, w on the right-hand sides are the values before the prediction).
+  - Update (that axis's coordinate z of the measurement): with r = z - p, set p to p + alpha * r, v to v + beta * r / T, and w to w + 2 * gamma * r / (T * T) (p, v, w on the right-hand sides are the values after the prediction).
+  The estimate is (p of the x axis, p of the y axis, v of the x axis, v of the y axis).
+(3) imm: the IMM filter that mixes model 1 (CV model, spectral density q1) and model 2 (CV model, spectral density q2). For each model j (j = 1, 2) it holds a state x_j and a covariance matrix P_j, and in addition the model probabilities mu_1 and mu_2.
+  - Initialization: x_1 and x_2 are both the state initialized from the measurement with the CV model, P_1 and P_2 are its covariance matrix, and (mu_1, mu_2) are the values of IMM_INITIAL.
+  - In each later scan, perform the following (a) to (e) in order. x_i, P_i and mu_i on the right-hand sides of (a) to (c) are the values of the previous scan.
+  (a) Predicted probabilities: c_j = p_1j * mu_1 + p_2j * mu_2 (j = 1, 2)
+  (b) Mixing weights: w_ij = p_ij * mu_i / c_j (i, j = 1, 2)
+  (c) Mixing: for each model j, the elements of the mixed state x0_j and covariance matrix P0_j are
+     x0_j[r] = w_1j * x_1[r] + w_2j * x_2[r]
+     P0_j[r][s] = w_1j * (P_1[r][s] + (x_1[r] - x0_j[r]) * (x_1[s] - x0_j[s])) + w_2j * (P_2[r][s] + (x_2[r] - x0_j[r]) * (x_2[s] - x0_j[s]))
+  (d) Per-model filters: for each model j, predict x0_j and P0_j with spectral density q_j, update with the measurement if there is one, and take the result as the new x_j and P_j. When there is a measurement, the likelihood is L_j = exp(-d2 / 2) / (2 * pi * sqrt(det(S))) (d2 and S are those of the innovation of that update); when there is no measurement, L_j = 1.
+  (e) Model probabilities: mu_j = L_j * c_j / (L_1 * c_1 + L_2 * c_2) (j = 1, 2)
+  The estimate is mu_1 * x_1[r] + mu_2 * x_2[r] (r = 1, ..., 4) after the processing of each scan (including the first scan of the span). In addition, mu_2 after the processing of each scan is called the "high-noise model probability" of that scan.
+(4) rts: RTS smoothing applied to the result of the primary filter ((1)). Let the scans of the span be k_1, k_2, ..., k_L in order (k_1 = b, k_L = e); let x_i and P_i be the state and covariance matrix of the primary filter after the processing at k_i, xp_i and Pp_i the predicted state and covariance matrix at k_i (before the update) (i >= 2), and F_i the state transition matrix used for the prediction at k_i (i >= 2). The smoothed states xs_i are obtained with xs_L = x_L and, for i = L - 1, L - 2, ..., 1 in this order,
+     C_i = P_i * F_(i+1)^T * (the inverse of Pp_(i+1))
+     xs_i = x_i + C_i * (xs_(i+1) - xp_(i+1))
+  The estimate is elements 1 to 4 of xs_i.
+
+* 9. Evaluation
+(1) Notation: among the estimates of filter f for evaluated track a, the estimated position at scan k (within a's span) is written E_f(a, k). The evaluated tracks whose span contains scan k, arranged in track order, are called the "estimated tracks of scan k".
+(2) True velocity: when target b exists in all of scans k - 1, k and k + 1, the true velocity of b at scan k is
+  ((x of g_b(k + 1) - x of g_b(k - 1)) / (t_(k+1) - t_(k-1)), (y of g_b(k + 1) - y of g_b(k - 1)) / (t_(k+1) - t_(k-1)))
+  In other scans, there is no true velocity.
+(3) Per-scan association: for each scan k and each filter f, find the optimal assignment (5) with the estimated tracks of scan k as rows, the targets existing in scan k (in target order) as columns, the pairs whose distance between E_f(a, k) and g_b(k) is delta or less as usable pairs, and that distance as the cost. The track assigned to target b in this assignment is the "label" of b by filter f in scan k (if there is no assignment, there is no label).
+  The association by the primary filter is called the "primary association", and for an evaluated track a the following are defined.
+  - Matched scan count: the number of scans in which a is assigned to some target in the primary association. A track whose matched scan count is 0 is called a "false track".
+  - Segments: the groups of scans with consecutive scan numbers in which the same target is assigned to a in the primary association, arranged in scan-number order. A scan in which a is not assigned to any target is contained in no segment.
+(4) OSPA distance: for each scan k and each filter f, let X be the sequence of estimated positions E_f(a, k) of the estimated tracks of scan k, Y the sequence of the true positions of the targets existing in scan k (in target order), and |X| and |Y| their sizes. The OSPA distance (cutoff c, order 2) is computed as follows.
+  - If |X| = |Y| = 0 it is 0; if exactly one of them is 0 it is c.
+  - Otherwise, U = X and V = Y if |X| <= |Y|, and U = Y and V = X otherwise. The cost of a pair of an element u of U and an element v of V is d * d with d = min(c, (the distance between u and v)). For the way of matching every element of U to a distinct element of V that minimizes the total cost (it can be found with the Hungarian method), let Sigma be that total cost (summed in the order of the sequence U), and OSPA = sqrt((Sigma + c * c * (|V| - |U|)) / |V|). Even if several matchings minimize the total cost, the 4-decimal value of OSPA is the same whichever one is used.
+  The mean OSPA of filter f is the sum (in scan order) of the OSPA of scans 1 to S divided by S.
+(5) Track-to-target association: for an evaluated track a and a target b, a scan contained both in a's span and in the scans where b exists is called a "common scan". For a pair with one or more common scans, let W be the set of all scans contained in at least one of a's span and the scans where b exists, and
+  md(a, b) = (the sum of h_k over the scans k of W (in scan order)) / (the number of scans in W)
+  Here h_k is min(c, (the distance between E_p(a, k) and g_b(k))) (p is the primary filter) if k is a common scan, and c otherwise.
+  Find the optimal assignment (5) with the evaluated tracks as rows, the targets as columns, the pairs for which the distance between E_p(a, k) and g_b(k) is smaller than c in at least one common scan as usable pairs, and md(a, b) as the cost. For a pair (a, b) of this assignment, a is called the "matched track of b" and b the "matched target of a". A target without a matched track is called a "lost target".
+(6) RMSE: for a target b with a matched track a, let K be the set of common scans of a and b, and K' the subset of K in which b has a true velocity. For each filter f, compute the following values.
+  - Squared position error: ex * ex + ey * ey for each scan k of K, where ex = (x of E_f(a, k)) - (x of g_b(k)) and ey = (y of E_f(a, k)) - (y of g_b(k)).
+  - Squared velocity error: fx * fx + fy * fy for each scan k of K', where fx = (vx of the estimate of f) - (x component of b's true velocity) and fy = (vy of the estimate of f) - (y component of b's true velocity).
+  - The position RMSE is sqrt((sum of the squared position errors of the scans of K) / (number of scans in K)), and the velocity RMSE is sqrt((sum of the squared velocity errors of the scans of K') / (number of scans in K')) (sums in scan order).
+  The overall position RMSE is the square root of the value obtained by adding the squared position errors of all targets that have a matched track into one sum, in target order (for the same target, in scan order), and dividing it by their count. The overall velocity RMSE is computed in the same way.
+  The "best filter" for an RMSE is the filter whose 4-decimal value of that RMSE is the smallest among the five (if equal, the earlier one in filter order).
+(7) NEES: for each common scan k of a target b with a matched track a, from the position error of the primary filter's estimate eps = ((x of E_p(a, k)) - (x of g_b(k)), (y of E_p(a, k)) - (y of g_b(k))) and the upper-left 2x2 part P2 of the primary filter's covariance matrix after the processing of scan k, compute NEES = eps^T Pi eps (Pi is the inverse of P2, computed by the method of 2; the quadratic form is also computed by the method of 2). The mean NEES is the sum taken in common-scan order divided by the number of common scans.
+(8) NIS histogram: the NIS sequences (7) of the evaluated tracks concatenated in track order are the "overall NIS", and their count is n_nis. From the edges e_1, ..., e_r, form r + 1 bins [0, e_1), [e_1, e_2), ..., [e_(r-1), e_r), [e_r, infinity), and for each bin compute the observed count (the number of overall NIS values with lower end <= NIS < upper end) and the expected count n_nis * (exp(-(lower end) / 2) - exp(-(upper end) / 2)). For the last bin, however, exp(-(upper end) / 2) is taken as 0. (The expected count is the value when NIS follows a chi-square distribution with 2 degrees of freedom.)
+(9) Continuity: for each filter f and each target b, compute the following values from the sequence of labels of b by filter f over the scans where b exists (in scan order).
+  - covered: the number of scans with a label.
+  - breaks: the number of groups of adjacent consecutive scans with a label in the sequence, minus 1 (0 if there is no such group).
+  - swaps: looking only at the scans with a label, in order, the number of scans whose label differs from the previous label (the first scan with a label is not counted).
+  - delay: the number of the first scan with a label minus the number of the first scan in which b exists (absent if there is no scan with a label).
+(10) Other values:
+  - Target path length: over the scans where the target exists, the sum (in scan order) of the distances between the true positions of adjacent scans. Target mean speed: path length / (time of the last scan where it exists - time of the first scan where it exists).
+  - Track path length: over the span of an evaluated track, the sum (in scan order) of the distances between the rts estimated positions of adjacent scans.
+  - Track mean NIS: the sum of the NIS sequence (in sequence order) divided by its count.
+  - IMM summary: for the high-noise model probabilities mu_2 of the scans of the span of an evaluated track: the mean (the sum taken in scan order divided by the number of scans), the maximum and its scan (if equal, the smaller scan number), the number of scans with mu_2 > 0.5, and the groups of scans with consecutive scan numbers that have mu_2 > 0.5.
+
+* 10. Plots
+- Grid: a plot consists of W columns and H rows of cells. Let dx = (xmax - xmin) / W and dy = (ymax - ymin) / H, and consider the cell in row r (0 to H - 1, from the top) and column c (0 to W - 1, from the left). The cell containing a point (x, y) is the cell with c = floor((x - xmin) / dx) and r = floor((ymax - y) / dy), and the point is inside the plot only when 0 <= c < W and 0 <= r < H. Points outside the plot are not drawn.
+- Track characters: the character of the i-th track (i = 1, 2, ...) in evaluated-track order is the i-th uppercase letter (A, B, ..., Z) if i <= 26, and the (i - 26)-th lowercase letter (a, b, ...) if i >= 27.
+(1) Trajectory plot: after setting every cell to a space, for each target in target order and each scan where it exists in scan order, set the cell containing the true position to ".". Then, for each evaluated track in track order and each scan of its span in scan order, set the cell containing the rts estimated position to that track's character. What is drawn later overwrites.
+(2) Measurement plot: each cell is shown as a space if the number of measurements contained in that cell (among all measurements of all scans, those inside the plot) is 0, as that digit if it is 1 to 9, and as "#" if it is 10 or more.
+(3) Timeline: for each target b, a string of S characters for scans 1 to S. The character for scan k is a space if b does not exist in scan k; if it exists, the character of the track that is b's label in the primary association if there is one, and "." if there is no label.
+(4) OSPA plot: let O_k be the OSPA of the primary filter at scan k, and the height h_k = floor(10 * O_k / c) (c is the value of OSPA_CUTOFF) (0 <= h_k <= 10). In a plot of 10 rows and S columns, the character in row i from the top (i = 1, ..., 10) and column k from the left is "#" if h_k >= 11 - i, and a space otherwise.
+
+[Output files]
+Write the five files output/tracks.csv, output/smoothed.csv, output/association_log.txt, output/evaluation.txt and output/track_plot.txt.
+
+* Common rules
+- The output consists of ASCII characters only, and every line (including the last one) ends with a newline (LF). Do not put extra spaces at the beginning or end of a line, and do not insert blank lines that are not specified.
+- In the formats below, each part enclosed in < > is replaced with a value, and all other characters are written as they are. Values are separated by a single space. "..." means that items of the same form as the one just before are repeated as many times as needed (possibly zero times).
+- Integers are written in base 10 without extra leading zeros.
+- Real numbers are rounded to 4 decimal places and written in fixed-point notation with exactly 4 digits after the decimal point (e.g. 12.5 as 12.5000, -0.00004 as 0.0000). Exponent notation is not used, and 0 is written when the integer part is 0. Negative numbers get a leading -, but a value whose rounded result is 0 is written without -. The data contain no values close to a rounding boundary.
+- A "framed" plot of width w columns and height h rows consists of h + 2 lines. The first and last lines are the string of +, w copies of -, and +. Each of the h lines in between is the string of |, the w cell characters of that row (from left to right), and |.
+
+* output/tracks.csv (tracking result)
+The first line is track,scan,x,y,vx,vy,status. Then, for scans 1 to S in order, write the following line for each track processed in scan k, in track order.
+<track number>,<k>,<x>,<y>,<vx>,<vy>,<status>
+x, y, vx and vy are elements 1 to 4 of the state after the processing of scan k, and status is the status after the processing of scan k (one of tentative, confirmed, deleted).
+
+* output/smoothed.csv (RTS smoothing result)
+The first line is track,scan,x,y,vx,vy. Then, for each evaluated track in track order and each scan of the track's span in scan order, write the following line. The values are the rts estimates (8 (4)).
+<track number>,<k>,<x>,<y>,<vx>,<vy>
+
+* output/association_log.txt (association log)
+For scans 1 to S in order, write the following 10 lines for each scan k.
+scan <k> tracks <number of live tracks> measurements <m_k>
+gate <i>:<j>=<d2(i, j)> ...
+assign <i>:<j> ...
+greedy <i>:<j> ...
+missed <i> ...
+new <i>:<j> ...
+confirmed <i> ...
+deleted <i> ...
+status tentative <number of tracks whose status is tentative> confirmed <number of tracks whose status is confirmed>
+conflicts measurements <number of conflicting measurements> tracks <number of conflicting tracks>
+i is a track number and j is a measurement number. Each line contains the following.
+- gate: the gated pairs (in track order, and for the same track in measurement-number order).
+- assign: the pairs of the optimal assignment (in track order).
+- greedy: the pairs of the greedy assignment (in track order).
+- missed: the tracks that had a miss (in track order).
+- new: the tracks created in (7) and the measurement number of the measurement that created each (in order of creation).
+- confirmed, deleted: the tracks whose status became confirmed, deleted in (6) (in track order).
+- status: the numbers of tracks whose status is tentative and confirmed after the processing of scan k.
+A line with nothing to list has only none after its keyword (e.g. gate none).
+
+* output/evaluation.txt (evaluation)
+Write the following parts (1) to (10) in this order, separated by one blank line each (do not write headings such as "(1) Summary"). An absent value is written as -.
+(1) Summary
+summary
+scans <S>
+measurements <total number of measurements>
+targets <number of targets>
+tracks_created <number of tracks created>
+tracks_confirmed <number of evaluated tracks>
+false_tracks <number of false tracks>
+missed_targets <number of lost targets>
+measurements_used <sum of the hit counts of the evaluated tracks>
+conflict_measurements <sum over all scans of the number of conflicting measurements>
+conflict_tracks <sum over all scans of the number of conflicting tracks>
+greedy_differences <number of scans in which the optimal assignment and the greedy assignment differ as sets of pairs>
+(2) Targets
+targets
+target <b> first <first scan where it exists> last <last scan where it exists> scans <number of scans where it exists> path <path length> mean_speed <mean speed>
+... (one line per target, in target order)
+(3) Tracks
+tracks
+track <a> birth <birth scan> confirmed <confirmation scan> end <last hit scan> deleted <deletion scan> hits <hit count> misses <miss count> longest_gap <longest gap> path <path length> nis <mean NIS> nis_inside <number of NIS values not greater than chi>/<number of entries in the NIS sequence>
+... (one line per evaluated track, in track order; if there is no deletion scan, write deleted -)
+(4) Matching
+matching
+track <a> target <matched target> common <number of common scans> mean_distance <md(a, matched target)> matched_scans <matched scan count> segments <segment> ...
+... (one line per evaluated track, in track order)
+A track without a matched target is written as track <a> target - matched_scans <matched scan count> segments <segment> .... A segment has the form <first scan>-<last scan>:<target number>, and segments are written in segment order. If there are no segments, write segments none.
+(5) RMSE
+rmse
+target <b> track <matched track> common <number of scans in K> cv <position RMSE> ca <...> abg <...> imm <...> rts <...> best <best filter>
+target <b> velocity <number of scans in K'> cv <velocity RMSE> ca <...> abg <...> imm <...> rts <...> best <best filter>
+... (in target order; for a target without a matched track, write only the one line target <b> track -)
+overall position cv <overall position RMSE> ca <...> abg <...> imm <...> rts <...> best <best filter>
+overall velocity cv <overall velocity RMSE> ca <...> abg <...> imm <...> rts <...> best <best filter>
+Each <...> is the value of the filter named just before it. The best filter is chosen from the five RMSEs of that line.
+(6) Consistency
+consistency
+target <b> track <matched track> nees <mean NEES> inside <number of NEES values not greater than chi>/<number of common scans>
+... (one line per target, in target order; for a target without a matched track, write target <b> track -)
+nis_histogram total <n_nis> observed <observed counts (r + 1 values in bin order)> expected <expected counts (r + 1 values in bin order)>
+(7) Models
+models
+track <a> updates <number of entries in the NIS sequence> cv <model log-likelihood of cv> ca <model log-likelihood of ca> better <name of the filter with the larger value (cv if equal)>
+... (one line per evaluated track, in track order)
+(8) OSPA
+ospa cutoff <c> order 2
+scan targets tracks cv ca abg imm rts
+<k> <number of targets existing in scan k> <number of estimated tracks of scan k> <OSPA of cv> <OSPA of ca> <OSPA of abg> <OSPA of imm> <OSPA of rts>
+... (one line per scan, for k = 1 to S in order)
+mean <mean OSPA of cv> <mean OSPA of ca> <mean OSPA of abg> <mean OSPA of imm> <mean OSPA of rts>
+(9) Continuity
+continuity
+<filter name> covered <sum of covered> breaks <sum of breaks> swaps <sum of swaps>
+  target <b> scans <number of scans where b exists> covered <covered> breaks <breaks> swaps <swaps> delay <delay>
+...
+For each filter in filter order, write the first line (the sums are over all targets) followed by the line of each target in target order. A target line starts with two spaces.
+(10) IMM
+imm
+track <a> mean_high <mean of mu_2> max_high <maximum of mu_2> at <scan of the maximum> high_scans <number of scans with mu_2 greater than 0.5> segments <first scan>-<last scan> ...
+... (one line per evaluated track, in track order; write the groups with mu_2 > 0.5 in order, and if there are none, write segments none)
+
+* output/track_plot.txt (plots)
+Write the following lines in this order.
+tracks x <xmin> <xmax> y <ymin> <ymax> size <W> <H>
+the H + 2 lines of the trajectory plot (10 (1)) written framed
+<track character> track <a> target <matched target> (one line per evaluated track, in track order; if there is no matched target, target -)
+a blank line
+measurements
+the H + 2 lines of the measurement plot (10 (2)) written framed
+a blank line
+timeline
+<b> |<the S characters of the timeline (10 (3))>| (one line per target, in target order)
+a blank line
+ospa <name of the primary filter>
+the 12 lines of the OSPA plot (10 (4)) written framed (width S, height 10)
+
+[Source files]
+Split the program into the following six source files (file names follow the conventions of each language).
+- main: holds the overall flow and most of the processing: reading the three input files, the per-scan tracking (prediction, gating and the conflict counts, the optimal and greedy assignments, update, status change, new tracks, the association log), the evaluated tracks and their measurement sequences, running the five filters (running cv and ca and their model log-likelihoods, the alpha-beta-gamma filter, calling imm and rts), the evaluation (true velocities, per-scan associations and labels, the OSPA table, track-to-target association, RMSE and the best filter, NEES and the NIS histogram, continuity and segments, the IMM summary, path lengths), the four plots, and assembling and writing the five output files.
+- matrix: matrix and vector products, sums, differences, transpose, identity and diagonal matrices, inverse by Gauss-Jordan elimination, the 2x2 determinant, and the quadratic form.
+- kalman: the CV and CA motion models (F, Q, H, R, initialization), the Kalman filter prediction, the innovation and the squared Mahalanobis distance, the Joseph-form update, and RTS smoothing.
+- association: the optimal assignment (the Hungarian method with a large cost for unusable pairs) and the computation of the matching that minimizes the total cost.
+- imm: the IMM filter's initialization, predicted probabilities and mixing, per-model prediction and update, likelihoods, model probability update, and combination of the estimates.
+- evaluation: distances, the OSPA distance, computing covered, breaks and swaps from a label sequence, and the formatting of real numbers (rounding, handling of -0).
+
+[Constraints]
+- 1 <= S <= 100 and 1 <= m_k <= 20, and the total number of measurements is at most 2000. There are at least 1 and at most 10 targets, and truth.csv has at most 1000 lines. Every target exists in two or more scans.
+- 2 <= M <= N <= 10, 1 <= D <= 10, 1 <= r <= 10, 1 <= W <= 100, 1 <= H <= 50.
+- At most 1000 tracks are created, and there are at least 1 and at most 52 evaluated tracks. At least one target has a matched track, and for every target with a matched track K' is not empty.
+- The given data have S = 80, 513 measurements and 5 targets, and the primary model is CV. The time intervals just before scan 41 and scan 61 are twice the others.
+- The input files follow the formats above exactly. There is no need to check for input errors.
+- Every matrix that is inverted is positive definite, and p in the Gauss-Jordan elimination is never close to 0. The determinant det(S) is positive, and c_j and L_j of the IMM filter are never 0 (no result of the exponential function is rounded to 0).
+- In the given data, each of the following comparisons and selections is more than 0.000001 away from its boundary: the comparison of d2(i, j) with G, the comparisons between d2(i, j) values in the greedy assignment, the comparison of distances with delta in the per-scan association, the comparison of distances with c in the OSPA distance and in the track-to-target association, the comparisons of NIS and NEES with chi, the comparisons of NIS with the edges e_1, ..., e_r, the comparison of mu_2 with 0.5, the selection of the maximum of mu_2, the comparison of the two model log-likelihoods, the floor(...) that finds the plot cells ((x - xmin) / dx and (ymax - y) / dy are more than 0.000001 away from an integer for every point), and the floor(...) that finds the heights of the OSPA plot (except when O_k equals 0 or c). For the optimal assignment, see what is written in 5.
+- Every real number output is sufficiently far from a rounding boundary. The results of the comparisons and selections above and the 4-decimal values of the output values have enough margin not to change under differences in the order of additions, fused multiply-add, or differences in the last digit (about 1 ulp) of the results of exp, ln and sqrt. Nevertheless, compute with the formulas and orders defined in this statement.
+
+[Example]
+A small example that differs from the actual input (7 scans, 2 targets, primary model CA, the time interval just before scan 5 is doubled, plot of 20 columns and 5 rows).
+
+input/measurements.csv:
+scan,time,x,y
+1,0.0,2.10,2.05
+1,0.0,9.82,8.40
+2,1.0,3.76,2.64
+2,1.0,17.55,7.71
+3,2.0,16.30,7.24
+3,2.0,5.27,3.17
+3,2.0,10.02,7.65
+4,3.0,14.45,7.46
+4,3.0,7.37,8.06
+5,5.0,11.72,5.77
+5,5.0,9.80,4.53
+6,6.0,12.43,4.98
+6,6.0,9.84,4.88
+6,6.0,17.19,4.69
+7,7.0,14.81,5.39
+7,7.0,7.73,4.69
+input/truth.csv:
+target,scan,x,y
+1,1,2.35,2.09
+1,2,3.76,2.60
+1,3,5.32,3.07
+1,4,6.94,3.58
+1,5,10.53,4.58
+1,6,12.49,5.09
+1,7,14.53,5.61
+2,2,17.59,8.14
+2,3,16.27,7.59
+2,4,14.79,7.01
+2,5,11.60,5.80
+2,6,9.83,5.20
+2,7,7.97,4.63
+input/params.txt:
+MODEL CA
+Q_CV 0.05
+Q_CA 0.01
+SIGMA 0.2
+INIT_VELOCITY_VARIANCE 4.0
+INIT_ACCELERATION_VARIANCE 0.25
+GATE 9.21
+CONFIRM 2 3
+DELETE 2
+ABG 0.5 0.4 0.1
+IMM_Q 0.01 1.0
+IMM_TRANSITION 0.9 0.1 0.2 0.8
+IMM_INITIAL 0.8 0.2
+MATCH_DISTANCE 1.5
+OSPA_CUTOFF 3.0
+CONSISTENCY_BOUND 5.991
+NIS_EDGES 1.0 4.0
+PLOT_X 0.0 20.0
+PLOT_Y 0.0 10.0
+PLOT_SIZE 20 5
+output/tracks.csv:
+track,scan,x,y,vx,vy,status
+1,1,2.1000,2.0500,0.0000,0.0000,tentative
+2,1,9.8200,8.4000,0.0000,0.0000,tentative
+1,2,3.7440,2.6343,1.6533,0.5876,confirmed
+2,2,9.8200,8.4000,0.0000,0.0000,tentative
+3,2,17.5500,7.7100,0.0000,0.0000,tentative
+1,3,5.2823,3.1749,1.5484,0.5435,confirmed
+2,3,10.0195,7.6518,0.1055,-0.3957,confirmed
+3,3,16.3121,7.2445,-1.2449,-0.4681,confirmed
+1,4,6.8162,3.7115,1.5195,0.5297,confirmed
+2,4,10.1281,7.2448,0.1115,-0.4182,confirmed
+3,4,14.4981,7.4045,-1.8929,0.2218,confirmed
+4,4,7.3700,8.0600,0.0000,0.0000,tentative
+1,5,9.8000,4.5311,1.4630,0.3924,confirmed
+2,5,11.7163,5.7716,0.8404,-0.7767,confirmed
+3,5,10.0115,8.5406,-2.5937,0.9143,confirmed
+4,5,7.3700,8.0600,0.0000,0.0000,tentative
+1,6,11.2487,4.9028,1.4344,0.3510,confirmed
+2,6,12.4685,4.9738,0.8804,-0.8542,confirmed
+3,6,9.8269,4.9039,-1.6080,-1.1818,confirmed
+4,6,17.1805,4.6933,3.6830,-1.2639,confirmed
+1,7,14.7025,5.3821,2.6684,0.4021,confirmed
+2,7,13.4158,4.0732,1.0143,-0.9469,confirmed
+3,7,7.8164,4.4923,-1.9387,-0.7263,confirmed
+4,7,21.0027,3.3816,3.9615,-1.3595,confirmed
+output/smoothed.csv:
+track,scan,x,y,vx,vy
+1,1,2.2584,2.0679,1.3886,0.5770
+1,2,3.6557,2.6278,1.4067,0.5427
+1,3,5.0780,3.1531,1.4440,0.5080
+1,4,6.5635,3.6450,1.5404,0.4765
+1,5,10.0454,4.5491,1.9994,0.4317
+1,6,12.2056,4.9729,2.3261,0.4163
+1,7,14.7025,5.3821,2.6684,0.4021
+2,1,9.7994,8.4034,-0.0272,-0.2874
+2,2,9.8519,8.0697,0.1333,-0.3807
+2,3,10.0671,7.6413,0.2971,-0.4764
+2,4,10.4449,7.1167,0.4571,-0.5727
+2,5,11.6551,5.7816,0.7461,-0.7614
+2,6,12.4685,4.9738,0.8804,-0.8542
+3,2,17.5705,7.6983,-1.3927,-0.1454
+3,3,16.1435,7.4765,-1.4613,-0.2993
+3,4,14.6488,7.0978,-1.5277,-0.4581
+3,5,11.4414,5.9205,-1.6937,-0.6850
+3,6,9.6908,5.2152,-1.8107,-0.7183
+3,7,7.8164,4.4923,-1.9387,-0.7263
+4,4,7.3795,8.0567,2.8558,-0.9800
+4,5,13.6366,5.9094,3.4047,-1.1684
+4,6,17.1805,4.6933,3.6830,-1.2639
+output/association_log.txt:
+scan 1 tracks 0 measurements 2
+gate none
+assign none
+greedy none
+missed none
+new 1:1 2:2
+confirmed none
+deleted none
+status tentative 2 confirmed 0
+conflicts measurements 0 tracks 0
+scan 2 tracks 2 measurements 2
+gate 1:1=0.7491
+assign 1:1
+greedy 1:1
+missed 2
+new 3:2
+confirmed 1
+deleted none
+status tentative 2 confirmed 1
+conflicts measurements 0 tracks 0
+scan 3 tracks 3 measurements 3
+gate 1:2=0.0543 2:1=2.5349 2:2=2.8109 2:3=0.0352 3:1=0.4305
+assign 1:2 2:3 3:1
+greedy 1:2 2:3 3:1
+missed none
+new none
+confirmed 2 3
+deleted none
+status tentative 0 confirmed 3
+conflicts measurements 2 tracks 1
+scan 4 tracks 3 measurements 2
+gate 3:1=1.6774
+assign 3:1
+greedy 3:1
+missed 1 2
+new 4:2
+confirmed none
+deleted none
+status tentative 1 confirmed 3
+conflicts measurements 0 tracks 0
+scan 5 tracks 4 measurements 2
+gate 1:1=0.5981 1:2=0.0057 2:1=0.1499 2:2=0.2514 3:1=4.3487 3:2=6.6202 4:1=1.4136 4:2=1.0743
+assign 1:2 2:1
+greedy 1:2 2:1
+missed 3 4
+new none
+confirmed none
+deleted none
+status tentative 1 confirmed 3
+conflicts measurements 2 tracks 4
+scan 6 tracks 4 measurements 3
+gate 1:1=6.2858 1:2=8.9029 2:1=0.2167 3:1=6.1078 3:2=3.6876 4:1=0.8504 4:2=0.3929 4:3=2.6122
+assign 2:1 3:2 4:3
+greedy 2:1 4:2
+missed 1
+new none
+confirmed 4
+deleted none
+status tentative 0 confirmed 4
+conflicts measurements 2 tracks 3
+scan 7 tracks 4 measurements 2
+gate 1:1=5.7866 3:2=6.4897
+assign 1:1 3:2
+greedy 1:1 3:2
+missed 2 4
+new none
+confirmed none
+deleted none
+status tentative 0 confirmed 4
+conflicts measurements 0 tracks 0
+output/evaluation.txt:
+summary
+scans 7
+measurements 16
+targets 2
+tracks_created 4
+tracks_confirmed 4
+false_tracks 1
+missed_targets 0
+measurements_used 16
+conflict_measurements 6
+conflict_tracks 8
+greedy_differences 1
+
+targets
+target 1 first 1 last 7 scans 7 path 12.6842 mean_speed 1.8120
+target 2 first 2 last 7 scans 6 path 10.2457 mean_speed 1.7076
+
+tracks
+track 1 birth 1 confirmed 2 end 7 deleted - hits 5 misses 2 longest_gap 1 path 12.9152 nis 1.6489 nis_inside 4/4
+track 2 birth 1 confirmed 3 end 6 deleted - hits 4 misses 2 longest_gap 1 path 4.4121 nis 0.1340 nis_inside 3/3
+track 3 birth 2 confirmed 3 end 7 deleted - hits 5 misses 1 longest_gap 1 path 10.2989 nis 3.0713 nis_inside 3/4
+track 4 birth 4 confirmed 6 end 6 deleted - hits 2 misses 1 longest_gap 1 path 10.3620 nis 2.6122 nis_inside 1/1
+
+matching
+track 1 target 1 common 7 mean_distance 0.4080 matched_scans 6 segments 1-5:1 7-7:1
+track 2 target - matched_scans 2 segments 5-5:2 6-6:1
+track 3 target 2 common 6 mean_distance 0.7955 matched_scans 5 segments 2-4:2 6-7:2
+track 4 target - matched_scans 0 segments none
+
+rmse
+target 1 track 1 common 7 cv 0.5482 ca 0.5736 abg 1.2456 imm 0.5493 rts 0.3033 best rts
+target 1 velocity 5 cv 0.2984 ca 0.3462 abg 1.0558 imm 0.2954 rts 0.2065 best rts
+target 2 track 3 common 6 cv 0.6708 ca 1.3362 abg 0.8595 imm 0.7375 rts 0.2428 best rts
+target 2 velocity 4 cv 0.4400 ca 1.0491 abg 0.9038 imm 0.4933 rts 0.1735 best rts
+overall position cv 0.6079 ca 1.0006 abg 1.0846 imm 0.6430 rts 0.2770 best rts
+overall velocity cv 0.3681 ca 0.7455 abg 0.9911 imm 0.3958 rts 0.1926 best rts
+
+consistency
+target 1 track 1 nees 3.7521 inside 5/7
+target 2 track 3 nees 3.6589 inside 5/6
+nis_histogram total 12 observed 7 3 2 expected 4.7216 5.6543 1.6240
+
+models
+track 1 updates 4 cv -11.3549 ca -13.2178 better cv
+track 2 updates 3 cv -8.0073 ca -9.7600 better cv
+track 3 updates 4 cv -11.8489 ca -14.7891 better cv
+track 4 updates 1 cv -6.9114 ca -6.8640 better ca
+
+ospa cutoff 3.0000 order 2
+scan targets tracks cv ca abg imm rts
+1 1 2 2.1289 2.1289 2.1289 2.1289 2.1224
+2 2 3 1.7500 1.7500 1.8203 1.7500 1.7519
+3 2 3 1.7449 1.7449 1.8364 1.7449 1.7411
+4 2 4 2.1338 2.1374 2.1631 2.1349 2.1315
+5 2 4 2.1523 2.1535 2.1718 2.1524 2.1354
+6 2 4 2.1255 2.1273 2.1928 2.1267 2.1233
+7 2 2 0.2018 0.2492 1.6344 0.2386 0.2492
+mean 1.7482 1.7559 1.9925 1.7538 1.7507
+
+continuity
+cv covered 13 breaks 0 swaps 4
+  target 1 scans 7 covered 7 breaks 0 swaps 2 delay 0
+  target 2 scans 6 covered 6 breaks 0 swaps 2 delay 0
+ca covered 13 breaks 0 swaps 4
+  target 1 scans 7 covered 7 breaks 0 swaps 2 delay 0
+  target 2 scans 6 covered 6 breaks 0 swaps 2 delay 0
+abg covered 12 breaks 0 swaps 3
+  target 1 scans 7 covered 6 breaks 0 swaps 1 delay 0
+  target 2 scans 6 covered 6 breaks 0 swaps 2 delay 0
+imm covered 13 breaks 0 swaps 4
+  target 1 scans 7 covered 7 breaks 0 swaps 2 delay 0
+  target 2 scans 6 covered 6 breaks 0 swaps 2 delay 0
+rts covered 13 breaks 0 swaps 4
+  target 1 scans 7 covered 7 breaks 0 swaps 2 delay 0
+  target 2 scans 6 covered 6 breaks 0 swaps 2 delay 0
+
+imm
+track 1 mean_high 0.2391 max_high 0.8039 at 7 high_scans 1 segments 7-7
+track 2 mean_high 0.1852 max_high 0.2735 at 4 high_scans 0 segments none
+track 3 mean_high 0.2244 max_high 0.2812 at 5 high_scans 0 segments none
+track 4 mean_high 0.2396 max_high 0.2788 at 6 high_scans 0 segments none
+output/track_plot.txt:
+tracks x 0.0000 20.0000 y 0.0000 10.0000 size 20 5
++--------------------+
+|       D B       .  |
+|          B   C CC  |
+|       C CACBDA  D  |
+|  AA AA             |
+|                    |
++--------------------+
+A track 1 target 1
+B track 2 target -
+C track 3 target 2
+D track 4 target -
+
+measurements
++--------------------+
+|       1 1          |
+|          1   1 11  |
+|       1 2 11 1  1  |
+|  11 1              |
+|                    |
++--------------------+
+
+timeline
+1 |AAAAABA|
+2 | CCCBCC|
+
+ospa ca
++-------+
+|       |
+|       |
+|       |
+|#  ### |
+|#  ### |
+|###### |
+|###### |
+|###### |
+|###### |
+|###### |
++-------+

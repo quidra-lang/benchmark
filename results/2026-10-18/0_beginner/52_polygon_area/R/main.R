@@ -1,0 +1,18 @@
+polygons <- list(matrix(as.integer(c(0,0,5,0,6,4,1,3)),ncol=2,byrow=TRUE),matrix(as.integer(c(2,1,0,4,3,7,7,6,8,2)),ncol=2,byrow=TRUE),matrix(as.integer(c(0,0,8,0,8,6,5,6,4,3,3,6,0,6)),ncol=2,byrow=TRUE))
+for (number in seq_along(polygons)) {
+    vertices <- polygons[[number]]
+    twice_area <- 0L
+    perimeter <- 0
+    for (i in seq_len(nrow(vertices))) {
+        j <- i %% nrow(vertices)+1
+        x <- vertices[i,1]
+        y <- vertices[i,2]
+        next_x <- vertices[j,1]
+        next_y <- vertices[j,2]
+        twice_area <- twice_area+x*next_y-next_x*y
+        dx <- x-next_x
+        dy <- y-next_y
+        perimeter <- perimeter+sqrt(dx*dx+dy*dy)
+    }
+    cat(sprintf("polygon %d: area=%.1f perimeter=%.3f\n",number,abs(twice_area)/2,perimeter))
+}

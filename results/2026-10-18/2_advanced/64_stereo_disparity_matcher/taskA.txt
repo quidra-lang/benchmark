@@ -1,0 +1,509 @@
+[Overview]
+Write a program that estimates, from two rectified grayscale images (images from a left and a right camera whose rows are aligned), the disparity of each pixel of the left image (how many pixels to the left the point seen at that pixel appears shifted in the right image). Three kinds of matching cost are used: SAD (sum of absolute intensity differences), SSD (sum of squared intensity differences), and the sum of Hamming distances between census transform codes. For each kind, a window size is chosen from a list of candidates, and disparities are found by choosing the disparity with the minimum cost (Winner-Takes-All, hereafter WTA). Disparities are also found by semi-global matching (hereafter SGM), which aggregates costs along paths in up to 8 directions. For every method, unreliable pixels are removed by a texture check, a uniqueness check and a left-right consistency check, and occlusions (parts not visible in the right image) are distinguished from false matches. After that, the result of the specified WTA method and the SGM result are post-processed by speckle (small isolated region) removal, a median filter and hole filling.
+The resulting disparity images are evaluated against the true disparities, and error statistics, a ranking of the methods, the accuracy of occlusion detection, the relation between confidence and error, and so on are reported. In addition, for the specified pixels, the sub-pixel disparity obtained by parabola fitting and the depth are computed, and objects are extracted from a disparity image and their depth and size are computed.
+All computations are done with integers; floating-point numbers are not used. The program reads the 4 files in the input/ folder and writes 7 files to the output/ folder. It prints nothing to standard output.
+
+[Input files]
+The input files are the four files input/left.pgm, input/right.pgm, input/ground_truth.pgm and input/params.txt. Every file consists of ASCII characters only, and every line (including the last one) ends with a newline (LF). Values within a line are separated by single spaces, there is no whitespace at the beginning or end of a line, and there are no empty lines. Integers are written in decimal without extra leading zeros, and there are no negative numbers.
+
+(1) input/left.pgm: the left image
+A grayscale image in P2 format (ASCII PGM). Line 1 is P2, line 2 holds the width W and the height H, and line 3 is the maximum value, which is always 255. Of the following H lines, line y + 1 (y = 0, 1, ..., H - 1) contains the pixel values IL(0, y), IL(1, y), ..., IL(W - 1, y) in this order. Pixel values are integers from 0 to 255. There are no comment lines.
+
+(2) input/right.pgm: the right image
+An image in the same format as (1), with the same width and height. The value of pixel (x, y) is written IR(x, y). A point seen at pixel (x, y) of the left image appears at pixel (x - d, y) of the right image, where d is the disparity of that point.
+
+(3) input/ground_truth.pgm: the true disparities
+An image in the same format as (1), with the same width and height (line 3 is also 255). The value G(x, y) of pixel (x, y) is the true disparity of pixel (x, y) of the left image; 0 means that the true disparity is unknown.
+
+(4) input/params.txt: parameters
+Each line consists of a parameter name followed by one or more values, separated by single spaces. The lines appear in the following order. The symbol after the parameter name in each item is the symbol that denotes its value in the description below.
+- disparity_min d_min: the minimum disparity.
+- disparity_max d_max: the maximum disparity. Below, D = d_max - d_min + 1.
+- sad_windows w_1 w_2 ...: the candidate window sizes for SAD (one or more, in increasing order).
+- ssd_windows w_1 w_2 ...: the candidate window sizes for SSD (likewise).
+- census_windows w_1 w_2 ...: the candidate sizes of the window over which census transform Hamming distances are summed (likewise).
+- texture_window w_t: the window size used to compute the texture strength.
+- texture_threshold tau: the lower bound of the texture strength for a pixel to be a textured pixel.
+- uniqueness U: the margin (in percent) required by the uniqueness check.
+- lr_max_diff lambda: the disparity difference allowed by the left-right consistency check.
+- wta_cost k_w: the cost kind of the WTA method that is post-processed (one of sad, ssd, census).
+- sgm_cost k_s: the cost kind used by SGM (one of sad, ssd, census).
+- sgm_window w_s: the window size of the cost used by SGM.
+- sgm_paths P: the number of path directions used by SGM.
+- p1 P1: in SGM, the penalty when the disparity differs from that of the neighbouring pixel by 1.
+- p2 P2: in SGM, the base value of the penalty when the disparity differs from that of the neighbouring pixel by 2 or more.
+- p2_gamma gamma: the constant used when reducing P2 according to the intensity difference.
+- speckle_size N_s: the pixel count of connected components removed as speckles (connected components with fewer pixels than this value are removed).
+- speckle_range rho_s: in the speckle test, the maximum disparity difference for which adjacent pixels are considered connected.
+- fusion_min_votes N_f: the number of agreeing votes required by fusion.
+- object_range rho_o: in object extraction, the maximum disparity difference for which adjacent pixels are considered connected.
+- object_min_size N_o: the minimum pixel count of a connected component for it to be an object.
+- focal_length f: the focal length (in pixels).
+- baseline B: the baseline length (the distance between the two cameras, in millimetres).
+- samples K: the number of sample pixels.
+These are followed by K lines of the form sample x y. The x and y on the i-th of these lines (i = 1, 2, ..., K) are the coordinates of the i-th sample pixel.
+All window sizes are odd. The values of k_w and k_s are names in lowercase English letters; all other values are integers.
+
+[Processing]
+Process the data by steps 1. to 12. below.
+
+## Notation
+- A pixel is denoted by its coordinates (x, y). x runs from 0 to W - 1 from left to right, and y runs from 0 to H - 1 from top to bottom. "Inside the image" means 0 <= x <= W - 1 and 0 <= y <= H - 1.
+- Raster order: the order of pixels by increasing y, and for equal y by increasing x.
+- a div b and a mod b are the quotient (the integer obtained by discarding the fractional part) and the remainder of dividing a non-negative integer a by a positive integer b. floor(a / b) also means the same as a div b. Every division in this task divides a non-negative integer by a positive integer. |a| is the absolute value of a.
+- Clamped reference: in a formula that uses the value at coordinates (x, y) outside the image, use instead the value at coordinates (min(max(x, 0), W - 1), min(max(y, 0), H - 1)) (this amounts to using the value of the nearest border pixel).
+- 4-neighbours: the 4-neighbours of pixel (x, y) are those of (x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1) that are inside the image. The 8-neighbours are those (x + dx, y + dy) with |dx| <= 1, |dy| <= 1, (dx, dy) != (0, 0) that are inside the image, and the 3 x 3 neighbourhood is the 8-neighbours together with pixel (x, y) itself.
+- 8 directions: the 8 directions r_1 = (1, 0), r_2 = (-1, 0), r_3 = (0, 1), r_4 = (0, -1), r_5 = (1, 1), r_6 = (-1, -1), r_7 = (-1, 1), r_8 = (1, -1).
+- Disparity image: an image in which each pixel holds either an integer disparity from d_min to d_max or "invalid". A pixel that holds a disparity is called valid in that disparity image.
+- Lower median: the floor((n + 1) / 2)-th value when n integers (n >= 1) are sorted in increasing order (for example, the lower median of the 4 values 4, 1, 3, 3 is 3, and the lower median of the 2 values 9, 2 is 2).
+- Window sum: for an image F and an odd number w, let h = (w - 1) / 2, and let the window sum box_w(F)(x, y) be the sum of F(x + i, y + j) over all w x w pairs (i, j) with -h <= i <= h, -h <= j <= h. F is referenced with clamping.
+- Writing with two decimals: for a non-negative integer a and a positive integer b, "writing a / b with two decimals" means computing N = floor((200 * a + b) / (2 * b)) and concatenating, in this order, N div 100, ".", and N mod 100 written with two digits (with a leading 0 if it has one digit). This is a / b rounded to two decimal places, with an exact half rounded up (for example, 2 / 3 gives 0.67, 1 / 8 gives 0.13, and 7 / 1 gives 7.00).
+- Ratio: for non-negative integers a and b, "the ratio a / b" is a string of two words. If b > 0, let a' and b' be a and b each divided by the greatest common divisor of a and b; the first word is "a'/b'", and the second word is 100 * a / b written with two decimals (for example, the ratio 6 / 8 is 3/4 75.00, and the ratio 0 / 5 is 0/1 0.00). If b = 0, it is 0/1 0.00.
+- popcount(v) is the number of 1s in the binary representation of a non-negative integer v, and a xor b is the bitwise exclusive or of a and b.
+
+## 1. Regions and evaluation based on the true disparities
+(1) A pixel with G(x, y) != 0 is called a known pixel.
+(2) A known pixel (x, y) is a truly occluded pixel (a pixel not visible in the right image) if, with g = G(x, y), it satisfies either of the following.
+  - x - g < 0.
+  - In the same row there is a pixel (x2, y) with G(x2, y) > g and x2 - G(x2, y) = x - g (a nearer point appears at the same position in the right image).
+(3) Known pixels that are not truly occluded pixels are called non-occluded pixels.
+(4) A non-occluded pixel (x, y) that has, among its 8-neighbours, a known pixel (x', y') with |G(x', y') - G(x, y)| >= 2 is called a discontinuity pixel.
+(5) There are three evaluation regions, nonocc (the set of non-occluded pixels), all (the set of known pixels) and disc (the set of discontinuity pixels), used in this order.
+(6) Evaluating a disparity image E on a set Q of known pixels means computing the following values. When a pixel p of Q is valid in E, its error is e(p) = |E(p) - G(p)|.
+  - pixels: the number of pixels in Q.
+  - valid: the number of pixels in Q that are valid in E.
+  - bad1: the number of pixels in Q that are invalid in E plus the number of pixels in Q with e(p) > 1.
+  - bad2: the number of pixels in Q that are invalid in E plus the number of pixels in Q with e(p) > 2.
+  - error sum: the sum of e(p) over the pixels in Q that are valid in E.
+  - mae: if valid > 0, (error sum) / valid written with two decimals; if valid = 0, -.
+  - exact: the number of pixels in Q that are valid in E and have e(p) = 0.
+
+## 2. Census transform
+For each of the left image and the right image, compute the census value of each pixel (x, y) as follows. Let the image be I. Sort the 24 pairs (dx, dy) with -2 <= dx <= 2, -2 <= dy <= 2, (dx, dy) != (0, 0) by increasing dy, and for equal dy by increasing dx. For the j-th pair (j = 1, 2, ..., 24), let b_j = 1 if I(x + dx, y + dy) < I(x, y), and b_j = 0 otherwise (I is referenced with clamping). The census value is b_1 * 2^23 + b_2 * 2^22 + ... + b_24 * 2^0 (an integer that is at least 0 and less than 2^24). The census value of the left image is written CL(x, y), and that of the right image CR(x, y).
+
+## 3. Texture strength
+For each pixel let g(x, y) = |IL(x + 1, y) - IL(x - 1, y)| (IL is referenced with clamping), and let the texture strength be T(x, y) = box_{w_t}(g)(x, y). A pixel with T(x, y) >= tau is called a textured pixel.
+
+## 4. Matching costs
+For a cost kind k (sad, ssd, census) and a disparity d, the pixel cost e_k(x, y, d) of each pixel (x, y) is defined as follows, where x' = max(x - d, 0) (when it would point outside the right image, the leftmost pixel of the right image is used).
+  - sad: |IL(x, y) - IR(x', y)|
+  - ssd: (IL(x, y) - IR(x', y))^2
+  - census: popcount(CL(x, y) xor CR(x', y)) (the number of the 24 bits whose values differ)
+The cost of kind k and window size w is C_{k,w}(x, y, d) = box_w(F_d)(x, y), where F_d is the image whose value at each pixel (x, y) is e_k(x, y, d). When the window extends beyond the image, F_d is referenced with clamping (for example, if x + i < 0, F_d(0, .) is used; F_d(0, y) is e_k(0, y, d), a value computed using pixel (0, y) of the right image).
+
+## 5. Selection procedure
+The selection procedure for a cost V (for which an integer V(x, y, d) is defined for every pixel (x, y) and every disparity d from d_min to d_max) computes, by the following steps, a disparity image, the check result of each pixel, margins, the left-right difference distribution and the bound count.
+(1) Right-image disparity: for each pixel (x, y), let dR(x, y) be the disparity d, among those with x + d <= W - 1, for which V(x + d, y, d) is minimal (if several have the same value, the smallest d). For a pixel with no such disparity, dR(x, y) is not defined.
+(2) For each pixel (x, y), let d1 be the disparity for which V(x, y, d) is minimal (if several have the same value, the smallest disparity), let c1 = V(x, y, d1), and let c2 be the minimum of V(x, y, d) over the disparities d with |d - d1| >= 2 (since D >= 4, such a disparity always exists).
+(3) A disparity e is consistent at pixel (x, y) if x - e >= 0 and |e - dR(x - e, y)| <= lambda (if x - e >= 0, dR(x - e, y) is always defined).
+(4) The check result of each pixel is determined by the first of the following (a) to (e) that applies. The name and the code of the result are given in parentheses.
+  (a) The pixel is not a textured pixel (textureless, 50).
+  (b) 100 * c2 <= (100 + U) * c1 (nonunique, 100).
+  (c) x - d1 < 0 (outside, 150).
+  (d) d1 is not consistent at (x, y). In this case, the result is (mismatch, 200) if some disparity e from d_min to d_max is consistent at (x, y), and (occluded, 255) if no disparity is consistent.
+  (e) None of (a) to (d) applies (valid, 0).
+(5) In the disparity image, a pixel whose result is valid has the disparity d1, and all other pixels are invalid. The margin of a pixel whose result is valid is c2 - c1.
+(6) Left-right difference distribution: among the pixels whose result is mismatch, occluded or valid, count the pixels for which |d1 - dR(x - d1, y)| is 0, 1, 2, and 3 or more, respectively.
+(7) Bound count: the number of pixels with d1 = d_min or d1 = d_max (all pixels are counted, regardless of their check result).
+
+## 6. WTA methods and window size selection
+Take the cost kinds k in the order sad, ssd, census, and for each kind take the candidate window sizes w in the order written in the input file; perform the selection procedure for C_{k,w} and evaluate the resulting disparity image on nonocc. For each kind, choose the candidate with the smallest bad1 (if tied, the one with the smallest bad2; if still tied, the one written first); the result of the selection procedure for that candidate is the result of method k, and that w is the window size of method k.
+
+## 7. SGM
+(1) Let C0 = C_{k_s,w_s}.
+(2) The path cost L_r(x, y, d) for a direction r = (rx, ry) is defined as follows. Let q = (x - rx, y - ry).
+  - If q is outside the image, L_r(x, y, d) = C0(x, y, d).
+  - If q is inside the image, let m be the minimum of L_r(q, d') over all disparities d', let P2' = max(P1, floor(P2 * gamma / (gamma + |IL(x, y) - IL(q)|))), and compute it by the following formula. However, the term L_r(q, d - 1) + P1 is omitted when d - 1 < d_min, and the term L_r(q, d + 1) + P1 is omitted when d + 1 > d_max.
+    L_r(x, y, d) = C0(x, y, d) + min(L_r(q, d), L_r(q, d - 1) + P1, L_r(q, d + 1) + P1, m + P2') - m
+  L_r(q, .) must be computed before L_r(x, y, .). For example, take the rows in increasing y if ry >= 0 and in decreasing y if ry < 0, and within each row compute in increasing x if rx >= 0 and in decreasing x if rx < 0 (all values are computed exactly in integers, so the order of computation does not change the result).
+(3) For i = 1, 2, ..., P, let S_i(x, y, d) = L_{r_1}(x, y, d) + L_{r_2}(x, y, d) + ... + L_{r_i}(x, y, d), perform the selection procedure for S_i, and evaluate the resulting disparity image on nonocc. The result of the selection procedure for S_P is the result of method sgm, and w_s is the window size of method sgm. Below, S denotes S_P.
+
+## 8. Post-processing
+From the result of a selection procedure (a disparity image A0 and the check result of each pixel), compute the post-processed disparity image A3 by the following steps.
+(1) Speckle removal: two pixels that are valid in A0 are connected if they are 4-neighbours of each other and the absolute difference of their disparities is at most rho_s. Divide the pixels valid in A0 into groups of pixels that can reach each other by following connections (connected components). Let A1 be the disparity image obtained by making invalid all pixels of the connected components with fewer than N_s pixels.
+(2) Median filter: for each pixel valid in A1, collect the disparities of the pixels in its 3 x 3 neighbourhood (including the pixel itself) that are valid in A1; their lower median is the disparity of that pixel in A2. A pixel invalid in A1 is also invalid in A2. The computation for every pixel uses the values of A1.
+(3) Hole filling: a pixel valid in A2 has the same disparity in A3. The value in A3 of each pixel invalid in A2 is determined according to the check result of that pixel as follows. In both cases only the values of A2 are used, never values determined by hole filling.
+  - Pixels whose result is outside or occluded (background filling): in the same row, find the nearest pixel valid in A2 to the left of the pixel and the nearest pixel valid in A2 to the right of it; the smaller of the disparities of the pixels found (the disparity of that pixel, if only one is found) is the disparity in A3. If neither is found, the pixel is invalid.
+  - All other pixels (pixels whose result is textureless, nonunique or mismatch, and pixels made invalid in (1); interpolation filling): for each of the 8 directions r_1, ..., r_8, step from the pixel one pixel at a time in direction r and collect the disparity of the first pixel valid in A2 that is encountered before leaving the image. The lower median of the collected values (at most 8) is the disparity in A3. If no value is collected, the pixel is invalid.
+(4) Source: the source of each pixel is determined as follows (a pixel valid in A2 is also valid in A0).
+  - kept: valid in A2, and its disparity in A2 equals its disparity in A0.
+  - median: valid in A2, and its disparity in A2 differs from its disparity in A0.
+  - background: invalid in A2, and made valid in A3 by background filling.
+  - interpolated: invalid in A2, and made valid in A3 by interpolation filling.
+  - none: invalid in A3.
+(5) Post-processing summary: the number of connected components removed in (1) and the total number of their pixels, the number of pixels whose disparity in A2 differs from their disparity in A1, and the numbers of pixels whose source is background, interpolated and none.
+The A3 obtained by post-processing the result of method k_w is the disparity image of method wta_final, and the A3 obtained by post-processing the result of method sgm is the disparity image of method sgm_final.
+
+## 9. Fusion
+For each pixel, collect the disparities from those of the disparity images of methods sad, ssd, census and sgm in which the pixel is valid; the number of collected values (0 to 4) is the candidate count of the pixel. When at least one value is collected, let m be their lower median; if the number of collected values v with |v - m| <= 1 is at least N_f, the disparity of the pixel in the disparity image of method fusion is m. Otherwise (including when no value is collected) the pixel is invalid.
+
+## 10. List of methods
+There are 7 methods, sad, ssd, census, sgm, fusion, wta_final and sgm_final, and this order is the method order. Of these, the 4 methods sad, ssd, census and sgm are called selection-based methods. The disparity image of a method is the disparity image obtained by the selection procedure for a selection-based method, the disparity image of step 9. for fusion, and the disparity image of step 8. for wta_final and sgm_final.
+
+## 11. Sub-pixel estimation and depth
+For each sample pixel (x, y), if its disparity d in the disparity image of method sgm_final is valid, compute the following values using S (step 7. (3)).
+(1) If d_min < d < d_max and S(x, y, d - 1) > S(x, y, d) and S(x, y, d + 1) >= S(x, y, d), let a = S(x, y, d - 1) - S(x, y, d + 1) and b = 2 * (S(x, y, d - 1) - 2 * S(x, y, d) + S(x, y, d + 1)). d + a / b is the position of the vertex of the parabola through the three costs at the disparities d - 1, d, d + 1, and b > 0, |a| <= b / 2. Otherwise let a = 0 and b = 1.
+(2) Let Q = floor((200 * (d * b + a) + b) / (2 * b)) (the integer obtained by multiplying d + a / b by 100 and rounding; d * b + a > 0). The sub-pixel disparity is the string formed by concatenating, in this order, Q div 100, ".", and Q mod 100 written with two digits.
+(3) The depth (in millimetres) is f * B / (Q / 100); write 100 * f * B / Q with two decimals.
+(4) If G(x, y) != 0, the true depth is f * B / G(x, y) written with two decimals.
+
+## 12. Object extraction
+Let A be the disparity image of method sgm_final.
+(1) Divide the pixels valid in A into connected components in the same way as in step 8. (1) (but using rho_o instead of rho_s). Connected components with N_o or more pixels are objects; count the connected components with fewer than N_o pixels.
+(2) For each object, with n the number of its pixels and d(p) the disparity in A of each pixel p, compute the following values.
+  - Bounding box: the minimum x0 of x, the minimum y0 of y, the maximum x1 of x and the maximum y1 of y over the pixels of the object.
+  - Disparity: the minimum, the maximum and the lower median dm of d(p), and the sum sum_d of d(p).
+  - Mean disparity: sum_d / n written with two decimals.
+  - Depth: f * B * n / sum_d written with two decimals (the depth for the mean disparity).
+  - Size: the width (x1 - x0 + 1) * B / dm and the height (y1 - y0 + 1) * B / dm (in millimetres), each written with two decimals.
+  - True disparity t: collect the values of G at the pixels of the object that are known pixels, and let t be the value that occurs most often (if several values occur equally often, the smallest of them). If the object has no known pixel, there is no t.
+  - Overlap: when t exists, let h_t be the number of pixels of the object with G = t, let M_t be the number of pixels in the whole image with G = t, and let the overlap be the ratio h_t / (n + M_t - h_t) (the IoU of the object and the region whose true disparity is t).
+(3) Sort the objects by decreasing dm (nearest first), for equal dm by decreasing n, and if these are also equal, so that the object whose first pixel in raster order comes earlier in raster order comes first; number them from 1 in this order.
+(4) The values of G at the known pixels, without duplicates and sorted in increasing order, are called the true layers. A true layer value g is detected if there is an object with t = g and 2 * h_t > n + M_t - h_t.
+
+[Output files]
+Write the following 7 files to the output/ folder. Every file consists of ASCII characters only, and every line ends with a newline (LF). Words within a line are separated by single spaces (only output/depth.csv uses "," as the separator), there is no whitespace at the beginning or end of a line, and no empty lines are output. Integers are written in decimal without extra leading zeros. In the formats below, each part enclosed in < > is replaced by a value, and everything else is output as is. <ratio> stands for the two words of a "ratio".
+
+## PGM images
+Line 1 is P2, line 2 is <W> <H>, and line 3 is 255. Of the following H lines, line y + 1 (y = 0, 1, ...) holds the values of the pixels (0, y), (1, y), ..., (W - 1, y) in this order on one line. No comments are output.
+(1) output/disparity_wta.pgm: the disparity image of method wta_final, with the value 8 * disparity for valid pixels and 0 for invalid pixels.
+(2) output/disparity_sgm.pgm: the disparity image of method sgm_final, represented in the same way as (1).
+(3) output/occlusion.pgm: an image whose values are the codes (0, 50, 100, 150, 200, 255) of the check result of each pixel in the selection procedure of method sgm.
+(4) output/error_sgm.pgm: an image representing the errors of method sgm_final. Pixels with G(x, y) = 0 have the value 0. Every other pixel has the value 255 if it is invalid; if it is valid, its value is 50 when the error |disparity - G(x, y)| is 0, 100 when it is 1, 150 when it is 2, and 200 when it is 3 or more.
+
+## Text files
+(5) output/depth.csv: the disparities and depths of the sample pixels. Line 1 is the following header.
+  x,y,sad,ssd,census,sgm,disparity,source,subpixel,depth,truth,truth_depth
+Then, for each sample pixel in the order of the input file, write the following 12 values on one line, separated by ",". If the same pixel is given two or more times, write it each time.
+  - x and y.
+  - The disparity of the pixel in the disparity images of methods sad, ssd, census and sgm (4 values; - if invalid).
+  - The disparity d of the pixel in the disparity image of method sgm_final, its source (step 8. (4)), the sub-pixel disparity, and the depth (step 11.). However, if d is invalid, these 4 values are -, none, -, -.
+  - G(x, y) and the true depth (step 11. (4)). If G(x, y) = 0, these 2 values are -, -.
+
+(6) output/evaluation.txt: the evaluation report. Output the following lines in this order.
+  image <W> <H>
+  disparities <d_min> <d_max>
+  left mean <mean> min <min> max <max>
+  right mean <mean> min <min> max <max>
+  texture mean <mean> textureless <count>
+  ground_truth known <known> nonocc <nonocc> occluded <occluded> disc <disc> unknown <unknown>
+  photometric pixels <N> mean_abs <mean_abs_diff> bias <mean_diff>
+  sweep <kind> window <w> valid <valid> bad1 <ratio> bad2 <ratio>
+  paths <i> valid <valid> bad1 <ratio> bad2 <ratio>
+  (the group of lines for each method)
+  ranking <region> <method> <method> <method> <method> <method> <method> <method>
+  occlusion <method> tp <tp> fp <fp> fn <fn> precision <ratio> recall <ratio>
+  confidence <method> <p> pixels <n> margin <margin> bad1 <ratio>
+  layer <g> pixels <known> nonocc <nonocc> bad1 <bad1> <bad1> <bad1> <bad1> <bad1> <bad1> <bad1>
+  histogram <d> <count>
+The values on each line are as follows.
+- left and right: for the left image and the right image respectively, (sum of the pixel values) / (W * H) written with two decimals, the minimum pixel value and the maximum pixel value.
+- texture: (sum of T(x, y)) / (W * H) written with two decimals, and the number of pixels that are not textured pixels.
+- ground_truth: the numbers of known pixels, non-occluded pixels, truly occluded pixels and discontinuity pixels, and the number of pixels with G(x, y) = 0.
+- photometric: for each non-occluded pixel (x, y) let delta = IR(x - G(x, y), y) - IL(x, y), and let N be the number of non-occluded pixels. <mean_abs_diff> is sum(|delta|) / N written with two decimals. <mean_diff> is sum(delta) / N written with two decimals if sum(delta) >= 0, and if sum(delta) < 0, it is (-sum(delta)) / N written with two decimals and prefixed with "-" (however, no "-" is added when that gives 0.00). Each sum is taken over all non-occluded pixels.
+- sweep: one line for each candidate of step 6., in the order examined. <kind> is one of sad, ssd, census. <valid> is the number of valid pixels of that disparity image in the whole image, and the <ratio>s of bad1 and bad2 are bad1 / pixels and bad2 / pixels when it is evaluated on nonocc.
+- paths: one line for each i = 1, 2, ..., P of step 7. (3) in this order, giving the same values as sweep for the disparity image obtained by the selection procedure for S_i.
+- The group of lines for each method: in method order, output the following lines for each method: the 3 lines of (A), then one of (B), (C), (D) depending on the kind of method, then the 5 lines of (E).
+  (A) All methods
+    method <name> valid <valid> invalid <invalid>
+    disparity min <min> max <max> median <lower_median> distinct <distinct_count>
+    jumps horizontal <horizontal_jumps> vertical <vertical_jumps>
+  (B) Selection-based methods (sad, ssd, census, sgm)
+    window <window_size> bounds <bound_count>
+    reasons textureless <count> nonunique <count> outside <count> mismatch <count> occluded <count>
+    lr 0 <count> 1 <count> 2 <count> 3+ <count>
+  (C) fusion
+    votes 0 <count> 1 <count> 2 <count> 3 <count> 4 <count>
+  (D) wta_final and sgm_final
+    postprocess speckles <component_count> <pixel_count> median <count> background <count> interpolated <count> unfilled <count>
+    source kept pixels <count> bad1 <ratio>
+    source median pixels <count> bad1 <ratio>
+    source background pixels <count> bad1 <ratio>
+    source interpolated pixels <count> bad1 <ratio>
+    source none pixels <count> bad1 <ratio>
+  (E) All methods
+    region nonocc pixels <pixels> valid <valid> bad1 <ratio> bad2 <ratio> mae <mae> exact <exact>
+    region all pixels <pixels> valid <valid> bad1 <ratio> bad2 <ratio> mae <mae> exact <exact>
+    region disc pixels <pixels> valid <valid> bad1 <ratio> bad2 <ratio> mae <mae> exact <exact>
+    depth_error pixels <count> mean <mean> max <max>
+    errors 0 <count> 1 <count> 2 <count> 3 <count> 4+ <count> invalid <count>
+  The values on each line are as follows. Below, E is the disparity image of the method.
+  - method: the number of valid pixels and the number of invalid pixels of E in the whole image.
+  - disparity: the minimum, the maximum, the lower median and the number of distinct values of the disparities of the pixels valid in E. If there are no valid pixels, this line is disparity min - max - median - distinct 0.
+  - jumps: the number of horizontally adjacent pixel pairs (x, y), (x + 1, y) that are both valid in E and whose disparities differ by 2 or more in absolute value, and the number counted in the same way for vertically adjacent pixel pairs (x, y), (x, y + 1).
+  - window: the window size of the method (step 6., step 7. (3)) and the bound count of the selection procedure (step 5. (7)).
+  - reasons: the numbers of pixels whose check result in the selection procedure is textureless, nonunique, outside, mismatch and occluded.
+  - lr: the left-right difference distribution of the selection procedure (step 5. (6)).
+  - votes: the numbers of pixels whose candidate count (step 9.) is 0, 1, 2, 3 and 4.
+  - postprocess: the post-processing summary (step 8. (5)).
+  - source: pixels and the ratio bad1 / pixels when E is evaluated on the set of known pixels whose source is the given name.
+  - region: the values when E is evaluated on that region. The <ratio>s of bad1 and bad2 are bad1 / pixels and bad2 / pixels.
+  - depth_error: for each non-occluded pixel p that is valid in E, with z(v) = floor((200 * f * B + v) / (2 * v)) (the depth f * B / v for a disparity v, rounded to an integer in units of 0.01 millimetre), compute the depth error |z(E(p)) - z(G(p))|. <count> is the number n of these pixels, <mean> is (sum of the errors) / (100 * n) written with two decimals, and <max> is (maximum error) / 100 written with two decimals. If n = 0, this line is depth_error pixels 0 mean - max -.
+  - errors: among the known pixels, the numbers of pixels that are valid in E with error 0, 1, 2, 3 and 4 or more, and the number of pixels that are invalid in E.
+- ranking: one line per region in the order nonocc, all, disc, listing the 7 methods in the following order: by increasing bad1 evaluated on that region; if tied, by increasing bad2; if tied, by increasing mean error (error sum / valid); if still tied, in method order. Mean errors are compared as exact fractions (for two methods with error sums s1, s2 and valid v1, v2, compare s1 * v2 with s2 * v1). The mean error of a method with valid = 0 is considered larger than that of any method with valid > 0.
+- occlusion: one line for each selection-based method, in method order. Pixels whose check result is outside or occluded are the occluded pixels detected by that method. <tp> is the number of truly occluded pixels that are detected occluded pixels, <fp> is the number of non-occluded pixels that are detected occluded pixels, and <fn> is the number of truly occluded pixels that are not detected occluded pixels. precision is the ratio tp / (tp + fp), and recall is the ratio tp / (tp + fn).
+- confidence: for each selection-based method in method order, 4 lines for p = 25, 50, 75, 100 in this order. Sort the non-occluded pixels that are valid in the disparity image of the method by decreasing margin (step 5. (5)), and for equal margins in raster order, and let N be their number. Let n = floor((N * p + 99) / 100), and let c be the number of pixels among the first n sorted pixels whose error exceeds 1; <ratio> is c / n. <margin> is the margin of the n-th pixel, or - if n = 0.
+- layer: one line for each true layer value g, in increasing order: the number of known pixels with G = g, the number of non-occluded pixels with G = g, and the bad1 values (7 values, in method order) obtained when the disparity image of each method is evaluated on the set of non-occluded pixels with G = g.
+- histogram: one line for each d = d_min, d_min + 1, ..., d_max in this order, giving the number of pixels whose disparity in the disparity image of method sgm_final is d.
+
+(7) output/objects.txt: the list of objects. Line 1 is the following line.
+  objects <object_count> small <components_below_N_o> pixels <total_object_pixels>
+Here <components_below_N_o> is the number of connected components with fewer than N_o pixels, and <total_object_pixels> is the total number of pixels of the objects.
+Then output the following line for each object, in number order. For an object without t, the part from truth on is truth - iou -.
+  object <number> pixels <n> box <x0> <y0> <x1> <y1> disparity <min> <max> median <dm> mean <mean_disparity> depth <depth> size <width> <height> truth <t> iou <overlap_ratio>
+Finally output the following line. <missed_values> is the true layer values that were not detected, in increasing order and separated by single spaces, or - if there are none.
+  layers <layer_count> detected <detected_layer_count> missed <missed_values>
+
+[Source files]
+There are the following 6 source files. The names are language-neutral role names; file extensions and capitalization follow the conventions of each language.
+- main: holds the overall flow and contains most of the processing: reading the input and calling each module, the selection procedure (step 5.), window size selection (step 6.), the selection procedure and evaluation at each stage of SGM (step 7. (3)), post-processing (step 8.), fusion (step 9.), assembling the values for the sample pixels (step 11.), object extraction (step 12.), aggregating the evaluation report (ranking, occlusion detection, confidence, per-layer evaluation, etc.), and writing each file.
+- pgm_io: reading and writing PGM images, and reading the parameters.
+- costs: clamped reference, window sums using integral images (2-D cumulative sums), the census transform (step 2.), texture strength (step 3.), and matching costs (step 4.).
+- aggregation: SGM path costs and the computation of P2', and the accumulation of S_1, ..., S_P (step 7. (1), (2) and the computation of S_i).
+- refinement: sub-pixel estimation by parabola fitting and depth (step 11.), and the two-decimal notation.
+- evaluation: the regions based on the true disparities (step 1. (1) to (5)), the evaluation of disparity images (step 1. (6)), and the ratio notation.
+
+[Constraints]
+- 8 <= W <= 64, 4 <= H <= 48.
+- 1 <= d_min, d_max <= 31, 4 <= D <= 24, d_max <= W - 1.
+- G(x, y) is 0 or an integer from d_min to d_max. There is at least one non-occluded pixel.
+- For each kind, there are 1 to 4 candidate window sizes, each an odd number from 1 to 9, in increasing order (no two are equal). w_t and w_s are odd numbers from 1 to 9.
+- 0 <= tau <= 100000, 0 <= U <= 100, 0 <= lambda <= 3.
+- 1 <= P <= 8, 1 <= P1 <= P2 <= 100000, 1 <= gamma <= 1000.
+- 1 <= N_s <= 1000, 0 <= rho_s <= 5, 1 <= N_f <= 4, 0 <= rho_o <= 5, 1 <= N_o <= 3072.
+- 1 <= f <= 2000, 1 <= B <= 1000.
+- 1 <= K <= 50, and every sample pixel is inside the image.
+- Values such as 100 * c2 and (100 + U) * c1 in the selection procedure, and intermediate values in sub-pixel estimation and in the two-decimal notation, can be 2^31 or larger, but all values, including intermediate values, are integers whose absolute value is less than 2^53 (compute with a type that represents integers below 2^53 exactly).
+
+[Example]
+The following example shows the format only; it differs from the actual input files.
+Input (input/left.pgm):
+P2
+16 6
+255
+122 78 141 52 58 177 64 133 189 54 169 94 49 62 151 147
+97 200 189 55 187 189 86 183 222 162 75 74 114 147 76 178
+88 135 64 180 56 184 113 217 156 98 222 149 120 159 189 156
+174 166 127 154 113 195 101 192 65 112 195 127 78 165 147 50
+188 156 57 63 109 161 144 222 117 216 109 112 138 128 45 158
+73 103 141 140 167 60 82 154 142 180 111 75 150 180 111 146
+Input (input/right.pgm):
+P2
+16 6
+255
+80 143 54 60 179 66 135 191 56 171 96 51 64 153 149 59
+202 191 57 88 185 224 164 77 53 184 76 116 149 78 180 72
+137 66 182 115 219 158 100 224 169 178 151 122 161 191 158 134
+168 129 156 103 194 67 114 197 149 84 129 80 167 149 52 61
+158 59 65 146 224 119 218 111 189 156 114 140 130 47 160 132
+105 143 142 169 62 84 156 144 182 113 77 152 182 113 148 133
+Input (input/ground_truth.pgm):
+P2
+16 6
+255
+1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0
+1 1 1 1 1 1 3 3 3 3 3 1 1 1 1 1
+1 1 1 1 1 1 3 3 3 3 3 1 1 1 1 1
+1 1 1 1 1 1 3 3 3 3 3 1 1 1 1 1
+1 1 1 1 1 1 3 3 3 3 3 1 1 1 1 1
+1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+Input (input/params.txt):
+disparity_min 1
+disparity_max 4
+sad_windows 3
+ssd_windows 3
+census_windows 1 3
+texture_window 3
+texture_threshold 20
+uniqueness 10
+lr_max_diff 1
+wta_cost sad
+sgm_cost census
+sgm_window 1
+sgm_paths 2
+p1 2
+p2 8
+p2_gamma 10
+speckle_size 3
+speckle_range 1
+fusion_min_votes 3
+object_range 1
+object_min_size 4
+focal_length 500
+baseline 60
+samples 2
+sample 7 2
+sample 1 4
+Output (output/disparity_wta.pgm):
+P2
+16 6
+255
+8 8 8 8 8 8 8 8 24 24 8 8 8 8 8 8
+8 8 8 8 8 8 8 24 24 24 24 8 8 8 8 8
+8 8 8 8 8 8 24 24 24 24 24 8 8 8 8 8
+8 8 8 8 8 8 24 24 24 24 24 8 8 8 8 8
+8 8 8 8 8 8 8 8 24 24 8 8 8 8 8 8
+8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8
+Output (output/disparity_sgm.pgm):
+P2
+16 6
+255
+8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8
+8 8 8 8 8 8 8 24 24 24 8 8 8 8 8 8
+8 8 8 8 8 8 24 24 24 24 24 8 8 8 8 8
+8 8 8 8 8 8 8 24 24 24 24 8 8 8 8 8
+8 8 8 8 8 8 8 8 8 24 8 8 8 8 8 8
+8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8
+Output (output/occlusion.pgm):
+P2
+16 6
+255
+100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 200
+100 0 0 0 200 200 200 0 0 0 0 0 0 0 0 0
+100 0 0 0 200 200 0 0 0 0 0 0 0 0 0 0
+150 0 0 0 0 200 200 0 0 0 0 0 0 0 0 0
+150 0 0 0 0 200 100 0 200 0 0 0 0 0 0 0
+150 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+Output (output/error_sgm.pgm):
+P2
+16 6
+255
+50 50 50 50 50 50 50 50 50 50 50 50 50 50 50 0
+50 50 50 50 50 50 150 50 50 50 150 50 50 50 50 50
+50 50 50 50 50 50 50 50 50 50 50 50 50 50 50 50
+50 50 50 50 50 50 150 50 50 50 50 50 50 50 50 50
+50 50 50 50 50 50 150 150 150 50 150 50 50 50 50 50
+50 50 50 50 50 50 50 50 50 50 50 50 50 50 50 50
+Output (output/depth.csv):
+x,y,sad,ssd,census,sgm,disparity,source,subpixel,depth,truth,truth_depth
+7,2,3,3,3,3,3,kept,2.98,10067.11,3,10000.00
+1,4,1,1,1,1,1,kept,1.00,30000.00,1,30000.00
+Output (output/evaluation.txt):
+image 16 6
+disparities 1 4
+left mean 130.82 min 45 max 222
+right mean 130.63 min 47 max 224
+texture mean 523.31 textureless 0
+ground_truth known 95 nonocc 81 occluded 14 disc 32 unknown 1
+photometric pixels 81 mean_abs 2.00 bias 2.00
+sweep sad window 3 valid 79 bad1 8/81 9.88 bad2 2/27 7.41
+sweep ssd window 3 valid 79 bad1 5/27 18.52 bad2 10/81 12.35
+sweep census window 1 valid 69 bad1 5/27 18.52 bad2 5/27 18.52
+sweep census window 3 valid 75 bad1 4/27 14.81 bad2 4/27 14.81
+paths 1 valid 71 bad1 13/81 16.05 bad2 4/27 14.81
+paths 2 valid 79 bad1 4/81 4.94 bad2 4/81 4.94
+method sad valid 79 invalid 17
+disparity min 1 max 3 median 1 distinct 2
+jumps horizontal 3 vertical 7
+window 3 bounds 73
+reasons textureless 0 nonunique 8 outside 0 mismatch 9 occluded 0
+lr 0 79 1 0 2 7 3+ 2
+region nonocc pixels 81 valid 75 bad1 8/81 9.88 bad2 2/27 7.41 mae 0.05 exact 73
+region all pixels 95 valid 78 bad1 1/5 20.00 bad2 17/95 17.89 mae 0.05 exact 76
+region disc pixels 32 valid 26 bad1 1/4 25.00 bad2 3/16 18.75 mae 0.15 exact 24
+depth_error pixels 75 mean 533.33 max 20000.00
+errors 0 76 1 0 2 2 3 0 4+ 0 invalid 17
+method ssd valid 79 invalid 17
+disparity min 1 max 4 median 1 distinct 3
+jumps horizontal 5 vertical 4
+window 3 bounds 73
+reasons textureless 0 nonunique 8 outside 0 mismatch 8 occluded 1
+lr 0 79 1 0 2 5 3+ 4
+region nonocc pixels 81 valid 73 bad1 5/27 18.52 bad2 10/81 12.35 mae 0.22 exact 66
+region all pixels 95 valid 78 bad1 24/95 25.26 bad2 1/5 20.00 mae 0.21 exact 71
+region disc pixels 32 valid 24 bad1 15/32 46.88 bad2 5/16 31.25 mae 0.67 exact 17
+depth_error pixels 73 mean 1986.30 max 22500.00
+errors 0 71 1 0 2 5 3 2 4+ 0 invalid 17
+method census valid 75 invalid 21
+disparity min 1 max 3 median 1 distinct 2
+jumps horizontal 1 vertical 3
+window 3 bounds 78
+reasons textureless 0 nonunique 15 outside 0 mismatch 6 occluded 0
+lr 0 75 1 0 2 4 3+ 2
+region nonocc pixels 81 valid 69 bad1 4/27 14.81 bad2 4/27 14.81 mae 0.00 exact 69
+region all pixels 95 valid 74 bad1 21/95 22.11 bad2 21/95 22.11 mae 0.00 exact 74
+region disc pixels 32 valid 20 bad1 3/8 37.50 bad2 3/8 37.50 mae 0.00 exact 20
+depth_error pixels 69 mean 0.00 max 0.00
+errors 0 74 1 0 2 0 3 0 4+ 0 invalid 21
+method sgm valid 79 invalid 17
+disparity min 1 max 3 median 1 distinct 3
+jumps horizontal 3 vertical 6
+window 1 bounds 77
+reasons textureless 0 nonunique 4 outside 3 mismatch 10 occluded 0
+lr 0 78 1 1 2 6 3+ 4
+region nonocc pixels 81 valid 77 bad1 4/81 4.94 bad2 4/81 4.94 mae 0.01 exact 76
+region all pixels 95 valid 79 bad1 16/95 16.84 bad2 16/95 16.84 mae 0.01 exact 78
+region disc pixels 32 valid 28 bad1 1/8 12.50 bad2 1/8 12.50 mae 0.04 exact 27
+depth_error pixels 77 mean 64.94 max 5000.00
+errors 0 78 1 1 2 0 3 0 4+ 0 invalid 16
+method fusion valid 72 invalid 24
+disparity min 1 max 3 median 1 distinct 2
+jumps horizontal 1 vertical 2
+votes 0 10 1 3 2 8 3 7 4 68
+region nonocc pixels 81 valid 67 bad1 14/81 17.28 bad2 14/81 17.28 mae 0.00 exact 67
+region all pixels 95 valid 71 bad1 24/95 25.26 bad2 24/95 25.26 mae 0.00 exact 71
+region disc pixels 32 valid 18 bad1 7/16 43.75 bad2 7/16 43.75 mae 0.00 exact 18
+depth_error pixels 67 mean 0.00 max 0.00
+errors 0 71 1 0 2 0 3 0 4+ 0 invalid 24
+method wta_final valid 96 invalid 0
+disparity min 1 max 3 median 1 distinct 2
+jumps horizontal 10 vertical 8
+postprocess speckles 0 0 median 2 background 0 interpolated 17 unfilled 0
+source kept pixels 76 bad1 1/76 1.32
+source median pixels 2 bad1 1/2 50.00
+source background pixels 0 bad1 0/1 0.00
+source interpolated pixels 17 bad1 4/17 23.53
+source none pixels 0 bad1 0/1 0.00
+region nonocc pixels 81 valid 81 bad1 2/27 7.41 bad2 0/1 0.00 mae 0.15 exact 75
+region all pixels 95 valid 95 bad1 6/95 6.32 bad2 0/1 0.00 mae 0.13 exact 89
+region disc pixels 32 valid 32 bad1 3/16 18.75 bad2 0/1 0.00 mae 0.38 exact 26
+depth_error pixels 81 mean 1481.48 max 20000.00
+errors 0 89 1 0 2 6 3 0 4+ 0 invalid 0
+method sgm_final valid 96 invalid 0
+disparity min 1 max 3 median 1 distinct 2
+jumps horizontal 8 vertical 10
+postprocess speckles 0 0 median 3 background 3 interpolated 14 unfilled 0
+source kept pixels 76 bad1 0/1 0.00
+source median pixels 3 bad1 1/1 100.00
+source background pixels 3 bad1 0/1 0.00
+source interpolated pixels 13 bad1 4/13 30.77
+source none pixels 0 bad1 0/1 0.00
+region nonocc pixels 81 valid 81 bad1 7/81 8.64 bad2 0/1 0.00 mae 0.17 exact 74
+region all pixels 95 valid 95 bad1 7/95 7.37 bad2 0/1 0.00 mae 0.15 exact 88
+region disc pixels 32 valid 32 bad1 7/32 21.88 bad2 0/1 0.00 mae 0.44 exact 25
+depth_error pixels 81 mean 1728.40 max 20000.00
+errors 0 88 1 0 2 7 3 0 4+ 0 invalid 0
+ranking nonocc sgm wta_final sgm_final sad census fusion ssd
+ranking all wta_final sgm_final sgm sad census ssd fusion
+ranking disc sgm wta_final sgm_final sad census fusion ssd
+occlusion sad tp 0 fp 0 fn 14 precision 0/1 0.00 recall 0/1 0.00
+occlusion ssd tp 0 fp 1 fn 14 precision 0/1 0.00 recall 0/1 0.00
+occlusion census tp 0 fp 0 fn 14 precision 0/1 0.00 recall 0/1 0.00
+occlusion sgm tp 3 fp 0 fn 11 precision 1/1 100.00 recall 3/14 21.43
+confidence sad 25 pixels 19 margin 398 bad1 0/1 0.00
+confidence sad 50 pixels 38 margin 314 bad1 0/1 0.00
+confidence sad 75 pixels 57 margin 209 bad1 0/1 0.00
+confidence sad 100 pixels 75 margin 33 bad1 2/75 2.67
+confidence ssd 25 pixels 19 margin 31658 bad1 0/1 0.00
+confidence ssd 50 pixels 37 margin 24015 bad1 1/37 2.70
+confidence ssd 75 pixels 55 margin 15990 bad1 3/55 5.45
+confidence ssd 100 pixels 73 margin 2895 bad1 7/73 9.59
+confidence census 25 pixels 18 margin 77 bad1 0/1 0.00
+confidence census 50 pixels 35 margin 62 bad1 0/1 0.00
+confidence census 75 pixels 52 margin 44 bad1 0/1 0.00
+confidence census 100 pixels 69 margin 7 bad1 0/1 0.00
+confidence sgm 25 pixels 20 margin 26 bad1 0/1 0.00
+confidence sgm 50 pixels 39 margin 18 bad1 0/1 0.00
+confidence sgm 75 pixels 58 margin 9 bad1 0/1 0.00
+confidence sgm 100 pixels 77 margin 2 bad1 0/1 0.00
+layer 1 pixels 75 nonocc 61 bad1 4 8 6 0 7 2 0
+layer 3 pixels 20 nonocc 20 bad1 4 7 6 4 7 4 7
+histogram 1 83
+histogram 2 0
+histogram 3 13
+histogram 4 0
+Output (output/objects.txt):
+objects 2 small 0 pixels 96
+object 1 pixels 13 box 6 1 10 4 disparity 3 3 median 3 mean 3.00 depth 10000.00 size 100.00 80.00 truth 3 iou 13/20 65.00
+object 2 pixels 83 box 0 0 15 5 disparity 1 1 median 1 mean 1.00 depth 30000.00 size 960.00 360.00 truth 1 iou 75/83 90.36
+layers 2 detected 2 missed -

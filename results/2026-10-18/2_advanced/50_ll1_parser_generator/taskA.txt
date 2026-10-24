@@ -1,0 +1,401 @@
+[Overview]
+Write an LL(1) parser generator together with a parser (driver) that runs on the generated parse table. The program reads a grammar written in BNF (input/grammar.bnf), checks it for format errors and for terminals missing from the declarations, and cleans the grammar by removing undefined, unproductive and unreachable nonterminals. Next, it transforms the grammar by eliminating indirect and direct left recursion and by left factoring, computes the NULLABLE, FIRST and FOLLOW sets until they reach a fixpoint, builds the LL(1) parse table, and reports every conflict together with its reason. Finally, it parses the token sequence on each line of input/inputs.txt with the table-driven method and outputs a trace of the stack, input and action, panic-mode error recovery, the parse tree and the compact tree, and the leftmost derivation; it also checks the result against whether the input belongs to the language of the cleaned grammar, and generates example sentences for productions that were not used. The program is run in a directory that contains, besides the source files, input/ holding the input files and an empty output/, and it writes its results to 5 files under output/. Nothing is written to standard output.
+
+[Input files]
+* input/grammar.bnf
+A text file containing the grammar. Every line ends with a newline (LF). Only printable ASCII characters (character codes 32 to 126) appear in a line, and no tabs appear. Each line is split into "tokens" by the following rules (the line formats and the handling of errors are described in 1 of [Processing]). Below, a "letter" is A to Z or a to z, a "word character" is a letter, a digit (0 to 9) or "_", and a "column" is a position counted with the first character of the line as column 1.
+Scan the line from the start, skipping spaces; at the position of a non-space character, read one token of one of the following kinds.
+  - "#": from that position to the end of the line is a comment, and the tokens of the line end here.
+  - "<": if the next character is a letter, followed by zero or more word characters, immediately followed by ">", then the whole from "<" to ">" is one "nonterminal" (example: "<stmt_list>"). The name of a nonterminal is the whole, including "<" and ">".
+  - The double quote ("): if, starting from the next character, one or more characters that are neither a space nor a double quote follow, immediately followed by a double quote, then the whole is one "quoted terminal". The string between the two double quotes is the name of the terminal (example: the name of the quoted terminal "<=" is <=).
+  - A letter: the part from that position consisting of as many word characters as possible is one "word". A word denotes the terminal whose name is that string (examples: "if", "num"). A word and a quoted terminal with the same name are the same terminal (the word num and the quoted terminal "num" are the same terminal).
+  - The 3 characters "::=": one "definition symbol".
+  - "|": one "separator".
+  - "%": if the part starting from the next character consisting of as many letters as possible is "empty", "start" or "token", it is one "directive", "%empty", "%start" or "%token" respectively.
+When none of the above applies (for example, when what follows "<" does not have the form of a nonterminal, when a double quote is not closed, when what follows "%" is none of the 3 directives, when there is a lone ":", or when it starts with a digit), there is an "invalid token" at that position, and reading the tokens of the line ends there. For each token, the column of its first character is called its "start column" and the column of its last character its "end column" (the start column of an invalid token is the column of the position where reading started).
+
+* input/inputs.txt
+A text file containing the token sequences to parse, one per line. Every line ends with a newline (LF). Each line consists of zero or more tokens separated by single spaces, with no space at the start or end of the line (an empty line denotes a sequence of zero tokens). A token is a string of one or more printable ASCII characters other than the space and the double quote ("). Within each line, the numbers 1, 2, ... given to the tokens from the start are called "token positions".
+
+[Processing]
+* Terms and notation
+- Nonterminals and terminals together are called "symbols". No terminal has the name "$". "$" is used as a special symbol denoting the end of the input.
+- For each nonterminal, a grammar has a sequence of "alternatives" (each a sequence of symbols, possibly of length 0). A pair of a nonterminal A and an alternative alpha of A is called a "production" and is written A -> alpha. An alternative with 0 symbols is called an "empty alternative".
+- A grammar has a sequence of nonterminals, called the "nonterminal order". Most of the display and processing of a grammar follows this order.
+- The "notation" of a sequence of symbols is the string of the names of its symbols separated by single spaces. However, the notation of an empty sequence is "%empty". The notation of a production A -> alpha is "<name of A> -> <notation of alpha>" (examples: "<args> -> %empty", "<stmt'> -> = <condition> ;").
+- A collection of terminals is listed in lexicographic order of the names compared by ASCII character code (if one is a prefix of the other, the shorter comes first), with "$" placed last if it is included. This is called the "terminal order".
+- "The list following the heading H" is the string H followed by the items concatenated in order, each preceded by one space. With 0 items it is just H. For example, the list following the heading "unused:" of 3, 7 is "unused: 3 7".
+- The diagnostics recorded during processing are output to output/diagnostics.txt (the output order is described in [Output files]).
+- In the formats of output strings, a part written <...> is replaced by the value it describes ("<" and ">" themselves are not output). However, since the name of a nonterminal includes "<" and ">", if, for example, the <name> in "unproductive nonterminal <name>" is the nonterminal <loop_stmt>, the output is "unproductive nonterminal <loop_stmt>". Likewise, <A>, <X>, <a>, <t>, etc. denote the names of the symbols A, X, a, t.
+
+* 1. Reading the grammar file
+Process the lines of grammar.bnf in order from the start. Line numbers count from 1.
+A line with no tokens and no invalid token (an empty line, a line of only spaces, or a line of only a comment) is a "blank line" and is ignored. The token sequence of any other line must have one of the following 4 forms. Here an "alternative description" is either a single "%empty" or a sequence of one or more nonterminals, words and quoted terminals, and an "alternative list" is one or more alternative descriptions joined by the separator "|".
+  (a) Rule line: a nonterminal, the definition symbol "::=", an alternative list.
+  (b) Continuation line: the separator "|", an alternative list.
+  (c) Start line: "%start", one nonterminal.
+  (d) Declaration line: "%token", one or more words.
+A line whose token sequence (including the invalid token, if any) does not match any of the 4 forms completely is "malformed". For a malformed line, record the diagnostic "line <line number>: syntax error at column <column>" and ignore the whole line. The column is determined as follows. If there is a smallest k such that the sequence of the first k tokens is not a prefix (the whole form included) of any of the 4 forms, the column is the start column of the k-th token. An invalid token is treated as a token that is not part of a prefix of any form. If there is no such k (the whole token sequence is a prefix of some form but does not complete the form), the column is the end column of the last token plus 1.
+For example, in "<a> := x" the ":" at column 5 is an invalid token, so the column is 5; in "<a> ::= x |" the end column of the last "|" is 11, so the column is 12; in "%tokens if" the "%" at column 1 is an invalid token, so the column is 1; in "<a> ::= x %empty" it is 11, the start column of "%empty".
+
+A line that is not malformed is processed according to its form as follows.
+- Rule line: let A be the leading nonterminal. If A has not appeared as the left-hand side of an earlier rule line that is not malformed, append A to the end of the nonterminal order. Then append each alternative written in the alternative list ("%empty" denotes the empty alternative), in the order written, to the end of the alternatives of A.
+- Continuation line: if the nearest line before this line that is not a blank line is a rule line that is not malformed or a continuation line attached to a rule, add the alternatives to that rule (the left-hand side A of that rule line) in the same way as for a rule line. Otherwise (when the nearest line is a malformed line, a start line, a declaration line or a continuation line that was not attached, or when there is no such line), record the diagnostic "line <line number>: continuation without a rule" and ignore the line.
+- Start line: the nonterminal written on the first start line is the "start symbol". Each second or later start line is ignored after recording the diagnostic "line <line number>: duplicate %start".
+- Declaration line: all the words written are "declared terminals". There may be any number of declaration lines.
+When adding an alternative, if A already has the same alternative (equal as a sequence of symbols), that alternative is not added, and the diagnostic "line <line number>: duplicate alternative <notation of the production of A and the alternative not added>" is recorded (the same applies to a duplicate of an alternative added earlier on the same line).
+After all lines have been processed, if there is no start line, the left-hand side of the first rule line that is not malformed is the start symbol.
+
+* 2. Checking the terminal declarations
+If there is no declaration line that is not malformed, this check is not performed. If there is at least one, then for the terminals written as words in the alternatives of rule lines and attached continuation lines (including those in alternatives not added because they were duplicates) that are not declared terminals, sort the names in terminal order and record, for each one, the diagnostic "undeclared terminal <name> at line <line number of the line where that word was first written>". A terminal written only as quoted terminals does not need to be declared (a terminal written as a word at least once is checked even if it is also written as a quoted terminal elsewhere). Undeclared terminals are treated just like other terminals.
+
+* 3. Cleaning the grammar
+(1) Undefined nonterminals: a nonterminal that appears in the alternatives of rule lines and attached continuation lines but never appears as the left-hand side of a rule line that is not malformed is "undefined". Sort the undefined nonterminals in lexicographic order of the string between "<" and ">" (ASCII; if one is a prefix of the other, the shorter comes first) and record, for each one, the diagnostic "undefined nonterminal <name>". Then examine the alternatives of each nonterminal in nonterminal order, remove the alternatives that contain an undefined nonterminal, and record, for each one, the diagnostic "removed <notation of the production> (undefined <leftmost undefined nonterminal in that alternative>)".
+(2) Unproductive nonterminals: a nonterminal that can derive a sequence consisting only of terminals (including the empty sequence) is "productive" (this is found by repeatedly applying "a nonterminal that has an alternative all of whose nonterminals are productive is productive" until nothing changes). For each nonterminal that is not productive, in nonterminal order, record the diagnostic "unproductive nonterminal <name>", and remove these nonterminals together with their alternatives from the grammar and the nonterminal order. Then examine the alternatives of the remaining nonterminals in nonterminal order, remove the alternatives that contain a removed nonterminal, and record, for each one, the diagnostic "removed <notation of the production> (unproductive <leftmost removed nonterminal in that alternative>)".
+(3) Unreachable nonterminals: for each nonterminal that cannot be reached from the start symbol by successively following the nonterminals appearing in alternatives, in nonterminal order, record the diagnostic "unreachable nonterminal <name>", and remove it from the grammar and the nonterminal order.
+The result is called the "cleaned grammar". In the input data, the start symbol is guaranteed to remain in the cleaned grammar.
+
+* 4. Reporting left recursion
+In the grammar at a given moment, there is a "leading edge" from a nonterminal X to a nonterminal Y if X has an alternative whose first symbol is Y.
+For each nonterminal A in the nonterminal order of the cleaned grammar, perform the following breadth-first search. Put only A in the queue and mark A visited. Repeatedly take a nonterminal X from the front of the queue, and each time examine the alternatives of X in order. If the first symbol of an alternative is A, end the search with "found". If the first symbol is a nonterminal Y that has not been visited, mark Y visited, make X the "parent" of Y, and append Y to the end of the queue. If the queue becomes empty, the result is "not found".
+When found, let P be the string obtained by joining with " -> ", in this order, A, the nonterminals after A up to X (the sequence obtained by following parents from X back to just before A, reversed), and A, and record the diagnostic "left recursion: P". When X is A itself, it has the form "left recursion: <A> -> <A>". For example, "left recursion: <path> -> <qualified> -> <path>".
+
+* 5. Eliminating left recursion
+Let A1, A2, ..., An be the nonterminal order of the cleaned grammar, and perform the following (1) to (3) for i = 1, 2, ..., n in this order (the new nonterminals created by this processing are not included in A1, ..., An).
+(1) For j = 1, 2, ..., i-1 in this order, do the following. Only if Ai has an alternative whose first symbol is Aj and, in the grammar at that moment, Ai can be reached from Aj by following leading edges one or more times, replace each alternative Aj gamma whose first symbol is Aj (gamma being the remaining sequence) with delta1 gamma, ..., deltak gamma (in this order), where delta1, ..., deltak are the alternatives of Aj at that moment. The replacing alternatives are placed at the position of the original alternative. If, as a result, Ai has several equal alternatives, keep only the first one. When this replacement is performed, record "substitute <Aj> into <Ai>".
+(2) If Ai has an alternative consisting of Ai alone, remove it and record "remove cycle <Ai> -> <Ai>".
+(3) If Ai has one or more alternatives whose first symbol is Ai (let them be Ai alpha1, ..., Ai alpham), create a new nonterminal A'. Replace the alternatives of Ai with beta1 A', ..., betar A', obtained by appending A' to the end of each of the alternatives beta1, ..., betar whose first symbol is not Ai (in their original order), and let the alternatives of A' be alpha1 A', ..., alpham A', and the empty alternative, in this order. A' is inserted into the nonterminal order immediately after Ai. Record "eliminate left recursion in <Ai> with <A'>". Note that, since we start from the cleaned grammar, at this point there is always at least one alternative whose first symbol is not Ai.
+Names of new nonterminals: when a new nonterminal is created from a nonterminal X, its name is the name of X with one "'" inserted immediately before the last ">" (for example, "<expr'>" from "<expr>"). If that equals the name of a nonterminal of the grammar at that moment, keep adding "'" immediately before the ">" until it no longer does (for example, "<expr''>").
+
+* 6. Left factoring
+Process the nonterminals A one by one, in order from the start of the nonterminal order of the grammar resulting from 5. Nonterminals inserted into the nonterminal order during the processing are also processed when their position in the nonterminal order is reached.
+Examine the alternatives of A in order from the first. For a non-empty alternative x, the alternatives of A whose first symbol is the same as that of x (x itself included) are called the "group of x". If the group has only one alternative, x is kept as it is. If it has two or more and x is the first alternative of the group, find the longest common prefix pi (a sequence of one or more symbols) of all alternatives of the group, and create a new nonterminal A'. The remainders of the alternatives of the group after removing pi (each may be empty) become the alternatives of A', in the order of the group; among the alternatives of A, put pi A' (pi followed by A') at the position of x and remove the other alternatives of the group. Record "left factor <A> on <notation of pi> with <A'>". Empty alternatives are kept as they are.
+The new nonterminals created while processing A are placed in the nonterminal order immediately after A, in the order created (so the next one processed is the first nonterminal created from A). Names are chosen as in 5, and the nonterminals created earlier while processing the same A are also included among the nonterminals of the grammar at that moment.
+
+* 7. The final grammar
+If the grammar resulting from 6 has nonterminals that cannot be reached from the start symbol, then, in nonterminal order, for each one record "remove unreachable <name>", record the diagnostic "unreachable after transformation <name>", and remove it from the grammar and the nonterminal order. The result is called the "final grammar".
+List the productions of the final grammar in nonterminal order, and for the same nonterminal in the order of its alternatives, and number them starting from 1. Below, "production n" denotes the production with this number n. Also, the terminals appearing in the alternatives of the final grammar are called "known terminals".
+If there is at least one declaration line that is not malformed, sort the declared terminals that are not known terminals in terminal order and record, for each one, the diagnostic "unused token <name>".
+
+* 8. NULLABLE, FIRST, FOLLOW
+For the final grammar, compute the following three in this order. Each is computed by repeating "passes", stopping after a pass in which nothing changed. The number of passes includes the last pass in which nothing changed. In one pass, the nonterminals are processed in nonterminal order, and the alternatives of each nonterminal in order, and the values are updated in place (a value updated earlier in the same pass is used immediately by the later processing).
+- NULLABLE: initially every nonterminal is no. In each pass, if a nonterminal A that is no has an alternative (the empty alternative included) all of whose symbols are nonterminals that are yes, A becomes yes.
+- FIRST: initially FIRST of every nonterminal is the empty set. For a sequence of symbols beta, FIRST(beta) is the set obtained by examining the symbols of beta from left to right: for a terminal t, add t and stop; for a nonterminal Y, add all elements of FIRST(Y), and stop if Y is not NULLABLE. When every symbol of beta is a NULLABLE nonterminal (including when beta is empty), we say that "beta can derive the empty string". In each pass, for each alternative alpha of each nonterminal A, add the elements of FIRST(alpha) to FIRST(A).
+- FOLLOW: initially only FOLLOW(start symbol) is the set consisting of the single element "$", and the others are empty sets. In each pass, for each alternative of each nonterminal A, examine the symbols of the alternative from left to right; every time there is a nonterminal B, let gamma be the sequence of symbols after B, add the elements of FIRST(gamma) to FOLLOW(B), and moreover, if gamma can derive the empty string, add the elements of FOLLOW(A) to FOLLOW(B).
+
+* 9. Shortest sentences and contexts
+For each nonterminal A of the final grammar, define the "shortest sentence" w(A) and the "context" u(A), v(A). All of these are sequences of terminals. For a terminal t, w(t) is the sequence consisting of the single "t", and w of a sequence of symbols is the concatenation, in order, of w of each symbol. Below, a pair of two values (p, q) is compared first by p, and by q if the p are equal.
+(1) Length and height: let L(A) be the minimum length (number of terminals) of a sequence of terminals derivable from A, and H(A) the minimum height of a derivation tree whose root is A and whose sequence of leaves has length L(A). For the height of a derivation tree, a node none of whose children is a nonterminal has height 1, and any other node has height equal to the maximum height of its children that are nonterminal nodes plus 1. In other words, for an alternative alpha, let L(alpha) be the sum of L of the symbols of alpha (1 for a terminal) and H(alpha) the maximum of H of the nonterminals in alpha plus 1 (1 if alpha has no nonterminal); then (L(A), H(A)) is the minimum of (L(alpha), H(alpha)) over the alternatives alpha of A. (It can be found by starting with the values of all nonterminals "undetermined" and repeatedly decreasing values using alternatives that contain no nonterminal whose value is undetermined, until nothing changes.)
+(2) Shortest sentence: let alpha be the first alternative of A whose (L(alpha), H(alpha)) equals (L(A), H(A)), and let w(A) = w(alpha).
+(3) Size of the context: for the start symbol S, (C(S), D(S)) = (0, 0). For a nonterminal A other than S, for each production X -> alpha of the final grammar whose right-hand side alpha has A as its k-th symbol (called an "occurrence" of A), compute (C(X)+L(alpha1)+L(alpha2), D(X)+1), and let (C(A), D(A)) be the minimum of these. Here alpha1 is the sequence of the 1st to the (k-1)-th symbols of alpha, alpha2 is the sequence of the (k+1)-th to the last symbols of alpha, and L of a sequence is the sum of L of its symbols. (It can be found by repetition in the same way as (1).)
+(4) Context: u(S) and v(S) are empty sequences. For a nonterminal A other than S, among the occurrences giving the minimum in (3), choose the one with the smallest production number, and among those the one with the smallest k, and let u(A) be u(X) followed by w(alpha1), and v(A) be w(alpha2) followed by v(X).
+The "example sentence" of production n (A -> alpha) is the concatenation of u(A), w(alpha) and v(A) in this order.
+
+* 10. The parse table
+(1) Predict sets: the predict set of production n (A -> alpha) is the union of the elements of FIRST(alpha) and, when alpha can derive the empty string, the elements of FOLLOW(A). Each element t of a predict set is given a "reason". The reason is FIRST if t is contained in FIRST(alpha), and FOLLOW otherwise.
+(2) Table: for each pair of a nonterminal A and a t that is a known terminal or "$", consider the "cell" [A, t], and put in it the numbers of the productions of A whose predict set contains t. A cell containing two or more numbers is a "conflict". The kind of a conflict is "FIRST/FIRST" if the reasons for t of all productions in the cell are FIRST, "FOLLOW/FOLLOW" if they are all FOLLOW, and "FIRST/FOLLOW" if both occur.
+(3) Chosen production: for a non-empty cell [A, t], the "chosen production" is the production with the smallest number among the productions in the cell whose reason for t is FIRST, or, if there is none whose reason is FIRST, the one with the smallest number. The parser always uses the chosen production.
+(4) Explanation of conflicts: for each production n in a conflict cell [A, t], find a sequence of numbers (the "path") as follows.
+  - When the reason for t is FIRST: perform a breadth-first search over productions. Put only n in the queue and mark n visited. Repeatedly take a production q from the front of the queue, and each time examine the symbols of the right-hand side of q from left to right. If the symbol is t, end the search; the path is the sequence of numbers on the route from n to q obtained by following parents, excluding n (in order starting nearest to n; empty if q = n). If the symbol is a nonterminal Y, then, in order of number, mark visited each production of Y that has not been visited, make q its parent, and append it to the end of the queue. If the symbol examined is a terminal or a nonterminal that is not NULLABLE, stop examining the right-hand side of q there.
+  - When the reason for t is FOLLOW: perform a breadth-first search over nonterminals. Put only A in the queue and let the path of A be the empty sequence. Repeatedly take a nonterminal B from the front of the queue. If B is the start symbol and t is "$", end with the path of B as the answer. Otherwise, examine the productions q in order of number, and the occurrences of B in the right-hand side of each from left to right, letting gamma be the sequence of symbols after B. If t is contained in FIRST(gamma), end with the path of B followed by q as the answer. Otherwise, if gamma can derive the empty string and the path of the left-hand side X of q has not been determined yet, let the path of X be the path of B followed by q, and append X to the end of the queue.
+(5) Conflicts before transformation: for the cleaned grammar as well, compute NULLABLE, FIRST, FOLLOW, the predict sets and the cells by the same method as in 8 and (1), (2), and count the number of conflict cells.
+
+* 11. Parsing
+Each line of inputs.txt is an "input", numbered 1, 2, ... from the start. For each input, do the following (1) to (7).
+(1) Unknown tokens: a token whose name is not equal to that of any known terminal is an "unknown token". For each unknown token, in order of token position, record the error "unknown "<token>" at token <token position>; removed" and remove it from the token sequence. The remaining token sequence (each token keeps its original token position) with "$" appended at the end is the "input sequence".
+(2) Steps: the stack is a sequence of symbols, initially "$" and the start symbol, from the bottom. The first token of the input sequence is the "current token". Repeat the following "step" until termination. In one step, according to the top symbol X of the stack and the current token a, perform exactly one action: the first of the following that applies.
+  - X and a are both "$": accept, and terminate.
+  - X is "$" and a is not "$": skip a (skip, an error), and make the next token of the input sequence the current token.
+  - X is a terminal equal to a: match. Remove X from the stack and make the next token the current token.
+  - X is a terminal not equal to a: X is considered missing (missing, an error); remove X from the stack.
+  - X is a nonterminal and the cell [X, a] is not empty: predict. For the chosen production X -> alpha, remove X from the stack and push the symbols of alpha starting from the last symbol (the first symbol of alpha ends up on top).
+  - X is a nonterminal and a is "$" or a is contained in FOLLOW(X): remove X from the stack (pop, an error).
+  - Otherwise: skip a (skip, an error), and make the next token the current token.
+The steps are numbered from 1. In the input data, the final grammar has no left recursion (including left recursion through symbols that can derive the empty string), and the steps always terminate after a finite number.
+(3) Errors: for each step that performed an error action (skip, missing, pop), record the error "step <step number>: unexpected <W>; expected <E>; <R>".
+  - W is "end of input" if a is "$", and ""<a>" at token <token position of a>" otherwise.
+  - E, if X is a nonterminal, is the string of the t (including "$") for which the cell [X, t] is not empty, listed in terminal order, each enclosed in double quotes (except "$", which is not enclosed), separated by single spaces. If X is a terminal, it is ""<X>"", and if X is "$", it is "$".
+  - R is "skipped "<a>"" for skip, "popped <X>" for pop, and "inserted "<X>"" for missing.
+The "number of errors" of an input is the total number of errors recorded in (1) and in (3). An input with 0 errors is said to be "accepted", and an input with 1 or more errors "rejected".
+(4) Parse tree: each symbol on the stack other than "$" corresponds to one node of the parse tree. The start symbol pushed first corresponds to the root node. In a predict, new nodes corresponding to the symbols of alpha are attached in order as children of the node of the removed symbol X (when alpha is the empty alternative, a single node "%empty" is attached as the only child). The node of a terminal removed by missing is given the mark "missing", and the node of a nonterminal removed by pop the mark "error". The "label" of a node is the name of the symbol (or "%empty") followed, if it has a mark, by " (missing)" or " (error)".
+(5) Compact tree: for each node N of the parse tree, find its "compacted node" as follows (the compacted nodes of the children are found first). Examine the children of N in order, excluding "%empty" nodes. For any other child C, find the compacted node C' of C; if C' is an unmarked nonterminal node with no children, exclude it; if C' is an unmarked node whose symbol is a nonterminal created in 5 or 6 (one whose name contains "'"), place the children of C' in order at that position; otherwise, place C'. If exactly one child was placed this way and N has no mark, the compacted node of N is that child. Otherwise, the compacted node of N is a node with the same label as N whose children are the placed children. The tree whose root is the compacted node of the root is the "compact tree".
+(6) Leftmost derivation: the numbers of the productions used in predicts, in step order, form the "left parse". For an accepted input, starting from the sequence consisting of the start symbol alone, apply the productions of the left parse in order, each time replacing the leftmost nonterminal in the sequence with the right-hand side of that production; the resulting series of sequences is the "leftmost derivation".
+(7) Language check: decide whether the original token sequence of the input (unknown tokens included) is a sequence of terminals derivable from the start symbol of the cleaned grammar. Any method of deciding may be used.
+
+* 12. Unused productions
+A production that never appears in the left parse of any input is an "unused production". For each unused production n, give the tokens of its example sentence (9) token positions starting from 1, append "$" at the end, parse the result as the input sequence with the same steps as in 11 (2), and determine the number of steps that performed an error action and whether n appears in the left parse.
+
+[Output files]
+Every line of the 5 files ends with a newline (LF), with no trailing spaces. All numbers are written as base-10 integers without extra leading zeros. Below, at the positions marked "empty line", output one empty line; at no other position output an empty line.
+
+* output/grammar.txt
+Output the following in this order.
+  "== cleaned grammar ==", the summary line of the cleaned grammar, the listing of the cleaned grammar, an empty line.
+  "== left recursion elimination ==", the lines recorded in 5, the summary line and the listing of the grammar resulting from 5, an empty line.
+  "== left factoring ==", the lines recorded in 6, the summary line and the listing of the grammar resulting from 6, an empty line.
+  "== final grammar ==", the "remove unreachable" lines recorded in 7, the summary line and the numbered listing of the final grammar, an empty line.
+  "== cross reference ==", the cross reference lines.
+The recorded lines are output in the order recorded; if no line was recorded at that stage, output one line "none" instead.
+The summary line is "start=<start symbol> nonterminals=<number of nonterminals> terminals=<number of distinct terminals appearing in alternatives> productions=<total number of alternatives> empty=<number of empty alternatives> unit=<number of alternatives consisting of exactly one nonterminal>".
+In a listing, for each nonterminal A in nonterminal order, output the first alternative as "<A> -> <notation of the alternative>", and each second or later alternative as a line of as many spaces as the number of characters in the name of A followed by " | <notation of the alternative>" (the "|" lines up in the same column as the "-" of "->"). In the numbered listing, each line is preceded by the number of its production right-aligned (padded with spaces on the left) to the number of digits of the largest number, and two spaces.
+In the cross reference, for each nonterminal in the nonterminal order of the final grammar, and then for each known terminal in terminal order, output one line: the list following the heading "<name> used in" of the numbers of the productions whose right-hand side contains that symbol, in increasing order. However, the <name> of a terminal is enclosed in double quotes, and the line of a symbol that appears in no right-hand side is "<name> not used".
+
+* output/sets.txt
+The first line is "passes: nullable=<number of NULLABLE passes> first=<number of FIRST passes> follow=<number of FOLLOW passes>", and the second line is an empty line. Then, for each nonterminal A in the nonterminal order of the final grammar, output the following 5 lines.
+  The name of A
+  "  nullable: yes" or "  nullable: no" (two spaces at the start of the line)
+  The list following the heading "  first:" of the elements of FIRST(A) in terminal order
+  The list following the heading "  follow:" of the elements of FOLLOW(A) in terminal order
+  The list following the heading "  shortest:" of the tokens of w(A)
+
+* output/table.txt
+Output the following in this order.
+  "== predict sets ==" and, for each production in order of number, the 2 lines "<number>: <notation of the production>" and the list following the heading "  predict:" of the elements of the predict set in terminal order.
+  An empty line, "== parse table ==", the table.
+  An empty line, "== conflicts ==", the conflict report, "LL(1): yes" (when there is no conflict) or "LL(1): no" (when there is), "conflicts before transformation: <number of conflict cells of 10 (5)>".
+The first line of the table is the header line, and the lines from the second on are the lines of the nonterminals in the nonterminal order of the final grammar. The columns of the table are the first column, the "row name", and the columns of the known terminals and "$" in terminal order. In the header line, the row name is the empty string and the value of each column is the name of its terminal. In the line of a nonterminal A, the row name is the name of A, and the value of the column of terminal t is the content of the cell [A, t]: the number if there is one number, the numbers in increasing order joined by "/" if there are two or more (example: "16/17"), and "." if empty. The width of each column is the maximum number of characters of the values of that column (header line included), and each line consists of the row name left-aligned to its width (padded with spaces on the right), followed, for each column, by two spaces and the value right-aligned to the width (padded with spaces on the left).
+In the conflict report, list the conflict cells in nonterminal order, and for the same nonterminal in terminal order; for each cell [A, t], output "conflict <A> on <t>: <kind of conflict>, chosen <number of the chosen production>", followed, for each production n in the cell in increasing order of number, by "  <n>: <notation of production n> (<reason for t>)" (two spaces at the start of the line). If the path is not empty, append after <reason for t> the list following the heading " via" of the path (example: "  17: <if_stmt'> -> %empty (FOLLOW via 16 5 16)"). If there is no conflict at all, the conflict report is the single line "none".
+
+* output/parses.txt
+For each input, in order of input number, output the following in order, and finally an empty line.
+  "== input <input number> =="
+  The list following the heading "tokens:" of the original token sequence
+  The trace table
+  The list following the heading "left parse:" of the left parse
+  "stats: steps=<number of steps> predicts=<number of predicts> matches=<number of matches> max_stack=<maximum number of symbols on the stack (including "$") just before each step>"
+  If the number of errors is 1 or more, "errors:" followed by the recorded errors, one per line, each with two spaces at the start of the line (the errors of (1) in order of token position, then the errors of (3) in order of step)
+  "result: accepted" if accepted, "result: rejected (errors: <number of errors>)" if rejected
+  "language: yes" if the result of 11 (7) is true, "language: no" if false
+  Only if accepted, "derivation:" and the leftmost derivation
+  "tree:" and the parse tree
+  "compact tree:" and the compact tree
+The first line of the trace table is the header line, followed by one line per step. Each line consists of 4 columns, and the values of the header line are "step", "stack", "input" and "action". The values of a step line are the step number, the notation of the sequence of stack symbols just before that step (from "$" to the top symbol, bottom first), the notation of the rest of the input sequence at that moment (from the current token to "$"), and the action string. The 1st to 3rd columns are left-aligned (padded with spaces on the right) to a width equal to the maximum number of characters of the values of that column (header line included), with two spaces between columns. The 4th column is not padded to a width. The action string is "accept" for accept, "match <a>" for match, "predict <production number>: <notation of the production>" for predict, "error: skip <a>" for skip, "error: pop <X>" for pop, and "error: missing <X>" for missing.
+In the leftmost derivation, the first line is two spaces and the name of the start symbol, and the lines from the second on are "  => <notation of the sequence>" for each of the second and later sequences of the series.
+To output a tree, output the label of the root on the first line, then output each node other than the root, one per line, in preorder (after a node's line come its children in order, each followed by the lines of its descendants). The line of a node other than the root is the concatenation of the "prefix", the "branch" and the label. The branch is "`-- " if the node is the last child of its parent, and "|-- " otherwise. The prefix of a child of the root is the empty string, and the prefix of a child of any other node M is the prefix of M followed by 4 spaces if M is the last child of its parent, or by "|" and 3 spaces otherwise.
+After all inputs, output the following.
+  "== summary =="
+  "inputs=<number of inputs> accepted=<number of accepted inputs> rejected=<number of rejected inputs> in_language=<number of inputs for which 11 (7) is true>"
+  The list following the heading "mismatches:" of the numbers of the inputs that were accepted but for which 11 (7) is false, or were rejected but for which 11 (7) is true
+  "recovery: unknown=<number of unknown tokens> skip=<number of skips> pop=<number of pops> missing=<number of missings>" (totals over all inputs)
+  "coverage: <number of productions other than unused productions> of <number of productions> productions used"
+  The list following the heading "unused:" of the numbers of the unused productions
+  For each unused production n, in order of number, the following 4 lines
+    "  <n>: <notation of production n>"
+    The list following the heading "    example:" of the tokens of the example sentence
+    "    result: accepted" if no step performed an error action, "    result: rejected (errors: <number of such steps>)" otherwise
+    "    used: yes" if n appears in the left parse, "    used: no" if not
+
+* output/diagnostics.txt
+Output the recorded diagnostics, one per line, in the following order.
+  The diagnostics of 1 (in order of line number, and within the same line in the order recorded), the diagnostics of 2, the diagnostics of 3 (in the order recorded), the diagnostics of 4 (in nonterminal order), the "unreachable after transformation" diagnostics of 7, the "unused token" diagnostics of 7.
+The last line is "result: LL(1)" if the table of the final grammar has no conflict, and "result: not LL(1) (conflicts: <number of conflict cells>)" otherwise.
+
+[Source files]
+Divide the source files into the following 6 roles (file names may follow the conventions of each language).
+- main: the overall flow. Reading the input files, checking the terminal declarations (2), cleaning the grammar (3), reporting left recursion (4), removing the unreachable nonterminals of the final grammar and checking for unused declarations (7), shortest sentences and contexts (9), explaining conflicts and counting the conflicts before transformation (10 (4), (5)), handling unknown tokens, building the error strings and the trace table strings, the compact tree, the leftmost derivation, the language check (11 (7)), parsing the example sentences of unused productions (12), drawing the trees and writing the 5 output files. It handles the largest part of the processing.
+- grammar_parser: splitting the lines of the grammar file into tokens, checking the line formats and the error column, processing rule lines, continuation lines, start lines and declaration lines, and detecting duplicate alternatives (1).
+- transform: eliminating left recursion (5) and left factoring (6), naming new nonterminals.
+- first_follow: NULLABLE, FIRST, FOLLOW and their numbers of passes, FIRST of a sequence of symbols and deciding whether it can derive the empty string (8).
+- table: numbering the productions, the predict sets and their reasons, the cells of the table, the kinds of conflicts, the chosen productions (10 (1) to (3)).
+- driver: repeating the steps of the table-driven parsing (11 (2)), recording the trace and building the parse tree.
+
+[Constraints]
+- grammar.bnf has 1 to 200 lines, and each line has at most 120 characters. There is at least one rule line that is not malformed, and the start symbol appears as the left-hand side of a rule line that is not malformed and remains in the cleaned grammar.
+- The name of every terminal has 1 to 12 characters, is neither "$" nor "%empty", and is not a string that starts with "<" and ends with ">".
+- The names of nonterminals, including those created in 5 and 6, have at most 32 characters. The final grammar has at most 60 nonterminals, at most 150 productions and at most 50 known terminals.
+- The final grammar has no left recursion (including left recursion through symbols that can derive the empty string).
+- inputs.txt has 1 to 50 lines; each line has 0 to 40 tokens, and each token has at most 12 characters.
+- The number of parsing steps for each input and each example sentence is at most 1000.
+
+[Example]
+The output for the following grammar and inputs is shown below (the content of each file is shown starting on the line after its "file name:" line, and one empty line is inserted between files as a separator; these separating empty lines are not part of the file contents).
+
+input/grammar.bnf:
+# expression grammar
+%token id num
+<e> ::= <e> "+" <t> | <t>
+<t> ::= id | "(" <e> ")"
+<t> ::= id
+
+input/inputs.txt:
+id + id
+( id
+
+output/grammar.txt:
+== cleaned grammar ==
+start=<e> nonterminals=2 terminals=4 productions=4 empty=0 unit=1
+<e> -> <e> + <t>
+    | <t>
+<t> -> id
+    | ( <e> )
+
+== left recursion elimination ==
+eliminate left recursion in <e> with <e'>
+start=<e> nonterminals=3 terminals=4 productions=5 empty=1 unit=0
+<e> -> <t> <e'>
+<e'> -> + <t> <e'>
+     | %empty
+<t> -> id
+    | ( <e> )
+
+== left factoring ==
+none
+start=<e> nonterminals=3 terminals=4 productions=5 empty=1 unit=0
+<e> -> <t> <e'>
+<e'> -> + <t> <e'>
+     | %empty
+<t> -> id
+    | ( <e> )
+
+== final grammar ==
+none
+start=<e> nonterminals=3 terminals=4 productions=5 empty=1 unit=0
+1  <e> -> <t> <e'>
+2  <e'> -> + <t> <e'>
+3       | %empty
+4  <t> -> id
+5      | ( <e> )
+
+== cross reference ==
+<e> used in 5
+<e'> used in 1 2
+<t> used in 1 2
+"(" used in 5
+")" used in 5
+"+" used in 2
+"id" used in 4
+
+output/sets.txt:
+passes: nullable=2 first=3 follow=3
+
+<e>
+  nullable: no
+  first: ( id
+  follow: ) $
+  shortest: id
+<e'>
+  nullable: yes
+  first: +
+  follow: ) $
+  shortest:
+<t>
+  nullable: no
+  first: ( id
+  follow: ) + $
+  shortest: id
+
+output/table.txt:
+== predict sets ==
+1: <e> -> <t> <e'>
+  predict: ( id
+2: <e'> -> + <t> <e'>
+  predict: +
+3: <e'> -> %empty
+  predict: ) $
+4: <t> -> id
+  predict: id
+5: <t> -> ( <e> )
+  predict: (
+
+== parse table ==
+      (  )  +  id  $
+<e>   1  .  .   1  .
+<e'>  .  3  2   .  3
+<t>   5  .  .   4  .
+
+== conflicts ==
+none
+LL(1): yes
+conflicts before transformation: 2
+
+output/parses.txt:
+== input 1 ==
+tokens: id + id
+step  stack         input      action
+1     $ <e>         id + id $  predict 1: <e> -> <t> <e'>
+2     $ <e'> <t>    id + id $  predict 4: <t> -> id
+3     $ <e'> id     id + id $  match id
+4     $ <e'>        + id $     predict 2: <e'> -> + <t> <e'>
+5     $ <e'> <t> +  + id $     match +
+6     $ <e'> <t>    id $       predict 4: <t> -> id
+7     $ <e'> id     id $       match id
+8     $ <e'>        $          predict 3: <e'> -> %empty
+9     $             $          accept
+left parse: 1 4 2 4 3
+stats: steps=9 predicts=5 matches=3 max_stack=4
+result: accepted
+language: yes
+derivation:
+  <e>
+  => <t> <e'>
+  => id <e'>
+  => id + <t> <e'>
+  => id + id <e'>
+  => id + id
+tree:
+<e>
+|-- <t>
+|   `-- id
+`-- <e'>
+    |-- +
+    |-- <t>
+    |   `-- id
+    `-- <e'>
+        `-- %empty
+compact tree:
+<e>
+|-- id
+|-- +
+`-- id
+
+== input 2 ==
+tokens: ( id
+step  stack              input   action
+1     $ <e>              ( id $  predict 1: <e> -> <t> <e'>
+2     $ <e'> <t>         ( id $  predict 5: <t> -> ( <e> )
+3     $ <e'> ) <e> (     ( id $  match (
+4     $ <e'> ) <e>       id $    predict 1: <e> -> <t> <e'>
+5     $ <e'> ) <e'> <t>  id $    predict 4: <t> -> id
+6     $ <e'> ) <e'> id   id $    match id
+7     $ <e'> ) <e'>      $       predict 3: <e'> -> %empty
+8     $ <e'> )           $       error: missing )
+9     $ <e'>             $       predict 3: <e'> -> %empty
+10    $                  $       accept
+left parse: 1 5 1 4 3 3
+stats: steps=10 predicts=6 matches=2 max_stack=5
+errors:
+  step 8: unexpected end of input; expected ")"; inserted ")"
+result: rejected (errors: 1)
+language: no
+tree:
+<e>
+|-- <t>
+|   |-- (
+|   |-- <e>
+|   |   |-- <t>
+|   |   |   `-- id
+|   |   `-- <e'>
+|   |       `-- %empty
+|   `-- ) (missing)
+`-- <e'>
+    `-- %empty
+compact tree:
+<t>
+|-- (
+|-- id
+`-- ) (missing)
+
+== summary ==
+inputs=2 accepted=1 rejected=1 in_language=1
+mismatches:
+recovery: unknown=0 skip=0 pop=0 missing=1
+coverage: 5 of 5 productions used
+unused:
+
+output/diagnostics.txt:
+line 5: duplicate alternative <t> -> id
+left recursion: <e> -> <e>
+unused token num
+result: LL(1)
+
+In this example, the alternative "id" on line 5 duplicates the alternative on line 4, and the declared num is not used in the grammar. The direct left recursion of <e> is eliminated, creating <e'>, and no left factoring is performed. In input 2, ")" is missing at the end of the input, so a missing error is recorded at step 8. In the compact tree, the %empty nodes and the nodes without children are removed, and the nodes with exactly one child are replaced by that child.

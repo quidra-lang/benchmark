@@ -1,0 +1,312 @@
+[Overview]
+Write a build simulator that imitates the behavior of the make command. The program reads from standard input a table of file names and modification times (the file table), then processes, in order, commands such as loading a Makefile, running a build, updating or deleting file times, and displaying variables and rules, and writes the results to standard output. No real files or commands are used. A file is represented only by a name and an integer time, and time advances with an integer clock.
+In the Makefile, the program handles four kinds of assignment (=, :=, +=, ?=), variable expansion with $(VAR) and ${VAR}, substitution references, 26 built-in functions, conditionals (ifeq, ifneq, ifdef, ifndef), line continuation, comments, rules with multiple targets, pattern rules, static pattern rules, automatic variables ($@, $<, $^, $?, $*), and .PHONY. A build builds prerequisites depth-first from left to right, compares times, and runs only the recipes of the targets that need it. Among recipe commands, the behavior of echo, touch, rm, false and exit is simulated. Circular dependencies, targets with no rule, recipe failures and so on are reported with messages in a format similar to GNU make.
+
+[Input format]
+The input consists of multiple lines. Each line is a string of at most 200 characters consisting only of printable ASCII characters (character codes 32 to 126), and no line ends with a space.
+The input appears in the following order.
+(1) The first line is FILES.
+(2) Then zero or more file table lines follow. Each line has the form "name t", where name is the name of a file and t is its time.
+(3) The line END FILES.
+(4) Zero or more commands.
+(5) The last line is QUIT.
+There are the following 8 commands. Only MAKEFILE is a command consisting of multiple lines.
+
+  MAKEFILE (followed by the Makefile body, which ends with the line END MAKEFILE)
+  MAKE args
+  TOUCH name1 name2 ...
+  RM name1 name2 ...
+  FILES
+  VARS
+  RULES
+  EXPAND text
+
+The zero or more lines from the line after the MAKEFILE line up to just before the first subsequent line consisting only of END MAKEFILE are called the "Makefile body". Any line other than END MAKEFILE (including empty lines, lines starting with a space, lines with the same form as a command, and so on) may appear in the body. The lines of the body are numbered 1, 2, 3, ... in order starting from the first line of the body; these numbers are called "line numbers".
+Lines outside the body exactly match the formats above. The command name and its arguments, and the arguments from each other, are separated by a single space. The args of MAKE are zero or more words; TOUCH and RM are followed by one or more names. An EXPAND line has the form "EXPAND " (EXPAND and one space) followed by a string text of one or more characters; text may contain spaces. QUIT is the last line and appears exactly once outside the body.
+
+[Processing]
+Process the commands in order from the beginning. For each command other than QUIT, first output one line consisting of "$ " ($ and one space) followed by the line of that command exactly as is (for MAKEFILE, only the single MAKEFILE line), and then output the result of the command. For QUIT, output nothing and end processing.
+
+Section 1. Terms
+- A "space" means only the ASCII space character (character code 32). To "trim" a string means to remove all spaces at its beginning and at its end.
+- A "word" is a part of a string of one or more characters that contains no space and is bordered on each side by a space or an end of the string. To "split" a string "into words" means to form the sequence of its words in order from left to right (it may have zero elements).
+- To "join" a sequence of strings "with spaces" means to concatenate its elements in order, with one space between consecutive elements. If the sequence is empty, the result is the empty string. An element that is the empty string is still treated as one element, so the result may contain consecutive spaces or have a space at its beginning or end.
+- To "remove duplicates" from a sequence means that, when the same string appears two or more times, only the first occurrence is kept and the later ones are removed (the order is not changed).
+- Strings are compared in lexicographic order of ASCII character codes. That is, compare them character by character from the beginning; the string with the smaller character code at the first differing character is smaller, and when one string is a prefix of the other, the shorter one is smaller.
+- A "non-negative integer notation" is a string of one or more characters consisting only of the digits 0 to 9. Its value is the value read as a decimal number (leading zeros are ignored).
+- A "name" is a string of 1 to 40 characters consisting only of letters (A to Z, a to z), digits, ".", "_", "-" and "/".
+- Pattern matching: for a pattern P and a string w, if P does not contain %, they match only when w equals P, and the "stem" is then the empty string. If P contains %, let X be the part of P before its first % and Y the part after it (a % contained in Y is treated as an ordinary character). They match only when the length of w is at least the sum of the lengths of X and Y, and w starts with X and ends with Y; the stem is then w with the leading X and the trailing Y removed (it may be the empty string).
+- To "substitute" a stem m into a string S means to replace the first % in S with m. If S contains no %, the result is S unchanged.
+- The "replacement" of a word w by a pattern P and a replacement string R is as follows. If w does not match P, the result is w unchanged. If it matches, the result is R with the stem substituted into it if P contains %, or R itself if P does not contain %.
+- Wildcard matching: for a wildcard G and a name n, G is said to "match" n when the whole of G matches the whole of n, where * in G matches any string of zero or more characters not containing "/", ? matches any single character other than "/", and every other character matches only itself.
+- The "wildcard expansion" of a word p is, if p contains * or ?, the sequence of all names in the file table at that time that match p, in increasing order. If p contains neither * nor ?, it is the sequence consisting of p alone if p is in the file table, and the empty sequence otherwise.
+
+Section 2. State
+The program has the following state.
+- File table: holds one time (an integer) for each name. Initially it is as given by the file table lines of the input.
+- Clock: an integer. Initially it is the maximum time in the file table (0 if the file table is empty). To "give a new time" to a name n means to add 1 to the clock and set the time of n in the file table to that value (n is added if it is not in the file table).
+- Makefile: consists of whether it is loaded, the variable table, the explicit rule table, the sequence of pattern rules, the PHONY set, and the default goal. Initially it is "not loaded", the tables, the sequence and the set are empty, and there is no default goal.
+The variable table holds, for each variable name, its "kind" and its "value" (a string). The kind is either "recursively expanded" (displayed with the symbol =) or "simply expanded" (displayed with the symbol :=). A variable whose name is in the table is said to be "defined" (it is defined even if its value is the empty string).
+The explicit rule table holds, for each target name, a sequence of prerequisites, a recipe (there may be none), and a stem (initially the empty string). A target whose name is in the table is called an "explicit target".
+A pattern rule consists of a target pattern, a sequence of prerequisites, and a recipe (there may be none).
+A recipe is a sequence of recipe lines. Each recipe line consists of a line number and an unexpanded string (the command).
+The PHONY set is a set of names; the names in it are called "PHONY targets".
+
+Section 3. Expansion
+Many parts of the Makefile are "expanded" before they are used. The expansion of a string s is the concatenation of the outputs obtained by reading s from left to right as follows.
+(1) A character other than $ is output as is.
+(2) If the character after $ is $, output one $ and finish reading those two characters.
+(3) If the character after $ is ( or {, call it the "opening bracket" and look for the corresponding "closing bracket". If the opening bracket is (, the closing character is ); if it is {, the closing character is }. Scanning to the right starting from the opening bracket, add 1 to the depth at each character equal to the opening bracket and subtract 1 from the depth at each closing character (the depth starts at 0); the character at the position where the depth returns to 0 is the closing bracket. The other kind of bracket is not counted. If no closing bracket is found, it is the error "unterminated variable reference". The part between the opening bracket and the closing bracket is the "content"; output the result of processing it as a "reference" (below), and continue reading from the character after the closing bracket.
+(4) If the character after $ is any other character c, output the reference value (below) of the name consisting of c alone, and finish reading those two characters.
+(5) If $ is the last character of s, output nothing.
+A "reference" is processed as follows. Let C be the content.
+(a) If C contains a space and the part of C before its first space equals one of the function names in section 4, it is a function call. The part of C after its first space, with all leading spaces removed, is the "argument part"; the result of processing it as described in section 4 is the result of the reference.
+(b) Otherwise, let N be the result of expanding C. If N contains ":" and the part of N after its first ":" contains "=", it is a "substitution reference". Let V be the part of N before its first ":", A the part between that ":" and the first "=" after it, and B the part after that "=". If A does not contain %, prepend % to each of A and B. The result is obtained by splitting the reference value of the name V into words, replacing each word by the pattern A and the replacement string B, and joining them with spaces.
+(c) Otherwise, the result is the reference value of the name N. The result of expanding C is not trimmed.
+The "reference value" of a name N is the first of the following that applies.
+(i) Examine the scope stack (used by foreach and call in section 4; initially empty) from the top (the most recently pushed scope) downward; if a scope that handles N is found, its value. A foreach scope handles N when its variable name equals N, and its value is its word. A call scope handles N when N is a non-negative integer notation; letting i be the value of N, its value is the i-th value (the 0th value is the name of the called variable, and for i >= 1 it is the i-th argument). If that value does not exist, the empty string.
+(ii) During recipe expansion (section 6), if N is one of @, <, ^, ?, *, the value of that automatic variable.
+(iii) If N is not defined, the empty string; if it is a simply expanded variable, its value itself. If it is a recursively expanded variable, the result of expanding its value. However, if, while the value of a recursively expanded variable N is being expanded in this (iii) (from the start of that expansion until its end), an attempt is made to expand the value of the same N again in (iii), it is the error "Recursive variable 'N' references itself (eventually)" (the N in 'N' is that variable name).
+If an error occurs during expansion, the whole expansion stops at that point (neither the scopes pushed along the way nor the records of "being expanded" from (iii) remain), and the error is reported in the way specified for the operation that caused it. As a rule, an error is reported as one line of the form "<location>: *** <reason>.  Stop." (two spaces after the "."). <reason> is the error string (such as "unterminated variable reference" above), and <location> is as follows.
+- While the Makefile is being loaded, "Makefile:<line number>". The line number is the line number of the first line of the logical line (section 5) being processed at that time (for a recipe line, the line number of that line).
+- While recipe lines are being expanded in MAKE, "Makefile:<line number of that recipe line>".
+- Otherwise (VARS, EXPAND, and so on), "make".
+
+Section 4. Functions
+In a function call, first split the argument part at the "separating commas" to form the sequence of arguments. Read the argument part from left to right, adding 1 to the depth at each character equal to the opening bracket of that function call and subtracting 1 from the depth at each corresponding closing character (the depth starts at 0; the other kind of bracket is not counted); a comma that appears while the depth is 0 is a separator. However, when the upper limit on the number of arguments for the function is m, once the argument part has been split at m-1 commas, all of the remaining part, including any commas, is the last argument. Even if the argument part is empty, there is considered to be one argument that is the empty string. The arguments are unexpanded strings, and the separating commas themselves are not included in the arguments. If the number of arguments is less than the lower limit for the function, it is the error "insufficient number of arguments (<number of arguments>) to function '<function name>'".
+There are the following 26 functions. The numbers in parentheses are the lower and upper limits on the number of arguments. Unless stated otherwise, every argument is expanded, in order from the first, and each is trimmed before use. The errors of word and wordlist are checked after all arguments have been expanded. "Join with spaces" in the results is as defined in section 1.
+- subst from,to,text (3, 3): the arguments are expanded but not trimmed. If from is the empty string, the result is text unchanged. Otherwise, it is text with every occurrence of from, searched from left to right without overlapping, replaced by to.
+- patsubst pattern,replacement,text (3, 3): text is split into words, each word is replaced by the pattern pattern and the replacement string replacement, and the words are joined with spaces.
+- strip string (1, 1): string split into words and joined with spaces.
+- findstring find,in (2, 2): find if find is a substring of in, otherwise the empty string (the empty string is a substring of every string).
+- filter patterns,text (2, 2): the words of text that match (as a pattern) at least one of the words of patterns, joined with spaces in order.
+- filter-out patterns,text (2, 2): the words of text that match none of the words of patterns, joined with spaces in order.
+- sort list (1, 1): the words of list with duplicates removed, arranged in increasing order and joined with spaces.
+- word n,text (2, 2): if n is not a non-negative integer notation, it is the error "non-numeric first argument to 'word' function: '<n>'"; if the value of n is 0, it is the error "first argument to 'word' function must be greater than 0". Otherwise, the result is the word of text at position (value of n) (counting from 1), or the empty string if there is no such word.
+- wordlist s,e,text (3, 3): if s is not a non-negative integer notation, it is the error "non-numeric first argument to 'wordlist' function: '<s>'"; if e is not a non-negative integer notation, it is the error "non-numeric second argument to 'wordlist' function: '<e>'"; if the value of s is 0, it is the error "invalid first argument to 'wordlist' function: '<s>'" (checked in this order). Otherwise, the result is the words of text from position (value of s) through position (value of e) (both ends inclusive; only words that exist), joined with spaces. In cases such as when the value of s is greater than the value of e, it is the empty string.
+- words text (1, 1): the number of words of text, written as a decimal string.
+- firstword names (1, 1): the first word of names, or the empty string if there is none.
+- lastword names (1, 1): the last word of names, or the empty string if there is none.
+- dir names (1, 1): for each word of names, the part up to its last "/" (including the "/"), or ./ for a word that does not contain "/", joined with spaces in order.
+- notdir names (1, 1): for each word of names, the part after its last "/" (the whole word for a word that does not contain "/"), joined with spaces in order.
+- suffix names (1, 1): a word of names that contains "." and whose last "." comes after its last "/" (including the case where it contains no "/") is called a "word with an extension". For the words with an extension only, the part from the last "." to the end, joined with spaces in order.
+- basename names (1, 1): for each word of names, the part before the last "." if it is a word with an extension, otherwise the whole word, joined with spaces in order.
+- addsuffix suffix,names (2, 2): each word of names with suffix appended after it, joined with spaces in order.
+- addprefix prefix,names (2, 2): each word of names with prefix prepended before it, joined with spaces in order.
+- wildcard patterns (1, 1): the wildcard expansion of each word of patterns is taken in order, those sequences are concatenated in this order, and the resulting sequence is joined with spaces.
+- foreach var,list,text (3, 3): let v be the variable name obtained by expanding var and trimming it, and let L be the sequence obtained by expanding list and splitting it into words. For each word x of L in order, push a foreach scope for v and x onto the scope stack, expand the third argument (the unexpanded text) (without trimming), and then remove that scope. The result is the obtained results joined with spaces in order. If L is empty, the result is the empty string and text is not expanded.
+- if condition,then,else (2, 3): if the result of expanding condition and trimming it is not empty, the result is then expanded; if it is empty, the result is else expanded (the empty string if there is no else). Only condition and the chosen one of the two are expanded, and the result is not trimmed.
+- call variable,arg1,arg2,... (1, no upper limit): all arguments are expanded in order (they are not trimmed). Let v be the variable name obtained by trimming the first argument. If v is not defined, the result is the empty string; if it is a simply expanded variable, its value. If it is a recursively expanded variable, the result is obtained by pushing onto the scope stack a call scope whose values are v and the remaining arguments (expanded), expanding the value of v, and then removing that scope. This expansion of the value of v does not count as "being expanded" in section 3 (iii) (therefore recursive calls through call are not an error).
+- value variable (1, 1): if variable is defined, its value is returned as is without being expanded; if it is not defined, the empty string.
+- info text (1, 1): output text as one line; the result is the empty string.
+- warning text (1, 1): output one line "<location>: <text>"; the result is the empty string. <location> is the same as in section 3.
+- error text (1, 1): an error. The error string is text.
+value, call, and ifdef and ifndef in section 5 do not look at the scope stack or the automatic variables; they examine only the variable table.
+
+Section 5. Loading the Makefile (MAKEFILE)
+In MAKEFILE, first discard the current Makefile and put it into the not-loaded state (the tables, the sequence and the set empty, no default goal), and then process the body line by line from its first line. During processing, a "current rule" (initially none) and a "condition stack" (initially empty) are used. Each element of the condition stack holds four items: "outer active", "condition value", "else processed" and "line number". The current position is said to be "active" when the condition stack is empty, or when "outer active" and "condition value" of the top element are both true.
+Each line is processed as follows.
+(1) A line starting with > is a "recipe line". If the position is not active, it is ignored. If there is no current rule, it is the error "recipe commences before first target". Otherwise, the string obtained by removing the leading > of the line and then removing all leading spaces is added, together with the line number of that line, as a recipe line of the current rule (see "Adding a recipe line" below). Even if a recipe line ends with \, it is not joined with the next line.
+(2) Every other line is combined into a "logical line" as follows. While the line ends with \ and there is a body line after it, remove the trailing \, then remove all trailing spaces, and append one space and the next line with all its leading spaces removed. A joined next line (even one starting with >) becomes part of this logical line and is not processed as a separate line. If there is no line after it, the trailing \ is kept as is. The line number of a logical line is the line number of its first line.
+Let T be the logical line with everything from the first # in it to the end of the line removed, and then trimmed. The part of T before its first space (the whole of T if it contains no space) is the "first word", and the part after its first space, trimmed, is the "rest".
+(3) If the first word is one of ifeq, ifneq, ifdef, ifndef, else, endif, process the line as described under "Conditionals" below, regardless of whether the position is active.
+(4) Otherwise, if T is empty or the position is not active, do nothing.
+(5) Otherwise, find the positions of the first = and the first : that appear "outside references" in T. Here, read T from left to right and skip, as a "reference span", from $ to the corresponding closing bracket (by the same rule as section 3 (3)) if the character after $ is ( or {, and otherwise $ and the one character after it ($ alone if $ is the last character); the parts that are not skipped are said to be outside references. If a closing bracket is not found, it is the error "unterminated variable reference" (if this occurs anywhere in T, it is an error, even after the position where = or : is found).
+  - If there is an = outside references, and either there is no : outside references or the position of the first : is greater than or equal to the position of the first = minus 1, the line is an "assignment". If the character immediately before the first = is :, + or ?, the operator is :=, += or ?= respectively; otherwise (including when = is the first character) the operator is =. The part of T before the operator, trimmed, is the variable name, and the part after the first =, trimmed, is the right-hand side. If the variable name is empty, it is the error "empty variable name". Process the line as described under "Assignment" below, and set the current rule to none.
+  - If it is not an assignment and there is a : outside references, the line is a "rule". Process it as described under "Rules" below, and make the created rule the current rule.
+  - If neither, expand T. If the result consists only of spaces (including the empty string), do nothing (the current rule is not changed either); otherwise it is the error "missing separator".
+Empty lines, lines consisting only of spaces, lines consisting only of a comment, conditional lines, lines at inactive positions, and lines for which nothing was done in the last case of (5) do not change the current rule.
+When the last line of the body has been processed, if the condition stack is not empty, it is the error "missing 'endif'", with the line number of its top element as the location.
+
+Assignment: let v be the variable name and r the right-hand side.
+- If the operator is =, make v a variable of kind recursively expanded with value r (if it is already defined, it is replaced).
+- If the operator is :=, make v a simply expanded variable whose value is the result of expanding r.
+- If the operator is ?=, then if v is not defined, make it a recursively expanded variable with value r. If it is defined, do nothing.
+- If the operator is +=, then if v is not defined, it is the same as =. If it is defined, the kind of v is not changed; let the string to append, a, be the result of expanding r if v is simply expanded, or r itself if v is recursively expanded; the new value is a if the value of v is empty, and otherwise the concatenation of the value of v, one space, and a.
+
+Conditionals:
+- ifdef and ifndef: if the current position is active, the rest is expanded and trimmed to give a variable name; the ifdef condition is true if that variable is defined and its value (the unexpanded value) is not empty, and false otherwise. The ifndef condition is the opposite.
+- ifeq and ifneq: if the current position is active, check as follows. If the rest is not a string of two or more characters that starts with ( and ends with ), it is the error "invalid syntax in conditional". Let I be the rest with its first and last characters removed; read I from left to right, adding 1 to the depth at ( and subtracting 1 from the depth at ) (the depth starts at 0), and look for the first comma that appears while the depth is 0. If there is none, it is the error "invalid syntax in conditional". The part before that comma and the part after it are each expanded, in this order, and trimmed; the ifeq condition is true if the two are equal and false if they differ. The ifneq condition is the opposite.
+- For these four kinds, if the current position is not active, nothing is checked and the condition value is false. Then push onto the condition stack the element (outer active = whether the current position is active, the condition value, else processed = false, line number = the line number of this logical line).
+- else: if the condition stack is empty, it is the error "extraneous 'else'"; if the top element has already processed else, it is the error "only one 'else' per conditional". Otherwise, invert the condition value of the top element and mark it as having processed else. The rest is not used.
+- endif: if the condition stack is empty, it is the error "extraneous 'endif'". Otherwise, remove the top element. The rest is not used.
+
+Rules: split T at the position of the first : outside references into the part before it, P1, and the part after it, R.
+(a) Expand P1, split it into words, and remove duplicates; the result is the sequence of targets.
+(b) If there is a ; outside references in R, the part after the first ; with all leading spaces removed is the "inline recipe", and R is shortened to the part before that ;.
+(c) If there is a : outside references in the (shortened) R, this rule is a "static pattern rule". The part before the first : is expanded and trimmed to give the target pattern TP, and R is shortened to the part after that :.
+(d) Expand R and split it into words; the result is the sequence of prerequisites.
+The expansions of (a), (c) and (d) are performed in this order. Then the rule is processed by the first of the following that applies.
+- If the sequence of targets consists of exactly the one name .PHONY, add all names in the sequence of prerequisites to the PHONY set. This rule is treated as a rule with no targets.
+- For a static pattern rule: if TP does not contain %, it is the error "target pattern contains no '%'". Otherwise, for each target t in the sequence of targets in order, if t matches TP and the stem is not empty, register t in the explicit rule table with, as prerequisites, the sequence obtained by substituting that stem into each element of the sequence of prerequisites (see "Registration" below), and set the stem of t to that stem. If it does not match or the stem is empty, output "Makefile:<line number of this logical line>: target '<t>' doesn't match the target pattern" and do not register t. The targets of this rule are only those that were registered.
+- If any of the targets contains %: if there is also a target that does not contain %, it is the error "mixed implicit and normal rules". Otherwise, for each target in order, append to the end of the sequence of pattern rules a pattern rule (with no recipe) whose target pattern is that target and whose prerequisites are the sequence of prerequisites as is.
+- Otherwise, register each target in order together with the sequence of prerequisites. If the sequence of targets is empty, nothing is registered, and the rule becomes a rule with no targets.
+Finally, if there is an inline recipe, add it, together with the line number of this logical line, as a recipe line of this rule.
+
+Registration: to register a target t together with a sequence of prerequisites Q means the following: if t is not an explicit target, create an entry for it with an empty sequence of prerequisites, no recipe and no stem (the stem is the empty string); then, among the elements of Q with duplicates removed, append each element not yet in the sequence of prerequisites of t to the end of that sequence, in order. In addition, if there is no default goal yet and t does not start with ".", make t the default goal.
+
+Adding a recipe line: when the first recipe line is added to a rule, create one new recipe (an empty sequence of recipe lines) and make it the recipe of all targets of that rule (for an explicit rule, each registered target; for a pattern rule, each added pattern rule). At that time, if an explicit target t already has a recipe, then for each such t in the order of the targets, output the two lines "Makefile:<line number of the recipe line being added>: warning: overriding recipe for target '<t>'" and "Makefile:<line number of the first recipe line of the old recipe>: warning: ignoring old recipe for target '<t>'", and then replace its recipe with the new recipe. The second and later recipe lines of the same rule are appended to the end of this shared recipe. A recipe line added to a rule with no targets is discarded without being added anywhere.
+A pattern rule with no recipe is not used anywhere afterwards (it is neither counted nor displayed).
+
+If an error occurs while the body is being processed, output "<location>: *** <reason>.  Stop.", do not process the remaining lines, and put the Makefile into the not-loaded state (the tables, the sequence and the set empty, no default goal). Output produced before the error (output from info and the like, and warnings) remains as is.
+If processing reaches the end without an error, mark the Makefile as loaded and output "Makefile loaded: lines=<number of body lines> variables=<number of defined variables> targets=<number of explicit targets> patterns=<number of pattern rules with a recipe> goal=<default goal>". If there is no default goal, <default goal> is (none).
+
+Section 6. Build (MAKE)
+Examine each word of args in order. A word starting with - is an "option", and each character after the - must be one of n, B, k, i, s. If there is any other character, output "make: invalid option -- '<c>'" for the first such character c found, and do nothing else for this command. A word not starting with - is a "goal"; the goals are arranged in the order in which they appear. The meanings of the option characters are as follows (the meaning is the same no matter how many times a character appears).
+  n: dry run. Commands are only displayed, not executed.
+  B: all targets are treated as out of date.
+  k: the build continues even when an error occurs.
+  i: errors of recipe commands are ignored.
+  s: commands are not displayed.
+If there are no goals: if the Makefile is not loaded, output "make: *** No targets specified and no makefile found.  Stop." and finish; if it is loaded and there is no default goal, output "make: *** No targets.  Stop." and finish. If neither of these applies, the sequence of goals is the single default goal. Even if the Makefile is not loaded, a build is performed if there are goals (following the procedure below, with no explicit rules and no pattern rules).
+If n is present, remember the contents of the file table and the clock at this point, and restore those contents at the end of this command (also when it is aborted midway).
+
+During this command, the following are used: a "result" for each target (one of success, failure and dependency failure; initially no target has a recorded result), the set of targets "being built" (initially empty), and the "recipe run count" (initially 0).
+
+Rule determination: for a target t, determine its sequence of prerequisites, its recipe and its stem by the first of the following that applies.
+(1) If t is an explicit target and has a recipe: the sequence of prerequisites, the recipe and the stem of t in the explicit rule table.
+(2) If t is not a PHONY target and there is a "usable pattern rule": the recipe and the stem m of that rule are used, and the sequence of prerequisites is the sequence obtained by substituting m into each prerequisite of that rule, followed, if t is an explicit target, by the sequence of prerequisites of t in the explicit rule table, with duplicates removed. A usable pattern rule is found as follows. The candidates are the pattern rules with a recipe whose target pattern matches t with a non-empty stem. Examine the candidates in increasing order of stem length, and for equal lengths in the order of their position in the sequence of pattern rules (earlier first); the first candidate for which every prerequisite of that rule, with the stem substituted into it, is in the file table at that time or is an explicit target is the usable pattern rule.
+(3) If t is an explicit target or a PHONY target: the sequence of prerequisites is the sequence of prerequisites of t in the explicit rule table (empty if t is not an explicit target), there is no recipe, and the stem is the stem of t in the explicit rule table (the empty string if t is not an explicit target).
+(4) If t is in the file table, t is a "source".
+(5) If none of these applies, t "has no rule".
+
+Target time: if t is a PHONY target or is not in the file table, it has "no time"; otherwise its time is its time in the file table.
+
+Building a target t (from a parent p, or as a goal) is done as follows. It returns a result.
+(1) If the result of t has already been recorded, return that result (output nothing).
+(2) Determine the rule of t. If it has no rule, record the result of t as failure and output the message "make: *** No rule to make target '<t>', needed by '<p>'." ("make: *** No rule to make target '<t>'." when building it as a goal). However, if k is absent, output the message with "  Stop." (two spaces and Stop.) further appended to its end, and abort this entire command. If k is present, return failure.
+(3) If t is a source, record the result of t as success and return success.
+(4) Otherwise, add t to the set being built, and for each element q of the sequence of prerequisites of t in order (in the order of the sequence before the removals described below), do the following. If q is in the set being built, output "make: Circular <t> <- <q> dependency dropped." and remove q from the sequence of prerequisites of t (for the rest of this command, q is treated as absent, including for $^ of t and so on; the explicit rule table itself is not changed, so RULES and later commands are not affected). Otherwise, build q from parent t, and if the result is not success, note that "a prerequisite failed".
+(5) Remove t from the set being built. If a prerequisite failed, the result is dependency failure. Otherwise, perform "Update" below, and its result is the result of t. Record the result of t and return it.
+(When k is absent, the entire command is aborted at the moment a failure occurs, so failure or dependency failure is returned only when k is present.)
+
+Update: let T be the time of t. If B is present or T is "no time", the whole sequence of prerequisites of t is the sequence of "new prerequisites". Otherwise, the sequence of new prerequisites is the prerequisites of t that have no time or whose time is greater than T, in order. In either of the following two cases, do nothing and succeed: one is when t has no recipe, and the other is when B is absent, T is not "no time", and the sequence of new prerequisites is empty. Otherwise, add 1 to the recipe run count and run the recipe; its result is the result of the update. If running the recipe succeeds and t is not a PHONY target, give t a new time (section 2). This is the same even when n is present (the remembered contents are restored at the end).
+
+Running a recipe:
+(1) Set the values of the automatic variables as follows: @ is t, < is the first element of the sequence of prerequisites of t (the empty string if it is empty), ^ is the sequence of prerequisites joined with spaces, ? is the sequence of new prerequisites joined with spaces, and * is the stem of t.
+(2) Expand all recipe lines in order from the first (all lines are expanded before any command is executed). If an error occurs, output "<location>: *** <reason>.  Stop." and abort this entire command.
+(3) For each expanded line in order, do the following. Remove from the beginning of the line the longest part consisting only of spaces, @ and -, as the "prefix", and then remove all trailing spaces; the result is the command. If the command is empty, do nothing and go on to the next line. If n is present, or if the prefix contains no @ and s is absent, output the command as one line. If n is present, go on to the next line without executing the command. Otherwise, execute the command (see "Executing a command" below), and if the exit code is 0, go on to the next line.
+(4) When the exit code e is not 0: if the prefix contains - or i is present, output "make: [Makefile:<line number>: <t>] Error <e> (ignored)" and go on to the next line. Otherwise, output "make: *** [Makefile:<line number>: <t>] Error <e>"; if k is absent, abort this entire command; if k is present, do not execute the remaining lines, and running the recipe fails. The line number is the line number of that recipe line.
+(5) When all lines are done, running the recipe succeeds.
+
+Executing a command: let W be the sequence obtained by splitting the command into words; the behavior is determined by the first word of W as follows.
+- echo: output the second and later words of W joined with spaces as one line (if there are no second or later words, output an empty line). The exit code is 0.
+- touch: give a new time to each of the second and later words n of W, in order. The exit code is 0.
+- rm: if the second word of W is -f, the removal is "forced" and that word is excluded. For each remaining word x in order, form the sequence that is the wildcard expansion (section 1) of x if it is not empty, or the sequence consisting of x alone if it is empty; for each name m in that sequence in order, remove m if it is in the file table, and otherwise, only when not forced, output "rm: cannot remove '<m>': No such file or directory" and set the exit code to 1. The exit code is 1 if this message was output one or more times, and 0 otherwise.
+- false: do nothing; the exit code is 1.
+- exit: if W has a second word, its value (it is a non-negative integer notation) is the exit code. Otherwise, the exit code is 0.
+- Anything else (gcc and so on): do nothing; the exit code is 0.
+
+Processing the goals: for each goal g in the sequence of goals in order, remember the recipe run count just before it, and then build g as a goal.
+- If the result is success and the recipe run count has not increased: output "make: Nothing to be done for '<g>'." if g is a PHONY target or the rule determination of g gave no recipe (including the case where g is a source), and otherwise output "make: '<g>' is up to date.". For a goal whose result had already been recorded (such as a goal appearing for the second time in the same command), decide using the result of the rule determination used at that time.
+- If the result is dependency failure, output "make: Target '<g>' not remade because of errors.".
+- Otherwise (success with an increased recipe run count, or failure), output nothing.
+When the entire command is aborted, the remaining goals are not processed and nothing more is output.
+
+Section 7. Other commands
+- TOUCH: give a new time to each name, in order. Output nothing.
+- RM: for each name in order, remove it if it is in the file table; otherwise output "rm: cannot remove '<name>': No such file or directory". Wildcards are not handled.
+- FILES: output "clock <clock value>", and then, for each name in the file table, output "<name> <time>", one line per name, in increasing order of name.
+- VARS: for each variable v in the variable table, in increasing order of variable name, let s be the reference value of v (section 3 (iii); its value if it is simply expanded, the result of expanding its value if it is recursively expanded), trimmed, and output "<v> <symbol> <s>" if s is not empty, or "<v> <symbol>" if it is empty. <symbol> is the display symbol of the kind of v (= or :=). If an error occurs during expansion, output "make: *** <reason>.  Stop." and do not output the remaining variables. Output from info or warning during expansion is produced at that moment.
+- RULES: first, for each target t in the explicit rule table, in increasing order of name, output one line consisting of t followed by ":" and then by each element of its sequence of prerequisites, each preceded by one space ("<t>:" if there are no prerequisites), and then, for each recipe line of the recipe of t in order, output one line consisting of ">" followed by the unexpanded string of that recipe line. Next, for the pattern rules with a recipe, in the order of the sequence of pattern rules, output in the same format with the target pattern in place of t. Finally, if the PHONY set is not empty, output one line consisting of ".PHONY:" followed by the names in the PHONY set in increasing order, each preceded by one space.
+- EXPAND: output one line consisting of the result of expanding text, enclosed in "[" and "]". If an error occurs during expansion, output "make: *** <reason>.  Stop." instead. Output from info or warning during expansion is produced at that moment (before the result line).
+The expansions in VARS, RULES and EXPAND are performed with an empty scope stack and with no automatic variables. When the Makefile is not loaded, VARS and RULES output nothing.
+
+[Output format]
+The output consists only of the lines described in [Processing]. In summary, they are as follows.
+- "$ <command line>" for each command
+- Loading the Makefile: "Makefile loaded: lines=<number> variables=<number> targets=<number> patterns=<number> goal=<name>", the warnings "Makefile:<line number>: warning: overriding recipe for target '<t>'" and "Makefile:<line number>: warning: ignoring old recipe for target '<t>'", and "Makefile:<line number>: target '<t>' doesn't match the target pattern"
+- Errors: "<location>: *** <reason>.  Stop."
+- Output from info, and "<location>: <text>" from warning
+- MAKE: displayed commands, output from echo, "make: invalid option -- '<c>'", "make: *** No targets specified and no makefile found.  Stop.", "make: *** No targets.  Stop.", "make: *** No rule to make target '<t>', needed by '<p>'.", "make: *** No rule to make target '<t>'." (when k is absent, both have "  Stop." appended at the end), "make: Circular <t> <- <q> dependency dropped.", "make: [Makefile:<line number>: <t>] Error <e> (ignored)", "make: *** [Makefile:<line number>: <t>] Error <e>", "make: Nothing to be done for '<g>'.", "make: '<g>' is up to date.", "make: Target '<g>' not remade because of errors."
+- "rm: cannot remove '<name>': No such file or directory"
+- Output of FILES, VARS, RULES and EXPAND
+Numbers are output in decimal without extra leading zeros. The error strings are as follows (replace the parts in < > as described in [Processing]).
+  unterminated variable reference
+  Recursive variable '<variable name>' references itself (eventually)
+  insufficient number of arguments (<number>) to function '<function name>'
+  non-numeric first argument to 'word' function: '<n>'
+  first argument to 'word' function must be greater than 0
+  non-numeric first argument to 'wordlist' function: '<s>'
+  non-numeric second argument to 'wordlist' function: '<e>'
+  invalid first argument to 'wordlist' function: '<s>'
+  (the argument of the error function)
+  recipe commences before first target
+  empty variable name
+  missing separator
+  missing 'endif'
+  extraneous 'else'
+  extraneous 'endif'
+  only one 'else' per conditional
+  invalid syntax in conditional
+  target pattern contains no '%'
+  mixed implicit and normal rules
+
+[Constraints]
+- The input has at most 2000 lines.
+- In a file table line, name is a name and t is an integer from 0 to 1000000 written without extra leading zeros; name and t are separated by one space. The names in the file table lines are all distinct.
+- The arguments of TOUCH and RM, and the goals, are names. An option word of MAKE is - followed by one or more letters.
+- The targets and prerequisites handled in a build, and the words passed to touch and rm, are all names or (for words of rm) strings consisting of the characters of names plus * and ?.
+- The value of the clock is always at most 10000000.
+- The second word of an exit executed in a recipe, if present, is a non-negative integer notation with a value from 0 to 255.
+- When the arguments of word and wordlist are non-negative integer notations, and when a call scope handles a name N in section 3 (i), those values (the value of N) are at most 1000000.
+- Expansion always terminates. The nesting of call is at most 30 levels, the depth of following prerequisites is at most 100, and the length of any string appearing during expansion is at most 10000.
+
+[Example]
+Input:
+FILES
+main.c 10
+util.c 12
+util.h 5
+END FILES
+MAKEFILE
+CC = gcc
+SRCS := $(wildcard *.c)
+OBJS = $(SRCS:.c=.o)
+app: $(OBJS)
+>$(CC) -o $@ $^
+%.o: %.c util.h
+>$(CC) -c $< -o $@
+>@echo built $* from $?
+.PHONY: clean
+clean:
+>rm -f *.o app
+END MAKEFILE
+VARS
+MAKE
+MAKE
+TOUCH util.h
+MAKE -n main.o
+MAKE clean lib.o
+FILES
+QUIT
+
+Output:
+$ MAKEFILE
+Makefile loaded: lines=11 variables=3 targets=2 patterns=1 goal=app
+$ VARS
+CC = gcc
+OBJS = main.o util.o
+SRCS := main.c util.c
+$ MAKE
+gcc -c main.c -o main.o
+built main from main.c util.h
+gcc -c util.c -o util.o
+built util from util.c util.h
+gcc -o app main.o util.o
+$ MAKE
+make: 'app' is up to date.
+$ TOUCH util.h
+$ MAKE -n main.o
+gcc -c main.c -o main.o
+echo built main from util.h
+$ MAKE clean lib.o
+rm -f *.o app
+make: *** No rule to make target 'lib.o'.  Stop.
+$ FILES
+clock 16
+main.c 10
+util.c 12
+util.h 16
+
+In this example, the clock starts at 12, and the first MAKE gives main.o, util.o and app the times 13, 14 and 15 respectively. The echo command starting with @ is not displayed; only its output appears. In MAKE -n main.o, after TOUCH has set the time of util.h to 16, the only new prerequisite is util.h. Since it is a dry run, the command with @ is also displayed, and the file table and the clock are restored. In MAKE clean, rm -f *.o app removes main.o, util.o and app. lib.o has no rule, because the prerequisite lib.c of the pattern rule %.o is neither in the file table nor an explicit target.

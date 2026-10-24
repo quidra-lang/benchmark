@@ -1,0 +1,27 @@
+using System;
+using System.Linq;
+using System.Globalization;
+
+CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+static int Find(int[] parent, int v) {
+    if (parent[v] != v) parent[v] = Find(parent,parent[v]);
+    return parent[v];
+}
+var edges = new[] { (0,1,7), (2,0,4), (1,2,9), (1,3,14), (3,2,6), (2,4,3), (4,3,5), (5,3,11), (4,6,16), (6,5,8), (7,5,12), (6,7,2), (7,4,10) };
+int[] parent = Enumerable.Range(0,8).ToArray();
+int accepted = 0, skipped = 0, total = 0;
+foreach (var (u,v,weight) in edges.OrderBy(e => e.Item3)) {
+    int a = Find(parent,u), b = Find(parent,v);
+    if (a == b) {
+        skipped++;
+        continue;
+    }
+    parent[a] = b;
+    accepted++;
+    total += weight;
+    char first = (char)('A' + Math.Min(u,v)), second = (char)('A' + Math.Max(u,v));
+    Console.WriteLine($"{first}-{second} {weight}");
+    if (accepted == 7) break;
+}
+Console.WriteLine($"total weight: {total}");
+Console.WriteLine($"skipped: {skipped}");

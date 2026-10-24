@@ -1,0 +1,20 @@
+gcd =: 4 : 0
+  a =. x
+  b =. y
+  while. b ~: 0 do.
+    remainder =. b|a
+    a =. b
+    b =. remainder
+  end.
+  a
+)
+main =: 3 : 0
+  for_pair. 5 2$48 180 1071 462 7 91 13 97 36288 98280 do.
+    'a b' =. pair
+    divisor =. a gcd b
+    multiple =. (a%divisor)*b
+    label =. '(', (":a), ', ', (":b), ') = '
+    smoutput 'gcd', label, (":divisor), ', lcm', label, (, '0' 8!:2 multiple)
+  end.
+)
+main ''

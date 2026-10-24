@@ -1,0 +1,32 @@
+fn find(parent: &mut [usize], v: usize) -> usize {
+    if parent[v] != v {
+        let next = parent[v];
+        parent[v] = find(parent, next);
+    }
+    parent[v]
+}
+
+fn main() {
+    let mut edges = [('A', 'B', 7), ('C', 'A', 4), ('B', 'C', 9), ('B', 'D', 14), ('D', 'C', 6),
+        ('C', 'E', 3), ('E', 'D', 5), ('F', 'D', 11), ('E', 'G', 16), ('G', 'F', 8), ('H', 'F', 12), ('G',
+        'H', 2), ('H', 'E', 10)];
+    edges.sort_by_key(|e| e.2);
+    let mut parent: Vec<usize> = (0..8).collect();
+    let (mut accepted, mut total, mut skipped) = (0, 0, 0);
+    for (a, b, w) in edges {
+        if accepted == 7 {
+            break;
+        }
+        let ra = find(&mut parent, a as usize - 'A' as usize);
+        let rb = find(&mut parent, b as usize - 'A' as usize);
+        if ra == rb {
+            skipped += 1;
+            continue;
+        }
+        parent[ra] = rb;
+        accepted += 1;
+        total += w;
+        println!("{}-{} {}", a.min(b), a.max(b), w);
+    }
+    println!("total weight: {}\nskipped: {}", total, skipped);
+}

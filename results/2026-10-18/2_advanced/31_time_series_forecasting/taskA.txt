@@ -1,0 +1,524 @@
+[Overview]
+Write a program that performs classical time-series analysis and demand forecasting from the monthly demand history (time series) of several products.
+For each series, the program interpolates missing values, computes the classical decomposition by centred moving average (trend, additive and multiplicative seasonal indices, residuals), and finds outliers from the residuals. Months with an event such as a sales promotion are corrected in the same way as outliers, after the effect of the event (lift) has been estimated. The last few months of the corrected series form the holdout period and the months before them the training period, and the program builds 11 methods (naive forecast, seasonal naive forecast, drift, simple exponential smoothing, Holt's linear trend method (ordinary and damped), the Holt-Winters method (additive and multiplicative), decomposition-based regression, and an autoregressive model of the differenced series (Yule-Walker estimation and order selection by AIC)) plus a combination forecast that averages the top methods among them. The parameters of exponential smoothing are chosen by grid search. The widths of the prediction intervals are obtained from rolling-origin cross-validation on the training period, and the best model is chosen by comparing the accuracy on the holdout period (MAE, RMSE, MAPE, sMAPE, MASE, etc.). The best model is refitted to the whole period to forecast the future, and the lifts of future events are multiplied in to give the final forecast. Based on this forecast, the program simulates an inventory plan under a periodic-review ordering policy and computes yearly totals. It also produces character-based correlograms of the autocorrelation and the partial autocorrelation, residual diagnostics (the Ljung-Box test, etc.), and charts of the forecast and of the seasonal shape.
+The input is the 4 files in the input/ folder (demand history, events, inventory conditions, settings), and the results are written to 8 files in the output/ folder. Nothing is printed to standard output.
+
+[Input files]
+The input files are the 4 files input/series.csv, input/events.csv, input/inventory.csv and input/params.txt. Every file consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). There are no spaces at the start or end of a line, and there are no empty lines. Integers are decimal numbers without extra leading zeros, and there are no negative numbers. A real is a sequence of one or more digits, or such a sequence followed by "." and a sequence of one or more digits (e.g. 3, 0.05, 1.2816). There are no negative numbers.
+A "year-month" is a 7-character string consisting of a 4-digit year (Western calendar), "-" and a 2-digit month (01 to 12), in this order (e.g. 2019-06). The "next month" of a year-month is month 01 of the following year if the month is 12, and otherwise the next month of the same year (e.g. the next month of 2019-12 is 2020-01).
+
+# input/series.csv (demand history)
+The first line is the header line, the string series,period,value. Each line from the second line on is the actual value of one series for one month: the series name, the year-month and the value, in this order, separated by commas. A series name is a string of 1 to 12 lowercase English letters. A value is an integer or the string NA, which denotes a missing value.
+The lines of the same series are contiguous, and the year-month of every line is the next month of the year-month of the previous line of the same series. The order in which the series first appear is called the "series order".
+
+# input/events.csv (events)
+The first line is the header line, the string series,period,kind. Each line from the second line on is one event: the series name, the year-month and the kind, in this order, separated by commas. A kind is a string of 1 to 12 lowercase English letters (e.g. promo). The series name is one that appears in series.csv, and no pair of series name and year-month appears more than once. There may be no lines after the first line.
+
+# input/inventory.csv (inventory conditions)
+The first line is the header line, the string series,on_hand,lead_time,review,service. Each line from the second line on is the inventory conditions of one series: the series name, the current stock I_0 (integer), the lead time tau (a positive integer number of months), the review interval R (a positive integer number of months) and the safety factor z_s (real), in this order, separated by commas. There is exactly one line for every series in series.csv.
+
+# input/params.txt (settings)
+It consists of the following 14 lines, in this order. Each line is a keyword followed by one or more values, separated by single spaces.
+- season m: the season length (a positive integer number of months)
+- holdout h: the length of the holdout period (a positive integer number of months)
+- horizon H: the length of the forecast period (a positive integer number of months)
+- cv_start c: the first forecast origin of the cross-validation (positive integer)
+- combo C: the number of methods used in the combination forecast (positive integer)
+- alpha alpha_1 alpha_2 ...: the candidates for alpha (reals)
+- beta beta_1 beta_2 ...: the candidates for beta (reals)
+- gamma gamma_1 gamma_2 ...: the candidates for gamma (reals)
+- phi phi_1 phi_2 ...: the candidates for phi (reals)
+- max_ar P: the maximum order of the autoregressive model (positive integer)
+- max_lag L: the maximum lag for which autocorrelations are computed (positive integer)
+- ljung_box eta_1 eta_2 ...: the lags of the Ljung-Box test (positive integers)
+- outlier z_o: the coefficient for detecting outliers (real)
+- interval z_80 z_95: the coefficients of the 80% and 95% prediction intervals (reals)
+The ranges of the values are given in [Constraints].
+
+[Processing]
+# Step 1. Notation and computation rules
+- All real computations are done in double-precision floating point (IEEE 754 binary64). An integer value is converted to a real when it is computed together with reals. / is always real division, including division between integers (the quotient is not truncated to an integer; e.g. (v_b - v_a) * (t - a) / (b - a) in Step 2, (M + 1) / 2 in Step 6, K / 6 in Step 14). Input reals are read as the nearest double-precision values.
+- Expressions are evaluated in the order written: parentheses first, * and / before + and -, and operations of equal precedence from left to right (e.g. a * b / c is (a * b) / c, and a - b - c is (a - b) - c).
+- sqrt is the square root, ln the natural logarithm, exp the exponential function, |v| the absolute value of v, floor(v) the largest integer <= v, ceil(v) the smallest integer >= v, and max and min the maximum and the minimum. v^2 means v * v.
+- Unless otherwise stated, a sum Sum adds its terms one at a time from the first, in increasing order of the index (increasing order of time point, step, origin, seasonal position, etc.). A sum with no terms is 0. In an expression containing Sum, the value of the Sum is computed first, and then the rest of the computation is done.
+- The "mean" of a sequence of values v_1, ..., v_K is (Sum v_i) / K, and its "sample variance" is Sum (v_i - v_bar)^2 / (K - 1) (v_bar is its mean). The "RMSE" of a sequence of errors e_1, ..., e_K is sqrt((Sum e_i^2) / K).
+- The number that is 0 at the first month of a series and increases by 1 every month is called the "time point". The "seasonal position" of time point t is the remainder of t divided by m (0 to m - 1).
+- The methods are the following 11, and this order is called the "method order": naive, snaive, drift, ses, holt, damped, hw_add, hw_mult, decomp_add, decomp_mult, ar. These together with the combination forecast combo, 12 in all, are called "models", and the order with combo placed after the method order is called the "model order".
+- Every rule that chooses a minimum states how to choose when there are ties.
+
+# Step 2. Preparing the series (interpolating missing values)
+The series are processed one at a time in series order. Steps 2 to 15 are the processing of one series.
+Let n be the number of months of the series, p_t the year-month of time point t (0 <= t <= n - 1), and v_t the value in series.csv. A time point whose value is NA is called a "missing time point".
+The value y_t of time point t is v_t if t is not a missing time point. If it is a missing time point, let a be the last time point before t that is not missing and b the first time point after t that is not missing, and y_t = v_a + (v_b - v_a) * (t - a) / (b - a) (a and b exist by [Constraints]).
+
+# Step 3. Classical decomposition
+The "decomposition" of a sequence of values X_0, ..., X_{M-1} of length M is defined as follows. It is used in Step 4 for y_0, ..., y_{n-1}, and in decomp_add and decomp_mult of Step 6 for the series being fitted. Let k = m / 2.
+(1) Trend: for time points t with k <= t <= M - 1 - k, T_t = (0.5 * X_{t-k} + X_{t-k+1} + X_{t-k+2} + ... + X_{t+k-1} + 0.5 * X_{t+k}) / m. The m + 1 terms in the parentheses are added one at a time from the left. The trend at the other time points is "undefined". Let D be the set of time points at which the trend is defined.
+(2) Seasonal indices: for each seasonal position j (0 <= j <= m - 1), let A_j be the mean of X_t - T_t and B_j the mean of X_t / T_t over the time points t that belong to D and have seasonal position j (added in time-point order). The additive seasonal index is S^A_j = A_j - (Sum_{j=0}^{m-1} A_j) / m, and the multiplicative seasonal index is S^M_j = B_j / ((Sum_{j=0}^{m-1} B_j) / m). Below, the seasonal indices S^A(t) and S^M(t) of time point t mean S^A_j and S^M_j for the seasonal position j of t.
+(3) Residuals: for the time points t in D, the additive residual is R^A_t = X_t - T_t - S^A(t) and the multiplicative residual is R^M_t = X_t / (T_t * S^M(t)). The residuals at the other time points are undefined.
+
+# Step 4. Outliers, events and the corrected series
+T_t, S^A_j, S^M_j, R^A_t, R^M_t and D of the decomposition (Step 3) of y_0, ..., y_{n-1} are used.
+- Among the lines of events.csv for the series, those whose year-month equals one of p_0 to p_{n-1} are called "past events", and those whose year-month equals one of the year-months of the forecast period (p_n to p_{n+H-1} of Step 11) are called "future events". The time points of the year-months of the past events are called "event time points".
+- Let mu_R be the mean of R^A_t over the time points in D (in time-point order), and s_R the square root of its sample variance.
+- Outliers: a time point t that belongs to D, is neither a missing time point nor an event time point, and satisfies |R^A_t - mu_R| > z_o * s_R is an "outlier". The "score" of an outlier t is (R^A_t - mu_R) / s_R.
+- Lift: for each kind of past event, the mean of y_t / (T_t + S^A(t)) over the event time points t of that kind (in time-point order) is the "lift" of that kind. The order of the kinds of past events is the increasing order of the time point of the first event of each kind.
+- Corrected series: the corrected value x_t of time point t (0 <= t <= n - 1) is T_t + S^A(t) if t is an outlier or an event time point, and y_t otherwise.
+- Strength: the strength of trend is F_T = max(0, 1 - V_R / V_T), and the strength of seasonality is F_S = max(0, 1 - V_R / V_S). Here V_R, V_T and V_S are the sample variances of R^A_t, T_t + R^A_t and S^A(t) + R^A_t respectively, over the time points t in D (in time-point order).
+
+# Step 5. Training period and holdout period
+Let N = n - h. Time points 0 to N - 1 are called the "training period", and time points N to n - 1 the "holdout period". The sequence of corrected values x_0, ..., x_{N-1} is called the "training series", and x_0, ..., x_{n-1} the "whole series". The actual values of the holdout period are a_i = y_{N+i-1} (1 <= i <= h) (by [Constraints], the time points of the holdout period are neither missing time points nor event time points).
+
+# Step 6. Forecasting methods
+Each method is fitted to a "series being fitted" z_0, ..., z_{M-1} of length M (the training series or the whole series). Fitting determines the parameters and the sequence of residuals, and produces the "model lines" written to models.txt. Given a forecast origin o (c <= o <= M) and a number of steps s (1 <= s <= H), a fitted method returns s forecast values F_1, ..., F_s from z_0, ..., z_{o-1} and the parameters determined by the fitting. F_k is the forecast value for time point o + k - 1, and these are called the "forecasts from origin o".
+- Grid search: the combinations of parameter candidates are examined in the order of the candidates in params.txt, with a parameter written earlier forming a more outer loop (e.g. for holt, in the order (alpha_1, beta_1), (alpha_1, beta_2), ..., (alpha_2, beta_1), ...). For each combination, the one-step-ahead errors e_t are computed by the formulas of the method, and the combination with the smallest SSE = Sum e_t^2 is chosen. If several combinations have equal SSE, the one examined first is chosen. The sequence of residuals is the sequence of e_t of the chosen combination.
+- "rmse r residuals K" in a model line (written as rmse <r> residuals <K> below) is the RMSE r of the sequence of residuals and the number of residuals K.
+(1) naive (naive forecast): the residuals are e_t = z_t - z_{t-1} (1 <= t <= M - 1). The forecasts from origin o are F_k = z_{o-1}. The model line is one line: naive rmse <r> residuals <K>.
+(2) snaive (seasonal naive forecast): the residuals are e_t = z_t - z_{t-m} (m <= t <= M - 1). The forecasts from origin o are F_k = z_{o-m+j}, where j is the remainder of k - 1 divided by m. The model line is one line: snaive rmse <r> residuals <K>.
+(3) drift: let g = (z_{M-1} - z_0) / (M - 1); the residuals are e_t = z_t - z_{t-1} - g (1 <= t <= M - 1). The forecasts from origin o are F_k = z_{o-1} + k * ((z_{o-1} - z_0) / (o - 1)). The model line is one line: drift slope <g> rmse <r> residuals <K>.
+(4) ses (simple exponential smoothing): alpha is chosen from the alpha candidates by grid search. Let l_0 = z_0, and for t = 0, 1, ..., M - 1 in order, e_t = z_t - l_t and l_{t+1} = alpha * z_t + (1 - alpha) * l_t. The forecasts from origin o are F_k = l_o. The model line is one line: ses alpha <alpha> rmse <r> residuals <K> level <l_M>.
+(5) holt and (6) damped (Holt's linear trend method): holt sets phi = 1 and chooses (alpha, beta) from the alpha and beta candidates, and damped chooses (alpha, beta, phi) from the alpha, beta and phi candidates, by grid search. Let l_0 = z_0 and b_0 = (z_m - z_0) / m, and for t = 0, 1, ..., M - 1 in order, let
+  f_t = l_t + phi * b_t, e_t = z_t - f_t,
+  l_{t+1} = alpha * z_t + (1 - alpha) * f_t,
+  b_{t+1} = beta * (l_{t+1} - l_t) + (1 - beta) * phi * b_t.
+The forecasts from origin o are F_k = l_o + psi_k * b_o, where rho_1 = phi, rho_k = rho_{k-1} * phi, psi_1 = rho_1 and psi_k = psi_{k-1} + rho_k (k >= 2). The model line is one line: for holt, holt alpha <alpha> beta <beta> rmse <r> residuals <K> level <l_M> slope <b_M>, and for damped, damped alpha <alpha> beta <beta> phi <phi> rmse <r> residuals <K> level <l_M> slope <b_M>.
+(7) hw_add and (8) hw_mult (Holt-Winters method): (alpha, beta, gamma) is chosen from the alpha, beta and gamma candidates by grid search. Let l_0 = (Sum_{t=0}^{m-1} z_t) / m and b_0 = ((Sum_{t=m}^{2m-1} z_t) / m - l_0) / m, and let the initial value of the seasonal component sigma_j of seasonal position j (0 <= j <= m - 1) be z_j - l_0 for hw_add and z_j / l_0 for hw_mult. For t = 0, 1, ..., M - 1 in order, with j the seasonal position of t, u = l_t + b_t and q = sigma_j (its value before the update at this time point), let
+  hw_add: e_t = z_t - (u + q), l_{t+1} = alpha * (z_t - q) + (1 - alpha) * u, and update sigma_j to gamma * (z_t - u) + (1 - gamma) * q
+  hw_mult: e_t = z_t - u * q, l_{t+1} = alpha * (z_t / q) + (1 - alpha) * u, and update sigma_j to gamma * (z_t / u) + (1 - gamma) * q
+  for both: b_{t+1} = beta * (l_{t+1} - l_t) + (1 - beta) * b_t.
+The forecasts from origin o use l_o, b_o and the seasonal components sigma after the updates up to time point o - 1; with j_k the seasonal position of o + k - 1, they are F_k = l_o + k * b_o + sigma_{j_k} for hw_add and F_k = (l_o + k * b_o) * sigma_{j_k} for hw_mult. The model lines are 2 lines:
+  hw_add alpha <alpha> beta <beta> gamma <gamma> rmse <r> residuals <K> level <l_M> slope <b_M>
+  hw_add seasonal <sigma_{j_0}> <sigma_{j_1}> ... <sigma_{j_{m-1}}>
+(hw_mult has the same form, with hw_add replaced by hw_mult). The second line lists the seasonal components after the updates up to time point M - 1, in the order of j_i = (the remainder of M + i divided by m) (0 <= i <= m - 1).
+(9) decomp_add and (10) decomp_mult (decomposition-based regression): the seasonal indices of the decomposition (Step 3) of the series being fitted z_0, ..., z_{M-1} are used, with S_j = S^A_j for decomp_add and S_j = S^M_j for decomp_mult. The seasonally adjusted value d_t of time point t (0 <= t <= M - 1) is z_t - S_j for decomp_add and z_t / S_j for decomp_mult, where j is the seasonal position of t. The least-squares line of d_t with the explanatory variable u_t = t + 1 is obtained as u_bar = (M + 1) / 2, d_bar = (Sum d_t) / M, slope beta_1 = (Sum (u_t - u_bar) * (d_t - d_bar)) / (Sum (u_t - u_bar) * (u_t - u_bar)) and intercept beta_0 = d_bar - beta_1 * u_bar. The fitted value at time point t is yhat(t) = beta_0 + beta_1 * (t + 1) + S_j for decomp_add and yhat(t) = (beta_0 + beta_1 * (t + 1)) * S_j for decomp_mult (j is the seasonal position of t; the same formula is used for t >= M). The residuals are e_t = z_t - yhat(t) (0 <= t <= M - 1), and the forecasts from origin o are F_k = yhat(o + k - 1). The model lines are 2 lines:
+  decomp_add intercept <beta_0> slope <beta_1> rmse <r> residuals <K>
+  decomp_add seasonal <S_0> <S_1> ... <S_{m-1}>
+(decomp_mult has the same form, with decomp_add replaced by decomp_mult).
+(11) ar (autoregressive model): defined in Step 7.
+
+# Step 7. Autoregressive model (ar)
+- The "autocorrelation" of a sequence of values g_0, ..., g_{J-1} of length J is defined as follows. Let mu = (Sum g_i) / J, delta_i = g_i - mu and nu = (Sum delta_i^2) / J; the autocorrelation at lag k is r_k = (Sum_{i=0}^{J-k-1} delta_i * delta_{i+k}) / J / nu. nu is called the "variance" of the sequence.
+- Differencing: the following 4 differenced series are made from the series being fitted. The order of the kinds is none, first, seasonal, both.
+  none: z_t (0 <= t <= M - 1). Offset omega = 0
+  first: z_t - z_{t-1} (1 <= t <= M - 1). Offset omega = 1
+  seasonal: z_t - z_{t-m} (m <= t <= M - 1). Offset omega = m
+  both: (z_t - z_{t-1}) - (z_{t-m} - z_{t-m-1}) (m + 1 <= t <= M - 1). Offset omega = m + 1
+ Each is a sequence in increasing order of t, and its i-th value (counting from 0) is the value for t = i + omega. The variances nu of the 4 differenced series are computed, and the kind with the smallest nu is chosen (if equal, the one earlier in the order of the kinds). Below, the chosen differenced series is w_0, ..., w_{N_w-1} (N_w is the number of values), and its offset is omega, its mean mu, its variance nu, and its autocorrelations r_1, ..., r_L.
+- Partial autocorrelation (Durbin-Levinson recursion): let v_0 = 1, and for k = 1, 2, ..., L in order, let
+  theta_k = (r_k - Sum_{j=1}^{k-1} phi_{k-1,j} * r_{k-j}) / v_{k-1},
+  phi_{k,j} = phi_{k-1,j} - theta_k * phi_{k-1,k-j} (1 <= j <= k - 1), phi_{k,k} = theta_k,
+  v_k = v_{k-1} * (1 - theta_k * theta_k).
+ theta_k is called the partial autocorrelation at lag k.
+- Order: for p = 0, 1, ..., P, compute AIC_p = N_w * ln(nu * v_p) + 2 * p; the p with the smallest AIC_p is the order (if equal, the smaller p). The coefficients are phi_j = phi_{p,j} (1 <= j <= p), and sigma^2 = nu * v_p.
+- Residuals: e_i = w_i - mu - Sum_{j=1}^{p} phi_j * (w_{i-j} - mu) (p <= i <= N_w - 1).
+- Forecasts from origin o: first, to the sequence of the first o - omega values of the differenced series, w_0, ..., w_{o-omega-1}, append mu + Sum_{j=1}^{p} phi_j * (W_j - mu) for k = 1, 2, ..., s in order. W_j is the value j positions before the position being appended (including the values appended so far). Let w_hat_k be the k-th appended value. Next, to the sequence z_0, ..., z_{o-1}, append the following value for k = 1, 2, ..., s in order, where Z_i is the value i positions before the position being appended (including the values appended so far): w_hat_k for none, w_hat_k + Z_1 for first, w_hat_k + Z_m for seasonal, and w_hat_k + Z_1 + Z_m - Z_{m+1} for both. F_k is the k-th appended value.
+- The model lines are 4 lines:
+  ar variance none <nu_none> first <nu_first> seasonal <nu_seasonal> both <nu_both>
+  ar difference <kind> n <N_w> mean <mu> order <p> sigma2 <sigma^2> rmse <r> residuals <K>
+  ar aic <AIC_0> <AIC_1> ... <AIC_P>
+  ar coefficients <phi_1> <phi_2> ... <phi_p>
+ nu_none etc. are the variances of the respective differenced series, and <kind> is the chosen kind of differencing. If p = 0, the 4th line is ar coefficients none.
+
+# Step 8. Rolling-origin cross-validation
+The cross-validation of a model fitted to a series z_0, ..., z_{M-1} of length M is defined as follows. For each origin o = c, c + 1, ..., M - 1, let s_o = min(H, M - o), compute the s_o forecasts F_1, ..., F_{s_o} from origin o, and let the errors be eps_{o,k} = z_{o+k-1} - F_k (1 <= k <= s_o). For each step k (1 <= k <= H), let n_k be the number of origins o with s_o >= k, SQ_k the sum of eps_{o,k}^2 over those origins and AB_k the sum of |eps_{o,k}| over those origins (added in origin order), sigma_k = sqrt(SQ_k / n_k) and mae_k = AB_k / n_k. Also, cv_rmse = sqrt((Sum_{k=1}^{h} SQ_k) / (Sum_{k=1}^{h} n_k)).
+
+# Step 9. Combination forecast (combo)
+The 11 methods fitted to the training series are sorted in increasing order of cv_rmse of the cross-validation (Step 8) on the training series (if equal, in method order), and the first C of them are the "combination methods". From then on, the combination methods are always handled in method order. F_k of the forecasts of combo from origin o is the sum of F_k of the forecasts from origin o of the combination methods, added in method order, divided by C. combo has neither residuals nor model lines.
+
+# Step 10. Evaluation on the holdout period
+For each of the 12 models fitted to the training series (combo as in Step 9), sigma_k, mae_k, n_k and cv_rmse of the cross-validation (Step 8) on the training series are computed. Let f_i (1 <= i <= h) be the h forecasts from origin N, and let the prediction intervals be lo80_i = f_i - z_80 * sigma_i, hi80_i = f_i + z_80 * sigma_i, lo95_i = f_i - z_95 * sigma_i and hi95_i = f_i + z_95 * sigma_i. With e_i = a_i - f_i, the following values are computed.
+- me = (Sum e_i) / h, mae = (Sum |e_i|) / h, rmse = sqrt((Sum e_i^2) / h)
+- mape = 100 * (Sum |e_i| / a_i) / h, smape = 100 * (Sum 2 * |e_i| / (|a_i| + |f_i|)) / h
+- mase = mae / Delta, where Delta = (Sum_{t=m}^{N-1} |x_t - x_{t-m}|) / (N - m).
+- fva = 100 * (mae_naive - mae) / mae_naive, where mae_naive is the mae of naive.
+- cover80 is the number of i with lo80_i <= a_i <= hi80_i, and cover95 is the number of i with lo95_i <= a_i <= hi95_i.
+- winkler80 = (Sum W(a_i, lo80_i, hi80_i, 10)) / h, winkler95 = (Sum W(a_i, lo95_i, hi95_i, 40)) / h, where W(a, lo, hi, kappa) is hi - lo + kappa * (lo - a) if a < lo, hi - lo + kappa * (a - hi) if a > hi, and hi - lo otherwise.
+- rank: the position (1 to 12) of the model when the 12 models are sorted in increasing order of rmse (if equal, in model order).
+The model with rank 1 is the "best model".
+
+# Step 11. Final model and future forecasts
+If the best model is a method, that method is refitted to the whole series (the grid search etc. is also redone on the whole series). If the best model is combo, each of the combination methods chosen in Step 9 (they are not chosen again) is refitted to the whole series, and a model that averages their forecasts in the same way as in Step 9 is made. This is called the "final model". Let sigma^F_k be sigma_k of the cross-validation (Step 8, with M = n) of the final model on the whole series.
+The year-months of the forecast period p_n, p_{n+1}, ..., p_{n+H-1} are H months in order, starting from the next month of p_{n-1}. The multiplier lambda_k of step k (1 <= k <= H) is the lift of the kind of the future event if there is a future event in year-month p_{n+k-1}, and 1 otherwise. With F_k the H forecasts of the final model from origin n, the "final forecast" of step k is D_k = F_k * lambda_k, and its prediction intervals are (F_k - z_80 * sigma^F_k) * lambda_k, (F_k + z_80 * sigma^F_k) * lambda_k, (F_k - z_95 * sigma^F_k) * lambda_k and (F_k + z_95 * sigma^F_k) * lambda_k (called lo80, hi80, lo95 and hi95, in this order).
+
+# Step 12. Inventory plan
+Let I_0, tau, R and z_s be the inventory conditions of the series, and G = tau + R.
+- Safety stock: for each origin o = c, c + 1, ..., n - G, compute the G forecasts F_1, ..., F_G of the final model from origin o, and let the cumulative error be E_o = Sum_{k=1}^{G} (x_{o+k-1} - F_k). Let sigma_E = sqrt((Sum E_o^2) / (n - G - c + 1)), and let the safety stock be SS = z_s * sigma_E.
+- Review months: among the steps k = 1, 1 + R, 1 + 2R, ..., those with k - 1 + G <= H are the "review months". Let k_star be the last review month, and k_end = k_star - 1 + G.
+- Simulation: the stock on hand I (real) starts at I_0 and the total quantity ordered but not yet received U (integer) starts at 0, and for steps k = 1, 2, ..., k_end in order, the following 1 to 3 are done.
+  1. Receipt: the receipt quantity r is the order quantity of the order that arrives at step k if there is one, and 0 otherwise; I is set to I + r and U to U - r.
+  2. Order: if k is a review month, let the inventory position be pos = I + U, the target stock Theta = (Sum_{j=k}^{k+G-1} D_j) + SS, and the order quantity Q = max(0, ceil(Theta - pos)). If Q > 0, this order arrives at step k + tau, and U is set to U + Q.
+  3. Shipment: I is set to I - D_k. This I is the stock at the end of step k, I_k. The status is short if I_k < 0, low if 0 <= I_k < SS, and ok if I_k >= SS.
+- Summary: compute the number of orders (the number of review months with Q > 0), the total of the order quantities Q, the number of steps with status short, and the minimum and the mean of I_1, ..., I_{k_end}.
+
+# Step 13. Yearly totals
+The first 4 characters of a year-month are its "year". The years that appear in p_0 to p_{n+H-1} are sorted in increasing order, and for each year, compute the number n_a of months of that year among p_0 to p_{n-1} and the sum Y_a of y_t over those months (in time-point order), the number n_f of months of that year among p_n to p_{n+H-1} and the sum Y_f of D_k over those months (in step order), and the total Y = Y_a + Y_f.
+If n_a + n_f = 12 and the previous year (the year listed just before it) also has n_a + n_f = 12, the growth rate is 100 * (Y - Y_prev) / Y_prev (Y_prev is the total of the previous year). Otherwise (including for the first year) there is no growth rate.
+
+# Step 14. Correlogram and residual diagnostics
+- The kind of differencing, N_w, the autocorrelations r_1, ..., r_L and the partial autocorrelations theta_1, ..., theta_L of ar (Step 7) fitted to the training series are used. The band is xi = 2 / sqrt(N_w).
+- The "bar" of a correlation value corr (an autocorrelation or a partial autocorrelation) is a 41-character string, whose leftmost character is position 0 and rightmost character position 40. With u_r = floor(|corr| * 20 + 0.5) and u_xi = floor(xi * 20 + 0.5), it is built in the following order.
+  1. Every position is set to a space, and positions 20 - u_xi and 20 + u_xi are set to ":".
+  2. Position 20 is set to "|".
+  3. If corr > 0, positions 21 to 20 + u_r are set to "#"; if corr < 0, positions 20 - u_r to 19 are set to "#" (if u_r = 0, nothing is done).
+ If |corr| > xi, the value is "significant".
+- Residual diagnostics: for each of the 11 methods fitted to the training series, the following values are computed from its sequence of residuals e_0, ..., e_{K-1} (K is the number of residuals). With e_bar = (Sum e_i) / K and delta_i = e_i - e_bar,
+  m_2 = (Sum delta_i^2) / K, m_3 = (Sum delta_i * delta_i * delta_i) / K, m_4 = (Sum delta_i * delta_i * delta_i * delta_i) / K,
+  sd = sqrt((Sum delta_i^2) / (K - 1)),
+  dw = (Sum_{i=1}^{K-1} (e_i - e_{i-1})^2) / (Sum_{i=0}^{K-1} e_i^2),
+  skewness = m_3 / (m_2 * sqrt(m_2)), kurtosis = m_4 / (m_2 * m_2) - 3,
+  jb = K / 6 * (skewness^2 + kurtosis^2 / 4)
+- Ljung-Box test: for the same sequence of residuals, for each lag eta (in the order eta_1, eta_2, ...), the statistic q = K * (K + 2) * (Sum_{k=1}^{eta} r_k * r_k / (K - k)) is computed from the autocorrelations (as defined in Step 7) r_1, ..., r_eta of the sequence of residuals. Further, let x = q / 2, t_0 = 1 and t_i = t_{i-1} * x / i (1 <= i <= eta / 2 - 1); the p-value is exp(-x) * (Sum_{i=0}^{eta/2-1} t_i) (this is the upper-tail probability of the chi-square distribution with eta degrees of freedom).
+
+# Step 15. Forecast chart and seasonal profile
+- Forecast chart: make h + H rows: the h months of the holdout period (the forecasts f_i of the best model from origin N, the prediction intervals of Step 10, and the actual values a_i) followed by the H months of the forecast period (the final forecasts D_k and the prediction intervals of Step 11; there are no actual values), in this order. Let lo be the minimum of the lo95 values and the actual values of all rows, and hi the maximum of the hi95 values and the actual values of all rows; the "column" of a value v is floor((v - lo) / (hi - lo) * 60 + 0.5). The chart of each row is a 61-character string whose leftmost character is position 0, built in the following order.
+  1. Every position is set to a space.
+  2. The positions from the column of lo95 to the column of hi95 are set to "-".
+  3. The positions from the column of lo80 to the column of hi80 are set to "=".
+  4. The position at the column of the forecast value is set to "o".
+  5. If there is an actual value, the position at the column of the actual value is set to "*".
+- Seasonal profile: the multiplicative seasonal indices S^M_j of the decomposition of y_0, ..., y_{n-1} used in Step 4 are used. Let the peak be Peak = max_j |S^M_j - 1|. The chart of seasonal position j is a 61-character string whose leftmost character is position 0; with u_j = floor(|S^M_j - 1| / Peak * 30 + 0.5), every position is set to a space and position 30 to "|", and then, if S^M_j > 1, positions 31 to 30 + u_j are set to "#", and if S^M_j < 1, positions 30 - u_j to 29 are set to "#" (if u_j = 0, there is no "#").
+
+[Output files]
+The program writes the following 8 files to the output/ folder. Every file consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). There are no spaces at the start or end of a line, and there are no empty lines. The items of a line are separated by a single comma in CSV files, and by a single space in the other files unless otherwise stated.
+Values defined as integers (counts, numbers of time points, orders, ranks, order quantities, receipt quantities, I_0, tau and R of the inventory conditions, lags, steps, etc.) are written in decimal without extra zeros. All other values are reals and are written rounded to 4 decimal places, including when the value is an integer (e.g. 1234.5678, 357.0000, 0.0000, -12.3400). However, if the resulting string is -0.0000, write 0.0000. By [Constraints], the exact value of an output real is never exactly halfway between two rounding candidates. In the line descriptions below, each part that names the symbol or name of a value (written as <...>) is replaced by that value, written by these rules.
+The parts for the individual series are written in series order.
+
+# output/decomposition.csv (decomposition)
+The first line is the header line, the string series,period,value,cleaned,trend,seasonal_add,residual_add,seasonal_mult,residual_mult,flag. From the second line on, for each series, one line per time point t = 0, 1, ..., n - 1 in order: the series name, p_t, y_t, x_t, T_t, S^A(t), R^A_t, S^M(t), R^M_t and the flag, in this order, separated by commas. The values are those of the decomposition of Step 4 (the decomposition of y), and undefined values are written as the string NA. The flag is the kind of the event if t is an event time point, missing if it is a missing time point, outlier if it is an outlier, and ok if it is none of these.
+
+# output/models.txt (models)
+For each series, the following lines are written in this order.
+- series <series name>
+- data observations <n> train <N> holdout <h> missing <number of missing time points> outliers <number of outliers> events <number of event time points>
+- for each kind of past event (in the order of the kinds of Step 4), event <kind> occurrences <number of event time points of that kind> lift <lift>
+- for each outlier (in time-point order), outlier <p_t> value <y_t> expected <x_t> score <score>
+- strength trend <F_T> seasonal <F_S>
+- the model lines (Step 6, Step 7) of the 11 methods fitted to the training series: in method order, all model lines of each method.
+- combo members <combination methods> (the method names in method order, separated by single spaces)
+- best <name of the best model> rmse <rmse of the best model (Step 10)>
+- the model lines of the final model (Step 11): if the best model is a method, the model lines of that method refitted to the whole series; if it is combo, the model lines of the combination methods refitted to the whole series, in method order; each line is written prefixed with "final " (final and a single space).
+
+# output/forecasts.csv (forecasts)
+The first line is the header line, the string series,stage,method,period,actual,forecast,lo80,hi80,lo95,hi95. For each series, the following lines are written in this order.
+- Holdout lines: in model order, for each model, for i = 1, 2, ..., h in order, a line consisting of the series name, the string holdout, the model name, p_{N+i-1}, v_{N+i-1} (the integer value in series.csv), f_i, lo80_i, hi80_i, lo95_i and hi95_i (Step 10)
+- Forecast-period lines: for k = 1, 2, ..., H in order, a line consisting of the series name, the string future, the name of the best model, p_{n+k-1}, the string NA, D_k, and lo80, hi80, lo95 and hi95 of Step 11
+
+# output/accuracy.csv (accuracy)
+The first line is the header line, the string series,method,me,mae,rmse,mape,smape,mase,fva,cv_rmse,cover80,cover95,winkler80,winkler95,rank. For each series, one line per model in model order: the series name, the model name, and me, mae, rmse, mape, smape, mase, fva, cv_rmse, cover80, cover95, winkler80, winkler95 and rank of Step 10.
+
+# output/cv.csv (cross-validation)
+The first line is the header line, the string series,method,step,origins,mae,rmse. For each series, in model order, for each model, one line per step k = 1, 2, ..., H in order: the series name, the model name, k, n_k, mae_k and sigma_k (of the cross-validation on the training series; Step 10).
+
+# output/correlogram.txt (correlogram and residual diagnostics)
+For each series, the following lines are written in this order.
+- series <series name> difference <kind of differencing> n <N_w> band <xi>
+- for k = 1, 2, ..., L in order, an autocorrelation line: the string acf, a single space, k right-aligned in 2 characters (padded on the left with spaces if shorter), a single space, r_k right-aligned in 7 characters (likewise padded on the left with spaces), a single space, "[", the bar of r_k (Step 14) and "]", concatenated in this order, followed by a single space and "*" if r_k is significant
+- for k = 1, 2, ..., L in order, a partial autocorrelation line: the autocorrelation line with acf replaced by pacf and r_k by theta_k
+- for each of the 11 methods (in method order), the following 2 lines
+  residuals <method name> n <K> mean <e_bar> sd <SD> dw <DW> skewness <SK> kurtosis <KU> jb <JB>
+  ljung_box <method name> lag <eta_1> q <statistic> p <p-value> lag <eta_2> q <statistic> p <p-value> ... (all lags are listed in the order eta_1, eta_2, ...)
+ K is the number of residuals, SD, DW, SK, KU and JB are sd, dw, skewness, kurtosis and jb of Step 14 respectively, and the statistic and the p-value are q and the p-value of Step 14.
+
+# output/chart.txt (forecast chart and seasonal profile)
+For each series, the following lines are written in this order.
+- chart <series name> method <name of the best model>
+- scale low <lo> high <hi>
+- each row of the forecast chart (in the order of Step 15): the year-month, a single space, "|", the chart of that row (61 characters) and "|", concatenated in this order
+- profile peak <Peak>
+- for seasonal positions j = 0, 1, ..., m - 1 in order, the string season, a single space, j + 1 right-aligned in 2 characters (padded on the left with spaces if shorter), a single space, S^M_j, a single space, "[", the chart of seasonal position j (61 characters) and "]", concatenated in this order
+
+# output/plan.txt (inventory plan and yearly totals)
+For each series, the following lines are written in this order.
+- series <series name> method <name of the best model>
+- policy on_hand <I_0> lead_time <tau> review <R> service <z_s> safety_stock <SS>
+- for the simulation steps k = 1, 2, ..., k_end in order: if k is a review month, the line review <p_{n+k-1}> position <pos> target <Theta> order <Q>, followed (whether or not k is a review month) by the line period <p_{n+k-1}> demand <D_k> receipt <r> on_hand <I_k> status <status>.
+- summary orders <number of orders> ordered <total of the order quantities> short_periods <number of steps with status short> lowest <minimum of I_k> average <mean of I_k>
+- for each year of Step 13 (in increasing order of year), year <year> actual_months <n_a> actual <Y_a> forecast_months <n_f> forecast <Y_f> total <Y> growth <growth rate>. If there is no growth rate, the string NA is written in place of the growth rate.
+
+[Source files]
+There are the following 6 source files. The names are language-neutral role names; extensions and the use of upper and lower case follow the conventions of each language.
+- main: handles the overall flow and contains most of the processing: calling the modules, interpolating missing values (Step 2), outliers, events and lifts, the corrected series and the strengths (Step 4), splitting into the training and holdout periods (Step 5), dispatching the fitting of the 11 methods and the grid search, assembling the forecasts of each method from origin o and the model lines (Step 6, including the choice of differencing and the choice of order of Step 7), rolling-origin cross-validation (Step 8), the combination forecast (Step 9), assembling the evaluation on the holdout period (Step 10), the final model and future forecasts (Step 11), the inventory plan simulation (Step 12), the yearly totals (Step 13), the bars and the residual diagnostics (Step 14), the forecast chart and the seasonal profile (Step 15), and assembling and writing the lines of the 8 files.
+- series_io: reading the 4 input files, computing the next month of a year-month, formatting reals (4 decimal places), and writing a sequence of lines to a file.
+- decomposition: the classical decomposition (the trend, seasonal indices and residuals of Step 3), the sample variance, and computing the least-squares line.
+- smoothing: the recursions of ses, holt and damped, and hw_add and hw_mult, and the formulas for forecasting from their respective states ((4) to (8) of Step 6).
+- autoregression: building the differenced series and accumulating the forecast values, the autocorrelation, the Durbin-Levinson recursion, the residual and forecast recursions of the autoregressive model (Step 7), and the Ljung-Box test (Step 14).
+- evaluation: the accuracy measures on the holdout period (computing me, mae, rmse, mape, smape and mase of Step 10), computing Delta, computing W(a, lo, hi, kappa), and ranking.
+
+[Constraints]
+- series.csv contains at least 1 and at most 3 series, and the number of months n of each series is at least 60 and at most 144. The values are integers from 1 to 99999.
+- The first and last months of each series, and the months of the holdout period, are not missing.
+- m is an even number from 4 to 12. 1 <= h <= H <= 24, m + P + 1 <= c, c + H <= N (= n - h), and 1 <= C <= 11.
+- The candidates for alpha, beta, gamma and phi are each 1 to 6 distinct values, all of them reals greater than 0 and less than 1.
+- 1 <= P <= L <= 24 and L <= N - m - 2. The Ljung-Box lags eta_1, eta_2, ... are 1 to 6 distinct even numbers, each from 2 to L.
+- z_o, z_80, z_95 and z_s are positive reals, and z_80 < z_95.
+- Every event time point t of a past event satisfies m / 2 <= t <= N - 1 and t <= n - 1 - m / 2, and is not a missing time point. The kind of a future event is one of the kinds of the past events of the same series. The year-month of every event is one of p_0 to p_{n+H-1} of its series.
+- 0 <= I_0 <= 99999, tau >= 1, R >= 1, and tau + R <= H.
+- During the computation there is no division by 0, no logarithm of a number <= 0, and no square root of a negative number (the trend, the seasonal indices, q and u of the Holt-Winters method, the variance nu, v_k, s_R, Peak, Delta, mae_naive, hi - lo, the total of the previous year Y_prev, m_2, the variance nu and Sum e_i^2 of the sequences of residuals, a_i, and |a_i| + |f_i| are all nonzero, and the arguments of ln are positive).
+- In the given data, every decision that affects the result (the choice of the smallest SSE in the grid searches, the choice of the kind of differencing, the choice of the order, the outlier test, the choice of the combination methods, the ranking by rmse, the comparisons for cover80, cover95 and W, the inventory status, whether a value is significant, and the bar lengths, columns, order quantities, etc. obtained with floor and ceil) is far enough from its boundary that it does not change with small errors of double-precision computation (up to about 10^-9 in relative terms) or with differences in the order of summation.
+- The exact value of every output real is at least 10^-9 away from the exact midpoint between two rounding candidates.
+
+[Example]
+The following example only shows the formats and differs from the actual input files (it has 1 series, and the holdout period and the forecast period are also shorter).
+Example input (input/series.csv):
+series,period,value
+demo,2019-01,182
+demo,2019-02,170
+demo,2019-03,191
+demo,2019-04,212
+demo,2019-05,223
+demo,2019-06,234
+demo,2019-07,248
+demo,2019-08,243
+demo,2019-09,204
+demo,2019-10,198
+demo,2019-11,207
+demo,2019-12,183
+demo,2020-01,195
+demo,2020-02,195
+demo,2020-03,217
+demo,2020-04,217
+demo,2020-05,229
+demo,2020-06,NA
+demo,2020-07,250
+demo,2020-08,257
+demo,2020-09,228
+demo,2020-10,208
+demo,2020-11,231
+demo,2020-12,192
+demo,2021-01,195
+demo,2021-02,194
+demo,2021-03,219
+demo,2021-04,235
+demo,2021-05,245
+demo,2021-06,245
+demo,2021-07,360
+demo,2021-08,257
+demo,2021-09,238
+demo,2021-10,222
+demo,2021-11,237
+demo,2021-12,221
+demo,2022-01,202
+demo,2022-02,207
+demo,2022-03,238
+demo,2022-04,249
+demo,2022-05,261
+demo,2022-06,277
+demo,2022-07,293
+demo,2022-08,289
+demo,2022-09,266
+demo,2022-10,243
+demo,2022-11,244
+demo,2022-12,238
+demo,2023-01,243
+demo,2023-02,228
+demo,2023-03,257
+demo,2023-04,274
+demo,2023-05,272
+demo,2023-06,287
+demo,2023-07,306
+demo,2023-08,297
+demo,2023-09,274
+demo,2023-10,262
+demo,2023-11,268
+demo,2023-12,248
+Example input (input/events.csv):
+series,period,kind
+demo,2021-07,sale
+demo,2024-03,sale
+Example input (input/inventory.csv):
+series,on_hand,lead_time,review,service
+demo,600,1,2,1.6449
+Example input (input/params.txt):
+season 12
+holdout 6
+horizon 8
+cv_start 30
+combo 2
+alpha 0.2 0.5 0.8
+beta 0.05 0.2
+gamma 0.1 0.3
+phi 0.9 0.98
+max_ar 4
+max_lag 12
+ljung_box 4 8
+outlier 2.5
+interval 1.2816 1.96
+Example output (output/decomposition.csv): the first 9 lines are as follows.
+series,period,value,cleaned,trend,seasonal_add,residual_add,seasonal_mult,residual_mult,flag
+demo,2019-01,182.0000,182.0000,NA,-28.7474,NA,0.8783,NA,ok
+demo,2019-02,170.0000,170.0000,NA,-32.6641,NA,0.8637,NA,ok
+demo,2019-03,191.0000,191.0000,NA,-7.2057,NA,0.9701,NA,ok
+demo,2019-04,212.0000,212.0000,NA,2.3984,NA,1.0086,NA,ok
+demo,2019-05,223.0000,223.0000,NA,9.0964,NA,1.0376,NA,ok
+demo,2019-06,234.0000,234.0000,NA,18.1589,NA,1.0739,NA,ok
+demo,2019-07,248.0000,248.0000,208.4583,57.4922,-17.9505,1.2463,0.9545,ok
+demo,2019-08,243.0000,243.0000,210.0417,30.0026,2.9557,1.1307,1.0232,ok
+The lines for 2020-06 and 2021-07 of the same file are as follows (the other lines are omitted).
+demo,2020-06,239.5000,239.5000,221.1667,18.1589,0.1745,1.0739,1.0084,missing
+demo,2021-07,360.0000,296.7839,239.2917,57.4922,63.2161,1.2463,1.2071,sale
+Example output (output/models.txt):
+series demo
+data observations 60 train 54 holdout 6 missing 1 outliers 0 events 1
+event sale occurrences 1 lift 1.2130
+strength trend 0.6952 seasonal 0.8074
+naive rmse 19.0495 residuals 53
+snaive rmse 18.9338 residuals 42
+drift slope 1.9811 rmse 18.9462 residuals 53
+ses alpha 0.8000 rmse 19.3625 residuals 54 level 283.9022
+holt alpha 0.8000 beta 0.0500 rmse 19.7163 residuals 54 level 284.3355 slope 2.3119
+damped alpha 0.8000 beta 0.0500 phi 0.9000 rmse 19.5792 residuals 54 level 284.1280 slope 1.5076
+hw_add alpha 0.2000 beta 0.0500 gamma 0.1000 rmse 8.6945 residuals 54 level 267.2999 slope 1.3153
+hw_add seasonal 41.5759 33.8627 -1.0645 -11.7020 -1.8753 -24.7092 -25.9573 -35.3781 -13.1150 3.5328 12.8923 23.7367
+hw_mult alpha 0.2000 beta 0.0500 gamma 0.3000 rmse 9.3910 residuals 54 level 268.7113 slope 1.3345
+hw_mult seasonal 1.1913 1.1429 1.0145 0.9414 0.9831 0.8969 0.8853 0.8523 0.9554 1.0101 1.0383 1.0859
+decomp_add intercept 198.7987 slope 1.2279 rmse 6.9734 residuals 54
+decomp_add seasonal -30.1831 -30.1137 -5.6137 1.9002 12.0947 19.6502 43.2058 31.5202 2.7286 -14.8548 -4.0110 -26.3235
+decomp_mult intercept 198.3851 slope 1.2447 rmse 7.0522 residuals 54
+decomp_mult seasonal 0.8687 0.8694 0.9762 1.0080 1.0518 1.0832 1.1886 1.1380 1.0102 0.9358 0.9842 0.8859
+ar variance none 906.9471 first 358.9586 seasonal 127.0147 both 280.4777
+ar difference seasonal n 42 mean 15.2143 order 0 sigma2 127.0147 rmse 11.2701 residuals 42
+ar aic 203.4607 205.1852 207.1840 208.5564 209.3793
+ar coefficients none
+combo members decomp_add decomp_mult
+best decomp_add rmse 3.5070
+final decomp_add intercept 198.4610 slope 1.2424 rmse 6.5578 residuals 60
+final decomp_add seasonal -27.4304 -31.3471 -5.8887 3.7154 10.4134 19.4759 43.0052 31.3196 2.5279 -15.0554 -4.2116 -26.5241
+Example output (output/forecasts.csv): the first 7 lines are as follows.
+series,stage,method,period,actual,forecast,lo80,hi80,lo95,hi95
+demo,holdout,naive,2023-07,306,287.0000,260.5710,313.4290,246.5810,327.4190
+demo,holdout,naive,2023-08,297,287.0000,251.1973,322.8027,232.2456,341.7544
+demo,holdout,naive,2023-09,274,287.0000,241.9948,332.0052,218.1718,355.8282
+demo,holdout,naive,2023-10,262,287.0000,235.8619,338.1381,208.7926,365.2074
+demo,holdout,naive,2023-11,268,287.0000,229.7638,344.2362,199.4665,374.5335
+demo,holdout,naive,2023-12,248,287.0000,224.9181,349.0819,192.0557,381.9443
+The last 8 lines of the same file (the forecast-period lines) are as follows (the other lines are omitted).
+demo,future,decomp_add,2024-01,NA,246.8181,238.3133,255.3229,233.8113,259.8248
+demo,future,decomp_add,2024-02,NA,244.1438,236.4734,251.8143,232.4132,255.8745
+demo,future,decomp_add,2024-03,NA,328.5356,319.8125,337.2587,315.1950,341.8762
+demo,future,decomp_add,2024-04,NA,281.6912,274.4343,288.9481,270.5929,292.7894
+demo,future,decomp_add,2024-05,NA,289.6315,282.2934,296.9696,278.4091,300.8539
+demo,future,decomp_add,2024-06,NA,299.9364,292.4554,307.4175,288.4954,311.3775
+demo,future,decomp_add,2024-07,NA,324.7081,317.1576,332.2587,313.1608,336.2555
+demo,future,decomp_add,2024-08,NA,314.2650,307.6755,320.8546,304.1874,324.3426
+Example output (output/accuracy.csv):
+series,method,me,mae,rmse,mape,smape,mase,fva,cv_rmse,cover80,cover95,winkler80,winkler95,rank
+demo,naive,-11.1667,20.8333,22.8655,7.7797,7.5002,1.3491,0.0000,36.6414,6,6,92.5644,141.5622,9
+demo,snaive,13.6667,13.6667,14.9108,5.0168,5.1748,0.8850,34.4000,20.9115,6,6,53.6025,81.9764,7
+demo,drift,-18.1006,25.7862,29.4221,9.7299,9.1874,1.6699,-23.7736,39.2036,6,6,98.6219,150.8263,12
+demo,ses,-8.0688,19.8007,21.5231,7.3359,7.1396,1.2823,4.9565,36.1650,6,6,91.5846,140.0639,8
+demo,holt,-16.5940,25.7250,28.9651,9.6739,9.1722,1.6659,-23.4801,40.4356,6,6,101.7170,155.5597,11
+demo,damped,-12.3267,22.5964,24.8683,8.4430,8.1107,1.4633,-8.4628,39.0901,6,6,98.5392,150.6997,10
+demo,hw_add,-2.0848,3.7379,4.1184,1.3300,1.3233,0.2421,82.0579,8.5117,6,6,21.6950,33.1790,2
+demo,hw_mult,-5.0714,6.4104,8.6656,2.1938,2.1567,0.4151,69.2302,9.5957,4,6,29.8454,37.4698,6
+demo,decomp_add,1.0533,2.9264,3.5070,1.0676,1.0731,0.1895,85.9531,6.6814,6,6,17.0575,26.0867,1
+demo,decomp_mult,-0.3295,6.0853,7.1676,2.1758,2.1739,0.3941,70.7904,7.0760,4,6,20.4751,27.6546,5
+demo,ar,-1.5476,5.7381,6.1604,2.1019,2.0981,0.3716,72.4571,11.1082,6,6,28.3700,43.3874,4
+demo,combo,0.3619,4.5059,5.1950,1.6217,1.6248,0.2918,78.3717,6.8013,6,6,17.3698,26.5643,3
+Example output (output/cv.csv): the first 9 lines are as follows (the other lines are omitted).
+series,method,step,origins,mae,rmse
+demo,naive,1,24,16.9820,20.6219
+demo,naive,2,23,22.9906,27.9359
+demo,naive,3,22,30.5356,35.1164
+demo,naive,4,21,35.0849,39.9017
+demo,naive,5,20,38.9392,44.6599
+demo,naive,6,19,40.3570,48.4409
+demo,naive,7,18,39.0991,46.8361
+demo,naive,8,17,34.8108,40.6162
+Example output (output/correlogram.txt):
+series demo difference seasonal n 42 band 0.3086
+acf  1 -0.0809 [              :   ##|     :              ]
+acf  2  0.0120 [              :     |     :              ]
+acf  3  0.1196 [              :     |##   :              ]
+acf  4 -0.1821 [              : ####|     :              ]
+acf  5  0.0731 [              :     |#    :              ]
+acf  6 -0.0198 [              :     |     :              ]
+acf  7  0.0698 [              :     |#    :              ]
+acf  8  0.3290 [              :     |#######             ] *
+acf  9 -0.0756 [              :   ##|     :              ]
+acf 10  0.0925 [              :     |##   :              ]
+acf 11  0.0576 [              :     |#    :              ]
+acf 12 -0.3768 [            ########|     :              ] *
+pacf  1 -0.0809 [              :   ##|     :              ]
+pacf  2  0.0055 [              :     |     :              ]
+pacf  3  0.1218 [              :     |##   :              ]
+pacf  4 -0.1662 [              :  ###|     :              ]
+pacf  5  0.0475 [              :     |#    :              ]
+pacf  6 -0.0217 [              :     |     :              ]
+pacf  7  0.1109 [              :     |##   :              ]
+pacf  8  0.3147 [              :     |######              ] *
+pacf  9 -0.0125 [              :     |     :              ]
+pacf 10  0.0587 [              :     |#    :              ]
+pacf 11  0.0331 [              :     |#    :              ]
+pacf 12 -0.3260 [             #######|     :              ] *
+residuals naive n 53 mean 1.9811 sd 19.1275 dw 1.9327 skewness -0.2850 kurtosis -0.0116 jb 0.7179
+ljung_box naive lag 4 q 0.3518 p 0.9862 lag 8 q 27.2117 p 0.0006
+residuals snaive n 42 mean 15.2143 sd 11.4067 dw 0.7638 skewness 0.6432 kurtosis 0.1396 jb 2.9299
+ljung_box snaive lag 4 q 2.5908 p 0.6285 lag 8 q 9.0172 p 0.3408
+residuals drift n 53 mean 0.0000 sd 19.1275 dw 1.9539 skewness -0.2850 kurtosis -0.0116 jb 0.7179
+ljung_box drift lag 4 q 0.3518 p 0.9862 lag 8 q 27.2117 p 0.0006
+residuals ses n 54 mean 2.3588 sd 19.3988 dw 1.5405 skewness -0.2152 kurtosis -0.3893 jb 0.7578
+ljung_box ses lag 4 q 2.8181 p 0.5887 lag 8 q 42.0281 p 0.0000
+residuals holt n 54 mean 0.5688 sd 19.8932 dw 1.5487 skewness -0.2649 kurtosis -0.3891 jb 0.9723
+ljung_box holt lag 4 q 3.0184 p 0.5548 lag 8 q 42.7965 p 0.0000
+residuals damped n 54 mean 1.6914 sd 19.6892 dw 1.5617 skewness -0.2566 kurtosis -0.3724 jb 0.9046
+ljung_box damped lag 4 q 2.6695 p 0.6146 lag 8 q 41.5063 p 0.0000
+residuals hw_add n 54 mean 0.3331 sd 8.7697 dw 2.1499 skewness 0.6100 kurtosis 0.4668 jb 3.8389
+ljung_box hw_add lag 4 q 2.7110 p 0.6073 lag 8 q 3.6395 p 0.8881
+residuals hw_mult n 54 mean 0.0014 sd 9.4792 dw 2.0815 skewness 0.4720 kurtosis 0.0357 jb 2.0081
+ljung_box hw_mult lag 4 q 3.1842 p 0.5275 lag 8 q 3.9206 p 0.8642
+residuals decomp_add n 54 mean 0.0000 sd 7.0389 dw 2.0637 skewness 0.1522 kurtosis -0.3520 jb 0.4873
+ljung_box decomp_add lag 4 q 2.0878 p 0.7196 lag 8 q 4.9136 p 0.7668
+residuals decomp_mult n 54 mean -0.0323 sd 7.1183 dw 2.0677 skewness 0.2234 kurtosis -0.4024 jb 0.8137
+ljung_box decomp_mult lag 4 q 2.2715 p 0.6860 lag 8 q 5.0918 p 0.7477
+residuals ar n 42 mean 0.0000 sd 11.4067 dw 2.1557 skewness 0.6432 kurtosis 0.1396 jb 2.9299
+ljung_box ar lag 4 q 2.5908 p 0.6285 lag 8 q 9.0172 p 0.3408
+Example output (output/chart.txt):
+chart demo method decomp_add
+scale low 232.4132 high 341.8762
+2023-07 |                                  ---===*=o=====---          |
+2023-08 |                             ---===*=o====---                |
+2023-09 |               --====o=*===--                                |
+2023-10 |      --====o===*=--                                         |
+2023-11 |            ---====o*====--                                  |
+2023-12 |---=====o*===---                                             |
+2024-01 | --=====o=====--                                             |
+2024-02 |--====o=====--                                               |
+2024-03 |                                             ---=====o====---|
+2024-04 |                     --====o====--                           |
+2024-05 |                         --====o====---                      |
+2024-06 |                               --====o====--                 |
+2024-07 |                                            --=====o====--   |
+2024-08 |                                       --====o===--          |
+profile peak 0.2463
+season  1 0.8783 [               ###############|                              ]
+season  2 0.8637 [             #################|                              ]
+season  3 0.9701 [                          ####|                              ]
+season  4 1.0086 [                              |#                             ]
+season  5 1.0376 [                              |#####                         ]
+season  6 1.0739 [                              |#########                     ]
+season  7 1.2463 [                              |##############################]
+season  8 1.1307 [                              |################              ]
+season  9 1.0036 [                              |                              ]
+season 10 0.9297 [                     #########|                              ]
+season 11 0.9777 [                           ###|                              ]
+season 12 0.8800 [               ###############|                              ]
+Example output (output/plan.txt):
+series demo method decomp_add
+policy on_hand 600 lead_time 1 review 2 service 1.6449 safety_stock 17.5004
+review 2024-01 position 600.0000 target 836.9979 order 237
+period 2024-01 demand 246.8181 receipt 0 on_hand 353.1819 status ok
+period 2024-02 demand 244.1438 receipt 237 on_hand 346.0381 status ok
+review 2024-03 position 346.0381 target 917.3586 order 572
+period 2024-03 demand 328.5356 receipt 0 on_hand 17.5025 status ok
+period 2024-04 demand 281.6912 receipt 572 on_hand 307.8113 status ok
+review 2024-05 position 307.8113 target 931.7765 order 624
+period 2024-05 demand 289.6315 receipt 0 on_hand 18.1798 status ok
+period 2024-06 demand 299.9364 receipt 624 on_hand 342.2434 status ok
+period 2024-07 demand 324.7081 receipt 0 on_hand 17.5352 status ok
+summary orders 3 ordered 1433 short_periods 0 lowest 17.5025 average 200.3560
+year 2019 actual_months 12 actual 2495.0000 forecast_months 0 forecast 0.0000 total 2495.0000 growth NA
+year 2020 actual_months 12 actual 2658.5000 forecast_months 0 forecast 0.0000 total 2658.5000 growth 6.5531
+year 2021 actual_months 12 actual 2868.0000 forecast_months 0 forecast 0.0000 total 2868.0000 growth 7.8804
+year 2022 actual_months 12 actual 3007.0000 forecast_months 0 forecast 0.0000 total 3007.0000 growth 4.8466
+year 2023 actual_months 12 actual 3216.0000 forecast_months 0 forecast 0.0000 total 3216.0000 growth 6.9504
+year 2024 actual_months 0 actual 0.0000 forecast_months 8 forecast 2329.7298 total 2329.7298 growth NA

@@ -1,0 +1,9 @@
+<?php
+function hanoi(int $n, string $source, string $target, string $auxiliary): int {
+    if ($n === 0) return 0;
+    $moves = hanoi($n-1,$source,$auxiliary,$target);
+    printf("move disk %d from %s to %s\n",$n,$source,$target);
+    return $moves + 1 + hanoi($n-1,$auxiliary,$target,$source);
+}
+$moves = hanoi(4,'A','C','B');
+printf("total moves: %d\n",$moves);

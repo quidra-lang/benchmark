@@ -1,0 +1,715 @@
+import lexer = "./lexer.qui"
+import ini = "./ini_parser.qui"
+import schema = "./schema.qui"
+import interpolate = "./interpolate.qui"
+import emitter = "./emitter.qui"
+
+class Scalar(string notation, int measure = 0, bool truth = false)
+
+string lowercase(string text)
+    string result = ""
+    for nat index < len(text)
+        string character = text[index]
+        match "ABCDEFGHIJKLMNOPQRSTUVWXYZ".find(character)
+            nat offset
+                result += "abcdefghijklmnopqrstuvwxyz"[offset]
+            none
+                result += character
+    return result
+
+bool characters_in(string text, string allowed)
+    for nat index < len(text)
+        if not allowed.contains(text[index])
+            return false
+    return true
+
+bool digits(string text, nat minimum, nat maximum)
+    return minimum <= len(text) <= maximum and characters_in(text, "0123456789")
+
+int | none integer_value(string text)
+    string body = text
+    bool negative = body.starts_with("-")
+    if negative or body.starts_with("+")
+        body = body[1:<len(body)]
+    int result = 0
+    if body.starts_with("0x") or body.starts_with("0X")
+        string hexadecimal = lowercase(body[2:<len(body)])
+        if not (1 <= len(hexadecimal) <= 10) or not characters_in(hexadecimal, "0123456789abcdef")
+            return none
+        for nat index < len(hexadecimal)
+            match "0123456789abcdef".find(hexadecimal[index])
+                nat digit
+                    result = result * 16 + int(digit)
+                none
+                    return none
+    else
+        string decimal = ""
+        for nat index < len(body)
+            string character = body[index]
+            if character == "_"
+                if index == 0 or index + 1 == len(body)
+                    return none
+                if not digits(body[index - 1], 1, 1) or not digits(body[index + 1], 1, 1)
+                    return none
+            elif digits(character, 1, 1)
+                decimal += character
+            else
+                return none
+        if not digits(decimal, 1, 12)
+            return none
+        result = int.parse(decimal)
+    return if negative then -result else result
+
+int | none size_value(string text)
+    nat position = 0
+    while position < len(text) and digits(text[position], 1, 1)
+        position += 1
+    string whole = text[0:<position]
+    if not digits(whole, 1, 6)
+        return none
+    string fraction = ""
+    if position < len(text) and text[position] == "."
+        position += 1
+        nat start = position
+        while position < len(text) and digits(text[position], 1, 1)
+            position += 1
+        fraction = text[start:<position]
+        if not digits(fraction, 1, 3)
+            return none
+    string unit = lowercase(text[position:<len(text)])
+    int factor = 1
+    if unit == "kb"
+        factor = 1024
+    elif unit == "mb"
+        factor = 1048576
+    elif unit == "gb"
+        factor = 1073741824
+    elif unit != "" and unit != "b"
+        return none
+    int result = int.parse(whole) * factor
+    if fraction != ""
+        int divisor = 1
+        for nat _ < len(fraction)
+            divisor *= 10
+        int scaled = int.parse(fraction) * factor
+        if scaled % divisor != 0
+            return none
+        result += scaled / divisor
+    return result
+
+int | none duration_value(string text)
+    if digits(text, 1, 6)
+        return int.parse(text)
+    if text == ""
+        return none
+    nat position = 0
+    int previous = -1
+    int result = 0
+    int[] factors = [3600, 60, 1]
+    while position < len(text)
+        nat start = position
+        while position < len(text) and digits(text[position], 1, 1)
+            position += 1
+        string number = text[start:<position]
+        if not digits(number, 1, 6) or position == len(text)
+            return none
+        match "hms".find(text[position])
+            nat order
+                if int(order) <= previous
+                    return none
+                previous = int(order)
+                result += int.parse(number) * factors[order]
+            none
+                return none
+        position += 1
+    return result
+
+string | none host_value(string text)
+    if characters_in(text, "0123456789.")
+        string[] parts = text.split(".")
+        if len(parts) != 4
+            return none
+        for auto part = parts[]
+            if not digits(part, 1, 3) or (len(part) > 1 and part.starts_with("0"))
+                return none
+            int number = int.parse(part)
+            if number > 255
+                return none
+        return text
+    if len(text) > 253
+        return none
+    for auto label = text.split(".")[]
+        if not (1 <= len(label) <= 63) or label.starts_with("-") or label.ends_with("-")
+            return none
+        if not characters_in(lowercase(label), "abcdefghijklmnopqrstuvwxyz0123456789-")
+            return none
+    return lowercase(text)
+
+string | none path_value(string text)
+    if text == "" or text.contains(" ") or text.contains(NL) or text.contains(HT)
+        return none
+    bool absolute = text.starts_with("/")
+    string[] parts = []
+    for auto part = text.split("/")[]
+        if part == "" or part == "."
+            continue
+        if part != ".."
+            parts = parts.append(part)
+        elif len(parts) > 0 and parts[len(parts) - 1] != ".."
+            parts = parts[0:<len(parts) - 1]
+        elif absolute
+            return none
+        else
+            parts = parts.append(part)
+    if absolute
+        return "/" + parts.join("/")
+    return if len(parts) == 0 then "." else parts.join("/")
+
+string | none url_value(string text)
+    nat boundary = 0
+    match text.find("://")
+        nat separator
+            boundary = separator
+        none
+            return none
+    string scheme = lowercase(text[0:<boundary])
+    if scheme == "" or not "abcdefghijklmnopqrstuvwxyz".contains(scheme[0])
+        return none
+    if not characters_in(scheme, "abcdefghijklmnopqrstuvwxyz0123456789+-.")
+        return none
+    string rest = text[boundary + 3:<len(text)]
+    if rest.contains("?") or rest.contains("#")
+        return none
+    string authority = rest
+    string path = "/"
+    match rest.find("/")
+        nat slash
+            authority = rest[0:<slash]
+            path = rest[slash:<len(rest)]
+        none
+            authority = rest
+    string host = authority
+    string port = ""
+    bool has_port = false
+    match authority.find(":")
+        nat colon
+            host = authority[0:<colon]
+            port = authority[colon + 1:<len(authority)]
+            has_port = true
+        none
+            host = authority
+    string normalized_host = ""
+    string normalized_path = ""
+    match host_value(host)
+        string accepted_host
+            normalized_host = accepted_host
+        none
+            return none
+    match path_value(path)
+        string accepted_path
+            normalized_path = accepted_path
+        none
+            return none
+    string result = scheme + "://" + normalized_host
+    if has_port
+        if not digits(port, 1, 5) or port.starts_with("0")
+            return none
+        int number = int.parse(port)
+        if number > 65535
+            return none
+        if not ((scheme == "http" and number == 80) or (scheme == "https" and number == 443))
+            result += ":" + port
+    return result + normalized_path
+
+int | none date_value(string text)
+    if len(text) != 10 or text[4] != "-" or text[7] != "-"
+        return none
+    if not digits(text[0:<4], 4, 4) or not digits(text[5:<7], 2, 2) or not digits(text[8:<10], 2, 2)
+        return none
+    int year = int.parse(text[0:<4])
+    int month = int.parse(text[5:<7])
+    int day = int.parse(text[8:<10])
+    if year < 1 or not (1 <= month <= 12)
+        return none
+    int[] days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    int maximum = days[month - 1]
+    if month == 2 and ((year % 4 == 0 and year % 100 != 0) or year % 400 == 0)
+        maximum = 29
+    if not (1 <= day <= maximum)
+        return none
+    return year * 10000 + month * 100 + day
+
+Scalar | none scalar_value(string kind, string text, string[] allowed)
+    if kind == "string"
+        return Scalar(emitter.scalar_notation(kind, text), int(len(text)))
+    if kind == "bool"
+        string lowered = lowercase(text)
+        if lowered == "true" or lowered == "yes" or lowered == "on" or lowered == "1"
+            return Scalar(emitter.scalar_notation(kind, text, 0, true), 0, true)
+        if lowered == "false" or lowered == "no" or lowered == "off" or lowered == "0"
+            return Scalar(emitter.scalar_notation(kind, text))
+        return none
+    if kind == "enum"
+        for auto candidate = allowed[]
+            if lowercase(text) == lowercase(candidate)
+                return Scalar(emitter.scalar_notation(kind, candidate))
+        return none
+    if kind == "int" or kind == "size" or kind == "duration" or kind == "date"
+        int | none number = none
+        if kind == "int"
+            number = integer_value(text)
+        elif kind == "size"
+            number = size_value(text)
+        elif kind == "duration"
+            number = duration_value(text)
+        else
+            number = date_value(text)
+        match number
+            int value
+                return Scalar(emitter.scalar_notation(kind, text, value), value)
+            none
+                return none
+    string | none normalized = none
+    if kind == "host"
+        normalized = host_value(text)
+    elif kind == "path"
+        normalized = path_value(text)
+    elif kind == "url"
+        normalized = url_value(text)
+    match normalized
+        string value
+            return Scalar(emitter.scalar_notation(kind, value))
+        none
+            return none
+
+class Parent(string section, lexer.Origin origin)
+
+class Profile(string name, string root, nat manifest_line, string[] overrides)
+    map.Map<string, interpolate.Definition> configuration
+    map.Map<string, Parent> parents
+    map.Map<string, emitter.Output> outputs
+    nat definition_count = 0
+    (nat, string)[] tree = []
+    lexer.Diagnostic[] diagnostics = []
+    (string, lexer.Origin[])[] overridden = []
+    nat errors = 0
+    nat warnings = 0
+    nat document_keys = 0
+    nat manifest_keys = 0
+    nat default_keys = 0
+    nat dropped = 0
+
+    void .report(lexer.Origin origin, string code, string message)
+        auto diagnostic = lexer.Diagnostic(origin, code, message)
+        for auto previous = diagnostics[]
+            if previous == diagnostic
+                return
+        diagnostics = diagnostics.append(diagnostic)
+
+    void .define(string key, string value, lexer.Origin origin)
+        definition_count += 1
+        lexer.Origin[] history = []
+        match configuration.get(key)
+            interpolate.Definition earlier
+                history = earlier.history
+            none
+                history = []
+        if len(history) == 0 or history[len(history) - 1] != origin
+            history = history.append(origin)
+        .configuration.set(key, interpolate.Definition(value, origin, definition_count, history))
+
+class Library()
+    map.Map<string, ini.Document> documents
+    set.Set<string> missing
+
+    ini.Document | none .find(string name)
+        match documents.get(name)
+            ini.Document cached
+                return cached
+            none
+                if missing.has(name)
+                    return none
+        string path = "input/conf/" + name + ".ini"
+        bool present = file.exists(path)
+        if not present
+            .missing.add(name)
+            return none
+        ini.Document parsed = ini.parse_document(name, lexer.read_lines(path))
+        .documents.set(name, parsed)
+        return parsed
+
+void apply_document(Profile &profile, Library &library, string name, string[] chain)
+    ini.Document document
+    match .library.find(name)
+        ini.Document found
+            document = found
+        none
+            return
+    profile.tree = profile.tree.append((len(chain) - 1, name))
+    for auto diagnostic = document.diagnostics[]
+        .profile.report(diagnostic.origin, diagnostic.code, diagnostic.message)
+    for auto statement = document.statements[]
+        auto origin = lexer.Origin(name, statement.line)
+        string key = statement.target
+        if statement.kind == "assign"
+            .profile.define(key, statement.value, origin)
+        elif statement.kind == "append"
+            string value = statement.value
+            match profile.configuration.get(key)
+                interpolate.Definition earlier
+                    if earlier.value != ""
+                        value = earlier.value + "," + value
+                none
+                    value = statement.value
+            .profile.define(key, value, origin)
+        elif statement.kind == "unset"
+            if not (.profile.configuration.remove(key))
+                .profile.report(origin, "W_UNSET", key + " is not set")
+        elif statement.kind == "inherit"
+            .profile.parents.set(key, Parent(statement.value, origin))
+        else
+            bool cycle = false
+            for string active = chain[nat index]
+                if active == key
+                    string[] path = chain[index:<len(chain)].append(key)
+                    .profile.report(origin, "E_INCLUDE_CYCLE", "include cycle " + path.join(" -> "))
+                    profile.tree = profile.tree.append((len(chain), key + " (cycle)"))
+                    cycle = true
+                    break
+            if cycle
+                continue
+            match .library.find(key)
+                ini.Document included
+                    apply_document(&profile, &library, key, chain.append(key))
+                none
+                    .profile.report(origin, "E_INCLUDE_MISSING", "missing document " + key)
+                    profile.tree = profile.tree.append((len(chain), key + " (missing)"))
+
+void inherit_sections(Profile &profile)
+    map.Map<string, interpolate.Definition> snapshot = profile.configuration
+    for auto section = profile.parents.keys()[]
+        Parent declaration = lexer.entry(profile.parents, section)
+        string[] chain = [section]
+        string current = section
+        bool cycle = false
+        while profile.parents.has(current)
+            Parent parent = lexer.entry(profile.parents, current)
+            bool repeated = false
+            for auto visited = chain[]
+                if visited == parent.section
+                    repeated = true
+            chain = chain.append(parent.section)
+            if repeated
+                .profile.report(declaration.origin, "E_INHERIT_CYCLE", "inheritance cycle " + chain.join(" -> "))
+                cycle = true
+                break
+            current = parent.section
+        if cycle
+            continue
+        bool parent_has_keys = false
+        for auto original = snapshot.keys()[]
+            if ini.section_of(original) == declaration.section
+                parent_has_keys = true
+        if not profile.parents.has(declaration.section) and not parent_has_keys
+            .profile.report(declaration.origin, "W_PARENT_EMPTY", "section {section} inherits from empty section {declaration.section}")
+        for 1 <= nat ancestor_index < len(chain)
+            string ancestor = chain[ancestor_index]
+            for auto original = snapshot.keys()[]
+                if ini.section_of(original) != ancestor
+                    continue
+                string target = section + "." + ini.key_name(original)
+                if not profile.configuration.has(target)
+                    .profile.configuration.set(target, lexer.entry(snapshot, original))
+
+void resolve_aliases(Profile &profile, schema.Schema rules)
+    for auto spec = rules.specs[]
+        if not spec.has("alias")
+            continue
+        string[] aliases = spec.attribute("alias").split(",")
+        string[] candidates = []
+        if profile.configuration.has(spec.pattern)
+            candidates = candidates.append(spec.pattern)
+        nat alias_count = 0
+        for auto alias = aliases[]
+            if profile.configuration.has(alias)
+                candidates = candidates.append(alias)
+                alias_count += 1
+        if alias_count == 0
+            continue
+        string winner = candidates[0]
+        interpolate.Definition chosen = lexer.entry(profile.configuration, winner)
+        for auto candidate = candidates[]
+            interpolate.Definition definition = lexer.entry(profile.configuration, candidate)
+            if definition.number > chosen.number
+                chosen = definition
+                winner = candidate
+        for auto candidate = candidates[]
+            interpolate.Definition definition = lexer.entry(profile.configuration, candidate)
+            if candidate != spec.pattern
+                .profile.report(definition.origin, "W_DEPRECATED", "{candidate} is deprecated, use {spec.pattern}")
+            if candidate != winner
+                .profile.report(definition.origin, "W_SHADOWED", "{candidate} is superseded by {winner} at {chosen.origin.text()}")
+        .profile.configuration.set(spec.pattern, chosen)
+        for auto alias = aliases[]
+            .profile.configuration.remove(alias)
+
+string[] fill_defaults(Profile &profile, schema.Schema rules)
+    set.Set<string> sections
+    for auto key = profile.configuration.keys()[]
+        .sections.add(ini.section_of(key))
+    string[] instances = sections.values()
+    for auto spec = rules.specs[]
+        if spec.has("default")
+            for auto target = rules.targets(spec, instances)[]
+                if not profile.configuration.has(target)
+                    .profile.define(target, spec.attribute("default"), lexer.Origin("schema", spec.line))
+    return instances
+
+void report_invalid(Profile &profile, string key, string kind, string[] allowed,
+                    string text, bool secret, bool item, lexer.Origin origin)
+    string display = if secret then "********" else emitter.string_notation(text)
+    if item
+        display = "item " + display
+    if kind == "enum"
+        .profile.report(origin, "E_ENUM", key + ": " + display + " is not one of " + allowed.join(","))
+    else
+        .profile.report(origin, "E_TYPE", key + ": " + display + " is not a valid " + kind)
+
+Scalar | none normalize(Profile &profile, string key, schema.Spec spec,
+                        string text, lexer.Origin origin)
+    bool secret = spec.has("secret")
+    string[] allowed = if spec.has("values") then spec.attribute("values").split(",") else []
+    Scalar normalized
+    if spec.kind == "list"
+        string item_kind = spec.attribute("item", "string")
+        string[] items = []
+        if lexer.trim_spaces(text) != ""
+            for auto raw = text.split(",")[]
+                string item = lexer.trim_spaces(raw)
+                if item == ""
+                    .profile.report(origin, "W_EMPTY_ITEM", key + ": empty list item ignored")
+                else
+                    items = items.append(item)
+        string[] notations = []
+        for auto item = items[]
+            match scalar_value(item_kind, item, allowed)
+                Scalar accepted
+                    notations = notations.append(accepted.notation)
+                none
+                    report_invalid(&profile, key, item_kind, allowed, item, secret, true, origin)
+                    return none
+        if spec.has("unique")
+            set.Set<string> seen
+            string[] distinct = []
+            for auto notation = notations[]
+                if not seen.has(notation)
+                    .seen.add(notation)
+                    distinct = distinct.append(notation)
+            if len(distinct) < len(notations)
+                .profile.report(origin, "W_DUPLICATE_ITEM", key + ": duplicate items removed")
+            notations = distinct
+        normalized = Scalar(emitter.list_notation(notations), int(len(notations)))
+    else
+        match scalar_value(spec.kind, text, allowed)
+            Scalar accepted
+                normalized = accepted
+            none
+                report_invalid(&profile, key, spec.kind, allowed, text, secret, false, origin)
+                return none
+    if spec.has("range")
+        string[] bounds = spec.attribute("range").split("..")
+        string[] displayed_bounds = []
+        bool outside = false
+        for string bound = bounds[nat index]
+            if bound == ""
+                displayed_bounds = displayed_bounds.append("")
+                continue
+            int measure = 0
+            string notation = ""
+            if spec.kind == "string" or spec.kind == "list"
+                measure = int.parse(bound)
+                notation = measure.string()
+            else
+                match scalar_value(spec.kind, bound, [])
+                    Scalar valid_bound
+                        measure = valid_bound.measure
+                        notation = valid_bound.notation
+                    none
+                        return none
+            displayed_bounds = displayed_bounds.append(notation)
+            if (index == 0 and normalized.measure < measure) or (index == 1 and normalized.measure > measure)
+                outside = true
+        if outside
+            string display = if secret then "********" else normalized.notation
+            if spec.kind == "string"
+                display = "length {normalized.measure}"
+            elif spec.kind == "list"
+                display = "count {normalized.measure}"
+            .profile.report(origin, "E_RANGE", key + ": " + display + " is out of range " + displayed_bounds.join(".."))
+            return none
+    return normalized
+
+void check_types(Profile &profile, schema.Schema rules)
+    auto expander = interpolate.Expander(profile.configuration)
+    for auto key = ini.ordered_keys(profile.configuration.keys())[]
+        .expander.expand(key)
+    for auto diagnostic = expander.diagnostics[]
+        .profile.report(diagnostic.origin, diagnostic.code, diagnostic.message)
+    for auto key = ini.ordered_keys(expander.results.keys())[]
+        string text = lexer.entry(expander.results, key)
+        interpolate.Definition definition = lexer.entry(profile.configuration, key)
+        match rules.spec_for(key)
+            schema.Spec spec
+                match normalize(&profile, key, spec, text, definition.origin)
+                    Scalar value
+                        .profile.outputs.set(key, emitter.Output(definition, spec.kind, spec.has("secret"),
+                            value.notation, value.measure, value.truth, spec.has("fixed"), spec.attribute("le")))
+                    none
+                        continue
+            none
+                .profile.report(definition.origin, "W_UNKNOWN", key + " is not in the schema")
+                .profile.outputs.set(key, emitter.Output(definition, "string", false,
+                    emitter.string_notation(text), int(len(text)), false, false, ""))
+
+void check_order(Profile &profile)
+    string[] removed = []
+    for auto key = ini.ordered_keys(profile.outputs.keys())[]
+        emitter.Output output = lexer.entry(profile.outputs, key)
+        if output.limit == ""
+            continue
+        string other_key = ini.section_of(key) + "." + output.limit
+        match profile.outputs.get(other_key)
+            emitter.Output limit
+                if output.measure > limit.measure
+                    .profile.report(output.definition.origin, "E_ORDER", key + ": " + emitter.shown(output)
+                        + " is greater than " + other_key + " (" + emitter.shown(limit) + ")")
+                    removed = removed.append(key)
+            none
+                continue
+    for auto key = removed[]
+        .profile.outputs.remove(key)
+
+void check_required(Profile &profile, schema.Schema rules, string[] instances,
+                    const map.Map<string, interpolate.Definition> configured)
+    for auto spec = rules.specs[]
+        if not spec.has("required")
+            continue
+        for auto target = rules.targets(spec, instances)[]
+            if configured.has(target)
+                continue
+            auto origin = lexer.Origin(profile.root, 0)
+            if not spec.has("when")
+                .profile.report(origin, "E_REQUIRED", target + " is required")
+            else
+                string condition = ini.section_of(target) + "." + spec.attribute("when")
+                match profile.outputs.get(condition)
+                    emitter.Output output
+                        if output.kind == "bool" and output.truth
+                            .profile.report(origin, "E_REQUIRED", "{target} is required when {condition} is true")
+                    none
+                        continue
+
+void check_fixed(Profile &profile, const Profile[] earlier)
+    for auto key = ini.ordered_keys(profile.outputs.keys())[]
+        emitter.Output output = lexer.entry(profile.outputs, key)
+        if not output.fixed
+            continue
+        for auto previous = earlier[]
+            match previous.outputs.get(key)
+                emitter.Output reference
+                    if output.notation != reference.notation
+                        .profile.report(output.definition.origin, "E_FIXED", "{key}: value differs from profile {previous.name}")
+                        .profile.outputs.remove(key)
+                    break
+                none
+                    continue
+
+bool diagnostic_before(lexer.Diagnostic left, lexer.Diagnostic right)
+    if left.origin.document != right.origin.document
+        return lexer.before(left.origin.document, right.origin.document)
+    if left.origin.line != right.origin.line
+        return left.origin.line < right.origin.line
+    if left.code != right.code
+        return lexer.before(left.code, right.code)
+    return lexer.before(left.message, right.message)
+
+void summarize(Profile &profile, nat configured_count)
+    lexer.Diagnostic[] ordered = []
+    for auto diagnostic = profile.diagnostics[]
+        nat position = 0
+        while position < len(ordered) and not diagnostic_before(diagnostic, ordered[position])
+            position += 1
+        ordered = ordered[0:<position].append(diagnostic).concat(ordered[position:<len(ordered)])
+    profile.diagnostics = ordered
+    for auto diagnostic = ordered[]
+        if diagnostic.code.starts_with("E_")
+            profile.errors += 1
+        else
+            profile.warnings += 1
+    for auto key = ini.ordered_keys(profile.outputs.keys())[]
+        emitter.Output output = lexer.entry(profile.outputs, key)
+        if len(output.definition.history) >= 2
+            profile.overridden = profile.overridden.append((key, output.definition.history))
+        if output.definition.origin.document == "manifest"
+            profile.manifest_keys += 1
+        elif output.definition.origin.document == "schema"
+            profile.default_keys += 1
+        else
+            profile.document_keys += 1
+    profile.dropped = configured_count - profile.outputs.size()
+
+void process_profile(Profile &profile, Library &library, schema.Schema rules, const Profile[] earlier)
+    apply_document(&profile, &library, profile.root, [profile.root])
+    for auto override = profile.overrides[]
+        match override.find("=")
+            nat equals
+                .profile.define(override[0:<equals], override[equals + 1:<len(override)],
+                    lexer.Origin("manifest", profile.manifest_line))
+            none
+                continue
+    inherit_sections(&profile)
+    resolve_aliases(&profile, rules)
+    string[] instances = fill_defaults(&profile, rules)
+    map.Map<string, interpolate.Definition> configured = profile.configuration
+    check_types(&profile, rules)
+    check_order(&profile)
+    check_required(&profile, rules, instances, configured)
+    check_fixed(&profile, earlier)
+    summarize(&profile, configured.size())
+
+emitter.Diff difference(Profile first, Profile second)
+    auto result = emitter.Diff(first.name, second.name)
+    set.Set<string> keys
+    for auto key = first.outputs.keys().concat(second.outputs.keys())[]
+        .keys.add(key)
+    for auto key = ini.ordered_keys(keys.values())[]
+        if not first.outputs.has(key)
+            emitter.Output after = lexer.entry(second.outputs, key)
+            result.added += 1
+            result.entries = result.entries.append(emitter.DiffEntry("+", key, "", emitter.shown(after)))
+        elif not second.outputs.has(key)
+            emitter.Output before = lexer.entry(first.outputs, key)
+            result.removed += 1
+            result.entries = result.entries.append(emitter.DiffEntry("-", key, emitter.shown(before), ""))
+        else
+            emitter.Output before = lexer.entry(first.outputs, key)
+            emitter.Output after = lexer.entry(second.outputs, key)
+            if before.notation != after.notation
+                result.changed += 1
+                result.entries = result.entries.append(emitter.DiffEntry("~", key, emitter.shown(before), emitter.shown(after)))
+    return result
+
+if main
+    schema.Schema rules = schema.read_schema("input/schema.txt")
+    auto library = Library()
+    Profile[] profiles = []
+    emitter.Diff[] differences = []
+    string[] manifest = lexer.read_lines("input/manifest.txt")
+    for string line = manifest[nat index]
+        string[] words = line.split(" ")
+        auto profile = Profile(words[0], words[1], index + 1, words[2:<len(words)])
+        process_profile(&profile, &library, rules, profiles)
+        if len(profiles) > 0
+            differences = differences.append(difference(profiles[len(profiles) - 1], profile))
+        profiles = profiles.append(profile)
+    emitter.write_outputs(profiles, differences)

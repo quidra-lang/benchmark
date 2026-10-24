@@ -1,0 +1,5 @@
+local terms = {1, 1}
+while #terms < 30 do terms[#terms+1] = terms[#terms-1] + terms[#terms] end
+local total = 0
+for _, value in ipairs(terms) do total = total + value end
+io.write(table.concat(terms, " "), "\n", string.format("sum: %d\n", total))

@@ -1,0 +1,72 @@
+package main
+
+import (
+	"fmt"
+	"sort"
+)
+
+type Team struct {
+	name string
+	played, wins, draws, losses, gf, ga, points int
+}
+
+func record(t *Team, gf, ga int) {
+	t.played++
+	t.gf += gf
+	t.ga += ga
+	if gf > ga {
+		t.wins++
+		t.points += 3
+	} else if gf == ga {
+		t.draws++
+		t.points++
+	} else {
+		t.losses++
+	}
+}
+
+func main() {
+	teams := []Team{}
+	for _, name := range []string{"Lions", "Tigers", "Eagles", "Sharks", "Wolves", "Bears"} {
+		teams = append(teams, Team{name: name})
+	}
+	for _, game := range []string{"Lions 0-3 Bears", "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks",
+		"Wolves 2-1 Eagles", "Lions 0-1 Tigers", "Tigers 3-3 Bears", "Eagles 2-2 Lions", "Sharks 2-2 Wolves",
+		"Bears 3-1 Wolves", "Lions 2-0 Sharks", "Tigers 2-1 Eagles", "Eagles 1-0 Bears", "Sharks 2-0 Tigers",
+		"Wolves 2-1 Lions"} {
+		var home, away string
+		var h, a int
+		fmt.Sscanf(game, "%s %d-%d %s", &home, &h, &a, &away)
+		x, y := 0, 0
+		for teams[x].name != home {
+			x++
+		}
+		for teams[y].name != away {
+			y++
+		}
+		record(&teams[x], h, a)
+		record(&teams[y], a, h)
+	}
+	sort.Slice(teams, func(i, j int) bool {
+		a, b := teams[i], teams[j]
+		if a.points != b.points {
+			return a.points > b.points
+		}
+		if a.gf - a.ga != b.gf - b.ga {
+			return a.gf - a.ga > b.gf - b.ga
+		}
+		if a.gf != b.gf {
+			return a.gf > b.gf
+		}
+		return a.name < b.name
+	})
+	for i, t := range teams {
+		gd := t.gf - t.ga
+		sign := ""
+		if gd > 0 {
+			sign = "+"
+		}
+		fmt.Printf("%d. %s P=%d W=%d D=%d L=%d GF=%d GA=%d GD=%s%d Pts=%d\n", i + 1, t.name, t.played, t.wins,
+			t.draws, t.losses, t.gf, t.ga, sign, gd, t.points)
+	}
+}

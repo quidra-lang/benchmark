@@ -1,0 +1,411 @@
+[Overview]
+Write an ELIZA-style chatbot that converses with a user according to rules written in a script file. The program first loads and checks the script and outputs the problems it finds. It then runs the one or more sessions written in a dialogue file in order, replying to the user's utterances one line at a time, and outputs the transcript, keyword usage statistics and a memory log. The dialogue file also contains debug commands that inspect or manipulate the chatbot's internal state.
+The program reads 2 files in the input/ folder and writes 4 files in the output/ folder. It prints nothing to standard output. All computation is done with integers and strings; no floating-point numbers are used.
+
+[Input files]
+Both files consist only of printable ASCII characters (including the space) and newlines (LF), and the last line also ends with a newline. Line numbers count every line, including empty lines and so on, with the first line of the file as 1.
+
+File input/script.txt (script)
+Lines of length 0 (empty lines) and lines starting with "#" (comment lines) are skipped. Every other line is called a directive line. When a directive line is split at the positions of spaces, the first part is called the directive name and the remaining parts, in order, are called the arguments (there may be zero arguments). The whole part of a directive line after its first space is called the text.
+
+The following terms are used.
+- Word: a string of one or more characters, each of which is a lowercase letter (a-z), a digit (0-9) or "'", and whose first and last characters are not "'".
+- Pattern element: one of "*", "#", "@" immediately followed by a word (of the form "@g", where g is called the group name), or a word.
+- Reference: the three characters "(", one digit, ")" in this order. The value of that digit is called the reference number.
+
+The valid directive names and the formats of their arguments are as follows. Directive names are case-sensitive.
+Global directives:
+- INITIAL text: the greeting at the start of a session. Any number of these lines may be written.
+- FINAL text: the greeting at the end of a session. Any number of these lines may be written.
+- QUIT word word ... (one or more words): quit words.
+- STOP word word ... (one or more words): stop words (used in the session notes).
+- DEFAULT text: a default reply. Any number of these lines may be written.
+- QUESTION text: a reply to a question. Any number of these lines may be written.
+- REPEAT text: a reply to a repetition. Any number of these lines may be written.
+- MEMSIZE n: n is a number of one or two digits whose value is between 1 and 20 inclusive. It is the capacity of the memory queue.
+- PERSIST x: x is "cycles" or "memory". It specifies state carried over across sessions.
+- PRE word word ... (two or more words): a pre-substitution. The first word (the source) is replaced by the sequence of the remaining words (the replacement).
+- POST word string ... (two or more arguments): a reflection substitution. The first argument is a word (the source), and the sequence of the remaining arguments (the replacement) consists of arbitrary strings containing no spaces.
+- SYNON word word ... (two or more words): a synonym group. The first word is the group name, and every argument word, including the group name itself, belongs to the group.
+Keyword directives:
+- KEY word r: defines a keyword. r is a number of one or two digits, and its value (between 0 and 99 inclusive) is called the rank of the keyword.
+- DECOMP element element ... (one or more pattern elements): a decomposition rule. The sequence of arguments is the pattern of the rule.
+- MEMORY element element ... (one or more pattern elements): a memory rule. The sequence of arguments is the pattern of the rule.
+- REASM text: a reassembly item. The text is used as the template of a reply.
+- GOTO word: a goto item. The word is the target keyword.
+- NEWKEY (no arguments): a newkey item.
+- RESTATE word x x ... (two or more arguments): a restate item. The first word is the target keyword, and each remaining argument x is a word or a reference.
+A line whose number or format of arguments does not conform to these definitions is called a "malformed line" (for example, INITIAL without arguments, KEY whose rank is not a number, or DECOMP with "(2)" among its arguments). Decomposition rules and memory rules are collectively called rules, and the things created by REASM, GOTO, NEWKEY and RESTATE lines are collectively called items.
+
+File input/dialogue.txt (dialogue)
+Each line is one of the following 3 kinds.
+- Session line: a line starting with "SESSION " (SESSION and one space). The part after it is the session name.
+- Command line: a line starting with ":" (see section 12, "Debug commands").
+- Utterance line: any other line; one utterance of the user.
+The first line is a session line. Each session runs from a session line up to just before the next session line (or to the end of the file); after the session line, utterance lines and command lines follow in any order. The last line of each session is an utterance line that is a quit line (see section 4, "Normalizing utterances and quit lines"), and no other utterance line of that session is a quit line.
+
+[Processing]
+Section 1. Overall flow
+(1) Load the script (section 2), check it (section 3), and write output/lint.txt.
+(2) Run the sessions of the dialogue file in order from the first (section 11). Reply to utterance lines (sections 4 to 10) and execute command lines (section 12).
+(3) After all sessions have ended, write output/transcript.txt, output/keyword_stats.csv and output/memory_log.txt.
+Even if problems are found in the script, the dialogue is run to the end using what was loaded in section 2.
+
+Section 2. Loading the script
+Process the directive lines in order from the first. During processing, keep track of the "current keyword" and the "current rule". The current keyword is "none", one of the loaded keywords, or "ignoring"; the current rule is "none" or one of the loaded rules. Initially both are "none".
+For each directive line, do the following (A), (B) and (C) in this order.
+
+(A) Structure update (done according to the directive name even if the line has an error)
+- Global directives (INITIAL, FINAL, QUIT, STOP, DEFAULT, QUESTION, REPEAT, MEMSIZE, PERSIST, PRE, POST, SYNON): set the current keyword and the current rule to "none".
+- KEY: set the current keyword and the current rule to "none".
+- DECOMP, MEMORY: if the current keyword is "ignoring", skip this line without examining anything (no diagnostic is recorded either) and go to the next line. Otherwise, set the current rule to "none".
+- REASM, GOTO, NEWKEY, RESTATE: if the current keyword is "ignoring", skip this line without examining anything and go to the next line.
+- Invalid directive name: do nothing.
+
+(B) Error check
+Check the following (1) to (5) in order; for the first one that applies, record one diagnostic (line number, code, message), do not load this line, and go to the next line. N in a message is the directive name of the line.
+(1) The directive name is not valid: code "SYNTAX", message "unknown directive N"
+(2) The line is malformed: code "SYNTAX", message "bad arguments for N"
+(3) DECOMP or MEMORY, and the current keyword is "none": code "ORPHAN", message "N without KEY"
+(4) REASM, and the current rule is "none": code "ORPHAN", message "REASM without DECOMP or MEMORY". GOTO, NEWKEY or RESTATE, and the current rule is "none" or a memory rule: code "ORPHAN", message "N without DECOMP"
+(5) One of the following applies (duplicate): code "DUPLICATE". In the message, X is the duplicated value and L is the line number of the line where that value was first loaded.
+  - KEY, and a keyword with the same word has already been loaded: message "KEY X first defined at line L". In addition, set the current keyword to "ignoring".
+  - SYNON, and a group with the same group name has already been loaded: message "SYNON X first defined at line L"
+  - PRE, and a PRE with the same source has already been loaded: message "PRE X first defined at line L". The same applies to POST, with the message "POST X first defined at line L".
+  - PERSIST, and a PERSIST with the same argument has already been loaded: message "PERSIST X first defined at line L"
+  - MEMSIZE, and a MEMSIZE has already been loaded: message "MEMSIZE first defined at line L"
+
+(C) Loading
+If none of (B) applies, load the line.
+- INITIAL, FINAL, DEFAULT, QUESTION, REPEAT: append the text to the end of the list for that directive name.
+- QUIT, STOP: add the argument words to the set of quit words or the set of stop words, respectively.
+- MEMSIZE: set the capacity of the memory queue to its value. If no MEMSIZE line is loaded at all, the capacity is 3.
+- PERSIST: record the argument (cycles or memory) as a persistence setting.
+- PRE, POST, SYNON: record the substitution (source and replacement) or the group (name and member words) together with the line number.
+- KEY: create a new keyword with the word, the rank and the line number, and make it the current keyword.
+- DECOMP, MEMORY: create a new decomposition rule (memory rule) with the pattern and the line number, append it to the end of the current keyword's list of decomposition rules (memory rules), and make it the current rule.
+- REASM, GOTO, NEWKEY, RESTATE: create a new item with the line number, the kind, and the text (REASM) or the arguments, and append it to the end of the current rule's list of items.
+From here on, keywords, groups, substitutions, rules and items refer only to those that were loaded. The decomposition rules and the memory rules of each keyword are each numbered from 1 in list order, and the items of each rule are also numbered from 1 in list order. The keyword order means the order in which the KEY lines were loaded.
+
+Section 3. Checking the script
+Check the loaded content for the following (1) to (10), and record one diagnostic for each case that applies. The parenthesized text after a code names the line whose line number is used as the line number of the diagnostic. Wildcards are the pattern elements "*", "#" and "@g". A pattern references an undefined group when the pattern has an element "@g" and there is no group named g.
+(1) KEY_NO_DECOMP (the KEY line): the keyword has no decomposition rule at all (memory rules are not counted). Message "keyword K has no DECOMP" (K is the word of the keyword)
+(2) KEY_UNREACHABLE (the KEY line): the word of the keyword is the source of some PRE, is not contained in the replacement of any PRE, and is not the target of any GOTO item or RESTATE item. Message "keyword K is replaced by PRE"
+(3) SYNON_UNUSED (the SYNON line): no rule's pattern has an element "@g" that references the group. Message "group G is never used" (G is the group name)
+(4) PRE_CHAIN (the PRE line): words of the PRE's replacement that are the source of some PRE (including that line itself). Record one diagnostic for each such word (when the same word appears several times in the replacement, one for each occurrence). Message "replacement W is itself replaced by PRE" (W is the word)
+(5) SYNON_UNKNOWN (the rule's line): elements "@g" of the pattern for which there is no group named g. Record one diagnostic for each such element. Message "unknown group G"
+(6) RULE_NO_REASM (the rule's line): the rule has no items at all. Message "rule has no reassembly"
+(7) RULE_SHADOWED (the rule's line): the rule is shadowed by an earlier rule of the same keyword and of the same kind (decomposition rules with each other, or memory rules with each other) (see "Rule shadowing" below). Message "pattern is shadowed by line L" (L is the line number of the shadowing rule; if several rules shadow it, the line number of the earliest one)
+(8) REF_UNBOUND (the item's line): references appearing in the text of a REASM item or in the second and later arguments of a RESTATE item whose reference number is 0 or greater than the number of wildcards in the pattern of the rule the item belongs to. Record one diagnostic for each such reference. A reference in a text is a place where, when the text is examined one character at a time from the beginning, the three characters starting at that position form a reference. Message "reference (d) is not bound" (d is the reference number)
+(9) TARGET_UNDEFINED (the item's line): the target of a GOTO item or a RESTATE item is not a keyword. Message "target T is not a keyword" (T is the target word)
+(10) TARGET_CYCLE (the item's line): the target of a GOTO item or a RESTATE item is a keyword, and that move is part of a cycle. Message "edge A -> B is on a cycle" (A is the keyword the item belongs to, B is the target). To decide cycles, use the directed graph whose vertices are the keywords and which has an edge from A to B for each GOTO item and each RESTATE item in the decomposition rules of each keyword A whose target is a keyword B. An edge from A to B is part of a cycle when A can be reached from B by following zero or more edges (if A = B, it is always part of a cycle).
+
+Rule shadowing: a rule R is shadowed by a rule P when P is a rule of the same keyword and of the same kind that comes before R and P covers R in the following sense. However, R is not examined when the pattern of R references an undefined group, and a rule whose pattern references an undefined group is not used as P.
+Let the pattern of P be p1, ..., pm and the pattern of R be r1, ..., rn. P covers R when there is a way to split r1, ..., rn, in order from the beginning, into m consecutive segments (empty segments are allowed), with the i-th segment corresponding to pi, such that the following condition holds for every i.
+- pi is "*": the segment is zero or more arbitrary elements.
+- pi is a word w: the segment is one element that is the same word as w.
+- pi is "#": the segment is one element other than "*".
+- pi is "@g": the segment is either one element that is a word belonging to group g, or one element of the form "@h" such that every word belonging to group h also belongs to group g.
+When P covers R, every word sequence that matches the pattern of R also matches the pattern of P, so R is never used.
+
+Diagnostic order: sort all diagnostics recorded in sections 2 and 3 by line number in ascending order. Diagnostics on the same line are ordered by code in the following order (SYNTAX, ORPHAN, DUPLICATE, KEY_NO_DECOMP, KEY_UNREACHABLE, SYNON_UNUSED, PRE_CHAIN, SYNON_UNKNOWN, RULE_NO_REASM, RULE_SHADOWED, REF_UNBOUND, TARGET_UNDEFINED, TARGET_CYCLE), and when the code is also the same, in order from the one further left in the line. Of the codes, SYNTAX, ORPHAN, DUPLICATE, SYNON_UNKNOWN, REF_UNBOUND, TARGET_UNDEFINED and TARGET_CYCLE are called errors, and the others are called warnings.
+
+Section 4. Normalizing utterances and quit lines
+Normalize a string as follows to produce a sequence of clauses (each clause is a sequence of words).
+(1) Change every uppercase letter to lowercase.
+(2) Split the string into parts at the positions of the 5 characters "," "." "?" "!" ";" (the delimiters). The delimiters themselves are not included in any part.
+(3) In each part, replace every character other than lowercase letters, digits and "'" with a space, and split at spaces to extract the non-empty strings.
+(4) Remove "'" from the beginning and the end of each extracted string (until there are none left). Discard the strings that become empty. The sequence of the remaining strings is the word sequence of that part.
+(5) Only the parts with one or more words become clauses, in their original order. There may be no clauses at all.
+For example, normalizing "Well, I'm 'fine'... really?!" gives the 3 clauses "well", "i'm fine" and "really".
+When the words of all clauses of a normalized string together number exactly one and that word is a quit word, the string is called a quit line (for example, if bye is a quit word, "Bye." and "BYE" are quit lines).
+Applying pre-substitution to a sequence of clauses means: for each word of each clause, if there is a PRE whose source is that word, replace the word with the word sequence of the replacement. The replacement is done only once; the result of a replacement is not replaced again.
+
+Section 5. Pattern matching
+A pattern matches a word sequence when there is a way to split the whole word sequence, in order from the beginning, into as many consecutive segments as the pattern has elements, with the i-th segment corresponding to the i-th element, such that every element satisfies the following condition.
+- "*": the segment is zero or more arbitrary words.
+- "#": the segment is any one word.
+- "@g": the segment is one word belonging to group g (if there is no group named g, it matches no word).
+- Word: the segment is one word that is the same as that word.
+When several splits satisfy the conditions, use the split in which the segments of the "*" elements are as short as possible, in order from the left "*". That is, choose the splits that minimize the length of the segment of the leftmost "*", among them the ones that minimize the length of the segment of the second "*", and so on. Number the wildcards of the pattern 1, 2, ... from the left; the word sequence of the segment corresponding to the n-th wildcard is called binding n (the binding of "#" and "@g" is one word, and the binding of "*" may be empty).
+For example, the pattern "* i remember *" matches the word sequence "i remember that i remember you"; binding 1 is empty and binding 2 is "that i remember you".
+
+Section 6. Building a reply
+Reflecting a word sequence means: for each word, if there is a POST whose source is that word, replace the word with the sequence of the replacement (the replacement is done only once).
+To build a reply from a template (the text of a REASM item) and bindings, first examine the template one character at a time from the beginning. If the three characters starting at that position form a reference (d), replace those three characters with the string obtained by reflecting binding d and joining it with single spaces, and continue just after the reference (if d is 0 or greater than the number of wildcards, replace it with the empty string). If they do not form a reference, use that one character as it is. Next, split the resulting string at spaces, take the non-empty parts, and join them again with single spaces (leading and trailing spaces disappear, and consecutive spaces become one space). Finally, if the first character is a lowercase letter, change it to uppercase.
+The restated words of a RESTATE item are the word sequence obtained by placing in order, for each of the item's second and later arguments, the word itself if it is a word, or the word sequence of binding d if it is a reference (d) (not reflected; if d is 0 or greater than the number of wildcards, nothing is placed).
+
+Section 7. Item cycling
+Each rule has the position of the item to use next (the cycle position). The cycle position is initially the 1st item. Taking an item from a rule means using the item at the cycle position, adding 1 to that item's use count, and advancing the cycle position to the next item (after the last item it returns to the 1st). The DEFAULT, QUESTION and REPEAT lists each also have a cycle position (initially the 1st), and their texts are taken one at a time in order in the same way. Returning the cycle positions of all rules and of these 3 lists to the 1st is called a cycle reset.
+
+Section 8. Memory queue
+The memory queue is a sequence of texts ordered from oldest to newest, and its capacity is the value set by MEMSIZE. Operating on the memory queue appends lines to the memory log. Each line of the log consists of "P t" followed by the content. P is the name of the current session, and t is the turn number of the utterance while an utterance is being processed, the number of turns processed so far in that session (section 11) while a command is being executed, and 0 for processing at the start of a session.
+- Store (keyword K, text X): if a text identical to X is already in the memory queue, log "P t SKIP K X" and do nothing else. Otherwise, if the number of texts in the memory queue equals the capacity, remove the oldest text Y and log "P t DROP Y". Then append X to the end of the memory queue, log "P t STORE K X", and add 1 to the store count of the current session.
+- Recall: remove the oldest text X, log "P t RECALL X", and add 1 to the recall count of the current session. X is the recalled text.
+- Clear: if the number n of texts in the memory queue is 1 or more, remove all of them and log "P t CLEAR n". If n is 0, do nothing.
+
+Section 9. Deciding the reply
+For the string S of an utterance that is not a quit line (or the string of a :say or :explain command), decide the reply and the reply source as follows. Meanwhile, build a sequence of trace lines (initially empty) that shows the course of the decision.
+(1) Repetition: let C be the sequence of clauses obtained by normalizing S. If the REPEAT list is not empty, C has one or more clauses, and C is equal to the clause sequence of the previous utterance of the current session (the numbers of clauses are equal and the word sequences of all corresponding clauses are equal), add the trace line "REPEAT", make a text taken from the REPEAT list the reply, set the reply source to repeat, and go to (4).
+(2) Keyword reply: let D be the clause sequence obtained by applying pre-substitution to C, and perform section 10, "Keyword reply". If a reply is obtained, set the reply source to keyword and go to (4).
+(3) If no reply was obtained, use the first of the following that applies.
+  - The memory queue is not empty: make the text recalled from the memory queue the reply, and set the reply source to memory.
+  - The last character of S is "?" and the QUESTION list is not empty: make a text taken from the QUESTION list the reply, and set the reply source to question.
+  - Otherwise: make a text taken from the DEFAULT list the reply, and set the reply source to default.
+(4) Add the trace line "REPLY x" (x is the reply source). Set the clause sequence of the previous utterance of the current session to C, and add 1 to the count of that reply source among the current session's per-source counts. If the reply source is question or default, append the turn count at that time to the end of the current session's record of unrecognized utterances.
+
+Section 10. Keyword reply
+(1) Clause selection: examine the clauses of D from the first and select the first clause that contains one or more words that are words of keywords. If there is no such clause, add the trace line "CLAUSE none" and finish without obtaining a reply. If the selected clause is the i-th and its word sequence is V, add the trace line "CLAUSE i V" (V is written with its words separated by single spaces; from here on, every word sequence in a trace line is written this way).
+(2) Keyword list: the keywords that appear in V, each taken once, ordered by rank in descending order, and for equal ranks by the position of their first occurrence in V, earliest first, form the keyword list; add the trace line "KEYS k1 k2 ..." (the words of the keyword list).
+(3) Memory rules: examine the memory rules of the first keyword K1 of the keyword list in number order, and for the first rule whose pattern matches V (say the n-th), add the trace line "MEMORY K1 n" and add 1 to that rule's hit count. If that rule has items, take one item, build a string as in section 6 with its text as the template and the bindings of this match (this string does not become the reply to this utterance), and store the built string as the text in the memory queue with keyword K1. If no memory rule's pattern matches, do nothing.
+(4) Keyword processing: make the set of entered keywords empty. Take the keywords of the keyword list in order from the first. If the keyword taken is already entered, skip it and go on to the next one. Otherwise, add the trace line "ENTER K" (K is that keyword), set the current word sequence to V, and do the following a to d for K.
+  a. Mark K as entered and add 1 to K's use count.
+  b. Examine K's decomposition rules in number order and find the first rule R whose pattern matches the current word sequence. If there is none, add the trace line "NOMATCH K" and go on to the next keyword of the keyword list.
+  c. Add 1 to R's hit count. If R has no items, add the trace line "DECOMP K n 0" (n is the number of R) and go on to the next keyword of the keyword list.
+  d. Take one item from R, add the trace line "DECOMP K n m" (m is the number of the item taken), and act as follows according to the kind of the item.
+    - REASM: build the reply with its text as the template and the bindings of the match in b. Add 1 to K's reply count and to K's topic count in the current session. A reply has been obtained, so finish here.
+    - NEWKEY: go on to the next keyword of the keyword list.
+    - GOTO, RESTATE: let T be the target. If T is not a keyword or is already entered, add the trace line "BLOCKED T" and go on to the next keyword of the keyword list. Otherwise, for RESTATE, replace the current word sequence with the restated words built from the bindings of the match in b, and add the trace line "RESTATE T w1 w2 ..." (the restated words; "RESTATE T" if they are empty). For GOTO, add the trace line "GOTO T" (the current word sequence is not changed). Then replace K with T and repeat from a.
+When going on to the next keyword of the keyword list, set the current word sequence back to V. If no reply has been obtained when the end of the keyword list is reached, finish without obtaining a reply.
+
+Section 11. Running sessions
+Number the sessions 1, 2, ... from the first, and run the s-th session as follows. How "ELIZA:" lines are written and what the entire state is are defined at the end of this section.
+(1) If s >= 2, write one empty line to the transcript. If the persistence settings do not include cycles, perform a cycle reset. If the persistence settings do not include memory, clear the memory queue (in the log lines, P is the name of this s-th session and t is 0).
+(2) Initialize the state of the current session. The session state consists of the turn count (0), the per-source counts (keyword, memory, question, default and repeat, all 0), the previous utterance (none), the utterance history (empty), the last trace (none), the trace display (off), the per-keyword topic counts and the per-word counts (both empty), the store count and the recall count (0), the record of unrecognized utterances (empty), and the undo snapshot (none).
+(3) Write "SESSION P" (P is the session name) to the transcript, and write the text of the INITIAL list at position ((s - 1) mod L) + 1, where L is the length of the list, as an "ELIZA:" line.
+(4) Process the lines of the session in order.
+  - Command line: write the line as it is to the transcript, execute the command (section 12), and write each line of its output with two spaces prepended.
+  - Utterance line: write to the transcript a line consisting of "YOU: " followed by the line as it is. If the line is a quit line, write the text of the FINAL list at position ((s - 1) mod L) + 1, where L is the length of the list, as an "ELIZA:" line, and go to (5). If it is not a quit line, do the following a to e.
+    a. Make a copy of the entire state at that time and make it the undo snapshot (the undo snapshot inside the copy is set to "none").
+    b. Add 1 to the turn count, and use its value as the turn number of this utterance.
+    c. For each word of the clauses of the normalized utterance (the words before pre-substitution) that is not a stop word, add 1 to the count of that word.
+    d. Append "t: S" (t is the turn number, S is the utterance line itself) to the end of the utterance history.
+    e. Perform section 9 on the string of the utterance line, and write the obtained reply as an "ELIZA:" line. Set the last trace to the sequence of trace lines built in doing so. If the trace display is on, then write each trace line with two spaces prepended.
+(5) Write the following session notes (6 lines) to the transcript. Lines 2 to 6 have two spaces prepended.
+NOTES P
+  turns=T keyword=a memory=b question=c default=d repeat=e
+  topics: L1
+  words: L2
+  memory: stored=x recalled=y pending=z
+  unrecognized: U
+- P is the session name, T is the turn count (the quit line is not counted), and a to e are the per-source counts.
+- L1 is formed from the keywords whose topic count is 1 or more, ordered by topic count in descending order (ties in ascending word order): the first 5 of them (all of them if there are fewer than 5), each written in the form "word count" (the word, one space, the count), joined with ", " (a comma and a space). If there are none, it is "none". L2 is formed in the same way from the per-word counts. Ascending word order means lexicographic order by ASCII code (if one is a prefix of the other, the shorter one comes first).
+- x and y are the store count and the recall count, and z is the number of texts in the memory queue when the session ends.
+- U is the values of the record of unrecognized utterances, in the order recorded, separated by single spaces. If there are none, it is "none".
+After all sessions have ended, write one empty line and "SUMMARY sessions=n turns=T keyword=a memory=b question=c default=d repeat=e" to the transcript. n is the number of sessions, and T and a to e are the totals of the turn counts and the per-source counts over all sessions.
+
+Writing "ELIZA:" lines: pack the words obtained by splitting the text at spaces into lines, in order from the first. The first line is "ELIZA: " followed by the first word; each subsequent word is appended to the end of the current line, preceded by one space, if the number of characters of the current line + 1 + the number of characters of the word is 72 or less. Otherwise, start a new line consisting of 7 spaces followed by the word (a word longer than 72 characters is not split either).
+
+Entire state: the "entire state" used for the undo snapshot and by the commands :say and :explain means every changing value except the lines written to the transcript. That is: the cycle positions of all rules and of the DEFAULT, QUESTION and REPEAT lists, the contents of the memory queue, the lines written to the memory log, all statistics (the use counts and reply counts of keywords, the hit counts of rules, the use counts of items), and the state of the current session (including the trace display and the undo snapshot).
+
+Section 12. Debug commands
+The part of a command line before its first space (the whole line if there is no space) is called the command name, the part after the first space is called the argument string (empty if there is no space), and the pieces of the argument string split at spaces are called the arguments (if the argument string is empty, there are 0 arguments). Commands do not change the state, except :forget, :reset, :trace and :undo.
+First check the following (1) to (3) in order; if one applies, output only that one line.
+(1) The command name is not in the list below: "unknown command N" (N is the command name)
+(2) The arguments do not fit: "bad arguments". This is the case for :keys, :why, :history, :memory, :forget, :reset, :unused, :stats and :undo when there are one or more arguments; for :prepare, :reflect, :say and :explain when the argument string is empty; for :groups, :find, :script, :cycles and :coverage when there is not exactly one argument; for :trace when the arguments are neither the single argument "on" nor the single argument "off"; and for :test when there are fewer than 2 arguments.
+(3) For :script, :cycles, :coverage and :test, the (first) argument is not the word of a keyword: "unknown keyword W" (W is that argument)
+In the descriptions of the commands below, K denotes the argument that specifies a keyword, W denotes the argument of :groups and :find, and S denotes the argument string (for :test, the part of the argument string after its first space).
+
+:prepare S
+For the clause sequence obtained by normalizing S and applying pre-substitution, output "clause i: V" for each clause (i is the number of the clause, V is the word sequence of the clause). If there are no clauses, output "no words". Then select a clause as in section 10 (1); if none can be selected, output "selected none". If one is selected, output "selected i" (i is the number of the selected clause), and then output a line consisting of "keys " followed by the keywords of the keyword list, each written in the form "word/rank", separated by single spaces.
+
+:test K S
+Let Ws be the word sequence obtained by concatenating, in order, the words of all clauses obtained by normalizing S and applying pre-substitution. Examine K's memory rules in number order and then its decomposition rules in number order, and for each rule output "memory n: X" or "decomp n: X" (n is the number of the rule). X is "no match" if the pattern does not match Ws, and "match" if it matches and the pattern has no wildcards. Otherwise, X consists of the bindings in binding-number order separated by single spaces, each binding written as "[", the words of the binding (not reflected) separated by single spaces, and "]" in this order (an empty binding is "[]"). If K has no rules at all, output "no rules".
+
+:reflect S
+For each clause obtained by normalizing S and applying pre-substitution, output a line consisting of its word sequence reflected and separated by single spaces. If there are no clauses, output "no words".
+
+:keys
+Order all keywords by rank in descending order (ties in ascending word order), write each in the form "word/rank", and output them 8 per line, separated by single spaces (the last line may have fewer than 8).
+
+:groups W
+Output one line with the names of the groups that W belongs to, in ascending order, separated by single spaces. If there is no such group, output "none".
+
+:find W
+Output where W is used in the script, in the following order. If none of these applies, output "not found".
+- If W is the word of a keyword: "keyword rank r" (r is the rank).
+- For each PRE whose source is W or whose replacement sequence contains a word identical to W, in ascending order of line number: "pre L: X -> Y" (L is the line number, X is the source, Y is the replacement separated by single spaces).
+- Likewise for POST: "post L: X -> Y" (checked by whether the replacement sequence contains a string identical to W).
+- For each group that W belongs to, in ascending order of line number: "group G line L" (G is the group name, L is the line number of its SYNON).
+- Following the keyword order, examine each keyword's memory rules in number order and then its decomposition rules in number order, and for each rule whose pattern contains an element identical to W: "pattern K memory n" or "pattern K decomp n" (K is the word of the keyword, n is the number of the rule).
+- If W is a stop word: "stop word".
+- If W is a quit word: "quit word".
+
+:script K
+Output the KEY line that defined K, the lines of K's rules and the lines of the items of those rules, in ascending order of line number, in the form "L X" (L is the line number, X is the whole line).
+
+:why
+Output each line of the last trace of the current session. If the last trace is "none", output "no reply yet".
+
+:trace on, :trace off
+Turn the trace display on (or off), and output "trace on" (or "trace off").
+
+:history
+Output the last 5 lines of the utterance history (all of them if there are fewer than 5) in order. If the utterance history is empty, output "no turns yet".
+
+:memory
+Output "memory n/c" (n is the number of texts in the memory queue, c is the capacity), then output the texts of the memory queue from oldest to newest in the form "i: X" (i is the number counted from 1, X is the text).
+
+:forget
+Clear the memory queue, and output "forgot n" (n is the number of texts in the memory queue before clearing).
+
+:cycles K
+For K's memory rules in number order and then its decomposition rules in number order, output for each rule "memory n: next m/c" or "decomp n: next m/c" (m is the number of the item at the cycle position, c is the number of items). For a rule without items, output "memory n: empty" or "decomp n: empty". If K has no rules at all, output "no rules".
+
+:coverage K
+In the same order as :cycles, output for each rule "memory n: hits h entries u" or "decomp n: hits h entries u". h is the hit count of the rule, and u is the use counts of the rule's items in item-number order separated by single spaces ("-" if there are no items). If K has no rules at all, output "no rules".
+
+:reset
+Perform a cycle reset, and output "cycles reset".
+
+:unused
+Collect the line numbers of the items, among the items of all rules, whose use count is 0, in ascending order. First output "unused n" (n is their number), then output those line numbers 12 per line, separated by single spaces (the last line may have fewer than 12; if n is 0, there are no such lines).
+
+:stats
+Output "turns=T keyword=a memory=b question=c default=d repeat=e", in the same form as line 2 of the session notes, with the values at that time.
+
+:say S, :explain S
+If S is a quit line, output "would quit". Otherwise, save a copy of the entire state, perform section 9 with S as the string of the utterance (steps a to d of section 11 (4) are not performed; t in the memory log lines is the number of turns processed so far in that session), and afterwards restore the entire state from the saved copy. :say outputs the obtained reply as one line (without wrapping), and :explain outputs the trace lines built in doing so, in order.
+
+:undo
+If the undo snapshot is "none", output "nothing to undo". Otherwise, restore the entire state to the contents of the undo snapshot (the lines written to the memory log after the snapshot was made also disappear, and the undo snapshot becomes "none"), and output "undone turn t" (t is the turn number of the undone utterance, that is, the turn count after restoring plus 1). Lines already written to the transcript remain as they are.
+
+[Output files]
+In all files, numbers are written in decimal without extra leading zeros. No line has trailing spaces, and every line ends with a newline (LF). In the formats, only the symbols that are explained are replaced with values, and all other characters are written as they are.
+
+File output/lint.txt
+Write the diagnostics, ordered as in section 3, one per line in the form "L C M" (L is the line number, C is the code, M is the message), and finally write "TOTAL n errors=e warnings=w" (n is the number of diagnostics, e is the number of errors, w is the number of warnings). If there are no diagnostics at all, write only the single line "OK".
+
+File output/transcript.txt
+The transcript defined in sections 11 and 12.
+
+File output/keyword_stats.csv
+The first line is "keyword,rank,uses,replies,decomposition_hits". From the second line on, write all keywords ordered by use count in descending order (ties in ascending word order), one per line, in the form "word,rank,use count,reply count,hit counts". The use count is the count counted in section 10 (4) a, the reply count is the count counted in section 10 (4) d, and the hit counts are the hit counts of the keyword's decomposition rules in number order joined with "/" ("-" if there are no decomposition rules). All values are those of the entire state after the whole dialogue has finished (changes made by :say and :explain and changes undone by :undo are not included).
+
+File output/memory_log.txt
+Write the lines recorded in section 8, in the order recorded (lines recorded during :say and :explain and lines undone by :undo are not included). If no lines were recorded, the file is empty.
+
+[Source files]
+Organize the program into the following 6 source files. Put the overall flow and most of the processing in main.
+- main: the overall flow, utterance normalization and pre-substitution, clause selection and the keyword list, the reply decision (applying memory rules, moves by GOTO, RESTATE and NEWKEY, and repeat, memory, question and default replies), item cycling, running sessions and carrying state over, copying and restoring the entire state, all debug commands, statistics and session notes, and writing the 4 output files.
+- script_loader: reading script.txt, checking directive formats, managing the current keyword and the current rule, the SYNTAX, ORPHAN and DUPLICATE diagnostics, and building the data for keywords, rules, items, substitutions, groups and settings.
+- linter: the checks (1) to (10) of section 3 (including the shadowing and cycle decisions), and sorting the diagnostics.
+- matcher: pattern matching (backtracking that binds each "*" as short as possible, from the left) and deciding the covering relation between rules.
+- responder: building replies (replacing references, reflection, tidying spaces), building restated words, and wrapping "ELIZA:" lines.
+- memory: the memory queue (store, recall, clear) and the memory log.
+
+[Constraints]
+- script.txt has between 1 and 600 lines, and each line has at most 200 characters. Directive lines do not start or end with a space, and do not contain two or more consecutive spaces.
+- INITIAL, FINAL and DEFAULT each have one or more loaded lines, and there are one or more quit words.
+- The text of a REASM contains one or more letters in the part other than references.
+- There are at most 100 keywords, at most 20 rules per keyword, at most 12 items per rule, and at most 8 elements per pattern, of which at most 3 are "*".
+- dialogue.txt has between 2 and 400 lines, each line has between 1 and 120 characters, and no line starts or ends with a space. A session name consists of between 1 and 16 lowercase letters and digits.
+- Command lines do not contain two or more consecutive spaces. When :groups or :find has one argument, that argument is a word.
+- The clauses of a normalized utterance line contain at most 40 words in total.
+- Each session has one or more utterance lines, its last line is an utterance line that is a quit line, and no other utterance line is a quit line.
+- All output text consists of ASCII characters. All integer values are less than 100000.
+
+[Example]
+The following example uses files made small for explanation (they differ from the actual files in input/).
+
+Input (input/script.txt):
+# sample script
+INITIAL Hello. What is on your mind?
+FINAL Goodbye.
+QUIT bye
+DEFAULT Please go on.
+QUESTION Why do you ask?
+MEMSIZE 2
+STOP i am is the it my
+PRE i'm i am
+POST i you
+POST my your
+POST me you
+SYNON family mother father sister
+SYNON sad unhappy lonely
+KEY my 2
+MEMORY * my *
+REASM Earlier you said your (2).
+DECOMP * my @family *
+REASM Tell me more about your family.
+DECOMP * my *
+REASM Your (2)?
+KEY i 0
+DECOMP * i am * @sad *
+REASM Why are you (3)?
+DECOMP * i am *
+REASM How long have you been (2)?
+KEY same 5
+DECOMP *
+GOTO alike
+KEY sorry 0
+REASM Never mind.
+
+Input (input/dialogue.txt):
+SESSION demo
+I'm lonely.
+My sister is never home.
+:memory
+It is the same every day.
+:why
+Do you understand?
+Hmm.
+bye
+
+Output (output/lint.txt):
+29 TARGET_UNDEFINED target alike is not a keyword
+30 KEY_NO_DECOMP keyword sorry has no DECOMP
+31 ORPHAN REASM without DECOMP or MEMORY
+TOTAL 3 errors=2 warnings=1
+
+Output (output/transcript.txt):
+SESSION demo
+ELIZA: Hello. What is on your mind?
+YOU: I'm lonely.
+ELIZA: Why are you lonely?
+YOU: My sister is never home.
+ELIZA: Tell me more about your family.
+:memory
+  memory 1/2
+  1: Earlier you said your sister is never home.
+YOU: It is the same every day.
+ELIZA: Earlier you said your sister is never home.
+:why
+  CLAUSE 1 it is the same every day
+  KEYS same
+  ENTER same
+  DECOMP same 1 1
+  BLOCKED alike
+  REPLY memory
+YOU: Do you understand?
+ELIZA: Why do you ask?
+YOU: Hmm.
+ELIZA: Please go on.
+YOU: bye
+ELIZA: Goodbye.
+NOTES demo
+  turns=5 keyword=2 memory=1 question=1 default=1 repeat=0
+  topics: i 1, my 1
+  words: day 1, do 1, every 1, hmm 1, home 1
+  memory: stored=1 recalled=1 pending=0
+  unrecognized: 4 5
+
+SUMMARY sessions=1 turns=5 keyword=2 memory=1 question=1 default=1 repeat=0
+
+Output (output/keyword_stats.csv):
+keyword,rank,uses,replies,decomposition_hits
+i,0,1,1,1/0
+my,2,1,1,1/0
+same,5,1,0,1
+sorry,0,0,0,-
+
+Output (output/memory_log.txt):
+demo 2 STORE my Earlier you said your sister is never home.
+demo 3 RECALL Earlier you said your sister is never home.
+
+Notes:
+- The diagnostic on line 29 of lint.txt shows that the target alike of the goto item of keyword same is not a keyword. The REASM on line 31 belongs to no rule, because there is neither a decomposition rule nor a memory rule after the preceding KEY.
+- "I'm lonely." becomes "i am lonely" by pre-substitution and matches the 1st decomposition rule "* i am * @sad *" of keyword i (bindings 1 and 2 are empty, and binding 3 is "lonely").
+- For "My sister is never home.", the memory rule of my, the first keyword of the keyword list, matches, and "Earlier you said your sister is never home." is stored in the memory queue. The reply comes from the 1st decomposition rule of my.
+- For "It is the same every day.", the target alike of the goto item of same is not a keyword, so the move cannot be made; the keyword list is exhausted, so the text recalled from the memory queue becomes the reply.
+- The clause of "Do you understand?" contains no keyword, the memory queue is empty, and the last character is "?", so a QUESTION text becomes the reply.

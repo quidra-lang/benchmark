@@ -1,0 +1,453 @@
+[Overview]
+Write a cheminformatics toolkit that parses molecules written in SMILES notation (a notation that represents the structure of a molecule as a one-line string) and performs canonicalization and searching. The program reads the element table input/elements.txt, which defines the properties of the elements, the molecule list input/molecules.smi, and input/queries.txt, which lists queries for substructure search and similarity calculation. It parses the SMILES of each molecule (containing atoms, atoms enclosed in square brackets, bonds, branches and ring closures), and if there is an error, reports it together with its column position. For each molecule that was read correctly, it finds the smallest set of smallest rings (SSSR) by breadth-first search, converts the aromatic parts into a Kekule structure (an arrangement of single and double bonds) by a matching search in a fixed order, determines the number of implicit hydrogens from the element valences, and checks the valences. It then computes the molecular formula (Hill order), the molecular weight, the number of heavy atoms, the number of rings, the number of rotatable bonds, the numbers of hydrogen-bond donors and acceptors, and the result of Lipinski's rule. It also assigns canonical ranks to the atoms by iterated atom ranking similar to the Morgan method, builds canonical SMILES, and examines duplicates of the same molecule, isomers, molecular scaffolds and ring systems. The queries perform substructure search with simplified SMARTS-like patterns (subgraph search by backtracking), and similarity matrices, neighbor searches and clustering based on the Tanimoto coefficient of path fingerprints. The results are written to output/properties.csv, output/canonical.txt, output/rings.txt, output/substructure.txt, output/similarity.txt and output/errors.txt. All computation is done with integers; floating-point numbers are not used. Nothing is written to standard output.
+
+[Input files]
+There are three input files: input/elements.txt, input/molecules.smi and input/queries.txt. Every file consists only of printable ASCII characters (including the space) and line feeds (LF), and every line (including the last line) ends with a line feed. In every file, empty lines and lines starting with "#" (comment lines) are ignored, and all other lines are called data lines. Line numbers are counted with the first line of the file as 1, including empty lines and comment lines.
+
+* input/elements.txt (element table)
+Each data line has the form "S Z M V", with the four parts separated by single spaces. S is the element symbol (one uppercase letter, or one uppercase letter followed by one lowercase letter), Z is the atomic number of the element, M is the atomic weight of the element multiplied by 1000 as an integer (for example, 12011 represents 12.011), and V is the list of valences of the element: one or more positive integers in increasing order joined with "," (example: "3,5"). The integers in Z, M and V are written in decimal without extra leading zeros. The smallest value in V is called the base valence of the element, and the largest value is called the maximum valence. No two lines have the same element symbol. The element table always contains the 11 elements H, B, C, N, O, P, S, F, Cl, Br and I.
+
+* input/molecules.smi (molecule list)
+Each data line contains the SMILES and the name of one molecule, separated by a single space. However, lines that are not in this form may also be included (they are checked in 2 of [Processing]).
+
+* input/queries.txt (queries)
+Each data line is one query, consisting of strings of one or more characters that contain no space (tokens) joined with single spaces. The first token is called the query type, the second token the identifier, and the third and later tokens the arguments. The query types and the meaning of their arguments are as follows (id is the identifier; whether a query is valid is checked in 15 of [Processing]).
+- "MATCH id P": substructure search of all molecules with pattern P.
+- "CONTAINS id X Y": decide whether molecule X is contained as a substructure of molecule Y.
+- "MATRIX id X1 X2 ... Xk": similarity matrix of molecules X1, X2, ..., Xk.
+- "NEAREST id X k": search for the k molecules most similar to molecule X.
+- "WITHIN id X t": search for molecules whose similarity to molecule X is at least threshold t.
+- "COMPARE id X Y": comparison of the fingerprints of molecules X and Y.
+- "CLUSTER id t": clustering of all molecules with threshold t.
+
+[Processing]
+== 1. Terms and common rules ==
+- Valid as a name: the string has from 1 to 32 characters and consists only of letters (A-Z, a-z), digits (0-9), "_" and "-".
+- Valid as a number: a string is "valid as a number from a to b" if it is a string of one or more characters consisting only of digits, its first character is not "0" when it has two or more characters, and its value read as a decimal number is at least a and at most b.
+- String comparison: lexicographic order by ASCII code (if one string is a prefix of the other, the shorter one comes first).
+- Sequence comparison: two sequences of integers or the like are compared element by element from the beginning, and the one whose first differing element is smaller is the smaller sequence. If one is a prefix of the other, the shorter one is smaller. When the elements are themselves sequences, the elements are also compared by this rule.
+- Dense ranking: when each of several objects has a value (an integer or a sequence), list the values that occur, without duplicates, in increasing order, and give rank k to the objects having the k-th value (k = 1, 2, ...); this is called dense ranking by that value. Objects with equal values get the same rank, and the number of distinct ranks equals the number of distinct values.
+- Fraction: the notation of a fraction p/q with p >= 0 and q >= 1 is "p'/q'", where p' and q' are p and q divided by their greatest common divisor (if p = 0, it is "0/1"). Two fractions p1/q1 and p2/q2 are compared by comparing p1*q2 and p2*q1.
+- Flow of processing: the program first reads the element table, then reads the molecule list as in 2 and analyzes each molecule as in 3 to 7. Next, for each valid molecule, it computes the values of 8 to 12 and the fingerprint of 14, and checks the queries as in 15. Finally, it writes the six files of [Output files].
+
+== 2. Reading the molecule list ==
+Examine the data lines of molecules.smi in order from the top. Each part obtained by splitting a data line at every single space (an empty string also counts as one part) is called a token. For each data line, perform the following checks in order; the line is an error with the reason of the first check that applies.
+(1) The number of tokens is not 2, or the first token is empty, or the second token is not valid as a name: "bad line"
+(2) The second token (the name) is the same as the name of an earlier data line that did not fall under (1) (including lines that became errors): "duplicate name"
+(3) An error is found when the first token (the SMILES) is analyzed as in 3 to 7: the reason of that error (a string such as "misplaced bond" defined in 3, 6 and 7). In this case the column position of the error is also reported.
+The molecule of a line to which none of these applies is called a valid molecule. The valid molecules in the order in which they appear in the file are said to be in molecule order. From here on, "molecule" alone means a valid molecule.
+
+== 3. Parsing SMILES ==
+Read the SMILES string from left to right. The column position of each character is counted with the first character as 1.
+- Atoms: the atoms that appear in the SMILES are numbered 1, 2, ... in order of appearance (atom numbers). Each atom has an element, whether it is aromatic, a mass number (0 if not specified), a charge (an integer), a hydrogen count, whether it is a bracket atom, and a column position (the column position of the first character of the string that represents the atom).
+- Organic atoms: atoms written without square brackets. When "C" is immediately followed by "l", the two characters "Cl" are read as one atom of that element, and when "B" is immediately followed by "r", the two characters "Br" are read as one atom of that element. Otherwise, a single uppercase letter "B", "C", "N", "O", "P", "S", "F" or "I" is a non-aromatic atom of that element, and a single lowercase letter "b", "c", "n", "o", "p" or "s" is an aromatic atom of the element obtained by converting it to uppercase. The mass number and charge of an organic atom are 0, and its hydrogen count is determined in 7 (it is taken as 0 during the processing up to 6).
+- Bracket atoms: the characters from "[" up to the first "]" that appears after it represent one atom. The string between "[" and "]" is called the content, and the content is read from the beginning in the following order. The column position of a bracket atom is the column position of "[".
+  1. Read the leading run of digits as the mass number. If there are 4 or more consecutive digits, or there is at least one digit and the first digit is "0", it is the error "bad bracket atom". If there are no digits, the mass number is 0.
+  2. Read the element symbol. If the next character is one of "b", "c", "n", "o", "p" and "s", read that one character, and the atom is an aromatic atom of the element obtained by converting it to uppercase. If the next character is an uppercase letter: if the two characters consisting of that letter and the immediately following lowercase letter are an element symbol in the element table, read those two characters; otherwise, if that single uppercase letter is an element symbol in the element table, read that one character; the atom is a non-aromatic atom of that element. If neither, it is the error "unknown element". If there is no next character, or the next character is anything other than these, it is the error "bad bracket atom".
+  3. If the next two characters are "@@", skip those two characters; otherwise, if the next character is "@", skip that one character (stereo information is not used).
+  4. If the next character is "H", read it and set the hydrogen count to 1. If the character after that is a digit, read it too and set the hydrogen count to the value of that digit. If there is no "H", the hydrogen count is 0.
+  5. If the next character is "+" or "-", read it and set the charge to +1 or -1, respectively. If the character after that is one of "1" to "9", read it too and set the absolute value of the charge to the value of that digit. If there is neither, the charge is 0.
+  6. If the end of the content has not been reached, it is the error "bad bracket atom".
+- Bond symbols: "-", "/" and "\" represent a single bond, "=" a double bond, "#" a triple bond, and ":" an aromatic bond (the stereo information of "/" and "\" is not used). When two bond symbols represent the same type of bond, the two symbols are said to be of the same type.
+- Reading procedure: while reading, keep a current atom (initially none), a pending bond symbol (initially none), a branch stack (initially empty) and a list of open rings (initially empty). Depending on the character at the reading position, perform exactly one of (a) to (e) below. The parenthesized text after an error reason is the column position to report. When an error is found, the analysis of the molecule ends at that point.
+(a) A bond symbol: if there is no current atom or there is a pending bond symbol, it is the error "misplaced bond" (column of that character). Otherwise, make the symbol the pending bond symbol.
+(b) "(": if there is no current atom, or there is a pending bond symbol, or the immediately preceding character is "(", it is the error "misplaced branch" (column of that character). Otherwise, push the pair of the current atom and the column position of this character onto the end of the branch stack.
+(c) ")": if the branch stack is empty, it is the error "unmatched parenthesis" (column of that character); if there is a pending bond symbol, it is the error "dangling bond" (column of that bond symbol); if the immediately preceding character is "(", it is the error "empty branch" (column of that character) (checked in this order). If none of these, remove the most recently added pair from the branch stack and make its atom the current atom.
+(d) A digit or "%" (ring closure): if there is no current atom, it is the error "misplaced ring closure" (column of that character). If it is a digit, read that one character, and the ring number is the value of that digit. If it is "%": if the next two characters are not both digits, it is the error "bad ring number" (column of "%"); otherwise read "%" and the two digits, and the ring number is the value represented by those two digits (0 to 99). Numbers given by a single digit and by "%" are not distinguished. The pending bond symbol (which may be none) becomes the symbol of this ring closure, and the pending bond symbol becomes none. If the ring with that number is not open, record the current atom (the opening atom), the symbol of this ring closure and the column position of the first character of this ring closure, and open the ring with that number. If the ring with that number is open, check the following in order (for all of them the column position of the error is the column of the first character of this ring closure). If the opening atom is the current atom, it is the error "self bond"; if the symbol at opening and the symbol of this ring closure both exist and are not of the same type, it is the error "ring bond mismatch"; if there is already a bond between the opening atom and the current atom, it is the error "duplicate bond". If none of these, create a bond between the opening atom and the current atom that has the symbol of this ring closure (if none, the symbol at opening; if neither exists, no symbol), and close the ring with that number. A ring number that has been closed can be opened again.
+(e) Any other character: read one atom starting at that character. If it is "[": if there is no "]" after it, it is the error "unclosed bracket" (column of "["); if there is, read a bracket atom (the column position of every error in the content is the column of "["). If it is not "[", read an organic atom. If the character cannot be read as an organic atom (this includes letters such as "H" as well as ".", "*", "~", "]" and so on), it is the error "unexpected character" (column of that character). After reading the atom, if there is a current atom, create a bond between the current atom and the new atom that has the pending bond symbol (a bond with no symbol if there is no pending bond symbol). Then make the new atom the current atom and set the pending bond symbol to none.
+After the last character has been read, check the following in order. If there is a pending bond symbol, it is the error "dangling bond" (column of that bond symbol); if the branch stack is not empty, it is the error "unmatched parenthesis" (column of the earliest added pair remaining in the stack); if there is an open ring, it is the error "unclosed ring" (column of the open ring with the smallest recorded column position).
+In a molecule read in this way, there is at most one bond between any two atoms, and every atom can reach every other atom by following bonds. Two atoms joined by a bond are said to be neighbors of each other, and the number of neighbors of an atom is called the degree of the atom. An atom whose element is H is called a hydrogen atom, and any other atom is called a heavy atom; the number of neighbors that are heavy atoms is called the heavy degree.
+
+== 4. Ring detection ==
+Rings are found as follows from the connectivity of atoms and bonds only, regardless of bond types. Below, a bond is represented by the pair of the numbers of its two end atoms (smaller number, larger number), and the bond ordering is the order in which these pairs are sorted in increasing order by sequence comparison. A ring is an arrangement of three or more distinct atoms in a cycle such that adjacent atoms (including the last and the first) are bonded, and the set of those bonds is called the bond set of the ring.
+(1) Breadth-first search: in the breadth-first search rooted at atom r, mark r as visited and put it into the queue; until the queue is empty, take out the atom a at the front, and for the neighbors of a that are not yet visited, in increasing order of number, mark each as visited, set its parent to a, and put it at the end of the queue. For an atom x, the sequence of atoms obtained by following parents from x until reaching r (including x and r) is called the path from r to x (written P(x); P(r) is r alone).
+(2) Candidates: for the roots r = 1, 2, ..., n (n is the number of atoms) in this order, perform the breadth-first search rooted at r, and then examine the bonds (x, y) in bond ordering. Skip a bond if the parent of x is y or the parent of y is x. Also skip a bond if P(x) and P(y) have a common atom other than r. For any other bond, the arrangement of atoms obtained by concatenating P(x) reversed (from r to x) and P(y) without r (from y) forms one ring. If the bond set of this ring is not the same as that of any candidate obtained so far, add it to the end of the candidates.
+(3) Selection: sort the candidates in increasing order of the number of atoms (candidates with the same number keep the order in which they were added). Examine the candidates in that order, and select a candidate if its bond set cannot be expressed as the symmetric difference (exclusive or; for zero rings it is the empty set) of the bond sets of some of the rings already selected. The set of selected rings is called the smallest set of smallest rings (SSSR). In this input, the number of selected rings is always (number of bonds) - (number of atoms) + 1.
+(4) Ring representation: the atom sequence of a ring starts at the atom of the ring with the smallest number and proceeds in the direction toward the smaller-numbered of that atom's two neighbors on the ring. The rings of the SSSR are sorted in increasing order of the number of atoms, and if equal, in increasing order of the atom sequence (sequence of numbers) by sequence comparison, and numbered 1, 2, ... (ring numbers). The number of atoms of a ring is called the size of the ring. A bond contained in any ring of the SSSR is called a ring bond, and such an atom is called a ring atom.
+
+== 5. Bond types ==
+Each bond is a single bond, a double bond, a triple bond or an aromatic bond. A bond with a bond symbol is of the type represented by that symbol. A bond with no symbol is an aromatic bond if both end atoms are aromatic and it is a ring bond; otherwise it is a single bond. The bond type numbers are 1 for a single bond, 2 for a double bond, 3 for a triple bond and 4 for an aromatic bond. The base values of bonds are 1 for a single bond, 2 for a double bond, 3 for a triple bond and 1 for an aromatic bond.
+
+== 6. Kekulization ==
+- Atoms that need a pi bond: aromatic atoms for which the sum of the base valence of the element and the charge is at least S + 1. S is the sum of the total of the base values of the atom's bonds and the atom's hydrogen count (for a bracket atom, its hydrogen count; for an organic atom, 0). A non-aromatic atom is not an atom that needs a pi bond.
+- Aromatic systems: consider the graph whose vertices are the atoms that need a pi bond and whose edges are the aromatic bonds joining two atoms that need a pi bond; each set of atoms that can reach each other by following edges is one aromatic system. The aromatic systems are examined in increasing order of the smallest atom number they contain.
+- Matching search: for one aromatic system, try to divide all of its atoms into pairs of two atoms joined by an edge of that system. Initially no atom is paired. Perform the following procedure "search".
+  1. If no atom of the system is unpaired, end with success.
+  2. Let u be the unpaired atom with the smallest number. Examine the neighbors v of u in increasing order of number; if v is an atom of the same system, is unpaired, and u and v are joined by an aromatic bond, pair u and v and perform "search". If that succeeds, this "search" also ends with success; if it fails, unpair u and v and examine the next v.
+  3. If no v succeeds, end with failure.
+- The pairs at the first success are used. If some aromatic system fails, the molecule has the error "kekulization failed", and its column position is the column position of the smallest-numbered atom of that system (if several systems fail, it is determined by the first system examined).
+- Multiplicity: if all systems succeed, determine the multiplicity of each bond. A single bond is 1, a double bond 2 and a triple bond 3. An aromatic bond is 2 if its two end atoms are paired with each other, and 1 otherwise (it is 1 when the two ends are each paired with a different atom). An aromatic bond whose multiplicity became 2 is called a double bond of the Kekule structure.
+
+== 7. Hydrogen counts and valence check ==
+If there was no error in 6, examine the atoms in order of number, and with B being the total of the multiplicities of each atom's bonds, do the following. The first atom that becomes an error determines the error of the molecule.
+- Bracket atoms: if the sum of B and the hydrogen count is greater than the sum of the maximum valence of the element and the absolute value of the charge, it is the error "bad valence" (column of that atom).
+- Organic atoms: let v be the smallest value in the element's valence list that is at least B, and set the hydrogen count to v - B. If there is no value at least B, it is the error "bad valence" (column of that atom).
+From here on, the hydrogen count of an atom is this value. The number of hydrogens attached to an atom is the sum of its hydrogen count and the number of its neighbors that are hydrogen atoms.
+
+== 8. Molecular properties ==
+For each molecule, compute the following values.
+- Molecular formula: count the atoms of the molecule by element (mass numbers are not distinguished), and add the total of the hydrogen counts of all atoms to the count of element H. The element order is as follows among the elements with count 1 or more: if C is present, C, then H (if present), then the remaining elements in increasing order of element symbol by string comparison; if C is not present, all elements in increasing order of element symbol by string comparison (Hill order). The molecular formula is the element symbols and counts written in this order, where the count is omitted for an element with count 1 (examples: C9H8O4, CHBrClF, H2O4S).
+- Molecular weight: the integer W obtained by summing, over all atoms, the mass number * 1000 if the mass number is not 0, or the atomic weight of the element (the integer multiplied by 1000) if it is 0, and adding the total of the hydrogen counts of all atoms multiplied by the atomic weight of element H (the integer multiplied by 1000). In the output, write the quotient of W divided by 1000, ".", and the remainder padded on the left with zeros to 3 digits, joined together (example: if W = 180159, 180.159).
+- Number of heavy atoms: the number of heavy atoms.
+- Number of rings: the number of rings in the SSSR.
+- Number of rotatable bonds: the number of bonds satisfying all of the following. The multiplicity is 1. It is not a ring bond. The heavy degrees of both end atoms are 2 or more. Neither end atom is an end of a bond with multiplicity 3.
+- Number of donors: the number of atoms whose element is N or O and whose number of attached hydrogens is 1 or more.
+- Number of acceptors: the number of atoms whose element is N or O.
+- Lipinski result: among "W is greater than 500000", "the number of donors is greater than 5" and "the number of acceptors is greater than 10", if the number of conditions that hold is 1 or less, "pass"; if 2 or more, "fail".
+- Net charge: the total of the charges of all atoms.
+
+== 9. Canonical ranks of atoms ==
+- Atom invariant: the sequence of the following six integers in this order: the degree of the atom, the atomic number of the element, the mass number, the charge, the hydrogen count, and 1 if aromatic, otherwise 0.
+- Refinement: when each atom has a rank, the neighborhood value of atom a is the pair, in this order, of the rank of a and the sequence of pairs (rank of b, bond type number of the bond between a and b), one for each neighbor b of a, sorted in increasing order by sequence comparison. The dense ranking of all atoms by their neighborhood values becomes the new ranks. Repeat this until the number of distinct new ranks equals the number of distinct ranks before, and the final ranks (the ranks when they became equal) are the result of the refinement.
+- Procedure: first, densely rank all atoms by their atom invariants, and refine. The number of distinct ranks at this point is called the number of symmetry classes of the molecule. Then, until all ranks are distinct, repeat the following tie breaking. Let r be the smallest rank held by two or more atoms, and let a be the atom with the smallest number among the atoms with rank r. Double the ranks of all atoms, subtract a further 1 from the rank of a only, densely re-rank all atoms by those values, and then refine.
+- The rank (1 to n) of each atom when all ranks are distinct is called the canonical rank of that atom.
+
+== 10. Canonical SMILES ==
+The canonical SMILES of a molecule is the string built as follows using the canonical ranks.
+- Search: with the atom of canonical rank 1 as the start atom, perform the procedure "visit(a, e)" (a is an atom, e is the bond passed through to come to a; for the start atom it is none).
+  1. Mark a as visited and give a a visit order (1, 2, ...).
+  2. Examine the neighbors b of a in increasing order of canonical rank. Let f be the bond between a and b. If f is e, or f is already a ring-closure bond, do nothing. If b is not visited, make f a tree bond and b a child of a (children are kept in the order they were added), and immediately perform "visit(b, f)". If b is visited, make f a ring-closure bond.
+- Writing: the string written by the procedure "write(a)" for the start atom is the canonical SMILES.
+  1. Write the atom notation of a.
+  2. Examine the ring-closure bonds that have a as an end, in increasing order of the visit order of the atom at the other end. If a ring number is assigned to the bond, write the notation of that number and release the assignment. If not, assign the smallest number of 1 or more that is not assigned to any bond at that moment, and write the bond symbol of that bond followed by the notation of the number. The notation of a number is the single digit if it is 1 to 9, and "%" followed by the number in 2 decimal digits if it is 10 or more.
+  3. Examine the children of a in child order; for each child c other than the last, write "(", the bond symbol of the bond between a and c, the string of "write(c)", and ")" in succession; for the last child c, write the bond symbol of the bond between a and c followed by the string of "write(c)".
+- Bond symbols: a bond whose two ends are both aromatic atoms and which is a ring bond is called an in-ring aromatic bond. A single bond is "-" if it is an in-ring aromatic bond, and the empty string otherwise. A double bond is "=" and a triple bond is "#". An aromatic bond is the empty string if it is an in-ring aromatic bond, and ":" otherwise.
+- Atom notation: the element symbol of an atom is the symbol converted to lowercase if the atom is aromatic, and otherwise the element symbol of the element table as is. The notation of an atom that satisfies all of the following (1) to (4) is the element symbol alone.
+  (1) The element is one of B, C, N, O, P, S, F, Cl, Br and I, and if the atom is aromatic, the element is one of B, C, N, O, P and S.
+  (2) The mass number and the charge are both 0.
+  (3) If the atom is aromatic, the result of deciding whether it is an atom that needs a pi bond as in 6 with the hydrogen count included in S is the same as the result of deciding it with the hydrogen count not included in S (with the hydrogen count taken as 0).
+  (4) With B being the total of the multiplicities of the atom's bonds, the hydrogen count obtained by the organic atom rule of 7 (v - B when there is a valence at least B) equals the atom's hydrogen count. If there is no valence at least B, this condition is not satisfied.
+  The notation of any other atom is the concatenation of "[", the mass number (in decimal, if it is not 0), the element symbol, "H" if the hydrogen count is 1 or "H" followed by the count if it is 2 or more, "+" if the charge is positive or "-" if it is negative, further followed by the absolute value of the charge if it is 2 or more, and finally "]" (examples: [NH4+], [O-], [13CH4], [nH], [Fe+2]).
+
+== 11. Scaffolds ==
+A molecule that contains no ring has no scaffold (it is called acyclic). The scaffold of a molecule that contains a ring is the substructure obtained as follows.
+(1) Pruning: consider all atoms of the molecule as remaining. Repeatedly remove one remaining atom that is not a ring atom and has exactly one remaining neighbor, until there is no such atom (the result does not depend on the order of removal). Let F be the set of remaining atoms.
+(2) Restoring: the set of scaffold atoms K is F plus the atoms not in F that are joined to an atom of F by a double bond.
+(3) Scaffold molecule: the molecule consisting of the atoms of K, renumbered 1, 2, ... in increasing order of their original numbers. Each atom has the element, aromaticity, mass number and charge of the original atom, and its hydrogen count is the original hydrogen count plus the total of the multiplicities of the bonds between that atom and atoms not in K. It has the bonds whose two ends are atoms of K, with their types and multiplicities unchanged. The ring bonds are the bonds that were ring bonds in the original molecule.
+The canonical SMILES of the scaffold is built by applying 9 and 10 as they are to the scaffold molecule (the degrees, hydrogen counts and so on of the atoms are those of the scaffold molecule).
+
+== 12. Ring systems ==
+When two rings of the SSSR share one or more atoms, the two rings are said to be connected. Each set of rings that can reach each other by following connections is one ring system. The ring systems are sorted in increasing order of the smallest ring number they contain and numbered 1, 2, ....
+- Relation between two rings: if they share one atom, spiro; if they share exactly two atoms and those two atoms are bonded, fused; otherwise, if they share two or more atoms, bridged.
+- Kind of ring system: a ring system with only one ring is "isolated". A ring system with two or more rings is "bridged" if any pair of its rings has the bridged relation, otherwise "fused" if any pair has the fused relation, and otherwise "spiro".
+- Number of atoms of a ring system: the number of atoms contained in any ring of the ring system.
+- Aromaticity of a ring: if all atoms of a ring are aromatic atoms, the ring is an aromatic ring. The number of hetero atoms of a ring is the number of atoms of that ring whose element is not C.
+
+== 13. Substructure search ==
+- Pattern: the argument P of MATCH is a string (pattern) read by the same rules as 3 except for the following points (1) to (4). The error reasons and the way column positions are determined are also the same as in 3. The atoms of a pattern are also numbered 1, 2, ... in order of appearance.
+  (1) In (e) of 3, the following pattern atoms are read instead of organic atoms and bracket atoms. An atom written in organic-atom form ("Cl", "Br", the 8 single uppercase letters and the 6 single lowercase letters of the organic atoms of 3; as in 3, "Cl" and "Br" take precedence) matches atoms of the same element with the same aromaticity. "*" matches any atom, "A" matches any non-aromatic atom, and "a" matches any aromatic atom. Something starting with "[" is an atom list. A character that cannot be read as any of these is the error "unexpected character" (column of that character).
+  (2) An atom list runs from "[" up to the first "]" that appears after it. If there is no "]", it is the error "unclosed bracket" (column of "["). Between "[" and "]" there must be one or more atoms in organic-atom form separated by ","; otherwise it is the error "bad bracket atom" (column of "["). An atom list matches an atom that matches any of the listed atoms.
+  (3) The bond symbols are the five symbols "-" (matches a single bond), "=" (matches a double bond), "#" (matches a triple bond), ":" (matches an aromatic bond) and "~" (matches any bond). "/" and "\" are not pattern bond symbols, so they are read in (1) and become "unexpected character". A bond with no symbol matches single bonds and aromatic bonds.
+  (4) Ring-closure symbols are of the same type when they are the same symbol.
+- Embedding: let k be the number of atoms of the pattern. An assignment of one molecule atom to each of the pattern atoms 1, 2, ..., k that satisfies all of the following is called an embedding. The assigned molecule atoms are all distinct. Each pattern atom matches the molecule atom assigned to it. For each pattern bond, there is a bond between the molecule atoms assigned to its two ends, and the type of that bond (the type of 5) matches the pattern bond. Other bonds of the molecule do not matter.
+- Search order: find all embeddings, in this order, by backtracking that goes through the pattern atoms 1, 2, ..., k in order and tries the molecule atoms to assign in increasing order of number. The first embedding found is called the first mapping (the first mapping is the embedding whose sequence of assigned molecule atom numbers is the smallest by sequence comparison). The number of embeddings is called the match count, and the number of distinct sets of molecule atoms used by the embeddings is called the unique match count.
+- Molecule pattern: in CONTAINS, the following pattern is built from molecule X and its embeddings into molecule Y are found. The atoms of X (in order of number) become pattern atoms that match only atoms of the same element with the same aromaticity, and the bonds of X become pattern bonds that match only bonds of the same type (hydrogen counts, charges and mass numbers do not matter).
+
+== 14. Fingerprints and similarity ==
+- Atom code: 16 * (atomic number of the element) + 8 * (1 if aromatic, otherwise 0) + (degree of the atom).
+- Path: a sequence of atoms a0, a1, ..., aL of the molecule (0 <= L <= 5) whose atoms are all distinct and in which adjacent atoms are bonded. Paths in different directions are different paths, and paths with L = 0 (a single atom) are included.
+- Hash value of a path: start h at the code of atom a0, and for i = 1, 2, ..., L in this order, set h to (h*31 + (bond type number of the bond between a(i-1) and ai)) mod 1000003, and then to (h*31 + (code of ai)) mod 1000003. The remainder of the final h divided by 1024 is called the bit of the path.
+- Fingerprint: the set of the bits of all paths of the molecule (a set of integers from 0 to 1023). The number of its elements is called the number of bits, and the number of paths is called the number of paths.
+- Tanimoto coefficient: for the fingerprints A and B of two molecules, the fraction c/u, where c is the number of elements in the intersection of A and B and u is the number of elements in their union. The similarity is this value.
+
+== 15. Checking and processing queries ==
+Examine the data lines of queries.txt in order from the top. For each data line, perform the following checks in order; the query is an error with the reason of the first check that applies. A query to which none of them applies is called a valid query.
+(1) The type is none of "MATCH", "CONTAINS", "MATRIX", "NEAREST", "WITHIN", "COMPARE" and "CLUSTER": "unknown query"
+(2) There is only one token, or the identifier is not valid as a name: "bad id"
+(3) The identifier is the same as the identifier of an earlier data line that did not fall under (1) or (2) (including lines that became errors): "duplicate id"
+(4) The number of arguments is not 1 for MATCH, 2 for CONTAINS, from 2 to 12 for MATRIX, 2 for NEAREST, 2 for WITHIN, 2 for COMPARE, or 1 for CLUSTER: "bad arguments"
+(5) Checks by type:
+  MATCH: there is an error when the argument is read as a pattern of 13: "bad pattern M at column C" (M is the reason of that error and C is the column position).
+  CLUSTER: the argument is not valid as a threshold: "bad threshold". Valid as a threshold means that it contains exactly one "/", the part p before the "/" is valid as a number from 0 to 99, the part q after it is valid as a number from 1 to 99, and the value of p is at most the value of q; the threshold is then the fraction p/q.
+  CONTAINS, MATRIX, COMPARE: examine the arguments in order from the first; for the first argument X that is not a molecule name (the name of a valid molecule): "unknown molecule X". Otherwise, if the same argument appears two or more times: "repeated molecule".
+  NEAREST: the first argument X is not a molecule name: "unknown molecule X". The second argument is not valid as a number from 1 to 99: "bad count" (checked in this order). k is its value.
+  WITHIN: the first argument X is not a molecule name: "unknown molecule X". The second argument is not valid as a threshold: "bad threshold" (checked in this order).
+For a valid query, compute the following values according to its type. Below, an argument that is a molecule name denotes the molecule with that name.
+- MATCH: find the embeddings into each molecule in molecule order; the molecules with match count 1 or more are hit molecules. Compute the number of hit molecules and the total of their match counts. Among the hit molecules with the largest match count, the first one in molecule order is the top molecule.
+- CONTAINS: find the embeddings of the pattern of molecule X into molecule Y. If the match count is 1 or more, X is contained in Y.
+- MATRIX: compute the similarity of every pair of argument molecules (including a molecule with itself). Among the pairs of the i-th and j-th molecules (i < j) in argument order, the one with the largest similarity is the best pair. If there are several best pairs, take the one with the smallest i, and among those the one with the smallest j.
+- NEAREST, WITHIN: sort all molecules other than molecule X in decreasing order of similarity to X, and if equal, in molecule order. For NEAREST, the first min(k, number of sorted molecules) molecules, and for WITHIN, all molecules whose similarity is at least the threshold t, are the result, in this order. For each molecule, compute the similarity and the number of elements in the intersection of the two fingerprints.
+- COMPARE: compute the numbers of bits of X and Y, the numbers of elements in the intersection and in the union, and the similarity. Also determine whether the canonical SMILES of X and Y are the same.
+- CLUSTER: for each molecule i, the molecules other than i whose similarity to i is at least the threshold t are the neighbors of i. Sort the molecules in decreasing order of the number of neighbors, and if equal, in molecule order, and examine them in this order. If the molecule i being examined does not yet belong to any cluster, create a new cluster with i as its center, consisting of i and the neighbors of i that do not yet belong to any cluster (in molecule order). Clusters are kept in the order they were created, and only clusters consisting of two or more molecules are numbered 1, 2, ... in order of creation. Compute the number of clusters and the number of clusters consisting of only one molecule (singletons).
+
+[Output files]
+The program writes the following six files into the output/ folder. Every file consists only of ASCII characters, every line ends with a line feed (LF), and no line has trailing spaces. Integers are written in decimal, negative numbers with a leading "-", and without extra leading zeros. The files other than properties.csv are sequences of paragraphs, with exactly one empty line between consecutive paragraphs, no empty line at the beginning or end of the file, and no empty line inside a paragraph. In a format, only the symbols explained (N, name, SMILES and so on) are replaced by values, and all other characters are output as they are. Names and identifiers are output exactly as the strings written in the input files. The atom numbers of a molecule are the numbers assigned in 3. Lists joined with "," have no spaces between the elements.
+
+* output/properties.csv
+The first line is "name,formula,weight,heavy_atoms,rings,rotatable,donors,acceptors,lipinski". Then, in molecule order, for each molecule output one line that joins with "," the name, the molecular formula, the molecular weight, the number of heavy atoms, the number of rings, the number of rotatable bonds, the number of donors, the number of acceptors and the Lipinski result, in this order (it is not divided into paragraphs).
+
+* output/canonical.txt
+Output the following four paragraphs in this order.
+1. Canonical SMILES paragraph: the first line is "CANONICAL molecules=N unique=U", where N is the number of molecules and U is the number of distinct canonical SMILES of the molecules. Then, in molecule order, output the line "name SMILES classes=K charge=Q" for each molecule. SMILES is the canonical SMILES of that molecule, K is the number of symmetry classes, and Q is the net charge, prefixed with "+" if positive ("0" if it is 0).
+2. Duplicates paragraph: when there are two or more molecules with the same canonical SMILES, the combination of that canonical SMILES and those molecules is a duplicate group. The first line is "DUPLICATES groups=G molecules=M", where G is the number of duplicate groups and M is the total number of molecules belonging to duplicate groups. Then, for each duplicate group, in molecule order of its first molecule, output the line "group i SMILES members=L". i is a serial number starting from 1, SMILES is the canonical SMILES, and L is the names of the molecules having that canonical SMILES, in molecule order, joined with ",".
+3. Isomers paragraph: among the sets of molecules with the same molecular formula, those with 2 or more distinct canonical SMILES are isomer groups. The first line is "ISOMERS groups=G", where G is the number of isomer groups. Then, for each isomer group, in molecule order of its first molecule, output the line "isomer i FORMULA forms=F members=L". i is a serial number, FORMULA is the molecular formula, F is the number of distinct canonical SMILES, and L is the names of all molecules having that molecular formula, in molecule order, joined with ",".
+4. Scaffolds paragraph: the first line is "SCAFFOLDS distinct=D acyclic=A", where D is the number of distinct scaffold canonical SMILES and A is the number of acyclic molecules. Then, for each distinct scaffold canonical SMILES, in decreasing order of the number of molecules having that scaffold, and if equal, in increasing order of the scaffold canonical SMILES by string comparison, output the line "scaffold i SMILES count=C members=L". i is a serial number, SMILES is the scaffold canonical SMILES, C is the number of molecules having that scaffold, and L is their names, in molecule order, joined with ",".
+
+* output/rings.txt
+Output one paragraph for each molecule containing one or more rings (cyclic molecule), in molecule order, and finally a summary paragraph.
+The paragraph of a cyclic molecule consists of the following lines in this order.
+1. "MOLECULE name atoms=N bonds=B rings=R aromatic=A systems=S ring_atoms=X ring_bonds=Y": N is the number of atoms, B is the number of bonds, R is the number of rings in the SSSR, A is the number of aromatic rings, S is the number of ring systems, X is the number of ring atoms, and Y is the number of ring bonds.
+2. For each ring, in order of ring number, "ring i size=K aromatic=F hetero=H atoms=P": i is the ring number, K is the size of the ring, F is "yes" if it is an aromatic ring and "no" otherwise, H is the number of hetero atoms of the ring, and P is the numbers of the ring's atom sequence joined with "-".
+3. For each ring system, in order of ring system number, "system j kind=T rings=L atoms=N": j is the ring system number, T is the kind of the ring system, L is the numbers of the rings contained in the ring system in increasing order joined with ",", and N is the number of atoms of the ring system.
+4. "kekule D": D is the double bonds of the Kekule structure, each written as the numbers of its two end atoms, smaller first, joined with "=" (example: 1=2), in bond ordering, joined with single spaces. If there is no double bond of the Kekule structure, D is "-".
+The summary paragraph consists of the following three lines.
+1. "SUMMARY molecules=N cyclic=C rings=R aromatic=A": N is the number of molecules, C is the number of cyclic molecules, and R and A are the totals over all molecules of the number of rings in the SSSR and of the number of aromatic rings.
+2. "sizes" followed, for each size k that occurs among the SSSR rings of all molecules, in increasing order of k, by a single space and "k=M" (M is the number of rings of size k). If there are no rings at all, "sizes -".
+3. "systems isolated=a fused=b spiro=c bridged=d": the numbers of ring systems of all molecules whose kind is isolated, fused, spiro and bridged.
+
+* output/substructure.txt
+Output one paragraph for each valid MATCH and CONTAINS query, in file order, and finally a summary paragraph.
+The paragraph of a MATCH consists of the following lines in this order.
+1. "MATCH id P atoms=A bonds=B hits=H embeddings=E": P is the pattern string itself, A is the number of pattern atoms, B is the number of pattern bonds, H is the number of hit molecules, and E is the total of their match counts.
+2. For each hit molecule, in molecule order, "name count=C unique=U map=L": C is the match count, U is the unique match count, and L is the numbers of the molecule atoms assigned to the pattern atoms 1, 2, ..., k in the first mapping, in this order, joined with ",".
+3. (When there are one or more hit molecules) "top name count=C": the name of the top molecule and its match count.
+The paragraph of a CONTAINS is one line: if X is contained in Y, "CONTAINS id X Y result=yes count=C unique=U map=L" (C, U and L have the same meaning as in 2 of MATCH); if not, "CONTAINS id X Y result=no".
+The summary paragraph is the single line "SUMMARY patterns=P hits=H contains=C found=F". P is the number of valid MATCH queries, H is the total of their numbers of hit molecules, C is the number of valid CONTAINS queries, and F is the number of those whose result was that X is contained.
+
+* output/similarity.txt
+Output the fingerprint paragraph and one paragraph for each valid MATRIX, NEAREST, WITHIN, COMPARE and CLUSTER query, in file order. Fractions are written in the fraction notation of 1.
+The fingerprint paragraph has the first line "FINGERPRINTS molecules=N size=1024 depth=5" (N is the number of molecules), followed, in molecule order, by the line "name bits=B paths=P" for each molecule (B is the number of bits and P is the number of paths).
+The paragraph of a MATRIX consists of the following lines in this order.
+1. "MATRIX id size=K": K is the number of argument molecules.
+2. For each molecule X (the i-th) in argument order, "row X S1 S2 ... SK": Sj is the similarity of the i-th and j-th molecules, separated by single spaces.
+3. "best X Y S": X and Y are the molecules of the best pair (the earlier one and the later one in argument order), and S is their similarity.
+The paragraph of a NEAREST has the first line "NEAREST id X count=C" (C is the number of result molecules), and the paragraph of a WITHIN has the first line "WITHIN id X threshold=T count=C" (T is the fraction of the threshold). In both, the first line is followed, for each result molecule in result order, by the line "k name S common=M". k is the position starting from 1, S is the similarity, and M is the number of elements in the intersection.
+The paragraph of a COMPARE is the single line "COMPARE id X Y bits=B1,B2 common=M union=U tanimoto=S identical=F". B1 and B2 are the numbers of bits of X and Y, M and U are the numbers of elements in the intersection and in the union, S is the similarity, and F is "yes" if the canonical SMILES are the same and "no" otherwise.
+The paragraph of a CLUSTER has the first line "CLUSTER id threshold=T clusters=K singletons=S" (T is the fraction of the threshold, K is the number of clusters, and S is the number of singletons), followed, for each numbered cluster in order of number, by the line "cluster i centroid=name size=N members=L". name is the name of the center molecule, N is the number of molecules in the cluster, and L is the names of the cluster's molecules, the center molecule first and then the remaining molecules (in molecule order), joined with ",".
+
+* output/errors.txt
+Output the following three paragraphs in this order.
+1. Molecules paragraph: the first line is "MOLECULES lines=N valid=V errors=E", where N is the number of data lines of molecules.smi, V is the number of valid molecules, and E is the number of error lines. Then, for each error line, in file order, output the following line. L is the line number and name is the second token (the name).
+  For "bad line": "line L: bad line"
+  For "duplicate name": "line L name: duplicate name"
+  For a parse error: "line L name: M at column C" (M is the reason of the error and C is the column position)
+2. Queries paragraph: the first line is "QUERIES lines=N valid=V errors=E", where N is the number of data lines of queries.txt, V is the number of valid queries, and E is the number of error queries. Then, for each error query, in file order, output the following line. L is the line number, K is the type, id is the identifier, and R is the reason defined in 15 ("bad pattern M at column C" and "unknown molecule X" with the values substituted).
+  For "unknown query": "line L: unknown query"
+  For "bad id": "line L K: bad id"
+  Otherwise: "line L K id: R"
+3. Causes paragraph: for each error line and each error query, the cause is determined as follows. The cause of a molecule error is "bad line", "duplicate name", or the reason M of the parse error. The cause of a query error is "bad pattern" for "bad pattern M at column C", "unknown molecule" for "unknown molecule X", and the reason itself otherwise. The first line is "CAUSES kinds=K", where K is the number of distinct causes. Then, for each distinct cause, in decreasing order of its count, and if equal, in increasing order of the cause string by string comparison, output the line "R=C" (R is the cause and C is its count).
+
+[Source files]
+Divide the source code into files with the following six roles (file names and extensions follow the conventions of each language).
+- main: holds the overall flow and the largest share of the processing. Reading the three input files (checking the lines of the molecule list and detecting duplicate names), the analysis flow (determining bond types, deciding atoms that need a pi bond, determining hydrogen counts and checking valences, collecting error reasons and column positions), the molecular properties (molecular formula and Hill order, molecular weight and its notation, heavy atoms, rotatable bonds, donors and acceptors, the Lipinski result, net charge), pruning and restoring for scaffolds and assembling the scaffold molecule, ring systems and their kinds, checking queries, aggregation for MATCH and CONTAINS, the computations for MATRIX, NEAREST, WITHIN, COMPARE and CLUSTER (fraction comparison, sorting, creating clusters), building the duplicate, isomer and scaffold groups, counting causes, and assembling and writing every line of the six output files.
+- smiles_parser: parsing common to SMILES and patterns (bond symbols, branches, ring closures, error detection and column positions), and reading organic atoms and bracket atoms.
+- molecule: reading the element table and element information, the data structures of atoms, bonds and molecules (lists of neighbors and bonds, totals of bond base values and of multiplicities), the pair of error reason and column position, deciding whether an atom needs a pi bond, and the rule that determines the hydrogen count from the valence list.
+- rings_aromatic: breadth-first search and paths, generation and selection of SSSR candidates (independence test by symmetric difference), ring representation and sorting, ring bond sets, division into aromatic systems, and kekulization by matching search and determination of multiplicities.
+- canonical: dense ranking, refinement, canonical ranks by tie breaking, the search for canonical SMILES (tree bonds and ring-closure bonds), assignment of ring numbers, bond symbols and atom notation.
+- search: reading pattern atoms ("*", "A", "a", atom lists) and the bond matching rules, the backtracking search for embeddings, fingerprints by path enumeration and hash values, and the Tanimoto coefficient.
+
+[Constraints]
+- elements.txt has at most 40 data lines. The atomic number of an element is from 1 to 118, the atomic weight (the integer multiplied by 1000) is from 1 to 300000, valences are from 1 to 8, and one element has at most 4 valences.
+- molecules.smi has at most 300 data lines, and each line has at most 200 characters. The number of atoms of a valid molecule is from 1 to 80, and the degree of an atom is at most 7. The mass number of a bracket atom is at most 999.
+- queries.txt has at most 100 data lines, and each line has at most 300 characters.
+- In this input, the number of SSSR rings of a valid molecule equals (number of bonds) - (number of atoms) + 1, the match count for one molecule in one query is at most 100000, and the number of paths of one molecule is at most 100000.
+- Every intermediate value of the computation fits in the range of a 32-bit signed integer.
+
+[Example]
+In this example, input/elements.txt, input/molecules.smi and input/queries.txt are as follows (the example element table is a small one with only 12 elements).
+
+input/elements.txt:
+# symbol number mass valences
+H 1 1008 1
+B 5 10811 3
+C 6 12011 4
+N 7 14007 3,5
+O 8 15999 2
+F 9 18998 1
+Na 11 22990 1
+P 15 30974 3,5
+S 16 32065 2,4,6
+Cl 17 35453 1
+Br 35 79904 1
+I 53 126904 1
+
+input/molecules.smi:
+# example molecules
+CCO ethanol
+OCC ethanol_b
+Oc1ccccc1 phenol
+CC(=O)Oc1ccccc1C(=O)O aspirin
+c1ccccc1 benzene
+C1=CC=CC=C1 benzene_kekule
+c1cc[nH]c1 pyrrole
+C1CC2CCC1C2 norbornane
+[O-][N+](=O)c1ccccc1 nitrobenzene
+O=C1CCC2(CC1)CCCC2 spiro_ketone
+C1CCC broken
+c1ccnc1 no_h
+[Na+ open
+CCN ethanol
+
+input/queries.txt:
+# example queries
+MATCH ring6 c1ccccc1
+MATCH carbonyl C=O
+MATCH broken C(C
+CONTAINS phenol_in_aspirin phenol aspirin
+CONTAINS kekule_in_phenol benzene_kekule phenol
+MATRIX trio phenol aspirin benzene
+NEAREST near phenol 2
+WITHIN close phenol 1/3
+COMPARE forms benzene benzene_kekule
+CLUSTER groups 1/2
+NEAREST near aspirin 3
+MATRIX lost phenol no_h
+
+Then output/properties.csv is as follows.
+name,formula,weight,heavy_atoms,rings,rotatable,donors,acceptors,lipinski
+ethanol,C2H6O,46.069,3,0,0,1,1,pass
+ethanol_b,C2H6O,46.069,3,0,0,1,1,pass
+phenol,C6H6O,94.113,7,1,0,1,1,pass
+aspirin,C9H8O4,180.159,13,1,3,1,4,pass
+benzene,C6H6,78.114,6,1,0,0,0,pass
+benzene_kekule,C6H6,78.114,6,1,0,0,0,pass
+pyrrole,C4H5N,67.091,5,1,0,1,1,pass
+norbornane,C7H12,96.173,7,2,0,0,0,pass
+nitrobenzene,C6H5NO2,123.111,9,1,1,0,3,pass
+spiro_ketone,C10H16O,152.237,11,2,0,0,1,pass
+
+output/canonical.txt is as follows.
+CANONICAL molecules=10 unique=9
+ethanol CCO classes=3 charge=0
+ethanol_b CCO classes=3 charge=0
+phenol Oc1ccccc1 classes=5 charge=0
+aspirin CC(=O)Oc1ccccc1C(=O)O classes=13 charge=0
+benzene c1ccccc1 classes=1 charge=0
+benzene_kekule C=1C=CC=CC1 classes=1 charge=0
+pyrrole c1cc[nH]c1 classes=3 charge=0
+norbornane C1CC2CCC1C2 classes=3 charge=0
+nitrobenzene [O-][N+](=O)c1ccccc1 classes=7 charge=0
+spiro_ketone O=C1CCC2(CCCC2)CC1 classes=7 charge=0
+
+DUPLICATES groups=1 molecules=2
+group 1 CCO members=ethanol,ethanol_b
+
+ISOMERS groups=1
+isomer 1 C6H6 forms=2 members=benzene,benzene_kekule
+
+SCAFFOLDS distinct=5 acyclic=2
+scaffold 1 c1ccccc1 count=4 members=phenol,aspirin,benzene,nitrobenzene
+scaffold 2 C1CC2CCC1C2 count=1 members=norbornane
+scaffold 3 C=1C=CC=CC1 count=1 members=benzene_kekule
+scaffold 4 O=C1CCC2(CCCC2)CC1 count=1 members=spiro_ketone
+scaffold 5 c1cc[nH]c1 count=1 members=pyrrole
+
+output/rings.txt is as follows.
+MOLECULE phenol atoms=7 bonds=7 rings=1 aromatic=1 systems=1 ring_atoms=6 ring_bonds=6
+ring 1 size=6 aromatic=yes hetero=0 atoms=2-3-4-5-6-7
+system 1 kind=isolated rings=1 atoms=6
+kekule 2=3 4=5 6=7
+
+MOLECULE aspirin atoms=13 bonds=13 rings=1 aromatic=1 systems=1 ring_atoms=6 ring_bonds=6
+ring 1 size=6 aromatic=yes hetero=0 atoms=5-6-7-8-9-10
+system 1 kind=isolated rings=1 atoms=6
+kekule 5=6 7=8 9=10
+
+MOLECULE benzene atoms=6 bonds=6 rings=1 aromatic=1 systems=1 ring_atoms=6 ring_bonds=6
+ring 1 size=6 aromatic=yes hetero=0 atoms=1-2-3-4-5-6
+system 1 kind=isolated rings=1 atoms=6
+kekule 1=2 3=4 5=6
+
+MOLECULE benzene_kekule atoms=6 bonds=6 rings=1 aromatic=0 systems=1 ring_atoms=6 ring_bonds=6
+ring 1 size=6 aromatic=no hetero=0 atoms=1-2-3-4-5-6
+system 1 kind=isolated rings=1 atoms=6
+kekule -
+
+MOLECULE pyrrole atoms=5 bonds=5 rings=1 aromatic=1 systems=1 ring_atoms=5 ring_bonds=5
+ring 1 size=5 aromatic=yes hetero=1 atoms=1-2-3-4-5
+system 1 kind=isolated rings=1 atoms=5
+kekule 1=5 2=3
+
+MOLECULE norbornane atoms=7 bonds=8 rings=2 aromatic=0 systems=1 ring_atoms=7 ring_bonds=8
+ring 1 size=5 aromatic=no hetero=0 atoms=1-2-3-7-6
+ring 2 size=5 aromatic=no hetero=0 atoms=3-4-5-6-7
+system 1 kind=bridged rings=1,2 atoms=7
+kekule -
+
+MOLECULE nitrobenzene atoms=9 bonds=9 rings=1 aromatic=1 systems=1 ring_atoms=6 ring_bonds=6
+ring 1 size=6 aromatic=yes hetero=0 atoms=4-5-6-7-8-9
+system 1 kind=isolated rings=1 atoms=6
+kekule 4=5 6=7 8=9
+
+MOLECULE spiro_ketone atoms=11 bonds=12 rings=2 aromatic=0 systems=1 ring_atoms=10 ring_bonds=11
+ring 1 size=5 aromatic=no hetero=0 atoms=5-8-9-10-11
+ring 2 size=6 aromatic=no hetero=0 atoms=2-3-4-5-6-7
+system 1 kind=spiro rings=1,2 atoms=10
+kekule -
+
+SUMMARY molecules=10 cyclic=8 rings=10 aromatic=5
+sizes 5=4 6=6
+systems isolated=6 fused=0 spiro=1 bridged=1
+
+output/substructure.txt is as follows.
+MATCH ring6 c1ccccc1 atoms=6 bonds=6 hits=4 embeddings=48
+phenol count=12 unique=1 map=2,3,4,5,6,7
+aspirin count=12 unique=1 map=5,6,7,8,9,10
+benzene count=12 unique=1 map=1,2,3,4,5,6
+nitrobenzene count=12 unique=1 map=4,5,6,7,8,9
+top phenol count=12
+
+MATCH carbonyl C=O atoms=2 bonds=1 hits=2 embeddings=3
+aspirin count=2 unique=2 map=2,3
+spiro_ketone count=1 unique=1 map=2,1
+top aspirin count=2
+
+CONTAINS phenol_in_aspirin phenol aspirin result=yes count=2 unique=1 map=4,5,6,7,8,9,10
+
+CONTAINS kekule_in_phenol benzene_kekule phenol result=no
+
+SUMMARY patterns=2 hits=6 contains=2 found=1
+
+output/similarity.txt is as follows.
+FINGERPRINTS molecules=10 size=1024 depth=5
+ethanol bits=8 paths=9
+ethanol_b bits=8 paths=9
+phenol bits=37 paths=85
+aspirin bits=156 paths=205
+benzene bits=6 paths=66
+benzene_kekule bits=11 paths=66
+pyrrole bits=15 paths=45
+norbornane bits=24 paths=137
+nitrobenzene bits=59 paths=121
+spiro_ketone bits=52 paths=217
+
+MATRIX trio size=3
+row phenol 1/1 17/176 5/38
+row aspirin 17/176 1/1 5/157
+row benzene 5/38 5/157 1/1
+best phenol benzene 5/38
+
+NEAREST near phenol count=2
+1 nitrobenzene 9/23 common=27
+2 benzene 5/38 common=5
+
+WITHIN close phenol threshold=1/3 count=1
+1 nitrobenzene 9/23 common=27
+
+COMPARE forms benzene benzene_kekule bits=6,11 common=0 union=17 tanimoto=0/1 identical=no
+
+CLUSTER groups threshold=1/2 clusters=9 singletons=8
+cluster 1 centroid=ethanol size=2 members=ethanol,ethanol_b
+
+output/errors.txt is as follows.
+MOLECULES lines=14 valid=10 errors=4
+line 12 broken: unclosed ring at column 2
+line 13 no_h: kekulization failed at column 1
+line 14 open: unclosed bracket at column 1
+line 15 ethanol: duplicate name
+
+QUERIES lines=12 valid=9 errors=3
+line 4 MATCH broken: bad pattern unmatched parenthesis at column 2
+line 12 NEAREST near: duplicate id
+line 13 MATRIX lost: unknown molecule no_h
+
+CAUSES kinds=7
+bad pattern=1
+duplicate id=1
+duplicate name=1
+kekulization failed=1
+unclosed bracket=1
+unclosed ring=1
+unknown molecule=1
+
+Notes: broken on line 12 of molecules.smi is an error because ring 1 is not closed, and no_h on line 13 is an error because all 5 atoms are atoms that need a pi bond (n also has S = 2, and 3 >= 2 + 1), forming one aromatic system, and 5 atoms cannot be divided into pairs. Line 14 has no "]", and on line 15 the name ethanol is the same as on line 2. The [nH] of pyrrole has S = 2 + 1 = 3, and 3 >= 4 does not hold, so it is not an atom that needs a pi bond. Searching from atom 1, first 1 and 2 are paired, but no partner is found for the next atom 3, so the pairs become 1 with 5 and 2 with 3 (kekule 1=5 2=3). The molecular weight of aspirin is 9*12011 + 4*15999 + 8*1008 = 180159. In norbornane, after the two five-membered rings 1-2-3-7-6 and 3-4-5-6-7 are selected, the six-membered ring 1-2-3-4-5-6 is not selected because it can be expressed as the symmetric difference of the bond sets of the two rings. The two five-membered rings share atoms 3, 6 and 7, so the kind of the ring system is bridged. In benzene_kekule, all atoms have the same invariant and the same refinement result (1 class), and the canonical ranks are determined by tie breaking. The bond from the start atom to its neighbor with the larger canonical rank becomes a ring-closure bond that is a double bond, and "=" and the number are written on the opening side, giving "C=1C=CC=CC1". In the scaffold of spiro_ketone, the oxygen atom removed by pruning is added back by restoring, so "=O" remains. In CONTAINS phenol_in_aspirin, the O of phenol can be assigned only to the ester oxygen atom 4 of aspirin, and there are 2 embeddings that traverse the benzene ring in the two directions. The double and single bonds of benzene_kekule do not match aromatic bonds, so the result of kekule_in_phenol is no. benzene and benzene_kekule have different atom codes (aromatic or not), so they have no common bits. In CLUSTER, the only pair with similarity 1/2 or more is ethanol and ethanol_b, so the clusters are one group and 8 singletons. Query line 12 has the identifier near, the same as on line 8, and no_h on line 13 is not a valid molecule.

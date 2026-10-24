@@ -1,0 +1,861 @@
+import math
+
+enum TokenKind
+    Number
+    Offset
+    Current
+    Last
+    Comma
+    Semicolon
+    Whole
+    Mark
+    Forward
+    Backward
+
+enum Kind
+    PrintLast
+    Append
+    Insert
+    Change
+    Print
+    Numbered
+    List
+    Equal
+    Count
+    Yank
+    Marks
+    History
+    Files
+    Delete
+    Put
+    Join
+    JoinWords
+    Page
+    Indent
+    Outdent
+    Undo
+    Redo
+    Read
+    PrintWrite
+    Write
+    AppendFile
+    Edit
+    Mark
+    Move
+    Copy
+    Substitute
+    LetterCase
+    Sort
+    Global
+
+class ReplacementPart(string text, bool matched = false)
+
+class Delimited(string text, ReplacementPart[] parts, string raw, int next)
+
+class Token(TokenKind kind, string word = "")
+
+class Scanned(Token[] tokens, string tail)
+
+class Addresses(int count, Token[] left = [], bool semicolon = false, Token[] right = [])
+
+class LineRange(int first, int last)
+
+class Substitution(string search = "", ReplacementPart[] replacement = [], bool previous = true, bool all = false, int count = 1)
+
+class Action(Kind kind, string argument = "", int amount = -1, string suffix = "", Token[] destination = [], Substitution substitution = Substitution())
+
+class Global(string search, bool inverse, Action action)
+
+class Line(int id, string text)
+
+class Record(string source, Line[] buffer, int current)
+
+class State()
+    Line[] buffer = []
+    int current = 0
+    int[26] marks = array(26, fill = 0)
+    string[] cut = []
+    string | none pattern = none
+    ReplacementPart[] | none replacement = none
+    int display_count = 5
+    Record[] undo = []
+    Record[] redo = []
+    map.Map<string, string[]> files = map.Map<string, string[]>()
+    int next_id = 1
+
+class Editor(State state = State(), string[] output = [])
+
+bool includes<T>(const T[] values, T sought)
+    for T value = values[]
+        if value == sought
+            return true
+    return false
+
+bool digit(string value)
+    return len(value) == 1 and "0123456789".contains(value)
+
+bool all_digits(string text)
+    for int point = text.codepoints()[]
+        if point < 48 or point > 57
+            return false
+    return true
+
+int digits_end(string text, int start)
+    int position = start
+    while position < int(len(text)) and digit(text[position])
+        position += 1
+    return position
+
+int find_index(string text, string needle)
+    match text.find(needle)
+        nat position
+            return int(position)
+        none
+            return -1
+
+Delimited | error delimited(string source, int start, string delimiter)
+    string text = ""
+    ReplacementPart[] parts = []
+    int position = start
+    while position < int(len(source))
+        string ch = source[position]
+        if ch == "\"
+            position += 1
+            if position == int(len(source))
+                return error("missing delimiter")
+            ch = source[position]
+            text += ch
+            parts = parts.append(ReplacementPart(ch))
+        elif ch == delimiter
+            return Delimited(text, parts, source[start:<position], position + 1)
+        else
+            text += ch
+            parts = parts.append(ReplacementPart(ch, ch == "&"))
+        position += 1
+    return error("missing delimiter")
+
+Scanned | error scan_address(string source)
+    Token[] tokens = []
+    int position = 0
+    while position < int(len(source))
+        string ch = source[position]
+        if digit(ch) or ch == "+" or ch == "-"
+            int start = position
+            position = digits_end(source, position + 1)
+            tokens = tokens.append(Token(if digit(ch) then TokenKind.Number else TokenKind.Offset, source[start:<position]))
+        elif ".$,;%".contains(ch)
+            TokenKind[] kinds = [TokenKind.Current, TokenKind.Last, TokenKind.Comma, TokenKind.Semicolon, TokenKind.Whole]
+            tokens = tokens.append(Token(kinds[find_index(".$,;%", ch)]))
+            position += 1
+        elif ch == "'"
+            position += 1
+            string name = ""
+            if position < int(len(source))
+                name = source[position]
+                position += 1
+            tokens = tokens.append(Token(TokenKind.Mark, name))
+        elif ch == "/" or ch == "?"
+            Delimited found = try delimited(source, position + 1, ch)
+            tokens = tokens.append(Token(if ch == "/" then TokenKind.Forward else TokenKind.Backward, found.text))
+            position = found.next
+        else
+            break
+    return Scanned(tokens, source[position:])
+
+bool valid_address(const Token[] tokens)
+    TokenKind[] bases = [TokenKind.Number, TokenKind.Current, TokenKind.Last, TokenKind.Mark, TokenKind.Forward, TokenKind.Backward]
+    for nat index < len(tokens)
+        if tokens[index].kind != TokenKind.Offset and (index != 0 or not includes(bases, tokens[index].kind))
+            return false
+    return true
+
+Addresses | error address_form(const Token[] tokens)
+    if len(tokens) == 0
+        return Addresses(0)
+    if len(tokens) == 1 and tokens[0].kind == TokenKind.Whole
+        return Addresses(2, [Token(TokenKind.Number, "1")], right = [Token(TokenKind.Last)])
+    int separator = -1
+    for nat index < len(tokens)
+        if tokens[index].kind == TokenKind.Comma or tokens[index].kind == TokenKind.Semicolon
+            if separator >= 0
+                return error("bad address")
+            separator = int(index)
+    if separator < 0
+        if not valid_address(tokens)
+            return error("bad address")
+        return Addresses(1, tokens)
+    Token[] left = tokens[0:<separator]
+    Token[] right = tokens[separator + 1:]
+    if not valid_address(left) or not valid_address(right)
+        return error("bad address")
+    return Addresses(2, left, tokens[separator].kind == TokenKind.Semicolon, right)
+
+int | error positive_argument(string argument)
+    if argument == ""
+        return -1
+    if not all_digits(argument)
+        return error("invalid suffix")
+    int value = int.parse(argument)
+    if value == 0
+        return error("invalid suffix")
+    return value
+
+string | error print_suffix(string argument)
+    if argument != "" and (len(argument) != 1 or not "pnl".contains(argument))
+        return error("invalid suffix")
+    return argument
+
+string | error file_name(string argument)
+    if len(argument) < 2 or len(argument) > 9 or argument[0] != " "
+        return error("invalid file name")
+    string name = argument[1:]
+    for int point = name.codepoints()[]
+        if not (97 <= point <= 122 or 48 <= point <= 57)
+            return error("invalid file name")
+    return name
+
+bool sort_form(string source)
+    return source == "sort" or source.starts_with("sort ")
+
+Action | error parse_substitution(string argument)
+    auto substitution = Substitution()
+    string flags = argument
+    bool repeated = true
+    for nat index < len(argument)
+        if not "gpnl".contains(argument[index]) and not digit(argument[index])
+            repeated = false
+    if not repeated
+        string delimiter = argument[0]
+        if delimiter == " " or delimiter == "\"
+            return error("missing delimiter")
+        Delimited search = try delimited(argument, 1, delimiter)
+        Delimited replace = try delimited(argument, search.next, delimiter)
+        substitution.search = search.text
+        substitution.replacement = replace.parts
+        substitution.previous = replace.raw == "%"
+        flags = argument[replace.next:]
+    bool counted = false
+    string suffix = ""
+    int position = 0
+    while position < int(len(flags))
+        string ch = flags[position]
+        position += 1
+        if ch == "g"
+            if substitution.all
+                return error("invalid suffix")
+            substitution.all = true
+        elif "pnl".contains(ch)
+            if suffix != ""
+                return error("invalid suffix")
+            suffix = ch
+        elif digit(ch)
+            if counted
+                return error("invalid suffix")
+            counted = true
+            int start = position - 1
+            position = digits_end(flags, position)
+            substitution.count = int.parse(flags[start:<position])
+            if substitution.count == 0
+                return error("invalid suffix")
+        else
+            return error("invalid suffix")
+    return Action(Kind.Substitute, suffix = suffix, substitution = substitution)
+
+Action | error parse_action(string source)
+    if sort_form(source)
+        string options = if source == "sort" then "" else source[5:]
+        if source != "sort"
+            if options == ""
+                return error("invalid suffix")
+            string seen = ""
+            for nat index < len(options)
+                string option = options[index]
+                if not "ruin".contains(option) or seen.contains(option)
+                    return error("invalid suffix")
+                seen += option
+            if options.contains("i") and options.contains("n")
+                return error("invalid suffix")
+        return Action(Kind.Sort, argument = options)
+    if source == ""
+        return Action(Kind.PrintLast)
+    string first = source[0]
+    string argument = source[1:]
+    int simple = find_index("aicpnl=#yKhf", first)
+    if simple >= 0
+        if argument != ""
+            return error("invalid suffix")
+        Kind[] kinds = [Kind.Append, Kind.Insert, Kind.Change, Kind.Print, Kind.Numbered, Kind.List, Kind.Equal, Kind.Count, Kind.Yank, Kind.Marks, Kind.History, Kind.Files]
+        return Action(kinds[simple])
+    if "dxjJ".contains(first)
+        Kind[] kinds = [Kind.Delete, Kind.Put, Kind.Join, Kind.JoinWords]
+        return Action(kinds[find_index("dxjJ", first)], suffix = try print_suffix(argument))
+    if "z><u".contains(first)
+        Kind[] kinds = [Kind.Page, Kind.Indent, Kind.Outdent, Kind.Undo]
+        return Action(kinds[find_index("z><u", first)], amount = try positive_argument(argument))
+    if first == "~"
+        if argument != "" and argument != "u" and argument != "l"
+            return error("invalid suffix")
+        return Action(Kind.LetterCase, argument = argument)
+    if first == "r"
+        if all_digits(argument)
+            return Action(Kind.Redo, amount = try positive_argument(argument))
+        return Action(Kind.Read, argument = try file_name(argument))
+    if first == "w"
+        if argument == ""
+            return Action(Kind.PrintWrite)
+        return Action(Kind.Write, argument = try file_name(argument))
+    if first == "W" or first == "e"
+        return Action(if first == "W" then Kind.AppendFile else Kind.Edit, argument = try file_name(argument))
+    if first == "k"
+        if len(argument) != 1 or not "abcdefghijklmnopqrstuvwxyz".contains(argument)
+            return error("invalid mark")
+        return Action(Kind.Mark, argument = argument)
+    if first == "m" or first == "t"
+        Scanned destination = try scan_address(argument)
+        if len(destination.tokens) == 0 or not valid_address(destination.tokens)
+            return error("invalid destination")
+        return Action(if first == "m" then Kind.Move else Kind.Copy, suffix = try print_suffix(destination.tail), destination = destination.tokens)
+    if first == "s"
+        return try parse_substitution(argument)
+    return error("unknown command")
+
+Action | Global | error parse_command(string source)
+    if len(source) > 0 and (source[0] == "g" or source[0] == "v")
+        if len(source) < 2 or source[1] == " " or source[1] == "\"
+            return error("missing delimiter")
+        Delimited search = try delimited(source, 2, source[1])
+        string body = source[search.next:]
+        if body == ""
+            body = "p"
+        if not "pnldmtjJs><~aicx".contains(body[0]) or sort_form(body)
+            return error("invalid global command")
+        Action action = try parse_action(body)
+        return Global(search.text, source[0] == "v", action)
+    return try parse_action(source)
+
+bool | error text_form(string source)
+    Scanned scanned = try scan_address(source)
+    string tail = scanned.tail
+    if tail == "a" or tail == "i" or tail == "c"
+        return true
+    if len(tail) < 2 or not "gv".contains(tail[0]) or tail[1] == " " or tail[1] == "\"
+        return false
+    Delimited search = try delimited(tail, 2, tail[1])
+    string body = tail[search.next:]
+    return body == "a" or body == "i" or body == "c"
+
+bool with_text(string source)
+    match text_form(source)
+        bool found
+            return found
+        error
+            return false
+
+Kind command_kind(const Action | Global command)
+    match command
+        Action action
+            return action.kind
+        Global
+            return Kind.Global
+
+int address_kind(Kind kind)
+    if includes([Kind.Undo, Kind.Redo, Kind.History, Kind.Marks, Kind.Files, Kind.Edit], kind)
+        return 0
+    if includes([Kind.Append, Kind.Insert, Kind.Put, Kind.Equal, Kind.Read, Kind.Mark, Kind.Page], kind)
+        return 1
+    return 2
+
+bool action_modifies(Kind kind)
+    return includes([Kind.Append, Kind.Insert, Kind.Change, Kind.Delete, Kind.Put, Kind.Join, Kind.JoinWords, Kind.Move, Kind.Copy, Kind.Substitute, Kind.Indent, Kind.Outdent, Kind.LetterCase, Kind.Sort, Kind.Read, Kind.Edit], kind)
+
+bool modifying(const Action | Global command)
+    match command
+        Action action
+            return action_modifies(action.kind)
+        Global global
+            return action_modifies(global.action.kind)
+
+string | error choose_pattern(State &state, string search)
+    if search != ""
+        state.pattern = search
+    match state.pattern
+        string remembered
+            return remembered
+        none
+            return error("no previous pattern")
+
+int locate(const Line[] buffer, int identity)
+    for nat index < len(buffer)
+        if buffer[index].id == identity
+            return int(index) + 1
+    return 0
+
+int | error address_value(State &state, const Token[] tokens)
+    int value = state.current
+    for Token token = tokens[]
+        if token.kind == TokenKind.Offset
+            int magnitude = if len(token.word) == 1 then 1 else int.parse(token.word[1:])
+            value += if token.word[0] == "+" then magnitude else -magnitude
+        elif token.kind == TokenKind.Number
+            value = int.parse(token.word)
+        elif token.kind == TokenKind.Current
+            value = state.current
+        elif token.kind == TokenKind.Last
+            value = int(len(state.buffer))
+        elif token.kind == TokenKind.Mark
+            if len(token.word) != 1 or not "abcdefghijklmnopqrstuvwxyz".contains(token.word)
+                return error("invalid mark")
+            value = locate(state.buffer, state.marks[token.word.codepoints()[0] - 97])
+            if value == 0
+                return error("mark not set")
+        else
+            string pattern = try choose_pattern(&state, token.word)
+            int size = int(len(state.buffer))
+            int pivot = if token.kind == TokenKind.Backward and state.current == 0 then size + 1 else state.current
+            value = 0
+            for 1 <= int step <= size
+                int index = if token.kind == TokenKind.Forward then (pivot + step - 1) % size else (pivot - step - 1 + size) % size
+                if state.buffer[index].text.contains(pattern)
+                    value = index + 1
+                    break
+            if value == 0
+                return error("no match")
+    return value
+
+int[] | error address_values(State &state, const Addresses form)
+    if form.count == 0
+        return []
+    int left = if len(form.left) == 0 then (if form.semicolon then state.current else 1) else try address_value(&state, form.left)
+    if form.count == 1
+        return [left]
+    if form.semicolon
+        if left < 0 or left > int(len(state.buffer))
+            return error("address out of range")
+        state.current = left
+    int right = if len(form.right) == 0 then int(len(state.buffer)) else try address_value(&state, form.right)
+    return [left, right]
+
+LineRange | error checked_range(const State state, Kind kind, const int[] values)
+    int arity = address_kind(kind)
+    int size = int(len(state.buffer))
+    if arity == 0
+        return LineRange(0, 0)
+    if arity == 1
+        int first = state.current
+        if len(values) > 0
+            first = values[0]
+        elif kind == Kind.Equal or kind == Kind.Read
+            first = size
+        elif kind == Kind.Page
+            first += 1
+        int minimum = if kind == Kind.Mark or kind == Kind.Page then 1 else 0
+        if first < minimum or first > size
+            return error("address out of range")
+        return LineRange(first, first)
+    int first = state.current
+    int last = first
+    if len(values) == 1
+        first = values[0]
+        last = first
+    elif len(values) == 2
+        first = values[0]
+        last = values[1]
+    elif includes([Kind.PrintWrite, Kind.Write, Kind.AppendFile, Kind.Count], kind)
+        return LineRange(1, size)
+    elif kind == Kind.Global or kind == Kind.Sort
+        first = 1
+        last = size
+    elif kind == Kind.Join or kind == Kind.JoinWords
+        last = first + 1
+    if first < 1 or first > size or last < 1 or last > size
+        return error("address out of range")
+    if first > last or first == last and (kind == Kind.Join or kind == Kind.JoinWords)
+        return error("invalid range")
+    return LineRange(first, last)
+
+Record snapshot(const State state, string source)
+    return Record(source, state.buffer, state.current)
+
+string[] contents(const State state, const LineRange range)
+    return [for Line line = state.buffer[range.first - 1:<range.last][] then line.text]
+
+Line[] new_lines(State &state, const string[] text)
+    int first = state.next_id
+    state.next_id += int(len(text))
+    return [for nat index < len(text) then Line(first + int(index), text[index])]
+
+void replace_lines(State &state, int position, int count, const Line[] inserted)
+    state.buffer = state.buffer[0:<position].concat(inserted).concat(state.buffer[position + count:])
+
+void add_line(Editor &editor, string text)
+    editor.output = editor.output.append(text)
+
+void print_line(Editor &editor, int number, string form)
+    string text = editor.state.buffer[number - 1].text
+    if form == "n"
+        string label = number.string()
+        add_line(&editor, string.repeat(" ", nat(math.max(0, 3 - int(len(label))))) + label + " " + text)
+    elif form == "l"
+        string escaped = ""
+        for nat index < len(text)
+            string ch = text[index]
+            escaped += if ch == "\" then "\\" else ch
+        escaped += "$"
+        while len(escaped) > 40
+            add_line(&editor, escaped[0:<39] + "\")
+            escaped = escaped[39:]
+        add_line(&editor, escaped)
+    else
+        add_line(&editor, text)
+
+void suffix_line(Editor &editor, string suffix)
+    if suffix != "" and editor.state.current > 0
+        print_line(&editor, editor.state.current, suffix)
+
+int byte_count(const string[] text)
+    return math.sum([for string line = text[] then int(len(line)) + 1])
+
+int word_count(string text)
+    return int(len([for string word = text.split(" ")[] if word != "" then word]))
+
+int leading_spaces(string text)
+    int position = 0
+    while position < int(len(text)) and text[position] == " "
+        position += 1
+    return position
+
+string letter_case(string text, string option)
+    string result = ""
+    int[] points = text.codepoints()
+    for nat index < len(points)
+        int point = points[index]
+        if 97 <= point <= 122 and option != "l"
+            result += "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[point - 97]
+        elif 65 <= point <= 90 and option != "u"
+            result += "abcdefghijklmnopqrstuvwxyz"[point - 65]
+        else
+            result += text[index]
+    return result
+
+int leading_integer(string text)
+    bool negative = text[0] == "-"
+    int start = if negative then 1 else 0
+    int finish = digits_end(text, start)
+    if finish == start
+        return 0
+    int magnitude = int.parse(text[start:<finish])
+    return if negative then -magnitude else magnitude
+
+// Sorting keys natively, then selecting each original key group, keeps ties stable.
+Line[] sorted_lines<Key>(const Line[] lines, const Key[] keys, bool descending, bool unique)
+    Key[] ordered = keys.sorted(descending = descending)
+    Line[] result = []
+    for nat position < len(ordered)
+        if position > 0 and ordered[position] == ordered[position - 1]
+            continue
+        for nat index < len(keys)
+            if keys[index] == ordered[position]
+                result = result.append(lines[index])
+                if unique
+                    break
+    return result
+
+int | error substitute(Editor &editor, const Action action, const LineRange range, bool inside)
+    Substitution sub = action.substitution
+    string pattern = try choose_pattern(&editor.state, sub.search)
+    ReplacementPart[] replacement = sub.replacement
+    if sub.previous
+        match editor.state.replacement
+            ReplacementPart[] remembered
+                replacement = remembered
+            none
+                return error("no previous substitution")
+    editor.state.replacement = replacement
+    string expanded = [for ReplacementPart part = replacement[] then (if part.matched then pattern else part.text)].join("")
+    int changed = 0
+    for range.first <= int number <= range.last
+        string original = editor.state.buffer[number - 1].text
+        string result = ""
+        int position = 0
+        int occurrence = 0
+        bool replaced = false
+        while true
+            int found = find_index(original[position:], pattern)
+            if found < 0
+                break
+            found += position
+            result += original[position:<found]
+            occurrence += 1
+            if occurrence == sub.count or sub.all and occurrence > sub.count
+                result += expanded
+                replaced = true
+            else
+                result += pattern
+            position = found + int(len(pattern))
+        if replaced
+            result += original[position:]
+            if len(result) > 80
+                return error("line too long")
+            if result == "" or result.ends_with(" ")
+                return error("bad line")
+            editor.state.buffer[number - 1].text = result
+            editor.state.current = number
+            changed += 1
+    if changed == 0 and not inside
+        return error("no match")
+    if changed > 0
+        suffix_line(&editor, action.suffix)
+    return changed
+
+void | error transfer_history(State &state, bool redo, int amount)
+    Record[] source = if redo then state.redo else state.undo
+    Record[] target = if redo then state.undo else state.redo
+    if amount > int(len(source))
+        return error(if redo then "nothing to redo" else "nothing to undo")
+    for 0 <= int repetition < amount
+        Record saved = source[len(source) - 1]
+        source = source[0:<int(len(source)) - 1]
+        target = target.append(snapshot(state, saved.source))
+        state.buffer = saved.buffer
+        state.current = saved.current
+    if redo
+        state.redo = source
+        state.undo = target
+    else
+        state.undo = source
+        state.redo = target
+    return void
+
+void | error file_command(Editor &editor, const Action action, const LineRange range)
+    string[] file_text = []
+    bool exists = false
+    match editor.state.files.get(action.argument)
+        string[] saved
+            file_text = saved
+            exists = true
+        none
+            exists = false
+    if action.kind == Kind.Write or action.kind == Kind.AppendFile
+        string[] selected = contents(editor.state, range)
+        file_text = if action.kind == Kind.AppendFile then file_text.concat(selected) else selected
+        .editor.state.files.set(action.argument, file_text)
+    else
+        if not exists
+            return error("no such file")
+        Line[] inserted = new_lines(&editor.state, file_text)
+        if action.kind == Kind.Read
+            replace_lines(&editor.state, range.first, 0, inserted)
+            editor.state.current = range.first + int(len(file_text))
+        else
+            editor.state.buffer = inserted
+            editor.state.current = int(len(file_text))
+    add_line(&editor, "file {action.argument} lines={len(file_text)} bytes={byte_count(file_text)}")
+    return void
+
+int | error execute_action(Editor &editor, const Action action, const LineRange range, const string[] text, bool inside = false)
+    Kind kind = action.kind
+    int first = range.first
+    int last = range.last
+    if kind == Kind.PrintLast
+        print_line(&editor, last, "p")
+        editor.state.current = last
+    elif kind == Kind.Print or kind == Kind.Numbered or kind == Kind.List
+        string form = if kind == Kind.Print then "p" elif kind == Kind.Numbered then "n" else "l"
+        for first <= int number <= last
+            print_line(&editor, number, form)
+        editor.state.current = last
+    elif kind == Kind.Page
+        if action.amount >= 0
+            editor.state.display_count = action.amount
+        int end = math.min(int(len(editor.state.buffer)), first + editor.state.display_count - 1)
+        for first <= int number <= end
+            print_line(&editor, number, "p")
+        editor.state.current = end
+    elif kind == Kind.Equal
+        add_line(&editor, first.string())
+    elif kind == Kind.Count
+        string[] selected = contents(editor.state, range)
+        int words = math.sum([for string line = selected[] then word_count(line)])
+        int characters = math.sum([for string line = selected[] then int(len(line))])
+        add_line(&editor, "count lines={len(selected)} words={words} chars={characters}")
+    elif kind == Kind.PrintWrite
+        string[] selected = contents(editor.state, range)
+        for string line = selected[]
+            add_line(&editor, line)
+        add_line(&editor, "lines={len(selected)} bytes={byte_count(selected)}")
+    elif kind == Kind.Append or kind == Kind.Insert
+        int position = if kind == Kind.Append then first else math.max(first, 1) - 1
+        Line[] inserted = new_lines(&editor.state, text)
+        replace_lines(&editor.state, position, 0, inserted)
+        editor.state.current = position + int(len(text))
+    elif kind == Kind.Change or kind == Kind.Delete
+        editor.state.cut = contents(editor.state, range)
+        Line[] inserted = []
+        if kind == Kind.Change
+            inserted = new_lines(&editor.state, text)
+        replace_lines(&editor.state, first - 1, last - first + 1, inserted)
+        editor.state.current = if len(inserted) > 0 then first + int(len(inserted)) - 1 else math.min(first, int(len(editor.state.buffer)))
+    elif kind == Kind.Yank
+        editor.state.cut = contents(editor.state, range)
+    elif kind == Kind.Put
+        if len(editor.state.cut) == 0
+            return error("nothing to put")
+        Line[] inserted = new_lines(&editor.state, editor.state.cut)
+        replace_lines(&editor.state, first, 0, inserted)
+        editor.state.current = first + int(len(inserted))
+    elif kind == Kind.Move or kind == Kind.Copy
+        int destination = try address_value(&editor.state, action.destination)
+        if destination < 0 or destination > int(len(editor.state.buffer))
+            return error("address out of range")
+        if kind == Kind.Move and first <= destination < last
+            return error("invalid destination")
+        Line[] selected = editor.state.buffer[first - 1:<last]
+        int position = destination
+        if kind == Kind.Move
+            replace_lines(&editor.state, first - 1, last - first + 1, [])
+            if destination >= last
+                position -= int(len(selected))
+        else
+            selected = new_lines(&editor.state, [for Line line = selected[] then line.text])
+        replace_lines(&editor.state, position, 0, selected)
+        editor.state.current = position + int(len(selected))
+    elif kind == Kind.Join or kind == Kind.JoinWords
+        string[] selected = contents(editor.state, range)
+        if kind == Kind.JoinWords
+            for 1 <= nat index < len(selected)
+                selected[index] = selected[index][leading_spaces(selected[index]):]
+        string joined = selected.join(if kind == Kind.Join then "" else " ")
+        if len(joined) > 80
+            return error("line too long")
+        Line line = editor.state.buffer[first - 1]
+        line.text = joined
+        replace_lines(&editor.state, first - 1, last - first + 1, [line])
+        editor.state.current = first
+    elif kind == Kind.Indent or kind == Kind.Outdent or kind == Kind.LetterCase
+        int width = if action.amount < 0 then 4 else action.amount
+        for first <= int number <= last
+            string line = editor.state.buffer[number - 1].text
+            if kind == Kind.Indent
+                if int(len(line)) + width > 80
+                    return error("line too long")
+                line = string.repeat(" ", nat(width)) + line
+            elif kind == Kind.Outdent
+                line = line[math.min(width, leading_spaces(line)):]
+            else
+                line = letter_case(line, action.argument)
+            editor.state.buffer[number - 1].text = line
+        editor.state.current = last
+    elif kind == Kind.Sort
+        Line[] selected = editor.state.buffer[first - 1:<last]
+        bool descending = action.argument.contains("r")
+        bool unique = action.argument.contains("u")
+        if action.argument.contains("n")
+            int[] keys = [for Line line = selected[] then leading_integer(line.text)]
+            selected = sorted_lines(selected, keys, descending, unique)
+        else
+            string[] keys = [for Line line = selected[] then (if action.argument.contains("i") then letter_case(line.text, "l") else line.text)]
+            selected = sorted_lines(selected, keys, descending, unique)
+        replace_lines(&editor.state, first - 1, last - first + 1, selected)
+        editor.state.current = first + int(len(selected)) - 1
+    elif kind == Kind.Substitute
+        return try substitute(&editor, action, range, inside)
+    elif kind == Kind.Mark
+        editor.state.marks[action.argument.codepoints()[0] - 97] = editor.state.buffer[first - 1].id
+    elif kind == Kind.Marks
+        string[] parts = []
+        for 0 <= int index < 26
+            int position = locate(editor.state.buffer, editor.state.marks[index])
+            if position > 0
+                parts = parts.append("abcdefghijklmnopqrstuvwxyz"[index] + "={position}")
+        add_line(&editor, "marks " + (if len(parts) == 0 then "none" else parts.join(" ")))
+    elif kind == Kind.Undo or kind == Kind.Redo
+        try transfer_history(&editor.state, kind == Kind.Redo, if action.amount < 0 then 1 else action.amount)
+    elif kind == Kind.History
+        add_line(&editor, "history undo={len(editor.state.undo)} redo={len(editor.state.redo)}")
+        for 0 <= int direction < 2
+            Record[] history = if direction == 0 then editor.state.undo else editor.state.redo
+            string label = if direction == 0 then "undo" else "redo"
+            for nat index < len(history)
+                Record saved = history[int(len(history)) - 1 - int(index)]
+                add_line(&editor, "{label} {index + 1}: {saved.source}")
+    elif includes([Kind.Read, Kind.Write, Kind.AppendFile, Kind.Edit], kind)
+        try file_command(&editor, action, range)
+    elif kind == Kind.Files
+        string[] parts = []
+        for string name = editor.state.files.keys().sorted()[]
+            match editor.state.files.get(name)
+                string[] saved
+                    parts = parts.append("{name}={len(saved)}")
+                none
+                    continue
+        add_line(&editor, "files " + (if len(parts) == 0 then "none" else parts.join(" ")))
+    if includes([Kind.Delete, Kind.Put, Kind.Join, Kind.JoinWords, Kind.Move, Kind.Copy], kind)
+        suffix_line(&editor, action.suffix)
+    return 0
+
+void | error apply_command(Editor &editor, string source, const string[] text)
+    Record before = snapshot(editor.state, source)
+    Scanned scanned = try scan_address(source)
+    Addresses form = try address_form(scanned.tokens)
+    Action | Global command = try parse_command(scanned.tail)
+    Kind kind = command_kind(command)
+    int arity = address_kind(kind)
+    if arity == 0 and form.count > 0
+        return error("unexpected address")
+    if arity == 1 and form.count == 2
+        return error("too many addresses")
+    int[] values = try address_values(&editor.state, form)
+    LineRange range = try checked_range(editor.state, kind, values)
+    match command
+        Action action
+            int changed = try execute_action(&editor, action, range, text)
+        Global global
+            string pattern = try choose_pattern(&editor.state, global.search)
+            int[] selected = [for Line line = editor.state.buffer[range.first - 1:<range.last][] if line.text.contains(pattern) != global.inverse then line.id]
+            if len(selected) == 0
+                return error("no match")
+            int changed = 0
+            for int identity = selected[]
+                int position = locate(editor.state.buffer, identity)
+                if position == 0
+                    continue
+                editor.state.current = position
+                LineRange subrange = try checked_range(editor.state, global.action.kind, [])
+                changed += try execute_action(&editor, global.action, subrange, text, inside = true)
+            if global.action.kind == Kind.Substitute and changed == 0
+                return error("no match")
+    if len(editor.state.buffer) > 200
+        return error("buffer full")
+    if modifying(command)
+        editor.state.undo = editor.state.undo.append(before)
+        editor.state.redo = []
+    return void
+
+string[] process_command(Editor &editor, string source, const string[] text)
+    State saved = editor.state
+    editor.output = []
+    void | error result = apply_command(&editor, source, text)
+    match result
+        void
+            return editor.output
+        error problem
+            editor.state = saved
+            editor.output = []
+            return ["? " + problem.message]
+
+auto line_editor = Editor()
+while true
+    string source_line
+    scan(&source_line)
+    if source_line == "Q"
+        break
+    string[] entered_text = []
+    if with_text(source_line)
+        while true
+            string entered_line
+            scan(&entered_line)
+            if entered_line == "."
+                break
+            entered_text = entered_text.append(entered_line)
+    for string output_line = process_command(&line_editor, source_line, entered_text)[]
+        print(output_line + NL)

@@ -1,0 +1,718 @@
+string[] policies()
+    return "FIFO LRU LFU NRU AGING CLOCK ECLOCK WSCLOCK RANDOM OPT".split(" ")
+int lookup(const string[] items, string target)
+    for nat j < len(items)
+        if items[j] == target
+            return int(j)
+    return -1
+T[] erase<T>(const T[] items, int at)
+    T[] result = []
+    for nat j < len(items)
+        if int(j) != at
+            result = result.append(items[j])
+    return result
+int maximum(int a, int b)
+    return if a > b then a else b
+int hex_value(string text)
+    int result = 0
+    string digits = "0123456789ABCDEF"
+    for 2 <= nat j < len(text)
+        for int digit < 16
+            if digits[digit] == text[j]
+                result = result * 16 + digit
+                break
+    return result
+string hexadecimal(int value)
+    if value == 0
+        return "0x0"
+    string digits = "0123456789ABCDEF"
+    string result = ""
+    while value > 0
+        result = digits[value % 16] + result
+        value /= 16
+    return "0x" + result
+string decimal(int numerator, int denominator)
+    int value = if denominator == 0 then 0 else numerator * 100 / denominator
+    int fraction = value % 100
+    return "{value / 100}." + (if fraction < 10 then "0" else "") + fraction.string()
+string ratio(int numerator, int denominator)
+    return decimal(numerator * 100, denominator) + "%"
+class Settings()
+    int page_size = 256
+    int frame_count = 4
+    int tlb_size = 4
+    int sets = 1
+    string policy = "FIFO"
+    string scope = "GLOBAL"
+    bool asid = false
+    int tick_interval = 0
+    int tau = 8
+    int seed = 1
+Settings | error parse_settings(const string[] words)
+    Settings result = Settings()
+    string[] names = "page frames tlb sets policy scope asid tick tau seed".split(" ")
+    bool[] seen = array(10, fill = false)
+    for 1 <= nat j < len(words)
+        string[] parts = words[j].split("=")
+        int key = lookup(names, parts[0])
+        if key < 0
+            return error("unknown key {parts[0]}")
+        if seen[key]
+            return error("duplicate key {parts[0]}")
+        seen[key] = true
+        string value = parts[1]
+        bool valid = true
+        if key == 4
+            valid = lookup(policies(), value) >= 0
+            result.policy = value
+        elif key == 5
+            valid = value == "GLOBAL" or value == "LOCAL"
+            result.scope = value
+        elif key == 6
+            valid = value == "ON" or value == "OFF"
+            result.asid = value == "ON"
+        else
+            int number = int.parse(value)
+            int[] lower = [16, 1, 1, 1, 0, 0, 0, 0, 1, 1]
+            int[] upper = [4096, 16, 8, 8, 0, 0, 0, 1000, 1000, 2147483646]
+            valid = lower[key] <= number <= upper[key]
+            if key == 0
+                int reduced = number
+                while reduced > 0 and reduced % 2 == 0
+                    reduced /= 2
+                valid = valid and reduced == 1
+                result.page_size = number
+            elif key == 1
+                result.frame_count = number
+            elif key == 2
+                result.tlb_size = number
+            elif key == 3
+                result.sets = number
+            elif key == 7
+                result.tick_interval = number
+            elif key == 8
+                result.tau = number
+            else
+                result.seed = number
+        if not valid
+            return error("invalid {parts[0]}")
+    if result.tlb_size % result.sets != 0
+        return error("invalid sets")
+    return result
+class Command(string[] words)
+    bool access = false
+    int pid = 0
+    string op = "R"
+    int address = 0
+Command access_command(int pid, string op, int address)
+    Command result = Command([])
+    result.access = true
+    result.pid = pid
+    result.op = op
+    result.address = address
+    return result
+class Page()
+    int frame = -1
+    int slot = -1
+    bool readonly = false
+    bool locked = false
+    int referenced = 0
+    int modified = 0
+    int loaded = 0
+    int last = 0
+    int uses = 0
+    int age = 0
+    bool ever = false
+class Process(int pid, int count)
+    Page[] pages = array(nat(count), fill = Page())
+    bool exited = false
+    int accesses = 0
+    int faults = 0
+    int writebacks = 0
+    int segfaults = 0
+    int protfaults = 0
+    int peak = 0
+    int hand = 0
+class Reference(int owner = -1, int page = 0)
+class Entry(int owner, int page, int frame)
+class Action(string kind, int pid = 0, string op = "R", int address = 0, int first = 0, int last = 0)
+class AccessRecord(int owner, int page, bool fault)
+class Simulation self(Settings config)
+    Process[] processes = []
+    Reference[] frames = array(nat(config.frame_count), fill = Reference())
+    Entry[] entries = []
+    Command[] future = []
+    int cursor = 0
+    Action[] actions = []
+    AccessRecord[] accesses = []
+    bool fixed_processes = false
+    bool trace = false
+    bool silent = false
+    int clock = 0
+    int previous = -1
+    int hand = 0
+    int random_state = config.seed
+    int faults = 0
+    int zeros = 0
+    int swapins = 0
+    int tlbhits = 0
+    int writebacks = 0
+    int switches = 0
+    void emit(string line)
+        if not silent
+            print(line + NL)
+    int process_index(int pid)
+        for nat j < len(processes)
+            if processes[j].pid == pid
+                return int(j)
+        return -1
+    int | error live(int pid)
+        int result = process_index(pid)
+        if result < 0
+            return error("unknown process {pid}")
+        if processes[result].exited
+            return error("process {pid} exited")
+        return result
+    int resident(int owner)
+        int result = 0
+        for Reference ref = frames[]
+            if ref.owner == owner
+                result += 1
+        return result
+    int quota(int owner)
+        int before = 0
+        for Process item = processes[]
+            if item.pid < processes[owner].pid
+                before += 1
+        int count = int(len(processes))
+        return config.frame_count / count + (if before < config.frame_count % count then 1 else 0)
+    void .invalidate(int owner, int page_number)
+        Entry[] kept = []
+        for Entry entry = entries[]
+            if entry.owner != owner or entry.page != page_number
+                kept = kept.append(entry)
+        entries = kept
+    void .write_back(int owner, int page_number)
+        processes[owner].writebacks += 1
+        writebacks += 1
+        processes[owner].pages[page_number].modified = 0
+        if processes[owner].pages[page_number].slot >= 0
+            return
+        int slot = 0
+        while true
+            bool used = false
+            for Process item = processes[]
+                for Page page = item.pages[]
+                    if page.slot == slot
+                        used = true
+            if not used
+                break
+            slot += 1
+        processes[owner].pages[page_number].slot = slot
+    int next_use(const Reference ref)
+        for cursor <= int j < int(len(future))
+            if future[j].pid == processes[ref.owner].pid and future[j].address / config.page_size == ref.page
+                return j
+        return int(len(future))
+    int .choose(int owner)
+        int[] candidates = []
+        int[] unlocked = []
+        for nat j < len(frames)
+            Reference ref = frames[j]
+            if config.scope == "GLOBAL" or ref.owner == owner
+                candidates = candidates.append(int(j))
+                if not processes[ref.owner].pages[ref.page].locked
+                    unlocked = unlocked.append(int(j))
+        if len(unlocked) > 0
+            candidates = unlocked
+        if config.policy == "RANDOM"
+            random_state = (48271 * random_state) % 2147483647
+            return candidates[random_state % int(len(candidates))]
+        if config.policy == "CLOCK" or config.policy == "ECLOCK" or config.policy == "WSCLOCK"
+            int clock_hand = if config.scope == "GLOBAL" then hand else processes[owner].hand
+            int[] circular = []
+            for int distance < config.frame_count
+                int frame_number = (clock_hand + distance) % config.frame_count
+                for int candidate = candidates[]
+                    if candidate == frame_number
+                        circular = circular.append(candidate)
+            int chosen = -1
+            if config.policy == "WSCLOCK"
+                for int candidate = circular[]
+                    Reference ref = frames[candidate]
+                    Page page = processes[ref.owner].pages[ref.page]
+                    if page.referenced == 1
+                        processes[ref.owner].pages[ref.page].referenced = 0
+                        processes[ref.owner].pages[ref.page].last = clock
+                    elif clock - page.last > config.tau
+                        if page.modified == 0
+                            chosen = candidate
+                            break
+                        .write_back(ref.owner, ref.page)
+                if chosen < 0
+                    for int candidate = circular[]
+                        Reference ref = frames[candidate]
+                        if processes[ref.owner].pages[ref.page].modified == 0
+                            chosen = candidate
+                            break
+                if chosen < 0
+                    chosen = circular[0]
+            else
+                while chosen < 0
+                    if config.policy == "ECLOCK"
+                        for int candidate = circular[]
+                            Reference ref = frames[candidate]
+                            Page page = processes[ref.owner].pages[ref.page]
+                            if page.referenced == 0 and page.modified == 0
+                                chosen = candidate
+                                break
+                    if chosen >= 0
+                        break
+                    for int candidate = circular[]
+                        Reference ref = frames[candidate]
+                        Page page = processes[ref.owner].pages[ref.page]
+                        if page.referenced == 0 and (config.policy == "CLOCK" or page.modified == 1)
+                            chosen = candidate
+                            break
+                        processes[ref.owner].pages[ref.page].referenced = 0
+            if config.scope == "GLOBAL"
+                hand = (chosen + 1) % config.frame_count
+            else
+                processes[owner].hand = (chosen + 1) % config.frame_count
+            return chosen
+        int best = candidates[0]
+        for int candidate = candidates[]
+            Reference current_ref = frames[candidate]
+            Reference best_ref = frames[best]
+            Page current_page = processes[current_ref.owner].pages[current_ref.page]
+            Page best_page = processes[best_ref.owner].pages[best_ref.page]
+            bool better = false
+            if config.policy == "FIFO"
+                better = current_page.loaded < best_page.loaded
+            elif config.policy == "LRU"
+                better = current_page.last < best_page.last
+            elif config.policy == "LFU"
+                better = current_page.uses < best_page.uses or (current_page.uses == best_page.uses and current_page.loaded < best_page.loaded)
+            elif config.policy == "NRU"
+                better = 2 * current_page.referenced + current_page.modified < 2 * best_page.referenced + best_page.modified
+            elif config.policy == "AGING"
+                better = current_page.age < best_page.age or (current_page.age == best_page.age and current_page.loaded < best_page.loaded)
+            else
+                better = next_use(current_ref) > next_use(best_ref)
+            if better
+                best = candidate
+        return best
+    void .access(const Command request)
+        fixed_processes = true
+        cursor += 1
+        int owner = -1
+        match live(request.pid)
+            int found
+                owner = found
+            error problem
+                emit("ERROR " + problem.message)
+                return
+        if request.address >= processes[owner].count * config.page_size
+            processes[owner].segfaults += 1
+            emit("SEGFAULT P{request.pid} {hexadecimal(request.address)}")
+            return
+        int page_number = request.address / config.page_size
+        if request.op == "W" and processes[owner].pages[page_number].readonly
+            processes[owner].protfaults += 1
+            emit("PROTFAULT P{request.pid} {hexadecimal(request.address)}")
+            return
+        clock += 1
+        bool switched = previous >= 0 and previous != owner
+        if switched
+            switches += 1
+            if not config.asid
+                entries = []
+        previous = owner
+        int hit = -1
+        for nat j < len(entries)
+            if entries[j].owner == owner and entries[j].page == page_number
+                hit = int(j)
+        bool fault = false
+        string result = "HIT"
+        string eviction = ""
+        if hit >= 0
+            tlbhits += 1
+            result = "TLBHIT"
+            Entry recent = entries[hit]
+            entries = erase(entries, hit).append(recent)
+        else
+            if processes[owner].pages[page_number].frame < 0
+                fault = true
+                faults += 1
+                processes[owner].faults += 1
+                bool swapped = processes[owner].pages[page_number].slot >= 0
+                if swapped
+                    swapins += 1
+                else
+                    zeros += 1
+                result = if swapped then "FAULT SWAPIN" else "FAULT ZERO"
+                int frame_number = -1
+                bool use_free = config.scope == "GLOBAL" or resident(owner) < quota(owner)
+                if use_free
+                    for nat j < len(frames)
+                        if frames[j].owner < 0
+                            frame_number = int(j)
+                            break
+                if frame_number < 0
+                    frame_number = .choose(owner)
+                    Reference victim = frames[frame_number]
+                    bool dirty = processes[victim.owner].pages[victim.page].modified == 1
+                    eviction = " evict=P{processes[victim.owner].pid}:{victim.page}" + (if dirty then " writeback" else "")
+                    if dirty
+                        .write_back(victim.owner, victim.page)
+                    processes[victim.owner].pages[victim.page].frame = -1
+                    .invalidate(victim.owner, victim.page)
+                frames[frame_number] = Reference(owner, page_number)
+                processes[owner].pages[page_number].frame = frame_number
+                processes[owner].pages[page_number].loaded = clock
+                processes[owner].pages[page_number].uses = 0
+                processes[owner].pages[page_number].modified = 0
+                processes[owner].pages[page_number].age = 0
+                processes[owner].peak = maximum(processes[owner].peak, resident(owner))
+            int count = 0
+            int oldest = -1
+            for nat j < len(entries)
+                if entries[j].page % config.sets == page_number % config.sets
+                    if oldest < 0
+                        oldest = int(j)
+                    count += 1
+            if count == config.tlb_size / config.sets
+                entries = erase(entries, oldest)
+            entries = entries.append(Entry(owner, page_number, processes[owner].pages[page_number].frame))
+        processes[owner].pages[page_number].referenced = 1
+        if request.op == "W"
+            processes[owner].pages[page_number].modified = 1
+        processes[owner].pages[page_number].last = clock
+        processes[owner].pages[page_number].uses += 1
+        processes[owner].pages[page_number].ever = true
+        processes[owner].accesses += 1
+        accesses = accesses.append(AccessRecord(owner, page_number, fault))
+        if not silent
+            actions = actions.append(Action("ACCESS", request.pid, request.op, request.address))
+        bool timer = config.tick_interval > 0 and clock % config.tick_interval == 0
+        if timer
+            for Reference ref = frames[]
+                if ref.owner >= 0
+                    Page page = processes[ref.owner].pages[ref.page]
+                    processes[ref.owner].pages[ref.page].age = page.age / 2 + 128 * page.referenced
+                    processes[ref.owner].pages[ref.page].referenced = 0
+        if trace
+            int frame_number = processes[owner].pages[page_number].frame
+            int physical = frame_number * config.page_size + request.address % config.page_size
+            emit("t={clock} P{request.pid} {request.op} {hexadecimal(request.address)} page={page_number} frame={frame_number} phys={hexadecimal(physical)} {result}{eviction}" + (if switched then " switch" else ""))
+            if timer
+                emit("t={clock} tick")
+    void .exit_process(int owner)
+        int freed = resident(owner)
+        int slots = 0
+        for nat j < len(processes[owner].pages)
+            if processes[owner].pages[j].slot >= 0
+                slots += 1
+            processes[owner].pages[j].slot = -1
+            processes[owner].pages[j].frame = -1
+            .invalidate(owner, int(j))
+        for nat j < len(frames)
+            if frames[j].owner == owner
+                frames[j] = Reference()
+        processes[owner].exited = true
+        int pid = processes[owner].pid
+        if not silent
+            actions = actions.append(Action("EXIT", pid))
+        emit("EXIT P{pid} freed={freed} slots={slots}")
+    void .clean()
+        int written = 0
+        for Reference ref = frames[]
+            if ref.owner >= 0 and processes[ref.owner].pages[ref.page].modified == 1
+                .write_back(ref.owner, ref.page)
+                written += 1
+        if not silent
+            actions = actions.append(Action("CLEAN"))
+        emit("CLEAN written={written}")
+    Simulation rerun(string policy_name, int frame_count)
+        Settings settings = config
+        settings.policy = policy_name
+        settings.frame_count = frame_count
+        Simulation replay = Simulation(settings)
+        replay.silent = true
+        for Process item = processes[]
+            replay.processes = replay.processes.append(Process(item.pid, item.count))
+        for Action action = actions[]
+            if action.kind == "ACCESS"
+                replay.future = replay.future.append(access_command(action.pid, action.op, action.address))
+        for Action action = actions[]
+            if action.kind == "ACCESS"
+                .replay.access(access_command(action.pid, action.op, action.address))
+            elif action.kind == "EXIT"
+                .replay.exit_process(replay.process_index(action.pid))
+            elif action.kind == "CLEAN"
+                .replay.clean()
+            else
+                int owner = replay.process_index(action.pid)
+                for action.first <= int page_number <= action.last
+                    replay.processes[owner].pages[page_number].locked = action.kind == "LOCK"
+        return replay
+    void | error .command(const string[] words)
+        string op = words[0]
+        if op == "PROCESS"
+            int pid = int.parse(words[1])
+            int count = int.parse(words[2])
+            if fixed_processes
+                return error("processes are fixed")
+            if process_index(pid) >= 0
+                return error("duplicate process {pid}")
+            if count < 1 or count > 256
+                return error("invalid page count")
+            if len(processes) == 8 or (config.scope == "LOCAL" and int(len(processes)) == config.frame_count)
+                return error("too many processes")
+            processes = processes.append(Process(pid, count))
+            return
+        int owner = -1
+        if lookup(["EXIT", "PROTECT", "LOCK", "UNLOCK", "PAGETABLE", "WSET", "HOT"], op) >= 0
+            owner = try live(int.parse(words[1]))
+        if op == "EXIT"
+            .exit_process(owner)
+        elif op == "PROTECT" or op == "LOCK" or op == "UNLOCK"
+            int first = int.parse(words[2])
+            int last = int.parse(words[3])
+            if first > last or last >= processes[owner].count
+                return error("invalid page range")
+            for first <= int page_number <= last
+                if op == "PROTECT"
+                    processes[owner].pages[page_number].readonly = words[4] == "RO"
+                else
+                    processes[owner].pages[page_number].locked = op == "LOCK"
+            if op != "PROTECT"
+                actions = actions.append(Action(op, processes[owner].pid, first = first, last = last))
+        elif op == "TRACE"
+            trace = words[1] == "ON"
+        elif op == "CLEAN"
+            .clean()
+        elif op == "SUMMARY"
+            emit("SUMMARY policy={config.policy} scope={config.scope} time={clock}")
+            int segfaults = 0
+            int protfaults = 0
+            for Process item = processes[]
+                segfaults += item.segfaults
+                protfaults += item.protfaults
+            emit("total faults={faults} zero={zeros} swapin={swapins} faultrate={ratio(faults, clock)} tlbhits={tlbhits} tlbrate={ratio(tlbhits, clock)} writebacks={writebacks} switches={switches} segfaults={segfaults} protfaults={protfaults}")
+            for 1 <= int pid <= 99
+                int index = process_index(pid)
+                if index >= 0
+                    Process item = processes[index]
+                    emit("P{pid} accesses={item.accesses} faults={item.faults} writebacks={item.writebacks} segfaults={item.segfaults} protfaults={item.protfaults} resident={resident(index)} peak={item.peak}" + (if config.scope == "LOCAL" then " quota={quota(index)}" else "") + (if item.exited then " exited" else ""))
+        elif op == "FRAMES"
+            int used = 0
+            for Reference ref = frames[]
+                if ref.owner >= 0
+                    used += 1
+            emit("FRAMES used={used}/{config.frame_count}")
+            for nat j < len(frames)
+                Reference ref = frames[j]
+                if ref.owner < 0
+                    emit("{j} free")
+                else
+                    Page page = processes[ref.owner].pages[ref.page]
+                    emit("{j} P{processes[ref.owner].pid}:{ref.page} R={page.referenced} M={page.modified} load={page.loaded} last={page.last} uses={page.uses} age={page.age}" + (if page.locked then " locked" else ""))
+            if config.policy == "CLOCK" or config.policy == "ECLOCK" or config.policy == "WSCLOCK"
+                if config.scope == "GLOBAL"
+                    emit("hand={hand}")
+                else
+                    string line = "hand"
+                    for 1 <= int pid <= 99
+                        int index = process_index(pid)
+                        if index >= 0
+                            line += " P{pid}={processes[index].hand}"
+                    emit(line)
+        elif op == "PAGETABLE"
+            emit("PAGETABLE P{processes[owner].pid} pages={processes[owner].count} resident={resident(owner)}")
+            for nat j < len(processes[owner].pages)
+                Page page = processes[owner].pages[j]
+                if page.ever
+                    string status = if page.frame >= 0 then "frame={page.frame} R={page.referenced} M={page.modified}" elif page.slot >= 0 then "swap={page.slot}" else "zero"
+                    emit("{j} {status}" + (if page.readonly then " RO" else "") + (if page.locked then " locked" else ""))
+        elif op == "TLB"
+            emit("TLB used={len(entries)}/{config.tlb_size} sets={config.sets}")
+            for int set_index < config.sets
+                string line = "set {set_index}:"
+                int j = int(len(entries)) - 1
+                while j >= 0
+                    Entry entry = entries[j]
+                    if entry.page % config.sets == set_index
+                        line += " P{processes[entry.owner].pid}:{entry.page}->{entry.frame}"
+                    j -= 1
+                emit(line)
+        elif op == "SWAP"
+            int count = 0
+            int largest = -1
+            for Process item = processes[]
+                for Page page = item.pages[]
+                    if page.slot >= 0
+                        count += 1
+                        largest = maximum(largest, page.slot)
+            emit("SWAP used={count}")
+            for int slot <= largest
+                for Process item = processes[]
+                    for nat j < len(item.pages)
+                        if item.pages[j].slot == slot
+                            emit("{slot} P{item.pid}:{j}")
+        elif op == "COMPARE"
+            emit("COMPARE accesses={clock} frames={config.frame_count}")
+            int[] fault_counts = []
+            int[] write_counts = []
+            string[] names = policies()
+            for string policy_name = names[]
+                Simulation replay = rerun(policy_name, config.frame_count)
+                fault_counts = fault_counts.append(replay.faults)
+                write_counts = write_counts.append(replay.writebacks)
+                emit("{policy_name} faults={replay.faults} writebacks={replay.writebacks} tlbhits={replay.tlbhits}")
+            int[] order = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+            for 1 <= int j < 10
+                int selected = order[j]
+                int at = j
+                while at > 0 and (fault_counts[selected] < fault_counts[order[at - 1]] or (fault_counts[selected] == fault_counts[order[at - 1]] and write_counts[selected] < write_counts[order[at - 1]]))
+                    order[at] = order[at - 1]
+                    at -= 1
+                order[at] = selected
+            string line = "ranking"
+            for int index = order[]
+                line += " {names[index]}"
+            emit(line)
+        elif op == "CURVE"
+            string policy_name = words[1]
+            if lookup(policies(), policy_name) < 0
+                return error("unknown policy")
+            int lower = int.parse(words[2])
+            int upper = int.parse(words[3])
+            if lower < 1 or lower > upper or upper > 16 or (config.scope == "LOCAL" and lower < int(len(processes)))
+                return error("invalid frame range")
+            emit("CURVE {policy_name} frames={lower}..{upper}")
+            int previous_faults = -1
+            for lower <= int count <= upper
+                Simulation replay = rerun(policy_name, count)
+                emit("F={count} faults={replay.faults}" + (if previous_faults >= 0 and replay.faults > previous_faults then " ANOMALY" else ""))
+                previous_faults = replay.faults
+        elif op == "EAT"
+            if clock == 0
+                emit("EAT accesses=0")
+            else
+                int total = int.parse(words[1]) * clock + int.parse(words[2]) * (2 * clock - tlbhits) + int.parse(words[3]) * (swapins + writebacks)
+                emit("EAT accesses={clock} total={total} average={decimal(total, clock)}")
+        elif op == "TIMELINE"
+            int width = int.parse(words[1])
+            if width < 1
+                return error("invalid window")
+            string line = "TIMELINE window={width}"
+            int at = 0
+            while at < int(len(accesses))
+                int count = 0
+                for at <= int j < at + width
+                    if j < int(len(accesses)) and accesses[j].fault
+                        count += 1
+                line += " {count}"
+                at += width
+            emit(line)
+        elif op == "WSET"
+            int width = int.parse(words[2])
+            if width < 1
+                return error("invalid window")
+            bool[] seen = array(nat(processes[owner].count), fill = false)
+            int remaining = width
+            int j = int(len(accesses)) - 1
+            while j >= 0 and remaining > 0
+                if accesses[j].owner == owner
+                    seen[accesses[j].page] = true
+                    remaining -= 1
+                j -= 1
+            int[] pages = []
+            for nat page_number < len(seen)
+                if seen[page_number]
+                    pages = pages.append(int(page_number))
+            string line = "WSET P{processes[owner].pid} window={width} size={len(pages)}"
+            for int page_number = pages[]
+                line += " {page_number}"
+            emit(line)
+        elif op == "HOT"
+            int count = int.parse(words[2])
+            if count < 1
+                return error("invalid count")
+            int[] frequencies = array(nat(processes[owner].count), fill = 0)
+            for AccessRecord record = accesses[]
+                if record.owner == owner
+                    frequencies[record.page] += 1
+            string line = "HOT P{processes[owner].pid}"
+            for int rank < count
+                int best = -1
+                for nat j < len(frequencies)
+                    if frequencies[j] > 0 and (best < 0 or frequencies[j] > frequencies[best])
+                        best = int(j)
+                if best < 0
+                    break
+                line += " {best}:{frequencies[best]}"
+                frequencies[best] = 0
+            emit(line)
+int line_count
+scan(&line_count)
+Command[] commands = []
+for int line_index < line_count
+    string line
+    scan(&line)
+    string[] words = line.split(" ")
+    if words[0] == "LOOP"
+        int pid = int.parse(words[1])
+        int start = hex_value(words[3])
+        int interval = int.parse(words[4])
+        int length = int.parse(words[5])
+        int repeats = int.parse(words[6])
+        for int repetition < repeats
+            for int j < length
+                commands = commands.append(access_command(pid, words[2], start + j * interval))
+    elif words[0] == "RAND"
+        int pid = int.parse(words[1])
+        int lower = hex_value(words[2])
+        int upper = hex_value(words[3])
+        int count = int.parse(words[4])
+        int random_state = int.parse(words[5])
+        int write_rate = int.parse(words[6])
+        for int j < count
+            random_state = (48271 * random_state) % 2147483647
+            int address = lower + random_state % (upper - lower)
+            random_state = (48271 * random_state) % 2147483647
+            commands = commands.append(access_command(pid, if random_state % 100 < write_rate then "W" else "R", address))
+    elif "0123456789".contains(words[0][0])
+        commands = commands.append(access_command(int.parse(words[0]), words[1], hex_value(words[2])))
+    else
+        commands = commands.append(Command(words))
+Simulation simulation = Simulation(Settings())
+bool active = false
+for nat command_index < len(commands)
+    Command command = commands[command_index]
+    if not command.access and command.words[0] == "SYSTEM"
+        active = false
+        match parse_settings(command.words)
+            Settings settings
+                simulation = Simulation(settings)
+                active = true
+                for command_index + 1 <= nat j < len(commands)
+                    if not commands[j].access and commands[j].words[0] == "SYSTEM"
+                        break
+                    if commands[j].access
+                        simulation.future = simulation.future.append(commands[j])
+                string asid = if settings.asid then "ON" else "OFF"
+                print("SYSTEM page={settings.page_size} frames={settings.frame_count} tlb={settings.tlb_size} sets={settings.sets} policy={settings.policy} scope={settings.scope} asid={asid} tick={settings.tick_interval} tau={settings.tau} seed={settings.seed}{NL}")
+            error problem
+                print("ERROR " + problem.message + NL)
+    elif not active
+        print("ERROR no system{NL}")
+    elif command.access
+        .simulation.access(command)
+    else
+        match .simulation.command(command.words)
+            void
+                continue
+            error problem
+                print("ERROR " + problem.message + NL)

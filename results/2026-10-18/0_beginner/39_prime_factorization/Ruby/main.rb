@@ -1,0 +1,15 @@
+[84, 9973, 15625, 1001, 123456, 48000, 999958, 999999].each do |number|
+  remaining, divisor = number, 2
+  factors = []
+  while divisor * divisor <= remaining
+    exponent = 0
+    while (remaining % divisor).zero?
+      remaining /= divisor
+      exponent += 1
+    end
+    factors << (exponent > 1 ? "#{divisor}^#{exponent}" : divisor.to_s) if exponent.positive?
+    divisor += 1
+  end
+  factors << remaining.to_s if remaining > 1
+  puts "#{number} = #{factors.join(' * ')}"
+end

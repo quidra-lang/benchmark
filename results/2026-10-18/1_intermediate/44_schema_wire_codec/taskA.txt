@@ -1,0 +1,379 @@
+[Overview]
+Write a program that encodes and decodes messages in a schema-based binary format similar to Protocol Buffers (hereafter, the wire format). The first part of the input is a schema, which defines enum types and message types. The second part is a sequence of commands; the program executes the commands one at a time from the first one and writes the results to standard output.
+The commands are: encoding a message written as one line of text (a literal) into a byte sequence; decoding a byte sequence given in hexadecimal and displaying it as indented text, as a one-line literal, or as JSON; explaining a byte sequence record by record; re-encoding into canonical form; decoding the concatenation of two byte sequences (merge); listing the differences between two messages; getting, rewriting and deleting the field specified by a path; computing varint and zigzag; and displaying the schema as a tree. Commands do not affect one another, and the only state the program keeps is the schema.
+All rules are exactly as defined in this statement (even where details differ from the real Protocol Buffers, follow this statement).
+
+[Input format]
+Read from standard input. The input consists of the following (1) to (3) in this order, and there are no other lines.
+(1) Schema part: one or more definition lines, followed by a final line consisting only of END SCHEMA.
+(2) A line consisting only of the number of commands N.
+(3) N command lines. Each line contains one command.
+
+Each definition line of the schema part has one of the following forms, with words separated by a single space. Below, a part enclosed in < > is replaced by a value.
+ENUM <type name>
+VALUE <value name> <number>
+MESSAGE <type name>
+FIELD <number> <type> <field name>
+FIELD <number> <type> <field name> REQUIRED
+FIELD <number> <type> <field name> REPEATED
+FIELD <number> <type> <field name> REPEATED PACKED
+FIELD <number> <type> <field name> ONEOF <group name>
+END
+An enum type definition consists of an ENUM line, one or more VALUE lines and an END line, in this order. A message type definition consists of a MESSAGE line, zero or more FIELD lines and an END line, in this order. The schema part consists of one or more definitions followed by the END SCHEMA line, and it contains at least one message type definition. The schema is always valid (see [Constraints]), and the program does not need to check the schema for errors.
+
+Each command line has one of the following forms.
+VARINT <n>
+ZIGZAG <n>
+SCHEMA <type name>
+ENCODE <type name> <literal>
+SIZE <type name> <literal>
+DECODE <type name> <hex>
+LITERAL <type name> <hex>
+JSON <type name> <hex>
+CANON <type name> <hex>
+EXPLAIN <type name> <hex>
+GET <type name> <hex> <path>
+PATCH <type name> <hex> <path> <value>
+CLEAR <type name> <hex> <path>
+MERGE <type name> <hex1> <hex2>
+DIFF <type name> <hex1> <hex2>
+The <literal> of ENCODE and SIZE is the whole part of the line after the second space. The <value> of PATCH is the whole part of the line after the fourth space. Both may contain spaces. <hex>, <hex1> and <hex2> are hexadecimal notations of byte sequences, and <path> is a string that denotes the position of a field.
+A command line may contain errors (an incorrect command name, a wrong number of words, an invalid argument, and so on). How errors are handled is defined in [Processing].
+
+[Processing]
+1. Terms and notation
+- A byte is an integer from 0 to 255 inclusive. The bytes of a byte sequence are given positions 0, 1, 2, ... from the beginning. Such a position is called an offset.
+- The hexadecimal notation of a byte sequence is the string obtained by writing each byte as two lowercase hexadecimal digits (0-9, a-f) and concatenating them without separators. However, the hexadecimal notation of the empty byte sequence is "-" (a single hyphen). In this statement, a byte is sometimes written like 0x80 for explanation.
+- x / y (x a non-negative integer, y a positive integer) is the integer obtained by discarding the fractional part of the quotient of x divided by y, and x mod y is the remainder in that division.
+- "In field-number order" means in ascending order of field number.
+
+2. Schema
+2.1 Types
+The types are the following 10 scalar types, plus the enum types and message types defined in the schema. Names of scalar types begin with a lowercase letter, and names of enum types and message types (type names) begin with an uppercase letter, so the two never coincide. The values and the wire type (Section 4) of each type are as follows.
+- uint32: an integer from 0 to 4294967295 inclusive. Wire type 0.
+- uint64: an integer from 0 to 9007199254740991 (2^53-1) inclusive. Wire type 0.
+- sint32: an integer from -2147483648 to 2147483647 inclusive. Wire type 0.
+- sint64: an integer from -4503599627370496 (-2^52) to 4503599627370495 (2^52-1) inclusive. Wire type 0.
+- bool: true or false. Wire type 0.
+- fixed32: an integer from 0 to 4294967295 inclusive. Wire type 5.
+- sfixed32: an integer from -2147483648 to 2147483647 inclusive. Wire type 5.
+- fixed64: an integer from 0 to 9007199254740991 inclusive. Wire type 1.
+- string: a byte sequence consisting only of bytes 0x00-0x7F (an ASCII string). Its length may be 0. Wire type 2.
+- bytes: any byte sequence. Its length may be 0. Wire type 2.
+- Enum type: one of the values defined by the VALUE lines of that enum type. Each value has a value name and a number. Wire type 0.
+- Message type: a message (Section 3) of that message type. Wire type 2.
+The seven types uint32, uint64, sint32, sint64, fixed32, sfixed32 and fixed64 are called integer types. The integer types, bool and enum types together are called packable types.
+
+2.2 Fields
+A FIELD line defines one field of the message type that contains the line. A field has a number (field number), a type and a name (field name), and is classified as follows by the fifth and later words of the line.
+- A field of a line with no fifth word, of a REQUIRED line, or of a ONEOF line is a singular field: it either has no value (is absent) or has one value. A field of a REQUIRED line is called a required field, and a field of a ONEOF line is called a oneof field.
+- A field of a REPEATED line or of a REPEATED PACKED line is a repeated field: it has a sequence of zero or more values (elements). A field of a REPEATED PACKED line is called a packed field.
+Required fields are subject to the checks described in Sections 6.4 and 8.2. Oneof fields in the same message type that have the same group name are called members of the same group. Among the members of the same group, at most one can be present at the same time.
+The type of a field is written as the name of a scalar type, or as a type name defined somewhere in the schema part (before or after that line). As the type of a field of a message type, that message type itself or a message type that contains it may also be written (recursion).
+
+3. Messages
+A message of message type T consists of the state of each field of T and a sequence of unknown fields.
+- A singular field is either absent or has one value of its type.
+- A repeated field has a sequence of values of its type. The field is said to be present when it has one or more elements; when it has zero elements, it is treated as absent.
+- An unknown field is created during decoding from a record (Section 4) whose number is not a field number of T, and it is a triple of number, wire type and raw value. The raw value is an integer for wire type 0, a byte sequence of 8 bytes for wire type 1, a byte sequence of 4 bytes for wire type 5, and the payload byte sequence for wire type 2.
+A message in which no field is present and which has zero unknown fields is called an empty message.
+
+4. Wire format
+4.1 varint
+The varint representation of a non-negative integer n is the following byte sequence: if n < 128, the single byte n. Otherwise, the single byte (n mod 128) + 128 followed by the varint representation of n / 128. For example, the varint representation of 300 is 0xAC 0x02, and its hexadecimal notation is ac02.
+To read a varint from a byte sequence, read one byte at a time from the start, and stop when a byte less than 128 has been read. If the bytes read are b1, b2, ..., bk in order, the value is (b1 mod 128) + (b2 mod 128) * 128 + ... + (bk mod 128) * 128^(k-1). Redundant representations that encoding never produces (for example, 0x87 0x00 represents 7) are also accepted. The detailed reading rules and errors are defined in Section 6.1.
+
+4.2 zigzag
+The zigzag value of an integer x is 2x if x >= 0, and -2x-1 if x < 0 (0, -1, 1, -2, ... become 0, 1, 2, 3, ... respectively). Conversely, the integer represented by a zigzag value z is z / 2 if z is even, and -((z + 1) / 2) if z is odd.
+
+4.3 Records
+A byte sequence that represents a message is a concatenation of zero or more records. A record consists of a tag (one varint) followed by a value. The value of the tag is "field number * 8 + wire type". Conversely, from a tag value t, the field number t / 8 and the wire type t mod 8 are obtained. The form of the value for each wire type and the name of each wire type are as follows.
+- Wire type 0 (name varint): the value is one varint.
+- Wire type 1 (name i64): the value is 8 bytes.
+- Wire type 2 (name len): the value consists of a varint giving the length L, followed by L bytes. These L bytes are called the payload.
+- Wire type 5 (name i32): the value is 4 bytes.
+Wire types 3, 4, 6 and 7 are not used.
+
+4.4 Representation of values
+A value of each type is represented as the value of a record as follows.
+- uint32, uint64: the varint of the value. sint32, sint64: the varint of the zigzag value. bool: the varint of 1 for true and of 0 for false. Enum type: the varint of the number.
+- fixed32, fixed64: the value written as 4 bytes and 8 bytes respectively, in little-endian order (lower byte first). sfixed32: for a value x, x if x is non-negative, or x + 4294967296 if x is negative, written as 4 bytes in little-endian order.
+- string, bytes: the byte sequence itself is the payload.
+- Message: the encoding of the message (Section 5) is the payload.
+The packed form is a form that represents the elements of a repeated field of a packable type together in a single record of wire type 2. Its payload is the concatenation, in element order, of the above representation of each element (a varint, 4 bytes or 8 bytes; no tag is attached).
+
+5. Encoding
+The encoding (canonical form) of a message m of message type T is the byte sequence obtained by concatenating the records of the following (1) and (2) in this order. Every varint is produced by the rule of Section 4.1 (redundant representations are not used).
+(1) For each field present in m, in field-number order, the following records.
+- Singular field: one record. Its tag is "field number * 8 + wire type of its type".
+- Repeated field that is not packed: one record per element (with the same tag as for a singular field), in element order.
+- Packed repeated field: one record in packed form. Its tag is "field number * 8 + 2".
+(2) For each unknown field of m, in the order of the sequence, one record whose tag is "number * 8 + wire type" and whose value is as follows: the varint of the raw value for wire type 0; the varint of the length of the raw value followed by the raw value for wire type 2; and the raw value byte sequence itself for wire types 1 and 5.
+The encoding of an empty message is the empty byte sequence.
+
+6. Decoding
+6.1 Reading rules and errors
+Decoding a byte sequence D with message type T means reading a message of T by the procedure of Section 6.2 with the whole of D as the range, and then performing the required-field check of Section 6.4. Even when reading nested messages, an offset is always a position counted from the start of D. A range has an end position e (the length of D for the whole of D, or the position immediately after the payload for a payload), and reading uses only bytes before e.
+If one of the following errors occurs during reading, decoding ends at that point and its result is the error "<reason> at byte <offset>". Since the procedure proceeds in order from the start, only the first error that occurs is reported.
+- Reading a varint from position p: read the bytes at p, p + 1, ... in order. If the position to be read is e or greater, truncated varint (offset p). Reading stops when a byte less than 128 has been read; if the value at that point is 2^53 (9007199254740992) or greater, varint too large (offset p). If the 8th byte read is 128 or greater, varint too long (offset p). As a consequence, a varint is at most 8 bytes long, and its value can be 2^53 or greater only when it is 8 bytes long and the 8th byte is 16 or greater.
+- Reading 4 bytes from position p: if e - p is less than 4, truncated i32 (offset p). Reading 8 bytes is similar: if e - p is less than 8, truncated i64 (offset p).
+
+6.2 Reading a message
+The procedure for reading a message of message type T from a range is as follows. Start with an empty message m and, from the start of the range, while the reading position is before the end e of the range, process one record at a time by the following (1) to (8). When the position reaches e (at that point the position is exactly e), the procedure ends and the result is m.
+(1) Read the tag as a varint from the current position r, and obtain the field number k and the wire type w.
+(2) If k is 0, invalid field number (offset r).
+(3) If w is none of 0, 1, 2 and 5, invalid wire type (offset r).
+(4) If T has a field f with number k (such a record is called a known record), w must be the wire type of f's type, or, if f is a repeated field of a packable type, w may also be 2. Otherwise, wire type mismatch (offset r). A record of a repeated field of a packable type whose w is 2 is called a packed record.
+(5) From the position q immediately after the tag, read the value according to w. If w is 0, read a varint; if 1, read 8 bytes; if 5, read 4 bytes. If w is 2, read the length L as a varint, and, with s the position immediately after it, if s + L > e, length past end (offset q). Otherwise, the L bytes starting at s are the payload.
+(6) If T has no field with number k, append the unknown field (k, w, raw value) to the end of m's sequence of unknown fields, and finish processing this record.
+(7) Convert the value of the known record into a value of f's type. For a packed record, take the payload as the range and read elements one at a time from its start until the end of the range is reached. Each element is read as a varint if the wire type of f's type is 0, as 4 bytes if it is 5, and as 8 bytes if it is 1; each element is converted by the rules below right after it is read, before the next element is read. There may be zero elements. If the record is not a packed record, convert the value read in (5) by the rules below. Below, "the value position" is the offset of the start of that varint, those 4 bytes or those 8 bytes (for a packed record, the offset of the start of each element).
+- Integer types: for sint32 and sint64, the integer represented by the zigzag value. For sfixed32, read the 4 bytes as a little-endian unsigned integer u, and take u - 4294967296 if u >= 2147483648, otherwise u. For the other types, the integer read itself (for fixed32 and fixed64, the little-endian unsigned integer). If that value is outside the range of the type, value out of range (the value position). Note that a fixed64 value is out of range only when the 8th byte is not 0 or the 7th byte is 32 or greater.
+- bool: 0 becomes false and 1 becomes true. Any other value gives value out of range (the value position).
+- Enum type: if the enum type has no value with that number, unknown enum number (the value position).
+- string: examine the payload bytes from the start; if there is a byte of 0x80 or greater, invalid string at the offset of the first such byte.
+- bytes: the payload itself becomes the value.
+- Message type: take the payload as the range and read a message of f's type by the procedure of Section 6.2 (recursively).
+(8) Apply the converted value to m.
+- If f is a oneof field, first remove the other members of f's group from m (make them absent).
+- If f is a repeated field, append the value (for a packed record, all elements in order) to the end of f's sequence of elements.
+- If f is a singular field of a message type and is already present in m, merge the new value into the existing value (Section 6.3).
+- Otherwise, set the value of f to the new value (overwriting it if a value already exists).
+
+6.3 Merge
+Merging a message b into a message a of message type U means performing the following for each field f present in b, in field-number order, and finally appending b's sequence of unknown fields to the end of a's sequence of unknown fields.
+- If f is a oneof field, first remove the other members of f's group from a.
+- If f is a repeated field, append the elements of f in b, in order, to the end of the sequence of elements of f in a.
+- If f is a singular field of a message type and is also present in a, merge the value of f in b into the value of f in a (recursively).
+- Otherwise, set the value of f in a to the value of f in b.
+
+6.4 Required-field check
+The message read is examined, starting from the top-level message, by the following procedure. To examine a message x of message type U, look at each field f of U in field-number order: if f is a required field and is absent in x, the check ends at that point and its result is the error "missing required field <path>". If f is of a message type and is present in x, examine its value (for a repeated field, each element in order) by the same procedure before moving on to the next field.
+<path> is the field names from the top-level message down to that field, joined by ".". When the path passes through an element of a repeated field, [i] (where i is the index of the element counted from 0) is appended immediately after that field name. For example: phones[1].number.
+If there is no error, the message that passed the check is the result of the decoding.
+
+7. Value notation
+In DECODE, LITERAL, GET, DIFF and EXPLAIN, a value is represented as a string as follows.
+- Integer types: decimal (a negative number is prefixed with -). No extra leading zeros are written.
+- bool: true or false.
+- Enum type: the value name.
+- string: a double quote character ("), the concatenation of the replacements of each byte by the rules below, and a double quote character ("), in this order. 0x22 (") becomes \", 0x5C (\) becomes \\, 0x0A becomes \n, 0x09 becomes \t, any other byte from 0x20 to 0x7E becomes that character itself, and any other byte becomes \x followed by two lowercase hexadecimal digits (for example, 0x01 becomes \x01 and 0x7F becomes \x7f).
+- bytes: "<", the hexadecimal notation of the byte sequence (except that nothing is written for the empty byte sequence), and ">", in this order. For example, <00ff> or <>.
+- Message: "{", the items separated by ", " (a comma and a space), and "}", in this order. There is one item "<field name>: <value>" for each present field, in field-number order. The value of a repeated field is "[", the notations of the elements separated by ", ", and "]", in this order. Unknown fields are not written. An empty message (or a message that has only unknown fields) is {}.
+For example: {id: 7, name: "Ann", tags: [1, 2], phones: [{number: "555", kind: HOME}]}. The notation of a message can be read as a literal of Section 8.
+
+8. Literals
+The <literal> of ENCODE and SIZE is a string that represents one message, and the <value> of PATCH is a string that represents one value. The characters of the string are given column numbers 1, 2, 3, ... from the start. An error in a literal is reported as the error "<reason> at column <column number>".
+
+8.1 Tokens
+Read the string from the start and split it into a sequence of tokens. Spaces are skipped (they act as token separators); when any other character is encountered, read the token that starts with that character by the following rules. The column number of a token is the column number of its first character.
+- One of the characters { } [ ] : , : that single character is a symbol token.
+- The character ": a string token. Read the following characters one at a time; when " is read, the token ends (this " is called the closing "). Each character other than \ represents one byte (its character code). \ starts an escape and, together with the next character, represents one byte: \" is 0x22, \\ is 0x5C, \n is 0x0A, \t is 0x09, and \x followed by two lowercase hexadecimal digits (00-7f) is that value. If \ is used in any other way, or the end of the string is reached without a closing ", syntax error at the column of the opening ".
+- The character <: a byte-sequence token. The part up to the next > consists of an even number (possibly zero) of lowercase hexadecimal digits (0-9, a-f), and each pair of digits represents one byte. If there is no >, or the part in between is not of this form, syntax error at the column of <.
+- The character - or a digit (0-9): an integer token. After an optional -, read as many digits as possible; the token represents the integer obtained by reading those digits as a decimal number, negated if - is present. At least one digit is required (leading zeros are allowed); if no digit follows -, syntax error at the column of -.
+- A letter (A-Z, a-z) or _: a name token. Read as many letters, digits and _ as possible.
+- Any other character: syntax error at the column of that character.
+If an error occurs while splitting into tokens, report that error and stop, without proceeding to Section 8.2 (this error is reported even if an earlier part contains an error of Section 8.2). If the splitting succeeds, place one special token that represents the end (the end token) after the sequence of tokens. Its column number is the length of the string plus 1.
+
+8.2 Syntax and checks
+Read the sequence of tokens from the start and interpret it by the following rules. "The next token" means the first token that has not been read yet, and "<reason> at t" means reporting that error at the column number of t and stopping. Only the first error that occurs is reported.
+The shape of a token t is defined as follows: message shape for {, list shape for [, integer shape for an integer token, boolean shape for a name token true or false, name shape for any other name token, string shape for a string token, and byte-sequence shape for a byte-sequence token. If t is one of } ] : , or the end token, it has no shape.
+* Message literal (message type U)
+(1) If the next token is not {, syntax error at that token. Read {.
+(2) If the next token is }, go to (8).
+(3) If the next token t is not a name token, syntax error at t. If U has no field with that name, unknown field at t; if that field has already appeared in this message literal, duplicate field at t; if that field is a oneof field and another member of the same group has already appeared, oneof conflict at t. Read t.
+(4) If the next token is not :, syntax error at that token. Read :.
+(5) Read the value of that field by the "Field value" rules below.
+(6) If the next token is a comma (,), read it and go back to (3).
+(7) If the next token is not }, syntax error at that token.
+(8) Read }. This } is called the closing brace. If some required fields of U did not appear in this message literal, let x be the field name of the one among them with the smallest field number, and report the error "missing required field x" at the closing brace.
+The message literal read represents the message in which each field that appeared has its value and no other field is present.
+* Field value (field f)
+- When f is a repeated field: if the next token t has no shape, syntax error at t; if it does not have list shape, type mismatch at t. Read [. If the next token is not ], read one element by the "Element" rules, and then, while the next token is a comma (,), repeat reading the comma and reading one more element. Finally, if the next token is not ], syntax error at that token. Read ]. The elements read, in order, form the sequence of elements of f. The list with zero elements [] is also valid; in that case f is absent.
+- When f is a singular field: read one value of f's type by the "Element" rules.
+* Element (type X)
+If the next token t has no shape, syntax error at t. Integer shape is required if X is an integer type, boolean shape if X is bool, name shape if X is an enum type, string shape if X is string, byte-sequence shape if X is bytes, and message shape if X is a message type; if the shape of t differs from it, type mismatch at t. Then read according to the shape as follows.
+- Integer shape: read t. If its value is outside the range of X, out of range at t.
+- Boolean shape: read t, which gives true or false.
+- Name shape: read t. If X has no value with that value name, unknown enum value at t.
+- String shape, byte-sequence shape: read t, which gives the byte sequence it represents.
+- Message shape: read a message literal of type X.
+In ENCODE and SIZE, <literal> is read as one message literal of the message type <type name>, and then, if the next token is not the end token, syntax error at that token. How the <value> of PATCH is read is defined in Section 11.
+
+9. Paths
+The <path> of GET, PATCH and CLEAR is a string of one or more segments joined by ".". Each segment is either a field name alone, or a field name immediately followed by [i]. i is a sequence of 1 to 6 digits and represents its decimal value (leading zeros are allowed).
+Starting from the top-level message type and following the segments in order from the first, the path is a valid path when all of the following conditions hold.
+- The field name of each segment is the name of a field of the current type.
+- The field of a segment with [i] is a repeated field.
+- The field of each segment other than the last is a singular field of a message type, or a repeated field of a message type with [i]. The next segment is followed as a field of that message type.
+The path is also not valid when a part obtained by splitting <path> at "." is empty, or when a [ ] part has a form different from the above.
+When the last segment is a repeated field without [i], the path refers to the whole sequence of elements of that field. Otherwise, the path refers to one value of the field (with [i], the i-th element counted from 0).
+
+10. Common processing of commands
+For each command, perform the following checks in this order, report the error of the first one that applies, and finish that command.
+(1) If the first word of the line (from the start of the line up to just before the first space; the whole line if there is no space) matches none of the 15 command names in [Input format], unknown command (uppercase and lowercase letters are distinguished).
+(2) If the number of words obtained by splitting the line at spaces is not 2 for VARINT, ZIGZAG and SCHEMA, not 3 for DECODE, LITERAL, JSON, CANON and EXPLAIN, or not 4 for GET, CLEAR, MERGE and DIFF, or if it is not 3 or more for ENCODE and SIZE, or not 5 or more for PATCH, wrong number of arguments.
+(3) For VARINT and ZIGZAG, if <n> is not in integer format (an optional - followed by a sequence of 1 to 18 digits; leading zeros are allowed), or if its decimal value is outside the range (0 to 2^53-1 inclusive for VARINT, the sint64 range for ZIGZAG), invalid number.
+(4) For the other commands, if <type name> is not the name of a message type defined in the schema, unknown message type (the name of an enum type also falls into this case).
+(5) For commands with hexadecimal arguments, if <hex> (for MERGE and DIFF, <hex1> and then <hex2>) is neither "-" nor a sequence of one or more characters consisting of an even number of lowercase hexadecimal digits (0-9, a-f), invalid hex.
+(6) For GET, PATCH and CLEAR, if <path> is not a valid path, invalid path.
+The subsequent processing is as described for each command in Section 11. Below, "decode hex" means decoding the byte sequence represented by <hex> with the message type <type name> (Section 6); its error is either "<reason> at byte <offset>" of Section 6.1 or "missing required field <path>" of Section 6.4.
+
+11. Processing of each command
+Below, the message type denoted by <type name> is written T, and the other arguments are also written without < >.
+- VARINT n: output the hexadecimal notation of the varint representation of n.
+- ZIGZAG n: output the zigzag value z of n and the hexadecimal notation of the varint representation of z.
+- SCHEMA T: output the structure of T in the form of a tree. The first line is T. Then output the fields of T with chain [T] and depth 1 by the rules below.
+ Outputting the fields of a message type U with chain S (a sequence of message types whose last one is U) and depth d means, for each field f of U in field-number order, outputting the line of f and then, if the type of f is a message type V, doing the following: if V is contained in S, append a space and "(recursive)" to the end of the line of f, and do not output the fields of V. If V is not contained in S, immediately after the line of f, output the fields of V with chain S + [V] (S with V appended at the end) and depth d + 1.
+ The line of f is 2d spaces, "<number> <field name>: ", the kind word, and the name of the type, in this order. The kind word is "required " for a required field, "repeated packed " for a packed field, "repeated " for any other repeated field, and "oneof <group name> " for a oneof field; nothing is written for a field of a line with no fifth word. If the type is an enum type, the name of the type is followed by a space, "(", the values of that enum type in ascending order of number, each written as "<value name>=<number>" and separated by ", ", and ")", in this order.
+- ENCODE T literal: read the literal (Section 8) and output the hexadecimal notation of the encoding (Section 5) of the resulting message.
+- SIZE T literal: read the literal and output the length (number of bytes) of the encoding of the resulting message. On the same line, follow it, for each present field in field-number order, by a space, the field name, "=", and the total number of bytes occupied in the encoding by the records of that field, in this order.
+- DECODE T hex: decode hex and output the result in text format (Section 12).
+- LITERAL T hex: decode hex and output the result in the message notation of Section 7.
+- JSON T hex: decode hex and output the result in JSON format (Section 12).
+- CANON T hex: decode hex and output the hexadecimal notation of the encoding of the result. If the input is not in canonical form (field order, redundant varints, whether the packed form is used, duplicates of the same field, positions of unknown fields, and so on), the output differs from the input.
+- EXPLAIN T hex: output the records of the byte sequence represented by <hex> in explanation format (Section 12).
+- GET T hex path: decode hex and output what the path refers to in the resulting message. When the path refers to a whole sequence of elements, output that sequence of elements in the notation for the value of a repeated field of Section 7 (enclosed in [ ]). When there are no elements (including when an intermediate field is absent and when i of an intermediate [i] is greater than or equal to the number of elements), the output is []. Otherwise, output the value in the notation of Section 7. When there is no value (when an intermediate or the last field is absent, or when i of a [i] is greater than or equal to the number of elements), output (none).
+- PATCH T hex path value: perform the following (1) to (5) in order.
+ (1) Decode hex.
+ (2) Split <value> into tokens by the rules of Section 8.1, and then read it by the rules of Section 8.2. If the path refers to a whole sequence of elements, read one value by the "Field value" rules for the field of the last segment (that is, as list shape); otherwise, read one value by the "Element" rules for the type of the field of the last segment. Then, if the next token is not the end token, syntax error at that token. Column numbers are counted with the first character of <value> as 1.
+ (3) Follow the path from the start and set the value. For each segment other than the last: if it is a singular field, then if that field is absent, first make it an empty message (for a oneof field, first removing the other members of the same group), and then go into its value. For a segment with [i], if i is greater than or equal to the number of elements, index out of range; otherwise go into the i-th element. For the last segment: if it is a singular field, set the value of that field to the value read (for a oneof field, first remove the other members of the same group; the existing value is replaced, not merged). If the path refers to a whole sequence of elements, replace the sequence of elements with the sequence of elements of the list read. If the segment has [i], then if i is greater than or equal to the number of elements, index out of range; otherwise replace the i-th element with the value read.
+ (4) Perform the required-field check of Section 6.4 on the resulting message (its error is "missing required field <path>").
+ (5) Output the hexadecimal notation of the encoding of the resulting message.
+- CLEAR T hex path: perform the following (1) to (4) in order.
+ (1) Decode hex.
+ (2) Follow the path from the start. If, at a segment other than the last, its singular field is absent, or i of its [i] is greater than or equal to the number of elements, proceed to (3) without changing anything. For the last segment: if it is a singular field, make that field absent. If the path refers to a whole sequence of elements, remove all elements. If the segment has [i], remove the i-th element if i is less than the number of elements (each following element moves forward by one position); otherwise do nothing.
+ (3) Perform the required-field check of Section 6.4 on the resulting message.
+ (4) Output the hexadecimal notation of the encoding of the resulting message.
+- MERGE T hex1 hex2: decode with T the byte sequence obtained by concatenating the byte sequence of <hex1> followed by the byte sequence of <hex2>, and output the result in the same text format as DECODE. Error offsets are also positions in the concatenated byte sequence.
+- DIFF T hex1 hex2: let a be the result of decoding <hex1> with T, and b the result of decoding <hex2> with T. If an error occurs while decoding a, report that error with " in first" appended at the end. If a is obtained, decode b, and append " in second" to its error. If both a and b are obtained, output the differences found by the comparison below, one per line, and output SAME if there are no differences at all.
+ Comparison (messages x and y of message type U, prefix P; initially U = T, x = a, y = b, and P is the empty string): for each field f of U in field-number order, form the sequence X of the values of f in x and the sequence Y of the values of f in y (for a singular field, its one value if present and zero values if absent; for a repeated field, its sequence of elements). For each k = 0, 1, ..., max(number of values in X, number of values in Y) - 1, let the path Q be P + field name for a singular field, or P + field name + "[k]" for a repeated field, and do the following.
+ - If both element k of X and element k of Y exist and f is of a message type, compare those two with prefix Q + ".".
+ - Otherwise, if only one of them exists, or both exist and their values differ (strings and byte sequences are compared as byte sequences), output "<Q>: <notation of element k of X> -> <notation of element k of Y>". The notation is as in Section 7, and the side that does not exist is written as (none).
+ Unknown fields are not compared.
+
+12. Output formats
+* Text format (DECODE, MERGE)
+The first line is "<type name> {", the last line is "}", and between them the contents of the message are output at depth 1. The contents of a message x at depth d are the following lines in this order. Below, <indent> is 2d spaces.
+- For each field present in x, in field-number order, and for each of its values (one value for a singular field, each element in order for a repeated field): if the type of the field is a message type, the line "<indent><field name> {", the contents of that value (at depth d + 1), and the line "<indent>}". Otherwise, the single line "<indent><field name>: <value notation>". The value notation is as in Section 7.
+- For each unknown field of x, in the order of the sequence, the single line "<indent><number>: <wire type name> <raw value>". <raw value> is a decimal number for wire type 0, and otherwise the same notation as a bytes value (the hexadecimal notation enclosed in < >).
+* JSON format (JSON)
+Write the message as a JSON object on one line, without any whitespace.
+- Message: "{", one item for each present field in field-number order, separated by ",", and "}", in this order. Each item is the key enclosed in double quotes ("), a colon (:), and the value, i.e. "<key>":<value>. Unknown fields are not written. The key is the field name with each "_" removed, where the character immediately after a removed "_" is changed to uppercase if it is a lowercase letter (for example, home_page becomes homePage and line_2 becomes line2).
+- Value of a repeated field: "[", the values of the elements separated by ",", and "]", in this order.
+- uint32, sint32, fixed32, sfixed32: decimal (a negative number is prefixed with -). uint64, sint64, fixed64: the decimal number enclosed in double quotes ("). bool: true or false. Enum type: the value name enclosed in double quotes. Message type: the object above.
+- string: a double quote character, the concatenation of the replacements of each byte, and a double quote character, in this order. 0x22 becomes \", 0x5C becomes \\, 0x0A becomes \n, 0x09 becomes \t, any other byte from 0x20 to 0x7E becomes that character itself, and any other byte becomes \u00 followed by two lowercase hexadecimal digits (for example, 0x01 becomes \u0001).
+- bytes: the Base64-encoded string enclosed in double quotes. In Base64, divide the byte sequence from the start into groups of 3 bytes; for each group, let its bytes be b1, b2, b3 in order, let n = b1 * 65536 + b2 * 256 + b3, and compute the four values n / 262144, (n / 4096) mod 64, (n / 64) mod 64 and n mod 64 (each from 0 to 63). Replace each value with a character: 0-25 with A-Z, 26-51 with a-z, 52-61 with 0-9, 62 with +, and 63 with /. When the last group has 1 or 2 bytes, compute with the missing bytes taken as 0; for 1 byte, append == after the first 2 characters, and for 2 bytes, append = after the first 3 characters. The empty byte sequence becomes the empty string ("").
+* Explanation format (EXPLAIN)
+Read the byte sequence as a message of T by the procedure of Section 6.2, and output one line per record. The error rules are also the same, but the application in (8) is not performed (no merging and no removal of oneof members), and the required-field check of Section 6.4 is not performed either. If an error occurs, output only the single error line.
+Each line consists of <indent> (2d spaces for a record inside nesting of depth d; d = 0 for a top-level record) and "<offset> <number> <name> <wire type name>", in this order, followed by the additions below. <offset> is the offset of the start of the record (the first byte of the tag), <number> is the field number, and <name> is the field name for a known record and ? otherwise.
+- For a record of wire type 2, first append a space and the payload length L.
+- A record that is not a known record: further append a space and the raw value (the same notation as <raw value> of the text format).
+- A known record whose field type is a message type: nothing further is appended. Immediately after this line, output the lines of the records in the payload at depth d + 1.
+- A packed record: further append a space and packed, and then, for each element, a space and the notation of its value.
+- Any other known record: further append a space and the value notation.
+If there are no records at all at the top level (that is, the byte sequence is empty), output the single line (empty). This applies only to the top level: after the line of a known record of a message type whose payload is empty, nothing is output for that payload.
+
+[Output format]
+For each command, output the following lines. No line has trailing whitespace, and every line ends with a newline. The output consists of ASCII characters only. Numbers are written in decimal without extra leading zeros. Below, a part enclosed in < > is replaced by a value, and the comma or period at the end of each item is sentence punctuation of this statement and is not part of the output.
+- Error: output only one line consisting of ERROR, a space, and the reason, in this order. The reason is one of the following:
+ unknown command, wrong number of arguments, invalid number, unknown message type, invalid hex, invalid path, index out of range,
+ <decode reason> at byte <offset> (<decode reason> is one of truncated varint, varint too large, varint too long, truncated i32, truncated i64, invalid field number, invalid wire type, wire type mismatch, length past end, value out of range, unknown enum number, invalid string),
+ missing required field <path>,
+ <literal reason> at column <column number> (<literal reason> is one of syntax error, unknown field, duplicate field, oneof conflict, type mismatch, out of range, unknown enum value, missing required field <field name>).
+ For a DIFF decoding error, " in first" or " in second" is appended at the end.
+- VARINT: one line <hexadecimal notation>.
+- ZIGZAG: one line <zigzag value> <hexadecimal notation>.
+- SCHEMA: one line with the type name, and the line of each field.
+- ENCODE, CANON, PATCH, CLEAR: one line <hexadecimal notation>. For the empty byte sequence it is -.
+- SIZE: one line with <number of bytes> followed, for each present field, by a space and <field name>=<number of bytes>.
+- DECODE, MERGE: the lines of the text format.
+- LITERAL: one line with the message notation.
+- JSON: one line in JSON format.
+- EXPLAIN: the lines of the explanation format.
+- GET: one line with the value notation (it may also be [] or (none)).
+- DIFF: one line per difference, or the single line SAME.
+
+[Constraints]
+- The schema part has at least 1 and at most 30 definitions (ENUM and MESSAGE combined), at most 200 FIELD lines in total, and at most 200 VALUE lines in total.
+- A type name is a string of at most 24 characters that begins with an uppercase letter and consists only of letters and digits. Type names are not duplicated among enum types, among message types, or between enum types and message types.
+- A value name is a string of at most 24 characters that begins with an uppercase letter and consists only of uppercase letters, digits and _. A number is an integer from 0 to 1000000 inclusive. Within the same enum type, value names are all distinct and numbers are all distinct.
+- A field name or group name is a string of at most 32 characters that begins with a lowercase letter and has the form of parts, each consisting of one or more lowercase letters and digits, joined by single _ characters (it does not begin or end with _, and never contains two consecutive _); it is neither true nor false. A field number is an integer from 1 to 536870911 inclusive. Within the same message type, field names are all distinct and field numbers are all distinct.
+- PACKED is attached only to repeated fields of packable types.
+- Numbers in the schema part are written in decimal without extra leading zeros.
+- 1 <= N <= 500. Every line has at most 1000 characters.
+- A command line is a non-empty string consisting only of printable ASCII characters (0x20-0x7E), and it neither begins nor ends with a space. In ENCODE and SIZE lines the first 2 separators, in PATCH lines the first 4 separators, and in all other lines all separators, are a single space (inside <literal> and <value>, spaces may be consecutive).
+- Inside <literal> and <value>, 19 or more digits never appear consecutively.
+- A byte sequence represented by a valid hexadecimal argument is at most 300 bytes long.
+- In literals and in byte sequences to be decoded, the nesting depth of messages is at most 30. The output of SCHEMA is at most 300 lines.
+- Integers handled in this problem have absolute values less than 2^53. However, the value of <n> of VARINT and ZIGZAG and the value of an integer token of a literal can have any absolute value less than 10^18, an intermediate value while reading a varint can be anything less than 2^56, and the 8 bytes of a fixed64 regarded as an unsigned integer can be anything less than 2^64. The values of <n> and of integer tokens are used only for range checks, and out-of-range ones are not used in any computation. With the checking methods of Sections 6.1 and 6.2 (7), there is no need to compute such large values for varints and fixed64 either. Floating-point numbers are not needed.
+
+[Example]
+Input:
+ENUM Kind
+VALUE MOBILE 0
+VALUE HOME 1
+END
+MESSAGE Phone
+FIELD 1 string number REQUIRED
+FIELD 2 Kind kind
+END
+MESSAGE Person
+FIELD 2 string name
+FIELD 1 uint32 id REQUIRED
+FIELD 3 Phone phones REPEATED
+FIELD 4 sint32 scores REPEATED PACKED
+FIELD 5 string email ONEOF contact
+FIELD 6 Phone fax ONEOF contact
+END
+END SCHEMA
+11
+ENCODE Person {name: "Ann", id: 150, scores: [-1, 2], phones: [{number: "12", kind: HOME}]}
+DECODE Person 0896011203416e6e1a060a0231321001220201043801
+DECODE Person 08011203416e6e2a017832030a01392a0179
+DECODE Person 08960112054161
+EXPLAIN Person 089601200322020104
+JSON Person 0896011203416e6e1a060a0231321001220201042a05612e622e63
+GET Person 0896011203416e6e1a060a023132100122020104 phones[0].kind
+PATCH Person 0896012a0178 fax {number: "9"}
+DIFF Person 0896011203416e6e 08960112034a6f6e1a030a0139
+ENCODE Person {id: 1, nmae: "x"}
+SCHEMA Person
+Output:
+0896011203416e6e1a060a023132100122020104
+Person {
+  id: 150
+  name: "Ann"
+  phones {
+    number: "12"
+    kind: HOME
+  }
+  scores: -1
+  scores: 2
+  7: varint 1
+}
+Person {
+  id: 1
+  name: "Ann"
+  email: "y"
+}
+ERROR length past end at byte 4
+0 1 id varint 150
+3 4 scores varint -2
+5 4 scores len 2 packed -1 2
+{"id":150,"name":"Ann","phones":[{"number":"12","kind":"HOME"}],"scores":[-1,2],"email":"a.b.c"}
+HOME
+08960132030a0139
+name: "Ann" -> "Jon"
+phones[0]: (none) -> {number: "9"}
+ERROR unknown field at column 9
+Person
+  1 id: required uint32
+  2 name: string
+  3 phones: repeated Phone
+    1 number: required string
+    2 kind: Kind (MOBILE=0, HOME=1)
+  4 scores: repeated packed sint32
+  5 email: oneof contact string
+  6 fax: oneof contact Phone
+    1 number: required string
+    2 kind: Kind (MOBILE=0, HOME=1)

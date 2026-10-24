@@ -1,0 +1,3 @@
+for (const n of [0, 7, 999, 1000, -456789, 3141592, 9876543210]) {
+  console.log(n.toLocaleString("en-US"));
+}

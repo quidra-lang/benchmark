@@ -1,0 +1,4 @@
+numbers <- c(12, 5, 12, 8, 3, 5, 20, 8, 8, 15, 3, 7, 20, 12, 9)
+remaining <- unique(numbers)
+cat(paste(remaining, collapse = " "), "\n", sep = "")
+cat(sprintf("removed: %d\n", length(numbers) - length(remaining)))

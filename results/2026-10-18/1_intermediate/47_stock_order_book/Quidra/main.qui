@@ -1,0 +1,568 @@
+class Order(string id, int trader, string kind, bool sell, int price, int trigger, int peak, int quantity, string condition)
+    int remaining = quantity
+    int visible = 0
+    int filled = 0
+    int value = 0
+    int priority = 0
+    string status = "PENDING"
+    string[] history = ["ACCEPT"]
+class Trader(string name)
+    int bought = 0
+    int sold = 0
+    int cash = 0
+    int fees = 0
+    int limit = -1
+class Trade(int price, int quantity, int buy, int sell, int taker, int buy_fee, int sell_fee)
+class Level(int price)
+    int visible = 0
+    int count = 0
+class Engine()
+    Order[] orders = []
+    Trader[] traders = []
+    Trade[] trades = []
+    int priority = 0
+    int maker = 0
+    int taker = 0
+    int band = 0
+    int tick = 1
+    int lot = 1
+    bool halted = false
+    string[] output = []
+int minimum(int a, int b)
+    return if a < b then a else b
+int absolute(int a)
+    return if a < 0 then -a else a
+bool one_of(string choices, string value)
+    for string item = choices.split(" ")[]
+        if item == value
+            return true
+    return false
+int order_at(const Engine engine, string id)
+    for nat index < len(engine.orders)
+        if engine.orders[index].id == id
+            return int(index)
+    return -1
+int trader_at(const Engine engine, string name)
+    for nat index < len(engine.traders)
+        if engine.traders[index].name == name
+            return int(index)
+    return -1
+int register_trader(Engine &engine, string name)
+    int index = trader_at(engine, name)
+    if index < 0
+        index = int(len(engine.traders))
+        engine.traders = engine.traders.append(Trader(name))
+    return index
+bool resting(const Order order)
+    return order.status == "OPEN" or order.status == "PARTIAL"
+bool active(const Order order)
+    return resting(order) or order.status == "PENDING"
+int net(const Engine engine, int trader)
+    return engine.traders[trader].bought - engine.traders[trader].sold
+int last(const Engine engine)
+    return if len(engine.trades) == 0 then 0 else engine.trades[len(engine.trades) - 1].price
+int pnl(const Engine engine, int trader)
+    return engine.traders[trader].cash + net(engine, trader) * last(engine)
+int exposure(const Engine engine, int trader, bool sell, int exclude = -1)
+    int result = if sell then -net(engine, trader) else net(engine, trader)
+    for nat index < len(engine.orders)
+        Order order = engine.orders[index]
+        if int(index) != exclude and active(order) and order.trader == trader and order.sell == sell
+            result += order.remaining
+    return result
+bool risk(const Engine engine, int trader, bool sell, int quantity, int exclude = -1)
+    return trader >= 0 and engine.traders[trader].limit >= 0 and exposure(engine, trader, sell, exclude) + quantity > engine.traders[trader].limit
+bool outside(const Engine engine, int price)
+    return engine.band > 0 and len(engine.trades) > 0 and absolute(price - last(engine)) > engine.band
+bool matchable(bool sell, int price, int other)
+    return price < 0 or (if sell then other >= price else other <= price)
+int best(const Engine engine, bool sell)
+    int result = -1
+    for nat index < len(engine.orders)
+        Order order = engine.orders[index]
+        if not resting(order) or order.sell != sell
+            continue
+        if result < 0
+            result = int(index)
+        else
+            Order previous = engine.orders[result]
+            if (if sell then order.price < previous.price else order.price > previous.price) or (order.price == previous.price and order.priority < previous.priority)
+                result = int(index)
+    return result
+string decimal(int value)
+    int fraction = value % 100
+    return (value / 100).string() + "." + (if fraction < 10 then "0" else "") + fraction.string()
+void emit(Engine &engine, string text)
+    engine.output = engine.output.append(text)
+void history(Engine &engine, int index, string text)
+    engine.orders[index].history = engine.orders[index].history.append(text)
+void order_line(Engine &engine, int index)
+    Order order = engine.orders[index]
+    emit(&engine, "ORDER {order.id} {order.status} {order.filled}/{order.quantity}")
+string details(const Engine engine, int index)
+    Order order = engine.orders[index]
+    string price = if order.price < 0 then "-" else order.price.string()
+    string average = if order.filled == 0 then "-" else decimal(order.value * 100 / order.filled)
+    string result = "{order.id} {engine.traders[order.trader].name} {order.kind} " + (if order.sell then "SELL" else "BUY") + " {price} {order.status} {order.filled}/{order.quantity} avg {average}"
+    if one_of("STOP STOPLIMIT", order.kind)
+        result += " trigger {order.trigger}"
+    return result
+string position(const Engine engine, int index)
+    Trader trader = engine.traders[index]
+    return "POSITION {trader.name} bought {trader.bought} sold {trader.sold} net {net(engine, index)} cash {trader.cash} fees {trader.fees} pnl {pnl(engine, index)}"
+string trade_line(const Engine engine, int index)
+    Trade trade = engine.trades[index]
+    Order buy = engine.orders[trade.buy]
+    Order sell = engine.orders[trade.sell]
+    return "TRADE {index + 1} {trade.price} {trade.quantity} {buy.id} {engine.traders[buy.trader].name} {sell.id} {engine.traders[sell.trader].name}"
+void execute_order(Engine &engine, int index)
+    while engine.orders[index].remaining > 0
+        Order incoming = engine.orders[index]
+        int opposite = best(engine, not incoming.sell)
+        if opposite < 0 or not matchable(incoming.sell, incoming.price, engine.orders[opposite].price)
+            break
+        Order maker_order = engine.orders[opposite]
+        if incoming.trader == maker_order.trader
+            emit(&engine, "STP {maker_order.id} {maker_order.remaining}")
+            history(&engine, opposite, "STP {maker_order.remaining}")
+            engine.orders[opposite].remaining = 0
+            engine.orders[opposite].visible = 0
+            engine.orders[opposite].status = "CANCELLED"
+            continue
+        int quantity = minimum(incoming.remaining, maker_order.visible)
+        int price = maker_order.price
+        int buy = if incoming.sell then opposite else index
+        int sell = if incoming.sell then index else opposite
+        int buy_fee = quantity * (if buy == index then engine.taker else engine.maker)
+        int sell_fee = quantity * (if sell == index then engine.taker else engine.maker)
+        engine.trades = engine.trades.append(Trade(price, quantity, buy, sell, index, buy_fee, sell_fee))
+        int number = int(len(engine.trades))
+        for int affected = [index, opposite][]
+            engine.orders[affected].remaining -= quantity
+            engine.orders[affected].filled += quantity
+            engine.orders[affected].value += quantity * price
+            history(&engine, affected, "FILL {number} {price} {quantity}")
+        engine.orders[opposite].visible -= quantity
+        int buyer = engine.orders[buy].trader
+        int seller = engine.orders[sell].trader
+        engine.traders[buyer].bought += quantity
+        engine.traders[buyer].cash -= quantity * price + buy_fee
+        engine.traders[buyer].fees += buy_fee
+        engine.traders[seller].sold += quantity
+        engine.traders[seller].cash += quantity * price - sell_fee
+        engine.traders[seller].fees += sell_fee
+        emit(&engine, trade_line(engine, number - 1))
+        if engine.orders[opposite].remaining == 0
+            engine.orders[opposite].status = "FILLED"
+        else
+            engine.orders[opposite].status = "PARTIAL"
+            if engine.orders[opposite].visible == 0
+                engine.priority += 1
+                engine.orders[opposite].priority = engine.priority
+                int visible = minimum(maker_order.peak, engine.orders[opposite].remaining)
+                int hidden = engine.orders[opposite].remaining - visible
+                engine.orders[opposite].visible = visible
+                history(&engine, opposite, "REFRESH {visible} {hidden}")
+                emit(&engine, "REFRESH {maker_order.id} {visible} {hidden}")
+void finish(Engine &engine, int index, bool stay)
+    if engine.orders[index].remaining == 0
+        engine.orders[index].status = "FILLED"
+    elif stay
+        engine.priority += 1
+        engine.orders[index].priority = engine.priority
+        Order order = engine.orders[index]
+        int visible = if order.kind == "ICEBERG" then minimum(order.peak, order.remaining) else order.remaining
+        engine.orders[index].visible = visible
+        engine.orders[index].status = if order.filled > 0 then "PARTIAL" else "OPEN"
+        history(&engine, index, "REST {order.price} {visible}")
+    else
+        history(&engine, index, "EXPIRE {engine.orders[index].remaining}")
+        engine.orders[index].remaining = 0
+        engine.orders[index].visible = 0
+        engine.orders[index].status = "CANCELLED"
+    order_line(&engine, index)
+void triggers(Engine &engine)
+    while len(engine.trades) > 0
+        int[] selected = []
+        int price = last(engine)
+        for nat index < len(engine.orders)
+            Order order = engine.orders[index]
+            if order.status == "PENDING" and (if order.sell then price <= order.trigger else price >= order.trigger)
+                selected = selected.append(int(index))
+        if len(selected) == 0
+            break
+        for int index = selected[]
+            engine.orders[index].status = "CANCELLED"
+        for int index = selected[]
+            emit(&engine, "TRIGGER {engine.orders[index].id}")
+            history(&engine, index, "TRIGGER")
+            execute_order(&engine, index)
+            finish(&engine, index, engine.orders[index].kind == "STOPLIMIT")
+void cancel(Engine &engine, int index)
+    history(&engine, index, "CANCEL {engine.orders[index].remaining}")
+    engine.orders[index].remaining = 0
+    engine.orders[index].visible = 0
+    engine.orders[index].status = "CANCELLED"
+    order_line(&engine, index)
+Level[] levels(const Engine engine, bool sell)
+    int[] prices = []
+    for Order order = engine.orders[]
+        if resting(order) and order.sell == sell
+            bool found = false
+            for int price = prices[]
+                if price == order.price
+                    found = true
+            if not found
+                prices = prices.append(order.price)
+    Level[] result = []
+    for int price = prices.sorted()[]
+        Level level = Level(price)
+        for Order order = engine.orders[]
+            if resting(order) and order.sell == sell and order.price == price
+                level.visible += order.visible
+                level.count += 1
+        result = result.append(level)
+    return result
+void | error new_order(Engine &engine, const string[] words)
+    string kind = words[0]
+    string id = words[1]
+    bool sell = words[3] == "SELL"
+    int trader = trader_at(engine, words[2])
+    int price = -1
+    int trigger = 0
+    int quantity = 0
+    int peak = 0
+    string condition = ""
+    if kind == "LIMIT" or kind == "ICEBERG"
+        price = int.parse(words[4])
+        quantity = int.parse(words[5])
+        if kind == "ICEBERG"
+            peak = int.parse(words[6])
+        elif len(words) == 7
+            condition = words[6]
+    elif kind == "MARKET"
+        quantity = int.parse(words[4])
+    else
+        trigger = int.parse(words[4])
+        if kind == "STOP"
+            quantity = int.parse(words[5])
+        else
+            price = int.parse(words[5])
+            quantity = int.parse(words[6])
+    if engine.halted
+        return error("halted")
+    if order_at(engine, id) >= 0
+        return error("duplicate id")
+    bool stop = kind == "STOP" or kind == "STOPLIMIT"
+    if price == 0 or (stop and trigger == 0)
+        return error("invalid price")
+    if quantity == 0
+        return error("invalid quantity")
+    if (price >= 0 and price % engine.tick != 0) or (stop and trigger % engine.tick != 0)
+        return error("invalid tick")
+    if quantity % engine.lot != 0
+        return error("invalid lot")
+    if kind == "ICEBERG" and (peak == 0 or peak > quantity or peak % engine.lot != 0)
+        return error("invalid peak")
+    if stop and len(engine.trades) > 0 and (if sell then trigger >= last(engine) else trigger <= last(engine))
+        return error("invalid trigger")
+    if price >= 0 and outside(engine, price)
+        return error("outside band")
+    if risk(engine, trader, sell, quantity)
+        return error("risk limit")
+    int opposite = best(engine, not sell)
+    if condition == "POSTONLY" and opposite >= 0 and matchable(sell, price, engine.orders[opposite].price)
+        return error("would cross")
+    if condition == "FOK"
+        int available = 0
+        for Order order = engine.orders[]
+            if resting(order) and order.sell != sell and order.trader != trader and matchable(sell, price, order.price)
+                available += order.remaining
+        if available < quantity
+            return error("unfillable")
+    trader = register_trader(&engine, words[2])
+    int index = int(len(engine.orders))
+    engine.orders = engine.orders.append(Order(id, trader, kind, sell, price, trigger, peak, quantity, condition))
+    if stop
+        order_line(&engine, index)
+    else
+        if condition != "POSTONLY"
+            execute_order(&engine, index)
+        finish(&engine, index, kind == "ICEBERG" or (kind == "LIMIT" and condition != "IOC"))
+        triggers(&engine)
+void | error execute(Engine &engine, const string[] words)
+    string command = words[0]
+    if one_of("LIMIT MARKET STOP STOPLIMIT ICEBERG", command)
+        try new_order(&engine, words)
+        return
+    if command == "CANCEL" or command == "REPLACE"
+        bool replace = command == "REPLACE"
+        if replace and engine.halted
+            return error("halted")
+        int index = order_at(engine, words[1])
+        if index < 0
+            return error("unknown order")
+        Order order = engine.orders[index]
+        if (replace and not resting(order)) or (not replace and not active(order))
+            return error("not open")
+        if not replace
+            cancel(&engine, index)
+            return
+        int price = int.parse(words[2])
+        int quantity = int.parse(words[3])
+        if price == 0
+            return error("invalid price")
+        if quantity == 0
+            return error("invalid quantity")
+        if price != order.price and price % engine.tick != 0
+            return error("invalid tick")
+        if quantity % engine.lot != 0
+            return error("invalid lot")
+        if price == order.price and quantity == order.remaining
+            return error("no change")
+        if price != order.price and outside(engine, price)
+            return error("outside band")
+        if quantity > order.remaining and risk(engine, order.trader, order.sell, quantity, index)
+            return error("risk limit")
+        bool kept = price == order.price and quantity < order.remaining
+        string mode = if kept then "kept" else "lost"
+        engine.orders[index].quantity = order.filled + quantity
+        engine.orders[index].remaining = quantity
+        history(&engine, index, "REPLACE {price} {quantity} {mode}")
+        emit(&engine, "REPLACE {order.id} {mode}")
+        if kept
+            engine.orders[index].visible = minimum(order.visible, quantity)
+            order_line(&engine, index)
+        else
+            engine.orders[index].status = "CANCELLED"
+            engine.orders[index].price = price
+            execute_order(&engine, index)
+            finish(&engine, index, true)
+            triggers(&engine)
+        return
+    if command == "HALT" or command == "RESUME"
+        bool halted = command == "HALT"
+        if engine.halted == halted
+            return error(if halted then "already halted" else "not halted")
+        engine.halted = halted
+        emit(&engine, command)
+        return
+    if command == "RISK"
+        int trader = register_trader(&engine, words[1])
+        int limit = int.parse(words[2])
+        engine.traders[trader].limit = limit
+        emit(&engine, "RISK {words[1]} {limit} exposure buy {exposure(engine, trader, false)} sell {exposure(engine, trader, true)}")
+        return
+    if command == "FEE"
+        int maker = int.parse(words[1])
+        int taker = int.parse(words[2])
+        if maker + taker < 0
+            return error("invalid fee")
+        engine.maker = maker
+        engine.taker = taker
+        emit(&engine, "FEE maker {maker} taker {taker}")
+        return
+    if one_of("BAND TICK LOT", command)
+        int value = int.parse(words[1])
+        if command != "BAND" and value == 0
+            return error("invalid size")
+        if command == "BAND"
+            engine.band = value
+        elif command == "TICK"
+            engine.tick = value
+        else
+            engine.lot = value
+        emit(&engine, "{command} {value}")
+        return
+    if one_of("CANCELALL ORDERS POSITION FILLS", command)
+        int trader = trader_at(engine, words[1])
+        if trader < 0
+            return error("unknown trader")
+        if command == "POSITION"
+            emit(&engine, position(engine, trader))
+        elif command == "FILLS"
+            string[] lines = []
+            int cumulative = 0
+            for nat index < len(engine.trades)
+                Trade trade = engine.trades[index]
+                bool buy = engine.orders[trade.buy].trader == trader
+                int own = if buy then trade.buy else trade.sell
+                if engine.orders[own].trader != trader
+                    continue
+                cumulative += if buy then trade.quantity else -trade.quantity
+                string side = if buy then "BUY" else "SELL"
+                string role = if own == trade.taker then "TAKER" else "MAKER"
+                int fee = if buy then trade.buy_fee else trade.sell_fee
+                lines = lines.append("{index + 1} {side} {trade.price} {trade.quantity} {engine.orders[own].id} {role} fee {fee} net {cumulative}")
+            emit(&engine, "FILLS {words[1]} {len(lines)}")
+            engine.output = engine.output.concat(lines)
+        else
+            int[] selected = []
+            for nat index < len(engine.orders)
+                if active(engine.orders[index]) and engine.orders[index].trader == trader
+                    selected = selected.append(int(index))
+            emit(&engine, "{command} {words[1]} {len(selected)}")
+            for int index = selected[]
+                if command == "CANCELALL"
+                    cancel(&engine, index)
+                else
+                    emit(&engine, details(engine, index))
+        return
+    if command == "STATUS" or command == "HISTORY"
+        int index = order_at(engine, words[1])
+        if index < 0
+            return error("unknown order")
+        if command == "STATUS"
+            emit(&engine, "STATUS " + details(engine, index))
+        else
+            emit(&engine, "HISTORY {words[1]} {len(engine.orders[index].history)}")
+            engine.output = engine.output.concat(engine.orders[index].history)
+        return
+    if command == "BOOK"
+        int depth = int.parse(words[1])
+        if depth == 0
+            return error("invalid depth")
+        Level[] bids = levels(engine, false)
+        Level[] asks = levels(engine, true)
+        emit(&engine, "BOOK bids {len(bids)} asks {len(asks)}")
+        int count = minimum(depth, int(len(asks)))
+        for int offset < count
+            Level level = asks[count - offset - 1]
+            emit(&engine, "ASK {level.price} {level.visible} {level.count}")
+        for int offset < minimum(depth, int(len(bids)))
+            Level level = bids[int(len(bids)) - offset - 1]
+            emit(&engine, "BID {level.price} {level.visible} {level.count}")
+        return
+    if command == "IMPACT"
+        bool sell = words[1] == "SELL"
+        int quantity = int.parse(words[2])
+        if quantity == 0
+            return error("invalid quantity")
+        Level[] book = levels(engine, not sell)
+        int remainder = quantity
+        int cost = 0
+        int total = 0
+        int worst = 0
+        int used = 0
+        for nat offset < len(book)
+            Level level = book[if sell then len(book) - offset - 1 else offset]
+            total += level.visible
+            if remainder > 0
+                int taken = minimum(remainder, level.visible)
+                remainder -= taken
+                cost += taken * level.price
+                worst = level.price
+                used += 1
+        if remainder > 0
+            emit(&engine, "IMPACT {words[1]} {quantity} insufficient {total}")
+        else
+            emit(&engine, "IMPACT {words[1]} {quantity} avg {decimal(cost * 100 / quantity)} worst {worst} levels {used}")
+        return
+    int count = int(len(engine.trades))
+    if command == "LAST"
+        emit(&engine, if count == 0 then "LAST none" else "LAST {last(engine)} {engine.trades[count - 1].quantity}")
+        return
+    if command == "SPREAD"
+        int buy = best(engine, false)
+        int sell = best(engine, true)
+        string result = "SPREAD bid " + (if buy < 0 then "none" else engine.orders[buy].price.string()) + " ask " + (if sell < 0 then "none" else engine.orders[sell].price.string())
+        if buy >= 0 and sell >= 0
+            int bid = engine.orders[buy].price
+            int ask = engine.orders[sell].price
+            result += " spread {ask - bid} mid {(ask + bid) / 2}." + (if (ask + bid) % 2 == 0 then "0" else "5")
+        emit(&engine, result)
+        return
+    if command == "TRADES" or command == "BARS"
+        int size = int.parse(words[1])
+        if size == 0
+            return error("invalid count")
+        if command == "TRADES"
+            int shown = minimum(size, count)
+            emit(&engine, "TRADES {shown} of {count}")
+            for count - shown <= int index < count
+                emit(&engine, trade_line(engine, index))
+        else
+            emit(&engine, "BARS {(count + size - 1) / size}")
+            int start = 0
+            int number = 1
+            while start < count
+                int end = minimum(start + size, count)
+                int high = 0
+                int low = engine.trades[start].price
+                int volume = 0
+                for start <= int index < end
+                    Trade trade = engine.trades[index]
+                    if trade.price > high
+                        high = trade.price
+                    low = minimum(low, trade.price)
+                    volume += trade.quantity
+                emit(&engine, "{number} open {engine.trades[start].price} high {high} low {low} close {engine.trades[end - 1].price} volume {volume}")
+                number += 1
+                start = end
+        return
+    if command == "FLOW"
+        int buy = 0
+        int sell = 0
+        for Trade trade = engine.trades[]
+            if engine.orders[trade.taker].sell
+                sell += trade.quantity
+            else
+                buy += trade.quantity
+        emit(&engine, "FLOW buy {buy} sell {sell} net {buy - sell}")
+        return
+    if command == "VWAP" or command == "SUMMARY"
+        int volume = 0
+        int cost = 0
+        int fees = 0
+        int high = 0
+        int low = if count == 0 then 0 else engine.trades[0].price
+        for Trade trade = engine.trades[]
+            volume += trade.quantity
+            cost += trade.price * trade.quantity
+            fees += trade.buy_fee + trade.sell_fee
+            low = minimum(low, trade.price)
+            if trade.price > high
+                high = trade.price
+        if command == "VWAP"
+            emit(&engine, if count == 0 then "VWAP none" else "VWAP {decimal(cost * 100 / volume)} volume {volume} trades {count}")
+            return
+        emit(&engine, if count == 0 then "SUMMARY trades 0" else "SUMMARY trades {count} volume {volume} open {engine.trades[0].price} high {high} low {low} close {last(engine)} fees {fees}")
+    bool ranked = command == "RANK"
+    int[] indices = []
+    for nat index < len(engine.traders)
+        indices = indices.append(int(index))
+    for nat left < len(indices)
+        for left + 1 <= nat right < len(indices)
+            int a = indices[left]
+            int b = indices[right]
+            int av = engine.traders[a].bought + engine.traders[a].sold
+            int bv = engine.traders[b].bought + engine.traders[b].sold
+            bool before = engine.traders[b].name < engine.traders[a].name
+            if ranked
+                before = pnl(engine, b) > pnl(engine, a) or (pnl(engine, b) == pnl(engine, a) and (bv > av or (bv == av and before)))
+            if before
+                indices[left] = b
+                indices[right] = a
+    if ranked
+        emit(&engine, "RANK {len(indices)}")
+    for nat rank < len(indices)
+        int index = indices[rank]
+        if ranked
+            emit(&engine, "{rank + 1} {engine.traders[index].name} pnl {pnl(engine, index)} volume {engine.traders[index].bought + engine.traders[index].sold}")
+        else
+            emit(&engine, position(engine, index))
+Engine engine = Engine()
+int count
+scan(&count)
+for int command_index < count
+    string line
+    scan(&line)
+    string[] words = line.split(" ")
+    engine.output = []
+    match execute(&engine, words)
+        void
+            void
+        error problem
+            string prefix = if one_of("LIMIT MARKET STOP STOPLIMIT ICEBERG CANCEL REPLACE", words[0]) then "REJECT {words[1]} " else "ERROR "
+            emit(&engine, prefix + problem.message)
+    print(engine.output.join(NL) + NL)

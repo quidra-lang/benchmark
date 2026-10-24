@@ -1,0 +1,288 @@
+[Overview]
+Write a program that reads INI-style configuration files and validates and normalizes them according to a schema. There are three kinds of input: a list of profiles (the manifest), a collection of configuration documents, and a schema. For each profile, the program starts from the root document, applies the documents pulled in by @include depth-first, and then performs, in this order: the manifest overrides, section inheritance, replacement of deprecated aliases, filling in defaults, expansion of ${...} references, type checking and normalization, and checks of constraints between keys.
+As a result, it writes four files to output/: the normalized configuration of each profile, the list of diagnostics (errors and warnings), the differences between profiles that are adjacent in the manifest, and a report summarizing the include tree, the definition histories and more. Nothing is printed to standard output.
+Every integer that appears in the computation has an absolute value less than 2^53, and no real numbers are used.
+
+[Input files]
+All input is under input/. Every file consists only of printable ASCII characters (0x20-0x7E) and line feeds (LF), and every line ends with a line feed (there are no tabs or CRs). Below, "space" means the ASCII space character.
+Names are defined as follows. A "name" is a string consisting of one lowercase letter followed by zero or more lowercase letters, digits or "_" (e.g. server, max_body, tls2). A "section name" is one or more names joined with "." (e.g. server, server.tls), and a "full key name" is a section name, ".", and a key name (a name), concatenated in this order (e.g. server.tls.cert). In a full key name, the part before the last "." is the section name and the part after it is the key name.
+
+* input/manifest.txt (manifest)
+Each line describes one profile in the form "<profile name> <root document name>". It may be followed by zero or more overrides of the form " <full key name>=<value>". Every separator is a single space. The profile name and the root document name are names. The value of an override is the string after the first "=", may be empty, and contains no spaces and no double quotes ("). Profiles are processed in the order in which they are written in this file (hereafter "manifest order").
+
+* input/conf/<document name>.ini (configuration documents)
+A document name is a name, and the content of that document is the file input/conf/<document name>.ini. A document for which this file does not exist is called a "missing document" (the root document always exists). Every document is interpreted the same way no matter how many times it is applied.
+
+(Physical lines and logical lines)
+Each line obtained by splitting the file at line feeds is called a physical line, and the physical lines are numbered 1, 2, ... from the top. Physical lines are combined into logical lines by the following procedure. A logical line starts at the beginning of a physical line, and the line number of that physical line is the line number of the logical line. The characters of the logical line are read one at a time from left to right, starting in the "outside quotes" state.
+1. When "\" is the last character of its physical line, it is a line continuation (except for a "\" that is read as the second character of an escape in rule 3 below). This "\" is discarded, and reading continues with the next physical line with all of its leading spaces removed. The state carries over unchanged. The last physical line of a file never ends this way.
+2. Outside quotes, a double quote (") starts a quoted string and switches the state to inside quotes. ";" or "#" starts a comment: the rest of that physical line is ignored and the logical line ends there (a "\" at the end of a comment is not a continuation). Every other character, including "\", is taken as itself.
+3. Inside quotes, a double quote (") ends the quoted string and switches the state back to outside quotes. "\" and the character after it are read as a two-character pair (an escape). "\\" stands for "\", "\"" for a double quote ("), "\n" for a newline character, "\t" for a tab character, and "\$" for a "$" that does not start a reference (hereafter a "literal $"). Any other pair is an invalid escape, and those two characters stand for nothing. Every other character, including ";" and "#", is taken as itself.
+4. When the end of a physical line is reached without a continuation, the logical line ends. If the state is inside quotes at that point, the quoted string is unterminated.
+A logical line that contains an invalid escape or an unterminated quoted string is read up to its end and then discarded entirely, and only the first error (the one encountered first when reading from left to right) is reported. For an invalid escape this is E_ESCAPE "invalid escape sequence \<the character after the "\">", and for an unterminated quoted string it is E_UNTERMINATED "unterminated string".
+
+(Interpreting logical lines)
+A logical line without errors is an alternating sequence of strings outside quotes and quoted strings (whose content is the string with the escapes resolved). Let T be this sequence with its leading spaces and trailing spaces (both outside quotes) removed, and interpret it as follows.
+1. Blank line: if T contains no quoted string and is empty, nothing is done.
+2. Section header: the case where the first character of T is "[" (outside quotes). A correct header is one where T contains no quoted string, ends with "]", and satisfies the following conditions. Let I be T without its first "[" and its last "]". If I contains ":", let N be the part before the first ":" and P the part after it; otherwise N is the whole of I and there is no P. N and P are each taken with their leading and trailing spaces removed. If P exists, P must be a section name. N must be either a section name (an absolute header) or "." followed by a section name (a relative header).
+  - For a correct absolute header, the current section and the base section are both set to N.
+  - For a correct relative header, if there is a base section, the current section is set to the base section followed by N (e.g. if the base section is server and N is .tls, it becomes server.tls). If there is no base section, it is E_SECTION "relative section without base".
+  - Otherwise it is E_SECTION "invalid section header".
+  After a header with an error, the current section becomes "none" (the base section does not change). At the start of each document, both the current section and the base section are "none". A correct header with P, after setting the current section, becomes an inheritance declaration statement saying "the current section inherits from P".
+3. Directive: the case where the first character of T is "@" (outside quotes). A correct directive is one where T contains no quoted string, splitting T at runs of one or more spaces gives exactly two words, the first word is "@include" or "@unset", and the second word is a name. Otherwise it is E_SYNTAX "invalid directive". "@include <document name>" is an include statement for that document (the current section may be "none"). "@unset <key name>" is E_NO_SECTION "no current section" if the current section is "none"; otherwise it is an unset statement for the full key name "<current section>.<key name>".
+4. Assignment: a line that matches none of the above. Find the first "=" outside quotes.
+  - If there is no such "=", it is E_SYNTAX "invalid line".
+  - If there is a quoted string before that "=", it is E_SYNTAX "invalid key".
+  - Let K be the string before the "=" with its leading and trailing spaces removed. If K ends with "+", it is an append assignment: that "+" is removed, and then trailing spaces are removed as well. If K does not end with "+", it is a normal assignment. If K is not a name, it is E_SYNTAX "invalid key".
+  - Take the part after the "=" (including quoted strings) with its leading and trailing spaces removed. If it contains no quoted string, that string (which may be empty) is the value; if it consists of exactly one quoted string and nothing else (there are no characters outside quotes before or after it), the content of that quoted string is the value. Otherwise it is E_SYNTAX "invalid value".
+  - If there has been no error so far and the current section is "none", it is E_NO_SECTION "no current section".
+  - If there is no error, it becomes an assignment or append assignment statement for the full key name "<current section>.<K>".
+  For a normal assignment statement, if the same document contains an earlier normal assignment statement for the same full key name, report W_DUPLICATE "<full key name> already set at line <n>" (n is the line number of the last such earlier statement). Append assignment statements are neither subject to this check nor candidates for n. This check depends only on the sequence of statements in the document and is not affected by includes or unsets. The reported statement still takes effect.
+A "$" in a value that is not a literal $ may start a reference, described later. A "\" outside quotes is an ordinary character.
+The diagnostics above (E_ESCAPE, E_UNTERMINATED, E_SECTION, E_SYNTAX, E_NO_SECTION, W_DUPLICATE) arise from interpreting a document, and their origin is that document name and the line number of the logical line.
+
+* input/schema.txt (schema)
+Blank lines and lines starting with "#" are ignored (they still count for line numbers). Every other line is one spec, consisting of words separated by single spaces. The first word is the key pattern, the second word is the type, and the third and later words are attributes.
+A key pattern has the form "<section pattern>.<key name>", where a section pattern is one or more items, each a name or "*", joined with ".". A spec containing "*" is called a wildcard spec. A section pattern matches a section name S when both have the same number of "."-separated parts and every position is either "*" or the same name.
+The type is one of string, int, bool, enum, size, duration, host, path, url, date, list. The attributes are as follows; their order has no meaning.
+- required: the key is required.
+- secret: the key is secret. Its value is hidden in the output.
+- unique: duplicate items are removed (appears only on list).
+- fixed: the value must be the same in every profile.
+- default=<value>: the default value. It may be empty and contains no spaces. It may contain ${...} references.
+- range=<lower>..<upper>: the range of the value. Either bound may be omitted, and an omitted bound means no limit. For int, size, duration and date the bounds are written in the value syntax of that type (e.g. range=1KB..2GB, range=1s..10m); for string and list they are written as non-negative decimal integers.
+- values=<value>,<value>,...: the list of values of an enum (or of a list whose item type is enum).
+- item=<type>: the item type of a list; any type other than list. If omitted, it is string.
+- alias=<full key name>,...: the list of deprecated aliases.
+- when=<key name>: used together with required; the key is required only when the key <key name> (a bool) in the same section has a true value.
+- le=<key name>: the value must be less than or equal to the value of the key <key name> in the same section.
+The "spec" of a full key name K is determined as follows. If there is a non-wildcard spec whose key pattern equals K, it is that spec. Otherwise, it is the earliest spec in the file among the wildcard specs whose key name equals the key name of K and whose section pattern matches the section name of K. If neither exists, K is a "key not in the schema".
+The "target keys" of a spec X are defined as follows. If X is not a wildcard spec, there is exactly one: the key pattern of X itself. If X is a wildcard spec, then for each section S of the instance section set (defined in step 5 of [Processing]) that matches the section pattern of X, form the full key name "<S>.<key name of X>"; the target keys are all of these whose spec is X.
+
+[Processing]
+* Key order
+The order between full key names (hereafter "key order") is determined by comparing first the section names and, if they are equal, the key names, in ascending order of character code (ASCII). Strings are compared character by character from the start, and when one is a prefix of the other, the shorter one comes first (e.g. the order is server, server.tls, server_x, upstream.a). Hereafter, whenever strings are sorted in "ascending order", this comparison is used.
+
+* Configuration and definitions
+For each profile, start from an empty "configuration" and perform steps 1 to 10 below in order (the recorded inheritance declarations, the include tree and the diagnostics also start empty for each profile). A configuration maps full key names to "definitions", and a definition consists of a value (a string, including the distinction of which "$" characters are literal $), an origin, a definition number and a history. An origin is a string of the form "<document name>:<line number>"; for a manifest override the document name is manifest and the line number is the line number in the manifest, and for a default value the document name is schema and the line number is the line number in the schema.
+"Define key K with value v and origin o" means: increase the definition number (which starts at 0 for each profile) by 1, and replace the definition of K (or add it if K does not exist) with a new definition consisting of value v, origin o, that definition number and history h. The history h is a sequence of origins: o appended to the end of the history of K's definition if K is in the configuration, or to an empty sequence otherwise. However, if the last element of the original history equals o, o is not appended.
+
+* 1. Applying documents
+Apply the root document with the include chain (the sequence of names of the documents being applied) set to [<root document name>]. Applying a document D means: first add a line "D" to the include tree (its depth is the length of the chain - 1), report all diagnostics that arose from interpreting D, and then execute the statements of D in order from the top. Below, the origin of a diagnostic arising from a statement is D and the line number of that statement.
+- Assignment: define the key with the value and origin "D:<line number>".
+- Append assignment: if the key is in the configuration and its value is not empty, the value is the existing value, ",", and the new value concatenated in this order (keeping the literal $ distinction as is); otherwise the value is the new value. Define the key with it in the same way as for an assignment.
+- Unset: if the key is in the configuration, remove its definition from the configuration. Otherwise it is W_UNSET "<full key name> is not set".
+- Inheritance declaration: record P as the parent of section S, with "D:<line number>" as the origin of the declaration. If S already has a record, replace it.
+- Include "@include X": if X is in the chain, report E_INCLUDE_CYCLE "include cycle <path>" and add a line "X (cycle)" to the include tree. The path is the document names of the chain from the position of X to the end, followed by X, joined with " -> " (e.g. if the chain is [test, ci] and X is test, it is test -> ci -> test). If X is a missing document, report E_INCLUDE_MISSING "missing document X" and add a line "X (missing)" to the include tree. Otherwise, append X to the end of the chain, apply X, and restore the chain when that is done. The depth of the lines added to the tree by this include (including the line "X" added by applying X) is the length of the chain at the moment the include is executed.
+Even when the same document is applied many times (for example when it is included from several documents), it is executed the same way each time.
+
+* 2. Overrides
+For the overrides on this profile's line in the manifest, in the order written, define the key with the value and origin "manifest:<line number in the manifest>". A "$" in an override value is not a literal $.
+
+* 3. Section inheritance
+Make a copy of the configuration at this point, and let the "own keys" of a section S be the keys in the copy whose section name is S. For each section S that has a recorded inheritance declaration (the order of processing does not affect the result), do the following.
+Starting from S and following parents, build the sequence S, P1 (the parent of S), P2 (the parent of P1), ..., until the last section has no recorded parent or the parent of the last section is already in the sequence.
+- If the last section has a recorded parent (there is a cycle), report E_INHERIT_CYCLE "inheritance cycle <path>" with the origin of S's inheritance declaration, and S inherits nothing. The path is the sequence followed by the parent of the last section, joined with " -> " (e.g. if the parent of a is b and the parent of b is a, the path for S = a is a -> b -> a).
+- Otherwise, first, if P1 has no recorded parent and P1 has no own keys at all, report W_PARENT_EMPTY "section <S> inherits from empty section <P1>" with the origin of S's inheritance declaration. Then, for P1, P2, ... in this order, for each of its own keys, if S does not yet have a key with the same key name, copy that key's definition (value, origin, definition number, history) unchanged and add it to the configuration as a key of S.
+
+* 4. Resolving aliases
+For each spec X with an alias attribute, the candidates are those of X's canonical name (its key pattern) and X's aliases that are in the configuration, ordered with the canonical name first and then the aliases (in the order written in the alias attribute). If the candidates contain no alias, nothing is done. Otherwise, the winner is the candidate with the largest definition number (if several are tied, the earliest in candidate order); report W_DEPRECATED "<alias> is deprecated, use <canonical name>" for each alias among the candidates, and W_SHADOWED "<candidate> is superseded by <winner> at <origin of the winner>" for each candidate other than the winner, each with the origin of that candidate. Then set the definition of the canonical name to the winner's definition (value, origin, definition number, history), and remove all aliases from the configuration.
+
+* 5. Filling in defaults
+The set of section names of the keys in the configuration at this point is the "instance section set". For each spec with a default attribute, define each of its target keys that is not in the configuration with the default value and origin "schema:<line number of the spec>". A "$" in a default value is not a literal $.
+
+* 6. Expanding references
+Expand the values of all keys in the configuration in key order. The result of an expansion is either a string or "failure". The expansion of a key K is as follows. If K has already been expanded, its result is used as is.
+Read the value from left to right; a reference starts where a "$" that is not a literal $ is immediately followed by "{". Every other character is appended to the result as is (a literal $ is appended as an ordinary "$"). At the start of a reference, let R be the part after "${" up to the first "}" that appears after it.
+- If there is no "}", or R is not in the form of a section name (one or more names joined with "."), it is E_BAD_REF "<K>: invalid reference".
+- If R does not contain ".", the referenced key T is "<section name of K>.<R>"; if it does, T is R. If T is not in the configuration, it is E_UNDEFINED "<K>: undefined reference <T>".
+- Otherwise expand T (during which the expansion of further keys may start); if the result is a string, append it to K's result and continue reading after the "}". The appended string is not scanned again.
+The sequence of keys whose expansion has started but not yet finished (in the order in which their expansion started) is the in-progress sequence. Referencing a key T that is in the in-progress sequence is a cycle. Form the path consisting of the part of the in-progress sequence from T to the end (the end is K) followed by T, joined with " -> ", report E_CYCLE "interpolation cycle <path>" with the origin of T, and make every key on the path a "cycle key". In this case the reference to T fails.
+If the result of T is failure or a cycle was detected, it is a reference failure. If K is not a cycle key, report E_DEPENDENCY "<K>: depends on failed key <T>".
+When any of E_BAD_REF, E_UNDEFINED or a reference failure occurs, the result of K is failure at that point and the rest of the value is not examined. The origin of E_BAD_REF, E_UNDEFINED and E_DEPENDENCY reported in step 6 is the origin of K (only E_CYCLE uses the origin of T, as described above).
+
+* 7. Type checking and normalization
+Examine the keys whose expansion result is a string one at a time in key order (keys that failed are not output). Hereafter, the keys thus decided to be output are called "output keys".
+For a key not in the schema, report W_UNKNOWN "<K> is not in the schema" and make it an output key whose value is the expansion result as is, as a string value. For a key with a spec, let v be the expansion result and apply the "type rules" below and the range check; if there is an error, report that one error and do not output the key. If there is no error, make it an output key with the normalized value. The origin of every diagnostic reported in step 7 (including those reported under the "type rules" below) is the origin of K.
+When the value is invalid under the type rules: if the type is enum (including an item of a list whose item type is enum), it is E_ENUM "<K>: <display> is not one of <the entries of values joined with ",">"; otherwise it is E_TYPE "<K>: <display> is not a valid <type name>". <display> is the checked string (the whole value, or the invalid item) written in string notation (see "Value notation" below), prefixed with "item " for a list item. <type name> is the name of the checked type (for a list item, the item type).
+If the value is valid under the type rules and there is a range attribute, check the range. If the value (for int, size, duration), the value's string (for date; compared in ascending string order), the number of characters (for string; a newline character or tab character also counts as one character) or the number of items (for list) is not both >= the lower bound and <= the upper bound, it is E_RANGE "<K>: <display> is out of range <lower>..<upper>". <display> is the value notation for int, size, duration and date, "length <number of characters>" for string, and "count <number of items>" for list. The lower and upper bounds are written in value notation (decimal for int, size and duration, the date string for date, decimal for string and list), and an omitted bound is written as nothing (e.g. ..86400, 1..).
+For a secret key, the string-notation part of <display> (including the part after "item ") and, for E_RANGE, the value notation of an int, size, duration or date value are replaced by eight "*" characters, "********" ("length <number of characters>" and "count <number of items>" are not replaced).
+
+* Type rules
+Let v be the string being checked. "Case-insensitive" means comparing with uppercase and lowercase letters treated as equal. Numbers are read in decimal.
+- string: any string is valid, and the value is v.
+- int: v is zero or one sign "+" or "-" at the start, followed by either (a) or (b). (a) "0x" or "0X" followed by 1 to 10 hexadecimal digits (0-9, a-f, A-F). (b) A sequence of decimal digits in which a single "_" may be placed between two digits (a leading, trailing or consecutive "_" is not allowed). Excluding "_", there are 1 to 12 digits (leading zeros count). The value is that number with the sign applied.
+- bool: true if it matches one of true, yes, on, 1 case-insensitively, false if it matches one of false, no, off, 0 case-insensitively.
+- enum: if it matches one of the entries of values case-insensitively, the value is that entry of values (spelled as written in the schema).
+- size: v is a number part immediately followed by zero or one unit (with nothing, such as spaces, in between). The number part is either just an integer part I of 1 to 6 decimal digits, or I, ".", and a fractional part F of 1 to 3 decimal digits in this order. The unit is one of B, KB, MB, GB (case-insensitive), and the factor f is 1, 1024, 1048576, 1073741824 respectively (f = 1 if there is no unit). Without a fractional part the value is I*f. With a fractional part, let F' be F read as an integer and d the number of digits of F; if F'*f is not divisible by 10^d it is invalid, otherwise the value is I*f + (F'*f)/10^d (e.g. 1.5MB is 1572864, 0.05KB is invalid, 1.3KB is invalid). The value is in bytes.
+- duration: if v consists only of 1 to 6 decimal digits, that number is the value. Otherwise v must consist of one or more of the three kinds of parts "<number>h", "<number>m", "<number>s", each at most once, in this order, with no gaps. <number> is 1 to 6 decimal digits, and the unit letters are lowercase only. The value is (the h number)*3600 + (the m number)*60 + (the s number) (e.g. 1h30m is 5400, 45 is 45, 30s1m is invalid). The value is in seconds.
+- host: if v consists only of digits and "." (including the empty string), check it as an IPv4 address: it is valid if splitting it at "." gives exactly 4 parts, each part consists of 1 to 3 decimal digits, does not start with 0 unless it is "0" itself, and has a value of at most 255; the value is v. Otherwise check it as a host name: it is valid if the length of v is at most 253 and each label separated by "." consists of 1 to 63 letters, digits or "-" and does not start or end with "-"; the value is v with uppercase letters converted to lowercase.
+- path: v must not be empty and must not contain a space, newline character or tab character. If v starts with "/" it is an absolute path, otherwise it is a relative path. Examine the parts of v split at "/" in order from the start, building a sequence of parts. Empty parts and "." are discarded. For "..": if the sequence is not empty and its last element is not "..", remove the last element of the sequence; otherwise, it is invalid for an absolute path, and for a relative path ".." is appended to the sequence. Every other part is appended to the sequence. The value is "/" followed by the sequence joined with "/" for an absolute path, or the sequence joined with "/" for a relative path ("." if the sequence is empty) (e.g. /etc/ssl/../a/./b/ is /etc/a/b, ./x/../../y is ../y, /a/../.. is invalid).
+- url: split v at the first "://" into the part before and the part after (invalid if there is no "://"). The part before (the scheme) must be non-empty, start with a letter, and consist only of letters, digits, "+", "-" and ".". If the part after, R, contains "?" or "#", it is invalid. Let the part of R before its first "/" be the authority A and the part after it the path part Q (if R contains no "/", A is the whole of R and Q is empty). If A contains ":", the part before the first ":" is the host part H and the part after it is the port part N; otherwise the whole of A is H and there is no port part. H must be valid under the host rule, and "/" followed by Q must be valid under the path rule. If there is a port part, it must be 1 to 5 decimal digits, must not start with 0, and must have a value of at most 65535. The value is the concatenation, in this order, of: the scheme with uppercase letters converted to lowercase; "://"; the host value of H; ":" and the port part, only if there is a port part and its value differs from the default port of the scheme (80 if the lowercased scheme is http, 443 if it is https; other schemes have no default port); and the path value of "/" followed by Q (e.g. HTTPS://Shop.Example.COM:443/a/../b/ is https://shop.example.com/b, http://h:8080 is http://h:8080/).
+- date: v must be 10 characters of the form "<4-digit year>-<2-digit month>-<2-digit day>" (year, month and day are decimal digits), with the year at least 1, the month from 1 to 12, and the day from 1 to the number of days in that month. The number of days in a month is 31 for months 1, 3, 5, 7, 8, 10, 12, 30 for months 4, 6, 9, 11, and for month 2 it is 29 (if the year is divisible by 4 and not divisible by 100, or divisible by 400) or 28 (otherwise). The value is v.
+- list: if v is empty or consists only of spaces, the value is the sequence with no items. Otherwise split v at "," and the items are the parts with their leading and trailing spaces removed. If there are empty items, report W_EMPTY_ITEM "<K>: empty list item ignored" only once and discard the empty items. Check the remaining items in order from the start under the rule of the item type; if there is an invalid item, report the error for the first one (later items are not checked). If all of them are valid, there is a unique attribute, and there is a pair of items whose normalized values are equal, report W_DUPLICATE_ITEM "<K>: duplicate items removed" only once and keep only the first of the equal items. The value is the sequence of the values of the remaining items. W_EMPTY_ITEM and W_DUPLICATE_ITEM that have already been reported are not withdrawn even if the key has another error.
+
+* Value notation
+- string: a double quote ("), each character of the string converted, and a double quote ("), concatenated in this order. The conversion turns "\" into "\\", a double quote (") into "\"", a newline character into "\n" and a tab character into "\t", and leaves every other character as is.
+- int, size, duration: decimal (with a leading "-" if negative, and no extra zeros).
+- bool: "true" if true, "false" if false.
+- enum, host, path, url, date: the value string as is.
+- list: "[", the items each written in the notation of the item type and separated by ", " (a comma and one space), and "]", concatenated in this order. If there are no items, it is "[]".
+- The value of a key not in the schema is written in string notation.
+In the output files normalized.txt and diff.txt, "********" is written instead of the value notation of a secret key. Comparisons between values (deciding changes in diff.txt and the check in step 10) are done by whether the notations before this replacement are equal.
+
+* 8. Order check
+For each output key K whose spec has an le attribute, let L be "<section name of K>.<value of le>". If L is also an output key and the value of K is greater than the value of L, report E_ORDER "<K>: <value notation of K> is greater than <L> (<value notation of L>)" with the origin of K. The value notation of a key is "********" if it is a secret key. After examining every K, remove all the reported keys from the output keys at once (all comparisons use the values before any removal).
+
+* 9. Required check
+For each spec with a required attribute, for each of its target keys K (with the instance section set defined in step 5) that was not in the configuration at the end of step 5, do the following. If there is no when attribute, report E_REQUIRED "<K> is required". If there is a when attribute, let C be "<section name of K>.<value of when>", and report E_REQUIRED "<K> is required when <C> is true" only if C is an output key (at the end of step 8) and its value is true. The origin of E_REQUIRED is "<root document name>:0".
+
+* 10. Fixed-value check
+For each output key K whose spec has a fixed attribute, the reference profile is the first profile, among the profiles before this one in manifest order, that has K as an output key (in its results after this check). If there is a reference profile and the value notation of K in the reference profile differs from the value notation of K in this profile, report E_FIXED "<K>: value differs from profile <name of the reference profile>" with the origin of K, and remove K from the output keys.
+
+* Diagnostics
+A diagnostic consists of four parts: the document name of the origin, the line number of the origin, the code and the message. There are the following 26 codes; those starting with E_ are errors and those starting with W_ are warnings.
+E_ESCAPE, E_UNTERMINATED, E_SECTION, E_SYNTAX, E_NO_SECTION, E_INCLUDE_CYCLE, E_INCLUDE_MISSING, E_INHERIT_CYCLE, E_BAD_REF, E_UNDEFINED, E_CYCLE, E_DEPENDENCY, E_TYPE, E_ENUM, E_RANGE, E_ORDER, E_REQUIRED, E_FIXED, W_DUPLICATE, W_UNSET, W_PARENT_EMPTY, W_DEPRECATED, W_SHADOWED, W_UNKNOWN, W_EMPTY_ITEM, W_DUPLICATE_ITEM.
+"Report" means to add a diagnostic to the diagnostics of the profile being processed. The message is the text shown in double quotes in the description of each step, with the <...> parts replaced by values. When diagnostics identical in all four parts occur more than once in the same profile (for example when the same document is applied many times), they are treated as one.
+
+[Output files]
+Write the following four files to output/. The "output keys" below are those at the end of step 10. Every file consists only of ASCII characters, every line ends with a line feed (LF), and no line has trailing spaces. Every file consists of one block per profile (in diff.txt, per pair of profiles) in manifest order, with exactly one blank line only between blocks (there is no blank line at the start or the end of the file). Text in double quotes is written exactly as shown, and the <...> parts are replaced by values. Every separator other than indentation is a single space.
+
+* output/normalized.txt
+The first line of each profile's block is "profile <profile name>". Then the sections that have output keys follow in ascending order of section name; for each section, output a line "[<section name>]" and then the output keys of that section in ascending order of key name, one per line, in the form "<key name> = <value notation>". If there are no output keys, the block is the first line only.
+
+* output/diagnostics.txt
+The first line of each profile's block is "profile <profile name> errors <number of errors> warnings <number of warnings>". Then output the diagnostics of that profile, one per line, in the form "<document name>:<line number> <code> <message>". The order is ascending by document name, then by increasing line number, then ascending by code, then ascending by message. The counts count identical diagnostics as one.
+
+* output/diff.txt
+Output one block for each pair A, B of profiles that are adjacent in manifest order (A first) (n-1 blocks if there are n profiles). The first line is "diff <A> -> <B>: <number added> added, <number removed> removed, <number changed> changed". Then examine, in key order, the full key names that are output keys of at least one of A and B: if a key is only in B, output "+ <full key name> = <value notation in B>" (added); if only in A, output "- <full key name> = <value notation in A>" (removed); if in both and the value notations differ, output "~ <full key name>: <value notation in A> -> <value notation in B>" (changed). Keys whose value notations are equal are not output.
+
+* output/report.txt
+Each profile's block consists of the following lines.
+- "profile <profile name>"
+- "includes"
+- Each line of the include tree, in the order in which they were added, with an indentation of (2 spaces + 2*<depth> spaces).
+- "overridden"
+- The output keys whose history has length 2 or more, in key order, one per line, in the form (indent 2) "<full key name>: <history>", where <history> is the origins of the history joined with " -> ". If there is no such key, output one line (indent 2) "(none)" instead.
+- "keys <number of output keys> documents <a> manifest <b> defaults <c>": b is the number of output keys whose origin has the document name manifest, c is the number of output keys whose origin has the document name schema, and a is the number of the other output keys.
+- "dropped <d>": d is the number of keys in the configuration at the end of step 5 minus the number of output keys.
+- "errors <number of errors> warnings <number of warnings>": the same counts as in diagnostics.txt.
+(indent 2) means placing 2 spaces at the start of the line.
+
+[Source files]
+Split the source into the following six files (file names and extensions follow the conventions of each language).
+- main: handles the overall flow and the core of the processing, and holds the most logic. It reads the manifest, applies the documents for each profile (the include chain and tree, assignment, append assignment, unset, inheritance declarations), and performs the overrides, section inheritance, alias resolution, filling in defaults, invoking the expansion and handling its results, checking and normalization under all type rules, the range check, the order, required and fixed-value checks, collecting, sorting and counting the diagnostics, aggregating the report (counts per origin, histories, dropped), and computing the differences between profiles.
+- lexer: builds logical lines from physical lines (comments, continuations, quoted strings and escapes, E_ESCAPE and E_UNTERMINATED).
+- ini_parser: interprets logical lines into a sequence of statements (section headers and the base section, directives, assignments and append assignments, checking names, E_SECTION, E_SYNTAX, E_NO_SECTION, W_DUPLICATE).
+- interpolate: parses and expands ${...} references (cycle detection with the in-progress sequence, E_BAD_REF, E_UNDEFINED, E_CYCLE, E_DEPENDENCY).
+- schema: reads the schema and represents specs, matches section patterns, determines the spec of a full key name, and enumerates target keys.
+- emitter: string notation and value notation (including the replacement for secret keys), and building and writing every line of the four output files.
+
+[Constraints]
+- There are 2 to 8 profiles, and the profile names are distinct. The full key names in overrides are correct full key names.
+- There are at most 20 documents, and each document has at most 300 physical lines. An escape whose second character is a space ("\" followed by a space) never appears inside quotes. No document is named manifest or schema. The configuration of each profile always has at most 300 keys.
+- The schema is well formed. The key patterns are distinct, and the combinations of types and attributes are as described above. Only string, int, size, duration, date and list specs have range, and the bounds are written in the correct value syntax of that type, with the lower bound <= the upper bound. values is always present on enum specs and on list specs whose item type is enum, and is not present on any other spec. The entries of values are distinct and consist only of lowercase letters, digits, ".", "_" and "-". A required spec has no default. when appears only on required specs and names the key name of a bool spec with the same section pattern. le appears only on int, size and duration specs and names the key name of a spec of the same type with the same section pattern. alias appears only on non-wildcard specs. Aliases are full key names, are not equal to the key pattern of any spec, do not match the pattern of any wildcard spec, and do not overlap with other aliases.
+- Default values may cause errors in expansion or type checking; in that case diagnostics are reported just as for other values.
+- Whether a document exists is determined only by whether the file input/conf/<document name>.ini exists (there is no need to list the contents of the folder).
+
+[Example]
+The following is a small example showing the format; it differs from the actual input.
+
+input/manifest.txt
+dev app
+live live server.port=80
+
+input/schema.txt
+# sample schema
+server.host host default=localhost alias=server.hostname
+server.port int range=1..65535 required
+server.timeout duration range=..5m default=30s
+cache.size size range=1MB.. default=16MB
+cache.tags list item=string unique
+cache.ttl duration default=10m
+
+input/conf/app.ini
+; sample application
+[server]
+hostname = Example.COM
+port = 8080
+timeout = 1m30s
+
+[cache]
+size = 1.5GB
+tags = a, b, a
+note = "x\ty"
+
+input/conf/live.ini
+@include app
+@include extra
+[server]
+timeout = ${port}0s
+[cache]
+size = 512KB
+
+(There is no input/conf/extra.ini.)
+
+output/normalized.txt
+profile dev
+[cache]
+note = "x\ty"
+size = 1610612736
+tags = ["a", "b"]
+ttl = 600
+[server]
+host = example.com
+port = 8080
+timeout = 90
+
+profile live
+[cache]
+note = "x\ty"
+tags = ["a", "b"]
+ttl = 600
+[server]
+host = example.com
+port = 80
+
+output/diagnostics.txt
+profile dev errors 0 warnings 3
+app:3 W_DEPRECATED server.hostname is deprecated, use server.host
+app:9 W_DUPLICATE_ITEM cache.tags: duplicate items removed
+app:10 W_UNKNOWN cache.note is not in the schema
+
+profile live errors 3 warnings 3
+app:3 W_DEPRECATED server.hostname is deprecated, use server.host
+app:9 W_DUPLICATE_ITEM cache.tags: duplicate items removed
+app:10 W_UNKNOWN cache.note is not in the schema
+live:2 E_INCLUDE_MISSING missing document extra
+live:4 E_RANGE server.timeout: 800 is out of range ..300
+live:6 E_RANGE cache.size: 524288 is out of range 1048576..
+
+output/diff.txt
+diff dev -> live: 0 added, 2 removed, 1 changed
+- cache.size = 1610612736
+~ server.port: 8080 -> 80
+- server.timeout = 90
+
+output/report.txt
+profile dev
+includes
+  app
+overridden
+  (none)
+keys 7 documents 6 manifest 0 defaults 1
+dropped 0
+errors 0 warnings 3
+
+profile live
+includes
+  live
+    app
+    extra (missing)
+overridden
+  server.port: app:4 -> manifest:2
+keys 5 documents 3 manifest 1 defaults 1
+dropped 2
+errors 3 warnings 3
+
+In live, server.timeout is expanded after the override has set port to 80, so it becomes 800s (800 seconds), which is out of range.

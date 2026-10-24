@@ -1,0 +1,500 @@
+[Overview]
+Write a program that analyzes a packet capture stored in text form. It reads two files in the input/ folder (the capture and the analysis requests). Each packet of the capture is given as a time and a hex dump. The program checks the hex dump and turns it back into a byte sequence, then dissects it into the layers Ethernet II, ARP, IPv4, ICMP, UDP, TCP and DNS (IPv4 header options are skipped, and fragments are only marked, not reassembled). The IPv4, ICMP, UDP and TCP checksums are verified with the 16-bit ones'-complement sum, and DNS names are reconstructed by following compression pointers (while guarding against infinite loops).
+Next, for each TCP connection, it tracks the state transitions from the three-way handshake to teardown, and detects retransmissions, reordering, lost segments and duplicate ACKs from the sequence numbers. It also selects packets with a display filter language (comparisons, and, or, not, parentheses), and produces detailed dissections of the requested packets.
+The results are written to six files in the output/ folder (the packet list and filter results, the details, the conversation table, the endpoint table, the protocol statistics, and the TCP stream histories). Nothing is printed to standard output.
+All computation uses only integers and strings; no floating-point numbers are used.
+
+[Input files]
+Both input files consist only of printable ASCII characters (character codes 32 to 126), and every line ends with a line feed (LF). No line has trailing spaces.
+
+* input/capture.txt (capture)
+A file that lists the packets in order. A line that starts with "PACKET " (the 7 characters P, A, C, K, E, T and one space) is called a "header line". A header line has the form "PACKET {packet number} {time} {length}", and its four parts are separated by single spaces. The packet numbers are 1, 2, 3, ... in order from the start of the file. The time is an integer giving the capture time in microseconds, and the length is the number of bytes of the packet. The first line of the file is a header line.
+The lines from the line after a header line up to the line just before the next header line (or up to the last line of the file if there is no next header line) are the "data lines" of that packet. However, empty lines are not data lines and are ignored. A well-formed data line has the form "{offset}  {byte} {byte} ...". The offset is 4 hex digits, followed by exactly two spaces, followed by at least 1 and at most 16 bytes separated by single spaces, and the line ends there. Each byte is 2 hex digits. Here, "hex digit" means only 0-9 and a-f (lowercase). The offset is the number of bytes of that packet that appeared before that line, and the bytes are the values of the packet's bytes in order from its start. Data lines may contain errors; how they are handled is defined in item 1 of [Processing].
+The lines of the file are numbered from 1 in order from the top (the file line number); header lines and empty lines are counted too.
+Example (2 packets, with an empty line between them):
+PACKET 1 5000000 42
+0000  ff ff ff ff ff ff 3c 22 fb 1a 2b 3c 08 06 00 01
+0010  08 00 06 04 00 01 3c 22 fb 1a 2b 3c c0 a8 01 17
+0020  00 00 00 00 00 00 c0 a8 01 01
+
+PACKET 2 5034570 60
+0000  3c 22 fb 1a 2b 3c 00 1d 7e 11 22 33 08 00 45 00
+0010  00 28 55 22 40 00 37 06 f0 e3 cb 00 71 0a c0 a8
+0020  01 17 00 50 c9 3a 00 00 00 00 00 0f 42 41 50 14
+0030  00 00 a6 2b 00 00 00 00 00 00 00 00
+
+* input/filters.txt (analysis requests)
+A file with one request per line. Each line is one of the following.
+- An empty line, or a line that starts with "#": nothing is done.
+- "FILTER {filter expression}": a display filter request. The whole remainder after "FILTER " (the 7 characters F, I, L, T, E, R and one space) is the filter expression. The filter expression is not empty and is written in the language defined in item 6 of [Processing], but it may contain errors.
+- "DETAIL {number}": a detail request. The remainder after "DETAIL " is a sequence of 1 to 6 digits, and its decimal value is the number of the request. It may be a packet number that does not exist.
+The order of the FILTER lines in the file is called the "filter order", and the order of the DETAIL lines is called the "detail request order".
+Example:
+# DNS only
+FILTER dns and udp.srcport == 53
+DETAIL 4
+
+[Processing]
+* Common notation
+- Text inside double quotes is a literal string, and the parts written as {...} are replaced by values. Unless stated otherwise, integers are written in decimal without extra leading zeros (zero is "0"). Negative values do not occur.
+- Positions in a byte sequence are counted from 0 at the start, and b[i] is the value (0 to 255) of the byte at index i of b. "The k-byte integer of b at index i" is the unsigned integer formed by b[i], b[i+1], ..., b[i+k-1] arranged in this order from the most significant byte (big-endian). For example, for 2 bytes it is b[i]*256+b[i+1]. "b from index i" is the byte sequence from b[i] to the end, and "b from index i to index j" is the byte sequence from b[i] to b[j] (empty if j<i).
+- The "bit of value 2^k" of an integer x is the remainder of floor(x/2^k) divided by 2 (1 or 0).
+- The "2-digit hex notation" is "0x" followed by the value in lowercase hexadecimal with exactly 2 digits (padded with leading zeros if needed), and the "4-digit hex notation" is the same with exactly 4 digits.
+- A MAC address (6 bytes) is treated as the integer (48 bits) of those 6 bytes. Its notation is the 6 bytes, in order from the first, each written as 2 lowercase hex digits and joined with ":" (e.g. 3c:22:fb:1a:2b:3c). An IPv4 address (4 bytes) is treated as the integer (32 bits) of those 4 bytes. Its notation is the 4 bytes, in order from the first, each written in decimal and joined with "." (e.g. 192.168.1.23).
+- The "seconds notation" of a time t in microseconds (t >= 0) is floor(t/1000000), followed by ".", followed by the remainder of t divided by 1000000 written with exactly 6 digits (padded with leading zeros if needed). Example: for t=51200 it is "0.051200", and for t=131000007 it is "131.000007".
+- The "relative time" of a packet is its time minus the time of packet 1.
+- The "ascending order" of strings is lexicographic order by character code (when one string is a prefix of the other, the shorter one comes first).
+- The "ones'-complement sum check": if the number of bytes of the byte sequence being checked is odd, append one byte of value 0 at its end. Split it into 2-byte pieces from the start, treat each piece as a 2-byte integer, and let s be the sum of all of them. While s exceeds 65535, replace s by (the remainder of s divided by 65536) + floor(s/65536). Finally, the result of the check is "good" if s equals 65535, and "bad" otherwise.
+
+1. Reading the capture
+For each packet, examine its data lines in increasing order of file line number and build the packet's byte sequence (initially empty) as follows.
+- If the line is not in the well-formed format described in [Input files], it is the dump error "dump: bad line {file line number}".
+- If it is well-formed but the value of the offset (read as a hexadecimal number) differs from the number of bytes added to the byte sequence so far, it is the dump error "dump: offset mismatch at line {file line number}".
+- Otherwise, append the bytes of that line, in order, to the end of the byte sequence.
+When a dump error occurs, the remaining data lines of that packet are not examined. If all data lines have been examined without a dump error and the number of bytes in the byte sequence differs from the length in the header line, it is the dump error "dump: length mismatch (header {length in the header line}, data {number of bytes in the byte sequence})".
+A packet in which a dump error occurred is called a "bad-dump packet". From here on, the "length" of a packet always means the length in its header line, whether or not it is a bad-dump packet.
+Example: "0000  ab" is well-formed. "0000  AB" (uppercase), "0000 ab" (one space), "0000  ab " (trailing space) and "0000  ab  cd" (two spaces between bytes) are not well-formed. If data lines appear with the offsets 0000 and 0020 in this order and the first line has 16 bytes, the second line causes an offset error.
+
+2. Layer dissection
+Each packet has a "layer list" (a list of layer names, initially empty) and fields (pairs of a name and values, defined in item 3). There are 8 layer names: eth, arp, ip, icmp, udp, tcp, dns and data. The byte sequence of each packet that is not a bad-dump packet is dissected starting from (1) below. When the dissection of a layer begins, the name of that layer is appended to the end of the layer list.
+If a condition marked "malformed" below is met during dissection, all dissection stops at that point. Such a packet is called a "malformed packet", and its "reason" is the string shown in double quotes below. In the layer where the malformation was found, none of that layer's fields are set (the layer name stays in the layer list). A bad-dump packet is also a malformed packet; its reason is the dump error string, and its layer list is empty.
+When a layer finishes its dissection, it may determine the "remaining data" (a byte sequence that is not interpreted as any higher layer).
+
+(1) Ethernet (layer eth)
+Let p be the whole byte sequence. If p is shorter than 14 bytes, it is malformed "eth: truncated". Otherwise, set eth.dst = the 6-byte integer of p at index 0, eth.src = the 6-byte integer at index 6, and eth.type = the 2-byte integer at index 12, and let p from index 14 be the "Ethernet payload". If eth.type is 0x0806 (2054), go to (2); if it is 0x0800 (2048), go to (3). Otherwise, the whole Ethernet payload is the remaining data.
+
+(2) ARP (layer arp)
+Let q be the Ethernet payload. If q is shorter than 28 bytes, it is malformed "arp: truncated". If any of the following holds, it is malformed "arp: unsupported format": the 2-byte integer of q at index 0 is not 1, the 2-byte integer at index 2 is not 0x0800, q[4] is not 6, q[5] is not 4. Otherwise, set arp.opcode = the 2-byte integer at index 6, arp.src.hw = the 6 bytes at index 8, arp.src.ip = the 4 bytes at index 14, arp.dst.hw = the 6 bytes at index 18, and arp.dst.ip = the 4 bytes at index 24 (all as integers). q from index 28 (padding) is ignored, and there is no remaining data.
+
+(3) IPv4 (layer ip)
+Let q be the Ethernet payload. Perform the following checks in this order.
+- If q is shorter than 20 bytes, malformed "ip: truncated header".
+- Let the version v be floor(q[0]/16); if v is not 4, malformed "ip: bad version {v}".
+- Let the header length h be (the remainder of q[0] divided by 16)*4; if h is less than 20, malformed "ip: bad header length {h}".
+- If the number of bytes of q is less than h, malformed "ip: truncated header".
+- Let the total length T be the 2-byte integer of q at index 2; if T is less than h, malformed "ip: bad total length {T}". If T is greater than the number of bytes of q, malformed "ip: truncated (total length {T}, available {number of bytes of q})".
+If none of these applies, let F be the 2-byte integer of q at index 6, and set the following fields.
+ip.hdr_len = h, ip.tos = q[1], ip.len = T, ip.id = the 2-byte integer at index 4, ip.flags.df = the bit of value 2^14 of F, ip.flags.mf = the bit of value 2^13 of F, ip.frag_offset = (the remainder of F divided by 8192)*8, ip.ttl = q[8], ip.proto = q[9], ip.checksum = the 2-byte integer at index 10, ip.checksum.status = the result ("good" or "bad") of the ones'-complement sum check of q from index 0 to index h-1, ip.src = the 4-byte integer at index 12, ip.dst = the 4-byte integer at index 16.
+Furthermore, if ip.flags.mf is 1 or ip.frag_offset is not 0, the packet is a "fragment", and the presence-only field ip.fragment is set.
+Let q from index h to index T-1 be the "IP payload" (index 20 to index h-1 are options and are skipped; index T onward is padding and is ignored). If the packet is a fragment, the whole IP payload is the remaining data (no reassembly is done). Otherwise, if ip.proto is 1 go to (4), if it is 17 go to (5), if it is 6 go to (6); for any other value the whole IP payload is the remaining data.
+
+(4) ICMP (layer icmp)
+Let r be the IP payload. If r is shorter than 8 bytes, it is malformed "icmp: truncated". Otherwise, set icmp.type = r[0], icmp.code = r[1], icmp.checksum = the 2-byte integer at index 2, and icmp.checksum.status = the result of the ones'-complement sum check of the whole of r. If icmp.type is 0 (echo reply) or 8 (echo request), also set icmp.id = the 2-byte integer at index 4 and icmp.seq = the 2-byte integer at index 6. r from index 8 is the remaining data.
+
+(5) UDP (layer udp)
+Let r be the IP payload, and let S and D be the addresses ip.src and ip.dst respectively. If r is shorter than 8 bytes, it is malformed "udp: truncated". Let L be the 2-byte integer of r at index 4; if L is less than 8 or greater than the number of bytes of r, it is malformed "udp: bad length {L}".
+Otherwise, set udp.srcport = the 2-byte integer at index 0, udp.dstport = the 2-byte integer at index 2, udp.length = L, and udp.checksum = the 2-byte integer at index 6. udp.checksum.status is "none" (not checked) if udp.checksum is 0; otherwise it is the result of the ones'-complement sum check of the byte sequence formed by concatenating the pseudo-header and r from index 0 to index L-1, in this order. The pseudo-header is the 12 bytes consisting of, in this order, the 4 bytes of S, the 4 bytes of D, a byte of value 0, a byte of value 17, and the 2 bytes representing L (most significant byte first).
+Let r from index 8 to index L-1 be the "UDP payload" (index L onward is ignored). If at least one of udp.srcport and udp.dstport is 53, the UDP payload is dissected as DNS in (7). Otherwise, the whole UDP payload is the remaining data.
+
+(6) TCP (layer tcp)
+Let r be the IP payload, and let S and D be as in (5). Perform the following checks in this order. If r is shorter than 20 bytes, it is malformed "tcp: truncated header". Let the header length h be floor(r[12]/16)*4; if h is less than 20, it is malformed "tcp: bad header length {h}", and if h is greater than the number of bytes of r, it is malformed "tcp: truncated header".
+If none of these applies, set the following fields.
+tcp.srcport = the 2-byte integer at index 0, tcp.dstport = the 2-byte integer at index 2, tcp.seq_raw = the 4-byte integer at index 4, tcp.hdr_len = h, tcp.flags = r[13], tcp.window = the 2-byte integer at index 14, tcp.checksum = the 2-byte integer at index 16, tcp.checksum.status = the result of the ones'-complement sum check of the byte sequence formed by concatenating the pseudo-header (in the same form as in (5), but with the value 6 instead of the value 17, and the number of bytes of r instead of L) and the whole of r, in this order, tcp.urgent = the 2-byte integer at index 18, tcp.len = (number of bytes of r) - h.
+The bits of value 1, 2, 4, 8, 16, 32, 64 and 128 of tcp.flags are called the "flags" FIN, SYN, RST, PSH, ACK, URG, ECE and CWR respectively, and a bit being 1 is described as the flag "being set". tcp.flags.fin, tcp.flags.syn, tcp.flags.rst, tcp.flags.psh, tcp.flags.ack and tcp.flags.urg are the values (1 or 0) of the FIN, SYN, RST, PSH, ACK and URG bits respectively. If ACK is set, also set tcp.ack_raw = the 4-byte integer at index 8.
+r from index 20 to index h-1 is parsed as the "option list" by the rules below. r from index h is the "TCP payload", and it is the remaining data.
+Option parsing: positions within the option list are counted from 0 at the start of the list. Start with position i = 0, and repeat the following until i reaches the number of bytes of the list. Let the kind k be the byte at position i.
+- k=0: record the option "EOL" and finish parsing (the rest of the list is ignored).
+- k=1: record the option "NOP" and advance i by 1.
+- Otherwise: let the length n be the byte at position i+1 (n=0 if i+1 is greater than or equal to the number of bytes of the list). If n is less than 2, or i+n exceeds the number of bytes of the list, or k is one of the kinds in the table below and n differs from every length listed for it, set the presence-only field tcp.options.malformed and finish parsing (the packet is not made a malformed packet). Otherwise, let the body B be the n-2 bytes starting at position i+2, record the option given by the table below, and advance i by n.
+  k=2 (length 4): "MSS {the 2-byte integer of B at index 0}". Also set tcp.options.mss to that integer.
+  k=3 (length 3): "WS {B[0]}". Also set tcp.options.wscale to B[0].
+  k=4 (length 2): "SACK_PERM".
+  k=5 (lengths 10, 18, 26, 34): "SACK" followed, for each group obtained by splitting B into 8-byte pieces from the start, in order, by " {integer of the first 4 bytes}-{integer of the last 4 bytes}" (with a leading space).
+  k=8 (length 10): "TS {the 4-byte integer of B at index 0} {the 4-byte integer of B at index 4}".
+  A kind not in the table: "kind {k} len {n}".
+The recorded option strings, in the order they were recorded, are the values of tcp.option (it may have zero values).
+Example: if the option list is 02 04 05 b4 01 03 03 07, the options are "MSS 1460", "NOP" and "WS 7", and tcp.options.mss=1460 and tcp.options.wscale=7. If the list is 01 01 08 0c, then after "NOP" and "NOP" are recorded, the length 12 of kind 8 exceeds the rest of the list, so tcp.options.malformed is set.
+
+(7) DNS (layer dns)
+Let the message m be the UDP payload. Below, whenever an attempt is made to read a byte outside the range of m, it is malformed "dns: truncated" at that point.
+- Header: read m from index 0 to index 11. Let G be the 2-byte integer of m at index 2, and set dns.id = the 2-byte integer at index 0, dns.flags = G, dns.flags.response = the bit of value 2^15 of G, dns.flags.opcode = the remainder of floor(G/2048) divided by 16, dns.flags.rcode = the remainder of G divided by 16, dns.count.queries = the 2-byte integer at index 4 (the question count QD), dns.count.answers = the 2-byte integer at index 6 (the answer count AN), dns.count.auth_rr = the 2-byte integer at index 8 (the authority count NS), and dns.count.add_rr = the 2-byte integer at index 10 (the additional count AR).
+- Questions: starting at position 12, read QD questions in order. Each question consists of a name (see below) followed by 4 bytes; the integer of the first 2 of those 4 bytes is the question type (the other 2 bytes are not used). Append the notation of the name to the end of the values of dns.qry.name, and the type to the end of the values of dns.qry.type.
+- Resource records: after the questions, read AN answers, NS authority records and AR additional records, in this order. Each record consists of a name, followed by 10 bytes (the type in 2 bytes, the class in 2 bytes, the TTL in 4 bytes and the rdata length R in 2 bytes, each an integer), followed by R bytes of rdata. If any of the R bytes of rdata lies outside the range of m, it is "dns: truncated". The rdata is interpreted according to its type by the rules below to produce its notation, and if the position where that interpretation finishes reading differs from the position just after the end of the rdata (the start position of the rdata + R), it is malformed "dns: bad rdata length". The record string is "{name notation} {type name} {class name} {TTL} {rdata notation}", and it is appended to the end of the values of dns.answer for an answer, dns.authority for an authority record, and dns.additional for an additional record. For an answer whose type is 1, the 4-byte integer of the rdata (an IPv4 address) is also appended to the end of the values of dns.a. The next record is read from the position just after the end of the rdata.
+- The type name for types 1, 2, 5, 6, 12, 15, 16, 28 is "A", "NS", "CNAME", "SOA", "PTR", "MX", "TXT", "AAAA" respectively, and "TYPE{type}" otherwise. The class name is "IN" if the class is 1, and "CLASS{class}" otherwise.
+- Interpreting rdata (let a be the start position of the rdata; names are read from the whole message regardless of the range of the rdata):
+  Type 1: the 4 bytes at position a are written as an IPv4 address. Reading finishes at position a+4.
+  Type 28: the 16 bytes at position a are written as an IPv6 address (see below). Reading finishes at position a+16.
+  Types 2, 5, 12: read a name at position a; its notation is the rdata notation. Reading finishes at the position after the name.
+  Type 15: read the 2-byte integer P at position a and read a name N at position a+2, giving "{P} {notation of N}". Reading finishes at the position after N.
+  Type 6: read a name M at position a, then a name N at the position after it, then read five 4-byte integers in succession from the position after N, giving "{notation of M} {notation of N} {integer 1} {integer 2} {integer 3} {integer 4} {integer 5}". Reading finishes at the position after the last integer.
+  Any other type (including type 16): "{R} bytes". Reading finishes at position a+R.
+- Reading a name: starting from position x, and using a list of labels (initially empty), the number of pointers followed (initially 0) and the "position after the name" (initially undetermined), repeat the following. Let c be the byte at position x.
+  c=0: the end of the name. If the position after the name is undetermined, set it to x+1.
+  c is 192 or more (the top 2 bits are 11): a compression pointer. Read the byte d at position x+1, and if the position after the name is undetermined, set it to x+2. Increase the number of pointers followed by 1; if it exceeds 16, it is malformed "dns: compression loop". If the target (c-192)*256+d is greater than or equal to the number of bytes of m, it is malformed "dns: pointer out of range". Otherwise, set x to the target and continue.
+  c is 64 or more and less than 192: malformed "dns: bad label type".
+  c is at least 1 and at most 63: the c bytes starting at position x+1 are a label. Append the label to the end of the list, advance x by c+1, and continue.
+The notation of a name is its labels, each converted to a string, joined with ".". If there are no labels, it is "<root>". To convert a label to a string, replace each byte by the character whose character code is the byte's value if the value is at least 33 and at most 126 and is neither 46 (".") nor 92 ("\"); otherwise replace it by "\" followed by the value in decimal with exactly 3 digits (padded with leading zeros if needed). Example: the label "my host" (with a byte of value 32 in the middle) becomes "my\032host".
+- IPv6 address notation: split the 16 bytes into 2-byte pieces from the start to get 8 integers (groups), and write each group in lowercase hexadecimal (without leading zeros; zero is "0"). If there is a run of two or more consecutive groups of value 0, choose the longest such run (the leftmost one if several have the same length), and concatenate, in this order, the groups to the left of that run joined with ":", then "::", then the groups to the right of that run joined with ":". If there is no such run, join the 8 groups with ":". Examples: 2001:db8:0:7::1, 2001:db8::5:0:0:9, ::1, fe80::.
+The DNS layer has no remaining data.
+
+(8) Remaining data (layer data)
+If the packet is not a malformed packet and the remaining data is 1 byte or more, append data to the end of the layer list and set data.len to the number of bytes of the remaining data. A malformed packet has no remaining data.
+
+(9) Packet-wide fields
+After all dissection has finished (including for bad-dump packets), set the following fields.
+- frame.number = the packet number, frame.time = the relative time, frame.len = the length.
+- frame.protocols: if the layer list is not empty, the layer names joined with ":" (e.g. eth:ip:tcp:data).
+- frame.malformed: if the packet is a malformed packet, its reason.
+- frame.bad_checksum: set if any of ip.checksum.status, icmp.checksum.status, udp.checksum.status and tcp.checksum.status is "bad" (presence-only).
+
+3. Fields
+A field has a name and zero or more values. A field not set in items 2 and 4 has zero values. When a field has one or more values, the field is said to "exist". Most fields have exactly one value, but the fields marked "multiple" below hold their values in the order described in items 2 and 4. There are 7 field types:
+- integer: the value is an integer >= 0, and its notation is decimal.
+- hex2, hex4: the value is an integer >= 0, and its notation is the 2-digit hex notation and the 4-digit hex notation respectively.
+- IPv4: the value is an IPv4 address, and its notation is the IPv4 address notation.
+- MAC: the value is a MAC address, and its notation is the MAC address notation.
+- string: the value is an ASCII string, and its notation is the string itself.
+- presence-only: the value has no content; it only indicates whether the field exists.
+The order of the following list is called the "field order" (the type is shown in parentheses).
+- frame.number (integer), frame.time (integer), frame.len (integer), frame.protocols (string), frame.malformed (string), frame.bad_checksum (presence-only)
+- eth.dst (MAC), eth.src (MAC), eth.type (hex4)
+- arp.opcode (integer), arp.src.hw (MAC), arp.src.ip (IPv4), arp.dst.hw (MAC), arp.dst.ip (IPv4)
+- ip.hdr_len (integer), ip.tos (hex2), ip.len (integer), ip.id (hex4), ip.flags.df (integer), ip.flags.mf (integer), ip.frag_offset (integer), ip.ttl (integer), ip.proto (integer), ip.checksum (hex4), ip.checksum.status (string), ip.src (IPv4), ip.dst (IPv4), ip.fragment (presence-only)
+- icmp.type (integer), icmp.code (integer), icmp.checksum (hex4), icmp.checksum.status (string), icmp.id (integer), icmp.seq (integer)
+- udp.srcport (integer), udp.dstport (integer), udp.length (integer), udp.checksum (hex4), udp.checksum.status (string)
+- tcp.srcport (integer), tcp.dstport (integer), tcp.stream (integer), tcp.seq (integer), tcp.seq_raw (integer), tcp.ack (integer), tcp.ack_raw (integer), tcp.hdr_len (integer), tcp.flags (hex2), tcp.flags.fin (integer), tcp.flags.syn (integer), tcp.flags.rst (integer), tcp.flags.psh (integer), tcp.flags.ack (integer), tcp.flags.urg (integer), tcp.window (integer), tcp.window.calc (integer), tcp.checksum (hex4), tcp.checksum.status (string), tcp.urgent (integer), tcp.option (string, multiple), tcp.options.mss (integer), tcp.options.wscale (integer), tcp.options.malformed (presence-only), tcp.len (integer), tcp.analysis.retransmission (presence-only), tcp.analysis.out_of_order (presence-only), tcp.analysis.lost_segment (presence-only), tcp.analysis.duplicate_ack (presence-only)
+- dns.id (hex4), dns.flags (hex4), dns.flags.response (integer), dns.flags.opcode (integer), dns.flags.rcode (integer), dns.count.queries (integer), dns.count.answers (integer), dns.count.auth_rr (integer), dns.count.add_rr (integer), dns.qry.name (string, multiple), dns.qry.type (integer, multiple), dns.answer (string, multiple), dns.authority (string, multiple), dns.additional (string, multiple), dns.a (IPv4, multiple)
+- data.len (integer)
+tcp.stream, tcp.seq, tcp.ack, tcp.window.calc and tcp.analysis.{mark} are set in item 4.
+In addition, there are the following fields that are used only by display filters (they are not part of the field order).
+- "Alias fields": eth.addr (MAC; its values are the value of eth.dst and the value of eth.src), ip.addr (IPv4; its values are the value of ip.src and the value of ip.dst), udp.port (integer; its values are the value of udp.srcport and the value of udp.dstport), tcp.port (integer; its values are the value of tcp.srcport and the value of tcp.dstport).
+- "Protocol fields": the 8 fields eth, arp, ip, icmp, udp, tcp, dns and data, whose type is presence-only. Each exists when the layer of that name is in the layer list.
+
+4. TCP stream tracking
+A packet in which tcp.srcport exists (one whose TCP layer was dissected without a malformation) is called a "TCP packet". The TCP packets are processed one at a time in packet number order, each through steps (1) to (6) below in this order.
+Notation: a pair of an IPv4 address and a port number is called an "endpoint"; the source endpoint of a TCP packet is (ip.src, tcp.srcport), and its destination endpoint is (ip.dst, tcp.dstport). seq is tcp.seq_raw, and ack is tcp.ack_raw (used only when ACK is set). "SYN only" means that SYN is set and ACK is not set, and "SYN-ACK" means that both SYN and ACK are set. x mod 2^32 is the remainder of x divided by 2^32 (if x is negative, the remainder after first adding 2^32 to x).
+A stream has a number, a client endpoint, a server endpoint, a state, a state history, a start time and an end time, a packet count, a byte count, a handshake record (the three packet numbers syn, syn_ack and ack, all initially none), an event list, the "side that closed first", and F2. It also has two "sides", the client side and the server side, and each side has an ISN, an MSS and a WS (initially none), a base (initially undetermined), an expected position E (initially undetermined), the time A at which E was last advanced, a set of received intervals (initially empty), a previous ACK (initially none), a packet count and a payload amount (initially 0), and the counts of the 4 kinds of marks (initially 0).
+(1) Determining the stream: among the streams whose pair of endpoints is the same as this packet's pair of source endpoint and destination endpoint (regardless of order), let C be the one created last. If there is no such C, or if the state of C is CLOSED or RESET and this packet is SYN only, create a new stream, let it be C, and initialize it with the 4 items below. The number of a new stream is the number of streams created before it (the first stream is 0). Otherwise, use C as it is, and do not perform the 4 items below.
+- If this packet is SYN-ACK, set the client to the destination endpoint and the server to the source endpoint, set the state to SYN_RECEIVED, and record the SYN information of the server side.
+- If it is SYN only, set the client to the source endpoint and the server to the destination endpoint, set the state to SYN_SENT, and record the SYN information of the client side.
+- Otherwise, set the client to the source endpoint and the server to the destination endpoint, and set the state to ESTABLISHED.
+- Set the state history to the single entry (that state, packet number), and set the start time to the time of this packet.
+To "record the SYN information" of side X means to set X's ISN to seq, its MSS to the value of tcp.options.mss (none if it does not exist) and its WS to the value of tcp.options.wscale (none if it does not exist), and to set the handshake syn to this packet number if X is the client side, or the handshake syn_ack if X is the server side.
+Set tcp.stream = the number of C on this packet. From here on, if the source endpoint of this packet equals C's client endpoint, the packet is a "packet from the client side", and otherwise it is a "packet from the server side". The side that sent it is called "this side", and the other one is called "the other side".
+(2) Relative numbers: if this side's base is undetermined, set it to seq. Then, if ACK is set and the other side's base is undetermined, set the other side's base to ack. Set tcp.seq = (seq - this side's base) mod 2^32, and if ACK is set, set tcp.ack = (ack - the other side's base) mod 2^32.
+(3) Analysis: let the interval length n = tcp.len + (1 if SYN is set) + (1 if FIN is set), and let r = tcp.seq. Below, r and E are compared as ordinary integers.
+- When n is 1 or more: if E is undetermined or r=E, there is no mark. If r>E, the mark is "lost_segment". If r<E: if the pair (r, n) is in this side's set of intervals, the mark is "retransmission"; otherwise, the mark is "out_of_order" if (the time of this packet) - A is less than 3000, and "retransmission" if it is 3000 or more. After that, add the pair (r, n) to this side's set of intervals, and if E is undetermined or r+n is greater than E, set E to r+n and A to the time of this packet.
+- When n is 0, ACK is set and RST is not set: if this side has a previous ACK (a tuple of the 4 items ack, window, original packet number and count), ack equals the previous ACK's ack, and tcp.window equals the previous ACK's window, the mark is "duplicate_ack", and the previous ACK's count is increased by 1 (the other 3 items are not changed).
+- Finally, if ACK is set and the mark is not duplicate_ack, set this side's previous ACK to (ack, tcp.window, this packet number, 0).
+If a mark was given, set the presence-only field tcp.analysis.{mark}, increase this side's count of that mark by 1, and append (packet number, the name of this side ("client" or "server"), mark, r, n) to the end of the event list.
+(4) Calculated window: if both the client side's WS and the server side's WS exist and SYN is not set, tcp.window.calc = tcp.window*2^(this side's WS). Otherwise, tcp.window.calc = tcp.window.
+(5) State transitions: check a to f below from the top in order, and perform only the first one whose condition holds. If none holds, the state does not change. When the state is changed, append (new state, packet number) to the end of the state history.
+a. RST is set: if the state is neither CLOSED nor RESET, set the state to RESET (if it is CLOSED or RESET, do nothing; in either case, b and the later items are not checked).
+b. The state is SYN_SENT, the packet is a SYN-ACK from the server side, and ack equals (the client side's ISN + 1) mod 2^32: set the state to SYN_RECEIVED and record the SYN information of the server side.
+c. The state is SYN_RECEIVED, the packet is a packet from the client side, ACK is set and SYN is not set, and ack equals (the server side's ISN + 1) mod 2^32: set the state to ESTABLISHED and set the handshake ack to this packet number.
+d. The state is ESTABLISHED and FIN is set: set the state to FIN_WAIT and make this side the side that closed first.
+e. The state is FIN_WAIT, FIN is set, and this side is not the side that closed first: set the state to CLOSING and set F2 = (seq + tcp.len + 1) mod 2^32.
+f. The state is CLOSING, the packet is a packet from the side that closed first, ACK is set, and ack equals F2: set the state to CLOSED.
+(6) Totals: increase this side's packet count by 1 and its payload amount by tcp.len, increase the stream's packet count by 1 and its byte count by the length of this packet, and set the end time to the time of this packet.
+
+5. Summary lines
+The summary line of each packet is "{packet number} {seconds notation of the relative time} {source} -> {destination} {protocol} {length} {info}".
+- Source and destination: if ip.src exists, the notations of ip.src and ip.dst; otherwise, if eth.src exists, the notations of eth.src and eth.dst; if neither exists, "-" and "-".
+- Protocol: if the last layer of the layer list with data excluded is eth, arp, ip, icmp, udp, tcp or dns, it is "ETH", "ARP", "IPv4", "ICMP", "UDP", "TCP" or "DNS" respectively. If the layer list is empty, it is "DUMP".
+- Info: the basic info below followed by the annotations.
+The basic info is the reason if the packet is a malformed packet. Otherwise it depends on the protocol as follows (a field written inside {} stands for the notation of its value).
+- ETH: "EtherType {eth.type}".
+- ARP: if arp.opcode is 1, "Who has {arp.dst.ip}? Tell {arp.src.ip}"; if it is 2, "{arp.src.ip} is at {arp.src.hw}"; otherwise "Opcode {arp.opcode}".
+- IPv4: if the packet is a fragment, "Fragment id={ip.id} off={ip.frag_offset}", followed by " MF" if ip.flags.mf is 1. If it is not a fragment, "Protocol {ip.proto}".
+- ICMP: if icmp.type is 8, "Echo request id={icmp.id} seq={icmp.seq}"; if it is 0, "Echo reply id={icmp.id} seq={icmp.seq}"; otherwise "Type {icmp.type} code {icmp.code}".
+- UDP: "{udp.srcport} -> {udp.dstport} Len={udp.length-8}".
+- TCP: "{mark notation}{tcp.srcport} -> {tcp.dstport} [{flag notation}] Seq={tcp.seq}", followed by " Ack={tcp.ack}" if ACK is set, then by " Win={tcp.window.calc} Len={tcp.len}", then by the option summary.
+  Mark notation: "[TCP Retransmission] " if the mark is retransmission, "[TCP Out-Of-Order] " if it is out_of_order, "[TCP Previous segment not captured] " if it is lost_segment, and "[TCP Dup ACK {original packet number of the previous ACK}#{count after the increase}] " if it is duplicate_ack (each ends with one space); the empty string if there is no mark.
+  Flag notation: the names of the flags that are set, in the order FIN, SYN, RST, PSH, ACK, URG, ECE, CWR, joined with ", " ("," and a space). If no flag is set, it is "<None>".
+  Option summary: go through the values of tcp.option in order and concatenate " MSS={v}" for "MSS {v}", " WS={the value of 2^s}" for "WS {s}", " SACK_PERM" for "SACK_PERM", and " TSval={a} TSecr={b}" for "TS {a} {b}" (nothing is produced from any other option).
+- DNS: "Response" if dns.flags.response is 1 or "Query" if it is 0, followed by " {dns.id}". If dns.flags.rcode is not 0, append a space and the rcode name. The rcode name is "NoError", "FormErr", "ServFail", "NXDomain", "NotImp", "Refused" for rcode 0 to 5 respectively, and "RCODE{rcode}" otherwise. Then append, for each question in order, " {type name of the question type} {name notation}", and then, for each answer in order, " {type name} {rdata notation}".
+The annotations are " [bad TCP options]" if tcp.options.malformed exists, followed by, in the order ip.checksum.status, icmp.checksum.status, udp.checksum.status, tcp.checksum.status, for each one that is "bad", " [bad IPv4 checksum]", " [bad ICMP checksum]", " [bad UDP checksum]" or " [bad TCP checksum]" respectively (the same applies to malformed packets).
+Example: "12 1.204518 10.0.0.5 -> 10.0.0.9 TCP 74 40100 -> 22 [SYN] Seq=0 Win=29200 Len=0 MSS=1460 SACK_PERM TSval=700 TSecr=0 WS=128"
+
+6. Display filters
+(1) Tokenizing: read the filter expression one character at a time from the start and build a list of tokens. Character positions (column numbers) are counted with the first character of the filter expression as 1. Each token has a kind, a string and a column number (the column number of the token's first character).
+- Spaces are skipped.
+- If the 2 characters starting at the current position are one of "==", "!=", "<=", ">=", "&&", "||", those 2 characters form one token (this is checked before the one-character tokens).
+- "(", ")", "!", "<" and ">" each form a one-character token.
+- A double quote (") starts a string, and everything up to the next double quote is one "string token" (the token's string includes the double quotes at both ends). If there is no next double quote, it is the error "unterminated string at column {column number of the opening double quote}".
+- For word characters (the letters A-Z and a-z, the digits 0-9, ".", "_" and ":"), the longest run of them is one "word token". However, if the run equals "and", "or" or "not", it is a token (keyword) of the same kind as "&&", "||" or "!" respectively (the token's string stays and, or, not).
+- Any other character is the error "invalid character '{that character}' at column {column number}".
+Tokenizing is done for the whole filter expression first, and if there is no error, parsing follows.
+(2) Parsing: read the list of tokens from the left with the procedure below. If no tokens remain when "taking one token", it is the error "unexpected end of filter". A token t being an "unexpected token" means the error "unexpected '{string of t}' at column {column number of t}". Only the first error that occurs is reported.
+- Expression: read a product, and while the next token is of the "||" kind, take that token and read the next product. The result is the logical OR of the products read.
+- Product: read a negation, and while the next token is of the "&&" kind, take that token and read the next negation. The result is the logical AND of the negations read.
+- Negation: if the next token is of the "!" kind, take that token and read a negation; the result is its logical NOT. Otherwise, take one token. If it is "(", read an expression, then take one token, and if that token is not ")", it is an unexpected token. If the token taken is a word token, read a test (below). Otherwise, it is an unexpected token.
+- Test: the string of the word token is the field name. If the field name is none of the fields in the field order list of item 3, the alias fields and the protocol fields, it is the error "unknown field {field name}". If the next token is not a comparison operator ("==", "!=", "<", ">", "<=", ">=") (including the case where no tokens remain), this test is an "existence test". If it is a comparison operator, take that token. If the field's type is presence-only, or the type is string and the operator is other than "==" and "!=", it is the error "operator {operator} not allowed for {field name}". Then take one token; if it is neither a word token nor a string token, it is an unexpected token. Convert that token into a value according to the field's type as described below; if it cannot be converted, it is the error "invalid value {string of the token} for {field name}".
+- If tokens remain after the first expression has been read, the first of them is an unexpected token.
+Value conversion:
+- Type string: it must be a string token. The value is the token's string without the double quotes at both ends.
+- Types integer, hex2 and hex4: if it is a word token consisting only of 1 to 15 digits, its decimal value. If it consists of "0x" followed only by 1 to 12 hex digits (here 0-9, a-f and A-F), its hexadecimal value.
+- Type IPv4: if it is a word token that, when split at ".", gives exactly 4 parts, and each part consists only of 1 to 3 digits whose decimal value is 255 or less, the IPv4 address whose bytes are those values in order from the first.
+- Type MAC: if it is a word token that, when split at ":", gives exactly 6 parts, and each part is exactly 2 hex digits (0-9, a-f, A-F), the MAC address whose bytes are those values in order from the first.
+- If none of the above applies, it cannot be converted.
+(3) Evaluation: evaluate the expression for each packet; a packet for which it is true is said to "match". The list of values of a field is its values for an ordinary field, and the values of the two corresponding fields concatenated for an alias field.
+- Existence test: true if the field exists (for a protocol field, if that layer is in the layer list; for an alias field, if the list of values is not empty).
+- Comparison test: false if the list of values is empty. If the operator is "!=", it is true when every value differs from the converted value. For any other operator, it is true when "v {operator} converted value" holds for at least one value v. The types integer, hex2, hex4, IPv4 and MAC are compared by magnitude as integers, and strings are compared for exact equality.
+Example: "tcp.port != 80" is true only when both values of the TCP port are not 80, and it is false for packets that are not TCP packets. "not tcp.port == 80" is true also for packets that are not TCP packets.
+
+7. Details
+For a detail request with number n, if n is at least 1 and at most the number of packets, the details of packet n are the following lines. Otherwise, they are the single line "packet {n} not found".
+- The first line is "packet {packet number}".
+- Then, for "frame" and each layer in the layer list, in this order, output a line consisting only of that name, followed by the existing fields whose names start with "{that name}." (excluding alias fields), in field order, one line per value. The line is "  {field name}" (with two leading spaces) if the type is presence-only, and "  {field name} = {value notation}" otherwise.
+- For the data layer, after its field lines, output the lines of the hex dump of the remaining data, each prefixed with two spaces. The hex dump has one line for each piece obtained by splitting the byte sequence into 16-byte pieces from the start, and each line is "{offset}  {hex part}  |{character part}|". The offset is the position of the piece's first byte written as exactly 4 lowercase hex digits; the hex part is the bytes each written as 2 lowercase hex digits and separated by single spaces, padded at the end with spaces to a length of 47 characters; the character part is the bytes each replaced by the character whose character code is the byte's value if the value is at least 32 and at most 126, and by "." otherwise.
+
+8. Conversations and endpoints
+There are 3 kinds of conversations: ipv4, tcp and udp. Examine the packets in packet number order and count them into conversations as follows. One packet may be counted in conversations of more than one kind.
+- ipv4: packets in which ip.src exists. Each pair of the two addresses ip.src and ip.dst (regardless of order) is one conversation.
+- tcp: packets in which tcp.stream exists. Each stream is one conversation (different streams are different conversations even for the same pair of endpoints).
+- udp: packets in which udp.srcport exists. Each pair of the two endpoints (ip.src, udp.srcport) and (ip.dst, udp.dstport) (regardless of order) is one conversation.
+For each conversation, the first packet counted is the "first packet", its source is endpoint A and its destination is endpoint B (for ipv4, an endpoint is just an address). Packets whose source is A are packets from A to B, and the others are packets from B to A. Compute the packet count and the byte count (total of the lengths) in each direction, the start (the relative time of the first packet), and the duration (the time of the last packet counted - the time of the first packet). The endpoint notation is the address notation for ipv4, and "{address notation}:{port number}" for tcp and udp.
+Conversations are sorted by byte count (total of both directions) in decreasing order, then by packet count (total of both directions) in decreasing order, then by kind in the order ipv4, tcp, udp, then by the packet number of the first packet in increasing order.
+The endpoint table gives, for each address that appears in packets in which ip.src exists, the packet count and byte count sent (packets whose ip.src is that address) and the packet count and byte count received (packets whose ip.dst is that address). It is sorted by byte count (total of sent and received) in decreasing order, then by packet count (total of sent and received) in decreasing order, then by address (as a 32-bit integer) in increasing order.
+
+9. DNS transactions
+Among the packets in which dns.id exists (those whose DNS layer was dissected without a malformation), those with dns.flags.response 0 are called "queries" and those with 1 are called "responses". Examine them in packet number order; a query is appended to the end of the "pending list". For a response, search the pending list from the front for queries whose dns.id equals the response's and whose ip.src, udp.srcport, ip.dst and udp.dstport equal the response's ip.dst, udp.dstport, ip.src and udp.srcport respectively; if one is found, remove the first such query from the pending list, and the pair forms one "transaction". Its response time is the time of the response - the time of the query. If none is found, nothing is done.
+
+[Output files]
+Write the following six files to output/. Every file consists only of ASCII characters, every line ends with a line feed (LF), and no line has trailing spaces. No empty lines are written other than those specified here.
+
+* output/summary.txt
+First, output the summary lines of all packets in packet number order. Then, in filter order, output the following block for each FILTER request.
+- One empty line.
+- "filter {filter expression}".
+- If the filter expression has an error, the block ends with the single line "error: {error string}".
+- If there is no error, output the summary lines of the matched packets in packet number order, and finally "matched {number of matched packets} of {total number of packets}".
+
+* output/details.txt
+In detail request order, output for each request the lines produced in item 7, with one empty line between consecutive requests. If there are no DETAIL requests, the file is empty.
+
+* output/conversations.csv
+The first line is "type,endpoint_a,endpoint_b,packets,bytes,packets_a_to_b,bytes_a_to_b,packets_b_to_a,bytes_b_to_a,start,duration". Then, in the order of item 8, output one line per conversation: "{kind},{endpoint A},{endpoint B},{packet count},{byte count},{packets from A to B},{bytes from A to B},{packets from B to A},{bytes from B to A},{seconds notation of the start},{seconds notation of the duration}". The kind is one of ipv4, tcp and udp, and the packet count and byte count are the totals of both directions.
+
+* output/endpoints.csv
+The first line is "address,packets,bytes,tx_packets,tx_bytes,rx_packets,rx_bytes". Then, in the order of item 8, output one line per address: "{address notation},{packet count},{byte count},{packets sent},{bytes sent},{packets received},{bytes received}". The packet count and byte count are the totals of sent and received.
+
+* output/protocol_stats.txt
+Output the following lines in this order.
+- "packets {total number of packets}"
+- "bytes {total of the lengths of all packets}"
+- "duration {seconds notation of (the time of the last packet - the time of packet 1)}"
+- "hierarchy", followed by the following 7 lines: "eth {P} {B}", "  arp {P} {B}", "  ip {P} {B}", "    icmp {P} {B}", "    udp {P} {B}", "      dns {P} {B}", "    tcp {P} {B}". The numbers of leading spaces are 0, 2, 2, 4, 4, 6 and 4 respectively. P is the number of packets whose layer list contains the layer of that name (including malformed packets), and B is the total of the lengths of those packets.
+- "checksums", followed by the following 4 lines: "ip good {g} bad {b}", "icmp good {g} bad {b}", "udp good {g} bad {b} none {n}", "tcp good {g} bad {b}". These are the numbers of packets whose value of ip.checksum.status, icmp.checksum.status, udp.checksum.status and tcp.checksum.status respectively is "good", "bad" or "none".
+- "malformed", followed by the following 8 lines: "dump {count}", "eth {count}", "arp {count}", "ip {count}", "icmp {count}", "udp {count}", "tcp {count}", "dns {count}". dump is the number of bad-dump packets; each of the others is the number of malformed packets that are not bad-dump packets and whose last layer in the layer list has that name (that is, the malformation was found in that layer).
+- "tcp analysis", followed by the following 4 lines: "retransmission {count}", "out_of_order {count}", "lost_segment {count}", "duplicate_ack {count}". Each is the total number of TCP packets that were given that mark.
+- "dns", followed by the 4 lines "queries {number of queries}", "responses {number of responses}", "transactions {number of transactions}", "unanswered {number of queries left in the pending list at the end}".
+- If there is at least one transaction, "response_time min {seconds notation of the minimum response time} max {seconds notation of the maximum}"; otherwise "response_time -".
+- For each rcode value from 0 to 15 in increasing order for which there is at least one response with that dns.flags.rcode, "rcode {rcode name} {number of those responses}" (the rcode name is as defined in item 5).
+- "names", followed by: count the values of dns.qry.name of the queries (each value separately if one query has several) per name notation, and output one line "{name notation} {count}" per name. Sort them by count in decreasing order, then by name notation in ascending order.
+
+* output/tcp_streams.txt
+Output one block per stream in order of stream number, with one empty line between blocks. If there are no streams, the file is empty. Each block consists of the following lines. The endpoint notation is "{address notation}:{port number}", and "{v or -}" is the value if it exists, and "-" otherwise.
+- "stream {number} {client endpoint} -> {server endpoint}"
+- "packets {packet count} bytes {byte count} start {seconds notation of (the start time - the time of packet 1)} duration {seconds notation of (the end time - the start time)}"
+- "states {state} {packet number}, {state} {packet number}, ...": each entry of the state history written as "{state} {packet number}", joined with ", ".
+- "handshake syn {v or -} syn_ack {v or -} ack {v or -} rtt {rtt}": the three packet numbers of the handshake record. rtt is the seconds notation of (the time of packet ack - the time of packet syn) if both syn and ack exist, and "-" otherwise.
+- "options client mss {v or -} wscale {v or -} server mss {v or -} wscale {v or -}": the client side's MSS and WS, and the server side's MSS and WS.
+- "client packets {packet count} payload {payload amount} retransmission {count} out_of_order {count} lost_segment {count} duplicate_ack {count}": the client side's values.
+- "server ...": a line of the same form for the server side.
+- For each entry of the event list, in order, "event {packet number} {side name} {mark} seq {r} len {n}".
+
+[Source files]
+Organize the program into the following 6 source files (name the files according to each language's conventions).
+- main: holds the overall flow and the core of the processing, and contains the most logic. It handles the flow of the per-packet layer dissection (calling the dissector of each layer, handling malformations, the remaining data, the packet-wide fields), the list of fields with their types and aliases, the summary lines (source and destination, protocol, the basic info of each layer, the mark/flag/option summaries, the annotations), the display filters (tokenizing, parsing and errors, value conversion, evaluation), building the details, matching DNS transactions, the protocol statistics, and building and writing the lines of all output files.
+- hexdump: reading the capture (header lines, checking data lines, dump errors) and producing the hex dump lines shown in the details.
+- link_network: helpers for reading integers from byte sequences, the ones'-complement sum check, the notation of MAC addresses and IPv4 addresses, and the dissection of Ethernet, ARP and IPv4.
+- transport: the dissection of ICMP, UDP and TCP (checks with the pseudo-header, flags, parsing of TCP options).
+- dns_app: the dissection of DNS (header, questions, resource records, reading names and compression pointers, rdata notation, IPv6 address notation, type names and rcode names).
+- flows: TCP stream tracking (determining the stream, relative numbers, analysis marks, calculated window, state transitions, totals), and the aggregation and sorting of conversations and endpoints.
+
+[Constraints]
+- There are at least 1 and at most 2000 packets, and capture.txt has at most 30000 lines. The length in a header line is at least 1 and at most 1600. Header lines are always well-formed; errors occur only in data lines.
+- Times are integers >= 0 and < 2^52, and they never decrease in packet number order.
+- filters.txt has at most 100 lines, and a filter expression has at most 200 characters.
+- The values r, r+n and E that appear in TCP tracking are always less than 2^31. The value of tcp.options.wscale is always 14 or less.
+- No packet has ip.src equal to ip.dst.
+- Every integer value, including intermediate values of computations, has an absolute value less than 2^53 (times do not fit in a 32-bit integer).
+- Errors other than the conditions stated here (broken dumps, packets that are too short, incorrect checksums, broken DNS messages or TCP options, incorrect filter expressions, etc.) may appear in the input, and all of them are handled according to the rules of [Processing].
+
+[Example]
+The following is a small example that shows the format; it differs from the actual input.
+
+input/capture.txt
+PACKET 1 5000000 42
+0000  ff ff ff ff ff ff 3c 22 fb 1a 2b 3c 08 06 00 01
+0010  08 00 06 04 00 01 3c 22 fb 1a 2b 3c c0 a8 01 17
+0020  00 00 00 00 00 00 c0 a8 01 01
+
+PACKET 2 5001250 75
+0000  00 1d 7e 11 22 33 3c 22 fb 1a 2b 3c 08 00 45 00
+0010  00 3d 1c 41 40 00 40 11 9b 06 c0 a8 01 17 c0 a8
+0020  01 01 cf 09 00 35 00 29 28 79 3a 1f 01 00 00 01
+0030  00 00 00 00 00 00 03 77 77 77 07 65 78 61 6d 70
+0040  6c 65 03 63 6f 6d 00 00 01 00 01
+
+PACKET 3 5013123 91
+0000  3c 22 fb 1a 2b 3c 00 1d 7e 11 22 33 08 00 45 00
+0010  00 4d 0a 11 40 00 40 11 ad 26 c0 a8 01 01 c0 a8
+0020  01 17 00 35 cf 09 00 39 4d db 3a 1f 81 80 00 01
+0030  00 01 00 00 00 00 03 77 77 77 07 65 78 61 6d 70
+0040  6c 65 03 63 6f 6d 00 00 01 00 01 c0 0c 00 01 00
+0050  01 00 00 00 3c 00 04 cb 00 71 0a
+
+PACKET 4 5015139 58
+0000  00 1d 7e 11 22 33 3c 22 fb 1a 2b 3c 08 00 45 00
+0010  00 2c 1c 42 40 00 40 06 20 c0 c0 a8 01 17 cb 00
+0020  71 0a c9 3a 00 50 00 0f 42 40 00 00 00 00 60 02
+0030  fa f0 93 91 00 00 02 04 05 b4
+
+PACKET 5 5034570 60
+0000  3c 22 fb 1a 2b 3c 00 1d 7e 11 22 33 08 00 45 00
+0010  00 28 55 22 40 00 37 06 f0 e3 cb 00 71 0a c0 a8
+0020  01 17 00 50 c9 3a 00 00 00 00 00 0f 42 41 50 14
+0030  00 00 a6 2b 00 00 00 00 00 00 00 00
+
+PACKET 6 5335070 18
+0000  10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
+0012  20 21
+
+input/filters.txt
+# example requests
+FILTER dns and udp.srcport == 53
+FILTER tcp.flags.syn == 1 or arp
+FILTER ip.ttl > 64)
+DETAIL 4
+DETAIL 9
+
+output/summary.txt
+1 0.000000 3c:22:fb:1a:2b:3c -> ff:ff:ff:ff:ff:ff ARP 42 Who has 192.168.1.1? Tell 192.168.1.23
+2 0.001250 192.168.1.23 -> 192.168.1.1 DNS 75 Query 0x3a1f A www.example.com
+3 0.013123 192.168.1.1 -> 192.168.1.23 DNS 91 Response 0x3a1f A www.example.com A 203.0.113.10
+4 0.015139 192.168.1.23 -> 203.0.113.10 TCP 58 51514 -> 80 [SYN] Seq=0 Win=64240 Len=0 MSS=1460
+5 0.034570 203.0.113.10 -> 192.168.1.23 TCP 60 80 -> 51514 [RST, ACK] Seq=0 Ack=1 Win=0 Len=0
+6 0.335070 - -> - DUMP 18 dump: offset mismatch at line 35
+
+filter dns and udp.srcport == 53
+3 0.013123 192.168.1.1 -> 192.168.1.23 DNS 91 Response 0x3a1f A www.example.com A 203.0.113.10
+matched 1 of 6
+
+filter tcp.flags.syn == 1 or arp
+1 0.000000 3c:22:fb:1a:2b:3c -> ff:ff:ff:ff:ff:ff ARP 42 Who has 192.168.1.1? Tell 192.168.1.23
+4 0.015139 192.168.1.23 -> 203.0.113.10 TCP 58 51514 -> 80 [SYN] Seq=0 Win=64240 Len=0 MSS=1460
+matched 2 of 6
+
+filter ip.ttl > 64)
+error: unexpected ')' at column 12
+
+output/details.txt
+packet 4
+frame
+  frame.number = 4
+  frame.time = 15139
+  frame.len = 58
+  frame.protocols = eth:ip:tcp
+eth
+  eth.dst = 00:1d:7e:11:22:33
+  eth.src = 3c:22:fb:1a:2b:3c
+  eth.type = 0x0800
+ip
+  ip.hdr_len = 20
+  ip.tos = 0x00
+  ip.len = 44
+  ip.id = 0x1c42
+  ip.flags.df = 1
+  ip.flags.mf = 0
+  ip.frag_offset = 0
+  ip.ttl = 64
+  ip.proto = 6
+  ip.checksum = 0x20c0
+  ip.checksum.status = good
+  ip.src = 192.168.1.23
+  ip.dst = 203.0.113.10
+tcp
+  tcp.srcport = 51514
+  tcp.dstport = 80
+  tcp.stream = 0
+  tcp.seq = 0
+  tcp.seq_raw = 1000000
+  tcp.hdr_len = 24
+  tcp.flags = 0x02
+  tcp.flags.fin = 0
+  tcp.flags.syn = 1
+  tcp.flags.rst = 0
+  tcp.flags.psh = 0
+  tcp.flags.ack = 0
+  tcp.flags.urg = 0
+  tcp.window = 64240
+  tcp.window.calc = 64240
+  tcp.checksum = 0x9391
+  tcp.checksum.status = good
+  tcp.urgent = 0
+  tcp.option = MSS 1460
+  tcp.options.mss = 1460
+  tcp.len = 0
+
+packet 9 not found
+
+output/conversations.csv
+type,endpoint_a,endpoint_b,packets,bytes,packets_a_to_b,bytes_a_to_b,packets_b_to_a,bytes_b_to_a,start,duration
+ipv4,192.168.1.23,192.168.1.1,2,166,1,75,1,91,0.001250,0.011873
+udp,192.168.1.23:53001,192.168.1.1:53,2,166,1,75,1,91,0.001250,0.011873
+ipv4,192.168.1.23,203.0.113.10,2,118,1,58,1,60,0.015139,0.019431
+tcp,192.168.1.23:51514,203.0.113.10:80,2,118,1,58,1,60,0.015139,0.019431
+
+output/endpoints.csv
+address,packets,bytes,tx_packets,tx_bytes,rx_packets,rx_bytes
+192.168.1.23,4,284,2,133,2,151
+192.168.1.1,2,166,1,91,1,75
+203.0.113.10,2,118,1,60,1,58
+
+output/protocol_stats.txt
+packets 6
+bytes 344
+duration 0.335070
+hierarchy
+eth 5 326
+  arp 1 42
+  ip 4 284
+    icmp 0 0
+    udp 2 166
+      dns 2 166
+    tcp 2 118
+checksums
+ip good 4 bad 0
+icmp good 0 bad 0
+udp good 2 bad 0 none 0
+tcp good 2 bad 0
+malformed
+dump 1
+eth 0
+arp 0
+ip 0
+icmp 0
+udp 0
+tcp 0
+dns 0
+tcp analysis
+retransmission 0
+out_of_order 0
+lost_segment 0
+duplicate_ack 0
+dns
+queries 1
+responses 1
+transactions 1
+unanswered 0
+response_time min 0.011873 max 0.011873
+rcode NoError 1
+names
+www.example.com 1
+
+output/tcp_streams.txt
+stream 0 192.168.1.23:51514 -> 203.0.113.10:80
+packets 2 bytes 118 start 0.015139 duration 0.019431
+states SYN_SENT 4, RESET 5
+handshake syn 4 syn_ack - ack - rtt -
+options client mss 1460 wscale - server mss - wscale -
+client packets 1 payload 0 retransmission 0 out_of_order 0 lost_segment 0 duplicate_ack 0
+server packets 1 payload 0 retransmission 0 out_of_order 0 lost_segment 0 duplicate_ack 0
+
+Notes:
+- In packet 5, the IPv4 total length is 40, so the IP payload is 20 bytes (only the TCP header), and the last 6 bytes are ignored as padding. Since ACK is set and the client side's base (1000000) has been determined, Ack is 1000001-1000000=1. This packet is an RST from the server side, so the stream becomes RESET.
+- Packet 6 is a bad-dump packet because the offset 0012 (18) on its second line differs from the number of bytes so far, 16.
+- The name in the answer of packet 3 is represented by the compression pointer c0 0c (a jump to position 12).
+- In conversations.csv, the ipv4 and udp conversations with the same byte count 166 also have the same packet count, so they are ordered by kind.

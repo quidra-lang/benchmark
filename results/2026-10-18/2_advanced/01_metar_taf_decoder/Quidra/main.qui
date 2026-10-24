@@ -1,0 +1,649 @@
+import groups = "./groups.qui"
+import units = "./units.qui"
+import metar = "./metar.qui"
+import taf = "./taf.qui"
+import verification = "./verification.qui"
+
+string[] read_lines(string path)
+    string source = file.read(path)
+    string[] result = source.split(NL)
+    return result[0:<len(result) - 1]
+
+class Report(int number, string kind)
+    bool accepted = true
+    string modifier = ""
+    int station = 0
+    int moment = 0
+    int start = 0
+    int finish = 0
+    int body_start = 0
+    groups.Section state = groups.Section()
+    metar.Trend[] trends = []
+    metar.Remarks remarks = metar.Remarks([], [])
+    taf.Change[] changes = []
+    taf.Hour[] hours = []
+    string speci_reasons = ""
+
+class Engine(units.Calendar calendar, groups.Station[] stations, int crosswind_limit, int tailwind_limit)
+    groups.Problem[] problems = []
+
+    void .problem(int report_number, int position, string reason, string text = "", bool quoted = true)
+        groups.record(&problems, report_number, position, reason, text, quoted)
+
+    Report .header(int report_number, string[] words)
+        Report report = Report(report_number, words[0])
+        if groups.locate(["METAR", "SPECI", "TAF"], words[0]) < 0
+            .problem(report_number, 1, "rejected report, invalid type", words[0])
+            report.accepted = false
+            return report
+        int cursor = 1
+        if report.kind == "TAF" and cursor < int(len(words)) and groups.locate(["AMD", "COR"], words[cursor]) >= 0
+            report.modifier = words[cursor]
+            cursor += 1
+        string[] items = if report.kind == "TAF" then ["station", "time", "validity"] else ["station", "time"]
+        for nat offset < len(items)
+            string item = items[offset]
+            if cursor == int(len(words))
+                .problem(report_number, int(len(words)) + 1, "rejected report, missing {item}", quoted = false)
+                report.accepted = false
+                return report
+            string word = words[cursor]
+            bool valid = false
+            if offset == 0
+                for nat station_index < len(stations)
+                    if stations[station_index].code == word
+                        report.station = int(station_index)
+                        valid = true
+                        break
+            elif offset == 1
+                report.moment = calendar.observation(word)
+                valid = report.moment >= 0
+            else
+                units.Period period = calendar.period(word, report.moment / 1440 + 1, 1800)
+                if period.valid
+                    report.start = period.start
+                    report.finish = period.finish
+                    valid = true
+            if not valid
+                .problem(report_number, cursor + 1, "rejected report, invalid {item}", word)
+                report.accepted = false
+                return report
+            cursor += 1
+        report.body_start = cursor
+        return report
+
+    groups.Section .match_section(Report report, groups.Group[] body, int[] slots, string context)
+        groups.Section state = groups.Section(context)
+        int current = 0
+        for groups.Group item = body[]
+            int found = current
+            groups.Value value = groups.Value()
+            while found < int(len(slots))
+                value = metar.test(slots[found], item.text)
+                if value.present
+                    break
+                found += 1
+            if found == int(len(slots))
+                bool earlier = false
+                for 0 <= int offset < current
+                    if metar.test(slots[offset], item.text).present
+                        earlier = true
+                .problem(report.number, item.position, if earlier then "out of order group" else "unknown group", item.text)
+                continue
+            int kind = slots[found]
+            if not groups.valid(kind, value, state, stations[report.station])
+                .problem(report.number, item.position, "invalid group", item.text)
+                continue
+            groups.accept(&state, kind, value)
+            if kind == 3 and value.name == "cavok"
+                current = int(len(slots))
+                for nat offset < len(slots)
+                    if slots[offset] == 6
+                        current = int(offset) + 1
+            else
+                current = found + (if metar.repeatable(kind) then 0 else 1)
+        return state
+
+    void .decode(Report &report, string[] words, Report[] previous)
+        groups.Group[] body = []
+        int cursor = report.body_start
+        while cursor < int(len(words))
+            int position = cursor + 1
+            string text = words[cursor]
+            if units.digits(text, 1, 1) and cursor + 1 < int(len(words))
+                string next = words[cursor + 1]
+                if 5 <= len(next) <= 6 and next[1] == "/" and units.digits(next[0], 1, 1) and next.ends_with("SM") and units.digits(next[2:<len(next) - 2], 1, 2)
+                    text += " " + next
+                    cursor += 1
+            body = body.append(groups.Group(text, position))
+            cursor += 1
+        if report.kind == "TAF"
+            taf.Parts parts = taf.split(body, calendar, report.moment / 1440 + 1, report.start, report.finish, report.number, &problems)
+            report.state = .match_section(report, parts.base, taf.slots(), "base")
+            report.changes = parts.changes
+            for auto &change = &report.changes[]
+                change.state = .match_section(report, change.body, taf.slots(), "change")
+            report.hours = taf.expand(report.start, report.finish, report.state, report.changes)
+        else
+            metar.Parts parts = metar.split(body)
+            report.state = .match_section(report, parts.body, metar.slots(), "main")
+            report.trends = metar.read_trends(parts.trends, report.number, &problems)
+            for auto &trend = &report.trends[]
+                trend.state = .match_section(report, trend.body, taf.slots(), "trend")
+            report.remarks = metar.read_remarks(parts.remarks)
+            if report.kind == "SPECI"
+                int earlier = -1
+                for nat offset < len(previous)
+                    if previous[offset].station == report.station and previous[offset].kind != "TAF"
+                        earlier = int(offset)
+                report.speci_reasons = if earlier < 0 then "no previous report" else speci_check(previous[earlier].state, report.state)
+
+int ceiling(groups.Section state)
+    for groups.Value cloud = state.lists[6][]
+        if groups.locate(["BKN", "OVC", "VV"], cloud.name) >= 0
+            return cloud.height
+    return -1
+
+int category(groups.Section state)
+    int height = ceiling(state)
+    if height < 0
+        height = 1000000
+    units.Fraction visibility = units.Fraction(100000000, 1)
+    groups.Value value = state.singles[3]
+    if value.present
+        visibility = units.miles(value.name, value.whole_or_meters, value.numerator, value.denominator)
+    int numerator = visibility.numerator
+    int denominator = visibility.denominator
+    if height < 500 or numerator < denominator
+        return 3
+    if height < 1000 or numerator < 3 * denominator
+        return 2
+    if height <= 3000 or numerator <= 5 * denominator
+        return 1
+    return 0
+
+string wind_phrase(groups.Value wind)
+    if wind.direction == 0
+        return "calm"
+    string phrase = if wind.direction < 0 then "variable at {wind.speed} KT" else "{units.pad(wind.direction, 3)} degrees at {wind.speed} KT"
+    if wind.gust >= 0
+        phrase += " gusting {wind.gust} KT"
+    return phrase
+
+string wind_code(groups.Value wind)
+    if wind.direction == 0
+        return "00000KT"
+    string direction = if wind.direction < 0 then "VRB" else units.pad(wind.direction, 3)
+    string gust = if wind.gust < 0 then "" else "G{units.pad(wind.gust, 2)}"
+    return "{direction}{units.pad(wind.speed, 2)}{gust}KT"
+
+string mile_number(groups.Value visibility)
+    if not visibility.fractional
+        return visibility.whole_or_meters.string()
+    string ratio = "{visibility.numerator}/{visibility.denominator}"
+    return if visibility.whole_or_meters == 0 then ratio else "{visibility.whole_or_meters} {ratio}"
+
+string qualifier_phrase(string qualifier)
+    return if qualifier == "M" then "less than " elif qualifier == "P" then "more than " else ""
+
+string visibility_phrase(groups.Value visibility)
+    if visibility.name == "cavok"
+        return "10 km or more (CAVOK)"
+    if visibility.name == "meter"
+        return if visibility.qualifier == "P" then "10 km or more" else "{visibility.whole_or_meters} m"
+    return "{qualifier_phrase(visibility.qualifier)}{mile_number(visibility)} SM"
+
+string visibility_code(groups.Value visibility)
+    if visibility.name == "cavok"
+        return "CAVOK"
+    if visibility.name == "meter"
+        return visibility.raw
+    return "{visibility.qualifier}{mile_number(visibility)}SM"
+
+string weather_phrase(groups.Value weather)
+    if weather.name == "NSW"
+        return "no significant weather"
+    string[] parts = []
+    if weather.intensity != ""
+        parts = parts.append(if weather.intensity == "-" then "light" elif weather.intensity == "+" then "heavy" else "nearby")
+    int descriptor = groups.locate(groups.descriptors(), weather.descriptor)
+    if descriptor >= 0
+        parts = parts.append(groups.descriptor_words()[descriptor])
+    string[] phenomena = []
+    for string code = weather.codes[]
+        phenomena = phenomena.append(groups.phenomenon_words()[groups.locate(groups.phenomena(), code)])
+    if len(phenomena) > 0
+        parts = parts.append(phenomena.join(" and "))
+    return parts.join(" ")
+
+string cloud_phrase(groups.Value cloud)
+    int clear_index = groups.locate(groups.clear_codes(), cloud.name)
+    if clear_index >= 0
+        return groups.clear_words()[clear_index]
+    if cloud.name == "VV"
+        return "vertical visibility {cloud.height} ft"
+    string suffix = if cloud.suffix == "CB" then " cumulonimbus" elif cloud.suffix == "TCU" then " towering cumulus" else ""
+    return "{groups.amount_words()[groups.locate(groups.amounts(), cloud.name)]} at {cloud.height} ft{suffix}"
+
+string summary(groups.Section state)
+    string[] parts = []
+    if state.singles[1].present
+        parts = parts.append("wind {wind_phrase(state.singles[1])}")
+    if state.singles[3].present
+        parts = parts.append("visibility {visibility_phrase(state.singles[3])}")
+    for int kind = [5, 6][]
+        string[] phrases = []
+        for groups.Value value = state.lists[kind][]
+            phrases = phrases.append(if kind == 5 then weather_phrase(value) else cloud_phrase(value))
+        if len(phrases) > 0
+            string label = if kind == 5 then "weather" else "cloud"
+            parts = parts.append("{label} {phrases.join(", ")}")
+    return if len(parts) == 0 then "no conditions" else parts.join("; ")
+
+string tokens(groups.Section state)
+    string[] parts = []
+    if state.singles[1].present
+        parts = parts.append(wind_code(state.singles[1]))
+    if state.singles[3].present
+        parts = parts.append(visibility_code(state.singles[3]))
+    for groups.Value weather = state.lists[5][]
+        if weather.name != "NSW"
+            parts = parts.append(weather.raw)
+    for groups.Value cloud = state.lists[6][]
+        parts = parts.append(cloud.raw)
+    parts = parts.append(verification.categories()[category(state)])
+    return parts.join(" ")
+
+string[] wind_changes(groups.Value earlier, groups.Value later, int angle)
+    string[] reasons = []
+    if not earlier.present or not later.present
+        return reasons
+    if earlier.direction > 0 and later.direction > 0 and (earlier.speed >= 10 or later.speed >= 10)
+        int difference = units.absolute(earlier.direction - later.direction) % 360
+        if difference >= angle and 360 - difference >= angle
+            reasons = reasons.append("wind shift")
+    if units.absolute(earlier.speed - later.speed) >= 10
+        reasons = reasons.append("wind speed")
+    return reasons
+
+bool weather_flag(groups.Section state, bool freezing)
+    for groups.Value weather = state.lists[5][]
+        if not freezing and weather.descriptor == "TS"
+            return true
+        if freezing and weather.descriptor == "FZ"
+            for string code = weather.codes[]
+                if code == "RA" or code == "DZ"
+                    return true
+    return false
+
+string speci_check(groups.Section earlier, groups.Section later)
+    string[] reasons = []
+    if category(earlier) != category(later)
+        reasons = reasons.append("category {verification.categories()[category(earlier)]} to {verification.categories()[category(later)]}")
+    reasons = reasons.concat(wind_changes(earlier.singles[1], later.singles[1], 45))
+    for bool freezing = [false, true][]
+        if weather_flag(earlier, freezing) != weather_flag(later, freezing)
+            string name = if freezing then "freezing precipitation" else "thunderstorm"
+            string action = if weather_flag(later, freezing) then "began" else "ended"
+            reasons = reasons.append("{name} {action}")
+    return if len(reasons) == 0 then "no criteria met" else reasons.join(", ")
+
+string tenth(int value)
+    int positive = units.absolute(value)
+    string sign = if value < 0 then "-" else ""
+    return "{sign}{positive / 10}.{positive % 10}"
+
+string rvr_phrase(groups.Value range)
+    string first = "{qualifier_phrase(range.qualifier)}{range.reading_first}"
+    string last = "{qualifier_phrase(range.qualifier_second)}{range.reading_second}"
+    string reading = if range.mixed then "between {first} and {last}" else first
+    string trend = if range.trend == "U" then ", rising" elif range.trend == "D" then ", falling" elif range.trend == "N" then ", no change" else ""
+    return "runway {range.name} {reading} {range.unit}{trend}"
+
+int[] components(int direction, int heading, int speed)
+    return [units.floor_div(speed * units.cosine(direction - heading), 1000), units.floor_div(speed * units.sine(direction - heading), 1000)]
+
+string component_phrase(int[] values)
+    string name = if values[0] < 0 then "tailwind" else "headwind"
+    string side = if values[1] > 0 then " from right" elif values[1] < 0 then " from left" else ""
+    return "{name} {units.absolute(values[0])} KT, crosswind {units.absolute(values[1])} KT{side}"
+
+string[] observation_lines(Engine engine, Report report)
+    groups.Section state = report.state
+    groups.Station station = engine.stations[report.station]
+    string[] result = ["time: {engine.calendar.stamp(report.moment)}"]
+    if state.singles[0].present
+        string modifier = if state.singles[0].name == "AUTO" then "automated" else "corrected"
+        result = result.append("modifier: {modifier}")
+    string wind = if state.singles[1].present then wind_phrase(state.singles[1]) else "not reported"
+    if state.singles[2].present
+        groups.Value variation = state.singles[2]
+        wind += ", varying between {units.pad(variation.direction_start, 3)} and {units.pad(variation.direction_end, 3)} degrees"
+    result = result.append("wind: {wind}")
+    string visibility = if state.singles[3].present then visibility_phrase(state.singles[3]) else "not reported"
+    result = result.append("visibility: {visibility}")
+    for groups.Value range = state.lists[4][]
+        result = result.append("runway visual range: {rvr_phrase(range)}")
+    for groups.Value weather = state.lists[5][]
+        result = result.append("weather: {weather_phrase(weather)}")
+    if state.singles[3].present and state.singles[3].name == "cavok"
+        result = result.append("cloud: no significant cloud")
+    elif not state.singles[6].present
+        result = result.append("cloud: not reported")
+    else
+        for groups.Value cloud = state.lists[6][]
+            result = result.append("cloud: {cloud_phrase(cloud)}")
+    if state.singles[7].present
+        groups.Value temperature = state.singles[7]
+        result = result.append("temperature: {temperature.temperature} C, dew point {temperature.dew_point} C, spread {temperature.temperature - temperature.dew_point} C")
+    else
+        result = result.append("temperature: not reported")
+    if state.singles[8].present
+        groups.Value pressure = state.singles[8]
+        string inches = "{pressure.inches / 100}.{units.pad(pressure.inches % 100, 2)} inHg"
+        string hectopascals = "{pressure.hectopascals} hPa"
+        string primary = if pressure.unit == "A" then inches else hectopascals
+        string secondary = if pressure.unit == "A" then hectopascals else inches
+        result = result.append("altimeter: {primary} ({secondary})")
+    else
+        result = result.append("altimeter: not reported")
+    if state.singles[9].present
+        result = result.append("trend: no significant change")
+    for metar.Trend trend = report.trends[]
+        string phrase = if trend.kind == "BECMG" then "becoming" else "temporarily"
+        for metar.TrendTime clock = trend.times[]
+            string prefix = if clock.kind == "FM" then "from" elif clock.kind == "TL" then "until" else "at"
+            phrase += " {prefix} {units.pad(clock.hour, 2)}:{units.pad(clock.minute, 2)}Z"
+        result = result.append("trend: {phrase}: {summary(trend.state)}")
+    for int pressure = report.remarks.pressures[]
+        result = result.append("sea level pressure: {tenth(pressure)} hPa")
+    for int[] temperature = report.remarks.temperatures[]
+        result = result.append("precise temperature: {tenth(temperature[0])} C, dew point {tenth(temperature[1])} C")
+    int height = ceiling(state)
+    string ceiling_text = if height < 0 then "none" else "{height} ft"
+    result = result.append("ceiling: {ceiling_text}")
+    result = result.append("flight category: {verification.categories()[category(state)]}")
+    string pressure_altitude = "not available"
+    string density_altitude = "not available"
+    if state.singles[8].present
+        int altitude = station.elevation + (2992 - state.singles[8].inches) * 10
+        pressure_altitude = "{altitude} ft"
+        if state.singles[7].present
+            int density = altitude + units.floor_div(120 * (1000 * state.singles[7].temperature - 15000 + 2 * altitude), 1000)
+            density_altitude = "{density} ft"
+    result = result.append("pressure altitude: {pressure_altitude}")
+    result = result.append("density altitude: {density_altitude}")
+    if state.singles[1].present and state.singles[1].direction > 0
+        groups.Value accepted_wind = state.singles[1]
+        string[] usable = []
+        string preferred = "none"
+        int best = -1000000
+        for groups.Runway runway = station.runways[]
+            int[] mean = components(accepted_wind.direction, runway.heading, accepted_wind.speed)
+            int[] gust = if accepted_wind.gust >= 0 then components(accepted_wind.direction, runway.heading, accepted_wind.gust) else mean
+            string phrase = component_phrase(mean)
+            if accepted_wind.gust >= 0
+                phrase += "; gusts {component_phrase(gust)}"
+            result = result.append("runway {runway.name}: {phrase}")
+            if units.absolute(gust[1]) <= engine.crosswind_limit and -gust[0] <= engine.tailwind_limit
+                usable = usable.append(runway.name)
+                if mean[0] > best
+                    best = mean[0]
+                    preferred = runway.name
+        string usable_text = if len(usable) == 0 then "none" else usable.join(" ")
+        result = result.append("usable runways: {usable_text}")
+        result = result.append("preferred runway: {preferred}")
+    else
+        result = result.append("runway wind: not computed")
+    if report.kind == "SPECI"
+        result = result.append("speci check: {report.speci_reasons}")
+    return result
+
+string decoded_block(Engine engine, Report report)
+    groups.Station station = engine.stations[report.station]
+    string[] result = ["REPORT {report.number}: {report.kind} {station.code} ({station.name})"]
+    string[] body = []
+    if report.kind == "TAF"
+        body = body.append("issued: {engine.calendar.stamp(report.moment)}")
+        if report.modifier != ""
+            string modifier = if report.modifier == "AMD" then "amended" else "corrected"
+            body = body.append("modifier: {modifier}")
+        body = body.append("valid: {engine.calendar.stamp(report.start)} to {engine.calendar.stamp(report.finish)}")
+        body = body.append("base: {summary(report.state)}")
+        for taf.Change change = report.changes[]
+            string period = engine.calendar.stamp(change.start)
+            if change.kind != "FM"
+                period += " to {engine.calendar.stamp(change.finish)}"
+            body = body.append("{change.kind} {period}: {summary(change.state)}")
+    else
+        body = observation_lines(engine, report)
+    for string line = body[]
+        result = result.append("  " + line)
+    return result.join(NL)
+
+string category_counts(int[] counts)
+    return "VFR {counts[0]}, MVFR {counts[1]}, IFR {counts[2]}, LIFR {counts[3]}"
+
+string timeline_block(Engine engine, Report report)
+    string[] result = ["TAF {engine.stations[report.station].code} issued {engine.calendar.stamp(report.moment)} valid {engine.calendar.stamp(report.start)} to {engine.calendar.stamp(report.finish)}"]
+    int[] counts = [0, 0, 0, 0]
+    for taf.Hour hour = report.hours[]
+        string line = "{engine.calendar.stamp(hour.moment)} {tokens(hour.prevailing)}"
+        for taf.Temporary temporary = hour.temporary[]
+            line += " | {temporary.kind} {tokens(temporary.state)}"
+        result = result.append(line)
+        counts[category(hour.prevailing)] += 1
+    result = result.append("summary: {category_counts(counts)}")
+    return result.join(NL)
+
+string categories_line(Engine engine, Report report)
+    groups.Section state = report.state
+    string height = if ceiling(state) < 0 then "NONE" else ceiling(state).string()
+    string visibility = "NONE"
+    if state.singles[3].present
+        groups.Value value = state.singles[3]
+        visibility = "{value.qualifier}{units.meters(value.name, value.whole_or_meters, value.numerator, value.denominator)}"
+    return "{engine.stations[report.station].code},{engine.calendar.stamp(report.moment)},{height},{visibility},{verification.categories()[category(state)]}"
+
+int extreme_value(Report report, int kind)
+    if kind < 2
+        return report.state.singles[7].temperature
+    if kind == 2
+        groups.Value wind = report.state.singles[1]
+        return if wind.gust >= 0 then wind.gust else wind.speed
+    return ceiling(report.state)
+
+string[] extreme_lines(Engine engine, Report[] observations)
+    string[] result = []
+    string[] labels = ["lowest temperature", "highest temperature", "strongest wind", "lowest ceiling", "lowest visibility"]
+    for 0 <= int kind < 5
+        int selected = -1
+        int value = 0
+        for nat offset < len(observations)
+            Report observation = observations[offset]
+            if (kind < 2 and not observation.state.singles[7].present) or (kind == 2 and not observation.state.singles[1].present) or (kind == 3 and ceiling(observation.state) < 0) or (kind == 4 and not observation.state.singles[3].present)
+                continue
+            int candidate = extreme_value(observation, kind)
+            bool better = selected < 0
+            if selected >= 0
+                if kind == 4
+                    groups.Value left = observation.state.singles[3]
+                    groups.Value right = observations[selected].state.singles[3]
+                    units.Fraction first = units.miles(left.name, left.whole_or_meters, left.numerator, left.denominator)
+                    units.Fraction last = units.miles(right.name, right.whole_or_meters, right.numerator, right.denominator)
+                    better = first.numerator * last.denominator < last.numerator * first.denominator
+                else
+                    better = if kind == 1 or kind == 2 then candidate > value else candidate < value
+            if better
+                selected = int(offset)
+                value = candidate
+        if selected < 0
+            result = result.append("{labels[kind]}: not available")
+        else
+            Report chosen = observations[selected]
+            string phrase = "{value} C"
+            if kind == 2
+                phrase = wind_phrase(chosen.state.singles[1])
+            elif kind == 3
+                phrase = "{value} ft"
+            elif kind == 4
+                phrase = visibility_phrase(chosen.state.singles[3])
+            result = result.append("{labels[kind]}: {phrase} at {engine.calendar.stamp(chosen.moment)}")
+    return result
+
+string table_row(string label, string[] values)
+    string result = label
+    while len(result) < 8
+        result += " "
+    for string value = values[]
+        int padding = 6 - int(len(value))
+        if padding > 0
+            result += string.repeat(" ", nat(padding))
+        result += value
+    return result
+
+string verification_block(Engine engine, int station_index, Report[] reports, verification.Forecast[] forecasts)
+    groups.Station station = engine.stations[station_index]
+    Report[] observations = []
+    int metars = 0
+    int specis = 0
+    int[] counts = [0, 0, 0, 0]
+    for Report report = reports[]
+        if report.station == station_index and report.kind != "TAF"
+            observations = observations.append(report)
+            if report.kind == "METAR"
+                metars += 1
+            else
+                specis += 1
+            counts[category(report.state)] += 1
+    string[] result = ["station {station.code} ({station.name})", "reports: METAR {metars}, SPECI {specis}", "observed categories: {category_counts(counts)}"]
+    result = result.concat(extreme_lines(engine, observations))
+    verification.Statistics statistics = verification.Statistics()
+    string[] amendments = []
+    for Report observation = observations[]
+        int hour_mark = observation.moment - observation.moment % 60
+        int actual = category(observation.state)
+        for verification.Forecast forecast = forecasts[]
+            if verification.covers(forecast, station_index, observation.moment)
+                int hour_index = (hour_mark - forecast.start) / 60
+                int bucket = hour_index / 6
+                statistics.bucket_pairs[bucket] += 1
+                if category(forecast.hours[hour_index].prevailing) == actual
+                    statistics.bucket_hits[bucket] += 1
+        int selected = verification.select(forecasts, station_index, observation.moment)
+        if selected < 0
+            statistics.no_forecast += 1
+            continue
+        verification.Forecast chosen = forecasts[selected]
+        taf.Hour hour = chosen.hours[(hour_mark - chosen.start) / 60]
+        int forecast_category = category(hour.prevailing)
+        bool temporary_hit = actual == forecast_category
+        for taf.Temporary temporary = hour.temporary[]
+            if category(temporary.state) == actual
+                temporary_hit = true
+        .statistics.add(forecast_category, actual, temporary_hit)
+        string[] reasons = []
+        if not temporary_hit
+            reasons = reasons.append("category {verification.categories()[actual]}, forecast {verification.categories()[forecast_category]}")
+        if len(wind_changes(hour.prevailing.singles[1], observation.state.singles[1], 60)) > 0
+            reasons = reasons.append("wind {wind_code(observation.state.singles[1])}, forecast {wind_code(hour.prevailing.singles[1])}")
+        if len(reasons) > 0
+            amendments = amendments.append("amendment {engine.calendar.stamp(observation.moment)}: {reasons.join("; ")}")
+    result = result.append("verified: {statistics.total}")
+    result = result.append("no forecast: {statistics.no_forecast}")
+    result = result.append(table_row("forecast", ["VFR", "MVFR", "IFR", "LIFR", "total"]))
+    for 0 <= int row < 4
+        string[] cells = []
+        for 0 <= int column < 4
+            cells = cells.append(statistics.table[row][column].string())
+        cells = cells.append(statistics.rows[row].string())
+        result = result.append(table_row(verification.categories()[row], cells))
+    string[] total_cells = []
+    for int count = statistics.columns[]
+        total_cells = total_cells.append(count.string())
+    total_cells = total_cells.append(statistics.total.string())
+    result = result.append(table_row("total", total_cells))
+    result = result.append("hit rate: {units.fraction(statistics.hits, statistics.total)}")
+    result = result.append("hit rate with temporary groups: {units.fraction(statistics.temporary_hits, statistics.total)}")
+    int[] skill = statistics.skill()
+    result = result.append("heidke skill score: {units.fraction(skill[0], skill[1])}")
+    for 0 <= int offset < 4
+        int[] pod = statistics.pod(offset)
+        int[] far = statistics.far(offset)
+        result = result.append("{verification.categories()[offset]}: pod {units.fraction(pod[0], pod[1])}, far {units.fraction(far[0], far[1])}")
+    for 0 <= int offset < 5
+        result = result.append("hours {offset * 6}-{offset * 6 + 5}: {units.fraction(statistics.bucket_hits[offset], statistics.bucket_pairs[offset])}")
+    return result.concat(amendments).join(NL)
+
+string line_text(string[] values)
+    return if len(values) == 0 then "" else values.join(NL) + NL
+
+string block_text(string[] blocks)
+    return if len(blocks) == 0 then "" else blocks.join(NL + NL) + NL
+
+if main
+    groups.Station[] stations = []
+    for string line = read_lines("input/stations.txt")[]
+        string[] fields = line.split(" ")
+        groups.Runway[] runways = []
+        for string entry = fields[2].split(",")[]
+            string[] runway = entry.split("/")
+            runways = runways.append(groups.Runway(runway[0], int.parse(runway[1])))
+        stations = stations.append(groups.Station(fields[0], int.parse(fields[1]), runways, fields[3:<len(fields)].join(" ")))
+    string[] settings = read_lines("input/params.txt")
+    units.Calendar calendar = units.Calendar(int.parse(settings[0].split(" ")[1]), int.parse(settings[1].split(" ")[1]))
+    Engine engine = Engine(calendar, stations, int.parse(settings[2].split(" ")[1]), int.parse(settings[3].split(" ")[1]))
+    string[][] raw_reports = []
+    for string line = read_lines("input/reports.txt")[]
+        string[] words = line.trim().split(" ")
+        if line.starts_with(" ")
+            nat last = len(raw_reports) - 1
+            raw_reports[last] = raw_reports[last].concat(words)
+        else
+            raw_reports = raw_reports.append(words)
+    Report[] reports = []
+    verification.Forecast[] forecasts = []
+    string[] decoded_output = []
+    string[] categories_output = ["station,time,ceiling,visibility,category"]
+    string[] timeline_output = []
+    for nat offset < len(raw_reports)
+        Report report = .engine.header(int(offset) + 1, raw_reports[offset])
+        if not report.accepted
+            continue
+        .engine.decode(&report, raw_reports[offset], reports)
+        reports = reports.append(report)
+        decoded_output = decoded_output.append(decoded_block(engine, report))
+        if report.kind == "TAF"
+            forecasts = forecasts.append(verification.Forecast(report.station, report.number, report.moment, report.start, report.finish, report.hours))
+            timeline_output = timeline_output.append(timeline_block(engine, report))
+        else
+            categories_output = categories_output.append(categories_line(engine, report))
+    string[] verification_output = []
+    string[] requested = settings[4].split(" ")
+    for string code = requested[1:<len(requested)][]
+        for nat station_index < len(stations)
+            if stations[station_index].code == code
+                verification_output = verification_output.append(verification_block(engine, int(station_index), reports, forecasts))
+    // Insertion sort preserves ties and orders period errors with slot errors.
+    for 1 <= int offset < int(len(engine.problems))
+        groups.Problem candidate = engine.problems[offset]
+        int position = offset
+        while position > 0
+            groups.Problem earlier = engine.problems[position - 1]
+            if earlier.report < candidate.report or (earlier.report == candidate.report and earlier.position <= candidate.position)
+                break
+            engine.problems[position] = earlier
+            position -= 1
+        engine.problems[position] = candidate
+    string[] errors_output = []
+    for groups.Problem problem = engine.problems[]
+        string suffix = if problem.quoted then " {DQ}{problem.text}{DQ}" else ""
+        errors_output = errors_output.append("report {problem.report} word {problem.position}: {problem.reason}{suffix}")
+    bool directory_exists = file.is_directory("output")
+    if not directory_exists
+        file.mkdir("output")
+    file.write("output/decoded.txt", block_text(decoded_output))
+    file.write("output/categories.csv", line_text(categories_output))
+    file.write("output/taf_timeline.txt", block_text(timeline_output))
+    file.write("output/verification.txt", block_text(verification_output))
+    file.write("output/errors.txt", line_text(errors_output))

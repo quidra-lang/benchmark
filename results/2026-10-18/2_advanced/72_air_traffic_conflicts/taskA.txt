@@ -1,0 +1,256 @@
+[Overview]
+Write a program that builds 4-D trajectories (position and altitude as functions of time) from the flight plans of aircraft flying in an airspace approximated by a plane, detects "conflicts" in which two aircraft come closer than the separation minima, and resolves them by flight level changes, speed reductions and ground delays. Processing is done in the following order.
+1. From the flight plans (waypoints, flight levels, speed, departure time) and the climb and descent rates of the aircraft types, build each aircraft's trajectory as a sequence of pieces of straight-line motion (segments).
+2. For every pair of aircraft and every pair of segments flown at the same time, solve the quadratic equation of the relative motion to find the time during which horizontal separation is lost, intersect it with the time during which vertical separation is lost, and obtain the conflict intervals and closest points of approach.
+3. Take the conflicts one at a time in order of start time; starting with the lower-priority aircraft, try flight level changes, a speed reduction and ground delays, and accept the first manoeuvre that creates no new conflict. Report conflicts that cannot be resolved.
+4. For the plans before resolution (initial plans) and after resolution (final plans), produce conflict classification and statistics, sector (airspace block) transits and load, a replay of short-term conflict alerts, radar images, traffic density maps and flight strips.
+Input is 4 files in the input/ folder and output is 9 files in the output/ folder. The program prints nothing to standard output.
+
+[Input files]
+All 4 input files consist of ASCII characters only, and every line ends with a newline (LF). Lines have no leading or trailing spaces, and there are no empty lines. Integers are written in decimal without extra leading zeros (negative integers do not occur).
+All coordinates are integers in units of 0.1 nautical mile (NM). x is the eastward coordinate and y is the northward coordinate. Flight levels (FL) are integers in units of 100 feet (ft) (e.g. 330 means 33000 ft). Speeds are in knots (kt, nautical miles per hour) and times are in seconds.
+
+* input/flights.csv (flight plans)
+Line 1 is the header line "callsign,type,departure_s,level,speed_kt,waypoints". From line 2 on, there is one aircraft per line, with the following 6 fields in this order, separated by commas.
+- callsign: the callsign. A string of 3 to 8 characters consisting of uppercase letters and digits and starting with an uppercase letter; all callsigns are distinct.
+- type: the aircraft type name. One of the types listed in input/aircraft.txt.
+- departure_s: the departure time (seconds).
+- level: the flight level at departure.
+- speed_kt: the ground speed (kt). It is constant during the flight.
+- waypoints: the sequence of waypoints. Two or more waypoints in flying order, separated by single spaces. Each waypoint has the form "X:Y" or "X:Y:L", where X and Y are the coordinates of the point and L is the flight level of the leg that ends at that point (described below). The first waypoint always has the form "X:Y".
+An aircraft appears at the first waypoint at its departure time, flies along straight lines connecting the waypoints in order, and disappears from the airspace at the time it reaches the last waypoint.
+
+* input/aircraft.txt (aircraft types)
+One aircraft type per line, with the 4 fields "type_name climb_rate descent_rate min_speed" separated by single spaces. Type names are strings of 1 to 8 characters consisting of uppercase letters and digits, and are all distinct. Climb and descent rates are in feet per minute (ft/min), and the minimum speed is in kt.
+
+* input/sectors.txt (sectors)
+One sector per line, with the 8 fields "name X1 Y1 X2 Y2 lower upper capacity" separated by single spaces. Names are strings of 1 to 8 characters consisting of uppercase letters, digits and "_", and are all distinct. A sector is the box-shaped airspace X1 <= X < X2, Y1 <= Y < Y2 (in coordinate units), lower <= flight level < upper. The capacity is the number of aircraft the sector can handle at the same time. Below, "sector order" means the order in which the sectors are written in this file.
+
+* input/params.txt (parameters)
+The following 9 lines are written in this order. Each line consists of a key and one or more integers separated by single spaces. The values on each line are referred to by the symbols shown here.
+separation Dh Dv: the minimum horizontal separation Dh (NM) and the minimum vertical separation Dv (ft)
+lookahead T_look: the look-ahead time (seconds) used to check for new conflicts during conflict resolution
+max_delay D_max: the upper limit of ground delay (seconds, a multiple of 60)
+levels L_min L_max: the lower and upper limits of usable flight levels
+sampling T_a T_b: the time range (seconds) over which load and alerts are examined
+radar R_x0 R_y0 R_x1 R_y1 R_w R_h: the range of the radar image (R_x0 <= X < R_x1, R_y0 <= Y < R_y1 in coordinate units), and the number of columns R_w and rows R_h of the image
+snapshots S_1 S_2 ...: the times at which radar images are produced (one or more, in increasing order)
+leader T_lead: how far ahead (seconds) the predicted position drawn in the radar image is
+alert T_alert: the prediction time (seconds) of the short-term conflict alert
+
+[Processing]
+* Common rules
+- All integer computations are exact. floor(a) is the largest integer not greater than a (floor function).
+- Real-number computations use IEEE 754 double precision. When an integer value is used in a real-number computation, it is converted to double precision. In formulas, "/" is real division except inside floor(...) (even when both operands are integers, as in c of 1 (4), they are converted to double precision before dividing). Formulas are evaluated with exactly the parentheses and order as written, and operations of equal precedence are evaluated from left to right. A "sum", unless stated otherwise, is formed by adding the terms one at a time from the first, in the order written.
+- sqrt is the square root. atan2(a, b) is the argument (in radians, -pi < atan2(a, b) <= pi) of the point (b, a) (the first argument is the vertical component and the second argument is the horizontal component). Use pi = 3.141592653589793. |a| is the absolute value of a, and max and min are the maximum and the minimum.
+- "Notation with d decimals" means the decimal notation of the value rounded half up to d digits after the decimal point (if the integer part is 0, write "0"). Negative values are prefixed with "-", but a value whose rounded result is 0 gets no "-" (e.g. -0.0004 with 3 decimals is 0.000). Below, "(d decimals)" or "with d decimals" denotes this notation.
+- Callsigns, type names and sector names are compared in lexicographic order of ASCII character codes. "Callsign order" means increasing order of callsign.
+- A pair of aircraft is written (A, B), where A is the one with the smaller callsign and B the one with the larger callsign, and in the output it is written "A-B" (A, "-" and B concatenated in this order). This is called the pair name.
+- The "phase" of a segment is CLB while climbing, DES while descending, and LVL in level flight.
+
+* 1. Building trajectories
+Internally, coordinates are represented by the real numbers x = X / 10 and y = Y / 10 in NM, and altitude by the real number z in ft (flight level * 100).
+Each aircraft's "plan" has, in addition to the input values, a ground delay delta (seconds), a level offset sigma (in flight level units, a multiple of 10) and a current speed V (kt). In the plan exactly as given in the input (the "initial plan"), delta = 0, sigma = 0 and V = speed_kt. The "flight level list" of a plan is the list of level + sigma followed by L + sigma for each waypoint of the form "X:Y:L".
+A trajectory is built from a plan as follows. Let the waypoints be W_0, W_1, ..., W_m, let the current time be t = departure time + delta, and let the current flight level be F = level + sigma. For k = 1, 2, ..., m in order, do the following for "leg k" from W_(k-1) = (X_P, Y_P) to W_k = (X_Q, Y_Q).
+(1) Let dX = X_Q - X_P and dY = Y_Q - Y_P (integers); the leg length is l_k = sqrt(dX * dX + dY * dY) / 10 (NM) and the leg duration is d = l_k * 3600 / V (seconds). The horizontal velocity is vx = (dX / 10) / d, vy = (dY / 10) / d (NM/s). Also let x_P = X_P / 10, y_P = Y_P / 10, x_Q = X_Q / 10, y_Q = Y_Q / 10.
+(2) If W_k has the form "X:Y:L", the target flight level is F' = L + sigma; otherwise F' = F.
+(3) If F' = F, this leg is a single segment (phase LVL): start time t, end time t + d, start position (x_P, y_P, F * 100), velocity (vx, vy, 0), end position (x_Q, y_Q, F * 100).
+(4) If F' != F, the altitude is changed at the beginning of the leg, and level flight follows once the target level is reached. If F' > F it is a climb: let r be the climb rate of the aircraft type and vz = r / 60. If F' < F it is a descent: let r be the descent rate and vz = -(r / 60). The altitude change time is c = |F' - F| * 6000 / r (|F' - F| * 6000 is computed as an integer), and let C = (x_P + vx * c, y_P + vy * c). This leg consists of the following 2 segments.
+  - First (phase CLB or DES): start time t, end time t + c, start position (x_P, y_P, F * 100), velocity (vx, vy, vz), end position (x of C, y of C, F' * 100)
+  - Second (phase LVL): start time t + c, end time t + d, start position (x of C, y of C, F' * 100), velocity (vx, vy, 0), end position (x_Q, y_Q, F' * 100)
+(5) Replace t with t + d and F with F'.
+Segments are numbered from 1 in the order they are created. Each segment has its number, the leg number k, the phase, the start time ts, the end time te, the start position, the velocity and the end position. The end time of the last segment is the "arrival time", and l_1 + l_2 + ... + l_m is the "route length".
+The altitude of a level-flight segment is exactly flight level * 100, and the z component of its velocity is exactly 0.
+
+* 2. Positions
+- The position of a segment at time u is (x + vx * (u - ts), y + vy * (u - ts), z + vz * (u - ts)), where (x, y, z) is the start position of the segment and (vx, vy, vz) is its velocity.
+- An aircraft is "in flight" at time u when ts of the first segment <= u < te of the last segment. When it is in flight, the first segment with ts <= u < te is called "the segment at time u", and the position computed from that segment is "the position at time u".
+
+* 3. Loss interval
+For the relative motion of two aircraft, the time during which separation is lost is found by the following procedure. The inputs are the relative position (px, py, pz) at time t1 (position of the first aircraft - position of the second aircraft), the relative velocity (wx, wy, wz) (velocity of the first aircraft - velocity of the second aircraft), and the time range to examine, t1 <= t <= t2.
+(1) Let qa = wx * wx + wy * wy, qb = 2 * (px * wx + py * wy), qc = (px * px + py * py) - Dh * Dh, lo = t1, hi = t2.
+(2) Horizontal: if qa < 10^-12, stop with "no loss" when qc >= 0 (when qc < 0, lo and hi are left unchanged). If qa >= 10^-12, let D = qb * qb - 4 * qa * qc, and stop with "no loss" when D <= 0. When D > 0, let s = sqrt(D) and set lo = max(lo, t1 + (-qb - s) / (2 * qa)), hi = min(hi, t1 + (-qb + s) / (2 * qa)).
+(3) Vertical: if wz = 0, stop with "no loss" when |pz| >= Dv (when |pz| < Dv, lo and hi are left unchanged). If wz != 0, let r1 = (-Dv - pz) / wz, r2 = (Dv - pz) / wz, and set lo = max(lo, t1 + min(r1, r2)), hi = min(hi, t1 + max(r1, r2)).
+(4) If hi - lo <= 10^-6, stop with "no loss". Otherwise, the time from lo to hi is the loss interval.
+(5) Closest point of approach: if qa >= 10^-12, tc = t1 + (-qb / (2 * qa)); if qa < 10^-12, tc = t1; then set tc = min(max(tc, lo), hi). Let tau = tc - t1, ex = px + wx * tau, ey = py + wy * tau; the closest approach distance is sqrt(ex * ex + ey * ey) (NM), and the altitude difference at that time is |pz + wz * tau| (ft).
+The result is the 5 values lo, hi, tc, the closest approach distance and the altitude difference.
+Vertical separation is lost when the altitude difference is less than Dv. When the altitude difference is exactly Dv (for example, when two aircraft in level flight are 10 flight levels apart), separation is maintained.
+
+* 4. Conflict detection
+(1) The conflicts of a pair (A, B) are found as follows. For every combination of a segment a of A (in number order) and a segment b of B (in number order), let t1 = max(ts of a, ts of b) and t2 = min(te of a, te of b); if t1 < t2, perform the procedure of 3 with the relative position being A's position at time t1 computed from a minus B's position at time t1 computed from b, and the relative velocity being a's velocity minus b's velocity. If there is a loss interval, it is a "piece". A piece has the number of a, the number of b, and the 5 values of 3.
+(2) Sort the pieces in increasing order of lo, and examine them one at a time from the first, grouping them into conflicts. If there is no conflict yet, or if lo of the examined piece - the end time of the last conflict > 10^-6, create a new conflict consisting of that piece alone (start time = lo, end time = hi, closest piece = that piece). Otherwise, add the piece to the last conflict, replace its end time with hi, and replace the closest piece with that piece only when the piece's closest approach distance is less than "the closest approach distance of the closest piece - 10^-9".
+(3) A conflict has its pair, start time, end time, sequence of pieces and closest piece. The CPA time, closest approach distance and altitude difference of a conflict are the tc, closest approach distance and altitude difference of its closest piece.
+(4) The "conflict list" of a set of plans consists of the conflicts found by (1) and (2) for all pairs (A, B), sorted in increasing order of start time, ties broken by increasing A, then by increasing B.
+
+* 5. Conflict resolution
+(1) Manoeuvres: the following manoeuvres are tried on a plan in this order.
+  - level_up: increase sigma by 10.
+  - level_down: decrease sigma by 10.
+  - speed_down: set V to floor(V * 9 / 10).
+  - delay_60, delay_120, ...: increase delta by 60, 120, ..., D_max respectively. The name of the manoeuvre is "delay_" followed by the number of seconds added (e.g. delay_120), and there are D_max / 60 ground delay manoeuvres.
+  level_up and level_down are "infeasible" if the flight level list of the new plan contains a value less than L_min or greater than L_max. speed_down is infeasible if the new V is less than the minimum speed of the aircraft type. Ground delays are always feasible. Every manoeuvre is applied cumulatively on top of the changes accepted so far.
+(2) Priority: of the two aircraft, the one with the larger departure time + delta has the lower priority; if equal, the one with the larger callsign has the lower priority.
+(3) Procedure: start with the set U of "unresolved pairs" and the set R of "resolved pairs" both empty and with every aircraft's plan set to its initial plan, then repeat the following.
+  [1] Compute the conflict list with the current plans, and let the "target" be the first conflict whose pair is not in U. If there is no such conflict, stop. Let T_c be the start time of the target.
+  [2] Increase the round number by 1 (the first round is 1).
+  [3] Of the target's pair, let F1 be the aircraft with the lower priority and F2 the one with the higher priority. First with F = F1 and the partner P = F2, then with F = F2 and P = F1, try the manoeuvres in the order of (1).
+    - Apply the manoeuvre to F's current plan. If it is infeasible, go to the next manoeuvre.
+    - Build F's trajectory from the new plan, and for each aircraft G other than F, if the pair (F, G) is not in U, perform 4 (1) and (2) with F's new trajectory and G's current trajectory. Among the conflicts found this way, those whose G is P (regardless of start time) and those whose start time is less than T_c + T_look are "blockers".
+    - If there is a blocker, go to the next manoeuvre.
+    - If there is no blocker, "accept" this manoeuvre, replace F's plan with the new plan, and finish [3].
+  [4] If a manoeuvre was accepted, add the target's pair to R. Otherwise, add the target's pair to U and record the target as an "unresolved conflict".
+  [5] Go back to [1].
+The plans at the end are the "final plans". The conflict list of the initial plans is called the "initial conflicts", and the conflict list of the final plans the "final conflicts".
+
+* 6. Conflict classification
+For each conflict in the initial conflicts and in the final conflicts, compute the following values. Let a be the A-side segment of the closest piece, b its B-side segment, and tc the CPA time.
+(1) Altitudes: z / 100 of A's position at time tc computed from a, and z / 100 of B's position at time tc computed from b.
+(2) Tracks: the track of a segment is theta = atan2(vx, vy) * 180 / pi, plus 360 if theta < 0 (the angle measured clockwise from north). Let theta_a and theta_b be the tracks of a and b; the crossing angle is 360 - g if g = |theta_a - theta_b| is greater than 180, and g otherwise.
+(3) Geometry: let dot = vx of a * vx of b + vy of a * vy of b and cross = vx of a * vy of b - vy of a * vx of b. If dot * dot > cross * cross, it is head_on (head-on) when dot < 0 and trailing (same direction) otherwise. Otherwise it is crossing (crossing).
+(4) Severity: with dmin the closest approach distance, it is HIGH if 10 * dmin < 4 * Dh, otherwise MEDIUM if 10 * dmin < 7 * Dh, and LOW otherwise.
+(5) Sector: the name of the first sector (in sector order) that contains the midpoint ((xA + xB) / 2, (yA + yB) / 2, (zA + zB) / 2) of the two positions of (1). If no sector contains it, "-". A point (x, y, z) is contained in a sector when X1 / 10 <= x < X2 / 10 and Y1 / 10 <= y < Y2 / 10 and lower * 100 <= z < upper * 100.
+(6) Outcome: remaining if the pair is the same as the pair of some final conflict, otherwise resolved if it is in R, and indirect otherwise (the outcome of a final conflict is always remaining).
+A conflict is "active" at time u when start time <= u < end time.
+
+* 7. Sector transits
+For the initial plans and for the final plans, find the transits as follows.
+(1) The time a segment is inside a sector: let lo = ts and hi = te, and for the 3 components x, y and z in order, with p the component of the segment's start position, v the component of its velocity, and [alpha, beta) the sector's range (X1 / 10 and X2 / 10 for x, Y1 / 10 and Y2 / 10 for y, lower * 100 and upper * 100 for z), do the following. If v = 0, stop with "none" unless alpha <= p < beta. If v != 0, let r1 = (alpha - p) / v and r2 = (beta - p) / v, and set lo = max(lo, ts + min(r1, r2)), hi = min(hi, ts + max(r1, r2)). After examining the 3 components, if hi - lo > 10^-6, the time from lo to hi is the time the segment is inside the sector; otherwise it is "none".
+(2) For each aircraft and each sector, examine the segments in number order and join the inside times in order. If lo of the examined time - the end of the previously joined time <= 10^-6, replace the end of the previous time with hi; otherwise (including the first time), start a new time. Each joined time is a "transit"; its beginning is the entry time and its end is the exit time.
+(3) For each aircraft, sort its transits in increasing order of entry time (ties in sector order). For every two adjacent transits, if |entry time of the later transit - exit time of the earlier transit| <= 10^-6, the "next" of the earlier transit is the sector of the later transit, and the "previous" of the later transit is the sector of the earlier transit. For transits whose next or previous is not determined, they are "-".
+(4) The "transit list" lists the transits with aircraft in callsign order and, within each aircraft, in the order of (3).
+
+* 8. Sector load
+(1) Sample times: all of T_a, T_a + 60, T_a + 120, ... that are less than T_b. Let N be the number of sample times (N is a multiple of 5).
+(2) Occupancy: for each sample time u and sector, the number of aircraft that are in flight at time u and whose position at time u is contained in that sector (containment is the condition of 6 (5)). It is computed for the initial plans and for the final plans.
+(3) Periods: the sample times are split into groups of 5 from the first; these are the periods, numbered from 1. The start time of period p is T_a + 300 * (p - 1), and its end time is the start time + 300. The peak occupancy of a period is the maximum of the occupancy at its 5 sample times, and the mean occupancy is the sum of those 5 values / 5. The entry count of a period is the number of transits in the transit list that are transits of that sector with start time <= entry time < end time. These values are computed for the initial plans and for the final plans (using that plan's occupancy and transit list).
+(4) Status: OVER if the peak occupancy of the final plans is greater than the capacity, otherwise RELIEVED if the peak occupancy of the initial plans is greater than the capacity, and OK otherwise.
+(5) Sector summary: for the initial plans and for the final plans, compute the entry count (the number of transits of that sector), the dwell time (the sum of exit time - entry time over the transits of that sector, added in transit list order), the mean dwell time (dwell time / entry count), the peak occupancy (the maximum over all sample times), the over-capacity period count (the number of periods whose peak occupancy is greater than the capacity), and the conflict count (the number of conflicts of that plan whose sector of 6 (5) is that sector).
+(6) Load chart: draw the occupancy of the final plans as a chart with N columns. Let the top value be h = max(capacity + 1, the maximum occupancy of the final plans over all sample times), and let the rows from the top correspond to k = h, h - 1, ..., 1. The character in column j (j is the 0-based index of the sample time) of row k is "#" if the occupancy at that sample time is k or more, otherwise "-" if k = capacity, and "." otherwise.
+(7) Flight level usage: for the initial plans and for the final plans, group the segments with phase LVL by altitude z / 100 (an integer, which is taken as the flight level of the segment), and for each flight level compute the number of aircraft that have such a segment and the sum of te - ts of those segments (added in callsign order and, within each aircraft, in segment number order).
+(8) Handoffs: for each transit in the transit list of the final plans whose next is not "-", count the pair (its sector, the next sector) once.
+
+* 9. Short-term conflict alerts
+For the initial plans and for the final plans, replay the alerts based on straight-line prediction at each sample time, as follows.
+(1) At each sample time u, for every pair (A, B) of aircraft in flight at that time, perform the procedure of 3 with t1 = 0 and t2 = T_alert, the relative position being A's position at time u minus B's position at time u, and the relative velocity being the velocity of A's segment at time u minus the velocity of B's segment at time u. If there is a loss interval, the pair is "alerting" at that sample time, with predicted loss time u + lo and predicted closest approach distance (the closest approach distance of 3).
+(2) For each pair, group consecutive alerting sample times that are 60 apart into one "alert". An alert has the first sample time, the last sample time, the number of sample times, the predicted loss time (that of the first sample time) and the minimum predicted distance (the minimum of the predicted closest approach distances of the grouped sample times). Sort the alerts in increasing order of first sample time, ties broken by increasing A, then by increasing B, and number them from 1.
+(3) Matching: for each alert, look for conflicts in that plan's conflict list with the same pair and with start time < last sample time + T_alert and end time > first sample time. If there is at least one, the alert is true (a correct alert), and all those conflicts become "detected". The lead time is start time - first sample time of the first of those conflicts in the conflict list. If there is none, the alert is false (a false alert).
+(4) Conflicts that did not become detected are "missed". The mean lead time is the sum of the lead times of the true alerts (added in alert number order) / the number of true alerts.
+
+* 10. Radar images and density maps
+(1) Screen cell: for a position (x, y), let fx = (10 * x - R_x0) * R_w / (R_x1 - R_x0), fy = (10 * y - R_y0) * R_h / (R_y1 - R_y0), col = floor(fx), r = floor(fy). If 0 <= col < R_w and 0 <= r < R_h, the position is on the screen, its column is col and its row is R_h - 1 - r (columns counted from the left and rows from the top, starting at 0). Otherwise it is off the screen.
+(2) Radar image: for each time S_i, produce the following image for the initial plans and for the final plans. The image is a character grid with R_w columns and R_h rows, initially all ".". Each aircraft in flight at time S_i is placed at its position (the position at time S_i) if that position is on the screen. A cell where exactly one aircraft is placed shows the first character of that aircraft's callsign, but if that aircraft belongs to the pair of a conflict of that plan that is active at time S_i, the character is made lowercase. A cell where two or more aircraft are placed shows the digit giving the number of aircraft. After that, for each aircraft in flight at time S_i, if it is also in flight at time S_i + T_lead, its position at that time (the predicted position) is set to "*" only when it is on the screen and the character at that cell is ".".
+(3) Density map: for the initial plans and for the final plans, count the positions of the aircraft in flight at all sample times per screen cell. The density map is a grid with R_w columns and R_h rows, showing "." for a count of 0, the digit for 1 to 9, and "#" for 10 or more.
+
+* 11. Flight strips
+For each waypoint of each aircraft, find the passing time and the flight level. For waypoint W_0, the passing time is ts of the first segment and the flight level is z / 100 (an integer) of its start position. For waypoint W_k (k >= 1), the passing time is te of the last segment of leg k and the flight level is z / 100 (an integer) of its end position. These are computed for both the initial plans and the final plans.
+
+[Output files]
+All files consist of ASCII characters only, and every line ends with a newline (LF). Do not put spaces at the end of a line, and do not output empty lines. In the line formats below, values are put in the <...> parts. Real-valued times, coordinates (NM), distances and durations are written with 3 decimals unless stated otherwise. Integer values (sample times, S_i, period start and end times, departure time + delta, delays, integer flight levels, counts, etc.) are written as they are in decimal.
+The "border line" of a chart is "+", as many "-" as there are columns, and "+" concatenated in this order. A chart is output as the border line, each row of the chart (from the top row down, "|", the characters of the row and "|" concatenated in this order), and the border line, in this order.
+
+* output/trajectories.csv
+Line 1 is the header line "callsign,segment,leg,phase,t_start,t_end,x_start,y_start,fl_start,x_end,y_end,fl_end". From line 2 on, output every segment of the final plans, one per line, in callsign order and, within each aircraft, in number order, with the following 12 fields in this order, separated by commas.
+callsign, segment number, leg number, phase, ts, te, x of start position, y of start position, z / 100 of start position (integer), x of end position, y of end position, z / 100 of end position (integer)
+
+* output/conflicts.txt
+Output the following (1) to (4) for the initial conflicts, then the same (1) to (4) for the final conflicts. <plan> is initial for the initial conflicts and final for the final conflicts.
+(1) CONFLICTS plan=<plan> count=<number of conflicts>
+(2) For each conflict, numbered from 1 in list order, output the following lines (the second and later lines begin with 2 spaces).
+CONFLICT <number> <pair name> start=<start time> end=<end time> duration=<end time - start time> outcome=<outcome>
+  CPA t=<CPA time> dist=<closest approach distance> vert=<altitude difference (1 decimal)> levels=<altitude of A (2 decimals)>/<altitude of B (2 decimals)> tracks=<theta_a (1 decimal)>/<theta_b (1 decimal)> angle=<crossing angle (1 decimal)>
+  TYPE geometry=<geometry> phases=<phase of a>/<phase of b> segments=<number of a>/<number of b> sector=<sector> severity=<severity>
+  PIECE <number of the piece's A-side segment>/<number of its B-side segment> <lo> <hi> (one line per piece, in the order the pieces were added to the conflict)
+(3) SUMMARY count=<number of conflicts> total=<sum of durations (end time - start time), added in list order> min_dist=<minimum closest approach distance; "-" if there are no conflicts> head_on=<count> crossing=<count> trailing=<count> high=<count> medium=<count> low=<count>
+The values of head_on, crossing and trailing are the numbers of conflicts of each geometry, and the values of high, medium and low are the numbers of conflicts of each severity.
+(4) For each aircraft that belongs to the pair of some conflict, in callsign order, output "FLIGHT <callsign> conflicts=<number of conflicts involving that aircraft> first=<minimum start time among them> partners=<the partners' callsigns without duplicates, in increasing order, separated by commas>". Then output the single line "TIMELINE from=<T_a> to=<T_b> step=60" and, for the same aircraft in callsign order, "<callsign> <N characters>". The j-th of the N characters (j is the 0-based index of the sample time) is "." if the aircraft is not in flight at that sample time, "X" if it is in flight and some conflict of that plan involving that aircraft is active at that time, and "-" otherwise.
+
+* output/resolutions.txt
+Output the following (1) to (4) in this order.
+(1) For each round, first output the following line.
+ROUND <round number> <pair name of the target> start=<start time of the target> end=<end time of the target> dist=<closest approach distance of the target>
+Then, for each manoeuvre tried, in the order tried, output one of the following lines. Every line begins with 2 spaces.
+- When infeasible: "  TRY <callsign of F> <manoeuvre name> infeasible"
+- When blocked: "  TRY <callsign of F> <manoeuvre name> blocked <pair name of the blocker> start=<start time of the blocker>" (when there are two or more blockers, write the one with the smallest start time, ties broken by the smaller A, then by the smaller B)
+- When accepted: "  TRY <callsign of F> <manoeuvre name> accepted"
+Finally, output "  RESULT resolved <callsign of F> <manoeuvre name>" if a manoeuvre was accepted, and "  RESULT unresolved" otherwise (each beginning with 2 spaces).
+(2) For each aircraft, in callsign order, output the following line.
+FLIGHT <callsign> departure=<departure time + delta of the final plan> delay=<delta of the final plan> level=<sigma of the final plan> speed=<V of the initial plan>-><V of the final plan> arrival=<arrival time of the initial plan>-><arrival time of the final plan> extra=<arrival time of the final plan - arrival time of the initial plan> length=<route length> conflicts=<number of initial conflicts involving that aircraft>-><number of final conflicts involving that aircraft> manoeuvres=<names of the accepted manoeuvres in order of acceptance, separated by commas; "-" if none>
+  sigma is written with a leading "+" if positive (e.g. +10), as "0" if 0, and with a leading "-" if negative (e.g. -20).
+(3) For each unresolved conflict, in the order recorded, output "UNRESOLVED <pair name> start=<start time> dist=<closest approach distance>" (the values are those of the target of the round in which it was recorded).
+(4) TOTAL rounds=<number of rounds> resolved=<number of rounds in which a manoeuvre was accepted> unresolved=<number of unresolved conflicts> level=<number of accepted level_up and level_down> speed=<number of accepted speed_down> delay=<number of accepted ground delays> total_delay=<sum of delta of the final plans> total_extra=<sum of extra of each aircraft (added in callsign order)> trials=<number of TRY lines> infeasible=<number of infeasible TRY lines> blocked=<number of blocked TRY lines>
+
+* output/sector_transits.csv
+Line 1 is the header line "callsign,sector,entry,exit,duration,from,to". From line 2 on, output one line per transit in the order of the transit list of the final plans, with the following 7 fields in this order, separated by commas.
+callsign, sector name, entry time, exit time, exit time - entry time, previous, next
+
+* output/sector_load.csv
+Line 1 is the header line "sector,period,start,end,entries_initial,entries_final,peak_initial,peak_final,mean_final,capacity,status". From line 2 on, output one line per period, in sector order and, within each sector, in period number order, with the following 11 fields in this order, separated by commas.
+sector name, period number, period start time, period end time, entry count of the initial plans, entry count of the final plans, peak occupancy of the initial plans, peak occupancy of the final plans, mean occupancy of the final plans (1 decimal), capacity, status
+
+* output/sector_report.txt
+(1) For each sector, in sector order, output the following.
+SECTOR <name> x=<X1>..<X2> y=<Y1>..<Y2> fl=<lower>..<upper> capacity=<capacity>
+INITIAL entries=<entry count> time=<dwell time> mean=<mean dwell time; "-" if the entry count is 0> peak=<peak occupancy> over=<over-capacity period count> conflicts=<conflict count> (values of the initial plans)
+FINAL entries=<...> time=<...> mean=<...> peak=<...> over=<...> conflicts=<...> (values of the final plans; the format is the same as the INITIAL line)
+Then output the load chart (N columns, h rows) enclosed by border lines.
+(2) After the single line "LEVELS", for each flight level used by a segment with phase LVL in at least one of the initial plans and the final plans, in decreasing order of flight level, output "LEVEL <flight level> flights=<number of aircraft in the initial plans>-><number of aircraft in the final plans> time=<sum of times in the initial plans>-><sum of times in the final plans>". For a plan in which the level is not used, the number of aircraft is 0 and the sum of times is 0.000.
+(3) After the single line "HANDOFFS plan=final count=<total number of handoffs>", for each pair (sector, next sector) counted at least once, in sector order of the first sector, ties in sector order of the next sector, output "HANDOFF <sector name> <next sector name> <count>".
+
+* output/alerts.txt
+Output the following (1) to (3) for the initial plans, then the same (1) to (3) for the final plans. <plan> is initial or final.
+(1) ALERTS plan=<plan> horizon=<T_alert> count=<number of alerts>
+(2) For each alert, in number order, output "ALERT <number> <pair name> first=<first sample time> last=<last sample time> samples=<number of sample times> predicted=<predicted loss time> min_dist=<minimum predicted distance> <matching result>". The matching result is "status=true lead=<lead time>" if true and "status=false lead=-" if false.
+(3) For each missed conflict, in conflict list order, output "MISSED <pair name> start=<start time> end=<end time>", and finally output "SUMMARY alerts=<number of alerts> true=<number of true> false=<number of false> missed=<number of missed> mean_lead=<mean lead time; "-" if there are no true alerts>".
+
+* output/radar.txt
+(1) For the times S_1, S_2, ... in order, for each time output the following for the initial plans (<plan> is initial) and then for the final plans (final).
+RADAR plan=<plan> t=<time> aircraft=<number of aircraft in flight at that time> conflicts=<number of conflicts of that plan active at that time>
+Then output the radar image (R_w columns, R_h rows) enclosed by border lines, and for each aircraft in flight at that time, in callsign order, the following line.
+<callsign> x=<x> y=<y> fl=<z / 100 (2 decimals)> track=<track of the segment at that time (1 decimal)> phase=<phase of the segment at that time> cell=<column>,<row>
+Here x, y and z are the position at that time. If the position is off the screen, the cell part is "cell=outside".
+Finally, for each conflict of that plan active at that time, in conflict list order, output "CONFLICT <pair name> dist=<horizontal distance between the two aircraft at that time> vert=<altitude difference between the two aircraft at that time (ft, 1 decimal)>". The horizontal distance is sqrt(dx * dx + dy * dy), where dx is the difference of the x of the two positions and dy the difference of their y.
+(2) Then, for the initial plans and then the final plans, output the single line "DENSITY plan=<plan> from=<T_a> to=<T_b> step=60 max=<maximum of the counts>" and the density map (R_w columns, R_h rows) enclosed by border lines.
+
+* output/strips.txt
+For each aircraft, in callsign order, output the following.
+STRIP <callsign> type=<type name> waypoints=<number of waypoints> length=<route length> manoeuvres=<the same as in the FLIGHT line of output/resolutions.txt>
+Then, for each waypoint, from W_0 in order, output "WPT <k> at=<X>:<Y> eta=<passing time in the initial plan>-><passing time in the final plan> fl=<flight level in the initial plan>-><flight level in the final plan>" (k is the waypoint number, and X and Y are the integer coordinates from the input).
+Finally output "SECTORS <transit sequence>". The transit sequence is the transits of that aircraft in the transit list of the final plans, each written as "<sector name>@<entry time>", in order, separated by commas. If there are no transits, it is "-".
+
+[Source files]
+Write the program as the following 6 source files. The file names describe the roles; the actual names and extensions follow the conventions of each language.
+- main: handles the overall flow of the program and holds most of the processing. It reads the input and calls trajectory building, runs the resolution loop of 5 (target selection, trying manoeuvres for the two aircraft, blocker checks, recording rounds, managing the unresolved and resolved pairs), the conflict classification of 6 (altitudes, tracks and crossing angle, geometry, severity, sector, outcome) and statistics, the active checks and timelines, the sector transits and handoffs of 7, the occupancy, period aggregation, sector summary, load chart and flight level usage of 8, the alert replay and matching of 9, the radar images and density maps of 10, the flight strips of 11, and writes the 9 output files.
+- flight_plans: reading input/flights.csv, input/aircraft.txt, input/sectors.txt and input/params.txt, and the data structures for plans, aircraft types and sectors (including the flight level list of a plan).
+- trajectory: trajectory building of 1 (leg length and duration, climb and descent segments, route length), and the segment positions and in-flight check of 2.
+- conflict: the loss interval and closest point of approach of 3, computing the pieces of 4, grouping them into conflicts, and the conflicts per pair and the conflict list over all pairs.
+- resolution: the list of manoeuvres of 5 (1), applying a manoeuvre and the infeasibility check, and the priority of (2).
+- report: number formatting (notation with d decimals, signed integers), enclosing charts in border lines, and writing to files.
+
+[Constraints]
+- There are 2 to 100 aircraft, 1 to 10 aircraft types and 1 to 20 sectors. Each aircraft has 2 to 8 waypoints, and adjacent waypoints are different. All coordinates are between 0 and 2000 inclusive.
+- Departure times are between 0 and 86400 inclusive, and speeds are multiples of 10 between 300 and 600 inclusive. Climb and descent rates are between 1000 and 4000 inclusive, and minimum speeds are between 300 and 600 inclusive. For every aircraft, the speed of the initial plan is at least the minimum speed of its type.
+- All flight levels (level and L) are multiples of 10, and all values in the flight level lists of the initial plans are between L_min and L_max inclusive. The L of "X:Y:L" differs from the flight level just before it. In every plan, the altitude change time c is at least 1 second shorter than the duration d of its leg.
+- The lower and upper bounds of sectors are integers that leave remainder 5 when divided by 10, with lower < upper. X1 < X2 and Y1 < Y2.
+- Dh, Dv, T_look, T_lead and T_alert are at least 1, D_max is a multiple of 60 that is at least 60, and L_min < L_max. T_a < T_b, and T_b - T_a is a multiple of 300. R_x0 < R_x1, R_y0 < R_y1, and R_w and R_h are between 1 and 80 inclusive.
+- No cell of a radar image has 10 or more aircraft placed in it.
+- The input data are constructed so that the output does not change with differences in the order of computation (order of summation, fused multiply-add, etc.) or last-bit differences of sqrt, atan2 and so on. Specifically: qa in 3 is either far smaller than 10^-12 (including 0) or at least 10^-6, and when qa < 10^-12, |qc| is at least 0.5 times Dh * Dh. hi - lo in 3 (4) has absolute value either less than 10^-9 or at least 0.1 (the former are zero-length intervals that appear only through computation, e.g. when the altitude difference becomes exactly Dv at the moment an aircraft starts or finishes changing altitude). When qa >= 10^-12, D in 3 (2) satisfies that |D| is at least 10^-6 times qb * qb + |4 * qa * qc|. The gaps between pieces when grouping them into conflicts, the gaps when joining transits, and the differences between entry and exit times compared in 7 (3) have absolute value either less than 10^-9 or at least 1 second. The differences between distances compared when choosing the closest piece are either less than 10^-11 or at least 10^-3. The values used for geometry, severity, sector, in flight, the segment at time u, active, period entry counts, matching and blocker decisions, and the fx and fy of radar image positions, are sufficiently far (at least 10^-6 relative, or at least 0.001) from the decision boundaries. Every printed real number is away from a rounding boundary (a value that is exactly halfway when rounding half up) by at least 10^-5 times the unit of its last printed digit.
+
+[Example]
+The actual input is large, so here the procedure is shown with a small example of only 2 aircraft (this is not an example of whole files). Let Dh = 5, Dv = 1000, T_a = 0, T_alert = 180, let the climb rate of type A320 be 1880, and let the climb rate of type B738 be 2120.
+Suppose input/flights.csv has the following 2 lines from line 2 on.
+AB101,A320,0,330,360,0:300 600:300
+CD202,B738,0,330,360,300:0 300:600
+- Leg 1 of AB101 has dX = 600 and dY = 0, so l_1 = sqrt(360000) / 10 = 60, d = 60 * 3600 / 360 = 600, vx = 60 / 600 = 0.1, vy = 0. The output/trajectories.csv line is "AB101,1,1,LVL,0.000,600.000,0.000,30.000,330,60.000,30.000,330". Similarly, CD202 flies north from (30, 0) with vy = 0.1.
+- Segments 1 and 1 of the pair (AB101, CD202) overlap with t1 = 0, t2 = 600. The relative position is (0 - 30, 30 - 0, 0) = (-30, 30, 0) and the relative velocity is (0.1, -0.1, 0), so qa = 0.02, qb = 2 * (-3 - 3) = -12, qc = 1800 - 25 = 1775, D = 144 - 142 = 2. From s = sqrt(2), lo = (12 - 1.41421...) / 0.04 = 264.6446... and hi = (12 + 1.41421...) / 0.04 = 335.3553.... Vertically, wz = 0 and |pz| = 0 < 1000, so lo and hi do not change. The closest approach is at tc = 12 / 0.04 = 300 with distance 0.
+- The output/conflicts.txt lines for this conflict are as follows (for the case where the sector containing the midpoint (30, 30, 33000) is named WEST).
+CONFLICT 1 AB101-CD202 start=264.645 end=335.355 duration=70.711 outcome=resolved
+  CPA t=300.000 dist=0.000 vert=0.0 levels=330.00/330.00 tracks=90.0/0.0 angle=90.0
+  TYPE geometry=crossing phases=LVL/LVL segments=1/1 sector=WEST severity=HIGH
+  PIECE 1/1 264.645 335.355
+- Here dot = 0.1 * 0 + 0 * 0.1 = 0 and cross = 0.1 * 0.1 - 0 * 0 = 0.01, so the geometry is crossing, and 10 * 0 < 4 * 5, so the severity is HIGH. The track of AB101 is atan2(0.1, 0) * 180 / pi = 90.0, and the track of CD202 is atan2(0, 0.1) * 180 / pi = 0.0.
+- In resolution, the two aircraft have the same departure time, so CD202, with the larger callsign, has the lower priority, and level_up of CD202 is tried first. In the new plan CD202 flies at FL340, and the altitude difference from AB101 is exactly 1000 ft, so vertical separation is maintained and the conflict disappears. If there are no other blockers, the output/resolutions.txt lines are as follows.
+ROUND 1 AB101-CD202 start=264.645 end=335.355 dist=0.000
+  TRY CD202 level_up accepted
+  RESULT resolved CD202 level_up
+- Climb example: if the second waypoint of CD202 were "300:600:340", it would climb at the beginning of leg 1, with c = 10 * 6000 / 2120 = 28.3018... and C = (30 + 0 * c, 0 + 0.1 * c) = (30, 2.8301...). The output/trajectories.csv lines would be "CD202,1,1,CLB,0.000,28.302,30.000,0.000,330,30.000,2.830,340" and "CD202,2,1,LVL,28.302,600.000,30.000,2.830,340,30.000,60.000,340". In this case too, the altitude difference at the time the two aircraft cross is 1000 ft, so there is no conflict.
+- Alert example: at sample time u = 120, the relative position is (12 - 30, 30 - 12, 0) = (-18, 18, 0) and lo of the loss interval is 144.6446..., so the predicted loss time is 264.645. If the pair keeps alerting at u = 120, 180, 240 and 300, the alert line is "ALERT 1 AB101-CD202 first=120 last=300 samples=4 predicted=264.645 min_dist=0.000 status=true lead=144.645".

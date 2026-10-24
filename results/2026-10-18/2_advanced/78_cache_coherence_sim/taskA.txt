@@ -1,0 +1,493 @@
+[Overview]
+Write a program that simulates a multi-core memory hierarchy from a trace of memory accesses, keeping time in units of one cycle. Each core has its own private L1 cache, all cores share one L2 cache, and main memory lies beyond the L2. The L2 is an "inclusive" cache that contains everything held in the L1 caches. The cores are connected by a single snooping bus, and a protocol keeps the caches consistent (coherence).
+Four protocols are handled: the write-through VI and the write-back MSI, MESI and MOESI. There are three replacement policies: LRU, FIFO and tree-based pseudo-LRU (PLRU). The configuration file lists several combinations of a protocol and replacement policies (scenarios); the same trace is simulated from the beginning for each scenario, and the results are compared. For one of these scenarios (the primary scenario), detailed output is written: the log of bus transactions, the state changes of watched lines, the final cache contents, the sharing analysis, and so on.
+The program reads the two files (configuration and trace) in the input/ folder, performs the following processing, and writes five files to the output/ folder. It prints nothing to standard output.
+1. Trace validation: check each line of the trace and exclude the lines that do not match the format.
+2. Reuse-distance analysis: for each core, compute the reuse distances of the accesses and the numbers of misses of a fully associative LRU cache and of optimal replacement (OPT).
+3. Simulation: for each scenario, process all accesses according to the behavior of the bus and the caches, and compute the miss classification, the times and the statistics.
+4. Analysis: compute the ranking of the scenarios, the frequently used lines of the primary scenario, the per-interval behavior, the slow accesses, the totals per address region, true and false sharing, and the communication between cores.
+All computation is done with integers; real numbers are not used (decimal output is also computed with integer arithmetic).
+
+[Input files]
+There are two input files: input/config.txt and input/trace.txt. Both consist only of printable ASCII characters (0x20 to 0x7E) and line feeds (LF), and every line (including the last one) ends with a line feed. Below, "space" means an ASCII space character. In the formats below, a part enclosed in < > stands for a value, and all other characters appear literally.
+"8 hex digits" means a string of exactly 8 characters consisting only of 0-9 and a-f (lowercase); it represents the value obtained by reading the string as a hexadecimal number (example: 0000a0c4). "Decimal integer" means a string of one or more digits (0-9) that does not begin with 0 unless it is 0 itself.
+
+== input/config.txt (configuration) ==
+The following lines appear in this order. Each line consists of words separated by single spaces, and integers are decimal integers.
+- CORES <N>: the number of cores (from 1 to 8). The cores are numbered 0, 1, ..., N - 1 (core numbers).
+- LINE <line size>: the number of bytes in a cache line (the unit of data handled as a whole between a cache and memory); a power of two from 8 to 128.
+- L1 <size> <ways>: the capacity (in bytes) and the number of ways (associativity) of the L1 of each core.
+- L2 <size> <ways>: the capacity (in bytes) and the number of ways of the L2.
+- LATENCY <L1 latency> <L2 latency> <memory latency> <bus latency>: each is a number of cycles from 1 to 100. Below, these four are written T1, T2, TM and TB, in this order.
+- SCENARIO <name> <protocol> <L1 replacement policy> <L2 replacement policy>: a scenario. There are from 1 to 8 such lines, and their order of appearance is called the "scenario order". The protocol is one of VI, MSI, MESI and MOESI, and each replacement policy is one of LRU, FIFO and PLRU.
+- PRIMARY <name>: the name of the primary scenario.
+- INTERVAL <W>: the length (in cycles) of the intervals used for the per-interval totals (a positive integer).
+- TOP <k>: the maximum number of rows written in a ranking table (a positive integer).
+- REGION <name> <start address> <end address>: an address region. There are from 0 to 16 such lines, and their order of appearance is called the "region order". The two addresses are 8 hex digits, and the addresses from the start address to the end address inclusive belong to this region.
+- WATCH <line address>: a watched line. There are from 0 to 8 such lines, and their order of appearance is called the "watch order". The line address is 8 hex digits.
+A name is a string of 1 to 16 characters consisting of lowercase letters, digits and "_".
+
+== input/trace.txt (memory access trace) ==
+Each line is one record. A valid record has one of the following two forms, with fields separated by a single space.
+<cycle> <core number> <operation> <address>
+<cycle> <core number> FENCE
+- cycle: the time at which the core tries to perform the operation of the record. A decimal integer.
+- core number: the core that performs the operation. A decimal integer.
+- operation: R is a read and W is a write. Both read or write the 4 bytes (one word) starting at the address. FENCE is an instruction that waits until all earlier writes of that core have completed.
+- address: the memory address to read or write, 8 hex digits.
+Valid records appear in nondecreasing order of cycle (equal values may follow each other). However, the trace may contain lines that were corrupted during recording (empty lines, lines with missing or extra fields, lines containing wrong characters, lines out of order, and so on). Corrupted lines are checked and excluded in step 2 of [Processing].
+The given trace.txt records the accesses of 4 cores performing mutual exclusion with a lock, a shared counter, per-core counters, a producer-consumer queue, a mailbox, a read-only table, per-core private arrays, arrays that map to the same set, and a partitioned update and aggregation of a matrix, with corrupted lines added.
+
+[Processing]
+== 1. Notation and common rules ==
+- a div b is the integer part of the quotient of a divided by b, and a mod b is the remainder. Wherever this statement uses div and mod, a is 0 or more and b is positive. max(...) is the maximum value.
+- "Decimal notation p/q" (p is an integer of 0 or more, q is a positive integer) is the string of p / q rounded to 2 decimal places. Let u = (2 * p * 100 + q) div (2 * q); write u div 100 in decimal, followed by "." and u mod 100 in 2 digits (padded with a leading 0 if needed). For example, if p = 89 and q = 8, then u = 1113, giving 11.13. Compute this with integers only, without floating-point numbers.
+- "Reduced fraction p/q" (p is an integer of 0 or more, q is a positive integer) is the string formed by the two values obtained by dividing p and q by their greatest common divisor, joined by "/" (examples: p = 279, q = 20 gives 279/20; p = 90, q = 10 gives 9/1; p = 0 gives 0/1).
+- A "core string" is the string of the core numbers of a set written in increasing order without separators (example: {3, 0, 1} gives 013). If the set is empty, it is -.
+- For an address a, a div (line size) is called its "block number", block number * (line size) its "line address", and (a mod (line size)) div 4 its "word number". Addresses with the same block number belong to the same line. Below, a line is identified by its block number, and in the output its line address is written as 8 hex digits.
+- Let CAP = number of L1 sets * number of L1 ways (the number of lines an L1 can hold).
+
+== 2. Trace validation ==
+Number the lines of trace.txt 1, 2, ... from the beginning (line numbers). Split each line at spaces into fields. Where two or more spaces are consecutive, or where a space is at the beginning or end of the line, empty fields arise; an empty line consists of one empty field. For each line, check the following rules from top to bottom, and exclude the line with the reason (the English word on the left) of the first rule that applies. Excluded lines are called "invalid lines". A line to which no rule applies is accepted.
+1. fields: the number of fields is neither 3 nor 4, or there is an empty field.
+2. cycle: the 1st field is not a decimal integer of at most 7 characters.
+3. core: the 2nd field is not a decimal integer, or its value is N or more.
+4. op: the 3rd field is none of R, W and FENCE. Or, it is FENCE but there are 4 fields, or it is R or W but there are 3 fields.
+5. address: it is R or W, and the 4th field is not 8 hex digits, is not a multiple of 4, or is greater than 7fffffff.
+6. order: the cycle is smaller than the cycle of the most recently accepted line (if no line has been accepted yet, compare with 0).
+Accepted lines are called "events" and are numbered event 1, event 2, ... in the order of acceptance (event numbers). R and W events are called "accesses", and FENCE events are called "fences". All later processing uses events only.
+
+== 3. Cache structure ==
+(1) Sets and ways
+- The number of L1 sets is L1 size div (line size * number of L1 ways), and the number of L2 sets is L2 size div (line size * number of L2 ways). Line b is placed in set b mod (number of L1 sets) in an L1, and in set b mod (number of L2 sets) in the L2. Sets are numbered from 0.
+- Each set has as many ways as the number of ways (numbered 0, 1, ...), and each way is either empty or holds one line and its state. When some way of a cache holds line b, the cache is said to "have" line b. No two ways hold the same line. Initially all ways are empty.
+- The state of a line in an L1 is one of V, M, O, E and S, and the state of a line that an L1 does not have is I. M and O are called "dirty states". The state of a line in the L2 is C (same contents as memory) or D (newer contents than memory), and the state of a line that the L2 does not have is I.
+(2) Cache operations
+- "Touch": update the replacement information of a way according to the rules of (3). There are touches on a hit and touches on a fill (the touch on an L2 hit in 7 (3) and the touch in a WB in 7 (5) are also touches on a hit).
+- "Fill": to fill line b with state x, first choose one way in the set. If there are empty ways, choose the one with the smallest number among them; otherwise choose the way selected by the replacement policy (the "victim"). If the chosen way holds a line, that line is "evicted" (how an evicted line is handled is described in the processing that performs the operation). Then put line b and state x into the way, and perform a touch on a fill.
+- "Remove": make the way holding the line empty. The replacement information is not changed.
+- A state change rewrites only the state of the way and does not change the replacement information.
+(3) Replacement policies
+- LRU: for each way, remember the time it was last touched (both touches on a hit and touches on a fill count). The victim is the way whose last touch is the oldest.
+- FIFO: for each way, remember the time it was filled. A touch on a hit does nothing. The victim is the way whose fill time is the oldest.
+- PLRU: let A (a power of two) be the number of ways; each set has A - 1 bits (initially all 0). The bits are numbered 1, 2, ..., A - 1 and form the nodes of a binary tree. Node 1 is the root, and the left child of node k is node 2k and its right child is node 2k + 1. The root covers the range of ways 0 to A - 1, and the left child of each node covers the first half of that node's range and the right child the second half. Where a range consists of a single way, it is a leaf. When way x is touched, go from the root toward x; at each node passed, if x is in the first half, set the bit of that node to 1 and go to the left child; if x is in the second half, set the bit to 0 and go to the right child. To choose a victim, start from the root, go to the left child if the bit is 0 and to the right child if it is 1, and the way reached is the victim. When A = 1 there are no bits, and way 0 is the victim.
+- "Time" here means the order in which touches (fills, for FIFO) occurred, separately for each cache (the L1 of each core and the L2 are separate caches).
+
+== 4. Coherence protocols ==
+VI is write-through (a write is sent to the L2 immediately), and on a write miss the line is not filled into the L1. Lines in the L1 never become dirty. MSI, MESI and MOESI are write-back (written data is kept in the L1), and the line is filled into the L1 on a write miss as well.
+There are five types of bus transactions: BusRd (read), BusRdX (read for writing), BusUpgr (invalidation of the other copies only), BusWr (write-through write) and WB (write-back of a dirty line to the L2). This order is called the "type order".
+(1) Transitions of the requesting core
+From the state of the line in the L1 of the core performing the access (the current state) and the operation, the following table determines the required transaction and the new state. "hit" means that no transaction is needed.
+  Protocol    Current  R                  W
+  VI          I        BusRd, V           BusWr, I (not filled)
+  VI          V        hit, V             BusWr, V
+  MSI         I        BusRd, S           BusRdX, M
+  MSI         S        hit, S             BusUpgr, M
+  MSI         M        hit, M             hit, M
+  MESI        I        BusRd, E or S      BusRdX, M
+  MESI        S        hit, S             BusUpgr, M
+  MESI        E        hit, E             hit, M
+  MESI        M        hit, M             hit, M
+  MOESI       I        BusRd, E or S      BusRdX, M
+  MOESI       S        hit, S             BusUpgr, M
+  MOESI       E        hit, E             hit, M
+  MOESI       O        hit, O             BusUpgr, M
+  MOESI       M        hit, M             hit, M
+"E or S" is E if, just before the transaction, no other core's L1 has the line, and S if at least one has it.
+(2) Transitions by snooping
+When the transaction is BusRd, BusRdX, BusUpgr or BusWr, the L1 of each core other than the requesting core, if it has the line, changes its state as in the following table according to its state and the transaction type. "supply" means that the cache passes the data to the requesting core, and "flush" means that the L2 line is overwritten with that data (the L2 state becomes D). Combinations marked - do not occur.
+  Protocol    State BusRd                BusRdX       BusUpgr  BusWr
+  VI          V     V                    -            -        I
+  MSI         S     S                    I            I        -
+  MSI         M     S (supply, flush)    I (supply)   -        -
+  MESI        S     S                    I            I        -
+  MESI        E     S                    I            -        -
+  MESI        M     S (supply, flush)    I (supply)   -        -
+  MOESI       S     S                    I            I        -
+  MOESI       E     S                    I            -        -
+  MOESI       O     O (supply)           I (supply)   I        -
+  MOESI       M     O (supply)           I (supply)   -        -
+
+== 5. Simulation procedure ==
+Each scenario is simulated independently, starting from a state in which all caches are empty, there are no invalidation records, and all times, the bus and all statistics are 0.
+Each core c processes its own events one at a time in event-number order. Core c has a "ready cycle" R_c and a "write-completion cycle" W_c, both initially 0. When the cycle of core c's next event is t, the "issue cycle" of that event is s = max(t, R_c).
+Repeat the following steps as long as events remain.
+1. Among the cores that have events remaining, choose the core whose next event has the smallest issue cycle (if equal, the core with the smaller core number).
+2. Process that core's next event according to the rules of 6 to 8, including all state changes, transactions and statistics updates.
+The order in which events are processed in this way is called the "processing order". The events of one core are in event-number order in the processing order as well.
+
+== 6. Processing an access ==
+When core c accesses word w of line b at issue cycle s, process it in the following order.
+1. Look up the state x of line b in c's L1. If x is not I, it is a "hit"; if it is I, it is a "miss" (a write that needs BusUpgr or BusWr is also counted as a hit if x is not I). Determine the transaction type and the new state y from the table in 4 (1).
+2. On a hit, perform a touch on a hit on that way of c's L1.
+3. On a miss, classify the miss by the rules of (1).
+4. If it is W, perform the addition to invalidation records of (2). Also, in the primary scenario, update 10 (2) and (3) if it is W, and 10 (3) if it is R.
+5. If a transaction is needed (if y is "E or S", first decide here whether it is E or S), perform the transaction by the procedure of 7 with request cycle s + T1, and obtain the completion cycle e. If no transaction is needed, e = s + T1.
+6. If x is not I, set the state of the line in the L1 to y. If x is I and y is not I, fill line b into c's L1 with state y, and delete the invalidation record (c, b) if it exists. If the line evicted at this time was in a dirty state, perform a WB as in 7 (5). If the evicted line was not dirty, simply discard it without doing anything. When both x and y are I (a write miss in VI), the L1 is not changed.
+7. Advance the time by the rules of 8.
+(1) Miss classification
+Check the following conditions from top to bottom and classify the miss as the first one that applies. The reuse distance d of the access is the one computed in 9.
+- compulsory: this access is the first access of core c to line b.
+- coherence: the invalidation record (c, b) exists. In addition, if w is in the word set of that record, the miss is due to "true sharing"; if not, it is due to "false sharing".
+- capacity: d is greater than CAP.
+- conflict: none of the above.
+(2) Invalidation records
+An invalidation record is a set of word numbers created for each pair (k, b) of a core and a line.
+- Creation: when line b in core k's L1 becomes I by the snooping of a BusRdX, BusUpgr or BusWr performed for a write by core a to word w, the record (k, b) is created as {w}.
+- Addition: whenever any core a writes word w (on a hit or a miss), for every core k other than a whose record (k, b) exists, add w to that set.
+- Deletion: when core k fills line b into its L1, the record (k, b) is deleted.
+No record is created when a line is lost through an L2 eviction or an L1 replacement.
+
+== 7. Bus transactions ==
+The bus handles only one transaction at a time. The bus has a "free cycle" F (initially 0).
+(1) Assignment
+A transaction with request cycle q is assigned the bus at start cycle g = max(q, F), and F is set to g + TB. The transaction uses the bus for the TB cycles from cycle g to g + TB - 1. Add g - q to the bus wait time. Transactions are numbered 1, 2, ... in the order in which the bus is assigned to them. The transaction is counted as a transaction of its type of the requesting core c.
+(2) Snooping (BusRd, BusRdX, BusUpgr, BusWr)
+For each core k other than c, in increasing order of core number, if k's L1 has line b in state x_k (other than I), determine the new state from the table in 4 (2).
+- If the new state is I, remove line b from k's L1, increase c's "invalidations sent" and k's "invalidations received" by 1 each, and create the invalidation record (k, b) of 6 (2).
+- If the new state is not I, change the state of line b in k's L1.
+- If there is "supply", k is the "supplier", and k's supply count is increased by 1. If there is "flush", this transaction is marked "flushed".
+The number of cores other than c that had line b in their L1 is the "snoop hits" of this transaction, and the number of those that became I is its "invalidation count".
+(3) L2 access (BusRd, BusRdX, BusWr)
+Look up line b in the L2 (an L2 lookup).
+- If the L2 has line b, it is an "L2 hit", and that way is touched.
+- If not, it is an "L2 miss": the line is read from memory, and line b is filled into the L2 with state C. If a line is evicted at this time, this is called an "L2 eviction"; let v be the evicted line and do the following. For each core k, in increasing order of core number, if k's L1 has line v, remove it and increase k's back-invalidation count by 1. If the state of v in the L2 was D, or any of the removed L1 copies was in a dirty state, this eviction is a "dirty eviction", and the data of v is written back to memory.
+After that, if the transaction is "flushed" or is a BusWr, set the state of line b in the L2 to D.
+Because the L2 is inclusive, whenever some L1 has line b, the L2 always has line b. BusUpgr does not access the L2.
+(4) Completion cycle and data source
+- BusUpgr: e = g + TB.
+- BusRd, BusRdX: if there is a supplier, e = g + TB (data from the supplier); otherwise, on an L2 hit e = g + TB + T2 (data from the L2), and on an L2 miss e = g + TB + T2 + TM (data from memory).
+- BusWr: on an L2 hit e = g + TB + T2, and on an L2 miss e = g + TB + T2 + TM.
+(5) WB
+For a dirty line v evicted from an L1 in step 6 of section 6, perform a WB transaction. The request cycle of a WB is the value of F at that moment (the end of the previous transaction), so by (1) its start cycle is g = F (the wait time does not increase), and F becomes g + TB. A WB is also numbered as in (1) and is counted as a WB of the evicting core. A WB neither snoops nor performs an L2 lookup, but it touches line v in the L2 (which always exists because the L2 is inclusive) and sets its state to D. A WB does not affect the completion cycle of the access.
+
+== 8. Time ==
+- The "latency" of an access is e - s.
+- For R, set R_c = e (a read waits for completion).
+- For W, set R_c = s + T1 and W_c = max(W_c, e) (a write proceeds to the next event without waiting for completion).
+- For a fence, let e = max(s, W_c), add e - s to the fence stall, and set R_c = e.
+- The "finish cycle" of a core is the maximum e over that core's events (fences included). The finish cycle of the scenario is the maximum of the finish cycles of all cores.
+- The "service" of an access is determined as follows: l1 if there is no transaction, upgrade for BusUpgr, through for BusWr, and for BusRd and BusRdX, cache if there is a supplier, otherwise l2 on an L2 hit and memory on an L2 miss.
+
+== 9. Reuse-distance analysis ==
+For each core, use the sequence of lines b of that core's accesses in event-number order (independent of the scenario).
+- If an access is the first access of that core to line b, it is a "first-time" access. Otherwise, its "reuse distance" d is the number of distinct lines other than b that the core accessed between its previous access to line b and this access, plus 1 (for example, if the previous access was also to b, d = 1).
+- The "LRU misses" for a capacity of z lines is the number of accesses that are first-time or have d greater than z.
+- The "OPT misses" for a capacity of CAP are counted by the following procedure. Prepare a set of lines (initially empty) and look at the accesses in order. If line b is in the set, do nothing. Otherwise, count one miss; if the set already has CAP elements, remove from the set the line in the set whose next access by that core after this access comes latest. A line that is never accessed again is regarded as later than any access; if there are several such lines, remove the one with the smallest block number. Then add b to the set.
+
+== 10. Sharing analysis ==
+(1) Static analysis (whole trace)
+Over all accesses, for each (line, word), find the set of cores that read it and the set of cores that wrote it. For each line, find the set of cores that accessed it and the set of cores that wrote it (the union of the writer sets of its words). A line accessed by two or more cores and written by one or more cores is a "shared line". A shared line is "true" if, for some word, there is at least one core that wrote it and the cores that read that word and the cores that wrote it together number two or more; otherwise it is "false".
+(2) Write handoffs (primary scenario, processing order)
+For each line, looking in processing order, the number of writes by a core different from the core that most recently wrote that line is called its "handoffs" (the first write to the line is not counted).
+(3) Communication between cores (primary scenario, processing order)
+For each (line, word), remember the core that wrote it last and the set of cores that have read it after that write. When core a writes the word, the last writer becomes a and the set is made empty. When core c reads the word, if there is a last writer a with a != c and c is not in the set, count one communication from a to c and add c to the set.
+
+== 11. Watching ==
+In the primary scenario, when each access is processed, for each watched line compare the "state tuple" (the state in each L1 in core-number order and the state in the L2) before and after the processing. If the line of the access is that watched line itself, or the state tuple differs before and after the processing, write one line to watch.txt after processing that access. Nothing is written for fences.
+
+[Output files]
+Write five files: output/stats.txt, output/bus_log.txt, output/watch.txt, output/sharing.txt and output/final_state.txt.
+
+== Common rules ==
+- The output consists of ASCII characters only, and every line (including the last one) ends with a line feed (LF). Do not insert spaces or blank lines that are not specified.
+- In the formats below, a part enclosed in < > is replaced by a value, and all other characters are written as they are. Separating spaces are single spaces.
+- Integers are written in decimal without superfluous leading zeros. Addresses and line addresses are written as 8 hex digits.
+- c<k> is the core number k preceded by c (example: c2).
+- "Decimal notation", "reduced fraction" and "core string" follow the definitions in 1.
+
+== output/stats.txt ==
+Write the following parts (1) to (8) in this order, with one blank line between consecutive parts. Part (3) is written once per scenario, in scenario order, with one blank line between consecutive scenarios as well.
+(1) Trace and configuration
+trace lines <number of lines in trace.txt> accepted <number of events> rejected <number of invalid lines>
+reject line <line number> <reason>
+... (one line per invalid line, in line-number order)
+geometry cores <N> line <line size> l1 <L1 size> <number of L1 ways> sets <number of L1 sets> l2 <L2 size> <number of L2 ways> sets <number of L2 sets>
+latency l1 <T1> l2 <T2> memory <TM> bus <TB>
+(2) Reuse distance (the following two lines for each core, in core-number order)
+reuse c<k> accesses <number of accesses> lines <number of distinct lines accessed> distance 1:<count> 2-4:<count> 5-16:<count> 17-64:<count> 65-256:<count> 257+:<count> cold <number of first-time accesses>
+mrc c<k> lru <CAP div 4>:<LRU misses> <CAP div 2>:<LRU misses> <CAP>:<LRU misses> <2 * CAP>:<LRU misses> <4 * CAP>:<LRU misses> opt <CAP>:<OPT misses>
+Each item of distance is the number of non-first-time accesses whose reuse distance d lies in that range (for example, 2-4 means 2 <= d <= 4, and 257+ means 257 <= d). Each item of lru is the number of LRU misses with the value before the colon as the capacity.
+(3) Scenario
+scenario <name> <protocol> <L1 replacement policy> <L2 replacement policy>
+Then write the following six lines for each core in core-number order, and after that the same six lines for the total of all cores, with total written instead of c<k>. The values in the total lines are the sums of the values of all cores, except finish, which is the maximum over all cores (the finish cycle of the scenario). The amat in the total lines is computed from the total L and A.
+c<k> accesses <number of accesses> reads <number of R> writes <number of W> hits <number of hits> misses <number of misses> fences <number of fences>
+c<k> misses compulsory <count> capacity <count> conflict <count> coherence <count> true_sharing <number of misses due to true sharing> false_sharing <number of misses due to false sharing>
+c<k> service l1 <count> upgrade <count> through <count> cache <count> l2 <count> memory <count>
+c<k> bus BusRd <count> BusRdX <count> BusUpgr <count> BusWr <count> WB <count>
+c<k> snoop invalidations_sent <number of invalidations sent> invalidations_received <number of invalidations received> supplied <supply count> back_invalidations <back-invalidation count>
+c<k> time latency <sum of latencies> amat <reduced fraction L/A> <decimal notation L/A> fence_stall <sum of fence stalls> finish <finish cycle>
+Here L is the sum of latencies and A is the number of accesses. Each item of service is the number of accesses with that service, and each item of bus is the number of transactions of that type of that core (WB counts those for lines evicted from that core's L1).
+Then write the following five lines. Z is the finish cycle (of the scenario), and X is the total number of transactions of all types.
+l2 lookups <number of L2 lookups> hits <number of L2 hits> misses <number of L2 misses> flushes <number of flushed transactions> writebacks <number of WBs> evictions <number of L2 evictions> dirty_evictions <number of dirty evictions>
+bus transactions <X> busy <TB * X> wait <sum of bus wait times> utilization <decimal notation (100 * TB * X)/Z>
+traffic command_bytes <8 * X> data_bytes <(line size) * (sum of the numbers of BusRd, BusRdX and WB) + 4 * (number of BusWr)> memory_bytes <(line size) * (number of L2 misses + number of dirty evictions)>
+snoops probes <(N - 1) * (number of transactions other than WB)> hits <sum of snoop hits> fanout 0:<count> 1:<count> ... <N - 1>:<count>
+latencies reads <sum of latencies of R> writes <sum of latencies of W> histogram 1:<count> 2-9:<count> 10-29:<count> 30-99:<count> 100-299:<count> 300+:<count>
+In fanout, "j:<count>" is the number of BusRdX, BusUpgr and BusWr transactions whose invalidation count was j, written in the order j = 0, 1, ..., N - 1. Each item of histogram is the number of accesses whose latency lies in that range.
+(4) Ranking
+ranking
+<rank> <name> finish <finish cycle> transactions <X> amat <reduced fraction L/A> <decimal notation L/A>
+... (one line for every scenario)
+Sort the scenarios in increasing order of finish cycle; if equal, in increasing order of X; if that is also equal, in scenario order. The rank is the position in this order, starting from 1. L and A are the total values.
+(5) Frequently used lines (primary scenario)
+hot <name of the primary scenario>
+<rank> <line address> transactions <total> BusRd <count> BusRdX <count> BusUpgr <count> BusWr <count> WB <count> misses <number of misses> coherence <number of coherence misses> invalidations <sum of invalidation counts> cores <core string>
+...
+Sort the lines that had one or more transactions in decreasing order of the total number of transactions (if equal, in increasing order of line address), and write the first TOP of them (all of them if there are fewer than TOP lines). Each per-type count is the number of transactions for that line (for WB, those for the evicted line); misses and coherence are the numbers of accesses to that line classified as misses and as coherence misses, respectively (summed over all cores); invalidations is the sum of the invalidation counts of the transactions for that line; and cores is the core string of the set of cores that requested transactions for that line (for WB, the evicting core).
+(6) Intervals (primary scenario)
+intervals <name of the primary scenario> <W>
+<k> <start>-<end> accesses <count of core 0> <count of core 1> ... <count of core N - 1> misses <number of misses> transactions <count> busy <number of cycles> utilization <decimal notation (100 * busy)/W>
+... (one line for each k = 0, 1, ..., Z div W, in order of k)
+Z is the finish cycle of the primary scenario. Interval k runs from cycle k * W to (k + 1) * W - 1, and start and end are these two values. accesses is the number of accesses whose issue cycle lies in this interval (per core), misses is the number of misses among them (all cores), transactions is the number of transactions (WB included) whose start cycle lies in this interval, and busy is the number of cycles in this interval during which the bus was in use.
+(7) Slowest accesses (primary scenario)
+slowest <name of the primary scenario>
+<rank> event <event number> cycle <issue cycle> c<k> <R or W> <address> latency <latency> service <service>
+...
+Sort the accesses in decreasing order of latency (if equal, in increasing order of event number), and write the first TOP of them.
+(8) Regions (primary scenario)
+regions <name of the primary scenario>
+<region name> accesses <count> reads <count> writes <count> hits <count> compulsory <count> capacity <count> conflict <count> coherence <count> transactions <count> latency <sum of latencies> amat <reduced fraction L/A> <decimal notation L/A>
+... (one line per region in region order, and finally one line for other)
+An access is counted in the region its address belongs to. An access that belongs to no region is counted in other. A transaction (WB included) is counted in the region its line address belongs to. L and A are the sum of latencies and the number of accesses of that region; when A is 0, the part after amat is the single word -.
+
+== output/bus_log.txt ==
+Write all transactions of the primary scenario, one per line, in order of transaction number. The format for each type is as follows.
+BusRd, BusRdX: <number> <start cycle> c<requesting core> <type> <line address> snoop <snoop list> data <data source> l2 <hit or miss><eviction description>
+BusUpgr: <number> <start cycle> c<requesting core> BusUpgr <line address> snoop <snoop list>
+BusWr: <number> <start cycle> c<requesting core> BusWr <line address> snoop <snoop list> l2 <hit or miss><eviction description>
+WB: <number> <start cycle> c<evicting core> WB <line address of the evicted line>
+- The snoop list consists of "c<k>:<old state>><new state>" (example: c1:M>O) for each core k that had the line at snooping, in core-number order, separated by single spaces. If there is no such core, it is none.
+- The data source is c<supplier> if there is a supplier, otherwise L2 on an L2 hit and mem on an L2 miss.
+- The eviction description is " evict <line address of v> <back-invalidation list> <dirty or clean>" (including the single leading space) when an L2 eviction occurred, and the empty string when it did not. The back-invalidation list consists of "c<k>:<state before removal>" for each core k from which v was removed, in core-number order, separated by single spaces; if there is no such core, it is none. It is dirty for a dirty eviction and clean otherwise.
+
+== output/watch.txt ==
+List the lines written by the rules of 11 in the primary scenario, in the order they are written. When one access writes lines for several watched lines, write them in watch order.
+<event number> <issue cycle> c<k> <R or W> <address> line <line address of the watched line> c0:<state> c1:<state> ... c<N - 1>:<state> L2:<state>
+The states are those after the processing: one of I, V, M, O, E and S for an L1, and one of I, C and D for the L2. Because the lines appear in processing order, they are not necessarily in event-number order.
+
+== output/sharing.txt ==
+First, for the shared lines, write the following, one line each, in increasing order of block number.
+<line address> <true or false> cores <core string of the accessing cores> writers <core string of the writing cores> reads <number of R> writes <number of W> handoffs <handoffs> coherence <t + f> true <t> false <f> words <word list>
+reads and writes are the numbers of R and W to that line over the whole trace (summed over all cores), and t and f are the numbers of misses due to true sharing and due to false sharing on that line in the primary scenario (summed over all cores). The word list consists of "w<j>=<core string of reading cores>/<core string of writing cores>" (example: w1=13/0) for each accessed word j of that line, in increasing order of word number, separated by single spaces.
+Then write the following line.
+lines <number of shared lines> true_lines <number of true lines> false_lines <number of false lines> coherence <sum of t + f> true <sum of t> false <sum of f>
+Finally, write the following line and the table of communication between cores.
+communication
+c<a> <number of communications from a to c0> <number of communications from a to c1> ... <number of communications from a to c<N - 1>>
+... (N lines, in the order a = 0, 1, ..., N - 1)
+
+== output/final_state.txt ==
+Write the cache contents at the end of the simulation of the primary scenario. First, for each core k in core-number order, write the row of each L1 set in set-number order, followed by one summary line for that core.
+c<k> <set number> <way 0> <way 1> ... <replacement policy> <replacement order> fills <number of fills> evictions <number of evictions>
+c<k> lines <number of lines held> M <count> O <count> E <count> S <count> V <count>
+After that, write the row of each L2 set in set-number order, and finally one summary line for the L2.
+L2 <set number> <way 0> <way 1> ... <replacement policy> <replacement order> fills <number of fills> evictions <number of evictions>
+L2 lines <number of lines held> dirty <number of D> clean <number of C> in_l1 <number of lines that some L1 also has>
+- Each way is "<line address>:<state>" (example: 0000a100:O) if it holds a line, and - if it is empty.
+- The replacement policy is one of lru, fifo and plru (lowercase).
+- The replacement order is, for LRU, the numbers of the non-empty ways in order from the most recently touched, and for FIFO, the numbers of the non-empty ways in order from the most recently filled, separated by single spaces (- if there is no non-empty way). For PLRU, it is the values (0 or 1) of bits 1, 2, ..., A - 1 written without separators (- if A = 1).
+- The number of fills is the number of times a line was filled into that set over the whole simulation, and the number of evictions is the number of those fills that evicted a line (lines removed by invalidation or back-invalidation are not included).
+
+[Source files]
+Split the program into the following six source files (file names follow the conventions of each language).
+- main: handles the overall flow and most of the processing: validation of each trace line (the six rules and reasons), computation of reuse distances, LRU misses and OPT misses, the simulation of each scenario (selection of events by issue cycle, access processing, miss classification and invalidation records, snooping, L2 access, eviction and back-invalidation, WB, determination of time and service, accumulation of statistics, watch lines, write handoffs, communication between cores), the ranking, frequently used lines, intervals, slowest accesses, region totals, sharing analysis, and assembly of the contents of the five output files.
+- config_io: reads the two input files. Handles reading config.txt and returning the configuration values (number of cores, line, L1 and L2 geometry and set counts, latencies, scenarios, primary scenario, interval, TOP, regions, watched lines), returning trace.txt as a sequence of lines, checking for decimal integers and 8 hex digits, formatting 8 hex digits, and writing a sequence of lines to a file.
+- cache: represents one set-associative cache. Handles line lookup, getting and changing states, removal, touches, victim selection by the three replacement policies, fills (returning the evicted line), the replacement-order string, and the per-set fill and eviction counts.
+- protocol: handles, for the four protocols, the table of transitions of the requesting core, the table of transitions by snooping, and the set of dirty states.
+- bus: handles the free cycle of the bus, the sums of busy cycles and wait times, assignment (determination of the start cycle), and assembly of the transaction log lines.
+- stats: handles the per-core statistics containers and their total, reduced fractions, decimal notation, core strings, strings of per-range counts, and assembly of the six per-core lines of stats.txt.
+
+[Constraints]
+- config.txt correctly follows the format in [Input files]. There is no need to check the configuration for errors.
+- The sizes and numbers of ways of the L1 and the L2 are powers of two, and the numbers of sets are integers of 1 or more (each size is divisible by line size * number of ways). The numbers of ways are at most 16. CAP is a multiple of 4.
+- Scenario names are all different, and PRIMARY is one of them. Region names are all different, and none of them is other. The start address of each region is a multiple of the line size, the end address plus 1 is also a multiple of the line size, and regions do not overlap. Watched line addresses are multiples of the line size and are all different.
+- trace.txt has from 1 to 30000 lines. Every field consisting only of digits has at most 9 characters. Every core has at least one access.
+- The given trace.txt has 12836 lines, of which 12806 lines (12589 accesses and 217 fences) are accepted.
+- TOP is not greater than either the number of lines that had transactions in the primary scenario or the number of accesses.
+- Every integer that appears in the computation (including intermediate values in the decimal-notation computation) is less than 2^31.
+
+[Example]
+A small example that differs from the actual input (2 cores, an L1 with 2 sets and 2 ways, an L2 with 8 sets and 2 ways, and 2 scenarios). In this example CAP = 4.
+input/config.txt:
+CORES 2
+LINE 16
+L1 64 2
+L2 256 2
+LATENCY 1 4 20 2
+SCENARIO mo MOESI PLRU LRU
+SCENARIO vi VI FIFO LRU
+PRIMARY mo
+INTERVAL 40
+TOP 3
+REGION shared 00000000 0000001f
+REGION private 00001000 000010ff
+WATCH 00000000
+input/trace.txt:
+1 0 R 00000000
+2 1 R 00001000
+3 0 W 00000000
+4 1 R 00000004
+5 2 R 00000000
+6 1 W 00000004
+7 0 R 00000000
+8 0 W 00000010
+9 0 FENCE
+9 1 R 00001020
+10 1 R 00001040
+11 1 W 00001044
+12 0 R 0000100g
+12 1 R 000010c0
+12 1 R 00001000
+13 0 R 00000014
+14 1 R 00001020
+3 1 R 00000000
+15 0 W 00000004
+16 1 R 00000008
+17 0 W 00001080
+18 1 R 00001040
+19 0 R 00000000
+20 1 R 00000010
+output/stats.txt:
+trace lines 24 accepted 21 rejected 3
+reject line 5 core
+reject line 13 address
+reject line 18 order
+geometry cores 2 line 16 l1 64 2 sets 2 l2 256 2 sets 8
+latency l1 1 l2 4 memory 20 bus 2
+
+reuse c0 accesses 8 lines 3 distance 1:3 2-4:2 5-16:0 17-64:0 65-256:0 257+:0 cold 3
+mrc c0 lru 1:5 2:3 4:3 8:3 16:3 opt 4:3
+reuse c1 accesses 12 lines 6 distance 1:2 2-4:1 5-16:3 17-64:0 65-256:0 257+:0 cold 6
+mrc c1 lru 1:10 2:10 4:9 8:6 16:6 opt 4:7
+
+scenario mo MOESI PLRU LRU
+c0 accesses 8 reads 4 writes 4 hits 4 misses 4 fences 1
+c0 misses compulsory 3 capacity 0 conflict 0 coherence 1 true_sharing 1 false_sharing 0
+c0 service l1 4 upgrade 0 through 0 cache 1 l2 0 memory 3
+c0 bus BusRd 1 BusRdX 3 BusUpgr 0 BusWr 0 WB 0
+c0 snoop invalidations_sent 1 invalidations_received 1 supplied 2 back_invalidations 2
+c0 time latency 89 amat 89/8 11.13 fence_stall 26 finish 87
+c1 accesses 12 reads 10 writes 2 hits 2 misses 10 fences 0
+c1 misses compulsory 6 capacity 2 conflict 1 coherence 1 true_sharing 0 false_sharing 1
+c1 service l1 1 upgrade 1 through 0 cache 2 l2 2 memory 6
+c1 bus BusRd 10 BusRdX 0 BusUpgr 1 BusWr 0 WB 1
+c1 snoop invalidations_sent 1 invalidations_received 1 supplied 1 back_invalidations 0
+c1 time latency 190 amat 95/6 15.83 fence_stall 0 finish 190
+total accesses 20 reads 14 writes 6 hits 6 misses 14 fences 1
+total misses compulsory 9 capacity 2 conflict 1 coherence 2 true_sharing 1 false_sharing 1
+total service l1 5 upgrade 1 through 0 cache 3 l2 2 memory 9
+total bus BusRd 11 BusRdX 3 BusUpgr 1 BusWr 0 WB 1
+total snoop invalidations_sent 2 invalidations_received 2 supplied 3 back_invalidations 2
+total time latency 279 amat 279/20 13.95 fence_stall 26 finish 190
+l2 lookups 14 hits 5 misses 9 flushes 0 writebacks 1 evictions 3 dirty_evictions 2
+bus transactions 16 busy 32 wait 5 utilization 16.84
+traffic command_bytes 128 data_bytes 240 memory_bytes 176
+snoops probes 15 hits 4 fanout 0:2 1:2
+latencies reads 216 writes 63 histogram 1:5 2-9:6 10-29:9 30-99:0 100-299:0 300+:0
+
+scenario vi VI FIFO LRU
+c0 accesses 8 reads 4 writes 4 hits 2 misses 6 fences 1
+c0 misses compulsory 3 capacity 0 conflict 1 coherence 2 true_sharing 1 false_sharing 1
+c0 service l1 1 upgrade 0 through 4 cache 0 l2 2 memory 1
+c0 bus BusRd 3 BusRdX 0 BusUpgr 0 BusWr 4 WB 0
+c0 snoop invalidations_sent 1 invalidations_received 1 supplied 0 back_invalidations 0
+c0 time latency 113 amat 113/8 14.13 fence_stall 26 finish 93
+c1 accesses 12 reads 10 writes 2 hits 2 misses 10 fences 0
+c1 misses compulsory 6 capacity 2 conflict 1 coherence 1 true_sharing 0 false_sharing 1
+c1 service l1 0 upgrade 0 through 2 cache 0 l2 5 memory 5
+c1 bus BusRd 10 BusRdX 0 BusUpgr 0 BusWr 2 WB 0
+c1 snoop invalidations_sent 1 invalidations_received 1 supplied 0 back_invalidations 0
+c1 time latency 191 amat 191/12 15.92 fence_stall 0 finish 181
+total accesses 20 reads 14 writes 6 hits 4 misses 16 fences 1
+total misses compulsory 9 capacity 2 conflict 2 coherence 3 true_sharing 1 false_sharing 2
+total service l1 1 upgrade 0 through 6 cache 0 l2 7 memory 6
+total bus BusRd 13 BusRdX 0 BusUpgr 0 BusWr 6 WB 0
+total snoop invalidations_sent 2 invalidations_received 2 supplied 0 back_invalidations 0
+total time latency 304 amat 76/5 15.20 fence_stall 26 finish 181
+l2 lookups 19 hits 11 misses 8 flushes 0 writebacks 0 evictions 2 dirty_evictions 1
+bus transactions 19 busy 38 wait 10 utilization 20.99
+traffic command_bytes 152 data_bytes 232 memory_bytes 144
+snoops probes 19 hits 5 fanout 0:4 1:2
+latencies reads 221 writes 83 histogram 1:1 2-9:11 10-29:8 30-99:0 100-299:0 300+:0
+
+ranking
+1 vi finish 181 transactions 19 amat 76/5 15.20
+2 mo finish 190 transactions 16 amat 279/20 13.95
+
+hot mo
+1 00000000 transactions 5 BusRd 3 BusRdX 1 BusUpgr 1 BusWr 0 WB 0 misses 4 coherence 2 invalidations 2 cores 01
+2 00001040 transactions 3 BusRd 2 BusRdX 0 BusUpgr 0 BusWr 0 WB 1 misses 2 coherence 0 invalidations 0 cores 1
+3 00000010 transactions 2 BusRd 1 BusRdX 1 BusUpgr 0 BusWr 0 WB 0 misses 2 coherence 0 invalidations 0 cores 01
+
+intervals mo 40
+0 0-39 accesses 4 4 misses 5 transactions 6 busy 12 utilization 30.00
+1 40-79 accesses 4 1 misses 3 transactions 3 busy 6 utilization 15.00
+2 80-119 accesses 0 3 misses 2 transactions 1 busy 2 utilization 5.00
+3 120-159 accesses 0 2 misses 2 transactions 4 busy 8 utilization 20.00
+4 160-199 accesses 0 2 misses 2 transactions 2 busy 4 utilization 10.00
+
+slowest mo
+1 event 2 cycle 2 c1 R 00001000 latency 28 service memory
+2 event 9 cycle 36 c1 R 00001020 latency 28 service memory
+3 event 18 cycle 59 c0 W 00001080 latency 28 service memory
+
+regions mo
+shared accesses 11 reads 7 writes 4 hits 5 compulsory 4 capacity 0 conflict 0 coherence 2 transactions 7 latency 99 amat 9/1 9.00
+private accesses 9 reads 7 writes 2 hits 1 compulsory 5 capacity 2 conflict 1 coherence 0 transactions 9 latency 180 amat 20/1 20.00
+other accesses 0 reads 0 writes 0 hits 0 compulsory 0 capacity 0 conflict 0 coherence 0 transactions 0 latency 0 amat -
+output/bus_log.txt:
+1 2 c0 BusRd 00000000 snoop none data mem l2 miss
+2 4 c1 BusRd 00001000 snoop none data mem l2 miss
+3 31 c0 BusRdX 00000010 snoop none data mem l2 miss
+4 33 c1 BusRd 00000000 snoop c0:M>O data c0 l2 hit
+5 36 c1 BusUpgr 00000000 snoop c0:O>I
+6 38 c1 BusRd 00001020 snoop none data mem l2 miss
+7 59 c0 BusRdX 00000000 snoop c1:M>I data c1 l2 hit
+8 61 c0 BusRdX 00001080 snoop none data mem l2 miss evict 00001000 none clean
+9 65 c1 BusRd 00001040 snoop none data mem l2 miss
+10 93 c1 BusRd 000010c0 snoop none data mem l2 miss
+11 120 c1 BusRd 00001000 snoop none data mem l2 miss evict 00000000 c0:M dirty
+12 122 c1 WB 00001040
+13 147 c1 BusRd 00001020 snoop none data L2 l2 hit
+14 154 c1 BusRd 00000000 snoop none data mem l2 miss evict 00001080 c0:M dirty
+15 181 c1 BusRd 00001040 snoop none data L2 l2 hit
+16 188 c1 BusRd 00000010 snoop c0:M>O data c0 l2 hit
+output/watch.txt:
+1 1 c0 R 00000000 line 00000000 c0:E c1:I L2:C
+3 28 c0 W 00000000 line 00000000 c0:M c1:I L2:C
+6 29 c0 R 00000000 line 00000000 c0:M c1:I L2:C
+4 30 c1 R 00000004 line 00000000 c0:O c1:S L2:C
+5 35 c1 W 00000004 line 00000000 c0:I c1:M L2:C
+16 58 c0 W 00000004 line 00000000 c0:M c1:I L2:C
+20 60 c0 R 00000000 line 00000000 c0:M c1:I L2:C
+13 119 c1 R 00001000 line 00000000 c0:I c1:I L2:I
+17 153 c1 R 00000008 line 00000000 c0:I c1:E L2:C
+output/sharing.txt:
+00000000 true cores 01 writers 01 reads 5 writes 3 handoffs 2 coherence 2 true 1 false 1 words w0=0/0 w1=1/01 w2=1/-
+00000010 true cores 01 writers 0 reads 2 writes 1 handoffs 0 coherence 0 true 0 false 0 words w0=1/0 w1=0/-
+lines 2 true_lines 2 false_lines 0 coherence 2 true 1 false 1
+communication
+c0 0 1
+c1 0 0
+output/final_state.txt:
+c0 0 - - plru 1 fills 3 evictions 0
+c0 1 00000010:O - plru 1 fills 1 evictions 0
+c0 lines 1 M 0 O 1 E 0 S 0 V 0
+c1 0 00001040:E 00000000:E plru 1 fills 9 evictions 6
+c1 1 00000010:S - plru 1 fills 1 evictions 0
+c1 lines 3 M 0 O 0 E 2 S 1 V 0
+L2 0 00001000:C 00000000:C lru 1 0 fills 5 evictions 3
+L2 1 00000010:C - lru 0 fills 1 evictions 0
+L2 2 00001020:C - lru 0 fills 1 evictions 0
+L2 3 - - lru - fills 0 evictions 0
+L2 4 00001040:D 000010c0:C lru 0 1 fills 2 evictions 0
+L2 5 - - lru - fills 0 evictions 0
+L2 6 - - lru - fills 0 evictions 0
+L2 7 - - lru - fills 0 evictions 0
+L2 lines 6 dirty 1 clean 5 in_l1 3
+In this example, line 5 is rejected as core because core number 2 is N or more, line 13 as address because the address contains g, and line 18 as order because its cycle 3 is smaller than the cycle 14 of the most recently accepted line (line 17).
+Event 1 (core 0, R 00000000) is an L2 miss with request cycle 2, start cycle 2 and completion cycle 2 + 2 + 4 + 20 = 28. Therefore the issue cycle of core 0's next event, event 3 (W 00000000), is 28; since it is a write to a line in state E, the line becomes M without a transaction.
+Event 7 (core 0, W 00000010) and event 4 (core 1, R 00000004) both have issue cycle 30, so event 7, of the core with the smaller core number, is processed first. The BusRd of event 4 waits until cycle 33, when the bus becomes free (wait time 2), and core 0, in state M, becomes O and supplies the data. This processing order is why the line for event 4 comes after the line for event 6 in watch.txt. Event 8 (a fence) waits until cycle 57, when the write of event 7 completes (fence_stall 26).
+The BusUpgr of event 5 (core 1, W 00000004) makes line 00000000 of core 0 I, and the invalidation record {1} is created. Therefore event 16 (core 0, W 00000004, word 1) is a coherence miss due to true sharing. The BusRdX of event 16 makes core 1's copy I and creates the record {1}, so core 1's event 17 (R 00000008, word 2) is a coherence miss due to false sharing.
+The reuse distance of event 13 (core 1, R 00001000) is 5: the 4 lines 00000000, 00001020, 00001040 and 000010c0 accessed between it and the previous event 2, plus 1. Since this is greater than CAP = 4, it is capacity. At this time, line 00000000 is evicted from set 0 of the L2, and core 0's copy in state M is removed (dirty). Also, in set 0 of core 1's L1, line 00001040 in state M in way 1 is evicted as the PLRU victim, so a WB (number 12) follows.

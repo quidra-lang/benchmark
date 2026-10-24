@@ -1,0 +1,270 @@
+[Overview]
+Write a simulator of a dynamic memory allocator (the mechanism behind malloc and free). The program reads a sequence of commands from standard input and, on a virtual heap area, performs block allocation, freeing, reallocation, coalescing of adjacent free blocks, a buddy system, compaction, reachability-based garbage collection, and so on, and writes the result of each command, the state of the heap, and statistics to standard output. There are six allocation modes, and there is also a command that compares the modes on a randomly generated workload.
+
+[Input format]
+The first line contains the number of commands N. Each of the following N lines contains one command. Each command consists of the command name and zero or more arguments, separated by single ASCII spaces, with no spaces at the start or end of the line. There are 26 command formats:
+
+  HEAP S M
+  MALLOC id n
+  CALLOC id c z
+  MEMALIGN id al n
+  REALLOC id n
+  FREE id
+  FILL id off len v
+  COPY dst doff src soff len
+  READ id off len
+  ROOT id
+  UNROOT id
+  LINK src dst
+  UNLINK src dst
+  GC
+  SBRK k
+  TRIM
+  COMPACT
+  WHO p
+  DUMP
+  MAP
+  FREELIST
+  TREE
+  STATS
+  LEAKS
+  HISTORY id
+  BENCH S seed ops maxreq
+
+M is a mode name, one of FIRST, NEXT, BEST, WORST, SEGFIT, BUDDY. id, src and dst are IDs: strings of 1 to 8 characters that start with a lowercase letter and consist only of lowercase letters (a to z) and digits (0 to 9). All other arguments are non-negative integers written in decimal without extra leading zeros. It is guaranteed that every line follows these formats and the ranges in [Constraints].
+
+[Processing]
+Process the N commands in order from the first one, and print the result of each command as described in [Output format]. Below, S denotes the current heap size (except that in the descriptions of HEAP and BENCH, S is the argument value).
+
+* Heap and blocks
+- The heap is the S-byte region from address 0 to address S-1. Initially no heap exists.
+- The whole heap is divided into "blocks" arranged in address order with no gaps and no overlaps. Each block has a start address and a size (number of bytes), and is either "used" or "free". A used block is owned by exactly one ID (except inside the BENCH experiments). The "next block" and the "previous block" of a block are the blocks immediately after it and immediately before it in address order.
+- The first 8 bytes of each block are the header. The start address plus 8 is called the "payload address".
+- A used block has a "requested size" and "contents". The requested size is the number of bytes specified in the last allocation or reallocation. The contents are a sequence of as many bytes as the requested size; each byte at offsets 0 through (requested size - 1) is either a value from 0 to 255 or "uninitialized".
+- The modes FIRST, NEXT, BEST, WORST and SEGFIT are collectively called the "free-list modes".
+- The "required length" for a requested size n is defined as follows. In the free-list modes, it is n rounded up to a multiple of 8, plus 8 (e.g. 16 for n=1, 16 for n=8, 24 for n=9). In BUDDY, it is the smallest power of two that is at least that value and at least 32 (e.g. 32 for n=1, 32 for n=24, 64 for n=25).
+- When processing follows the rules, block start addresses and sizes are always multiples of 8. In the free-list modes, every block is at least 16 bytes and no two free blocks are ever adjacent. In BUDDY, the heap size and every block size are powers of two, and the start address of each block is a multiple of that block's size.
+- In BUDDY, the "buddy" of a block with start address a and size s is the region of size s whose start address is a+s (if a is a multiple of 2s) or a-s (otherwise).
+
+* ID states
+- Each ID is in one of the states "unused", "in use" and "freed". Initially, and right after a successful HEAP, every ID is unused.
+- An ID whose allocation succeeds becomes in use. When the block of an in-use ID is freed, that ID becomes freed. A freed ID can be allocated again, and it then becomes in use again.
+- Many commands check that an ID is in use, and otherwise print the following "state error": "ERROR USE AFTER FREE <id>" if the ID is freed, and "ERROR UNKNOWN ID <id>" if it is unused (<id> is that ID).
+
+* Roots and references
+- An in-use ID can be designated as a "root". Also, directed "references" can be created from an in-use ID to an in-use ID.
+- The IDs designated as roots, and the IDs that can be reached from them by following references one or more times, are called "reachable".
+- When an ID becomes freed, its root designation, the references going out of it and the references coming into it are all removed.
+
+* Registration of free blocks
+- Every free block has a registration age (newer or older), which is used to choose the allocation target in SEGFIT and for the display order of FREELIST in SEGFIT.
+- When a free block is newly created, or when the start address or the size of an existing free block changes, that block is "registered". A registered block becomes the most recently registered free block at that moment. When several free blocks are registered within one command, the order is as given in the description of each operation.
+
+* Rover
+- The rover is an address used by NEXT. It becomes 0 at HEAP and changes only where stated in the descriptions of the allocation procedure, TRIM and COMPACT. The rover is always less than the heap size, and there is exactly one block containing the rover (the block with start address <= rover < start address + size). Even if block boundaries change, for example by coalescing, the value of the rover does not change.
+
+* Allocation procedure
+For a required length s and an alignment al (the specified value in MEMALIGN, 8 otherwise), proceed as follows.
+(1) For each free block (start address f, size z), compute its "placement address" p. First, let q be the smallest address >= f such that q+8 is a multiple of al. If q-f is 0 or at least 16, p=q; if q-f is from 1 to 15, p=q+al. If p+s <= f+z, the block is "placeable". When al=8, p=f always.
+(2) If there is no placeable free block, the allocation fails. Otherwise, choose one of them according to the mode:
+  FIRST: the one with the smallest start address.
+  NEXT: examine the blocks in increasing address order starting from the block containing the rover; after examining up to the end of the heap, go back to the block at address 0 and examine up to the block immediately before the block containing the rover. The first one found in that order.
+  BEST: the one with the smallest size; among equal sizes, the one with the smallest start address.
+  WORST: the one with the largest size; among equal sizes, the one with the smallest start address.
+  SEGFIT: the one with the smallest size class; among equal classes, the most recently registered one. The class of a size z is the integer k satisfying 2^k <= z < 2^(k+1).
+  BUDDY: the one with the smallest size; among equal sizes, the one with the smallest start address.
+(3) Split the chosen block (start address f, size z, placement address p) as follows.
+  Free-list modes: if p is greater than f, keep the part with start address f and size p-f as a free block and register it. Next, let r=f+z-p. If r-s is at least 16, make the part with start address p and size s a used block, and make the part with start address p+s and size r-s a free block and register it (it is registered after the leading free block). If r-s is less than 16, make the whole part with start address p and size r a used block.
+  BUDDY: while the block size is greater than s, repeatedly split the block into two halves, make the upper half (the one with higher addresses) a free block and register it, and take the lower half as the target of the next split. Finally, make the remaining block, with start address f and size s, used.
+(4) In NEXT, each time an allocation succeeds, set the rover to the start address + size of the block that was made used. However, if that value equals the heap size, set the rover to 0.
+
+* Free procedure
+Make a used block free and coalesce as follows. Each coalescing step increases the "merge count" by 1 (the merge count starts from 0).
+  Free-list modes: if the next block is free, coalesce with it into one free block. Then, if the previous block is free, coalesce with it.
+  BUDDY: while the block size is less than the heap size and there exists a free block with the same start address and size as its buddy, repeatedly coalesce the two into a free block of twice the size whose start address is the smaller of the two start addresses.
+The final free block (the block that was made free itself, if no coalescing happened) is called the "resulting free block", and it is registered.
+
+* Commands
+While no heap exists, every command other than HEAP and BENCH does nothing and prints the single line "ERROR NO HEAP". The following describes the processing when a heap exists (for HEAP and BENCH, regardless of whether a heap exists). Error checks are performed in the order written; only the line of the first error that applies is printed, and the command does nothing else (except that the number of times "ERROR OUT OF MEMORY" is printed is counted as A5 of STATS).
+
+HEAP S M
+Succeeds if S is a multiple of 8 with 32 <= S <= 65536 and, in addition when M is BUDDY, S is a power of two. On success, discard the previous heap and all information related to it (blocks, ID states, roots, references, histories, counters, peak, rover), create a new heap in mode M consisting only of one free block of size S (which is registered), and print "HEAP size=<S> mode=<M>". If the conditions are not met, print "ERROR BAD HEAP SIZE" and leave the previous state unchanged, including the state in which no heap exists.
+
+MALLOC id n
+Checks: if n=0, "ERROR BAD SIZE". If id is in use, "ERROR DUPLICATE ID <id>". Perform the allocation procedure with the required length and alignment 8; if it fails, "ERROR OUT OF MEMORY <id>".
+Processing: make the block that was made used owned by id, set its requested size to n and all of its contents to uninitialized. id becomes in use. Print "MALLOC <id> addr=<payload address> block=<block size>".
+
+CALLOC id c z
+Perform the same checks and processing as MALLOC with n=c*z. However, set all of the contents to the value 0, and make the first word of the output line CALLOC.
+
+MEMALIGN id al n
+Checks: if the mode is BUDDY, "ERROR UNSUPPORTED IN BUDDY MODE". If al is not a power of two from 8 to 4096, "ERROR BAD ALIGNMENT".
+After that, perform the same checks and processing as MALLOC, with al as the alignment of the allocation procedure. However, the first word of the output line is MEMALIGN.
+
+FREE id
+Checks: if id is freed, "ERROR DOUBLE FREE <id>". If id is unused, "ERROR UNKNOWN ID <id>".
+Processing: perform the free procedure on the block of id (size b) and make id freed. Print "FREE <id> block=<b> merges=<merge count> free=<start address of the resulting free block>+<its size>".
+
+REALLOC id n
+When n=0, perform exactly the same checks, processing and output as FREE id.
+When n is 1 or more and id is freed, print the state error "ERROR USE AFTER FREE <id>".
+When n is 1 or more and id is unused, perform exactly the same checks, processing and output as MALLOC id n.
+When n is 1 or more and id is in use, let a be the start address of the block of id, b its size, and s the required length; process with the first of the following (A) to (D) that applies, and determine its "kind".
+(A) When s is less than or equal to b:
+  In a free-list mode, if b-s is at least 16, set the block size to s and create a free block with start address a+s and size b-s. If the block after it is free, coalesce with it, and register the resulting free block. The kind is shrunk.
+  In a free-list mode, if b-s is less than 16, leave the block unchanged. The kind is kept.
+  In BUDDY, if s=b, leave the block unchanged. The kind is kept.
+  In BUDDY, if s is less than b, repeatedly split the block in half, keeping the lower half and making the upper half a free block and registering it, until the block size becomes s. The kind is shrunk.
+(B) In a free-list mode, when the next block is free (size z) and b+z is at least s: absorb that free block. If b+z-s is at least 16, set the block size to s, and create a free block with start address a+s and size b+z-s and register it. If b+z-s is less than 16, set the block size to b+z. The kind is grown.
+(C) In BUDDY, when for every t in t=b, 2b, 4b, ..., s/2 the condition "a is a multiple of 2t, and a free block with start address a+t and size t exists" holds: absorb all those free blocks and set the block size to s. The kind is grown.
+(D) Otherwise: keeping the original block used, perform the allocation procedure with required length s and alignment 8. If it fails, print "ERROR OUT OF MEMORY <id>" and change nothing (the requested size and the contents stay as they were). If it succeeds, move the ownership of id to the new block and perform the free procedure on the original block (this merge count is not printed). The kind is moved.
+When no error occurs (including kept), set the requested size to n. For the contents, the bytes at offsets less than the smaller of the original requested size and n keep their original values, and the bytes at all other offsets become uninitialized. The root designation and references of id are kept as they are. If the kind is not moved, print "REALLOC <id> addr=<payload address> block=<block size after processing> <kind>"; if it is moved, print "REALLOC <id> addr=<new payload address> block=<new block size> moved from=<original payload address>".
+
+FILL id off len v
+Checks: the state error of id. If off+len is greater than the requested size of id, "ERROR OUT OF BOUNDS <id>".
+Processing: set each byte of the contents at offsets off through off+len-1 to the value v, and print "FILL <id> <off>+<len> = <v>".
+
+COPY dst doff src soff len
+Checks: the state error of dst. If doff+len is greater than the requested size of dst, "ERROR OUT OF BOUNDS <dst>". The state error of src. If soff+len is greater than the requested size of src, "ERROR OUT OF BOUNDS <src>".
+Processing: copy the len bytes of the contents of src starting at offset soff (uninitialized bytes stay uninitialized) to the len bytes of the contents of dst starting at offset doff. Even if dst and src are the same and the ranges overlap, the contents as they were before copying are copied. Print "COPY <dst> <doff>+<len> from <src> <soff>".
+
+READ id off len
+Checks: the same as FILL.
+Processing: print "READ <id> <off>+<len> = " followed by the len bytes of the contents at offsets off through off+len-1, in order, separated by single spaces. Values are decimal integers, and an uninitialized byte is written as ?.
+
+ROOT id
+Checks: the state error of id.
+Processing: designate id as a root (nothing changes if it is already a root), and print "ROOT <id>".
+
+UNROOT id
+Checks: the state error of id. If id is not a root, "ERROR NOT ROOT <id>".
+Processing: remove the root designation of id, and print "UNROOT <id>".
+
+LINK src dst
+Checks: the state error of src. The state error of dst.
+Processing: create a reference from src to dst (nothing changes if it already exists; src and dst may be the same), and print "LINK <src> <dst>".
+
+UNLINK src dst
+Checks: the state error of src. The state error of dst. If there is no reference from src to dst, "ERROR NO LINK <src> <dst>".
+Processing: remove that reference, and print "UNLINK <src> <dst>".
+
+GC
+Find all in-use IDs that are not reachable at the start of the command, and free their blocks one at a time in increasing order of start address, in the same way as FREE (perform the free procedure, make the ID freed, and remove its root designation and references). First print "GC collected=<number of blocks freed> bytes=<total size of the freed blocks>", then print one line per freed block in the order they were freed: "COLLECT <id> block=<b> merges=<merge count> free=<start address of the resulting free block>+<its size>" (the FREE output line with its first word changed to COLLECT).
+
+SBRK k
+Checks: in the free-list modes, unless k is a multiple of 8, k is at least 16, and S+k is at most 65536, "ERROR BAD SBRK SIZE". In BUDDY, unless k=S and 2S is at most 65536, "ERROR BAD SBRK SIZE".
+Processing: add a free block with start address S and size k at the end of the heap, making the heap size S+k; perform on this block the same coalescing as in the free procedure, and register the resulting free block. The rover does not change. Print "SBRK heap=<new heap size> free=<start address of the resulting free block>+<its size>".
+
+TRIM
+In the free-list modes, if there are two or more blocks and the last block is free, remove that block and set the heap size to the start address of that block. In BUDDY, while the last block is free and its size is exactly half of the heap size, repeatedly remove that block and halve the heap size. After that, if the rover is greater than or equal to the heap size, set the rover to 0. Print "TRIM heap=<heap size after processing> released=<number of bytes removed>" (also print it, with released=0, when nothing was removed).
+
+COMPACT
+Checks: if the mode is BUDDY, "ERROR UNSUPPORTED IN BUDDY MODE".
+Processing: relocate the used blocks, keeping their address order and their sizes, packed without gaps starting from address 0, and remove all previous free blocks. A block whose start address changed is a "moved" block. Let U be the total size of the used blocks; if U is less than S, create one free block with start address U and size S-U and register it. Set the rover to 0. Ownership, requested sizes, contents, root designations and references do not change. First print "COMPACT moved=<number of moved blocks> free=<U>+<S-U>" ("free=none" if no free block was created), then, for each moved block in address order, print one line "MOVE <id> <original payload address> -> <new payload address>".
+
+WHO p
+Print the owner of address p in one line. If p is S or more, "WHO <p> outside". Otherwise, if the block containing p is free, "WHO <p> free <start address of that block>+<its size>"; if it is used and p is less than its start address+8, "WHO <p> header <id>". In the remaining case, with d=p-payload address, "WHO <p> data <id>+<d>" if d is less than the requested size, and "WHO <p> slack <id>+<d>" otherwise.
+
+DUMP
+First print "DUMP mode=<mode name> heap=<S> blocks=<number of blocks>". Only when the mode is NEXT, append one space and "rover=<rover>" to the end of this line. Then print all blocks in address order, one per line: "<start address> <size> USED <id> req=<requested size>" for a used block, and "<start address> <size> FREE" for a free block.
+
+MAP
+First print "MAP heap=<S>". Divide the heap into 8-byte "units" starting from address 0, and represent each unit by one character. The first unit of a used block is H. Numbering the remaining units of that block from the first one as k=0, 1, 2, ..., the k-th unit is # if 8k is less than the requested size, and - otherwise. The first unit of a free block is F, and its remaining units are . (period). Group the units into lines of 64 starting from address 0 (the last line consists only of the remaining units and may have fewer than 64). Each line is the address of the first unit of the line written as a 5-digit decimal number (padded with leading zeros if it has fewer than 5 digits), followed by one space, followed by the characters of the units in address order.
+
+FREELIST
+First print "FREELIST count=<number of free blocks>". Then, for each class k that has at least one free block, in increasing order of k, print one line: "<2^k>-<2^(k+1)-1>: " followed by the free blocks of that class in the form "<start address>+<size>", separated by single spaces (e.g. "32-63: 96+48 400+32"). The order of the blocks is newest registration first (the most recently registered one first) in SEGFIT, and address order in the other modes.
+
+TREE
+Checks: if the mode is not BUDDY, "ERROR REQUIRES BUDDY MODE".
+Processing: first print "TREE heap=<S>". Then, starting from the "node" with start address 0 and size S, print each node on one line by the following rule. If a block with the same start address and size as the node exists, the node is a leaf: print "<indent><start address>+<size> USED <id>" or "<indent><start address>+<size> FREE". If no such block exists, print "<indent><start address>+<size> split", and then print the node of the lower half and then the node of the upper half by the same rule. The indent is a number of spaces equal to twice the depth, where the depth of the first node is 0.
+
+STATS
+Print the following two lines.
+  STATS used=<U> used_blocks=<number of used blocks> free=<F> free_blocks=<number of free blocks> largest=<L> frag=<fragmentation> requested=<total requested size> peak=<peak>
+  OPS allocs=<A1> frees=<A2> reallocs=<A3> moves=<A4> failures=<A5> collected=<A6>
+U is the total size of the used blocks, F is the total size of the free blocks, L is the size of the largest free block (0 if there are no free blocks), and the total requested size is the sum of the requested sizes of the used blocks. The fragmentation is the quotient of (F-L)*100 divided by F (fractional part truncated) if F is 1 or more, and 0 if F=0. The peak is the maximum value, since the most recent successful HEAP, obtained by updating it with the current U each time the processing of a command finishes (including commands that ended in an error); it is 0 right after HEAP.
+A1 to A6 are the following counts since the most recent successful HEAP. A1: the number of successful MALLOC, CALLOC and MEMALIGN commands (including cases where REALLOC performed the same processing as MALLOC and succeeded). A2: the number of successful FREE commands (including cases where REALLOC performed the same processing as FREE and succeeded, and not including frees by GC). A3: the number of times REALLOC processed an in-use ID with (A) to (D) and succeeded. A4: the number of REALLOCs of kind moved plus the number of blocks moved by COMPACT. A5: the number of times "ERROR OUT OF MEMORY" was printed. A6: the total number of blocks freed by GC.
+
+LEAKS
+First print "LEAKS count=<number of in-use IDs> requested=<sum of their requested sizes> lost=<number of those that are not reachable>". Then sort the in-use IDs in lexicographic order of ASCII character codes (if one is a prefix of the other, the shorter one comes first), and print one line per ID: "LEAK <id> addr=<payload address> block=<block size> req=<requested size> <status>". The status is reachable if the ID is reachable, and lost otherwise.
+
+HISTORY id
+This never produces an error, regardless of the state of the ID. Among the following lines printed since the most recent successful HEAP, the lines about that ID are recorded as its "history", in the order they were printed: the output lines of successful MALLOC, CALLOC, MEMALIGN, REALLOC and FREE (when REALLOC performed the same processing as MALLOC or FREE, that MALLOC or FREE line), the MOVE lines of COMPACT, and the COLLECT lines of GC. First print "HISTORY <id> events=<number of history lines>", then print each history line exactly as it was, in recorded order.
+
+BENCH S seed ops maxreq
+Checks: if S is not a power of two from 32 to 65536, "ERROR BAD HEAP SIZE".
+Processing: for the modes FIRST, NEXT, BEST, WORST, SEGFIT, BUDDY in this order, perform the following experiment once each. In each experiment, create a new heap in that mode consisting only of one free block of size S (the same state as right after HEAP), set the random state x to seed and the experiment peak to 0, prepare an empty "live list", and repeat the following (1) to (4) ops times. "Update x" means replacing x with the remainder of (48271*x) divided by 2147483647.
+(1) Update x. If the live list is empty, or the remainder of x divided by 3 is not 0, the step is an "allocation"; otherwise it is a "free".
+(2) Update x.
+(3) For an allocation, let n=1+(the remainder of x divided by maxreq), and perform the allocation procedure with the required length for n and alignment 8. If it succeeds, append the block that was made used to the end of the live list. For a free, remove from the live list the block at position (the remainder of x divided by the length of the live list) counted from the head of the list (the head is position 0), and perform the free procedure on that block.
+(4) If the total size of the used blocks at that point is greater than the experiment peak, set the peak to that value.
+First print "BENCH heap=<S> seed=<seed> ops=<ops> maxreq=<maxreq>", then print one line per mode in experiment order: "BENCH <mode name> ok=<number of successful allocations> fail=<number of failed allocations> peak=<experiment peak> used=<total size of the used blocks at the end> frag=<fragmentation at the end> blocks=<number of blocks at the end>". The fragmentation is computed by the same formula as in STATS. BENCH can be executed even when no heap exists, and it does not change the current heap or any information related to it (including the peak, the counters and the histories).
+
+[Output format]
+- For each command, print only the lines described in [Processing]. Every command prints at least one line.
+- Words and values within a line are separated by single spaces as described. The only leading spaces are the indentation of TREE, and no line has trailing spaces. No blank lines are printed. Every line ends with a newline.
+- All numbers are written as decimal integers without extra leading zeros, except that the address at the start of each MAP line is padded to 5 digits.
+- The error lines are the following 15 kinds (the parts in < > are replaced by the corresponding ID).
+  ERROR NO HEAP
+  ERROR BAD HEAP SIZE
+  ERROR BAD SIZE
+  ERROR BAD ALIGNMENT
+  ERROR BAD SBRK SIZE
+  ERROR DUPLICATE ID <id>
+  ERROR UNKNOWN ID <id>
+  ERROR USE AFTER FREE <id>
+  ERROR DOUBLE FREE <id>
+  ERROR OUT OF MEMORY <id>
+  ERROR OUT OF BOUNDS <id>
+  ERROR NOT ROOT <id>
+  ERROR NO LINK <src> <dst>
+  ERROR UNSUPPORTED IN BUDDY MODE
+  ERROR REQUIRES BUDDY MODE
+
+[Constraints]
+- 1 <= N <= 1000
+- S of HEAP and BENCH: 0 <= S <= 1000000
+- n of MALLOC, MEMALIGN and REALLOC: 0 <= n <= 1000000
+- CALLOC: 0 <= c <= 1000, 0 <= z <= 1000
+- al of MEMALIGN: 0 <= al <= 1000000
+- FILL: 0 <= off <= 1000000, 1 <= len <= 1000000, 0 <= v <= 255
+- COPY: 0 <= doff <= 1000000, 0 <= soff <= 1000000, 1 <= len <= 1000000
+- READ: 0 <= off <= 1000000, 1 <= len <= 32
+- k of SBRK: 0 <= k <= 1000000
+- p of WHO: 0 <= p <= 1000000
+- BENCH: 1 <= seed <= 2147483646, 1 <= ops <= 2000, 1 <= maxreq <= 4096. There are at most 5 BENCH lines in the whole input.
+- The heap size is always at most 65536. The absolute value of every integer needed in processing is less than 2^47 (the largest is 48271*x, used in the random update of BENCH).
+
+[Example]
+Input:
+11
+MALLOC a 10
+HEAP 128 FIRST
+MALLOC a 10
+MALLOC b 20
+FILL b 0 3 5
+FREE a
+MALLOC c 4
+REALLOC b 40
+READ b 1 4
+DUMP
+STATS
+
+Output:
+ERROR NO HEAP
+HEAP size=128 mode=FIRST
+MALLOC a addr=8 block=24
+MALLOC b addr=32 block=32
+FILL b 0+3 = 5
+FREE a block=24 merges=0 free=0+24
+MALLOC c addr=8 block=24
+REALLOC b addr=32 block=48 grown
+READ b 1+4 = 5 5 ? ?
+DUMP mode=FIRST heap=128 blocks=3
+0 24 USED c req=4
+24 48 USED b req=40
+72 56 FREE
+STATS used=72 used_blocks=2 free=56 free_blocks=1 largest=56 frag=0 requested=44 peak=72
+OPS allocs=3 frees=1 reallocs=1 moves=0 failures=0 collected=0
+
+In this example, the required length of c is 16, but splitting the free block (size 24) would leave 8 bytes, which is less than 16, so the whole block of size 24 becomes c's. Also, in the reallocation of b, the next free block (start address 56, size 72) is absorbed, and the part beyond the required length 48 (56 bytes) is split off as a free block.

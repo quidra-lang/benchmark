@@ -1,0 +1,480 @@
+[Overview]
+Write a program that reproduces the behavior of BGP, the protocol that exchanges routes between ASes (autonomous systems) on the Internet, as a discrete-time event-driven simulation.
+Each AS has exactly one router, and ASes are connected by links. Each link has a business relationship (provider and customer, or peers), a delay until a message arrives, and an MRAI (the minimum interval between consecutive updates sent on the same session). Each AS holds a receive table per session (Adj-RIB-In), a table of the best route per prefix (Loc-RIB), and a send table per session (Adj-RIB-Out). Import rules (prefix lists, AS_PATH conditions and community conditions, and settings of LOCAL_PREF, MED and communities) are applied to received routes, and the best route is selected with AS_PATH loop prevention and the best-route selection procedure (in the order LOCAL_PREF, AS_PATH length, ORIGIN, MED among routes from the same neighbor AS, router ID). When the best route changes, announcements and withdrawals are sent to neighbor ASes according to the export rules (the Gao-Rexford rules, NO_EXPORT, AS_PATH prepending, MED and community settings, and exceptions permitted by rules).
+The input is four files in the input/ folder (topology, policies, events, parameters). The events, each with a time, are announcements and withdrawals of prefixes, link failures and recoveries, and activation and deactivation of rules.
+During the simulation, the program measures the time to convergence and the number of updates per event, records forwarding loops (forwarding cycles) and blackholes that arise during convergence, and detects repetitions of the same global state (divergence). At the end it computes the final routing table of each AS, forwarding paths from given ASes to given addresses (by longest match), a reachability table, a valley-free audit of the final routes, and the number of times each rule was applied. The results are written to five files in the output/ folder, and nothing is printed to standard output.
+All computation is done with integers; neither real numbers nor random numbers are used. Since the order of every step is also fully specified, the result is uniquely determined.
+
+[Input files]
+The input files are the four files input/topology.txt, input/policies.txt, input/events.txt and input/params.txt. Every file consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). There are no blank lines and no spaces at the beginning or end of a line. The items in a line are separated by a single ASCII space. Integers are written in decimal with no extra leading zeros and no sign (negative numbers do not occur).
+In the descriptions below, <...> denotes a part holding a value, [...] denotes an optional part, and "<community>..." denotes zero or more communities in a row. These symbols themselves never appear in the input or the output. IPv4 addresses, router IDs, prefixes and communities are written as described in [Processing] section 1. Names (of links, prefix lists and rules) are strings of 1 to 12 characters that start with a lowercase English letter and consist only of lowercase English letters and digits.
+
+* input/topology.txt (topology)
+AS lines (one or more), LINK lines (one or more) and PREFIX lines (zero or more), in this order.
+- AS <AS number> <router ID>: defines one AS. Both the AS number and the router ID differ between ASes.
+- LINK <name> <a> <b> <relationship> <delay> <MRAI>: defines one link connecting AS a and AS b. <relationship> is P2C or P2P. P2C means that a is a provider of b (b is a customer of a), and P2P means that a and b are peers. <delay> is the time until a message sent on this link reaches the other side, and <MRAI> is the minimum route advertisement interval of this link ([Processing] section 7). The order of the LINK lines is called "link order", and the links are given "link numbers" 0, 1, 2, ... in order from the first.
+- PREFIX <AS number> <prefix> <ORIGIN> <community>...: a prefix originated by that AS at time 0 (INITIAL in [Processing] section 9). <ORIGIN> is one of IGP, EGP and INCOMPLETE.
+
+* input/policies.txt (policies)
+PLIST lines (zero or more) and RULE lines (zero or more), in this order.
+- PLIST <name> <action> <prefix> [GE <g>] [LE <l>]: defines one entry of a prefix list. <action> is PERMIT or DENY. GE and LE are both optional, and when both are present, GE comes first. The PLIST lines with the same name, in file order, form one prefix list ([Processing] section 3).
+- RULE <name> <state> <AS number> <direction> <target> <condition>... THEN <action>...: defines one rule. Rule names differ between rules.
+  <state> is the state at time 0, either ON (active) or OFF (inactive). <AS number> is the AS that owns this rule. <direction> is IMPORT (import rule) or EXPORT (export rule). <target> is one of *, the AS number of a neighbor AS, and the name of a link.
+  There are zero or more <condition>s, each of which is one of: PREFIX <list name>, CONTAINS <AS number>, ORIGINAS <AS number>, LENGTH <lo>-<hi>, COMMUNITY <community>.
+  There are one or more <action>s after THEN, each of which is one of: DENY, ALLOW, LOCALPREF <n>, MED <n>, PREPEND <n>, ADD <community>, REMOVE <community>.
+  The order of the RULE lines is called "rule order".
+
+* input/events.txt (events)
+Each line has the form "<time> <event>", where <event> is one of the following.
+- ANNOUNCE <AS number> <prefix> <ORIGIN> <community>...
+- WITHDRAW <AS number> <prefix>
+- LINK DOWN <link name>
+- LINK UP <link name>
+- POLICY ON <rule name>
+- POLICY OFF <rule name>
+Times are at least 1 and strictly increase from line to line. The meaning is defined in [Processing] section 9.
+
+* input/params.txt (parameters)
+Line 1 is "LOCALPREF <Lc> <Lp> <Lv>", line 2 is "STEPCAP <n>", and from line 3 on there are one or more lines "TRACE <AS number> <IPv4 address>".
+- LOCALPREF: the default LOCAL_PREF values of learned routes. Lc is the value for routes learned from a customer, Lp from a peer, and Lv from a provider ([Processing] section 4).
+- STEPCAP: the cap used for divergence detection and for cutting off the last event ([Processing] sections 10 and 11).
+- TRACE: the source AS and the destination address of a forwarding path to examine. The order of the TRACE lines is called "trace order".
+
+[Processing]
+* 1. Notation and common rules
+- An AS is denoted by its AS number. "AS order" means ascending order of AS number.
+- An IPv4 address a1.a2.a3.a4 (each part is a decimal number from 0 to 255 with no extra leading zeros) has as its "value" the integer a1 * 2^24 + a2 * 2^16 + a3 * 2^8 + a4. Router IDs are written the same way, and router IDs are compared by this value (they must not be compared as strings).
+- A prefix has the form "<IPv4 address>/<length>", where the length is from 0 to 32 and the value of the address is a multiple of 2^(32 - length). Let P be the value of the prefix's address and m its length; an address with value B is "contained" in this prefix when the quotient of B divided by 2^(32 - m) (rounded down) equals the quotient of P divided by 2^(32 - m) (if m = 0, every address is contained). "Prefix order" means ascending order of the address value, and for equal values ascending order of the length.
+- A community is a value of the form "<x>:<y>" (0 <= x <= 65535, 0 <= y <= 65535). The special community NO_EXPORT is the same value as 65535:65281, and it is always written NO_EXPORT in both input and output. A set of communities has no duplicates and is handled sorted by ascending x, and for equal x by ascending y. In the output, the communities are written in this order joined by commas (,), and the empty set is written - (example: 65001:2,65202:100,NO_EXPORT).
+- An AS_PATH is a sequence of AS numbers. Its first element is the neighbor AS that sent the route, and its last element is the AS that originated the prefix. In the output, the AS numbers are written in sequence order joined by commas (example: 65102,65202,65101). The "length" of an AS_PATH is the number of elements of the sequence (where the same AS appears several times in a row, each occurrence is counted).
+- The preference order of ORIGIN is IGP, EGP, INCOMPLETE (IGP is the most preferred).
+- Let x be one of the endpoints of a link L. "The other end of L as seen from x" is the other endpoint of L. "The role of the other end as seen from x" is peer for a P2P link; for a P2C link it is customer if x is a (the provider), and provider if x is b (the customer). The "direction symbol" of a role is D for customer, P for peer, and U for provider. When several links connect the same two ASes, they all have the same relationship and orientation.
+- Each link L has two "sessions", one at each end. The session on the side of AS x is written (x, L). The "session order" of AS x is the link order of the links that have x as an endpoint. "Global session order" means the order in which sessions are sorted by AS order, and sessions of the same AS by session order.
+- Times are integers of 0 or more, and in the descriptions below t denotes the current time. "Write to the log" means appending one line of the form "<t> <content>" to output/updates.txt. Below, log lines are shown by their content only, without the time (for example, "EVENT 3 LINK DOWN c2" is actually written like "30 EVENT 3 LINK DOWN c2").
+
+* 2. Routes and state
+- An "attribute" is the 4-tuple of AS_PATH, ORIGIN, MED (an integer of 0 or more) and the set of communities; it is the content carried by an announcement message. Two attributes are "equal" when all four values are equal.
+- There are two kinds of "routes".
+  (1) Originated route: the route of a prefix that the AS originates itself. It has an ORIGIN and a set of communities. Its AS_PATH is treated as empty and its MED as 0.
+  (2) Learned route: a route learned from a neighbor AS. It has six values: AS_PATH, ORIGIN, MED, the set of communities, LOCAL_PREF, and the learning link (the link on which the route was received). The "neighbor AS" of a learned route is the first AS of its AS_PATH, which is the other end of the learning link.
+  Two routes are "equal" when both are originated routes with equal ORIGIN and equal sets of communities, or when both are learned routes with all six values equal.
+- Each AS x has the following state.
+  Origination table: a mapping from prefix to (ORIGIN, set of communities), representing the prefixes that x originates.
+  Loc-RIB: a mapping from prefix to route, representing the best route per prefix.
+- Each session (x, L) has the following state.
+  Adj-RIB-In: a mapping from prefix to attribute. It holds the attribute of the latest announcement received from the other end of L, in its form before rules are applied.
+  Adj-RIB-Out: a mapping from prefix to attribute. It holds the attributes that x has announced to the other end of L and not yet withdrawn.
+  Pending set: the set of prefixes waiting to be sent.
+  MRAI timer: an expiry time (an integer) or "none". When it is not "none", the timer is said to be "running".
+- Each link is in one of two states, "up" or "down".
+- At the beginning of time 0, all tables and pending sets are empty, all MRAI timers are "none", all links are up, and the state of each rule is as written in policies.txt. All counters (section 15) are 0.
+
+* 3. Rule matching
+(1) Prefix lists: for a PLIST entry (action, prefix P/m, GE g, LE l), the lower bound low is g if GE is present and m otherwise, and the upper bound high is l if LE is present, 32 if LE is absent and GE is present, and m if neither is present. A prefix Q/n "matches" this entry when low <= n <= high and the quotient of Q divided by 2^(32 - m) equals the quotient of P divided by 2^(32 - m). A prefix is "permitted" by a list when, examining the entries of the list in order, the action of the first matching entry is PERMIT. When the action of the first matching entry is DENY, and when no entry matches, the prefix is not permitted.
+(2) Rule match: for a session (x, L), a prefix p, an AS_PATH S and a set of communities C, a rule R "matches" when all of the following hold.
+  - The state of R is ON, and the AS number of R is x.
+  - The target of R is one of *, the AS number of the other end of L, and the name of L.
+  - All conditions of R hold. The meaning of each condition is as follows. PREFIX n: p is permitted by list n. CONTAINS a: S contains a. ORIGINAS a: the last element of S is a (when S is empty, x is regarded as the last element). LENGTH lo-hi: lo <= (length of S) <= hi. COMMUNITY c: C contains c.
+(3) Applied rule: for a given direction (IMPORT or EXPORT), the rules of that direction are examined in rule order, and the first matching rule is the "applied rule". If no rule matches, the applied rule is "none".
+(4) Community editing: to "edit" a set of communities with a rule means to perform the rule's ADD and REMOVE actions one at a time in the order written. ADD c adds c to the set (does nothing if it is already present), and REMOVE c removes c from the set (does nothing if it is absent).
+(5) Within one rule, each of LOCALPREF, MED, PREPEND and ALLOW appears at most once. A rule that has DENY has no other actions. Import rules have no ALLOW and no PREPEND, and export rules have no LOCALPREF.
+
+* 4. Import evaluation and candidate routes
+The "import evaluation" of an attribute A (AS_PATH S, ORIGIN o, MED m, set of communities C) of a prefix p received on session (x, L) is as follows. First, the IMPORT applied rule R is determined using S and C (section 3). The default LOCAL_PREF d is Lc of params.txt if the role of the other end of L as seen from x is customer, Lp if it is peer, and Lv if it is provider.
+- When R is "none": accept. The route is the learned route with AS_PATH S, ORIGIN o, MED m, set of communities C, LOCAL_PREF d and learning link L.
+- When R has DENY: reject.
+- Otherwise: accept. The route is a learned route whose AS_PATH is S, ORIGIN is o, MED is n if R has "MED n" and m otherwise, set of communities is C edited with R, LOCAL_PREF is n if R has "LOCALPREF n" and d otherwise, and learning link is L.
+The "candidate routes" of prefix p at AS x are obtained by examining the sessions of x in session order, performing the import evaluation of the attribute of each session whose Adj-RIB-In contains p, and collecting all accepted routes. The import evaluation is always performed with the rule states at that moment (the result of the evaluation at reception time is not remembered).
+
+* 5. Best-route selection
+From a non-empty collection K of routes, one best route and its "decision reason" are selected as follows.
+- If K has only one route, it is the best route and the decision reason is ONLY.
+- Otherwise, the following six stages are performed in order, each narrowing down K. If only one route remains in K after some stage, it is the best route and the decision reason is the name of that stage (later stages are not performed).
+  (1) LOCALPREF: keep only the routes with the largest LOCAL_PREF.
+  (2) ASPATH: keep only the routes with the smallest AS_PATH length.
+  (3) ORIGIN: keep only the routes with the most preferred ORIGIN.
+  (4) MED: for each route r of K, remove r if K contains a route with the same neighbor AS as r and a smaller MED than r (for every r, this is judged on K before any removal). MEDs of routes with different neighbor ASes are not compared.
+  (5) ROUTERID: keep only the routes whose neighbor AS has the smallest router ID.
+  (6) LINK: keep only the routes whose learning link has the smallest link number.
+After stage (6), exactly one route always remains.
+
+* 6. Re-deciding the best route
+To "re-decide the best route" for prefix p at AS x means the following procedure.
+(1) Determine the new route N. If p is in the origination table of x, N is the originated route with the ORIGIN and set of communities in the origination table (the originated route is chosen even if there are candidate routes). Otherwise, if p has one or more candidate routes, N is the best route selected from the candidate routes by section 5. If neither, N is "none".
+(2) If the route of p in the Loc-RIB of x ("none" if p is absent) is equal to N (including the case where both are "none"), finish without doing anything.
+(3) Otherwise, set p in the Loc-RIB to N (if N is "none", remove p from the Loc-RIB), and write "BEST <x> <p> <route notation>" to the log. Writing this line is called a "Loc-RIB change". The route notation is as follows.
+  - Originated route: LOCAL origin <ORIGIN> comm <set of communities>
+  - Learned route: next <neighbor AS> path <AS_PATH> link <name of learning link> lp <LOCAL_PREF> med <MED> origin <ORIGIN> comm <set of communities>
+  - "none": NONE
+(4) Then examine the sessions (x, L) of x in session order, and for each one whose L is up, add p to the pending set of (x, L). If the MRAI timer of (x, L) is not running at that moment, process the pending set of (x, L) immediately (section 7 (2)).
+
+* 7. Announcements and MRAI
+(1) Advertised content: what AS x should send for prefix p on session (x, L) (the "advertised content") is determined in the following order. Let y be the other end of L as seen from x, and r the route of p in the Loc-RIB of x.
+  - If r is "none", the advertised content is "do not advertise".
+  - If r is a learned route and its neighbor AS is y, it is "do not advertise".
+  - If the set of communities of r contains NO_EXPORT, it is "do not advertise".
+  - If not decided so far, the EXPORT applied rule R is determined using the AS_PATH of r (empty for an originated route) and the set of communities of r (section 3). The R determined here is called "the applied rule of this decision" (when the advertised content is decided before R is determined, the applied rule of this decision is "none").
+  - If R has DENY, it is "do not advertise".
+  - If R does not have ALLOW, r is a learned route, the role of the other end of the learning link of r as seen from x is peer or provider, and the role of y as seen from x is peer or provider, it is "do not advertise" (the Gao-Rexford rule: routes learned from peers or providers are advertised only to customers; ALLOW permits an exception to this rule).
+  - Otherwise, the advertised content is the following attribute. The AS_PATH is (1 + k) copies of x followed by the AS_PATH of r, where k is n if R has "PREPEND n" and 0 otherwise. The ORIGIN is the ORIGIN of r. The MED is n if R has "MED n" and 0 otherwise. The set of communities is that of r unchanged if R is "none", and otherwise that of r edited with R. LOCAL_PREF is not advertised.
+(2) Processing the pending set: when the pending set of session (x, L) is processed at time t, the prefixes p of the pending set are taken out one at a time in prefix order, and the following is done for each.
+  - Determine the advertised content E. If the attribute of p in the Adj-RIB-Out of (x, L) ("do not advertise" if p is absent) is equal to E (including the case where both are "do not advertise"), do nothing.
+  - Otherwise, send one message. If E is an attribute, set p in the Adj-RIB-Out to E and send an announcement message. If E is "do not advertise", remove p from the Adj-RIB-Out and send a withdrawal message. A message has a serial number (1, 2, 3, ... in the order sent over the whole simulation), a sender x, a receiver y, a link L, a prefix p, a content (the attribute for an announcement; a withdrawal has no content), and an arrival time t + (delay of L). Write to the log "SEND #<serial number> <x>-><y> <name of L> <p> ANNOUNCE path <AS_PATH> origin <ORIGIN> med <MED> comm <set of communities>" for an announcement, or "SEND #<serial number> <x>-><y> <name of L> <p> WITHDRAW" for a withdrawal. If the applied rule of this decision is not "none", increase that rule's application count (section 15) by 1.
+  After all prefixes are taken out, empty the pending set. If one or more messages were sent in this processing and the MRAI of L is 1 or more, set the expiry time of the MRAI timer of (x, L) to t + (MRAI of L). Otherwise, set the MRAI timer of (x, L) to "none".
+(3) MRAI timer expiry: a timer with expiry time t expires in stage 2 of time t (section 10). During stage 1 of time t it is still running.
+
+* 8. Reception
+A message that arrives at time t (sender y, receiver x, link L, prefix p) is processed by x as follows. The Adj-RIB-In below is that of (x, L).
+- For a withdrawal message: remove p from the Adj-RIB-In (do nothing if absent). The result is "WITHDRAW".
+- For an announcement message whose AS_PATH contains x (a loop): remove p from the Adj-RIB-In (do nothing if absent). The result is "ANNOUNCE loop".
+- For any other announcement message: set p in the Adj-RIB-In to the attribute of the message, and perform the import evaluation of that attribute (section 4). If the applied rule is not "none", increase that rule's application count by 1. The result is "ANNOUNCE deny <name of applied rule>" when rejected; when accepted, it is "ANNOUNCE accept <name of applied rule>" if there is an applied rule and "ANNOUNCE accept" otherwise.
+Then write "RECV #<serial number> <y>-><x> <name of L> <p> <result>" to the log, and re-decide the best route for p at x (section 6).
+
+* 9. Executing events
+Events are numbered from 0. Number 0 is "INITIAL" at time 0, and the lines of events.txt are the events numbered 1, 2, 3, ... in the order written. When an event is executed, first write "EVENT <number> <event>" to the log. <event> is INITIAL for number 0, and otherwise the rest of the events.txt line after removing the time and the space right after it, written as is. Then, depending on the kind, do the following.
+- INITIAL: process the PREFIX lines of topology.txt one line at a time in file order. For each line, register the prefix (together with its ORIGIN and set of communities) in the origination table of that AS, and re-decide the best route for that prefix at that AS.
+- ANNOUNCE a p o <community>...: set p in the origination table of AS a to (o, the set of written communities) (replace it if already present). Then re-decide the best route for p at a.
+- WITHDRAW a p: remove p from the origination table of AS a, and re-decide the best route for p at a.
+- LINK DOWN L: set L to down, and increase the down count of L by 1. Next, remove all messages on L waiting for delivery (in either direction) in delivery order (section 10), and for each of them write "DROP #<serial number> <sender>-><receiver> <name of L> <prefix>" to the log. Next, for each of the two endpoints x of L in AS order, remember the prefixes that were in the Adj-RIB-In of (x, L), then empty the Adj-RIB-In, Adj-RIB-Out and pending set of (x, L), and set its MRAI timer to "none". Finally, for the two endpoints in AS order, for each of the remembered prefixes of that endpoint one at a time in prefix order, re-decide the best route for that prefix at that endpoint.
+- LINK UP L: set L to up. Next, for each of the two endpoints x of L in AS order, set the pending set of (x, L) to the set of all prefixes in the Loc-RIB of x, and immediately process the pending set of (x, L) (section 7 (2)).
+- POLICY ON R, POLICY OFF R: set the state of rule R to ON or OFF, respectively. Let x be the AS that owns R. If R is an import rule, for all prefixes in the Adj-RIB-In of any session of x, one at a time in prefix order, re-decide the best route for that prefix at x. If R is an export rule, examine the sessions (x, L) of x in session order, and for each one whose L is up, add all prefixes in the Loc-RIB of x and all prefixes in the Adj-RIB-Out of (x, L) to the pending set of (x, L), and if the MRAI timer of (x, L) is not running, immediately process the pending set of (x, L).
+
+* 10. Advancing time
+Let s(k) be the time of event k (s(0) = 0). The "period" of event k starts at time s(k) and, if there is a next event, ends at time s(k + 1) - 1. When the period of the last event ends is determined by (3) below.
+For events k = 0, 1, 2, ... in order, do the following for each.
+(1) Reset the per-event counters (section 15 (1)) to 0, and remember the contents of the Loc-RIB of each AS as "the contents at the start of the period". Set the "number of times with deliveries" A to 0.
+(2) Execute event k (section 9).
+(3) For each time t = s(k), s(k) + 1, s(k) + 2, ..., perform the following stages 1 to 4 in this order.
+  Stage 1 (delivery): take out the messages with arrival time t one at a time in ascending order of the receiver's AS number, for the same receiver in ascending order of the sender's AS number, and if that is also the same in ascending order of serial number, and process each reception (section 8). Messages newly sent in this stage do not arrive at time t, since delays are 1 or more. The order of all messages waiting for delivery sorted by ascending arrival time, and for equal arrival times by the order above, is called "delivery order".
+  Stage 2 (MRAI): in global session order, expire the MRAI timers whose expiry time is t. Set each expired timer to "none", and if the pending set of that session is not empty, immediately process that pending set (section 7 (2)).
+  Stage 3 (forwarding check): when there was one or more Loc-RIB changes at time t (at t = s(k), including changes caused by executing the event), perform the check of section 13.
+  Stage 4 (divergence check): when one or more messages were delivered in stage 1, increase A by 1 and perform the check of section 11.
+  If, after stage 4, there are no messages waiting for delivery and the pending sets of all sessions are empty, the simulation is said to be "quiet" (MRAI timers may still be running).
+  If event k is not the last event, the processing of this event ends after stage 4 of t = s(k + 1) - 1. If it is the last event, the processing ends after stage 4 of a time t when, at that point, the simulation is quiet, divergence has been found in this event, or A >= STEPCAP.
+(4) The "status" of event k is determined as follows. It is DIVERGENT if divergence has been found in this event. Otherwise, it is CONVERGED if the simulation is quiet after stage 4 of the last processed time. If neither, it is CAPPED for the last event and UNSETTLED otherwise.
+The last time processed in the whole simulation is called the "end time", and the status at that time is called the "final state".
+
+* 11. Divergence detection
+When the check is performed in stage 4, nothing is done if divergence has already been found in this event or if A > STEPCAP. Otherwise, the "global state" at that moment is built. The global state consists of the following.
+- For each session in global session order: the contents of the Adj-RIB-In (all mappings of prefix to attribute), the contents of the Adj-RIB-Out, the pending set, and the remaining time of the MRAI timer (expiry time - t; "none" if the timer is "none").
+- The sequence of all messages waiting for delivery in delivery order, each message represented as (arrival time - t, receiver, sender, link, prefix, content) (the serial number itself is not included).
+When the built global state is equal to the global state recorded earlier within the same event at a time f, "divergence has been found". In this case, f is the "first time" and t the "repeat time", and the BEST lines written during the period of this event whose time is greater than f and at most t are remembered, in the order written, as the "cycle lines". If no equal state exists, the built global state is recorded together with time t. The records start empty for each event.
+Even when divergence is found, if it is not the last event, the simulation continues until the time of the next event.
+(The Loc-RIB is determined by the Adj-RIB-In, the origination tables and the rule states, and the origination tables, rule states and link states do not change within one period, so they need not be included in the global state.)
+
+* 12. Tracing a forwarding path
+The "forwarding path" from a source AS s to a destination address a is computed with the Loc-RIBs at that moment as follows. Let the visit list be [s] and the hop list be empty, and start with x = s.
+(1) If no prefix in the Loc-RIB of x contains a, finish with the result UNREACHABLE if the hop list is empty, or BLACKHOLE otherwise.
+(2) Choose the longest prefix q among the prefixes containing a, and let r be the route of q in the Loc-RIB of x. If r is an originated route, add the hop (x, q, arrival) to the hop list and finish with the result DELIVERED.
+(3) If r is a learned route, add the hop (x, q, learning link of r) to the hop list. Let z be the other end of the learning link as seen from x. If z is in the visit list, add z to the visit list and finish with the result LOOP. Otherwise, add z to the visit list, set x = z and go back to (1).
+The number of hops that have a learning link is called the "forwarding hop count", and the AS of the last hop when the result is DELIVERED is called the "arrival AS".
+
+* 13. Checks during convergence
+In stage 3, the following two checks are performed in this order.
+(1) Forwarding loops: for each prefix whose Loc-RIB changed at time t (at any AS), do the following. Let that prefix be p. The "forwarding graph" of p is the graph that has, from each AS x whose Loc-RIB route for p is a learned route, an arrow to the other end of its learning link as seen from x. A cycle of this graph is called a "loop" and is represented by the sequence of ASes obtained by starting from the AS with the smallest AS number in the loop and following the arrows. Among the ongoing loop records (pairs of a prefix and a loop), those whose prefix is p and whose loop is not equal to any of the loops of p found this time end at time t. Among the loops of p found this time, those that have no ongoing record start at time t.
+(2) Trace status: for each TRACE line, in trace order, compute the forwarding path from the source AS to the destination address (section 12). If the result is LOOP or BLACKHOLE, the "status" is the pair (result, visit list); otherwise the status is "none". If there is an ongoing record for that TRACE line and its status differs from the current status, that record ends at time t. If the current status is not "none" and there is no ongoing record for that TRACE line (including the case where one has just ended), a record of the current status starts at time t.
+Loop records and trace records continue across event periods. Records still ongoing when the simulation ends have the end "none" (written END in the output).
+
+* 14. Valley-free judgment
+A sequence w of direction symbols is "valley-free" when w has the form "zero or more U, then zero or one P, then zero or more D". Let g be the position reached by starting at the beginning of w, advancing while U continues, advancing by exactly one if the next symbol is P, and then advancing while D continues (counting the beginning as 0). If g equals the length of w, it is valley-free; otherwise it is not valley-free, and the g-th symbol of w (counting from 0) is the first violation.
+The "direction-symbol sequence" of a sequence of ASes h(0), h(1), ..., h(n) is the sequence, for i = 0, 1, ..., n - 1 in order, of the direction symbol of the role of the other end of the link connecting h(i) and h(i + 1), as seen from h(i).
+
+* 15. Counters
+(1) Per-event counters (reset to 0 in section 10 (1), counting what happens within the period of that event):
+  - convergence_time: the time of the last message delivery within the period - s(k). It is 0 if there was no delivery within the period.
+  - updates: the number of messages sent (the number of SEND lines).
+  - withdrawals: the number of withdrawal messages among them.
+  - drops: the number of messages removed (the number of DROP lines).
+  - best_changes: the number of Loc-RIB changes (the number of BEST lines).
+  - routes_changed: the number of (AS, prefix) pairs whose route in the contents at the start of the period is not equal to the route at the end of the period (when the processing of that event has finished). Pairs with a route on only one side are also counted.
+  - max_exploration: the maximum, over (AS, prefix) pairs, of the number of Loc-RIB changes of that pair within the period. It is 0 if there was no change.
+(2) Counters over the whole simulation:
+  - For each session (x, L), the sent count (the number of SEND lines whose sender is x and whose link is L) and the received count (the number of RECV lines whose receiver is x and whose link is L). Removed messages are not counted in the received count.
+  - For each AS, the number of Loc-RIB changes.
+  - For each link, the down count.
+  - For each rule, the application count (counted in section 7 (2) and section 8).
+
+[Output files]
+Write the following five files in the output/ folder. Every file consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). There are no blank lines and no spaces at the beginning or end of a line. Except in output/convergence.csv, the items in a line are separated by a single ASCII space. Integers are written in decimal with no extra leading zeros. Prefixes, sets of communities, AS_PATHs and route notations are written as described in [Processing] sections 1 and 6. The spaces in the formats below are also single ASCII spaces.
+
+* output/updates.txt
+All log lines ([Processing] section 1) in the order written. Each line has the form "<time> <content>", and the content is one of the following five kinds.
+- EVENT <number> <event> (section 9)
+- BEST <AS> <prefix> <route notation> (section 6)
+- SEND #<serial number> <sender>-><receiver> <link name> <prefix> ANNOUNCE path <AS_PATH> origin <ORIGIN> med <MED> comm <set of communities>, or SEND #<serial number> <sender>-><receiver> <link name> <prefix> WITHDRAW (section 7)
+- RECV #<serial number> <sender>-><receiver> <link name> <prefix> <result> (section 8)
+- DROP #<serial number> <sender>-><receiver> <link name> <prefix> (section 9)
+
+* output/convergence.csv
+Line 1 is the following header.
+event,time,kind,status,convergence_time,updates,withdrawals,drops,best_changes,routes_changed,max_exploration
+From line 2 on, there is one line per event in order of number, consisting of the 11 values of the header joined by commas (,) (with no spaces). event is the event number, time is s(k), kind is one of INITIAL, ANNOUNCE, WITHDRAW, LINK_DOWN, LINK_UP, POLICY_ON, POLICY_OFF (for LINK and POLICY events, the two words of the kind joined by _), status is the status of the event (section 10 (4)), and the remaining seven are the per-event counters (section 15 (1)).
+
+* output/ribs.txt
+The routing tables in the final state. In AS order, for each AS x, the following lines.
+(1) AS <x> routes <number of prefixes in the Loc-RIB> local <number of originated routes among them> sent <total sent count of all sessions of x> received <total received count of all sessions of x> changes <number of Loc-RIB changes of x>
+(2) For each session (x, L) of x, one line in session order:
+SESSION <name of L> <other end of L as seen from x> <role of the other end as seen from x> <state> in <number of prefixes in the Adj-RIB-In> accepted <number of them accepted by the import evaluation> out <number of prefixes in the Adj-RIB-Out> sent <sent count> received <received count> flaps <down count of L>
+<state> is UP if L is up and DOWN if it is down. The role is one of customer, peer and provider.
+(3) For each prefix p in the Loc-RIB of x, in prefix order, write the following line.
+  If the route is an originated route, "<p> <route notation> candidates <number of candidate routes of p>"; if it is a learned route, "<p> <route notation> candidates <number of candidate routes of p> reason <decision reason>". The decision reason is the one obtained when the best route is selected from the candidate routes of p by section 5 (in the final state, a learned route in the Loc-RIB is always equal to the best route selected from the candidate routes by section 5).
+  Then, the candidate routes of p that are not equal to the route of p in the Loc-RIB are written one per line as "ALT <route notation>" in the following order: select the best route from the remaining routes by section 5, write one line for it, and remove it from the remaining routes; repeat until none remain.
+The candidate routes, import evaluations and decision reasons are computed with the rule states of the final state.
+
+* output/paths.txt
+The forwarding paths and the reachability table in the final state.
+(1) For each TRACE line (source s, destination a), in trace order, write the following lines. The forwarding path is computed by section 12.
+  - TRACE <s> <a> <result> hops <forwarding hop count> (<a> is the address exactly as written in params.txt)
+  - One line per hop of the hop list: a hop with a learning link (x, q, L) is "HOP <x> <q> next <other end of L as seen from x> link <name of L>", and an arrival hop (x, q, arrival) is "HOP <x> <q> LOCAL".
+  - If the result is LOOP, write "HOP <last AS of the visit list> REVISIT"; if it is BLACKHOLE or UNREACHABLE, write "HOP <last AS of the visit list> NOROUTE" (nothing is written for DELIVERED).
+  - If the hop list is empty, write "CONTROL NONE". Otherwise, let r be the route, in the Loc-RIB of s, of the prefix q of the first hop, and write "CONTROL <notation> <match>". <notation> is LOCAL if r is an originated route, and the AS_PATH of r if it is a learned route. <match> is MATCH when the result is DELIVERED and the sequence obtained from the AS_PATH of r by merging each run of the same AS into one element is equal to the visit list without its first element s, and MISMATCH otherwise (the AS_PATH of an originated route is the empty sequence).
+  - If the forwarding hop count is 1 or more, write "PATTERN <w> <judgment>". w is the string of the direction symbols of the role of the other end of L as seen from x, for each hop with a learning link (x, q, L), in hop order. <judgment> is VALLEYFREE if w is valley-free and VALLEY otherwise (section 14).
+(2) The prefixes that are in the origination table of any AS in the final state, without duplicates and sorted in prefix order, are called the "originated prefixes"; write "PREFIXES <originated prefixes joined by commas>".
+(3) For each AS s, in AS order, write "REACH <s> <symbol string>". The symbol string is obtained by computing, for each originated prefix p (in their order), the forwarding path from s to the address of p (the part of the prefix before /), and concatenating the following single characters: * if the result is DELIVERED and the forwarding hop count is 0, + if DELIVERED and p is in the origination table of the arrival AS, X if DELIVERED and p is not in the origination table of the arrival AS, L for LOOP, B for BLACKHOLE, and U for UNREACHABLE.
+
+* output/audit.txt
+The following lines (1) to (6) in this order.
+(1) The trace records (section 13 (2)), one per line, in ascending order of start time, and for equal start times in trace order of the TRACE line. Let the TRACE line of the record be (source s, destination a), the visit list be V, the end time (END if the end is "none") be e, and the start time be b.
+  - If the result of the status is LOOP: LOOP <s> <a> from <b> to <e> path <V>
+  - If the result of the status is BLACKHOLE: BLACKHOLE <s> <a> from <b> to <e> at <last AS of V> path <V>
+  V is written as AS numbers joined by commas.
+(2) The loop records (section 13 (1)), one per line as "RING <prefix> from <b> to <e> path <sequence of ASes of the loop>", in ascending order of start time, for equal start times in prefix order, and if that is also equal in ascending order of the AS number of the first AS of the loop. The sequence of ASes of the loop is written as AS numbers joined by commas.
+(3) The valley-free audit of the final state. In AS order, for each AS x, the learned routes in the Loc-RIB of x are examined in prefix order. For a route r, let H be the sequence of ASes obtained by putting x followed by the AS_PATH of r and merging each run of the same AS into one element, and let w be the direction-symbol sequence of H (section 14). If w is not valley-free, write "VALLEY <x> <prefix> path <AS_PATH of r> pattern <w> leaker <g-th AS of H>". g is the position of section 14 (both H and w are counted from element 0).
+(4) For each rule, in rule order, write "RULE <name> <direction> <state> hits <application count>". <direction> is IMPORT or EXPORT, and <state> is ON or OFF in the final state.
+(5) For each event in which divergence was found, in order of number, write the following lines.
+  - DIVERGENT event <number> first <first time> repeat <repeat time> period <repeat time - first time>
+  - One line per cycle line, in order: CYCLE <time> <AS> <prefix> <route notation> (the BEST line of the cycle with the word BEST removed and CYCLE put at the beginning)
+  - One line per (AS, prefix) pair appearing in the cycle lines, in AS order, and for the same AS in prefix order: OSCILLATE <AS> <prefix> changes <number of cycle lines of that pair>
+(6) Finally, one line: SUMMARY loops <number of LOOP lines in (1)> blackholes <number of BLACKHOLE lines in (1)> rings <number of lines in (2)> routes <number of learned routes examined in (3)> valleys <number of VALLEY lines in (3)> divergent <number of DIVERGENT lines in (5)> end <end time>
+
+[Source files]
+Organize the program into the following six source files (name the files according to each language's conventions).
+- main: holds the overall flow and the core of the processing. It calls the input reading, and performs the import evaluation and candidate routes, re-deciding the best route, determining the advertised content (the Gao-Rexford rule, NO_EXPORT, applying export rules), processing pending sets and MRAI timers, reception, executing events (origination, withdrawal, link failure and recovery, rule changes), advancing time and the termination judgment, building the global state and divergence detection, forwarding path tracing, the forwarding loop and trace status checks, the valley-free judgment, all the counters, and the assembly of the lines of all output files (updates.txt, convergence.csv, ribs.txt, paths.txt, audit.txt) and the calls that write them.
+- topology: handles parsing, notation and containment tests of IPv4 addresses and prefixes, reading topology.txt (ASes and router IDs, the relationship, delay, MRAI and state of links, PREFIX lines), determining the other end of a link, roles and direction symbols, and finding the links that connect two ASes.
+- policy: handles parsing, notation and set editing of communities, reading policies.txt (prefix lists, rule conditions and actions), prefix-list judgment, rule-match judgment and determining the applied rule.
+- decision: handles the representation of routes (originated and learned routes) and best-route selection (the six stages and the decision reason).
+- simulator: handles the representation of messages and the queue of messages waiting for delivery (sending and serial numbers, taking out in delivery order, removal due to link failure, ordering for the global state), and reading events.txt and params.txt.
+- report: handles assembling the notation of AS_PATHs, attributes and routes, and writing sequences of lines to files.
+
+[Constraints]
+- There are at least 2 and at most 50 ASes. AS numbers are from 1 to 65535.
+- There are at least 1 and at most 100 links. The two ends of a link are different ASes, both defined by AS lines. The delay is from 1 to 50, and the MRAI is from 0 to 50. When several links connect the same two ASes, they have the same relationship and, for P2C, the same orientation (which side is the provider). Every AS is an endpoint of at least one link.
+- There are at most 50 PREFIX lines, and the same prefix never appears twice for the same AS. The communities of a PREFIX line or an ANNOUNCE do not repeat within the line.
+- A PLIST entry satisfies m <= low <= high <= 32, where m is the length of its prefix. The list referenced by a PREFIX condition of a rule is always defined.
+- There are at most 50 rules. The AS number of a rule is an AS defined by an AS line. The actions of a rule satisfy [Processing] section 3 (5). The lo and hi of LENGTH satisfy 0 <= lo <= hi <= 100. The values of LOCALPREF and MED are from 0 to 1000000, and the value of PREPEND is from 1 to 10. Lc, Lp and Lv of params.txt are also from 0 to 1000000.
+- There are at most 50 event lines, and times are from 1 to 100000. The AS of ANNOUNCE and WITHDRAW is an AS defined by an AS line, and the prefix of WITHDRAW is in the origination table of that AS at that moment. LINK DOWN appears only for a link that is up at that moment, and LINK UP only for a link that is down. POLICY ON appears only for a rule that is OFF at that moment, and POLICY OFF only for a rule that is ON.
+- STEPCAP is from 1 to 10000. There are at most 20 TRACE lines, and the source is an AS defined by an AS line.
+- The values of IPv4 addresses and router IDs are at least 0 and less than 2^32, and can be 2^31 or more (example: the value of 198.51.100.0 is 3325256704). Also, for a prefix of length 0, 2^(32 - length) = 2^32. Apart from these, all integers appearing in the computation (including serial numbers) have absolute value less than 2^31.
+
+[Example]
+The following is a small example (it differs from the actual data in input/; there are 4 ASes and 4 links).
+input/topology.txt:
+AS 100 192.0.2.10
+AS 200 192.0.2.9
+AS 300 192.0.2.30
+AS 400 192.0.2.4
+LINK pa 100 200 P2P 2 0
+LINK c1 100 300 P2C 1 3
+LINK c2 200 300 P2C 3 0
+LINK c3 200 400 P2C 2 4
+PREFIX 300 10.3.0.0/16 IGP
+PREFIX 400 10.4.0.0/16 EGP 400:1
+input/policies.txt:
+PLIST long PERMIT 10.0.0.0/8 GE 24
+RULE r1 ON 100 IMPORT * PREFIX long THEN DENY
+RULE r2 OFF 300 EXPORT c1 THEN PREPEND 2 ADD 300:9
+input/events.txt:
+10 POLICY ON r2
+20 ANNOUNCE 400 10.3.1.0/24 IGP
+30 LINK DOWN c2
+40 LINK DOWN c3
+41 LINK UP c3
+50 LINK UP c2
+input/params.txt:
+LOCALPREF 200 100 50
+STEPCAP 50
+TRACE 100 10.3.1.5
+TRACE 400 10.3.0.1
+TRACE 100 10.4.0.1
+output/updates.txt:
+0 EVENT 0 INITIAL
+0 BEST 300 10.3.0.0/16 LOCAL origin IGP comm -
+0 SEND #1 300->100 c1 10.3.0.0/16 ANNOUNCE path 300 origin IGP med 0 comm -
+0 SEND #2 300->200 c2 10.3.0.0/16 ANNOUNCE path 300 origin IGP med 0 comm -
+0 BEST 400 10.4.0.0/16 LOCAL origin EGP comm 400:1
+0 SEND #3 400->200 c3 10.4.0.0/16 ANNOUNCE path 400 origin EGP med 0 comm 400:1
+1 RECV #1 300->100 c1 10.3.0.0/16 ANNOUNCE accept
+1 BEST 100 10.3.0.0/16 next 300 path 300 link c1 lp 200 med 0 origin IGP comm -
+1 SEND #4 100->200 pa 10.3.0.0/16 ANNOUNCE path 100,300 origin IGP med 0 comm -
+2 RECV #3 400->200 c3 10.4.0.0/16 ANNOUNCE accept
+2 BEST 200 10.4.0.0/16 next 400 path 400 link c3 lp 200 med 0 origin EGP comm 400:1
+2 SEND #5 200->100 pa 10.4.0.0/16 ANNOUNCE path 200,400 origin EGP med 0 comm 400:1
+2 SEND #6 200->300 c2 10.4.0.0/16 ANNOUNCE path 200,400 origin EGP med 0 comm 400:1
+3 RECV #4 100->200 pa 10.3.0.0/16 ANNOUNCE accept
+3 BEST 200 10.3.0.0/16 next 100 path 100,300 link pa lp 100 med 0 origin IGP comm -
+3 SEND #7 200->300 c2 10.3.0.0/16 ANNOUNCE path 200,100,300 origin IGP med 0 comm -
+3 SEND #8 200->400 c3 10.3.0.0/16 ANNOUNCE path 200,100,300 origin IGP med 0 comm -
+3 RECV #2 300->200 c2 10.3.0.0/16 ANNOUNCE accept
+3 BEST 200 10.3.0.0/16 next 300 path 300 link c2 lp 200 med 0 origin IGP comm -
+3 SEND #9 200->100 pa 10.3.0.0/16 ANNOUNCE path 200,300 origin IGP med 0 comm -
+3 SEND #10 200->300 c2 10.3.0.0/16 WITHDRAW
+4 RECV #5 200->100 pa 10.4.0.0/16 ANNOUNCE accept
+4 BEST 100 10.4.0.0/16 next 200 path 200,400 link pa lp 100 med 0 origin EGP comm 400:1
+4 SEND #11 100->300 c1 10.4.0.0/16 ANNOUNCE path 100,200,400 origin EGP med 0 comm 400:1
+5 RECV #9 200->100 pa 10.3.0.0/16 ANNOUNCE accept
+5 RECV #11 100->300 c1 10.4.0.0/16 ANNOUNCE accept
+5 BEST 300 10.4.0.0/16 next 100 path 100,200,400 link c1 lp 50 med 0 origin EGP comm 400:1
+5 RECV #6 200->300 c2 10.4.0.0/16 ANNOUNCE accept
+5 BEST 300 10.4.0.0/16 next 200 path 200,400 link c2 lp 50 med 0 origin EGP comm 400:1
+5 RECV #8 200->400 c3 10.3.0.0/16 ANNOUNCE accept
+5 BEST 400 10.3.0.0/16 next 200 path 200,100,300 link c3 lp 50 med 0 origin IGP comm -
+6 RECV #7 200->300 c2 10.3.0.0/16 ANNOUNCE loop
+6 RECV #10 200->300 c2 10.3.0.0/16 WITHDRAW
+7 SEND #12 200->400 c3 10.3.0.0/16 ANNOUNCE path 200,300 origin IGP med 0 comm -
+9 RECV #12 200->400 c3 10.3.0.0/16 ANNOUNCE accept
+9 BEST 400 10.3.0.0/16 next 200 path 200,300 link c3 lp 50 med 0 origin IGP comm -
+10 EVENT 1 POLICY ON r2
+10 SEND #13 300->100 c1 10.3.0.0/16 ANNOUNCE path 300,300,300 origin IGP med 0 comm 300:9
+11 RECV #13 300->100 c1 10.3.0.0/16 ANNOUNCE accept
+11 BEST 100 10.3.0.0/16 next 300 path 300,300,300 link c1 lp 200 med 0 origin IGP comm 300:9
+11 SEND #14 100->200 pa 10.3.0.0/16 ANNOUNCE path 100,300,300,300 origin IGP med 0 comm 300:9
+13 RECV #14 100->200 pa 10.3.0.0/16 ANNOUNCE accept
+20 EVENT 2 ANNOUNCE 400 10.3.1.0/24 IGP
+20 BEST 400 10.3.1.0/24 LOCAL origin IGP comm -
+20 SEND #15 400->200 c3 10.3.1.0/24 ANNOUNCE path 400 origin IGP med 0 comm -
+22 RECV #15 400->200 c3 10.3.1.0/24 ANNOUNCE accept
+22 BEST 200 10.3.1.0/24 next 400 path 400 link c3 lp 200 med 0 origin IGP comm -
+22 SEND #16 200->100 pa 10.3.1.0/24 ANNOUNCE path 200,400 origin IGP med 0 comm -
+22 SEND #17 200->300 c2 10.3.1.0/24 ANNOUNCE path 200,400 origin IGP med 0 comm -
+24 RECV #16 200->100 pa 10.3.1.0/24 ANNOUNCE deny r1
+25 RECV #17 200->300 c2 10.3.1.0/24 ANNOUNCE accept
+25 BEST 300 10.3.1.0/24 next 200 path 200,400 link c2 lp 50 med 0 origin IGP comm -
+30 EVENT 3 LINK DOWN c2
+30 BEST 200 10.3.0.0/16 next 100 path 100,300,300,300 link pa lp 100 med 0 origin IGP comm 300:9
+30 SEND #18 200->100 pa 10.3.0.0/16 WITHDRAW
+30 SEND #19 200->400 c3 10.3.0.0/16 ANNOUNCE path 200,100,300,300,300 origin IGP med 0 comm 300:9
+30 BEST 300 10.3.1.0/24 NONE
+30 BEST 300 10.4.0.0/16 next 100 path 100,200,400 link c1 lp 50 med 0 origin EGP comm 400:1
+32 RECV #18 200->100 pa 10.3.0.0/16 WITHDRAW
+32 RECV #19 200->400 c3 10.3.0.0/16 ANNOUNCE accept
+32 BEST 400 10.3.0.0/16 next 200 path 200,100,300,300,300 link c3 lp 50 med 0 origin IGP comm 300:9
+40 EVENT 4 LINK DOWN c3
+40 BEST 200 10.3.1.0/24 NONE
+40 SEND #20 200->100 pa 10.3.1.0/24 WITHDRAW
+40 BEST 200 10.4.0.0/16 NONE
+40 SEND #21 200->100 pa 10.4.0.0/16 WITHDRAW
+40 BEST 400 10.3.0.0/16 NONE
+41 EVENT 5 LINK UP c3
+41 SEND #22 200->400 c3 10.3.0.0/16 ANNOUNCE path 200,100,300,300,300 origin IGP med 0 comm 300:9
+41 SEND #23 400->200 c3 10.3.1.0/24 ANNOUNCE path 400 origin IGP med 0 comm -
+41 SEND #24 400->200 c3 10.4.0.0/16 ANNOUNCE path 400 origin EGP med 0 comm 400:1
+42 RECV #20 200->100 pa 10.3.1.0/24 WITHDRAW
+42 RECV #21 200->100 pa 10.4.0.0/16 WITHDRAW
+42 BEST 100 10.4.0.0/16 NONE
+42 SEND #25 100->300 c1 10.4.0.0/16 WITHDRAW
+43 RECV #23 400->200 c3 10.3.1.0/24 ANNOUNCE accept
+43 BEST 200 10.3.1.0/24 next 400 path 400 link c3 lp 200 med 0 origin IGP comm -
+43 SEND #26 200->100 pa 10.3.1.0/24 ANNOUNCE path 200,400 origin IGP med 0 comm -
+43 RECV #24 400->200 c3 10.4.0.0/16 ANNOUNCE accept
+43 BEST 200 10.4.0.0/16 next 400 path 400 link c3 lp 200 med 0 origin EGP comm 400:1
+43 SEND #27 200->100 pa 10.4.0.0/16 ANNOUNCE path 200,400 origin EGP med 0 comm 400:1
+43 RECV #25 100->300 c1 10.4.0.0/16 WITHDRAW
+43 BEST 300 10.4.0.0/16 NONE
+43 RECV #22 200->400 c3 10.3.0.0/16 ANNOUNCE accept
+43 BEST 400 10.3.0.0/16 next 200 path 200,100,300,300,300 link c3 lp 50 med 0 origin IGP comm 300:9
+45 RECV #26 200->100 pa 10.3.1.0/24 ANNOUNCE deny r1
+45 RECV #27 200->100 pa 10.4.0.0/16 ANNOUNCE accept
+45 BEST 100 10.4.0.0/16 next 200 path 200,400 link pa lp 100 med 0 origin EGP comm 400:1
+45 SEND #28 100->300 c1 10.4.0.0/16 ANNOUNCE path 100,200,400 origin EGP med 0 comm 400:1
+46 RECV #28 100->300 c1 10.4.0.0/16 ANNOUNCE accept
+46 BEST 300 10.4.0.0/16 next 100 path 100,200,400 link c1 lp 50 med 0 origin EGP comm 400:1
+50 EVENT 6 LINK UP c2
+50 SEND #29 200->300 c2 10.3.0.0/16 ANNOUNCE path 200,100,300,300,300 origin IGP med 0 comm 300:9
+50 SEND #30 200->300 c2 10.3.1.0/24 ANNOUNCE path 200,400 origin IGP med 0 comm -
+50 SEND #31 200->300 c2 10.4.0.0/16 ANNOUNCE path 200,400 origin EGP med 0 comm 400:1
+50 SEND #32 300->200 c2 10.3.0.0/16 ANNOUNCE path 300 origin IGP med 0 comm -
+53 RECV #32 300->200 c2 10.3.0.0/16 ANNOUNCE accept
+53 BEST 200 10.3.0.0/16 next 300 path 300 link c2 lp 200 med 0 origin IGP comm -
+53 SEND #33 200->100 pa 10.3.0.0/16 ANNOUNCE path 200,300 origin IGP med 0 comm -
+53 SEND #34 200->300 c2 10.3.0.0/16 WITHDRAW
+53 SEND #35 200->400 c3 10.3.0.0/16 ANNOUNCE path 200,300 origin IGP med 0 comm -
+53 RECV #29 200->300 c2 10.3.0.0/16 ANNOUNCE loop
+53 RECV #30 200->300 c2 10.3.1.0/24 ANNOUNCE accept
+53 BEST 300 10.3.1.0/24 next 200 path 200,400 link c2 lp 50 med 0 origin IGP comm -
+53 RECV #31 200->300 c2 10.4.0.0/16 ANNOUNCE accept
+53 BEST 300 10.4.0.0/16 next 200 path 200,400 link c2 lp 50 med 0 origin EGP comm 400:1
+55 RECV #33 200->100 pa 10.3.0.0/16 ANNOUNCE accept
+55 RECV #35 200->400 c3 10.3.0.0/16 ANNOUNCE accept
+55 BEST 400 10.3.0.0/16 next 200 path 200,300 link c3 lp 50 med 0 origin IGP comm -
+56 RECV #34 200->300 c2 10.3.0.0/16 WITHDRAW
+output/convergence.csv:
+event,time,kind,status,convergence_time,updates,withdrawals,drops,best_changes,routes_changed,max_exploration
+0,0,INITIAL,CONVERGED,9,12,1,0,11,8,2
+1,10,POLICY_ON,CONVERGED,3,2,0,0,1,1,1
+2,20,ANNOUNCE,CONVERGED,5,3,0,0,3,3,1
+3,30,LINK_DOWN,CONVERGED,2,2,1,0,4,4,1
+4,40,LINK_DOWN,UNSETTLED,0,2,2,0,3,3,1
+5,41,LINK_UP,CONVERGED,5,7,1,0,7,3,2
+6,50,LINK_UP,CONVERGED,6,7,1,0,4,4,1
+output/ribs.txt:
+AS 100 routes 2 local 0 sent 5 received 11 changes 5
+SESSION pa 200 peer UP in 3 accepted 2 out 1 sent 2 received 9 flaps 0
+SESSION c1 300 customer UP in 1 accepted 1 out 1 sent 3 received 2 flaps 0
+10.3.0.0/16 next 300 path 300,300,300 link c1 lp 200 med 0 origin IGP comm 300:9 candidates 2 reason LOCALPREF
+ALT next 200 path 200,300 link pa lp 100 med 0 origin IGP comm -
+10.4.0.0/16 next 200 path 200,400 link pa lp 100 med 0 origin EGP comm 400:1 candidates 1 reason ONLY
+AS 200 routes 3 local 0 sent 22 received 8 changes 10
+SESSION pa 100 peer UP in 1 accepted 1 out 3 sent 9 received 2 flaps 0
+SESSION c2 300 customer UP in 1 accepted 1 out 2 sent 8 received 2 flaps 1
+SESSION c3 400 customer UP in 2 accepted 2 out 1 sent 5 received 4 flaps 1
+10.3.0.0/16 next 300 path 300 link c2 lp 200 med 0 origin IGP comm - candidates 2 reason LOCALPREF
+ALT next 100 path 100,300,300,300 link pa lp 100 med 0 origin IGP comm 300:9
+10.3.1.0/24 next 400 path 400 link c3 lp 200 med 0 origin IGP comm - candidates 1 reason ONLY
+10.4.0.0/16 next 400 path 400 link c3 lp 200 med 0 origin EGP comm 400:1 candidates 1 reason ONLY
+AS 300 routes 3 local 1 sent 4 received 11 changes 10
+SESSION c1 100 provider UP in 1 accepted 1 out 1 sent 2 received 3 flaps 0
+SESSION c2 200 provider UP in 2 accepted 2 out 1 sent 2 received 8 flaps 1
+10.3.0.0/16 LOCAL origin IGP comm - candidates 0
+10.3.1.0/24 next 200 path 200,400 link c2 lp 50 med 0 origin IGP comm - candidates 1 reason ONLY
+10.4.0.0/16 next 200 path 200,400 link c2 lp 50 med 0 origin EGP comm 400:1 candidates 2 reason ASPATH
+ALT next 100 path 100,200,400 link c1 lp 50 med 0 origin EGP comm 400:1
+AS 400 routes 3 local 2 sent 4 received 5 changes 8
+SESSION c3 200 provider UP in 1 accepted 1 out 2 sent 4 received 5 flaps 1
+10.3.0.0/16 next 200 path 200,300 link c3 lp 50 med 0 origin IGP comm - candidates 1 reason ONLY
+10.3.1.0/24 LOCAL origin IGP comm - candidates 0
+10.4.0.0/16 LOCAL origin EGP comm 400:1 candidates 0
+output/paths.txt:
+TRACE 100 10.3.1.5 DELIVERED hops 3
+HOP 100 10.3.0.0/16 next 300 link c1
+HOP 300 10.3.1.0/24 next 200 link c2
+HOP 200 10.3.1.0/24 next 400 link c3
+HOP 400 10.3.1.0/24 LOCAL
+CONTROL 300,300,300 MISMATCH
+PATTERN DUD VALLEY
+TRACE 400 10.3.0.1 DELIVERED hops 2
+HOP 400 10.3.0.0/16 next 200 link c3
+HOP 200 10.3.0.0/16 next 300 link c2
+HOP 300 10.3.0.0/16 LOCAL
+CONTROL 200,300 MATCH
+PATTERN UD VALLEYFREE
+TRACE 100 10.4.0.1 DELIVERED hops 2
+HOP 100 10.4.0.0/16 next 200 link pa
+HOP 200 10.4.0.0/16 next 400 link c3
+HOP 400 10.4.0.0/16 LOCAL
+CONTROL 200,400 MATCH
+PATTERN PD VALLEYFREE
+PREFIXES 10.3.0.0/16,10.3.1.0/24,10.4.0.0/16
+REACH 100 +++
+REACH 200 +++
+REACH 300 *++
+REACH 400 +**
+output/audit.txt:
+BLACKHOLE 100 10.4.0.1 from 40 to 42 at 200 path 100,200
+RULE r1 IMPORT ON hits 2
+RULE r2 EXPORT ON hits 1
+SUMMARY loops 0 blackholes 1 rings 0 routes 8 valleys 0 divergent 0 end 56
+In this example, the following happens.
+- At time 3, AS 200 receives 10.3.0.0/16 from its peer AS 100 and changes its Loc-RIB, and then receives the same prefix from its customer AS 300 and changes to the route with the larger LOCAL_PREF. At this point it withdraws the announcement already sent to AS 300 (because a route is not advertised to the neighbor AS it was learned from). Since link c3 has MRAI 4, the update to AS 400 after the one sent at time 3 is held until time 7.
+- With POLICY ON r2 at time 10, AS 300 resends its announcement on c1 with AS_PATH prepending and a community added. The RECV at time 24 is a rejection by the import rule r1 of AS 100.
+- After LINK DOWN c3 at time 40, the forwarding path from AS 100 to 10.4.0.1 dead-ends at AS 200 (BLACKHOLE) until time 42, when AS 100 receives the withdrawal. The period of event 4 is time 40 only, and at its end the withdrawal messages are still waiting for delivery, so the status is UNSETTLED.
+- In the final state, AS 100 rejects 10.3.1.0/24, so the forwarding path to 10.3.1.5 heads to AS 300 via 10.3.0.0/16, but AS 300 has learned 10.3.1.0/24 via AS 200, so the packet reaches AS 400 (CONTROL is MISMATCH and PATTERN is VALLEY).

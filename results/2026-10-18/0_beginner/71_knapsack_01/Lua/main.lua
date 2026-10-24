@@ -1,0 +1,22 @@
+local items = {{"tent",10,120},{"stove",3,65},{"lantern",2,45},{"rope",3,20},{"camera",5,90},{"blanket",5,85},{"water",6,100}}
+local capacity,dp = 20,{[0]={}}
+for weight = 0,capacity do dp[0][weight] = 0 end
+for i,item in ipairs(items) do
+    dp[i] = {}
+    for weight = 0,capacity do
+        dp[i][weight] = dp[i-1][weight]
+        if item[2] <= weight then dp[i][weight] = math.max(dp[i][weight],dp[i-1][weight-item[2]]+item[3]) end
+    end
+end
+local chosen,remaining = {},capacity
+for i = #items,1,-1 do
+    if dp[i][remaining] ~= dp[i-1][remaining] then
+        chosen[i] = true
+        remaining = remaining-items[i][2]
+    end
+end
+local names = {}
+for i,item in ipairs(items) do
+    if chosen[i] then names[#names+1] = item[1] end
+end
+io.write(string.format("max value: %d\ntotal weight: %d\nitems: %s\n",dp[#items][capacity],capacity-remaining,table.concat(names," ")))

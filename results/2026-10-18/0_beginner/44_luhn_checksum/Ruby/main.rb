@@ -1,0 +1,11 @@
+numbers = %w[688126340316 0128469655154 92181914514156 177332430060552 7982377590420309 9884593615513906]
+numbers.each do |number|
+  total = number.reverse.chars.each_with_index.sum do |char, i|
+    digit = char.to_i
+    digit *= 2 if i.odd?
+    digit > 9 ? digit - 9 : digit
+  end
+  expected = (-(total - number[-1].to_i)) % 10
+  result = (total % 10).zero? ? 'valid' : "invalid (expected check digit #{expected})"
+  puts "#{number}: #{result}"
+end

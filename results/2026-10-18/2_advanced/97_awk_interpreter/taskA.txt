@@ -1,0 +1,402 @@
+[Overview]
+Write an interpreter for a subset of AWK without regular expressions (hereafter simply called "AWK"). The program reads input/args.txt, which gives the startup settings (options and operands), and input/program.awk, which contains the AWK program, performs lexical analysis, parsing and static checks, and then executes, in order, the BEGIN actions, the rules (pattern-action pairs) for each record of the input files, and the END actions. AWK values have a dual string/number nature (strings obtained from input that look numeric are also compared as numbers); all numbers are integers, and division truncates the fractional part (this is a convention of this task that differs from real AWK). In addition, the interpreter supports splitting records into fields and rebuilding $0, associative arrays (multi-dimensional subscripts, in, delete, and for-in iterating in a fixed order), user-defined functions (scalars passed by value, arrays passed by reference, recursion), printf formatting, string built-in functions, and reading files with getline. What the AWK program writes to standard output is written to output/stdout.txt, output whose destination is given with ">" or ">>" is written to the file of that name in output/, and the result of the execution and statistics (records per file, matches per rule, calls per function, statement executions per line, and the final values of the global variables) are written to output/stats.txt. The program is run in a directory that contains, besides the source files, input/ holding the input files and an empty output/, and it prints nothing to standard output.
+
+[Input files]
+All input files are text files consisting only of printable ASCII characters (character codes 32 to 126) and newlines (LF); a file that is not empty ends with a newline. Tabs do not appear.
+
+* input/args.txt
+This corresponds to the command-line arguments given when AWK is started, with one item per line. There are no empty lines and no trailing spaces. Each line is the first of the following (1) to (4) that applies.
+(1) A line starting with "-F " ("-F" and one space): an option. If X is the rest of the line, it means the same as "-v FS=X".
+(2) A line starting with "-v " ("-v" and one space): an option. The rest has the form "name=value": the part before the first "=" is the name, and the part after it is the value (which may be empty).
+(3) A line that contains "=" and whose part before the first "=" has the form of a name (it starts with a letter or "_" and continues only with letters, digits and "_"): an assignment operand. The part before the first "=" is the name, and the part after it is the value.
+(4) Any other line: a file operand. The whole line is the file name.
+All option lines come before all operand lines. A value is the string exactly as written; no escape processing or the like is done. Options are processed at the start of execution (13(1)), and operands while the main input is read (13(3)).
+
+* input/program.awk
+The AWK program. Its grammar is defined in 2. A position in the file is given by the pair of a line number (the first line is 1) and a column number (the first character of a line is 1), written "L:C" (L is the line number, C is the column number).
+
+* Data files
+A file name given as a file operand and a file name given with "<" of getline (12) denote the file of that name in input/. A data file is a sequence of lines separated by newlines, and each line (not including the newline at its end) is one record. An empty file has no records. Below, a "valid file name" is a string of one or more characters consisting only of letters, digits, ".", "_" and "-" that does not start with ".". All file names of file operands are valid file names, and those files exist in input/.
+
+[Processing]
+* 1. Lexical analysis
+Read the whole of program.awk from the beginning and split it into "tokens". The position of each token is the position of its first character. Below, a "letter" means A to Z and a to z, and a "digit" means 0 to 9. Depending on the character at the current position, do the first of the following (1) to (9) that applies, and repeat until the end of the file.
+(1) A space: skip it.
+(2) "\" whose next character is a newline: skip these two characters (a line continuation; no newline token is produced).
+(3) "#": a comment. Skip everything up to just before the newline of that line (the newline is read by (4)).
+(4) A newline: a "newline token".
+(5) A digit: the longest run of digits is a "number token", whose value is the integer obtained by reading it as a decimal number (leading zeros are allowed).
+(6) A letter or "_": the longest run of letters, digits and "_" is one word.
+  - If the word is one of the following 18 words, it is a "keyword".
+    BEGIN END function if else while for do break continue next exit return delete in getline print printf
+  - If the word is one of the following 9 words, it is a "built-in function name".
+    length substr index split sprintf toupper tolower close int
+  - Any other word is a "function name token" if the character immediately after the word is "(", and a "name token" otherwise.
+(7) A double quote ("): the start of a "string token". Starting from the next character, read forward until a double quote appears. A "\" on the way is read as a pair with the next character: "\n" stands for a newline, "\t" for a tab (character code 9), "\\" for "\", '\"' for a double quote ("), and "\/" for "/", each one character. Any other character stands for itself. The value of the string token is the string of the represented characters in order (it may be empty).
+  - If a newline is reached before a double quote appears, it is a syntax error at the position of the opening double quote.
+  - If the character after a paired "\" is none of the five kinds above, it is a syntax error at the position of that "\".
+  Of these two, the one encountered first while reading forward occurs.
+(8) The text starts with one of the following "symbols": that symbol is one token. If more than one symbol matches, choose the longer one.
+    +=  -=  *=  /=  %=  ^=  ==  <=  >=  !=  ++  --  &&  ||  >>
+    +  -  *  /  %  ^  !  >  <  ?  :  =  (  )  [  ]  {  }  ,  ;  $
+(9) None of the above (for example ".", "@", "|", "~", a single "&", or a "\" whose next character is not a newline): a syntax error at the position of that character.
+Finally, append a token representing the end of the file (hereafter called "EOF"). Its position has the line number equal to the number of lines of the file plus 1, and the column number 1. If there was a syntax error in lexical analysis, do not parse; report that (first) syntax error (3(4)).
+
+* 2. Syntax
+(1) Grammar
+Read the token sequence according to the following grammar. In the grammar, something enclosed in double quotes denotes the keyword, built-in function name or symbol with that spelling, NL denotes a newline token, and EOF denotes the end-of-file token. NUMBER, STRING, NAME, FUNCNAME and BUILTIN denote the corresponding tokens of 1 (number token, string token, name token, function name token and built-in function name, respectively). [ ] denotes an optional part, { } denotes zero or more repetitions, and | denotes a choice.
+  program = {NL | ";" | item} EOF
+  item = "function" (NAME | FUNCNAME) "(" [NAME {"," {NL} NAME}] ")" {NL} block
+       | "BEGIN" block | "END" block | block
+       | expr ["," {NL} expr] [block]
+  block = "{" {NL | ";" | statement} "}"
+  statement = block | ";"
+     | "if" "(" expr ")" {NL} statement [{NL} "else" {NL} statement]
+     | "while" "(" expr ")" {NL} statement
+     | "do" {NL} statement {NL} "while" "(" expr ")" terminator
+     | "for" "(" NAME "in" NAME ")" {NL} statement
+     | "for" "(" [expr] ";" {NL} [expr] ";" {NL} [expr] ")" {NL} statement
+     | simple_statement terminator
+  simple_statement = ("print" | "printf") [output_args] [redirection]
+         | "delete" NAME ["[" expr_list "]"]
+         | "next" | "break" | "continue" | "exit" [expr] | "return" [expr]
+         | expr
+  terminator = ";" | NL | (when the next token is "}", nothing is read)
+  output_args = expr_list | "(" expr_list ")"
+  redirection = (">" | ">>") concat_expr
+  expr_list = expr {"," {NL} expr}
+  expr = lvalue assign_op expr | cond_expr
+  assign_op = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "^="
+  cond_expr = or_expr ["?" cond_expr ":" cond_expr]
+  or_expr = and_expr {"||" {NL} and_expr}
+  and_expr = in_expr {"&&" {NL} in_expr}
+  in_expr = comparison {"in" NAME}
+  comparison = concat_expr {("<" | "<=" | "==" | "!=" | ">=" | ">") concat_expr}
+  concat_expr = additive {additive}
+  additive = multiplicative {("+" | "-") multiplicative}
+  multiplicative = unary {("*" | "/" | "%") unary}
+  unary = ("!" | "-" | "+") unary | postfix ["^" unary]
+  postfix = ("++" | "--") lvalue | atom ["++" | "--"]
+  lvalue = NAME ["[" expr_list "]"] | "$" field_spec
+  field_spec = ("++" | "--") lvalue | atom
+  atom = NUMBER | STRING | lvalue | "(" expr ")"
+         | "(" expr "," {NL} expr {"," {NL} expr} ")" "in" NAME
+         | FUNCNAME "(" [expr_list] ")"
+         | BUILTIN "(" [expr_list] ")" | "length"
+         | "getline" [lvalue] ["<" atom]
+(2) Reading rules
+Read from the beginning, deciding between the alternatives by the following rules. A token that has been read is never put back (in (e) and (f), tokens further ahead are only inspected to make the decision).
+(a) An item is chosen by its first token: "function" gives a function definition, "BEGIN" a BEGIN action, "END" an END action, "{" a rule without a pattern, and anything else a rule that starts with an expression. "BEGIN" and "END" must be immediately followed by "{".
+(b) In a rule that starts with an expression, after the first expression (the start pattern) is read, if the next token is ",", skip NLs and read the second expression (the end pattern). This is called a "range pattern", and a pattern without "," is called an "expression pattern". Then, if the next token is "{", that block is the action of the rule. Otherwise the rule has no action, and the next token must be NL, ";" or EOF (therefore a "{" that starts on the line after the line of the pattern becomes a separate item (a rule without a pattern)). After an item that ends with "}", the next item may follow even without NL or ";".
+(c) A statement is chosen by its first token: "{" gives a block, ";" an empty statement, "if", "while", "do" and "for" the respective statements, and anything else a simple statement. A simple statement is the respective statement for "print", "printf", "delete", "next", "break", "continue", "exit" and "return", and otherwise an expression statement.
+(d) In an if statement, after the first statement (the then branch) is read, skip NLs, and if the next token is "else", read the statement of the else branch. If it is not "else", the skipped NLs are treated as statement separators. Therefore an else binds to the innermost if that does not yet have an else.
+(e) If the 4 tokens following "for" and "(" are NAME, "in", NAME, ")" in this order, it is a for-in statement; otherwise it is a for statement with three expressions. "exit" and "return" have no expression if the next token is ";", NL or "}".
+(f) If the token after "print" or "printf" is "(", search for the ")" matching that "(", counting only "(" and ")". If the matching ")" exists and the token after it is ";", NL, "}", ">", ">>" or EOF, the output arguments have the form "(" expr_list ")". Otherwise (including when there is no matching ")"), the output arguments have the form expr_list, and that "(" is part of the first expression. If the token after "print" or "printf" is ";", NL, "}", ">" or ">>", there are no output arguments. printf requires output arguments; if there are none, it is a syntax error at the position of the token after printf.
+(g) Inside output arguments of the form expr_list, the symbol ">" is not read as a comparison operator (">" becomes the start of the redirection). However, inside parts enclosed in "(" and ")" or in "[" and "]", and inside the arguments of function names and built-in function names, ">" is read as a comparison operator.
+(h) When reading an expression, first read a cond_expr. If what was read is an lvalue (not enclosed in parentheses) and the next token is an assignment operator, read the assignment operator and the right-hand expression to form an assignment expression (since the right-hand side is also an expression, assignment is right-associative).
+(i) The conditional expression is right-associative ("a ? b : c ? d : e" is "a ? b : (c ? d : e)"). ||, &&, in, the comparison operators, concatenation, +, -, *, / and % are all left-associative ("a < b < c" is "(a < b) < c"). ^ is right-associative ("2 ^ 3 ^ 2" is "2 ^ (3 ^ 2)") and binds tighter than unary !, - and + ("-2 ^ 2" is "-(2 ^ 2)", and "2 ^ -1" is "2 ^ (-1)"). Unary operators bind tighter than binary operators other than ^ ("!x == y" is "(!x) == y", and "-a * b" is "(-a) * b").
+(j) In a concat_expr, after an additive is read, if the next token is NUMBER, STRING, NAME, FUNCNAME, BUILTIN, "$", "(", "++" or "--", read the next additive and concatenate. "-", "+" and "!" do not start a concatenation. For example, "a -1" is the expression a minus 1, 'a " " -1' is the concatenation of a and (" " - 1), '"n=" n + 1' is the concatenation of "n=" and (n + 1), and '"x" ++i' is the concatenation of "x" and (++i).
+(k) In a postfix, a trailing "++" or "--" is read only when the atom is an lvalue not enclosed in parentheses. After "$", if the next token is "++" or "--", read a prefix increment or decrement expression; otherwise read one atom (a trailing "++" or "--" is not read). For example, "$i++" is "($i)++", "$NF-1" is "($NF) - 1", "$a[1]" is "$(a[1])", and "$$0" is "$($0)".
+(l) An atom is chosen by its first token. A number or a string is its value. A name is an lvalue, and if the next token is "[", a subscripted lvalue. A function name is a call of a user-defined function (a function name is always immediately followed by "("). A built-in function name is a call of the built-in function if the next token is "("; otherwise only length is allowed (it is the same as a call of length without arguments), and for any other built-in function name it is a syntax error at the position of that next token. For "getline", if the next token is a name or "$", read an lvalue (the target to read into); then, if the next token is "<", read one atom (the file name). For "(", read an expr_list and ")"; if there is one expression, it is a parenthesized expression (not an lvalue); if there are two or more, then read "in" and a name.
+(m) The number of arguments of a built-in function call is 0 or 1 for length, 2 or 3 for substr, 2 for index, 2 or 3 for split, 1 or more for sprintf, and 1 for toupper, tolower, close and int. If the number does not match, or if the second argument of split is not a single name token (without a subscript or parentheses), it is a syntax error at the position of that built-in function name, detected when the closing ")" has been read.
+(n) If "next" is inside a BEGIN or END action (not including inside function bodies), if "return" is outside a function body, or if "break" or "continue" is outside the bodies of the while, do, for and for-in statements within the same action or function body, it is a syntax error at the position of that keyword.
+(3) Syntax errors
+Reading the tokens from the beginning according to the grammar and reading rules above, if the next token to be read does not fit the grammar, it is a syntax error at the position of that token (for example, at the position of ";" in "x = 1 +;", and at the position of "print" in "NR == 1 print"). There are also the syntax errors defined in (2)(f), (m) and (n). Report only the first syntax error found while reading forward (not necessarily the one at the earliest position) and end processing (3(4)).
+
+* 3. Static checks
+If there was no syntax error, perform the following checks and preparation.
+(1) Static errors
+Check for the following 5 kinds of errors.
+  (a) There are two or more definitions of functions with the same name: "function F redefined" at the position of the function name of the second and each later definition.
+  (b) The parameter list of one function contains the same name two or more times: "duplicate parameter P" at the position of the second and each later such parameter.
+  (c) The name of a defined function (wherever it is defined) appears as the name of a parameter, or as the name of a variable (the name of an lvalue, the name after in, the name after delete, or either of the two names of a for-in statement): "function F used as variable" at the position of that name.
+  (d) The function name of a function call is none of the defined functions: "undefined function F" at the position of that function name.
+  (e) A function call has more arguments than the function has parameters: "too many arguments to F" at the position of that function name.
+F is the name of the function, and P is the name of the parameter. If there are errors, report only the one at the earliest position (the smaller line number, and on the same line the smaller column number) and end processing (3(4)). If there are two or more errors at the same position, report the one that comes first in the order (a) to (e) above.
+(2) Scope of names
+Inside a function body, a name equal to a parameter of that function denotes a "local variable". Any other name (names in the patterns and actions of rules, and names inside function bodies that are not parameters) denotes a "global variable".
+(3) Array names
+Each global variable and each parameter of each function is either an "array name" or a "scalar name". Determine the array names by the following rules; all others are scalar names.
+  - A name that appears in one of the following positions is an array name (the name as resolved in the scope of that position): the name of a subscripted lvalue, the name after in, the name after delete, the second name of a for-in statement, and the second argument of the built-in function split.
+  - In a function call, when an argument is an expression consisting of a single name token only (without a subscript or parentheses) and there is a parameter corresponding to that position, "link" that name and the parameter. If one of two linked names is an array name, the other is also an array name. Repeat this until no more array names are added.
+(4) Reporting syntax errors and static errors
+If there was a syntax error or a static error, do not execute the AWK program; write an empty output/stdout.txt and an output/stats.txt consisting only of the one report line, and finish (see the output files section).
+
+* 4. Values
+(1) Kinds of values
+A value is one of four kinds: a "number" (an integer), a "string", a "numeric string" (a string that also has a numeric value), or the "uninitialized value" (which behaves both as the empty string and as the number 0). Below, numbers, numeric strings and the uninitialized value are together called "number-like values".
+(2) Input values
+A string s "looks numeric" when what remains after removing "whitespace characters" (space, tab, newline) from the beginning and end of s consists of zero or one "+" or "-" followed by one or more digits. The "input value" of a string s is, if s looks numeric, the numeric string whose string is s and whose numeric value is the value converted by (3); otherwise it is the string s. For example, " 42 ", "-7", "+5" and "007" look numeric, and "" (empty), "4 2", "3.5", "12x" and "-" do not look numeric.
+The following are input values: records and fields (6), lines read into a variable by getline (12), the values assigned by options and assignment operands (13), the elements of arrays created by split (10), and the subscripts assigned to the variable of a for-in statement (8).
+(3) Conversion to a number
+The value of a value v converted to a number is as follows.
+  - A number: it stays as it is.
+  - A numeric string: its numeric value.
+  - The uninitialized value: 0.
+  - A string: skip leading whitespace characters, read one "+" or "-" if present, and then read the longest run of digits. If there is at least one digit, the value is that run read as a decimal number (with its sign inverted if "-" was read); if there is no digit, the value is 0. The remaining characters are ignored. For example, "12abc" is 12, " -7x" is -7, "abc" is 0, "- 5" is 0, and "3.9" is 3.
+(4) Conversion to a string
+The value of a value v converted to a string is as follows.
+  - A number: its decimal representation (a negative number gets a leading "-"; no extra leading zeros are added, and 0 is "0").
+  - A string or a numeric string: that string (a numeric string keeps its original string; for example, "  25" keeps its spaces).
+  - The uninitialized value: the empty string.
+(5) Truth
+A value v used as a condition is true when it is a number other than 0, a numeric string whose numeric value is not 0, or a string that is not empty; the uninitialized value is false. The result of a comparison, a logical operation, ! or in is the number 1 when true and the number 0 when false.
+(6) Comparison
+When two values a and b are compared, if both are number-like values, they are compared by their values converted to numbers. Otherwise, each is converted to a string and they are compared as strings. A string comparison compares character codes from the beginning: at the first differing character, the string with the smaller character code is smaller, and if one string is a prefix of the other, the shorter one is smaller.
+
+* 5. Variables and arrays
+(1) Variables
+Global variables are initially the uninitialized value, except for the following special variables. The initial values of the special variables are as follows.
+  FS: the string " " (one space); OFS: the string " " (one space); ORS: the string consisting of one newline character
+  SUBSEP: the one-character string of character code 28; NR: the number 0; FNR: the number 0; FILENAME: the empty string
+FS, OFS, ORS and SUBSEP are converted to strings at their current values each time they are used. FS is used as the field separator (6), OFS as the separator of print and for rebuilding $0 (6, 11), ORS as the terminator of print (11), and SUBSEP to join multi-dimensional subscripts ((2)). NR (the total number of records read), FNR (the number of records read in the current file) and FILENAME (the current file name) are updated when the main input is read (12, 13). NF always denotes the number of fields of the current record (a number); assignment to NF is as in 6(5). Like the other global variables, these 8 special variables can be referenced and assigned by the AWK program. Local variables are created for each function call (9).
+(2) Arrays
+An array is a mapping from string "subscripts" to values, and is initially empty. The subscript string of a subscripted lvalue "name[expr_list]" or of "(expr_list) in name" is obtained by evaluating the expressions of the expr_list from left to right, converting each to a string, and joining them with SUBSEP (its value after all the expressions have been evaluated) (with one expression, it is just that string).
+When an array element is referenced as a value (including reading the current value in a compound assignment or an increment or decrement) and there is no element with that subscript, an element with the uninitialized value is created with that subscript. in does not create elements. "delete name[expr_list]" removes the element with that subscript if it exists, and "delete name" removes all the elements of the array.
+(3) for-in order
+A for-in statement iterates over the subscripts of the array arranged in the following order. First come the "integer-form subscripts" (the string "0", or a string of zero or one "-", followed by one digit from 1 to 9, followed by zero or more digits; for example "12" and "-3", but not "007", "-0" or "+5") in ascending order of their integer values, and after them the other subscripts in ascending order of the string comparison of 4(6).
+
+* 6. Records and fields
+(1) Splitting a string
+The sequence of strings ("pieces") obtained by splitting a string s by a separator t is as follows.
+  - When t is a single space: each longest run of characters other than whitespace characters (space, tab, newline) in s is one piece (leading and trailing whitespace characters are ignored, and an s consisting only of whitespace characters or an empty s has no pieces).
+  - When t is empty: each character of s is a one-character piece (an empty s has no pieces).
+  - Otherwise: if s is empty, there are no pieces. Otherwise, search for the occurrences of t in s from the beginning without overlapping; if there are n occurrences, the pieces are the n+1 parts separated by them (there may be empty pieces). Even when t has two or more characters, that whole string is the separator.
+(2) Setting the record
+To "set the record" to a string r means to make $0 the input value of r, and to make the pieces obtained by splitting r by FS (at that moment) the 1st, 2nd, ... fields in order. The value of each field is the input value of its piece, and NF becomes the number of fields. Before the first record is set, $0 is the empty string (a string) and there are no fields (NF is 0). Changing FS does not change the fields of a record that has already been set.
+(3) Field reference
+The value of "$expr" is determined by the value k of the expression converted to a number. If k is negative, it is a runtime error (14). If k is 0, it is the value of $0; if k is at least 1 and at most NF, the value of the k-th field; if k is greater than NF, the uninitialized value (NF does not change).
+(4) Assignment to a field
+When a value v is assigned to "$k" (k is determined as in (3)): if k is 0, set the record to v converted to a string (the fields are split again). If k is 1 or more: if k is greater than NF, add the (NF+1)-th to k-th fields as fields with the empty string (a string) and make NF equal to k; then make the k-th field v (the kind of v is kept as it is). After that, make the new $0 the input value of the string obtained by converting the 1st to NF-th fields to strings and joining them with OFS (this is called "rebuilding $0"; the fields are not split again at this time).
+(5) Assignment to NF
+When a value v is assigned to the global variable NF (including by a compound assignment, an increment or decrement, as the target of getline, and as the variable of a for-in statement), let n be v converted to a number. If n is negative, it is a runtime error (14). If n is less than NF, remove the (n+1)-th and later fields; if n is greater, add fields with the empty string; either way, the number of fields becomes n. Then rebuild $0, including when n equals the original NF.
+
+* 7. Evaluation of expressions
+Unless otherwise specified, the parts of an expression are evaluated from left to right.
+(1) The value of a number token is a number, and the value of a string token is a string. The value of a parenthesized expression is the value of the expression inside.
+(2) The value of a name is the value of that variable (the value of the global variable NF is the number of fields (a number)).
+(3) For an assignment to an lvalue, first determine the "location" of the lvalue: for a name, that variable; for a subscripted name, the array element whose subscript string (5(2)) has been computed; for "$", the field number k (6(3); a runtime error if it is negative).
+(4) An assignment "lvalue = expr" determines the location of the lvalue, evaluates the right-hand expression, and stores its value in the location. A compound assignment "lvalue op= expr" (op is +, -, *, /, % or ^) determines the location of the lvalue, evaluates the right-hand expression to obtain a value b, reads the current value a of the location (creating the element if it does not exist), and stores the value of "a op b" computed as in (9). Storing is done as in 6(4) for a field, as in 6(5) for the global variable NF, and for other variables and array elements by putting the value there as it is (keeping its kind). The value of an assignment expression is the value of the lvalue after storing (for example, for an assignment to $0 it is the input value of the new $0, and for an assignment to NF it is the new number of fields).
+(5) A conditional expression "c ? a : b" evaluates c, and if it is true evaluates only a, and if it is false evaluates only b, and takes that value.
+(6) "a || b" is 1 without evaluating b if a is true; otherwise its result is the truth of b. "a && b" is 0 without evaluating b if a is false; otherwise its result is the truth of b. The result is the number 1 or 0.
+(7) "subscript in name" is 1 if the array has an element with the subscript string, and 0 otherwise.
+(8) A comparison operator evaluates both sides, compares them as in 4(6), and is 1 if the relation "<", "<=", "==", "!=", ">=" or ">" holds, and 0 if it does not. A concatenation is the string obtained by converting both sides to strings and joining them.
+(9) Binary +, -, *, /, % and ^ compute the following number from the values a and b obtained by converting both sides to numbers. +, - and * give the sum, difference and product. "a / b" is the integer obtained by truncating the fractional part of the quotient (rounding toward 0) (for example, 7 / 2 is 3, and -7 / 2 is -3), and "a % b" is a - (a / b) * b (for example, -7 % 2 is -1, and 7 % -3 is 1). For / and %, if b is 0, it is a runtime error. "a ^ b" is a to the power of b; when b is 0 it is 1 (also when a is 0). If b is negative, it is a runtime error.
+(10) Unary "-x" is the number obtained by inverting the sign of x converted to a number, "+x" is the number obtained by converting x to a number, and "!x" is 1 if x is false and 0 if x is true.
+(11) An increment or decrement ("++x", "--x", "x++", "x--") determines the location of the lvalue, lets a be the current value (creating the element if it does not exist) converted to a number, and stores the number a + 1 (a - 1 for --) by the same rules as (4). The value of the expression is a + 1 (or a - 1) for the prefix forms, and a for the postfix forms.
+(12) A function call is as in 9, a built-in function call is as in 10, and getline is as in 12.
+
+* 8. Execution of statements
+(1) A block executes the statements in it in order. An empty statement does nothing. An expression statement evaluates the expression and discards its value.
+(2) An if statement executes the statement of the then branch if the condition expression is true, and the statement of the else branch (if any) if it is false.
+(3) A while statement repeats "evaluate the condition expression; if it is false, finish; if it is true, execute the body". A do statement executes the body, then evaluates the condition expression, and if it is true repeats again from the body. A for statement evaluates the first expression (if any) once, and then repeats "evaluate the second expression (taken as true if absent); if it is false, finish; if it is true, execute the body and evaluate the third expression (if any)".
+(4) A for-in statement "for (v in a) statement", when the statement starts, makes a list of the subscripts of array a arranged in the order of 5(3), and for each subscript in that order, assigns the input value of the subscript to v (storing it as in 7(4)) and executes the body. Adding or removing array elements while the body is executed does not change the list (removed subscripts are still visited).
+(5) break ends the innermost loop (while, do, for or for-in statement) that contains it. continue skips the rest of the body of the innermost loop that contains it; then a for statement proceeds to the evaluation of the third expression, while and do statements to the evaluation of the condition expression, and a for-in statement to the next subscript.
+(6) next stops processing the rules for the current record and proceeds to the next record (13(3)). Executing next during the execution of a BEGIN or END action (including inside functions called from them) is a runtime error.
+(7) "exit expr" sets the exit status to the value of the expression converted to a number, and then ends execution as in 13(5). exit without an expression ends execution in the same way without changing the exit status.
+(8) return ends the execution of the function (9).
+(9) delete is as in 5(2), and print and printf are as in 11.
+
+* 9. User-defined functions
+A call "f(e1, ..., ek)" of a function f is performed as follows. Let the parameters of f be p1, ..., pm (k <= m).
+(1) For i = 1, ..., m in order, determine the initial value of pi. When pi is an array name: if i <= k, ei is an expression consisting of a single name token that is an array name, and pi denotes the same array as the array that name denotes (in the scope of the caller) (pass by reference; changing elements inside the function changes the caller's array). If i > k, pi is a new empty array. When pi is a scalar name: if i <= k, it is the value of ei evaluated (in the scope of the caller) (pass by value; assigning to pi inside the function does not change the caller), and if i > k, it is the uninitialized value (so extra parameters can be used as local variables).
+(2) Execute the function body. When "return expr" is executed, the value of that expression is the value of the call; when return without an expression is executed, or the end of the body is reached without executing return, the value of the call is the uninitialized value.
+A function can call itself and other functions (recursively), and each call has its own local variables. For the statistics, count for each function the number of calls and the maximum number of calls of that function executing at the same time (the "depth"). These are counted when (1) has finished and (2) begins (therefore a call inside the arguments is counted before the call that contains it; for example, when only "f(f(1))" is executed, the number of calls of f is 2 and its depth is 1).
+
+* 10. Built-in functions
+The arguments are evaluated from left to right.
+(1) "length()" and "length" without parentheses give the length (the number of characters) of $0 converted to a string. "length(e)" gives the number of elements of the array if e is an expression consisting of a single name token that is an array name, and otherwise the length of e converted to a string. The value is a number.
+(2) "substr(s, m)" and "substr(s, m, n)" give a substring (a string) of s converted to a string. Let L be the length of the string, and let m and n be the values of m and n converted to numbers. Let the start be m and the end be m + n (L + 1 if n is absent); if the start is less than 1, change it to 1, and if the end is greater than L + 1, change it to L + 1. If the end is greater than the start, the result is the characters from the start-th to the (end - 1)-th (the first character is the 1st); otherwise it is the empty string. For example, substr("hello", 0, 3) is "he", and substr("hello", 4) is "lo".
+(3) "index(s, t)" converts s and t to strings and gives the position (the first character is 1) of the first occurrence of t in s. It is 0 if t does not occur or if t is empty. The value is a number.
+(4) "split(s, a)" and "split(s, a, t)" evaluate s and convert it to a string, and, if t is present, evaluate t and convert it to a string (if t is absent, t is FS converted to a string); then they remove all the elements of array a, and put the pieces (6(1)) obtained by splitting s by t into a as the elements with subscripts "1", "2", ..., each with the input value of its piece. The value is the number of pieces (a number).
+(5) "sprintf(fmt, e1, ...)" gives the string (a string) made by the format of 11(2).
+(6) "toupper(s)" and "tolower(s)" convert s to a string and give the string in which lowercase letters are changed to uppercase letters (for tolower, uppercase letters to lowercase letters). Other characters are not changed.
+(7) "close(s)" closes the output file (11(3)) whose name is s converted to a string if it is open, and closes the getline input (12) of the same name if it is open. The value is 0 if either of them was closed, and -1 (a number) if neither was open.
+(8) "int(e)" gives the value of e converted to a number.
+
+* 11. Output
+(1) print
+print evaluates the expressions of the output arguments from left to right (if there are no output arguments, the value of $0 is used), converts each to a string, joins them with OFS, appends ORS at the end, and outputs the resulting string. The destination is as in (3).
+(2) printf format
+printf evaluates the expressions of the output arguments from left to right, uses the first value converted to a string as the format fmt and the remaining values as arguments, and outputs the string made as follows (ORS is not appended). The destination is as in (3). sprintf makes its string by the same rules.
+Read fmt from the beginning; characters other than "%" are added to the output string as they are. "%%" adds one "%" character. Any other "%" starts a "conversion specification": after the "%", read, in this order, the flags (a sequence of zero or more "-" and "0"), the width (zero or more digits), the precision ("." followed by zero or more digits; it may be omitted), and the conversion character. If there is no conversion character (fmt ends) or it is none of d, i, s, c, x and o, it is a runtime error. The width is the value of its digits read as a decimal number (0 if there are no digits), and the precision is the value of the digits after the "." (0 if there are no digits after the "."). Each conversion specification uses the next argument that has not been used yet. If no usable argument is left, it is a runtime error. Excess arguments are ignored. Each conversion specification adds the following string.
+  - d, i, x, o: let n be the argument converted to a number, and let D be the digit string representing the absolute value of n in decimal for d and i, in hexadecimal for x (using the lowercase letters a-f), and in octal for o. If a precision p is given: if p is 0 and n is also 0, make D empty; otherwise, while the length of D is less than p, add a 0 at the beginning. If n is negative, the body is D with "-" added at the beginning; otherwise the body is D (for example, -255 with x is "-ff"). If the length of the body is less than the width, add, until the length equals the width: spaces after the body if the flags contain "-"; "0"s after the sign (at the beginning if there is no sign) if the flags contain no "-", contain "0", and there is no precision; and spaces before the body otherwise.
+  - s: convert the argument to a string, and if a precision p is given, take its first p characters (the whole string if it is shorter than p characters); this is the body. If the length of the body is less than the width, add spaces after it if the flags contain "-", and before it if not, until the length equals the width (the "0" flag is ignored).
+  - c: if the argument is a number or a numeric string, the body is the one character whose character code is its numeric value. The character code must be 10 or 32 to 126; otherwise it is a runtime error. If the argument is a string or the uninitialized value, the body is the first character of the value converted to a string (the empty string if it is empty). The precision is ignored, and the width is handled in the same way as for s.
+The string is output after fmt has been read to the end (if a runtime error occurs on the way, nothing is output).
+(3) Destination
+When there is no redirection, the string is appended to the end of standard output (output/stdout.txt). When there is a redirection "> expr" or ">> expr", after the string to output has been made, evaluate the expression of the redirection, and output to the file whose name is its value converted to a string. If the name is not a valid file name, or is "stdout.txt" or "stats.txt", it is a runtime error.
+Each output file name has a state, "open" or "closed", and initially all names are closed. When outputting to a closed name, first open that file. When it is opened, ">" makes the content of the file empty, and ">>" keeps the content as it is (if nothing has ever been output to that name, it starts from empty content). Then the string is appended to the end of the content. Output to an open name only appends to the end of the content, with either ">" or ">>". A name closed by close is opened again at the next output to it. Standard output is not subject to opening and closing (close("stdout.txt") does not affect standard output).
+For the statistics, count the number of outputs (outputs of print, printf and rules without an action) for standard output and for each output file.
+
+* 12. getline
+The value of getline is a number, and getline has the following 4 forms.
+(1) "getline": get the string of the next record from the main input (13(3)). If one is obtained, increase NR and FNR (each to the number equal to its value converted to a number plus 1), set the record to that string, and the value is 1. If the main input has ended and none is obtained, NR, FNR and the record are not changed, and the value is 0 (the assignments of the assignment operands processed up to that point are performed). Inside an END action, the main input is not read and the value is always 0.
+(2) "getline lvalue": get the string from the main input and increase NR and FNR as in (1), but do not set the record; instead assign the input value of the string to the lvalue (storing it as in 7(4)). The value is the same as in (1).
+(3) "getline < atom": get the next line from the "getline input" whose name is the value of the atom evaluated and converted to a string. If one is obtained, set the record to that line (NR and FNR are not changed), and the value is 1. If the name is not a valid file name or there is no file of that name in input/, the value is -1; if the file has already been read to the end, the value is 0; in both cases nothing is changed.
+(4) "getline lvalue < atom": get one line as in (3), and if one is obtained, do not set the record; instead assign the input value of the line to the lvalue. The value is the same as in (3).
+In (3) and (4), the line is read after the atom is evaluated. In (2) and (4), only when a line is obtained, the location of the lvalue is determined and the assignment is done after the line has been obtained (in (2), after NR and FNR have been increased). Each getline input name has a state, "open" or "closed", and initially all names are closed. When reading from a closed name, open that file in input/ and start reading from its first line. From an open name, the following lines are read. When a name closed by close is read next, it is read again from the first line. For the statistics, count for each name the number of times a line was obtained by (3) and (4). The getline input is read separately from the main input, so even when it reads the same file as the main input, they do not affect each other.
+
+* 13. Flow of execution
+(1) Process the options (-F and -v) in the order written in args.txt, assigning the input value of the value to the global variable of that name.
+(2) Execute all the BEGIN actions in the order written in the program.
+(3) If the program has one or more rules other than BEGIN actions (expression-pattern rules, range-pattern rules, rules without a pattern, END actions), execute the rules for each record of the main input. If there are only BEGIN actions, (3) is not performed (however, getline of the forms 12(1) and 12(2) inside a BEGIN action reads the main input).
+The main input is read by processing the operands of args.txt in the order written, as they become needed. When the next record is needed, if the current file still has a line that has not been read, that line is the next record. Otherwise, process the next operand. If it is an assignment operand, assign the input value of the value to the global variable of that name and go on to the next operand. If it is a file operand, open that file and make it the current file, set FILENAME to the file name (a string) and FNR to the number 0, and read from the first line of that file. If no operands remain, the main input has ended and there is no next record.
+Each time the string of the next record is obtained from the main input, increase NR and FNR (each to the number equal to its value converted to a number plus 1), set the record to that string, and then process the rules other than BEGIN and END in the order written in the program as follows.
+  - An expression-pattern rule: evaluate the expression of the pattern; if it is true, it is a "match".
+  - A range-pattern rule: each rule has a state of being "inside the range" or not, and is initially outside the range (the state is kept even when the file changes). If it is outside the range, evaluate the start pattern, and if it is true, make the rule inside the range. If, as a result, it is inside the range, it is a "match", and then evaluate the end pattern, and if it is true, make the rule outside the range (therefore the end pattern is evaluated even for the record on which the start pattern became true).
+  - A rule without a pattern: it is always a "match".
+On a match, increase the match count of that rule by 1 and execute its action. For a rule without an action, output $0 converted to a string with ORS appended to standard output. When next is executed, the remaining rules are not processed for that record, and processing proceeds to the next record. If the record changes in the middle of an action because of getline of the form 12(1), the later rules are processed for the new record.
+(4) Execute all the END actions in the order written in the program. When the END actions start, the main input is regarded as ended: getline of the forms 12(1) and 12(2) returns 0, and the remaining operands are not processed. $0, NF, NR, FNR, FILENAME and so on keep their values up to that point.
+(5) When exit is executed inside a BEGIN action or inside the processing of (3) (including inside functions called from there), abandon all the processing after it and go to (4) (the END actions are executed). When exit is executed inside an END action, go to (6) without executing the remaining END actions.
+(6) End execution. The exit status is the value of the exit with an expression that was executed last, or 0 if no exit with an expression was executed.
+When a runtime error (14) occurs, abandon all processing at that point (the END actions are not executed either) and write out the output produced up to that point.
+
+* 14. Runtime errors
+The messages and positions of the runtime errors are as follows.
+  - "division by zero": the right-hand side of / or % is 0. The position is that of the symbol "/", "%", "/=" or "%=".
+  - "negative exponent": the right-hand side of ^ is negative. The position is that of the symbol "^" or "^=".
+  - "negative field index": a field number is negative (6(3)). The position is that of the symbol "$".
+  - "negative NF": a negative value is about to be assigned to NF (6(5)). The position is that of the assignment operator, "++", "--", getline keyword, or variable name of the for-in statement that performed the assignment.
+  - "invalid output file name": the name of the redirection is not valid (11(3)). The position is that of the symbol ">" or ">>".
+  - "invalid format", "not enough arguments", "invalid character code": an error in the printf format, missing arguments, or an invalid character code for %c (11(2)). The position is that of the printf keyword or the sprintf built-in function name.
+  - "next used in BEGIN or END": the case of 8(6). The position is that of the next keyword.
+
+[Output files]
+* output/stdout.txt
+The strings output to standard output, concatenated in the order they were output. If nothing was output, it is an empty file.
+
+* output/<name>
+For each name of redirected output, write its content at the end of execution (11(3)) to the file of that name.
+
+* output/stats.txt
+The first line is the "status line".
+  - On a syntax error: "status: syntax error at L:C"
+  - On a static error: "status: error at L:C: MESSAGE" (MESSAGE is the string of 3(1))
+  - On a runtime error: "status: runtime error at L:C: MESSAGE" (MESSAGE is the string of 14)
+  - Otherwise: "status: exit N" (N is the exit status; prefixed with "-" if negative)
+L:C is the position of the error. On a syntax error or a static error, write only this one line. Otherwise, then write the following 7 sections in this order. Each section starts with a line containing the section name enclosed in "[" and "]", followed by the lines of the section content (possibly zero lines). All numbers in the text are decimal.
+(1) [inputs]
+For each file operand of args.txt, in the order written (separately for each occurrence if the same name is written two or more times), write the line "NAME records=N". N is the number of records obtained as main input from the file of that operand (including those obtained by getline of the forms 12(1) and 12(2); 0 if the file was not read).
+(2) [getline]
+For the names used with "<" of getline, write one line each in the order of first use. For a name whose file could be opened at least once, write "NAME reads=N" (N is the number of times a line was obtained); for a name whose file could never be opened (a name that is not a valid file name or that has no file), write "NAME missing".
+(3) [rules]
+Write the BEGIN actions, the END actions and the rules in the order written in the program, as lines "L:C KIND count=N". L:C is the position of the first token of the item, and KIND is "BEGIN" for a BEGIN action, "END" for an END action, "pattern" for an expression-pattern rule, "range" for a range-pattern rule, and "all" for a rule without a pattern. N is, for BEGIN and END, the number of times execution of the action started (0 or 1), and otherwise the number of matches.
+(4) [functions]
+Write the defined functions in the order written in the program, as lines "NAME calls=N depth=D". N is the number of calls, and D is the depth (9; 0 for a function that was never called).
+(5) [outputs]
+First write the line "stdout.txt writes=N bytes=B", and then, for each name of redirected output in the order in which the names were first opened, the line "NAME writes=N bytes=B". N is the number of outputs (the total over the periods before and after closing and reopening), and B is the number of characters of the content at the end of execution (the size of the file).
+(6) [lines]
+Write the number of statement executions for each line. Here a "statement" is a "statement" of the grammar of 2(1) excluding blocks and empty statements (";") (that is, if, while, do, for and for-in statements, print, printf, delete, next, break, continue, exit and return statements, and expression statements), and the line of each statement is the line of its first token. The expressions inside the parentheses of a for statement are not statements. Each time the execution of a statement starts, increase the execution count of the line of that statement by 1 (an if statement or a loop statement counts once each time the statement starts, and the statements in its body are counted separately). Write all the lines of the program on which a statement starts (including the lines of statements that were not executed and of statements in functions that were never called), in ascending order of line number, as lines "L count=N". N is the total number of executions of the statements that start on that line.
+(7) [globals]
+Write the following names in ascending order of the string comparison of 4(6), as lines "NAME = VALUE".
+  - The 8 special variables (FILENAME, FNR, FS, NF, NR, OFS, ORS, SUBSEP).
+  - The names of the name tokens in the program (excluding the names of function definitions and the names in parameter lists) that denote global variables according to 3(2).
+  - The names assigned by options, and the names assigned by assignment operands that were executed.
+The value is the value of the global variable at the end of execution (or when execution was abandoned because of a runtime error). For an array name it is "array (N)" (N is the number of elements); for a scalar name it is written as follows according to the kind of value (NF is the number of fields (a number)).
+  - A number: its decimal representation.
+  - A string: a double quote ("), the string written as described below, and a double quote.
+  - A numeric string: written in the same way as a string, followed by " (strnum)".
+  - The uninitialized value: "(uninitialized)".
+In the string, a double quote (") is written as '\"', "\" as "\\", a newline as "\n", and a tab as "\t"; the other characters with character codes 32 to 126 are written as they are, and any other character is written as "\" followed by its character code as 3 octal digits (for example, character code 28 is written as "\034").
+
+[Source files]
+Split the source files into the following 6 roles (file names may follow the conventions of each language).
+- main: the overall flow: reading the two configuration files, the static checks (3), management of the execution state (global variables, the sequence of local variables, arrays, the current record), evaluation of expressions (7), execution of statements (8), calls of user-defined functions (9), dispatching of built-in function calls (10(1), (4), (7)), print, printf and redirection (11(1), (3)), getline (12), processing of the main input and the rules, BEGIN, END, exit and runtime errors (13, 14), and counting the statistics and writing output/stats.txt. It handles the largest part of the processing.
+- lexer: token kinds, spellings, values and positions, and lexical analysis (1).
+- parser: the definition of the syntax tree (items, statements, expressions) and recursive-descent parsing (2), including deciding the form of output arguments, recognizing lvalues and assignments, and detecting context-dependent syntax errors.
+- values_fields: the representation of the four kinds of values, input values, conversion to numbers and strings, truth, comparison (4), the for-in order (5(3)), splitting strings, setting the record, field reference and assignment, changing NF, rebuilding $0 (6), and the way values are written in [globals].
+- builtins: the printf format (11(2)), substr, index, toupper, tolower, int and sprintf (10), and the representation of runtime errors.
+- streams: interpreting args.txt, checking valid file names, reading the lines of data files, the contents and open/closed states of output files (11(3)) and writing them out, and opening, closing and reading getline inputs (12).
+
+[Constraints]
+- program.awk has at most 400 lines, and each line has at most 120 characters. args.txt has at most 20 lines. Each data file has at most 1000 lines, and each line has at most 200 characters.
+- Every integer that appears, including intermediate results, has an absolute value less than 2^31. The digit sequences read when converting to a number (including the numeric value of a numeric string), and the integer-form subscripts sorted by for-in, have at most 9 digits.
+- The widths and precisions in printf formats are at most 99. Strings have at most 10000 characters.
+- The depth of function calls (the number of calls executing at the same time) is at most 100, and the nesting depth of the syntax (blocks, statements, expressions) is at most 50. The total number of statement executions is at most 1000000.
+- Array names appear only in the array-name positions of 3(3), as linked arguments, and as the argument of length (a single name token). An argument corresponding to an array-name parameter is always a single name token that is an array name.
+- The names of options and assignment operands are none of the keywords, built-in function names, function names, array names, NF, NR, FNR and FILENAME.
+
+[Example]
+The output for the following input is shown (below, the content of each file is shown starting from the line after its "file name:" line, and one empty line is inserted between files as a separator; these separator empty lines are not part of the file contents).
+
+input/args.txt:
+-v limit=3
+-F ,
+a.csv
+OFS=-
+b.csv
+
+input/program.awk:
+function cost(q, p) { return q * p }
+BEGIN { while ((getline line < "a.csv") > 0) rows++; printf("limit=%s rows=%d\n", limit, rows) }
+{ sum[$1] += cost($2, $3); total += cost($2, $3) }
+$2 > limit { $2 = "many"; print }
+END {
+    for (k in sum) printf("%-4s %5d\n", k, sum[k]) > "sums.txt"
+    print "total", total, NR, FNR
+    exit total > 1000
+}
+
+input/a.csv:
+pen,3,120
+ink,10,45
+pen,2,120
+
+input/b.csv:
+cap,1,300
+ink,5,45
+
+output/stdout.txt:
+limit=3 rows=3
+ink many 45
+ink-many-45
+total-1575-5-2
+
+output/sums.txt:
+cap    300
+ink    675
+pen    600
+
+output/stats.txt:
+status: exit 1
+[inputs]
+a.csv records=3
+b.csv records=2
+[getline]
+a.csv reads=3
+[rules]
+2:1 BEGIN count=1
+3:1 all count=5
+4:1 pattern count=2
+5:1 END count=1
+[functions]
+cost calls=10 depth=1
+[outputs]
+stdout.txt writes=4 bytes=54
+sums.txt writes=3 bytes=33
+[lines]
+1 count=10
+2 count=5
+3 count=10
+4 count=4
+6 count=4
+7 count=1
+8 count=1
+[globals]
+FILENAME = "b.csv"
+FNR = 2
+FS = ","
+NF = 3
+NR = 5
+OFS = "-"
+ORS = "\n"
+SUBSEP = "\034"
+k = "pen"
+limit = "3" (strnum)
+line = "pen,2,120"
+rows = 3
+sum = array (3)
+total = 1575
+
+In this example, the BEGIN action reads 3 lines of a.csv with getline (separately from the main input). limit is the numeric string "3" assigned by -v, and the field $2 is also a numeric string, so "$2 > limit" is compared as numbers, and the lines with 10 and 5 match (compared as strings, "10" would be smaller than "3"). On a matching line, "many" is assigned to $2 and $0 is rebuilt, so the line of a.csv is joined with the space of OFS, and the line of b.csv, which is read after the assignment operand "OFS=-", is joined with "-". The print in END is also joined with "-". for-in visits the subscripts cap, ink and pen in string order. "exit total > 1000" is "exit (total > 1000)", and the exit status is 1. The execution count 5 of line 2 is the total of the while statement once, rows++ three times, and printf once.

@@ -1,0 +1,14 @@
+#include <stdio.h>
+
+int main(void) {
+    int n = 5;
+    for (int row = 1; row < 2 * n; row++) {
+        int i = row <= n ? row: 2 * n - row;
+        for (int j = 0; j < n - i; j++)
+            putchar(' ');
+        for (int j = 0; j < 2 * i - 1; j++)
+            putchar('*');
+        putchar('\n');
+    }
+    return 0;
+}

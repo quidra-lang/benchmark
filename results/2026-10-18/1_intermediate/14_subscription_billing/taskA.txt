@@ -1,0 +1,417 @@
+[Overview]
+Write a program that performs the billing for a subscription service. It handles pricing plans (weekly, monthly or yearly periods, free trial periods, setup fees, per-seat pricing, and graduated tier tables for metered usage), tax rates per region, discount coupons, automatic renewal and invoicing as the date advances, immediate upgrades with proration, downgrades at the end of the period, pausing and resuming, cancellation, customer balances, failed automatic charges and their retries (dunning), manual payments and refunds, and various queries and summaries.
+All money amounts are handled as integers counted in cents (units of 1/100), and dates as integers in units of days; floating-point numbers are not used. Read commands from standard input, process them one at a time in the order given, and write the results to standard output.
+
+[Input format]
+The first line contains the number N of command lines that follow. Each of the following N lines is one command. Each line is a sequence of tokens separated by a single space, with no space at the beginning or end of the line. The first token is the command name and the remaining tokens are its arguments. Terminate after processing all N command lines.
+In the descriptions below, <...> denotes a part where a value goes, [...] denotes a part that may be omitted, and A|B denotes either A or B. The symbols < > [ ] | themselves never appear in the input. The only one of them that appears in the output is the ">" of "->", which denotes a state change and the like.
+
+The token formats are as follows.
+- <plan>: 1 to 12 characters, starting with an uppercase letter (A-Z) and consisting only of uppercase letters, digits (0-9) and underscores "_" (examples: BASIC, API_V2).
+- <customer>: 1 to 12 characters, starting with a lowercase letter (a-z) and consisting only of lowercase letters and digits (examples: acme, bob2).
+- <region>: 2 uppercase letters (example: JP).
+- <coupon>: 1 to 12 characters, starting with an uppercase letter and consisting only of uppercase letters and digits (example: WELCOME10).
+- <amount>: an integer part and a fractional part joined by ".". The integer part is a decimal number without extra leading zeros, and the fractional part has exactly 2 digits (examples: 0.05, 19.99, 120.00). The amount "a.bc" represents the integer a*100+bc counted in cents.
+- <cycle>: one of WEEKLY, MONTHLY and YEARLY.
+- <limit>: a positive decimal integer without extra leading zeros, or INF.
+- Other numbers (<day>, <days>, <bp>, <count>, <seats>, <units>, <sub-id>, <invoice-id>): non-negative decimal integers without extra leading zeros. <bp> is a ratio expressed in basis points (units of 1/10000); for example, 1000 means 10%.
+
+There are 27 commands, as follows.
+Setup:
+PLAN <plan> <amount> <cycle> [TRIAL <days>] [SETUP <amount>] [PERSEAT] [GRADUATED|VOLUME]
+TIER <plan> <limit> <amount> <amount>
+TAX <region> <bp>
+CUSTOMER <customer> <region>
+COUPON <coupon> PERCENT <bp>|AMOUNT <amount> ONCE|FOREVER|REPEATING <count> [MAX <count>]
+PAYMETHOD <customer> OK|FAIL
+CREDIT <customer> <amount>
+Subscriptions and billing:
+DAY <day>
+SUBSCRIBE <customer> <plan> [SEATS <seats>] [COUPON <coupon>]
+CHANGE <sub-id> PLAN <plan> or CHANGE <sub-id> SEATS <seats> (one of the two)
+PAUSE <sub-id>
+RESUME <sub-id>
+CANCEL <sub-id> NOW|END
+USAGE <sub-id> <units>
+APPLY <sub-id> <coupon>
+PAY <invoice-id>
+REFUND <invoice-id> <amount>
+Queries and summaries:
+INVOICE <invoice-id>
+SUB <sub-id>
+PREVIEW <sub-id>
+STATEMENT <customer>
+LEDGER <customer>
+MRR
+AGING
+DUNNING
+REVENUE
+EVENTS [<sub-id>]
+From the 3rd token on, COUPON consists of "PERCENT <bp>" or "AMOUNT <amount>", followed by one of "ONCE", "FOREVER" and "REPEATING <count>", and finally the optional "MAX <count>". The two <amount>s of TIER are, in order, the unit price and the flat fee.
+The optional parts of PLAN and SUBSCRIBE, when present, appear in the order shown above, and none of them appears more than once.
+
+[Processing]
+== 1. State and initial state ==
+- Current day: initially 1. It is advanced by DAY. Each command is processed on the current day.
+- Initially there are no plans, tax rates, customers, coupons, subscriptions or invoices at all.
+- Plan: has a price, a cycle, trial days, a setup fee, whether it is per-seat, a metering mode, and a tier table. The "period length" of a plan is 7 if its cycle is WEEKLY, 30 if MONTHLY, and 360 if YEARLY. A plan registered with GRADUATED or VOLUME specified is called a "metered plan".
+- Tax rate: kept per region in bp. The tax rate of a region that has not been set by TAX is 0.
+- Customer: has a region, a payment method (OK or FAIL; initially OK), a balance (initially 0), and a balance log (initially empty). The balance is a deposit that is applied to invoices issued afterward, and it never becomes negative.
+- Coupon: has a discount type (PERCENT or AMOUNT) and its value, an application count (1 for ONCE, n for REPEATING n, unlimited for FOREVER), a redemption limit (the MAX count; unlimited if MAX is not given), and a redemption count (initially 0).
+- Subscription: one is created each time SUBSCRIBE succeeds, and subscriptions are given the sub ids 1, 2, 3, ... in order of creation. A subscription has a customer, a plan, a seat count, a state, a period, a trial end day, a pause start day, a pending change (a pair of a plan and a seat count), a cancel-at-period-end flag, a scheduled cancellation day, a cancellation day, a coupon and its remaining applications, and a usage. The pending change, the cancel-at-period-end flag and the scheduled cancellation day are initially absent.
+- Invoice: one is created each time an invoice is issued, and invoices are given the invoice ids 1, 2, 3, ... in order of issue (section 5).
+- Event log: a sequence of rows recording the state changes of subscriptions; initially empty.
+An "existing sub id" is a number that is at least 1 and at most the number of subscriptions created so far. An "existing invoice id" is defined likewise.
+A command that results in an error does not change any state at all; it only outputs one error line.
+
+== 2. Subscription states, periods and fees ==
+- The state of a subscription is one of six: TRIALING (in trial), ACTIVE (active), PAST_DUE (payment overdue), UNPAID (unpaid), PAUSED (paused) and CANCELED (canceled).
+- The period of a subscription is a pair of a start day a and an end day b; it represents day a through day b-1 and is written "a-b" (example: 31-61). A <period> appearing in an output line is this "a-b" notation. The end day b is the next renewal day. Subscriptions whose state is ACTIVE, PAST_DUE, UNPAID or PAUSED have a period.
+- The "fee" for a plan P and a seat count k is P's price * k if P is per-seat, and P's price otherwise. The fee of a subscription is the fee for its plan and seat count.
+- The seat count of a subscription whose plan is not per-seat is always 1 (this is guaranteed by the rules for SUBSCRIBE and CHANGE in section 12).
+- The "plan" of a subscription means its plan at that moment, not including any pending change.
+
+== 3. Usage charge ==
+The tier table of a metered plan is a sequence of tiers in the order they were added by TIER. Each tier has an upper limit m, a unit price c and a flat fee f. The lower bound of the 1st tier is 0, and the lower bound of the i-th tier (i >= 2) is the upper limit of the (i-1)-th tier. The last tier is treated as having no upper limit, regardless of its upper limit value (even if it is not INF).
+The usage charge for a usage u (u >= 1) is as follows.
+- GRADUATED: for each tier whose lower bound is less than u, compute "(min(u, the tier's upper limit) - the tier's lower bound) * c + f", and the usage charge is the sum of these. For the last tier, however, use u instead of min(u, the tier's upper limit).
+- VOLUME: for the first tier whose upper limit is at least u (or the last tier if there is no such tier), the usage charge is "u * c + f".
+- If the tier table is empty, the usage charge is 0.
+
+== 4. Line items ==
+A line item is a pair of a description and an amount (an integer in cents). There are the following 5 kinds of line items.
+- Period charge: the description is "charge <plan> seats <seats> <period>" (<period> is the "a-b" notation of the period that the item covers), and the amount is the fee for that plan and seat count.
+- Setup fee: the description is "setup <plan>", and the amount is the plan's setup fee.
+- Usage charge: the description is "usage <plan> <units> units", and the amount is the plan's usage charge for that usage.
+- Unused portion: the description is "unused <plan> seats <seats> <days> days", and the amount is a value <= 0 (CHANGE in section 12).
+- Remaining days: the description is "remaining <plan> seats <seats> <days> days" (CHANGE in section 12).
+The following two operations are defined.
+- "Close out the usage of subscription s": if s's plan is a metered plan and s's usage is at least 1, create one usage charge item for s's plan and usage, and set s's usage to 0. Otherwise, no item is created.
+- "The opening items of subscription s with start day a": a period charge item for s's plan and seat count (with the period from a to a + the period length), followed by a setup fee item if the plan's setup fee is at least 1.
+
+== 5. Issuing an invoice ==
+To "issue an invoice for subscription s with kind k and item sequence L", give the invoice the invoice id "the number of invoices issued so far + 1", and perform steps 1-9 below in this order. The kind is one of first (first billing), renewal (renewal), upgrade (upgrade) and final (settlement on cancellation). The customer of s is called "the customer".
+1. Subtotal: the sum of the amounts in L (under the rules of this problem, the subtotal never becomes negative).
+2. Discount: if s has a coupon, its remaining applications are at least 1 or unlimited, and the subtotal is at least 1, compute the discount as follows and, unless the remaining applications are unlimited, decrease them by 1. If the coupon type is PERCENT, the discount is floor(subtotal * the coupon's bp / 10000); if AMOUNT, it is min(the coupon's amount, subtotal). In all other cases, the discount is 0 and the remaining applications do not change.
+3. Tax: floor((subtotal - discount) * the tax rate of the customer's region / 10000). The tax rate at that moment is used.
+4. Total: subtotal - discount + tax.
+5. Credit applied: min(the customer's balance, total). Subtract the credit applied from the customer's balance (section 8; the description is "applied invoice <invoice-id>").
+6. Amount due: total - credit applied.
+7. Collection: set the invoice's amount paid to 0, amount refunded to 0, outstanding amount to the amount due, and attempt count to 0, and then do one of the following.
+   - If the amount due is 0, the result is PAID.
+   - Otherwise, if s's state is UNPAID, no charge is attempted. The result is OPEN.
+   - Otherwise, attempt one charge and set the attempt count to 1. If the customer's payment method is OK, it succeeds: set the amount paid to the amount due and the outstanding amount to 0. The result is PAID. If the payment method is FAIL, it fails, and the result is FAILED.
+8. Output the notice line (section 10) "day <current day> invoice <invoice-id> sub <sub-id> <kind> total <total> credit <credit applied> due <amount due> <result>".
+9. If the result is FAILED: if s's state is ACTIVE, change the state to PAST_DUE (section 7). After that, if s's state is PAST_DUE, set this invoice's retry days to the three days "current day + 3", "current day + 5" and "current day + 7".
+An invoice has an invoice id, a sub id, a customer, an issue day (the current day at the time of issue), a kind, an item sequence, a subtotal, a discount, a tax, a total, a credit applied, an amount due, an amount paid, an amount refunded, an outstanding amount, an attempt count, and remaining retry days. The state of an invoice is OPEN if its outstanding amount is at least 1, and PAID if it is 0.
+
+== 6. Payment completion ==
+When the outstanding amount of an invoice becomes 0 through a retry, PAY or REFUND, do the following. Cancel all remaining retry days of that invoice. Then, if the state of that invoice's subscription s is PAST_DUE or UNPAID and the outstanding amounts of all invoices of s are 0, remove s's scheduled cancellation day and change s's state to ACTIVE (section 7).
+
+== 7. State changes ==
+To change the state of subscription s from X to Y, output the notice line "day <current day> sub <sub-id> X -> Y" and append the row (current day, sub id, X, Y) to the end of the event log. When X is PAST_DUE, cancel the remaining retry days of all invoices of s. For the first state change of a newly created subscription, X is NONE.
+
+== 8. Balance log ==
+A customer's balance is changed only by these four: CREDIT (the description is "grant"), the refund of CANCEL NOW (the description is "cancel sub <sub-id>"), the part of REFUND that is put into the balance (the description is "refund invoice <invoice-id>"), and the credit application when an invoice is issued (the description is "applied invoice <invoice-id>"). When the balance changes, append the row (current day, description, change, balance after the change) to the end of that customer's balance log. For a credit application, the change is a negative value. When the change is 0, neither the balance nor the log changes.
+
+== 9. Cancellation procedure ==
+To "cancel subscription s", change s's state to CANCELED (section 7), set s's cancellation day to the current day, and remove s's pending change, cancel-at-period-end flag and scheduled cancellation day. Then close out the usage of s, and if an item was created, issue an invoice of kind final with an item sequence consisting of that single item only (section 5).
+
+== 10. Notice lines ==
+A notice line is a line that reports something that happened during the processing of a command; it starts with two spaces, followed by the content given in each rule (example: "  day 31 sub 1 ACTIVE -> PAST_DUE"). Notice lines are output in the order in which the events occur. In a command that outputs notice lines, the notice lines are output after the first line of that command.
+
+== 11. Advancing the date ==
+For DAY d, advance the current day one day at a time until it reaches d, and for each day advanced, do the following. Let t be the current day after advancing. Take the subscriptions one at a time in increasing order of sub id, and for each subscription s, perform (1)-(4) below in this order.
+(1) Retries: examine s's invoices in increasing order of invoice id, and for each invoice whose earliest remaining retry day is t, do the following. Remove that retry day, increase the attempt count by 1, and let k = attempt count - 1 (this is the k-th retry). If the payment method of s's customer is OK, it succeeds: add the outstanding amount to the amount paid, set the outstanding amount to 0, output the notice line "day t retry k invoice <invoice-id> PAID", and then perform section 6. If the payment method is FAIL, it fails: output the notice line "day t retry k invoice <invoice-id> FAILED", and if the invoice has no remaining retry days (that is, if this was the 3rd retry), change s's state to UNPAID (section 7) and set s's scheduled cancellation day to t+14. By section 7, this also cancels all remaining retry days of the other invoices of s (an invoice that was scheduled to be retried on that day is not retried either).
+(2) Cancellation for non-payment: if s's state is UNPAID and s's scheduled cancellation day is t, cancel s (section 9).
+(3) End of trial: if s's state is TRIALING and s's trial end day is t, do the following. If the cancel-at-period-end flag is set, cancel s. Otherwise, change s's state to ACTIVE, set s's period from t to t + the period length of s's plan, and issue an invoice of kind first with the opening items of s with start day t.
+(4) End of period: if s's state is ACTIVE, PAST_DUE or UNPAID and the end day of s's period is t, do the following. If the cancel-at-period-end flag is set, cancel s. Otherwise, first close out the usage of s. Next, if there is a pending change, output the notice line "day t sub <sub-id> <old plan> seats <old seats> -> <new plan> seats <new seats>", change s's plan and seat count to its contents, and remove the pending change. Then set s's period from t to t + the period length (of the plan after the change), and issue an invoice of kind renewal with the item sequence consisting of the item created by closing out the usage (if any) followed by the period charge item for the new period with s's plan and seat count, in this order.
+None of (1)-(4) applies to a subscription whose state is PAUSED or CANCELED. Under the rules of this problem, every newly determined retry day, scheduled cancellation day, trial end day and period end day is later than the current day.
+
+== 12. Processing of each command ==
+For each command, check the errors in the order listed, and output only the first one that applies. The texts of the error lines are given in [Output format]. If there is no error, change the state as described and output the lines.
+
+* PLAN <plan> <price> <cycle> [TRIAL <days>] [SETUP <setup fee>] [PERSEAT] [GRADUATED|VOLUME]
+Errors:
+1. The plan is already registered: duplicate plan
+Register the plan. Its trial days are the TRIAL days (0 if not given), its setup fee is the SETUP amount (0 if not given), it is per-seat if PERSEAT is given, and it is a metered plan of that mode if GRADUATED or VOLUME is given; its tier table is empty. Output one line consisting of "PLAN <plan> <cycle> <price>" followed, in this order, by " trial <trial days>" if the trial days are at least 1, " setup <setup fee>" if the setup fee is at least 1, " perseat" if it is per-seat, and " graduated" or " volume" if it is a metered plan.
+
+* TIER <plan> <limit> <unit price> <flat fee>
+Errors:
+1. The plan is not registered: unknown plan
+2. The plan is not a metered plan: not metered
+3. The plan's tier table is not empty, and either the upper limit of the last tier is INF, or <limit> is not INF and is less than or equal to the upper limit of the last tier: tier order
+Append a tier to the end of the tier table and output "TIER <plan> <tier number> upto <limit> unit <unit price> flat <flat fee>". The tier number is the number of tiers after the addition, and <limit> is as written in the input (INF if it is INF).
+
+* TAX <region> <bp>
+There are no errors. Set the tax rate of the region to <bp> (replacing the previous value) and output "TAX <region> <tax rate in percentage notation>".
+
+* CUSTOMER <customer> <region>
+Errors:
+1. The customer is already registered: duplicate customer
+Register the customer and output "CUSTOMER <customer> region <region>".
+
+* COUPON <coupon> PERCENT <bp>|AMOUNT <amount> ONCE|FOREVER|REPEATING <count> [MAX <count>]
+Errors:
+1. The coupon is already registered: duplicate coupon
+Register the coupon and output one line consisting of "COUPON <coupon> <discount> <application>" followed by " max <redemption limit>" if MAX is given. <discount> is "percent <bp in percentage notation>" for PERCENT and "amount <amount>" for AMOUNT. <application> is "once" for ONCE, "forever" for FOREVER, and "repeating n" for REPEATING n.
+
+* PAYMETHOD <customer> OK|FAIL
+Errors:
+1. The customer is not registered: unknown customer
+Change the customer's payment method and output "PAYMETHOD <customer> <payment method>". Changing the payment method does not cause a charge of a failed invoice to be attempted immediately.
+
+* CREDIT <customer> <amount>
+Errors:
+1. The customer is not registered: unknown customer
+2. The amount is 0: invalid amount
+Add the amount to the customer's balance (section 8; the description is "grant") and output "CREDIT <customer> amount <amount> balance <balance after the addition>". The balance is not applied to invoices already issued; it is applied only to invoices issued afterward.
+
+* DAY <day>
+Errors:
+1. <day> is less than or equal to the current day: invalid day
+Output "DAY <day>", and then perform the processing of section 11.
+
+* SUBSCRIBE <customer> <plan> [SEATS <seats>] [COUPON <coupon>]
+Errors:
+1. The customer is not registered: unknown customer
+2. The plan is not registered: unknown plan
+3. SEATS is given and the plan is not per-seat: not per-seat
+4. The seat count is 0: invalid seats
+5. COUPON is given and the coupon is not registered: unknown coupon
+6. COUPON is given, the coupon has a redemption limit, and its redemption count equals the redemption limit: coupon exhausted
+If COUPON is given, increase that coupon's redemption count by 1. Create a new subscription. Its customer and plan are the specified ones, its seat count is the SEATS count (1 if not given), its coupon is the COUPON one (none if not given), its remaining applications are that coupon's application count, and its usage is 0. Output one line consisting of "SUBSCRIBE sub <sub-id> <customer> <plan> seats <seats>" followed by " coupon <coupon>" if it has a coupon.
+Next, if the plan's trial days T are at least 1, set the trial end day to "current day + T" and change the state from NONE to TRIALING. If T is 0, change the state from NONE to ACTIVE, set the period from the current day to "current day + the plan's period length", and issue an invoice of kind first with the opening items whose start day is the current day.
+
+* CHANGE <sub-id> PLAN <plan>, CHANGE <sub-id> SEATS <seats>
+Errors:
+1. <sub-id> does not exist: unknown sub
+2. The subscription's state is neither ACTIVE nor TRIALING: invalid state
+3. For PLAN, the plan is not registered: unknown plan
+   For SEATS, the subscription's plan is not per-seat: not per-seat (the plan is the subscription's plan)
+   For SEATS, the seat count is 0: invalid seats
+4. The new plan and seat count are equal to the subscription's plan and seat count: no change
+The new plan and seat count are: for PLAN P, plan P and a seat count (the subscription's seat count if P is per-seat, otherwise 1); for SEATS n, the subscription's plan and seat count n.
+First, remove the subscription's pending change. Let A be the fee for the old plan and seat count, LA the period length of the old plan, B the fee for the new plan and seat count, and LB the period length of the new plan. Let the head of the output line be "CHANGE sub <sub-id> <old plan> seats <old seats> -> <new plan> seats <new seats>".
+- If the state is TRIALING: immediately change the subscription's plan and seat count to the new ones, and output one line consisting of the head followed by " now". No invoice is issued.
+- If the state is ACTIVE and B * LA > A * LB (an upgrade that raises the fee per day): output one line consisting of the head followed by " now". Let r = period end day - current day. Close out the usage of the subscription, and arrange, in this order, the item created by closing out (if any), an unused portion item for the old plan and seat count (the days in the description are r, and the amount is -floor(A * r / LA)), and a remaining days item for the new plan and seat count (the days in the description are r, and the amount is floor(B * r / LB)). Then change the subscription's plan and seat count to the new ones, and after that issue an invoice of kind upgrade with this item sequence. The period does not change.
+- If the state is ACTIVE and B * LA <= A * LB (a downgrade): set the pending change to the new plan and seat count, and output one line consisting of the head followed by " at <period end day>". The change is applied on the period end day by section 11 (4).
+
+* PAUSE <sub-id>
+Errors:
+1. <sub-id> does not exist: unknown sub
+2. The subscription's state is not ACTIVE: invalid state
+Output "PAUSE sub <sub-id>", set the pause start day to the current day, and change the state to PAUSED.
+
+* RESUME <sub-id>
+Errors:
+1. <sub-id> does not exist: unknown sub
+2. The subscription's state is not PAUSED: invalid state
+Let e = current day - pause start day, and add e to the period end day. Output "RESUME sub <sub-id> shift <e> period <period>", remove the pause start day, and change the state to ACTIVE.
+
+* CANCEL <sub-id> NOW
+Errors:
+1. <sub-id> does not exist: unknown sub
+2. The subscription's state is CANCELED: invalid state
+Let the refund amount be floor(fee * (period end day - current day) / period length) if the state is ACTIVE, floor(fee * (period end day - pause start day) / period length) if it is PAUSED, and 0 otherwise. The fee and the period length are those for the subscription's plan and seat count. Add the refund amount to the customer's balance (section 8; the description is "cancel sub <sub-id>"), output "CANCEL sub <sub-id> now credit <refund amount>", and then cancel the subscription (section 9).
+
+* CANCEL <sub-id> END
+Errors:
+1. <sub-id> does not exist: unknown sub
+2. The subscription's state is neither ACTIVE nor TRIALING: invalid state
+3. The cancel-at-period-end flag is already set for the subscription: already canceling
+Set the cancel-at-period-end flag and output "CANCEL sub <sub-id> end <day>". <day> is the trial end day if the state is TRIALING, and the period end day if it is ACTIVE.
+
+* USAGE <sub-id> <units>
+Errors:
+1. <sub-id> does not exist: unknown sub
+2. The subscription's state is neither ACTIVE nor PAST_DUE: invalid state
+3. The subscription's plan is not a metered plan: not metered
+4. The usage is 0: invalid units
+Add <units> to the subscription's usage and output "USAGE sub <sub-id> units <units> total <the subscription's usage after the addition>".
+
+* APPLY <sub-id> <coupon>
+Errors:
+1. <sub-id> does not exist: unknown sub
+2. The subscription's state is CANCELED: invalid state
+3. The coupon is not registered: unknown coupon
+4. The coupon has a redemption limit and its redemption count equals the redemption limit: coupon exhausted
+Increase the coupon's redemption count by 1. Replace the subscription's coupon with this coupon, and set the remaining applications to this coupon's application count. Output "APPLY sub <sub-id> coupon <coupon>".
+
+* PAY <invoice-id>
+Errors:
+1. <invoice-id> does not exist: unknown invoice
+2. The invoice's outstanding amount is 0: already paid
+Output "PAY invoice <invoice-id> amount <outstanding amount>". Add the outstanding amount to the amount paid, set the outstanding amount to 0, and perform section 6.
+
+* REFUND <invoice-id> <amount>
+Errors:
+1. <invoice-id> does not exist: unknown invoice
+2. The amount is 0: invalid amount
+3. The amount is greater than "total - amount refunded": refund exceeds
+Let x = min(amount, outstanding amount). Add the amount to the invoice's amount refunded, subtract x from the outstanding amount, and add "amount - x" to the customer's balance (section 8; the description is "refund invoice <invoice-id>"). Output "REFUND invoice <invoice-id> amount <amount> applied <x> balance <the customer's balance afterward>". If x is at least 1 and the outstanding amount has become 0, perform section 6.
+
+* INVOICE <invoice-id>
+Errors:
+1. <invoice-id> does not exist: unknown invoice
+On the first line, output "INVOICE <invoice-id> sub <sub-id> <customer> day <issue day> <kind> <state>". Then output the items one at a time in sequence order as "  <description> <amount>". Finally, output "  subtotal <subtotal> discount <discount> tax <tax> total <total>" and "  credit <credit applied> due <amount due> paid <amount paid> refunded <amount refunded> outstanding <outstanding amount>".
+
+* SUB <sub-id>
+Errors:
+1. <sub-id> does not exist: unknown sub
+On the first line, output "SUB <sub-id> <customer> <plan> seats <seats> <state>". Then output those of the following lines whose conditions hold, in this order.
+- "  trial until <trial end day>": the state is TRIALING.
+- "  period <period>": the state is ACTIVE, PAST_DUE, UNPAID or PAUSED.
+- "  paused since <pause start day>": the state is PAUSED.
+- "  pending <plan> seats <seats>": there is a pending change (its contents).
+- "  cancel at end": the cancel-at-period-end flag is set.
+- "  cancel on <scheduled cancellation day>": there is a scheduled cancellation day.
+- "  canceled on <cancellation day>": the state is CANCELED.
+- "  coupon <coupon> left <remaining applications>" or "  coupon <coupon> forever": the subscription has a coupon and its remaining applications are at least 1 (the former) or unlimited (the latter).
+- "  usage <usage>": the subscription's plan is a metered plan and the state is not CANCELED.
+- "  open <invoice-id> <invoice-id> ...": the subscription has an invoice whose outstanding amount is at least 1. List the ids of those invoices in increasing order, separated by a single space.
+
+* PREVIEW <sub-id>
+Shows a projection of the invoice to be issued on the next due day. It does not change any state at all.
+Errors:
+1. <sub-id> does not exist: unknown sub
+2. The subscription's state is PAUSED or CANCELED: invalid state
+The due day t is the trial end day if the state is TRIALING, and the period end day otherwise. The kind and the item sequence are determined by the first of the following that applies. Here, "the closed-out usage item" means the item that the operation of closing out the usage would create (the usage is not changed).
+- If the cancel-at-period-end flag is set: the kind is final. The item sequence is empty if the state is TRIALING, and otherwise is the closed-out usage item (empty if there is none).
+- If the state is TRIALING: the kind is first, and the item sequence is the opening items with start day t.
+- Otherwise: the kind is renewal. The item sequence consists of the closed-out usage item (if any) followed by a period charge item, in this order. The period charge item is for the plan and seat count of the pending change if there is one, and otherwise for the subscription's plan and seat count, and its period is from t to t + the period length (of that plan).
+On the first line, output "PREVIEW sub <sub-id> day <t> <kind>", and then output the items one at a time as "  <description> <amount>". If the item sequence is not empty, perform the same calculation as steps 1-6 of section 5 (except that computing the discount does not decrease the remaining applications, the current tax rate and customer balance are used, and the balance is not changed), and output "  subtotal <subtotal> discount <discount> tax <tax> total <total>" and "  credit <credit applied> due <amount due>". If the item sequence is empty, output "  (none)" instead.
+
+* STATEMENT <customer>
+Errors:
+1. The customer is not registered: unknown customer
+On the first line, output "STATEMENT <customer> region <region> tax <tax rate in percentage notation> method <payment method> balance <balance>". The tax rate is the current tax rate of the region. Then output the customer's subscriptions in increasing order of sub id as "  sub <sub-id> <plan> <state>", and next the customer's invoices in increasing order of invoice id as "  invoice <invoice-id> day <issue day> sub <sub-id> <kind> total <total> outstanding <outstanding amount>". Finally, output "  outstanding <sum of the outstanding amounts of all invoices of the customer>".
+
+* LEDGER <customer>
+Errors:
+1. The customer is not registered: unknown customer
+On the first line, output "LEDGER <customer> balance <balance>". Then output the rows of the customer's balance log in the order recorded as "  day <day> <description> <change in signed money notation> balance <balance after the change>". If the log has no rows at all, output "  (none)" instead.
+
+* MRR
+There are no errors. The subscriptions whose state is ACTIVE or PAST_DUE are counted, and the monthly equivalent of each is the fee if its plan's cycle is MONTHLY, floor(fee / 12) if YEARLY, and floor(fee * 30 / 7) if WEEKLY. On the first line, output "MRR". Then take the plans that have at least one counted subscription one at a time in ascending order of plan, and output "  <plan> subs <number of counted subscriptions on that plan> mrr <sum of their monthly equivalents>". Finally, output "  total subs <number of counted subscriptions> mrr <sum of the monthly equivalents of all counted subscriptions>".
+
+* AGING
+There are no errors. The invoices whose outstanding amount is at least 1 are counted, and they are divided into three buckets by "current day - issue day": 0 to 30, 31 to 60, and 61 or more. On the first line, output "AGING day <current day>". Then take the customers who have counted invoices one at a time in ascending order of customer, sum the outstanding amounts of that customer's counted invoices per bucket, and output "  <customer> 0-30 <amount> 31-60 <amount> 61+ <amount> sum <sum of the three>". Finally, output "  total 0-30 <amount> 31-60 <amount> 61+ <amount> sum <sum of the three>", summed in the same way over all counted invoices.
+
+* DUNNING
+There are no errors. On the first line, output "DUNNING". Then output the invoices that have remaining retry days one at a time in increasing order of invoice id as "  invoice <invoice-id> sub <sub-id> <customer> outstanding <outstanding amount> attempts <attempt count> next <earliest remaining retry day>". If there is no such invoice, output "  (none)" instead.
+
+* REVENUE
+There are no errors. Over all invoices, output "REVENUE" on the first line, "  invoices <number of invoices> subtotal <sum of subtotals> discount <sum of discounts> tax <sum of taxes> total <sum of totals>" on the second line, and "  credit <sum of credits applied> paid <sum of amounts paid> refunded <sum of amounts refunded> outstanding <sum of outstanding amounts> balances <sum of the balances of all customers>" on the third line.
+
+* EVENTS [<sub-id>]
+Errors:
+1. <sub-id> is given and does not exist: unknown sub
+On the first line, output "EVENTS" if <sub-id> is not given, or "EVENTS sub <sub-id>" if it is given. Then output the rows of the event log (only the rows of that subscription if <sub-id> is given) one per line in the order recorded as "  day <day> sub <sub-id> <X> -> <Y>". If there are no matching rows, output "  (none)" instead.
+
+[Output format]
+- For each command, output the lines specified in [Processing] in the specified order. For the commands that output notice lines (DAY, SUBSCRIBE, CHANGE, PAUSE, RESUME, CANCEL, PAY, REFUND), first output the first line of that command ("DAY <day>", "SUBSCRIBE sub ...", etc.), and after it output the notice lines in the order in which they occur. On an error, output only the single error line.
+- Text inside double quotes consists of ASCII characters exactly as written, with each <...> part replaced by its value. The two spaces at the start of a quoted line are also output as they are. Every separator within a line is a single space. Except for notice lines and lines specified to start with two spaces, no line starts with a space. No line ends with a space.
+- The output consists of ASCII characters only, every line ends with a newline (LF), and no empty lines are output.
+- Money notation: for a number of cents c that is 0 or more, it is "the quotient of c / 100 (a decimal number without extra leading zeros)", ".", and "the remainder of c / 100 (2 digits; prefixed with a 0 if it has 1 digit)", concatenated in this order (examples: 0.05, 7.62, 1000.00). If c is negative, it is "-" followed by the money notation of -c (example: -10.40). All values that represent money (prices, unit prices, flat fees, setup fees, item amounts, subtotals, discounts, taxes, totals, credits applied, amounts due, amounts paid, amounts refunded, outstanding amounts, balances, monthly equivalents, etc.) are written in money notation, except for the change in LEDGER (signed money notation).
+- Signed money notation: if c is positive, "+" followed by the money notation of c; if c is negative, the money notation of c (which starts with "-") (examples: +4.00, -8.80).
+- Percentage notation: for a bp value p, "the quotient of p / 100", ".", "the remainder of p / 100 (2 digits; prefixed with a 0 if it has 1 digit)" and "%", concatenated in this order (examples: 1000 is 10.00%, 825 is 8.25%, 5 is 0.05%).
+- Integers such as days, numbers of days, seat counts, usages, ids, counts and numbers of items are written as decimal numbers without extra leading zeros.
+- Ascending order: the ascending order of plans and of customers is the lexicographic order by character code (ASCII) (when one is a prefix of the other, the shorter one comes first).
+- Error lines: on an error, output only one of the following lines. Each <...> is filled with the offending token exactly as written in the input. <state> is the subscription's current state, and the <amount> of refund exceeds is the money notation of "total - amount refunded".
+"ERROR duplicate plan <plan>"
+"ERROR unknown plan <plan>"
+"ERROR not metered <plan>"
+"ERROR tier order <plan>"
+"ERROR duplicate customer <customer>"
+"ERROR unknown customer <customer>"
+"ERROR duplicate coupon <coupon>"
+"ERROR unknown coupon <coupon>"
+"ERROR coupon exhausted <coupon>"
+"ERROR not per-seat <plan>"
+"ERROR invalid seats"
+"ERROR invalid amount"
+"ERROR invalid units"
+"ERROR invalid day <day>"
+"ERROR unknown sub <sub-id>"
+"ERROR invalid state <sub-id> <state>"
+"ERROR no change <sub-id>"
+"ERROR already canceling <sub-id>"
+"ERROR unknown invoice <invoice-id>"
+"ERROR already paid <invoice-id>"
+"ERROR refund exceeds <invoice-id> <amount>"
+Here, the <plan> of not metered and not per-seat is the plan written in the command for TIER and SUBSCRIBE, and the subscription's plan for CHANGE SEATS and USAGE.
+
+[Constraints]
+- 1 <= N <= 2000.
+- The input correctly follows the formats in [Input format] (there are no unknown commands, wrong numbers of arguments, or tokens that do not match their format). The only errors to be detected are those listed in [Processing].
+- <day> is at least 1 and at most 2000.
+- Every <amount> is at least 0.00 and at most 10000.00. However, the unit price and the flat fee of TIER are at most 100.00.
+- The TRIAL days are at least 1 and at most 60, the REPEATING count is at least 1 and at most 24, and the MAX count is at least 1 and at most 100.
+- The <bp> of TAX is at least 0 and at most 10000, and the <bp> of PERCENT is at least 1 and at most 10000.
+- <seats> is at least 0 and at most 100, <units> is at least 0 and at most 100000, and the numeric value of <limit> is at least 1 and at most 1000000. <sub-id> and <invoice-id> are at least 0 and at most 100000.
+- At most 20 plans and at most 30 customers are registered, at most 50 subscriptions are created, and one plan has at most 10 tiers.
+- The usage of one subscription never exceeds 1000000.
+- When computed according to the rules above, the absolute value of every integer, including intermediate values, is less than 2^53 (computing with 64-bit signed integers does not overflow).
+
+[Example]
+Input:
+18
+TAX JP 1000
+PLAN BASIC 10.00 MONTHLY
+PLAN TEAM 8.00 MONTHLY TRIAL 7 PERSEAT
+COUPON HALF PERCENT 5000 ONCE
+CUSTOMER acme JP
+SUBSCRIBE acme BASIC COUPON HALF
+SUBSCRIBE acme TEAM SEATS 3
+DAY 25
+CHANGE 2 SEATS 5
+CHANGE 1 PLAN TEAM
+PAYMETHOD acme FAIL
+DAY 31
+PAYMETHOD acme OK
+DAY 35
+INVOICE 3
+SUB 1
+CANCEL 2 NOW
+LEDGER acme
+
+Output:
+TAX JP 10.00%
+PLAN BASIC MONTHLY 10.00
+PLAN TEAM MONTHLY 8.00 trial 7 perseat
+COUPON HALF percent 50.00% once
+CUSTOMER acme region JP
+SUBSCRIBE sub 1 acme BASIC seats 1 coupon HALF
+  day 1 sub 1 NONE -> ACTIVE
+  day 1 invoice 1 sub 1 first total 5.50 credit 0.00 due 5.50 PAID
+SUBSCRIBE sub 2 acme TEAM seats 3
+  day 1 sub 2 NONE -> TRIALING
+DAY 25
+  day 8 sub 2 TRIALING -> ACTIVE
+  day 8 invoice 2 sub 2 first total 26.40 credit 0.00 due 26.40 PAID
+CHANGE sub 2 TEAM seats 3 -> TEAM seats 5 now
+  day 25 invoice 3 sub 2 upgrade total 7.62 credit 0.00 due 7.62 PAID
+CHANGE sub 1 BASIC seats 1 -> TEAM seats 1 at 31
+PAYMETHOD acme FAIL
+DAY 31
+  day 31 sub 1 BASIC seats 1 -> TEAM seats 1
+  day 31 invoice 4 sub 1 renewal total 8.80 credit 0.00 due 8.80 FAILED
+  day 31 sub 1 ACTIVE -> PAST_DUE
+PAYMETHOD acme OK
+DAY 35
+  day 34 retry 1 invoice 4 PAID
+  day 34 sub 1 PAST_DUE -> ACTIVE
+INVOICE 3 sub 2 acme day 25 upgrade PAID
+  unused TEAM seats 3 13 days -10.40
+  remaining TEAM seats 5 13 days 17.33
+  subtotal 6.93 discount 0.00 tax 0.69 total 7.62
+  credit 0.00 due 7.62 paid 7.62 refunded 0.00 outstanding 0.00
+SUB 1 acme TEAM seats 1 ACTIVE
+  period 31-61
+CANCEL sub 2 now credit 4.00
+  day 35 sub 2 ACTIVE -> CANCELED
+LEDGER acme balance 4.00
+  day 35 cancel sub 2 +4.00 balance 4.00
+
+The first invoice of subscription 1 is 5.50: the subtotal 10.00 minus the 5.00 discount of coupon HALF, plus the tax 0.50 (this uses up the coupon). For subscription 2, the first invoice is issued on day 8, when the trial period ends, and the period becomes 8-38. The seat change on day 25 raises the fee per day, so it is applied immediately: for the remaining 13 days, the unused portion floor(2400 * 13 / 30) = 1040 cents is deducted, and floor(4000 * 13 / 30) = 1733 cents at the new fee is charged. The plan change of subscription 1 lowers the fee per day, so it is applied on the period end day (day 31). The charge on day 31 fails, and the 1st retry on day 34 succeeds. When subscription 2 is canceled on day 35, floor(4000 * 3 / 30) = 400 cents for the remaining 3 days goes into the balance.
