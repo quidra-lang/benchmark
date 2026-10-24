@@ -1,25 +1,25 @@
-import type { Geometry, CacheHit, CacheLine, CacheSet } from './types.ts';
+import type { CacheGeometry, CacheSet, CacheLine, FoundLine } from './types.ts';
 
 export class Cache {
   ways: number;
   policy: string;
   clock: number;
   sets: CacheSet[];
-  constructor(geometry: Geometry, policy: string) {
+  constructor(geometry: CacheGeometry, policy: string) {
     this.ways = geometry.ways; this.policy = policy; this.clock = 0;
-    this.sets = Array.from({ length: geometry.sets }, () => ({ ways: Array<CacheLine | null>(this.ways).fill(null), bits: Array<number>(this.ways).fill(0), fills: 0, evictions: 0 }));
+    this.sets = Array.from({ length: geometry.sets }, () => ({ ways: Array(this.ways).fill(null), bits: Array(this.ways).fill(0), fills: 0, evictions: 0 }));
   }
-  lookup(block: number): CacheHit | null {
+  lookup(block: number): FoundLine | null {
     const set = block % this.sets.length, way = this.sets[set].ways.findIndex(line => line !== null && line.block === block);
-    return way < 0 ? null : { set, way, line: this.sets[set].ways[way]! };
+    return way < 0 ? null : { set, way, line: this.sets[set].ways[way] };
   }
   state(block: number): string { const found = this.lookup(block); return found === null ? 'I' : found.line.state; }
-  setState(block: number, state: string): void { this.lookup(block)!.line.state = state; }
+  setState(block: number, state: string): void { this.lookup(block).line.state = state; }
   remove(block: number): void {
     const found = this.lookup(block);
     if (found !== null) this.sets[found.set].ways[found.way] = null;
   }
-  touch(found: CacheHit, fill = false): void {
+  touch(found: FoundLine, fill: boolean = false): void {
     if (this.policy === 'FIFO' && !fill) return;
     found.line.stamp = ++this.clock;
     if (this.policy !== 'PLRU') return;
@@ -37,7 +37,7 @@ export class Cache {
     if (empty >= 0) return empty;
     if (this.policy !== 'PLRU') {
       let oldest = 0;
-      for (let way = 1; way < this.ways; way++) if (set.ways[way]!.stamp < set.ways[oldest]!.stamp) oldest = way;
+      for (let way = 1; way < this.ways; way++) if (set.ways[way].stamp < set.ways[oldest].stamp) oldest = way;
       return oldest;
     }
     let node = 1, first = 0, width = this.ways;
@@ -53,7 +53,7 @@ export class Cache {
     const previous = set.ways[way];
     set.fills++;
     if (previous !== null) set.evictions++;
-    const line: CacheLine = { block, state, stamp: 0 }; set.ways[way] = line;
+    const line = { block, state, stamp: 0 }; set.ways[way] = line;
     this.touch({ set: setNumber, way, line }, true);
     return previous;
   }
@@ -61,7 +61,7 @@ export class Cache {
     const set = this.sets[setNumber];
     if (this.policy === 'PLRU') return this.ways === 1 ? '-' : set.bits.slice(1).join('');
     return set.ways.map((line, way) => ({ line, way })).filter(item => item.line !== null)
-      .sort((a, b) => b.line!.stamp - a.line!.stamp || a.way - b.way).map(item => item.way).join(' ') || '-';
+      .sort((a, b) => b.line.stamp - a.line.stamp || a.way - b.way).map(item => item.way).join(' ') || '-';
   }
 }
 

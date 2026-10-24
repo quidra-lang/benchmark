@@ -1,17 +1,18 @@
+import type { BusTransaction } from './types.ts';
+
 import { hex } from './config_io.ts';
-import type { BusType, Transaction } from './types.ts';
 
 export class Bus {
   latency: number;
   free: number;
   busy: number;
   wait: number;
-  transactions: Transaction[];
+  transactions: BusTransaction[];
   constructor(latency: number) { this.latency = latency; this.free = 0; this.busy = 0; this.wait = 0; this.transactions = []; }
-  assign(requestCycle: number, core: number, type: BusType, block: number): Transaction {
+  assign(requestCycle: number, core: number, type: string, block: number): BusTransaction {
     const start = Math.max(requestCycle, this.free);
     this.wait += start - requestCycle; this.busy += this.latency; this.free = start + this.latency;
-    const transaction: Transaction = { number: this.transactions.length + 1, start, core, type, block,
+    const transaction: BusTransaction = { number: this.transactions.length + 1, start, core, type, block,
       snoops: [], supplier: null, invalidations: 0, l2: null, eviction: null };
     this.transactions.push(transaction);
     return transaction;

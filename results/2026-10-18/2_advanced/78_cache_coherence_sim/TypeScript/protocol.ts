@@ -1,7 +1,7 @@
 export const DIRTY = new Set(['M', 'O']);
-export const TYPES = ['BusRd', 'BusRdX', 'BusUpgr', 'BusWr', 'WB'] as const;
+export const TYPES = ['BusRd', 'BusRdX', 'BusUpgr', 'BusWr', 'WB'];
 
-export function request(protocol: string, state: string, operation: string): {type: import('./types.ts').BusType | null; state: string} {
+export function request(protocol: string, state: string, operation: string): {type: string | null; state: string} {
   if (protocol === 'VI') {
     if (operation === 'W') return { type: 'BusWr', state: state === 'I' ? 'I' : 'V' };
     return { type: state === 'I' ? 'BusRd' : null, state: 'V' };

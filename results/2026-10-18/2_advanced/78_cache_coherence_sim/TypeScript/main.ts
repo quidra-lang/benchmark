@@ -1,13 +1,14 @@
-import { mkdirSync } from 'node:fs';
+import type {
+ Config, Scenario, TraceEvent, TraceValidation, ReuseStats,
+ SharingLine, LineStats, CoreStats, AccessRecord
+} from './types.ts';
+
+import * as fs from 'node:fs';
 import * as io from './config_io.ts';
 import { Cache } from './cache.ts';
 import * as protocol from './protocol.ts';
 import { Bus } from './bus.ts';
 import * as stats from './stats.ts';
-import type {
-  AccessEvent, AccessRecord, BusType, CacheLine, Config, Counters, LineData, MissClass,
-  RegionReport, ReuseResult, Scenario, StaticLine, TraceEvent, Transaction, ValidatedTrace, WordData,
-} from './types.ts';
 
 const DISTANCE_LABELS = ['1', '2-4', '5-16', '17-64', '65-256', '257+'];
 const LATENCY_LABELS = ['1', '2-9', '10-29', '30-99', '100-299', '300+'];
@@ -16,8 +17,8 @@ const typeCounts = (): Record<string, number> => Object.fromEntries(protocol.TYP
 const countTypes = (counts: Record<string, number>): string => protocol.TYPES.map(type => `${type} ${counts[type]}`).join(' ');
 const sumTypes = (counts: Record<string, number>): number => protocol.TYPES.reduce((sum, type) => sum + counts[type], 0);
 
-function validateTrace(lines: string[], config: Config): ValidatedTrace {
-  const events: TraceEvent[] = [], rejected: ValidatedTrace['rejected'] = [], byCore: TraceEvent[][] = Array.from({ length: config.cores }, () => []);
+function validateTrace(lines: string[], config: Config): TraceValidation {
+  const events: TraceEvent[] = [], rejected: {line: number; reason: string}[] = [], byCore: TraceEvent[][] = Array.from({ length: config.cores }, () => []);
   let previousCycle = 0;
   lines.forEach((line, index) => {
     const fields = line.split(' ');
@@ -29,31 +30,25 @@ function validateTrace(lines: string[], config: Config): ValidatedTrace {
     else if (fields[2] !== 'FENCE' && (!io.hexDigits(fields[3]) || Number.parseInt(fields[3], 16) % 4 !== 0 || Number.parseInt(fields[3], 16) > 0x7fffffff)) reason = 'address';
     else if (Number(fields[0]) < previousCycle) reason = 'order';
     if (reason !== null) { rejected.push({ line: index + 1, reason }); return; }
-    const base = { number: events.length + 1, cycle: Number(fields[0]), core: Number(fields[1]) };
-    const event: TraceEvent = fields[2] === 'FENCE'
-      ? { ...base, operation: 'FENCE' }
-      : {
-        ...base,
-        operation: fields[2] as AccessEvent['operation'],
-        address: Number.parseInt(fields[3], 16),
-        block: Math.floor(Number.parseInt(fields[3], 16) / config.line),
-        word: Math.floor((Number.parseInt(fields[3], 16) % config.line) / 4),
-        distance: null,
-      };
+    const event: TraceEvent = { number: events.length + 1, cycle: Number(fields[0]), core: Number(fields[1]), operation: fields[2] };
+    if (event.operation !== 'FENCE') {
+      event.address = Number.parseInt(fields[3], 16); event.block = Math.floor(event.address / config.line);
+      event.word = Math.floor((event.address % config.line) / 4);
+    }
     previousCycle = event.cycle; events.push(event); byCore[event.core].push(event);
   });
   return { events, rejected, byCore, lineCount: lines.length };
 }
 
-function optimalMisses(accesses: AccessEvent[], capacity: number): number {
-  const next: number[] = Array(accesses.length), future = new Map<number, number>();
+function optimalMisses(accesses: TraceEvent[], capacity: number): number {
+  const next = Array(accesses.length), future = new Map();
   for (let i = accesses.length - 1; i >= 0; i--) {
-    next[i] = future.has(accesses[i].block) ? future.get(accesses[i].block)! : accesses.length;
+    next[i] = future.has(accesses[i].block) ? future.get(accesses[i].block) : accesses.length;
     future.set(accesses[i].block, i);
   }
-  const resident = new Map<number, number>(), heap: [number, number][] = [];
-  const later = (a: [number, number], b: [number, number]): boolean => a[0] > b[0] || (a[0] === b[0] && a[1] < b[1]);
-  const push = (item: [number, number]): void => {
+  const resident = new Map(), heap = [];
+  const later = (a, b) => a[0] > b[0] || (a[0] === b[0] && a[1] < b[1]);
+  const push = item => {
     heap.push(item);
     let index = heap.length - 1;
     while (index > 0) {
@@ -62,8 +57,8 @@ function optimalMisses(accesses: AccessEvent[], capacity: number): number {
       [heap[index], heap[parent]] = [heap[parent], heap[index]]; index = parent;
     }
   };
-  const pop = (): [number, number] => {
-    const first = heap[0], last = heap.pop()!;
+  const pop = () => {
+    const first = heap[0], last = heap.pop();
     if (heap.length === 0) return first;
     heap[0] = last;
     let index = 0;
@@ -82,7 +77,7 @@ function optimalMisses(accesses: AccessEvent[], capacity: number): number {
     if (!resident.has(access.block)) {
       misses++;
       if (resident.size === capacity) {
-        let victim: [number, number];
+        let victim;
         do { victim = pop(); } while (!resident.has(victim[1]) || resident.get(victim[1]) !== victim[0]);
         resident.delete(victim[1]);
       }
@@ -92,13 +87,13 @@ function optimalMisses(accesses: AccessEvent[], capacity: number): number {
   return misses;
 }
 
-function reuseAnalysis(byCore: TraceEvent[][], capacity: number): ReuseResult[] {
+function reuseAnalysis(byCore: TraceEvent[][], capacity: number): ReuseStats[] {
   const capacities = [capacity / 4, capacity / 2, capacity, 2 * capacity, 4 * capacity];
   return byCore.map(events => {
-    const accesses = events.filter((event): event is AccessEvent => event.operation !== 'FENCE'), previous = new Map<number, number>();
+    const accesses = events.filter(event => event.operation !== 'FENCE'), previous = new Map();
     const tree = Array(accesses.length + 1).fill(0), histogram = Array(6).fill(0), misses = Array(5).fill(0);
-    const prefix = (position: number): number => { let sum = 0; for (let i = position; i > 0; i -= i & -i) sum += tree[i]; return sum; };
-    const add = (position: number, value: number): void => { for (let i = position; i < tree.length; i += i & -i) tree[i] += value; };
+    const prefix = position => { let sum = 0; for (let i = position; i > 0; i -= i & -i) sum += tree[i]; return sum; };
+    const add = (position, value) => { for (let i = position; i < tree.length; i += i & -i) tree[i] += value; };
     let cold = 0;
     accesses.forEach((access, index) => {
       const old = previous.get(access.block);
@@ -114,13 +109,13 @@ function reuseAnalysis(byCore: TraceEvent[][], capacity: number): ReuseResult[] 
   });
 }
 
-function staticSharing(events: TraceEvent[]): Map<number, StaticLine> {
-  const lines = new Map<number, StaticLine>();
+function staticSharing(events: TraceEvent[]): Map<number, SharingLine> {
+  const lines = new Map<number, SharingLine>();
   for (const event of events) {
     if (event.operation === 'FENCE') continue;
-    if (!lines.has(event.block)) lines.set(event.block, { cores: new Set<number>(), writers: new Set<number>(), words: new Map<number, {readers: Set<number>; writers: Set<number>}>(), reads: 0, writes: 0, shared: false, true: false });
+    if (!lines.has(event.block)) lines.set(event.block, { cores: new Set(), writers: new Set(), words: new Map(), reads: 0, writes: 0 });
     const line = lines.get(event.block); line.cores.add(event.core);
-    if (!line.words.has(event.word)) line.words.set(event.word, { readers: new Set<number>(), writers: new Set<number>() });
+    if (!line.words.has(event.word)) line.words.set(event.word, { readers: new Set(), writers: new Set() });
     const word = line.words.get(event.word);
     if (event.operation === 'W') { line.writes++; line.writers.add(event.core); word.writers.add(event.core); }
     else { line.reads++; word.readers.add(event.core); }
@@ -140,7 +135,7 @@ class Simulation {
   l1: Cache[];
   l2: Cache;
   bus: Bus;
-  cores: Counters[];
+  cores: CoreStats[];
   ready: number[];
   writeComplete: number[];
   invalidations: Map<number, Set<number>>[];
@@ -148,48 +143,47 @@ class Simulation {
   snoopHits: number;
   fanout: number[];
   histogram: number[];
-  lineData: Map<number, LineData>;
-  wordData: Map<string, WordData>;
+  lineData: Map<number, LineStats>;
+  wordData: Map<string, {writer: number | null; readers: Set<number>}>;
   communication: number[][];
   accesses: AccessRecord[];
   watchLines: string[];
-  total!: Counters;
   constructor(config: Config, scenario: Scenario, byCore: TraceEvent[][]) {
     this.config = config; this.scenario = scenario; this.byCore = byCore; this.primary = scenario.name === config.primary;
     this.l1 = Array.from({ length: config.cores }, () => new Cache(config.l1, scenario.l1Policy));
     this.l2 = new Cache(config.l2, scenario.l2Policy); this.bus = new Bus(config.latencies[3]);
     this.cores = Array.from({ length: config.cores }, () => stats.create());
     this.ready = Array(config.cores).fill(0); this.writeComplete = Array(config.cores).fill(0);
-    this.invalidations = Array.from({ length: config.cores }, () => new Map<number, Set<number>>());
+    this.invalidations = Array.from({ length: config.cores }, () => new Map());
     this.l2Stats = { lookups: 0, hits: 0, misses: 0, flushes: 0, writebacks: 0, evictions: 0, dirtyEvictions: 0 };
     this.snoopHits = 0; this.fanout = Array(config.cores).fill(0); this.histogram = Array(6).fill(0);
-    this.lineData = new Map<number, LineData>(); this.wordData = new Map<string, WordData>(); this.communication = Array.from({ length: config.cores }, () => Array(config.cores).fill(0));
+    this.lineData = new Map(); this.wordData = new Map(); this.communication = Array.from({ length: config.cores }, () => Array(config.cores).fill(0));
     this.accesses = []; this.watchLines = [];
   }
-  line(block: number): LineData {
-    if (!this.lineData.has(block)) this.lineData.set(block, { bus: typeCounts(), cores: new Set<number>(), misses: 0,
+  line(block: number): LineStats {
+    if (!this.lineData.has(block)) this.lineData.set(block, { bus: typeCounts(), cores: new Set(), misses: 0,
       coherence: 0, invalidations: 0, trueSharing: 0, falseSharing: 0, handoffs: 0, lastWriter: null });
     return this.lineData.get(block);
   }
-  assign(cycle: number, core: number, type: BusType, block: number): Transaction {
+  assign(cycle: number, core: number, type: string, block: number) {
     const transaction = this.bus.assign(cycle, core, type, block), line = this.line(block);
     this.cores[core].bus[type]++; line.bus[type]++; line.cores.add(core);
     return transaction;
   }
   watchedState(block: number): string[] { return [...this.l1.map(cache => cache.state(block)), this.l2.state(block)]; }
-  sharing(event: AccessEvent): void {
+  sharing(event: TraceEvent): void {
     if (!this.primary) return;
     const line = this.line(event.block), key = `${event.block}/${event.word}`;
-    if (!this.wordData.has(key)) this.wordData.set(key, { writer: null, readers: new Set<number>() });
+    if (!this.wordData.has(key)) this.wordData.set(key, { writer: null, readers: new Set() });
     const word = this.wordData.get(key);
     if (event.operation === 'W') {
       if (line.lastWriter !== null && line.lastWriter !== event.core) line.handoffs++;
-      line.lastWriter = event.core; word.writer = event.core; word.readers = new Set<number>();
+      line.lastWriter = event.core; word.writer = event.core; word.readers = new Set();
     } else if (word.writer !== null && word.writer !== event.core && !word.readers.has(event.core)) {
       this.communication[word.writer][event.core]++; word.readers.add(event.core);
     }
   }
-  transact(event: AccessEvent, type: BusType, requestCycle: number): {completion: number; service: string} {
+  transact(event: TraceEvent, type: string, requestCycle: number): {completion: number; service: string} {
     const { core, block, word } = event, transaction = this.assign(requestCycle, core, type, block);
     let flushed = false;
     for (let other = 0; other < this.config.cores; other++) {
@@ -216,7 +210,7 @@ class Simulation {
         const evicted = this.l2.fill(block, 'C');
         if (evicted !== null) {
           this.l2Stats.evictions++;
-          const eviction = { block: evicted.block, copies: [] as string[], dirty: evicted.state === 'D' };
+          const eviction = { block: evicted.block, copies: [], dirty: evicted.state === 'D' };
           for (let other = 0; other < this.config.cores; other++) {
             const state = this.l1[other].state(evicted.block);
             if (state === 'I') continue;
@@ -242,27 +236,27 @@ class Simulation {
     }
     return { completion, service };
   }
-  access(event: AccessEvent, issue: number): void {
+  access(event: TraceEvent, issue: number): void {
     const { core, block, operation, word } = event, cache = this.l1[core], counter = this.cores[core];
     const before = this.primary ? this.config.watches.map(watched => this.watchedState(watched)) : [];
     const old = cache.state(block), transition = protocol.request(this.scenario.protocol, old, operation), hit = old !== 'I';
     const line = this.line(block);
     counter.accesses++; counter[operation === 'R' ? 'reads' : 'writes']++;
-    let classification: MissClass | null = null;
-    if (hit) { counter.hits++; cache.touch(cache.lookup(block)!); }
+    let classification = null;
+    if (hit) { counter.hits++; cache.touch(cache.lookup(block)); }
     else {
       counter.misses++; line.misses++;
       if (event.distance === null) classification = 'compulsory';
       else if (this.invalidations[core].has(block)) {
         classification = 'coherence'; line.coherence++;
-        const sharing: 'trueSharing' | 'falseSharing' = this.invalidations[core].get(block)!.has(word) ? 'trueSharing' : 'falseSharing';
+        const sharing = this.invalidations[core].get(block).has(word) ? 'trueSharing' : 'falseSharing';
         counter[sharing]++; line[sharing]++;
       } else classification = event.distance > this.config.capacity ? 'capacity' : 'conflict';
-      counter[classification as MissClass]++;
+      counter[classification]++;
     }
     if (operation === 'W') {
       for (let other = 0; other < this.config.cores; other++) {
-        if (other !== core && this.invalidations[other].has(block)) this.invalidations[other].get(block)!.add(word);
+        if (other !== core && this.invalidations[other].has(block)) this.invalidations[other].get(block).add(word);
       }
     }
     this.sharing(event);
@@ -274,7 +268,7 @@ class Simulation {
       const evicted = cache.fill(block, transition.state); this.invalidations[core].delete(block);
       if (evicted !== null && protocol.DIRTY.has(evicted.state)) {
         this.assign(this.bus.free, core, 'WB', evicted.block); this.l2Stats.writebacks++;
-        this.l2.touch(this.l2.lookup(evicted.block)!); this.l2.setState(evicted.block, 'D');
+        this.l2.touch(this.l2.lookup(evicted.block)); this.l2.setState(evicted.block, 'D');
       }
     }
     const latency = completion - issue;
@@ -291,7 +285,7 @@ class Simulation {
       }
     });
   }
-  simulate(): Simulation {
+  simulate(): void {
     const positions = Array(this.config.cores).fill(0);
     while (true) {
       let selected = -1, issue = null;
@@ -303,10 +297,10 @@ class Simulation {
       if (selected < 0) break;
       const event = this.byCore[selected][positions[selected]++];
       if (event.operation === 'FENCE') {
-        const completion = Math.max(issue!, this.writeComplete[selected]), counter = this.cores[selected];
-        counter.fences++; counter.fenceStall += completion - issue!; counter.finish = Math.max(counter.finish, completion);
+        const completion = Math.max(issue, this.writeComplete[selected]), counter = this.cores[selected];
+        counter.fences++; counter.fenceStall += completion - issue; counter.finish = Math.max(counter.finish, completion);
         this.ready[selected] = completion;
-      } else this.access(event, issue!);
+      } else this.access(event, issue);
     }
     this.total = stats.total(this.cores);
     return this;
@@ -354,18 +348,14 @@ function intervalReport(simulation: Simulation): string[] {
 }
 
 function regionReport(simulation: Simulation): string[] {
-  const { config } = simulation;
-  const emptyStats = () => ({ accesses: 0, reads: 0, writes: 0, hits: 0, compulsory: 0,
-    capacity: 0, conflict: 0, coherence: 0, transactions: 0, latency: 0 });
-  const regions: RegionReport[] = config.regions.map(region => ({ ...region, ...emptyStats() }));
-  regions.push({ name: 'other', ...emptyStats() });
-  const locate = (address: number): RegionReport =>
-    regions.find(region => region.name !== 'other' && region.first !== undefined &&
-      region.last !== undefined && region.first <= address && address <= region.last)! || regions[regions.length - 1];
+  const { config } = simulation, regions = config.regions.map(region => ({ ...region }));
+  regions.push({ name: 'other' });
+  for (const region of regions) Object.assign(region, { accesses: 0, reads: 0, writes: 0, hits: 0, compulsory: 0, capacity: 0, conflict: 0, coherence: 0, transactions: 0, latency: 0 });
+  const locate = address => regions.find(region => region.name !== 'other' && region.first <= address && address <= region.last) || regions[regions.length - 1];
   for (const access of simulation.accesses) {
     const region = locate(access.address);
     region.accesses++; region[access.operation === 'R' ? 'reads' : 'writes']++;
-    if (access.hit) region.hits++; else region[access.classification!]++;
+    if (access.hit) region.hits++; else region[access.classification]++;
     region.latency += access.latency;
   }
   for (const transaction of simulation.bus.transactions) locate(transaction.block * config.line).transactions++;
@@ -373,7 +363,7 @@ function regionReport(simulation: Simulation): string[] {
     `${region.name} accesses ${region.accesses} reads ${region.reads} writes ${region.writes} hits ${region.hits} compulsory ${region.compulsory} capacity ${region.capacity} conflict ${region.conflict} coherence ${region.coherence} transactions ${region.transactions} latency ${region.latency} amat ${region.accesses === 0 ? '-' : `${stats.fraction(region.latency, region.accesses)} ${stats.decimal(region.latency, region.accesses)}`}`)];
 }
 
-function statisticsReport(config: Config, trace: ValidatedTrace, reuse: ReuseResult[], simulations: Simulation[], primary: Simulation): string[] {
+function statisticsReport(config: Config, trace: TraceValidation, reuse: ReuseStats[], simulations: Simulation[], primary: Simulation): string[] {
   const parts = [], first = [`trace lines ${trace.lineCount} accepted ${trace.events.length} rejected ${trace.rejected.length}`];
   for (const rejected of trace.rejected) first.push(`reject line ${rejected.line} ${rejected.reason}`);
   first.push(`geometry cores ${config.cores} line ${config.line} l1 ${config.l1.size} ${config.l1.ways} sets ${config.l1.sets} l2 ${config.l2.size} ${config.l2.ways} sets ${config.l2.sets}`,
@@ -393,15 +383,15 @@ function statisticsReport(config: Config, trace: ValidatedTrace, reuse: ReuseRes
   return parts.flatMap((part, i) => i === 0 ? part : ['', ...part]);
 }
 
-function sharingReport(config: Config, sharing: Map<number, StaticLine>, primary: Simulation): string[] {
-  const lines = [], blocks = Array.from(sharing.keys()).filter(block => sharing.get(block)!.shared).sort((a, b) => a - b);
+function sharingReport(config: Config, sharing: Map<number, SharingLine>, primary: Simulation): string[] {
+  const lines = [], blocks = Array.from(sharing.keys()).filter(block => sharing.get(block).shared).sort((a, b) => a - b);
   let trueLines = 0, trueMisses = 0, falseMisses = 0;
   for (const block of blocks) {
-    const line = sharing.get(block)!, dynamic = primary.lineData.get(block)!;
+    const line = sharing.get(block), dynamic = primary.lineData.get(block);
     if (line.true) trueLines++;
     trueMisses += dynamic.trueSharing; falseMisses += dynamic.falseSharing;
     const words = Array.from(line.words.keys()).sort((a, b) => a - b).map(word =>
-      `w${word}=${stats.coreString(line.words.get(word)!.readers)}/${stats.coreString(line.words.get(word)!.writers)}`).join(' ');
+      `w${word}=${stats.coreString(line.words.get(word).readers)}/${stats.coreString(line.words.get(word).writers)}`).join(' ');
     lines.push(`${io.hex(block * config.line)} ${line.true ? 'true' : 'false'} cores ${stats.coreString(line.cores)} writers ${stats.coreString(line.writers)} reads ${line.reads} writes ${line.writes} handoffs ${dynamic.handoffs} coherence ${dynamic.trueSharing + dynamic.falseSharing} true ${dynamic.trueSharing} false ${dynamic.falseSharing} words ${words}`);
   }
   lines.push(`lines ${blocks.length} true_lines ${trueLines} false_lines ${blocks.length - trueLines} coherence ${trueMisses + falseMisses} true ${trueMisses} false ${falseMisses}`, 'communication');
@@ -411,12 +401,12 @@ function sharingReport(config: Config, sharing: Map<number, StaticLine>, primary
 
 function finalStateReport(simulation: Simulation): string[] {
   const lines = [], { config } = simulation;
-  const cacheLines = (cache: Cache, label: string): CacheLine[] => {
+  const cacheLines = (cache, label) => {
     cache.sets.forEach((set, index) => {
       const ways = set.ways.map(line => line === null ? '-' : `${io.hex(line.block * config.line)}:${line.state}`).join(' ');
       lines.push(`${label} ${index} ${ways} ${cache.policy.toLowerCase()} ${cache.order(index)} fills ${set.fills} evictions ${set.evictions}`);
     });
-    return cache.sets.flatMap(set => set.ways.filter((line): line is CacheLine => line !== null));
+    return cache.sets.flatMap(set => set.ways.filter(line => line !== null));
   };
   simulation.l1.forEach((cache, core) => {
     const held = cacheLines(cache, `c${core}`), states = ['M', 'O', 'E', 'S', 'V'];
@@ -432,8 +422,8 @@ function main(): void {
   const input = io.read(), { config } = input, trace = validateTrace(input.trace, config);
   const reuse = reuseAnalysis(trace.byCore, config.capacity), sharing = staticSharing(trace.events);
   const simulations = config.scenarios.map(scenario => new Simulation(config, scenario, trace.byCore).simulate());
-  const primary = simulations.find(simulation => simulation.primary)!;
-  mkdirSync('output', { recursive: true });
+  const primary = simulations.find(simulation => simulation.primary);
+  fs.mkdirSync('output', { recursive: true });
   io.write('output/stats.txt', statisticsReport(config, trace, reuse, simulations, primary));
   io.write('output/bus_log.txt', primary.bus.lines(config.line));
   io.write('output/watch.txt', primary.watchLines);
