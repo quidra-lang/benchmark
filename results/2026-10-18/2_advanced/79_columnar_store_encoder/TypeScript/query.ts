@@ -103,3 +103,4 @@ class Parser {
   }
 }
 
+export const parse = (text: string): Query => new Parser(text).parse();
