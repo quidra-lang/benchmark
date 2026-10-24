@@ -16,16 +16,16 @@ export function readTrains(path: string, layout: Layout, routes: Map<string, Rou
         emergency: false, crossed: null, stats: { distance: 0, maxspeed: 0, standing: 0, passes: 0 } };
       trains.push(train); byName.set(name, train);
     } else {
-      const train = byName.get(name);
+      const train = byName.get(name)!;
       if (kind === 'REQUEST') {
         const time = Number(fields[1]);
         if (!requests.has(time)) requests.set(time, []);
-        requests.get(time).push({ train, route: routes.get(fields[0]) });
+        requests.get(time).push({ train, route: routes.get(fields[0])! });
       } else if (kind === 'EXIT') {
         train.exit = layout.boundaryByName.get(fields[0])!; train.scheduledExit = Number(fields[1]);
       } else {
         const [section, dwell, arrival, departure] = fields;
-        train.stops.push({ section: layout.sectionByName.get(section), turn: kind === 'TURN', dwell: Number(dwell),
+        train.stops.push({ section: layout.sectionByName.get(section)!, turn: kind === 'TURN', dwell: Number(dwell),
           scheduledArrival: Number(arrival), scheduledDeparture: Number(departure), arrival: null, departure: null });
       }
     }

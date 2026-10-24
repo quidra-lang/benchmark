@@ -164,7 +164,7 @@ class Simulation {
       point.failed = kind === 'POINTFAIL'; this.log(kind + ' ' + point.name);
       if (point.moving) {
         if (point.failed) point.completion = null;
-        else this.startThrow(point, point.target);
+        else this.startThrow(point, point.target!);
       }
     }
   }
@@ -189,10 +189,10 @@ class Simulation {
     const entry = headEntry(train), stop = train.stops[train.nextStop];
     let section = entry.section, distance = entry.start + section.length - train.head;
     while (true) {
-      const signal = section.signals[train.direction];
+      const signal = section.signals[train.direction!];
       if (signal && signal.aspect === 'RED') return distance;
       if (stop && stop.section === section) return distance;
-      const next = beyond(section, train.direction);
+      const next = beyond(section, train.direction!);
       if (next.kind === 'boundary') return null;
       if (next.kind === 'buffer' || next.kind === 'impassable') return distance;
       section = next.section; distance += section.length;
@@ -215,13 +215,13 @@ class Simulation {
       const end = entry.start + entry.section.length;
       if (train.head + remaining <= end) { train.head += remaining; break; }
       remaining -= end - train.head; train.head = end;
-      const signal = entry.section.signals[train.direction];
+      const signal = entry.section.signals[train.direction!];
       if (signal) this.passSignal(train, signal);
       if (train.pendingDeparture !== null && train.pendingDeparture.section === entry.section) {
         this.log(`DEPART ${train.name} ${entry.section.name}`);
         train.pendingDeparture.departure = this.time; train.pendingDeparture = null;
       }
-      const next = beyond(entry.section, train.direction);
+      const next = beyond(entry.section, train.direction!);
       if (next.kind === 'boundary') train.crossed = { boundary: next, coordinate: end };
       else { entry = { section: next.section, start: end }; train.path.push(entry); }
     }
@@ -307,7 +307,7 @@ class Simulation {
       for (const event of this.events.get(this.time) || []) this.executeEvent(event);
       this.judgeRequests();
       this.setSignals();
-      const entered = new Set();
+      const entered = new Set<import('./types.ts').Feature>();
       for (const train of this.trains) this.runTrain(train, entered);
       this.recomputeOccupancy();
       this.releaseSections();
@@ -346,7 +346,7 @@ function snapshot(simulation: Simulation): string[] {
   }
   for (const buffer of layout.buffers) grid[buffer.row][buffer.col] = '|';
   for (const point of layout.points) grid[point.row][point.col] = point.moving || point.failed ? '?' : point.position;
-  for (const signal of layout.signals) grid[signal.row][signal.col] = { RED: 'X', YELLOW: 'Y', GREEN: 'G' }[signal.aspect];
+  for (const signal of layout.signals) grid[signal.row][signal.col] = ({ RED: 'X', YELLOW: 'Y', GREEN: 'G' } as Record<string, string>)[signal.aspect];
   const lines = ['SNAPSHOT ' + simulation.time, ...grid.map(row => row.join('').replace(/ +$/, ''))];
   for (const train of trains) if (train.state === 'RUNNING') {
     const sections = occupiedParts(train).map(part => part.section.name).join(',');
@@ -376,7 +376,7 @@ function trainLog(trains: Train[]): {lines: string[]; punctuality: Punctuality} 
       record(train, 'arr:' + stop.section.name, stop.scheduledArrival, stop.arrival);
       record(train, 'dep:' + stop.section.name, stop.scheduledDeparture, stop.departure);
     }
-    record(train, 'exit:' + train.exit.name, train.scheduledExit, train.actualExit);
+    record(train, 'exit:' + train.exit!.name, train.scheduledExit!, train.actualExit);
   }
   return { lines, punctuality };
 }
@@ -399,7 +399,7 @@ function summaryReport(simulation: Simulation, punctuality: Punctuality): string
     const stats = signal.stats;
     lines.push(`SIGNAL ${signal.name} red ${stats.RED} yellow ${stats.YELLOW} green ${stats.GREEN} passes ${stats.passes}`);
   }
-  const states = { WAITING: 0, RUNNING: 0, EXITED: 0 };
+  const states: Record<string, number> = { WAITING: 0, RUNNING: 0, EXITED: 0 };
   for (const train of simulation.trains) {
     const stats = train.stats; states[train.state]++;
     lines.push(`TRAIN ${train.name} ${train.symbol} ${train.state} distance ${stats.distance} maxspeed ${stats.maxspeed} standing ${stats.standing} passes ${stats.passes}`);

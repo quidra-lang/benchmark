@@ -13,7 +13,7 @@ export function readLayout(path: string): Layout {
         stats: { occupied: 0, locked: 0, trains: new Set<import('./types.ts').Train>() } };
       sections.push(section); sectionByName.set(name, section);
     } else if (kind === 'JOINT') {
-      const first = sectionByName.get(fields[0]), second = sectionByName.get(fields[1]);
+      const first = sectionByName.get(fields[0])!, second = sectionByName.get(fields[1])!;
       first.ends.R = { kind: 'section', section: second }; second.ends.L = { kind: 'section', section: first };
     } else if (kind === 'POINT') {
       const [name, side, common, normal, reverse, row, col] = fields;
