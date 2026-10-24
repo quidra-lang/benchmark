@@ -41,12 +41,13 @@ The source code must follow these rules:
 - Use idiomatic, widely accepted conventions for the language. For example, do not add Python type annotations when they would not normally be used for that kind of program.
 - When several implementations are reasonable, prefer one that is concise and conveys the required meaning clearly. Do not shorten code at the expense of important type information or clarity. For example, do not use C++ `auto` indiscriminately when an explicit type would better communicate the program's meaning.
 - Preserve the intended behavior of the task.
+- Do not write comments in the source code.
 
 #### Review and testing
 
 **Compiling, building, executing, or testing Task A programs is not required, either after initial creation or after updates.** Review the source code for consistency with the target language version and the intended task behavior. This review does not establish or imply that a program has actually been compiled, run, tested, or verified.
 
-### 2.3. Task B — Understanding (`taskB.txt` and `list-up.txt`)
+### 2.3. Task B — Understanding (`taskB.txt`, `list-up.txt`, and `reason.md`)
 
 `taskB.txt` contains a question about the program created for Task A. Questions fall into two categories:
 - **Code comprehension:** Explain an algorithm, trace data, or identify program behavior or side effects.
@@ -144,6 +145,16 @@ Task B counts only tokens in the selected source code. The question, natural-lan
 
    Do not change the criteria for deciding whether a line is necessary to favor or disadvantage a particular language.
 
+#### Selection rationale (`reason.md`)
+
+For every `list-up.txt`, create a `reason.md` in the same directory to record why the source-code lines were selected.
+
+- Identify the Task B answer requirements and explain how the selected lines support each requirement.
+- Explain any language guarantees or documented library semantics used to avoid including additional implementation lines.
+- Explain how the selection was minimized, including why selected lines are necessary and any relevant alternative line sets considered.
+
+`reason.md` is an explanation of the selection, not part of the source-code excerpt. Its contents are excluded from the Task B token count.
+
 #### Validate the selection
 
 Before finalizing `list-up.txt`:
@@ -163,7 +174,7 @@ During independent validation, do not use Task A implementation details absent f
 For each language approved in Step 1:
 
 1. Identify only the topics whose existing Task A implementation needs to change because of syntax changes in the language's updated version, while still meeting the Task A writing rules above.
-2. For each affected topic, make the minimum necessary changes to its source code and, where needed, its `list-up.txt` file. Ensure the Task B selection still accurately reflects the source lines required to answer a comprehension question or identify and understand a requested modification.
+2. For each affected topic, make the minimum necessary changes to its source code and, where needed, its `list-up.txt` and `reason.md` files. Ensure the Task B selection still accurately reflects the source lines required to answer a comprehension question or identify and understand a requested modification, and keep the recorded rationale consistent with that selection.
 3. Leave all unaffected topics unchanged.
 
 **Building, running, and testing updated Task A programs are not required.** Review edited code for consistency with the target language version and the intended task behavior, without presenting that review as proof of compilation or correctness.
