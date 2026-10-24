@@ -6,34 +6,24 @@ export interface Prefix {
   unit: number;
 }
 
-export type Relationship = 'P2C' | 'P2P';
-export type NeighborRole = 'customer' | 'peer' | 'provider';
-export type Origin = 'IGP' | 'EGP' | 'INCOMPLETE';
-
 export interface Attribute {
   path: number[];
-  origin: Origin;
+  origin: string;
   med: number;
   communities: number[];
 }
 
-export interface LocalRoute extends Attribute {
-  local: true;
+export interface Route extends Attribute {
+  local: boolean;
+  localPref?: number;
+  link?: Link;
 }
-
-export interface LearnedRoute extends Attribute {
-  local: false;
-  localPref: number;
-  link: Link;
-}
-
-export type Route = LocalRoute | LearnedRoute;
 
 export interface AutonomousSystem {
   asn: number;
   routerId: number;
   sessions: Session[];
-  origination: Map<string, LocalRoute>;
+  origination: Map<string, Route>;
   rib: Map<string, Route>;
   changes: number;
 }
@@ -42,7 +32,7 @@ export interface Link {
   name: string;
   a: number;
   b: number;
-  relationship: Relationship;
+  relationship: string;
   delay: number;
   mrai: number;
   number: number;
@@ -63,19 +53,12 @@ export interface Session {
   received: number;
 }
 
-export interface InitialRoute {
-  asn: number;
-  prefix: string;
-  origin: Origin;
-  communities: string[];
-}
-
 export interface Topology {
   ases: Map<number, AutonomousSystem>;
   asOrder: AutonomousSystem[];
   links: Link[];
   linkByName: Map<string, Link>;
-  initial: InitialRoute[];
+  initial: {asn: number; prefix: string; origin: string; communities: string[]}[];
   sessions: Session[];
 }
 
@@ -86,23 +69,31 @@ export interface PrefixListEntry {
   high: number;
 }
 
-export type RuleValue = string | number | number[];
-export interface RuleCondition { kind: string; value: RuleValue }
-export interface RuleAction { kind: string; value: boolean | number }
+export interface PolicyCondition {
+  kind: string;
+  value: any;
+}
+
+export interface PolicyAction {
+  kind: string;
+  value: any;
+}
+
 export interface PolicyRule {
   name: string;
   active: boolean;
   asn: number;
   direction: string;
   target: string;
-  conditions: RuleCondition[];
-  actions: RuleAction[];
+  conditions: PolicyCondition[];
+  actions: PolicyAction[];
   hits: number;
   DENY?: boolean;
   ALLOW?: boolean;
-  LOCALPREF?: number;
   MED?: number;
+  LOCALPREF?: number;
   PREPEND?: number;
+  [key: string]: any;
 }
 
 export interface Policies {
@@ -111,7 +102,7 @@ export interface Policies {
   byName: Map<string, PolicyRule>;
 }
 
-export interface Delivery {
+export interface Message {
   serial: number;
   sender: number;
   receiver: number;
@@ -121,7 +112,7 @@ export interface Delivery {
   arrival: number;
 }
 
-export interface SimEvent {
+export interface Event {
   number: number;
   time: number;
   text: string;
@@ -129,66 +120,23 @@ export interface SimEvent {
   kind: string;
 }
 
-export interface ForwardingTrace {
+export interface Trace {
   index: number;
   asn: number;
   address: string;
   value: number;
 }
 
-export interface Parameters {
-  preferences: Record<NeighborRole, number>;
+export interface Params {
+  preferences: Record<string, number>;
   cap: number;
-  traces: ForwardingTrace[];
+  traces: Trace[];
 }
 
-export interface PathHop { asn: number; prefix: string; link: Link | null }
-export type PathResultType = 'DELIVERED' | 'LOOP' | 'BLACKHOLE' | 'UNREACHABLE';
 export interface PathResult {
-  result: PathResultType;
+  result: string;
   visits: number[];
-  hops: PathHop[];
+  hops: {asn: number; prefix: string; link: Link | null}[];
   count: number;
   arrival?: number;
-}
-
-export interface BestChange {
-  time: number;
-  asn: number;
-  prefix: string;
-  route: Route | null;
-}
-
-export interface Period {
-  event: SimEvent;
-  convergence: number;
-  updates: number;
-  withdrawals: number;
-  drops: number;
-  bestChanges: number;
-  routesChanged: number;
-  exploration: Map<string, number>;
-  bestLines: BestChange[];
-  deliveries: number;
-  states: Map<string, number>;
-  first: number | null;
-  repeat: number | null;
-  cycle: BestChange[];
-  status: string;
-  maxExploration: number;
-}
-
-export interface RingRecord {
-  prefix: string;
-  loop: number[];
-  start: number;
-  end: number | null;
-}
-export interface ActiveTrace {
-  trace: ForwardingTrace;
-  status: string;
-  result: PathResultType;
-  visits: number[];
-  start: number;
-  end: number | null;
 }

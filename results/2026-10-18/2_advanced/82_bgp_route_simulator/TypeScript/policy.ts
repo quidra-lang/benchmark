@@ -1,6 +1,7 @@
-import { readFileSync } from 'node:fs';
+import type { PrefixListEntry, Policies, PolicyRule, Session } from './types.ts';
+
+import * as fs from 'node:fs';
 import { prefixValue, contains } from './topology.ts';
-import type { Policies, PolicyRule, RuleCondition, RuleAction, Session, PrefixListEntry, RuleValue } from './types.ts';
 export const NO_EXPORT = 65535 * 65536 + 65281;
 
 export function communityValue(text: string): number {
@@ -16,17 +17,15 @@ export const communitiesText = (values: number[]): string => values.length ? val
 export function editCommunities(values: number[], rule: PolicyRule | null): number[] {
   const result = new Set(values);
   if (rule) for (const action of rule.actions) {
-    if (action.kind === 'ADD') result.add(action.value as number);
-    else if (action.kind === 'REMOVE') result.delete(action.value as number);
+    if (action.kind === 'ADD') result.add(action.value);
+    else if (action.kind === 'REMOVE') result.delete(action.value);
   }
   return Array.from(result).sort((a, b) => a - b);
 }
 
 export function readPolicies(path: string): Policies {
-  const lists = new Map<string, PrefixListEntry[]>();
-  const rules: PolicyRule[] = [];
-  const byName = new Map<string, PolicyRule>();
-  for (const line of readFileSync(path, 'ascii').split('\n').slice(0, -1)) {
+  const lists = new Map<string, PrefixListEntry[]>(), rules: PolicyRule[] = [], byName = new Map<string, PolicyRule>();
+  for (const line of fs.readFileSync(path, 'ascii').split('\n').slice(0, -1)) {
     const fields = line.split(' ');
     if (fields[0] === 'PLIST') {
       const [, name, action, text] = fields, prefix = prefixValue(text);
@@ -36,7 +35,7 @@ export function readPolicies(path: string): Policies {
         else le = Number(fields[i + 1]);
       }
       if (!lists.has(name)) lists.set(name, []);
-      lists.get(name)!.push({ action, prefix, low: ge === null ? prefix.length : ge,
+      lists.get(name).push({ action, prefix, low: ge === null ? prefix.length : ge,
         high: le === null ? ge === null ? prefix.length : 32 : le });
     } else {
       const [, name, state, asn, direction, target] = fields;
@@ -44,7 +43,7 @@ export function readPolicies(path: string): Policies {
       let i = 6;
       while (fields[i] !== 'THEN') {
         const kind = fields[i++], text = fields[i++];
-        const value: RuleValue = kind === 'PREFIX' ? text : kind === 'LENGTH' ? text.split('-').map(Number) :
+        const value = kind === 'PREFIX' ? text : kind === 'LENGTH' ? text.split('-').map(Number) :
           kind === 'COMMUNITY' ? communityValue(text) : Number(text);
         rule.conditions.push({ kind, value });
       }
@@ -53,11 +52,7 @@ export function readPolicies(path: string): Policies {
         const value = kind === 'DENY' || kind === 'ALLOW' ? true :
           kind === 'ADD' || kind === 'REMOVE' ? communityValue(fields[i++]) : Number(fields[i++]);
         rule.actions.push({ kind, value });
-        if (kind === 'DENY') rule.DENY = true;
-        else if (kind === 'ALLOW') rule.ALLOW = true;
-        else if (kind === 'LOCALPREF') rule.LOCALPREF = value as number;
-        else if (kind === 'MED') rule.MED = value as number;
-        else if (kind === 'PREPEND') rule.PREPEND = value as number;
+        if (kind !== 'ADD' && kind !== 'REMOVE') rule[kind] = value;
       }
       rules.push(rule); byName.set(name, rule);
     }
@@ -78,11 +73,11 @@ export function appliedRule(policies: Policies, direction: string, session: Sess
     if (!rule.active || rule.direction !== direction || rule.asn !== session.owner.asn) continue;
     if (rule.target !== '*' && rule.target !== String(session.neighbor) && rule.target !== session.link.name) continue;
     const matches = rule.conditions.every(({ kind, value }) => {
-      if (kind === 'PREFIX') return permitted(policies.lists.get(value as string)!, prefix);
-      if (kind === 'CONTAINS') return path.includes(value as number);
+      if (kind === 'PREFIX') return permitted(policies.lists.get(value)!, prefix);
+      if (kind === 'CONTAINS') return path.includes(value);
       if (kind === 'ORIGINAS') return (path.length ? path[path.length - 1] : session.owner.asn) === value;
-      if (kind === 'LENGTH') return (value as number[])[0] <= path.length && path.length <= (value as number[])[1];
-      return communities.includes(value as number);
+      if (kind === 'LENGTH') return value[0] <= path.length && path.length <= value[1];
+      return communities.includes(value);
     });
     if (matches) return rule;
   }

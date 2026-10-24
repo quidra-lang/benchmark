@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs';
-import type { Prefix, Topology, Link, Session, AutonomousSystem, Relationship, Origin, NeighborRole } from './types.ts';
+import type { Prefix, Link, AutonomousSystem, Session, Topology } from './types.ts';
 
+import * as fs from 'node:fs';
 const prefixCache = new Map<string, Prefix>();
 
 export function addressValue(text: string): number {
@@ -22,23 +22,20 @@ export function prefixCompare(a: string, b: string): number {
 
 export const contains = (prefix: Prefix, address: number): boolean => Math.floor(address / prefix.unit) === Math.floor(prefix.value / prefix.unit);
 export const otherEnd = (link: Link, asn: number): number => asn === link.a ? link.b : link.a;
-export const role = (link: Link, asn: number): NeighborRole => link.relationship === 'P2P' ? 'peer' : asn === link.a ? 'customer' : 'provider';
-export const direction = (link: Link, asn: number): string => ({ customer: 'D', peer: 'P', provider: 'U' })[role(link, asn)];
+export const role = (link: Link, asn: number): string => link.relationship === 'P2P' ? 'peer' : asn === link.a ? 'customer' : 'provider';
+export const direction = (link: Link, asn: number): string => ({ customer: 'D', peer: 'P', provider: 'U' } as Record<string, string>)[role(link, asn)];
 
 export function readTopology(path: string): Topology {
-  const ases = new Map<number, AutonomousSystem>();
-  const links: Link[] = [];
-  const linkByName = new Map<string, Link>();
-  const initial: Topology['initial'] = [];
-  for (const line of readFileSync(path, 'ascii').split('\n').slice(0, -1)) {
+  const ases = new Map<number, AutonomousSystem>(), links: Link[] = [], linkByName = new Map<string, Link>(), initial: Topology['initial'] = [];
+  for (const line of fs.readFileSync(path, 'ascii').split('\n').slice(0, -1)) {
     const [kind, ...fields] = line.split(' ');
     if (kind === 'AS') {
       const asn = Number(fields[0]);
       ases.set(asn, { asn, routerId: addressValue(fields[1]), sessions: [], origination: new Map(), rib: new Map(), changes: 0 });
     } else if (kind === 'LINK') {
       const [name, a, b, relationship, delay, mrai] = fields;
-      const link: Link = { name, a: Number(a), b: Number(b), relationship: relationship as Relationship, delay: Number(delay), mrai: Number(mrai),
-        number: links.length, up: true, downs: 0, sessions: new Map<number, Session>() };
+      const link: Link = { name, a: Number(a), b: Number(b), relationship, delay: Number(delay), mrai: Number(mrai),
+        number: links.length, up: true, downs: 0, sessions: new Map() };
       links.push(link); linkByName.set(name, link);
       for (const asn of [link.a, link.b]) {
         const session: Session = { owner: ases.get(asn)!, neighbor: otherEnd(link, asn), link, input: new Map(), output: new Map(),
@@ -47,7 +44,7 @@ export function readTopology(path: string): Topology {
       }
     } else {
       const [asn, prefix, origin, ...communities] = fields;
-      initial.push({ asn: Number(asn), prefix, origin: origin as Origin, communities });
+      initial.push({ asn: Number(asn), prefix, origin, communities });
     }
   }
   const asOrder = Array.from(ases.values()).sort((a, b) => a.asn - b.asn);

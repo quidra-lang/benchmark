@@ -1,44 +1,44 @@
-import { prefixValue, prefixCompare, contains, role, direction, readTopology, connectingLink } from './topology.ts';
+import type {
+  Attribute, Route, Session, AutonomousSystem, Topology, Policies,
+  Message, Event, Params, Link, PathResult
+} from './types.ts';
+
+import { addressValue, prefixValue, prefixCompare, contains, role, direction, readTopology, connectingLink } from './topology.ts';
 import { NO_EXPORT, parseCommunities, editCommunities, readPolicies, appliedRule } from './policy.ts';
 import { sameSequence, originated, learned, attributesEqual, routesEqual, selectBest } from './decision.ts';
 import { MessageQueue, readEvents, readParams } from './simulator.ts';
 import { pathText, attributeText, routeText, writeReports } from './report.ts';
-import type {
-  Attribute, Route, LearnedRoute, AutonomousSystem, Session, Origin, Delivery,
-  SimEvent, Policies, Topology, Parameters, ForwardingTrace, PathResult,
-  Period, RingRecord, ActiveTrace, BestChange
-} from './types.ts';
 
 const prefixOrder = (values: Iterable<string>): string[] => Array.from(values).sort(prefixCompare);
 const compressed = (values: number[]): number[] => values.filter((value, i) => i === 0 || value !== values[i - 1]);
-const attributeState = (value: Attribute | null | undefined): unknown => value == null ? null : [value.path, value.origin, value.med, value.communities];
-const tableState = (table: Map<string, Attribute>): unknown[] => prefixOrder(table.keys()).map(prefix => [prefix, attributeState(table.get(prefix))]);
+const attributeState = (value: Attribute | null | undefined): any => value === null ? null : [value.path, value.origin, value.med, value.communities];
+const tableState = (table: Map<string, Attribute>): any[] => prefixOrder(table.keys()).map(prefix => [prefix, attributeState(table.get(prefix))]);
 
 class Simulation {
   topology: Topology;
   policies: Policies;
-  events: SimEvent[];
-  params: Parameters;
+  events: Event[];
+  params: Params;
   messages: MessageQueue;
   time: number;
-  logLines: string[];
-  periods: Period[];
-  changedPrefixes: Set<string>;
-  current: Period | null;
-  rings: RingRecord[];
-  activeRings: Map<string, RingRecord>;
-  traceRecords: ActiveTrace[];
-  activeTraces: Map<number, ActiveTrace>;
   endTime: number;
+  logLines: string[];
+  periods: any[];
+  changedPrefixes: Set<string>;
+  current: any;
+  rings: any[];
+  activeRings: Map<string, any>;
+  traceRecords: any[];
+  activeTraces: Map<number, any>;
   constructor() {
     this.topology = readTopology('input/topology.txt'); this.policies = readPolicies('input/policies.txt');
     this.events = readEvents('input/events.txt'); this.params = readParams('input/params.txt');
     this.messages = new MessageQueue(); this.time = 0; this.logLines = []; this.periods = [];
-    this.changedPrefixes = new Set<string>(); this.current = null; this.rings = []; this.activeRings = new Map<string, RingRecord>();
-    this.traceRecords = []; this.activeTraces = new Map<number, ActiveTrace>(); this.endTime = 0;
+    this.changedPrefixes = new Set(); this.current = null; this.rings = []; this.activeRings = new Map();
+    this.traceRecords = []; this.activeTraces = new Map();
   }
   log(content: string): void { this.logLines.push(this.time + ' ' + content); }
-  importEvaluation(session: Session, prefix: string, attribute: Attribute): {rule: Policies['rules'][number] | null; route: LearnedRoute | null} {
+  importEvaluation(session: Session, prefix: string, attribute: Attribute): {rule: import('./types.ts').PolicyRule | null; route: Route | null} {
     const rule = appliedRule(this.policies, 'IMPORT', session, prefix, attribute.path, attribute.communities);
     if (rule && rule.DENY) return { rule, route: null };
     const preference = rule && rule.LOCALPREF !== undefined ? rule.LOCALPREF : this.params.preferences[role(session.link, session.owner.asn)];
@@ -46,16 +46,16 @@ class Simulation {
       communities: editCommunities(attribute.communities, rule) };
     return { rule, route: learned(adjusted, preference, session.link) };
   }
-  candidates(as: AutonomousSystem, prefix: string): LearnedRoute[] {
-    const routes: LearnedRoute[] = [];
+  candidates(as: AutonomousSystem, prefix: string): Route[] {
+    const routes = [];
     for (const session of as.sessions) if (session.input.has(prefix)) {
-      const evaluation = this.importEvaluation(session, prefix, session.input.get(prefix)!);
+      const evaluation = this.importEvaluation(session, prefix, session.input.get(prefix));
       if (evaluation.route) routes.push(evaluation.route);
     }
     return routes;
   }
   redecide(as: AutonomousSystem, prefix: string): void {
-    let next: Route | null = as.origination.get(prefix) || null;
+    let next = as.origination.get(prefix) || null;
     if (next === null) {
       const candidates = this.candidates(as, prefix);
       if (candidates.length) next = selectBest(candidates, this.topology.ases).route;
@@ -64,16 +64,16 @@ class Simulation {
     if (next === null) as.rib.delete(prefix);
     else as.rib.set(prefix, next);
     this.log(`BEST ${as.asn} ${prefix} ${routeText(next)}`);
-    as.changes++; this.current!.bestChanges++; this.changedPrefixes.add(prefix);
+    as.changes++; this.current.bestChanges++; this.changedPrefixes.add(prefix);
     const key = as.asn + '|' + prefix;
-    this.current!.exploration.set(key, (this.current!.exploration.get(key) || 0) + 1);
-    this.current!.bestLines.push({ time: this.time, asn: as.asn, prefix, route: next });
+    this.current.exploration.set(key, (this.current.exploration.get(key) || 0) + 1);
+    this.current.bestLines.push({ time: this.time, asn: as.asn, prefix, route: next });
     for (const session of as.sessions) if (session.link.up) {
       session.pending.add(prefix);
       if (session.timer === null) this.processPending(session);
     }
   }
-  advertised(session: Session, prefix: string): {content: Attribute | null; rule: Policies['rules'][number] | null} {
+  advertised(session: Session, prefix: string): {content: Attribute | null; rule: import('./types.ts').PolicyRule | null} {
     const asn = session.owner.asn, route = session.owner.rib.get(prefix);
     if (!route || (!route.local && route.path[0] === session.neighbor) || route.communities.includes(NO_EXPORT)) return { content: null, rule: null };
     const rule = appliedRule(this.policies, 'EXPORT', session, prefix, route.path, route.communities);
@@ -96,15 +96,15 @@ class Simulation {
       const message = this.messages.send(this.time, session, prefix, content);
       this.log(`SEND #${message.serial} ${message.sender}->${message.receiver} ${message.link.name} ${prefix} ` +
         (content === null ? 'WITHDRAW' : 'ANNOUNCE ' + attributeText(content)));
-      sent++; session.sent++; this.current!.updates++;
-      if (content === null) this.current!.withdrawals++;
+      sent++; session.sent++; this.current.updates++;
+      if (content === null) this.current.withdrawals++;
       if (rule) rule.hits++;
     }
     session.pending.clear();
     session.timer = sent > 0 && session.link.mrai > 0 ? this.time + session.link.mrai : null;
   }
-  receive(message: Delivery): void {
-    const { prefix, content } = message, session = message.link.sessions.get(message.receiver)!;
+  receive(message: Message): void {
+    const { prefix, content } = message, session = message.link.sessions.get(message.receiver);
     let result;
     if (content === null) { session.input.delete(prefix); result = 'WITHDRAW'; }
     else if (content.path.includes(message.receiver)) { session.input.delete(prefix); result = 'ANNOUNCE loop'; }
@@ -112,34 +112,34 @@ class Simulation {
       session.input.set(prefix, content);
       const evaluation = this.importEvaluation(session, prefix, content);
       if (evaluation.rule) evaluation.rule.hits++;
-      result = evaluation.route ? 'ANNOUNCE accept' + (evaluation.rule ? ' ' + evaluation.rule.name : '') : 'ANNOUNCE deny ' + evaluation.rule!.name;
+      result = evaluation.route ? 'ANNOUNCE accept' + (evaluation.rule ? ' ' + evaluation.rule.name : '') : 'ANNOUNCE deny ' + evaluation.rule.name;
     }
     session.received++;
     this.log(`RECV #${message.serial} ${message.sender}->${message.receiver} ${message.link.name} ${prefix} ${result}`);
     this.redecide(session.owner, prefix);
   }
-  originate(asn: number, prefix: string, origin: Origin, communities: string[]): void {
-    const as = this.topology.ases.get(asn)!;
+  originate(asn: number, prefix: string, origin: string, communities: string[]): void {
+    const as = this.topology.ases.get(asn);
     as.origination.set(prefix, originated(origin, parseCommunities(communities)));
     this.redecide(as, prefix);
   }
-  executeEvent(event: SimEvent): void {
+  executeEvent(event: Event): void {
     this.log(`EVENT ${event.number} ${event.text}`);
     const fields = event.fields;
     if (event.kind === 'INITIAL') {
       for (const item of this.topology.initial) this.originate(item.asn, item.prefix, item.origin, item.communities);
-    } else if (event.kind === 'ANNOUNCE') this.originate(Number(fields[1]), fields[2], fields[3] as Origin, fields.slice(4));
+    } else if (event.kind === 'ANNOUNCE') this.originate(Number(fields[1]), fields[2], fields[3], fields.slice(4));
     else if (event.kind === 'WITHDRAW') {
-      const as = this.topology.ases.get(Number(fields[1]))!;
+      const as = this.topology.ases.get(Number(fields[1]));
       as.origination.delete(fields[2]); this.redecide(as, fields[2]);
     } else if (event.kind === 'LINK_DOWN' || event.kind === 'LINK_UP') {
-      const link = this.topology.linkByName.get(fields[2])!;
+      const link = this.topology.linkByName.get(fields[2]);
       const sessions = Array.from(link.sessions.values()).sort((a, b) => a.owner.asn - b.owner.asn);
       link.up = event.kind === 'LINK_UP';
       if (!link.up) {
         link.downs++;
         for (const message of this.messages.removeLink(link)) {
-          this.log(`DROP #${message.serial} ${message.sender}->${message.receiver} ${link.name} ${message.prefix}`); this.current!.drops++;
+          this.log(`DROP #${message.serial} ${message.sender}->${message.receiver} ${link.name} ${message.prefix}`); this.current.drops++;
         }
         const remembered = sessions.map(session => prefixOrder(session.input.keys()));
         for (const session of sessions) {
@@ -150,10 +150,10 @@ class Simulation {
         session.pending = new Set(session.owner.rib.keys()); this.processPending(session);
       }
     } else {
-      const rule = this.policies.byName.get(fields[2])!, as = this.topology.ases.get(rule.asn)!;
+      const rule = this.policies.byName.get(fields[2]), as = this.topology.ases.get(rule.asn);
       rule.active = event.kind === 'POLICY_ON';
       if (rule.direction === 'IMPORT') {
-        const prefixes = new Set<string>();
+        const prefixes = new Set();
         for (const session of as.sessions) for (const prefix of session.input.keys()) prefixes.add(prefix);
         for (const prefix of prefixOrder(prefixes)) this.redecide(as, prefix);
       } else for (const session of as.sessions) if (session.link.up) {
@@ -171,26 +171,26 @@ class Simulation {
     return JSON.stringify([sessions, messages]);
   }
   checkDivergence(): void {
-    const period = this.current!;
+    const period = this.current;
     if (period.first !== null || period.deliveries > this.params.cap) return;
     const state = this.globalState();
     if (period.states.has(state)) {
-      period.first = period.states.get(state)!; period.repeat = this.time;
-      period.cycle = period.bestLines.filter(line => line.time > period.first! && line.time <= period.repeat!);
+      period.first = period.states.get(state); period.repeat = this.time;
+      period.cycle = period.bestLines.filter(line => line.time > period.first && line.time <= period.repeat);
     } else period.states.set(state, this.time);
   }
   tracePath(source: number, address: number): PathResult {
-    const visits: number[] = [source], hops: PathResult['hops'] = [];
+    const visits = [source], hops = [];
     let current = source, count = 0;
     while (true) {
-      const as = this.topology.ases.get(current)!;
-      let match: string | null = null;
+      const as = this.topology.ases.get(current);
+      let match = null;
       for (const prefix of as.rib.keys()) {
         const value = prefixValue(prefix);
         if (contains(value, address) && (match === null || value.length > prefixValue(match).length)) match = prefix;
       }
       if (match === null) return { result: hops.length ? 'BLACKHOLE' : 'UNREACHABLE', visits, hops, count };
-      const route = as.rib.get(match)!;
+      const route = as.rib.get(match);
       if (route.local) {
         hops.push({ asn: current, prefix: match, link: null });
         return { result: 'DELIVERED', visits, hops, count, arrival: current };
@@ -203,20 +203,20 @@ class Simulation {
     }
   }
   forwardingLoops(prefix: string): number[][] {
-    const arrows = new Map<number, number>(), visited = new Set<number>(), loops: number[][] = [];
+    const arrows = new Map(), visited = new Set(), loops = [];
     for (const as of this.topology.asOrder) {
-      const route = as.rib.get(prefix)!;
+      const route = as.rib.get(prefix);
       if (route && !route.local) arrows.set(as.asn, route.path[0]);
     }
     for (const as of this.topology.asOrder) {
       if (visited.has(as.asn)) continue;
-      const path: number[] = [], positions = new Map<number, number>();
+      const path = [], positions = new Map();
       let current = as.asn;
       while (current !== undefined && !visited.has(current) && !positions.has(current)) {
         positions.set(current, path.length); path.push(current); current = arrows.get(current);
       }
       if (current !== undefined && positions.has(current)) {
-        const cycle = path.slice(positions.get(current)!), minimum = Math.min(...cycle), start = cycle.indexOf(minimum);
+        const cycle = path.slice(positions.get(current)), minimum = Math.min(...cycle), start = cycle.indexOf(minimum);
         loops.push(cycle.slice(start).concat(cycle.slice(0, start)));
       }
       for (const node of path) visited.add(node);
@@ -230,7 +230,7 @@ class Simulation {
         record.end = this.time; this.activeRings.delete(key);
       }
       for (const [key, loop] of present) if (!this.activeRings.has(key)) {
-        const record: RingRecord = { prefix, loop, start: this.time, end: null };
+        const record = { prefix, loop, start: this.time, end: null };
         this.rings.push(record); this.activeRings.set(key, record);
       }
     }
@@ -240,7 +240,7 @@ class Simulation {
       const previous = this.activeTraces.get(trace.index);
       if (previous && previous.status !== status) { previous.end = this.time; this.activeTraces.delete(trace.index); }
       if (status !== null && !this.activeTraces.has(trace.index)) {
-        const record: ActiveTrace = { trace, status, result: path.result, visits: path.visits, start: this.time, end: null };
+        const record = { trace, status, result: path.result, visits: path.visits, start: this.time, end: null };
         this.traceRecords.push(record); this.activeTraces.set(trace.index, record);
       }
     }
@@ -251,10 +251,9 @@ class Simulation {
       const event = this.events[index], last = index + 1 === this.events.length;
       const end = last ? null : this.events[index + 1].time - 1;
       const starting = this.topology.asOrder.map(as => new Map(as.rib));
-      const period: Period = { event, convergence: 0, updates: 0, withdrawals: 0, drops: 0, bestChanges: 0, routesChanged: 0,
-        exploration: new Map(), bestLines: [], deliveries: 0, states: new Map(), first: null, repeat: null, cycle: [],
-        status: '', maxExploration: 0 };
-      this.current = period; this.time = event.time; this.changedPrefixes = new Set<string>(); this.executeEvent(event);
+      const period = { event, convergence: 0, updates: 0, withdrawals: 0, drops: 0, bestChanges: 0, routesChanged: 0,
+        exploration: new Map(), bestLines: [], deliveries: 0, states: new Map(), first: null, repeat: null, cycle: [] };
+      this.current = period; this.time = event.time; this.changedPrefixes = new Set(); this.executeEvent(event);
       while (true) {
         const deliveries = this.messages.takeTime(this.time);
         for (const message of deliveries) this.receive(message);
@@ -314,7 +313,7 @@ function ribsReport(simulation: Simulation): string[] {
       lines.push(`SESSION ${session.link.name} ${session.neighbor} ${role(session.link, as.asn)} ${session.link.up ? 'UP' : 'DOWN'} in ${session.input.size} accepted ${accepted} out ${session.output.size} sent ${session.sent} received ${session.received} flaps ${session.link.downs}`);
     }
     for (const prefix of prefixOrder(as.rib.keys())) {
-      const route = as.rib.get(prefix)!, candidates = simulation.candidates(as, prefix);
+      const route = as.rib.get(prefix), candidates = simulation.candidates(as, prefix);
       const reason = route.local ? '' : ' reason ' + selectBest(candidates, topology.ases).reason;
       lines.push(`${prefix} ${routeText(route)} candidates ${candidates.length}${reason}`);
       let alternatives = candidates.filter(candidate => !routesEqual(candidate, route));
@@ -333,7 +332,7 @@ function pathsReport(simulation: Simulation): string[] {
     const path = simulation.tracePath(trace.asn, trace.value);
     lines.push(`TRACE ${trace.asn} ${trace.address} ${path.result} hops ${path.count}`);
     for (const hop of path.hops) {
-      const ending = hop.link ? `next ${hop.link.sessions.get(hop.asn)!.neighbor} link ${hop.link.name}` : 'LOCAL';
+      const ending = hop.link ? `next ${hop.link.sessions.get(hop.asn).neighbor} link ${hop.link.name}` : 'LOCAL';
       lines.push(`HOP ${hop.asn} ${hop.prefix} ${ending}`);
     }
     const last = path.visits[path.visits.length - 1];
@@ -341,7 +340,7 @@ function pathsReport(simulation: Simulation): string[] {
     else if (path.result === 'BLACKHOLE' || path.result === 'UNREACHABLE') lines.push(`HOP ${last} NOROUTE`);
     if (path.hops.length === 0) lines.push('CONTROL NONE');
     else {
-      const route = topology.ases.get(trace.asn)!.rib.get(path.hops[0].prefix)!;
+      const route = topology.ases.get(trace.asn).rib.get(path.hops[0].prefix);
       const match = path.result === 'DELIVERED' && sameSequence(compressed(route.path), path.visits.slice(1));
       lines.push(`CONTROL ${route.local ? 'LOCAL' : pathText(route.path)} ${match ? 'MATCH' : 'MISMATCH'}`);
     }
@@ -359,9 +358,9 @@ function pathsReport(simulation: Simulation): string[] {
       const path = simulation.tracePath(as.asn, prefixValue(prefix).value);
       if (path.result === 'DELIVERED') {
         if (path.count === 0) return '*';
-        return topology.ases.get(path.arrival!)!.origination.has(prefix) ? '+' : 'X';
+        return topology.ases.get(path.arrival).origination.has(prefix) ? '+' : 'X';
       }
-      return ({ LOOP: 'L', BLACKHOLE: 'B', UNREACHABLE: 'U', DELIVERED: '+' } as Record<string, string>)[path.result];
+      return { LOOP: 'L', BLACKHOLE: 'B', UNREACHABLE: 'U' }[path.result];
     }).join('');
     lines.push((`REACH ${as.asn} ` + symbols).trimEnd());
   }
@@ -381,7 +380,7 @@ function auditReport(simulation: Simulation): string[] {
   const rings = simulation.rings.slice().sort((a, b) => a.start - b.start || prefixCompare(a.prefix, b.prefix) || a.loop[0] - b.loop[0]);
   for (const ring of rings) lines.push(`RING ${ring.prefix} from ${ring.start} to ${ring.end === null ? 'END' : ring.end} path ${pathText(ring.loop)}`);
   for (const as of topology.asOrder) for (const prefix of prefixOrder(as.rib.keys())) {
-    const route = as.rib.get(prefix)!;
+    const route = as.rib.get(prefix);
     if (route.local) continue;
     routes++;
     const path = compressed([as.asn, ...route.path]);
@@ -394,13 +393,13 @@ function auditReport(simulation: Simulation): string[] {
   for (const rule of simulation.policies.rules) lines.push(`RULE ${rule.name} ${rule.direction} ${rule.active ? 'ON' : 'OFF'} hits ${rule.hits}`);
   for (const period of simulation.periods) if (period.first !== null) {
     divergent++;
-    lines.push(`DIVERGENT event ${period.event.number} first ${period.first} repeat ${period.repeat} period ${period.repeat! - period.first}`);
-    const pairs = new Map<string, {asn: number; prefix: string; count: number}>();
+    lines.push(`DIVERGENT event ${period.event.number} first ${period.first} repeat ${period.repeat} period ${period.repeat - period.first}`);
+    const pairs = new Map();
     for (const item of period.cycle) {
       lines.push(`CYCLE ${item.time} ${item.asn} ${item.prefix} ${routeText(item.route)}`);
       const key = item.asn + '|' + item.prefix;
       if (!pairs.has(key)) pairs.set(key, { asn: item.asn, prefix: item.prefix, count: 0 });
-      pairs.get(key)!.count++;
+      pairs.get(key).count++;
     }
     const ordered = Array.from(pairs.values()).sort((a, b) => a.asn - b.asn || prefixCompare(a.prefix, b.prefix));
     for (const pair of ordered) lines.push(`OSCILLATE ${pair.asn} ${pair.prefix} changes ${pair.count}`);
