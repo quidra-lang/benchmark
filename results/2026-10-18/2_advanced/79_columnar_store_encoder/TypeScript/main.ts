@@ -1,6 +1,6 @@
 import type {
   Cell, Column, Input, Bounds, Chunk, WriteGroup, ParsedFile,
-  ParsedChunk, Page, Query, Condition
+  ParsedChunk, Page, Query, Condition, Comparison, ValueGroup
 } from './types.ts';
 
 import * as io from './schema_io.ts';
@@ -323,7 +323,7 @@ function metadata(file: ParsedFile, table: Cell[][]): string[] {
   return lines;
 }
 
-function comparisonNodes(condition: Condition): Condition[] {
+function comparisonNodes(condition: Condition | null): Comparison[] {
   if (condition === null) return [];
   if (condition.kind === 'comparison') return [condition];
   if (condition.kind === 'NOT') return comparisonNodes(condition.child);
@@ -352,7 +352,7 @@ function checkQuery(query: Query, schema: Column[]): string | null {
   for (const comparison of comparisons) {
     const column = byName.get(comparison.name);
     comparison.column = column.number;
-    comparison.values = comparison.literals.map(literal => column.type === 'DATE' ? io.dayNumber(literal.value) : literal.value);
+    comparison.values = comparison.literals.map(literal => column.type === 'DATE' ? io.dayNumber(literal.value as string) : literal.value);
   }
   for (const item of query.items) if (item.name !== null) item.column = byName.get(item.name).number;
   query.groupColumn = query.group === null ? null : byName.get(query.group).number;
@@ -372,7 +372,7 @@ function logical(operator: string, first: number, second: number): number {
   return first === TRUE || second === TRUE ? TRUE : first === UNKNOWN || second === UNKNOWN ? UNKNOWN : FALSE;
 }
 
-function comparisonTruth(condition: Condition, value: any): number {
+function comparisonTruth(condition: Comparison, value: any): number {
   const {operator, values} = condition;
   if (operator === 'IS NULL') return value === null ? TRUE : FALSE;
   if (operator === 'IS NOT NULL') return value === null ? FALSE : TRUE;
@@ -399,7 +399,7 @@ function evaluate(condition: Condition | null, values: Cell[]): number {
   return logical(condition.kind, evaluate(condition.left, values), evaluate(condition.right, values));
 }
 
-function zoneComparison(condition: Condition, information: any): Set<number> {
+function zoneComparison(condition: Comparison, information: any): Set<number> {
   const result = new Set();
   const {operator, values} = condition;
   const {count, nulls, statistics: stats} = information;
@@ -528,7 +528,7 @@ function fraction(numerator: number, denominator: number): string {
   return denominator === 1 ? String(numerator) : `${numerator}/${denominator}`;
 }
 
-function aggregateItem(item: Query['items'][number], group: {number: number; values: Cell[]}[], schema: Column[]) {
+function aggregateItem(item: Query['items'][number], group: ValueGroup, schema: Column[]) {
   if (item.kind === 'column') return io.valueText(group.key, schema[item.column].type);
   if (item.name === null) return String(group.rows.length);
   const values = group.rows.map(row => row.values[item.column]).filter(value => value !== null);
@@ -536,7 +536,7 @@ function aggregateItem(item: Query['items'][number], group: {number: number; val
   if (values.length === 0) return 'NULL';
   if (item.function === 'SUM' || item.function === 'AVG') {
     let total = 0;
-    for (const value of values) total += value;
+    for (const value of values) total += value as number;
     return item.function === 'SUM' ? String(total) : fraction(total, values.length);
   }
   let chosen = values[0];

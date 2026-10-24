@@ -87,9 +87,16 @@ export interface Literal {
   value: string | number | boolean;
 }
 export type Condition =
-  | {kind: 'comparison'; name: string; operator: string; literals: Literal[]; column?: number}
+  | {kind: 'comparison'; name: string; operator: string; literals: Literal[]; column?: number; values?: any[]}
   | {kind: 'NOT'; child: Condition}
   | {kind: 'AND' | 'OR'; left: Condition; right: Condition};
+
+export type Comparison = Extract<Condition, {kind: 'comparison'}>;
+
+export interface ValueGroup {
+  key: Cell;
+  rows: {number: number; values: Cell[]}[];
+}
 
 export type QueryItem =
   | {kind: 'column'; name: string; number?: number}
@@ -99,8 +106,10 @@ export interface Query {
   items: QueryItem[];
   condition: Condition | null;
   group: string | null;
-  order: {name: string; descending: boolean} | null;
+  order: {name: string; descending: boolean; column?: number} | null;
   limit: number | null;
+  aggregate?: boolean;
+  groupColumn?: number | null;
   needed?: number[];
   remaining?: number[];
   conditionColumns?: number[];
