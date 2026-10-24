@@ -373,7 +373,7 @@ def valid_visibility(visibility):
     if visibility.kind != "MILES":
         return True
     if visibility.denominator == 0:
-        return visibility.whole >= 1
+        return not visibility.joined and visibility.whole >= 1
     if visibility.joined and visibility.whole < 1:
         return False
     if visibility.denominator not in FRACTION_DENOMINATORS:
