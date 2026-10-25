@@ -1,18 +1,32 @@
+export interface Position {
+  file: string;
+  line: number;
+  column: number;
+}
+
+export interface Token {
+  kind: 'int' | 'string' | 'name' | 'keyword' | 'typevar' | 'symbol' | 'invalid' | 'eof';
+  text: string;
+  position: Position;
+  value?: string | number | null;
+  message?: string;
+}
+
 const keywords = new Set(['let', 'rec', 'and', 'in', 'fun', 'if', 'then', 'else', 'match', 'with', 'true', 'false', 'mod', 'val']);
 const symbols = [';;', '->', '::', '||', '&&', '<=', '>=', '<>', ':', ';', '=', '<', '>', '+', '-', '*', '/', '^', '(', ')', '[', ']', ',', '|'];
 
-function tokenize(text, file) {
-  const tokens = [];
+function tokenize(text: string, file: string): Token[] {
+  const tokens: Token[] = [];
   let index = 0;
   let line = 1;
   let column = 1;
-  function advance(length) {
+  function advance(length: number): void {
     for (let end = index + length; index < end; index++) {
       if (text[index] === '\n') { line++; column = 1; }
       else column++;
     }
   }
-  function token(kind, length, value, message) {
+  function token(kind: Token['kind'], length: number, value?: string | number | null, message?: string): void {
     tokens.push({kind, text: text.slice(index, index + length), value, message, position: {file, line, column}});
     advance(length);
   }
@@ -50,7 +64,7 @@ function tokenize(text, file) {
       let end = index + 1;
       let value = '';
       let invalidEscape = false;
-      const escapes = {n: '\n', t: '\t', '\\': '\\', '"': '"'};
+      const escapes: Record<string, string> = {n: '\n', t: '\t', '\\': '\\', '"': '"'};
       while (end < text.length && text[end] !== '"' && text[end] !== '\n') {
         if (text[end] === '\\' && end + 1 < text.length && text[end + 1] !== '\n') {
           const escaped = text[end + 1];
