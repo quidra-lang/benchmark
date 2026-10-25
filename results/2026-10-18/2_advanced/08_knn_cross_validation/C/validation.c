@@ -1,0 +1,14 @@
+#include "knn.h"
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
+const char *model_notation(Model m){static char buffers[32][160];static unsigned next;char *text=buffers[next++%32];snprintf(text,160,"k=%d metric=%s weighting=%s scaling=%s",m.k,metric_names[m.metric],weighting_names[m.weighting],scaling_names[m.scaling]);return text;}
+static int compare_rows(const void *left,const void *right){const Row *a=*(Row *const *)left,*b=*(Row *const *)right;if(a->label_index!=b->label_index)return a->label_index-b->label_index;return strcmp(a->id,b->id);}
+void stratified(const Rows *rows,int folds,int *assignment){Row *ordered[MAX_ROWS];memcpy(ordered,rows->values,(size_t)rows->count*sizeof *ordered);if(rows->count>1)qsort(ordered,(size_t)rows->count,sizeof *ordered,compare_rows);for(int j=0;j<rows->count;j++)for(int k=0;k<rows->count;k++)if(ordered[j]==rows->values[k]){assignment[k]=j%folds;break;}}
+Rows training_rows(const Rows *rows,const int *assignment,int excluded_fold){Rows training={0};for(int j=0;j<rows->count;j++)if(assignment[j]!=excluded_fold)training.values[training.count++]=rows->values[j];return training;}
+Orders neighbor_orders(const Rows *training,const Rows *queries,ScalingMethod method,Metric metric,Features features,int dimension){Scaling s=compute_scaling(training,method,dimension);double vectors[MAX_ROWS*MAX_FEATURES],query[MAX_FEATURES];for(int j=0;j<training->count;j++)transform(s,training->values[j],features,vectors+j*features.count);Orders orders={.queries=queries->count,.references=training->count};size_t count=(size_t)queries->count*training->count;orders.values=malloc(count*sizeof *orders.values);if(count&&!orders.values)exit(1);for(int j=0;j<queries->count;j++){transform(s,queries->values[j],features,query);neighbor_order(query,training,vectors,features.count,metric,orders.values+j*training->count);}return orders;}
+void predict_rows(Model m,const Rows *training,const Rows *queries,Features features,int dimension,Prediction *predictions){Orders orders=neighbor_orders(training,queries,m.scaling,m.metric,features,dimension);for(int j=0;j<queries->count;j++)predictions[j]=predict_order(orders.values+j*orders.references,orders.references,m.k,m.weighting);free(orders.values);}
+double rmse(const double *errors,int count){double sum=0;for(int j=0;j<count;j++)sum+=errors[j]*errors[j];return sqrt(sum/count);}
+double mae(const double *errors,int count){double sum=0;for(int j=0;j<count;j++)sum+=fabs(errors[j]);return sum/count;}
+double r_squared(const double *errors,const double *targets,int count){double sum=0;for(int j=0;j<count;j++)sum+=targets[j];double mean=sum/count,residual=0,spread=0;for(int j=0;j<count;j++)residual+=errors[j]*errors[j];for(int j=0;j<count;j++){double d=targets[j]-mean;spread+=d*d;}return 1-residual/spread;}
