@@ -1,4 +1,13 @@
-const operators = new Map([
+import type {Position, Token} from './lexer.ts';
+
+export interface Binding {
+  name: string;
+  position: Position;
+  expression?: any;
+  scheme?: any;
+}
+
+const operators = new Map<string, [number, boolean]>([
   ['||', [1, true]], ['&&', [2, true]], ['=', [3, false]], ['<>', [3, false]],
   ['<', [3, false]], ['>', [3, false]], ['<=', [3, false]], ['>=', [3, false]],
   ['::', [4, true]], ['^', [4, true]], ['+', [5, false]], ['-', [5, false]],
@@ -6,26 +15,26 @@ const operators = new Map([
 ]);
 
 class ParseError extends Error {
-  declare token: any;
-  constructor(token) { super('syntax error'); this.token = token; }
+  declare token: Token;
+  constructor(token: Token) { super('syntax error'); this.token = token; }
 }
 
 class Parser {
-  declare index: any;
-  declare tokens: any;
-  constructor(tokens) { this.tokens = tokens; this.index = 0; }
-  current() { return this.tokens[this.index]; }
-  fail() { throw new ParseError(this.current()); }
-  take(text) {
+  declare index: number;
+  declare tokens: Token[];
+  constructor(tokens: Token[]) { this.tokens = tokens; this.index = 0; }
+  current(): Token { return this.tokens[this.index]; }
+  fail(): never { throw new ParseError(this.current()); }
+  take(text: string): Token | null {
     if (this.current().text !== text) return null;
     return this.tokens[this.index++];
   }
-  expect(text) {
+  expect(text: string): Token {
     const token = this.take(text);
     if (token === null) this.fail();
     return token;
   }
-  name(allowWildcard = false) {
+  name(allowWildcard = false): Binding {
     const token = this.current();
     if (token.kind !== 'name' || (!allowWildcard && token.text === '_')) this.fail();
     this.index++;
@@ -35,7 +44,7 @@ class Parser {
     for (let i = parameters.length - 1; i >= 0; i--) body = {kind: 'fun', parameter: parameters[i], body, position};
     return body;
   }
-  binding() {
+  binding(): Binding {
     const binding = this.name();
     const parameters = [];
     while (this.current().kind === 'name') parameters.push(this.name(true));
