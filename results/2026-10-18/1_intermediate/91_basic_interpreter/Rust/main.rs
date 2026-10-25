@@ -693,7 +693,11 @@ impl Machine {
                     std::cmp::Ordering::Greater => 1,
                 }
             } else {
-                a.number().cmp(&b.number()) as i32 - 1
+                match a.number().cmp(&b.number()) {
+                    std::cmp::Ordering::Less => -1,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                }
             };
             let yes = match op {
                 "=" => ordering == 0,
