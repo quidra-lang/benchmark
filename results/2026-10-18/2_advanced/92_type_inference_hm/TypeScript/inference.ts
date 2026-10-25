@@ -56,9 +56,11 @@ class Inferencer {
       case 'application': {
         let callable = types.resolve(this.expression(expression.fn, environment));
         if (callable.kind === 'var') {
-          callable.bound = types.fn(types.fresh(), types.fresh());
-          callable = callable.bound;
-        } else if (callable.kind !== 'function') throw new InferenceError('function', expression.fn.position, {found: callable});
+          const functionType = types.fn(types.fresh(), types.fresh());
+          callable.bound = functionType;
+          callable = functionType;
+        }
+        if (callable.kind !== 'function') throw new InferenceError('function', expression.fn.position, {found: callable});
         check(callable.args[0], this.expression(expression.argument, environment), expression.argument.position);
         type = callable.args[1];
         break;
