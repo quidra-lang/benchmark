@@ -12,7 +12,15 @@ require_type <- function(a,b,op) if (!compatible(a,b)) fail(paste0("type mismatc
 compare <- function(a,b) {
   if (is.numeric(a)) return(sign(a-b))
   if (a == b) return(0L)
-  if (a < b) -1L else 1L
+  left <- utf8ToInt(a)
+  right <- utf8ToInt(b)
+  count <- min(length(left),length(right))
+  if (count > 0L) {
+    for (i in seq_len(count)) {
+      if (left[i] != right[i]) return(sign(left[i]-right[i]))
+    }
+  }
+  sign(length(left)-length(right))
 }
 quotient <- function(a,b) trunc(a/b)
 otherwise <- function(a,b) if (is.null(a)) b else a
@@ -74,11 +82,14 @@ tokenize <- function(source) {
     found <- regexpr("^[0-9]+|^[A-Za-z_][A-Za-z0-9_]*|^(<>|!=|<=|>=|\\|\\|)|^[(),.;*/%+\\-=<>]",rest,perl=TRUE)
     if (found[1] < 0L) fail(paste0("unexpected character '",substr(rest,1L,1L),"'"))
     word <- substr(rest,1L,attr(found,"match.length"))
-    item <- if (grepl("^[0-9]",word)) token("integer",as.numeric(word),word)
-    else if (grepl("^[A-Za-z_]",word)) {
+    item <- if (grepl("^[0-9]",word)) {
+      token("integer",as.numeric(word),word)
+    } else if (grepl("^[A-Za-z_]",word)) {
       upper <- toupper(word)
       if (upper %in% reserved) token("keyword",upper,word) else token("name",word,word)
-    } else token("symbol",word,word)
+    } else {
+      token("symbol",word,word)
+    }
     out[[length(out)+1L]] <- item
     i <- i+nchar(word)
   }
@@ -222,9 +233,11 @@ select_item <- function(p) {
   name <- alias_name(p)
   e <- value$expr
   tokens <- value$tokens
-  if (!is.null(name)) heading <- name
-  else if (e$kind == "ref" && tokens[[1]]$kind == "name") heading <- e$column
-  else {
+  if (!is.null(name)) {
+    heading <- name
+  } else if (e$kind == "ref" && tokens[[1]]$kind == "name") {
+    heading <- e$column
+  } else {
     parts <- character()
     for (i in seq_along(tokens)) {
       item <- tokens[[i]]
@@ -378,8 +391,9 @@ check_expr <- function(e,s,aggregates_allowed=FALSE,grouped=NULL,inside=FALSE) {
     return("INT")
   }
   if (e$kind == "binary") {
-    if (e$op %in% comparisons) require_type(types[1],types[2],e$op)
-    else {
+    if (e$op %in% comparisons) {
+      require_type(types[1],types[2],e$op)
+    } else {
       type <- if (e$op == "||") "TEXT" else "INT"
       for (value in types) require_type(value,type,e$op)
     }
