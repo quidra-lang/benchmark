@@ -433,8 +433,8 @@ public class Main {
                     if(b<0)fault("ILLEGAL FUNCTION CALL");
                     if(Math.abs(a)>1&&b>15)fault("OVERFLOW");
                     long total=1;
-                    for(int i=0;i<b;i++)total*=a;
-                    return checked(total);
+                    for(int i=0;i<b;i++)total=checked(total*a);
+                    return (int)total;
                 case "AND":return a&b;
                 case "OR":return a|b;
             }

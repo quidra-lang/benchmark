@@ -572,7 +572,7 @@ Machine <- function(inputs) {
                 }
             }
             if (!length(s$items) ||
-                !tail(s$items,1L)[[1]]$kind %in% c(";",",")) m$end_line()
+                !(tail(s$items,1L)[[1]]$kind %in% c(";",","))) m$end_line()
         } else if (s$kind %in% c("INPUT","READ")) {
             for (target in s$targets) {
                 place <- m$address(target)

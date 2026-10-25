@@ -528,7 +528,11 @@ function evaluate(m::Machine,e::Expr)
     elseif op == "^"
         b < 0 && fault("ILLEGAL FUNCTION CALL")
         abs(a)>1 && b>15 && fault("OVERFLOW")
-        return checked(a^b)
+        total = 1
+        for _ in 1:b
+            total = checked(total*a)
+        end
+        return total
     elseif op == "AND"
         return a & b
     elseif op == "OR"

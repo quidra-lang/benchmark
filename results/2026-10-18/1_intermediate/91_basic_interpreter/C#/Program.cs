@@ -454,8 +454,8 @@ sealed class Machine
                 if(b<0)Basic.Fault("ILLEGAL FUNCTION CALL");
                 if(Math.Abs(a)>1&&b>15)Basic.Fault("OVERFLOW");
                 long result=1;
-                for(int i=0;i<b;i++)result*=a;
-                return Checked(result);
+                for(int i=0;i<b;i++)result=Checked(result*a);
+                return (int)result;
             case "AND":return a&b;
             case "OR":return a|b;
         }

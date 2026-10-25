@@ -389,8 +389,8 @@ class Machine {
         if(y<0)fault('ILLEGAL FUNCTION CALL');
         if(x.abs()>1&&y>15)fault('OVERFLOW');
         var result=1;
-        for(var i=0;i<y;i++)result*=x;
-        return checked(result);
+        for(var i=0;i<y;i++)result=checked(result*x);
+        return result;
       case 'AND':return x&y;
       case 'OR':return x|y;
     }

@@ -458,8 +458,8 @@ func(m *Machine)evaluate(e *Expr)any{
         if y<0{fault("ILLEGAL FUNCTION CALL")}
         if (x>1||x< -1)&&y>15{fault("OVERFLOW")}
         result:=1
-        for range y{result*=x}
-        return checked(result)
+        for range y{result=checked(result*x)}
+        return result
     case "AND":return x&y
     case "OR":return x|y
     }
