@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <iostream>
 #include <map>
@@ -704,7 +705,7 @@ class Machine {
                         int n = std::get<int>(v);
                         if (n < 0) fault("ILLEGAL FUNCTION CALL");
                         std::size_t count = item.kind == "SPC" ? n :
-                            std::max<std::int64_t>(0, static_cast<std::int64_t>(n) - buffer.size());
+                            std::max<std::int64_t>(0, static_cast<std::int64_t>(n) - static_cast<std::int64_t>(buffer.size()));
                         buffer.append(count, ' ');
                     }
                 }
