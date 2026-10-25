@@ -1,21 +1,26 @@
 import * as types from './unifier.ts';
+import type {Position} from './lexer.ts';
+import type {Binding} from './parser.ts';
+
+type Node = {kind: string; position: Position; [key: string]: any};
+type BindingGroup = {bindings: Binding[]; recursive: boolean};
 
 class InferenceError extends Error {
   [key: string]: any;
-  declare position: any;
-  declare reason: any;
-  constructor(reason, position, details = {}) {
+  declare position: Position;
+  declare reason: string;
+  constructor(reason: string, position: Position, details: Record<string, unknown> = {}) {
     super(reason);
     Object.assign(this, {reason, position}, details);
   }
 }
 
-function check(expected, found, position) {
+function check(expected: types.Type, found: types.Type, position: Position): void {
   const failure = types.unify(expected, found);
   if (failure !== null) throw new InferenceError('check', position, {expected, found, failure});
 }
 
-function operatorType(operator) {
+function operatorType(operator: string): [types.Type, types.Type, types.Type] {
   if (['+', '-', '*', '/', 'mod'].includes(operator)) return [types.integer, types.integer, types.integer];
   if (operator === '^') return [types.string, types.string, types.string];
   if (operator === '&&' || operator === '||') return [types.boolean, types.boolean, types.boolean];
@@ -25,10 +30,10 @@ function operatorType(operator) {
 }
 
 class Inferencer {
-  declare locals: any;
+  declare locals: Binding[];
   constructor() { this.locals = []; }
 
-  expression(expression, environment) {
+  expression(expression: Node, environment: Map<string, types.Scheme>): types.Type {
     let type;
     switch (expression.kind) {
       case 'int': type = types.integer; break;
@@ -109,7 +114,7 @@ class Inferencer {
     return type;
   }
 
-  pattern(pattern, bindings) {
+  pattern(pattern: Node, bindings: Map<string, types.Type>): types.Type {
     let type;
     switch (pattern.kind) {
       case 'wildcard': type = types.fresh(); break;
@@ -146,7 +151,7 @@ class Inferencer {
     return type;
   }
 
-  group(group, environment, topLevel) {
+  group(group: BindingGroup, environment: Map<string, types.Scheme>, topLevel: boolean): Map<string, types.Scheme> {
     const names = new Set();
     for (const binding of group.bindings) {
       if (names.has(binding.name)) throw new InferenceError('letDuplicate', binding.position, {name: binding.name});
