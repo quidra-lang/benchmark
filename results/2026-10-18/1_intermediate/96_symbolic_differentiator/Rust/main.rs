@@ -729,8 +729,8 @@ fn quotient(coefficient: Rational, factors: &[Expression]) -> String {
         denominator.push(coefficient.denominator.to_string());
     }
     for factor in factors {
-        if let Expression::Power(base, Expression) = factor {
-            if let Expression::Number(exponent) = &**Expression {
+        if let Expression::Power(base, exponent_expression) = factor {
+            if let Expression::Number(exponent) = &**exponent_expression {
                 if exponent.numerator < 0 {
                     let positive = Expression::Number(exponent.negate());
                     if positive == one() {
