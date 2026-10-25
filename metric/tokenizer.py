@@ -262,8 +262,9 @@ def tokenize(source: str) -> list[Token]:
     Each numeric digit is a token; identifiers split at '_' and word-case
     boundaries. Alphanumeric words like real32 remain intact. The same token
     boundaries apply inside strings; their delimiters are separate tokens.
-    Four leading ASCII spaces count as one indentation token; LF and blank
-    lines count as tokens as well. Comments are counted, not discarded.
+    Four leading ASCII spaces count as one indentation token. Other runs
+    of ASCII spaces are counted in pairs, with a final single space counted
+    separately. LF and blank lines count as tokens, as do comments.
     """
     source = source.replace("\r\n", "\n").replace("\r", "\n")
     if source.startswith("\ufeff"):
@@ -305,13 +306,15 @@ def tokenize(source: str) -> list[Token]:
         if ch == "\n":
             emit("newline", i + 1)
             continue
-        if at_line_start and ch == " ":
-            if source.startswith("    ", i) and (literal_close_start is None or i + 4 <= literal_close_start):
+        if ch == " ":
+            if at_line_start and i + 4 <= token_limit and source.startswith("    ", i):
                 emit("indent4", i + 4)
+            elif i + 2 <= token_limit and source.startswith("  ", i):
+                emit("space", i + 2)
             else:
                 emit("space", i + 1)
             continue
-        if ch == " " or ch == "\t" or (ch.isspace() and ch != "\n"):
+        if ch == "\t" or (ch.isspace() and ch != "\n"):
             emit("space", i + 1)
             continue
 
