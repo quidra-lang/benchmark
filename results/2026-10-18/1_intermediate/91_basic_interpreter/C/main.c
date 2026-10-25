@@ -780,15 +780,6 @@ int compare(Value a, Value b) {
     return (a.number > b.number) - (a.number < b.number);
 }
 
-int64_t parse_decimal(Machine *m, const char *text) {
-    int64_t result = 0;
-    for (int i = 0; text[i]; ++i) {
-        result = result * 10 + text[i] - '0';
-        if (result > 32768) fail(m, "OVERFLOW");
-    }
-    return result;
-}
-
 Value call(Machine *m, const char *name, const Value *args, int count) {
     int64_t n = args[0].number;
     const char *s = args[0].type == 'S' ? args[0].text : "";
