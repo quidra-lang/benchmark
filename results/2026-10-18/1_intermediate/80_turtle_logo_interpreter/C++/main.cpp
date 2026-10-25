@@ -257,7 +257,6 @@ class Parser {
                 else result.items.push_back(item(token, kind));
             }
             if ((result.operation == "TRACE" || result.operation == "UNTRACE") && !procedures.count(result.items[0].word)) {
-                // The quote token is immediately after TRACE/UNTRACE.
                 const Token& quote = tokens[position - 1];
                 fail(quote, "I don't know how to " + result.items[0].word);
             }

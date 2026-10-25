@@ -324,7 +324,6 @@ class Workbench:
         count = len(numbers)
         distance = self.distance
         full = (1 << count) - 1
-        # rest[mask][i]: shortest path from stop i through every stop in mask and back to D
         rest = [[0] * count for _ in range(full + 1)]
         for i, number in enumerate(numbers):
             rest[0][i] = distance(number, DEPOT)

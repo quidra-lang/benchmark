@@ -318,7 +318,6 @@ static const Step STEPS[] = {
     {"5a", STEP_5A, LENGTH(STEP_5A)}, {"5b", NULL, 0},
 };
 
-/* Applies the rule with the longest matching suffix in place; returns the applied rule. */
 static const Rule *apply_rules(char *word, const Rule *rules, size_t rule_count)
 {
     size_t length = strlen(word);

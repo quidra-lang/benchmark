@@ -135,7 +135,7 @@ struct Round {
     Course* course;
     Tee* tee;
     int day;
-    array<int, 18> scores; // 0 denotes X, -1 denotes an unplayed hole
+    array<int, 18> scores;
     optional<int> previous_index;
     size_t previous_records;
     optional<Calculation> previous_calculation;
@@ -163,11 +163,11 @@ struct Player {
     string name;
     optional<int> index;
     vector<Round> rounds;
-    vector<pair<int, int>> records; // day, index
+    vector<pair<int, int>> records;
     optional<Calculation> calculation;
 
     optional<pair<int, int>> low_index(int day) const {
-        optional<pair<int, int>> lowest; // index, day
+        optional<pair<int, int>> lowest;
         for (auto [date, value] : records) {
             if (day - 365 <= date && date < day) {
                 pair<int, int> candidate{value, date};

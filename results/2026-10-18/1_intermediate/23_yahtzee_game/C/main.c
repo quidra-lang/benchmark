@@ -382,7 +382,6 @@ static void ranking(const Game *game, int order[MAX_PLAYERS]) {
 typedef struct {
     const Player *player;
     JokerRule joker;
-    /* Values at depth j are scaled by 7776^j to keep comparisons exact. */
     int64_t values[4][CODES], expectations[4][CODES];
 } Adviser;
 

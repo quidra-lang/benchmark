@@ -136,7 +136,6 @@ class Election {
     }
     preferred(field: Field): number[] { return field.slice().sort((a, b) => this.tieRank[a] - this.tieRank[b]); }
 
-    // Only counts and effective rankings are cached; method decisions use the current priority.
     aggregate(field: Field): Aggregate {
         const mask = field.reduce((bits, candidate) => bits | (1 << candidate), 0);
         const cached = this.cache.get(mask);

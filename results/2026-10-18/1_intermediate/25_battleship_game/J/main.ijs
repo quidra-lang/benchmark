@@ -44,7 +44,6 @@ ship_range =: 3 : '(cell_text {.y),''-'',cell_text {:y'
 next_random =: 3 : '2147483647|48271x*y'
 pad =: 4 : '((0>.x-#y)$'' ''),y'
 
-NB. Geometry is shared by games; all cells use row-major indices.
 geometry =: 3 : 0
     Around =: Orthogonal =: 0$a:
     Steps =: 0 4$0
@@ -428,7 +427,6 @@ stats_output =: 3 : 0
     end.
 )
 
-NB. Simulations own a fresh game and restore every live-game field afterward.
 match =: 3 : 0
     'seed1 seed2 strategy1 strategy2 mode' =. y
     saved =. snapshot''

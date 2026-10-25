@@ -254,7 +254,6 @@ static Hsl hsl(Color c) {
     return result;
 }
 
-/* The sector components are numerators with common denominator 60. */
 static Color sector(Int h) {
     Int q = h / 60;
     Int f = h % 60;

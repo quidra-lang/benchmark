@@ -640,7 +640,6 @@ class TemplateEngine:
         parts = parse_key(key)
         value = parse_value(notation)
         container = self.root
-        # The first newly created container stays detached until the whole key succeeds.
         detached = None
         for position, (part, prefix) in enumerate(parts):
             if isinstance(part, int) and part > len(container):

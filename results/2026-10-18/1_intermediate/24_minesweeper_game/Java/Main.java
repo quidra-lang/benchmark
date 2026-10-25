@@ -133,7 +133,7 @@ public class Main {
         Game(Game source, boolean keepMoves) {
             width = source.width; height = source.height; cells = source.cells; mineCount = source.mineCount; seed = source.seed;
             determined = source.determined; mine = source.mine.clone(); numbers = source.numbers.clone();
-            neighbors = source.neighbors; // Geometry is immutable.
+            neighbors = source.neighbors;
             revealed = source.revealed.clone(); marks = source.marks.clone(); state = source.state; exploded = source.exploded;
             moves = keepMoves ? new ArrayList<>(source.moves) : new ArrayList<>();
         }
@@ -256,7 +256,6 @@ public class Main {
             for (Constraint c : constraints) at[c.cell()] = c;
             for (Constraint a : constraints) {
                 int ax = a.cell() % width, ay = a.cell() / width;
-                // A nonempty subset pair shares a neighbor, putting its centers within two cells.
                 for (int y = Math.max(0, ay - 2); y <= Math.min(height - 1, ay + 2); y++) {
                     for (int x = Math.max(0, ax - 2); x <= Math.min(width - 1, ax + 2); x++) {
                         Constraint b = at[y * width + x];
@@ -456,7 +455,6 @@ public class Main {
                     if (undo.isEmpty()) throw error("nothing to undo");
                     Snapshot snapshot = undo.removeLast();
                     revealed = snapshot.revealed(); marks = snapshot.marks();
-                    // Operations only append to the move record, so its saved prefix is unchanged.
                     moves.subList(snapshot.moves(), moves.size()).clear();
                     line("undo %s moves %d", snapshot.command().name().toLowerCase(Locale.ROOT), moves.size());
                 }

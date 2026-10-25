@@ -537,7 +537,7 @@ class Simulator {
         }
       }
     } on MakeError catch (error) { output.add(error.message); }
-    on BuildAbort { /* The command already printed its failure. */ }
+    on BuildAbort {}
     finally { if (flags.contains('n')) { files = savedFiles; clock = savedClock; } }
   }
   void other(String commandLine) {

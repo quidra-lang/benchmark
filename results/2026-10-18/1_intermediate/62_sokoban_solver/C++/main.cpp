@@ -1201,7 +1201,7 @@ std::vector<std::string> readRows(int count) {
     return rows;
 }
 
-}  // namespace
+}
 
 int main() {
     std::ios::sync_with_stdio(false);

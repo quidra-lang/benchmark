@@ -81,7 +81,7 @@ class Element {
 class Word {
   final String original;
   final int start, end, ordinal;
-  int pattern = 0; // lowercase, title, uppercase
+  int pattern = 0;
   List<Mora> morae = [];
   List<Element> elements = [];
   late List<List<int>> sortKey;

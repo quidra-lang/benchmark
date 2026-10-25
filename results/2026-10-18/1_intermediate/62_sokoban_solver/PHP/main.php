@@ -818,7 +818,6 @@ final class Sokoban
     {
         $boxes = $this->current->boxes;
         $best = null;
-        // Choosing unused goal indices in ascending order enumerates assignments lexicographically.
         $visit = function (array $order, array $distances, int $total) use (&$visit, &$best, $boxes): void {
             $index = count($order);
             if ($index === count($boxes)) {

@@ -53,7 +53,6 @@ ARGUMENT_COUNTS = {
     'CRITICAL': 1,
     'PERIOD': 1,
 }
-# These commands accept the listed number of arguments or more.
 VARIADIC_COMMANDS = {'WATCH', 'UNWATCH', 'SHOW'}
 SIMULATION_COMMANDS = {
     'RESET', 'SET', 'APPLY', 'PULSE', 'CLOCK', 'RUN', 'WATCH', 'UNWATCH',
@@ -185,7 +184,6 @@ class Circuit:
         self.order = self.combinational_order()
 
     def combinational_order(self):
-        # Topological order of the non-DFF gates, or None if they contain a loop.
         waiting = {}
         ready = []
         for gate in self.gates:
@@ -321,7 +319,6 @@ class Simulation:
                 self.schedule(time + gate.delay, gate.output, self.values[gate.inputs[1]])
 
     def step(self, time):
-        # Returns the numbers of events and glitches, or None when the step oscillates.
         original = {}
         events = 0
         while self.queue and self.queue[0][0] == time:

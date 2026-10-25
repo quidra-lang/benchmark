@@ -564,7 +564,6 @@ runProgram =: 3 : 0
     TurtleX=:TurtleY=:Heading=:0
     Pen=:'DOWN'
     PenChar=:'*'
-    NB. The stated coordinate range is -1000..1000 on both axes.
     Canvas=:4004001$NUL
     EnvNames=:,<''
     EnvBindings=:,<(<0$a:),<i.0

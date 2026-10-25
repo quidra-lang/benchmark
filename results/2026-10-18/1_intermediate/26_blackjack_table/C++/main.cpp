@@ -574,7 +574,6 @@ public:
         std::int64_t value = 0, seed = 0;
         std::optional<Rules> proposed_rules;
 
-        // Argument errors precede state errors, even for commands that cannot run now.
         if (command == "SHOE") {
             value = integer(first, 1, 8);
             seed = integer(second, 1, 2147483646);

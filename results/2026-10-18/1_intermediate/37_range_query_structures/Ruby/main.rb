@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 KINDS = %i[SEG LAZY FEN RFEN SPARSE SQRT PERSIST GRID].freeze
 OPERATIONS = %i[SUM MIN MAX GCD].freeze

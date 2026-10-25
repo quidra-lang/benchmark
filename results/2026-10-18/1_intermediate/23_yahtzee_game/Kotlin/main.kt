@@ -140,7 +140,6 @@ private fun makeOutcomes(): List<List<Outcome>> = List(6) { size ->
 
 private val outcomes = makeOutcomes()
 
-// Stored turns share only arrays that remain unchanged; each roll creates a copy.
 private data class Turn(val seat: Int = 0, val rolls: Int = 0, val faces: IntArray = IntArray(5), val hold: Int = 0)
 private data class ScoreEntry(val before: Turn, val category: Int, val points: Int, val bonus: Int, val joker: Boolean)
 private data class RedoEntry(val after: Turn?, val entry: ScoreEntry)
@@ -411,7 +410,6 @@ private class Game(seed: Long, names: List<String>, val rules: Rules, val verbos
 }
 
 private class Adviser(val player: Player, val joker: JokerRule, depth: Int) {
-    // Every value at depth j is scaled by 7776^j, so comparisons stay exact.
     private val values = Array(depth + 1) { LongArray(CODES) { -1L } }
     private val expectations = Array(depth + 1) { LongArray(CODES) { -1L } }
 

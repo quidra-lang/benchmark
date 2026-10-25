@@ -659,7 +659,6 @@ class MetroPlanner:
                     continue
                 for train in direction.upcoming(j, time, count):
                     trains.append((direction.time(train, j), direction))
-        # The stable sort keeps line ID order and direction order for equal times.
         trains.sort(key=lambda entry: entry[0])
         return trains[:count]
 

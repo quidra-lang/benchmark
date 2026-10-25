@@ -163,7 +163,6 @@ const rule_tables = std.StaticStringMap([]const Rule).initComptime(.{
 
 const RuleOutcome = struct { word: []const u8, suffix: ?[]const u8 };
 
-// Apply the rule with the longest matching suffix; return the word and the applied suffix.
 fn applyRules(gpa: Allocator, word: []const u8, rules: []const Rule) Allocator.Error!RuleOutcome {
     var selected: ?Rule = null;
     for (rules) |rule| {
@@ -273,7 +272,6 @@ fn closestDistance(
             try gaps.append(gpa, positions[index] - positions[index - 1]);
         }
     } else {
-        // The closest pair of different stems is adjacent in the merged order.
         const Marker = struct {
             position: usize,
             source: u1,

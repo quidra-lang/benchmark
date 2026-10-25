@@ -28,12 +28,10 @@ result <- function(pattern, flags = 0L) list(pattern = pattern, flags = flags)
 small_integer <- function(value) as.integer(as.character(value))
 power_two <- function(exponent) as.bigz(2L)^exponent
 decimal_integer <- function(word) {
-    # GMP recognizes leading zeroes as octal, so remove decimal padding first.
     digits <- sub("^0+", "", word)
     as.bigz(if (nzchar(digits)) digits else "0")
 }
 
-# A separate sign preserves negative zero; n * 2^e / d is the magnitude.
 exact <- function(n = ZERO, e = 0L, d = ONE, negative = FALSE) {
     list(n = as.bigz(n), e = e, d = as.bigz(d), negative = negative)
 }
@@ -88,7 +86,6 @@ exact_sum <- function(terms, mode) {
         signs <- vapply(terms, function(term) term$negative, logical(1L))
         return(exact(negative = if (all(signs == signs[1L])) signs[1L] else mode == "RDN"))
     }
-    # All summation terms originate from patterns and therefore have d = 1.
     exponent <- min(vapply(nonzero, function(term) term$e, integer(1L)))
     aligned <- c_bigz(lapply(nonzero, function(term) {
         value <- term$n * power_two(term$e - exponent)

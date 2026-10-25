@@ -79,7 +79,6 @@ static class IntegerMath
     }
 }
 
-// A magnitude is Numerator * 2^Exponent / Denominator; its sign also preserves -0.
 readonly record struct Exact(long Numerator, int Exponent = 0, long Denominator = 1, bool Negative = false)
 {
     public Exact Negated() => this with { Negative = !Negative };
@@ -134,7 +133,6 @@ readonly record struct Exact(long Numerator, int Exponent = 0, long Denominator 
             bool same = terms.All(term => term.Negative == terms[0].Negative);
             return new(0, Negative: same ? terms[0].Negative : mode == Mode.Rdn);
         }
-        // Terms in sums and differences are dyadic, so their denominators are 1.
         long numerator = 0;
         foreach (var term in terms)
         {

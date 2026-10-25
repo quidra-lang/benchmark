@@ -80,8 +80,6 @@ Integer integer_sqrt(Integer n) {
     }
 }
 
-// Magnitudes use n * 2^exponent / denominator; negative also preserves signed zero.
-// The problem's bounds keep these integer computations within int64_t.
 struct Exact {
     Integer n;
     int exponent;
@@ -142,7 +140,6 @@ Exact exact_sum(const std::vector<Exact>& terms, Mode mode) {
         });
         return {0, 0, 1, same_sign ? terms.front().negative : mode == Mode::RDN};
     }
-    // All terms used in sums and differences are dyadic, with denominator 1.
     Integer numerator = 0;
     for (const Exact& term : terms) {
         if (!term.n) continue;

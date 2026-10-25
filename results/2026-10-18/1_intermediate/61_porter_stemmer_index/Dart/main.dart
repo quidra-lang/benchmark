@@ -234,7 +234,6 @@ int? closestDistance(List<int> positions, List<int> others, bool sameStem) {
         positions[index] - positions[index - 1],
     ];
   } else {
-    // The closest pair of different stems is adjacent in the merged order.
     final merged = [
       for (final position in positions) (position: position, source: 0),
       for (final other in others) (position: other, source: 1),

@@ -217,7 +217,6 @@ class Program
         return new(degrees, graph.Edges().Count, triangles, sizes, girth == int.MaxValue ? "none" : girth.ToString(), sizes.Count == 1 ? diameter.ToString() : "INF", sizes.Count == 1 ? radius.ToString() : "INF", bipartite ? "yes" : "no");
     }
 
-    // A lexicographically smallest coloring introduces new colors in numerical order.
     static bool ColorSearch(Graph graph, int count, int vertex, int largest, int[] colors)
     {
         if (vertex == graph.N) return true;

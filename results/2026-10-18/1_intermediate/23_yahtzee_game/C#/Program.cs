@@ -334,7 +334,6 @@ sealed class Adviser(Player player, JokerRule rule)
     readonly Dictionary<(int Depth, int Code), long> values = [];
     readonly Dictionary<(int Depth, int Code), long> expectations = [];
 
-    // At depth j, every value is scaled by 7776^j, so comparisons stay integral.
     long Value(int code, int depth)
     {
         if (values.TryGetValue((depth, code), out long cached)) return cached;

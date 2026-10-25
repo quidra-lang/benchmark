@@ -62,7 +62,6 @@ function integerSqrt(value: bigint): bigint {
     }
 }
 
-// The magnitude is n * 2^e / d; the separate sign also represents negative zero.
 class Exact {
     constructor(
         readonly n: bigint,
@@ -110,7 +109,6 @@ function exactSum(terms: readonly Exact[], mode: Mode): Exact {
         const sameSign = terms.every(term => term.sign === terms[0].sign);
         return new Exact(0n, 0, 1n, sameSign ? terms[0].sign : mode === 'RDN' ? 1 : 0);
     }
-    // Operands, products and differences entering a sum are dyadic (d = 1).
     const exponent = Math.min(...nonzero.map(term => term.e));
     let numerator = 0n;
     for (const term of nonzero) {
@@ -408,7 +406,6 @@ class Laboratory {
         this.emit(`PATTERNS finite=${2 * count} infinite=2 nan=${2 * (format.hidden - 1)} total=${1 << format.w}`);
     }
     execute(words: readonly string[]): void {
-        // Command names and arities are guaranteed by the input grammar.
         const command = words[0] as Command;
         if (command === 'FORMAT') {
             const name = words[1], e = Number(words[2]), m = Number(words[3]);

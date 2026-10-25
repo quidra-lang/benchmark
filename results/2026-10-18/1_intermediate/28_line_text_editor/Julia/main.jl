@@ -645,7 +645,6 @@ function apply!(editor::Editor, source::String, text::Vector{String})
     arity = address_kind(command.kind)
     arity == 0 && form.count > 0 && fail("unexpected address")
     arity == 1 && form.count == 2 && fail("too many addresses")
-    # Trial arrays are owned; shared strings and saved vectors are never mutated.
     trial = fork(editor.state)
     values = address_values!(trial, form)
     range = checked_range(trial, command.kind, values)

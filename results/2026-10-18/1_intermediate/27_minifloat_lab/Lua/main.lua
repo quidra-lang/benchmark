@@ -73,7 +73,6 @@ local function round_sqrt_units(value, exponent, mode)
     return whole, inexact
 end
 
--- The magnitude is n * 2^exponent / d; its separate sign preserves negative zero.
 local Exact = {}
 Exact.__index = Exact
 
@@ -129,7 +128,6 @@ function Exact.sum(terms, mode)
         if not same then negative = mode == "RDN" end
         return Exact.new(0, 0, 1, negative)
     end
-    -- All summands and differences here are dyadic, with denominator 1.
     local numerator = 0
     for _, term in ipairs(terms) do
         if term.n ~= 0 then

@@ -150,7 +150,6 @@ generate =: 3 : 0
         positions =. positions,<position
         legal =. legal,p
         key =. ,4{::>p
-        NB. Keys have equal row count or use a sentinel to put longer prefixes first.
         keys =. keys,<(key,_1)
     end.
     legal =. (\:keys){legal

@@ -8,7 +8,6 @@ const ADJACENT_KEYS: [&str; 26] = [
     "ijlmo", "kop", "jkn", "bhjm", "iklp", "lo", "aw", "deft", "adewxz", "fgry", "hijy", "bcfg",
     "aeqs", "cdsz", "ghtu", "asx",
 ];
-// h and w map to 0: that is their value as a first letter, and they are skipped elsewhere
 const SOUNDEX_DIGITS: &[u8; 26] = b"01230120022455012623010202";
 const SENTENCE_MARKS: [char; 3] = ['.', '!', '?'];
 const FINDING_KINDS: [&str; 4] = ["unknown", "case", "capital", "repeats"];

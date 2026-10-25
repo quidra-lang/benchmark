@@ -77,8 +77,6 @@ parse_settings =: 3 : 0
     end.
     if. 0~:(3{Settings)|2{Settings do. fail 'invalid sets' end.
 )
-NB. Processes: pid,count,exited,accesses,faults,writebacks,segfaults,protfaults,peak,hand.
-NB. Pages: process index,page,frame,slot,RO,locked,R,M,load,last,uses,age,seen.
 reset =: 3 : 0
     Processes =: 0 10$0
     Pages =: 0 13$0

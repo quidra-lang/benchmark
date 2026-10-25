@@ -186,7 +186,6 @@ const Adviser = struct {
     outcomes: *const Outcomes,
     values: std.AutoHashMapUnmanaged(usize, i64) = .empty,
     expectations: std.AutoHashMapUnmanaged(usize, i64) = .empty,
-    // Depth j uses the common denominator 7776^j; multiset weights count ordered rolls.
     fn value(adviser: *Adviser, code: usize, depth: usize) Allocator.Error!i64 {
         const key = depth * 46656 + code;
         if (adviser.values.get(key)) |cached| return cached;

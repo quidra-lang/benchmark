@@ -147,7 +147,6 @@ reaches =: 4 : 0
     0
 )
 
-NB. Validation is completed in token order before expression evaluation begins.
 query_tokens =: 3 : 0
     result =. 0$a:
     current =. ''

@@ -1135,7 +1135,6 @@ func (e *editor) apply(line string, text []string) (string, error) {
 	if command.addressKind() == 1 && addresses.count == 2 {
 		return "", errors.New("too many addresses")
 	}
-	// Records, cut text and file contents are immutable; each trial owns its edits.
 	trial := e.clone()
 	values, err := trial.evaluate(addresses)
 	if err != nil {

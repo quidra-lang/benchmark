@@ -630,7 +630,6 @@ class Session:
         print(f"bound: {max(maximum)}")
         print(f"safe: {yes_no(max(maximum) <= 1)}")
 
-        # A home marking exists only when there is exactly one terminal component.
         home = []
         if len(terminal_components) == 1:
             home = [k for k in range(len(graph.markings)) if component[k] in terminal_components]
@@ -836,7 +835,6 @@ class Session:
             return
         source, sink = sources[0], sinks[0]
 
-        # Vertices are the places followed by the transitions.
         successors = [
             [place_count + t for t in net.output_transitions[p]] for p in range(place_count)
         ]
@@ -883,7 +881,6 @@ class Session:
 
 
 def main():
-    # TINV searches firing sequences recursively, one level per fired transition.
     sys.setrecursionlimit(200_000)
     lines = iter(sys.stdin.read().splitlines())
     for _ in range(int(next(lines))):

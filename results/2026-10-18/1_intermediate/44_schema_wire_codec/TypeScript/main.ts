@@ -46,7 +46,7 @@ class Field {
     readonly repeated: boolean;
     readonly packed: boolean;
     readonly group: string | null;
-    type!: Type; // Resolved after all definitions, before the schema is used.
+    type!: Type;
     constructor(words: readonly string[]) {
         this.number = Number(words[1]); this.typeName = words[2]; this.name = words[3];
         this.required = words[4] === 'REQUIRED'; this.repeated = words[4] === 'REPEATED';

@@ -74,7 +74,6 @@ function distribution(words, length) {
 const weightList = counts => counts.flatMap((count, index) => count ? [`${index}:${count}`] : []).join(' ');
 function* fixedWeight(length, count) {
     if (count === 0) { yield 0; return; }
-    // Gosper's successor enumerates equal-weight vectors in lexicographic order.
     for (let word = 2 ** count - 1; word < 2 ** length;) {
         yield word;
         const lowest = word & -word, next = word + lowest;
@@ -463,7 +462,6 @@ function independent(command, args) {
     if (command === 'FACTOR') {
         let remaining = (1 << n) | 1, divisors = 1;
         const factors = [];
-        // Once all smaller factors are removed, a dividing candidate is irreducible.
         for (let candidate = 2; 2 * degree(candidate) <= degree(remaining); ++candidate) {
             let exponent = 0;
             while (divide(remaining, candidate).remainder === 0) {

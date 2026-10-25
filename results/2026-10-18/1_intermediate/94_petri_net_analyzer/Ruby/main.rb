@@ -1,4 +1,3 @@
-# Markings and graph states are immutable arrays; mutation is confined to Net.
 def yn(value) = value ? 'yes' : 'no'
 def mark(values) = '(' + values.map { |v| v.negative? ? 'w' : v.to_s }.join(',') + ')'
 def listing(values) = values.empty? ? 'none' : values.join(' ')

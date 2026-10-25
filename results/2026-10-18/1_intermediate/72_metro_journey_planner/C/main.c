@@ -312,7 +312,6 @@ static Search earliest(Station *origin, int departure) {
 }
 
 static void walk_step(Label *labels, bool *origins, bool *marked, Node **allocated) {
-    // Walks use a snapshot taken after all ride updates in this round.
     Label *recorded = copy_labels(labels);
     for (size_t i = 0; i < station_count; i++) {
         Station *u = stations[i];

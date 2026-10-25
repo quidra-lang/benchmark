@@ -715,7 +715,6 @@ private:
         } else if (key == "=" || key == ">") {
             modes[DECKPAM] = key == "=";
         } else if (key == "\\") {
-            // ST: nothing to do
         } else if (key == "(0" || key == "(B") {
             g0 = key[1] == '0' ? Charset::LineDrawing : Charset::Ascii;
         } else if (key == ")0" || key == ")B") {

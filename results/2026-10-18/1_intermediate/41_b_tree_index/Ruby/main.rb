@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 Entry = Data.define(:key, :value) do
   def initialize(key:, value:)

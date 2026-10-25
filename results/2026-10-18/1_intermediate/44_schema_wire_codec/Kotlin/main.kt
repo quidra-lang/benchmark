@@ -472,7 +472,6 @@ private fun tokenize(text: String): List<Token> {
 }
 
 private class LiteralParser(text: String) {
-    // Tokenize everything first: lexical errors take precedence over parsing errors.
     private val tokens = tokenize(text)
     private var position = 0
     private val next get() = tokens[position]
@@ -684,7 +683,6 @@ private class WireReader(private val data: ByteArray, private val explanation: M
                 values = listOf(value)
                 explanation?.add("$heading ${valueNotation(field, value)}")
             }
-            // EXPLAIN reads and validates records, but never applies them to a message.
             if (explanation == null) message.apply(field, values)
         }
         return message

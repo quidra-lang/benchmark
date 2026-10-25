@@ -28,7 +28,6 @@ fail <- function(message) {
 split_fixed <- function(text, separator) strsplit(text, separator, fixed = TRUE)[[1L]]
 trim_spaces <- function(text) trimws(text, whitespace = " ")
 
-# Each delimiter contains no braces, so its matches can be filtered by depth.
 depth_before <- function(text) {
   characters <- chars(text)
   c(0L, head(cumsum((characters == "{") - (characters == "}")), -1L))
@@ -481,7 +480,6 @@ cite <- function(database, style, text) {
     if (length(missing)) fail(paste0("unknown key '", keys[missing[1L]], "'"))
     list(start = start, finish = finish, kind = substr(text, start + 1L, opening - 1L), indices = indices)
   })
-  # All keys have been checked; every citation uses this complete new record.
   database$record <- unique(c(database$record, unlist(lapply(citations, `[[`, "indices"), use.names = FALSE)))
   numbers <- ieee_numbers(database)
   pieces <- character()

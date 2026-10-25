@@ -251,7 +251,6 @@ class RateLimit:
         self.buckets = {}
 
     def consume(self, client, time):
-        # Levels are token counts multiplied by the period, so refills stay integral.
         full = self.capacity * self.period
         level, last = self.buckets.get(client, (full, time))
         level = min(full, level + (time - last) * self.capacity)

@@ -428,7 +428,6 @@ def eval_named_let(items, form, env):
 def eval_let_star(items, form, env):
     bindings = parse_bindings(items[1], unique=False) if len(items) >= 3 else None
     require_shape(bindings is not None, form)
-    # Each binding gets its own frame; an empty let* still evaluates its body in a new frame.
     scope = env if bindings else Environment(env)
     for name, expr in bindings:
         value = evaluate(expr, scope)

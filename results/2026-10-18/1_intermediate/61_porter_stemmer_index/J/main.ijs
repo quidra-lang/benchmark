@@ -55,7 +55,6 @@ endsCvc =: 3 : 0
     if. 3 > #y do. 0 return. end.
     ('CVC' -: _3 {. pattern y) *. -. ({:y) e. 'wxy'
 )
-NB. Condition codes: 0 none, 1 m>0, 2 m>1, 3 ion rule, 4 final e, 5 *v*.
 holds =: 4 : 0
     select. x
     case. 0 do. 1
@@ -84,7 +83,6 @@ Rules4 =: Step4 ,. a: ,. <"0 (2 + Step4 = <'ion')
 Rules5a =: _3 ]\ 'e';'';4
 StepRules =: Rules1a;Rules1b;Rules1c;Rules2;Rules3;Rules4;<Rules5a
 
-NB. Applies the rule with the longest matching suffix; returns the word and the applied suffix.
 applyRules =: 4 : 0
     suffixes =. 0 {"1 x
     lengths =. (#&> suffixes) * suffixes ends&> <y
@@ -200,7 +198,6 @@ closest =: 3 : 0
     'positions others same' =. y
     if. same do. gaps =. (}. - }:) positions
     else.
-        NB. The closest pair of different stems is adjacent in the merged order.
         merged =. /:~ (positions ,. 0) , others ,. 1
         gaps =. ((}. - }:) {."1 merged) #~ (}. ~: }:) {:"1 merged
     end.

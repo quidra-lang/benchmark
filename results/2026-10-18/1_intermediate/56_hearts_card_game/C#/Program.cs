@@ -262,7 +262,6 @@ sealed class Game
     public void AutoGame() { if (State == TableState.Passing || State == TableState.Playing) AutoHand(); while (State != TableState.None) { Deal(); AutoHand(); } }
     public (int Winner, int Points) Preview(int card)
     {
-        // A trick simulation only needs the live hand state; no scores, RNG or persistent records are changed.
         Game copy = new(Rules, Bots, new Generator(1)) { Hands = CopySets(Hands), Taken = CopySets(Taken), Tricks = Tricks.Select(t => new List<Play>(t)).ToList(),
             Current = new(Current), Leader = Leader, Broken = Broken, State = TableState.Playing, Number = Number, TrickCounts = (int[])TrickCounts.Clone() };
         int count = copy.Tricks.Count; copy.PlayCard(card);

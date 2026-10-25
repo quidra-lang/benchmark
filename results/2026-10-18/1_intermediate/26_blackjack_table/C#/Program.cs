@@ -495,7 +495,6 @@ sealed class Table
         long amount = 0, seed = 0;
         Rules? proposed = null;
 
-        // Parse left to right before any phase checks or state changes.
         if (command == "SHOE")
         {
             amount = Format.Integer(first, 1, 8);

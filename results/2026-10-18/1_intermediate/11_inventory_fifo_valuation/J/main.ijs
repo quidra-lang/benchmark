@@ -1,4 +1,3 @@
-NB. Exact cents, shared current lot costs, and immutable linked issue/card records.
 LF=:10{a.
 EMPTY=:i.0 0
 LOTKINDS=:;:'receive adjust return count'
@@ -49,11 +48,6 @@ emit=:3:0
 fail=:3:0
   emit 'ERROR ',y
 )
-NB. I: reorder,last-receipt-cost,card-head,card-tail,item-lot-count.
-NB. L: item,day,initial-qty,initial-cost,creating-warehouse,kind,current-cost,removed.
-NB. O: warehouse,item,day,price,ordered,shipped,backorder,cancelled,returned,
-NB. revenue,COGS,issue-head,issue-tail. U: order,lot,qty,cost,next.
-NB. B: day,card-kind,warehouse,qty-change,value-change,next.
 iget=:4:0
   (<x,y){I
 )

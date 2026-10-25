@@ -301,7 +301,6 @@ sealed class State
     public List<HistoryRecord> Undo = [], Redo = [];
     public Dictionary<string, string[]> Files = new(StringComparer.Ordinal);
 
-    // Lines, history records, cut contents and file arrays are immutable once shared.
     public State Copy() => new()
     {
         Lines = [.. Lines], Current = Current, DisplayCount = DisplayCount, NextId = NextId,

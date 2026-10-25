@@ -116,7 +116,6 @@ validate_events <- function(cfg, lines) {
 }
 
 simulate <- function(cfg, events, policy, logging=TRUE) {
-  # Environments give cars and groups shared identity while their ordered lists change.
   s <- new.env(parent=emptyenv())
   s$groups <- list(); s$pending <- numeric(); s$fire <- 0; s$round <- 0; s$time <- 0
   s$log <- character(); s$status <- ""; s$abandoned <- s$evacuated <- s$delivered <- 0
@@ -372,7 +371,6 @@ for (q in seq_len(as.integer(lines[1]))) {
 }
 output <- c(output, "== ranking ==")
 ranked <- Filter(function(x) outcome(x) == "ranked", scenarios)
-# Stable insertion ordering compares exact cross products, before display truncation.
 if (length(ranked) > 1) for (i in 2:length(ranked)) {
   j <- i
   while (j > 1) {

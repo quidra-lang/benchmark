@@ -45,7 +45,6 @@ private class Network {
     fun edgeNumber(text: String) = text.toInt().takeIf {
         it in 1..edges.size
     }?.minus(1) ?: fail("UNKNOWN EDGE $text")
-    // Forward arcs precede all backward arcs, including in every vertex list.
     fun globalArcs() = listOf(true,false).flatMap {
         forward -> edges.indices.map {
             Arc(it,forward)
@@ -193,7 +192,6 @@ private class Network {
         }
         return false
     }
-    // Keep the usable arc sequence fixed and apply each relaxation immediately.
     fun shortest(s: Int): Pair<List<Long?>,List<Arc?>> {
         val arcs = globalArcs().filter {
             residual(it) > 0

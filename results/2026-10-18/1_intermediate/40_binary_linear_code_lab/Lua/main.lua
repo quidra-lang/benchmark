@@ -189,7 +189,6 @@ function Code:leaders()
                 result[index] = word; remaining = remaining - 1
                 if remaining == 0 then break end
             end
-            -- Gosper's successor preserves weight and increases lexicographic order.
             local lowest = word & -word
             local nextWord = word + lowest
             word = nextWord | (((nextWord ~ word) >> 2) // lowest)

@@ -995,7 +995,6 @@ final class Workspace
 
     private function listFiles(): void
     {
-        // Numeric names become integer keys, so convert them back before a byte-wise sort.
         $names = array_map(strval(...), array_keys($this->files));
         sort($names, SORT_STRING);
         $this->emit('FILES count=' . count($names));

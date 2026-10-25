@@ -309,7 +309,6 @@ public class Main {
                 gaps.add(positions.get(index) - positions.get(index - 1));
             }
         } else {
-            // The closest pair of different stems is adjacent in the merged order.
             record Marker(int position, int source) {}
             var merged = new ArrayList<Marker>();
             positions.forEach(position -> merged.add(new Marker(position, 0)));

@@ -47,7 +47,6 @@ check_cell =: 3 : 0
     if. +./(y<0)+.y>:GH,GW do. fail 'BAD CELL ',numbers y end.
 )
 
-NB. The common shape is immutable between LOAD commands.
 shape_walk =: 3 : 0
     'v l r' =. y
     Lo =: l v}Lo
@@ -300,7 +299,6 @@ sqrt_query =: 3 : 0
     value,(#whole),#cells
 )
 
-NB. Append-only node pools keep old subtrees shared by node index.
 pool_build =: 3 : 0
     'l r' =. y
     if. l=r do. row =. _1 _1,l{BuildValues

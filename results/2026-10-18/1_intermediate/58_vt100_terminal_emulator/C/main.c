@@ -394,7 +394,6 @@ static void execute_csi(Terminal *t, char final) {
                 char answer[80]; snprintf(answer, sizeof answer, "^[[%s%d;%d$y", dec ? "?" : "", p, state); reply(t, answer);
             } else supported = false;
     }
-    /* Unsupported ED/EL must not clear pending wrap. */
     if (invalid) ++t->ignored[3];
     else if (!supported) ++t->ignored[0];
     else ++t->sequences;
@@ -435,7 +434,6 @@ static void feed(Terminal *t, int b) {
         case CSI_ENTRY:
             if (b >= 60 && b <= 63) { t->marker = (char)b; t->parser = CSI_PARAM; break; }
             t->parser = CSI_PARAM;
-            /* fall through */
         case CSI_PARAM:
             if (b >= '0' && b <= '9') { t->has_params = true; t->value = minimum(9999, t->value*10+b-'0'); }
             else if (b == ';') {

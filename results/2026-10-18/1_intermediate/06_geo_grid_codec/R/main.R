@@ -9,8 +9,6 @@ os_letters <- "ABCDEFGHJKLMNOPQRSTUVWXYZ"
 columns <- c("STUVWXYZ", "ABCDEFGH", "JKLMNPQR")
 rows <- "ABCDEFGHJKLMNPQRSTUV"
 invalid <- function() stop("INVALID", call. = FALSE)
-# Inputs and correction products are exact integers below 2^53.
-# Correct a rounded quotient against products before making any grid decision.
 fd <- function(a, b) {
   q <- floor(a / b)
   while (q * b > a) q <- q - 1

@@ -105,7 +105,6 @@ public class Main {
         }
 
         Fraction add(Fraction other) {
-            // Denominators are powers of two; their maximum is their LCM.
             long common = Math.max(denominator, other.denominator);
             return new Fraction(numerator * (common / denominator)
                     + other.numerator * (common / other.denominator), common);

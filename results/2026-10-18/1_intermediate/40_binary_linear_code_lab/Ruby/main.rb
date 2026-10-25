@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 class CommandError < StandardError; end
 Format = Data.define(:types, :minimum, :maximum)

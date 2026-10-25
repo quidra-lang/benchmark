@@ -53,7 +53,6 @@ new_board <- function(width, height, mine_count, seed) {
                 state = "ready", exploded = 0L, moves = list(), undos = list()), parent = emptyenv())
 }
 
-# A board contains only vectors and lists, so R's copy-on-modify also isolates snapshots.
 copy_board <- function(board) list2env(as.list(board), parent = emptyenv())
 cell_text <- function(board, cell) paste0((cell - 1L) %% board$width, ",", (cell - 1L) %/% board$width)
 size_text <- function(board) paste0(board$width, "x", board$height)

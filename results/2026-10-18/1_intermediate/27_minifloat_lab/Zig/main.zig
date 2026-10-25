@@ -129,7 +129,6 @@ const Hex = struct {
     }
 };
 
-// The magnitude is n * 2^exponent / d; the separate sign preserves negative zero.
 const Exact = struct {
     n: u64 = 0,
     exponent: i32 = 0,
@@ -157,7 +156,6 @@ const Exact = struct {
             for (terms) |term| same = same and term.negative == terms[0].negative;
             return .{ .negative = if (same) terms[0].negative else mode == .RDN };
         }
-        // All sums and differences consist of dyadic terms with denominator 1.
         var numerator: i64 = 0;
         for (terms) |term| {
             if (term.n == 0) continue;

@@ -284,7 +284,6 @@ static void deduct(Stub *stub, int field, Amount amount, Amount *remaining) {
     *remaining -= stub->v[field];
 }
 
-/* Calculates a preview without modifying the employee or garnishment orders. */
 static int calculate(const Employee *employee, int period, Stub *stub, Amount *post_balances) {
     memset(stub, 0, sizeof(*stub));
     Amount *v = stub->v;

@@ -200,8 +200,6 @@ typedef struct {
     int state;
 } Definition;
 typedef struct {
-    // The specification allows 40 states, 20 variables, 5000 reservation
-    // creations and 10000 events added to the queue per chart.
     State states[41];
     int state_count, order[40], order_count;
     Variable variables[20];

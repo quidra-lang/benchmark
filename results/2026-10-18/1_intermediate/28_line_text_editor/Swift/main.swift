@@ -9,7 +9,7 @@ func isDigit(_ ch: Character) -> Bool { ch >= "0" && ch <= "9" }
 func isLower(_ ch: Character) -> Bool { ch >= "a" && ch <= "z" }
 func isUpper(_ ch: Character) -> Bool { ch >= "A" && ch <= "Z" }
 
-typealias Replacement = [Character?] // nil represents an unescaped '&'.
+typealias Replacement = [Character?]
 
 struct Delimited {
     let text: String
@@ -666,7 +666,6 @@ final class Editor {
     }
 
     func process(_ source: String, text: [String]) -> [String] {
-        // All state and history values use Swift's value and copy-on-write semantics.
         let previous = state
         let before = snapshot(source)
         output = []

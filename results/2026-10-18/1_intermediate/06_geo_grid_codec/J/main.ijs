@@ -1,4 +1,3 @@
-NB. Exact integer grid indices and rational floor; no binary floating operations.
 split =: 4 : 0
   <;._1 x,y
 )
@@ -101,7 +100,6 @@ dimensions =: 4 : 0
   case. 5 do. (k{SCALES)*360 270
   end.
 )
-NB. A cell is the integer vector system,precision,X,Y; precision zero is invalid.
 point_cell =: 3 : 0
   'sys p lat lon' =. y
   'w h' =. sys dimensions p

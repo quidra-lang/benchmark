@@ -336,7 +336,6 @@ local function relationship_text(a, b)
     return #result > 0 and table.concat(result, ", ") or "no relation"
 end
 
--- Coefficients are exact integer multiples of 2^-37.
 local coefficient_scale = 1 << 37
 local phi
 local function inbreeding(x)

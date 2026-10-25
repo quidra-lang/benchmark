@@ -208,7 +208,6 @@ func editOperations(_ first: String, _ second: String, _ keyboard: Bool) -> (Int
 
 func soundex(_ word: String) -> String {
     var code = word.prefix(1).uppercased()
-    // h and w have no digit; as the first letter they count as 0
     var previous = soundexDigits[word.first!, default: "0"]
     for letter in word.dropFirst() where letter != "h" && letter != "w" {
         let digit = soundexDigits[letter, default: "0"]
@@ -235,7 +234,6 @@ func segment(_ word: String, _ dictionary: [String: Int]) -> (ways: Int, best: [
             }
             ways[start] += ways[end]
             let candidate = [piece] + rest
-            // pieces share their start: with equal counts the earlier, shorter one is smaller
             if let current = best[start], current.count <= candidate.count {
                 continue
             }

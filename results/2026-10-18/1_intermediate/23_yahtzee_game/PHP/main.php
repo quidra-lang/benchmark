@@ -139,7 +139,6 @@ final class Dice {
 }
 
 final class Player {
-    /** @var array<int, ?int> */
     public array $scores;
     public int $yahtzeeBonus = 0;
     public function __construct(public readonly string $name, public Strategy $strategy = Strategy::Kind) {
@@ -176,12 +175,9 @@ final readonly class RedoEntry {
 final class Game {
     public readonly SplQueue $loaded;
     public array $faceTotals = [0, 0, 0, 0, 0, 0];
-    /** @var list<ScoreEntry> */
     public array $entries = [];
-    /** @var list<RedoEntry> */
     public array $redoList = [];
     public Turn $state;
-    /** @param list<Player> $players */
     public function __construct(public int $randomState, public readonly array $players, public readonly int $maxRolls,
                                 public readonly JokerRule $joker, private readonly ?Closure $output = null) {
         $this->loaded = new SplQueue();
@@ -336,7 +332,6 @@ final class Adviser {
     private array $values = [], $expectations = [];
     private readonly array $outcomes;
     public function __construct(private readonly Player $player, private readonly JokerRule $joker) { $this->outcomes = Dice::outcomes(); }
-    // Values at depth j share the denominator 7776^j, including the all-held choice.
     private function value(int $code, int $depth): int {
         $key = $depth * 46656 + $code;
         if (isset($this->values[$key])) return $this->values[$key];
@@ -370,7 +365,6 @@ final class Program {
     private int $rolls = 3;
     private JokerRule $joker = JokerRule::Forced;
     private ?Game $game = null;
-    /** @var array<string, GameRecord> */
     private array $records = [];
     public array $output = [];
     public function emit(string $format, mixed ...$args): void { $this->output[] = $args === [] ? $format : sprintf($format, ...$args); }

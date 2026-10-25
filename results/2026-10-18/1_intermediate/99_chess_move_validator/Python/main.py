@@ -161,7 +161,6 @@ def piece_targets(board, square):
 
 def attackers(board, target, color):
     pawn, knight, bishop, rook, queen, king = (colored(kind, color) for kind in 'PNBRQK')
-    # a pawn attacks the target from the squares an opposing pawn on the target would attack
     found = [square for square in PAWN_TARGETS[opponent(color)][target] if board[square] == pawn]
     found += [square for square in KNIGHT_TARGETS[target] if board[square] == knight]
     found += [square for square in KING_TARGETS[target] if board[square] == king]

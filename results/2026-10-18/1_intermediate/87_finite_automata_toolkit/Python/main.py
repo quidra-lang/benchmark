@@ -69,8 +69,6 @@ def reachable_from(sources, successors):
 
 
 def explore(origin, alphabet, step):
-    # Breadth-first search trying the symbols in symbol order: nodes are numbered in discovery
-    # order, and the word of each node is the smallest string (in shortlex order) leading to it.
     nodes = [origin]
     words = [""]
     index_of = {origin: 0}
@@ -710,7 +708,6 @@ class Toolkit:
         dfa, _ = determinize(automaton)
         if is_infinite(dfa):
             return ["INFINITE"]
-        # Every string of a finite language is shorter than the number of states.
         total = sum(count_by_length(dfa, len(automaton.states) - 1))
         return [f"FINITE {total}"]
 

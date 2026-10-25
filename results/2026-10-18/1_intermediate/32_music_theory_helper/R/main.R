@@ -33,7 +33,6 @@ parse_frequency <- function(text, tuning) {
 }
 frequency_text <- function(cents) sprintf("%d.%02d", cents %/% 100L, cents %% 100L)
 
-# A pitch retains its letter independently of its pitch class.
 new_pitch <- function(letter, alteration) c(letter = letter, alteration = alteration)
 pitch_class <- function(pitch) (naturals[pitch[["letter"]] + 1L] + pitch[["alteration"]]) %% 12L
 pitch_text <- function(pitch) paste0(letters[pitch[["letter"]] + 1L], accidentals[pitch[["alteration"]] + 3L])

@@ -161,7 +161,6 @@ final class Game
     }
     public function copy(bool $reset = false): self
     {
-        // PHP arrays copy on write; move and undo entries are immutable values.
         $copy = clone $this;
         $copy->undo = [];
         if ($reset) $copy->restart();

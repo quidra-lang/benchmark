@@ -59,7 +59,6 @@ allocation_text =: 3 : 0
     ' ' join parts
 )
 
-NB. Preference lists are explicit values so manipulation trials share no state.
 deferred =: 4 : 0
     preferences =. x
     reverse =. y

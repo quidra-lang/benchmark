@@ -278,7 +278,6 @@ class Stats {
       'tricks $tricks hearts $hearts queens $queens moons $moons';
 }
 
-// Everything that UNDO restores when a played card is taken back.
 class Round {
   var hands = List.generate(4, (_) => <int>{});
   var taken = List.generate(4, (_) => <int>{});
@@ -806,7 +805,6 @@ class Table {
   }
 
   List<String> tableCommand(String name, List<String> args) {
-    // Validate argument words before any state-dependent checks or mutation.
     final seat = const {'STACK', 'PASS', 'PLAY', 'CLAIM'}.contains(name)
         ? seatValue(args[0])
         : -1;

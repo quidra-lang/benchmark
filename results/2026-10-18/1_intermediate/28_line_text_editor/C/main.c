@@ -165,7 +165,6 @@ static bool digits(const char *s) {
     return true;
 }
 
-/* A delimiter read retains the distinction between & and escaped \&. */
 static bool delimited(const char *s, int *position, char delimiter, Replacement *value) {
     *value = (Replacement){0};
     while (s[*position]) {
@@ -920,7 +919,6 @@ int main(void) {
                 strcpy(text->items[text->count++], entered);
             }
         }
-        /* All mutable state and pending output belong to this transaction. */
         Execution *x = allocate(sizeof *x);
         *x = (Execution){.editor = editor_copy(&editor)};
         if (setjmp(x->jump) == 0) {

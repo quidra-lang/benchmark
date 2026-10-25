@@ -1,4 +1,3 @@
-NB. Exact cents, integer calendar events, and native boxed catalog records.
 LF=:10{a.
 EMPTY=:i.0 0
 split=:4:0
@@ -51,9 +50,6 @@ isbn_value=:3:0
     raw
   end.
 )
-NB. T: ISBN/name/price/copy-indices/queue/borrow-count.
-NB. P: ID/type/name/charge-table/history. Charges: day/kind/title/amount/unpaid.
-NB. C columns: title/copy-number/state/member/loan-day/due/renewals/expiry.
 tget=:4:0
   y{::x{::T
 )

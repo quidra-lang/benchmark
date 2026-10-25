@@ -225,7 +225,6 @@ class Program
         bool Usable(PackageVersion p) => (!p.Yanked || manager.installed.GetValueOrDefault(p.Name) == p) && (!audit || !manager.Vulnerable(p));
         void Record(Requirement r, string reason, Requirement? other)
         {
-            // Freeze the first failure at the greatest selection depth.
             if (Selected.Count <= failureDepth) return;
             failureDepth = Selected.Count;
             Failure = ["UNSATISFIABLE", .. r.Chain().Select(line => "  " + line), "  " + reason];

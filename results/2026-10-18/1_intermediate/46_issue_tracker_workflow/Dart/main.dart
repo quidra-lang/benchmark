@@ -282,7 +282,6 @@ class Tracker {
       IssuePredicate? predicate;
       if (operand) {
         if (token == 'NOT') {
-          // Another operand still follows.
         } else if (token == '(') {
           depth++;
         } else if (const {'AND', 'OR', ')'}.contains(token)) {

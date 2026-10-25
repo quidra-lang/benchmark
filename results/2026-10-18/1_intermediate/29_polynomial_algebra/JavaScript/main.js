@@ -320,7 +320,6 @@ function special(kind, order) {
   return current;
 }
 
-// Build a complete syntax tree before looking up names or performing arithmetic.
 class ExpressionParser {
   constructor(source) {
     this.tokens = [];

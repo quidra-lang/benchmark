@@ -384,7 +384,6 @@ func (t *Terminal) reply(text string) {
     t.emit("REPLY "+text)
 }
 func modeState(enabled bool) int { if enabled { return 1 }; return 2 }
-// Return an ignored reason, or -1 for an executed sequence.
 func (t *Terminal) csi(key string,params []int) int {
     p1,p2:=0,0
     if len(params)>0 {
@@ -806,7 +805,6 @@ func (t *Terminal) finish() {
 }
 func main() {
     input:=bufio.NewScanner(os.Stdin)
-    // A stream line contains at most 200 bytes; all directives are shorter.
     input.Buffer(make([]byte,256),256)
     input.Scan(); dimensions:=strings.Fields(input.Text())
     w,_:=strconv.Atoi(dimensions[0]); h,_:=strconv.Atoi(dimensions[1])

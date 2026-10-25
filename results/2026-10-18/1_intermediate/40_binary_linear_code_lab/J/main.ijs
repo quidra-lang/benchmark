@@ -58,7 +58,6 @@ dimension =: 3 : 0
     end.
 )
 
-NB. Packed rows retain their specified order; only the working pivots are reduced.
 basis =: 4 : 0
     pivots =. x#0
     selected =. i.0

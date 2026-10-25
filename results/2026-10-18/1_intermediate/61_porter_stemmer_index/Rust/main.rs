@@ -82,7 +82,6 @@ fn final_e_condition(remainder: &str) -> bool {
     value > 1 || (value == 1 && !ends_cvc(remainder))
 }
 
-// Applies the rule with the longest matching suffix; returns the word and the applied suffix.
 fn apply_rules(
     word: &str,
     rules: impl IntoIterator<Item = (&'static str, &'static str)>,
@@ -268,7 +267,6 @@ fn closest_distance(positions: &[usize], others: &[usize], same_stem: bool) -> O
     if same_stem {
         return positions.windows(2).map(|pair| pair[1] - pair[0]).min();
     }
-    // The closest pair of different stems is adjacent in the merged order.
     let mut merged: Vec<(usize, bool)> = positions
         .iter()
         .map(|&position| (position, false))

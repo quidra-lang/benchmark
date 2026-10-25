@@ -969,7 +969,6 @@ const Table = struct {
         args: []const []const u8,
         out: *Writer,
     ) Error!void {
-        // Validate argument words before any state-dependent checks or mutation.
         const seat = switch (command) {
             .STACK, .PASS, .PLAY, .CLAIM => try table.parseSeat(args[0]),
             else => 0,

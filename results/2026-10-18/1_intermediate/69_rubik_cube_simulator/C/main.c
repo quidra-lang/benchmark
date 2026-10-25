@@ -147,7 +147,6 @@ static Permutation identity(void) {
 }
 
 static Permutation compose(Permutation first, Permutation second) {
-    // Effects map each source sticker to its destination.
     Permutation p;
     for (int i = 0; i < 54; i++) p.to[i] = second.to[first.to[i]];
     return p;
@@ -237,7 +236,6 @@ static bool same_vector(Vector a, Vector b) {
 }
 
 static void initialize(void) {
-    // A sticker is identified by its cubie position and outward face normal.
     Vector positions[54], normals[54], face_normals[6] = {
         {{0, 1, 0}}, {{1, 0, 0}}, {{0, 0, 1}},
         {{0, -1, 0}}, {{-1, 0, 0}}, {{0, 0, -1}}

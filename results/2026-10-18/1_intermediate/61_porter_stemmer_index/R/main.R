@@ -107,7 +107,6 @@ RULE_TABLES <- list(
   "5a" = list(rule("e", "", final_e_condition))
 )
 
-# Apply the rule with the longest matching suffix; return the word and the applied suffix.
 apply_rules <- function(word, rules) {
   matching <- Filter(function(candidate) endsWith(word, candidate$suffix), rules)
   if (length(matching) == 0) {
@@ -228,7 +227,6 @@ closest_distance <- function(positions, others, same_stem) {
   if (same_stem) {
     gaps <- diff(positions)
   } else {
-    # The closest pair of different stems is adjacent in the merged order.
     merged <- c(positions, others)
     sources <- rep(c(0, 1), c(length(positions), length(others)))
     ordering <- order(merged)

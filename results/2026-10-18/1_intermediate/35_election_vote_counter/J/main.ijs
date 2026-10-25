@@ -71,7 +71,6 @@ finish =: 3 : 0
     order;tie;<rows
 )
 
-NB. Subset totals depend on the recorded groups, not on withdrawal or tiebreak.
 tallies =: 3 : 0
     key =. field_id y
     saved =. key{::Cache

@@ -237,7 +237,6 @@ fn alignment(s: &str) -> Option<String> {
     }.into())
 }
 
-// Collect definitions recursively before any inline conversion takes place.
 #[derive(Default)]
 struct Parser {
     references: HashMap<String, Reference>,
@@ -531,7 +530,6 @@ impl Renderer {
                     } else {
                         name
                     });
-                    // A complete reference suffix blocks shortcut fallback.
                     return self.references.get(&key).cloned().map(|r| (r, end + 1));
                 }
             }
@@ -894,7 +892,6 @@ impl Renderer {
     }
 
     fn document(&mut self, blocks: &[Block]) -> String {
-        // Resolve every TOC after all heading IDs and labels have been recorded.
         let html = self.blocks(blocks);
         let mut html = html.replace(TOC, &self.toc());
         if !self.note_names.is_empty() {

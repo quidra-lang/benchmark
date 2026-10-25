@@ -326,7 +326,6 @@ function ttc(market: Market): string[] {
   while (remaining.size) {
     const pointing = Array<number>(market.names.length).fill(-1);
     for (const agent of remaining) {
-      // Every remaining agent still owns a remaining house in its effective list.
       pointing[agent] = market.effective(agent).find(house => remaining.has(house))!;
     }
     const path: number[] = [];
@@ -467,7 +466,7 @@ class Laboratory {
 
   execute(line: string): string[] {
     const [word, name, ...args] = line.split(' ');
-    const command = word as Command; // The input grammar guarantees a listed command.
+    const command = word as Command;
     if (isCreation(command)) {
       if (this.#markets.has(name)) fail(`DUPLICATE MARKET ${name}`);
       const market = newMarket(command, name, args);

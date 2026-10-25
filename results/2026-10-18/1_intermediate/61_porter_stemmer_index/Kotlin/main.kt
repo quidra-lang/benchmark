@@ -173,7 +173,6 @@ fun closestDistance(positions: List<Int>, others: List<Int>, sameStem: Boolean):
     val gaps = if (sameStem) {
         positions.zipWithNext { earlier, later -> later - earlier }
     } else {
-        // The closest pair of different stems is adjacent in the merged order.
         val merged = (positions.map { it to 0 } + others.map { it to 1 }).sortedBy { it.first }
         merged.zipWithNext()
             .filter { (earlier, later) -> earlier.second != later.second }

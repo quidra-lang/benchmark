@@ -187,7 +187,6 @@ final class Code {
           result[s] = word;
           if (--remaining == 0) break;
         }
-        // Equal-weight vectors advance in their lexicographic order.
         final lowest = word & -word, next = word + lowest;
         word = next | (((next ^ word) >> 2) ~/ lowest);
       }

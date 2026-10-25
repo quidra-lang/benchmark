@@ -155,7 +155,6 @@ public class Main {
     }
 
     static void walkStep(Map<Station, Label> labels, Set<Station> origins, Set<Station> marked) {
-        // Walks use a snapshot taken after all ride updates in this round.
         Map<Station, Label> recorded = new HashMap<>();
         for (Station origin : origins) recorded.put(origin, labels.get(origin));
         for (Station u : stations.values()) if (origins.contains(u)) for (var walk : u.walks.entrySet()) {

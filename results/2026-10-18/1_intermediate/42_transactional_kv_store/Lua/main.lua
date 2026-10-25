@@ -479,7 +479,6 @@ function Store:control_command(command, args)
             .. ",list=" .. counts.list .. ",hash=" .. counts.hash .. ",set=" .. counts.set .. ",zset=" .. counts.zset
             .. ",time=" .. self.time .. ",depth=" .. #self.transactions .. ",snapshots=" .. count(self.snapshots) }
     end
-    -- Entries and their contents remain immutable after they enter the database.
     if command == "BEGIN" then self.transactions[#self.transactions + 1] = copy(self.database); return { "OK" } end
     if command == "COMMIT" or command == "ROLLBACK" then
         if #self.transactions == 0 then fail("ERR no transaction") end

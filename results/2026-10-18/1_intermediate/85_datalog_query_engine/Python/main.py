@@ -412,7 +412,6 @@ def compute_strata(predicates, rules):
         for head, dependency, weight in edges:
             if strata[head] < strata[dependency] + weight:
                 strata[head] = strata[dependency] + weight
-                # A stratum can never exceed the number of predicates without a negative cycle.
                 if strata[head] > len(strata):
                     return None
                 changed = True
@@ -490,8 +489,6 @@ def holds(literal, binding, negative):
 
 
 def solve(body, positive, negative, start):
-    # Positive atoms are joined left to right through indexes on their bound positions;
-    # negated atoms and comparisons are checked as soon as their variables are bound.
     atoms = [literal for literal in body if is_positive(literal)]
     known = set(start)
     stages = [set(known)]

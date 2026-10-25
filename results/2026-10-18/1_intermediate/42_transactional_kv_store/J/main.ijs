@@ -1,4 +1,3 @@
-NB. Values and database snapshots are ordinary J arrays, with value semantics.
 Lower =: 'abcdefghijklmnopqrstuvwxyz'
 Upper =: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 Quote =: 34{a.

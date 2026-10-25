@@ -414,7 +414,6 @@ static bool usable(Resolution *r, Package *p) {
 }
 
 static void record_failure(Resolution *r, Requirement *requirement, int kind, Package *p, Package *q) {
-    /* Copy the chains now, while all requirements from this branch are alive. */
     int count = 0;
     for (int i = 0; i < known_count; i++) count += r->selected[i] != NULL;
     if (count <= r->failure_depth) return;

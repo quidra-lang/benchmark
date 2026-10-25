@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 LAST_DAY = 36_524
 

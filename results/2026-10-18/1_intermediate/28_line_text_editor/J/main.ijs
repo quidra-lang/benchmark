@@ -1,4 +1,3 @@
-NB. Parallel content and identity vectors make snapshots ordinary J values.
 LF =: 10{a.
 BS =: '\'
 Match =: 0{a.
@@ -53,7 +52,6 @@ digits_end =: 4 : 0
     end.
     i
 )
-NB. Match is an internal marker for an unescaped replacement ampersand.
 delimited =: 3 : 0
     'source start delimiter' =. y
     text =. replacement =. ''
@@ -187,8 +185,6 @@ parse_substitution =: 3 : 0
     end.
     search;replacement;previous;replace_all;suffix;count
 )
-NB. Command fields: kind, argument, suffix, destination, pattern,
-NB. replacement, previous replacement, global replacement, count, subcommand.
 parse_command =: 3 : 0
     kind =. argument =. suffix =. search =. replacement =. ''
     destination =. NoTokens

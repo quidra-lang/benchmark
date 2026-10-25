@@ -4,7 +4,6 @@ Letters =: Upper , Lower
 Digits =: '0123456789'
 AdjacentKeys =: ;:'qswz ghnv dfvx cefrsx drsw cdgrtv bfhtvy bgjnuy jkou hikmnu ijlmo kop jkn'
 AdjacentKeys =: AdjacentKeys , ;:'bhjm iklp lo aw deft adewxz fgry hijy bcfg aeqs cdsz ghtu asx'
-NB. h and w map to 0: that is their value as a first letter, and they are skipped elsewhere
 SoundexDigits =: '01230120022455012623010202'
 SentenceMarks =: '.!?'
 FindingKinds =: ;:'unknown case capital repeats'
@@ -233,7 +232,6 @@ increment =: 4 : 0
     else. keys ; (>: index { counts) index } counts end.
 )
 
-NB. keys are "word>correction", which sort like the pairs because > precedes every letter
 logCorrection =: 3 : 0
     CorrectionLog =: CorrectionLog increment y
     Counters =: Counters + CounterNames = < 'corrected'

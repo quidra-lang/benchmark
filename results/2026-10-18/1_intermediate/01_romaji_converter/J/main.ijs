@@ -1,4 +1,3 @@
-NB. Exact mora identifiers in table order; 108=N, 109=Q, 110=L.
 split =: 4 : 0
   <;._1 x,y
 )
@@ -6,7 +5,6 @@ join =: 4 : 0
   if. 0=#y do. '' return. end.
   (#x) }. ; (<x) ,&.> y
 )
-NB. Strings from cut are lists; character literals/indexes may be atoms.
 text_equal =: 4 : 0
   (,x) -: ,y
 )
@@ -102,7 +100,6 @@ case_pattern =: 3 : 0
   end.
   _1
 )
-NB. Arguments: system, lowercase word, character offset. Longest then table order.
 syllable =: 3 : 0
   'sys value position' =. y
   best =. _1
@@ -205,7 +202,6 @@ long_flags =: 3 : 0
   end.
   (<pairs),<elements
 )
-NB. Word record: original; column; case; morae; mora columns; poem line.
 write_parts =: 3 : 0
   'sys word long_value' =. y
   morae =. 3{::word
@@ -462,7 +458,6 @@ execute =: 3 : 0
     end.
     ' ' join results return.
   end.
-  NB. Finish every parse before any command-specific writing.
   for_k. i.#words do.
     word =. k{::words
     sys =. source

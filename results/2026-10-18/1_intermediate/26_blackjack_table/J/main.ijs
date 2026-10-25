@@ -14,8 +14,6 @@ Names =: 7$<''
 Money =: 7 4$0x
 Stats =: 7 11$0x
 Participants =: i.0
-NB. Hand rows: owner, bet, split, split aces, finished, reason.
-NB. Reasons: none=0, bust=1, surrender=2, charlie=3.
 Hands =: 0 6$0x
 Cards =: 0$a:
 State =: 'idle'
@@ -484,7 +482,6 @@ command =: 3 : 0
     if. -.(<cmd)e.Commands do. fail 'unknown command ',cmd end.
     value =. 0x
     owner =. _1
-    NB. Argument validation precedes every state or command-specific check.
     if. cmd-:'SHOE' do.
         value =. 1 8 integer_word 1{::tokens
         seed =. 1 2147483646 integer_word 2{::tokens

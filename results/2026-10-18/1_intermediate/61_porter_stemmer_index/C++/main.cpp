@@ -325,7 +325,6 @@ std::optional<int> closestDistance(const std::vector<int>& positions,
             gaps.push_back(positions[index] - positions[index - 1]);
         }
     } else {
-        // The closest pair of different stems is adjacent in the merged order.
         std::vector<std::pair<int, int>> merged;
         for (int position : positions) {
             merged.emplace_back(position, 0);
@@ -1141,7 +1140,7 @@ private:
     }
 };
 
-}  // namespace
+}
 
 int main() {
     std::ios::sync_with_stdio(false);

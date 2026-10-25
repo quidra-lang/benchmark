@@ -343,7 +343,6 @@ end
 local Adviser = {}
 Adviser.__index = Adviser
 function Adviser.new(player, joker) return setmetatable({player = player, joker = joker, values = {}, expectations = {}}, Adviser) end
--- At depth j, values share the denominator 7776^j; weights count ordered rolls.
 function Adviser:value(code, depth)
     local key = depth * 46656 + code
     if self.values[key] ~= nil then return self.values[key] end

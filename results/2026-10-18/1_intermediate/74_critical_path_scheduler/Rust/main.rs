@@ -135,7 +135,6 @@ impl Project {
         p.sort_by(|x,y| x.b.cmp(&y.b));
         p
     }
-    // Kahn removal also supplies the exact remainder used to choose a cycle.
     fn order(&self) -> (Vec<String>,Option<String>) {
         let mut remaining: BTreeSet<String> = self.tasks.keys().cloned().collect();
         let mut order = Vec::new();

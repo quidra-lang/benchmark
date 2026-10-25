@@ -643,7 +643,6 @@ enum Command {
     CMD_PLAY,
     CMD_TRANSFORM
 };
-/* Argument kinds: n number, s steps, d direction, a name, t transform, x text. */
 static const char *commands[] = {
     "IMPORT", "VALID", "INFO",    "SHOW",   "EXPORT",  "MOVE",  "PUSH",  "BRING",       "PATH",
     "UNDO",   "REDO",  "RESET",   "STATUS", "HISTORY", "BOXES", "REACH", "DEADSQUARES", "DEADLOCK",

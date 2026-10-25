@@ -261,7 +261,6 @@ func advise(_ player: Player, dice: [Int], rollsLeft: Int, joker: Joker, rerolls
                 for outcome in rerolls.outcomes[rolled] {
                     sum += outcome.weight * values[combined(held.counts, outcome.counts)]!
                 }
-                // Scale all expectations at this depth to denominator 7776^depth.
                 expectations[held.counts] = sum * (powersOfSix[5] / powersOfSix[rolled])
             }
         }

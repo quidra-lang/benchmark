@@ -237,7 +237,6 @@ const Code = struct {
                     remaining -= 1;
                     if (remaining == 0) break;
                 }
-                // Gosper's successor preserves lexicographic order within a weight.
                 const lowest = word & (0 -% word);
                 const next = word + lowest;
                 word = next | (((next ^ word) >> 2) / lowest);

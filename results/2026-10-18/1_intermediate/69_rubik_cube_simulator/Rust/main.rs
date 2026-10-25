@@ -24,7 +24,6 @@ impl Move {
         }
     }
 }
-// A permutation maps each source sticker to its destination sticker.
 type Permutation = [usize; 54];
 type State = [u8; 54];
 fn identity() -> Permutation {

@@ -493,7 +493,6 @@ class Table:
             self.game = None
             return ["game abandoned"]
 
-        # Validate argument words before any state-dependent checks or mutation.
         seat = None
         cards = []
         if command in ("STACK", "PASS", "PLAY", "CLAIM"):

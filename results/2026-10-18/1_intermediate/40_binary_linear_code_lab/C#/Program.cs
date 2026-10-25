@@ -214,7 +214,6 @@ sealed class Code
                     result[syndrome] = word;
                     if (--remaining == 0) break;
                 }
-                // Gosper's successor enumerates each weight in lexicographic order.
                 uint lowest = word & unchecked(0u - word), next = word + lowest;
                 word = next | (((next ^ word) >> 2) / lowest);
             }

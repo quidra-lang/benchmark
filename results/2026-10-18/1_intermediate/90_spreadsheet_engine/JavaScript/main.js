@@ -1,7 +1,6 @@
 'use strict';
 const fs = require('fs');
 
-// Immutable expression trees also represent scalar and range values.
 class Expr {
   constructor(k, n = 0, m = 0, f = 0, s = '', a = null, b = null, args = []) {
     Object.assign(this, {k, n, m, f, s, a, b, args});

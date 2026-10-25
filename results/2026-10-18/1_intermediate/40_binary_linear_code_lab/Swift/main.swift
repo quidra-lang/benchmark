@@ -136,7 +136,6 @@ final class Code {
                     result[s] = word; remaining -= 1
                     if remaining == 0 { break }
                 }
-                // Gosper's successor visits equal-weight vectors in lexicographic order.
                 let lowest = word & (Word(0) &- word), next = word + lowest
                 word = next | (((next ^ word) >> 2) / lowest)
             }

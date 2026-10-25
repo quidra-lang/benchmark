@@ -217,7 +217,6 @@ public class Main {
         return new Invariants(degrees, graph.edges().size(), triangles, sizes, girth == Integer.MAX_VALUE ? "none" : "" + girth, sizes.size() == 1 ? "" + diameter : "INF", sizes.size() == 1 ? "" + radius : "INF", bipartite ? "yes" : "no");
     }
 
-    // A lexicographically smallest coloring introduces new colors in numerical order.
     static boolean colorSearch(Graph graph, int count, int vertex, int largest, int[] colors) {
         if (vertex == graph.n) return true;
         for (int color = 0; color < count && color <= largest + 1; color++) {

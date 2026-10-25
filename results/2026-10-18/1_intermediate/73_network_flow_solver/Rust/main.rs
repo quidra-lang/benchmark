@@ -77,7 +77,6 @@ impl Network {
             Ok(i-1)
         }
     }
-    // Forward arcs precede all backward arcs, including in every vertex list.
     fn global_arcs(&self) -> Vec<Arc> {
         [true,false].iter().copied().flat_map(|forward|(0..self.edges.len()).map(move |edge|Arc {
             edge,forward
@@ -275,7 +274,6 @@ impl Network {
         }
         false
     }
-    // Keep the usable arc sequence fixed and apply each relaxation immediately.
     fn shortest(&self, s: usize) -> (Vec<Option<i64>>,Vec<Option<Arc>>) {
         let arcs: Vec<_> = self.global_arcs().into_iter().filter(|&a|self.residual(a) > 0).collect();
         let mut distance = vec![None;self.names.len()];

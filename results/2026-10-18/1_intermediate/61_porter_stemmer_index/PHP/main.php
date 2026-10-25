@@ -121,7 +121,6 @@ function ruleTables(): array
     return $tables;
 }
 
-/** Apply the rule with the longest matching suffix; return the word and the applied suffix. */
 function applyRules(string $word, array $rules): array
 {
     $matching = array_filter($rules, fn(array $rule): bool => str_ends_with($word, $rule[0]));
@@ -253,7 +252,6 @@ function closestDistance(array $positions, array $others, bool $sameStem): ?int
             $gaps[] = $positions[$index] - $positions[$index - 1];
         }
     } else {
-        // The closest pair of different stems is adjacent in the merged order.
         $merged = array_merge(
             array_map(fn(int $position): array => [$position, 0], $positions),
             array_map(fn(int $other): array => [$other, 1], $others),

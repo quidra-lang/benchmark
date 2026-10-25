@@ -365,7 +365,6 @@ const Ledger = struct {
                 copy.next_day = 0;
                 copy.copies = 0;
                 try self.compute(&copy);
-                // No pointer into expenses is retained across the possible reallocation.
                 try self.expenses.append(self.gpa, copy);
                 try self.used.put(self.gpa, copy.id, {});
                 try out.print("  RECUR {s} {s}\n", .{ copy.id, try money(self.gpa, copy.total) });

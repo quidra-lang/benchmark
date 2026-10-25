@@ -38,7 +38,6 @@ check_cell <- function(grid, row, column) {
   }
 }
 
-# Numeric vectors represent the specified integers exactly within the 2^53 bound.
 tree_shape <- function(n) {
   tree <- record(n = n, left = rep.int(NA_integer_, 4L * n), right = integer(4L * n))
   visit <- function(node, left, right) {
@@ -277,7 +276,6 @@ sqrt_query <- function(tree, left, right) {
   list(text = paste0("sum=", number(value), " whole=", length(split$blocks), " cells=", length(split$cells)), values = value)
 }
 
-# Pools own immutable nodes; versions share unchanged child indices.
 new_pool <- function() record(left = integer(), right = integer(), values = numeric(), size = 0L)
 pool_append <- function(pool, left, right, value) {
   pool$size <- pool$size + 1L

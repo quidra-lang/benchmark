@@ -124,7 +124,6 @@ private class Planner {
         return labels
     }
     fun walkStep(labels: MutableMap<String,Label>, sources: Set<String>, changed: MutableSet<String>) {
-        // All walks use source labels captured before this walk step.
         val recorded = sources.sorted().map {
             it to labels.getValue(it)
         }

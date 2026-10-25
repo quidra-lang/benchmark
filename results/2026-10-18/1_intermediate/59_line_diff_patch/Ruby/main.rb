@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 DATA_COMMANDS = %w[FILE PATCH EDIT].freeze
 FORMATS_WITH_ARGUMENT = %w[IFDEF UNIFIED CONTEXT SIDE].freeze

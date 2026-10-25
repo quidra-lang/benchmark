@@ -369,7 +369,6 @@ class Simulation {
                 page.uses = page.m = page.age = 0;
                 process.peak = Math.max(process.peak, this.resident(process));
             }
-            // Eviction may have replaced this set's array.
             const target = this.tlb[page.number % this.settings.sets];
             if (target.length === this.settings.tlb / this.settings.sets) target.pop();
             target.unshift(page);

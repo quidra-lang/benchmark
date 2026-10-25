@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* All parse/render allocations live until the document has been written. */
 static void **allocations;
 static size_t allocation_count, allocation_capacity;
 static void *allocate(size_t bytes) {

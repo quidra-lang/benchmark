@@ -111,7 +111,7 @@ struct Round {
     pars: [i32; 18],
     indexes: [i32; 18],
     day: i32,
-    scores: [i32; 18], // -1 is unplayed, 0 is X
+    scores: [i32; 18],
     previous_index: Option<i32>,
     previous_records: usize,
     previous_calculation: Option<Calculation>,
@@ -128,7 +128,7 @@ struct Player {
     name: String,
     index: Option<i32>,
     rounds: Vec<Round>,
-    records: Vec<(i32, i32)>, // day, index
+    records: Vec<(i32, i32)>,
     calculation: Option<Calculation>,
 }
 

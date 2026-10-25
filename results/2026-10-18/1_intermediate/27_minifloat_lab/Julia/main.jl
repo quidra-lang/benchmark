@@ -77,7 +77,6 @@ function exact_sum(terms::Vector{Exact}, mode::Mode)
         same = all(term -> term.negative == terms[1].negative, terms)
         return Exact(0, 0, 1, same ? terms[1].negative : mode == RDN)
     end
-    # Pattern values and products are dyadic; their denominators are one.
     exponent = minimum(term.e for term in nonzero)
     total = sum((term.negative ? -term.n : term.n) << (term.e - exponent) for term in nonzero)
     Exact(abs(total), exponent, 1, total < 0 || (total == 0 && mode == RDN))

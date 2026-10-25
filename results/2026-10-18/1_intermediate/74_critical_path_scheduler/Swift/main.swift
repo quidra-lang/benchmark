@@ -130,7 +130,6 @@ final class Project {
             $0.b < $1.b
         }
     }
-    // Kahn removal also supplies the exact remainder used to choose a cycle.
     func order() -> ([String],String?) {
         var remaining = Set(names)
         var result = [String]()

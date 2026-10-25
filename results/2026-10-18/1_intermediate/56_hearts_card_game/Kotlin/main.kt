@@ -171,7 +171,6 @@ fun trickWinner(plays: List<Play>): Int {
 fun playsText(plays: List<Play>) =
     plays.joinToString(" ") { "${seatName(it.seat)} ${cardText(it.card)}" }
 
-// Everything that UNDO restores when a played card is taken back.
 class Round(
     val hands: List<MutableSet<Int>> = List(4) { mutableSetOf() },
     val taken: List<MutableSet<Int>> = List(4) { mutableSetOf() },
@@ -579,7 +578,6 @@ class Table {
     }
 
     private fun tableCommand(name: String, args: List<String>): List<String> {
-        // Validate argument words before any state-dependent checks or mutation.
         val seat = if (name in listOf("STACK", "PASS", "PLAY", "CLAIM")) seatValue(args[0]) else -1
         val cards =
             if (name in listOf("STACK", "PASS", "PLAY")) args.drop(1).map(::cardValue) else listOf()

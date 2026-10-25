@@ -522,7 +522,6 @@ function Inventory:command(cmd, a)
             self:emit(0, "VALUE", table.unpack(a))
         else
             self:emit(0, "AGING", table.unpack(a))
-            -- The report header includes the reference day.
             self.output[#self.output] = self.output[#self.output] .. " day " .. self.day
         end
         local total_q, total_value = 0, 0

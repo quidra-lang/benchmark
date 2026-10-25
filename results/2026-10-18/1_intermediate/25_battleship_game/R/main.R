@@ -21,7 +21,6 @@ coordinate <- function(cell) paste0(LETTERS[(cell - 1L) %/% 10L + 1L], (cell - 1
 parse_cell <- function(text) (match(substr(text, 1L, 1L), LETTERS) - 1L) * 10L + as.integer(substring(text, 2L))
 ship_range <- function(cells) paste0(coordinate(cells[1L]), "-", coordinate(cells[length(cells)]))
 
-# The generator product exceeds R's 32-bit integer range; all board counts fit it.
 advance <- function(state) as.integer(as.character((as.bigz(state) * 48271L) %% 2147483647L))
 
 step <- function(cell, dr, dc) {
@@ -394,7 +393,6 @@ statistics <- function(game) {
     }
 }
 
-# Fresh environments keep simulation changes separate from the current game.
 play_match <- function(current, first_seed, second_seed, first_strategy, second_strategy, mode = "quiet") {
     game <- new_game()
     game$salvo <- current$salvo

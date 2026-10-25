@@ -90,7 +90,6 @@ hand_line <- function(table, seat, index, verb = "") {
 }
 cut <- function(table) (length(table$shoe) * table$rules$PEN) %/% 100L
 
-# Only the generator product needs more than R's native 32-bit integers.
 next_random <- function(state) as.integer(as.character((as.bigz(state) * 48271L) %% 2147483647L))
 shuffle <- function(table) {
     table$shoe <- (seq_len(52L * table$decks) - 1L) %% 52L

@@ -42,8 +42,6 @@ function integerSqrt(value) {
   }
 }
 
-// Values keep an integer numerator, a binary exponent, and an integer denominator.
-// The separate sign also records the sign of an exact zero.
 class Exact {
   constructor(numerator, exponent = 0, denominator = 1n, sign = 0) {
     this.n = numerator;
@@ -96,7 +94,6 @@ function exactSum(terms, mode) {
     const sameSign = terms.every(term => term.sign === terms[0].sign);
     return new Exact(0n, 0, 1n, sameSign ? terms[0].sign : Number(mode === 'RDN'));
   }
-  // Arithmetic operands, products, sums, and differences are all dyadic (d=1).
   const exponent = Math.min(...nonzero.map(term => term.e));
   let numerator = 0n;
   for (const term of nonzero) {

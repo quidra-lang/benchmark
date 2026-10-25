@@ -47,7 +47,6 @@ new_election <- function(number, names) {
        cache = new.env(parent = emptyenv()))
 }
 
-# Cache entries contain counts only; withdrawal and tiebreak changes keep them valid.
 tallies <- function(election, field) {
   key <- as.character(field_id(field))
   if (exists(key, election$cache, inherits = FALSE)) return(get(key, election$cache, inherits = FALSE))

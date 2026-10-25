@@ -301,7 +301,6 @@ impl Search<'_> {
             vec![format!("requested {} {}",r.rule.name,r.rule.text)]
         }
     }
-    // Materialize a failure before backtracking changes its selection and origins.
     fn record(&mut self,r: &Requirement,reason: String,other: Option<&str>) {
         if self.failure.as_ref().is_none_or(|(depth,_)| self.selected.len() > *depth) {
             let mut out = vec!["UNSATISFIABLE".into()];

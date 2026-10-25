@@ -26,7 +26,7 @@ bool digits(const std::string& text) { return std::all_of(text.begin(), text.end
 char lowercase(char ch) { return upper(ch) ? static_cast<char>(ch + ('a' - 'A')) : ch; }
 
 using Text = std::vector<std::string>;
-using Replacement = std::vector<std::optional<char>>; // nullopt denotes an unescaped '&'.
+using Replacement = std::vector<std::optional<char>>;
 
 struct Delimited {
     std::string text;
@@ -714,8 +714,6 @@ class Editor {
 
 public:
     Text process(const std::string& source, const Text& text) {
-        // History buffers and file contents are immutable shared snapshots;
-        // all writable state is copied for the command's transaction.
         State previous = state;
         const Record before = snapshot(source);
         output.clear();

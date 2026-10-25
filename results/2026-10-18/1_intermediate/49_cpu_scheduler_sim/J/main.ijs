@@ -85,7 +85,6 @@ notation =: 3 : 0
  for_k. ks do. text =. text,<(k{::Keys),'=',number k{Params end.
  ' 'join text
 )
-NB. Job columns: state,burst,left,effective,wait,level,usage,enqueued,start,finish,selections.
 ready =: 3 : ';Queues'
 event =: 4 : 0
  Log =: Log,<(number Time),' ',x,((0<#y)#' '),y

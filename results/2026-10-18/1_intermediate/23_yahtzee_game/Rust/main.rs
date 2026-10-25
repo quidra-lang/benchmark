@@ -487,7 +487,6 @@ struct Adviser<'a> {
     player: &'a Player,
     joker: JokerRule,
     outcomes: &'a [Vec<Outcome>; 6],
-    // At depth j every stored value is scaled by 7776^j.
     values: Vec<Vec<i64>>,
     expectations: Vec<Vec<i64>>,
 }

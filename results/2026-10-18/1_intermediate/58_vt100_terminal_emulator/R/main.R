@@ -285,7 +285,6 @@ reply <- function(t, text) {
     cat("REPLY ", text, "\n", sep = "")
 }
 mode_state <- function(enabled) if (enabled) 1L else 2L
-# Return zero for executed, one for unsupported, or four for invalid.
 csi <- function(t, key, params) {
     p1 <- if (length(params)) params[1] else 0L
     p2 <- if (length(params) >= 2L) params[2] else 0L
@@ -409,7 +408,6 @@ csi <- function(t, key, params) {
     0L
 }
 execute_csi <- function(t, final) {
-    # Appending a sentinel preserves all empty fields, including a final one.
     fields <- if (nzchar(t$parameters)) strsplit(paste0(t$parameters, ";x"), ";", fixed = TRUE)[[1]] else character()
     if (length(fields)) fields <- fields[-length(fields)]
     if (length(fields) > 16L) {

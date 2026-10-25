@@ -79,7 +79,6 @@ int min_margin(const Rect& outer, const Rect& inner) {
     return *min_element(values.begin(), values.end());
 }
 
-// Each compressed cell is a whole rectangular block of equally covered unit squares.
 struct Grid {
     vector<int> xs, ys;
     vector<vector<int>> counts;

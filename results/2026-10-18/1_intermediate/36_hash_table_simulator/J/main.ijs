@@ -74,7 +74,6 @@ item_keys =: 3 : 0
 )
 sorted_items =: 3 : '(/:s:item_keys y){y'
 
-NB. Search retains the first reusable slot and the original path.
 search =: 4 : 0
     p =. chain =. available =. _1
     probes =. 0
@@ -238,7 +237,6 @@ remove_item =: 4 : 0
     shifted;<moves
 )
 
-NB. Trial rebuilds preserve their caller, including a failed cuckoo layout.
 rebuild =: 4 : 0
     saved =. snapshot ''
     (0{x) new_table 1{x

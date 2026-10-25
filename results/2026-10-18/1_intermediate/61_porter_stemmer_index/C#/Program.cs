@@ -122,7 +122,6 @@ static class Porter
         return value > 1 || (value == 1 && !EndsCvc(remainder));
     }
 
-    // Applies the rule with the longest matching suffix; returns the word and the applied suffix.
     static (string Word, string? Suffix) ApplyRules(string word, Rule[] rules)
     {
         var rule = rules
@@ -449,7 +448,6 @@ class SearchEngine
         }
         else
         {
-            // The closest pair of different stems is adjacent in the merged order.
             var merged = positions
                 .Select(position => (Position: position, Kind: 0))
                 .Concat(others.Select(other => (Position: other, Kind: 1)))

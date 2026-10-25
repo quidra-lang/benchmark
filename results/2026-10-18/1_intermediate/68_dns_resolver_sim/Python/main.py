@@ -516,7 +516,6 @@ class Resolver:
         if nameservers is None:
             yield from self.root_hints
             return
-        # A host's addresses are looked up only after every earlier host has failed.
         for host in sorted(nameservers, key=name_key):
             yield from self.host_addresses(host, depth, pending)
 

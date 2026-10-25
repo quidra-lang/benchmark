@@ -91,7 +91,6 @@ loadPGM =: 3 : 0
     replace w;h;m;p
     emit 'loaded ',summary Image
 )
-NB. Neighbor filters always read one immutable source image.
 filter =: 4 : 0
     'w h m p' =. y
     result =. i.0
@@ -130,7 +129,6 @@ statsLine =: 3 : 0
     mode =. ({.I.counts=>./counts){unique
     words 'min';({.sorted);'max';({:sorted);'mean';(<.(+/y)%#y);'median';((<.(<:#y)%2){sorted);'mode';mode
 )
-NB. Four- or eight-neighbor connected searches use pixel indices.
 component =: 4 : 0
     'w h mask start' =. y
     queue =. ,start

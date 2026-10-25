@@ -58,7 +58,6 @@ final readonly class Fraction {
 }
 
 final readonly class Dimension {
-    /** @param list<int> $exponents */
     public function __construct(public array $exponents = [0, 0, 0, 0, 0, 0, 0]) {}
     public function same(self $b): bool { return $this->exponents === $b->exponents; }
     public function isZero(): bool { return $this->exponents === [0, 0, 0, 0, 0, 0, 0]; }
@@ -103,7 +102,6 @@ final readonly class Token {
     public function __construct(public TokenKind $kind, public string $text, public int $position) {}
 }
 abstract class Parser {
-    /** @var list<Token> */
     private array $tokens = [];
     private int $index = 0;
     public function __construct(private readonly string $source, bool $quantity) {
@@ -170,7 +168,6 @@ final readonly class UnitPower implements UnitNode {
     public function __construct(public UnitNode $atom, public string $exponent) {}
 }
 final readonly class UnitProduct implements UnitNode {
-    /** @param list<array{string, UnitNode}> $terms */
     public function __construct(public array $terms) {}
 }
 final class UnitParser extends Parser {
@@ -215,7 +212,6 @@ final readonly class Negative implements QuantityNode {
     public function __construct(public QuantityNode $operand) {}
 }
 final readonly class Call implements QuantityNode {
-    /** @param list<QuantityNode> $arguments */
     public function __construct(public string $name, public array $arguments) {}
 }
 final class QuantityParser extends Parser {
@@ -266,11 +262,9 @@ final class QuantityParser extends Parser {
     private function unitString(): string { return substr($this->advance()->text, 1, -1); }
 }
 final readonly class ParsedUnit {
-    /** @param list<string> $names */
     public function __construct(public UnitNode $tree, public Quantity $quantity, public array $names) {}
 }
 final readonly class Reduced {
-    /** @param array<string, int> $exponents */
     public function __construct(public Fraction $coefficient, public array $exponents) {}
 }
 
@@ -290,11 +284,8 @@ final class Calculator {
         'inductance' => [1, 2, -2, -2, 0, 0, 0], 'illuminance' => [0, -2, 0, 0, 0, 0, 1],
         'catalytic_activity' => [0, 0, -1, 0, 0, 1, 0],
     ];
-    /** @var list<Unit> */
     private array $units = [];
-    /** @var array<string, Quantity> */
     private array $variables = [];
-    /** @var list<array{string, Fraction}> */
     private array $prefixes;
 
     public function __construct() {
@@ -487,7 +478,6 @@ final class Calculator {
         }
         throw new LogicException('Unknown quantity node');
     }
-    /** @return list<Unit> */
     private function matching(Dimension $dimension): array {
         $selected = array_values(array_filter($this->units, fn(Unit $unit): bool => $unit->quantity->dimension->same($dimension)));
         usort($selected, function(Unit $a, Unit $b): int {

@@ -134,8 +134,6 @@ var ruleTables = map[string][]rule{
 	"5a": {{"e", "", finalECondition}},
 }
 
-// applyRules applies the rule with the longest matching suffix and returns the
-// resulting word and the applied suffix ("" when no rule changed the word).
 func applyRules(word string, rules []rule) (string, string) {
 	var selected *rule
 	for index := range rules {
@@ -266,7 +264,6 @@ func closestDistance(positions, others []int, sameStem bool) (int, bool) {
 			gaps = append(gaps, positions[index]-positions[index-1])
 		}
 	} else {
-		// The closest pair of different stems is adjacent in the merged order.
 		type marker struct {
 			position int
 			source   int

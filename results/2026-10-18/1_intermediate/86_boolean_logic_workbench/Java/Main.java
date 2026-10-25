@@ -525,7 +525,6 @@ public class Main {
         Set<Clause> result = new HashSet<>();
         if (n.op.equals("0")) result.add(new Clause(0, 0));
         else if (n.op.equals("1")) {
-            // True contributes no clauses.
         } else if (n.left == null) result.add(new Clause(1 << (n.op.charAt(0) - 'A'), 0));
         else if (n.op.equals("~")) result.add(new Clause(0, 1 << (n.left.op.charAt(0) - 'A')));
         else {

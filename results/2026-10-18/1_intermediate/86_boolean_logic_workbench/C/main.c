@@ -812,7 +812,6 @@ static Clauses clauses(Node *n) {
     Clauses out = {0};
     if (n->op == '0') add_clause(&out, (Clause){0, 0});
     else if (n->op == '1') {
-        // True contributes no clauses.
     } else if (!n->left) add_clause(&out, (Clause){1u << (n->op - 'A'), 0});
     else if (n->op == '~') add_clause(&out, (Clause){0, 1u << (n->left->op - 'A')});
     else {

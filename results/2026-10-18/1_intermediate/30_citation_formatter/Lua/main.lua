@@ -597,7 +597,6 @@ function Manager:cite(text, style)
         citations[#citations + 1] = {start = start, finish = finish, kind = text:sub(start + 1, brace - 1), entries = entries}
         start = text:find("\\", finish + 1, true)
     end
-    -- Validation is complete before the citation record is updated.
     for _, citation in ipairs(citations) do
         for _, entry in ipairs(citation.entries) do
             if not self.recorded[entry] then self.recorded[entry] = true; self.record[#self.record + 1] = entry end

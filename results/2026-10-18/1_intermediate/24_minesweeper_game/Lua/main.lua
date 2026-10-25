@@ -133,7 +133,6 @@ function Game:unknown_neighbors(cell)
 end
 function Game:copy(reset)
     local result = setmetatable({}, Game)
-    -- Placements, numbers, neighbors and recorded moves remain immutable after creation.
     for key, value in pairs(self) do result[key] = value end
     result.revealed, result.marks, result.moves = copy_list(self.revealed), copy_list(self.marks), copy_list(self.moves)
     result.undo = {}

@@ -1,4 +1,3 @@
-NB. Milliseconds and products are integers; division explicitly enters exact rationals.
 split =: 4 : 0
   <;._1 x,y
 )
@@ -6,7 +5,6 @@ join =: 4 : 0
   if. 0=#y do. '' return. end.
   (#x)}.;(<x),&.>y
 )
-NB. Strings from cut are lists; character literals/indexes may be atoms.
 text_equal =: 4 : 0
   (,x) -: ,y
 )
@@ -50,7 +48,6 @@ time_text =: 4 : 0
 decimal_text =: 3 : 0
   (number y floor_ratio 100),'.',2 padded 100|y
 )
-NB. A cue is a boxed record: index; start; end; boxed text lines.
 characters =: 3 : 0
   +/#&>3{::y
 )

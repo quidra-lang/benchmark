@@ -141,7 +141,6 @@ const RULE_TABLES = {
   '5a': [{ suffix: 'e', replacement: '', condition: finalECondition }],
 };
 
-// Applies the rule with the longest matching suffix; returns the word and the applied suffix.
 function applyRules(word, rules) {
   const matching = rules.filter((rule) => word.endsWith(rule.suffix));
   if (matching.length === 0) {
@@ -269,7 +268,6 @@ function closestDistance(positions, others, sameStem) {
       gaps.push(positions[index] - positions[index - 1]);
     }
   } else {
-    // The closest pair of different stems is adjacent in the merged order.
     const merged = [
       ...positions.map((position) => [position, 0]),
       ...others.map((other) => [other, 1]),

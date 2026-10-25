@@ -1,4 +1,3 @@
-NB. Exact integer algorithms, indexed registry, and explicit validation phases.
 LF=:10{a.
 SYMBOLS=:'ACGTRYWSKMBDHVN'
 PARTNERS=:'TGCAYRWSMKVHDBN'

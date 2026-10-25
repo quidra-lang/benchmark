@@ -621,7 +621,6 @@ final class Store
                 . ',list=' . $counts['list'] . ',hash=' . $counts['hash'] . ',set=' . $counts['set'] . ',zset=' . $counts['zset']
                 . ',time=' . $this->time . ',depth=' . count($this->transactions) . ',snapshots=' . count($this->snapshots)];
         }
-        // Entries and their values are immutable; PHP arrays copy on modification.
         if ($command === 'BEGIN') { $this->transactions[] = $this->database; return ['OK']; }
         if ($command === 'COMMIT' || $command === 'ROLLBACK') {
             if ($this->transactions === []) throw new CommandError('ERR no transaction');

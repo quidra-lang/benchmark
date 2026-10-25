@@ -236,7 +236,6 @@ bot_turn <- function(game) {
   enter_score(game, category)
 }
 
-# Count-state transitions retain exact multinomial weights in bigz vectors.
 compositions <- function(total, faces = 6L) {
   if (faces == 1L) return(matrix(total, 1L, 1L))
   rows <- lapply(seq.int(0L, total), function(count) {

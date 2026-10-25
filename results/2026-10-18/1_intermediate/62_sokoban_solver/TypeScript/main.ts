@@ -357,7 +357,6 @@ function pushSearch(level: Level, start: Position, fixed: readonly number[], tar
     const nodes: SearchNode[] = [{boxes: start.boxes, representative, parent: -1, push: null}];
     const known = new Set([stateKey(start.boxes, representative)]);
     let expanded = 0;
-    // The append-only nodes array is also the FIFO queue; found children count as known states.
     while (expanded < nodes.length) {
         if (limit !== null && expanded === limit) return {outcome: 'limit', expanded, states: nodes.length, notation: ''};
         const parent = expanded, node = nodes[expanded++];
@@ -535,7 +534,6 @@ class Sokoban {
     bound(): void {
         const boxes = this.current.boxes, level = this.level;
         const best: {value: Assignment | null} = {value: null};
-        // Ascending goal indices make equal-total assignments retain the lexicographically first.
         const assign = (order: number[], pushes: number[], used: ReadonlySet<number>, total: number): void => {
             if (order.length === boxes.length) {
                 if (best.value === null || total < best.value.total) best.value = {order, pushes, total};
@@ -555,7 +553,6 @@ class Sokoban {
         boxes.forEach((box, index) => this.emit('box', level.cellText(box), 'goal', level.cellText(level.goalCells[chosen.order[index]]), 'pushes', chosen.pushes[index]));
     }
     save(name: string): void {
-        // Positions and box arrays are never mutated; snapshots can safely share them.
         this.snapshots.set(name, {position: this.current, history: this.history});
         this.emit('saved', name, 'moves', this.history.length);
     }

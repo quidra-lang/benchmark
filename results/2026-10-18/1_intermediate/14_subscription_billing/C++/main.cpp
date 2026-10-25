@@ -46,7 +46,7 @@ int period_length(const string& cycle) {
 }
 
 struct Tier {
-    int upper;  // -1 denotes INF.
+    int upper;
     Money unit;
     Money flat;
 };
@@ -108,8 +108,8 @@ struct Coupon {
     string name;
     string kind;
     Money value = 0;
-    int applications = -1;  // -1: forever.
-    int maximum = -1;       // -1: unlimited redemptions.
+    int applications = -1;
+    int maximum = -1;
     int redemptions = 0;
 };
 
@@ -402,7 +402,6 @@ class BillingService {
 
     void advance_subscription(Subscription& s) {
         if (s.state == "PAUSED" || s.state == "CANCELED") return;
-        // The invoice list is stable during the retry phase of a day.
         for (int id : s.invoices) {
             Invoice& bill = invoices[id - 1];
             if (!bill.retries.empty() && bill.retries.front() == day)

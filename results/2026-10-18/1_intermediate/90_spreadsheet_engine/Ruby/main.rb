@@ -1,4 +1,3 @@
-# Trees are immutable arrays; the sheet and each history entry share them safely.
 def num(n) = [:n, n]
 def txt(s) = [:s, s]
 def err(s) = [:e, s]

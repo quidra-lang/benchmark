@@ -373,29 +373,29 @@ static void execute(Editor *ed, char **tokens, int n) {
     int w=im ? im->w : 0, h=im ? im->h : 0, m=im ? im->m : 0;
     Image *out=NULL;
     switch (index) {
-    case 0: /* NEW */
+    case 0:
         if (a[0]<1 || a[0]>64 || a[1]<1 || a[1]>64 ||
             a[2]<1 || a[2]>255 || a[3]<0 || a[3]>a[2]) { error("bad value"); return; }
         out=make_image(a[0],a[1],a[2]);
         for (int i=0;i<a[0]*a[1];++i) out->p[i]=a[3];
         replace(ed,out,"created"); return;
-    case 1: /* OUTPUT */
+    case 1:
         printf("P2\n%d %d\n%d\n",w,h,m);
         for (int y=0;y<h;++y) {
             for (int x=0;x<w;++x) printf("%s%d",x==0 ? "" : " ",pixel(im,x,y));
             putchar('\n');
         }
         return;
-    case 2: /* INVERT */
+    case 2:
         out=copy_image(im);
         for (int i=0;i<w*h;++i) out->p[i]=m-im->p[i];
         break;
-    case 3: /* BRIGHTNESS */
+    case 3:
         if (a[0]<-255 || a[0]>255) { error("bad value"); return; }
         out=copy_image(im);
         for (int i=0;i<w*h;++i) out->p[i]=clamp(im->p[i]+a[0],0,m);
         break;
-    case 4: /* CONTRAST */
+    case 4:
         if (a[0]<0 || a[0]>100 || a[1]<1 || a[1]>100) { error("bad value"); return; }
         out=copy_image(im);
         for (int i=0;i<w*h;++i) {
@@ -403,18 +403,18 @@ static void execute(Editor *ed, char **tokens, int n) {
             out->p[i]=clamp(center+floor_div((im->p[i]-center)*a[0],a[1]),0,m);
         }
         break;
-    case 5: /* THRESHOLD */
+    case 5:
         if (a[0]<0 || a[0]>m) { error("bad value"); return; }
         out=copy_image(im);
         for (int i=0;i<w*h;++i) out->p[i]=im->p[i]>=a[0] ? m : 0;
         break;
-    case 6: /* LEVELS */
+    case 6:
         if (a[0]<0 || a[0]>=a[1] || a[1]>m) { error("bad value"); return; }
         out=copy_image(im);
         for (int i=0;i<w*h;++i)
             out->p[i]=clamp(floor_div((im->p[i]-a[0])*m,a[1]-a[0]),0,m);
         break;
-    case 7: /* POSTERIZE */
+    case 7:
         if (a[0]<2 || a[0]>m+1) { error("bad value"); return; }
         out=copy_image(im);
         for (int i=0;i<w*h;++i) {
@@ -422,17 +422,17 @@ static void execute(Editor *ed, char **tokens, int n) {
             out->p[i]=q*m/(a[0]-1);
         }
         break;
-    case 8: /* MAXVAL */
+    case 8:
         if (a[0]<1 || a[0]>255) { error("bad value"); return; }
         out=make_image(w,h,a[0]);
         for (int i=0;i<w*h;++i) out->p[i]=(2*im->p[i]*a[0]+m)/(2*m);
         break;
-    case 9: case 10: /* FLIPH, FLIPV */
+    case 9: case 10:
         out=copy_image(im);
         for (int y=0;y<h;++y) for (int x=0;x<w;++x)
             set_pixel(out,x,y,index==9 ? pixel(im,w-1-x,y) : pixel(im,x,h-1-y));
         break;
-    case 11: /* ROTATE */
+    case 11:
         if (a[0]!=90 && a[0]!=180 && a[0]!=270) { error("bad value"); return; }
         out=make_image(a[0]==180?w:h,a[0]==180?h:w,m);
         for (int y=0;y<out->h;++y) for (int x=0;x<out->w;++x) {
@@ -441,13 +441,13 @@ static void execute(Editor *ed, char **tokens, int n) {
             set_pixel(out,x,y,v);
         }
         break;
-    case 12: /* CROP */
+    case 12:
         if (!valid_crop(im,a[0],a[1],a[2],a[3])) { error("bad value"); return; }
         out=make_image(a[2],a[3],m);
         for (int y=0;y<out->h;++y) for (int x=0;x<out->w;++x)
             set_pixel(out,x,y,pixel(im,a[0]+x,a[1]+y));
         break;
-    case 13: /* PAD */
+    case 13:
         if (a[0]<1 || a[1]<0 || a[1]>m) { error("bad value"); return; }
         if (w+2*a[0]>64 || h+2*a[0]>64) { error("too large"); return; }
         out=make_image(w+2*a[0],h+2*a[0],m);
@@ -456,7 +456,7 @@ static void execute(Editor *ed, char **tokens, int n) {
             set_pixel(out,x,y,contains(im,px,py)?pixel(im,px,py):a[1]);
         }
         break;
-    case 14: /* SCALE */
+    case 14:
         if (a[0]<1 || a[0]>16 || a[1]<1 || a[1]>16) { error("bad value"); return; }
         {
             int nw=w*a[0]/a[1], nh=h*a[0]/a[1];
@@ -468,7 +468,7 @@ static void execute(Editor *ed, char **tokens, int n) {
                                            (2*y+1)*a[1]/(2*a[0])));
         }
         break;
-    case 15: /* SHIFT */
+    case 15:
         if (a[0]<-1000 || a[0]>1000 || a[1]<-1000 || a[1]>1000 ||
             a[2]<0 || a[2]>m) { error("bad value"); return; }
         out=copy_image(im);
@@ -477,14 +477,14 @@ static void execute(Editor *ed, char **tokens, int n) {
             set_pixel(out,x,y,contains(im,sx,sy)?pixel(im,sx,sy):a[2]);
         }
         break;
-    case 16: /* TILE */
+    case 16:
         if (a[0]<1 || a[1]<1) { error("bad value"); return; }
         if (w*a[0]>64 || h*a[1]>64) { error("too large"); return; }
         out=make_image(w*a[0],h*a[1],m);
         for (int y=0;y<out->h;++y) for (int x=0;x<out->w;++x)
             set_pixel(out,x,y,pixel(im,x%w,y%h));
         break;
-    case 17: case 18: case 19: case 20: /* CONVOLUTIONS */
+    case 17: case 18: case 19: case 20:
         {
             int kernel[9] = {1,1,1,1,1,1,1,1,1}, divisor = 9;
             if (index==18) {
@@ -501,7 +501,7 @@ static void execute(Editor *ed, char **tokens, int n) {
             out=convoluted(im,kernel,divisor);
         }
         break;
-    case 21: /* SOBEL */
+    case 21:
         out=copy_image(im);
         for (int y=0;y<h;++y) for (int x=0;x<w;++x) {
             int q[9],i=0;
@@ -512,17 +512,17 @@ static void execute(Editor *ed, char **tokens, int n) {
             set_pixel(out,x,y,clamp(abs(gx)+abs(gy),0,m));
         }
         break;
-    case 22: case 23: case 24: /* MEDIAN, ERODE, DILATE */
+    case 22: case 23: case 24:
         out=rank_filter(im,index==22?4:index==23?0:8);
         break;
-    case 25: case 26: /* OPEN, CLOSE */
+    case 25: case 26:
         {
             Image *middle=rank_filter(im,index==25?0:8);
             out=rank_filter(middle,index==25?8:0);
             free(middle);
         }
         break;
-    case 27: /* GRADIENT */
+    case 27:
         {
             Image *high=rank_filter(im,8), *low=rank_filter(im,0);
             out=copy_image(im);
@@ -530,7 +530,7 @@ static void execute(Editor *ed, char **tokens, int n) {
             free(high); free(low);
         }
         break;
-    case 28: case 29: case 30: case 31: /* DRAWING */
+    case 28: case 29: case 30: case 31:
         {
             int value=index==30?a[3]:index==31?a[2]:a[4];
             if (value<0 || value>m) { error("bad value"); return; }
@@ -591,9 +591,9 @@ static void execute(Editor *ed, char **tokens, int n) {
             commit(ed,out,painted);
         }
         return;
-    case 32: /* HISTOGRAM */
+    case 32:
         histogram(im); return;
-    case 33: /* EQUALIZE */
+    case 33:
         {
             int counts[256]={0},cdf[256]={0},total=0;
             for (int i=0;i<w*h;++i) ++counts[im->p[i]];
@@ -608,18 +608,18 @@ static void execute(Editor *ed, char **tokens, int n) {
                 out->p[i]=(2*(cdf[im->p[i]]-cmin)*m+span)/(2*span);
         }
         break;
-    case 34: /* LABEL */
+    case 34:
         if (a[0]<0 || a[0]>m) { error("bad value"); return; }
         labels(im,a[0]); return;
-    case 35: /* DISTANCE */
+    case 35:
         if (a[0]<0 || a[0]>m) { error("bad value"); return; }
         out=copy_image(im); distance_transform(out,a[0]); break;
-    case 36: /* STATS */
+    case 36:
         statistics(im,0,0,w,h); return;
-    case 37: /* REGION */
+    case 37:
         if (!valid_crop(im,a[0],a[1],a[2],a[3])) { error("bad value"); return; }
         statistics(im,a[0],a[1],a[2],a[3]); return;
-    case 38: /* DITHER */
+    case 38:
         {
             int e[MAX_PIXELS];
             memcpy(e,im->p,(size_t)w*h*sizeof(int));
@@ -635,7 +635,7 @@ static void execute(Editor *ed, char **tokens, int n) {
             }
         }
         break;
-    case 39: /* ASCIIART */
+    case 39:
         {
             const char *shades="@#*+=~-:,.";
             for (int y=0;y<h;++y) {
@@ -644,7 +644,7 @@ static void execute(Editor *ed, char **tokens, int n) {
             }
         }
         return;
-    case 40: /* STORE */
+    case 40:
         {
             int existing=slot_index(ed,slot);
             if (existing<0) {
@@ -657,20 +657,20 @@ static void execute(Editor *ed, char **tokens, int n) {
             printf("stored %s ",slot); summary(ed->slots[existing].image); putchar('\n');
         }
         return;
-    case 41: /* RECALL */
+    case 41:
         {
             char label[40];
             snprintf(label,sizeof(label),"recalled %s",slot);
             replace(ed,copy_image(ed->slots[si].image),label);
         }
         return;
-    case 42: /* DROP */
+    case 42:
         free(ed->slots[si].image);
         memmove(&ed->slots[si],&ed->slots[si+1],(size_t)(ed->slot_count-si-1)*sizeof(Slot));
         --ed->slot_count;
         printf("dropped %s\n",slot);
         return;
-    case 43: case 44: /* BLEND, DIFF */
+    case 43: case 44:
         {
             const Image *other=ed->slots[si].image;
             if (index==43 && (a[1]<1 || a[1]>100 || a[0]<0 || a[0]>a[1])) {
@@ -685,7 +685,7 @@ static void execute(Editor *ed, char **tokens, int n) {
                     abs(im->p[i]-other->p[i]);
         }
         break;
-    case 45: /* PASTE */
+    case 45:
         {
             if (a[0]<-1000 || a[0]>1000 || a[1]<-1000 || a[1]>1000) {
                 error("bad value"); return;
@@ -702,7 +702,7 @@ static void execute(Editor *ed, char **tokens, int n) {
             commit(ed,out,painted);
         }
         return;
-    case 46: /* SLOTS */
+    case 46:
         if (!ed->slot_count) { puts("no slots"); return; }
         qsort(ed->slots,(size_t)ed->slot_count,sizeof(Slot),slot_compare);
         for (int i=0;i<ed->slot_count;++i) {
@@ -710,18 +710,18 @@ static void execute(Editor *ed, char **tokens, int n) {
             summary(ed->slots[i].image); putchar('\n');
         }
         return;
-    case 47: /* INFO */
+    case 47:
         printf("image ");
         if (!im) printf("none"); else summary(im);
         printf(" undo %d redo %d slots %d\n",ed->undo_count,ed->redo_count,ed->slot_count);
         return;
-    case 48: /* UNDO */
+    case 48:
         if (!ed->undo_count) { error("nothing to undo"); return; }
         ed->redo[ed->redo_count++]=ed->current;
         ed->current=ed->undo[--ed->undo_count];
         printf("undo "); summary(ed->current); putchar('\n');
         return;
-    case 49: /* REDO */
+    case 49:
         if (!ed->redo_count) { error("nothing to redo"); return; }
         ed->undo[ed->undo_count++]=ed->current;
         ed->current=ed->redo[--ed->redo_count];

@@ -30,7 +30,6 @@ private data class Marriage(
 
 private data class Fraction private constructor(val numerator: Long, val denominator: Long) {
     operator fun plus(other: Fraction): Fraction {
-        // All denominators are powers of two, so the larger one is their LCM.
         val common = maxOf(denominator, other.denominator)
         return of(numerator * (common / denominator) +
             other.numerator * (common / other.denominator), common)

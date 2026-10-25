@@ -700,7 +700,6 @@ public class Main {
             Command command = Command.parse(line.substring(lexed.end));
             require(command.addressKind() != 0 || addresses.count == 0, "unexpected address");
             require(command.addressKind() != 1 || addresses.count != 2, "too many addresses");
-            // Only a successful command publishes the trial state and its output.
             State trial = state.copy();
             Range values = trial.evaluate(addresses);
             Range range = trial.checkedRange(command, addresses.count, values);

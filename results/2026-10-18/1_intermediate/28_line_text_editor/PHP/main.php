@@ -510,7 +510,6 @@ final class Editor
         };
         $compare = static fn(Line $left, Line $right): int => $numeric ? $key($left) <=> $key($right) : strcmp($key($left), $key($right));
         $ordered = array_slice($this->state->lines, $a - 1, $b - $a + 1);
-        // PHP's stable sort retains the first original line among equal keys.
         usort($ordered, static fn(Line $left, Line $right): int => ($reverse ? -1 : 1) * $compare($left, $right));
         $result = [];
         foreach ($ordered as $line) {
@@ -715,7 +714,6 @@ while (($input = fgets(STDIN)) !== false) {
         }
     }
     try {
-        // Arrays copy on write; all objects reachable through them are immutable.
         $next = clone $state;
         $editor = new Editor($next);
         $editor->process($line, $text, $state);

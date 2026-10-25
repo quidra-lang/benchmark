@@ -620,7 +620,6 @@ def choose_cover(primes, on, n, swap):
         shown = [p.translate(SWAP) if swap else p for p in cover]
         return sum(map(literal_count, cover)), sorted(map(pattern_key, shown))
 
-    # Fewest prime implicants first, then fewest literals, then pattern order.
     for count in range(len(optional) + 1):
         covers = [
             essential.union(chosen)

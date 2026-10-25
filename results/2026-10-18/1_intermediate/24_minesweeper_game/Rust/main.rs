@@ -215,7 +215,6 @@ impl Game {
         for (i, c) in constraints.iter().enumerate() { at[c.cell] = Some(i); }
         for a in &constraints {
             let (ax, ay) = (a.cell % self.width, a.cell / self.width);
-            // A nonempty subset pair shares a neighbor, so its centers are within two cells.
             for y in ay.saturating_sub(2)..=(ay + 2).min(self.height - 1) {
                 for x in ax.saturating_sub(2)..=(ax + 2).min(self.width - 1) {
                     let Some(index) = at[y * self.width + x] else { continue; };
@@ -418,7 +417,6 @@ impl Game {
                 let snapshot = self.undo.pop().ok_or_else(|| "nothing to undo".to_string())?;
                 self.revealed = snapshot.revealed;
                 self.marks = snapshot.marks;
-                // Successful operations only append, so the saved prefix is still intact.
                 self.moves.truncate(snapshot.moves);
                 println!("undo {} moves {}", snapshot.name, self.moves.len());
             }

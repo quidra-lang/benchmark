@@ -33,7 +33,6 @@ class CommandError(Exception):
 @dataclass(frozen=True)
 class Version:
     core: tuple
-    # Each identifier is (0, number) or (1, text), so numeric ones sort first.
     prerelease: tuple = ()
 
     @property

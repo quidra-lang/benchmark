@@ -194,7 +194,6 @@ function modifying(command) {
 }
 
 function copyState(state) {
-  // Line objects, history records, replacements and file contents are immutable.
   return { ...state, lines: state.lines.slice(), marks: new Map(state.marks), cut: state.cut.slice(),
     undo: state.undo.slice(), redo: state.redo.slice(), files: new Map(state.files) };
 }

@@ -170,7 +170,7 @@ std::vector<ChangeBlock> changeBlocks(const Lines& first, const Lines& second) {
 struct Step {
     int oldIndex;
     int newIndex;
-    const ChangeBlock* block;  // nullptr for a common line
+    const ChangeBlock* block;
 };
 
 std::vector<Step> walk(const std::vector<ChangeBlock>& blocks, int oldStart, int newStart,

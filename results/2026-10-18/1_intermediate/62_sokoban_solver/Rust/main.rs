@@ -415,7 +415,6 @@ impl Level {
     }
 }
 
-// A search key merges player positions with the same reachable region.
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct State {
     boxes: Vec<i32>,
@@ -447,7 +446,6 @@ fn search(level: &Level, start: &Position, fixed: &[i32], target: Option<i32>, p
         push: (0, 0)
     }];
     let mut expanded = 0;
-    // Nodes are queued in discovery order; the cursor is also the expansion count.
     while expanded < nodes.len() {
         if Some(expanded) == limit {
             return Search {
@@ -907,7 +905,6 @@ impl Game {
             }
             return;
         }
-        // Ascending goals enumerate assignments lexicographically; retain ties.
         for g in 0..self.level.goal_cells.len() {
             let d = self.level.distances[g][self.current.boxes[i] as usize];
             if used & (1 << g) == 0 && d >= 0 {

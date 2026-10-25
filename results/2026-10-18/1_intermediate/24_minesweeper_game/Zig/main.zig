@@ -134,7 +134,6 @@ const Component = struct {
 
 const Counter = struct {
     component: *Component,
-    // An unknown cell belongs to at most eight numbered-neighbor constraints.
     links: [max_component]Nearby = @splat(.{}),
     order: [max_component]usize = undefined,
     assignment: [max_component]usize = @splat(0),

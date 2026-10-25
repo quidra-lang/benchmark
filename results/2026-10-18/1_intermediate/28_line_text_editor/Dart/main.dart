@@ -297,7 +297,6 @@ class EditorState {
   Map<String, List<String>> files = {};
   EditorState();
 
-  // Stored lines and shared history, cut and file contents are never mutated.
   EditorState.copy(EditorState other) {
     lines = [...other.lines];
     current = other.current;

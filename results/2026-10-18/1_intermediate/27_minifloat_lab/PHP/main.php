@@ -42,7 +42,6 @@ function bitLength(int $value): int
     return $length;
 }
 
-/** @return array{int, int} */
 function scaled(int $n, int $d, int $exponent): array
 {
     return $exponent >= 0 ? [$n << $exponent, $d] : [$n, $d << -$exponent];
@@ -96,7 +95,6 @@ function roundSqrtUnits(Exact $value, int $exponent, Mode $mode): Units
     return new Units($whole, $inexact);
 }
 
-// The magnitude is numerator * 2^exponent / denominator; sign also preserves -0.
 final readonly class Exact
 {
     public function __construct(
@@ -150,7 +148,6 @@ final readonly class Exact
             $a->denominator * $b->denominator, $a->negative !== $b->negative);
     }
 
-    /** @param list<Exact> $terms */
     public static function sum(array $terms, Mode $mode): self
     {
         $exponent = null;
@@ -162,7 +159,6 @@ final readonly class Exact
             foreach ($terms as $term) $same = $same && $term->negative === $terms[0]->negative;
             return new self(0, negative: $same ? $terms[0]->negative : $mode === Mode::RDN);
         }
-        // Every sum and difference here consists of dyadic terms, with denominator 1.
         $numerator = 0;
         foreach ($terms as $term) {
             if ($term->numerator === 0) continue;
@@ -326,7 +322,6 @@ function operand(MiniFormat $f, string $word): int
     return realInput($word)->encoded($f, Mode::RNE)->pattern;
 }
 
-/** @param list<int> $inputs */
 function calculate(MiniFormat $f, Operation $operation, Mode $mode, array $inputs): Result
 {
     $anyNaN = false;
@@ -392,9 +387,7 @@ function difference(MiniFormat $f, int $pattern, Exact $exact): string
 
 final class Laboratory
 {
-    /** @var array<string, MiniFormat> */
     private array $formats;
-    /** @var list<string> */
     private array $output = [];
     private const INTEGER_TYPES = [
         'I8' => [-128, 127], 'U8' => [0, 255], 'I16' => [-32768, 32767],
@@ -409,7 +402,6 @@ final class Laboratory
     private function emit(string $line): void { $this->output[] = $line; }
     private function format(string $name): MiniFormat { return $this->formats[$name] ?? fail('UNKNOWN FORMAT ' . $name); }
 
-    /** @param list<string> $words @return list<int> */
     private function operands(MiniFormat $f, array $words, int $begin, int $end): array
     {
         $patterns = [];
@@ -501,7 +493,6 @@ final class Laboratory
         $this->emit('PATTERNS finite=' . (2 * $count) . ' infinite=2 nan=' . (2 * ($f->hidden - 1)) . ' total=' . (1 << $f->width));
     }
 
-    /** @return list<string> */
     public function execute(string $line): array
     {
         $this->output = [];

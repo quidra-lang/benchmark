@@ -534,7 +534,6 @@ class Table {
                 this.deal();
                 break;
             case 'INSURANCE': {
-                // The common state check has already established this alternative.
                 const state = this.state as Extract<TableState, { kind: 'insurance' }>;
                 const { player, amount } = command;
                 const waiting = this.participants[state.next];

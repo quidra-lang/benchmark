@@ -50,7 +50,6 @@ public class Main {
         return p;
     }
 
-    // Effects map each source sticker to its destination.
     static int[] compose(int[] first, int[] second) {
         int[] p = new int[54];
         for (int i = 0; i < 54; i++) p[i] = second[first[i]];

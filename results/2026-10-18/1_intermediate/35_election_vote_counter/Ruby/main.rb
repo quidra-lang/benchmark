@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 LIMIT = 7
 Ballot = Data.define(:votes, :ranking)

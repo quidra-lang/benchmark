@@ -4,7 +4,6 @@ Offsets =: 0 1 _1 2 _2 3 _3
 GraphWidth =: 20
 Digits =: '0123456789'
 Separator =: '======='
-NB. marker kinds: 1 start, 2 base, 3 end, 4 separator
 MarkerPrefixes =: '<<<<<<<';'|||||||';'>>>>>>>'
 KindNames =: ;:'stable a b both conflict'
 Names =: 0$a:

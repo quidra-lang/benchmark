@@ -957,7 +957,6 @@ func (t *Table) command(words []string) (out []string) {
 }
 func main() {
     input:=bufio.NewScanner(os.Stdin)
-    // STACK has at most 21 argument words of at most ten bytes each.
     input.Buffer(make([]byte,256),256)
     input.Scan(); count,_:=strconv.Atoi(input.Text())
     t := Table{

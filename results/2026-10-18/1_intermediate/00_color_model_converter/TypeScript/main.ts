@@ -126,7 +126,6 @@ function hsl(color: Color): number[] {
   return [hue(color), saturation, roundRatio(100 * (maximum + minimum), 510)];
 }
 
-// These are the components of base(h, 1), multiplied by 60.
 function base60(h: number): Color {
   const sector = floorRatio(h, 60), fraction = h % 60;
   const x = sector % 2 === 0 ? fraction : 60 - fraction;

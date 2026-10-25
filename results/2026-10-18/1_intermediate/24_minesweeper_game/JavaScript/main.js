@@ -353,7 +353,6 @@ function countConfigurations(component) {
     const values = Array(component.cells.length).fill(0);
     const result = { configs: 0, minimum: component.cells.length, maximum: 0, frequencies: values.slice() };
     if (constraints.some(c => c.remaining < 0 || c.remaining > c.cells.length)) return result;
-    // Assign frequently constrained cells first; cell indices still preserve output order.
     const order = component.cells.map((_, index) => index).sort((a, b) => incidence[b].length - incidence[a].length || a - b);
     const search = (depth, mineCount) => {
         if (depth === order.length) {

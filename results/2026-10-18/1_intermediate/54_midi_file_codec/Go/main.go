@@ -192,7 +192,6 @@ func eventLine(e *Event, track int) string {
     } else if e.isMeta(32) {
         fields = append(fields, strconv.Itoa(int(data[0]) + 1))
     } else if e.isMeta(47) {
-        // No fields.
     } else if e.isMeta(84) {
         for _, b := range data {
             fields = append(fields, strconv.Itoa(int(b)))

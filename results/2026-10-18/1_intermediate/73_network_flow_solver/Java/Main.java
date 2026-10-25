@@ -192,7 +192,6 @@ public class Main {
             List<Augmentation> result = new ArrayList<>();
             int pushed = 0;
             while (wanted < 0 || pushed < wanted) {
-                // Keep the specified global arc order fixed during each shortest-path search.
                 List<Integer> usable = new ArrayList<>();
                 for (int i = 1; i <= edges.size(); i++) if (residual(i) > 0) usable.add(i);
                 for (int i = 1; i <= edges.size(); i++) if (residual(-i) > 0) usable.add(-i);

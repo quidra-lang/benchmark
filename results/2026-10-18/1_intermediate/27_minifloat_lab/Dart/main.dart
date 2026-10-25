@@ -72,7 +72,6 @@ Units roundSqrtUnits(Exact value, int exponent, Mode mode) {
   return (integer: integer, inexact: inexact);
 }
 
-// The separate sign preserves negative zero in numerator * 2^exponent / denominator.
 class Exact {
   final int numerator, exponent, denominator;
   final bool negative;
@@ -128,7 +127,6 @@ class Exact {
       final same = terms.every((term) => term.negative == terms.first.negative);
       return Exact(0, negative: same ? terms.first.negative : mode == Mode.rdn);
     }
-    // All summands and differences are dyadic, with denominator 1.
     var numerator = 0;
     for (final term in terms) {
       if (term.numerator == 0) continue;

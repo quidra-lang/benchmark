@@ -100,7 +100,6 @@ enum Porter {
         return value > 1 || (value == 1 && !endsCvc(remainder))
     }
 
-    // Applies the rule with the longest matching suffix; returns the word and the applied suffix.
     static func applyRules(_ word: String, _ rules: [Rule]) -> (word: String, suffix: String?) {
         let matching = rules.filter { word.hasSuffix($0.suffix) }
         guard let rule = matching.max(by: { $0.suffix.count < $1.suffix.count }) else {
@@ -210,7 +209,6 @@ func closestDistance(_ positions: [Int], _ others: [Int], sameStem: Bool) -> Int
     if sameStem {
         return zip(positions, positions.dropFirst()).map { $1 - $0 }.min()
     }
-    // The closest pair of different stems is adjacent in the merged order.
     let tagged = positions.map { (position: $0, kind: 0) } + others.map { (position: $0, kind: 1) }
     let merged = tagged.sorted { $0.position < $1.position }
     return zip(merged, merged.dropFirst())

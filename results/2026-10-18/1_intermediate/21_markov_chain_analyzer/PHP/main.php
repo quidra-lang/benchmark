@@ -74,10 +74,8 @@ function probability(string $text): Fraction
     return new Fraction($numerator, $denominator);
 }
 
-/** @return list<Fraction> */
 function vector(int $size): array { return array_fill(0, $size, Fraction::zero()); }
 
-/** @return list<list<Fraction>> */
 function matrix(int $rows, int $columns): array
 {
     $result = [];

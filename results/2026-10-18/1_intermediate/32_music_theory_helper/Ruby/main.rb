@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 LETTERS = 'CDEFGAB'
 NATURALS = [0, 2, 4, 5, 7, 9, 11].freeze

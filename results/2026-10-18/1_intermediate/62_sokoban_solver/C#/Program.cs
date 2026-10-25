@@ -233,7 +233,6 @@ sealed class Sokoban
     const string Symbols = "#-.$*@+";
     static readonly string[] Turns = { "ROT90", "ROT180", "ROT270", "FLIPH", "FLIPV" };
     static readonly string[] DirectionMaps = { "rlud", "durl", "lrdu", "udrl", "dulr" };
-    // n: number, s: steps, d: direction, a: name, t: transformation, x: arbitrary text.
     static readonly Dictionary<string, string> Formats =
         new() { ["IMPORT"] = "x",     ["VALID"] = "",     ["INFO"] = "",    ["SHOW"] = "",
                 ["EXPORT"] = "",      ["MOVE"] = "s",     ["PUSH"] = "nnd", ["BRING"] = "nnnn",

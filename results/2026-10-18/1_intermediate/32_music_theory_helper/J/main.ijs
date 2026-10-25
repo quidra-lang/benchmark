@@ -1,4 +1,3 @@
-NB. Pitches are letter/alteration pairs; notes append the written octave.
 LF =: 10{a.
 Digits =: '0123456789'
 Letters =: 'CDEFGAB'
@@ -183,7 +182,6 @@ minor_pentatonic P1 m3 P4 P5 m7
 blues P1 m3 P4 A4 P5 m7
 whole_tone P1 M2 M3 A4 A5 A6
 )
-NB. Quality, symbol suffix, lowercase flag, numeral suffix, then intervals.
 ChordRows =: <;._2 (0 : 0)
 maj - 0 - P1 M3 P5
 min m 1 - P1 m3 P5

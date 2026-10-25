@@ -291,7 +291,6 @@ static void deduce(const Game *game, Deduction *result) {
     for (int i = 0; i < count; i++) {
         const Constraint *a = &list[i];
         int ax = a->cell % game->width, ay = a->cell / game->width;
-        /* A nonempty subset pair must share a neighbor, so its centers are at most two cells apart. */
         for (int y = ay - 2; y <= ay + 2; y++) for (int x = ax - 2; x <= ax + 2; x++) {
             if (x < 0 || x >= game->width || y < 0 || y >= game->height) continue;
             int index = at[y * game->width + x];

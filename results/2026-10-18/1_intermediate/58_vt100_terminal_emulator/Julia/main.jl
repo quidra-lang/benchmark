@@ -352,7 +352,6 @@ function reply!(t::Terminal,text::String)
     println("REPLY ",text)
 end
 modestate(enabled::Bool) = enabled ? 1 : 2
-# 0 is executed; 1 is unsupported; 4 is invalid.
 function csi!(t::Terminal,key::String,params::Vector{Int})
     p1 = isempty(params) ? 0 : params[1]
     p2 = length(params) < 2 ? 0 : params[2]

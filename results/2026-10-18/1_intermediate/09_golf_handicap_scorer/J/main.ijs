@@ -1,4 +1,3 @@
-NB. Exact tenths, extended-integer fractions, and immutable round snapshots.
 LF=:10{a.
 EMPTY=:i.0 0
 NONE=:1000000000000
@@ -52,8 +51,6 @@ sum_range=:4:0
   'first last'=.x
   +/(first+i.last-first){y
 )
-NB. Each ranking entry is index;numeric-key-vector;ID. Stable numeric row
-NB. grade after ID grade gives every specified countback and final ID tie.
 ranked=:3:0
   if. 0=#y do. i.0 return. end.
   width=.#1{::0{::y
@@ -70,10 +67,6 @@ ranked=:3:0
   if. width=0 do. initial{targets return. end.
   ((/:initial{keys){initial){targets
 )
-NB. C: ID/pars/SI/par. T: course/ID/rating/slope.
-NB. P: ID/name/index/round-indices/record-days/record-indexes/calculation.
-NB. R: course/tee/day/scores/hcp/adjusted/AGS/D/E/prior-index/prior-records/prior-calculation.
-NB. E: ID/format/course/tee/day/allowance/players.
 cget=:4:0
   y{::x{::C
 )

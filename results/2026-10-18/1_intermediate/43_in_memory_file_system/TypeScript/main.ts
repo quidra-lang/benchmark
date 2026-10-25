@@ -24,7 +24,7 @@ const notDirectory = 'Not a directory';
 abstract class NodeBase {
     readonly inode: number;
     modified: number;
-    parent!: Directory; // Assigned by add; the root is its own parent.
+    parent!: Directory;
     name = '';
     abstract readonly kind: 'd' | 'f' | 'l';
     abstract get size(): number;

@@ -1,4 +1,3 @@
-NB. Field values are boxed sequences; singular fields contain zero or one value.
 LF =: 10{a.
 Quote =: 34{a.
 Slash =: 92{a.

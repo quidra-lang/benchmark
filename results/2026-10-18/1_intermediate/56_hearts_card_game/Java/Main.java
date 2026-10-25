@@ -278,7 +278,6 @@ public class Main {
                 .collect(Collectors.joining(" "));
     }
 
-    // Everything that UNDO restores when a played card is taken back.
     static final class Round {
         List<Set<Integer>> hands = seatSets();
         List<Set<Integer>> taken = seatSets();
@@ -855,7 +854,6 @@ public class Main {
         }
 
         private List<String> tableCommand(String name, List<String> args) {
-            // Validate argument words before any state-dependent checks or mutation.
             int seat = Set.of("STACK", "PASS", "PLAY", "CLAIM").contains(name)
                     ? seatValue(args.get(0))
                     : -1;

@@ -489,7 +489,6 @@ execute_command <- function(editor, cmd, range, text, inside = FALSE) {
     } else if (kind == "sort") {
         lines <- editor$state$lines[selected]
         keys <- if ("n" %in% cmd$options) vapply(lines, leading_integer, integer(1L)) else if ("i" %in% cmd$options) letter_case(lines, "l") else lines
-        # Radix ordering compares ASCII bytes and preserves original order within ties.
         ordered <- order(keys, decreasing = "r" %in% cmd$options, method = "radix")
         if ("u" %in% cmd$options) ordered <- ordered[!duplicated(keys[ordered])]
         ids <- editor$state$ids[selected][ordered]
@@ -533,7 +532,6 @@ execute_command <- function(editor, cmd, range, text, inside = FALSE) {
 }
 
 process_command <- function(editor, source, text) {
-    # Every mutable component is an R value inside this list; assignment preserves the old version.
     saved <- editor$state
     before <- snapshot(saved, source)
     editor$output <- character()

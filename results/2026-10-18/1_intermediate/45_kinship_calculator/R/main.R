@@ -170,8 +170,6 @@ relationship_text <- function(a, b) {
   if (length(result)) paste(result, collapse = ", ") else "no relation"
 }
 
-# All coefficients are multiples of 2^-37. These scaled integers and their sums
-# are exactly representable as R numerics, without any integer32 bit operations.
 coefficient_scale <- 2^37
 phi <- function(a, b) {
   key <- paste(id_order(c(a, b)), collapse = ":")

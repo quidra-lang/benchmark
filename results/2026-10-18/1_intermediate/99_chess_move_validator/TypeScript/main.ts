@@ -194,11 +194,11 @@ function execute(line:string) {
     if (bad) {emit('ERROR bad arguments');return;}
     const p=game.current();
     if (cmd==='NEW') {game=new Game();emit('OK');}
-    else if (cmd==='LOAD') {try {const q=parseFen(a);game=new Game(q,true);emit('OK');}catch(e:any) {emit(`ERROR bad fen (${e.message})`);}}
+    else if (cmd==='LOAD') {try {const q=parseFen(a);game=new Game(q,true);emit('OK');}catch(e) {if (!(e instanceof Error)) throw e;emit(`ERROR bad fen (${e.message})`);}}
     else if (cmd==='FEN') emit(p.fen());
     else if (cmd==='BOARD') {for (let r=7;r>=0;r--) emit([r+1,...p.board.slice(8*r,8*r+8)].join(' '));emit('  a b c d e f g h');}
     else if (cmd==='MOVE'||cmd==='UCI') {
-        const played=[];let error='';for (let i=0;i<a.length;i++) {try {const m=cmd==='MOVE'?readSan(game.current(),a[i]):readUci(game.current(),a[i]);game.play(m);played.push(game.records.at(-1).san);}catch(e:any) {error=`ILLEGAL move ${i+1}: ${a[i]} (${e.message})`;break;}}
+        const played=[];let error='';for (let i=0;i<a.length;i++) {try {const m=cmd==='MOVE'?readSan(game.current(),a[i]):readUci(game.current(),a[i]);game.play(m);played.push(game.records.at(-1).san);}catch(e) {if (!(e instanceof Error)) throw e;error=`ILLEGAL move ${i+1}: ${a[i]} (${e.message})`;break;}}
         if (cmd==='UCI'&&played.length) emit('san '+played.join(' '));if (error) emit(error);else if (cmd==='MOVE') emit('OK');
     } else if (cmd==='LEGAL') {const from=a.length?square(a[0]):-1,list=p.legal().filter(m=>from<0||m.s===from).map(m=>p.san(m)).sort();emit(['legal',list.length,...list].join(' '));}
     else if (cmd==='STATUS') emit(['status',p.side==='w'?'white':'black',p.state(),'rep',game.repetition(),...game.draws()].join(' '));

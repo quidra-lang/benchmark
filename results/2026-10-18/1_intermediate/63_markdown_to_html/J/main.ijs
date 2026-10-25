@@ -192,8 +192,6 @@ alignment =: 3 : 0
     1;((2*left)+right){::'';'right';'left';'center'
 )
 
-NB. Block arena fields: kind, text, number, ordered, lines, children, items,
-NB. alignments, table rows. Nested sequences contain integer arena indices.
 Blocks=:0$a:
 RefNames=:RefValues=:FootNames=:FootBodies=:0$a:
 newBlock =: 3 : 0

@@ -77,7 +77,6 @@ String normalized(String s) => s.split(' ').where((w) => w.isNotEmpty).join(' ')
 
 const formatTags = ['<i>', '</i>', '<b>', '</b>', '<u>', '</u>'];
 const assTags = [r'{\i1}', r'{\i0}', r'{\b1}', r'{\b0}', r'{\u1}', r'{\u0}'];
-// kind: 0 format, 1 font, 2 position, 3 ordinary; detail: format index/code.
 (int, int, int) markup(String line, int p) {
   for (var i = 0; i < formatTags.length; i++) {
     if (line.startsWith(formatTags[i], p)) return (formatTags[i].length, 0, i);

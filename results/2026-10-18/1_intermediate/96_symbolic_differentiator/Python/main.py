@@ -130,7 +130,6 @@ def term_order(s, t):
     s_exponents = monomial_exponents(s)
     t_exponents = monomial_exponents(t)
     for base in sorted(s_exponents.keys() | t_exponents.keys(), key=order_key):
-        # the term with the larger exponent comes first
         order = compare_exponents(t_exponents.get(base, ZERO), s_exponents.get(base, ZERO))
         if order != 0:
             return order

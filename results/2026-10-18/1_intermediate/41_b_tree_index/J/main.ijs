@@ -78,7 +78,6 @@ height =: 3 : 0
     depth
 )
 
-NB. Each page is a value: ordered keys, boxed values, and child page numbers.
 check_node =: 3 : 0
     'page location depth low high' =. y
     'keys values kids' =. page{::Nodes

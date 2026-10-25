@@ -374,7 +374,6 @@ const TextReader = struct {
                 try payload.appendSlice(r.h.a, &.{byte(@mod(bend, 128)), byte(@divTrunc(bend, 128))});
             } else for (fields[1..]) |word| { try payload.append(r.h.a, byte(try r.bounded(word, 0, 127))); };
         } else if (code >= 257 and code <= 263) {
-            // The original suffix preserves consecutive spaces within the quoted field.
             const prefix_len = words[0].len + words[1].len + words[2].len + 3;
             const quoted = if (line.len >= prefix_len) line[prefix_len..] else "";
             if (quoted.len < 2 or quoted[0] != '"' or quoted[quoted.len - 1] != '"' or std.mem.indexOfScalar(u8, quoted[1 .. quoted.len - 1], '"') != null) return r.bad("bad value");
@@ -761,7 +760,6 @@ const Codec = struct {
             for (song.tracks.items) |*track_value| {
                 var end_event = track_value.items[track_value.items.len - 1];
                 const ordinary = track_value.items[0 .. track_value.items.len - 1];
-                // Stable insertion preserves prior order at equal ticks.
                 var j: usize = 1;
                 while (j < ordinary.len) : (j += 1) {
                     var k = j;

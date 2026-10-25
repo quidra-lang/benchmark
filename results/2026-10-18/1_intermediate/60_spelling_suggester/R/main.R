@@ -630,7 +630,6 @@ report_unknown <- function(checker, ...) {
 }
 
 report_corrections <- function(checker, ...) {
-  # Keys are "word>correction"; ">" sorts before every letter, so key order is pair order.
   counts <- checker$correction_log
   entries <- head(counts[order(-counts, names(counts))], REPORT_SIZE)
   emit("HISTORY", paste0("distinct=", length(counts)), sprintf("%s:%d", names(entries), entries))

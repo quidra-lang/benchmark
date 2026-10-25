@@ -345,7 +345,6 @@ private class PathParser(private val text: String) {
         return segments
     }
 }
-// Child positions preserve document order even when object keys are renamed.
 private typealias Location = List<Int>
 private fun valueAt(root: Value, location: Location): Value = location.fold(root, ::child)
 private fun update(root: Value, location: Location, change: (Value) -> Value): Value {

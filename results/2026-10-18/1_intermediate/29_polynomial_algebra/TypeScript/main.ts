@@ -362,7 +362,6 @@ interface Token {
   readonly position: number;
 }
 
-// Build a complete syntax tree before looking up names or performing arithmetic.
 class ExpressionParser {
   private readonly tokens: Token[] = [];
   private position = 0;

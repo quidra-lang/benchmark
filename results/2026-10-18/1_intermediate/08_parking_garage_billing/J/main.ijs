@@ -1,4 +1,3 @@
-NB. Integer calendar, native tables, and fixed per-admission billing records.
 LF=:10{a.
 EMPTY=:i.0 0
 TYPES=:;:'MOTORCYCLE CAR ECAR VAN BUS'
@@ -41,8 +40,6 @@ preference_rank=:4:0
   index=.kinds i.y
   if. index=#kinds do. _1 else. index end.
 )
-NB. S: level,number,kind,closed,occupant. V: kind,spot,entry,energy,cost,
-NB. validation,paytime,payparking,paynight,active,exit,total,lost.
 sget=:4:0
   (<x,y){S
 )

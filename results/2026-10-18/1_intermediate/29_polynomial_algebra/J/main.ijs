@@ -1,4 +1,3 @@
-NB. Ascending coefficient vectors use J's native extended integers and rationals.
 LF =: 10{a.
 Digits =: '0123456789'
 Upper =: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -47,7 +46,6 @@ trim =: 3 : 0
     if. 0=#nonzero do. Zero else. (1+{:nonzero){.coefficients end.
 )
 degree =: 3 : '<:#y'
-NB. Padding both operands also preserves a vector for constants and zero.
 padd =: 4 : 0
     n =. (#x)>.#y
     trim (n{.x)+n{.y
@@ -208,7 +206,6 @@ compose_checked =: 4 : 0
     x compose y
 )
 
-NB. Parse the entire expression into an indexed tree before any lookup or evaluation.
 Tokens =: 0$a:
 Positions =: i.0
 Cursor =: 0

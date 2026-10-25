@@ -209,7 +209,6 @@ impl Planner {
         labels
     }
     fn walk_step(&self, labels: &mut Labels, sources: &BTreeSet<String>, changed: &mut BTreeSet<String>) {
-        // All walks use source labels captured before this walk step.
         let recorded: Vec<_> = sources.iter().map(|s|(s.clone(),labels[s].clone())).collect();
         for (u,label) in recorded {
             for (v,w) in self.neighbors(&u) {

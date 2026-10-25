@@ -310,7 +310,6 @@ func alignment(_ text: String) -> String? {
     return text.hasSuffix(":") ? "right" : ""
 }
 
-// Collect definitions recursively before any inline conversion takes place.
 final class Parser {
     var references: [String:Reference] = [:]
     var footnotes: [String:String] = [:]
@@ -574,7 +573,6 @@ final class Renderer {
             if let end = first(b,93,at+1) {
                 let name = part(b,at+1,end)
                 if !name.contains("[") {
-                    // A syntactically complete reference suffix blocks shortcut fallback.
                     guard let reference = references[normalize(name.isEmpty ? content : name)] else {
                         return nil
                     }
@@ -880,7 +878,6 @@ final class Renderer {
     }
 
     func document(_ blocks: [Block]) -> String {
-        // Resolve each TOC only after all heading IDs and labels are known.
         let html = self.blocks(blocks)
         var result = html.replacingOccurrences(of: tocMarker,with: toc())
         if !noteNames.isEmpty {

@@ -19,7 +19,6 @@ final readonly class Pitch {
     public function pitchClass(): int { return modulo($this->natural() + $this->alteration, 12); }
     public function same(self $other): bool { return $this->letter === $other->letter && $this->alteration === $other->alteration; }
     public function __toString(): string { return self::LETTERS[$this->letter] . self::ACCIDENTALS[$this->alteration + 2]; }
-    /** @return array{Pitch, int}|null */
     public static function prefix(string $text): ?array {
         if ($text === '' || ($letter = strpos(self::LETTERS, $text[0])) === false) return null;
         $end = 1; $alteration = 0;
@@ -146,7 +145,6 @@ final readonly class Motion {
     public function __construct(public Interval $interval, public bool $down, public int $semitones) {}
 }
 final readonly class Quality {
-    /** @param list<Interval> $pattern */
     public function __construct(public string $name, public array $pattern, public string $suffix, public string $numeral) {}
     public function lower(): bool { return $this->numeral[0] === 'i'; }
     public function roman(int $degree): string {
@@ -194,9 +192,7 @@ final readonly class Degree {
 
 final class Calculator {
     private int $tuning = 44000;
-    /** @var array<string, list<Interval>> */
     private array $scales = [];
-    /** @var list<Quality> */
     private array $qualities = [];
     private const LIMITS = [
         'MIDI' => [1, 1], 'NOTE' => [1, 1], 'FREQ' => [1, 1], 'TUNING' => [1, 1], 'PITCH' => [1, 1],
@@ -244,7 +240,6 @@ final class Calculator {
         foreach ($this->qualities as $quality) if ($quality->name === $text) return $quality;
         throw new CommandError("BAD QUALITY $text");
     }
-    /** @return list<Interval> */
     private function scalePattern(string $text): array { return $this->scales[$text] ?? throw new CommandError("BAD SCALE $text"); }
     private static function inversion(string $text, Quality $quality): int {
         if (!preg_match('/\A[0-9]\z/', $text) || (int)$text >= count($quality->pattern)) throw new CommandError("BAD INVERSION $text");
@@ -274,21 +269,17 @@ final class Calculator {
         }
         throw new CommandError("BAD SYMBOL $text");
     }
-    /** @param list<Interval> $pattern @return list<Pitch> */
     private static function build(Pitch $root, array $pattern): array { return array_map($root->raise(...), $pattern); }
-    /** @return list<Pitch> */
     private function scale(Key $key): array { return self::build($key->tonic, $this->scales[$key->mode->scale()]); }
     private function degree(Key $key, Pitch $pitch): Degree {
         $index = modulo($pitch->letter - $key->tonic->letter, 7);
         return new Degree($index, $pitch->alteration - $this->scale($key)[$index]->alteration);
     }
-    /** @param list<Pitch> $pitches */
     private static function mask(array $pitches): int {
         $mask = 0;
         foreach ($pitches as $pitch) $mask |= 1 << $pitch->pitchClass();
         return $mask;
     }
-    /** @param list<Numeral> $numerals */
     private static function cadence(array $numerals): string {
         if (count($numerals) < 2) return 'none';
         $a = $numerals[count($numerals) - 2]; $b = $numerals[count($numerals) - 1];

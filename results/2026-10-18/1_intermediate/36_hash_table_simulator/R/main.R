@@ -41,7 +41,7 @@ new_table <- function(mode, cap) {
   table$size <- table$tomb <- 0L
   table$buckets <- vector("list", if (mode == "CHAIN") cap else 0L)
   count <- if (mode == "CHAIN") 0L else slot_count(table)
-  table$state <- integer(count) # 0 empty, 1 item, 2 tombstone.
+  table$state <- integer(count)
   table$keys <- rep("", count)
   table$values <- integer(count)
   table$counters <- setNames(integer(8L), c("probes", "rehashes", "inserts", "updates",
@@ -70,7 +70,6 @@ put_slot <- function(table, position, item) {
 }
 slot_item <- function(table, position) list(key = table$keys[position], value = table$values[position])
 
-# Search positions are one-based internally; paths always describe the old table.
 search <- function(table, key, tracing = FALSE) {
   result <- list(found = FALSE, position = 0L, chain = 0L, probes = 0L, available = 0L,
                  item = NULL, path = character())
@@ -222,7 +221,6 @@ remove_item <- function(table, found, tracing) {
   list(shifted = shifted, moves = moves)
 }
 
-# Environment replacement happens only after the complete trial succeeds.
 rebuild <- function(table, mode, capacity, items) {
   trial <- new_table(mode, capacity)
   for (item in items) {

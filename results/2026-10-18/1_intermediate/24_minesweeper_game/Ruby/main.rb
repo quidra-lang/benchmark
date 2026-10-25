@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 class CommandError < StandardError; end
 
@@ -105,7 +104,6 @@ class Game
 
   def initialize_copy(other)
     super
-    # Immutable geometry is shared; every mutable board and record is independent.
     @mine = other.mine.dup
     @numbers = other.numbers.dup
     @revealed = other.revealed.dup
@@ -247,7 +245,6 @@ class Game
     constraints.each { |constraint| at[constraint.cell] = constraint }
     constraints.each do |a|
       ax, ay = a.cell % width, a.cell / width
-      # Nonempty subset pairs share a neighbor, so their centers are within two cells.
       ([0, ay - 2].max..[height - 1, ay + 2].min).each do |y|
         ([0, ax - 2].max..[width - 1, ax + 2].min).each do |x|
           b = at[y * width + x]
@@ -478,7 +475,6 @@ class Game
       raise CommandError, 'nothing to undo' unless snapshot
 
       @revealed, @marks = snapshot.revealed, snapshot.marks
-      # All operations append, so restoring the old prefix restores the move record.
       moves.slice!(snapshot.moves, moves.length - snapshot.moves)
       puts "undo #{snapshot.command.downcase} moves #{moves.length}"
     when 'SHOW' then show

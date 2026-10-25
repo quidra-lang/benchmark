@@ -241,7 +241,6 @@ simulate =: 3 : 0
     peak =. >./'import' column rows
     demand =. (peak*demand_price) floor_ratio 1000
     bill =. (net rows)+fixed+demand
-    NB. Each result retains the inputs used to calculate its records.
     strategy;settings;prices;rows;start;reserve;bill;peak;demand
 )
 baseline =: 3 : 0

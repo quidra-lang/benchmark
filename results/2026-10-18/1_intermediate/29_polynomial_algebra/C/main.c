@@ -279,7 +279,6 @@ static void store(const char *name, Polynomial value) {
 }
 static int named_compare(const void *a, const void *b) { return strcmp((*(Named *const *)a)->name, (*(Named *const *)b)->name); }
 
-// Build the syntax tree completely before any name lookup or arithmetic.
 typedef enum { NUMBER, NAME, SYMBOL, END } TokenKind;
 typedef struct { TokenKind kind; int position, number; char symbol, name[9]; } Token;
 typedef enum { LITERAL, VARIABLE, REFERENCE, NEGATIVE, PLUS, MINUS, TIMES, OVER, POWER, COMPOSE } Operation;
@@ -472,7 +471,6 @@ static void write_square_free(const char *name, Polynomial a) {
     emit("\n");
 }
 
-// Infinity is separate from finite fractions, so all finite operations stay exact.
 typedef struct { int infinity; Fraction value; } Bound;
 typedef struct { Polynomial items[31]; int count; } Sturm;
 typedef struct { Fraction low, high; } Interval;

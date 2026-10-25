@@ -45,8 +45,6 @@ inside =: 3 : 'RoomCount+y'
 exit_at =: 3 : '(6*Room)+y'
 name =: 3 : 'y{::Names'
 
-NB. Places are room indices, Player, Nowhere, or RoomCount + container index.
-NB. Definitions are indexed first so all permitted forward references are available.
 build_world =: 3 : 0
     RoomIds =: ItemIds =: 0$a:
     for_line. y do.
@@ -313,7 +311,6 @@ require_container =: 3 : 0
     if. 0=y{Capacities do. fail 'The ',(name y),' is not a container.' end.
     if. 0~:y{States do. fail 'The ',(name y),' is closed.' end.
 )
-NB. Return a reason without changing state, or an empty string after moving x.
 put_item =: 4 : 0
     if. y within x do. 'The ',(name y),' is inside the ',(name x),'.' return. end.
     if. (x{Places)=inside y do. 'The ',(name x),' is already in the ',(name y),'.' return. end.

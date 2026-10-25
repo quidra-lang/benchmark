@@ -215,7 +215,6 @@ fn yiq(c: Color) [3]i64 {
         rounded(211 * r - 523 * g + 312 * b, 1000)
     };
 }
-// Every component of base(h,C) is C times one of these factors divided by60.
 fn baseFactors(h: i64) [3]i64 {
     const q = @divTrunc(h, 60);
     const f = @mod(h, 60);

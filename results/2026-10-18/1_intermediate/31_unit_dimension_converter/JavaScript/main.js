@@ -150,7 +150,6 @@ class Database {
 const letter = c => c !== undefined && ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'));
 const digit = c => c !== undefined && c >= '0' && c <= '9';
 
-// Parsing builds a complete tree before unit lookup or quantity evaluation.
 class Parser {
   tokens = [];
   position = 0;

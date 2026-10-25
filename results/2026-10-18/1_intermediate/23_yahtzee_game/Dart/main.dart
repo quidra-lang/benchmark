@@ -382,7 +382,6 @@ class Adviser {
   final expectations = <(int, int), int>{};
   Adviser(this.player, this.rule);
 
-  // Depth j uses the common denominator 7776^j throughout the dynamic program.
   int value(int code, int depth) {
     final key = (depth, code);
     final cached = values[key];

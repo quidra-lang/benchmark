@@ -1,4 +1,3 @@
-NB. Exact values are integer rows: numerator, denominator, binary exponent, sign.
 LF =: 10{a.
 FormatNames =: ;:'HALF E5M2 E4M3'
 Formats =: x:3 2$5 10 5 2 4 3
@@ -89,7 +88,6 @@ bit_text =: 3 : 0
 )
 hex_text =: 3 : '''0x'',''0123456789ABCDEF''{~(((Width+3) div 4)#16)#:y'
 
-NB. x scale y returns integers n,d for abs(y)/2^x.
 scale =: 4 : 0
     'n d exponent sign' =. y
     shift =. exponent-x

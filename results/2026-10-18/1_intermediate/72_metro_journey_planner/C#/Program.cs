@@ -128,7 +128,6 @@ class Program
 
     static void WalkStep(Dictionary<Station, Label> labels, HashSet<Station> origins, HashSet<Station> marked)
     {
-        // Walks use a snapshot taken after all ride updates in this round.
         var recorded = origins.ToDictionary(origin => origin, origin => labels[origin]);
         foreach (Station u in Stations.Values) if (origins.Contains(u)) foreach (var walk in u.Walks)
         {

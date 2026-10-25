@@ -286,7 +286,6 @@ interface EditorState {
 }
 
 function copyState(state: EditorState): EditorState {
-  // Shared line records, saved arrays, replacements and file contents remain read-only.
   return { ...state, lines: state.lines.slice(), marks: new Map(state.marks),
     undo: state.undo.slice(), redo: state.redo.slice(), files: new Map(state.files) };
 }

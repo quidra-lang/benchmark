@@ -354,7 +354,6 @@ static char *distance_text(int distance) {
     return distance < 0 ? "INF" : format("%d", distance);
 }
 
-// A lexicographically smallest coloring introduces new colors in numerical order.
 static bool color_search(Graph graph, int count, int vertex, int largest, int *colors) {
     if (vertex == graph.n) return true;
     for (int color = 0; color < count && color <= largest + 1; color++) {

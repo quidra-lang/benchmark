@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 WORD_PATTERN = /\A[A-Za-z]{1,30}\z/
 NUMBER_PATTERN = /\A[0-9]{1,7}\z/
@@ -76,7 +75,6 @@ RULE_TABLES = {
   '5a' => [Rule.new('e', '', FINAL_E_CONDITION)],
 }.freeze
 
-# Apply the rule with the longest matching suffix; return the word and the applied suffix.
 def apply_rules(word, rules)
   matching = rules.select { |candidate| word.end_with?(candidate.suffix) }
   rule = matching.max_by { |candidate| candidate.suffix.size }
@@ -160,7 +158,6 @@ def closest_distance(positions, others, same_stem)
   if same_stem
     gaps = positions.each_cons(2).map { |earlier, later| later - earlier }
   else
-    # The closest pair of different stems is adjacent in the merged order.
     merged = (positions.map { |position| [position, 0] } + others.map { |other| [other, 1] }).sort
     gaps = merged.each_cons(2).filter_map do |earlier, later|
       later[0] - earlier[0] if earlier[1] != later[1]

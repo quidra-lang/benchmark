@@ -1,6 +1,5 @@
 import * as fs from 'node:fs';
 
-// Immutable expression trees also represent scalar and range values.
 class Expr {
   constructor(public k: string, public n = 0, public m = 0, public f = 0,
               public s = '', public a: Expr | null = null, public b: Expr | null = null,

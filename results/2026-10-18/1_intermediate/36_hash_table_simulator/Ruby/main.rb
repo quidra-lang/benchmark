@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 MODES = %w[CHAIN LINEAR QUADRATIC DOUBLE ROBINHOOD CUCKOO].freeze
 class CommandError < StandardError; end

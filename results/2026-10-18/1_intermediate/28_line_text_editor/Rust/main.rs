@@ -701,7 +701,6 @@ impl Editor {
         let count = addresses.count();
         if command.address_kind() == 0 && count > 0 { return Err("unexpected address"); }
         if command.address_kind() == 1 && count == 2 { return Err("too many addresses"); }
-        // Shared snapshots stay immutable; the trial owns every changed value.
         let mut trial = self.clone();
         let values = trial.evaluate(&addresses)?;
         let range = trial.checked_range(&command, count, values)?;

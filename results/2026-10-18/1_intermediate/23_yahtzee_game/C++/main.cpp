@@ -290,7 +290,6 @@ Advice advise(const Player& player, const Dice& dice, int rollsLeft, Joker joker
                 for (const Outcome& outcome : rerolls.outcomes[rolled]) {
                     sum += outcome.weight * values.at(combined(held.counts, outcome.counts));
                 }
-                // Every value at this depth has the common denominator 7776^depth.
                 expectations[held.counts] = sum * (powersOfSix[5] / powersOfSix[rolled]);
             }
         }

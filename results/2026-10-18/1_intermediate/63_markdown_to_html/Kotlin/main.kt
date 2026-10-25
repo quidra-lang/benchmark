@@ -156,7 +156,6 @@ private fun alignment(text: String): String? {
         else -> ""
     }
 }
-// Definitions are collected recursively before inline conversion starts.
 private class Parser {
     val references = mutableMapOf<String, Reference>()
     val footnotes = mutableMapOf<String, String>()
@@ -332,7 +331,6 @@ private class Renderer(private val references: Map<String, Reference>, private v
             val end = text.indexOf(']', at + 1)
             if (end >= 0 && '[' !in text.substring(at + 1, end)) {
                 val name = text.substring(at + 1, end).ifEmpty { content }
-                // A complete reference suffix blocks shortcut fallback.
                 return references[normalize(name)]?.let { it to end + 1 }
             }
         } else if (text.startsWith("(", at)) {
@@ -573,7 +571,6 @@ private class Renderer(private val references: Map<String, Reference>, private v
         append("</ol>\n</section>\n")
     }
     fun document(blocks: List<Block>): String {
-        // Headings have all been converted before a TOC placeholder is replaced.
         val html = this.blocks(blocks).replace(TOC, toc())
         return html + if (noteNames.isEmpty()) "" else noteList()
     }

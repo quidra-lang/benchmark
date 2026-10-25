@@ -111,7 +111,6 @@ function finish_entry!(election::Election)
     election.pairs = nothing
 end
 
-# Cached arrays are read-only after construction and contain no tiebreak decisions.
 function tallies(election::Election, field::Vector{Int})
     key = field_key(field)
     haskey(election.cache, key) && return election.cache[key]

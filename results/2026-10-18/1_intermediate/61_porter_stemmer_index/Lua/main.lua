@@ -173,7 +173,6 @@ local RULE_TABLES = {
   ["5a"] = { rule("e", "", final_e_condition) },
 }
 
--- Apply the rule with the longest matching suffix; return the word and the applied suffix.
 local function apply_rules(word, rules)
   local selected
   for _, candidate in ipairs(rules) do
@@ -318,7 +317,6 @@ local function closest_distance(positions, others, same_stem)
       consider(positions[index] - positions[index - 1])
     end
   else
-    -- The closest pair of different stems is adjacent in the merged order.
     local merged = {}
     for _, position in ipairs(positions) do
       merged[#merged + 1] = { position = position, side = 0 }

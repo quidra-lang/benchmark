@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 class CommandError < StandardError; end
 
@@ -634,7 +633,6 @@ class Editor
     command = Parsing.command(line[lexed.position..])
     raise CommandError, 'unexpected address' if command.address_kind.zero? && addresses.count.positive?
     raise CommandError, 'too many addresses' if command.address_kind == 1 && addresses.count == 2
-    # Immutable line/text records may be shared; only the trial's containers change.
     trial = @state.dup
     values = trial.evaluate(addresses)
     range = trial.checked_range(command, addresses.count, values)

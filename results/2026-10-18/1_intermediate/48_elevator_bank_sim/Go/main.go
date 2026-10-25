@@ -19,7 +19,7 @@ type Config struct {
 	starts, homes              []int
 	zones                      []Zone
 	policy                     string
-	park, patience, period     int // -1 means disabled.
+	park, patience, period     int
 	bypass, limit              int
 	compare                    []string
 }

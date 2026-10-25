@@ -366,7 +366,6 @@ function SqrtBlocks:dump()
     return rows
 end
 
--- Persistent roots share every node outside the copied update path.
 local function node(value, left, right) return { value = value, left = left, right = right } end
 local function buildNodes(contents, left, right)
     if left == right then return node(contents[left + 1]) end

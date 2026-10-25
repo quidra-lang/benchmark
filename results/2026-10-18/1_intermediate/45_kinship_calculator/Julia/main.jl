@@ -207,7 +207,6 @@ function relationship_text(f, a, b)
     return isempty(terms) ? "no relation" : join(terms, ", ")
 end
 
-# All coefficients are integral multiples of 1 / SCALE under the constraints.
 function kinship(f, a, b, memo)
     key = a <= b ? (a, b) : (b, a)
     haskey(memo, key) && return memo[key]

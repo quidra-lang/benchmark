@@ -70,7 +70,6 @@ private class Project {
     }.sortedBy {
         it.b
     }
-    // Kahn removal also supplies the exact remainder used to choose a cycle.
     fun order(): Pair<List<String>,String?> {
         val remaining = tasks.keys.toSortedSet()
         val order = mutableListOf<String>()

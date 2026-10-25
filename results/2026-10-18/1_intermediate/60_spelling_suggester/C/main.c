@@ -30,7 +30,6 @@ static const char *const ADJACENT_KEYS[26] = {
     "hikmnu", "ijlmo", "kop", "jkn", "bhjm", "iklp", "lo", "aw", "deft",
     "adewxz", "fgry", "hijy", "bcfg", "aeqs", "cdsz", "ghtu", "asx",
 };
-/* h and w map to 0: that is their value as a first letter, and they are skipped elsewhere */
 static const char SOUNDEX_DIGITS[] = "01230120022455012623010202";
 
 typedef char Word[MAX_WORD_LENGTH + 1];
@@ -766,7 +765,6 @@ static long long segment(const char *word, int *next)
             piece[end - start] = '\0';
             if (find_entry(piece) < 0 || ways[end] == 0)
                 continue;
-            /* pieces share their start, so with equal counts the earlier, shorter one is smaller */
             if (ways[start] == 0 || counts[end] + 1 < counts[start]) {
                 counts[start] = counts[end] + 1;
                 next[start] = end;

@@ -528,7 +528,6 @@ class Table {
     var amount = 0, seed = 0;
     Rules? proposed;
 
-    // Argument validation precedes every state check and mutation.
     if (command == 'SHOE') {
       amount = integer(first, 1, 8);
       seed = integer(second, 1, 2147483646);

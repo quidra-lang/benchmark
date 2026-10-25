@@ -148,7 +148,6 @@ function candidates(player::Player, counts::Counts, joker_rule::JokerRule)::Cand
     CandidateScores(joker, allowed, points, best_category, requirement)
 end
 
-# A turn contains only immutable values, so score and redo snapshots share no mutable dice.
 struct Turn
     player::Int
     rolls::Int

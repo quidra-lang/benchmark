@@ -129,7 +129,6 @@ matches <- function(parts, text) {
     tail(previous, 1L)
 }
 
-# Database entries and payloads contain only value lists and vectors.
 db_get <- function(db, key) {
     at <- match(key, names(db), nomatch = 0L)
     if (at) db[[at]] else NULL

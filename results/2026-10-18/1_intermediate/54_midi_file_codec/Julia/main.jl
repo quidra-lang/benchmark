@@ -90,7 +90,6 @@ function event_line(e, track)
     elseif ismeta(e, 32)
         push!(fields, string(d[1]+1))
     elseif ismeta(e, 47)
-        # No fields.
     elseif ismeta(e, 84)
         append!(fields, string.(d))
     elseif ismeta(e, 88)

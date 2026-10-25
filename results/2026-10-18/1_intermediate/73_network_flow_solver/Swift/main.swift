@@ -75,7 +75,6 @@ final class Network {
         }
         return i-1
     }
-    // Forward arcs precede all backward arcs, including in every vertex list.
     func globalArcs() -> [Arc] {
         [true,false].flatMap {
             forward in edges.indices.map {
@@ -258,7 +257,6 @@ final class Network {
         }
         return false
     }
-    // Keep the usable arc sequence fixed and apply each relaxation immediately.
     func shortest(_ s: Int) -> ([Int?],[Arc?]) {
         let q = globalArcs().filter {
             residual($0) > 0

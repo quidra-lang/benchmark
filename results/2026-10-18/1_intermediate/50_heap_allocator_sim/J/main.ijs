@@ -85,7 +85,6 @@ fragmentation =: 3 : 0
     f =. +/sizes
     if. f=0 do. 0 else. <.(100*f->./0,sizes)%f end.
 )
-NB. Allocation returns an index after restoring address order, or _1.
 allocate =: 3 : 0
     's al' =. y
     eligible =. positions =. i.0
@@ -138,7 +137,6 @@ allocate =: 3 : 0
     if. Mode=1 do. Rover =: S|p+b end.
     locate p
 )
-NB. Free/coalesce does not alter ID metadata, so realloc can retain references.
 freeproc =: 3 : 0
     'a b owner age' =. y{Blocks
     remove y

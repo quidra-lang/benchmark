@@ -1,5 +1,3 @@
-"""DC circuit analysis by exact modified nodal analysis."""
-
 import math
 import re
 import sys
@@ -139,7 +137,6 @@ def voltage_loops(elements):
     links = []
     for e in elements:
         if e.kind in VOLTAGE_SOURCES:
-            # n1 is always reachable from itself, so n1 == n2 is a loop too.
             if e.n2 in reachable(e.n1, links):
                 loops.append(e.name)
             links.append((e.n1, e.n2))

@@ -13,7 +13,6 @@ private data class Move(val letter: Char, val amount: Int) {
     }
     fun inverse() = copy(amount = 4-amount)
 }
-// A permutation maps each source sticker to its destination sticker.
 private typealias Permutation = List<Int>
 private typealias State = List<Char>
 private class Problem(val text: String) : RuntimeException(text)

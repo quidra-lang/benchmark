@@ -778,7 +778,6 @@ const Session = struct {
             });
             position = end + 1;
         }
-        // All keys have been validated before the persistent citation record changes.
         for (citations.items) |citation| {
             for (citation.entries) |entry| {
                 if (!session.manager.recorded(entry)) try session.manager.record.append(session.manager.db.gpa, entry);

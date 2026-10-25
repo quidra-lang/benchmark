@@ -108,7 +108,6 @@ components =: 3 : 0
     parts#~0<#&>parts
 )
 
-NB. Only the outer path can report an absent final component or create parents.
 walk =: 3 : 0
     'path base follow original parents' =. y
     node =. base

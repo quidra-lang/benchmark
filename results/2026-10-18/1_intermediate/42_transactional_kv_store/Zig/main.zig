@@ -212,7 +212,6 @@ const Store = struct {
         }
         return removed;
     }
-    // Registered values are immutable; each saved database owns its entry array.
     fn copy(store: *const Store) Allocator.Error![]const Entry { return store.storage.dupe(Entry, store.entries.items); }
     fn restore(store: *Store, entries: []const Entry) Allocator.Error!void {
         store.entries.clearRetainingCapacity();

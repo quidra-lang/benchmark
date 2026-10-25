@@ -1,4 +1,3 @@
-NB. Sparse per-event undo deltas in a persistent linked history: no rally replay.
 split =: 4 : 0
   <;._1 x,y
 )
@@ -66,11 +65,6 @@ checkout =: 4 : 0
 dart_names =: 3 : 0
   ' ' join y{DLABEL
 )
-NB. State: points0..1, games/legs2..3, sets4..5, server6, done7,winner8,
-NB. completed9,run-side10/run11,tennis-games12,darts-leg13,turn14/start15/sum16,
-NB. bowling frame17/ball18/standing19/fresh20/rolls21/open22,
-NB. stats24..55,lineups56..67,finished sets68..103,pins104..133,
-NB. turn dart IDs134..136,marks137..166. Only changed slots enter D.
 V =: i.0
 D =: i.0
 CFG =: i.0

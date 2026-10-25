@@ -49,7 +49,6 @@ func fragment(free, largest int) int {
 
 func nextRandom(state int64) int64 { return randomMultiplier * state % randomModulus }
 
-// A block is shared by the address-ordered heap and the live-ID index.
 type block struct {
 	start, size int
 	used        bool
@@ -430,7 +429,6 @@ func experiment(mode string, size int, seed int64, operations, maxRequest int) s
 	return fmt.Sprintf("BENCH %s ok=%d fail=%d peak=%d used=%d frag=%d blocks=%d", mode, successes, failures, peak, used, h.fragmentation(), len(h.blocks))
 }
 
-// A separate index tracks live objects, while the heap tracks their physical blocks.
 type allocator struct {
 	heap         *heap
 	live         map[string]*block

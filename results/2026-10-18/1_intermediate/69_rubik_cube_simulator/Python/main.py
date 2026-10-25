@@ -9,7 +9,6 @@ FACES = "URFDLB"
 COLORS = "WRGYOB"
 FACE_COLORS = dict(zip(FACES, COLORS))
 SOLVED = [color for color in COLORS for _ in range(9)]
-# Outward normal, column direction and row direction of each face, in face order.
 FACE_FRAMES = (
     ((0, 1, 0), (1, 0, 0), (0, 0, 1)),
     ((1, 0, 0), (0, 0, -1), (0, -1, 0)),
@@ -18,7 +17,6 @@ FACE_FRAMES = (
     ((-1, 0, 0), (0, 0, 1), (0, -1, 0)),
     ((0, 0, -1), (-1, 0, 0), (0, -1, 0)),
 )
-# Axis (0 = x, 1 = y, 2 = z), clockwise quarter turns seen from the positive side, turned layers.
 TURNS = {
     "R": (0, 1, (1,)),
     "L": (0, 3, (-1,)),

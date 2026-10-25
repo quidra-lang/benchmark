@@ -27,7 +27,6 @@ split =: 4 : 0
 cellText =: 3 : '(num <. y%12),'' '',num 12|y'
 pushCount =: 3 : '+/ y e. Upper'
 
-NB. Decoder returns success and text, so an empty valid part remains distinct from failure.
 decode =: 4 : 0
     result =. ''
     i =. 0
@@ -69,7 +68,6 @@ moveBox =: 4 : 0
     /:~ target (x i. source)} x
 )
 
-NB. Every board occupies rows/columns 1..10 in a padded 12-column array.
 walk =: 3 : 0
     'player boxes' =. y
     reached =. player = i.144
@@ -286,8 +284,6 @@ render =: 3 : 0
     rows
 )
 
-NB. Canonical state is sorted boxes plus the least reachable cell. Numeric keys
-NB. fit exactly in a 64-bit J integer (at most five base-145 digits).
 stateKey =: 3 : 0
     'player boxes' =. y
     145 #. player,boxes
@@ -363,7 +359,6 @@ bound =: 3 : 0
     m =. #boxes
     best =. _1
     bestOrder =. i.0
-    NB. Permutation indices enumerate goal-index lists lexicographically.
     for_index. i.!m do.
         order =. index A. i.m
         distances =. i.0

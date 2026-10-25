@@ -456,7 +456,7 @@ function parseCommand(line: string): Command {
         for (let index = 1; index < tokens.length; index += 2) queries.push(span(index));
         return { type: 'MO', queries };
     }
-    const kind = name as Kind, action = tokens[1]; // Command spelling is guaranteed by the input format.
+    const kind = name as Kind, action = tokens[1];
     if (action === 'BUILD') {
         if (kind === 'SEG') return { type: 'SEG BUILD', op: tokens[2] };
         if (kind === 'SQRT') return { type: 'SQRT BUILD', block: tokens.length === 3 ? number(2) : undefined };

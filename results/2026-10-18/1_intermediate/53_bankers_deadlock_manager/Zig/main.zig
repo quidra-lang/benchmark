@@ -228,7 +228,6 @@ const Manager = struct {
         const current = path.values[path.len - 1];
         const start = path.values[0];
         const wanted = s.requestOf(current);
-        // Numeric resource-first traversal is obtained by sorting completed keys below.
         for (s.data.jobs, 0..) |job, next_id| {
             if (!job.exists or (!resource_graph and current == next_id)) continue;
             for (0..s.data.m) |j| {

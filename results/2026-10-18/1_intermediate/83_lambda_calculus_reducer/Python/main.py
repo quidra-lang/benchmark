@@ -292,7 +292,6 @@ def to_de_bruijn(term, bound=()):
 
 
 def from_de_bruijn(term):
-    # Names bound variables in printed order with the name sequence, skipping free names.
     names = fresh_names(free_vars(term))
 
     def rename(node, bound):
@@ -351,7 +350,6 @@ def one_step(term, strategy, eta):
                 return Step(App(found.term, arg), found.kind)
             if strategy != CBN and (found := one_step(arg, strategy, eta)):
                 return Step(App(func, found.term), found.kind)
-            # Only APPLICATIVE and CBV get here with an abstraction in the function part.
             if isinstance(func, Lam) and (strategy == APPLICATIVE or isinstance(arg, (Var, Lam))):
                 return Step(substitute(func.body, func.var, arg), "beta")
         case Lam(var, body) if strategy in (NORMAL, APPLICATIVE):

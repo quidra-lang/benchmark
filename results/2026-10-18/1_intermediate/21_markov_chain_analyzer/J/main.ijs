@@ -1,4 +1,3 @@
-NB. Native extended integers and rationals keep every probability exact.
 LF =: 10{a.
 ChainNames =: 0$a:
 Chains =: 0$a:

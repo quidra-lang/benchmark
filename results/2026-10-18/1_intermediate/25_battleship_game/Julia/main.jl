@@ -446,7 +446,6 @@ function statistics_output(game::Game)
     end
 end
 
-# A match owns fresh players and a copied reef vector, preserving the current game.
 function play_match(current::Game, first_seed::Int64, second_seed::Int64, strategies::NTuple{2,Strategy}, mode::OutputMode=QUIET)::Game
     game = Game()
     game.salvo, game.chain, game.touch = current.salvo, current.chain, current.touch

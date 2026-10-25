@@ -149,7 +149,6 @@ static class EditDistance
 
 static class Soundex
 {
-    // h and w map to 0: that is their value as a first letter, and they are skipped elsewhere
     const string Digits = "01230120022455012623010202";
 
     public static string Encode(string word)
@@ -283,7 +282,6 @@ sealed class SpellChecker
                     continue;
                 ways[start] += ways[end];
                 List<string> candidate = [piece, .. best[end]!];
-                // pieces share their start: with equal counts the earlier, shorter one is smaller
                 if (best[start] is not { } current || candidate.Count < current.Count)
                     best[start] = candidate;
             }

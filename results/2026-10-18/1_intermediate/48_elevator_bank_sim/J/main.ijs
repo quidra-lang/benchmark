@@ -170,8 +170,6 @@ validate =: 3 : 0
   end.
  end.
 )
-NB. Group columns: from,to,count,time,waiting,car,boarded,delivered,lost,lastboard,lastalight,wait,travel,maxwait.
-NB. Car columns: floor,direction,door,inservice,idlesince,distance,stops,boarded,busy,energy.
 log =: 3 : 0
  if. Logging do. emit (number Time),' ',y end.
 )

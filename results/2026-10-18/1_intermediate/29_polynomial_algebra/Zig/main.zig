@@ -69,7 +69,6 @@ const Fraction = struct {
     }
 };
 
-// Every coefficient slice is immutable after construction, including stored operands.
 const Polynomial = struct {
     coefficients: []const Fraction = &.{},
     const zero: Polynomial = .{};

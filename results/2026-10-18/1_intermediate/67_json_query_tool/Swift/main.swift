@@ -478,7 +478,6 @@ final class PathParser {
         return segments
     }
 }
-// Child positions preserve document order even when object keys are renamed.
 typealias Location = [Int]
 func valueAt(_ root:Value,_ location:Location) -> Value {
     location.reduce(root) {

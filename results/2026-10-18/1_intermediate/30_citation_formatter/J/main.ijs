@@ -1,4 +1,3 @@
-NB. Names retain their protected parts; fields and rendered text are separate values.
 LF =: 10{a.
 Digits =: '0123456789'
 Upper =: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -47,7 +46,6 @@ fail =: 3 : 0
     Error =: y
     throw.
 )
-NB. Delimiters are recognized before consuming a character at depth zero.
 depth_split =: 4 : 0
     parts =. 0$a:
     start =. position =. depth =. 0
@@ -316,7 +314,6 @@ editor_names =: 4 : 0
     end.
 )
 singular =: 3 : '(1=#0{::y)*.-.1{::y'
-NB. Case changes inspect depth before each character, including the first letter.
 outside_case =: 4 : 0
     text =. y
     depth =. seen_letter =. 0
@@ -435,7 +432,6 @@ RawTemplates =: <;._2 (0 : 0)
 {author}. {title}. {year}. {school}, PhD dissertation.
 {author}. {title}.< {howpublished},> <{mon} >{year}.< {note}.>
 )
-NB. A node is (kind; payload): literal, placeholder, or nested optional nodes.
 template_nodes =: 3 : 0
     nodes =. 0$a:
     while. TemplateCursor<#TemplateSource do.
@@ -628,7 +624,6 @@ cite_text =: 4 : 0
         if. #missing do. fail 'unknown key ''',(({.missing){::keys),'''' end.
         nodes =. nodes,<(<start),(<closing+1),(<kind),<entries
     end.
-    NB. The complete command is valid before the record or output is changed.
     for_node. nodes do. CitationRecord =: ~.CitationRecord,3{::>node end.
     text =. ''
     position =. 0

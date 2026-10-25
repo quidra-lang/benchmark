@@ -394,7 +394,6 @@ function SpellChecker:record_undo(name)
 end
 
 function SpellChecker:log_correction(word, replacement)
-    -- ">" sorts before every letter, so ordering these keys orders by word, then correction.
     local key = word .. ">" .. replacement
     self.correction_log[key] = (self.correction_log[key] or 0) + 1
     self.counters.corrected = self.counters.corrected + 1

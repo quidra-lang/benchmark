@@ -368,7 +368,6 @@ fn path(s: &str, field: bool) -> Option<Vec<Segment>> {
             return None;
         }
         else {
-            // A bracket selector does not need a preceding dot.
         }
         let selector=if b.get(at)==Some(&b'[') {
             at+=1;
@@ -425,7 +424,6 @@ fn path(s: &str, field: bool) -> Option<Vec<Segment>> {
     }
     Some(segments)
 }
-// Child positions preserve document order even when object keys are renamed.
 type Location = Vec<usize>;
 fn value_at<'a>(root: &'a Value, location: &[usize]) -> &'a Value {
     let mut v=root;

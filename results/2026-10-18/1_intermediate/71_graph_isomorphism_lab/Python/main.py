@@ -256,7 +256,6 @@ def count_triangles(graph):
 def maximum_clique(graph):
     best = []
 
-    # Cliques are visited in lexicographic order, so the first largest one is kept.
     def extend(clique, candidates):
         nonlocal best
         if len(clique) > len(best):
@@ -271,8 +270,6 @@ def maximum_clique(graph):
 def colouring_with(graph, limit):
     colours = []
 
-    # A vertex may only open the next unused colour; the lexicographically
-    # smallest colouring always has this form, and it is found first.
     def extend(used):
         v = len(colours)
         if v == graph.n:

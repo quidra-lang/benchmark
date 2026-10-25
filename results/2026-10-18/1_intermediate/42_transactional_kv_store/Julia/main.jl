@@ -202,7 +202,6 @@ function matches_pattern(parts::Vector{PatternPart}, text::String)
     last(previous)
 end
 
-# Stored payloads are never mutated; edits replace an Entry with a new value.
 function read_value(store::Store, key::String, ::Type{T}, empty::T) where {T<:Value}
     entry = get(store.database, key, nothing)
     isnothing(entry) && return empty

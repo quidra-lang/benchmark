@@ -105,7 +105,6 @@ RULE_TABLES = {
 
 
 def apply_rules(word, rules):
-    """Apply the rule with the longest matching suffix; return the word and the applied suffix."""
     matching = [rule for rule in rules if word.endswith(rule[0])]
     if not matching:
         return word, None
@@ -193,7 +192,6 @@ def closest_distance(positions, others, same_stem):
     if same_stem:
         gaps = [later - earlier for earlier, later in zip(positions, positions[1:])]
     else:
-        # The closest pair of different stems is adjacent in the merged order.
         merged = sorted(
             [(position, 0) for position in positions] + [(other, 1) for other in others]
         )

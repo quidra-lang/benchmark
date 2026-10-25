@@ -155,7 +155,6 @@ func changeBlocks(first, second []string) []changeBlock {
 	return blocks
 }
 
-// A step is either a common line (block == nil) or a whole change block.
 type step struct {
 	oldIndex, newIndex int
 	block              *changeBlock

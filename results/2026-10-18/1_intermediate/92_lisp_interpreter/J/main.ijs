@@ -1,4 +1,3 @@
-NB. Values and lexical frames are arena entries; pair/procedure IDs retain identity.
 LF=:10{a.
 DQ=:34{a.
 SQ=:39{a.

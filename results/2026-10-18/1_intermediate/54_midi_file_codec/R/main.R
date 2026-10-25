@@ -69,7 +69,6 @@ event_line <- function(e, track) {
     } else if (is_meta(e, 32)) {
         fields <- c(fields, d[1] + 1)
     } else if (is_meta(e, 47)) {
-        # No fields.
     } else if (is_meta(e, 84)) {
         fields <- c(fields, d)
     } else if (is_meta(e, 88)) {

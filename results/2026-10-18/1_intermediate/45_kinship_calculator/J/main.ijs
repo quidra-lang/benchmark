@@ -3,8 +3,6 @@ Scale =: 137438953472
 SexLetters =: 'MFX'
 Ids =: Names =: Parents =: 0$a:
 Sex =: Birth =: Death =: Active =: i.0
-NB. Marriage columns: first, second, start, end, status, deceased person.
-NB. End is -1 for a current marriage; statuses are current=0, divorced=1, widowed=2.
 Marriages =: 0 6$0
 HistoryStates =: HistoryLines =: 0$a:
 Modifying =: ;:'PERSON DEATH REMOVE PARENT UNPARENT SPOUSE DIVORCE'
@@ -174,7 +172,6 @@ step_related =: 4 : 0
     0
 )
 
-NB. Breadth-first traversal gives minimum generation distances in either direction.
 distances =: 4 : 0
     result =. (#Ids)#_1
     result =. 0 y}result
@@ -312,7 +309,6 @@ relationship_text =: 4 : 0
     if. #terms do. ', ' join terms else. 'no relation' end.
 )
 
-NB. The specified denominator bound makes this integer scaling exact.
 reset_phi =: 3 : 'Phi =: ((#Ids),#Ids)$_1'
 phi =: 4 : 0
     value =. (<x,y){Phi

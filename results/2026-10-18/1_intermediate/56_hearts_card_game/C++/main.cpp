@@ -278,7 +278,6 @@ struct HandRecord {
     std::vector<std::string> record;
 };
 
-// Everything that UNDO restores when a played card is taken back.
 struct Round {
     std::array<CardSet, 4> hands;
     std::array<CardSet, 4> taken;
@@ -827,7 +826,6 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
         return {"game abandoned"};
     }
 
-    // Validate argument words before any state-dependent checks or mutation.
     int seat = -1;
     std::vector<int> cards;
     if (one_of(name, {"STACK", "PASS", "PLAY", "CLAIM"})) seat = seat_value(args[0]);

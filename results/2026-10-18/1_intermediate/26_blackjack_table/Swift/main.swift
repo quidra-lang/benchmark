@@ -519,7 +519,6 @@ final class Table {
         var seed: Int64 = 1
         var proposedRules: Rules?
 
-        // Validate arguments in their written order before inspecting the phase.
         if command == "SHOE" {
             value = try integer(first, 1...8)
             seed = Int64(try integer(second, 1...2147483646))

@@ -262,7 +262,6 @@ struct Level {
         return result
     }
 }
-// The representative merges positions with the same reachable player region.
 struct SearchState: Hashable {
     let boxes: [Int]
     let representative: Int
@@ -283,7 +282,6 @@ func search(_ level: Level, _ start: Position, fixed: [Int] = [], target: Int? =
     let first = SearchState(boxes: start.boxes, representative: level.representative(start.player,start.boxes))
     var nodes = [SearchNode(state: first,parent: nil,box: 0,direction: 0)]
     var known: Set<SearchState> = [first], expanded = 0
-    // Discovery order is the BFS queue, and its cursor counts expanded states.
     while expanded < nodes.count {
         if let limit, expanded == limit { return SearchResult(outcome: "limit", expanded: expanded, states: nodes.count) }
         let parent = expanded, state = nodes[parent].state
@@ -382,7 +380,6 @@ final class Game {
                 if best == nil || total < best!.0 { best = (total,order) }
                 return
             }
-            // Ascending goals enumerate assignments lexicographically; retain ties.
             for g in level.goalCells.indices where !used.contains(g) {
                 let d = level.distances[g][current.boxes[i]]
                 if d >= 0 { visit(order+[g],used.union([g]),total+d) }

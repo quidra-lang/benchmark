@@ -48,7 +48,6 @@ histogram =: 4 : 0
     result
 )
 
-NB. The calendar is an integer day-number lookup table, including the end boundary.
 leap =: 3 : '((0=4|y)*.0~:100|y)+.0=400|y'
 month_days =: 3 : 0
     'year month' =. y
@@ -106,7 +105,6 @@ parse_month =: 3 : 0
     Calendar i.year,month,1
 )
 
-NB. Item syntax is checked from the base outward; the step is checked last.
 field_value =: 4 : 0
     if. x=3 do.
         index =. MonthCodes i.<y
@@ -452,7 +450,6 @@ enabled_jobs =: 3 : 0
     order#~>7{"1 order{Jobs
 )
 
-NB. The incidence table has job rows in ID order and minute columns.
 fire_table =: 3 : 0
     'lo hi' =. y
     selected =. enabled_jobs ''

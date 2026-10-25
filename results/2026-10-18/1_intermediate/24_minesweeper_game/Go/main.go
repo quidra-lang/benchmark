@@ -133,7 +133,6 @@ func (g *Game) clone(keepMoves bool) *Game {
 	copy.moves = nil
 	if keepMoves { copy.moves = slices.Clone(g.moves) }
 	copy.undo = nil
-	// Neighbor lists are immutable and can be shared by query copies.
 	return &copy
 }
 
@@ -319,7 +318,6 @@ func (g *Game) deduce() Deduction {
 	for i, c := range list { at[c.cell] = i }
 	for _, a := range list {
 		ax, ay := a.cell%g.width, a.cell/g.width
-		// A nonempty subset pair shares a neighbor, placing its centers within two cells.
 		for y := max(0, ay-2); y <= min(g.height-1, ay+2); y++ {
 			for x := max(0, ax-2); x <= min(g.width-1, ax+2); x++ {
 				index := at[y*g.width+x]
@@ -660,7 +658,6 @@ func (g *Game) process(command string, cell int, value int64, safety Safety) err
 		snapshot := g.undo[len(g.undo)-1]
 		g.undo = g.undo[:len(g.undo)-1]
 		g.revealed, g.marks = snapshot.revealed, snapshot.marks
-		// Successful operations only append, leaving every saved history prefix intact.
 		g.moves = g.moves[:snapshot.moves]
 		line("undo %s moves %d", snapshot.name, len(g.moves))
 	case "SHOW":

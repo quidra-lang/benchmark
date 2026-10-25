@@ -173,7 +173,6 @@ apdex_rating <- function(score) {
     else "unacceptable"
 }
 fraction_rank <- function(numerator, denominator) {
-    # Cross products stay below 2^53 under the input constraints.
     vapply(seq_along(numerator), function(i) {
         sum(numerator * denominator[i] < numerator[i] * denominator)
     }, numeric(1))

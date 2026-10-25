@@ -94,7 +94,7 @@ private class Game(
     fun opened() = revealed.count { it }
 
     fun copy(keepMoves: Boolean): Game {
-        val copy = Game(width, height, mineCount, seed, neighbors) // Geometry is immutable.
+        val copy = Game(width, height, mineCount, seed, neighbors)
         mine.copyInto(copy.mine)
         numbers.copyInto(copy.numbers)
         revealed.copyInto(copy.revealed)
@@ -221,7 +221,6 @@ private class Game(
         for (a in constraints) {
             val ax = a.cell % width
             val ay = a.cell / width
-            // Nonempty subset pairs share a neighbor; their centers are within two cells.
             for (y in maxOf(0, ay - 2)..minOf(height - 1, ay + 2)) {
                 for (x in maxOf(0, ax - 2)..minOf(width - 1, ax + 2)) {
                     val b = at[y * width + x] ?: continue
@@ -428,7 +427,6 @@ private class Game(
                 val snapshot = undo.removeLastOrNull() ?: fail("nothing to undo")
                 revealed = snapshot.revealed
                 marks = snapshot.marks
-                // Operations only append, so truncating restores the saved move record.
                 moves.subList(snapshot.moves, moves.size).clear()
                 emit("undo ${snapshot.command.name.lowercase()} moves ${moves.size}")
             }

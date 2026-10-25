@@ -4,7 +4,6 @@ let corners=["URF","UFL","ULB","UBR","DFR","DLF","DBL","DRB"]
 let edges=["UR","UF","UL","UB","DR","DF","DL","DB","FR","FL","BL","BR"]
 let cornerStickers=[[8,9,20],[6,18,38],[0,36,47],[2,45,11],[29,26,15],[27,44,24],[33,53,42],[35,17,51]]
 let edgeStickers=[[5,10],[7,19],[3,37],[1,46],[32,16],[28,25],[30,43],[34,52],[23,12],[21,41],[50,39],[48,14]]
-// A permutation maps each source sticker to its destination sticker.
 typealias Permutation = [Int]
 typealias State = [UInt8]
 struct Problem: Error {

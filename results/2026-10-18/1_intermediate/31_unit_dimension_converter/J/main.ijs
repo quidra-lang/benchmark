@@ -1,4 +1,3 @@
-NB. A quantity is an exact value followed by its seven integer dimension exponents.
 LF =: 10{a.
 Digits =: '0123456789'
 Letters =: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
@@ -225,7 +224,6 @@ selected_units =: 3 : 0
     selected{~/:selected{UnitFactors
 )
 
-NB. Nodes store kind, source data, and two child/auxiliary fields.
 Nodes =: 0 4$a:
 Tokens =: 0$a:
 TokenTypes =: Positions =: i.0

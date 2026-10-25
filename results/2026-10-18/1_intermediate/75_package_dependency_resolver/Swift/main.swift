@@ -305,7 +305,6 @@ final class Manager {
             }
             return ["requested \(r.rule.name) \(r.rule.text)"]
         }
-        // Materialize a failure before backtracking changes its selection and origins.
         func record(_ r: Requirement,_ reason: String,_ other: String? = nil) {
             if selected.count > failureDepth {
                 failureDepth = selected.count

@@ -191,7 +191,6 @@ private class Manager {
             val origin = r.origin
             return if (origin == null) listOf("requested ${r.rule.name} ${r.rule.text}") else chain(origins.getValue(origin.first))+"${origin.first}@${origin.second.version.text} requires ${r.rule.name} ${r.rule.text}"
         }
-        // Materialize a failure before backtracking changes its selection and origins.
         fun record(r: Requirement,reason: String,other: String? = null) {
             if (selected.size > failureDepth) {
                 failureDepth = selected.size

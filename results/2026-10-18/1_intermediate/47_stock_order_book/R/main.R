@@ -1,5 +1,4 @@
 options(scipen = 999L)
-# Mutable environments represent orders and traders; accepted order order is stable.
 orders <- list()
 traders <- new.env(hash = TRUE, parent = emptyenv())
 trades <- list()

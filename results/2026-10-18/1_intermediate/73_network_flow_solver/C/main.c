@@ -274,7 +274,6 @@ static Augmentations cheapest(Graph *g, int s, int t, int wanted) {
     Augmentations result = {0};
     int pushed = 0;
     while (wanted < 0 || pushed < wanted) {
-        /* The usable global arc sequence stays fixed throughout these passes. */
         int usable[2 * WORK_EDGES], count = 0;
         for (int i = 1; i <= g->m; i++) if (residual(g, i) > 0) usable[count++] = i;
         for (int i = 1; i <= g->m; i++) if (residual(g, -i) > 0) usable[count++] = -i;

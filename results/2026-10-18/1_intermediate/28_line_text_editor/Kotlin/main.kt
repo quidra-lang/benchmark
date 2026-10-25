@@ -648,7 +648,6 @@ private class Editor {
         val command = Command.parse(line.substring(lexed.end))
         ensure(command.addressKind() != 0 || addresses.count == 0, "unexpected address")
         ensure(command.addressKind() != 1 || addresses.count != 2, "too many addresses")
-        // The trial owns mutable collections; shared history and text values stay unchanged.
         val trial = state.fork()
         val values = trial.evaluate(addresses)
         val range = trial.checkedRange(command, addresses.count, values)

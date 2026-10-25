@@ -199,7 +199,6 @@ class Graph
         int pushed = 0;
         while (wanted < 0 || pushed < wanted)
         {
-            // Keep the specified global arc order fixed during each shortest-path search.
             List<int> usable = [];
             for (int i = 1; i <= Edges.Count; i++) if (Residual(i) > 0) usable.Add(i);
             for (int i = 1; i <= Edges.Count; i++) if (Residual(-i) > 0) usable.Add(-i);

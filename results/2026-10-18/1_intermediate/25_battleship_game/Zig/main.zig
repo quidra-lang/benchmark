@@ -145,7 +145,6 @@ const Player = struct {
     ships: [5]Placement = @splat(.{}),
     owner: [100]?usize = @splat(null),
     attacked: [100]bool = @splat(false),
-    // A ship cell can produce HIT only once; each adds at most four neighbors.
     candidates: [68]usize = @splat(0),
     candidate_count: usize = 0,
     random: u64,

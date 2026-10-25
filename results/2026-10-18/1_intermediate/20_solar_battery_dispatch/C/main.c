@@ -619,7 +619,6 @@ static void execute(char *tokens[MAX_ARGS], int n) {
         if (!oneStrategy(args + 1, argc - 1, &strategy)) return;
         if (!checkCurrent()) return;
         simulate(strategy, &current.settings, current.prices, &trial, 1, 0);
-        /* The saved run is unchanged by comparison. */
         char oldName[50], newName[50];
         snprintf(oldName, sizeof(oldName), "%s", strategyText(current.strategy));
         snprintf(newName, sizeof(newName), "%s", strategyText(strategy));

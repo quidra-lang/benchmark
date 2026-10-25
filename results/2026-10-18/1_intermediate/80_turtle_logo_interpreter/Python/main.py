@@ -498,7 +498,6 @@ class Interpreter:
         raise LogoError(variable.line, f"{variable.name} has no value")
 
     def make(self, name, value):
-        # The innermost binding wins; without one the global variable is set.
         target = next(
             (env for env in reversed(self.environments) if name in env.variables),
             self.environments[0],
@@ -523,7 +522,6 @@ class Interpreter:
             self.run_list(procedure.body)
         except ProcedureExit as exit_signal:
             result = exit_signal.value
-        # Runtime errors propagate past this point so the active calls can be reported.
         self.environments.pop()
         if traced:
             outcome = "stops" if result is None else f"outputs {result}"
@@ -613,7 +611,6 @@ class Interpreter:
         if steps == 0:
             self.apply_pen(self.x, self.y)
         else:
-            # Each point is i*dx/steps rounded to nearest, with halves rounded up.
             for i in range(steps + 1):
                 cell_x = self.x + (2 * i * dx + steps) // (2 * steps)
                 cell_y = self.y + (2 * i * dy + steps) // (2 * steps)

@@ -12,7 +12,6 @@ RESERVED_WORDS = {
     'RETURN', 'ON', 'ERROR', 'RESUME', 'FOR', 'TO', 'STEP', 'NEXT', 'WHILE', 'WEND', 'DIM',
     'RESTORE', 'RANDOMIZE', 'END', 'STOP', 'TAB', 'SPC', 'AND', 'OR', 'NOT', 'MOD', 'ERR', 'ERL',
 }
-# Allowed argument type signatures: I = integer, S = string.
 FUNCTIONS = {
     'ABS': ('I',),
     'SGN': ('I',),

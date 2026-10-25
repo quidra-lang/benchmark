@@ -423,7 +423,6 @@ class Table {
     const [command, first, second] = line.split(' ');
     if (!COMMANDS.has(command)) fail(`unknown command ${command}`);
 
-    // Validate every argument, left to right, before checking table state.
     let player, value, seed;
     if (command === 'SHOE') {
       value = integer(first, 1, 8);

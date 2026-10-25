@@ -84,8 +84,6 @@ func integerSqrt(_ value: Int64) -> Int64 {
     }
 }
 
-// Keep the magnitude n * 2^exponent / denominator separate from its sign.
-// Int64 covers the exact intermediate values guaranteed by the problem.
 struct Exact {
     let n: Int64
     let exponent: Int
@@ -144,7 +142,6 @@ func exactSum(_ terms: [Exact], mode: Mode) -> Exact {
         let sign = terms.allSatisfy { $0.negative == terms[0].negative } ? terms[0].negative : mode == .rdn
         return Exact(negative: sign)
     }
-    // Every term supplied to a sum or difference is dyadic, with denominator 1.
     let exponent = nonzero.map(\.exponent).min()!
     var numerator: Int64 = 0
     for term in nonzero {

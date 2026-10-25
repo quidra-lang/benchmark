@@ -600,7 +600,6 @@ const Referee = struct {
             return s.h.line("total {d}", .{generated.legal.items.len});
         }
         if (eq(op, "HINT")) {
-            // Stable insertion preserves canonical order when evaluations tie.
             const ranked = generated.legal.items;
             var j: usize = 1;
             while (j < ranked.len) : (j += 1) {

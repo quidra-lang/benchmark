@@ -426,7 +426,6 @@ function Game:statistics_output()
     end
 end
 
--- Each trial owns every mutable table; only the current rules and reefs are copied.
 local function play_match(current, first_seed, second_seed, first_strategy, second_strategy, mode)
     local game = Game.new()
     game.salvo, game.chain, game.touch = current.salvo, current.chain, current.touch

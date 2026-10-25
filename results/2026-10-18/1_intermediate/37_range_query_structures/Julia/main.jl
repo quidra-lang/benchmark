@@ -381,7 +381,6 @@ function dump_structure(tree::SqrtBlocks)
     rows
 end
 
-# The pools append immutable nodes; every unchanged subtree retains its node index.
 struct Node
     total::Int
     left::Int

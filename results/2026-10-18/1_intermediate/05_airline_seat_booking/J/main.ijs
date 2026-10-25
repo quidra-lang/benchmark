@@ -1,4 +1,3 @@
-NB. Indexed native boxed records retain passenger and booking acceptance order.
 split =: 4 : 0
   <;._1 x,y
 )
@@ -25,11 +24,6 @@ PEOPLE =: 0$<i.0
 TIERNAMES =: 0$<''
 TIERS =: i.0
 PENDING =: (<' '),(<0),(<0),(<0$<i.0),<0$<i.0
-NB. Seat: label,row,cabin,block,offset,kind,exit,blocked.
-NB. Cabin: cabin,first,last,blocks. Aircraft: model,base,limit,cabins,seats.
-NB. Flight: name,aircraft,limits,blocked,occupied,closed,volunteers.
-NB. Booking: pnr,flight,checked,people.
-NB. Passenger: name,type,pref,booking,cabin,seat,partner,alive.
 pget =: 4 : 0
   y{::x{::PEOPLE
 )
@@ -795,7 +789,6 @@ execute =: 3 : 0
     end.
     output return.
   end.
-  NB. BOARDING: whole integer keys retain PRE and cabin precedence.
   keys =. 0 5$0
   groups =. 0$<''
   order =. i.0

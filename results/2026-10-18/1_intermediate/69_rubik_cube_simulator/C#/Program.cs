@@ -43,7 +43,6 @@ class Program
 
     static int[] Identity() => Enumerable.Range(0, 54).ToArray();
 
-    // Effects map each source sticker to its destination.
     static int[] Compose(int[] first, int[] second) => first.Select(index => second[index]).ToArray();
 
     static int[] Inverse(int[] permutation)

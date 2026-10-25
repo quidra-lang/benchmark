@@ -68,7 +68,6 @@ html =: 3 : 0
     end.
     out
 )
-NB. A value is a boxed (kind,payload) pair. Maps contain boxed key/value vectors.
 Absent =: (<'a'),<''
 str =: 3 : '( <''s''),<y'
 integer =: 3 : '( <''i''),<y'
@@ -529,8 +528,6 @@ apply =: 3 : 0
         str s
     end.
 )
-NB. Numeric NAME parts are unbounded. Compare their digit count with the
-NB. actual container length before converting a usable list index.
 nameHas =: 4 : 0
     if. subscript y do.
         if. 'l'~:0{::x do. 0 return. end.

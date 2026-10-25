@@ -1,4 +1,3 @@
-NB. Integer cents throughout; every division explicitly uses extended integers.
 split =: 4 : 0
   <;._1 x,y
 )
@@ -6,7 +5,6 @@ join =: 4 : 0
   if. 0=#y do. '' return. end.
   (#x)}.;(<x),&.>y
 )
-NB. Strings from cut are lists; character literals/indexes may be atoms.
 text_equal =: 4 : 0
   (,x) -: ,y
 )
@@ -52,7 +50,6 @@ largest_remainder =: 4 : 0
   for_k. rest{.order do. result =. (1+k{result) k}result end.
   result
 )
-NB. Member arrays preserve registration; sorted views are used for all name ties.
 DAYNOW =: 1
 SERIAL =: 0
 MNAMES =: 0$<''
@@ -65,9 +62,6 @@ BVALUES =: i.0
 USED =: 0$<''
 EXPENSES =: 0$<i.0
 SETTLEMENTS =: 0$<i.0
-NB. Expense fields: id,day,record,payers,payments,A,currency,category,mode,
-NB. participants,specified,T,shares,contributions,interval,next day,copy count.
-NB. Settlement fields: day,record,sender,receiver,A,currency,T.
 member_id =: 3 : 0
   k =. MNAMES i.<y
   if. k=#MNAMES do. _1 else. k end.
@@ -807,7 +801,6 @@ execute =: 3 : 0
     end.
     output,<'  count ',(number count),' total ',money total return.
   end.
-  NB. PERIODS: chronological traversal gives increasing integral bucket numbers.
   interval =. 0".1{::fields
   output =. ,<'PERIODS ',number interval
   bucket =. _1

@@ -297,7 +297,6 @@ auto_play =: 3 : 0
     rounds,flagged,opened
 )
 
-NB. Prune a component search whenever a constraint cannot reach its target.
 search_configs =: 3 : 0
     if. y=#SearchOrder do.
         SearchCount =: SearchCount+1

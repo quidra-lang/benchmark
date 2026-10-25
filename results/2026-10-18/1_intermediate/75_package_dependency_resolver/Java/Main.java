@@ -261,7 +261,6 @@ public class Main {
             return (!p.yanked || installed.get(p.name) == p) && (!audit || !vulnerable(p));
         }
         void record(Requirement r, String reason, Requirement other) {
-            // Freeze the first failure at the greatest selection depth.
             if (selected.size() <= failureDepth) return;
             failureDepth = selected.size();
             failure = new ArrayList<>(List.of("UNSATISFIABLE"));

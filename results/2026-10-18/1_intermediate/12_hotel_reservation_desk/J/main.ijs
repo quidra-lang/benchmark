@@ -1,4 +1,3 @@
-NB. Manual Gregorian calendar, exact cents, and indexed historical night snapshots.
 LF=:10{a.
 EMPTY=:i.0 0
 TYPES=:;:'SINGLE DOUBLE SUITE'
@@ -74,10 +73,6 @@ emit=:3:0
 fail=:3:0
   emit 'ERROR ',y
 )
-NB. R: room-number,type,base-rate,dirty,in-house-reservation.
-NB. B: created,room,wait-type,arrival,departure,status,nights,extras,deposit,
-NB. paid,posting,fee,penalty-day,penalty-rate,extra-head,extra-tail.
-NB. BILLS: lodging,discount,penalty,extras,tax,total. X: amount,next.
 rget=:4:0
   (<x,y){R
 )

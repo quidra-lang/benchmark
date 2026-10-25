@@ -1,4 +1,3 @@
-# frozen_string_literal: true
 
 DIRECTIONS = %w[u d l r].freeze
 TURNS = { 'ROT90' => 'rlud', 'ROT180' => 'durl', 'ROT270' => 'lrdu',
@@ -246,7 +245,6 @@ class Level
   end
 
   def transformed(kind)
-    # Rebuilding the initial drawing preserves its connected interior under any isometry.
     width = %w[ROT90 ROT270].include?(kind) ? @height : @width
     symbols = Array.new(size)
     render(@loaded_position).join.chars.each_with_index { |letter, cell| symbols[map_cell(kind, cell)] = letter }

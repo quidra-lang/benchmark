@@ -9,7 +9,6 @@ struct CommandError <: Exception
 end
 fail(message::AbstractString) = throw(CommandError(String(message)))
 
-# Indices follow creation order; zero denotes an absent partner.
 struct Saved
     source::Source
     matching::Vector{Int}

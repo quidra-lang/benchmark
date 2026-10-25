@@ -66,7 +66,6 @@ const Card = struct {
 };
 const Total = struct { value: i64, soft: bool };
 const Hand = struct {
-    // Every card is worth at least one point, and a hand finishes at 21 or bust.
     cards: [22]Card = undefined,
     len: usize = 0,
     bet: i64 = 0,
@@ -573,7 +572,6 @@ const Program = struct {
         var seed: u64 = 0;
         var proposed = table.rules;
 
-        // Preserve the specified argument order before all phase checks.
         if (command == .SHOE) {
             value = try program.integer(first, 1, 8);
             seed = @intCast(try program.integer(second, 1, 2147483646));

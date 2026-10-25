@@ -202,7 +202,6 @@ public class Main {
         return List.copyOf(result);
     }
 
-    // Face arrays are never changed after a turn is stored; rolling creates a new array.
     record Turn(int seat, int rolls, int[] faces, int hold) {
         static Turn start(int seat) { return new Turn(seat, 0, new int[5], 0); }
     }
@@ -507,7 +506,6 @@ public class Main {
     static final class Adviser {
         final Player player;
         final JokerRule joker;
-        // Values at depth j are scaled by 7776^j for exact comparisons.
         final long[][] values, expectations;
 
         Adviser(Player player, JokerRule joker, int depth) {

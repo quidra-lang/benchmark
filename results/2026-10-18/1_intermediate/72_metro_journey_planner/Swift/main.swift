@@ -173,7 +173,6 @@ final class Planner {
         return labels
     }
     func walkStep(_ labels: inout Labels, _ sources: Set<String>, _ changed: inout Set<String>) {
-        // All walks use source labels captured before this walk step.
         let recorded = sources.sorted().map {
             ($0,labels[$0]!)
         }

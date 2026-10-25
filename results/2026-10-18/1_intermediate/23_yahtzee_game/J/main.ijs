@@ -283,7 +283,6 @@ bot_turn =: 3 : 0
     enter_score chosen
 )
 
-NB. Count-state transitions reuse all equivalent ordered dice outcomes.
 compositions =: 4 : 0
     if. y=1 do. 1 1$x return. end.
     result =. (0,y)$0

@@ -58,7 +58,6 @@ function Cursor:delimited(delimiter)
             self.position = self.position + 1
         end
         content[#content + 1] = c
-        -- False is an unescaped &, while an empty array is a literal empty replacement.
         if c == "&" and not escaped then replacement[#replacement + 1] = false
         else replacement[#replacement + 1] = c end
     end

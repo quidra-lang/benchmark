@@ -375,7 +375,6 @@ const Library = struct {
                 }
                 for (automatic.items) |c|
                     try self.processLoss(c, "AUTOLOST", out);
-                // Snapshot expiry targets after automatic losses, before releasing any hold.
                 var expired: std.ArrayList(*Copy) = .empty;
                 for (ordered_titles) |t| for (t.copies.items) |c| {
                     if (c.state == .HOLD and c.expiry < self.day)

@@ -1,4 +1,3 @@
-NB. Rational division begins with extended integers, never binary floating point.
 floor_ratio =: 4 : 0
   <. (x: x) % x: y
 )

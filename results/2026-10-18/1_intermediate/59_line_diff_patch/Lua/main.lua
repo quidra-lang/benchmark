@@ -161,7 +161,6 @@ local function change_blocks(first, second)
   return blocks
 end
 
--- Each step is either a common line pair (old_line, new_line) or a change block.
 local function walk(blocks, old_start, new_start, old_end)
   local steps = {}
   local old_index, new_index = old_start, new_start
@@ -916,7 +915,6 @@ function Workspace:require_files(...)
   end
 end
 
--- A history entry of false records that the file did not exist.
 function Workspace:save(name, lines)
   local states = self.history[name] or {}
   self.history[name] = states

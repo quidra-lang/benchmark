@@ -282,7 +282,6 @@ fn hasText(gpa: Allocator, text: []const u8) ParseError!bool {
 
 const Line = struct { id: usize, text: []const u8 };
 const HistoryRecord = struct { command: []const u8, lines: []const Line, current: usize };
-// Immutable append chunks avoid copying an entire memory file on every W.
 const FileData = struct {
     previous: ?*const FileData,
     lines: []const []const u8,

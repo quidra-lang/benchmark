@@ -11,7 +11,6 @@ const adjacent_keys = [26][]const u8{
     "hikmnu", "ijlmo", "kop",  "jkn",    "bhjm", "iklp",   "lo",     "aw",     "deft",
     "adewxz", "fgry",  "hijy", "bcfg",   "aeqs", "cdsz",   "ghtu",   "asx",
 };
-// Digits of a to z; h and w have no digit and are skipped by soundex.
 const soundex_digits = "01230120022455012623010202";
 const sentence_marks = ".!?";
 const max_word_length = 30;

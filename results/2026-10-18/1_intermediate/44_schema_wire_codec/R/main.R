@@ -14,8 +14,6 @@ fail <- function(reason) {
 byte_error <- function(reason, offset) fail(paste(reason, "at byte", decimal(offset)))
 column_error <- function(reason, column) fail(paste(reason, "at column", column))
 
-# Compare decimal digits before conversion, so an out-of-range token cannot round
-# onto a valid endpoint in R's double-precision numeric representation.
 number_fits <- function(text, low, high) {
   negative <- startsWith(text, "-")
   digits <- if (negative) substring(text, 2) else text

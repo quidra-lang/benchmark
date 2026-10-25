@@ -185,7 +185,6 @@ def runs(flags, coordinates):
 
 
 class Coverage:
-    """Coverage counts on the grid compressed to the rectangle coordinates."""
 
     def __init__(self, rects, extra_xs=(), extra_ys=()):
         self.xs = sorted({x for rect in rects for x in (rect.x1, rect.x2)}.union(extra_xs))
@@ -242,7 +241,6 @@ class Coverage:
         return component
 
     def holes(self):
-        # Uncovered cells reaching the grid border are connected to the unbounded outside.
         seen = set()
         found = []
         for j in range(self.rows):
@@ -277,7 +275,6 @@ class Coverage:
         return found
 
     def largest_empty(self):
-        # A largest empty rectangle cannot grow, so its sides lie on grid lines.
         candidates = []
         for a in range(self.columns):
             free = [True] * self.rows
@@ -562,7 +559,6 @@ class Layout:
         if a not in distance:
             print(f"path {a} {b}: none")
             return
-        # Walking towards b, the smallest name one step closer gives the first shortest path.
         route = [a]
         while route[-1] != b:
             remaining = distance[route[-1]] - 1
@@ -599,7 +595,6 @@ class Layout:
         rows = -(-(y2 - y1) // window)
         if columns > MAX_TILES or rows > MAX_TILES:
             raise CommandError("too many windows")
-        # Tile borders become grid lines, so every grid cell lies inside one tile.
         coverage = Coverage(rects, [x1 + i * window for i in range(columns + 1)],
                             [y1 + j * window for j in range(rows + 1)])
         covered = {(i, j): 0 for j in range(rows) for i in range(columns)}
@@ -679,7 +674,6 @@ class Layout:
         if not self.rules:
             raise CommandError("no rules")
         total = 0
-        # Kind names sort as enclose, spacing, width, matching the required order.
         for (kind, layers), value in sorted(self.rules.items()):
             if kind == "enclose":
                 lines = self.enclosure_violations(*layers, value)

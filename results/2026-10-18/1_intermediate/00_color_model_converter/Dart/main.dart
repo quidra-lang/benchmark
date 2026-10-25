@@ -18,8 +18,6 @@ const builtins = <Color>[
   [255, 127, 80], [250, 128, 114], [238, 130, 238], [75, 0, 130],
 ];
 
-// All divisions below have positive denominators. Dart's ~/ truncates, so
-// negative floor and the two distinct tie rules are expressed explicitly.
 int floorRatio(int n, int d) => n >= 0 ? n ~/ d : -((-n + d - 1) ~/ d);
 int rounded(int n, int d) => floorRatio(2 * n + d, 2 * d);
 int away(int n, int d) => n < 0 ? -rounded(-n, d) : rounded(n, d);
@@ -73,8 +71,6 @@ int hue(Color c) {
     numerator += 360 * d;
   return rounded(numerator, d) % 360;
 }
-// base(h,C) has components C * factor / 60. These integer factors
-// let each inverse conversion combine all fractions before its only round.
 List<int> baseFactors(int h) {
   final q = h ~/ 60, f = h % 60, x = q.isEven ? f : 60 - f;
   return switch (q) {
@@ -210,7 +206,6 @@ int blendComponent(String mode, int x, int y) {
 }
 
 class Engine {
-  // Dart maps retain insertion order; replacing a value preserves its position.
   final registered = <String, Color>{};
   Color color(String text) {
     if (RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(text)) {

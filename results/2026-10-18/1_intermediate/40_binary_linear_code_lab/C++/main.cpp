@@ -173,7 +173,6 @@ public:
                     leaders[s] = word;
                     if (--remaining == 0) break;
                 }
-                // Gosper's successor preserves weight and increases lexicographic order.
                 const Word lowest = word & (Word{0} - word), next = word + lowest;
                 word = next | (((next ^ word) >> 2) / lowest);
             }

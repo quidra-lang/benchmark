@@ -1,105 +1,651 @@
 import java.io.*;
 import java.util.*;
 import java.util.stream.*;
-
 public class Main {
     static final List<String> SYMBOLS=List.of("H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe".split(" "));
-    static final long[] WEIGHTS={1008,4003,6941,9012,10811,12011,14007,15999,18998,20180,22990,24305,26982,28086,30974,32065,35453,39948,39098,40078,44956,47867,50942,51996,54938,55845,58933,58693,63546,65380,69723,72630,74922,78971,79904,83798,85468,87620,88906,91224,92906,95950,98000,101070,102906,106420,107868,112414,114818,118710,121760,127600,126904,131293};
+    static final long[] WEIGHTS={
+        1008,4003,6941,9012,10811,12011,14007,15999,18998,20180,22990,24305,26982,28086,30974,32065,35453,39948,39098,40078,44956,47867,50942,51996,54938,55845,58933,58693,63546,65380,69723,72630,74922,78971,79904,83798,85468,87620,88906,91224,92906,95950,98000,101070,102906,106420,107868,112414,114818,118710,121760,127600,126904,131293
+    };
     static final Map<String,Long> W=new HashMap<>(),VALENCE=new HashMap<>(),METALS=new HashMap<>();
     static final Map<String,Integer> COUNTS=new HashMap<>();
     static {
         for(int i=0;i<SYMBOLS.size();i++)W.put(SYMBOLS.get(i),WEIGHTS[i]);
-        String[] groups={"H F Cl Br I","O S Se","B N P As","C Si Ge"};for(int i=0;i<groups.length;i++)for(String e:groups[i].split(" "))VALENCE.put(e,(long)i+1);
-        for(String e:"Li Na K Rb".split(" "))METALS.put(e,1L);for(String e:"Be Mg Ca Sr".split(" "))METALS.put(e,2L);METALS.put("Al",3L);
+        String[] groups={
+            "H F Cl Br I","O S Se","B N P As","C Si Ge"
+        };
+        for(int i=0;i<groups.length;i++)for(String e:groups[i].split(" "))VALENCE.put(e,(long)i+1);
+        for(String e:"Li Na K Rb".split(" "))METALS.put(e,1L);
+        for(String e:"Be Mg Ca Sr".split(" "))METALS.put(e,2L);
+        METALS.put("Al",3L);
         for(String e:"ELEMENT PARSE MASS PERCENT EMPIRICAL DBE OXSTATE".split(" "))COUNTS.put(e,1);
         for(String e:"MOLES GRAMS MOLECULAR SALT HEAT".split(" "))COUNTS.put(e,2);
-        COUNTS.put("COMBUST",3);COUNTS.put("HEATS",0);COUNTS.put("DERIVE",-2);
+        COUNTS.put("COMBUST",3);
+        COUNTS.put("HEATS",0);
+        COUNTS.put("DERIVE",-2);
         for(String e:"BALANCE MATRIX CHECK DELTAH".split(" "))COUNTS.put(e,-1);
-        COUNTS.put("REDOX",-3);COUNTS.put("HALF",-3);for(String e:"STOICH LIMITING YIELD".split(" "))COUNTS.put(e,-4);
+        COUNTS.put("REDOX",-3);
+        COUNTS.put("HALF",-3);
+        for(String e:"STOICH LIMITING YIELD".split(" "))COUNTS.put(e,-4);
     }
-    static class ChemError extends RuntimeException {ChemError(String s){super(s);}}
-    static void fail(String s){throw new ChemError("error: "+s);}
-    static long gcd(long a,long b){a=Math.abs(a);b=Math.abs(b);while(b!=0){long t=a%b;a=b;b=t;}return a;}
-    static String dec(long n,int d){long p=1;for(int i=0;i<d;i++)p*=10;String f=Long.toString(n%p);return n/p+"."+"0".repeat(d-f.length())+f;}
-    static String ent(long n){return (n<0?"-":"")+dec(Math.abs(n),2);}
-    static String signed(long n){return (n>0?"+":"")+n;}
-    record Fraction(long n,long d){
-        Fraction(long n){this(n,1);}
-        Fraction {long g=gcd(n,d);n=n/g*(d<0?-1:1);d=Math.abs(d)/g;}
-        Fraction sub(Fraction b){return new Fraction(n*b.d-b.n*d,d*b.d);}
-        Fraction mul(Fraction b){return new Fraction(n*b.n,d*b.d);}
-        Fraction div(Fraction b){return new Fraction(n*b.d,d*b.n);}
-        public String toString(){return signed(n)+(d==1?"":"/"+d);}
-    }
-    record Formula(Map<String,Long> c,long q){long mass(){return Main.mass(c);}}
-    record Species(String f,String state,long coefficient,Formula formula){String name(){return f+state;}long mass(){return formula.mass();}}
-    record Equation(List<Species> list,int r){long[] signs(){long[] s=new long[list.size()];for(int i=0;i<s.length;i++)s[i]=i<r?1:-1;return s;}}
-    static List<String> order(Map<String,Long> c){List<String> es=new ArrayList<>(c.keySet());Collections.sort(es);if(c.containsKey("C")){es.remove("C");es.remove("H");if(c.containsKey("H"))es.add(0,"H");es.add(0,"C");}return es;}
-    static Map<String,Long> add(Map<String,Long> a,Map<String,Long> b,long k){Map<String,Long> c=new HashMap<>(a);b.forEach((e,n)->c.merge(e,n*k,Long::sum));return c;}
-    static Map<String,Long> scale(Map<String,Long> c,long k){Map<String,Long> b=new HashMap<>();c.forEach((e,n)->b.put(e,n*k));return b;}
-    static long mass(Map<String,Long> c){long m=0;for(var e:c.entrySet())m+=e.getValue()*W.get(e.getKey());return m;}
-    static String hill(Map<String,Long> c,long q){StringBuilder s=new StringBuilder();for(String e:order(c)){s.append(e);if(c.get(e)!=1)s.append(c.get(e));}if(q!=0){s.append('^');if(Math.abs(q)!=1)s.append(Math.abs(q));s.append(q>0?'+':'-');}return s.toString();}
-    static String hill(Map<String,Long> c){return hill(c,0);}
-    static class Parser {
-        final String text;int p;List<String> seen=new ArrayList<>();Parser(String s){text=s;}
-        char peek(){return p<text.length()?text.charAt(p):'\0';}
-        long number(){int start=p;while(peek()>='0'&&peek()<='9')p++;if(start==p)return 1;if(text.charAt(start)=='0')throw new IllegalArgumentException();return Long.parseLong(text.substring(start,p));}
-        Map<String,Long> sequence(){Map<String,Long> c=new HashMap<>();int items=0;while(true){char ch=peek();Map<String,Long> item;if(ch>='A'&&ch<='Z'){String e=""+text.charAt(p++);if(peek()>='a'&&peek()<='z')e+=text.charAt(p++);seen.add(e);item=Map.of(e,1L);}else if(ch=='('||ch=='['){p++;item=sequence();if(peek()!=(ch=='('?')':']'))throw new IllegalArgumentException();p++;}else break;c=add(c,item,number());items++;}if(items==0)throw new IllegalArgumentException();return c;}
-        Formula parse(){Map<String,Long> c=sequence();while(peek()=='.'){p++;long k=number();c=add(c,sequence(),k);}long q=0;if(peek()=='^'){p++;long k=number();char ch=peek();if(ch!='+'&&ch!='-')throw new IllegalArgumentException();p++;q=ch=='+'?k:-k;}if(p!=text.length())throw new IllegalArgumentException();return new Formula(c,q);}
-    }
-    static Formula formula(String text,String word){Parser p=new Parser(text);Formula f;try{f=p.parse();}catch(IllegalArgumentException e){fail("invalid formula "+word);throw e;}for(String e:p.seen)if(!W.containsKey(e))fail("unknown element "+e);return f;}
-    static Formula formula(String text){return formula(text,text);}
-    static Species species(String word,boolean check){String state="",f=word;long k=1;for(String s:List.of("(s)","(l)","(g)","(aq)"))if(word.endsWith(s)){state=s;f=word.substring(0,word.length()-s.length());break;}if(check&&!f.isEmpty()&&Character.isDigit(f.charAt(0))){int i=0;while(i<f.length()&&Character.isDigit(f.charAt(i)))i++;if(f.charAt(0)=='0')fail("invalid formula "+word);k=Long.parseLong(f.substring(0,i));f=f.substring(i);}return new Species(f,state,k,formula(f,word));}
-    static Species species(String word){return species(word,false);}
-    static Equation equation(List<String> a,boolean check){boolean valid=a.size()%2==1;int arrow=-1;for(int i=0;i<a.size();i++){boolean op=a.get(i).equals("+")||a.get(i).equals("->");if(i%2==1){if(!op)valid=false;if(a.get(i).equals("->")){if(arrow>=0)valid=false;arrow=i;}}else if(op)valid=false;}if(!valid||arrow<0)fail("malformed equation");List<Species> list=new ArrayList<>();for(int i=0;i<a.size();i+=2)list.add(species(a.get(i),check));return new Equation(list,(arrow+1)/2);}
-    static Equation equation(List<String> a){return equation(a,false);}
-    static long quantity(String s){if(!s.matches("(0|[1-9][0-9]{0,3})(\\.[0-9]{1,3})?"))fail("invalid quantity "+s);String[] p=s.split("\\.");long q=Long.parseLong(p[0])*1000+(p.length==1?0:Long.parseLong((p[1]+"000").substring(0,3)));if(q==0)fail("invalid quantity "+s);return q;}
-    static long enthalpy(String s){if(!s.matches("-?(0|[1-9][0-9]{0,4})(\\.[0-9]{1,2})?"))fail("invalid enthalpy "+s);String[] p=s.replaceFirst("^-","").split("\\.");return (s.startsWith("-")?-1:1)*(Long.parseLong(p[0])*100+(p.length==1?0:Long.parseLong((p[1]+"00").substring(0,2))));}
-    record Matrix(List<String> labels,long[][] rows){}
-    static Matrix matrix(List<Species> list,long[] signs){Map<String,Long> all=new HashMap<>();for(Species s:list)all=add(all,s.formula.c,1);List<String> labels=order(all);labels.add("charge");long[][] rows=new long[labels.size()][list.size()];for(int i=0;i<labels.size();i++)for(int j=0;j<list.size();j++){Species s=list.get(j);rows[i][j]=signs[j]*(labels.get(i).equals("charge")?s.formula.q:s.formula.c.getOrDefault(labels.get(i),0L));}return new Matrix(labels,rows);}
-    record Nullspace(int rank,List<long[]> basis){}
-    static Nullspace nullspace(long[][] rows,int n){Fraction[][] a=new Fraction[rows.length][n];for(int i=0;i<rows.length;i++)for(int j=0;j<n;j++)a[i][j]=new Fraction(rows[i][j]);List<Integer> piv=new ArrayList<>(),free=new ArrayList<>();for(int j=0;j<n;j++){int r=piv.size(),i=r;while(i<a.length&&a[i][j].n==0)i++;if(i==a.length){free.add(j);continue;}Fraction[] row=a[r];a[r]=a[i];a[i]=row;Fraction t=a[r][j];for(int z=0;z<n;z++)a[r][z]=a[r][z].div(t);for(int k=0;k<a.length;k++)if(k!=r&&a[k][j].n!=0){Fraction f=a[k][j];for(int z=0;z<n;z++)a[k][z]=a[k][z].sub(f.mul(a[r][z]));}piv.add(j);}List<long[]> basis=new ArrayList<>();for(int f:free){Fraction[] v=new Fraction[n];Arrays.setAll(v,i->new Fraction(0));v[f]=new Fraction(1);for(int i=0;i<piv.size();i++)v[piv.get(i)]=new Fraction(-a[i][f].n,a[i][f].d);long l=1;for(Fraction x:v)l=l/gcd(l,x.d)*x.d;long[] b=new long[n];long g=0;for(int i=0;i<n;i++){b[i]=v[i].n*(l/v[i].d);g=gcd(g,b[i]);}for(int i=0;i<n;i++)b[i]/=g;basis.add(b);}return new Nullspace(piv.size(),basis);}
-    static long[] coefficients(List<Species> list,long[] signs,int required){Nullspace ns=nullspace(matrix(list,signs).rows,list.size());int d=ns.basis.size();if(d>=2)throw new ChemError("AMBIGUOUS (nullity "+d+")");if(d==0)throw new ChemError("IMPOSSIBLE");long[] v=ns.basis.get(0);if(v[0]<0)for(int i=0;i<v.length;i++)v[i]=-v[i];for(int i=0;i<required;i++)if(v[i]<=0)throw new ChemError("IMPOSSIBLE");return v;}
-    static long[] coefficients(Equation eq){return coefficients(eq.list,eq.signs(),eq.list.size());}
-    static String term(String s,long k){return (k==1?"":Long.toString(k))+s;}
-    static String notation(Equation eq,long[] v){List<String> left=new ArrayList<>(),right=new ArrayList<>();for(int i=0;i<v.length;i++)(i<eq.r?left:right).add(term(eq.list.get(i).name(),v[i]));return String.join(" + ",left)+" -> "+String.join(" + ",right);}
-    static String gas(Species s,long n,long d){return s.state.equals("(g)")?" "+dec(n*22414/d,3)+" L":"";}
-    static List<String> ratios(Map<String,Long> a){List<String> es=order(a),out=new ArrayList<>();String f=es.get(0);for(String e:es)if(a.get(e)*W.get(f)<a.get(f)*W.get(e))f=e;for(String e:es)out.add(e+" "+dec(1000*a.get(e)*W.get(f)/(W.get(e)*a.get(f)),3));for(long k=1;k<=12;k++){Map<String,Long> c=new HashMap<>();boolean ok=true;for(String e:es){long n=k*a.get(e)*W.get(f),d=W.get(e)*a.get(f),i=(2*n+d)/(2*d);c.put(e,i);if(20*Math.abs(n-i*d)>d)ok=false;}if(ok){out.add(hill(c)+" (k = "+k+")");return out;}}out.add("no simple ratio");return out;}
-    static String group(String f,long k){String c=f.split("\\^")[0];if(k==1)return c;int depth=0,last=-1;if(c.charAt(0)=='[')for(int i=0;i<c.length();i++){if(c.charAt(i)=='[')depth++;if(c.charAt(i)==']'&&--depth==0){last=i;break;}}return (c.matches("[A-Z][a-z]?")||last==c.length()-1?c:"("+c+")")+k;}
-    static int find(List<Species> list,String name,int start,int end){for(int i=start;i<end;i++)if(list.get(i).name().equals(name))return i;return -1;}
-    static class Chemistry {
-        Map<String,Long> heats=new HashMap<>();
-        List<String> execute(String line){List<String> words=new ArrayList<>(List.of(line.split(" ")));String cmd=words.removeFirst();List<String> a=words;int n=a.size();Integer e=COUNTS.get(cmd);if(e==null)fail("unknown command "+cmd);if((e>=0&&n!=e)||(e==-1&&n<1)||(e==-2&&(n<2||n%2!=0))||(e==-3&&n<2))fail("wrong argument count for "+cmd);
-            if(cmd.equals("ELEMENT")){String s=a.get(0);if(!W.containsKey(s))fail("unknown element "+s);return List.of(s+" (Z = "+(SYMBOLS.indexOf(s)+1)+") "+dec(W.get(s),3)+" u");}
-            if(cmd.equals("HEATS")){if(heats.isEmpty())return List.of("no enthalpies");return heats.keySet().stream().sorted().map(s->s+" "+ent(heats.get(s))+" kJ/mol").toList();}
-            if(cmd.equals("HEAT")){String s=a.get(0);species(s);long h=enthalpy(a.get(1));String text="dHf("+s+") = "+ent(h)+" kJ/mol"+(heats.containsKey(s)?" (was "+ent(heats.get(s))+")":"");heats.put(s,h);return List.of(text);}
-            if(cmd.equals("DERIVE")){Map<String,Long> b=new HashMap<>();long total=0;for(int i=0;i<n;i+=2){String s=a.get(i);if(!W.containsKey(s))fail("unknown element "+s);if(b.containsKey(s))fail("duplicate element "+s);long q=quantity(a.get(i+1));if(q>100000)fail("invalid percentage "+a.get(i+1));b.put(s,q);total+=q;}if(Math.abs(total-100000)>1000)fail("percentages sum to "+dec(total,3));return ratios(b);}
-            if(cmd.equals("COMBUST")){long sample=quantity(a.get(0)),p=quantity(a.get(1)),r=quantity(a.get(2)),c=p*12011/44009,h=r*2016/18015,o=sample-c-h;if(c==0||h==0||100*o < -sample)fail("inconsistent masses");Map<String,Long> b=new HashMap<>(Map.of("C",c,"H",h));if(100*o>sample)b.put("O",o);List<String> out=new ArrayList<>();for(String s:order(b))out.add("mass "+s+" "+dec(b.get(s),3)+" g");out.addAll(ratios(b));return out;}
-            if(List.of("PARSE","MASS","PERCENT","EMPIRICAL","DBE","OXSTATE","MOLES","GRAMS","MOLECULAR","SALT").contains(cmd)){Formula f=formula(a.get(0));Map<String,Long> c=f.c;long q=f.q,m=f.mass();List<String> es=order(c),out=new ArrayList<>();
-                if(cmd.equals("PARSE")){for(String s:es)out.add(s+" "+c.get(s));return List.of(hill(c,q)+" ("+String.join(", ",out)+"; charge "+signed(q)+")");}
-                if(cmd.equals("MASS"))return List.of("M("+a.get(0)+") = "+dec(m,3)+" g/mol");
-                if(cmd.equals("PERCENT")){for(String s:es)out.add(s+" "+dec(10000*c.get(s)*W.get(s)/m,2)+"%");return out;}
-                if(cmd.equals("EMPIRICAL")){long g=0;for(long x:c.values())g=gcd(g,x);Map<String,Long> b=new HashMap<>();for(String s:es)b.put(s,c.get(s)/g);return List.of(hill(b)+" (n = "+g+")");}
-                if(cmd.equals("DBE")){if(q!=0)fail("charged formula "+a.get(0));long t=2;for(String s:es){if(!VALENCE.containsKey(s))fail("no valence for "+s);t+=c.get(s)*(VALENCE.get(s)-2);}return List.of("DBE = "+(t<0?"-":"")+Math.abs(t)/2+"."+(t%2!=0?5:0));}
-                if(cmd.equals("OXSTATE")){LinkedHashMap<String,Fraction> st=new LinkedHashMap<>();if(es.size()==1)st.put(es.get(0),new Fraction(q,c.get(es.get(0))));else{if(c.containsKey("F"))st.put("F",new Fraction(-1));for(String s:es)if(METALS.containsKey(s))st.put(s,new Fraction(METALS.get(s)));if(c.containsKey("H")){boolean only=true;for(String s:es)if(!s.equals("H")&&!METALS.containsKey(s))only=false;st.put("H",new Fraction(only?-1:1));}if(c.containsKey("O"))st.put("O",new Fraction(-2));else if(!c.containsKey("F"))for(String s:List.of("Cl","Br","I"))if(c.containsKey(s)){st.put(s,new Fraction(-1));break;}List<String> u=new ArrayList<>();long total=0;String last="";for(var x:st.entrySet()){total+=c.get(x.getKey())*x.getValue().n;last=x.getKey();}for(String s:es)if(!st.containsKey(s))u.add(s);if(u.size()>1)return List.of("indeterminate: "+String.join(" ",u));if(!u.isEmpty())st.put(u.get(0),new Fraction(q-total,c.get(u.get(0))));else if(total!=q)st.put(last,new Fraction(q-total+c.get(last)*st.get(last).n,c.get(last)));}for(String s:es)out.add(s+" "+st.get(s));return List.of(String.join(", ",out));}
-                if(cmd.equals("SALT")){Formula b=formula(a.get(1));if(q<=0)fail("not a cation "+a.get(0));if(b.q>=0)fail("not an anion "+a.get(1));for(String s:a)if(s.contains("."))fail("hydrate ion "+s);long g=gcd(q,b.q),x=-b.q/g,y=q/g;Map<String,Long> z=add(scale(c,x),b.c,y);return List.of(group(a.get(0),x)+group(a.get(1),y)+" ("+hill(z)+", "+dec(mass(z),3)+" g/mol)");}
-                if(cmd.equals("MOLECULAR")&&q!=0)fail("charged formula "+a.get(0));long x=quantity(a.get(1));if(cmd.equals("MOLES"))return List.of(dec(x,3)+" g "+a.get(0)+" = "+dec(x*1000000/m,6)+" mol");if(cmd.equals("GRAMS"))return List.of(dec(x,3)+" mol "+a.get(0)+" = "+dec(x*m/1000,3)+" g");long k=(2*x+m)/(2*m);return k==0||10*Math.abs(x-k*m)>m?List.of("no integer multiple (ratio "+dec(1000*x/m,3)+")"):List.of(hill(scale(c,k))+" (n = "+k+", "+dec(k*m,3)+" g/mol)");
-            }
-            if(cmd.equals("REDOX")||cmd.equals("HALF")){String medium=a.get(0);if(!List.of("acidic","basic").contains(medium))fail("invalid medium "+medium);Equation eq=equation(a.subList(1,a.size()));for(Species s:eq.list)if(List.of("H^+","OH^-","H2O").contains(s.f))fail("reserved species "+s.name());List<Species> list=new ArrayList<>(eq.list);list.add(species(medium.equals("acidic")?"H^+":"OH^-"));list.add(species("H2O"));if(cmd.equals("HALF"))list.add(new Species("e^-","",1,new Formula(Map.of(),-1)));long[] sign=Arrays.copyOf(eq.signs(),list.size());Arrays.fill(sign,eq.list.size(),list.size(),1);long[] v=coefficients(list,sign,eq.list.size());List<String> left=new ArrayList<>(),right=new ArrayList<>();for(int i=0;i<eq.list.size();i++)(i<eq.r?left:right).add(term(list.get(i).name(),v[i]));for(int i=eq.list.size();i<list.size();i++)if(v[i]!=0)(v[i]>0?left:right).add(term(list.get(i).name(),Math.abs(v[i])));List<String> out=new ArrayList<>(List.of(String.join(" + ",left)+" -> "+String.join(" + ",right)));if(cmd.equals("HALF"))out.add(v[v.length-1]>0?"reduction":v[v.length-1]<0?"oxidation":"no electron transfer");return out;}
-            List<String> eqWords=a,rest=List.of();if(List.of("STOICH","LIMITING","YIELD").contains(cmd)){if(Collections.frequency(a,":")!=1)fail("invalid separator");int i=a.indexOf(":");eqWords=a.subList(0,i);rest=a.subList(i+1,a.size());if((cmd.equals("STOICH")&&rest.size()!=2)||(cmd.equals("YIELD")&&rest.size()!=4))fail("wrong argument count for "+cmd);}
-            Equation eq=equation(eqWords,cmd.equals("CHECK"));List<Species> list=eq.list;int r=eq.r;long[] signs=eq.signs();
-            if(cmd.equals("MATRIX")){Matrix matrix=matrix(list,signs);Nullspace ns=nullspace(matrix.rows,list.size());List<String> out=new ArrayList<>();out.add("columns: "+list.stream().map(Species::name).collect(Collectors.joining(" ")));for(int i=0;i<matrix.rows.length;i++)out.add(matrix.labels.get(i)+": "+Arrays.stream(matrix.rows[i]).mapToObj(Long::toString).collect(Collectors.joining(" ")));out.add("rank "+ns.rank+", nullity "+ns.basis.size());for(long[] row:ns.basis)out.add("null: "+Arrays.stream(row).mapToObj(Long::toString).collect(Collectors.joining(" ")));return out;}
-            if(cmd.equals("CHECK")){Matrix matrix=matrix(list,signs);List<String> diff=new ArrayList<>();for(int i=0;i<matrix.rows.length;i++){long l=0,rr=0;for(int j=0;j<list.size();j++)if(j<r)l+=matrix.rows[i][j]*list.get(j).coefficient;else rr-=matrix.rows[i][j]*list.get(j).coefficient;String label=matrix.labels.get(i);if(l!=rr)diff.add(label+": "+(label.equals("charge")?signed(l):Long.toString(l))+" != "+(label.equals("charge")?signed(rr):Long.toString(rr)));}if(!diff.isEmpty()){diff.addFirst("not balanced");return diff;}long g=0;for(Species s:list)g=gcd(g,s.coefficient);return List.of(g==1?"balanced":"balanced, not in lowest terms (gcd "+g+")");}
-            int target=-1,product=-1;long[] qs={};if(cmd.equals("DELTAH"))for(Species s:list)if(!heats.containsKey(s.name()))fail("no enthalpy for "+s.name());
-            if(cmd.equals("STOICH")){target=find(list,rest.get(0),0,list.size());if(target<0)fail("species "+rest.get(0)+" not in equation");qs=new long[]{quantity(rest.get(1))};}
-            if(cmd.equals("LIMITING")){if(rest.size()!=r)fail("expected "+r+" masses, got "+rest.size());qs=new long[r];for(int i=0;i<r;i++)qs[i]=quantity(rest.get(i));}
-            if(cmd.equals("YIELD")){target=find(list,rest.get(0),0,r);if(target<0)fail(rest.get(0)+" is not a reactant");product=find(list,rest.get(2),r,list.size());if(product<0)fail(rest.get(2)+" is not a product");qs=new long[]{quantity(rest.get(1)),quantity(rest.get(3))};}
-            long[] v=coefficients(eq);List<String> out=new ArrayList<>(List.of(notation(eq,v)));if(cmd.equals("BALANCE"))return out;
-            if(cmd.equals("DELTAH")){long h=0;for(int i=0;i<list.size();i++)h-=signs[i]*v[i]*heats.get(list.get(i).name());out.add("dH = "+ent(h)+" kJ ("+(h<0?"exothermic":h>0?"endothermic":"thermoneutral")+")");return out;}
-            if(cmd.equals("STOICH")){long d=v[target]*list.get(target).mass();for(int i=0;i<list.size();i++){Species s=list.get(i);long x=qs[0]*v[i];out.add(s.name()+" "+dec(x*1000000/d,6)+" mol "+dec(x*s.mass()/d,3)+" g"+gas(s,x,d));}return out;}
-            if(cmd.equals("YIELD")){long t=qs[0]*v[product]*list.get(product).mass()/(v[target]*list.get(target).mass());out.add("theoretical "+dec(t,3)+" g");out.add("actual "+dec(qs[1],3)+" g");out.add(t==0?"yield undefined":"yield "+dec(qs[1]*10000/t,2)+"%");return out;}
-            int l=0;for(int i=1;i<r;i++)if(qs[i]*v[l]*list.get(l).mass()<qs[l]*v[i]*list.get(i).mass())l=i;long d=v[l]*list.get(l).mass();out.add("limiting "+list.get(l).name());out.add("extent "+dec(qs[l]*1000000/d,6)+" mol");for(int i=r;i<list.size();i++)out.add("product "+list.get(i).name()+" "+dec(qs[l]*v[i]*list.get(i).mass()/d,3)+" g"+gas(list.get(i),qs[l]*v[i],d));for(int i=0;i<r;i++)if(i!=l)out.add("remaining "+list.get(i).name()+" "+dec((qs[i]*d-qs[l]*v[i]*list.get(i).mass())/d,3)+" g");return out;
+    static class ChemError extends RuntimeException {
+        ChemError(String s){
+            super(s);
         }
     }
-    public static void main(String[] args)throws IOException{BufferedReader in=new BufferedReader(new InputStreamReader(System.in));int n=Integer.parseInt(in.readLine());Chemistry engine=new Chemistry();for(int i=0;i<n;i++){try{for(String s:engine.execute(in.readLine()))System.out.println(s);}catch(ChemError e){System.out.println(e.getMessage());}}}
+    static void fail(String s){
+        throw new ChemError("error: "+s);
+    }
+    static long gcd(long a,long b){
+        a=Math.abs(a);
+        b=Math.abs(b);
+        while(b!=0){
+            long t=a%b;
+            a=b;
+            b=t;
+        }
+        return a;
+    }
+    static String dec(long n,int d){
+        long p=1;
+        for(int i=0;i<d;i++)p*=10;
+        String f=Long.toString(n%p);
+        return n/p+"."+"0".repeat(d-f.length())+f;
+    }
+    static String ent(long n){
+        return (n<0?"-":"")+dec(Math.abs(n),2);
+    }
+    static String signed(long n){
+        return (n>0?"+":"")+n;
+    }
+    record Fraction(long n,long d){
+        Fraction(long n){
+            this(n,1);
+        }
+        Fraction {
+            long g=gcd(n,d);
+            n=n/g*(d<0?-1:1);
+            d=Math.abs(d)/g;
+        }
+        Fraction sub(Fraction b){
+            return new Fraction(n*b.d-b.n*d,d*b.d);
+        }
+        Fraction mul(Fraction b){
+            return new Fraction(n*b.n,d*b.d);
+        }
+        Fraction div(Fraction b){
+            return new Fraction(n*b.d,d*b.n);
+        }
+        public String toString(){
+            return signed(n)+(d==1?"":"/"+d);
+        }
+    }
+    record Formula(Map<String,Long> c,long q){
+        long mass(){
+            return Main.mass(c);
+        }
+    }
+    record Species(String f,String state,long coefficient,Formula formula){
+        String name(){
+            return f+state;
+        }
+        long mass(){
+            return formula.mass();
+        }
+    }
+    record Equation(List<Species> list,int r){
+        long[] signs(){
+            long[] s=new long[list.size()];
+            for(int i=0;i<s.length;i++)s[i]=i<r?1:-1;
+            return s;
+        }
+    }
+    static List<String> order(Map<String,Long> c){
+        List<String> es=new ArrayList<>(c.keySet());
+        Collections.sort(es);
+        if(c.containsKey("C")){
+            es.remove("C");
+            es.remove("H");
+            if(c.containsKey("H"))es.add(0,"H");
+            es.add(0,"C");
+        }
+        return es;
+    }
+    static Map<String,Long> add(Map<String,Long> a,Map<String,Long> b,long k){
+        Map<String,Long> c=new HashMap<>(a);
+        b.forEach((e,n)->c.merge(e,n*k,Long::sum));
+        return c;
+    }
+    static Map<String,Long> scale(Map<String,Long> c,long k){
+        Map<String,Long> b=new HashMap<>();
+        c.forEach((e,n)->b.put(e,n*k));
+        return b;
+    }
+    static long mass(Map<String,Long> c){
+        long m=0;
+        for(var e:c.entrySet())m+=e.getValue()*W.get(e.getKey());
+        return m;
+    }
+    static String hill(Map<String,Long> c,long q){
+        StringBuilder s=new StringBuilder();
+        for(String e:order(c)){
+            s.append(e);
+            if(c.get(e)!=1)s.append(c.get(e));
+        }
+        if(q!=0){
+            s.append('^');
+            if(Math.abs(q)!=1)s.append(Math.abs(q));
+            s.append(q>0?'+':'-');
+        }
+        return s.toString();
+    }
+    static String hill(Map<String,Long> c){
+        return hill(c,0);
+    }
+    static class Parser {
+        final String text;
+        int p;
+        List<String> seen=new ArrayList<>();
+        Parser(String s){
+            text=s;
+        }
+        char peek(){
+            return p<text.length()?text.charAt(p):'\0';
+        }
+        long number(){
+            int start=p;
+            while(peek()>='0'&&peek()<='9')p++;
+            if(start==p)return 1;
+            if(text.charAt(start)=='0')throw new IllegalArgumentException();
+            return Long.parseLong(text.substring(start,p));
+        }
+        Map<String,Long> sequence(){
+            Map<String,Long> c=new HashMap<>();
+            int items=0;
+            while(true){
+                char ch=peek();
+                Map<String,Long> item;
+                if(ch>='A'&&ch<='Z'){
+                    String e=""+text.charAt(p++);
+                    if(peek()>='a'&&peek()<='z')e+=text.charAt(p++);
+                    seen.add(e);
+                    item=Map.of(e,1L);
+                }else if(ch=='('||ch=='['){
+                    p++;
+                    item=sequence();
+                    if(peek()!=(ch=='('?')':']'))throw new IllegalArgumentException();
+                    p++;
+                }else break;
+                c=add(c,item,number());
+                items++;
+            }
+            if(items==0)throw new IllegalArgumentException();
+            return c;
+        }
+        Formula parse(){
+            Map<String,Long> c=sequence();
+            while(peek()=='.'){
+                p++;
+                long k=number();
+                c=add(c,sequence(),k);
+            }
+            long q=0;
+            if(peek()=='^'){
+                p++;
+                long k=number();
+                char ch=peek();
+                if(ch!='+'&&ch!='-')throw new IllegalArgumentException();
+                p++;
+                q=ch=='+'?k:-k;
+            }
+            if(p!=text.length())throw new IllegalArgumentException();
+            return new Formula(c,q);
+        }
+    }
+    static Formula formula(String text,String word){
+        Parser p=new Parser(text);
+        Formula f;
+        try{
+            f=p.parse();
+        }catch(IllegalArgumentException e){
+            fail("invalid formula "+word);
+            throw e;
+        }
+        for(String e:p.seen)if(!W.containsKey(e))fail("unknown element "+e);
+        return f;
+    }
+    static Formula formula(String text){
+        return formula(text,text);
+    }
+    static Species species(String word,boolean check){
+        String state="",f=word;
+        long k=1;
+        for(String s:List.of("(s)","(l)","(g)","(aq)"))if(word.endsWith(s)){
+            state=s;
+            f=word.substring(0,word.length()-s.length());
+            break;
+        }
+        if(check&&!f.isEmpty()&&Character.isDigit(f.charAt(0))){
+            int i=0;
+            while(i<f.length()&&Character.isDigit(f.charAt(i)))i++;
+            if(f.charAt(0)=='0')fail("invalid formula "+word);
+            k=Long.parseLong(f.substring(0,i));
+            f=f.substring(i);
+        }
+        return new Species(f,state,k,formula(f,word));
+    }
+    static Species species(String word){
+        return species(word,false);
+    }
+    static Equation equation(List<String> a,boolean check){
+        boolean valid=a.size()%2==1;
+        int arrow=-1;
+        for(int i=0;i<a.size();i++){
+            boolean op=a.get(i).equals("+")||a.get(i).equals("->");
+            if(i%2==1){
+                if(!op)valid=false;
+                if(a.get(i).equals("->")){
+                    if(arrow>=0)valid=false;
+                    arrow=i;
+                }
+            }else if(op)valid=false;
+        }
+        if(!valid||arrow<0)fail("malformed equation");
+        List<Species> list=new ArrayList<>();
+        for(int i=0;i<a.size();i+=2)list.add(species(a.get(i),check));
+        return new Equation(list,(arrow+1)/2);
+    }
+    static Equation equation(List<String> a){
+        return equation(a,false);
+    }
+    static long quantity(String s){
+        if(!s.matches("(0|[1-9][0-9]{0,3})(\\.[0-9]{1,3})?"))fail("invalid quantity "+s);
+        String[] p=s.split("\\.");
+        long q=Long.parseLong(p[0])*1000+(p.length==1?0:Long.parseLong((p[1]+"000").substring(0,3)));
+        if(q==0)fail("invalid quantity "+s);
+        return q;
+    }
+    static long enthalpy(String s){
+        if(!s.matches("-?(0|[1-9][0-9]{0,4})(\\.[0-9]{1,2})?"))fail("invalid enthalpy "+s);
+        String[] p=s.replaceFirst("^-","").split("\\.");
+        return (s.startsWith("-")?-1:1)*(Long.parseLong(p[0])*100+(p.length==1?0:Long.parseLong((p[1]+"00").substring(0,2))));
+    }
+    record Matrix(List<String> labels,long[][] rows){
+    }
+    static Matrix matrix(List<Species> list,long[] signs){
+        Map<String,Long> all=new HashMap<>();
+        for(Species s:list)all=add(all,s.formula.c,1);
+        List<String> labels=order(all);
+        labels.add("charge");
+        long[][] rows=new long[labels.size()][list.size()];
+        for(int i=0;i<labels.size();i++)for(int j=0;j<list.size();j++){
+            Species s=list.get(j);
+            rows[i][j]=signs[j]*(labels.get(i).equals("charge")?s.formula.q:s.formula.c.getOrDefault(labels.get(i),0L));
+        }
+        return new Matrix(labels,rows);
+    }
+    record Nullspace(int rank,List<long[]> basis){
+    }
+    static Nullspace nullspace(long[][] rows,int n){
+        Fraction[][] a=new Fraction[rows.length][n];
+        for(int i=0;i<rows.length;i++)for(int j=0;j<n;j++)a[i][j]=new Fraction(rows[i][j]);
+        List<Integer> piv=new ArrayList<>(),free=new ArrayList<>();
+        for(int j=0;j<n;j++){
+            int r=piv.size(),i=r;
+            while(i<a.length&&a[i][j].n==0)i++;
+            if(i==a.length){
+                free.add(j);
+                continue;
+            }
+            Fraction[] row=a[r];
+            a[r]=a[i];
+            a[i]=row;
+            Fraction t=a[r][j];
+            for(int z=0;z<n;z++)a[r][z]=a[r][z].div(t);
+            for(int k=0;k<a.length;k++)if(k!=r&&a[k][j].n!=0){
+                Fraction f=a[k][j];
+                for(int z=0;z<n;z++)a[k][z]=a[k][z].sub(f.mul(a[r][z]));
+            }
+            piv.add(j);
+        }
+        List<long[]> basis=new ArrayList<>();
+        for(int f:free){
+            Fraction[] v=new Fraction[n];
+            Arrays.setAll(v,i->new Fraction(0));
+            v[f]=new Fraction(1);
+            for(int i=0;i<piv.size();i++)v[piv.get(i)]=new Fraction(-a[i][f].n,a[i][f].d);
+            long l=1;
+            for(Fraction x:v)l=l/gcd(l,x.d)*x.d;
+            long[] b=new long[n];
+            long g=0;
+            for(int i=0;i<n;i++){
+                b[i]=v[i].n*(l/v[i].d);
+                g=gcd(g,b[i]);
+            }
+            for(int i=0;i<n;i++)b[i]/=g;
+            basis.add(b);
+        }
+        return new Nullspace(piv.size(),basis);
+    }
+    static long[] coefficients(List<Species> list,long[] signs,int required){
+        Nullspace ns=nullspace(matrix(list,signs).rows,list.size());
+        int d=ns.basis.size();
+        if(d>=2)throw new ChemError("AMBIGUOUS (nullity "+d+")");
+        if(d==0)throw new ChemError("IMPOSSIBLE");
+        long[] v=ns.basis.get(0);
+        if(v[0]<0)for(int i=0;i<v.length;i++)v[i]=-v[i];
+        for(int i=0;i<required;i++)if(v[i]<=0)throw new ChemError("IMPOSSIBLE");
+        return v;
+    }
+    static long[] coefficients(Equation eq){
+        return coefficients(eq.list,eq.signs(),eq.list.size());
+    }
+    static String term(String s,long k){
+        return (k==1?"":Long.toString(k))+s;
+    }
+    static String notation(Equation eq,long[] v){
+        List<String> left=new ArrayList<>(),right=new ArrayList<>();
+        for(int i=0;i<v.length;i++)(i<eq.r?left:right).add(term(eq.list.get(i).name(),v[i]));
+        return String.join(" + ",left)+" -> "+String.join(" + ",right);
+    }
+    static String gas(Species s,long n,long d){
+        return s.state.equals("(g)")?" "+dec(n*22414/d,3)+" L":"";
+    }
+    static List<String> ratios(Map<String,Long> a){
+        List<String> es=order(a),out=new ArrayList<>();
+        String f=es.get(0);
+        for(String e:es)if(a.get(e)*W.get(f)<a.get(f)*W.get(e))f=e;
+        for(String e:es)out.add(e+" "+dec(1000*a.get(e)*W.get(f)/(W.get(e)*a.get(f)),3));
+        for(long k=1;k<=12;k++){
+            Map<String,Long> c=new HashMap<>();
+            boolean ok=true;
+            for(String e:es){
+                long n=k*a.get(e)*W.get(f),d=W.get(e)*a.get(f),i=(2*n+d)/(2*d);
+                c.put(e,i);
+                if(20*Math.abs(n-i*d)>d)ok=false;
+            }
+            if(ok){
+                out.add(hill(c)+" (k = "+k+")");
+                return out;
+            }
+        }
+        out.add("no simple ratio");
+        return out;
+    }
+    static String group(String f,long k){
+        String c=f.split("\\^")[0];
+        if(k==1)return c;
+        int depth=0,last=-1;
+        if(c.charAt(0)=='[')for(int i=0;i<c.length();i++){
+            if(c.charAt(i)=='[')depth++;
+            if(c.charAt(i)==']'&&--depth==0){
+                last=i;
+                break;
+            }
+        }
+        return (c.matches("[A-Z][a-z]?")||last==c.length()-1?c:"("+c+")")+k;
+    }
+    static int find(List<Species> list,String name,int start,int end){
+        for(int i=start;i<end;i++)if(list.get(i).name().equals(name))return i;
+        return -1;
+    }
+    static class Chemistry {
+        Map<String,Long> heats=new HashMap<>();
+        List<String> execute(String line){
+            List<String> words=new ArrayList<>(List.of(line.split(" ")));
+            String cmd=words.removeFirst();
+            List<String> a=words;
+            int n=a.size();
+            Integer e=COUNTS.get(cmd);
+            if(e==null)fail("unknown command "+cmd);
+            if((e>=0&&n!=e)||(e==-1&&n<1)||(e==-2&&(n<2||n%2!=0))||(e==-3&&n<2))fail("wrong argument count for "+cmd);
+            if(cmd.equals("ELEMENT")){
+                String s=a.get(0);
+                if(!W.containsKey(s))fail("unknown element "+s);
+                return List.of(s+" (Z = "+(SYMBOLS.indexOf(s)+1)+") "+dec(W.get(s),3)+" u");
+            }
+            if(cmd.equals("HEATS")){
+                if(heats.isEmpty())return List.of("no enthalpies");
+                return heats.keySet().stream().sorted().map(s->s+" "+ent(heats.get(s))+" kJ/mol").toList();
+            }
+            if(cmd.equals("HEAT")){
+                String s=a.get(0);
+                species(s);
+                long h=enthalpy(a.get(1));
+                String text="dHf("+s+") = "+ent(h)+" kJ/mol"+(heats.containsKey(s)?" (was "+ent(heats.get(s))+")":"");
+                heats.put(s,h);
+                return List.of(text);
+            }
+            if(cmd.equals("DERIVE")){
+                Map<String,Long> b=new HashMap<>();
+                long total=0;
+                for(int i=0;i<n;i+=2){
+                    String s=a.get(i);
+                    if(!W.containsKey(s))fail("unknown element "+s);
+                    if(b.containsKey(s))fail("duplicate element "+s);
+                    long q=quantity(a.get(i+1));
+                    if(q>100000)fail("invalid percentage "+a.get(i+1));
+                    b.put(s,q);
+                    total+=q;
+                }
+                if(Math.abs(total-100000)>1000)fail("percentages sum to "+dec(total,3));
+                return ratios(b);
+            }
+            if(cmd.equals("COMBUST")){
+                long sample=quantity(a.get(0)),p=quantity(a.get(1)),r=quantity(a.get(2)),c=p*12011/44009,h=r*2016/18015,o=sample-c-h;
+                if(c==0||h==0||100*o < -sample)fail("inconsistent masses");
+                Map<String,Long> b=new HashMap<>(Map.of("C",c,"H",h));
+                if(100*o>sample)b.put("O",o);
+                List<String> out=new ArrayList<>();
+                for(String s:order(b))out.add("mass "+s+" "+dec(b.get(s),3)+" g");
+                out.addAll(ratios(b));
+                return out;
+            }
+            if(List.of("PARSE","MASS","PERCENT","EMPIRICAL","DBE","OXSTATE","MOLES","GRAMS","MOLECULAR","SALT").contains(cmd)){
+                Formula f=formula(a.get(0));
+                Map<String,Long> c=f.c;
+                long q=f.q,m=f.mass();
+                List<String> es=order(c),out=new ArrayList<>();
+                if(cmd.equals("PARSE")){
+                    for(String s:es)out.add(s+" "+c.get(s));
+                    return List.of(hill(c,q)+" ("+String.join(", ",out)+"; charge "+signed(q)+")");
+                }
+                if(cmd.equals("MASS"))return List.of("M("+a.get(0)+") = "+dec(m,3)+" g/mol");
+                if(cmd.equals("PERCENT")){
+                    for(String s:es)out.add(s+" "+dec(10000*c.get(s)*W.get(s)/m,2)+"%");
+                    return out;
+                }
+                if(cmd.equals("EMPIRICAL")){
+                    long g=0;
+                    for(long x:c.values())g=gcd(g,x);
+                    Map<String,Long> b=new HashMap<>();
+                    for(String s:es)b.put(s,c.get(s)/g);
+                    return List.of(hill(b)+" (n = "+g+")");
+                }
+                if(cmd.equals("DBE")){
+                    if(q!=0)fail("charged formula "+a.get(0));
+                    long t=2;
+                    for(String s:es){
+                        if(!VALENCE.containsKey(s))fail("no valence for "+s);
+                        t+=c.get(s)*(VALENCE.get(s)-2);
+                    }
+                    return List.of("DBE = "+(t<0?"-":"")+Math.abs(t)/2+"."+(t%2!=0?5:0));
+                }
+                if(cmd.equals("OXSTATE")){
+                    LinkedHashMap<String,Fraction> st=new LinkedHashMap<>();
+                    if(es.size()==1)st.put(es.get(0),new Fraction(q,c.get(es.get(0))));
+                    else{
+                        if(c.containsKey("F"))st.put("F",new Fraction(-1));
+                        for(String s:es)if(METALS.containsKey(s))st.put(s,new Fraction(METALS.get(s)));
+                        if(c.containsKey("H")){
+                            boolean only=true;
+                            for(String s:es)if(!s.equals("H")&&!METALS.containsKey(s))only=false;
+                            st.put("H",new Fraction(only?-1:1));
+                        }
+                        if(c.containsKey("O"))st.put("O",new Fraction(-2));
+                        else if(!c.containsKey("F"))for(String s:List.of("Cl","Br","I"))if(c.containsKey(s)){
+                            st.put(s,new Fraction(-1));
+                            break;
+                        }
+                        List<String> u=new ArrayList<>();
+                        long total=0;
+                        String last="";
+                        for(var x:st.entrySet()){
+                            total+=c.get(x.getKey())*x.getValue().n;
+                            last=x.getKey();
+                        }
+                        for(String s:es)if(!st.containsKey(s))u.add(s);
+                        if(u.size()>1)return List.of("indeterminate: "+String.join(" ",u));
+                        if(!u.isEmpty())st.put(u.get(0),new Fraction(q-total,c.get(u.get(0))));
+                        else if(total!=q)st.put(last,new Fraction(q-total+c.get(last)*st.get(last).n,c.get(last)));
+                    }
+                    for(String s:es)out.add(s+" "+st.get(s));
+                    return List.of(String.join(", ",out));
+                }
+                if(cmd.equals("SALT")){
+                    Formula b=formula(a.get(1));
+                    if(q<=0)fail("not a cation "+a.get(0));
+                    if(b.q>=0)fail("not an anion "+a.get(1));
+                    for(String s:a)if(s.contains("."))fail("hydrate ion "+s);
+                    long g=gcd(q,b.q),x=-b.q/g,y=q/g;
+                    Map<String,Long> z=add(scale(c,x),b.c,y);
+                    return List.of(group(a.get(0),x)+group(a.get(1),y)+" ("+hill(z)+", "+dec(mass(z),3)+" g/mol)");
+                }
+                if(cmd.equals("MOLECULAR")&&q!=0)fail("charged formula "+a.get(0));
+                long x=quantity(a.get(1));
+                if(cmd.equals("MOLES"))return List.of(dec(x,3)+" g "+a.get(0)+" = "+dec(x*1000000/m,6)+" mol");
+                if(cmd.equals("GRAMS"))return List.of(dec(x,3)+" mol "+a.get(0)+" = "+dec(x*m/1000,3)+" g");
+                long k=(2*x+m)/(2*m);
+                return k==0||10*Math.abs(x-k*m)>m?List.of("no integer multiple (ratio "+dec(1000*x/m,3)+")"):List.of(hill(scale(c,k))+" (n = "+k+", "+dec(k*m,3)+" g/mol)");
+            }
+            if(cmd.equals("REDOX")||cmd.equals("HALF")){
+                String medium=a.get(0);
+                if(!List.of("acidic","basic").contains(medium))fail("invalid medium "+medium);
+                Equation eq=equation(a.subList(1,a.size()));
+                for(Species s:eq.list)if(List.of("H^+","OH^-","H2O").contains(s.f))fail("reserved species "+s.name());
+                List<Species> list=new ArrayList<>(eq.list);
+                list.add(species(medium.equals("acidic")?"H^+":"OH^-"));
+                list.add(species("H2O"));
+                if(cmd.equals("HALF"))list.add(new Species("e^-","",1,new Formula(Map.of(),-1)));
+                long[] sign=Arrays.copyOf(eq.signs(),list.size());
+                Arrays.fill(sign,eq.list.size(),list.size(),1);
+                long[] v=coefficients(list,sign,eq.list.size());
+                List<String> left=new ArrayList<>(),right=new ArrayList<>();
+                for(int i=0;i<eq.list.size();i++)(i<eq.r?left:right).add(term(list.get(i).name(),v[i]));
+                for(int i=eq.list.size();i<list.size();i++)if(v[i]!=0)(v[i]>0?left:right).add(term(list.get(i).name(),Math.abs(v[i])));
+                List<String> out=new ArrayList<>(List.of(String.join(" + ",left)+" -> "+String.join(" + ",right)));
+                if(cmd.equals("HALF"))out.add(v[v.length-1]>0?"reduction":v[v.length-1]<0?"oxidation":"no electron transfer");
+                return out;
+            }
+            List<String> eqWords=a,rest=List.of();
+            if(List.of("STOICH","LIMITING","YIELD").contains(cmd)){
+                if(Collections.frequency(a,":")!=1)fail("invalid separator");
+                int i=a.indexOf(":");
+                eqWords=a.subList(0,i);
+                rest=a.subList(i+1,a.size());
+                if((cmd.equals("STOICH")&&rest.size()!=2)||(cmd.equals("YIELD")&&rest.size()!=4))fail("wrong argument count for "+cmd);
+            }
+            Equation eq=equation(eqWords,cmd.equals("CHECK"));
+            List<Species> list=eq.list;
+            int r=eq.r;
+            long[] signs=eq.signs();
+            if(cmd.equals("MATRIX")){
+                Matrix matrix=matrix(list,signs);
+                Nullspace ns=nullspace(matrix.rows,list.size());
+                List<String> out=new ArrayList<>();
+                out.add("columns: "+list.stream().map(Species::name).collect(Collectors.joining(" ")));
+                for(int i=0;i<matrix.rows.length;i++)out.add(matrix.labels.get(i)+": "+Arrays.stream(matrix.rows[i]).mapToObj(Long::toString).collect(Collectors.joining(" ")));
+                out.add("rank "+ns.rank+", nullity "+ns.basis.size());
+                for(long[] row:ns.basis)out.add("null: "+Arrays.stream(row).mapToObj(Long::toString).collect(Collectors.joining(" ")));
+                return out;
+            }
+            if(cmd.equals("CHECK")){
+                Matrix matrix=matrix(list,signs);
+                List<String> diff=new ArrayList<>();
+                for(int i=0;i<matrix.rows.length;i++){
+                    long l=0,rr=0;
+                    for(int j=0;j<list.size();j++)if(j<r)l+=matrix.rows[i][j]*list.get(j).coefficient;
+                    else rr-=matrix.rows[i][j]*list.get(j).coefficient;
+                    String label=matrix.labels.get(i);
+                    if(l!=rr)diff.add(label+": "+(label.equals("charge")?signed(l):Long.toString(l))+" != "+(label.equals("charge")?signed(rr):Long.toString(rr)));
+                }
+                if(!diff.isEmpty()){
+                    diff.addFirst("not balanced");
+                    return diff;
+                }
+                long g=0;
+                for(Species s:list)g=gcd(g,s.coefficient);
+                return List.of(g==1?"balanced":"balanced, not in lowest terms (gcd "+g+")");
+            }
+            int target=-1,product=-1;
+            long[] qs={
+            };
+            if(cmd.equals("DELTAH"))for(Species s:list)if(!heats.containsKey(s.name()))fail("no enthalpy for "+s.name());
+            if(cmd.equals("STOICH")){
+                target=find(list,rest.get(0),0,list.size());
+                if(target<0)fail("species "+rest.get(0)+" not in equation");
+                qs=new long[]{
+                    quantity(rest.get(1))
+                };
+            }
+            if(cmd.equals("LIMITING")){
+                if(rest.size()!=r)fail("expected "+r+" masses, got "+rest.size());
+                qs=new long[r];
+                for(int i=0;i<r;i++)qs[i]=quantity(rest.get(i));
+            }
+            if(cmd.equals("YIELD")){
+                target=find(list,rest.get(0),0,r);
+                if(target<0)fail(rest.get(0)+" is not a reactant");
+                product=find(list,rest.get(2),r,list.size());
+                if(product<0)fail(rest.get(2)+" is not a product");
+                qs=new long[]{
+                    quantity(rest.get(1)),quantity(rest.get(3))
+                };
+            }
+            long[] v=coefficients(eq);
+            List<String> out=new ArrayList<>(List.of(notation(eq,v)));
+            if(cmd.equals("BALANCE"))return out;
+            if(cmd.equals("DELTAH")){
+                long h=0;
+                for(int i=0;i<list.size();i++)h-=signs[i]*v[i]*heats.get(list.get(i).name());
+                out.add("dH = "+ent(h)+" kJ ("+(h<0?"exothermic":h>0?"endothermic":"thermoneutral")+")");
+                return out;
+            }
+            if(cmd.equals("STOICH")){
+                long d=v[target]*list.get(target).mass();
+                for(int i=0;i<list.size();i++){
+                    Species s=list.get(i);
+                    long x=qs[0]*v[i];
+                    out.add(s.name()+" "+dec(x*1000000/d,6)+" mol "+dec(x*s.mass()/d,3)+" g"+gas(s,x,d));
+                }
+                return out;
+            }
+            if(cmd.equals("YIELD")){
+                long t=qs[0]*v[product]*list.get(product).mass()/(v[target]*list.get(target).mass());
+                out.add("theoretical "+dec(t,3)+" g");
+                out.add("actual "+dec(qs[1],3)+" g");
+                out.add(t==0?"yield undefined":"yield "+dec(qs[1]*10000/t,2)+"%");
+                return out;
+            }
+            int l=0;
+            for(int i=1;i<r;i++)if(qs[i]*v[l]*list.get(l).mass()<qs[l]*v[i]*list.get(i).mass())l=i;
+            long d=v[l]*list.get(l).mass();
+            out.add("limiting "+list.get(l).name());
+            out.add("extent "+dec(qs[l]*1000000/d,6)+" mol");
+            for(int i=r;i<list.size();i++)out.add("product "+list.get(i).name()+" "+dec(qs[l]*v[i]*list.get(i).mass()/d,3)+" g"+gas(list.get(i),qs[l]*v[i],d));
+            for(int i=0;i<r;i++)if(i!=l)out.add("remaining "+list.get(i).name()+" "+dec((qs[i]*d-qs[l]*v[i]*list.get(i).mass())/d,3)+" g");
+            return out;
+        }
+    }
+    public static void main(String[] args)throws IOException{
+        BufferedReader in=new BufferedReader(new InputStreamReader(System.in));
+        int n=Integer.parseInt(in.readLine());
+        Chemistry engine=new Chemistry();
+        for(int i=0;i<n;i++){
+            try{
+                for(String s:engine.execute(in.readLine()))System.out.println(s);
+            }catch(ChemError e){
+                System.out.println(e.getMessage());
+            }
+        }
+    }
 }

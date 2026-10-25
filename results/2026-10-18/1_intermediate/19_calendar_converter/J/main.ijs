@@ -223,7 +223,6 @@ validate_date =: 4 : 0
     if. -.in_range f do. 'RANGE';f else. '';f end.
 )
 valid_arguments =: 4 : 0
-    NB. Check every non-date field before inspecting any date.
     schema =. x{::SCHEMAS
     if. (#y)~:#schema do. 0 return. end.
     for_i. i.#schema do.
@@ -339,7 +338,6 @@ span =: 4 : 0
     years =. (0{x from_fixed b)-0{x from_fixed a
     while. (x shift a,years,0)>b do. years =. years-1 end.
     while. (x shift a,(years+1),0)<:b do. years =. years+1 end.
-    NB. Every candidate shifts the original day, preserving its unclamped day.
     months =. 0
     while. (x shift a,years,months+1)<:b do. months =. months+1 end.
     days =. b-x shift a,years,months

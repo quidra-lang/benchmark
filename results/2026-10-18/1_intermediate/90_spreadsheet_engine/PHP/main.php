@@ -1,5 +1,4 @@
 <?php
-// Immutable tagged trees; PHP array values provide independent history snapshots.
 function nval(int $n): array { return ['N', $n]; }
 function sval(string $s): array { return ['S', $s]; }
 function eval_error(string $s): array { return ['E', $s]; }

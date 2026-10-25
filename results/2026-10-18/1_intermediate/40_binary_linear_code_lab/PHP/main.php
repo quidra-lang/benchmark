@@ -179,7 +179,6 @@ final class BinaryCode {
                     $leaders[$syndrome] = $word;
                     if (--$remaining === 0) break;
                 }
-                // Enumerate fixed-weight words in increasing numeric order.
                 $lowest = $word & -$word;
                 $next = $word + $lowest;
                 $word = $next | intdiv(($next ^ $word) >> 2, $lowest);

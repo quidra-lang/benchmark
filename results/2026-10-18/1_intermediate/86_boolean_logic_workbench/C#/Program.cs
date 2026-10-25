@@ -487,7 +487,6 @@ class Program
         if (n.Op == "0") result.Add(new(0, 0));
         else if (n.Op == "1")
         {
-            // True contributes no clauses.
         }
         else if (n.Left == null) result.Add(new(1 << (n.Op[0] - 'A'), 0));
         else if (n.Op == "~") result.Add(new(0, 1 << (n.Left.Op[0] - 'A')));

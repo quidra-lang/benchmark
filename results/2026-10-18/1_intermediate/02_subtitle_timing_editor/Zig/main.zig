@@ -760,7 +760,6 @@ pub fn main(init: std.process.Init) !void {
     try out.print("LOAD cues={d} bad={d}\n", .{ editor.cues.len, editor.bad });
     const count: usize = @intCast(unsigned((try input.interface.takeDelimiter('\n')).?, 9).?);
     for (0..count) |_| {
-        // Text arguments may persist in cues and undo records, so own every input line.
         const line = try gpa.dupe(u8, (try input.interface.takeDelimiter('\n')).?);
         var draft: std.Io.Writer.Allocating = .init(gpa);
         editor.execute(line, &draft.writer) catch |err| {
