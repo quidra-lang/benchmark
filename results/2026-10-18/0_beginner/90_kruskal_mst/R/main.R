@@ -1,5 +1,6 @@
-edges <- list(c("A","B",7),c("C","A",4),c("B","C",9),c("B","D",14),c("D","C",6),c("C","E",3),c("E","D",5),c("F","D",11),c("E","G",16),c("G","F",8),c("H","F",12),c("G","H",2),c("H","E",10))
-edges <- edges[order(vapply(edges,function(edge) as.integer(edge[3]),integer(1)))]
+edges <- data.frame(from=c("A","C","B","B","D","C","E","F","E","G","H","G","H"),
+    to=c("B","A","C","D","C","E","D","D","G","F","F","H","E"), weight=c(7,4,9,14,6,3,5,11,16,8,12,2,10))
+edges <- edges[order(edges$weight),]
 parents <- setNames(LETTERS[1:8],LETTERS[1:8])
 find_root <- function(vertex) {
     while (parents[vertex] != vertex) vertex <- unname(parents[vertex])
@@ -8,10 +9,10 @@ find_root <- function(vertex) {
 accepted <- 0
 skipped <- 0
 total <- 0
-for (edge in edges) {
-    a <- edge[1]
-    b <- edge[2]
-    weight <- as.integer(edge[3])
+for (edge in seq_len(nrow(edges))) {
+    a <- edges$from[edge]
+    b <- edges$to[edge]
+    weight <- edges$weight[edge]
     first_root <- find_root(a)
     second_root <- find_root(b)
     if (first_root == second_root) {

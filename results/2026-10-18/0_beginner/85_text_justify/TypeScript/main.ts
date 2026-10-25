@@ -4,8 +4,8 @@ const paragraph =
   "When a team agrees on shared rules for internationalization, documentation and code review, " +
   "every newcomer can read the code quickly, change it safely and ship new improvements " +
   "with confidence instead of fear, week after week.";
-const width = 30, lines = [];
-let line = [], letters = 0;
+const width = 30, lines: string[][] = [];
+let line: string[] = [], letters = 0;
 for (const word of paragraph.split(" ")) {
   if (line.length > 0 && letters + line.length + word.length > width) {
     lines.push(line);

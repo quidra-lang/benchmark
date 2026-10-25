@@ -1,5 +1,5 @@
 let state = 12345;
-const counts = Array(13).fill(0);
+const counts = Array<number>(13).fill(0);
 for (let trial = 0; trial < 1000; trial++) {
   state = state * 48271 % 2147483647;
   const first = state % 6 + 1;

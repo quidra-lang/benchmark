@@ -2,16 +2,16 @@ function kahn(courses: string[], pairs: string[][]) {
   const graph = new Map<string, string[]>(courses.map(course => [course, []]));
   const indegree = new Map<string, number>(courses.map(course => [course, 0]));
   for (const [source, target] of pairs) {
-    graph.get(source).push(target);
-    indegree.set(target, indegree.get(target) + 1);
+    graph.get(source)!.push(target);
+    indegree.set(target, indegree.get(target)! + 1);
   }
   const ready = courses.filter(course => indegree.get(course) === 0).sort();
-  const order = [];
+  const order: string[] = [];
   while (ready.length > 0) {
-    const course = ready.shift();
+    const course = ready.shift()!;
     order.push(course);
-    for (const target of graph.get(course)) {
-      indegree.set(target, indegree.get(target) - 1);
+    for (const target of graph.get(course)!) {
+      indegree.set(target, indegree.get(target)! - 1);
       if (indegree.get(target) === 0) ready.push(target);
     }
     ready.sort();

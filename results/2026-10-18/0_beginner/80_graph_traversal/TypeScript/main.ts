@@ -12,9 +12,9 @@ function dfs(vertex: number, seen: Set<number>, order: number[]): void {
     if (!seen.has(neighbor)) dfs(neighbor, seen, order);
   }
 }
-const depth = [];
+const depth: number[] = [];
 dfs(0, new Set(), depth);
-const queue = [0], breadth = [];
+const queue = [0], breadth: number[] = [];
 const reached = new Set([0]);
 for (let head = 0; head < queue.length; head++) {
   const vertex = queue[head];
@@ -30,7 +30,7 @@ const components: number[][] = [];
 const seen = new Set<number>();
 for (let vertex = 0; vertex < 9; vertex++) {
   if (!seen.has(vertex)) {
-    const component = [];
+    const component: number[] = [];
     dfs(vertex, seen, component);
     components.push(component.sort((a, b) => a - b));
   }

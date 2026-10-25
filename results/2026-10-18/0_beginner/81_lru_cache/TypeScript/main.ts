@@ -1,4 +1,4 @@
-const cache = [];
+const cache: string[] = [];
 let hits = 0, misses = 0;
 for (const key of "B A C B D A B E A D D C A E B".split(" ")) {
   const index = cache.indexOf(key);

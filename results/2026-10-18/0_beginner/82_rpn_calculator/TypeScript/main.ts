@@ -4,7 +4,7 @@ const expressions = [
   "2 3 4 + 5", "46341 46339 * -2 /"
 ];
 for (const expression of expressions) {
-  const stack = [];
+  const stack: number[] = [];
   let error = "";
   for (const token of expression.split(" ")) {
     if (!["+", "-", "*", "/"].includes(token)) {
@@ -15,7 +15,7 @@ for (const expression of expressions) {
       error = "stack underflow";
       break;
     }
-    const b = stack.pop(), a = stack.pop();
+    const b = stack.pop()!, a = stack.pop()!;
     if (token === "/" && b === 0) {
       error = "division by zero";
       break;

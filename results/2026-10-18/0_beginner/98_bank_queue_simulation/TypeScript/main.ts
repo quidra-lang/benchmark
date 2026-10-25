@@ -1,5 +1,5 @@
 let state = 42, arrival = 0;
-const freeTimes = [0, 0], waits = [];
+const freeTimes = [0, 0], waits: number[] = [];
 for (let customer = 1; customer <= 20; customer++) {
   state = state * 48271 % 2147483647;
   arrival += state % 5 + 1;

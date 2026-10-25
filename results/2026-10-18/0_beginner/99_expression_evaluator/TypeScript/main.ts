@@ -46,7 +46,7 @@ const lines = [
 ];
 const variables = new Map<string, number>();
 for (const line of lines) {
-  const tokens = line.match(/\d+|[a-z]+|[-+*\/()=]/g);
+  const tokens = line.match(/\d+|[a-z]+|[-+*\/()=]/g)!;
   const name = tokens[1] === "=" ? tokens[0] : "";
   try {
     const value = evaluate(name ? tokens.slice(2) : tokens, variables);

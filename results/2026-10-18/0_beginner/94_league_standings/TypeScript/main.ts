@@ -10,7 +10,7 @@ for (const match of matches) {
   const [home, score, away] = match.split(" ");
   const [h, a] = score.split("-").map(Number);
   for (const {name, goals, conceded} of [{name: home, goals: h, conceded: a}, {name: away, goals: a, conceded: h}]) {
-    const s = stats.get(name);
+    const s = stats.get(name)!;
     s.played++;
     s.gf += goals;
     s.ga += conceded;
@@ -24,11 +24,11 @@ for (const match of matches) {
   }
 }
 teams.sort((a, b) => {
-  const x = stats.get(a), y = stats.get(b);
+  const x = stats.get(a)!, y = stats.get(b)!;
   return y.points - x.points || (y.gf - y.ga) - (x.gf - x.ga) || y.gf - x.gf || (a < b ? -1 : a > b ? 1 : 0);
 });
 teams.forEach((name, position) => {
-  const s = stats.get(name), difference = s.gf - s.ga;
+  const s = stats.get(name)!, difference = s.gf - s.ga;
   const gd = difference > 0 ? `+${difference}` : String(difference);
   console.log(
     `${position + 1}. ${name} P=${s.played} W=${s.wins} D=${s.draws} L=${s.losses} ` +

@@ -5,7 +5,7 @@ const items = [
   {name: "water", weight: 6, value: 100}
 ];
 const capacity = 20;
-const dp = Array.from({length: items.length + 1}, () => Array(capacity + 1).fill(0));
+const dp = Array.from({length: items.length + 1}, () => Array<number>(capacity + 1).fill(0));
 items.forEach(({weight, value}, index) => {
   const i = index + 1;
   for (let limit = 0; limit <= capacity; limit++) {
@@ -13,7 +13,7 @@ items.forEach(({weight, value}, index) => {
     if (weight <= limit) dp[i][limit] = Math.max(dp[i][limit], dp[i - 1][limit - weight] + value);
   }
 });
-const chosen = [];
+const chosen: typeof items = [];
 let remaining = capacity;
 for (let i = items.length; i > 0; i--) {
   if (dp[i][remaining] !== dp[i - 1][remaining]) {

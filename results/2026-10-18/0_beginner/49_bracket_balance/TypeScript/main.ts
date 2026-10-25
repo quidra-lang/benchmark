@@ -1,7 +1,7 @@
 const strings = ["(a + b) * [c - d]", "{x = [1, 2, (3 + 4)]}", "f(a[i] + g(b)}", "(1 + 2)) * 3", "if (a < b) { c = d[0]; }", "((a + b] * c", "[{(x * y) - z}"];
 const matching = new Map([[")", "("], ["]", "["], ["}", "{"]]);
 for (const text of strings) {
-  const stack = [];
+  const stack: string[] = [];
   let error = -1;
   for (let i = 0; i < text.length; i++) {
     const char = text[i];

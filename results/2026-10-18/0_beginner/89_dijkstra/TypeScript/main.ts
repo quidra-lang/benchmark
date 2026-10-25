@@ -8,9 +8,9 @@ for (const [a, b, weight] of edges) {
   graph[a].push([b, weight]);
   graph[b].push([a, weight]);
 }
-const distances = Array(names.length).fill(Infinity);
+const distances = Array<number>(names.length).fill(Infinity);
 distances[0] = 0;
-const done = Array(names.length).fill(false), previous = Array(names.length).fill(-1);
+const done = Array<boolean>(names.length).fill(false), previous = Array<number>(names.length).fill(-1);
 for (let count = 0; count < names.length; count++) {
   let vertex = -1;
   for (let v = 0; v < names.length; v++) {
@@ -26,7 +26,7 @@ for (let count = 0; count < names.length; count++) {
   }
 }
 for (let target = 0; target < names.length; target++) {
-  const path = [];
+  const path: string[] = [];
   for (let vertex = target; vertex >= 0; vertex = previous[vertex]) path.push(names[vertex]);
   console.log(`${names[target]}: distance=${distances[target]} path=${path.reverse().join("-")}`);
 }

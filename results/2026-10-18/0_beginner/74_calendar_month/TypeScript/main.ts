@@ -13,7 +13,7 @@ months.forEach(([year, month], index) => {
   console.log(`${names[month - 1]} ${year}`);
   console.log("Su Mo Tu We Th Fr Sa");
   const fields = [
-    ...Array(weekday).fill("  "),
+    ...Array<string>(weekday).fill("  "),
     ...Array.from({length: lengths[month - 1]}, (_, i) => String(i + 1).padStart(2))
   ];
   for (let start = 0; start < fields.length; start += 7) {

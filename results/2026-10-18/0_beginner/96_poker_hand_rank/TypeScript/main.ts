@@ -14,7 +14,7 @@ const ranked = hands.map(hand => {
   }
   const ranks = [...counts.keys()].sort((a, b) => a - b);
   const wheel = ranks.join(",") === "2,3,4,5,14";
-  const straight = ranks.length === 5 && (ranks.at(-1) - ranks[0] === 4 || wheel);
+  const straight = ranks.length === 5 && (ranks.at(-1)! - ranks[0] === 4 || wheel);
   const flush = new Set(cards.map(card => card[1])).size === 1;
   const pattern = [...counts.values()].sort((a, b) => b - a);
   let strength;
@@ -27,7 +27,7 @@ const ranked = hands.map(hand => {
   else if (pattern[0] === 2 && pattern[1] === 2) strength = 2;
   else if (pattern[0] === 2) strength = 1;
   else strength = 0;
-  let sequence = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || b - a);
+  let sequence = [...counts.keys()].sort((a, b) => counts.get(b)! - counts.get(a)! || b - a);
   if (wheel && straight) sequence = [5, 4, 3, 2, 1];
   return {strength, sequence, hand};
 });

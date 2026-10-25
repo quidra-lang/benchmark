@@ -15,7 +15,7 @@ systems.forEach((a, number) => {
       for (let j = k; j <= n; j++) a[i][j] = a[i][j] - factor * a[k][j];
     }
   }
-  const solution = Array(n).fill(0);
+  const solution = Array<number>(n).fill(0);
   for (let i = n - 1; i >= 0; i--) {
     let s = a[i][n];
     for (let j = i + 1; j < n; j++) s = s - a[i][j] * solution[j];

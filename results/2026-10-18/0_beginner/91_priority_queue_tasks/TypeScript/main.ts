@@ -42,6 +42,6 @@ for (const operation of operations) {
     console.log(`run: ${task.name} (priority ${task.priority})`);
   }
 }
-const remaining = [];
+const remaining: string[] = [];
 while (heap.length > 0) remaining.push(pop().name);
 console.log(`remaining: ${remaining.join(" ")}`);

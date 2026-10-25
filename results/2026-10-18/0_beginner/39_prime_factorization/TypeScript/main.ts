@@ -1,6 +1,6 @@
 for (const number of [84, 9973, 15625, 1001, 123456, 48000, 999958, 999999]) {
   let remaining = number, divisor = 2;
-  const factors = [];
+  const factors: string[] = [];
   while (divisor * divisor <= remaining) {
     let exponent = 0;
     while (remaining % divisor === 0) {

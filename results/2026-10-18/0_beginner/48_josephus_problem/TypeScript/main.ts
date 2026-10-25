@@ -1,5 +1,5 @@
 for (const [n, k] of [[7, 3], [10, 2], [41, 3]]) {
-  const people = Array.from({length: n}, (_, i) => i + 1), removed = [];
+  const people = Array.from({length: n}, (_, i) => i + 1), removed: number[] = [];
   let index = 0;
   while (people.length > 0) {
     index = (index + k - 1) % people.length;

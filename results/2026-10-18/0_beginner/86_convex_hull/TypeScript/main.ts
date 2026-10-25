@@ -8,7 +8,7 @@ function cross(o: number[], a: number[], b: number[]): number {
 function chain(ordered: number[][]): number[][] {
   const result: number[][] = [];
   for (const point of ordered) {
-    while (result.length >= 2 && cross(result.at(-2), result.at(-1), point) <= 0) result.pop();
+    while (result.length >= 2 && cross(result.at(-2)!, result.at(-1)!, point) <= 0) result.pop();
     result.push(point);
   }
   return result;

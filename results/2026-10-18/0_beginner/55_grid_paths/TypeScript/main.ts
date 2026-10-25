@@ -1,6 +1,6 @@
 const grid = [".......", "..#....", "....#..", ".#.....", "...#.#.", "......."];
 function paths(blocked: boolean): number {
-  const dp = Array(grid[0].length).fill(0);
+  const dp = Array<number>(grid[0].length).fill(0);
   dp[0] = 1;
   for (const row of grid) {
     for (let column = 0; column < row.length; column++) {

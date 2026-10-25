@@ -1,5 +1,5 @@
 const limit = 200;
-const isPrime = Array(limit + 1).fill(true);
+const isPrime = Array<boolean>(limit + 1).fill(true);
 isPrime[0] = isPrime[1] = false;
 for (let n = 2; n <= limit; n++) {
   if (isPrime[n]) {

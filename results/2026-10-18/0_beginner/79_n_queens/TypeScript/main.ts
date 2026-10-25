@@ -20,7 +20,7 @@ function solve(n: number): { count: number; first: number[] } {
   visit();
   return {count, first};
 }
-let firstEight = [];
+let firstEight: number[] = [];
 for (let n = 4; n <= 8; n++) {
   const {count, first} = solve(n);
   console.log(`N=${n}: ${count} solutions`);

@@ -10,8 +10,8 @@ for (const n of [9, 14, 49, 94, 444, 1994, 2768, 3999]) {
   }
   let decoded = 0;
   for (let i = 0; i < roman.length; i++) {
-    const value = values.get(roman[i]);
-    decoded += i + 1 < roman.length && value < values.get(roman[i + 1]) ? -value : value;
+    const value = values.get(roman[i])!;
+    decoded += i + 1 < roman.length && value < values.get(roman[i + 1])! ? -value : value;
   }
   console.log(`${n} -> ${roman} -> ${decoded}`);
 }

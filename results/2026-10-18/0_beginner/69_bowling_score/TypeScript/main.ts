@@ -7,7 +7,7 @@ const games = [
 ];
 games.forEach((rolls, number) => {
   let index = 0, total = 0;
-  const cumulative = [];
+  const cumulative: number[] = [];
   for (let frame = 0; frame < 9; frame++) {
     if (rolls[index] === 10) {
       total += 10 + rolls[index + 1] + rolls[index + 2];

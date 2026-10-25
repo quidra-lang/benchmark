@@ -6,7 +6,7 @@ for (let generation = 0; generation <= 4; generation++) {
   console.log(`generation ${generation}`);
   for (const line of board) console.log(line);
   if (generation === 4) break;
-  const nextBoard = [];
+  const nextBoard: string[] = [];
   for (let row = 0; row < 8; row++) {
     let line = "";
     for (let column = 0; column < 8; column++) {

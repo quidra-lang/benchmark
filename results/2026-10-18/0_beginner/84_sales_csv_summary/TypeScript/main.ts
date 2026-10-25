@@ -18,9 +18,9 @@ for (const line of rows.slice(1)) {
   dates.set(date, (dates.get(date) ?? 0) + sales);
 }
 const alphabetical = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
-const regionOrder = [...regions.keys()].sort((a, b) => regions.get(b) - regions.get(a) || alphabetical(a, b));
+const regionOrder = [...regions.keys()].sort((a, b) => regions.get(b)! - regions.get(a)! || alphabetical(a, b));
 console.log(`total: ${total}`);
 for (const region of regionOrder) console.log(`${region}: ${regions.get(region)}`);
 for (const product of [...products.keys()].sort()) console.log(`${product}: ${products.get(product)}`);
-const best = [...dates.keys()].sort((a, b) => dates.get(b) - dates.get(a) || alphabetical(a, b))[0];
+const best = [...dates.keys()].sort((a, b) => dates.get(b)! - dates.get(a)! || alphabetical(a, b))[0];
 console.log(`best day: ${best} (${dates.get(best)})`);

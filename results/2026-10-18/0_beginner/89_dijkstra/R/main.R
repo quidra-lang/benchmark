@@ -1,9 +1,11 @@
 names <- LETTERS[1:7]
 weights <- matrix(0,7,7)
-for (edge in list(c("A","B",7),c("A","C",3),c("A","D",9),c("B","C",2),c("C","E",6),c("B","D",3),c("D","E",4),c("D","F",5),c("E","F",3),c("E","G",8),c("F","G",4))) {
-    i <- match(edge[1],names)
-    j <- match(edge[2],names)
-    weights[i,j] <- weights[j,i] <- as.integer(edge[3])
+edges <- data.frame(from=c("A","A","A","B","C","B","D","D","E","E","F"),
+    to=c("B","C","D","C","E","D","E","F","F","G","G"), weight=c(7,3,9,2,6,3,4,5,3,8,4))
+for (edge in seq_len(nrow(edges))) {
+    i <- match(edges$from[edge],names)
+    j <- match(edges$to[edge],names)
+    weights[i,j] <- weights[j,i] <- edges$weight[edge]
 }
 distance <- rep(Inf,7)
 previous <- integer(7)

@@ -5,7 +5,7 @@ function mergeSort(left: number, right: number): number {
   let inversions = mergeSort(left, middle) + mergeSort(middle + 1, right);
   const a = values.slice(left, middle + 1), b = values.slice(middle + 1, right + 1);
   let i = 0, j = 0;
-  const merged = [];
+  const merged: number[] = [];
   while (i < a.length && j < b.length) {
     if (a[i] < b[j]) {
       merged.push(a[i]);

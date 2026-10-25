@@ -1,7 +1,7 @@
 const values = [3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77];
 for (const target of [42, 3, 77, 31, 50, 1]) {
   let lo = 0, hi = values.length - 1, found = -1;
-  const probes = [];
+  const probes: number[] = [];
   while (lo <= hi) {
     const mid = Math.floor((lo + hi) / 2);
     probes.push(mid);

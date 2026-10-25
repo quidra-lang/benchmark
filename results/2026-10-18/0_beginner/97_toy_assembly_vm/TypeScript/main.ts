@@ -16,7 +16,7 @@ while (pc >= 0 && pc < program.length) {
   }
   if (operation === "PRINT") console.log(value(parts[1]));
   else {
-    const register = parts[1], operand = value(parts[2]), current = registers.get(register);
+    const register = parts[1], operand = value(parts[2]), current = registers.get(register)!;
     if (operation === "SET") registers.set(register, operand);
     else if (operation === "ADD") registers.set(register, current + operand);
     else if (operation === "SUB") registers.set(register, current - operand);

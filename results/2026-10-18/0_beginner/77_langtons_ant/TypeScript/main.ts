@@ -1,5 +1,5 @@
 const size = 11;
-const board = Array.from({length: size}, () => Array(size).fill(false));
+const board = Array.from({length: size}, () => Array<boolean>(size).fill(false));
 const directions = [[-1, 0], [0, 1], [1, 0], [0, -1]];
 let row = 5, column = 5, direction = 0;
 for (let step = 0; step < 300; step++) {

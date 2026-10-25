@@ -1,7 +1,7 @@
 const denominations = [10000, 5000, 1000, 500, 100, 50, 10, 5, 1];
 for (const amount of [3780, 15420, 99999, 506, 48263]) {
   let remaining = amount, pieces = 0;
-  const parts = [];
+  const parts: string[] = [];
   for (const face of denominations) {
     const count = Math.floor(remaining / face);
     remaining %= face;

@@ -1,5 +1,5 @@
 const rows = 5, columns = 6;
-const matrix = Array.from({length: rows}, () => Array(columns).fill(0));
+const matrix = Array.from({length: rows}, () => Array<number>(columns).fill(0));
 const directions = [[0, 1], [1, 0], [0, -1], [-1, 0]];
 let row = 0, column = 0, direction = 0;
 for (let value = 1; value <= rows * columns; value++) {

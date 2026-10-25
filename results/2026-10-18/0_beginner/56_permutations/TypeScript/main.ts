@@ -1,4 +1,4 @@
-const letters = "ABCD", used = Array(4).fill(false);
+const letters = "ABCD", used = Array<boolean>(4).fill(false);
 let count = 0;
 function visit(prefix: string): void {
   if (prefix.length === letters.length) {

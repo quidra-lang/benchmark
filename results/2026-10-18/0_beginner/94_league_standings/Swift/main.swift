@@ -1,3 +1,10 @@
+struct TeamStats {
+    var played = 0, wins = 0, draws = 0, losses = 0
+    var goalsFor = 0, goalsAgainst = 0
+    var points: Int { 3 * wins + draws }
+    var goalDifference: Int { goalsFor - goalsAgainst }
+}
+
 let matches = ["Lions 0-3 Bears",
     "Tigers 2-2 Wolves",
     "Eagles 4-0 Sharks",
@@ -14,36 +21,34 @@ let matches = ["Lions 0-3 Bears",
     "Sharks 2-0 Tigers",
     "Wolves 2-1 Lions"]
 let names = ["Lions","Tigers","Eagles","Sharks","Wolves","Bears"]
-var stats = [[Int]](repeating: [Int](repeating: 0, count: 6), count: 6)
+var stats = [TeamStats](repeating: TeamStats(), count: names.count)
 for match in matches {
     let parts = match.split(separator: " ").map(String.init)
     let goals = parts[1].split(separator: "-").map { Int($0)! }
     let home = names.firstIndex(of: parts[0])!, away = names.firstIndex(of: parts[2])!
     let h = goals[0], a = goals[1]
-    stats[home][0] += 1
-    stats[away][0] += 1
-    stats[home][4] += h
-    stats[home][5] += a
-    stats[away][4] += a
-    stats[away][5] += h
+    stats[home].played += 1
+    stats[away].played += 1
+    stats[home].goalsFor += h
+    stats[home].goalsAgainst += a
+    stats[away].goalsFor += a
+    stats[away].goalsAgainst += h
     if h == a {
-        stats[home][2] += 1
-        stats[away][2] += 1
+        stats[home].draws += 1
+        stats[away].draws += 1
     } else {
-        stats[h > a ? home : away][1] += 1
-        stats[h > a ? away : home][3] += 1
+        stats[h > a ? home : away].wins += 1
+        stats[h > a ? away : home].losses += 1
     }
 }
 let order = names.indices.sorted { a,b in
-    let pa = 3 * stats[a][1] + stats[a][2], pb = 3 * stats[b][1] + stats[b][2]
-    if pa != pb { return pa > pb }
-    let ga = stats[a][4] - stats[a][5], gb = stats[b][4] - stats[b][5]
-    if ga != gb { return ga > gb }
-    if stats[a][4] != stats[b][4] { return stats[a][4] > stats[b][4] }
+    if stats[a].points != stats[b].points { return stats[a].points > stats[b].points }
+    if stats[a].goalDifference != stats[b].goalDifference { return stats[a].goalDifference > stats[b].goalDifference }
+    if stats[a].goalsFor != stats[b].goalsFor { return stats[a].goalsFor > stats[b].goalsFor }
     return names[a] < names[b]
 }
 for (position,i) in order.enumerated() {
-    let gd = stats[i][4] - stats[i][5], difference = (gd > 0 ? "+" : "") + String(gd)
-    print("\(position + 1). \(names[i]) P=\(stats[i][0]) W=\(stats[i][1]) D=\(stats[i][2]) " +
-        "L=\(stats[i][3]) GF=\(stats[i][4]) GA=\(stats[i][5]) GD=\(difference) Pts=\(3 * stats[i][1] + stats[i][2])")
+    let record = stats[i], difference = (record.goalDifference > 0 ? "+" : "") + String(record.goalDifference)
+    print("\(position + 1). \(names[i]) P=\(record.played) W=\(record.wins) D=\(record.draws) " +
+        "L=\(record.losses) GF=\(record.goalsFor) GA=\(record.goalsAgainst) GD=\(difference) Pts=\(record.points)")
 }

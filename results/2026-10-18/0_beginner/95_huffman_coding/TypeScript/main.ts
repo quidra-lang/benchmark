@@ -33,7 +33,7 @@ visit(trees[0], "");
 let bits = 0;
 for (const symbol of [...frequencies.keys()].sort()) {
   console.log(`'${symbol}' freq=${frequencies.get(symbol)} code=${codes.get(symbol)}`);
-  bits += frequencies.get(symbol) * codes.get(symbol).length;
+  bits += frequencies.get(symbol)! * codes.get(symbol)!.length;
 }
 console.log(`encoded bits: ${bits}`);
 console.log(`fixed 8-bit: ${text.length * 8}`);

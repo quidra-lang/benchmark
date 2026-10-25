@@ -35,13 +35,11 @@ Hand evaluate(const char *text) {
                : maximum == 3 ? 3
                : pairs == 2 ? 2
                : pairs == 1 ? 1 : 0;
-    for (int i = 0; i < h.length; i++)
-        for (int j = i + 1; j < h.length; j++)
-            if (counts[h.key[j]] > counts[h.key[i]] || (counts[h.key[j]] == counts[h.key[i]] && h.key[j] > h.key[i])) {
-                int t = h.key[i];
-                h.key[i] = h.key[j];
-                h.key[j] = t;
-            }
+    h.length = 0;
+    for (int count = 4; count >= 1; count--)
+        for (int rank = 14; rank >= 2; rank--)
+            if (counts[rank] == count)
+                h.key[h.length++] = rank;
     if (wheel && straight)
         for (int i = 0; i < 5; i++)
             h.key[i] = 5 - i;
