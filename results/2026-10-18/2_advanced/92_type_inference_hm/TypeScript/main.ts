@@ -16,7 +16,7 @@ function quote(value) {
 
 function printValue(value) {
   const pieces = [];
-  const pending = [{value}];
+  const pending: Array<{value?: any; text?: string}> = [{value}];
   while (pending.length > 0) {
     const part = pending.pop();
     if (Object.hasOwn(part, 'text')) { pieces.push(part.text); continue; }
@@ -39,8 +39,8 @@ function printValue(value) {
 
 function printType(type, names = new Map(), quantified = null) {
   function render(value) {
-    value = types.resolve(value);
     if (value.kind === 'variable') return value.name;
+    value = types.resolve(value);
     if (value.kind === 'var') {
       if (!names.has(value)) names.set(value, names.size);
       const index = names.get(value);

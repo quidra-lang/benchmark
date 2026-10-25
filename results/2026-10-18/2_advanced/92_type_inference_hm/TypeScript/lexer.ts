@@ -4,13 +4,17 @@ export interface Position {
   column: number;
 }
 
-export interface Token {
-  kind: 'int' | 'string' | 'name' | 'keyword' | 'typevar' | 'symbol' | 'invalid' | 'eof';
+interface TokenBase {
   text: string;
   position: Position;
-  value?: string | number | null;
   message?: string;
 }
+
+export type Token =
+  | (TokenBase & {kind: 'int'; value: number})
+  | (TokenBase & {kind: 'string' | 'name' | 'keyword' | 'typevar' | 'symbol'; value: string})
+  | (TokenBase & {kind: 'invalid'; value: null})
+  | (TokenBase & {kind: 'eof'; value?: never});
 
 const keywords = new Set(['let', 'rec', 'and', 'in', 'fun', 'if', 'then', 'else', 'match', 'with', 'true', 'false', 'mod', 'val']);
 const symbols = [';;', '->', '::', '||', '&&', '<=', '>=', '<>', ':', ';', '=', '<', '>', '+', '-', '*', '/', '^', '(', ')', '[', ']', ',', '|'];
@@ -27,7 +31,7 @@ function tokenize(text: string, file: string): Token[] {
     }
   }
   function token(kind: Token['kind'], length: number, value?: string | number | null, message?: string): void {
-    tokens.push({kind, text: text.slice(index, index + length), value, message, position: {file, line, column}});
+    tokens.push({kind, text: text.slice(index, index + length), value, message, position: {file, line, column}} as Token);
     advance(length);
   }
   while (index < text.length) {
