@@ -1,33 +1,60 @@
+export interface TypeVariable {
+  kind: 'var';
+  number: number;
+  bound: Type | null;
+}
+
+export interface TypeConstructor {
+  kind: 'int' | 'bool' | 'string' | 'list' | 'pair' | 'function';
+  args: Type[];
+}
+
+export type Type = TypeVariable | TypeConstructor;
+
+export interface Scheme {
+  type: Type;
+  quantified: Set<TypeVariable>;
+}
+
+export interface UnifyFailure {
+  kind: 'occurs' | 'mismatch';
+  expected: Type;
+  found: Type;
+  component: boolean;
+  variable?: TypeVariable;
+  other?: Type;
+}
+
 let serial = 0;
-const integer = {kind: 'int', args: []};
-const boolean = {kind: 'bool', args: []};
-const string = {kind: 'string', args: []};
+const integer: TypeConstructor = {kind: 'int', args: []};
+const boolean: TypeConstructor = {kind: 'bool', args: []};
+const string: TypeConstructor = {kind: 'string', args: []};
 
-function fresh() { return {kind: 'var', number: serial++, bound: null}; }
-function list(element) { return {kind: 'list', args: [element]}; }
-function pair(first, second) { return {kind: 'pair', args: [first, second]}; }
-function fn(argument, result) { return {kind: 'function', args: [argument, result]}; }
+function fresh(): TypeVariable { return {kind: 'var', number: serial++, bound: null}; }
+function list(element: Type): TypeConstructor { return {kind: 'list', args: [element]}; }
+function pair(first: Type, second: Type): TypeConstructor { return {kind: 'pair', args: [first, second]}; }
+function fn(argument: Type, result: Type): TypeConstructor { return {kind: 'function', args: [argument, result]}; }
 
-function resolve(type) {
+function resolve(type: Type): Type {
   if (type.kind !== 'var' || type.bound === null) return type;
   type.bound = resolve(type.bound);
   return type.bound;
 }
 
-function freeVariables(type, result = new Set()) {
+function freeVariables(type: Type, result: Set<TypeVariable> = new Set()): Set<TypeVariable> {
   type = resolve(type);
   if (type.kind === 'var') result.add(type);
   else for (const argument of type.args) freeVariables(argument, result);
   return result;
 }
 
-function occurs(variable, type) {
+function occurs(variable: TypeVariable, type: Type): boolean {
   type = resolve(type);
   return type === variable || (type.kind !== 'var' && type.args.some(argument => occurs(variable, argument)));
 }
 
-function unify(expected, found) {
-  function visit(first, second, component) {
+function unify(expected: Type, found: Type): UnifyFailure | null {
+  function visit(first: Type, second: Type, component: boolean): UnifyFailure | null {
     first = resolve(first);
     second = resolve(second);
     if (first === second) return null;
@@ -51,20 +78,20 @@ function unify(expected, found) {
   return visit(expected, found, false);
 }
 
-function monomorphic(type) { return {type, quantified: new Set()}; }
+function monomorphic(type: Type): Scheme { return {type, quantified: new Set<TypeVariable>()}; }
 
-function generalize(type, environment) {
-  const free = new Set();
+function generalize(type: Type, environment: Map<string, Scheme>): Scheme {
+  const free = new Set<TypeVariable>();
   for (const scheme of environment.values()) {
     for (const variable of freeVariables(scheme.type)) if (!scheme.quantified.has(variable)) free.add(variable);
   }
-  const quantified = new Set([...freeVariables(type)].filter(variable => !free.has(variable)));
+  const quantified = new Set<TypeVariable>([...freeVariables(type)].filter(variable => !free.has(variable)));
   return {type, quantified};
 }
 
-function instantiate(scheme) {
-  const replacements = new Map();
-  function copy(type) {
+function instantiate(scheme: Scheme): Type {
+  const replacements = new Map<TypeVariable, TypeVariable>();
+  function copy(type: Type): Type {
     type = resolve(type);
     if (type.kind === 'var') {
       if (!scheme.quantified.has(type)) return type;
