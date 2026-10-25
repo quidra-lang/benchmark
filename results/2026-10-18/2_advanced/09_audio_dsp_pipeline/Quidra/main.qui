@@ -1,0 +1,665 @@
+import signals = "./signals.qui"
+import effects = "./effects.qui"
+import filters = "./filters.qui"
+import dynamics = "./dynamics.qui"
+import analysis = "./analysis.qui"
+
+class Argument(string name, string low = "", string high = "")
+    string kind = if name == "dst" or name == "var" then "name" elif name == "src" then "signal" elif name == "metric" then "metric" elif name == "op" then "operator" else "integer"
+
+Argument bounded(string name, int low, int high)
+    return Argument(name, low.string(), high.string())
+
+class Command(Argument[] arguments, Argument[] repeated = [], int repeat_min = 0, int repeat_max = 0)
+    bool accepts(int count)
+        int extra = count - int(len(arguments))
+        if len(repeated) == 0
+            return extra == 0
+        int width = int(len(repeated))
+        return extra >= 0 and extra % width == 0 and repeat_min * width <= extra <= repeat_max * width
+
+    Argument argument_at(int index)
+        if index < int(len(arguments))
+            return arguments[index]
+        return repeated[(index - int(len(arguments))) % int(len(repeated))]
+
+map.Map<string, Command> make_commands()
+    Argument dst = Argument("dst")
+    Argument src = Argument("src")
+    Argument rate = bounded("rate", 1000, 48000)
+    Argument count = bounded("count", 1, 20000)
+    Argument numerator = bounded("num", -65536, 65536)
+    Argument denominator = bounded("den", 1, 65536)
+    Argument attack = bounded("attack", 1, 32768)
+    Argument release = bounded("release", 1, 32768)
+    Argument min_hz = Argument("min_hz", "1", "rate / 2 - 1")
+    Argument max_hz = Argument("max_hz", "min_hz + 1", "rate / 2")
+    Argument start = Argument("start", "0", "L - 1")
+    Argument[] test_arguments = [dst, rate, count, Argument("pos", "0", "count - 1"), bounded("amp", -32768, 32767)]
+    Argument[] section = []
+    for string name = ["b0", "b1", "b2", "a1", "a2"][]
+        section = section.append(bounded(name, -65536, 65536))
+    map.Map<string, Command> result
+    .result.set("SET", Command([Argument("var"), bounded("value", -10000000, 10000000)], [Argument("op"), bounded("operand", -10000000, 10000000)], 0, 1))
+    .result.set("IMPULSE", Command(test_arguments))
+    .result.set("STEP", Command(test_arguments))
+    .result.set("NOISE", Command([dst, rate, count, bounded("seed", 1, 2147483646)]))
+    .result.set("GAIN", Command([dst, src, numerator, denominator]))
+    .result.set("MIX", Command([dst, denominator], [src, bounded("weight", -65536, 65536)], 1, 8))
+    .result.set("DELAY", Command([dst, src, bounded("samples", 0, 20000)]))
+    .result.set("ECHO", Command([dst, src, bounded("delay", 1, 20000), numerator, denominator, bounded("tail", 0, 20000)]))
+    .result.set("RESAMPLE", Command([dst, src, bounded("new_rate", 1000, 48000)]))
+    .result.set("FADE", Command([dst, src, Argument("in", "0", "L"), Argument("out", "0", "L")]))
+    .result.set("TRIM", Command([dst, src, start, Argument("count", "1", "L - start")]))
+    .result.set("CONCAT", Command([dst], [src], 2, 8))
+    .result.set("FIR", Command([dst, src, bounded("divisor", 1, 1000000)], [bounded("tap", -32768, 32767)], 1, 64))
+    .result.set("BIQUAD", Command([dst, src], section, 1, 4))
+    .result.set("MOVAVG", Command([dst, src, bounded("width", 1, 1000)]))
+    .result.set("DCBLOCK", Command([dst, src, bounded("num", 0, 65535), Argument("den", "num + 1", "65536")]))
+    .result.set("NORMALIZE", Command([dst, src, bounded("target", 1, 32767)]))
+    .result.set("GATE", Command([dst, src, bounded("threshold", 1, 32768), bounded("hold", 0, 20000)]))
+    .result.set("ENVELOPE", Command([dst, src, attack, release]))
+    .result.set("COMPRESS", Command([dst, src, bounded("threshold", 1, 32767), bounded("ratio_num", 1, 100), Argument("ratio_den", "1", "ratio_num"), attack, release]))
+    .result.set("ANALYZE", Command([src, min_hz, max_hz]))
+    .result.set("COMPARE", Command([src, src]))
+    .result.set("EXPECT", Command([src, Argument("metric"), Argument("op"), bounded("value", -1000000000, 1000000000)]))
+    .result.set("SEGMENTS", Command([src, bounded("threshold", 1, 32768), bounded("gap", 1, 20000), bounded("min_length", 1, 20000)]))
+    .result.set("ONSETS", Command([src, attack, release, bounded("threshold", 1, 32767), bounded("min_gap", 1, 20000)]))
+    .result.set("PITCHTRACK", Command([src, Argument("frame", "16", "L"), Argument("hop", "1", "frame"), min_hz, max_hz, bounded("threshold", 0, 32767)]))
+    .result.set("EXCERPT", Command([src, start, bounded("count", 1, 1000)]))
+    .result.set("PLOT", Command([src, start, Argument("count", "1", "L - start"), Argument("columns", "8", "min(120, count)"), bounded("half", 2, 20), attack, release]))
+    .result.set("METER", Command([src, bounded("block", 1, 20000)]))
+    .result.set("HISTOGRAM", Command([src, bounded("bins", 2, 64)]))
+    .result.set("TRACE", Command([src]))
+    .result.set("SAVE", Command([src]))
+    return result
+
+bool listed(string value, string[] choices)
+    for string choice = choices[]
+        if choice == value
+            return true
+    return false
+
+bool valid_name(string token)
+    int[] points = token.codepoints()
+    if len(points) < 1 or len(points) > 16 or points[0] < 97 or points[0] > 122
+        return false
+    for 1 <= nat index < len(points)
+        int point = points[index]
+        if not (97 <= point <= 122 or 48 <= point <= 57 or point == 95)
+            return false
+    return true
+
+bool valid_integer(string token)
+    if len(token) == 0 or token == "-0"
+        return false
+    string digits = if token[0] == "-" then token[1:<len(token)] else token
+    if len(digits) < 1 or len(digits) > 10 or (len(digits) > 1 and digits[0] == "0")
+        return false
+    for int point = digits.codepoints()[]
+        if point < 48 or point > 57
+            return false
+    return true
+
+int value_or_zero(map.Map<string, int> values, string key)
+    match values.get(key)
+        int value
+            return value
+        none
+            return 0
+
+int milliseconds(int index, int rate)
+    return index * 1000 / rate
+
+string two_decimals(int hundredths)
+    int fraction = hundredths % 100
+    return "{hundredths / 100}.{fraction:int=2,zero}"
+
+string frequency_text(int rate, int lag)
+    return two_decimals(signals.rdiv(100 * rate, lag))
+
+int metric_value(string metric, int[] samples)
+    if metric == "samples"
+        return int(len(samples))
+    if metric == "peak"
+        return signals.peak(samples)
+    if metric == "rms"
+        return analysis.rms(samples)
+    if metric == "sum"
+        return signals.sum_samples(samples)
+    if metric == "zero_crossings"
+        return analysis.zero_crossings(samples)
+    return analysis.count_clipped(samples)
+
+bool comparison(string operation, int first, int second)
+    return if operation == "eq" then first == second elif operation == "ne" then first != second elif operation == "lt" then first < second elif operation == "le" then first <= second elif operation == "gt" then first > second else first >= second
+
+class Parsed(string[] tokens)
+    int[] values = array(len(tokens), fill = 0)
+    int[] sources = []
+    map.Map<string, int> known
+
+int set_result(Parsed arguments)
+    int result = arguments.values[1]
+    if len(arguments.tokens) == 4
+        string operation = arguments.tokens[2]
+        int operand = arguments.values[3]
+        if operation == "+"
+            result += operand
+        elif operation == "-"
+            result -= operand
+        elif operation == "*"
+            result *= operand
+        else
+            result = signals.floor_div(result, operand)
+    return result
+
+string pad_left(string text, int width)
+    string result = text
+    while int(len(result)) < width
+        result = " " + result
+    return result
+
+int plot_row(int value, int scale, int rows)
+    return signals.rdiv((scale - value) * (rows - 1), 2 * scale)
+
+string[] waveform_plot(signals.Signal source, int start, int count, int columns, int half, int attack, int release)
+    int[] window = source.samples[start:<start + count]
+    int[] envelope = dynamics.envelope(source.samples, attack, release)
+    int[] levels = envelope[start:<start + count]
+    int rows = 2 * half + 1
+    int scale = signals.maximum(1, signals.peak(window))
+    string[][] grid = []
+    for int row < rows
+        string[] cells = array(nat(columns), fill = " ")
+        grid = grid.append(cells)
+    for int column < columns
+        int first = column * count / columns
+        int last = (column + 1) * count / columns
+        int high = window[first]
+        int low = high
+        int level = 0
+        for first <= int index < last
+            high = signals.maximum(high, window[index])
+            low = signals.minimum(low, window[index])
+            level = signals.maximum(level, levels[index])
+        level = signals.minimum(scale, level)
+        int top = plot_row(high, scale, rows)
+        int bottom = plot_row(low, scale, rows)
+        int positive = plot_row(level, scale, rows)
+        int negative = plot_row(-level, scale, rows)
+        for int row < rows
+            grid[row][column] = if row == positive or row == negative then "*" elif top <= row <= bottom then "#" elif row == half then "-" else " "
+    string[] lines = ["PLOT {source.name} rate={source.rate} start={start} count={count} columns={columns} rows={rows} scale={scale} attack={attack} release={release}"]
+    for int row < rows
+        string label = if row == 0 then scale.string() elif row == half then "0" elif row == rows - 1 then (-scale).string() else ""
+        string band = grid[row].join("")
+        lines = lines.append(pad_left(label, 6) + " |" + band + "|")
+    string axis = "       +"
+    for int column < columns
+        axis += if column % 10 == 0 then "+" else "-"
+    lines = lines.append(axis + "+")
+    string timeline = "    ms"
+    for int column < columns step 10
+        while int(len(timeline)) < 8 + column
+            timeline += " "
+        timeline += milliseconds(start + column * count / columns, source.rate).string()
+    return lines.append(timeline)
+
+string[] meter_plot(signals.Signal source, int block)
+    int count = (int(len(source.samples)) + block - 1) / block
+    string[] lines = ["METER {source.name} rate={source.rate} samples={len(source.samples)} block={block} blocks={count}"]
+    for int index < count
+        int end = signals.minimum((index + 1) * block, int(len(source.samples)))
+        int[] part = source.samples[index * block:<end]
+        int peak = signals.peak(part)
+        int rms = analysis.rms(part)
+        int peak_width = signals.rdiv(peak * 40, 32768)
+        int rms_width = signals.rdiv(rms * 40, 32768)
+        string band = ""
+        for int position < 40
+            band += if position < rms_width then "#" elif position < peak_width then "-" else " "
+        int time = milliseconds(index * block, source.rate)
+        lines = lines.append("{time:int=6} |{band}| peak={peak} rms={rms} clipped={analysis.count_clipped(part)}")
+    return lines
+
+string[] histogram_plot(signals.Signal source, int bins)
+    int[] counts = array(nat(bins), fill = 0)
+    for int value = source.samples[]
+        counts[(value + 32768) * bins / 65536] += 1
+    int top = 0
+    for int count = counts[]
+        top = signals.maximum(top, count)
+    string[] lines = ["HISTOGRAM {source.name} rate={source.rate} samples={len(source.samples)} bins={bins} max={top}"]
+    for int index < bins
+        int lower = (index * 65536 + bins - 1) / bins - 32768
+        int upper = ((index + 1) * 65536 + bins - 1) / bins - 32769
+        int count = counts[index]
+        string band = string.repeat("#", nat(signals.rdiv(count * 50, top)))
+        string bounds = pad_left(lower.string(), 6) + " " + pad_left(upper.string(), 6)
+        lines = lines.append("{bounds} {count:int=5} |{band}")
+    return lines
+
+string pitch_row(int rate, int start, int level, int lag, int low, int high)
+    int time = milliseconds(start, rate)
+    if lag == 0
+        string silence = string.repeat(" ", 41)
+        return "{time:int=6} |{silence}| unvoiced rms={level}"
+    int position = if high > low then signals.rdiv((high - lag) * 40, high - low) else 0
+    string band = string.repeat(" ", nat(position)) + "o" + string.repeat(" ", nat(40 - position))
+    return "{time:int=6} |{band}| lag={lag} hz={frequency_text(rate, lag)} rms={level}"
+
+class Pipeline(local signals.Signal[] loaded)
+    map.Map<string, Command> commands = make_commands()
+    signals.Signal[] archive = loaded
+    map.Map<string, int> signal_table
+    map.Map<string, int> variables
+    string[] log = []
+    string[] analysis_lines = ["signal,peak,rms,zero_crossings,clipped,crest,pitch_lag,pitch_hz"]
+    string[] excerpts = []
+    string[] waveforms = []
+    string[] saved = []
+    int steps = 0
+    int errors = 0
+    int passed = 0
+    int failed = 0
+    for nat index < len(loaded)
+        signals.Signal source = loaded[index]
+        .signal_table.set(source.name, int(index))
+        log = log.append("load {source.name} rate={source.rate} samples={len(source.samples)} peak={signals.peak(source.samples)}")
+
+    int | error integer_value(string token)
+        if token[0] == "$"
+            string name = token[1:<len(token)]
+            match variables.get(name)
+                int value
+                    return value
+                none
+                    return error("undefined variable {token}")
+        if not valid_integer(token)
+            return error("bad integer {token}")
+        return int.parse(token)
+
+    int resolve_bound(string bound, map.Map<string, int> known, int first_source)
+        if bound == "count - 1"
+            return value_or_zero(known, "count") - 1
+        if bound == "min(120, count)"
+            return signals.minimum(120, value_or_zero(known, "count"))
+        if bound == "min_hz + 1"
+            return value_or_zero(known, "min_hz") + 1
+        if bound == "num + 1"
+            return value_or_zero(known, "num") + 1
+        if bound == "ratio_num" or bound == "frame"
+            return value_or_zero(known, bound)
+        if bound == "L" or bound == "L - 1" or bound == "L - start"
+            int length = int(len(archive[first_source].samples))
+            if bound == "L"
+                return length
+            if bound == "L - 1"
+                return length - 1
+            return length - value_or_zero(known, "start")
+        if bound == "rate / 2" or bound == "rate / 2 - 1"
+            int rate = archive[first_source].rate
+            return if bound == "rate / 2" then rate / 2 else rate / 2 - 1
+        return int.parse(bound)
+
+    Parsed | error parse_arguments(string name, Command command, string[] tokens)
+        Parsed result = Parsed(tokens)
+        for nat index < len(tokens)
+            string token = tokens[index]
+            Argument argument = command.argument_at(int(index))
+            if argument.kind == "name"
+                if not valid_name(token)
+                    return error("bad name {token}")
+            elif argument.kind == "signal"
+                match signal_table.get(token)
+                    int version
+                        result.sources = result.sources.append(version)
+                    none
+                        return error("unknown signal {token}")
+            elif argument.kind == "metric"
+                if not listed(token, ["samples", "peak", "rms", "sum", "zero_crossings", "clipped"])
+                    return error("unknown metric {token}")
+            elif argument.kind == "operator"
+                string[] allowed = if name == "SET" then ["+", "-", "*", "/"] else ["eq", "ne", "lt", "le", "gt", "ge"]
+                if not listed(token, allowed)
+                    return error("unknown operator {token}")
+            else
+                int value = try integer_value(token)
+                int first_source = if len(result.sources) > 0 then result.sources[0] else -1
+                int low = resolve_bound(argument.low, result.known, first_source)
+                int high = resolve_bound(argument.high, result.known, first_source)
+                if value < low or value > high
+                    return error("{argument.name} out of range")
+                result.values[index] = value
+                .result.known.set(argument.name, value)
+        return result
+
+    string check_command(string name, Parsed arguments)
+        int[] values = arguments.values
+        if name == "SET"
+            if len(arguments.tokens) == 4
+                if arguments.tokens[2] == "/" and values[3] == 0
+                    return "division by zero"
+                if signals.magnitude(set_result(arguments)) > 10000000
+                    return "value out of range"
+            return ""
+        if len(arguments.sources) == 0
+            return ""
+        signals.Signal source = archive[arguments.sources[0]]
+        int length = int(len(source.samples))
+        if name == "MIX" or name == "CONCAT" or name == "COMPARE"
+            int combined_length = 0
+            for int version = arguments.sources[]
+                signals.Signal ingredient = archive[version]
+                if ingredient.rate != source.rate
+                    return "rate mismatch"
+                combined_length += int(len(ingredient.samples))
+            if name == "CONCAT" and combined_length > 20000
+                return "result too long"
+        elif name == "DELAY"
+            if length + values[2] > 20000
+                return "result too long"
+        elif name == "ECHO"
+            if signals.magnitude(values[3]) >= values[4]
+                return "unstable feedback"
+            if length + values[5] > 20000
+                return "result too long"
+        elif name == "RESAMPLE"
+            if effects.resampled_length(length, source.rate, values[2]) > 20000
+                return "result too long"
+        elif name == "ANALYZE" or name == "PITCHTRACK"
+            int min_hz = if name == "ANALYZE" then values[1] else values[3]
+            int max_hz = if name == "ANALYZE" then values[2] else values[4]
+            int low = (source.rate + max_hz - 1) / max_hz
+            int high = source.rate / min_hz
+            if low > high
+                return "empty lag range"
+            if name == "ANALYZE" and high >= length
+                return "signal too short"
+            if name == "PITCHTRACK" and high >= values[1]
+                return "frame too short"
+        return ""
+
+    string .register_signal(int number, string command, Parsed arguments, int rate, int[] samples, string extras)
+        string name = arguments.tokens[0]
+        int version = int(len(archive))
+        archive = archive.append(signals.Signal(name, rate, samples, "line {number} {command}", arguments.sources))
+        .signal_table.set(name, version)
+        return "{name} rate={rate} samples={len(samples)} peak={signals.peak(samples)} sum={signals.sum_samples(samples)}{extras}"
+
+    string .generate(int number, string command, Parsed arguments)
+        int[] values = arguments.values
+        if command == "IMPULSE" or command == "STEP"
+            int[] samples = if command == "IMPULSE" then signals.impulse(values[2], values[3], values[4]) else signals.step(values[2], values[3], values[4])
+            return .register_signal(number, command, arguments, values[1], samples, "")
+        if command == "NOISE"
+            return .register_signal(number, command, arguments, values[1], signals.noise(values[2], values[3]), "")
+        signals.Signal source = archive[arguments.sources[0]]
+        int rate = source.rate
+        int[] samples = []
+        string extras = ""
+        if command == "GAIN"
+            signals.Processed result = effects.gain(source.samples, values[2], values[3])
+            samples = result.samples
+            extras = " clipped={result.clipped}"
+        elif command == "MIX"
+            int[][] tracks = []
+            int[] weights = []
+            for nat index < len(arguments.sources)
+                tracks = tracks.append(archive[arguments.sources[index]].samples)
+                weights = weights.append(values[3 + int(index) * 2])
+            signals.Processed result = effects.mix(tracks, weights, values[1])
+            samples = result.samples
+            extras = " clipped={result.clipped}"
+        elif command == "DELAY"
+            samples = effects.delay(source.samples, values[2])
+        elif command == "ECHO"
+            signals.Processed result = effects.echo(source.samples, values[2], values[3], values[4], values[5])
+            samples = result.samples
+            extras = " clipped={result.clipped}"
+        elif command == "RESAMPLE"
+            rate = values[2]
+            samples = effects.resample(source.samples, source.rate, rate)
+        elif command == "FADE"
+            samples = effects.fade(source.samples, values[2], values[3])
+        elif command == "TRIM"
+            samples = source.samples[values[2]:<values[2] + values[3]]
+        elif command == "CONCAT"
+            for int version = arguments.sources[]
+                samples = samples.concat(archive[version].samples)
+        elif command == "FIR"
+            signals.Processed result = filters.fir(source.samples, values[2], values[3:<len(values)])
+            samples = result.samples
+            extras = " clipped={result.clipped}"
+        elif command == "BIQUAD"
+            int[][] sections = []
+            for 2 <= int start < int(len(values)) step 5
+                sections = sections.append(values[start:<start + 5])
+            signals.Processed result = filters.biquad(source.samples, sections)
+            samples = result.samples
+            extras = " sections={len(sections)} clipped={result.clipped}"
+        elif command == "MOVAVG"
+            samples = filters.moving_average(source.samples, values[2])
+        elif command == "DCBLOCK"
+            signals.Processed result = filters.dc_block(source.samples, values[2], values[3])
+            samples = result.samples
+            extras = " clipped={result.clipped}"
+        elif command == "NORMALIZE"
+            dynamics.Normalized result = dynamics.normalize(source.samples, values[2])
+            samples = result.samples
+            extras = " source_peak={result.source_peak}"
+        elif command == "GATE"
+            dynamics.Gated result = dynamics.gate(source.samples, values[2], values[3])
+            samples = result.samples
+            extras = " muted={result.muted}"
+        elif command == "ENVELOPE"
+            samples = dynamics.envelope(source.samples, values[2], values[3])
+        elif command == "COMPRESS"
+            dynamics.Compressed result = dynamics.compress(source.samples, values[2], values[3], values[4], values[5], values[6])
+            samples = result.samples
+            extras = " min_gain={result.min_gain} reduced={result.reduced}"
+        return .register_signal(number, command, arguments, rate, samples, extras)
+
+    void trace_lines(int version, int depth, string[] &lines)
+        signals.Signal source = archive[version]
+        string indent = string.repeat(" ", nat(2 * depth))
+        lines = lines.append("{indent}{source.name} <- {source.origin}")
+        for int ingredient = source.ingredients[]
+            trace_lines(ingredient, depth + 1, &lines)
+
+    string compare_signals(signals.Signal first, signals.Signal second)
+        int count = signals.maximum(int(len(first.samples)), int(len(second.samples)))
+        int differing = 0
+        int max_diff = 0
+        string first_index = "none"
+        int error_energy = 0
+        for int index < count
+            int left = if index < int(len(first.samples)) then first.samples[index] else 0
+            int right = if index < int(len(second.samples)) then second.samples[index] else 0
+            int difference = left - right
+            if difference != 0
+                if differing == 0
+                    first_index = index.string()
+                differing += 1
+            max_diff = signals.maximum(max_diff, signals.magnitude(difference))
+            error_energy += difference * difference
+        return "{first.name} {second.name} differing={differing} max_diff={max_diff} first={first_index} error_energy={error_energy}"
+
+    string[] segment_lines(signals.Signal source, int threshold, int gap, int min_length)
+        int[][] found = []
+        for int index < int(len(source.samples))
+            if signals.magnitude(source.samples[index]) >= threshold
+                int last = int(len(found)) - 1
+                if last >= 0 and index - found[last][1] <= gap
+                    found[last][1] = index
+                else
+                    found = found.append([index, index])
+        string[] details = []
+        for int[] segment = found[]
+            int start = segment[0]
+            int end = segment[1]
+            if end - start + 1 >= min_length
+                int[] part = source.samples[start:<end + 1]
+                int number = int(len(details)) + 1
+                details = details.append("  segment {number} start={start} end={end} start_ms={milliseconds(start, source.rate)} end_ms={milliseconds(end, source.rate)} peak={signals.peak(part)} rms={analysis.rms(part)} crossings={analysis.zero_crossings(part)}")
+        string[] heading = ["{source.name} segments={len(details)}"]
+        return heading.concat(details)
+
+    string[] onset_lines(signals.Signal source, int attack, int release, int threshold, int min_gap)
+        int[] levels = dynamics.envelope(source.samples, attack, release)
+        int[] found = []
+        int[] intervals = []
+        for int index < int(len(levels))
+            bool rising = levels[index] >= threshold and (index == 0 or levels[index - 1] < threshold)
+            if rising and (len(found) == 0 or index - found[len(found) - 1] >= min_gap)
+                if len(found) > 0
+                    intervals = intervals.append(index - found[len(found) - 1])
+                found = found.append(index)
+        string tempo = "none"
+        if len(found) >= 2
+            int[] ordered = intervals.sorted()
+            int middle = ordered[(len(found) - 2) / 2]
+            tempo = two_decimals(signals.rdiv(6000 * source.rate, middle))
+        string[] lines = ["{source.name} onsets={len(found)} tempo={tempo}"]
+        for nat index < len(found)
+            int sample = found[index]
+            string interval = if index == 0 then "none" else intervals[index - 1].string()
+            lines = lines.append("  onset {index + 1} sample={sample} ms={milliseconds(sample, source.rate)} interval={interval}")
+        return lines
+
+    string .analyze_signal(signals.Signal source, int min_hz, int max_hz)
+        int low = (source.rate + max_hz - 1) / max_hz
+        int high = source.rate / min_hz
+        int lag = analysis.pitch_lag(source.samples, low, high)
+        string lag_text = if lag == 0 then "none" else lag.string()
+        string hz_text = if lag == 0 then "none" else frequency_text(source.rate, lag)
+        analysis_lines = analysis_lines.append("{source.name},{signals.peak(source.samples)},{analysis.rms(source.samples)},{analysis.zero_crossings(source.samples)},{analysis.count_clipped(source.samples)},{analysis.crest_fraction(source.samples)},{lag_text},{hz_text}")
+        return "{source.name} lags={low}-{high}"
+
+    string .pitch_track(signals.Signal source, int frame, int hop, int min_hz, int max_hz, int threshold)
+        int low = (source.rate + max_hz - 1) / max_hz
+        int high = source.rate / min_hz
+        int count = (int(len(source.samples)) - frame) / hop + 1
+        int voiced = 0
+        string[] rows = []
+        for int index < count
+            int start = index * hop
+            int[] window = source.samples[start:<start + frame]
+            int level = analysis.rms(window)
+            int lag = if level < threshold then 0 else analysis.pitch_lag(window, low, high)
+            if lag > 0
+                voiced += 1
+            rows = rows.append(pitch_row(source.rate, start, level, lag, low, high))
+        waveforms = waveforms.append("PITCHTRACK {source.name} rate={source.rate} frame={frame} hop={hop} lags={low}-{high} threshold={threshold} frames={count} voiced={voiced}")
+        waveforms = waveforms.concat(rows)
+        return "{source.name} frames={count} voiced={voiced}"
+
+    string .excerpt_signal(signals.Signal source, int start, int count)
+        int length = signals.minimum(count, int(len(source.samples)) - start)
+        excerpts = excerpts.append("EXCERPT {source.name} rate={source.rate} samples={len(source.samples)} start={start} count={length}")
+        for int offset < length step 8
+            int end = signals.minimum(length, offset + 8)
+            int first = start + offset
+            string line = "{first:int=5}:"
+            for offset <= int index < end
+                int value = source.samples[start + index]
+                line += " " + pad_left(value.string(), 6)
+            excerpts = excerpts.append(line)
+        return "{source.name} start={start} count={length}"
+
+    string[] | error .execute(int number, string name, string[] tokens)
+        Command command
+        match commands.get(name)
+            Command found
+                command = found
+            none
+                return error("unknown command {name}")
+        if not command.accepts(int(len(tokens)))
+            return error("wrong number of arguments")
+        Parsed arguments = try parse_arguments(name, command, tokens)
+        string failure = check_command(name, arguments)
+        if failure != ""
+            return error(failure)
+        if name == "SET"
+            int result = set_result(arguments)
+            .variables.set(tokens[0], result)
+            return ["{tokens[0]}={result}"]
+        if listed(name, ["IMPULSE", "STEP", "NOISE", "GAIN", "MIX", "DELAY", "ECHO", "RESAMPLE", "FADE", "TRIM", "CONCAT", "FIR", "BIQUAD", "MOVAVG", "DCBLOCK", "NORMALIZE", "GATE", "ENVELOPE", "COMPRESS"])
+            return [.generate(number, name, arguments)]
+        signals.Signal source = archive[arguments.sources[0]]
+        int[] values = arguments.values
+        if name == "ANALYZE"
+            return [.analyze_signal(source, values[1], values[2])]
+        if name == "COMPARE"
+            return [compare_signals(source, archive[arguments.sources[1]])]
+        if name == "EXPECT"
+            int measured = metric_value(tokens[1], source.samples)
+            bool satisfied = comparison(tokens[2], measured, values[3])
+            if satisfied
+                passed += 1
+            else
+                failed += 1
+            string outcome = if satisfied then "pass" else "fail"
+            return ["{source.name} {tokens[1]}={measured} {tokens[2]} {values[3]} {outcome}"]
+        if name == "SEGMENTS"
+            return segment_lines(source, values[1], values[2], values[3])
+        if name == "ONSETS"
+            return onset_lines(source, values[1], values[2], values[3], values[4])
+        if name == "PITCHTRACK"
+            return [.pitch_track(source, values[1], values[2], values[3], values[4], values[5])]
+        if name == "EXCERPT"
+            return [.excerpt_signal(source, values[1], values[2])]
+        if name == "PLOT"
+            waveforms = waveforms.concat(waveform_plot(source, values[1], values[2], values[3], values[4], values[5], values[6]))
+            return ["{source.name} start={values[1]} count={values[2]} columns={values[3]} rows={2 * values[4] + 1}"]
+        if name == "METER"
+            waveforms = waveforms.concat(meter_plot(source, values[1]))
+            return ["{source.name} block={values[1]}"]
+        if name == "HISTOGRAM"
+            waveforms = waveforms.concat(histogram_plot(source, values[1]))
+            return ["{source.name} bins={values[1]}"]
+        if name == "TRACE"
+            string[] lines = [source.name]
+            trace_lines(arguments.sources[0], 1, &lines)
+            return lines
+        saved = saved.concat(signals.format_signal(source))
+        return ["{source.name} samples={len(source.samples)}"]
+
+    void .run_line(int number, string line)
+        string[] tokens = line.split(" ")
+        string name = tokens[0]
+        match .execute(number, name, tokens[1:<len(tokens)])
+            string[] details
+                log = log.append("line {number}: {name} {details[0]}")
+                log = log.concat(details[1:<len(details)])
+                steps += 1
+            error problem
+                log = log.append("line {number}: error: {problem.message}")
+                errors += 1
+
+    void .run()
+        string text = file.read("input/pipeline.txt")
+        string[] lines = text.split(NL)
+        for nat index < len(lines)
+            if lines[index] != "" and lines[index][0] != "#"
+                .run_line(int(index) + 1, lines[index])
+        for string name = signal_table.keys().sorted()[]
+            signals.Signal source = archive[value_or_zero(signal_table, name)]
+            log = log.append("signal {name} rate={source.rate} samples={len(source.samples)} peak={signals.peak(source.samples)} rms={analysis.rms(source.samples)}")
+        log = log.append("summary steps={steps} errors={errors} signals={signal_table.size()} passed={passed} failed={failed}")
+
+void write_lines(string name, string[] lines)
+    string text = if len(lines) == 0 then "" else lines.join(NL) + NL
+    file.write("output/" + name, text)
+
+if main
+    Pipeline pipeline = Pipeline(signals.read_signals())
+    .pipeline.run()
+    if not file.is_directory("output")
+        file.mkdir("output")
+    write_lines("log.txt", pipeline.log)
+    write_lines("analysis.csv", pipeline.analysis_lines)
+    write_lines("excerpts.txt", pipeline.excerpts)
+    write_lines("waveforms.txt", pipeline.waveforms)
+    write_lines("signals_out.txt", pipeline.saved)
