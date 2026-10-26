@@ -1,13 +1,13 @@
-for (pair in list(c(7,3),c(10,2),c(41,3))) {
-    n <- pair[1]
-    k <- pair[2]
-    people <- seq_len(n)
-    removed <- integer(0)
-    index <- 0
-    while (length(people) > 0) {
-        index <- (index+k-1) %% length(people)
-        removed <- c(removed,people[index+1])
-        people <- people[-(index+1)]
-    }
-    cat(sprintf("n=%d k=%d: %s\nsurvivor: %d\n",n,k,paste(removed,collapse=" "),tail(removed,1)))
+for (pair in list(c(7, 3), c(10, 2), c(41, 3))) {
+  n <- pair[1]
+  k <- pair[2]
+  people <- seq_len(n)
+  removed <- integer(0)
+  index <- 0
+  while (length(people) > 0) {
+    index <- (index + k - 1) %% length(people)
+    removed <- c(removed, people[index + 1])
+    people <- people[-(index + 1)]
+  }
+  cat(sprintf("n=%d k=%d: %s\nsurvivor: %d\n", n, k, paste(removed, collapse = " "), tail(removed, 1)))
 }

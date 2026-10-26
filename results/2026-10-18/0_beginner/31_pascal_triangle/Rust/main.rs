@@ -5,6 +5,13 @@ fn main() {
         for k in (1..=n).rev() {
             row[k] += row[k - 1];
         }
-        println!("{}", row[..=n].iter().map(i32::to_string).collect::<Vec<_>>().join(" "));
+        println!(
+            "{}",
+            row[..=n]
+                .iter()
+                .map(i32::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
     }
 }

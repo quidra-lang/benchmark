@@ -26,9 +26,8 @@ int main() {
     for (std::string token; input >> token;) {
         if (token == "/")
             decoded += ' ';
-        else {
+        else
             decoded += symbols[std::find(codes.begin(), codes.end(), token) - codes.begin()];
-        }
     }
     std::cout << decoded << '\n';
 }

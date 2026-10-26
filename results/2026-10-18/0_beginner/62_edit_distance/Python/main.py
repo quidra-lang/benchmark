@@ -1,5 +1,10 @@
-pairs = [("kitten", "sitting"), ("flaw", "lawn"), ("listen", "silent"),
-         ("intention", "execution"), ("algorithm", "altruistic")]
+pairs = [
+    ("kitten", "sitting"),
+    ("flaw", "lawn"),
+    ("listen", "silent"),
+    ("intention", "execution"),
+    ("algorithm", "altruistic"),
+]
 for a, b in pairs:
     dp = [[i] + [0] * len(b) for i in range(len(a) + 1)]
     dp[0] = list(range(len(b) + 1))

@@ -9,6 +9,7 @@ struct Team {
     std::string name;
     int played = 0, wins = 0, draws = 0, losses = 0, gf = 0, ga = 0, points = 0;
 };
+
 void record(Team &t, int gf, int ga) {
     ++t.played;
     t.gf += gf;
@@ -19,19 +20,21 @@ void record(Team &t, int gf, int ga) {
     } else if (gf == ga) {
         ++t.draws;
         ++t.points;
-    } else
+    } else {
         ++t.losses;
+    }
 }
 
 int main() {
     std::vector<Team> teams;
-    for (const std::string &name : std::array<std::string, 6>{"Lions", "Tigers", "Eagles", "Sharks",
-        "Wolves", "Bears"})
+    const std::array<std::string, 6> names = {"Lions", "Tigers", "Eagles", "Sharks", "Wolves", "Bears"};
+    const std::array<std::string, 15> matches = {
+        "Lions 0-3 Bears", "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks", "Wolves 2-1 Eagles",
+        "Lions 0-1 Tigers", "Tigers 3-3 Bears", "Eagles 2-2 Lions", "Sharks 2-2 Wolves", "Bears 3-1 Wolves",
+        "Lions 2-0 Sharks", "Tigers 2-1 Eagles", "Eagles 1-0 Bears", "Sharks 2-0 Tigers", "Wolves 2-1 Lions"};
+    for (const std::string &name : names)
         teams.push_back({name});
-    for (const std::string &match : std::array<std::string, 15>{"Lions 0-3 Bears", "Tigers 2-2 Wolves",
-        "Eagles 4-0 Sharks", "Bears 0-1 Sharks", "Wolves 2-1 Eagles", "Lions 0-1 Tigers", "Tigers 3-3 Bears",
-        "Eagles 2-2 Lions", "Sharks 2-2 Wolves", "Bears 3-1 Wolves", "Lions 2-0 Sharks", "Tigers 2-1 Eagles",
-        "Eagles 1-0 Bears", "Sharks 2-0 Tigers", "Wolves 2-1 Lions"}) {
+    for (const std::string &match : matches) {
         std::istringstream input(match);
         std::string home, away;
         char dash;

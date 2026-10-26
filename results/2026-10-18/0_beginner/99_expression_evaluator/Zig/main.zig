@@ -76,7 +76,7 @@ pub fn main(init: std.process.Init) !void {
         "height = 100 / (height - 7) + bonus",
         "volume = area * depth",
         "width = (width+3)*-(2-4)",
-        "width * shift - height"
+        "width * shift - height",
     };
     var variables: Table = .empty;
     defer variables.deinit(std.heap.page_allocator);
@@ -104,15 +104,11 @@ pub fn main(init: std.process.Init) !void {
             len += 1;
         }
         const assignment = len > 1 and std.mem.eql(u8, tokens[1], "=");
-        var parser = Parser{
-            .tokens = tokens[0..len],
-            .position = if (assignment) 2 else 0,
-            .variables = &variables
-        };
+        var parser = Parser{ .tokens = tokens[0..len], .position = if (assignment) 2 else 0, .variables = &variables };
         const result = parser.expression() catch |err| {
             switch (err) {
                 error.DivisionByZero => try out.writeAll("error: division by zero\n"),
-                error.UndefinedVariable => try out.print("error: undefined variable {s}\n", .{ parser.missing })
+                error.UndefinedVariable => try out.print("error: undefined variable {s}\n", .{parser.missing}),
             }
             continue;
         };
@@ -120,7 +116,7 @@ pub fn main(init: std.process.Init) !void {
             try variables.put(std.heap.page_allocator, tokens[0], result);
             try out.print("{s} = {d}\n", .{ tokens[0], result });
         } else {
-            try out.print("{d}\n", .{ result });
+            try out.print("{d}\n", .{result});
         }
     }
     try out.flush();

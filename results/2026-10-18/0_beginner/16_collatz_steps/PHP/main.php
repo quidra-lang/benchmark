@@ -1,9 +1,10 @@
 <?php
+
 foreach ([1, 6, 27, 97, 871] as $start) {
     $n = $peak = $start;
     $steps = 0;
     while ($n !== 1) {
-        $n = $n % 2 === 0 ? intdiv($n, 2) : 3*$n+1;
+        $n = $n % 2 === 0 ? intdiv($n, 2) : 3 * $n + 1;
         $steps++;
         $peak = max($peak, $n);
     }

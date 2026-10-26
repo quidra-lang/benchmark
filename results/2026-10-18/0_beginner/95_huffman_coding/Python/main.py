@@ -9,11 +9,15 @@ trees = [
 while len(trees) > 1:
     trees.sort(key=lambda tree: (tree["weight"], tree["minimum"]))
     left, right = trees.pop(0), trees.pop(0)
-    trees.append({
-        "weight": left["weight"] + right["weight"],
-        "minimum": min(left["minimum"], right["minimum"]),
-        "symbol": None, "left": left, "right": right,
-    })
+    trees.append(
+        {
+            "weight": left["weight"] + right["weight"],
+            "minimum": min(left["minimum"], right["minimum"]),
+            "symbol": None,
+            "left": left,
+            "right": right,
+        }
+    )
 codes = {}
 
 

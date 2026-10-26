@@ -22,8 +22,8 @@ func solve(board *[9][9]int, placements *uint64) bool {
 				safe = false
 			}
 		}
-		for r := row / 3 * 3; r < row / 3 * 3 + 3; r++ {
-			for c := col / 3 * 3; c < col / 3 * 3 + 3; c++ {
+		for r := row / 3 * 3; r < row/3*3+3; r++ {
+			for c := col / 3 * 3; c < col/3*3+3; c++ {
 				if board[r][c] == d {
 					safe = false
 				}

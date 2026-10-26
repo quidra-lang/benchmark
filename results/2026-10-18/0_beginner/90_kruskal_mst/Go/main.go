@@ -6,7 +6,7 @@ import (
 )
 
 type Edge struct {
-	a, b rune
+	a, b   rune
 	weight int
 }
 
@@ -18,9 +18,9 @@ func find(parent *[8]int, v int) int {
 }
 
 func main() {
-	edges := []Edge{{'A', 'B', 7}, {'C', 'A', 4}, {'B', 'C', 9}, {'B', 'D', 14}, {'D', 'C', 6}, {'C',
-		'E', 3}, {'E', 'D', 5}, {'F', 'D', 11}, {'E', 'G', 16}, {'G', 'F', 8}, {'H', 'F', 12}, {'G', 'H',
-		2}, {'H', 'E', 10}}
+	edges := []Edge{{'A', 'B', 7}, {'C', 'A', 4}, {'B', 'C', 9}, {'B', 'D', 14}, {'D', 'C', 6},
+		{'C', 'E', 3}, {'E', 'D', 5}, {'F', 'D', 11}, {'E', 'G', 16}, {'G', 'F', 8}, {'H', 'F', 12},
+		{'G', 'H', 2}, {'H', 'E', 10}}
 	sort.Slice(edges, func(i, j int) bool {
 		return edges[i].weight < edges[j].weight
 	})
@@ -33,7 +33,7 @@ func main() {
 		if accepted == 7 {
 			break
 		}
-		a, b := find(&parent, int(e.a - 'A')), find(&parent, int(e.b - 'A'))
+		a, b := find(&parent, int(e.a-'A')), find(&parent, int(e.b-'A'))
 		if a == b {
 			skipped++
 			continue

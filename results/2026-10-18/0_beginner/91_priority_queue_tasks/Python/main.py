@@ -1,9 +1,22 @@
-from heapq import heappush, heappop
+from heapq import heappop, heappush
 
 operations = [
-    "add email 3", "add backup 5", "add deploy 1", "run", "add report 3", "add test 2",
-    "add lint 3", "run", "run", "add cleanup 5", "add review 2", "run",
-    "add build 1", "add docs 4", "run", "run",
+    "add email 3",
+    "add backup 5",
+    "add deploy 1",
+    "run",
+    "add report 3",
+    "add test 2",
+    "add lint 3",
+    "run",
+    "run",
+    "add cleanup 5",
+    "add review 2",
+    "run",
+    "add build 1",
+    "add docs 4",
+    "run",
+    "run",
 ]
 queue = []
 sequence = 0

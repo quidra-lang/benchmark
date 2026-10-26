@@ -1,7 +1,7 @@
 using Printf
 
-for i in 1:9
-    for j in 1:9
+for i = 1:9
+    for j = 1:9
         @printf("%3d", i * j)
     end
     println()

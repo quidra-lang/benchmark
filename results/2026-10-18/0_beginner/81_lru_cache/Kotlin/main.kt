@@ -12,7 +12,7 @@ fun main() {
             status = "miss"
             if (cache.size == 3) status += ", evict ${cache.removeAt(cache.lastIndex)}"
         }
-        cache.add(0,key)
+        cache.add(0, key)
         println("$key: $status [${cache.joinToString(" ")}]")
     }
     println("hits: $hits misses: $misses")

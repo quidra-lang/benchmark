@@ -1,11 +1,21 @@
 use std::collections::BTreeMap;
 
 fn main() {
-    let lines = ["date,region,product,quantity,unit_price", "2026-04-01,north,notebook,10,200", "2026-04-01,east,marker,6,150",
-        "2026-04-01,south,eraser,25,80", "2026-04-02,west,stapler,4,600", "2026-04-02,north,marker,8,150",
-        "2026-04-02,east,notebook,9,200", "2026-04-03,south,stapler,3,600", "2026-04-03,west,eraser,15,80",
-        "2026-04-03,north,eraser,20,80", "2026-04-04,east,stapler,5,600", "2026-04-04,south,notebook,6,200",
-        "2026-04-04,west,marker,8,150"];
+    let lines = [
+        "date,region,product,quantity,unit_price",
+        "2026-04-01,north,notebook,10,200",
+        "2026-04-01,east,marker,6,150",
+        "2026-04-01,south,eraser,25,80",
+        "2026-04-02,west,stapler,4,600",
+        "2026-04-02,north,marker,8,150",
+        "2026-04-02,east,notebook,9,200",
+        "2026-04-03,south,stapler,3,600",
+        "2026-04-03,west,eraser,15,80",
+        "2026-04-03,north,eraser,20,80",
+        "2026-04-04,east,stapler,5,600",
+        "2026-04-04,south,notebook,6,200",
+        "2026-04-04,west,marker,8,150",
+    ];
     let (mut regions, mut products, mut days) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     let mut total = 0;
     for line in &lines[1..] {
@@ -27,6 +37,10 @@ fn main() {
     for (name, quantity) in products {
         println!("{}: {}", name, quantity);
     }
-    let (best, amount) = days.into_iter().rev().max_by_key(|(_, sales)| *sales).unwrap();
+    let (best, amount) = days
+        .into_iter()
+        .rev()
+        .max_by_key(|(_, sales)| *sales)
+        .unwrap();
     println!("best day: {} ({})", best, amount);
 }

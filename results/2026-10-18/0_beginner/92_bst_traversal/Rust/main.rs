@@ -42,7 +42,9 @@ fn traverse(nodes: &[Node], root: Option<usize>, mode: usize) {
 }
 
 fn height(nodes: &[Node], root: Option<usize>) -> usize {
-    root.map_or(0, |v| 1 + height(nodes, nodes[v].left).max(height(nodes, nodes[v].right)))
+    root.map_or(0, |v| {
+        1 + height(nodes, nodes[v].left).max(height(nodes, nodes[v].right))
+    })
 }
 
 fn erase(nodes: &mut [Node], root: Option<usize>, key: i32) -> Option<usize> {

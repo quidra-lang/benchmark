@@ -18,6 +18,7 @@ function kahn(courses: string[], pairs: string[][]) {
   }
   return {order, cycle: courses.filter(course => !order.includes(course)).sort()};
 }
+
 const courses1 = "physics algebra graphics programming statistics calculus databases algorithms".split(" ");
 const pairs1 = [
   ["calculus", "physics"], ["algebra", "calculus"], ["programming", "algorithms"],

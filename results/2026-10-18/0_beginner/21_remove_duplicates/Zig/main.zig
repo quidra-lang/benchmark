@@ -16,8 +16,8 @@ pub fn main(init: std.process.Init) !void {
     for (unique[0..count], 0..) |v, i| {
         if (i > 0)
             try out.writeByte(' ');
-        try out.print("{d}", .{ v });
+        try out.print("{d}", .{v});
     }
-    try out.print("\nremoved: {d}\n", .{ values.len - count });
+    try out.print("\nremoved: {d}\n", .{values.len - count});
     try out.flush();
 }

@@ -1,12 +1,24 @@
 import java.util.Locale
+import kotlin.math.abs
 
 fun main() {
-    val systems = listOf(arrayOf(doubleArrayOf(2.0,-1.0,3.0,7.0),doubleArrayOf(4.0,1.0,-2.0,3.0),doubleArrayOf(-3.0,5.0,1.0,-4.0)),
-        arrayOf(doubleArrayOf(1.0,3.0,-2.0,4.0,6.0),doubleArrayOf(5.0,-2.0,1.0,3.0,-7.0),doubleArrayOf(-2.0,4.0,6.0,-1.0,9.0),doubleArrayOf(3.0,1.0,-4.0,2.0,5.0)))
-    for ((system,a) in systems.withIndex()) {
+    val systems = listOf(
+        arrayOf(
+            doubleArrayOf(2.0, -1.0, 3.0, 7.0),
+            doubleArrayOf(4.0, 1.0, -2.0, 3.0),
+            doubleArrayOf(-3.0, 5.0, 1.0, -4.0),
+        ),
+        arrayOf(
+            doubleArrayOf(1.0, 3.0, -2.0, 4.0, 6.0),
+            doubleArrayOf(5.0, -2.0, 1.0, 3.0, -7.0),
+            doubleArrayOf(-2.0, 4.0, 6.0, -1.0, 9.0),
+            doubleArrayOf(3.0, 1.0, -4.0, 2.0, 5.0),
+        ),
+    )
+    for ((system, a) in systems.withIndex()) {
         val n = a.size
         for (k in 0 until n) {
-            val pivot = (k until n).maxBy { kotlin.math.abs(a[it][k]) }
+            val pivot = (k until n).maxBy { abs(a[it][k]) }
             val temporary = a[k]
             a[k] = a[pivot]
             a[pivot] = temporary

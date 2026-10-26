@@ -1,9 +1,12 @@
 using System;
+using System.Text;
 
 string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-foreach (string text in new[] { "Man", "Hello, World!", "", "<b>bold</b>", "a+b=c?" }) {
-    var encoded = new System.Text.StringBuilder();
-    for (int i = 0; i < text.Length; i += 3) {
+foreach (string text in new[] { "Man", "Hello, World!", "", "<b>bold</b>", "a+b=c?" })
+{
+    var encoded = new StringBuilder();
+    for (int i = 0; i < text.Length; i += 3)
+    {
         int remaining = text.Length - i;
         int bits = text[i] << 16;
         if (remaining > 1) bits |= text[i + 1] << 8;

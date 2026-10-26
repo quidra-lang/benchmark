@@ -1,5 +1,3 @@
-require 'set'
-
 edges = [[5, 0], [3, 8], [7, 2], [1, 6], [0, 2], [5, 3], [7, 5], [6, 4], [8, 7]]
 graph = Array.new(9) { [] }
 edges.each do |a, b|

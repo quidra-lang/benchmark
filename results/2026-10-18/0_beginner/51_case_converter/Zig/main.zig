@@ -10,7 +10,7 @@ pub fn main(init: std.process.Init) !void {
         "ShoppingCartItem",
         "background-color",
         "get_last_login_time",
-        "isEmailAddressValid"
+        "isEmailAddressValid",
     };
     for (identifiers) |id| {
         var lower: [100]u8 = undefined;
@@ -35,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
             words[count] = lower[start..id.len];
             count += 1;
         }
-        try out.print("{s}: snake=", .{ id });
+        try out.print("{s}: snake=", .{id});
         for (0..4) |style| {
             if (style == 1)
                 try out.writeAll(", camel=");
@@ -45,10 +45,11 @@ pub fn main(init: std.process.Init) !void {
                 try out.writeAll(", kebab=");
             for (words[0..count], 0..) |word, i| {
                 if (i > 0 and (style == 0 or style == 3))
-                    try out.writeByte(if (style == 0) '_' else
-                        '-');
+                    try out.writeByte(if (style == 0) '_' else '-');
                 for (word, 0..) |c, j|
-                    try out.writeByte(if (j == 0 and (style == 2 or (style == 1 and i > 0))) std.ascii.toUpper(c) else
+                    try out.writeByte(if (j == 0 and (style == 2 or (style == 1 and i > 0)))
+                        std.ascii.toUpper(c)
+                    else
                         c);
             }
         }

@@ -9,9 +9,9 @@ func main() {
 	for _, value := range []int{84, 9973, 15625, 1001, 123456, 48000, 999958, 999999} {
 		n := value
 		factors := []string{}
-		for d := 2; d * d <= n; d++ {
+		for d := 2; d*d <= n; d++ {
 			e := 0
-			for n % d == 0 {
+			for n%d == 0 {
 				n /= d
 				e++
 			}

@@ -5,12 +5,7 @@ pub fn main(init: std.process.Init) !void {
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
     const sets = [_][3]i32{
-        .{ 1, -3, -10 },
-        .{ -2, 5, 4 },
-        .{ 3, 1, -2 },
-        .{ 4, -12, 9 },
-        .{ 1, 2, 5 },
-        .{ -2, 3, -4 }
+        .{ 1, -3, -10 }, .{ -2, 5, 4 }, .{ 3, 1, -2 }, .{ 4, -12, 9 }, .{ 1, 2, 5 }, .{ -2, 3, -4 },
     };
     for (sets) |s| {
         const a = s[0];

@@ -10,22 +10,16 @@ pub fn main(init: std.process.Init) !void {
         .{ "XO.", ".OX", "XO." },
         .{ "XOX", "XOO", "OXX" },
         .{ "X.O", "XO.", "O.X" },
-        .{ "XOX", "OXO", "OXX" }
+        .{ "XOX", "OXO", "OXX" },
     };
     const lines = [_][3]usize{
-        .{ 0, 1, 2 },
-        .{ 3, 4, 5 },
-        .{ 6, 7, 8 },
-        .{ 0, 3, 6 },
-        .{ 1, 4, 7 },
-        .{ 2, 5, 8 },
-        .{ 0, 4, 8 },
-        .{ 2, 4, 6 }
+        .{ 0, 1, 2 }, .{ 3, 4, 5 }, .{ 6, 7, 8 }, .{ 0, 3, 6 }, .{ 1, 4, 7 }, .{ 2, 5, 8 },
+        .{ 0, 4, 8 }, .{ 2, 4, 6 },
     };
     for (boards, 0..) |board, i| {
         var cells: [9]u8 = undefined;
         for (board, 0..) |row, r|
-            @memcpy(cells[r * 3..][0..3], row);
+            @memcpy(cells[r * 3 ..][0..3], row);
         const empty = std.mem.findScalar(u8, &cells, '.') != null;
         var winner: u8 = '.';
         for (lines) |line| {
@@ -35,7 +29,14 @@ pub fn main(init: std.process.Init) !void {
                 break;
             }
         }
-        const result: []const u8 = if (winner == 'X') "X wins" else if (winner == 'O') "O wins" else if (empty) "in progress" else "draw";
+        const result: []const u8 = if (winner == 'X')
+            "X wins"
+        else if (winner == 'O')
+            "O wins"
+        else if (empty)
+            "in progress"
+        else
+            "draw";
         try out.print("board {d}: {s}\n", .{ i + 1, result });
     }
     try out.flush();

@@ -24,11 +24,13 @@ std::vector<std::string> tokenize(const std::string &line) {
     }
     return tokens;
 }
+
 struct Parser {
     std::vector<std::string> tokens;
     std::size_t position = 0;
     const std::map<std::string, long long> &variables;
     std::string error;
+
     long long unary() {
         std::string token = tokens[position++];
         if (token == "-")
@@ -41,12 +43,13 @@ struct Parser {
         }
         if (token[0] >= '0' && token[0] <= '9')
             return std::stoll(token);
-        std::map<std::string, long long>::const_iterator found = variables.find(token);
+        auto found = variables.find(token);
         if (found != variables.end())
             return found->second;
         error = "undefined variable " + token;
         return 0;
     }
+
     long long product() {
         long long value = unary();
         while (error.empty() && position < tokens.size() && (tokens[position] == "*" || tokens[position] == "/")) {
@@ -62,6 +65,7 @@ struct Parser {
         }
         return value;
     }
+
     long long sum() {
         long long value = product();
         while (error.empty() && position < tokens.size() && (tokens[position] == "+" || tokens[position] == "-")) {
@@ -74,22 +78,25 @@ struct Parser {
         return value;
     }
 };
+
 int main() {
     std::map<std::string, long long> variables;
-    for (const std::string &line : std::array<std::string, 9>{"width = 12", "height = width - 5", "area = width * height",
+    const std::array<std::string, 9> lines = {"width = 12", "height = width - 5", "area = width * height",
         "(area + 6) / 4", "shift = -area / 8 + 3", "height = 100 / (height - 7) + bonus", "volume = area * depth",
-        "width = (width+3)*-(2-4)", "width * shift - height"}) {
+        "width = (width+3)*-(2-4)", "width * shift - height"};
+    for (const std::string &line : lines) {
         Parser parser{tokenize(line), 0, variables, {}};
         bool assignment = parser.tokens.size() > 1 && parser.tokens[1] == "=";
         if (assignment)
             parser.position = 2;
         long long value = parser.sum();
-        if (!parser.error.empty())
+        if (!parser.error.empty()) {
             std::cout << "error: " << parser.error << '\n';
-        else if (assignment) {
+        } else if (assignment) {
             variables[parser.tokens[0]] = value;
             std::cout << parser.tokens[0] << " = " << value << '\n';
-        } else
+        } else {
             std::cout << value << '\n';
+        }
     }
 }

@@ -14,7 +14,7 @@ int main(void) {
             int first = 1;
             for (int j = i; j < 12; j++)
                 if (!used[j] && memcmp(signatures[i], signatures[j], sizeof signatures[i]) == 0) {
-                    printf("%s%s", first ? "": " ", words[j]);
+                    printf("%s%s", first ? "" : " ", words[j]);
                     first = 0;
                     used[j] = 1;
                 }

@@ -11,9 +11,10 @@ struct Student {
     std::array<int, 3> scores;
     int total = 0;
 };
+
 int main() {
-    std::vector<Student> students = {{"Tanaka", {78, 85, 94}}, {"Suzuki", {88, 74, 82}}, {"Yamada",
-        {65, 90, 71}}, {"Ito", {80, 79, 85}}, {"Kato", {92, 88, 95}}, {"Mori", {70, 62, 78}}};
+    std::vector<Student> students = {{"Tanaka", {78, 85, 94}}, {"Suzuki", {88, 74, 82}}, {"Yamada", {65, 90, 71}},
+                                     {"Ito", {80, 79, 85}}, {"Kato", {92, 88, 95}}, {"Mori", {70, 62, 78}}};
     for (Student &s : students)
         s.total = std::accumulate(s.scores.begin(), s.scores.end(), 0);
     std::sort(students.begin(), students.end(), [](const Student &a, const Student &b) {

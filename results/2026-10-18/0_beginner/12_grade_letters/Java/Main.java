@@ -7,6 +7,8 @@ public class Main {
             counts[index]++;
             System.out.println(score + ": " + grades[index]);
         }
-        for (int i = 0; i < grades.length; i++) System.out.println(grades[i] + ": " + counts[i]);
+        for (int i = 0; i < grades.length; i++) {
+            System.out.println(grades[i] + ": " + counts[i]);
+        }
     }
 }

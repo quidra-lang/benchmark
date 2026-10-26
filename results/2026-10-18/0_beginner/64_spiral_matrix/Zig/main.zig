@@ -4,7 +4,7 @@ pub fn main(init: std.process.Init) !void {
     var output_buffer: [8192]u8 = undefined;
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
-    var matrix = [_][6]u32{ [_]u32{ 0 } ** 6 } ** 5;
+    var matrix: [5][6]u32 = @splat(@splat(0));
     const directions = [_][2]i32{ .{ 0, 1 }, .{ 1, 0 }, .{ 0, -1 }, .{ -1, 0 } };
     var r: i32 = 0;
     var c: i32 = 0;
@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
     }
     for (matrix) |row| {
         for (row) |v|
-            try out.print("{d:>3}", .{ v });
+            try out.print("{d:>3}", .{v});
         try out.writeByte('\n');
     }
     try out.flush();

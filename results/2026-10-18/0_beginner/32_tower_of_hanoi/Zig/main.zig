@@ -15,6 +15,6 @@ pub fn main(init: std.process.Init) !void {
     const out = &writer.interface;
     var count: u32 = 0;
     try hanoi(out, 4, 'A', 'C', 'B', &count);
-    try out.print("total moves: {d}\n", .{ count });
+    try out.print("total moves: {d}\n", .{count});
     try out.flush();
 }

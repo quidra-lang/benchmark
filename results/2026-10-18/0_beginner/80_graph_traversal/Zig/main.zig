@@ -14,30 +14,24 @@ pub fn main(init: std.process.Init) !void {
     var output_buffer: [8192]u8 = undefined;
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
-    var graph = [_][9]bool{ [_]bool{ false } ** 9 } ** 9;
-    for ([_][2]usize{
-        .{ 5, 0 },
-        .{ 3, 8 },
-        .{ 7, 2 },
-        .{ 1, 6 },
-        .{ 0, 2 },
-        .{ 5, 3 },
-        .{ 7, 5 },
-        .{ 6, 4 },
-        .{ 8, 7 }
-    }) |e| {
+    var graph: [9][9]bool = @splat(@splat(false));
+    const edges = [_][2]usize{
+        .{ 5, 0 }, .{ 3, 8 }, .{ 7, 2 }, .{ 1, 6 }, .{ 0, 2 },
+        .{ 5, 3 }, .{ 7, 5 }, .{ 6, 4 }, .{ 8, 7 },
+    };
+    for (edges) |e| {
         graph[e[0]][e[1]] = true;
         graph[e[1]][e[0]] = true;
     }
-    var visited = [_]bool{ false } ** 9;
+    var visited: [9]bool = @splat(false);
     var order: [9]usize = undefined;
     var len: usize = 0;
     dfs(&graph, 0, &visited, &order, &len);
     try out.writeAll("DFS:");
     for (order[0..len]) |v|
-        try out.print(" {d}", .{ v });
+        try out.print(" {d}", .{v});
     try out.writeAll("\nBFS:");
-    visited = [_]bool{ false } ** 9;
+    visited = @splat(false);
     var queue: [9]usize = undefined;
     queue[0] = 0;
     var head: usize = 0;
@@ -46,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
     while (head < tail) {
         const v = queue[head];
         head += 1;
-        try out.print(" {d}", .{ v });
+        try out.print(" {d}", .{v});
         for (0..9) |u| {
             if (graph[v][u] and !visited[u]) {
                 visited[u] = true;
@@ -55,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
     }
-    visited = [_]bool{ false } ** 9;
+    visited = @splat(false);
     var components: [9][9]usize = undefined;
     var sizes: [9]usize = undefined;
     var count: usize = 0;
@@ -68,11 +62,11 @@ pub fn main(init: std.process.Init) !void {
             count += 1;
         }
     }
-    try out.print("\ncomponents: {d}\n", .{ count });
+    try out.print("\ncomponents: {d}\n", .{count});
     for (0..count) |i| {
-        try out.print("component {d}:", .{ i + 1 });
+        try out.print("component {d}:", .{i + 1});
         for (components[i][0..sizes[i]]) |v|
-            try out.print(" {d}", .{ v });
+            try out.print(" {d}", .{v});
         try out.writeByte('\n');
     }
     try out.flush();

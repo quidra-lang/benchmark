@@ -1,9 +1,14 @@
 alphabet = collect("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-codes = split(".- -... -.-. -.. . ..-. --. .... .. .--- -.- .-.. -- -. --- .--. --.- .-. ... - ..- ...- .-- -..- -.-- --.. ----- .---- ..--- ...-- ....- ..... -.... --... ---.. ----.")
-table = Dict(zip(alphabet,codes))
-reverse_table = Dict(code=>string(letter) for (letter,code) in table)
+codes = split(
+    ".- -... -.-. -.. . ..-. --. .... .. .--- -.- .-.. -- -. --- .--. --.- .-. ... - ..- ...- .-- -..- -.-- --.. ----- .---- ..--- ...-- ....- ..... -.... --... ---.. ----.",
+)
+table = Dict(zip(alphabet, codes))
+reverse_table = Dict(code=>string(letter) for (letter, code) in table)
 message = "MEET ME AT PIER 9 AT 1745"
-encoded = join((join((table[c] for c in word)," ") for word in split(message))," / ")
-decoded = join((join(reverse_table[code] for code in split(word)) for word in split(encoded," / "))," ")
+encoded = join((join((table[c] for c in word), " ") for word in split(message)), " / ")
+decoded = join(
+    (join(reverse_table[code] for code in split(word)) for word in split(encoded, " / ")),
+    " ",
+)
 println(encoded)
 println(decoded)

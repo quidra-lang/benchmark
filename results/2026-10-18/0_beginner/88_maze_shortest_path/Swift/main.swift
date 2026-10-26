@@ -1,4 +1,5 @@
-let rows = ["#############",
+let rows = [
+    "#############",
     "#S..#.......#",
     "#.#.#.###.#.#",
     "#.#...#...#.#",
@@ -6,7 +7,8 @@ let rows = ["#############",
     "#...#...#...#",
     "###.#####.#.#",
     "#.......#..G#",
-    "#############"]
+    "#############",
+]
 var maze = rows.map { Array($0) }, start = -1, goal = -1
 for r in 0..<9 {
     for c in 0..<13 {
@@ -16,7 +18,7 @@ for r in 0..<9 {
 }
 var parent = [Int](repeating: -1, count: 117), queue = [start], head = 0
 parent[start] = start
-let dr = [-1,1,0,0], dc = [0,0,-1,1]
+let dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1]
 while head < queue.count {
     let cell = queue[head], r = cell / 13, c = cell % 13
     head += 1

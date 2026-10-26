@@ -1,8 +1,11 @@
+use std::collections::BTreeMap;
+
 struct Parser<'a> {
     tokens: Vec<String>,
     position: usize,
-    variables: &'a std::collections::BTreeMap<String, i64>
+    variables: &'a BTreeMap<String, i64>,
 }
+
 impl Parser<'_> {
     fn unary(&mut self) -> Result<i64, String> {
         let token = self.tokens[self.position].clone();
@@ -18,11 +21,17 @@ impl Parser<'_> {
         if token.as_bytes()[0].is_ascii_digit() {
             return Ok(token.parse().unwrap());
         }
-        self.variables.get(&token).copied().ok_or_else(|| format!("undefined variable {}", token))
+        self.variables
+            .get(&token)
+            .copied()
+            .ok_or_else(|| format!("undefined variable {}", token))
     }
+
     fn product(&mut self) -> Result<i64, String> {
         let mut value = self.unary()?;
-        while self.position < self.tokens.len() && (self.tokens[self.position] == "*" || self.tokens[self.position] == "/") {
+        while self.position < self.tokens.len()
+            && (self.tokens[self.position] == "*" || self.tokens[self.position] == "/")
+        {
             let operation = self.tokens[self.position].clone();
             self.position += 1;
             let right = self.unary()?;
@@ -37,9 +46,12 @@ impl Parser<'_> {
         }
         Ok(value)
     }
+
     fn sum(&mut self) -> Result<i64, String> {
         let mut value = self.product()?;
-        while self.position < self.tokens.len() && (self.tokens[self.position] == "+" || self.tokens[self.position] == "-") {
+        while self.position < self.tokens.len()
+            && (self.tokens[self.position] == "+" || self.tokens[self.position] == "-")
+        {
             let operation = self.tokens[self.position].clone();
             self.position += 1;
             let right = self.product()?;
@@ -79,15 +91,24 @@ fn tokenize(line: &str) -> Vec<String> {
 }
 
 fn main() {
-    let mut variables = std::collections::BTreeMap::new();
-    for line in ["width = 12", "height = width - 5", "area = width * height", "(area + 6) / 4", "shift = -area / 8 + 3",
-        "height = 100 / (height - 7) + bonus", "volume = area * depth", "width = (width+3)*-(2-4)", "width * shift - height"] {
+    let mut variables = BTreeMap::new();
+    for line in [
+        "width = 12",
+        "height = width - 5",
+        "area = width * height",
+        "(area + 6) / 4",
+        "shift = -area / 8 + 3",
+        "height = 100 / (height - 7) + bonus",
+        "volume = area * depth",
+        "width = (width+3)*-(2-4)",
+        "width * shift - height",
+    ] {
         let tokens = tokenize(line);
         let assignment = tokens.len() > 1 && tokens[1] == "=";
         let mut parser = Parser {
             tokens,
             position: if assignment { 2 } else { 0 },
-            variables: &variables
+            variables: &variables,
         };
         match parser.sum() {
             Err(error) => println!("error: {}", error),

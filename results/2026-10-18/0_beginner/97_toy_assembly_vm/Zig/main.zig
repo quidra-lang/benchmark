@@ -27,9 +27,9 @@ pub fn main(init: std.process.Init) !void {
         "SET B C",
         "JNZ B -4",
         "PRINT A",
-        "HALT"
+        "HALT",
     };
-    var registers = [_]i64{ 0 } ** 4;
+    var registers: [4]i64 = @splat(0);
     var pc: i32 = 0;
     var executed: u32 = 0;
     while (pc >= 0 and pc < @as(i32, @intCast(program.len))) {
@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
             break;
         const first = tokens.next().?;
         if (std.mem.eql(u8, op, "PRINT")) {
-            try out.print("{d}\n", .{ value(first, &registers) });
+            try out.print("{d}\n", .{value(first, &registers)});
             pc += 1;
             continue;
         }
@@ -64,6 +64,6 @@ pub fn main(init: std.process.Init) !void {
         }
         pc += 1;
     }
-    try out.print("executed: {d}\n", .{ executed });
+    try out.print("executed: {d}\n", .{executed});
     try out.flush();
 }

@@ -24,9 +24,9 @@ int main() {
             pc += value(a, registers) != 0 ? std::stoi(b) : 1;
             continue;
         }
-        if (op == "PRINT")
+        if (op == "PRINT") {
             std::cout << value(a, registers) << '\n';
-        else {
+        } else {
             int r = a[0] - 'A', x = value(b, registers);
             if (op == "SET")
                 registers[r] = x;

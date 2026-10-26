@@ -9,7 +9,7 @@ pub fn main(init: std.process.Init) !void {
         .{ "flaw", "lawn" },
         .{ "listen", "silent" },
         .{ "intention", "execution" },
-        .{ "algorithm", "altruistic" }
+        .{ "algorithm", "altruistic" },
     };
     for (pairs) |p| {
         const a = p[0];

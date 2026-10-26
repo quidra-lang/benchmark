@@ -8,10 +8,10 @@ func main() {
 		px, py := p[0], p[1]
 		inside := false
 		for i, v := range polygon {
-			w := polygon[(i + 1) % len(polygon)]
+			w := polygon[(i+1)%len(polygon)]
 			x1, y1, x2, y2 := v[0], v[1], w[0], w[1]
 			if (y1 > py) != (y2 > py) {
-				intersection := float64(x1) + float64(x2 - x1) * float64(py - y1) / float64(y2 - y1)
+				intersection := float64(x1) + float64(x2-x1)*float64(py-y1)/float64(y2-y1)
 				if intersection > float64(px) {
 					inside = !inside
 				}

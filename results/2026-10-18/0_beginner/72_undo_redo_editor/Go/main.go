@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"strconv"
+	"strings"
 )
 
 func main() {
@@ -18,7 +18,7 @@ func main() {
 				continue
 			}
 			redo = append(redo, buffer)
-			buffer = undo[len(undo) - 1]
+			buffer = undo[len(undo)-1]
 			undo = undo[:len(undo)-1]
 		} else if command == "redo" {
 			if len(redo) == 0 {
@@ -26,7 +26,7 @@ func main() {
 				continue
 			}
 			undo = append(undo, buffer)
-			buffer = redo[len(redo) - 1]
+			buffer = redo[len(redo)-1]
 			redo = redo[:len(redo)-1]
 		} else {
 			undo = append(undo, buffer)

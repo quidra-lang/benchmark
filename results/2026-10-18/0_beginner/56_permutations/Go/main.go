@@ -11,7 +11,7 @@ func search(p []byte, used [4]bool, count *int) {
 	for i := 0; i < 4; i++ {
 		if !used[i] {
 			used[i] = true
-			search(append(p, byte('A' + i)), used, count)
+			search(append(p, byte('A'+i)), used, count)
 			used[i] = false
 		}
 	}

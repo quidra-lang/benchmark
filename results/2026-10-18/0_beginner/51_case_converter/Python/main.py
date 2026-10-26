@@ -1,6 +1,13 @@
 import re
 
-identifiers = ["user_name", "maxRetryCount", "ShoppingCartItem", "background-color", "get_last_login_time", "isEmailAddressValid"]
+identifiers = [
+    "user_name",
+    "maxRetryCount",
+    "ShoppingCartItem",
+    "background-color",
+    "get_last_login_time",
+    "isEmailAddressValid",
+]
 for identifier in identifiers:
     words = [word.lower() for word in re.split(r"[_-]|(?=[A-Z])", identifier) if word]
     snake = "_".join(words)

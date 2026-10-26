@@ -9,6 +9,7 @@ struct Hand {
     int category;
     std::vector<int> key;
 };
+
 Hand evaluate(const std::string &text) {
     std::string ranks = "23456789TJQKA";
     std::array<int, 15> counts{};
@@ -49,8 +50,9 @@ Hand evaluate(const std::string &text) {
 
 int main() {
     std::vector<Hand> hands;
-    for (const std::string &text : std::array<std::string, 8>{"9C 9D 5H QH 2C", "4D AH 3C 5S 2H", "KS 8S 2S JS 6S",
-        "7H 7D KC 7S KD", "3H 6C 4S 2D 5C", "JD TC 4H 8C AS", "QC 6D QS 3S 6H", "9H KH 9S 8H 3D"})
+    const std::array<std::string, 8> input = {"9C 9D 5H QH 2C", "4D AH 3C 5S 2H", "KS 8S 2S JS 6S", "7H 7D KC 7S KD",
+        "3H 6C 4S 2D 5C", "JD TC 4H 8C AS", "QC 6D QS 3S 6H", "9H KH 9S 8H 3D"};
+    for (const std::string &text : input)
         hands.push_back(evaluate(text));
     std::sort(hands.begin(), hands.end(), [](const Hand &a, const Hand &b) {
         return a.category != b.category ? a.category > b.category : a.key > b.key;

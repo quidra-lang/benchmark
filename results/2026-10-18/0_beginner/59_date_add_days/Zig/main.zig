@@ -9,7 +9,7 @@ pub fn main(init: std.process.Init) !void {
         .{ 2000, 2, 27, 3 },
         .{ 2021, 2, 20, 14 },
         .{ 2023, 11, 15, 120 },
-        .{ 2026, 10, 17, 1500 }
+        .{ 2026, 10, 17, 1500 },
     };
     const lengths = [_]u32{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
     for (cases) |c| {
@@ -30,8 +30,9 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
         }
-        try out.print("{d:0>4}-{d:0>2}-{d:0>2} + {d} days = {d:0>4}-{d:0>2}-{d:0>2}\n", .{ c[0], c[1],
-            c[2], c[3], y, m, d });
+        try out.print("{d:0>4}-{d:0>2}-{d:0>2} + {d} days = {d:0>4}-{d:0>2}-{d:0>2}\n", .{
+            c[0], c[1], c[2], c[3], y, m, d,
+        });
     }
     try out.flush();
 }

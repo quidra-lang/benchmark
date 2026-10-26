@@ -14,7 +14,7 @@ func main() {
 				for d := 0; d < 8; d++ {
 					match := true
 					for k := range word {
-						rr, cc := r + dr[d] * k, c + dc[d] * k
+						rr, cc := r+dr[d]*k, c+dc[d]*k
 						if rr < 0 || rr >= 10 || cc < 0 || cc >= 10 || board[rr][cc] != word[k] {
 							match = false
 							break

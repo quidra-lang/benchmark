@@ -5,26 +5,16 @@ pub fn main(init: std.process.Init) !void {
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
     const words = [_][]const u8{
-        "listen",
-        "stone",
-        "night",
-        "silent",
-        "notes",
-        "apple",
-        "thing",
-        "enlist",
-        "earth",
-        "onset",
-        "heart",
-        "tones"
+        "listen", "stone", "night", "silent", "notes", "apple", "thing", "enlist", "earth", "onset",
+        "heart",  "tones",
     };
     var keys: [12][26]u32 = undefined;
     for (words, 0..) |word, i| {
-        keys[i] = [_]u32{ 0 } ** 26;
+        keys[i] = @splat(0);
         for (word) |c|
             keys[i][c - 'a'] += 1;
     }
-    var used = [_]bool{ false } ** 12;
+    var used: [12]bool = @splat(false);
     for (words, 0..) |_, i| {
         if (used[i])
             continue;

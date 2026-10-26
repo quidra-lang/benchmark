@@ -12,7 +12,10 @@ def solve(n):
                 first = placement.copy()
             return
         for column in range(n):
-            if any(previous == column or abs(previous - column) == row - r for r, previous in enumerate(placement)):
+            if any(
+                previous == column or abs(previous - column) == row - r
+                for r, previous in enumerate(placement)
+            ):
                 continue
             placement.append(column)
             visit()

@@ -2,8 +2,9 @@
 
 int main(void) {
     const char *board[] = {"MMONKENBIR", "PMTIGERJPL", "TGREJEDUZI", "SPYUTEJDEC", "WKAPSIDLBN", "KUVNGSBPRO",
-        "RIBSDACBAM", "YWVAUAPKAH", "KYCGTHHESR", "OCCALAOKKR"}, *words[] = {"TIGER", "ZEBRA", "MONKEY",
-        "PANDA", "KOALA", "RABBIT"}, *names[] = {"E", "SE", "S", "SW", "W", "NW", "N", "NE"};
+        "RIBSDACBAM", "YWVAUAPKAH", "KYCGTHHESR", "OCCALAOKKR"};
+    const char *words[] = {"TIGER", "ZEBRA", "MONKEY", "PANDA", "KOALA", "RABBIT"};
+    const char *names[] = {"E", "SE", "S", "SW", "W", "NW", "N", "NE"};
     int dr[] = {0, 1, 1, 1, 0, -1, -1, -1}, dc[] = {1, 1, 0, -1, -1, -1, 0, 1};
     for (int w = 0; w < 6; w++) {
         int found = 0;

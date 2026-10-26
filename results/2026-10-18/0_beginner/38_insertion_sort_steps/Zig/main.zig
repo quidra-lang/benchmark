@@ -19,9 +19,9 @@ pub fn main(init: std.process.Init) !void {
         total += shifts;
         try out.print("i={d} shifts={d}:", .{ i, shifts });
         for (a) |x|
-            try out.print(" {d}", .{ x });
+            try out.print(" {d}", .{x});
         try out.writeByte('\n');
     }
-    try out.print("total shifts: {d}\n", .{ total });
+    try out.print("total shifts: {d}\n", .{total});
     try out.flush();
 }

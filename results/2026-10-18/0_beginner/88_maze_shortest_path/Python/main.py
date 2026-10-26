@@ -1,8 +1,15 @@
 from collections import deque
 
 rows = [
-    "#############", "#S..#.......#", "#.#.#.###.#.#", "#.#...#...#.#", "#.###.#.###.#",
-    "#...#...#...#", "###.#####.#.#", "#.......#..G#", "#############",
+    "#############",
+    "#S..#.......#",
+    "#.#.#.###.#.#",
+    "#.#...#...#.#",
+    "#.###.#.###.#",
+    "#...#...#...#",
+    "###.#####.#.#",
+    "#.......#..G#",
+    "#############",
 ]
 height, width = len(rows), len(rows[0])
 maze = list("".join(rows))
@@ -29,5 +36,5 @@ while cell != start:
         maze[cell] = "*"
     cell = parent[cell]
 print(f"steps: {steps}")
-for start in range(0, len(maze), width):
-    print("".join(maze[start:start + width]))
+for offset in range(0, len(maze), width):
+    print("".join(maze[offset : offset + width]))

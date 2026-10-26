@@ -1,8 +1,13 @@
 const std = @import("std");
 
-fn topological(out: *std.Io.Writer, names: []const []const u8, edges: []const [2]usize, cycle: bool) std.Io.Writer.Error!void {
-    var indegree = [_]usize{ 0 } ** 8;
-    var taken = [_]bool{ false } ** 8;
+fn topological(
+    out: *std.Io.Writer,
+    names: []const []const u8,
+    edges: []const [2]usize,
+    cycle: bool,
+) std.Io.Writer.Error!void {
+    var indegree: [8]usize = @splat(0);
+    var taken: [8]bool = @splat(false);
     for (edges) |e|
         indegree[e[1]] += 1;
     try out.writeAll("order: ");
@@ -39,7 +44,7 @@ fn topological(out: *std.Io.Writer, names: []const []const u8, edges: []const [2
         }
         std.mem.sort([]const u8, remaining[0..len], {}, nameLess);
         for (remaining[0..len]) |name|
-            try out.print(" {s}", .{ name });
+            try out.print(" {s}", .{name});
         try out.writeByte('\n');
     }
 }
@@ -60,18 +65,11 @@ pub fn main(init: std.process.Init) !void {
         "statistics",
         "calculus",
         "databases",
-        "algorithms"
+        "algorithms",
     };
     const edges1 = [_][2]usize{
-        .{ 5, 0 },
-        .{ 1, 5 },
-        .{ 3, 7 },
-        .{ 1, 4 },
-        .{ 7, 6 },
-        .{ 4, 6 },
-        .{ 5, 2 },
-        .{ 7, 2 },
-        .{ 0, 2 }
+        .{ 5, 0 }, .{ 1, 5 }, .{ 3, 7 }, .{ 1, 4 }, .{ 7, 6 }, .{ 4, 6 }, .{ 5, 2 }, .{ 7, 2 },
+        .{ 0, 2 },
     };
     const names2 = [_][]const u8{ "music", "ecology", "art", "geology", "biology", "chemistry" };
     const edges2 = [_][2]usize{ .{ 0, 2 }, .{ 2, 1 }, .{ 4, 5 }, .{ 5, 1 }, .{ 1, 3 }, .{ 3, 5 } };

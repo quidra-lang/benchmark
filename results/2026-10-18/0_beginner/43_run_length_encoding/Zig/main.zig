@@ -9,7 +9,7 @@ pub fn main(init: std.process.Init) !void {
         "WWWWWWWWWWWWBWWWWWWWWWWWWBBB",
         "ALGORITHM",
         "MISSISSIPPI",
-        "XXXXXXXXXXYYYYYYYYYYYYYYYYYYYYYZ"
+        "XXXXXXXXXXYYYYYYYYYYYYYYYYYYYYYZ",
     };
     for (strings) |s| {
         var encoded: [256]u8 = undefined;

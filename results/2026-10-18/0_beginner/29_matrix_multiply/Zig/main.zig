@@ -12,9 +12,9 @@ pub fn main(init: std.process.Init) !void {
             for (0..4) |k|
                 value += row[k] * b[k][j];
             if (value < 0) {
-                try out.print("{d:>5}", .{ value });
+                try out.print("{d:>5}", .{value});
             } else {
-                try out.print("{d:>5}", .{ @as(u32, @intCast(value)) });
+                try out.print("{d:>5}", .{@as(u32, @intCast(value))});
             }
         }
         try out.writeByte('\n');

@@ -8,8 +8,9 @@ import (
 
 func main() {
 	graph := [7][7]int{}
-	for _, e := range [][3]int{{0, 1, 7}, {0, 2, 3}, {0, 3, 9}, {1, 2, 2}, {2, 4, 6}, {1, 3, 3}, {3,
-		4, 4}, {3, 5, 5}, {4, 5, 3}, {4, 6, 8}, {5, 6, 4}} {
+	edges := [][3]int{{0, 1, 7}, {0, 2, 3}, {0, 3, 9}, {1, 2, 2}, {2, 4, 6}, {1, 3, 3},
+		{3, 4, 4}, {3, 5, 5}, {4, 5, 3}, {4, 6, 8}, {5, 6, 4}}
+	for _, e := range edges {
 		graph[e[0]][e[1]], graph[e[1]][e[0]] = e[2], e[2]
 	}
 	distance, parent, done := [7]int{}, [7]int{}, [7]bool{}
@@ -27,7 +28,7 @@ func main() {
 		}
 		done[u] = true
 		for v := 0; v < 7; v++ {
-			if graph[u][v] > 0 && distance[u] + graph[u][v] < distance[v] {
+			if graph[u][v] > 0 && distance[u]+graph[u][v] < distance[v] {
 				distance[v] = distance[u] + graph[u][v]
 				parent[v] = u
 			}
@@ -36,9 +37,9 @@ func main() {
 	for v := 0; v < 7; v++ {
 		path := []string{}
 		for u := v; u >= 0; u = parent[u] {
-			path = append(path, string(rune('A' + u)))
+			path = append(path, string(rune('A'+u)))
 		}
 		slices.Reverse(path)
-		fmt.Printf("%c: distance=%d path=%s\n", 'A' + v, distance[v], strings.Join(path, "-"))
+		fmt.Printf("%c: distance=%d path=%s\n", 'A'+v, distance[v], strings.Join(path, "-"))
 	}
 }

@@ -1,8 +1,8 @@
-func courses(_ original: [String], _ edges: [(String,String)], _ showCycle: Bool) {
+func courses(_ original: [String], _ edges: [(String, String)], _ showCycle: Bool) {
     let names = original.sorted(), n = names.count
     var degree = [Int](repeating: 0, count: n)
     var graph = [[Bool]](repeating: [Bool](repeating: false, count: n), count: n)
-    for (source,target) in edges {
+    for (source, target) in edges {
         let a = names.firstIndex(of: source)!, b = names.firstIndex(of: target)!
         graph[a][b] = true
         degree[b] += 1
@@ -19,18 +19,13 @@ func courses(_ original: [String], _ edges: [(String,String)], _ showCycle: Bool
         print("cycle: \(remaining.joined(separator: " "))")
     }
 }
-courses(["physics","algebra","graphics","programming","statistics","calculus","databases","algorithms"], [("calculus","physics"),
-    ("algebra","calculus"),
-    ("programming","algorithms"),
-    ("algebra","statistics"),
-    ("algorithms","databases"),
-    ("statistics","databases"),
-    ("calculus","graphics"),
-    ("algorithms","graphics"),
-    ("physics","graphics")],false)
-courses(["music","ecology","art","geology","biology","chemistry"], [("music","art"),
-    ("art","ecology"),
-    ("biology","chemistry"),
-    ("chemistry","ecology"),
-    ("ecology","geology"),
-    ("geology","chemistry")],true)
+
+let names1 = ["physics", "algebra", "graphics", "programming", "statistics", "calculus", "databases", "algorithms"]
+let edges1 = [("calculus", "physics"), ("algebra", "calculus"), ("programming", "algorithms"),
+    ("algebra", "statistics"), ("algorithms", "databases"), ("statistics", "databases"),
+    ("calculus", "graphics"), ("algorithms", "graphics"), ("physics", "graphics")]
+let names2 = ["music", "ecology", "art", "geology", "biology", "chemistry"]
+let edges2 = [("music", "art"), ("art", "ecology"), ("biology", "chemistry"),
+    ("chemistry", "ecology"), ("ecology", "geology"), ("geology", "chemistry")]
+courses(names1, edges1, false)
+courses(names2, edges2, true)

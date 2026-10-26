@@ -3,7 +3,7 @@ public class Main {
         String[] board = {"MMONKENBIR", "PMTIGERJPL", "TGREJEDUZI", "SPYUTEJDEC", "WKAPSIDLBN",
             "KUVNGSBPRO", "RIBSDACBAM", "YWVAUAPKAH", "KYCGTHHESR", "OCCALAOKKR"};
         String[] directions = {"E", "SE", "S", "SW", "W", "NW", "N", "NE"};
-        int[] dr = {0,1,1,1,0,-1,-1,-1}, dc = {1,1,0,-1,-1,-1,0,1};
+        int[] dr = {0, 1, 1, 1, 0, -1, -1, -1}, dc = {1, 1, 0, -1, -1, -1, 0, 1};
         for (String word : new String[]{"TIGER", "ZEBRA", "MONKEY", "PANDA", "KOALA", "RABBIT"}) {
             String result = "not found";
             search: for (int r = 0; r < 10; r++) {

@@ -9,6 +9,7 @@ const edges = [
   {a: "H", b: "E", weight: 10}
 ];
 const parents = new Map([...vertices].map(vertex => [vertex, vertex]));
+
 function find(vertex: string): string {
   while (parents.get(vertex) !== vertex) {
     parents.set(vertex, parents.get(parents.get(vertex)!)!);
@@ -16,6 +17,7 @@ function find(vertex: string): string {
   }
   return vertex;
 }
+
 let accepted = 0, skipped = 0, total = 0;
 for (const {a, b, weight} of edges.sort((a, b) => a.weight - b.weight)) {
   const rootA = find(a), rootB = find(b);

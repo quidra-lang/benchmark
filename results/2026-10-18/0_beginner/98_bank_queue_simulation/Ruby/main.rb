@@ -13,7 +13,7 @@ waits = []
   free_times[teller] = ending
   wait = start - arrival
   waits << wait
-  puts "customer #{customer}: arrive=#{arrival} start=#{start} end=#{ending} " +
+  puts "customer #{customer}: arrive=#{arrival} start=#{start} end=#{ending} " \
        "teller=#{teller + 1} wait=#{wait}"
 end
 puts format('average wait: %.2f', waits.sum.fdiv(20))

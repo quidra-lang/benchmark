@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Globalization;
+using System.Linq;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
-string[] rows = { "#############",
+string[] rows =
+{
+    "#############",
     "#S..#.......#",
     "#.#.#.###.#.#",
     "#.#...#...#.#",
@@ -13,35 +15,42 @@ string[] rows = { "#############",
     "#...#...#...#",
     "###.#####.#.#",
     "#.......#..G#",
-    "#############" };
+    "#############",
+};
 char[][] maze = rows.Select(row => row.ToCharArray()).ToArray();
 int start = -1, goal = -1;
-for (int r = 0; r < 9; r++) {
-    for (int c = 0; c < 13; c++) {
+for (int r = 0; r < 9; r++)
+{
+    for (int c = 0; c < 13; c++)
+    {
         if (maze[r][c] == 'S') start = r * 13 + c;
         if (maze[r][c] == 'G') goal = r * 13 + c;
     }
 }
-int[] parent = Enumerable.Repeat(-1,117).ToArray();
+int[] parent = Enumerable.Repeat(-1, 117).ToArray();
 parent[start] = start;
 var queue = new Queue<int>();
 queue.Enqueue(start);
-int[] dr = { -1,1,0,0 }, dc = { 0,0,-1,1 };
-while (queue.Count > 0) {
+int[] dr = { -1, 1, 0, 0 }, dc = { 0, 0, -1, 1 };
+while (queue.Count > 0)
+{
     int cell = queue.Dequeue(), r = cell / 13, c = cell % 13;
     if (cell == goal) break;
-    for (int d = 0; d < 4; d++) {
+    for (int d = 0; d < 4; d++)
+    {
         int nr = r + dr[d], nc = c + dc[d];
         if (nr < 0 || nr >= 9 || nc < 0 || nc >= 13) continue;
         int next = nr * 13 + nc;
-        if (maze[nr][nc] != '#' && parent[next] < 0) {
+        if (maze[nr][nc] != '#' && parent[next] < 0)
+        {
             parent[next] = cell;
             queue.Enqueue(next);
         }
     }
 }
 int steps = 0;
-for (int cell = goal; cell != start; cell = parent[cell]) {
+for (int cell = goal; cell != start; cell = parent[cell])
+{
     if (cell != goal) maze[cell / 13][cell % 13] = '*';
     steps++;
 }

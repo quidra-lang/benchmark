@@ -6,11 +6,12 @@ typedef struct {
     char name[32];
     int total;
 } Entry;
+
 void add(Entry *entries, int *count, const char *name, int amount) {
     int i = 0;
-    while (i < * count && strcmp(entries[i].name, name))
+    while (i < *count && strcmp(entries[i].name, name))
         i++;
-    if (i == * count) {
+    if (i == *count) {
         strcpy(entries[i].name, name);
         entries[i].total = 0;
         (*count)++;
@@ -20,11 +21,11 @@ void add(Entry *entries, int *count, const char *name, int amount) {
 
 int by_total(const void *a, const void *b) {
     const Entry *x = a, *y = b;
-    return x->total != y->total ? y->total - x->total: strcmp(x->name, y->name);
+    return x->total != y->total ? y->total - x->total : strcmp(x->name, y->name);
 }
 
 int by_name(const void *a, const void *b) {
-    return strcmp(((const Entry *) a)->name, ((const Entry *) b)->name);
+    return strcmp(((const Entry *)a)->name, ((const Entry *)b)->name);
 }
 
 int main(void) {

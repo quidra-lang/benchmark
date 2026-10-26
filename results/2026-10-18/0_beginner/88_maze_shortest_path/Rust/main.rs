@@ -1,6 +1,18 @@
 fn main() {
-    let mut maze: Vec<Vec<u8>> = ["#############", "#S..#.......#", "#.#.#.###.#.#", "#.#...#...#.#",
-        "#.###.#.###.#", "#...#...#...#", "###.#####.#.#", "#.......#..G#", "#############"].iter().map(|r| r.as_bytes().to_vec()).collect();
+    let mut maze: Vec<Vec<u8>> = [
+        "#############",
+        "#S..#.......#",
+        "#.#.#.###.#.#",
+        "#.#...#...#.#",
+        "#.###.#.###.#",
+        "#...#...#...#",
+        "###.#####.#.#",
+        "#.......#..G#",
+        "#############",
+    ]
+    .iter()
+    .map(|r| r.as_bytes().to_vec())
+    .collect();
     let mut parent = [None; 117];
     let mut distance = [0; 117];
     let (mut start, mut goal) = (0, 0);
@@ -18,7 +30,10 @@ fn main() {
         let (r, c) = ((v / 13) as i32, (v % 13) as i32);
         for (dr, dc) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
             let (rr, cc) = (r + dr, c + dc);
-            if !(0..9).contains(&rr) || !(0..13).contains(&cc) || maze[rr as usize][cc as usize] == b'#' {
+            if !(0..9).contains(&rr)
+                || !(0..13).contains(&cc)
+                || maze[rr as usize][cc as usize] == b'#'
+            {
                 continue;
             }
             let w = rr as usize * 13 + cc as usize;

@@ -1,6 +1,20 @@
 fn main() {
-    let commands = ["undo", "type hello world", "delete 5", "type there", "undo", "undo", "redo", "type friend",
-        "redo", "delete 20", "undo", "redo", "redo", "type see you"];
+    let commands = [
+        "undo",
+        "type hello world",
+        "delete 5",
+        "type there",
+        "undo",
+        "undo",
+        "redo",
+        "type friend",
+        "redo",
+        "delete 20",
+        "undo",
+        "redo",
+        "redo",
+        "type see you",
+    ];
     let mut buffer = String::new();
     let mut undo = Vec::new();
     let mut redo = Vec::new();

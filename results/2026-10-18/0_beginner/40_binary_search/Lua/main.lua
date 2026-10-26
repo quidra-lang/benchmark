@@ -1,15 +1,18 @@
-local numbers = {3,8,11,15,19,24,27,31,36,42,47,53,58,64,70,77}
-for _, target in ipairs({42,3,77,31,50,1}) do
-    local lo,hi,found,probes = 0,#numbers-1,-1,{}
+local numbers = {3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77}
+for _, target in ipairs({42, 3, 77, 31, 50, 1}) do
+    local lo, hi, found, probes = 0, #numbers - 1, -1, {}
     while lo <= hi do
-        local mid = (lo+hi)//2
-        probes[#probes+1] = mid
-        if numbers[mid+1] == target then
+        local mid = (lo + hi) // 2
+        probes[#probes + 1] = mid
+        if numbers[mid + 1] == target then
             found = mid
             break
-        elseif numbers[mid+1] < target then lo = mid+1
-        else hi = mid-1 end
+        elseif numbers[mid + 1] < target then
+            lo = mid + 1
+        else
+            hi = mid - 1
+        end
     end
-    local result = found >= 0 and string.format("index %d",found) or "not found"
-    io.write(string.format("%d: probes %s -> %s\n",target,table.concat(probes," "),result))
+    local result = found >= 0 and string.format("index %d", found) or "not found"
+    io.write(string.format("%d: probes %s -> %s\n", target, table.concat(probes, " "), result))
 end

@@ -1,12 +1,9 @@
 const std = @import("std");
 
-const Entry = struct {
-    name: []const u8,
-    value: u32
-};
+const Entry = struct { name: []const u8, value: u32 };
 
 fn add(entries: *[12]Entry, len: *usize, name: []const u8, value: u32) void {
-    for (entries[0..len.*]) | * e| {
+    for (entries[0..len.*]) |*e| {
         if (std.mem.eql(u8, e.name, name)) {
             e.value += value;
             return;
@@ -41,7 +38,7 @@ pub fn main(init: std.process.Init) !void {
         "2026-04-03,north,eraser,20,80",
         "2026-04-04,east,stapler,5,600",
         "2026-04-04,south,notebook,6,200",
-        "2026-04-04,west,marker,8,150"
+        "2026-04-04,west,marker,8,150",
     };
     var regions: [12]Entry = undefined;
     var products: [12]Entry = undefined;
@@ -66,7 +63,7 @@ pub fn main(init: std.process.Init) !void {
     std.mem.sort(Entry, regions[0..rlen], {}, salesLess);
     std.mem.sort(Entry, products[0..plen], {}, nameLess);
     std.mem.sort(Entry, dates[0..dlen], {}, salesLess);
-    try out.print("total: {d}\n", .{ total });
+    try out.print("total: {d}\n", .{total});
     for (regions[0..rlen]) |e|
         try out.print("{s}: {d}\n", .{ e.name, e.value });
     for (products[0..plen]) |e|

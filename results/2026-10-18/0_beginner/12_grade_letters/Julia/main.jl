@@ -10,4 +10,5 @@ function main()
         println(grade, ": ", total)
     end
 end
+
 main()

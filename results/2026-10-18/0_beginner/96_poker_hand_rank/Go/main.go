@@ -3,14 +3,14 @@ package main
 import (
 	"fmt"
 	"slices"
-	"strings"
 	"sort"
+	"strings"
 )
 
 type Hand struct {
-	text string
+	text     string
 	category int
-	key []int
+	key      []int
 }
 
 func evaluate(text string) Hand {
@@ -18,9 +18,9 @@ func evaluate(text string) Hand {
 	counts := [15]int{}
 	flush := true
 	for i := 0; i < 5; i++ {
-		rank := strings.IndexByte(ranks, text[i * 3]) + 2
+		rank := strings.IndexByte(ranks, text[i*3]) + 2
 		counts[rank]++
-		if text[i * 3 + 1] != text[1] {
+		if text[i*3+1] != text[1] {
 			flush = false
 		}
 	}
@@ -36,7 +36,7 @@ func evaluate(text string) Hand {
 		}
 	}
 	wheel := len(key) == 5 && counts[14] > 0 && counts[2] > 0 && counts[3] > 0 && counts[4] > 0 && counts[5] > 0
-	straight := len(key) == 5 && (key[0] - key[4] == 4 || wheel)
+	straight := len(key) == 5 && (key[0]-key[4] == 4 || wheel)
 	category := 0
 	switch {
 	case straight && flush:
@@ -73,8 +73,9 @@ func evaluate(text string) Hand {
 
 func main() {
 	hands := []Hand{}
-	for _, text := range []string{"9C 9D 5H QH 2C", "4D AH 3C 5S 2H", "KS 8S 2S JS 6S", "7H 7D KC 7S KD",
-		"3H 6C 4S 2D 5C", "JD TC 4H 8C AS", "QC 6D QS 3S 6H", "9H KH 9S 8H 3D"} {
+	input := []string{"9C 9D 5H QH 2C", "4D AH 3C 5S 2H", "KS 8S 2S JS 6S", "7H 7D KC 7S KD",
+		"3H 6C 4S 2D 5C", "JD TC 4H 8C AS", "QC 6D QS 3S 6H", "9H KH 9S 8H 3D"}
+	for _, text := range input {
 		hands = append(hands, evaluate(text))
 	}
 	sort.Slice(hands, func(i, j int) bool {
@@ -87,6 +88,6 @@ func main() {
 	categories := []string{"high card", "one pair", "two pair", "three of a kind", "straight", "flush",
 		"full house", "four of a kind", "straight flush"}
 	for i, h := range hands {
-		fmt.Printf("%d. %s: %s\n", i + 1, h.text, categories[h.category])
+		fmt.Printf("%d. %s: %s\n", i+1, h.text, categories[h.category])
 	}
 }

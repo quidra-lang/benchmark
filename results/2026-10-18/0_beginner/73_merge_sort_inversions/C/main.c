@@ -8,9 +8,9 @@ int merge_sort(int *a, int l, int r) {
     count += merge_sort(a, m + 1, r);
     int temp[10], i = l, j = m + 1, k = 0;
     while (i <= m && j <= r) {
-        if (a[i] < a[j])
+        if (a[i] < a[j]) {
             temp[k++] = a[i++];
-        else {
+        } else {
             temp[k++] = a[j++];
             count += m - i + 1;
         }

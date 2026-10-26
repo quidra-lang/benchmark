@@ -13,7 +13,7 @@ func main() {
 			d = (d + 1) % 4
 		}
 		black[r][c] = !black[r][c]
-		r, c = (r + dr[d] + 11) % 11, (c + dc[d] + 11) % 11
+		r, c = (r+dr[d]+11)%11, (c+dc[d]+11)%11
 	}
 	count := 0
 	for i, row := range black {

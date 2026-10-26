@@ -7,9 +7,9 @@ func main() {
 	total := 0
 	for p := 1; p <= 7; p++ {
 		swaps := 0
-		for j := 0; j <= 7 - p; j++ {
-			if a[j] > a[j + 1] {
-				a[j], a[j + 1] = a[j + 1], a[j]
+		for j := 0; j <= 7-p; j++ {
+			if a[j] > a[j+1] {
+				a[j], a[j+1] = a[j+1], a[j]
 				swaps++
 			}
 		}

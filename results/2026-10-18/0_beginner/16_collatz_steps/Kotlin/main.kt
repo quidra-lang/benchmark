@@ -1,5 +1,5 @@
 fun main() {
-    for (start in longArrayOf(1,6,27,97,871)) {
+    for (start in longArrayOf(1, 6, 27, 97, 871)) {
         var n = start
         var maximum = n
         var steps = 0

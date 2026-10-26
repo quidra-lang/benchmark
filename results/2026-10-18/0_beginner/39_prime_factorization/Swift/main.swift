@@ -1,4 +1,4 @@
-for n in [84,9973,15625,1001,123456,48000,999958,999999] {
+for n in [84, 9973, 15625, 1001, 123456, 48000, 999958, 999999] {
     var remaining = n, d = 2, factors = [String]()
     while d * d <= remaining {
         var exponent = 0

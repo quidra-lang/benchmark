@@ -19,6 +19,7 @@ function solve(n) {
   visit();
   return {count, first};
 }
+
 let firstEight = [];
 for (let n = 4; n <= 8; n++) {
   const {count, first} = solve(n);

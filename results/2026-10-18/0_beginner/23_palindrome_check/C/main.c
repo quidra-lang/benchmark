@@ -15,7 +15,7 @@ int main(void) {
         for (int i = 0; i < len / 2; i++)
             if (clean[i] != clean[len - 1 - i])
                 yes = 0;
-        printf("%s -> %s\n", phrases[k], yes ? "yes": "no");
+        printf("%s -> %s\n", phrases[k], yes ? "yes" : "no");
     }
     return 0;
 }

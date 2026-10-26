@@ -26,8 +26,7 @@ int main() {
         days[fields[0]] += amount;
     }
     std::vector<std::pair<std::string, int>> ranked(regions.begin(), regions.end());
-    std::sort(ranked.begin(), ranked.end(), [](const std::pair<std::string, int> &a, const std::pair<std::string,
-        int> &b) {
+    std::sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) {
         return a.second != b.second ? a.second > b.second : a.first < b.first;
     });
     std::cout << "total: " << total << '\n';

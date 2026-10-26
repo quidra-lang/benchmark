@@ -1,5 +1,11 @@
 fn main() {
-    for s in ["AAABBBCCCD", "WWWWWWWWWWWWBWWWWWWWWWWWWBBB", "ALGORITHM", "MISSISSIPPI", "XXXXXXXXXXYYYYYYYYYYYYYYYYYYYYYZ"] {
+    for s in [
+        "AAABBBCCCD",
+        "WWWWWWWWWWWWBWWWWWWWWWWWWBBB",
+        "ALGORITHM",
+        "MISSISSIPPI",
+        "XXXXXXXXXXYYYYYYYYYYYYYYYYYYYYYZ",
+    ] {
         let mut encoded = String::new();
         for run in s.as_bytes().chunk_by(|a, b| a == b) {
             encoded.push_str(&format!("{}{}", run.len(), run[0] as char));

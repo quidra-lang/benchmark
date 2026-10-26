@@ -1,12 +1,6 @@
 const std = @import("std");
 
-const Node = struct {
-    weight: u32,
-    minimum: u8,
-    symbol: ?u8 = null,
-    left: ?usize = null,
-    right: ?usize = null
-};
+const Node = struct { weight: u32, minimum: u8, symbol: ?u8 = null, left: ?usize = null, right: ?usize = null };
 
 fn compare(nodes: *const [64]Node, a: usize, b: usize) std.math.Order {
     return if (nodes[a].weight != nodes[b].weight)
@@ -15,8 +9,14 @@ fn compare(nodes: *const [64]Node, a: usize, b: usize) std.math.Order {
         std.math.order(nodes[a].minimum, nodes[b].minimum);
 }
 
-fn assign(nodes: *const [64]Node, index: usize, path: *[64]u8, depth: usize, codes: *[128][64]u8,
-    lengths: *[128]usize) void {
+fn assign(
+    nodes: *const [64]Node,
+    index: usize,
+    path: *[64]u8,
+    depth: usize,
+    codes: *[128][64]u8,
+    lengths: *[128]usize,
+) void {
     const node = nodes[index];
     if (node.symbol) |c| {
         @memcpy(codes[c][0..depth], path[0..depth]);
@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
     const text = "she sells sea shells by the sea shore";
-    var frequency = [_]u32{ 0 } ** 128;
+    var frequency: [128]u32 = @splat(0);
     for (text) |c|
         frequency[c] += 1;
     var nodes: [64]Node = undefined;
@@ -55,13 +55,13 @@ pub fn main(init: std.process.Init) !void {
             .weight = nodes[left].weight + nodes[right].weight,
             .minimum = @min(nodes[left].minimum, nodes[right].minimum),
             .left = left,
-            .right = right
+            .right = right,
         };
         try active.push(std.heap.page_allocator, nlen);
         nlen += 1;
     }
     var codes: [128][64]u8 = undefined;
-    var lengths = [_]usize{ 0 } ** 128;
+    var lengths: [128]usize = @splat(0);
     var path: [64]u8 = undefined;
     assign(&nodes, active.pop().?, &path, 0, &codes, &lengths);
     var bits: usize = 0;

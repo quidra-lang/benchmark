@@ -4,8 +4,8 @@
 
 int main() {
     std::array<std::string, 6> names = {"milk", "notebook", "bread", "apple", "detergent", "eggs"};
-    std::array<int, 6> prices = {198, 165, 248, 128, 437, 268}, quantities = {2, 3, 1, 4, 1, 1}, category = {0,
-        1, 0, 0, 1, 0};
+    std::array<int, 6> prices = {198, 165, 248, 128, 437, 268}, quantities = {2, 3, 1, 4, 1, 1};
+    std::array<int, 6> category = {0, 1, 0, 0, 1, 0};
     std::array<int, 2> totals{};
     for (int i = 0; i < 6; i++) {
         int subtotal = prices[i] * quantities[i];

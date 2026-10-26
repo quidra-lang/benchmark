@@ -13,13 +13,16 @@ fn main() {
     for i in 0..11 {
         for j in 0..11 {
             count += i32::from(black[i][j]);
-            print!("{}", if i == r as usize && j == c as usize {
-                'A'
-            } else if black[i][j] {
-                '#'
-            } else {
-                '.'
-            });
+            print!(
+                "{}",
+                if i == r as usize && j == c as usize {
+                    'A'
+                } else if black[i][j] {
+                    '#'
+                } else {
+                    '.'
+                }
+            );
         }
         println!();
     }

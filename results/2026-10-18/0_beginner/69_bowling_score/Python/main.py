@@ -8,7 +8,7 @@ games = [
 for number, rolls in enumerate(games, 1):
     index = total = 0
     cumulative = []
-    for frame in range(9):
+    for _ in range(9):
         if rolls[index] == 10:
             total += 10 + rolls[index + 1] + rolls[index + 2]
             index += 1

@@ -2,8 +2,8 @@ fun main() {
     val board = listOf("MMONKENBIR", "PMTIGERJPL", "TGREJEDUZI", "SPYUTEJDEC", "WKAPSIDLBN",
         "KUVNGSBPRO", "RIBSDACBAM", "YWVAUAPKAH", "KYCGTHHESR", "OCCALAOKKR")
     val directions = listOf("E", "SE", "S", "SW", "W", "NW", "N", "NE")
-    val dr = intArrayOf(0,1,1,1,0,-1,-1,-1)
-    val dc = intArrayOf(1,1,0,-1,-1,-1,0,1)
+    val dr = intArrayOf(0, 1, 1, 1, 0, -1, -1, -1)
+    val dc = intArrayOf(1, 1, 0, -1, -1, -1, 0, 1)
     for (word in listOf("TIGER", "ZEBRA", "MONKEY", "PANDA", "KOALA", "RABBIT")) {
         var result = "not found"
         search@ for (r in 0 until 10) {

@@ -7,6 +7,6 @@ while balance > 0 do
     balance = balance - principal
     total_interest = total_interest + interest
     total_paid = total_paid + payment
-    io.write(string.format("month %d: interest=%d principal=%d balance=%d\n",month,interest,principal,balance))
+    io.write(string.format("month %d: interest=%d principal=%d balance=%d\n", month, interest, principal, balance))
 end
-io.write(string.format("total interest: %d\ntotal paid: %d\n",total_interest,total_paid))
+io.write(string.format("total interest: %d\ntotal paid: %d\n", total_interest, total_paid))

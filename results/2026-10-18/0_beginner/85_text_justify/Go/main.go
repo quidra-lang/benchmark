@@ -10,26 +10,26 @@ func main() {
 	words := strings.Split(paragraph, " ")
 	for start := 0; start < len(words); {
 		end, letters := start, 0
-		for end < len(words) && letters + len(words[end]) + end - start <= 30 {
+		for end < len(words) && letters+len(words[end])+end-start <= 30 {
 			letters += len(words[end])
 			end++
 		}
-		gaps, last := end - start - 1, end == len(words)
+		gaps, last := end-start-1, end == len(words)
 		line := ""
 		for i := start; i < end; i++ {
 			line += words[i]
-			if i + 1 < end {
+			if i+1 < end {
 				spaces := 1
 				if !last && gaps > 0 {
 					spaces = (30 - letters) / gaps
-					if i - start < (30 - letters) % gaps {
+					if i-start < (30-letters)%gaps {
 						spaces++
 					}
 				}
 				line += strings.Repeat(" ", spaces)
 			}
 		}
-		line += strings.Repeat(" ", 30 - len(line))
+		line += strings.Repeat(" ", 30-len(line))
 		fmt.Printf("|%s|\n", line)
 		start = end
 	}

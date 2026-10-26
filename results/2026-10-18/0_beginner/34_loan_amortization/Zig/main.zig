@@ -16,8 +16,7 @@ pub fn main(init: std.process.Init) !void {
         balance -= principal;
         total_interest += interest;
         total_paid += payment;
-        try out.print("month {d}: interest={d} principal={d} balance={d}\n", .{ month, interest, principal,
-            balance });
+        try out.print("month {d}: interest={d} principal={d} balance={d}\n", .{ month, interest, principal, balance });
     }
     try out.print("total interest: {d}\ntotal paid: {d}\n", .{ total_interest, total_paid });
     try out.flush();

@@ -9,13 +9,13 @@ func main() {
 		minimum[amount] = 1000
 		for _, coin := range coins {
 			if coin <= amount {
-				minimum[amount] = min(minimum[amount], minimum[amount - coin] + 1)
+				minimum[amount] = min(minimum[amount], minimum[amount-coin]+1)
 			}
 		}
 	}
 	for _, coin := range coins {
 		for amount := coin; amount <= 40; amount++ {
-			ways[amount] += ways[amount - coin]
+			ways[amount] += ways[amount-coin]
 		}
 	}
 	for _, target := range []int{8, 11, 15, 22, 33, 40} {

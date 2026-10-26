@@ -27,9 +27,13 @@ public class Main {
                         default -> a / b;
                     };
                     stack.push(value);
-                } else stack.push(Integer.parseInt(token));
+                } else {
+                    stack.push(Integer.parseInt(token));
+                }
             }
-            if (error == null && stack.size() != 1) error = "leftover operands";
+            if (error == null && stack.size() != 1) {
+                error = "leftover operands";
+            }
             System.out.println(expression + " => " + (error == null ? stack.peek() : "error: " + error));
         }
     }

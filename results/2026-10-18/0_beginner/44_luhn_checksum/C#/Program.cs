@@ -3,11 +3,19 @@ using System.Globalization;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
-foreach (string number in new[] { "688126340316","0128469655154","92181914514156","177332430060552","7982377590420309","9884593615513906" }) {
+string[] numbers =
+{
+    "688126340316", "0128469655154", "92181914514156", "177332430060552", "7982377590420309",
+    "9884593615513906",
+};
+foreach (string number in numbers)
+{
     int sum = 0;
-    for (int i = number.Length - 1, position = 1; i >= 0; i--, position++) {
+    for (int i = number.Length - 1, position = 1; i >= 0; i--, position++)
+    {
         int digit = number[i] - '0';
-        if (position % 2 == 0) {
+        if (position % 2 == 0)
+        {
             digit *= 2;
             if (digit > 9) digit -= 9;
         }

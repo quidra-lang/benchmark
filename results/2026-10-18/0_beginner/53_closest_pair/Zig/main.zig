@@ -5,16 +5,8 @@ pub fn main(init: std.process.Init) !void {
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
     const p = [_][2]i32{
-        .{ 12, -7 },
-        .{ -33, 25 },
-        .{ 41, 18 },
-        .{ -8, -44 },
-        .{ 27, 39 },
-        .{ -46, -12 },
-        .{ 5, 14 },
-        .{ 36, -29 },
-        .{ -19, 47 },
-        .{ -2, 3 }
+        .{ 12, -7 }, .{ -33, 25 }, .{ 41, 18 },  .{ -8, -44 }, .{ 27, 39 }, .{ -46, -12 },
+        .{ 5, 14 },  .{ 36, -29 }, .{ -19, 47 }, .{ -2, 3 },
     };
     var nearest: i32 = std.math.maxInt(i32);
     var farthest: i32 = -1;
@@ -37,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
     }
     try out.print("closest: P{d} P{d} {d:.4}\nfarthest: P{d} P{d} {d:.4}\n", .{
         near_pair[0], near_pair[1], @sqrt(@as(f64, @floatFromInt(nearest))),
-        far_pair[0], far_pair[1], @sqrt(@as(f64, @floatFromInt(farthest))),
+        far_pair[0],  far_pair[1],  @sqrt(@as(f64, @floatFromInt(farthest))),
     });
     try out.flush();
 }

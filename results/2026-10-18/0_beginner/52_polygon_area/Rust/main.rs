@@ -14,6 +14,11 @@ fn main() {
             twice += x * ny - nx * y;
             perimeter += f64::from(dx * dx + dy * dy).sqrt();
         }
-        println!("polygon {}: area={:.1} perimeter={:.3}", k + 1, f64::from(twice.abs()) / 2.0, perimeter);
+        println!(
+            "polygon {}: area={:.1} perimeter={:.3}",
+            k + 1,
+            f64::from(twice.abs()) / 2.0,
+            perimeter
+        );
     }
 }

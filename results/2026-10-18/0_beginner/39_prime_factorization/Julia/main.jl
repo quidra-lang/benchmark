@@ -1,4 +1,4 @@
-for original in [84,9973,15625,1001,123456,48000,999958,999999]
+for original in [84, 9973, 15625, 1001, 123456, 48000, 999958, 999999]
     remaining, divisor = original, 2
     factors = String[]
     while divisor * divisor <= remaining
@@ -8,7 +8,10 @@ for original in [84,9973,15625,1001,123456,48000,999958,999999]
             factor_power += 1
         end
         if factor_power > 0
-            push!(factors, factor_power == 1 ? string(divisor) : string(divisor, "^", factor_power))
+            push!(
+                factors,
+                factor_power == 1 ? string(divisor) : string(divisor, "^", factor_power),
+            )
         end
         divisor += 1
     end

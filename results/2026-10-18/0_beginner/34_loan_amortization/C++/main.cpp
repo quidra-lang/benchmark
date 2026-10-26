@@ -5,7 +5,9 @@ int main() {
     int balance = 1000000, month = 0, total_interest = 0, total_paid = 0;
     while (balance > 0) {
         ++month;
-        int interest = balance / 100, payment = std::min(50000, balance + interest), principal = payment - interest;
+        int interest = balance / 100;
+        int payment = std::min(50000, balance + interest);
+        int principal = payment - interest;
         balance -= principal;
         total_interest += interest;
         total_paid += payment;

@@ -6,6 +6,7 @@ fun cipher(text: String, shift: Int): String = text.map { ch ->
     }
     if (base < 0) ch else (base + (ch.code - base + shift + 26) % 26).toChar()
 }.joinToString("")
+
 fun main() {
     val encrypted = cipher("Zoe, meet Max by the Old Bridge at six!", 3)
     println(encrypted)

@@ -1,7 +1,7 @@
-let boards = [["XXX","OO.","O.X"],["X.O",".X.","O.."],["XO.",".OX","XO."],
-    ["XOX","XOO","OXX"],["X.O","XO.","O.X"],["XOX","OXO","OXX"]]
-let lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]]
-for (i,board) in boards.enumerated() {
+let boards = [["XXX", "OO.", "O.X"], ["X.O", ".X.", "O.."], ["XO.", ".OX", "XO."],
+    ["XOX", "XOO", "OXX"], ["X.O", "XO.", "O.X"], ["XOX", "OXO", "OXX"]]
+let lines = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]]
+for (i, board) in boards.enumerated() {
     let cells = Array(board.joined())
     let winning = lines.first { line in
         cells[line[0]] != "." && cells[line[0]] == cells[line[1]] && cells[line[0]] == cells[line[2]]

@@ -4,7 +4,7 @@
 
 int main(void) {
     const char *expressions[] = {"3 4 + 2 *", "-17 5 / 4 -3 * -", "1 2 + * 3", "15 7 1 1 + - / 3 * 2 1 1 + + -",
-        "4 2 5 * + 1 3 2 * - 5 + /", "2 3 4 + 5", "46341 46339 * -2 /"};
+                                 "4 2 5 * + 1 3 2 * - 5 + /", "2 3 4 + 5", "46341 46339 * -2 /"};
     for (int k = 0; k < 7; k++) {
         char text[128];
         strcpy(text, expressions[k]);
@@ -37,8 +37,9 @@ int main(void) {
                         break;
                 }
                 stack[top++] = v;
-            } else
+            } else {
                 stack[top++] = strtoll(token, NULL, 10);
+            }
         }
         if (!error && top != 1)
             error = "leftover operands";

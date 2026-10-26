@@ -37,8 +37,8 @@ func main() {
 		result := 0
 		for i := range roman {
 			v, next := value(roman[i]), 0
-			if i + 1 < len(roman) {
-				next = value(roman[i + 1])
+			if i+1 < len(roman) {
+				next = value(roman[i+1])
 			}
 			if v < next {
 				result -= v

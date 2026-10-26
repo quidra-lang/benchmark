@@ -1,3 +1,5 @@
+import kotlin.math.abs
+
 fun main() {
     var firstEight = IntArray(8)
     for (n in 4..8) {
@@ -13,7 +15,7 @@ fun main() {
             var count = 0
             for (column in positions.indices) {
                 val safe = (0 until row).all { previous ->
-                    positions[previous] != column && kotlin.math.abs(positions[previous] - column) != row - previous
+                    positions[previous] != column && abs(positions[previous] - column) != row - previous
                 }
                 if (safe) {
                     positions[row] = column

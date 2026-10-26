@@ -1,4 +1,5 @@
 <?php
+
 $words = explode(' ', 'we planted beans and carrots in the garden behind our old house');
 $lengths = array_map('strlen', $words);
 $longest = $words[array_search(max($lengths), $lengths, true)];

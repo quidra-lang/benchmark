@@ -23,7 +23,7 @@ func main() {
 				neighbors := 0
 				for dr := -1; dr <= 1; dr++ {
 					for dc := -1; dc <= 1; dc++ {
-						rr, cc := r + dr, c + dc
+						rr, cc := r+dr, c+dc
 						if (dr != 0 || dc != 0) && rr >= 0 && rr < 8 && cc >= 0 && cc < 8 && board[rr][cc] == '#' {
 							neighbors++
 						}

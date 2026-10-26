@@ -1,13 +1,20 @@
 <?php
-function daysInMonth(int $year, int $month): int {
-    $leap = $year%400 === 0 || ($year%4 === 0 && $year%100 !== 0);
-    return $month === 2 && $leap ? 29 : [31,28,31,30,31,30,31,31,30,31,30,31][$month-1];
+
+function daysInMonth(int $year, int $month): int
+{
+    $leap = $year % 400 === 0 || ($year % 4 === 0 && $year % 100 !== 0);
+    return $month === 2 && $leap ? 29 : [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][$month - 1];
 }
-foreach ([['1999-12-25',10],['2000-02-27',3],['2021-02-20',14],['2023-11-15',120],['2026-10-17',1500]] as [$original,$added]) {
-    [$year,$month,$day] = array_map('intval',explode('-',$original));
+
+$cases = [
+    ['1999-12-25', 10], ['2000-02-27', 3], ['2021-02-20', 14], ['2023-11-15', 120],
+    ['2026-10-17', 1500],
+];
+foreach ($cases as [$original, $added]) {
+    [$year, $month, $day] = array_map('intval', explode('-', $original));
     for ($step = 0; $step < $added; $step++) {
         $day++;
-        if ($day > daysInMonth($year,$month)) {
+        if ($day > daysInMonth($year, $month)) {
             $day = 1;
             $month++;
             if ($month > 12) {
@@ -16,5 +23,5 @@ foreach ([['1999-12-25',10],['2000-02-27',3],['2021-02-20',14],['2023-11-15',120
             }
         }
     }
-    printf("%s + %d days = %04d-%02d-%02d\n",$original,$added,$year,$month,$day);
+    printf("%s + %d days = %04d-%02d-%02d\n", $original, $added, $year, $month, $day);
 }

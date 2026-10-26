@@ -16,13 +16,12 @@ pub fn main(init: std.process.Init) !void {
     }
     const food_tax = totals[0] * 8 / 100;
     const general_tax = totals[1] * 10 / 100;
-    try out.print("food: {d} yen, tax {d} yen\ngeneral: {d} yen, tax {d} yen\ntotal: {d} yen\n",
-        .{
+    try out.print("food: {d} yen, tax {d} yen\ngeneral: {d} yen, tax {d} yen\ntotal: {d} yen\n", .{
         totals[0],
         food_tax,
         totals[1],
         general_tax,
-        totals[0] + totals[1] + food_tax + general_tax
+        totals[0] + totals[1] + food_tax + general_tax,
     });
     try out.flush();
 }

@@ -1,33 +1,36 @@
-commands <- c("undo","type hello world","delete 5","type there","undo","undo","redo","type friend","redo","delete 20","undo","redo","redo","type see you")
+commands <- c(
+  "undo", "type hello world", "delete 5", "type there", "undo", "undo", "redo", "type friend",
+  "redo", "delete 20", "undo", "redo", "redo", "type see you"
+)
 buffer <- ""
 undo_stack <- character(0)
 redo_stack <- character(0)
 for (command in commands) {
-    if (command == "undo") {
-        if (length(undo_stack) == 0) {
-            cat("undo => nothing to undo\n")
-            next
-        }
-        redo_stack <- c(redo_stack,buffer)
-        buffer <- tail(undo_stack,1)
-        undo_stack <- head(undo_stack,-1)
-    } else if (command == "redo") {
-        if (length(redo_stack) == 0) {
-            cat("redo => nothing to redo\n")
-            next
-        }
-        undo_stack <- c(undo_stack,buffer)
-        buffer <- tail(redo_stack,1)
-        redo_stack <- head(redo_stack,-1)
-    } else {
-        undo_stack <- c(undo_stack,buffer)
-        redo_stack <- character(0)
-        if (startsWith(command,"type ")) {
-            buffer <- paste0(buffer,substring(command,6))
-        } else {
-            amount <- as.integer(substring(command,8))
-            buffer <- substr(buffer,1,max(0,nchar(buffer)-amount))
-        }
+  if (command == "undo") {
+    if (length(undo_stack) == 0) {
+      cat("undo => nothing to undo\n")
+      next
     }
-    cat(sprintf('%s => "%s"\n',command,buffer))
+    redo_stack <- c(redo_stack, buffer)
+    buffer <- tail(undo_stack, 1)
+    undo_stack <- head(undo_stack, -1)
+  } else if (command == "redo") {
+    if (length(redo_stack) == 0) {
+      cat("redo => nothing to redo\n")
+      next
+    }
+    undo_stack <- c(undo_stack, buffer)
+    buffer <- tail(redo_stack, 1)
+    redo_stack <- head(redo_stack, -1)
+  } else {
+    undo_stack <- c(undo_stack, buffer)
+    redo_stack <- character(0)
+    if (startsWith(command, "type ")) {
+      buffer <- paste0(buffer, substring(command, 6))
+    } else {
+      amount <- as.integer(substring(command, 8))
+      buffer <- substr(buffer, 1, max(0, nchar(buffer) - amount))
+    }
+  }
+  cat(sprintf('%s => "%s"\n', command, buffer))
 }

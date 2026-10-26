@@ -11,12 +11,12 @@ void dfs(int v, int graph[9][9], int *seen, int *order, int *length) {
 }
 
 int compare(const void *a, const void *b) {
-    return *(const int *) a - * (const int *) b;
+    return *(const int *)a - *(const int *)b;
 }
 
 int main(void) {
-    int graph[9][9] = {{0}}, edges[][2] = {{5, 0}, {3, 8}, {7, 2}, {1, 6}, {0, 2}, {5, 3}, {7, 5}, {6,
-        4}, {8, 7}};
+    int graph[9][9] = {{0}};
+    int edges[][2] = {{5, 0}, {3, 8}, {7, 2}, {1, 6}, {0, 2}, {5, 3}, {7, 5}, {6, 4}, {8, 7}};
     for (int i = 0; i < 9; i++)
         graph[edges[i][0]][edges[i][1]] = graph[edges[i][1]][edges[i][0]] = 1;
     int seen[9] = {0}, order[9], length = 0;

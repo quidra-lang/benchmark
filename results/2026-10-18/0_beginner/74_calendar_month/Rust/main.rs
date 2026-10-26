@@ -1,6 +1,18 @@
 fn main() {
-    let names = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
-        "October", "November", "December"];
+    let names = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
     let lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     for (k, &(y, m)) in [(2024, 2), (2026, 8), (2026, 11)].iter().enumerate() {
         let (mut yy, mut mm) = (y, m);
@@ -8,9 +20,12 @@ fn main() {
             mm += 12;
             yy -= 1;
         }
-        let h = (1 + 13 * (mm + 1) / 5 + yy % 100 + (yy % 100) / 4 + (yy / 100) / 4 + 5 * (yy / 100)) % 7;
+        let h =
+            (1 + 13 * (mm + 1) / 5 + yy % 100 + (yy % 100) / 4 + (yy / 100) / 4 + 5 * (yy / 100))
+                % 7;
         let start = (h + 6) % 7;
-        let days = lengths[(m - 1) as usize] + i32::from(m == 2 && (y % 400 == 0 || (y % 4 == 0 && y % 100 != 0)));
+        let days = lengths[(m - 1) as usize]
+            + i32::from(m == 2 && (y % 400 == 0 || (y % 4 == 0 && y % 100 != 0)));
         if k > 0 {
             println!();
         }

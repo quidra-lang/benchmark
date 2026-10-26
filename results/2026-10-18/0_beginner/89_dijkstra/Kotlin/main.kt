@@ -1,17 +1,10 @@
 fun main() {
-    val edges = listOf(Triple(0,1,7),
-        Triple(0,2,3),
-        Triple(0,3,9),
-        Triple(1,2,2),
-        Triple(2,4,6),
-        Triple(1,3,3),
-        Triple(3,4,4),
-        Triple(3,5,5),
-        Triple(4,5,3),
-        Triple(4,6,8),
-        Triple(5,6,4))
+    val edges = listOf(
+        Triple(0, 1, 7), Triple(0, 2, 3), Triple(0, 3, 9), Triple(1, 2, 2), Triple(2, 4, 6), Triple(1, 3, 3),
+        Triple(3, 4, 4), Triple(3, 5, 5), Triple(4, 5, 3), Triple(4, 6, 8), Triple(5, 6, 4),
+    )
     val weight = Array(7) { IntArray(7) }
-    for ((a,b,w) in edges) {
+    for ((a, b, w) in edges) {
         weight[a][b] = w
         weight[b][a] = w
     }

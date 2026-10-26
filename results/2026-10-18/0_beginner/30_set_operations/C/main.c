@@ -11,7 +11,10 @@ int main(void) {
     for (int op = 0; op < 4; op++) {
         printf("%s:", labels[op]);
         for (int n = 0; n < 26; n++) {
-            int keep = op == 0 ? (sa[n] || sb[n]): op == 1 ? (sa[n] && sb[n]): op == 2 ? (sa[n] && !sb[n]): (sa[n] != sb[n]);
+            int keep = op == 0   ? (sa[n] || sb[n])
+                       : op == 1 ? (sa[n] && sb[n])
+                       : op == 2 ? (sa[n] && !sb[n])
+                                 : (sa[n] != sb[n]);
             if (keep)
                 printf(" %d", n);
         }

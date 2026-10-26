@@ -11,10 +11,10 @@ func main() {
 	for k, p := range polygons {
 		twice, perimeter := 0, 0.0
 		for i, v := range p {
-			w := p[(i + 1) % len(p)]
-			dx, dy := v[0] - w[0], v[1] - w[1]
-			twice += v[0] * w[1] - w[0] * v[1]
-			perimeter += math.Sqrt(float64(dx * dx + dy * dy))
+			w := p[(i+1)%len(p)]
+			dx, dy := v[0]-w[0], v[1]-w[1]
+			twice += v[0]*w[1] - w[0]*v[1]
+			perimeter += math.Sqrt(float64(dx*dx + dy*dy))
 		}
 		fmt.Printf("polygon %d: area=%.1f perimeter=%.3f\n",
 			k+1, math.Abs(float64(twice))/2, perimeter)

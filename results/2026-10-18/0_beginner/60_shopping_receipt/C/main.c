@@ -2,8 +2,8 @@
 
 int main(void) {
     const char *names[] = {"milk", "notebook", "bread", "apple", "detergent", "eggs"};
-    int prices[] = {198, 165, 248, 128, 437, 268}, quantities[] = {2, 3, 1, 4, 1, 1}, category[] = {0,
-        1, 0, 0, 1, 0}, totals[2] = {0}, taxes[2];
+    int prices[] = {198, 165, 248, 128, 437, 268}, quantities[] = {2, 3, 1, 4, 1, 1};
+    int category[] = {0, 1, 0, 0, 1, 0}, totals[2] = {0}, taxes[2];
     for (int i = 0; i < 6; i++) {
         int subtotal = prices[i] * quantities[i];
         totals[category[i]] += subtotal;

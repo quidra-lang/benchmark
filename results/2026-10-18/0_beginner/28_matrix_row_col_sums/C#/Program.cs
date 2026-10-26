@@ -1,14 +1,22 @@
 using System;
-using System.Linq;
 using System.Globalization;
+using System.Linq;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
-int[][] matrix = { new[] {125,340,78,912,456}, new[] {603,27,819,150,384}, new[] {0,765,231,498,62}, new[] {947,113,586,39,720} };
+int[][] matrix =
+[
+    [125, 340, 78, 912, 456],
+    [603, 27, 819, 150, 384],
+    [0, 765, 231, 498, 62],
+    [947, 113, 586, 39, 720],
+];
 int[] columns = new int[5];
-foreach (int[] row in matrix) {
+foreach (int[] row in matrix)
+{
     int sum = row.Sum();
-    for (int j = 0; j < row.Length; j++) {
+    for (int j = 0; j < row.Length; j++)
+    {
         Console.Write($"{row[j],6}");
         columns[j] += row[j];
     }

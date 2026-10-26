@@ -10,22 +10,28 @@ public class Main {
         for (String command : commands) {
             String special = null;
             if (command.equals("undo")) {
-                if (undo.isEmpty()) special = "nothing to undo";
-                else {
+                if (undo.isEmpty()) {
+                    special = "nothing to undo";
+                } else {
                     redo.push(buffer);
                     buffer = undo.pop();
                 }
             } else if (command.equals("redo")) {
-                if (redo.isEmpty()) special = "nothing to redo";
-                else {
+                if (redo.isEmpty()) {
+                    special = "nothing to redo";
+                } else {
                     undo.push(buffer);
                     buffer = redo.pop();
                 }
             } else {
                 undo.push(buffer);
                 redo.clear();
-                if (command.startsWith("type ")) buffer += command.substring(5);
-                else buffer = buffer.substring(0, Math.max(0, buffer.length() - Integer.parseInt(command.substring(7))));
+                if (command.startsWith("type ")) {
+                    buffer += command.substring(5);
+                } else {
+                    int count = Integer.parseInt(command.substring(7));
+                    buffer = buffer.substring(0, Math.max(0, buffer.length() - count));
+                }
             }
             System.out.println(command + " => " + (special != null ? special : "\"" + buffer + "\""));
         }

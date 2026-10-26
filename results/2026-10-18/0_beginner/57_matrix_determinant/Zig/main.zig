@@ -45,7 +45,10 @@ pub fn main(init: std.process.Init) !void {
         .{ 6, 0, -7, 3, -2 },
         .{ 1, -6, 4, 9, 8 },
     };
-    try out.print("det(3x3) = {d}\ndet(4x4) = {d}\ndet(5x5) = {d}\n",
-        .{ det(3, matrix3), det(4, matrix4), det(5, matrix5) });
+    try out.print("det(3x3) = {d}\ndet(4x4) = {d}\ndet(5x5) = {d}\n", .{
+        det(3, matrix3),
+        det(4, matrix4),
+        det(5, matrix5),
+    });
     try out.flush();
 }

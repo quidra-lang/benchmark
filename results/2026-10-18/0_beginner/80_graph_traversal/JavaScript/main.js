@@ -5,6 +5,7 @@ for (const [a, b] of edges) {
   graph[b].push(a);
 }
 for (const neighbors of graph) neighbors.sort((a, b) => a - b);
+
 function dfs(vertex, seen, order) {
   seen.add(vertex);
   order.push(vertex);
@@ -12,6 +13,7 @@ function dfs(vertex, seen, order) {
     if (!seen.has(neighbor)) dfs(neighbor, seen, order);
   }
 }
+
 const depth = [];
 dfs(0, new Set(), depth);
 const queue = [0], breadth = [];

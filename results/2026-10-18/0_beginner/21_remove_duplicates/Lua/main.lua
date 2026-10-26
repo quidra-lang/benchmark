@@ -3,7 +3,7 @@ local seen, remaining = {}, {}
 for _, n in ipairs(numbers) do
     if not seen[n] then
         seen[n] = true
-        remaining[#remaining+1] = n
+        remaining[#remaining + 1] = n
     end
 end
-io.write(table.concat(remaining, " "), "\n", string.format("removed: %d\n", #numbers-#remaining))
+io.write(table.concat(remaining, " "), "\n", string.format("removed: %d\n", #numbers - #remaining))

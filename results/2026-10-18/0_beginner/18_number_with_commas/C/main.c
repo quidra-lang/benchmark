@@ -6,7 +6,7 @@ int main(void) {
     for (int i = 0; i < 7; i++) {
         char text[32];
         snprintf(text, sizeof text, "%lld", values[i]);
-        size_t len = strlen(text), start = text[0] == '-' ? 1: 0;
+        size_t len = strlen(text), start = text[0] == '-' ? 1 : 0;
         if (start)
             putchar('-');
         for (size_t j = start; j < len; j++) {

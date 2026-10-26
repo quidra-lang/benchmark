@@ -6,10 +6,12 @@ fun main() {
             println("${++count}: $prefix")
             return
         }
-        for (i in 0 until 4) if (!used[i]) {
-            used[i] = true
-            permute(prefix + "ABCD"[i])
-            used[i] = false
+        for (i in 0 until 4) {
+            if (!used[i]) {
+                used[i] = true
+                permute(prefix + "ABCD"[i])
+                used[i] = false
+            }
         }
     }
     permute("")

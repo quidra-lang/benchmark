@@ -32,7 +32,7 @@ int main(void) {
     }
     for (int r = 0; r < 8; r++) {
         for (int c = 0; c < 8; c++)
-            putchar(first[r] == c ? 'Q': '.');
+            putchar(first[r] == c ? 'Q' : '.');
         putchar('\n');
     }
     return 0;

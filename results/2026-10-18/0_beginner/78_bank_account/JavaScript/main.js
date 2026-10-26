@@ -9,8 +9,9 @@ transactions.forEach((transaction, number) => {
   const operation = parts[0], name = parts[1], amount = Number(parts.at(-1));
   const success = operation === "deposit" || balances.get(name) >= amount;
   if (success) {
-    if (operation === "deposit") balances.set(name, balances.get(name) + amount);
-    else {
+    if (operation === "deposit") {
+      balances.set(name, balances.get(name) + amount);
+    } else {
       balances.set(name, balances.get(name) - amount);
       if (operation === "transfer") balances.set(parts[2], balances.get(parts[2]) + amount);
     }

@@ -1,4 +1,5 @@
 import java.util.Locale
+import kotlin.math.sqrt
 
 fun main() {
     val values = intArrayOf(72, 85, 64, 90, 85, 58, 77, 85, 69, 93, 71)
@@ -15,5 +16,5 @@ fun main() {
     println("median: ${sorted[values.size / 2]}")
     println("mode: $mode")
     println("range: ${sorted.last() - sorted.first()}")
-    println("stdev: %.3f".format(Locale.ROOT, kotlin.math.sqrt(squared / values.size)))
+    println("stdev: %.3f".format(Locale.ROOT, sqrt(squared / values.size)))
 }

@@ -9,6 +9,7 @@ function caesar(message, shift)
         end
     end
 end
+
 ciphertext = caesar("Zoe, meet Max by the Old Bridge at six!", 3)
 println(ciphertext)
 println(caesar(ciphertext, -3))

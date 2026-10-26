@@ -11,7 +11,7 @@ int main(void) {
             unique[count++] = values[i];
     }
     for (int i = 0; i < count; i++)
-        printf("%s%d", i ? " ": "", unique[i]);
+        printf("%s%d", i ? " " : "", unique[i]);
     printf("\nremoved: %d\n", 15 - count);
     return 0;
 }

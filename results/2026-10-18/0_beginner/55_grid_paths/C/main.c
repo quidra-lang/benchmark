@@ -14,7 +14,7 @@ int main(void) {
                 if (c)
                     dp[r][c] += dp[r][c - 1];
             }
-        printf("%s obstacles: %d\n", obstacles ? "with": "without", dp[5][6]);
+        printf("%s obstacles: %d\n", obstacles ? "with" : "without", dp[5][6]);
     }
     return 0;
 }

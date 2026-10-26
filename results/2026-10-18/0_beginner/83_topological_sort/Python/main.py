@@ -17,16 +17,35 @@ def kahn(courses, pairs):
     return order, sorted(set(courses) - set(order))
 
 
-courses1 = "physics algebra graphics programming statistics calculus databases algorithms".split()
-pairs1 = [
-    ("calculus", "physics"), ("algebra", "calculus"), ("programming", "algorithms"),
-    ("algebra", "statistics"), ("algorithms", "databases"), ("statistics", "databases"),
-    ("calculus", "graphics"), ("algorithms", "graphics"), ("physics", "graphics"),
+courses1 = [
+    "physics",
+    "algebra",
+    "graphics",
+    "programming",
+    "statistics",
+    "calculus",
+    "databases",
+    "algorithms",
 ]
-courses2 = "music ecology art geology biology chemistry".split()
+pairs1 = [
+    ("calculus", "physics"),
+    ("algebra", "calculus"),
+    ("programming", "algorithms"),
+    ("algebra", "statistics"),
+    ("algorithms", "databases"),
+    ("statistics", "databases"),
+    ("calculus", "graphics"),
+    ("algorithms", "graphics"),
+    ("physics", "graphics"),
+]
+courses2 = ["music", "ecology", "art", "geology", "biology", "chemistry"]
 pairs2 = [
-    ("music", "art"), ("art", "ecology"), ("biology", "chemistry"),
-    ("chemistry", "ecology"), ("ecology", "geology"), ("geology", "chemistry"),
+    ("music", "art"),
+    ("art", "ecology"),
+    ("biology", "chemistry"),
+    ("chemistry", "ecology"),
+    ("ecology", "geology"),
+    ("geology", "chemistry"),
 ]
 order1, _ = kahn(courses1, pairs1)
 order2, cycle = kahn(courses2, pairs2)

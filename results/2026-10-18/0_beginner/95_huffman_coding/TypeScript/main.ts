@@ -22,13 +22,16 @@ while (trees.length > 1) {
   });
 }
 const codes = new Map<string, string>();
+
 function visit(tree: HuffmanNode, prefix: string): void {
-  if (tree.symbol !== null) codes.set(tree.symbol, prefix);
-  else {
+  if (tree.symbol !== null) {
+    codes.set(tree.symbol, prefix);
+  } else {
     visit(tree.left!, prefix + "0");
     visit(tree.right!, prefix + "1");
   }
 }
+
 visit(trees[0], "");
 let bits = 0;
 for (const symbol of [...frequencies.keys()].sort()) {

@@ -8,6 +8,7 @@ func cipher(_ text: String, _ shift: Int) -> String {
     }
     return String(bytes: bytes, encoding: .utf8)!
 }
+
 let encrypted = cipher("Zoe, meet Max by the Old Bridge at six!", 3)
 print(encrypted)
 print(cipher(encrypted, -3))

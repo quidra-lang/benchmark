@@ -1,6 +1,5 @@
 from math import sqrt
 
-
 values = [72, 85, 64, 90, 85, 58, 77, 85, 69, 93, 71]
 ordered = sorted(values)
 mean = sum(values) / len(values)

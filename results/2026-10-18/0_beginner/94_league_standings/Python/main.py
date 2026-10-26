@@ -1,9 +1,20 @@
-teams = "Lions Tigers Eagles Sharks Wolves Bears".split()
+teams = ["Lions", "Tigers", "Eagles", "Sharks", "Wolves", "Bears"]
 matches = [
-    "Lions 0-3 Bears", "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks",
-    "Wolves 2-1 Eagles", "Lions 0-1 Tigers", "Tigers 3-3 Bears", "Eagles 2-2 Lions",
-    "Sharks 2-2 Wolves", "Bears 3-1 Wolves", "Lions 2-0 Sharks", "Tigers 2-1 Eagles",
-    "Eagles 1-0 Bears", "Sharks 2-0 Tigers", "Wolves 2-1 Lions",
+    "Lions 0-3 Bears",
+    "Tigers 2-2 Wolves",
+    "Eagles 4-0 Sharks",
+    "Bears 0-1 Sharks",
+    "Wolves 2-1 Eagles",
+    "Lions 0-1 Tigers",
+    "Tigers 3-3 Bears",
+    "Eagles 2-2 Lions",
+    "Sharks 2-2 Wolves",
+    "Bears 3-1 Wolves",
+    "Lions 2-0 Sharks",
+    "Tigers 2-1 Eagles",
+    "Eagles 1-0 Bears",
+    "Sharks 2-0 Tigers",
+    "Wolves 2-1 Lions",
 ]
 fields = ["played", "wins", "draws", "losses", "gf", "ga", "points"]
 stats = {name: dict.fromkeys(fields, 0) for name in teams}

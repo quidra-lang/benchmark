@@ -7,6 +7,7 @@ const std::array<std::string, 20> small = {"zero", "one", "two", "three", "four"
     "seventeen", "eighteen", "nineteen"};
 const std::array<std::string, 10> tens = {"", "", "twenty", "thirty", "forty", "fifty", "sixty",
     "seventy", "eighty", "ninety"};
+
 std::string under(int n) {
     std::string out;
     if (n >= 100) {
@@ -19,8 +20,9 @@ std::string under(int n) {
         out += tens[n / 10];
         if (n % 10)
             out += "-" + small[n % 10];
-    } else if (n)
+    } else if (n) {
         out += small[n];
+    }
     return out;
 }
 

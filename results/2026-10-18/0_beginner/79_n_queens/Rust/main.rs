@@ -1,5 +1,10 @@
-fn search(n: usize, row: usize, positions: &mut [usize; 8],
-          count: &mut usize, first: &mut [usize; 8]) {
+fn search(
+    n: usize,
+    row: usize,
+    positions: &mut [usize; 8],
+    count: &mut usize,
+    first: &mut [usize; 8],
+) {
     if row == n {
         if n == 8 && *count == 0 {
             *first = *positions;

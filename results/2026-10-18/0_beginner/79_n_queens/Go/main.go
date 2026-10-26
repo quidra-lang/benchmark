@@ -17,14 +17,14 @@ func search(n, row int, positions *[8]int, count *int, first *[8]int) {
 			if difference < 0 {
 				difference = -difference
 			}
-			if positions[r] == col || difference == row - r {
+			if positions[r] == col || difference == row-r {
 				safe = false
 				break
 			}
 		}
 		if safe {
 			positions[row] = col
-			search(n, row + 1, positions, count, first)
+			search(n, row+1, positions, count, first)
 		}
 	}
 }

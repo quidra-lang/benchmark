@@ -1,6 +1,11 @@
 fn main() {
-    for (name, h, w) in [("Aiko", 158, 45), ("Kenji", 172, 68), ("Mika", 165, 70), ("Ryo", 180, 101),
-        ("Yuki", 150, 52)] {
+    for (name, h, w) in [
+        ("Aiko", 158, 45),
+        ("Kenji", 172, 68),
+        ("Mika", 165, 70),
+        ("Ryo", 180, 101),
+        ("Yuki", 150, 52),
+    ] {
         let numerator = w * 10000;
         let denominator = h * h;
         let bmi = f64::from(numerator) / f64::from(denominator);

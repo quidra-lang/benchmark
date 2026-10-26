@@ -7,7 +7,9 @@
 struct Node {
     int key, left = -1, right = -1;
 };
+
 std::vector<Node> nodes;
+
 int insert(int root, int key) {
     if (root < 0) {
         nodes.push_back({key});
@@ -43,11 +45,11 @@ int height(int root) {
 int erase(int root, int key) {
     if (root < 0)
         return root;
-    if (key < nodes[root].key)
+    if (key < nodes[root].key) {
         nodes[root].left = erase(nodes[root].left, key);
-    else if (key > nodes[root].key)
+    } else if (key > nodes[root].key) {
         nodes[root].right = erase(nodes[root].right, key);
-    else {
+    } else {
         if (nodes[root].left < 0)
             return nodes[root].right;
         if (nodes[root].right < 0)

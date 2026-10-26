@@ -2,9 +2,11 @@ const points = [
   [3, 2], [-6, 1], [8, 4], [0, 0], [-3, 7], [4, -3], [1, -5], [-2, 1],
   [5, 6], [-6, -2], [2, -2], [7, -1], [-3, 4], [2, 8], [-6, 3]
 ];
+
 function cross(o, a, b) {
   return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
 }
+
 function chain(ordered) {
   const result = [];
   for (const point of ordered) {
@@ -13,6 +15,7 @@ function chain(ordered) {
   }
   return result;
 }
+
 const ordered = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 const hull = [...chain(ordered).slice(0, -1), ...chain(ordered.toReversed()).slice(0, -1)];
 let areaTwice = 0;

@@ -6,6 +6,7 @@ typedef struct {
     const char *name;
     int played, wins, draws, losses, gf, ga, points;
 } Team;
+
 void record(Team *t, int gf, int ga) {
     t->played++;
     t->gf += gf;
@@ -16,8 +17,9 @@ void record(Team *t, int gf, int ga) {
     } else if (gf == ga) {
         t->draws++;
         t->points++;
-    } else
+    } else {
         t->losses++;
+    }
 }
 
 int compare(const void *a, const void *b) {
@@ -32,10 +34,11 @@ int compare(const void *a, const void *b) {
 }
 
 int main(void) {
-    const char *names[] = {"Lions", "Tigers", "Eagles", "Sharks", "Wolves", "Bears"}, *matches[] = {"Lions 0-3 Bears",
-        "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks", "Wolves 2-1 Eagles", "Lions 0-1 Tigers",
-        "Tigers 3-3 Bears", "Eagles 2-2 Lions", "Sharks 2-2 Wolves", "Bears 3-1 Wolves", "Lions 2-0 Sharks",
-        "Tigers 2-1 Eagles", "Eagles 1-0 Bears", "Sharks 2-0 Tigers", "Wolves 2-1 Lions"};
+    const char *names[] = {"Lions", "Tigers", "Eagles", "Sharks", "Wolves", "Bears"};
+    const char *matches[] = {
+        "Lions 0-3 Bears", "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks", "Wolves 2-1 Eagles",
+        "Lions 0-1 Tigers", "Tigers 3-3 Bears", "Eagles 2-2 Lions", "Sharks 2-2 Wolves", "Bears 3-1 Wolves",
+        "Lions 2-0 Sharks", "Tigers 2-1 Eagles", "Eagles 1-0 Bears", "Sharks 2-0 Tigers", "Wolves 2-1 Lions"};
     Team teams[6];
     for (int i = 0; i < 6; i++)
         teams[i] = (Team){.name = names[i]};
@@ -56,7 +59,7 @@ int main(void) {
         Team t = teams[i];
         int gd = t.gf - t.ga;
         printf("%d. %s P=%d W=%d D=%d L=%d GF=%d GA=%d GD=%s%d Pts=%d\n", i + 1, t.name, t.played, t.wins,
-            t.draws, t.losses, t.gf, t.ga, gd > 0 ? "+": "", gd, t.points);
+            t.draws, t.losses, t.gf, t.ga, gd > 0 ? "+" : "", gd, t.points);
     }
     return 0;
 }

@@ -10,9 +10,9 @@ int merge_sort(std::vector<int> &a, int l, int r) {
     std::vector<int> temp;
     int i = l, j = m + 1;
     while (i <= m && j <= r) {
-        if (a[i] < a[j])
+        if (a[i] < a[j]) {
             temp.push_back(a[i++]);
-        else {
+        } else {
             temp.push_back(a[j++]);
             count += m - i + 1;
         }

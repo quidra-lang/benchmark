@@ -5,8 +5,9 @@ typedef struct {
     char name[32];
     int priority, order;
 } Task;
+
 int before(Task a, Task b) {
-    return a.priority != b.priority ? a.priority < b.priority: a.order < b.order;
+    return a.priority != b.priority ? a.priority < b.priority : a.order < b.order;
 }
 
 void push(Task *heap, int *size, Task task) {
@@ -20,6 +21,7 @@ void push(Task *heap, int *size, Task task) {
     }
     heap[i] = task;
 }
+
 Task pop(Task *heap, int *size) {
     Task result = heap[0], last = heap[--*size];
     if (*size) {

@@ -18,34 +18,34 @@ public class Main {
         List<String> order = new ArrayList<>();
         while (true) {
             int next = IntStream.range(0, n).filter(i -> !taken[i] && degree[i] == 0).findFirst().orElse(-1);
-            if (next < 0) break;
+            if (next < 0) {
+                break;
+            }
             taken[next] = true;
             order.add(names[next]);
             for (int i = 0; i < n; i++) {
-                if (graph[next][i]) degree[i]--;
+                if (graph[next][i]) {
+                    degree[i]--;
+                }
             }
         }
-        System.out.println("order: " + String.join(" -> ",order));
+        System.out.println("order: " + String.join(" -> ", order));
         if (showCycle) {
             var remaining = IntStream.range(0, n).filter(i -> !taken[i]).mapToObj(i -> names[i]).toList();
-            System.out.println("cycle: " + String.join(" ",remaining));
+            System.out.println("cycle: " + String.join(" ", remaining));
         }
     }
+
     public static void main(String[] args) {
-        courses(new String[]{"physics","algebra","graphics","programming","statistics","calculus","databases","algorithms"}, new String[][]{{"calculus","physics"},
-            {"algebra","calculus"},
-            {"programming","algorithms"},
-            {"algebra","statistics"},
-            {"algorithms","databases"},
-            {"statistics","databases"},
-            {"calculus","graphics"},
-            {"algorithms","graphics"},
-            {"physics","graphics"}},false);
-        courses(new String[]{"music","ecology","art","geology","biology","chemistry"}, new String[][]{{"music","art"},
-            {"art","ecology"},
-            {"biology","chemistry"},
-            {"chemistry","ecology"},
-            {"ecology","geology"},
-            {"geology","chemistry"}},true);
+        String[] names1 = {"physics", "algebra", "graphics", "programming", "statistics", "calculus", "databases",
+            "algorithms"};
+        String[][] edges1 = {{"calculus", "physics"}, {"algebra", "calculus"}, {"programming", "algorithms"},
+            {"algebra", "statistics"}, {"algorithms", "databases"}, {"statistics", "databases"},
+            {"calculus", "graphics"}, {"algorithms", "graphics"}, {"physics", "graphics"}};
+        String[] names2 = {"music", "ecology", "art", "geology", "biology", "chemistry"};
+        String[][] edges2 = {{"music", "art"}, {"art", "ecology"}, {"biology", "chemistry"},
+            {"chemistry", "ecology"}, {"ecology", "geology"}, {"geology", "chemistry"}};
+        courses(names1, edges1, false);
+        courses(names2, edges2, true);
     }
 }

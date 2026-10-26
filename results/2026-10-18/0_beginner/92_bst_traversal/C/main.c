@@ -3,8 +3,10 @@
 typedef struct {
     int key, left, right;
 } Node;
+
 Node nodes[12];
 int used = 0;
+
 int insert(int root, int key) {
     if (root < 0) {
         int v = used++;
@@ -35,17 +37,17 @@ int height(int root) {
     if (root < 0)
         return 0;
     int l = height(nodes[root].left), r = height(nodes[root].right);
-    return 1 + (l > r ? l: r);
+    return 1 + (l > r ? l : r);
 }
 
 int erase(int root, int key) {
     if (root < 0)
         return root;
-    if (key < nodes[root].key)
+    if (key < nodes[root].key) {
         nodes[root].left = erase(nodes[root].left, key);
-    else if (key > nodes[root].key)
+    } else if (key > nodes[root].key) {
         nodes[root].right = erase(nodes[root].right, key);
-    else {
+    } else {
         if (nodes[root].left < 0)
             return nodes[root].right;
         if (nodes[root].right < 0)

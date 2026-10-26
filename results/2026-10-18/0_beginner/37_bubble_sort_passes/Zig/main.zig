@@ -15,13 +15,13 @@ pub fn main(init: std.process.Init) !void {
                 swapped = true;
             }
         }
-        try out.print("pass {d}:", .{ pass });
+        try out.print("pass {d}:", .{pass});
         for (a) |v|
-            try out.print(" {d}", .{ v });
+            try out.print(" {d}", .{v});
         try out.writeByte('\n');
         if (!swapped)
             break;
     }
-    try out.print("swaps: {d}\n", .{ total });
+    try out.print("swaps: {d}\n", .{total});
     try out.flush();
 }

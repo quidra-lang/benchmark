@@ -14,7 +14,10 @@ int main() {
     for (int op = 0; op < 4; op++) {
         std::cout << labels[op] << ':';
         for (int n = 0; n < 26; n++) {
-            bool keep = op == 0 ? (sa[n] || sb[n]) : op == 1 ? (sa[n] && sb[n]) : op == 2 ? (sa[n] && !sb[n]) : (sa[n] != sb[n]);
+            bool keep = op == 0   ? (sa[n] || sb[n])
+                        : op == 1 ? (sa[n] && sb[n])
+                        : op == 2 ? (sa[n] && !sb[n])
+                                  : (sa[n] != sb[n]);
             if (keep)
                 std::cout << ' ' << n;
         }

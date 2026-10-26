@@ -8,6 +8,7 @@ struct Edge {
     char a, b;
     int weight;
 };
+
 int find(std::array<int, 8> &parent, int v) {
     if (parent[v] != v)
         parent[v] = find(parent, parent[v]);
@@ -15,8 +16,8 @@ int find(std::array<int, 8> &parent, int v) {
 }
 
 int main() {
-    std::vector<Edge> edges = {{'A', 'B', 7}, {'C', 'A', 4}, {'B', 'C', 9}, {'B', 'D', 14}, {'D', 'C',
-        6}, {'C', 'E', 3}, {'E', 'D', 5}, {'F', 'D', 11}, {'E', 'G', 16}, {'G', 'F', 8}, {'H', 'F', 12},
+    std::vector<Edge> edges = {{'A', 'B', 7}, {'C', 'A', 4}, {'B', 'C', 9}, {'B', 'D', 14}, {'D', 'C', 6},
+        {'C', 'E', 3}, {'E', 'D', 5}, {'F', 'D', 11}, {'E', 'G', 16}, {'G', 'F', 8}, {'H', 'F', 12},
         {'G', 'H', 2}, {'H', 'E', 10}};
     std::sort(edges.begin(), edges.end(), [](const Edge &a, const Edge &b) {
         return a.weight < b.weight;

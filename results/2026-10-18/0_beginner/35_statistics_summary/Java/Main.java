@@ -14,7 +14,9 @@ public class Main {
         }
         int[] sorted = Arrays.stream(values).sorted().toArray();
         Map<Integer, Integer> counts = new TreeMap<>();
-        for (int value : values) counts.merge(value, 1, Integer::sum);
+        for (int value : values) {
+            counts.merge(value, 1, Integer::sum);
+        }
         int mode = counts.keySet().stream()
                 .min(Comparator.<Integer>comparingInt(counts::get).reversed().thenComparingInt(Integer::intValue))
                 .orElseThrow();

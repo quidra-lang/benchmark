@@ -1,17 +1,25 @@
 function main()
-    items = [("milk",198,2,"food"),("notebook",165,3,"general"),("bread",248,1,"food"),("apple",128,4,"food"),("detergent",437,1,"general"),("eggs",268,1,"food")]
-    totals = Dict("food"=>0,"general"=>0)
-    for (name,price,quantity,category) in items
+    items = [
+        ("milk", 198, 2, "food"),
+        ("notebook", 165, 3, "general"),
+        ("bread", 248, 1, "food"),
+        ("apple", 128, 4, "food"),
+        ("detergent", 437, 1, "general"),
+        ("eggs", 268, 1, "food"),
+    ]
+    totals = Dict("food"=>0, "general"=>0)
+    for (name, price, quantity, category) in items
         subtotal = price*quantity
         totals[category] += subtotal
-        println(name," ",price," x ",quantity," = ",subtotal)
+        println(name, " ", price, " x ", quantity, " = ", subtotal)
     end
     payment = 0
-    for (category,rate) in [("food",8),("general",10)]
-        tax = div(totals[category]*rate,100)
+    for (category, rate) in [("food", 8), ("general", 10)]
+        tax = div(totals[category]*rate, 100)
         payment += totals[category]+tax
-        println(category,": ",totals[category]," yen, tax ",tax," yen")
+        println(category, ": ", totals[category], " yen, tax ", tax, " yen")
     end
-    println("total: ",payment," yen")
+    println("total: ", payment, " yen")
 end
+
 main()

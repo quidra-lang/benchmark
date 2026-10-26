@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
         "withdraw Emma 300",
         "deposit Nina 750",
         "transfer Leo Emma 3200",
-        "withdraw Nina 9800"
+        "withdraw Nina 9800",
     };
     for (commands, 0..) |command, k| {
         var parts = std.mem.splitScalar(u8, command, ' ');
@@ -53,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
         try out.print("op {d}: {s} {s}\n", .{
             k + 1,
             command,
-            if (success) @as([]const u8, "ok") else "failed (insufficient funds)"
+            if (success) @as([]const u8, "ok") else "failed (insufficient funds)",
         });
     }
     var order = [_]usize{ 0, 1, 2 };

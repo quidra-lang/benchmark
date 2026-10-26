@@ -10,11 +10,15 @@ public class Main {
             ways[0] = 1;
             for (int value = 1; value <= amount; value++) {
                 for (int coin : coins) {
-                    if (coin <= value) minimum[value] = Math.min(minimum[value], minimum[value - coin] + 1);
+                    if (coin <= value) {
+                        minimum[value] = Math.min(minimum[value], minimum[value - coin] + 1);
+                    }
                 }
             }
             for (int coin : coins) {
-                for (int value = coin; value <= amount; value++) ways[value] += ways[value - coin];
+                for (int value = coin; value <= amount; value++) {
+                    ways[value] += ways[value - coin];
+                }
             }
             int remaining = amount, greedy = 0;
             for (int i = coins.length - 1; i >= 0; i--) {

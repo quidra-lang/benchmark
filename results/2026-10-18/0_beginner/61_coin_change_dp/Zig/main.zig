@@ -5,7 +5,7 @@ pub fn main(init: std.process.Init) !void {
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
     const coins = [_]usize{ 1, 5, 6, 9 };
-    var minimum = [_]u32{ 1000 } ** 41;
+    var minimum: [41]u32 = @splat(1000);
     minimum[0] = 0;
     for (1..41) |amount| {
         for (coins) |coin| {
@@ -13,7 +13,7 @@ pub fn main(init: std.process.Init) !void {
                 minimum[amount] = @min(minimum[amount], minimum[amount - coin] + 1);
         }
     }
-    var ways = [_]u64{ 0 } ** 41;
+    var ways: [41]u64 = @splat(0);
     ways[0] = 1;
     for (coins) |coin| {
         for (coin..41) |amount|

@@ -1,7 +1,7 @@
 #include <iostream>
 
 int main() {
-    bool black[11][11] {};
+    bool black[11][11]{};
     const int dr[] = {-1, 0, 1, 0}, dc[] = {0, 1, 0, -1};
     int r = 5, c = 5, d = 0;
     for (int step = 0; step < 300; step++) {

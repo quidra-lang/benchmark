@@ -1,4 +1,17 @@
-words = "listen stone night silent notes apple thing enlist earth onset heart tones".split()
+words = [
+    "listen",
+    "stone",
+    "night",
+    "silent",
+    "notes",
+    "apple",
+    "thing",
+    "enlist",
+    "earth",
+    "onset",
+    "heart",
+    "tones",
+]
 groups = {}
 for word in words:
     key = "".join(sorted(word))

@@ -7,8 +7,11 @@ public class Main {
         int foodTotal = 0, generalTotal = 0;
         for (int i = 0; i < names.length; i++) {
             int subtotal = prices[i] * quantities[i];
-            if (food[i]) foodTotal += subtotal;
-            else generalTotal += subtotal;
+            if (food[i]) {
+                foodTotal += subtotal;
+            } else {
+                generalTotal += subtotal;
+            }
             System.out.println(names[i] + " " + prices[i] + " x " + quantities[i] + " = " + subtotal);
         }
         int foodTax = foodTotal * 8 / 100, generalTax = generalTotal * 10 / 100;

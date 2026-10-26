@@ -7,15 +7,15 @@ fn main() {
             let bits = (u32::from(chunk[0]) << 16)
                 | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
                 | u32::from(*chunk.get(2).unwrap_or(&0));
-            encoded.push(alphabet[((bits >> 18) &63) as usize] as char);
-            encoded.push(alphabet[((bits >> 12) &63) as usize] as char);
+            encoded.push(alphabet[((bits >> 18) & 63) as usize] as char);
+            encoded.push(alphabet[((bits >> 12) & 63) as usize] as char);
             encoded.push(if chunk.len() > 1 {
-                alphabet[((bits >> 6) &63) as usize] as char
+                alphabet[((bits >> 6) & 63) as usize] as char
             } else {
                 '='
             });
             encoded.push(if chunk.len() > 2 {
-                alphabet[(bits &63) as usize] as char
+                alphabet[(bits & 63) as usize] as char
             } else {
                 '='
             });

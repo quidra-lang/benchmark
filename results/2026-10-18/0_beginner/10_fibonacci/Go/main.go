@@ -10,7 +10,7 @@ func main() {
 		}
 		fmt.Print(a)
 		sum += a
-		a, b = b, a + b
+		a, b = b, a+b
 	}
 	fmt.Printf("\nsum: %d\n", sum)
 }

@@ -16,7 +16,7 @@ int main() {
         }
         const char *end = encoded.data() + encoded.size();
         for (const char *p = encoded.data(); p < end;) {
-            int count;
+            int count = 0;
             const char *next = std::from_chars(p, end, count).ptr;
             decoded.append(count, *next);
             p = next + 1;

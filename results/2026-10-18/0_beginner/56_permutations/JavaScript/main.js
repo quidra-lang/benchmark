@@ -1,5 +1,6 @@
 const letters = "ABCD", used = Array(4).fill(false);
 let count = 0;
+
 function visit(prefix) {
   if (prefix.length === letters.length) {
     console.log(`${++count}: ${prefix}`);
@@ -13,4 +14,5 @@ function visit(prefix) {
     }
   }
 }
+
 visit("");

@@ -1,4 +1,5 @@
 <?php
+
 $sentence = "every program starts with a single line";
 echo strrev($sentence), "\n";
 echo implode(" ", array_reverse(explode(" ", $sentence))), "\n";

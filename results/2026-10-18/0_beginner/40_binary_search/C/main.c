@@ -1,8 +1,8 @@
 #include <stdio.h>
 
 int main(void) {
-    int a[] = {3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77}, targets[] = {42, 3, 77,
-        31, 50, 1};
+    int a[] = {3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77};
+    int targets[] = {42, 3, 77, 31, 50, 1};
     for (int i = 0; i < 6; i++) {
         int t = targets[i], lo = 0, hi = 15, found = -1;
         printf("%d: probes", t);

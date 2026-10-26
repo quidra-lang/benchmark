@@ -8,7 +8,13 @@ fn main() {
         balance -= principal;
         total_interest += interest;
         total_paid += payment;
-        println!("month {}: interest={} principal={} balance={}", month, interest, principal, balance);
+        println!(
+            "month {}: interest={} principal={} balance={}",
+            month, interest, principal, balance
+        );
     }
-    println!("total interest: {}\ntotal paid: {}", total_interest, total_paid);
+    println!(
+        "total interest: {}\ntotal paid: {}",
+        total_interest, total_paid
+    );
 }

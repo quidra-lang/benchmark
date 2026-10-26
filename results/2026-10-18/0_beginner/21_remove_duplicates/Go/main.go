@@ -18,5 +18,5 @@ func main() {
 		}
 		fmt.Print(n)
 	}
-	fmt.Printf("\nremoved: %d\n", len(values) - len(unique))
+	fmt.Printf("\nremoved: %d\n", len(values)-len(unique))
 }

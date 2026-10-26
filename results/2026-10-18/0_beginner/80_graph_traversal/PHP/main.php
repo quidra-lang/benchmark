@@ -1,23 +1,31 @@
 <?php
-$adjacency = array_fill(0,9,[]);
-foreach ([[5,0],[3,8],[7,2],[1,6],[0,2],[5,3],[7,5],[6,4],[8,7]] as [$a,$b]) {
+
+$adjacency = array_fill(0, 9, []);
+foreach ([[5, 0], [3, 8], [7, 2], [1, 6], [0, 2], [5, 3], [7, 5], [6, 4], [8, 7]] as [$a, $b]) {
     $adjacency[$a][] = $b;
     $adjacency[$b][] = $a;
 }
-foreach ($adjacency as &$neighbors) sort($neighbors,SORT_NUMERIC);
+foreach ($adjacency as &$neighbors) {
+    sort($neighbors, SORT_NUMERIC);
+}
 unset($neighbors);
-function dfs(int $vertex, array $adjacency, array &$seen, array &$order): void {
+
+function dfs(int $vertex, array $adjacency, array &$seen, array &$order): void
+{
     $seen[$vertex] = true;
     $order[] = $vertex;
     foreach ($adjacency[$vertex] as $neighbor) {
-        if (!$seen[$neighbor]) dfs($neighbor,$adjacency,$seen,$order);
+        if (!$seen[$neighbor]) {
+            dfs($neighbor, $adjacency, $seen, $order);
+        }
     }
 }
-$seen = array_fill(0,9,false);
+
+$seen = array_fill(0, 9, false);
 $order = [];
-dfs(0,$adjacency,$seen,$order);
-echo 'DFS: ', implode(' ',$order), "\n";
-$seen = array_fill(0,9,false);
+dfs(0, $adjacency, $seen, $order);
+echo 'DFS: ', implode(' ', $order), "\n";
+$seen = array_fill(0, 9, false);
 $seen[0] = true;
 $queue = [0];
 $head = 0;
@@ -30,16 +38,18 @@ while ($head < count($queue)) {
         }
     }
 }
-echo 'BFS: ', implode(' ',$queue), "\n";
-$seen = array_fill(0,9,false);
+echo 'BFS: ', implode(' ', $queue), "\n";
+$seen = array_fill(0, 9, false);
 $components = [];
 for ($vertex = 0; $vertex < 9; $vertex++) {
     if (!$seen[$vertex]) {
         $component = [];
-        dfs($vertex,$adjacency,$seen,$component);
-        sort($component,SORT_NUMERIC);
+        dfs($vertex, $adjacency, $seen, $component);
+        sort($component, SORT_NUMERIC);
         $components[] = $component;
     }
 }
-printf("components: %d\n",count($components));
-foreach ($components as $number => $component) printf("component %d: %s\n",$number+1,implode(' ',$component));
+printf("components: %d\n", count($components));
+foreach ($components as $number => $component) {
+    printf("component %d: %s\n", $number + 1, implode(' ', $component));
+}

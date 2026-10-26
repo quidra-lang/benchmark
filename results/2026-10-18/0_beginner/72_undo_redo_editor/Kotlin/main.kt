@@ -7,19 +7,26 @@ fun main() {
     for (command in commands) {
         var special: String? = null
         when (command) {
-            "undo" -> if (undo.isEmpty()) special = "nothing to undo" else {
+            "undo" -> if (undo.isEmpty()) {
+                special = "nothing to undo"
+            } else {
                 redo.add(buffer)
                 buffer = undo.removeLast()
             }
-            "redo" -> if (redo.isEmpty()) special = "nothing to redo" else {
+            "redo" -> if (redo.isEmpty()) {
+                special = "nothing to redo"
+            } else {
                 undo.add(buffer)
                 buffer = redo.removeLast()
             }
             else -> {
                 undo.add(buffer)
                 redo.clear()
-                buffer = if (command.startsWith("type ")) buffer + command.substring(5)
-                    else buffer.take(maxOf(0, buffer.length - command.substring(7).toInt()))
+                buffer = if (command.startsWith("type ")) {
+                    buffer + command.substring(5)
+                } else {
+                    buffer.take(maxOf(0, buffer.length - command.substring(7).toInt()))
+                }
             }
         }
         println(command + " => " + (special ?: "\"$buffer\""))

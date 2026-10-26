@@ -11,8 +11,9 @@ int main() {
         x = x * 48271 % 2147483647;
         arrival += static_cast<int>(x % 5) + 1;
         x = x * 48271 % 2147483647;
-        int service = static_cast<int>(x % 7) + 2, teller = free_time[0] <= free_time[1] ? 0 : 1, start = std::max(arrival,
-            free_time[teller]), end = start + service, wait = start - arrival;
+        int service = static_cast<int>(x % 7) + 2;
+        int teller = free_time[0] <= free_time[1] ? 0 : 1;
+        int start = std::max(arrival, free_time[teller]), end = start + service, wait = start - arrival;
         free_time[teller] = end;
         total_wait += wait;
         maximum = std::max(maximum, wait);

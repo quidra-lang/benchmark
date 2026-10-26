@@ -1,8 +1,9 @@
 local function hanoi(n, source, target, auxiliary)
     if n == 0 then return 0 end
-    local moves = hanoi(n-1, source, auxiliary, target)
+    local moves = hanoi(n - 1, source, auxiliary, target)
     io.write(string.format("move disk %d from %s to %s\n", n, source, target))
-    return moves + 1 + hanoi(n-1, auxiliary, target, source)
+    return moves + 1 + hanoi(n - 1, auxiliary, target, source)
 end
-local moves = hanoi(4,"A","C","B")
-io.write(string.format("total moves: %d\n",moves))
+
+local moves = hanoi(4, "A", "C", "B")
+io.write(string.format("total moves: %d\n", moves))

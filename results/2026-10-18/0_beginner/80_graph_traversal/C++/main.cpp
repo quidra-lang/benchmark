@@ -3,7 +3,8 @@
 #include <array>
 #include <algorithm>
 
-void dfs(int v, const std::array<std::array<bool, 9>, 9> &graph, std::array<bool, 9> &seen, std::vector<int> &order) {
+void dfs(int v, const std::array<std::array<bool, 9>, 9> &graph, std::array<bool, 9> &seen,
+         std::vector<int> &order) {
     seen[v] = true;
     order.push_back(v);
     for (int w = 0; w < 9; w++)
@@ -14,7 +15,7 @@ void dfs(int v, const std::array<std::array<bool, 9>, 9> &graph, std::array<bool
 int main() {
     std::array<std::array<bool, 9>, 9> graph{};
     int edges[][2] = {{5, 0}, {3, 8}, {7, 2}, {1, 6}, {0, 2}, {5, 3}, {7, 5}, {6, 4}, {8, 7}};
-    for (const int (&e)[2] : edges)
+    for (const int(&e)[2] : edges)
         graph[e[0]][e[1]] = graph[e[1]][e[0]] = true;
     std::array<bool, 9> seen{};
     std::vector<int> order;

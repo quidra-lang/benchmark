@@ -13,7 +13,7 @@ func main() {
 		}
 		text := strconv.FormatInt(n, 10)
 		for i, c := range text {
-			if i > 0 && (len(text) - i) % 3 == 0 {
+			if i > 0 && (len(text)-i)%3 == 0 {
 				fmt.Print(",")
 			}
 			fmt.Printf("%c", c)

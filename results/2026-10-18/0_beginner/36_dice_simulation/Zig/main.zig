@@ -5,7 +5,7 @@ pub fn main(init: std.process.Init) !void {
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
     var state: u64 = 12345;
-    var counts = [_]u32{ 0 } ** 13;
+    var counts: [13]u32 = @splat(0);
     for (0..1000) |_| {
         state = (state * 48271) % 2147483647;
         const a = state % 6 + 1;
@@ -19,6 +19,6 @@ pub fn main(init: std.process.Init) !void {
         if (counts[sum] > counts[best])
             best = sum;
     }
-    try out.print("most frequent: {d}\n", .{ best });
+    try out.print("most frequent: {d}\n", .{best});
     try out.flush();
 }

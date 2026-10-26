@@ -1,4 +1,4 @@
-for n in 1:30
+for n = 1:30
     if n % 15 == 0
         println("FizzBuzz")
     elseif n % 3 == 0

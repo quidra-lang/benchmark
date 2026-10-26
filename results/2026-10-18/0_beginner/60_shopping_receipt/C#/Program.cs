@@ -8,10 +8,13 @@ int[] prices = { 198, 165, 248, 128, 437, 268 };
 int[] quantities = { 2, 3, 1, 4, 1, 1 };
 bool[] food = { true, false, true, true, false, true };
 int foodTotal = 0, generalTotal = 0;
-for (int i = 0; i < names.Length; i++) {
+for (int i = 0; i < names.Length; i++)
+{
     int subtotal = prices[i] * quantities[i];
-    if (food[i]) foodTotal += subtotal;
-    else generalTotal += subtotal;
+    if (food[i])
+        foodTotal += subtotal;
+    else
+        generalTotal += subtotal;
     Console.WriteLine($"{names[i]} {prices[i]} x {quantities[i]} = {subtotal}");
 }
 int foodTax = foodTotal * 8 / 100, generalTax = generalTotal * 10 / 100;

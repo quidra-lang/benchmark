@@ -8,7 +8,9 @@ fn solve(board: *[81]u8, placements: *u64) bool {
     while (digit <= 9) : (digit += 1) {
         var valid = true;
         for (0..9) |k| {
-            if (board[r * 9 + k] == digit or board[k * 9 + c] == digit or board[(r / 3 * 3 + k / 3) * 9 + c / 3 * 3 + k % 3] == digit) {
+            if (board[r * 9 + k] == digit or board[k * 9 + c] == digit or
+                board[(r / 3 * 3 + k / 3) * 9 + c / 3 * 3 + k % 3] == digit)
+            {
                 valid = false;
                 break;
             }
@@ -37,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
         "600200000",
         "900010000",
         "700000004",
-        "020000036"
+        "020000036",
     };
     var board: [81]u8 = undefined;
     for (0..81) |i|
@@ -48,10 +50,10 @@ pub fn main(init: std.process.Init) !void {
         for (0..9) |c| {
             if (c > 0)
                 try out.writeByte(' ');
-            try out.print("{d}", .{ board[r * 9 + c] });
+            try out.print("{d}", .{board[r * 9 + c]});
         }
         try out.writeByte('\n');
     }
-    try out.print("placements: {d}\n", .{ placements });
+    try out.print("placements: {d}\n", .{placements});
     try out.flush();
 }

@@ -4,5 +4,6 @@ function hanoi(n: number, source: string, target: string, auxiliary: string): nu
   console.log(`move disk ${n} from ${source} to ${target}`);
   return count + 1 + hanoi(n - 1, auxiliary, target, source);
 }
+
 const moves = hanoi(4, "A", "C", "B");
 console.log(`total moves: ${moves}`);

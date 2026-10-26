@@ -1,4 +1,5 @@
 <?php
+
 foreach ([0, 59, 3725, 45296, 86400, 312047] as $seconds) {
     $hours = intdiv($seconds, 3600);
     $minutes = intdiv($seconds % 3600, 60);

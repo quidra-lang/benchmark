@@ -1,6 +1,12 @@
 fn main() {
-    for id in ["user_name", "maxRetryCount", "ShoppingCartItem", "background-color", "get_last_login_time",
-        "isEmailAddressValid"] {
+    for id in [
+        "user_name",
+        "maxRetryCount",
+        "ShoppingCartItem",
+        "background-color",
+        "get_last_login_time",
+        "isEmailAddressValid",
+    ] {
         let mut words = Vec::new();
         let mut word = String::new();
         for c in id.chars() {
@@ -17,9 +23,18 @@ fn main() {
         if !word.is_empty() {
             words.push(word);
         }
-        let caps: Vec<String> = words.iter().map(|w| w[..1].to_ascii_uppercase() + &w[1..]).collect();
+        let caps: Vec<String> = words
+            .iter()
+            .map(|w| w[..1].to_ascii_uppercase() + &w[1..])
+            .collect();
         let camel = words[0].clone() + &caps[1..].concat();
-        println!("{}: snake={}, camel={}, pascal={}, kebab={}", id, words.join("_"), camel, caps.concat(),
-            words.join("-"));
+        println!(
+            "{}: snake={}, camel={}, pascal={}, kebab={}",
+            id,
+            words.join("_"),
+            camel,
+            caps.concat(),
+            words.join("-")
+        );
     }
 }

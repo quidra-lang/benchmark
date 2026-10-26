@@ -10,19 +10,19 @@ func main() {
 			remain := len(s) - i
 			bits := uint32(s[i]) << 16
 			if remain > 1 {
-				bits |= uint32(s[i + 1]) << 8
+				bits |= uint32(s[i+1]) << 8
 			}
 			if remain > 2 {
-				bits |= uint32(s[i + 2])
+				bits |= uint32(s[i+2])
 			}
-			encoded = append(encoded, alphabet[(bits >> 18) &63], alphabet[(bits >> 12) &63])
+			encoded = append(encoded, alphabet[(bits>>18)&63], alphabet[(bits>>12)&63])
 			if remain > 1 {
-				encoded = append(encoded, alphabet[(bits >> 6) &63])
+				encoded = append(encoded, alphabet[(bits>>6)&63])
 			} else {
 				encoded = append(encoded, '=')
 			}
 			if remain > 2 {
-				encoded = append(encoded, alphabet[bits &63])
+				encoded = append(encoded, alphabet[bits&63])
 			} else {
 				encoded = append(encoded, '=')
 			}

@@ -1,5 +1,7 @@
 fn main() {
-    let names = ["tent", "stove", "lantern", "rope", "camera", "blanket", "water"];
+    let names = [
+        "tent", "stove", "lantern", "rope", "camera", "blanket", "water",
+    ];
     let weights = [10, 3, 2, 3, 5, 5, 6];
     let values = [120, 65, 45, 20, 90, 85, 100];
     let mut dp = [[0_i32; 21]; 8];

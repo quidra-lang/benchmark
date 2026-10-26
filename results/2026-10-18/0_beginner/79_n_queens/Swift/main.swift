@@ -11,15 +11,16 @@ func queens(_ positions: inout [Int], _ row: Int, _ first: inout [Int], _ found:
         }
         if safe {
             positions[row] = column
-            count += queens(&positions,row + 1,&first,&found)
+            count += queens(&positions, row + 1, &first, &found)
         }
     }
     return count
 }
+
 var firstEight = [Int](repeating: 0, count: 8)
 for n in 4...8 {
     var positions = [Int](repeating: 0, count: n), first = positions, found = false
-    let solutions = queens(&positions,0,&first,&found)
+    let solutions = queens(&positions, 0, &first, &found)
     print("N=\(n): \(solutions) solutions")
     if n == 8 { firstEight = first }
 }

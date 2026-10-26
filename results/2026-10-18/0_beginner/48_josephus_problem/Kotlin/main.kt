@@ -1,5 +1,5 @@
 fun main() {
-    for ((n,k) in listOf(7 to 3,10 to 2,41 to 3)) {
+    for ((n, k) in listOf(7 to 3, 10 to 2, 41 to 3)) {
         var index = 0
         val people = (1..n).toMutableList()
         val removed = mutableListOf<Int>()

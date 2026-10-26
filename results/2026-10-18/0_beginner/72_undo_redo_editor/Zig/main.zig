@@ -1,9 +1,6 @@
 const std = @import("std");
 
-const Snapshot = struct {
-    text: [128]u8 = undefined,
-    len: usize = 0
-};
+const Snapshot = struct { text: [128]u8 = undefined, len: usize = 0 };
 
 pub fn main(init: std.process.Init) !void {
     var output_buffer: [8192]u8 = undefined;
@@ -23,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
         "undo",
         "redo",
         "redo",
-        "type see you"
+        "type see you",
     };
     var current = Snapshot{};
     var undo: [14]Snapshot = undefined;
@@ -31,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
     var ulen: usize = 0;
     var rlen: usize = 0;
     for (commands) |command| {
-        try out.print("{s} => ", .{ command });
+        try out.print("{s} => ", .{command});
         if (std.mem.eql(u8, command, "undo")) {
             if (ulen == 0) {
                 try out.writeAll("nothing to undo\n");
@@ -63,7 +60,7 @@ pub fn main(init: std.process.Init) !void {
                 current.len -= @min(current.len, n);
             }
         }
-        try out.print("\"{s}\"\n", .{ current.text[0..current.len] });
+        try out.print("\"{s}\"\n", .{current.text[0..current.len]});
     }
     try out.flush();
 }

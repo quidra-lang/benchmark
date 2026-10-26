@@ -1,3 +1,3 @@
 for (i in 1:9) {
-    cat(paste(sprintf("%3d", i * (1:9)), collapse = ""), "\n", sep = "")
+  cat(paste(sprintf("%3d", i * (1:9)), collapse = ""), "\n", sep = "")
 }

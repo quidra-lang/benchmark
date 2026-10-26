@@ -3,11 +3,13 @@ using System.Globalization;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
-int[] values = { 52,17,38,9,61,38,24,45  };
+int[] values = { 52, 17, 38, 9, 61, 38, 24, 45 };
 int total = 0;
-for (int i = 1; i < values.Length; i++) {
+for (int i = 1; i < values.Length; i++)
+{
     int value = values[i], j = i - 1, shifts = 0;
-    while (j >= 0 && values[j] > value) {
+    while (j >= 0 && values[j] > value)
+    {
         values[j + 1] = values[j];
         j--;
         shifts++;

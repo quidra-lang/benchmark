@@ -6,8 +6,8 @@
 int main() {
     const std::array<std::string, 12> names = {"January", "February", "March", "April", "May", "June",
         "July", "August", "September", "October", "November", "December"};
-    const int cases[][2] = {{2024, 2}, {2026, 8}, {2026, 11}}, lengths[] = {31, 28, 31, 30, 31, 30,
-        31, 31, 30, 31, 30, 31};
+    const int cases[][2] = {{2024, 2}, {2026, 8}, {2026, 11}};
+    const int lengths[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     for (int k = 0; k < 3; k++) {
         int y = cases[k][0], m = cases[k][1], yy = y, mm = m;
         if (mm < 3) {

@@ -5,7 +5,7 @@ int main(void) {
     for (int i = 0; i < 5; i++) {
         long long n = starts[i], m = n, k = 0;
         while (n != 1) {
-            n = n % 2 == 0 ? n / 2: 3 * n + 1;
+            n = n % 2 == 0 ? n / 2 : 3 * n + 1;
             k++;
             if (n > m)
                 m = n;

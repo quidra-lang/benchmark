@@ -9,6 +9,9 @@ fn main() {
             reversed = reversed * 10 + digit;
             remaining /= 10;
         }
-        println!("{}: digits={} sum={} reversed={}", value, digits, sum, reversed);
+        println!(
+            "{}: digits={} sum={} reversed={}",
+            value, digits, sum, reversed
+        );
     }
 }

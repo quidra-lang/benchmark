@@ -6,8 +6,12 @@ public class Main {
             for (int i = 0; i < text.length(); i += 3) {
                 int remaining = text.length() - i;
                 int bits = text.charAt(i) << 16;
-                if (remaining > 1) bits |= text.charAt(i + 1) << 8;
-                if (remaining > 2) bits |= text.charAt(i + 2);
+                if (remaining > 1) {
+                    bits |= text.charAt(i + 1) << 8;
+                }
+                if (remaining > 2) {
+                    bits |= text.charAt(i + 2);
+                }
                 encoded.append(alphabet.charAt((bits >> 18) & 63));
                 encoded.append(alphabet.charAt((bits >> 12) & 63));
                 encoded.append(remaining > 1 ? alphabet.charAt((bits >> 6) & 63) : '=');

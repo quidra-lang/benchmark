@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
     var output_buffer: [8192]u8 = undefined;
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
-    var used = [_]bool{ false } ** 4;
+    var used: [4]bool = @splat(false);
     var word: [4]u8 = undefined;
     var count: u32 = 0;
     try permutations(out, 0, &used, &word, &count);

@@ -1,6 +1,13 @@
 fn main() {
-    for s in ["(a + b) * [c - d]", "{x = [1, 2, (3 + 4)]}", "f(a[i] + g(b)}", "(1 + 2)) * 3", "if (a < b) { c = d[0]; }",
-        "((a + b] * c", "[{(x * y) - z}"] {
+    for s in [
+        "(a + b) * [c - d]",
+        "{x = [1, 2, (3 + 4)]}",
+        "f(a[i] + g(b)}",
+        "(1 + 2)) * 3",
+        "if (a < b) { c = d[0]; }",
+        "((a + b] * c",
+        "[{(x * y) - z}",
+    ] {
         let mut stack = Vec::new();
         let mut error = None;
         for (i, c) in s.bytes().enumerate() {

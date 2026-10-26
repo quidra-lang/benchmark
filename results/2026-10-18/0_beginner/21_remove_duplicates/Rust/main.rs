@@ -6,6 +6,13 @@ fn main() {
             unique.push(n);
         }
     }
-    println!("{}", unique.iter().map(i32::to_string).collect::<Vec<_>>().join(" "));
+    println!(
+        "{}",
+        unique
+            .iter()
+            .map(i32::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
     println!("removed: {}", values.len() - unique.len());
 }

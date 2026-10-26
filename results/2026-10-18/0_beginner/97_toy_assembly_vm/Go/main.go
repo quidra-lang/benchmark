@@ -2,13 +2,13 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"strconv"
+	"strings"
 )
 
 func value(token string, registers [4]int64) int64 {
 	if token[0] >= 'A' && token[0] <= 'D' {
-		return registers[token[0] - 'A']
+		return registers[token[0]-'A']
 	}
 	n, _ := strconv.ParseInt(token, 10, 64)
 	return n

@@ -50,9 +50,15 @@ class Parser:
 
 
 lines = [
-    "width = 12", "height = width - 5", "area = width * height", "(area + 6) / 4",
-    "shift = -area / 8 + 3", "height = 100 / (height - 7) + bonus",
-    "volume = area * depth", "width = (width+3)*-(2-4)", "width * shift - height",
+    "width = 12",
+    "height = width - 5",
+    "area = width * height",
+    "(area + 6) / 4",
+    "shift = -area / 8 + 3",
+    "height = 100 / (height - 7) + bonus",
+    "volume = area * depth",
+    "width = (width+3)*-(2-4)",
+    "width * shift - height",
 ]
 variables = {}
 for line in lines:

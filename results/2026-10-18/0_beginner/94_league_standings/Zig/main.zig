@@ -8,7 +8,7 @@ const Team = struct {
     losses: u32 = 0,
     gf: i32 = 0,
     ga: i32 = 0,
-    points: u32 = 0
+    points: u32 = 0,
 };
 
 fn find(teams: *const [6]Team, name: []const u8) usize {
@@ -36,29 +36,14 @@ pub fn main(init: std.process.Init) !void {
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
     var teams = [_]Team{
-        .{ .name = "Lions" },
-        .{ .name = "Tigers" },
-        .{ .name = "Eagles" },
-        .{ .name = "Sharks" },
-        .{ .name = "Wolves" },
-        .{ .name = "Bears" }
+        .{ .name = "Lions" },  .{ .name = "Tigers" }, .{ .name = "Eagles" }, .{ .name = "Sharks" },
+        .{ .name = "Wolves" }, .{ .name = "Bears" },
     };
     const matches = [_][]const u8{
-        "Lions 0-3 Bears",
-        "Tigers 2-2 Wolves",
-        "Eagles 4-0 Sharks",
-        "Bears 0-1 Sharks",
-        "Wolves 2-1 Eagles",
-        "Lions 0-1 Tigers",
-        "Tigers 3-3 Bears",
-        "Eagles 2-2 Lions",
-        "Sharks 2-2 Wolves",
-        "Bears 3-1 Wolves",
-        "Lions 2-0 Sharks",
-        "Tigers 2-1 Eagles",
-        "Eagles 1-0 Bears",
-        "Sharks 2-0 Tigers",
-        "Wolves 2-1 Lions"
+        "Lions 0-3 Bears",   "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks",
+        "Wolves 2-1 Eagles", "Lions 0-1 Tigers",  "Tigers 3-3 Bears",  "Eagles 2-2 Lions",
+        "Sharks 2-2 Wolves", "Bears 3-1 Wolves",  "Lions 2-0 Sharks",  "Tigers 2-1 Eagles",
+        "Eagles 1-0 Bears",  "Sharks 2-0 Tigers", "Wolves 2-1 Lions",
     };
     for (matches) |match| {
         var fields = std.mem.splitScalar(u8, match, ' ');
@@ -92,17 +77,8 @@ pub fn main(init: std.process.Init) !void {
     for (teams, 0..) |t, i| {
         const gd = t.gf - t.ga;
         try out.print("{d}. {s} P={d} W={d} D={d} L={d} GF={d} GA={d} GD={s}{d} Pts={d}\n", .{
-            i + 1,
-            t.name,
-            t.played,
-            t.wins,
-            t.draws,
-            t.losses,
-            t.gf,
-            t.ga,
-            if (gd > 0) @as([]const u8, "+") else "",
-            gd,
-            t.points
+            i + 1,                                    t.name, t.played, t.wins, t.draws, t.losses, t.gf, t.ga,
+            if (gd > 0) @as([]const u8, "+") else "", gd,     t.points,
         });
     }
     try out.flush();

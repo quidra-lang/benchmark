@@ -11,7 +11,7 @@ pub fn main(init: std.process.Init) !void {
         "(1 + 2)) * 3",
         "if (a < b) { c = d[0]; }",
         "((a + b] * c",
-        "[{(x * y) - z}"
+        "[{(x * y) - z}",
     };
     for (strings) |s| {
         var stack: [100]u8 = undefined;
@@ -32,9 +32,9 @@ pub fn main(init: std.process.Init) !void {
         }
         if (err == null and len > 0)
             err = s.len;
-        try out.print("{s} -> ", .{ s });
+        try out.print("{s} -> ", .{s});
         if (err) |i| {
-            try out.print("error at index {d}\n", .{ i });
+            try out.print("error at index {d}\n", .{i});
         } else {
             try out.writeAll("balanced\n");
         }

@@ -1,8 +1,8 @@
 #include <stdio.h>
 
 int main(void) {
-    int polygon[][2] = {{1, 1}, {11, 2}, {13, 9}, {9, 7}, {7, 12}, {5, 6}, {2, 10}, {3, 5}}, points[][2] = {{4,
-        8}, {6, 4}, {10, 8}, {7, 11}, {14, 3}, {12, 8}};
+    int polygon[][2] = {{1, 1}, {11, 2}, {13, 9}, {9, 7}, {7, 12}, {5, 6}, {2, 10}, {3, 5}};
+    int points[][2] = {{4, 8}, {6, 4}, {10, 8}, {7, 11}, {14, 3}, {12, 8}};
     for (int k = 0; k < 6; k++) {
         int px = points[k][0], py = points[k][1], inside = 0;
         for (int i = 0; i < 8; i++) {
@@ -13,7 +13,7 @@ int main(void) {
                     inside = !inside;
             }
         }
-        printf("(%d, %d): %s\n", px, py, inside ? "inside": "outside");
+        printf("(%d, %d): %s\n", px, py, inside ? "inside" : "outside");
     }
     return 0;
 }

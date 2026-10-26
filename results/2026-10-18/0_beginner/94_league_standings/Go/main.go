@@ -6,7 +6,7 @@ import (
 )
 
 type Team struct {
-	name string
+	name                                        string
 	played, wins, draws, losses, gf, ga, points int
 }
 
@@ -30,10 +30,12 @@ func main() {
 	for _, name := range []string{"Lions", "Tigers", "Eagles", "Sharks", "Wolves", "Bears"} {
 		teams = append(teams, Team{name: name})
 	}
-	for _, game := range []string{"Lions 0-3 Bears", "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks",
-		"Wolves 2-1 Eagles", "Lions 0-1 Tigers", "Tigers 3-3 Bears", "Eagles 2-2 Lions", "Sharks 2-2 Wolves",
-		"Bears 3-1 Wolves", "Lions 2-0 Sharks", "Tigers 2-1 Eagles", "Eagles 1-0 Bears", "Sharks 2-0 Tigers",
-		"Wolves 2-1 Lions"} {
+	matches := []string{
+		"Lions 0-3 Bears", "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks", "Wolves 2-1 Eagles",
+		"Lions 0-1 Tigers", "Tigers 3-3 Bears", "Eagles 2-2 Lions", "Sharks 2-2 Wolves", "Bears 3-1 Wolves",
+		"Lions 2-0 Sharks", "Tigers 2-1 Eagles", "Eagles 1-0 Bears", "Sharks 2-0 Tigers", "Wolves 2-1 Lions",
+	}
+	for _, game := range matches {
 		var home, away string
 		var h, a int
 		fmt.Sscanf(game, "%s %d-%d %s", &home, &h, &a, &away)
@@ -52,8 +54,8 @@ func main() {
 		if a.points != b.points {
 			return a.points > b.points
 		}
-		if a.gf - a.ga != b.gf - b.ga {
-			return a.gf - a.ga > b.gf - b.ga
+		if a.gf-a.ga != b.gf-b.ga {
+			return a.gf-a.ga > b.gf-b.ga
 		}
 		if a.gf != b.gf {
 			return a.gf > b.gf
@@ -66,7 +68,7 @@ func main() {
 		if gd > 0 {
 			sign = "+"
 		}
-		fmt.Printf("%d. %s P=%d W=%d D=%d L=%d GF=%d GA=%d GD=%s%d Pts=%d\n", i + 1, t.name, t.played, t.wins,
+		fmt.Printf("%d. %s P=%d W=%d D=%d L=%d GF=%d GA=%d GD=%s%d Pts=%d\n", i+1, t.name, t.played, t.wins,
 			t.draws, t.losses, t.gf, t.ga, sign, gd, t.points)
 	}
 }

@@ -1,6 +1,6 @@
 public class Main {
     public static void main(String[] args) {
-        for (long start : new long[]{1,6,27,97,871}) {
+        for (long start : new long[]{1, 6, 27, 97, 871}) {
             long n = start, maximum = n;
             int steps = 0;
             while (n != 1) {

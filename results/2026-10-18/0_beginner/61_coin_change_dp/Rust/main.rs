@@ -22,6 +22,9 @@ fn main() {
             greedy += remaining / coin;
             remaining %= coin;
         }
-        println!("{}: min={} greedy={} ways={}", target, minimum[target], greedy, ways[target]);
+        println!(
+            "{}: min={} greedy={} ways={}",
+            target, minimum[target], greedy, ways[target]
+        );
     }
 }

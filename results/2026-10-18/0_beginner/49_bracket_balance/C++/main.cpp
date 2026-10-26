@@ -10,9 +10,9 @@ int main() {
         int error = -1;
         for (int i = 0; i < static_cast<int>(s.size()); i++) {
             char c = s[i];
-            if (c == '(' || c == '[' || c == '{')
+            if (c == '(' || c == '[' || c == '{') {
                 stack.push_back(c);
-            else if (c == ')' || c == ']' || c == '}') {
+            } else if (c == ')' || c == ']' || c == '}') {
                 char expected = c == ')' ? '(' : c == ']' ? '[' : '{';
                 if (stack.empty() || stack.back() != expected) {
                     error = i;

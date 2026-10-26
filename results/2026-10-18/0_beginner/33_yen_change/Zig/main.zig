@@ -8,7 +8,7 @@ pub fn main(init: std.process.Init) !void {
     for ([_]u32{ 3780, 15420, 99999, 506, 48263 }) |amount| {
         var remaining = amount;
         var total: u32 = 0;
-        try out.print("{d} yen:", .{ amount });
+        try out.print("{d} yen:", .{amount});
         for (denominations) |denom| {
             const count = remaining / denom;
             remaining %= denom;
@@ -16,7 +16,7 @@ pub fn main(init: std.process.Init) !void {
             if (count > 0)
                 try out.print(" {d}x{d}", .{ denom, count });
         }
-        try out.print(" ({d} pieces)\n", .{ total });
+        try out.print(" ({d} pieces)\n", .{total});
     }
     try out.flush();
 }

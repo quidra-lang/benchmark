@@ -5,8 +5,9 @@
 #include <sstream>
 
 int main() {
-    for (const std::string &expression : std::array<std::string, 7>{"3 4 + 2 *", "-17 5 / 4 -3 * -",
-        "1 2 + * 3", "15 7 1 1 + - / 3 * 2 1 1 + + -", "4 2 5 * + 1 3 2 * - 5 + /", "2 3 4 + 5", "46341 46339 * -2 /"}) {
+    const std::array<std::string, 7> expressions = {"3 4 + 2 *", "-17 5 / 4 -3 * -", "1 2 + * 3",
+        "15 7 1 1 + - / 3 * 2 1 1 + + -", "4 2 5 * + 1 3 2 * - 5 + /", "2 3 4 + 5", "46341 46339 * -2 /"};
+    for (const std::string &expression : expressions) {
         std::istringstream input(expression);
         std::vector<long long> stack;
         std::string error;
@@ -25,8 +26,9 @@ int main() {
                     break;
                 }
                 stack.push_back(token == "+" ? a + b : token == "-" ? a - b : token == "*" ? a * b : a / b);
-            } else
+            } else {
                 stack.push_back(std::stoll(token));
+            }
         }
         if (error.empty() && stack.size() != 1)
             error = "leftover operands";

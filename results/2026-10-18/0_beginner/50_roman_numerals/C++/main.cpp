@@ -30,7 +30,7 @@ int main() {
         int result = 0;
         for (std::size_t i = 0; i < roman.size(); i++) {
             int v = value(roman[i]), next = i + 1 < roman.size() ? value(roman[i + 1]) : 0;
-            result += v < next ? - v : v;
+            result += v < next ? -v : v;
         }
         std::cout << n << " -> " << roman << " -> " << result << '\n';
     }

@@ -1,11 +1,16 @@
 fn main() {
-    let words = ["listen", "stone", "night", "silent", "notes", "apple", "thing", "enlist", "earth",
-        "onset", "heart", "tones"];
-    let keys: Vec<Vec<u8>> = words.iter().map(|w| {
-        let mut k = w.as_bytes().to_vec();
-        k.sort();
-        k
-    }).collect();
+    let words = [
+        "listen", "stone", "night", "silent", "notes", "apple", "thing", "enlist", "earth",
+        "onset", "heart", "tones",
+    ];
+    let keys: Vec<Vec<u8>> = words
+        .iter()
+        .map(|w| {
+            let mut k = w.as_bytes().to_vec();
+            k.sort();
+            k
+        })
+        .collect();
     let mut used = [false; 12];
     for i in 0..12 {
         if !used[i] {

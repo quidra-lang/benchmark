@@ -22,7 +22,9 @@ for expression in expressions {
             case "*": stack.append(a * b)
             default: stack.append(a / b)
             }
-        } else { stack.append(Int(token)!) }
+        } else {
+            stack.append(Int(token)!)
+        }
     }
     if error == nil && stack.count != 1 { error = "leftover operands" }
     let result = error.map { "error: " + $0 } ?? String(stack[0])

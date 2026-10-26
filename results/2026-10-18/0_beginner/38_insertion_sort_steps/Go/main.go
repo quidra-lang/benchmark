@@ -7,8 +7,8 @@ func main() {
 	total := 0
 	for i := 1; i < 8; i++ {
 		v, j, shifts := a[i], i, 0
-		for j > 0 && a[j - 1] > v {
-			a[j] = a[j - 1]
+		for j > 0 && a[j-1] > v {
+			a[j] = a[j-1]
 			j--
 			shifts++
 		}

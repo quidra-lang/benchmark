@@ -8,4 +8,4 @@ for n in range(2, limit + 1):
 primes = [n for n in range(2, limit + 1) if is_prime[n]]
 print(f"count: {len(primes)}")
 for start in range(0, len(primes), 10):
-    print(*primes[start:start + 10])
+    print(*primes[start : start + 10])

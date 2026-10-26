@@ -5,7 +5,7 @@ pub fn main(init: std.process.Init) !void {
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
     const text = "Peter Piper picked a peck of pickled peppers!";
-    var counts = [_]u32{ 0 } ** 26;
+    var counts: [26]u32 = @splat(0);
     for (text) |c| {
         const lower = std.ascii.toLower(c);
         if (lower >= 'a' and lower <= 'z')

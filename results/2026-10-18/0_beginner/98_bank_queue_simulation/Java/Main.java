@@ -3,7 +3,7 @@ import java.util.Locale;
 public class Main {
     public static void main(String[] args) {
         long state = 42;
-        int[] free = {0,0};
+        int[] free = {0, 0};
         int arrival = 0, totalWait = 0, maxWait = 0;
         for (int customer = 1; customer <= 20; customer++) {
             state = state * 48271 % 2147483647;
@@ -11,15 +11,15 @@ public class Main {
             state = state * 48271 % 2147483647;
             int service = (int)(state % 7) + 2;
             int teller = free[0] <= free[1] ? 0 : 1;
-            int start = Math.max(arrival,free[teller]), end = start + service, wait = start - arrival;
+            int start = Math.max(arrival, free[teller]), end = start + service, wait = start - arrival;
             free[teller] = end;
             totalWait += wait;
-            maxWait = Math.max(maxWait,wait);
-            System.out.println("customer " + customer + ": arrive=" + arrival + " start=" + start + " end=" + end +
-                " teller=" + (teller + 1) + " wait=" + wait);
+            maxWait = Math.max(maxWait, wait);
+            System.out.println("customer " + customer + ": arrive=" + arrival + " start=" + start + " end=" + end
+                    + " teller=" + (teller + 1) + " wait=" + wait);
         }
         System.out.printf(Locale.ROOT, "average wait: %.2f%n", totalWait / 20.0);
         System.out.println("max wait: " + maxWait);
-        System.out.println("last departure: " + Math.max(free[0],free[1]));
+        System.out.println("last departure: " + Math.max(free[0], free[1]));
     }
 }

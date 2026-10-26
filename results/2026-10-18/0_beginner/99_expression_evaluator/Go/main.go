@@ -6,10 +6,10 @@ import (
 )
 
 type Parser struct {
-	tokens []string
-	position int
+	tokens    []string
+	position  int
 	variables map[string]int64
-	err string
+	err       string
 }
 
 func tokenize(line string) []string {
@@ -35,6 +35,7 @@ func tokenize(line string) []string {
 	}
 	return tokens
 }
+
 func (p *Parser) unary() int64 {
 	token := p.tokens[p.position]
 	p.position++
@@ -58,6 +59,7 @@ func (p *Parser) unary() int64 {
 	}
 	return value
 }
+
 func (p *Parser) product() int64 {
 	value := p.unary()
 	for p.err == "" && p.position < len(p.tokens) && (p.tokens[p.position] == "*" || p.tokens[p.position] == "/") {
@@ -79,6 +81,7 @@ func (p *Parser) product() int64 {
 	}
 	return value
 }
+
 func (p *Parser) sum() int64 {
 	value := p.product()
 	for p.err == "" && p.position < len(p.tokens) && (p.tokens[p.position] == "+" || p.tokens[p.position] == "-") {
@@ -99,9 +102,10 @@ func (p *Parser) sum() int64 {
 
 func main() {
 	variables := map[string]int64{}
-	for _, line := range []string{"width = 12", "height = width - 5", "area = width * height", "(area + 6) / 4",
-		"shift = -area / 8 + 3", "height = 100 / (height - 7) + bonus", "volume = area * depth", "width = (width+3)*-(2-4)",
-		"width * shift - height"} {
+	lines := []string{"width = 12", "height = width - 5", "area = width * height", "(area + 6) / 4",
+		"shift = -area / 8 + 3", "height = 100 / (height - 7) + bonus", "volume = area * depth",
+		"width = (width+3)*-(2-4)", "width * shift - height"}
+	for _, line := range lines {
 		tokens := tokenize(line)
 		assignment := len(tokens) > 1 && tokens[1] == "="
 		parser := Parser{tokens: tokens, variables: variables}

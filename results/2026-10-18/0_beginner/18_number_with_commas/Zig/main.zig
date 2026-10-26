@@ -6,7 +6,7 @@ pub fn main(init: std.process.Init) !void {
     const out = &writer.interface;
     for ([_]i64{ 0, 7, 999, 1000, -456789, 3141592, 9876543210 }) |n| {
         var buf: [32]u8 = undefined;
-        const digits = try std.fmt.bufPrint(&buf, "{d}", .{ @abs(n) });
+        const digits = try std.fmt.bufPrint(&buf, "{d}", .{@abs(n)});
         if (n < 0)
             try out.writeByte('-');
         for (digits, 0..) |c, i| {

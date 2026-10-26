@@ -4,8 +4,7 @@ pub fn main(init: std.process.Init) !void {
     var output_buffer: [8192]u8 = undefined;
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
-    var words = std.mem.splitScalar(u8, "we planted beans and carrots in the garden behind our old house",
-        ' ');
+    var words = std.mem.splitScalar(u8, "we planted beans and carrots in the garden behind our old house", ' ');
     var count: usize = 0;
     var total: usize = 0;
     var longest: []const u8 = "";
@@ -19,7 +18,8 @@ pub fn main(init: std.process.Init) !void {
         total += word.len;
     }
     const average = @as(f64, @floatFromInt(total)) / @as(f64, @floatFromInt(count));
-    try out.print("words: {d}\nlongest: {s}\nshortest: {s}\naverage length: {d:.2}\n",
-        .{ count, longest, shortest, average });
+    try out.print("words: {d}\nlongest: {s}\nshortest: {s}\naverage length: {d:.2}\n", .{
+        count, longest, shortest, average,
+    });
     try out.flush();
 }

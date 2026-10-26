@@ -22,15 +22,15 @@ fn mergeSort(out: *std.Io.Writer, a: *[10]i32, l: usize, r: usize, inversions: *
         len += 1;
     }
     const left = m + 1 - i;
-    @memcpy(temp[len..][0..left], a[i..m + 1]);
+    @memcpy(temp[len..][0..left], a[i .. m + 1]);
     len += left;
     const right = r + 1 - j;
-    @memcpy(temp[len..][0..right], a[j..r + 1]);
+    @memcpy(temp[len..][0..right], a[j .. r + 1]);
     len += right;
-    @memcpy(a[l..r + 1], temp[0..len]);
+    @memcpy(a[l .. r + 1], temp[0..len]);
     try out.print("merge [{d}..{d}]:", .{ l, r });
     for (temp[0..len]) |v|
-        try out.print(" {d}", .{ v });
+        try out.print(" {d}", .{v});
     try out.writeByte('\n');
 }
 
@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     try mergeSort(out, &a, 0, 9, &inversions);
     try out.writeAll("sorted:");
     for (a) |v|
-        try out.print(" {d}", .{ v });
-    try out.print("\ninversions: {d}\n", .{ inversions });
+        try out.print(" {d}", .{v});
+    try out.print("\ninversions: {d}\n", .{inversions});
     try out.flush();
 }

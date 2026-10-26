@@ -5,22 +5,11 @@ import java.util.List;
 
 public class Main {
     public static void main(String[] args) {
-        String[] matches = {"Lions 0-3 Bears",
-            "Tigers 2-2 Wolves",
-            "Eagles 4-0 Sharks",
-            "Bears 0-1 Sharks",
-            "Wolves 2-1 Eagles",
-            "Lions 0-1 Tigers",
-            "Tigers 3-3 Bears",
-            "Eagles 2-2 Lions",
-            "Sharks 2-2 Wolves",
-            "Bears 3-1 Wolves",
-            "Lions 2-0 Sharks",
-            "Tigers 2-1 Eagles",
-            "Eagles 1-0 Bears",
-            "Sharks 2-0 Tigers",
-            "Wolves 2-1 Lions"};
-        String[] names = {"Lions","Tigers","Eagles","Sharks","Wolves","Bears"};
+        String[] matches = {
+            "Lions 0-3 Bears", "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks", "Wolves 2-1 Eagles",
+            "Lions 0-1 Tigers", "Tigers 3-3 Bears", "Eagles 2-2 Lions", "Sharks 2-2 Wolves", "Bears 3-1 Wolves",
+            "Lions 2-0 Sharks", "Tigers 2-1 Eagles", "Eagles 1-0 Bears", "Sharks 2-0 Tigers", "Wolves 2-1 Lions"};
+        String[] names = {"Lions", "Tigers", "Eagles", "Sharks", "Wolves", "Bears"};
         int[][] stats = new int[6][6];
         for (String match : matches) {
             String[] parts = match.split(" "), goals = parts[1].split("-");
@@ -40,7 +29,7 @@ public class Main {
                 stats[h > a ? away : home][3]++;
             }
         }
-        List<Integer> order = new ArrayList<>(List.of(0,1,2,3,4,5));
+        List<Integer> order = new ArrayList<>(List.of(0, 1, 2, 3, 4, 5));
         order.sort(Comparator.<Integer>comparingInt(i -> 3 * stats[i][1] + stats[i][2]).reversed()
             .thenComparing(Comparator.<Integer>comparingInt(i -> stats[i][4] - stats[i][5]).reversed())
             .thenComparing(Comparator.<Integer>comparingInt(i -> stats[i][4]).reversed())
@@ -48,9 +37,9 @@ public class Main {
         for (int position = 0; position < 6; position++) {
             int i = order.get(position), gd = stats[i][4] - stats[i][5];
             String difference = (gd > 0 ? "+" : "") + gd;
-            System.out.println((position + 1) + ". " + names[i] + " P=" + stats[i][0] + " W=" + stats[i][1] +
-                " D=" + stats[i][2] + " L=" + stats[i][3] + " GF=" + stats[i][4] + " GA=" + stats[i][5] +
-                " GD=" + difference + " Pts=" + (3 * stats[i][1] + stats[i][2]));
+            System.out.println((position + 1) + ". " + names[i] + " P=" + stats[i][0] + " W=" + stats[i][1]
+                    + " D=" + stats[i][2] + " L=" + stats[i][3] + " GF=" + stats[i][4] + " GA=" + stats[i][5]
+                    + " GD=" + difference + " Pts=" + (3 * stats[i][1] + stats[i][2]));
         }
     }
 }

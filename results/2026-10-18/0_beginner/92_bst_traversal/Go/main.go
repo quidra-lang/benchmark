@@ -9,7 +9,7 @@ type Node struct {
 func insert(nodes *[]Node, root, key int) int {
 	if root < 0 {
 		*nodes = append(*nodes, Node{key, -1, -1})
-		return len(*nodes) -1
+		return len(*nodes) - 1
 	}
 	if key < (*nodes)[root].key {
 		child := insert(nodes, (*nodes)[root].left, key)

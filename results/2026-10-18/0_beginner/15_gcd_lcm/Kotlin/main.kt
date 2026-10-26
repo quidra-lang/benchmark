@@ -8,6 +8,7 @@ fun gcd(a: Int, b: Int): Int {
     }
     return x
 }
+
 fun main() {
     for ((a, b) in listOf(48 to 180, 1071 to 462, 7 to 91, 13 to 97, 36288 to 98280)) {
         val g = gcd(a, b)

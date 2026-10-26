@@ -13,14 +13,14 @@ pub fn main(init: std.process.Init) !void {
         "#...#...#...#",
         "###.#####.#.#",
         "#.......#..G#",
-        "#############"
+        "#############",
     };
     var maze: [117]u8 = undefined;
     for (initial, 0..) |row, r|
-        @memcpy(maze[r * 13..][0..13], row);
+        @memcpy(maze[r * 13 ..][0..13], row);
     const start = std.mem.findScalar(u8, &maze, 'S').?;
     const goal = std.mem.findScalar(u8, &maze, 'G').?;
-    var parent = [_]i32{ -1 } ** 117;
+    var parent: [117]i32 = @splat(-1);
     parent[start] = @intCast(start);
     var queue: [117]usize = undefined;
     queue[0] = start;
@@ -38,7 +38,7 @@ pub fn main(init: std.process.Init) !void {
             if (r < 0 or r >= 9 or c < 0 or c >= 13)
                 continue;
             const u: usize = @intCast(r * 13 + c);
-            if (maze[u] != '#' and parent[u] == - 1) {
+            if (maze[u] != '#' and parent[u] == -1) {
                 parent[u] = @intCast(v);
                 queue[tail] = u;
                 tail += 1;
@@ -53,8 +53,8 @@ pub fn main(init: std.process.Init) !void {
         current = @intCast(parent[current]);
         steps += 1;
     }
-    try out.print("steps: {d}\n", .{ steps });
+    try out.print("steps: {d}\n", .{steps});
     for (0..9) |r|
-        try out.print("{s}\n", .{ maze[r * 13..r * 13 + 13] });
+        try out.print("{s}\n", .{maze[r * 13 .. r * 13 + 13]});
     try out.flush();
 }

@@ -12,7 +12,7 @@ let lines = [
     "2026-04-04,east,stapler,5,600",
     "2026-04-04,south,notebook,6,200",
     "2026-04-04,west,marker,8,150"]
-var regions = [String:Int](), products = [String:Int](), days = [String:Int]()
+var regions = [String: Int](), products = [String: Int](), days = [String: Int]()
 for line in lines.dropFirst() {
     let fields = line.split(separator: ",").map(String.init)
     let quantity = Int(fields[3])!, amount = quantity * Int(fields[4])!

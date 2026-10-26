@@ -7,6 +7,7 @@ public class Main {
         }
         return result.toString();
     }
+
     public static void main(String[] args) {
         String encrypted = cipher("Zoe, meet Max by the Old Bridge at six!", 3);
         System.out.println(encrypted);

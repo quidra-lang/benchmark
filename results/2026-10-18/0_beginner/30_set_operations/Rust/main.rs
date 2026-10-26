@@ -7,9 +7,20 @@ fn main() {
         ("union", a.union(&b).copied().collect::<Vec<_>>()),
         ("intersection", a.intersection(&b).copied().collect()),
         ("difference", a.difference(&b).copied().collect()),
-        ("symmetric difference", a.symmetric_difference(&b).copied().collect()),
+        (
+            "symmetric difference",
+            a.symmetric_difference(&b).copied().collect(),
+        ),
     ];
     for (label, values) in results {
-        println!("{}: {}", label, values.iter().map(i32::to_string).collect::<Vec<_>>().join(" "));
+        println!(
+            "{}: {}",
+            label,
+            values
+                .iter()
+                .map(i32::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
     }
 }

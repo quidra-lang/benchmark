@@ -1,9 +1,9 @@
 function main()
-    numbers = [27,64,13,88,41,5,72,36]
+    numbers = [27, 64, 13, 88, 41, 5, 72, 36]
     total = 0
-    for pass in 1:7
+    for pass = 1:7
         changed = false
-        for j in 1:8-pass
+        for j = 1:(8-pass)
             if numbers[j] > numbers[j+1]
                 numbers[j], numbers[j+1] = numbers[j+1], numbers[j]
                 total += 1
@@ -15,4 +15,5 @@ function main()
     end
     println("swaps: ", total)
 end
+
 main()

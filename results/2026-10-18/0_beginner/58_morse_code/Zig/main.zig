@@ -5,42 +5,10 @@ pub fn main(init: std.process.Init) !void {
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
     const codes = [_][]const u8{
-        ".-",
-        "-...",
-        "-.-.",
-        "-..",
-        ".",
-        "..-.",
-        "--.",
-        "....",
-        "..",
-        ".---",
-        "-.-",
-        ".-..",
-        "--",
-        "-.",
-        "---",
-        ".--.",
-        "--.-",
-        ".-.",
-        "...",
-        "-",
-        "..-",
-        "...-",
-        ".--",
-        "-..-",
-        "-.--",
-        "--..",
-        "-----",
-        ".----",
-        "..---",
-        "...--",
-        "....-",
-        ".....",
-        "-....",
-        "--...",
-        "---..",
-        "----."
+        ".-",    "-...",  "-.-.",  "-..",   ".",     "..-.",  "--.",   "....",  "..",    ".---",
+        "-.-",   ".-..",  "--",    "-.",    "---",   ".--.",  "--.-",  ".-.",   "...",   "-",
+        "..-",   "...-",  ".--",   "-..-",  "-.--",  "--..",  "-----", ".----", "..---", "...--",
+        "....-", ".....", "-....", "--...", "---..", "----.",
     };
     const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     const message = "MEET ME AT PIER 9 AT 1745";
@@ -63,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
         len += codes[index].len;
         need_space = true;
     }
-    try out.print("{s}\n", .{ encoded[0..len] });
+    try out.print("{s}\n", .{encoded[0..len]});
     var tokens = std.mem.splitScalar(u8, encoded[0..len], ' ');
     while (tokens.next()) |token| {
         if (std.mem.eql(u8, token, "/")) {

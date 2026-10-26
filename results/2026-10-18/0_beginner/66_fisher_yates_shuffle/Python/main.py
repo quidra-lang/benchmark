@@ -6,4 +6,4 @@ for i in range(len(deck) - 1, 0, -1):
     j = state % (i + 1)
     deck[i], deck[j] = deck[j], deck[i]
 for start in range(0, len(deck), 13):
-    print(*deck[start:start + 13])
+    print(*deck[start : start + 13])

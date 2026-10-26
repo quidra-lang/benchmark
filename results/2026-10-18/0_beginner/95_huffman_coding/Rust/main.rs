@@ -7,10 +7,15 @@ struct Node {
 }
 
 fn pop(roots: &mut Vec<usize>, nodes: &[Node]) -> usize {
-    let position = roots.iter().enumerate().min_by_key(|pair| {
-        let v = *pair.1;
-        (nodes[v].weight, nodes[v].minimum)
-    }).unwrap().0;
+    let position = roots
+        .iter()
+        .enumerate()
+        .min_by_key(|pair| {
+            let v = *pair.1;
+            (nodes[v].weight, nodes[v].minimum)
+        })
+        .unwrap()
+        .0;
     roots.remove(position)
 }
 
@@ -19,7 +24,12 @@ fn assign(nodes: &[Node], root: usize, prefix: String, codes: &mut [String]) {
         codes[symbol] = prefix;
         return;
     }
-    assign(nodes, nodes[root].left.unwrap(), prefix.clone() + "0", codes);
+    assign(
+        nodes,
+        nodes[root].left.unwrap(),
+        prefix.clone() + "0",
+        codes,
+    );
     assign(nodes, nodes[root].right.unwrap(), prefix + "1", codes);
 }
 

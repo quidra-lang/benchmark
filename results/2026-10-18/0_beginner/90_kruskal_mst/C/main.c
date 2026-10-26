@@ -5,8 +5,9 @@ typedef struct {
     char a, b;
     int weight;
 } Edge;
+
 int compare(const void *a, const void *b) {
-    return ((const Edge *) a)->weight - ((const Edge *) b)->weight;
+    return ((const Edge *)a)->weight - ((const Edge *)b)->weight;
 }
 
 int find(int *parent, int v) {
@@ -16,9 +17,9 @@ int find(int *parent, int v) {
 }
 
 int main(void) {
-    Edge edges[] = {{'A', 'B', 7}, {'C', 'A', 4}, {'B', 'C', 9}, {'B', 'D', 14}, {'D', 'C', 6}, {'C',
-        'E', 3}, {'E', 'D', 5}, {'F', 'D', 11}, {'E', 'G', 16}, {'G', 'F', 8}, {'H', 'F', 12}, {'G', 'H',
-        2}, {'H', 'E', 10}};
+    Edge edges[] = {{'A', 'B', 7}, {'C', 'A', 4}, {'B', 'C', 9}, {'B', 'D', 14}, {'D', 'C', 6},
+        {'C', 'E', 3}, {'E', 'D', 5}, {'F', 'D', 11}, {'E', 'G', 16}, {'G', 'F', 8}, {'H', 'F', 12},
+        {'G', 'H', 2}, {'H', 'E', 10}};
     qsort(edges, 13, sizeof(Edge), compare);
     int parent[8];
     for (int i = 0; i < 8; i++)

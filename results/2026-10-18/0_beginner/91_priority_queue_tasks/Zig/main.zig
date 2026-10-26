@@ -1,10 +1,6 @@
 const std = @import("std");
 
-const Task = struct {
-    name: []const u8,
-    priority: u32,
-    sequence: usize
-};
+const Task = struct { name: []const u8, priority: u32, sequence: usize };
 
 fn compare(_: void, a: Task, b: Task) std.math.Order {
     return if (a.priority != b.priority)
@@ -33,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
         "add build 1",
         "add docs 4",
         "run",
-        "run"
+        "run",
     };
     var heap: std.PriorityQueue(Task, void, compare) = .empty;
     defer heap.deinit(std.heap.page_allocator);
@@ -53,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
     }
     try out.writeAll("remaining:");
     while (heap.pop()) |task| {
-        try out.print(" {s}", .{ task.name });
+        try out.print(" {s}", .{task.name});
     }
     try out.writeByte('\n');
     try out.flush();

@@ -28,7 +28,12 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     const deviation = @sqrt(squares / @as(f64, @floatFromInt(values.len)));
-    try out.print("mean: {d:.3}\nmedian: {d}\nmode: {d}\nrange: {d}\nstdev: {d:.3}\n",
-        .{ mean, sorted[values.len / 2], mode, sorted[values.len - 1] - sorted[0], deviation });
+    try out.print("mean: {d:.3}\nmedian: {d}\nmode: {d}\nrange: {d}\nstdev: {d:.3}\n", .{
+        mean,
+        sorted[values.len / 2],
+        mode,
+        sorted[values.len - 1] - sorted[0],
+        deviation,
+    });
     try out.flush();
 }

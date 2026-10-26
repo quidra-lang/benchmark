@@ -6,6 +6,7 @@ typedef struct {
     const char *text;
     int category, key[5], length;
 } Hand;
+
 Hand evaluate(const char *text) {
     const char *ranks = "23456789TJQKA";
     int counts[15] = {0}, flush = 1;
@@ -47,7 +48,7 @@ Hand evaluate(const char *text) {
 }
 
 int compare(const void *a, const void *b) {
-    const Hand * x = a, *y = b;
+    const Hand *x = a, *y = b;
     if (x->category != y->category)
         return y->category - x->category;
     for (int i = 0; i < 5; i++)
@@ -57,9 +58,10 @@ int compare(const void *a, const void *b) {
 }
 
 int main(void) {
-    const char *input[] = {"9C 9D 5H QH 2C", "4D AH 3C 5S 2H", "KS 8S 2S JS 6S", "7H 7D KC 7S KD", "3H 6C 4S 2D 5C",
-        "JD TC 4H 8C AS", "QC 6D QS 3S 6H", "9H KH 9S 8H 3D"}, *categories[] = {"high card", "one pair",
-        "two pair", "three of a kind", "straight", "flush", "full house", "four of a kind", "straight flush"};
+    const char *input[] = {"9C 9D 5H QH 2C", "4D AH 3C 5S 2H", "KS 8S 2S JS 6S", "7H 7D KC 7S KD",
+        "3H 6C 4S 2D 5C", "JD TC 4H 8C AS", "QC 6D QS 3S 6H", "9H KH 9S 8H 3D"};
+    const char *categories[] = {"high card", "one pair", "two pair", "three of a kind", "straight", "flush",
+        "full house", "four of a kind", "straight flush"};
     Hand hands[8];
     for (int i = 0; i < 8; i++)
         hands[i] = evaluate(input[i]);

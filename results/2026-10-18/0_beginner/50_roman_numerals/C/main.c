@@ -15,8 +15,8 @@ int value(char c) {
 }
 
 int main(void) {
-    int numbers[] = {9, 14, 49, 94, 444, 1994, 2768, 3999}, values[] = {1000, 900, 500, 400, 100, 90,
-        50, 40, 10, 9, 5, 4, 1};
+    int numbers[] = {9, 14, 49, 94, 444, 1994, 2768, 3999};
+    int values[] = {1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1};
     const char *symbols[] = {"M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"};
     for (int k = 0; k < 8; k++) {
         int remaining = numbers[k];
@@ -29,7 +29,7 @@ int main(void) {
         int result = 0;
         for (int i = 0; roman[i]; i++) {
             int v = value(roman[i]), next = value(roman[i + 1]);
-            result += v < next ? - v: v;
+            result += v < next ? -v : v;
         }
         printf("%d -> %s -> %d\n", numbers[k], roman, result);
     }

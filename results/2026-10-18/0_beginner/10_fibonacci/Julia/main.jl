@@ -6,4 +6,5 @@ function main()
     println(join(terms, " "))
     println("sum: ", sum(terms))
 end
+
 main()

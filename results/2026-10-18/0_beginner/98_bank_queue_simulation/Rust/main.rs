@@ -14,9 +14,20 @@ fn main() {
         free_time[teller] = end;
         total_wait += wait;
         maximum = maximum.max(wait);
-        println!("customer {}: arrive={} start={} end={} teller={} wait={}", k, arrival, start, end, teller + 1,
-            wait);
+        println!(
+            "customer {}: arrive={} start={} end={} teller={} wait={}",
+            k,
+            arrival,
+            start,
+            end,
+            teller + 1,
+            wait
+        );
     }
-    println!("average wait: {:.2}\nmax wait: {}\nlast departure: {}", f64::from(total_wait) / 20.0, maximum,
-        free_time[0].max(free_time[1]));
+    println!(
+        "average wait: {:.2}\nmax wait: {}\nlast departure: {}",
+        f64::from(total_wait) / 20.0,
+        maximum,
+        free_time[0].max(free_time[1])
+    );
 }

@@ -1,4 +1,10 @@
-let values = ["AAABBBCCCD", String(repeating: "W",count: 12) + "B" + String(repeating: "W",count: 12) + "BBB", "ALGORITHM", "MISSISSIPPI", String(repeating: "X",count: 10) + String(repeating: "Y",count: 21) + "Z"]
+let values = [
+    "AAABBBCCCD",
+    String(repeating: "W", count: 12) + "B" + String(repeating: "W", count: 12) + "BBB",
+    "ALGORITHM",
+    "MISSISSIPPI",
+    String(repeating: "X", count: 10) + String(repeating: "Y", count: 21) + "Z",
+]
 for text in values {
     let chars = Array(text)
     var encoded = "", i = 0

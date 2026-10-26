@@ -1,4 +1,5 @@
 const grid = [".......", "..#....", "....#..", ".#.....", "...#.#.", "......."];
+
 function paths(blocked) {
   const dp = Array(grid[0].length).fill(0);
   dp[0] = 1;
@@ -10,5 +11,6 @@ function paths(blocked) {
   }
   return dp[dp.length - 1];
 }
+
 console.log(`without obstacles: ${paths(false)}`);
 console.log(`with obstacles: ${paths(true)}`);

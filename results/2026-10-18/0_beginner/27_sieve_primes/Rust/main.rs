@@ -12,6 +12,13 @@ fn main() {
     let primes: Vec<usize> = (2..=200).filter(|&n| prime[n]).collect();
     println!("count: {}", primes.len());
     for group in primes.chunks(10) {
-        println!("{}", group.iter().map(usize::to_string).collect::<Vec<_>>().join(" "));
+        println!(
+            "{}",
+            group
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
     }
 }

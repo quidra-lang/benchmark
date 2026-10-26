@@ -4,7 +4,7 @@ pub fn main(init: std.process.Init) !void {
     var output_buffer: [8192]u8 = undefined;
     var writer = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const out = &writer.interface;
-    var a = [_]bool{ false } ** 26;
+    var a: [26]bool = @splat(false);
     var b = a;
     for ([_]usize{ 12, 5, 8, 21, 5, 17, 3, 12, 9 }) |v|
         a[v] = true;
@@ -18,10 +18,10 @@ pub fn main(init: std.process.Init) !void {
                 0 => a[v] or b[v],
                 1 => a[v] and b[v],
                 2 => a[v] and !b[v],
-                else => a[v] != b[v]
+                else => a[v] != b[v],
             };
             if (include)
-                try out.print(" {d}", .{ v });
+                try out.print(" {d}", .{v});
         }
         try out.writeByte('\n');
     }

@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
-	"strings"
-	"strconv"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 func main() {

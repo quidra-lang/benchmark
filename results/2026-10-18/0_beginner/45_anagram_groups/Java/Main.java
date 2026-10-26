@@ -6,12 +6,17 @@ import java.util.Map;
 
 public class Main {
     public static void main(String[] args) {
-        Map<String,List<String>> groups = new LinkedHashMap<>();
-        for (String word : new String[]{"listen","stone","night","silent","notes","apple","thing","enlist","earth","onset","heart","tones"}) {
+        Map<String, List<String>> groups = new LinkedHashMap<>();
+        String[] words = {
+            "listen", "stone", "night", "silent", "notes", "apple", "thing", "enlist", "earth",
+            "onset", "heart", "tones"};
+        for (String word : words) {
             char[] letters = word.toCharArray();
             Arrays.sort(letters);
             groups.computeIfAbsent(new String(letters), key -> new ArrayList<>()).add(word);
         }
-        for (List<String> group : groups.values()) System.out.println(String.join(" ", group));
+        for (List<String> group : groups.values()) {
+            System.out.println(String.join(" ", group));
+        }
     }
 }

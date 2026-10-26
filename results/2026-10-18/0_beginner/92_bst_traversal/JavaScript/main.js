@@ -4,10 +4,13 @@ function insert(node, key) {
   else node.right = insert(node.right, key);
   return node;
 }
+
 function remove(node, key) {
-  if (key < node.key) node.left = remove(node.left, key);
-  else if (key > node.key) node.right = remove(node.right, key);
-  else {
+  if (key < node.key) {
+    node.left = remove(node.left, key);
+  } else if (key > node.key) {
+    node.right = remove(node.right, key);
+  } else {
     if (node.left === null) return node.right;
     if (node.right === null) return node.left;
     let successor = node.right;
@@ -17,6 +20,7 @@ function remove(node, key) {
   }
   return node;
 }
+
 function traverse(node, order) {
   if (node === null) return [];
   const left = traverse(node.left, order), right = traverse(node.right, order);
@@ -24,9 +28,11 @@ function traverse(node, order) {
   if (order === "preorder") return [node.key, ...left, ...right];
   return [...left, ...right, node.key];
 }
+
 function height(node) {
   return node === null ? 0 : 1 + Math.max(height(node.left), height(node.right));
 }
+
 let root = null;
 for (const key of [50, 27, 74, 13, 39, 62, 88, 6, 31, 45, 70, 34]) root = insert(root, key);
 for (const order of ["inorder", "preorder", "postorder"]) {

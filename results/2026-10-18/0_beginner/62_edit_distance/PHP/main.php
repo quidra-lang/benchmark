@@ -1,14 +1,27 @@
 <?php
-function editDistance(string $a, string $b): int {
-    $table = array_fill(0,strlen($a)+1,array_fill(0,strlen($b)+1,0));
-    for ($i = 0; $i <= strlen($a); $i++) $table[$i][0] = $i;
-    for ($j = 0; $j <= strlen($b); $j++) $table[0][$j] = $j;
+
+function editDistance(string $a, string $b): int
+{
+    $table = array_fill(0, strlen($a) + 1, array_fill(0, strlen($b) + 1, 0));
+    for ($i = 0; $i <= strlen($a); $i++) {
+        $table[$i][0] = $i;
+    }
+    for ($j = 0; $j <= strlen($b); $j++) {
+        $table[0][$j] = $j;
+    }
     for ($i = 1; $i <= strlen($a); $i++) {
         for ($j = 1; $j <= strlen($b); $j++) {
-            $cost = $a[$i-1] === $b[$j-1] ? 0 : 1;
-            $table[$i][$j] = min($table[$i-1][$j]+1,$table[$i][$j-1]+1,$table[$i-1][$j-1]+$cost);
+            $cost = $a[$i - 1] === $b[$j - 1] ? 0 : 1;
+            $table[$i][$j] = min($table[$i - 1][$j] + 1, $table[$i][$j - 1] + 1, $table[$i - 1][$j - 1] + $cost);
         }
     }
     return $table[strlen($a)][strlen($b)];
 }
-foreach ([['kitten','sitting'],['flaw','lawn'],['listen','silent'],['intention','execution'],['algorithm','altruistic']] as [$a,$b]) printf("%s -> %s: %d\n",$a,$b,editDistance($a,$b));
+
+$pairs = [
+    ['kitten', 'sitting'], ['flaw', 'lawn'], ['listen', 'silent'], ['intention', 'execution'],
+    ['algorithm', 'altruistic'],
+];
+foreach ($pairs as [$a, $b]) {
+    printf("%s -> %s: %d\n", $a, $b, editDistance($a, $b));
+}

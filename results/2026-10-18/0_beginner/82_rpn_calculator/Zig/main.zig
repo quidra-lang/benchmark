@@ -11,7 +11,7 @@ pub fn main(init: std.process.Init) !void {
         "15 7 1 1 + - / 3 * 2 1 1 + + -",
         "4 2 5 * + 1 3 2 * - 5 + /",
         "2 3 4 + 5",
-        "46341 46339 * -2 /"
+        "46341 46339 * -2 /",
     };
     for (expressions) |expression| {
         var stack: [32]i64 = undefined;
@@ -19,7 +19,8 @@ pub fn main(init: std.process.Init) !void {
         var err: ?[]const u8 = null;
         var tokens = std.mem.splitScalar(u8, expression, ' ');
         while (tokens.next()) |token| {
-            const operator = token.len == 1 and (token[0] == '+' or token[0] == '-' or token[0] == '*' or token[0] == '/');
+            const operator = token.len == 1 and
+                (token[0] == '+' or token[0] == '-' or token[0] == '*' or token[0] == '/');
             if (!operator) {
                 stack[len] = try std.fmt.parseInt(i64, token, 10);
                 len += 1;
@@ -41,17 +42,17 @@ pub fn main(init: std.process.Init) !void {
                 '-' => a - b,
                 '*' => a * b,
                 '/' => @divTrunc(a, b),
-                else => unreachable
+                else => unreachable,
             };
             len += 1;
         }
         if (err == null and len != 1)
             err = "leftover operands";
-        try out.print("{s} => ", .{ expression });
+        try out.print("{s} => ", .{expression});
         if (err) |message| {
-            try out.print("error: {s}\n", .{ message });
+            try out.print("error: {s}\n", .{message});
         } else {
-            try out.print("{d}\n", .{ stack[0] });
+            try out.print("{d}\n", .{stack[0]});
         }
     }
     try out.flush();

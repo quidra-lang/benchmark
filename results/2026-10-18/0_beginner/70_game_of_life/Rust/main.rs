@@ -1,6 +1,8 @@
 fn main() {
-    let initial = [".#......", "..#.....", "###.....", "........", "........", "........", ".....###",
-        "........"];
+    let initial = [
+        ".#......", "..#.....", "###.....", "........", "........", "........", ".....###",
+        "........",
+    ];
     let mut board = [[b'.'; 8]; 8];
     for r in 0..8 {
         board[r].copy_from_slice(initial[r].as_bytes());
@@ -21,7 +23,11 @@ fn main() {
                     for dc in -1..=1 {
                         let rr = r as i32 + dr;
                         let cc = c as i32 + dc;
-                        if (dr != 0 || dc != 0) && (0..8).contains(&rr) && (0..8).contains(&cc) && board[rr as usize][cc as usize] == b'#' {
+                        if (dr != 0 || dc != 0)
+                            && (0..8).contains(&rr)
+                            && (0..8).contains(&cc)
+                            && board[rr as usize][cc as usize] == b'#'
+                        {
                             neighbors += 1;
                         }
                     }

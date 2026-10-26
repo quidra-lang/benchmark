@@ -1,6 +1,5 @@
 from urllib.parse import parse_qs
 
-
 queries = [
     "name=Alice+Smith&age=30&city=New%20York",
     "q=c%2B%2B+tutorial&page=2&sort=desc&page=3",

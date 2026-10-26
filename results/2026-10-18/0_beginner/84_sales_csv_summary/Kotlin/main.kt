@@ -13,21 +13,21 @@ fun main() {
         "2026-04-04,east,stapler,5,600",
         "2026-04-04,south,notebook,6,200",
         "2026-04-04,west,marker,8,150")
-    val regions = mutableMapOf<String,Int>()
-    val products = sortedMapOf<String,Int>()
-    val days = sortedMapOf<String,Int>()
+    val regions = mutableMapOf<String, Int>()
+    val products = sortedMapOf<String, Int>()
+    val days = sortedMapOf<String, Int>()
     for (line in lines.drop(1)) {
         val fields = line.split(',')
         val quantity = fields[3].toInt()
         val amount = quantity * fields[4].toInt()
-        regions[fields[1]] = regions.getOrDefault(fields[1],0) + amount
-        products[fields[2]] = products.getOrDefault(fields[2],0) + quantity
-        days[fields[0]] = days.getOrDefault(fields[0],0) + amount
+        regions[fields[1]] = regions.getOrDefault(fields[1], 0) + amount
+        products[fields[2]] = products.getOrDefault(fields[2], 0) + quantity
+        days[fields[0]] = days.getOrDefault(fields[0], 0) + amount
     }
     println("total: ${days.values.sum()}")
     val names = regions.keys.sortedWith(compareByDescending<String> { regions.getValue(it) }.thenBy { it })
     for (name in names) println("$name: ${regions.getValue(name)}")
-    for ((name,quantity) in products) println("$name: $quantity")
+    for ((name, quantity) in products) println("$name: $quantity")
     val best = days.keys.minWith(compareByDescending<String> { days.getValue(it) }.thenBy { it })
     println("best day: $best (${days.getValue(best)})")
 }

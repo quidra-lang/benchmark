@@ -4,6 +4,7 @@ function caesar(text: string, shift: number): string {
     return String.fromCharCode(base + (char.charCodeAt(0) - base + shift + 26) % 26);
   });
 }
+
 const message = "Zoe, meet Max by the Old Bridge at six!";
 const encrypted = caesar(message, 3);
 console.log(encrypted);

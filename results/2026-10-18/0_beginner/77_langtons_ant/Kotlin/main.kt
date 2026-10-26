@@ -3,8 +3,8 @@ fun main() {
     var r = 5
     var c = 5
     var direction = 0
-    val dr = intArrayOf(-1,0,1,0)
-    val dc = intArrayOf(0,1,0,-1)
+    val dr = intArrayOf(-1, 0, 1, 0)
+    val dc = intArrayOf(0, 1, 0, -1)
     repeat(300) {
         direction = (direction + if (black[r][c]) 3 else 1) % 4
         black[r][c] = !black[r][c]

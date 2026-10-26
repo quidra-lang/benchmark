@@ -17,7 +17,7 @@ func main() {
 				} else if c == '}' {
 					expected = '{'
 				}
-				if len(stack) == 0 || stack[len(stack) - 1] != expected {
+				if len(stack) == 0 || stack[len(stack)-1] != expected {
 					error = i
 					break
 				}

@@ -1,6 +1,11 @@
 items = [
-    ("tent", 10, 120), ("stove", 3, 65), ("lantern", 2, 45), ("rope", 3, 20),
-    ("camera", 5, 90), ("blanket", 5, 85), ("water", 6, 100),
+    ("tent", 10, 120),
+    ("stove", 3, 65),
+    ("lantern", 2, 45),
+    ("rope", 3, 20),
+    ("camera", 5, 90),
+    ("blanket", 5, 85),
+    ("water", 6, 100),
 ]
 capacity = 20
 dp = [[0] * (capacity + 1) for _ in range(len(items) + 1)]

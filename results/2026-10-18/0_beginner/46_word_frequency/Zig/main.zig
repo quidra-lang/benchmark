@@ -1,9 +1,6 @@
 const std = @import("std");
 
-const Entry = struct {
-    word: []const u8,
-    count: u32
-};
+const Entry = struct { word: []const u8, count: u32 };
 
 fn less(_: void, a: Entry, b: Entry) bool {
     return if (a.count != b.count) a.count > b.count else std.mem.order(u8, a.word, b.word) == .lt;
@@ -35,6 +32,6 @@ pub fn main(init: std.process.Init) !void {
     std.mem.sort(Entry, entries[0..len], {}, less);
     for (entries[0..5]) |entry|
         try out.print("{s}: {d}\n", .{ entry.word, entry.count });
-    try out.print("distinct words: {d}\n", .{ len });
+    try out.print("distinct words: {d}\n", .{len});
     try out.flush();
 }

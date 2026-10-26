@@ -15,7 +15,7 @@ func pop(roots *[]int, nodes []Node) int {
 		}
 	}
 	result := (*roots)[best]
-	(*roots)[best] = (*roots)[len(*roots) - 1]
+	(*roots)[best] = (*roots)[len(*roots)-1]
 	*roots = (*roots)[:len(*roots)-1]
 	return result
 }
@@ -25,8 +25,8 @@ func assign(nodes []Node, root int, prefix string, codes *[128]string) {
 		codes[nodes[root].symbol] = prefix
 		return
 	}
-	assign(nodes, nodes[root].left, prefix + "0", codes)
-	assign(nodes, nodes[root].right, prefix + "1", codes)
+	assign(nodes, nodes[root].left, prefix+"0", codes)
+	assign(nodes, nodes[root].right, prefix+"1", codes)
 }
 
 func main() {
@@ -46,8 +46,8 @@ func main() {
 	for len(roots) > 1 {
 		left, right := pop(&roots, nodes), pop(&roots, nodes)
 		roots = append(roots, len(nodes))
-		nodes = append(nodes, Node{nodes[left].weight + nodes[right].weight, min(nodes[left].minimum, nodes[right].minimum),
-			left, right, -1})
+		weight := nodes[left].weight + nodes[right].weight
+		nodes = append(nodes, Node{weight, min(nodes[left].minimum, nodes[right].minimum), left, right, -1})
 	}
 	codes := [128]string{}
 	assign(nodes, roots[0], "", &codes)
@@ -58,5 +58,5 @@ func main() {
 			bits += f * len(codes[c])
 		}
 	}
-	fmt.Printf("encoded bits: %d\nfixed 8-bit: %d\n", bits, len(text) * 8)
+	fmt.Printf("encoded bits: %d\nfixed 8-bit: %d\n", bits, len(text)*8)
 }

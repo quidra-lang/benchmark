@@ -35,7 +35,7 @@ int main(void) {
             strcpy(cap, words[i]);
             cap[0] = (char)toupper((unsigned char)cap[0]);
             strcat(pascal, cap);
-            strcat(camel, i ? cap: words[i]);
+            strcat(camel, i ? cap : words[i]);
         }
         printf("%s: snake=%s, camel=%s, pascal=%s, kebab=%s\n", s, snake, camel, pascal, kebab);
     }

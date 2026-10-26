@@ -10,7 +10,7 @@ pub fn main(init: std.process.Init) !void {
         "Was it a car or a cat I saw?",
         "Hello, World!",
         "Step on no pets.",
-        "No lemon, no melon"
+        "No lemon, no melon",
     };
     for (phrases) |phrase| {
         var clean: [100]u8 = undefined;

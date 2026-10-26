@@ -18,12 +18,15 @@ for (const word of paragraph.split(" ")) {
 lines.push(line);
 lines.forEach((words, index) => {
   let text;
-  if (index === lines.length - 1 || words.length === 1) text = words.join(" ").padEnd(width, " ");
-  else {
+  if (index === lines.length - 1 || words.length === 1) {
+    text = words.join(" ").padEnd(width, " ");
+  } else {
     const spaces = width - words.reduce((sum, word) => sum + word.length, 0);
     const gaps = words.length - 1, base = Math.floor(spaces / gaps), extra = spaces % gaps;
     text = words[0];
-    for (let gap = 0; gap < gaps; gap++) text += " ".repeat(base + (gap < extra ? 1 : 0)) + words[gap + 1];
+    for (let gap = 0; gap < gaps; gap++) {
+      text += " ".repeat(base + (gap < extra ? 1 : 0)) + words[gap + 1];
+    }
   }
   console.log(`|${text}|`);
 });

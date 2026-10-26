@@ -1,8 +1,8 @@
 #include <stdio.h>
 
 int main(void) {
-    int amounts[] = {3780, 15420, 99999, 506, 48263}, denominations[] = {10000, 5000, 1000, 500, 100,
-        50, 10, 5, 1};
+    int amounts[] = {3780, 15420, 99999, 506, 48263};
+    int denominations[] = {10000, 5000, 1000, 500, 100, 50, 10, 5, 1};
     for (int i = 0; i < 5; i++) {
         int remaining = amounts[i], total = 0;
         printf("%d yen:", remaining);

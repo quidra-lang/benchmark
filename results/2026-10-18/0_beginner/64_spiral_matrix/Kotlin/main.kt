@@ -1,7 +1,7 @@
 fun main() {
     val matrix = Array(5) { IntArray(6) }
-    val dr = intArrayOf(0,1,0,-1)
-    val dc = intArrayOf(1,0,-1,0)
+    val dr = intArrayOf(0, 1, 0, -1)
+    val dc = intArrayOf(1, 0, -1, 0)
     var r = 0
     var c = 0
     var direction = 0

@@ -13,7 +13,9 @@ public class Main {
         int best = 2;
         for (int sum = 2; sum <= 12; sum++) {
             System.out.println(sum + ": " + counts[sum]);
-            if (counts[sum] > counts[best]) best = sum;
+            if (counts[sum] > counts[best]) {
+                best = sum;
+            }
         }
         System.out.println("most frequent: " + best);
     }

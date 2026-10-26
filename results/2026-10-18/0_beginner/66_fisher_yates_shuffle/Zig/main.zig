@@ -19,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
     for (deck, 0..) |card, k| {
         if (k % 13 > 0)
             try out.writeByte(' ');
-        try out.print("{s}", .{ card });
+        try out.print("{s}", .{card});
         if (k % 13 == 12)
             try out.writeByte('\n');
     }

@@ -10,12 +10,12 @@ func main() {
 			c = c - 'A' + 'a'
 		}
 		if c >= 'a' && c <= 'z' {
-			counts[c - 'a']++
+			counts[c-'a']++
 		}
 	}
 	for i, n := range counts {
 		if n > 0 {
-			fmt.Printf("%c: %d\n", 'a' + i, n)
+			fmt.Printf("%c: %d\n", 'a'+i, n)
 		}
 	}
 }

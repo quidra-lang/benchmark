@@ -20,7 +20,9 @@ for (const match of matches) {
     } else if (goals === conceded) {
       s.draws++;
       s.points++;
-    } else s.losses++;
+    } else {
+      s.losses++;
+    }
   }
 }
 teams.sort((a, b) => {

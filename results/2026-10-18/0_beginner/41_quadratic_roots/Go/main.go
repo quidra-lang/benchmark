@@ -6,10 +6,10 @@ import (
 )
 
 func main() {
-	for _, p := range [][3]int{{1, -3, -10}, {-2, 5, 4}, {3, 1, -2}, {4, -12, 9}, {1, 2, 5}, {-2, 3,
-		-4}} {
+	coefficients := [][3]int{{1, -3, -10}, {-2, 5, 4}, {3, 1, -2}, {4, -12, 9}, {1, 2, 5}, {-2, 3, -4}}
+	for _, p := range coefficients {
 		a, b, c := p[0], p[1], p[2]
-		d := b * b - 4 * a * c
+		d := b*b - 4*a*c
 		fmt.Printf("%d %d %d: ", a, b, c)
 		if d > 0 {
 			root := math.Sqrt(float64(d))

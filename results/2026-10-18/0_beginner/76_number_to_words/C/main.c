@@ -3,8 +3,9 @@
 
 const char *small[] = {"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
     "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
-    "nineteen"}, *tens[] = {"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty",
-    "ninety"};
+    "nineteen"};
+const char *tens[] = {"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
+
 void under(int n, char *out) {
     out[0] = 0;
     if (n >= 100) {
@@ -20,8 +21,9 @@ void under(int n, char *out) {
             strcat(out, "-");
             strcat(out, small[n % 10]);
         }
-    } else if (n)
+    } else if (n) {
         strcat(out, small[n]);
+    }
 }
 
 int main(void) {

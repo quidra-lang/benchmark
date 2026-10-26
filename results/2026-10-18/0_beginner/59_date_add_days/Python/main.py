@@ -2,7 +2,13 @@ def format_date(year, month, day):
     return f"{year:04d}-{month:02d}-{day:02d}"
 
 
-cases = [(1999, 12, 25, 10), (2000, 2, 27, 3), (2021, 2, 20, 14), (2023, 11, 15, 120), (2026, 10, 17, 1500)]
+cases = [
+    (1999, 12, 25, 10),
+    (2000, 2, 27, 3),
+    (2021, 2, 20, 14),
+    (2023, 11, 15, 120),
+    (2026, 10, 17, 1500),
+]
 for year, month, day, added in cases:
     original = format_date(year, month, day)
     for _ in range(added):

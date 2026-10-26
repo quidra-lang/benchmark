@@ -8,8 +8,8 @@ pub fn main(init: std.process.Init) !void {
     const out = &writer.interface;
     for (radii) |radius| {
         const r: f64 = @floatFromInt(radius);
-        const area = (pi * r) * r;
-        const circumference = (2.0 * pi) * r;
+        const area = pi * r * r;
+        const circumference = 2.0 * pi * r;
         try out.print("r={d} area={d:.3} circumference={d:.3}\n", .{ radius, area, circumference });
     }
     try out.flush();

@@ -7,11 +7,12 @@ typedef struct {
     char *word;
     int count;
 } Entry;
+
 int compare(const void *a, const void *b) {
     const Entry *x = a, *y = b;
-    if (x -> count != y -> count)
-        return y -> count - x -> count;
-    return strcmp(x -> word, y -> word);
+    if (x->count != y->count)
+        return y->count - x->count;
+    return strcmp(x->word, y->word);
 }
 
 int main(void) {

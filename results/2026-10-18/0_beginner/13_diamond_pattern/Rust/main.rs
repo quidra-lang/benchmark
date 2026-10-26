@@ -1,11 +1,7 @@
 fn main() {
     let n = 5;
     for row in 1..2 * n {
-        let i = if row <= n {
-            row
-        } else {
-            2 * n - row
-        };
+        let i = if row <= n { row } else { 2 * n - row };
         println!("{}{}", " ".repeat(n - i), "*".repeat(2 * i - 1));
     }
 }

@@ -23,7 +23,9 @@ fun main() {
                     "*" -> a * b
                     else -> a / b
                 })
-            } else stack.add(token.toInt())
+            } else {
+                stack.add(token.toInt())
+            }
         }
         if (error == null && stack.size != 1) error = "leftover operands"
         println(expression + " => " + (if (error == null) stack.single().toString() else "error: $error"))

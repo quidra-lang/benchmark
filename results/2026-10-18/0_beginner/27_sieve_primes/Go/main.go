@@ -22,11 +22,11 @@ func main() {
 	}
 	fmt.Printf("count: %d\n", len(primes))
 	for i, n := range primes {
-		if i % 10 > 0 {
+		if i%10 > 0 {
 			fmt.Print(" ")
 		}
 		fmt.Print(n)
-		if i % 10 == 9 || i == len(primes) - 1 {
+		if i%10 == 9 || i == len(primes)-1 {
 			fmt.Println()
 		}
 	}

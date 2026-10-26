@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 
-void solve(const char * * names, int n, const char *edges[][2], int e, int show_cycle) {
+void solve(const char **names, int n, const char *edges[][2], int e, int show_cycle) {
     int graph[8][8] = {{0}}, indegree[8] = {0}, taken[8] = {0};
     for (int i = 0; i < e; i++) {
         int a = 0, b = 0;
@@ -48,10 +48,12 @@ void solve(const char * * names, int n, const char *edges[][2], int e, int show_
 
 int main(void) {
     const char *names1[] = {"physics", "algebra", "graphics", "programming", "statistics", "calculus",
-        "databases", "algorithms"}, *names2[] = {"music", "ecology", "art", "geology", "biology", "chemistry"}, *edges1[][2] = {{"calculus",
-        "physics"}, {"algebra", "calculus"}, {"programming", "algorithms"}, {"algebra", "statistics"}, {"algorithms",
-        "databases"}, {"statistics", "databases"}, {"calculus", "graphics"}, {"algorithms", "graphics"},
-        {"physics", "graphics"}}, *edges2[][2] = {{"music", "art"}, {"art", "ecology"}, {"biology", "chemistry"},
+        "databases", "algorithms"};
+    const char *edges1[][2] = {{"calculus", "physics"}, {"algebra", "calculus"}, {"programming", "algorithms"},
+        {"algebra", "statistics"}, {"algorithms", "databases"}, {"statistics", "databases"},
+        {"calculus", "graphics"}, {"algorithms", "graphics"}, {"physics", "graphics"}};
+    const char *names2[] = {"music", "ecology", "art", "geology", "biology", "chemistry"};
+    const char *edges2[][2] = {{"music", "art"}, {"art", "ecology"}, {"biology", "chemistry"},
         {"chemistry", "ecology"}, {"ecology", "geology"}, {"geology", "chemistry"}};
     solve(names1, 8, edges1, 9, 0);
     solve(names2, 6, edges2, 6, 1);

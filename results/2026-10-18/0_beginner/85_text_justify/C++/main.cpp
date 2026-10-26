@@ -21,7 +21,8 @@ int main() {
         for (std::size_t i = start; i < end; i++) {
             line += words[i];
             if (i + 1 < end) {
-                std::size_t spaces = last || gaps == 0 ? 1 : (30 - letters) / gaps + (i - start < (30 - letters) % gaps);
+                std::size_t spaces =
+                    last || gaps == 0 ? 1 : (30 - letters) / gaps + (i - start < (30 - letters) % gaps);
                 line += std::string(spaces, ' ');
             }
         }

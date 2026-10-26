@@ -9,10 +9,10 @@ pub fn main(init: std.process.Init) !void {
         var lo: i32 = 0;
         var hi: i32 = 15;
         var found: ?i32 = null;
-        try out.print("{d}: probes", .{ target });
+        try out.print("{d}: probes", .{target});
         while (lo <= hi) {
             const mid = @divTrunc(lo + hi, 2);
-            try out.print(" {d}", .{ mid });
+            try out.print(" {d}", .{mid});
             const value = a[@intCast(mid)];
             if (value == target) {
                 found = mid;
@@ -24,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (found) |index| {
-            try out.print(" -> index {d}\n", .{ index });
+            try out.print(" -> index {d}\n", .{index});
         } else {
             try out.writeAll(" -> not found\n");
         }

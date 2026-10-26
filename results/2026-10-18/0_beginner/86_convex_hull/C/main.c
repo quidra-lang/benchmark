@@ -4,9 +4,10 @@
 typedef struct {
     int x, y;
 } Point;
+
 int compare(const void *a, const void *b) {
-    const Point * x = a, *y = b;
-    return x->x != y->x ? x->x - y->x: x->y - y->y;
+    const Point *x = a, *y = b;
+    return x->x != y->x ? x->x - y->x : x->y - y->y;
 }
 
 int cross(Point o, Point a, Point b) {

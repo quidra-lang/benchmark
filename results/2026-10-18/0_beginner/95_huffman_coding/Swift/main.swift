@@ -10,24 +10,27 @@ class Node {
         self.right = right
     }
 }
-func codes(_ node: Node, _ prefix: String, _ result: inout [Character:String]) {
-    if let symbol = node.symbol { result[symbol] = prefix }
-    else {
-        codes(node.left!,prefix + "0",&result)
-        codes(node.right!,prefix + "1",&result)
+
+func codes(_ node: Node, _ prefix: String, _ result: inout [Character: String]) {
+    if let symbol = node.symbol {
+        result[symbol] = prefix
+    } else {
+        codes(node.left!, prefix + "0", &result)
+        codes(node.right!, prefix + "1", &result)
     }
 }
+
 let text = "she sells sea shells by the sea shore"
-var frequencies = [Character:Int]()
+var frequencies = [Character: Int]()
 for ch in text { frequencies[ch, default: 0] += 1 }
-var trees = frequencies.map { ch,count in Node(count,Int(ch.asciiValue!),ch) }
+var trees = frequencies.map { ch, count in Node(count, Int(ch.asciiValue!), ch) }
 while trees.count > 1 {
     trees.sort { $0.weight == $1.weight ? $0.minimum < $1.minimum : $0.weight < $1.weight }
     let left = trees.removeFirst(), right = trees.removeFirst()
-    trees.append(Node(left.weight + right.weight,min(left.minimum,right.minimum),nil,left,right))
+    trees.append(Node(left.weight + right.weight, min(left.minimum, right.minimum), nil, left, right))
 }
-var mapping = [Character:String]()
-codes(trees[0],"",&mapping)
+var mapping = [Character: String]()
+codes(trees[0], "", &mapping)
 for ch in frequencies.keys.sorted() {
     let code = mapping[ch]!, count = frequencies[ch]!
     print("'\(ch)' freq=\(count) code=\(code)")

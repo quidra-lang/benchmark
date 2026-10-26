@@ -1,8 +1,9 @@
 #include <stdio.h>
 
 int main(void) {
-    int graph[7][7] = {{0}}, edges[][3] = {{0, 1, 7}, {0, 2, 3}, {0, 3, 9}, {1, 2, 2}, {2, 4, 6}, {1,
-        3, 3}, {3, 4, 4}, {3, 5, 5}, {4, 5, 3}, {4, 6, 8}, {5, 6, 4}};
+    int graph[7][7] = {{0}};
+    int edges[][3] = {{0, 1, 7}, {0, 2, 3}, {0, 3, 9}, {1, 2, 2}, {2, 4, 6}, {1, 3, 3},
+        {3, 4, 4}, {3, 5, 5}, {4, 5, 3}, {4, 6, 8}, {5, 6, 4}};
     for (int i = 0; i < 11; i++)
         graph[edges[i][0]][edges[i][1]] = graph[edges[i][1]][edges[i][0]] = edges[i][2];
     int distance[7], parent[7], done[7] = {0};
@@ -29,7 +30,7 @@ int main(void) {
             path[length++] = u;
         printf("%c: distance=%d path=", 'A' + v, distance[v]);
         for (int i = length - 1; i >= 0; i--)
-            printf("%s%c", i == length - 1 ? "": "-", 'A' + path[i]);
+            printf("%s%c", i == length - 1 ? "" : "-", 'A' + path[i]);
         putchar('\n');
     }
     return 0;

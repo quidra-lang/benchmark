@@ -1,10 +1,10 @@
 fun main() {
-    val boards = listOf(listOf("XXX","OO.","O.X"),listOf("X.O",".X.","O.."),
-        listOf("XO.",".OX","XO."),listOf("XOX","XOO","OXX"),
-        listOf("X.O","XO.","O.X"),listOf("XOX","OXO","OXX"))
-    val lines = listOf(listOf(0,1,2),listOf(3,4,5),listOf(6,7,8),listOf(0,3,6),
-        listOf(1,4,7),listOf(2,5,8),listOf(0,4,8),listOf(2,4,6))
-    for ((i,board) in boards.withIndex()) {
+    val boards = listOf(listOf("XXX", "OO.", "O.X"), listOf("X.O", ".X.", "O.."),
+        listOf("XO.", ".OX", "XO."), listOf("XOX", "XOO", "OXX"),
+        listOf("X.O", "XO.", "O.X"), listOf("XOX", "OXO", "OXX"))
+    val lines = listOf(listOf(0, 1, 2), listOf(3, 4, 5), listOf(6, 7, 8), listOf(0, 3, 6),
+        listOf(1, 4, 7), listOf(2, 5, 8), listOf(0, 4, 8), listOf(2, 4, 6))
+    for ((i, board) in boards.withIndex()) {
         val cells = board.joinToString("")
         val winning = lines.firstOrNull { line ->
             cells[line[0]] != '.' && cells[line[0]] == cells[line[1]] && cells[line[0]] == cells[line[2]]

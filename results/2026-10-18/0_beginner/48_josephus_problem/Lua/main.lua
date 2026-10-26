@@ -1,10 +1,10 @@
-for _, pair in ipairs({{7,3},{10,2},{41,3}}) do
-    local n,k = table.unpack(pair)
-    local people,removed,index = {},{},0
-    for person = 1,n do people[person] = person end
+for _, pair in ipairs({{7, 3}, {10, 2}, {41, 3}}) do
+    local n, k = table.unpack(pair)
+    local people, removed, index = {}, {}, 0
+    for person = 1, n do people[person] = person end
     while #people > 0 do
-        index = (index+k-1)%#people
-        removed[#removed+1] = table.remove(people,index+1)
+        index = (index + k - 1) % #people
+        removed[#removed + 1] = table.remove(people, index + 1)
     end
-    io.write(string.format("n=%d k=%d: %s\nsurvivor: %d\n",n,k,table.concat(removed," "),removed[#removed]))
+    io.write(string.format("n=%d k=%d: %s\nsurvivor: %d\n", n, k, table.concat(removed, " "), removed[#removed]))
 end

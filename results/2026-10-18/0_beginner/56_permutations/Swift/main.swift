@@ -11,5 +11,6 @@ func permute(_ prefix: String, _ used: inout [Bool], _ count: inout Int) {
         used[i] = false
     }
 }
-var used = [Bool](repeating: false,count: 4), count = 0
-permute("",&used,&count)
+
+var used = [Bool](repeating: false, count: 4), count = 0
+permute("", &used, &count)

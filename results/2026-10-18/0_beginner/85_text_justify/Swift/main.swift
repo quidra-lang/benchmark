@@ -1,9 +1,10 @@
 import Foundation
 
-let paragraph = "Good software is written for people first and for machines second. A clear program explains its purpose " +
-    "through careful names, small functions and honest tests. When a team agrees on shared rules for " +
-    "internationalization, documentation and code review, every newcomer can read the code quickly, change it " +
-    "safely and ship new improvements with confidence instead of fear, week after week."
+let paragraph = "Good software is written for people first and for machines second. " +
+    "A clear program explains its purpose through careful names, small functions and honest tests. " +
+    "When a team agrees on shared rules for internationalization, documentation and code review, " +
+    "every newcomer can read the code quickly, change it safely and ship new improvements " +
+    "with confidence instead of fear, week after week."
 var lines = [[String]](), current = [String](), letters = 0
 for raw in paragraph.split(separator: " ") {
     let word = String(raw)
@@ -16,7 +17,7 @@ for raw in paragraph.split(separator: " ") {
     letters += word.count
 }
 if !current.isEmpty { lines.append(current) }
-for (i,words) in lines.enumerated() {
+for (i, words) in lines.enumerated() {
     var text = ""
     if i == lines.count - 1 || words.count == 1 {
         text = words.joined(separator: " ").padding(toLength: 30, withPad: " ", startingAt: 0)

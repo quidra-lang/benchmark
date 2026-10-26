@@ -5,17 +5,18 @@ function main()
     function visit(prefix)
         if length(prefix) == 4
             counter += 1
-            println(counter,": ",prefix)
+            println(counter, ": ", prefix)
             return
         end
-        for i in 1:4
+        for i = 1:4
             if !used[i]
                 used[i] = true
-                visit(string(prefix,characters[i]))
+                visit(string(prefix, characters[i]))
                 used[i] = false
             end
         end
     end
     visit("")
 end
+
 main()

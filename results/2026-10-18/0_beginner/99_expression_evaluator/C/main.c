@@ -7,13 +7,16 @@ typedef struct {
     long long values[32];
     int count;
 } Variables;
+
 typedef struct {
     char tokens[128][32];
     int count, position;
     char error[128];
     Variables *variables;
 } Parser;
+
 long long sum(Parser *p);
+
 void tokenize(Parser *p, const char *line) {
     p->count = 0;
     p->position = 0;
@@ -30,11 +33,13 @@ void tokenize(Parser *p, const char *line) {
         } else if (line[i] >= 'a' && line[i] <= 'z') {
             while (line[i] >= 'a' && line[i] <= 'z')
                 p->tokens[p->count][length++] = line[i++];
-        } else
+        } else {
             p->tokens[p->count][length++] = line[i++];
+        }
         p->tokens[p->count++][length] = 0;
     }
 }
+
 long long unary(Parser *p) {
     const char *token = p->tokens[p->position++];
     if (strcmp(token, "-") == 0)
@@ -53,10 +58,11 @@ long long unary(Parser *p) {
     snprintf(p->error, sizeof p->error, "undefined variable %s", token);
     return 0;
 }
+
 long long product(Parser *p) {
     long long value = unary(p);
-    while (!p->error[0] && p->position < p->count && (strcmp(p->tokens[p->position], "*") == 0 || strcmp(p->tokens[p->position],
-        "/") == 0)) {
+    while (!p->error[0] && p->position < p->count &&
+           (strcmp(p->tokens[p->position], "*") == 0 || strcmp(p->tokens[p->position], "/") == 0)) {
         char operation = p->tokens[p->position++][0];
         long long right = unary(p);
         if (p->error[0])
@@ -65,27 +71,28 @@ long long product(Parser *p) {
             strcpy(p->error, "division by zero");
             return 0;
         }
-        value = operation == '*' ? value * right: value / right;
+        value = operation == '*' ? value * right : value / right;
     }
     return value;
 }
+
 long long sum(Parser *p) {
     long long value = product(p);
-    while (!p->error[0] && p->position < p->count && (strcmp(p->tokens[p->position], "+") == 0 || strcmp(p->tokens[p->position],
-        "-") == 0)) {
+    while (!p->error[0] && p->position < p->count &&
+           (strcmp(p->tokens[p->position], "+") == 0 || strcmp(p->tokens[p->position], "-") == 0)) {
         char operation = p->tokens[p->position++][0];
         long long right = product(p);
         if (p->error[0])
             return 0;
-        value = operation == '+' ? value + right: value - right;
+        value = operation == '+' ? value + right : value - right;
     }
     return value;
 }
 
 int main(void) {
     const char *lines[] = {"width = 12", "height = width - 5", "area = width * height", "(area + 6) / 4",
-        "shift = -area / 8 + 3", "height = 100 / (height - 7) + bonus", "volume = area * depth", "width = (width+3)*-(2-4)",
-        "width * shift - height"};
+        "shift = -area / 8 + 3", "height = 100 / (height - 7) + bonus", "volume = area * depth",
+        "width = (width+3)*-(2-4)", "width * shift - height"};
     Variables variables = {0};
     for (int line = 0; line < 9; line++) {
         Parser p;
@@ -95,9 +102,9 @@ int main(void) {
         if (assignment)
             p.position = 2;
         long long value = sum(&p);
-        if (p.error[0])
+        if (p.error[0]) {
             printf("error: %s\n", p.error);
-        else if (assignment) {
+        } else if (assignment) {
             int i = 0;
             while (i < variables.count && strcmp(variables.names[i], p.tokens[0]))
                 i++;
@@ -107,8 +114,9 @@ int main(void) {
             }
             variables.values[i] = value;
             printf("%s = %lld\n", p.tokens[0], value);
-        } else
+        } else {
             printf("%lld\n", value);
+        }
     }
     return 0;
 }

@@ -6,9 +6,9 @@ func cipher(s string, shift byte) string {
 	out := []byte(s)
 	for i, c := range out {
 		if c >= 'a' && c <= 'z' {
-			out[i] = 'a' + (c - 'a' + shift) % 26
+			out[i] = 'a' + (c-'a'+shift)%26
 		} else if c >= 'A' && c <= 'Z' {
-			out[i] = 'A' + (c - 'A' + shift) % 26
+			out[i] = 'A' + (c-'A'+shift)%26
 		}
 	}
 	return string(out)

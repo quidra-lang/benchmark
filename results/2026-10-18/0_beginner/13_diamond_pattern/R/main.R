@@ -1,4 +1,4 @@
 n <- 5
-for (i in c(1:n, (n-1):1)) {
-    cat(strrep(" ", n-i), strrep("*", 2*i-1), "\n", sep = "")
+for (i in c(1:n, (n - 1):1)) {
+  cat(strrep(" ", n - i), strrep("*", 2 * i - 1), "\n", sep = "")
 }

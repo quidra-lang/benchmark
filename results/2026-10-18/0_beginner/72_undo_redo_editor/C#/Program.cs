@@ -9,25 +9,41 @@ string[] commands = { "undo", "type hello world", "delete 5", "type there", "und
 var undo = new Stack<string>();
 var redo = new Stack<string>();
 string buffer = "";
-foreach (string command in commands) {
+foreach (string command in commands)
+{
     string? special = null;
-    if (command == "undo") {
-        if (undo.Count == 0) special = "nothing to undo";
-        else {
+    if (command == "undo")
+    {
+        if (undo.Count == 0)
+        {
+            special = "nothing to undo";
+        }
+        else
+        {
             redo.Push(buffer);
             buffer = undo.Pop();
         }
-    } else if (command == "redo") {
-        if (redo.Count == 0) special = "nothing to redo";
-        else {
+    }
+    else if (command == "redo")
+    {
+        if (redo.Count == 0)
+        {
+            special = "nothing to redo";
+        }
+        else
+        {
             undo.Push(buffer);
             buffer = redo.Pop();
         }
-    } else {
+    }
+    else
+    {
         undo.Push(buffer);
         redo.Clear();
-        if (command.StartsWith("type ",StringComparison.Ordinal)) buffer += command[5..];
-        else buffer = buffer[..Math.Max(0, buffer.Length - int.Parse(command[7..],CultureInfo.InvariantCulture))];
+        if (command.StartsWith("type ", StringComparison.Ordinal))
+            buffer += command[5..];
+        else
+            buffer = buffer[..Math.Max(0, buffer.Length - int.Parse(command[7..], CultureInfo.InvariantCulture))];
     }
     Console.WriteLine(command + " => " + (special ?? "\"" + buffer + "\""));
 }

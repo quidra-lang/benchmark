@@ -26,11 +26,11 @@ int main(void) {
         } else {
             strcpy(undo[u++], buffer);
             r = 0;
-            if (strncmp(command, "type ", 5) == 0)
+            if (strncmp(command, "type ", 5) == 0) {
                 strcat(buffer, command + 5);
-            else {
-                int count = atoi(command + 7), len = (int) strlen(buffer);
-                buffer[count > len ? 0: len - count] = 0;
+            } else {
+                int count = atoi(command + 7), len = (int)strlen(buffer);
+                buffer[count > len ? 0 : len - count] = 0;
             }
         }
         printf("%s => \"%s\"\n", command, buffer);

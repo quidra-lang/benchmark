@@ -1,4 +1,5 @@
-const formatDate = (year: number, month: number, day: number): string => [String(year).padStart(4, "0"), String(month).padStart(2, "0"), String(day).padStart(2, "0")].join("-");
+const formatDate = (year: number, month: number, day: number): string =>
+  [String(year).padStart(4, "0"), String(month).padStart(2, "0"), String(day).padStart(2, "0")].join("-");
 const cases = [[1999, 12, 25, 10], [2000, 2, 27, 3], [2021, 2, 20, 14], [2023, 11, 15, 120], [2026, 10, 17, 1500]];
 for (const [initialYear, initialMonth, initialDay, added] of cases) {
   let year = initialYear, month = initialMonth, day = initialDay;

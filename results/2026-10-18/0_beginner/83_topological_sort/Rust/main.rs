@@ -11,7 +11,9 @@ fn solve(names: &[&str], edges: &[(&str, &str)], show_cycle: bool) {
     }
     let mut order = Vec::new();
     loop {
-        let best = (0..n).filter(|&v| !taken[v] && indegree[v] == 0).min_by_key(|&v| names[v]);
+        let best = (0..n)
+            .filter(|&v| !taken[v] && indegree[v] == 0)
+            .min_by_key(|&v| names[v]);
         let Some(v) = best else {
             break;
         };
@@ -32,11 +34,40 @@ fn solve(names: &[&str], edges: &[(&str, &str)], show_cycle: bool) {
 }
 
 fn main() {
-    solve(&["physics", "algebra", "graphics", "programming", "statistics", "calculus", "databases",
-        "algorithms"], &[("calculus", "physics"), ("algebra", "calculus"), ("programming", "algorithms"),
-        ("algebra", "statistics"), ("algorithms", "databases"), ("statistics", "databases"), ("calculus",
-        "graphics"), ("algorithms", "graphics"), ("physics", "graphics")], false);
-    solve(&["music", "ecology", "art", "geology", "biology", "chemistry"], &[("music", "art"), ("art",
-        "ecology"), ("biology", "chemistry"), ("chemistry", "ecology"), ("ecology", "geology"), ("geology",
-        "chemistry")], true);
+    solve(
+        &[
+            "physics",
+            "algebra",
+            "graphics",
+            "programming",
+            "statistics",
+            "calculus",
+            "databases",
+            "algorithms",
+        ],
+        &[
+            ("calculus", "physics"),
+            ("algebra", "calculus"),
+            ("programming", "algorithms"),
+            ("algebra", "statistics"),
+            ("algorithms", "databases"),
+            ("statistics", "databases"),
+            ("calculus", "graphics"),
+            ("algorithms", "graphics"),
+            ("physics", "graphics"),
+        ],
+        false,
+    );
+    solve(
+        &["music", "ecology", "art", "geology", "biology", "chemistry"],
+        &[
+            ("music", "art"),
+            ("art", "ecology"),
+            ("biology", "chemistry"),
+            ("chemistry", "ecology"),
+            ("ecology", "geology"),
+            ("geology", "chemistry"),
+        ],
+        true,
+    );
 }

@@ -11,10 +11,10 @@ func main() {
 		if n == 30 {
 			break
 		}
-		nr, nc := r + dr[d], c + dc[d]
+		nr, nc := r+dr[d], c+dc[d]
 		if nr < 0 || nr >= 5 || nc < 0 || nc >= 6 || matrix[nr][nc] != 0 {
 			d = (d + 1) % 4
-			nr, nc = r + dr[d], c + dc[d]
+			nr, nc = r+dr[d], c+dc[d]
 		}
 		r, c = nr, nc
 	}

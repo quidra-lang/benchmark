@@ -6,7 +6,7 @@ int main(void) {
         "9884593615513906"};
     for (int k = 0; k < 6; k++) {
         const char *s = numbers[k];
-        int len = (int) strlen(s), sum = 0;
+        int len = (int)strlen(s), sum = 0;
         for (int i = 0; i < len; i++) {
             int d = s[len - 1 - i] - '0';
             if (i % 2) {
@@ -16,9 +16,9 @@ int main(void) {
             }
             sum += d;
         }
-        if (sum % 10 == 0)
+        if (sum % 10 == 0) {
             printf("%s: valid\n", s);
-        else {
+        } else {
             int expected = (10 - (sum - (s[len - 1] - '0')) % 10) % 10;
             printf("%s: invalid (expected check digit %d)\n", s, expected);
         }

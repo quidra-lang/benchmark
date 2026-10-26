@@ -1,4 +1,4 @@
-for (n,k) in [(7,3),(10,2),(41,3)] {
+for (n, k) in [(7, 3), (10, 2), (41, 3)] {
     var index = 0, people = Array(1...n), removed = [Int]()
     while !people.isEmpty {
         index = (index + k - 1) % people.count

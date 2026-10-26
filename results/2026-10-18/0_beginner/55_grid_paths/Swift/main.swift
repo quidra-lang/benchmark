@@ -1,6 +1,6 @@
-let grid = [".......","..#....","....#..",".#.....","...#.#.","......."].map { Array($0) }
-for obstacles in [false,true] {
-    var dp = [[Int]](repeating: [Int](repeating: 0,count: 7),count: 6)
+let grid = [".......", "..#....", "....#..", ".#.....", "...#.#.", "......."].map { Array($0) }
+for obstacles in [false, true] {
+    var dp = [[Int]](repeating: [Int](repeating: 0, count: 7), count: 6)
     dp[0][0] = 1
     for r in 0..<6 {
         for c in 0..<7 {

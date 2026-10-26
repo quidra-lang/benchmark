@@ -1,6 +1,7 @@
 using Printf
+
 function main()
-    numbers = [72,85,64,90,85,58,77,85,69,93,71]
+    numbers = [72, 85, 64, 90, 85, 58, 77, 85, 69, 93, 71]
     average = sum(numbers) / length(numbers)
     squares = 0.0
     for value in numbers
@@ -16,4 +17,5 @@ function main()
     println("range: ", ordered[end]-ordered[1])
     @printf("stdev: %.3f\n", deviation)
 end
+
 main()

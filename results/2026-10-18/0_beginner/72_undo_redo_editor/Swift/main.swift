@@ -7,17 +7,24 @@ for command in commands {
         if let previous = undo.popLast() {
             redo.append(buffer)
             buffer = previous
-        } else { special = "nothing to undo" }
+        } else {
+            special = "nothing to undo"
+        }
     } else if command == "redo" {
         if let next = redo.popLast() {
             undo.append(buffer)
             buffer = next
-        } else { special = "nothing to redo" }
+        } else {
+            special = "nothing to redo"
+        }
     } else {
         undo.append(buffer)
         redo.removeAll()
-        if command.hasPrefix("type ") { buffer += command.dropFirst(5) }
-        else { buffer = String(buffer.prefix(max(0, buffer.count - Int(command.dropFirst(7))!))) }
+        if command.hasPrefix("type ") {
+            buffer += command.dropFirst(5)
+        } else {
+            buffer = String(buffer.prefix(max(0, buffer.count - Int(command.dropFirst(7))!)))
+        }
     }
     print(command + " => " + (special ?? "\"\(buffer)\""))
 }

@@ -1,9 +1,9 @@
-ranks <- strsplit("A23456789TJQK","",fixed=TRUE)[[1]]
-deck <- unlist(lapply(c("S","H","D","C"),function(suit) paste0(ranks,suit)),use.names=FALSE)
+ranks <- strsplit("A23456789TJQK", "", fixed = TRUE)[[1]]
+deck <- unlist(lapply(c("S", "H", "D", "C"), function(suit) paste0(ranks, suit)), use.names = FALSE)
 state <- 2026
 for (i in 51:1) {
-    state <- (state*48271) %% 2147483647
-    j <- state %% (i+1)
-    deck[c(i+1,j+1)] <- deck[c(j+1,i+1)]
+  state <- (state * 48271) %% 2147483647
+  j <- state %% (i + 1)
+  deck[c(i + 1, j + 1)] <- deck[c(j + 1, i + 1)]
 }
-for (first in seq(1,52,by=13)) cat(paste(deck[first:(first+12)],collapse=" "),"\n",sep="")
+for (first in seq(1, 52, by = 13)) cat(paste(deck[first:(first + 12)], collapse = " "), "\n", sep = "")

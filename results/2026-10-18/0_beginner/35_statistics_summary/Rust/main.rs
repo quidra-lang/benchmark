@@ -11,12 +11,22 @@ fn main() {
     }
     let (mut mode, mut best, mut count) = (sorted[0], 0, 0);
     for i in 0..sorted.len() {
-        count = if i > 0 && sorted[i] == sorted[i - 1] { count + 1 } else { 1 };
+        count = if i > 0 && sorted[i] == sorted[i - 1] {
+            count + 1
+        } else {
+            1
+        };
         if count > best {
             best = count;
             mode = sorted[i];
         }
     }
-    println!("mean: {:.3}\nmedian: {}\nmode: {}\nrange: {}\nstdev: {:.3}",
-             mean, sorted[5], mode, sorted[10] - sorted[0], (s / 11.0).sqrt());
+    println!(
+        "mean: {:.3}\nmedian: {}\nmode: {}\nrange: {}\nstdev: {:.3}",
+        mean,
+        sorted[5],
+        mode,
+        sorted[10] - sorted[0],
+        (s / 11.0).sqrt()
+    );
 }

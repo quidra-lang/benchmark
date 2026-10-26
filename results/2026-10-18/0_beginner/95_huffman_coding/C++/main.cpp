@@ -8,7 +8,7 @@ struct Node {
     int weight, minimum, left, right, symbol;
 };
 
-int pop(std::vector<int>& roots, const std::vector<Node>& nodes) {
+int pop(std::vector<int> &roots, const std::vector<Node> &nodes) {
     auto best = std::min_element(roots.begin(), roots.end(), [&nodes](int x, int y) {
         const Node &a = nodes[x], &b = nodes[y];
         return a.weight < b.weight || (a.weight == b.weight && a.minimum < b.minimum);
@@ -18,8 +18,8 @@ int pop(std::vector<int>& roots, const std::vector<Node>& nodes) {
     return result;
 }
 
-void assign(const std::vector<Node>& nodes, int root, const std::string& prefix,
-            std::array<std::string, 128>& codes) {
+void assign(const std::vector<Node> &nodes, int root, const std::string &prefix,
+            std::array<std::string, 128> &codes) {
     if (nodes[root].symbol >= 0) {
         codes[nodes[root].symbol] = prefix;
         return;

@@ -1,5 +1,6 @@
 fun main() {
-    val rows = listOf("#############",
+    val rows = listOf(
+        "#############",
         "#S..#.......#",
         "#.#.#.###.#.#",
         "#.#...#...#.#",
@@ -7,7 +8,8 @@ fun main() {
         "#...#...#...#",
         "###.#####.#.#",
         "#.......#..G#",
-        "#############")
+        "#############",
+    )
     val maze = rows.map { it.toCharArray() }
     var start = -1
     var goal = -1
@@ -21,8 +23,8 @@ fun main() {
     parent[start] = start
     val queue = ArrayDeque<Int>()
     queue.addLast(start)
-    val dr = intArrayOf(-1,1,0,0)
-    val dc = intArrayOf(0,0,-1,1)
+    val dr = intArrayOf(-1, 1, 0, 0)
+    val dc = intArrayOf(0, 0, -1, 1)
     while (queue.isNotEmpty()) {
         val cell = queue.removeFirst()
         val r = cell / 13

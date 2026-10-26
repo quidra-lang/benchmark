@@ -9,8 +9,8 @@ int main(void) {
         words[count++] = w;
     for (int start = 0; start < count;) {
         int end = start, letters = 0;
-        while (end < count && letters + (int) strlen(words[end]) + end - start <= 30) {
-            letters += (int) strlen(words[end]);
+        while (end < count && letters + (int)strlen(words[end]) + end - start <= 30) {
+            letters += (int)strlen(words[end]);
             end++;
         }
         int gaps = end - start - 1, last = end == count;
@@ -19,11 +19,11 @@ int main(void) {
         line[30] = 0;
         int pos = 0;
         for (int i = start; i < end; i++) {
-            int length = (int) strlen(words[i]);
+            int length = (int)strlen(words[i]);
             memcpy(line + pos, words[i], length);
             pos += length;
             if (i < end - 1) {
-                int spaces = last || gaps == 0 ? 1: (30 - letters) / gaps + ((i - start) < (30 - letters) % gaps);
+                int spaces = last || gaps == 0 ? 1 : (30 - letters) / gaps + ((i - start) < (30 - letters) % gaps);
                 pos += spaces;
             }
         }

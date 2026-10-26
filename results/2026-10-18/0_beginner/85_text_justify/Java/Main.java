@@ -4,10 +4,11 @@ import java.util.Locale;
 
 public class Main {
     public static void main(String[] args) {
-        String paragraph = "Good software is written for people first and for machines second. A clear program explains its purpose " +
-            "through careful names, small functions and honest tests. When a team agrees on shared rules for " +
-            "internationalization, documentation and code review, every newcomer can read the code quickly, change it " +
-            "safely and ship new improvements with confidence instead of fear, week after week.";
+        String paragraph = "Good software is written for people first and for machines second. "
+                + "A clear program explains its purpose through careful names, small functions and honest tests. "
+                + "When a team agrees on shared rules for internationalization, documentation and code review, "
+                + "every newcomer can read the code quickly, change it safely and ship new improvements "
+                + "with confidence instead of fear, week after week.";
         List<List<String>> lines = new ArrayList<>();
         List<String> current = new ArrayList<>();
         int letters = 0;
@@ -20,7 +21,9 @@ public class Main {
             current.add(word);
             letters += word.length();
         }
-        if (!current.isEmpty()) lines.add(current);
+        if (!current.isEmpty()) {
+            lines.add(current);
+        }
         for (int i = 0; i < lines.size(); i++) {
             List<String> words = lines.get(i);
             String text;

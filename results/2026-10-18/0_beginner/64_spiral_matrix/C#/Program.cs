@@ -3,18 +3,20 @@ using System.Globalization;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
-int[,] matrix = new int[5,6];
-int[] dr = { 0,1,0,-1 }, dc = { 1,0,-1,0 };
+int[,] matrix = new int[5, 6];
+int[] dr = { 0, 1, 0, -1 }, dc = { 1, 0, -1, 0 };
 int r = 0, c = 0, direction = 0;
-for (int value = 1; value <= 30; value++) {
-    matrix[r,c] = value;
+for (int value = 1; value <= 30; value++)
+{
+    matrix[r, c] = value;
     if (value == 30) break;
     int nr = r + dr[direction], nc = c + dc[direction];
-    if (nr < 0 || nr >= 5 || nc < 0 || nc >= 6 || matrix[nr,nc] != 0) direction = (direction + 1) % 4;
+    if (nr < 0 || nr >= 5 || nc < 0 || nc >= 6 || matrix[nr, nc] != 0) direction = (direction + 1) % 4;
     r += dr[direction];
     c += dc[direction];
 }
-for (int row = 0; row < 5; row++) {
-    for (int column = 0; column < 6; column++) Console.Write($"{matrix[row,column],3}");
+for (int row = 0; row < 5; row++)
+{
+    for (int column = 0; column < 6; column++) Console.Write($"{matrix[row, column],3}");
     Console.WriteLine();
 }

@@ -1,4 +1,5 @@
 <?php
+
 for ($n = 1; $n <= 30; $n++) {
     if ($n % 15 === 0) {
         echo "FizzBuzz\n";

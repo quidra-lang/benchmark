@@ -1,6 +1,6 @@
 let pairs = [("kitten", "sitting"), ("flaw", "lawn"), ("listen", "silent"),
     ("intention", "execution"), ("algorithm", "altruistic")]
-for (first,second) in pairs {
+for (first, second) in pairs {
     let a = Array(first), b = Array(second)
     var dp = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1), count: a.count + 1)
     for i in 0...a.count { dp[i][0] = i }

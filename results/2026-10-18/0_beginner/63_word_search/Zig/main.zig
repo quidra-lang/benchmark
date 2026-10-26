@@ -14,17 +14,11 @@ pub fn main(init: std.process.Init) !void {
         "RIBSDACBAM",
         "YWVAUAPKAH",
         "KYCGTHHESR",
-        "OCCALAOKKR"
+        "OCCALAOKKR",
     };
     const directions = [_][2]i32{
-        .{ 0, 1 },
-        .{ 1, 1 },
-        .{ 1, 0 },
-        .{ 1, -1 },
-        .{ 0, -1 },
-        .{ -1, -1 },
-        .{ -1, 0 },
-        .{ -1, 1 }
+        .{ 0, 1 },  .{ 1, 1 }, .{ 1, 0 }, .{ 1, -1 }, .{ 0, -1 }, .{ -1, -1 }, .{ -1, 0 },
+        .{ -1, 1 },
     };
     const names = [_][]const u8{ "E", "SE", "S", "SW", "W", "NW", "N", "NE" };
     for ([_][]const u8{ "TIGER", "ZEBRA", "MONKEY", "PANDA", "KOALA", "RABBIT" }) |word| {
@@ -44,13 +38,13 @@ pub fn main(init: std.process.Init) !void {
                     if (matches) {
                         try out.print("{s}: ({d}, {d}) {s}\n", .{ word, r, c, names[d] });
                         found = true;
-                        break: search;
+                        break :search;
                     }
                 }
             }
         }
         if (!found)
-            try out.print("{s}: not found\n", .{ word });
+            try out.print("{s}: not found\n", .{word});
     }
     try out.flush();
 }

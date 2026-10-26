@@ -1,4 +1,5 @@
 const values = [47, 12, 85, 33, 6, 71, 29, 58, 90, 14];
+
 function mergeSort(left, right) {
   if (left === right) return 0;
   const middle = Math.floor((left + right) / 2);
@@ -21,6 +22,7 @@ function mergeSort(left, right) {
   console.log(`merge [${left}..${right}]: ${merged.join(" ")}`);
   return inversions;
 }
+
 const inversions = mergeSort(0, values.length - 1);
 console.log(`sorted: ${values.join(" ")}`);
 console.log(`inversions: ${inversions}`);

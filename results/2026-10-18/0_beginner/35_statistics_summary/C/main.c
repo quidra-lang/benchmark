@@ -4,7 +4,7 @@
 #include <math.h>
 
 int compare(const void *a, const void *b) {
-    int x = *(const int *) a, y = *(const int *) b;
+    int x = *(const int *)a, y = *(const int *)b;
     return (x > y) - (x < y);
 }
 

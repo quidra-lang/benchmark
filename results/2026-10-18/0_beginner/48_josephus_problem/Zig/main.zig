@@ -15,11 +15,11 @@ pub fn main(init: std.process.Init) !void {
         while (len > 0) {
             index = (index + p[1] - 1) % len;
             survivor = people[index];
-            try out.print(" {d}", .{ survivor });
-            std.mem.copyForwards(usize, people[index..len - 1], people[index + 1..len]);
+            try out.print(" {d}", .{survivor});
+            std.mem.copyForwards(usize, people[index .. len - 1], people[index + 1 .. len]);
             len -= 1;
         }
-        try out.print("\nsurvivor: {d}\n", .{ survivor });
+        try out.print("\nsurvivor: {d}\n", .{survivor});
     }
     try out.flush();
 }

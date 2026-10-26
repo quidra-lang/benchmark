@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"sort"
+	"strings"
 )
 
 func solve(names []string, edges [][2]string, showCycle bool) {
@@ -54,11 +54,16 @@ func solve(names []string, edges [][2]string, showCycle bool) {
 }
 
 func main() {
-	solve([]string{"physics", "algebra", "graphics", "programming", "statistics", "calculus", "databases",
-		"algorithms"}, [][2]string{{"calculus", "physics"}, {"algebra", "calculus"}, {"programming", "algorithms"},
-		{"algebra", "statistics"}, {"algorithms", "databases"}, {"statistics", "databases"}, {"calculus",
-		"graphics"}, {"algorithms", "graphics"}, {"physics", "graphics"}}, false)
-	solve([]string{"music", "ecology", "art", "geology", "biology", "chemistry"}, [][2]string{{"music",
-		"art"}, {"art", "ecology"}, {"biology", "chemistry"}, {"chemistry", "ecology"}, {"ecology", "geology"},
-		{"geology", "chemistry"}}, true)
+	names1 := []string{
+		"physics", "algebra", "graphics", "programming", "statistics", "calculus", "databases",
+		"algorithms",
+	}
+	edges1 := [][2]string{{"calculus", "physics"}, {"algebra", "calculus"}, {"programming", "algorithms"},
+		{"algebra", "statistics"}, {"algorithms", "databases"}, {"statistics", "databases"},
+		{"calculus", "graphics"}, {"algorithms", "graphics"}, {"physics", "graphics"}}
+	names2 := []string{"music", "ecology", "art", "geology", "biology", "chemistry"}
+	edges2 := [][2]string{{"music", "art"}, {"art", "ecology"}, {"biology", "chemistry"},
+		{"chemistry", "ecology"}, {"ecology", "geology"}, {"geology", "chemistry"}}
+	solve(names1, edges1, false)
+	solve(names2, edges2, true)
 }

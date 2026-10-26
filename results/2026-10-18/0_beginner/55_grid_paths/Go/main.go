@@ -12,10 +12,10 @@ func main() {
 					continue
 				}
 				if r > 0 {
-					dp[r][c] += dp[r - 1][c]
+					dp[r][c] += dp[r-1][c]
 				}
 				if c > 0 {
-					dp[r][c] += dp[r][c - 1]
+					dp[r][c] += dp[r][c-1]
 				}
 			}
 		}

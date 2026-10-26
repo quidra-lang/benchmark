@@ -8,7 +8,7 @@ int main() {
     std::vector<char> cache;
     int hits = 0, misses = 0;
     for (char key : accesses) {
-        std::vector<char>::iterator position = std::find(cache.begin(), cache.end(), key);
+        auto position = std::find(cache.begin(), cache.end(), key);
         bool hit = position != cache.end();
         char evicted = 0;
         if (hit) {

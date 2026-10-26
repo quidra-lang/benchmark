@@ -1,5 +1,7 @@
 fn main() {
-    let grid = [".......", "..#....", "....#..", ".#.....", "...#.#.", "......."];
+    let grid = [
+        ".......", "..#....", "....#..", ".#.....", "...#.#.", ".......",
+    ];
     for obstacles in [false, true] {
         let mut dp = [[0; 7]; 6];
         dp[0][0] = 1;
@@ -16,6 +18,10 @@ fn main() {
                 }
             }
         }
-        println!("{} obstacles: {}", if obstacles { "with" } else { "without" }, dp[5][6]);
+        println!(
+            "{} obstacles: {}",
+            if obstacles { "with" } else { "without" },
+            dp[5][6]
+        );
     }
 }

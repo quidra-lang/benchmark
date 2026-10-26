@@ -8,8 +8,8 @@ int main(void) {
         arrival += (int)(x % 5) + 1;
         x = x * 48271 % 2147483647;
         int service = (int)(x % 7) + 2;
-        int teller = free_time[0] <= free_time[1] ? 0: 1;
-        int start = arrival > free_time[teller] ? arrival: free_time[teller];
+        int teller = free_time[0] <= free_time[1] ? 0 : 1;
+        int start = arrival > free_time[teller] ? arrival : free_time[teller];
         int end = start + service;
         int wait = start - arrival;
         free_time[teller] = end;
@@ -20,6 +20,6 @@ int main(void) {
             wait);
     }
     printf("average wait: %.2f\nmax wait: %d\nlast departure: %d\n", total_wait / 20.0, maximum,
-        free_time[0] > free_time[1] ? free_time[0]: free_time[1]);
+        free_time[0] > free_time[1] ? free_time[0] : free_time[1]);
     return 0;
 }

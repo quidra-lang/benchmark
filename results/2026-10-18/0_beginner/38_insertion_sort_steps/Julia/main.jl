@@ -1,7 +1,7 @@
 function main()
-    numbers = [52,17,38,9,61,38,24,45]
+    numbers = [52, 17, 38, 9, 61, 38, 24, 45]
     total = 0
-    for i in 2:8
+    for i = 2:8
         value, j, shifts = numbers[i], i-1, 0
         while j >= 1 && numbers[j] > value
             numbers[j+1] = numbers[j]
@@ -14,4 +14,5 @@ function main()
     end
     println("total shifts: ", total)
 end
+
 main()

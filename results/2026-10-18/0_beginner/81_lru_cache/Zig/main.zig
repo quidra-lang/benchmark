@@ -10,7 +10,7 @@ pub fn main(init: std.process.Init) !void {
     var misses: u32 = 0;
     for ("BACBDABEADDCAEB") |key| {
         const found = std.mem.findScalar(u8, cache[0..len], key);
-        try out.print("{c}: ", .{ key });
+        try out.print("{c}: ", .{key});
         var position: usize = 0;
         if (found) |i| {
             hits += 1;
@@ -20,14 +20,14 @@ pub fn main(init: std.process.Init) !void {
             misses += 1;
             try out.writeAll("miss");
             if (len == 3) {
-                try out.print(", evict {c}", .{ cache[2] });
+                try out.print(", evict {c}", .{cache[2]});
                 position = 2;
             } else {
                 position = len;
                 len += 1;
             }
         }
-        std.mem.copyBackwards(u8, cache[1..position + 1], cache[0..position]);
+        std.mem.copyBackwards(u8, cache[1 .. position + 1], cache[0..position]);
         cache[0] = key;
         try out.writeAll(" [");
         for (cache[0..len], 0..) |c, i| {

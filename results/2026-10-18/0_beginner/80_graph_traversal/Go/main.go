@@ -55,7 +55,7 @@ func main() {
 	}
 	fmt.Printf("components: %d\n", len(components))
 	for i, component := range components {
-		fmt.Printf("component %d:", i + 1)
+		fmt.Printf("component %d:", i+1)
 		for _, v := range component {
 			fmt.Printf(" %d", v)
 		}

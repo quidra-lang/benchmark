@@ -2,7 +2,9 @@ import java.util.regex.Pattern;
 
 public class Main {
     public static void main(String[] args) {
-        String[] values = {"AAABBBCCCD", "W".repeat(12) + "B" + "W".repeat(12) + "BBB", "ALGORITHM", "MISSISSIPPI", "X".repeat(10) + "Y".repeat(21) + "Z"};
+        String[] values = {
+            "AAABBBCCCD", "W".repeat(12) + "B" + "W".repeat(12) + "BBB", "ALGORITHM", "MISSISSIPPI",
+            "X".repeat(10) + "Y".repeat(21) + "Z"};
         var runs = Pattern.compile("(.)\\1*");
         var counts = Pattern.compile("(\\d+)([A-Z])");
         for (String text : values) {

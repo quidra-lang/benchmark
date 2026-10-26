@@ -2,7 +2,7 @@
 #include <iomanip>
 
 int main() {
-    int matrix[5][6] {}, dr[] = {0, 1, 0, -1}, dc[] = {1, 0, -1, 0}, r = 0, c = 0, d = 0;
+    int matrix[5][6]{}, dr[] = {0, 1, 0, -1}, dc[] = {1, 0, -1, 0}, r = 0, c = 0, d = 0;
     for (int n = 1; n <= 30; n++) {
         matrix[r][c] = n;
         if (n == 30)

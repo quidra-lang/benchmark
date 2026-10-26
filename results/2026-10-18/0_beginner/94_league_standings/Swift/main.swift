@@ -5,22 +5,12 @@ struct TeamStats {
     var goalDifference: Int { goalsFor - goalsAgainst }
 }
 
-let matches = ["Lions 0-3 Bears",
-    "Tigers 2-2 Wolves",
-    "Eagles 4-0 Sharks",
-    "Bears 0-1 Sharks",
-    "Wolves 2-1 Eagles",
-    "Lions 0-1 Tigers",
-    "Tigers 3-3 Bears",
-    "Eagles 2-2 Lions",
-    "Sharks 2-2 Wolves",
-    "Bears 3-1 Wolves",
-    "Lions 2-0 Sharks",
-    "Tigers 2-1 Eagles",
-    "Eagles 1-0 Bears",
-    "Sharks 2-0 Tigers",
-    "Wolves 2-1 Lions"]
-let names = ["Lions","Tigers","Eagles","Sharks","Wolves","Bears"]
+let matches = [
+    "Lions 0-3 Bears", "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks", "Wolves 2-1 Eagles",
+    "Lions 0-1 Tigers", "Tigers 3-3 Bears", "Eagles 2-2 Lions", "Sharks 2-2 Wolves", "Bears 3-1 Wolves",
+    "Lions 2-0 Sharks", "Tigers 2-1 Eagles", "Eagles 1-0 Bears", "Sharks 2-0 Tigers", "Wolves 2-1 Lions",
+]
+let names = ["Lions", "Tigers", "Eagles", "Sharks", "Wolves", "Bears"]
 var stats = [TeamStats](repeating: TeamStats(), count: names.count)
 for match in matches {
     let parts = match.split(separator: " ").map(String.init)
@@ -41,13 +31,13 @@ for match in matches {
         stats[h > a ? away : home].losses += 1
     }
 }
-let order = names.indices.sorted { a,b in
+let order = names.indices.sorted { a, b in
     if stats[a].points != stats[b].points { return stats[a].points > stats[b].points }
     if stats[a].goalDifference != stats[b].goalDifference { return stats[a].goalDifference > stats[b].goalDifference }
     if stats[a].goalsFor != stats[b].goalsFor { return stats[a].goalsFor > stats[b].goalsFor }
     return names[a] < names[b]
 }
-for (position,i) in order.enumerated() {
+for (position, i) in order.enumerated() {
     let record = stats[i], difference = (record.goalDifference > 0 ? "+" : "") + String(record.goalDifference)
     print("\(position + 1). \(names[i]) P=\(record.played) W=\(record.wins) D=\(record.draws) " +
         "L=\(record.losses) GF=\(record.goalsFor) GA=\(record.goalsAgainst) GD=\(difference) Pts=\(record.points)")

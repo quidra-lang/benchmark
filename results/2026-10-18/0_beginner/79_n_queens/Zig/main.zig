@@ -36,8 +36,7 @@ pub fn main(init: std.process.Init) !void {
     }
     for (0..8) |r| {
         for (0..8) |c|
-            try out.writeByte(if (first[r] == c) 'Q' else
-                '.');
+            try out.writeByte(if (first[r] == c) 'Q' else '.');
         try out.writeByte('\n');
     }
     try out.flush();

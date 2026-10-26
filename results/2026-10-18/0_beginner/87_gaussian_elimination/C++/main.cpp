@@ -5,8 +5,9 @@
 #include <cmath>
 
 int main() {
-    std::vector<std::vector<std::vector<double>>> systems = {{{2, -1, 3, 7}, {4, 1, -2, 3}, {-3, 5,
-        1, -4}}, {{1, 3, -2, 4, 6}, {5, -2, 1, 3, -7}, {-2, 4, 6, -1, 9}, {3, 1, -4, 2, 5}}};
+    std::vector<std::vector<std::vector<double>>> systems = {
+        {{2, -1, 3, 7}, {4, 1, -2, 3}, {-3, 5, 1, -4}},
+        {{1, 3, -2, 4, 6}, {5, -2, 1, 3, -7}, {-2, 4, 6, -1, 9}, {3, 1, -4, 2, 5}}};
     for (std::size_t s = 0; s < systems.size(); s++) {
         std::vector<std::vector<double>> &a = systems[s];
         int n = static_cast<int>(a.size());

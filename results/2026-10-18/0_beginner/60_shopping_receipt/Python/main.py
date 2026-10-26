@@ -1,7 +1,10 @@
 items = [
-    ("milk", 198, 2, "food"), ("notebook", 165, 3, "general"),
-    ("bread", 248, 1, "food"), ("apple", 128, 4, "food"),
-    ("detergent", 437, 1, "general"), ("eggs", 268, 1, "food"),
+    ("milk", 198, 2, "food"),
+    ("notebook", 165, 3, "general"),
+    ("bread", 248, 1, "food"),
+    ("apple", 128, 4, "food"),
+    ("detergent", 437, 1, "general"),
+    ("eggs", 268, 1, "food"),
 ]
 totals = {"food": 0, "general": 0}
 for name, price, quantity, category in items:

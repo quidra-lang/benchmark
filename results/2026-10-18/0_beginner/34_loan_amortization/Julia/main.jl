@@ -8,9 +8,10 @@ function main()
         balance -= principal
         total_interest += interest
         total_paid += payment
-        println("month ", month, ": interest=", interest, " principal=", principal, " balance=", balance)
+        println("month $month: interest=$interest principal=$principal balance=$balance")
     end
     println("total interest: ", total_interest)
     println("total paid: ", total_paid)
 end
+
 main()

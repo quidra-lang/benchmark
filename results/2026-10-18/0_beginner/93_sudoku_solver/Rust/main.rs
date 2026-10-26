@@ -6,8 +6,8 @@ fn solve(board: &mut [[u8; 9]; 9], placements: &mut u64) -> bool {
     let (row, col) = (index / 9, index % 9);
     for d in 1..=9 {
         let safe = (0..9).all(|k| board[row][k] != d && board[k][col] != d)
-            && (row / 3 * 3..row / 3 * 3 + 3).all(|r|
-                (col / 3 * 3..col / 3 * 3 + 3).all(|c| board[r][c] != d));
+            && (row / 3 * 3..row / 3 * 3 + 3)
+                .all(|r| (col / 3 * 3..col / 3 * 3 + 3).all(|c| board[r][c] != d));
         if safe {
             board[row][col] = d;
             *placements += 1;
@@ -21,8 +21,17 @@ fn solve(board: &mut [[u8; 9]; 9], placements: &mut u64) -> bool {
 }
 
 fn main() {
-    let rows = ["800025000", "070080005", "260400070", "000001900", "010000040", "600200000", "900010000",
-        "700000004", "020000036"];
+    let rows = [
+        "800025000",
+        "070080005",
+        "260400070",
+        "000001900",
+        "010000040",
+        "600200000",
+        "900010000",
+        "700000004",
+        "020000036",
+    ];
     let mut board = [[0; 9]; 9];
     for r in 0..9 {
         for c in 0..9 {

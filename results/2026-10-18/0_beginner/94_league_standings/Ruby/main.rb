@@ -33,6 +33,6 @@ ordered.each_with_index do |name, position|
   s = stats[name]
   difference = s[:gf] - s[:ga]
   gd = difference.positive? ? "+#{difference}" : difference.to_s
-  puts "#{position + 1}. #{name} P=#{s[:played]} W=#{s[:wins]} D=#{s[:draws]} L=#{s[:losses]} " +
+  puts "#{position + 1}. #{name} P=#{s[:played]} W=#{s[:wins]} D=#{s[:draws]} L=#{s[:losses]} " \
        "GF=#{s[:gf]} GA=#{s[:ga]} GD=#{gd} Pts=#{s[:points]}"
 end

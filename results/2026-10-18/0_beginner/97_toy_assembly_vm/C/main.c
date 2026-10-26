@@ -3,7 +3,7 @@
 #include <string.h>
 
 int value(const char *token, const int *registers) {
-    return token[0] >= 'A' && token[0] <= 'D' ? registers[token[0] - 'A']: atoi(token);
+    return token[0] >= 'A' && token[0] <= 'D' ? registers[token[0] - 'A'] : atoi(token);
 }
 
 int main(void) {
@@ -18,12 +18,12 @@ int main(void) {
         if (strcmp(op, "HALT") == 0)
             break;
         if (strcmp(op, "JNZ") == 0) {
-            pc += value(a, registers) != 0 ? atoi(b): 1;
+            pc += value(a, registers) != 0 ? atoi(b) : 1;
             continue;
         }
-        if (strcmp(op, "PRINT") == 0)
+        if (strcmp(op, "PRINT") == 0) {
             printf("%d\n", value(a, registers));
-        else {
+        } else {
             int r = a[0] - 'A', x = value(b, registers);
             if (strcmp(op, "SET") == 0)
                 registers[r] = x;

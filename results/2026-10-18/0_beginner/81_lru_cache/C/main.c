@@ -24,12 +24,12 @@ int main(void) {
             cache[j] = cache[j - 1];
         cache[0] = key;
         length++;
-        printf("%c: %s", key, hit ? "hit": "miss");
+        printf("%c: %s", key, hit ? "hit" : "miss");
         if (evicted)
             printf(", evict %c", evicted);
         printf(" [");
         for (int j = 0; j < length; j++)
-            printf("%s%c", j ? " ": "", cache[j]);
+            printf("%s%c", j ? " " : "", cache[j]);
         puts("]");
     }
     printf("hits: %d misses: %d\n", hits, misses);

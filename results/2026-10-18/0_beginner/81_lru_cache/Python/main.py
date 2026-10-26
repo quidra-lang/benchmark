@@ -1,6 +1,6 @@
 cache = []
 hits = misses = 0
-for key in "B A C B D A B E A D D C A E B".split():
+for key in ["B", "A", "C", "B", "D", "A", "B", "E", "A", "D", "D", "C", "A", "E", "B"]:
     if key in cache:
         hits += 1
         cache.remove(key)

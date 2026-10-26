@@ -7,8 +7,8 @@ import (
 
 func main() {
 	systems := [][][]float64{
-		{{2, -1, 3, 7}, {4, 1, -2, 3}, {-3, 5, 1, -4}}, {{1, 3, -2, 4, 6}, {5, -2, 1, 3, -7}, {-2, 4, 6,
-			-1, 9}, {3, 1, -4, 2, 5}},
+		{{2, -1, 3, 7}, {4, 1, -2, 3}, {-3, 5, 1, -4}},
+		{{1, 3, -2, 4, 6}, {5, -2, 1, 3, -7}, {-2, 4, 6, -1, 9}, {3, 1, -4, 2, 5}},
 	}
 	for s, a := range systems {
 		n := len(a)
@@ -24,20 +24,20 @@ func main() {
 			for i := k + 1; i < n; i++ {
 				f := a[i][k] / a[k][k]
 				for j := k; j <= n; j++ {
-					a[i][j] = a[i][j] - f * a[k][j]
+					a[i][j] = a[i][j] - f*a[k][j]
 				}
 			}
 		}
 		for i := n - 1; i >= 0; i-- {
 			sum := a[i][n]
 			for j := i + 1; j < n; j++ {
-				sum = sum - a[i][j] * x[j]
+				sum = sum - a[i][j]*x[j]
 			}
 			x[i] = sum / a[i][i]
 		}
-		fmt.Printf("system %d:\n", s + 1)
+		fmt.Printf("system %d:\n", s+1)
 		for i, value := range x {
-			fmt.Printf("x%d = %.4f\n", i + 1, value)
+			fmt.Printf("x%d = %.4f\n", i+1, value)
 		}
 	}
 }

@@ -6,12 +6,12 @@ int main(void) {
     char *longest = NULL, *shortest = NULL;
     int count = 0, total = 0;
     for (char *w = strtok(sentence, " "); w; w = strtok(NULL, " ")) {
-        int len = (int) strlen(w);
+        int len = (int)strlen(w);
         count++;
         total += len;
-        if (!longest || len > (int) strlen(longest))
+        if (!longest || len > (int)strlen(longest))
             longest = w;
-        if (!shortest || len < (int) strlen(shortest))
+        if (!shortest || len < (int)strlen(shortest))
             shortest = w;
     }
     printf("words: %d\nlongest: %s\nshortest: %s\naverage length: %.2f\n",

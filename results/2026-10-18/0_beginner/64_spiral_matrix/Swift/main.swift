@@ -1,7 +1,7 @@
 import Foundation
 
 var matrix = [[Int]](repeating: [Int](repeating: 0, count: 6), count: 5)
-let dr = [0,1,0,-1], dc = [1,0,-1,0]
+let dr = [0, 1, 0, -1], dc = [1, 0, -1, 0]
 var r = 0, c = 0, direction = 0
 for value in 1...30 {
     matrix[r][c] = value

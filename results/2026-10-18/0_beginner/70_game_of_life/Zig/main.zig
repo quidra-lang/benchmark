@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
         "........",
         "........",
         ".....###",
-        "........"
+        "........",
     };
     var board: [8][8]bool = undefined;
     for (0..8) |r| {
@@ -20,11 +20,10 @@ pub fn main(init: std.process.Init) !void {
             board[r][c] = initial[r][c] == '#';
     }
     for (0..5) |g| {
-        try out.print("generation {d}\n", .{ g });
+        try out.print("generation {d}\n", .{g});
         for (board) |row| {
             for (row) |alive|
-                try out.writeByte(if (alive) '#' else
-                    '.');
+                try out.writeByte(if (alive) '#' else '.');
             try out.writeByte('\n');
         }
         if (g == 4)
@@ -53,6 +52,6 @@ pub fn main(init: std.process.Init) !void {
     var alive: usize = 0;
     for (board) |row|
         alive += std.mem.countScalar(bool, &row, true);
-    try out.print("alive: {d}\n", .{ alive });
+    try out.print("alive: {d}\n", .{alive});
     try out.flush();
 }

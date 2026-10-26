@@ -1,4 +1,7 @@
-const identifiers = ["user_name", "maxRetryCount", "ShoppingCartItem", "background-color", "get_last_login_time", "isEmailAddressValid"];
+const identifiers = [
+  "user_name", "maxRetryCount", "ShoppingCartItem", "background-color", "get_last_login_time",
+  "isEmailAddressValid"
+];
 for (const identifier of identifiers) {
   const words = identifier.split(/[_-]|(?=[A-Z])/).filter(Boolean).map(word => word.toLowerCase());
   const capitals = words.map(word => word[0].toUpperCase() + word.slice(1));

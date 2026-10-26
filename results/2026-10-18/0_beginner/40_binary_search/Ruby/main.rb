@@ -9,7 +9,11 @@ values = [3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77]
       found = mid
       break
     end
-    values[mid] < target ? lo = mid + 1 : hi = mid - 1
+    if values[mid] < target
+      lo = mid + 1
+    else
+      hi = mid - 1
+    end
   end
   result = found >= 0 ? "index #{found}" : 'not found'
   puts "#{target}: probes #{probes.join(' ')} -> #{result}"

@@ -1,6 +1,6 @@
 var black = [[Bool]](repeating: [Bool](repeating: false, count: 11), count: 11)
 var r = 5, c = 5, direction = 0
-let dr = [-1,0,1,0], dc = [0,1,0,-1]
+let dr = [-1, 0, 1, 0], dc = [0, 1, 0, -1]
 for _ in 0..<300 {
     direction = (direction + (black[r][c] ? 3 : 1)) % 4
     black[r][c].toggle()

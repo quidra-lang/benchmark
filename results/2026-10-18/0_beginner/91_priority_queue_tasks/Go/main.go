@@ -6,7 +6,7 @@ import (
 )
 
 type Task struct {
-	name string
+	name            string
 	priority, order int
 }
 
@@ -36,9 +36,10 @@ func (q *TaskQueue) Pop() any {
 func main() {
 	queue := TaskQueue{}
 	sequence := 0
-	for _, operation := range []string{"add email 3", "add backup 5", "add deploy 1", "run", "add report 3",
+	operations := []string{"add email 3", "add backup 5", "add deploy 1", "run", "add report 3",
 		"add test 2", "add lint 3", "run", "run", "add cleanup 5", "add review 2", "run", "add build 1",
-		"add docs 4", "run", "run"} {
+		"add docs 4", "run", "run"}
+	for _, operation := range operations {
 		if operation == "run" {
 			task := heap.Pop(&queue).(Task)
 			fmt.Printf("run: %s (priority %d)\n", task.name, task.priority)

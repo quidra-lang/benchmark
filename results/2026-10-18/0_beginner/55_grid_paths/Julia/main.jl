@@ -1,17 +1,20 @@
 function count_paths(grid, obstacles)
     rows, columns = length(grid), length(grid[1])
-    paths = zeros(Int,rows,columns)
-    for row in 1:rows, column in 1:columns
+    paths = zeros(Int, rows, columns)
+    for row = 1:rows, column = 1:columns
         if obstacles && grid[row][column] == '#'
             continue
         elseif row == 1 && column == 1
-            paths[row,column] = 1
+            paths[row, column] = 1
         else
-            paths[row,column] = (row > 1 ? paths[row-1,column] : 0) + (column > 1 ? paths[row,column-1] : 0)
+            paths[row, column] =
+                (row > 1 ? paths[row-1, column] : 0) +
+                (column > 1 ? paths[row, column-1] : 0)
         end
     end
-    return paths[end,end]
+    return paths[end, end]
 end
-grid = [".......","..#....","....#..",".#.....","...#.#.","......."]
-println("without obstacles: ",count_paths(grid,false))
-println("with obstacles: ",count_paths(grid,true))
+
+grid = [".......", "..#....", "....#..", ".#.....", "...#.#.", "......."]
+println("without obstacles: ", count_paths(grid, false))
+println("with obstacles: ", count_paths(grid, true))

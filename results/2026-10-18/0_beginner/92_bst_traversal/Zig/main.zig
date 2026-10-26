@@ -1,21 +1,17 @@
 const std = @import("std");
 
-const Node = struct {
-    key: i32,
-    left: ?usize = null,
-    right: ?usize = null
-};
+const Node = struct { key: i32, left: ?usize = null, right: ?usize = null };
 
 fn traverse(out: *std.Io.Writer, nodes: *const [12]Node, root: ?usize, mode: usize) std.Io.Writer.Error!void {
     const i = root orelse return;
     if (mode == 1)
-        try out.print(" {d}", .{ nodes[i].key });
+        try out.print(" {d}", .{nodes[i].key});
     try traverse(out, nodes, nodes[i].left, mode);
     if (mode == 0)
-        try out.print(" {d}", .{ nodes[i].key });
+        try out.print(" {d}", .{nodes[i].key});
     try traverse(out, nodes, nodes[i].right, mode);
     if (mode == 2)
-        try out.print(" {d}", .{ nodes[i].key });
+        try out.print(" {d}", .{nodes[i].key});
 }
 
 fn height(nodes: *const [12]Node, root: ?usize) usize {
@@ -73,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
     while (head < tail) {
         const i = queue[head];
         head += 1;
-        try out.print(" {d}", .{ nodes[i].key });
+        try out.print(" {d}", .{nodes[i].key});
         if (nodes[i].left) |child| {
             queue[tail] = child;
             tail += 1;
@@ -83,11 +79,11 @@ pub fn main(init: std.process.Init) !void {
             tail += 1;
         }
     }
-    try out.print("\nheight: {d}\n", .{ height(&nodes, root) });
+    try out.print("\nheight: {d}\n", .{height(&nodes, root)});
     root = remove(&nodes, root, 6);
     root = remove(&nodes, root, 27);
     try out.writeAll("preorder after deletions:");
     try traverse(out, &nodes, root, 1);
-    try out.print("\nheight after deletions: {d}\n", .{ height(&nodes, root) });
+    try out.print("\nheight after deletions: {d}\n", .{height(&nodes, root)});
     try out.flush();
 }

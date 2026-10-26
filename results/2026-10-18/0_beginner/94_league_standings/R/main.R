@@ -1,30 +1,40 @@
-teams <- c("Lions","Tigers","Eagles","Sharks","Wolves","Bears")
-records <- matrix(0,6,7,dimnames=list(teams,c("played","wins","draws","losses","gf","ga","points")))
-matches <- c("Lions 0-3 Bears","Tigers 2-2 Wolves","Eagles 4-0 Sharks","Bears 0-1 Sharks","Wolves 2-1 Eagles","Lions 0-1 Tigers","Tigers 3-3 Bears","Eagles 2-2 Lions","Sharks 2-2 Wolves","Bears 3-1 Wolves","Lions 2-0 Sharks","Tigers 2-1 Eagles","Eagles 1-0 Bears","Sharks 2-0 Tigers","Wolves 2-1 Lions")
+teams <- c("Lions", "Tigers", "Eagles", "Sharks", "Wolves", "Bears")
+records <- matrix(0, 6, 7, dimnames = list(teams, c("played", "wins", "draws", "losses", "gf", "ga", "points")))
+matches <- c(
+  "Lions 0-3 Bears", "Tigers 2-2 Wolves", "Eagles 4-0 Sharks", "Bears 0-1 Sharks",
+  "Wolves 2-1 Eagles", "Lions 0-1 Tigers", "Tigers 3-3 Bears", "Eagles 2-2 Lions",
+  "Sharks 2-2 Wolves", "Bears 3-1 Wolves", "Lions 2-0 Sharks", "Tigers 2-1 Eagles",
+  "Eagles 1-0 Bears", "Sharks 2-0 Tigers", "Wolves 2-1 Lions"
+)
 for (match in matches) {
-    parts <- strsplit(match," ",fixed=TRUE)[[1]]
-    goals <- as.integer(strsplit(parts[2],"-",fixed=TRUE)[[1]])
-    for (side in 1:2) {
-        team <- if (side == 1) parts[1] else parts[3]
-        gf <- goals[side]
-        ga <- goals[3-side]
-        records[team,"played"] <- records[team,"played"]+1
-        records[team,"gf"] <- records[team,"gf"]+gf
-        records[team,"ga"] <- records[team,"ga"]+ga
-        if (gf > ga) {
-            records[team,"wins"] <- records[team,"wins"]+1
-            records[team,"points"] <- records[team,"points"]+3
-        } else if (gf == ga) {
-            records[team,"draws"] <- records[team,"draws"]+1
-            records[team,"points"] <- records[team,"points"]+1
-        } else records[team,"losses"] <- records[team,"losses"]+1
+  parts <- strsplit(match, " ", fixed = TRUE)[[1]]
+  goals <- as.integer(strsplit(parts[2], "-", fixed = TRUE)[[1]])
+  for (side in 1:2) {
+    team <- if (side == 1) parts[1] else parts[3]
+    gf <- goals[side]
+    ga <- goals[3 - side]
+    records[team, "played"] <- records[team, "played"] + 1
+    records[team, "gf"] <- records[team, "gf"] + gf
+    records[team, "ga"] <- records[team, "ga"] + ga
+    if (gf > ga) {
+      records[team, "wins"] <- records[team, "wins"] + 1
+      records[team, "points"] <- records[team, "points"] + 3
+    } else if (gf == ga) {
+      records[team, "draws"] <- records[team, "draws"] + 1
+      records[team, "points"] <- records[team, "points"] + 1
+    } else {
+      records[team, "losses"] <- records[team, "losses"] + 1
     }
+  }
 }
-differences <- records[,"gf"]-records[,"ga"]
-ordered <- order(-records[,"points"],-differences,-records[,"gf"],teams,method="radix")
+differences <- records[, "gf"] - records[, "ga"]
+ordered <- order(-records[, "points"], -differences, -records[, "gf"], teams, method = "radix")
 for (position in seq_along(ordered)) {
-    i <- ordered[position]
-    r <- records[i,]
-    signed <- if (differences[i] > 0) sprintf("+%d",differences[i]) else sprintf("%d",differences[i])
-    cat(sprintf("%d. %s P=%d W=%d D=%d L=%d GF=%d GA=%d GD=%s Pts=%d\n",position,teams[i],r[1],r[2],r[3],r[4],r[5],r[6],signed,r[7]))
+  i <- ordered[position]
+  r <- records[i, ]
+  signed <- if (differences[i] > 0) sprintf("+%d", differences[i]) else sprintf("%d", differences[i])
+  cat(sprintf(
+    "%d. %s P=%d W=%d D=%d L=%d GF=%d GA=%d GD=%s Pts=%d\n",
+    position, teams[i], r[1], r[2], r[3], r[4], r[5], r[6], signed, r[7]
+  ))
 }

@@ -6,7 +6,7 @@ def merge_sort(left, right):
         return 0
     middle = (left + right) // 2
     inversions = merge_sort(left, middle) + merge_sort(middle + 1, right)
-    a, b = values[left:middle + 1], values[middle + 1:right + 1]
+    a, b = values[left : middle + 1], values[middle + 1 : right + 1]
     i = j = 0
     merged = []
     while i < len(a) and j < len(b):
@@ -19,7 +19,7 @@ def merge_sort(left, right):
             inversions += len(a) - i
     merged.extend(a[i:])
     merged.extend(b[j:])
-    values[left:right + 1] = merged
+    values[left : right + 1] = merged
     print(f"merge [{left}..{right}]:", *merged)
     return inversions
 

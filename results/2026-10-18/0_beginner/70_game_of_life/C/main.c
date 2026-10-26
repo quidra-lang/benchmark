@@ -20,7 +20,7 @@ int main(void) {
                         if ((dr || dc) && rr >= 0 && rr < 8 && cc >= 0 && cc < 8 && board[rr][cc] == '#')
                             neighbors++;
                     }
-                next[r][c] = neighbors == 3 || (board[r][c] == '#' && neighbors == 2) ? '#': '.';
+                next[r][c] = neighbors == 3 || (board[r][c] == '#' && neighbors == 2) ? '#' : '.';
             }
             next[r][8] = 0;
         }

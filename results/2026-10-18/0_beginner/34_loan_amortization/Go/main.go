@@ -7,7 +7,7 @@ func main() {
 	for balance > 0 {
 		month++
 		interest := balance / 100
-		payment := min(50000, balance + interest)
+		payment := min(50000, balance+interest)
 		principal := payment - interest
 		balance -= principal
 		totalInterest += interest

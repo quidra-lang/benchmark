@@ -10,12 +10,12 @@ pub fn main(init: std.process.Init) !void {
     for (0..30) |i| {
         if (i > 0)
             try out.writeByte(' ');
-        try out.print("{d}", .{ a });
+        try out.print("{d}", .{a});
         sum += a;
         const next = a + b;
         a = b;
         b = next;
     }
-    try out.print("\nsum: {d}\n", .{ sum });
+    try out.print("\nsum: {d}\n", .{sum});
     try out.flush();
 }

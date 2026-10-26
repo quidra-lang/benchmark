@@ -1,5 +1,5 @@
 let names = ["tent", "stove", "lantern", "rope", "camera", "blanket", "water"]
-let weights = [10,3,2,3,5,5,6], values = [120,65,45,20,90,85,100]
+let weights = [10, 3, 2, 3, 5, 5, 6], values = [120, 65, 45, 20, 90, 85, 100]
 var dp = [[Int]](repeating: [Int](repeating: 0, count: 21), count: 8)
 for i in 1...7 {
     for capacity in 0...20 {

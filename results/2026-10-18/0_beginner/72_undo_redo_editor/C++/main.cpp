@@ -28,9 +28,9 @@ int main() {
         } else {
             undo.push_back(buffer);
             redo.clear();
-            if (command.compare(0, 5, "type ") == 0)
+            if (command.compare(0, 5, "type ") == 0) {
                 buffer += command.substr(5);
-            else {
+            } else {
                 std::size_t count = static_cast<std::size_t>(std::stoi(command.substr(7)));
                 buffer.resize(count > buffer.size() ? 0 : buffer.size() - count);
             }

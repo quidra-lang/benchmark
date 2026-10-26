@@ -4,7 +4,8 @@ using System.Globalization;
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
 int[] row = { 1 };
-for (int n = 0; n < 12; n++) {
+for (int n = 0; n < 12; n++)
+{
     Console.WriteLine(string.Join(" ", row));
     int[] next = new int[row.Length + 1];
     next[0] = next[^1] = 1;

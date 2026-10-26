@@ -13,10 +13,12 @@ public class Main {
             } else {
                 misses++;
                 status = "miss";
-                if (cache.size() == 3) status += ", evict " + cache.removeLast();
+                if (cache.size() == 3) {
+                    status += ", evict " + cache.removeLast();
+                }
             }
             cache.addFirst(key);
-            System.out.println(key + ": " + status + " [" + String.join(" ",cache) + "]");
+            System.out.println(key + ": " + status + " [" + String.join(" ", cache) + "]");
         }
         System.out.println("hits: " + hits + " misses: " + misses);
     }

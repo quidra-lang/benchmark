@@ -7,13 +7,13 @@ int main(void) {
     for (int k = 0; k < 7; k++) {
         const char *s = values[k];
         char stack[128];
-        int top = 0, error = -1, len = (int) strlen(s);
+        int top = 0, error = -1, len = (int)strlen(s);
         for (int i = 0; i < len; i++) {
             char c = s[i];
-            if (c == '(' || c == '[' || c == '{')
+            if (c == '(' || c == '[' || c == '{') {
                 stack[top++] = c;
-            else if (c == ')' || c == ']' || c == '}') {
-                char expected = c == ')' ? '(': c == ']' ? '[': '{';
+            } else if (c == ')' || c == ']' || c == '}') {
+                char expected = c == ')' ? '(' : c == ']' ? '[' : '{';
                 if (!top || stack[top - 1] != expected) {
                     error = i;
                     break;

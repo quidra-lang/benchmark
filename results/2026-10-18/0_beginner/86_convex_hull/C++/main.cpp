@@ -4,6 +4,7 @@
 #include <utility>
 
 using Point = std::pair<int, int>;
+
 int cross(Point o, Point a, Point b) {
     return (a.first - o.first) * (b.second - o.second) - (a.second - o.second) * (b.first - o.first);
 }

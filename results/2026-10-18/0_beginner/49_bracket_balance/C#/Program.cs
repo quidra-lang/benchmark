@@ -4,15 +4,27 @@ using System.Globalization;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
-foreach (string text in new[] { "(a + b) * [c - d]", "{x = [1, 2, (3 + 4)]}", "f(a[i] + g(b)}", "(1 + 2)) * 3", "if (a < b) { c = d[0]; }", "((a + b] * c", "[{(x * y) - z}" }) {
+string[] texts =
+{
+    "(a + b) * [c - d]", "{x = [1, 2, (3 + 4)]}", "f(a[i] + g(b)}", "(1 + 2)) * 3",
+    "if (a < b) { c = d[0]; }", "((a + b] * c", "[{(x * y) - z}",
+};
+foreach (string text in texts)
+{
     var stack = new Stack<char>();
     int error = -1;
-    for (int i = 0; i < text.Length; i++) {
+    for (int i = 0; i < text.Length; i++)
+    {
         char ch = text[i];
         int close = ")]}".IndexOf(ch);
-        if ("([{".IndexOf(ch) >= 0) stack.Push(ch);
-        else if (close >= 0) {
-            if (stack.Count == 0 || stack.Peek() != "([{"[close]) {
+        if ("([{".IndexOf(ch) >= 0)
+        {
+            stack.Push(ch);
+        }
+        else if (close >= 0)
+        {
+            if (stack.Count == 0 || stack.Peek() != "([{"[close])
+            {
                 error = i;
                 break;
             }

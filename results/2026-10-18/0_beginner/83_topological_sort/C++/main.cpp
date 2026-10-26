@@ -11,8 +11,8 @@ void solve(const std::vector<std::string> &names, const std::vector<std::array<s
     std::vector<int> indegree(n);
     std::vector<bool> taken(n);
     for (const std::array<std::string, 2> &e : edges) {
-        int a = static_cast<int>(std::find(names.begin(), names.end(), e[0]) - names.begin()), b = static_cast<int>(std::find(names.begin(),
-            names.end(), e[1]) - names.begin());
+        int a = static_cast<int>(std::find(names.begin(), names.end(), e[0]) - names.begin());
+        int b = static_cast<int>(std::find(names.begin(), names.end(), e[1]) - names.begin());
         graph[a][b] = true;
         ++indegree[b];
     }
@@ -48,9 +48,14 @@ void solve(const std::vector<std::string> &names, const std::vector<std::array<s
 }
 
 int main() {
-    solve({"physics", "algebra", "graphics", "programming", "statistics", "calculus", "databases", "algorithms"}, {{"calculus", "physics"}, {"algebra", "calculus"}, {"programming", "algorithms"}, {"algebra",
-        "statistics"}, {"algorithms", "databases"}, {"statistics", "databases"}, {"calculus", "graphics"},
-        {"algorithms", "graphics"}, {"physics", "graphics"}}, false);
-    solve({"music", "ecology", "art", "geology", "biology", "chemistry"}, {{"music", "art"}, {"art", "ecology"}, {"biology", "chemistry"}, {"chemistry", "ecology"}, {"ecology",
-        "geology"}, {"geology", "chemistry"}}, true);
+    std::vector<std::string> names1 = {"physics", "algebra", "graphics", "programming", "statistics", "calculus",
+        "databases", "algorithms"};
+    std::vector<std::array<std::string, 2>> edges1 = {{"calculus", "physics"}, {"algebra", "calculus"},
+        {"programming", "algorithms"}, {"algebra", "statistics"}, {"algorithms", "databases"},
+        {"statistics", "databases"}, {"calculus", "graphics"}, {"algorithms", "graphics"}, {"physics", "graphics"}};
+    std::vector<std::string> names2 = {"music", "ecology", "art", "geology", "biology", "chemistry"};
+    std::vector<std::array<std::string, 2>> edges2 = {{"music", "art"}, {"art", "ecology"},
+        {"biology", "chemistry"}, {"chemistry", "ecology"}, {"ecology", "geology"}, {"geology", "chemistry"}};
+    solve(names1, edges1, false);
+    solve(names2, edges2, true);
 }

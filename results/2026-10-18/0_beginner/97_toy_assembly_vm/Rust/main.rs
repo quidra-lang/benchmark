@@ -8,8 +8,25 @@ fn value(token: &str, registers: &[i64; 4]) -> i64 {
 }
 
 fn main() {
-    let program = ["SET A 1", "SET B 1", "SET D 8", "MUL A B", "PRINT A", "ADD B 1", "SUB D 1", "JNZ D -4",
-        "SET A 1071", "SET B 462", "SET C A", "MOD C B", "SET A B", "SET B C", "JNZ B -4", "PRINT A", "HALT"];
+    let program = [
+        "SET A 1",
+        "SET B 1",
+        "SET D 8",
+        "MUL A B",
+        "PRINT A",
+        "ADD B 1",
+        "SUB D 1",
+        "JNZ D -4",
+        "SET A 1071",
+        "SET B 462",
+        "SET C A",
+        "MOD C B",
+        "SET A B",
+        "SET B C",
+        "JNZ B -4",
+        "PRINT A",
+        "HALT",
+    ];
     let mut registers = [0_i64; 4];
     let (mut pc, mut executed) = (0_i32, 0);
     while (0..program.len() as i32).contains(&pc) {
@@ -38,7 +55,7 @@ fn main() {
                 "SUB" => registers[r] -= x,
                 "MUL" => registers[r] *= x,
                 "MOD" => registers[r] %= x,
-                _ => unreachable!()
+                _ => unreachable!(),
             }
         }
         pc += 1;

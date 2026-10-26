@@ -1,9 +1,6 @@
 const std = @import("std");
 
-const Student = struct {
-    name: []const u8,
-    scores: [3]u32
-};
+const Student = struct { name: []const u8, scores: [3]u32 };
 
 fn total(s: Student) u32 {
     return s.scores[0] + s.scores[1] + s.scores[2];
@@ -23,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "Yamada", .scores = .{ 65, 90, 71 } },
         .{ .name = "Ito", .scores = .{ 80, 79, 85 } },
         .{ .name = "Kato", .scores = .{ 92, 88, 95 } },
-        .{ .name = "Mori", .scores = .{ 70, 62, 78 } }
+        .{ .name = "Mori", .scores = .{ 70, 62, 78 } },
     };
     std.mem.sort(Student, &students, {}, less);
     var rank: usize = 0;
@@ -33,8 +30,7 @@ pub fn main(init: std.process.Init) !void {
         if (i == 0 or t != previous)
             rank = i + 1;
         previous = t;
-        try out.print("{d}. {s} total={d} average={d:.2}\n",
-            .{ rank, s.name, t, @as(f64, @floatFromInt(t)) / 3.0 });
+        try out.print("{d}. {s} total={d} average={d:.2}\n", .{ rank, s.name, t, @as(f64, @floatFromInt(t)) / 3.0 });
     }
     try out.flush();
 }

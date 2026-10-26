@@ -4,7 +4,9 @@ int main(void) {
     int balance = 1000000, month = 0, total_interest = 0, total_paid = 0;
     while (balance > 0) {
         month++;
-        int interest = balance / 100, payment = balance + interest < 50000 ? balance + interest: 50000, principal = payment - interest;
+        int interest = balance / 100;
+        int payment = balance + interest < 50000 ? balance + interest : 50000;
+        int principal = payment - interest;
         balance -= principal;
         total_interest += interest;
         total_paid += payment;

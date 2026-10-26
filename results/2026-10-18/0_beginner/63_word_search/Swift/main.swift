@@ -1,7 +1,7 @@
 let board = ["MMONKENBIR", "PMTIGERJPL", "TGREJEDUZI", "SPYUTEJDEC", "WKAPSIDLBN",
     "KUVNGSBPRO", "RIBSDACBAM", "YWVAUAPKAH", "KYCGTHHESR", "OCCALAOKKR"].map { Array($0) }
 let directions = ["E", "SE", "S", "SW", "W", "NW", "N", "NE"]
-let dr = [0,1,1,1,0,-1,-1,-1], dc = [1,1,0,-1,-1,-1,0,1]
+let dr = [0, 1, 1, 1, 0, -1, -1, -1], dc = [1, 1, 0, -1, -1, -1, 0, 1]
 for word in ["TIGER", "ZEBRA", "MONKEY", "PANDA", "KOALA", "RABBIT"] {
     let letters = Array(word)
     var result = "not found"

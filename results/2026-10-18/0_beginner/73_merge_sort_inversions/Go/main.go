@@ -8,9 +8,9 @@ func mergeSort(a []int, l, r int) int {
 	}
 	m := (l + r) / 2
 	count := mergeSort(a, l, m)
-	count += mergeSort(a, m + 1, r)
+	count += mergeSort(a, m+1, r)
 	temp := []int{}
-	i, j := l, m + 1
+	i, j := l, m+1
 	for i <= m && j <= r {
 		if a[i] < a[j] {
 			temp = append(temp, a[i])
@@ -25,7 +25,7 @@ func mergeSort(a []int, l, r int) int {
 	temp = append(temp, a[j:r+1]...)
 	copy(a[l:r+1], temp)
 	fmt.Printf("merge [%d..%d]:", l, r)
-	for _, n := range a[l:r+1] {
+	for _, n := range a[l : r+1] {
 		fmt.Printf(" %d", n)
 	}
 	fmt.Println()

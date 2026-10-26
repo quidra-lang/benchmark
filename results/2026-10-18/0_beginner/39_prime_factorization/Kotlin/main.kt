@@ -1,5 +1,5 @@
 fun main() {
-    for (n in intArrayOf(84,9973,15625,1001,123456,48000,999958,999999)) {
+    for (n in intArrayOf(84, 9973, 15625, 1001, 123456, 48000, 999958, 999999)) {
         var remaining = n
         var d = 2
         val factors = mutableListOf<String>()

@@ -4,11 +4,13 @@ const rows = [
 ];
 const board = rows.map(row => [...row].map(Number));
 let placements = 0;
+
 function allowed(row, column, digit) {
   if (board[row].includes(digit) || board.some(line => line[column] === digit)) return false;
   const top = Math.floor(row / 3) * 3, left = Math.floor(column / 3) * 3;
   return !board.slice(top, top + 3).some(line => line.slice(left, left + 3).includes(digit));
 }
+
 function solve() {
   for (let row = 0; row < 9; row++) {
     for (let column = 0; column < 9; column++) {
@@ -25,6 +27,7 @@ function solve() {
   }
   return true;
 }
+
 solve();
 for (const row of board) console.log(row.join(" "));
 console.log(`placements: ${placements}`);

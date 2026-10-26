@@ -15,8 +15,8 @@ func main() {
 			}
 		}
 		yes := true
-		for i := 0; i < len(clean) / 2; i++ {
-			if clean[i] != clean[len(clean) - 1 - i] {
+		for i := 0; i < len(clean)/2; i++ {
+			if clean[i] != clean[len(clean)-1-i] {
 				yes = false
 			}
 		}
