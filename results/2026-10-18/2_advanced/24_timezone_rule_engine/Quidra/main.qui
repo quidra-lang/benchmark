@@ -1,0 +1,696 @@
+import math
+import calendar = "./day_rules.qui"
+import parser = "./tz_parser.qui"
+import transitions = "./transitions.qui"
+import resolver = "./resolver.qui"
+import report = "./report.qui"
+
+string[] read_lines(string path)
+    string[] lines = file.read(path).split(NL)
+    return lines[0:<len(lines) - 1]
+
+int year_start(int year)
+    return calendar.day_number(year, 1, 1) * calendar.seconds_per_day
+
+int clock_seconds(string text)
+    return int.parse(text[0:<2]) * 3600 + int.parse(text[3:<5]) * 60
+
+string names_or_none(string[] names, string separator)
+    return if len(names) == 0 then "none" else names.join(separator)
+
+string[] indented(string[] lines)
+    return [lines[0]].concat([for string line = lines[1:<len(lines)][] then "  " + line])
+
+class Interval(int low, int high)
+
+Interval[] merge_intervals(Interval[] intervals)
+    Interval[] sorted = []
+    for Interval piece = intervals[]
+        int position = int(len(sorted))
+        sorted = sorted.append(piece)
+        while position > 0 and (piece.low < sorted[position - 1].low or (piece.low == sorted[position - 1].low and piece.high < sorted[position - 1].high))
+            sorted[position] = sorted[position - 1]
+            position -= 1
+        sorted[position] = piece
+    Interval[] merged = []
+    for Interval piece = sorted[]
+        int last = int(len(merged)) - 1
+        if last >= 0 and piece.low <= merged[last].high
+            merged[last].high = math.max(merged[last].high, piece.high)
+        else
+            merged = merged.append(piece)
+    return merged
+
+Interval[] intersect_intervals(Interval[] first, Interval[] second)
+    Interval[] pieces = []
+    for Interval a = first[]
+        for Interval b = second[]
+            int low = math.max(a.low, b.low)
+            int high = math.min(a.high, b.high)
+            if low < high
+                pieces = pieces.append(Interval(low, high))
+    return merge_intervals(pieces)
+
+class ZoneLine(int stdoff, string rules_text, string rule_set, int save, string format_text, parser.Until | none until)
+    int start = calendar.neg_infinity
+    int end = calendar.pos_infinity
+
+    string rules_notation()
+        return if rule_set != "" then rule_set elif rules_text == "-" then "-" else report.clock_text(save)
+
+    string until_notation()
+        match until
+            parser.Until boundary
+                return "{boundary.year_text} {boundary.month_text} {boundary.day_text} {report.clock_text(boundary.clock)}{boundary.time_type}"
+            none
+                return ""
+
+ZoneLine | error parse_zone_line(string[] fields)
+    int stdoff = try parser.parse_stdoff(fields[0])
+    string rules_text = fields[1]
+    string rule_set = ""
+    int save = 0
+    if parser.is_number(rules_text[0], 1, 1)
+        save = try parser.parse_save(rules_text)
+    elif rules_text != "-"
+        rule_set = rules_text
+    try parser.check_format(fields[2], rule_set != "")
+    parser.Until | none until = none
+    if len(fields) > 3
+        until = try parser.parse_until(fields[3:<len(fields)])
+    return ZoneLine(stdoff, rules_text, rule_set, save, fields[2], until)
+
+class SourceLine(int number, local string content)
+    string[] fields = parser.split_fields(content)
+    string kind = if parser.is_continuation(content) then "continuation" elif fields[0] == "Rule" or fields[0] == "Zone" or fields[0] == "Link" then fields[0] else "unknown"
+    int block = -1
+    int position = 0
+    ZoneLine | none zone_line = none
+    bool field_error = false
+    string problem = ""
+
+    bool accepts_continuation()
+        return (kind == "Zone" and len(fields) >= 6) or (kind == "continuation" and len(fields) >= 4)
+
+class Block(string name, int number, int[] indices)
+    bool defined = false
+
+transitions.Rule | error parse_rule(SourceLine line)
+    string[] fields = line.fields
+    int from_year = try parser.parse_year(fields[2])
+    int to_year = try parser.parse_to(fields[3], from_year)
+    if fields[4] != "-"
+        return error("syntax error")
+    int month = try parser.parse_month(fields[5])
+    calendar.DaySpec day = try parser.parse_day_spec(fields[6], month)
+    parser.Time at = try parser.parse_time(fields[7])
+    int save = try parser.parse_save(fields[8])
+    string letter = try parser.parse_letter(fields[9])
+    return transitions.Rule(line.number, fields, from_year, to_year, month, day, at.value, at.kind, save, letter)
+
+transitions.Rule[] rules_named(map.Map<string, transitions.Rule[]> groups, string name)
+    match groups.get(name)
+        transitions.Rule[] found
+            return found
+        none
+            return []
+
+transitions.RuleInstance[] sequence_named(map.Map<string, transitions.RuleInstance[]> sequences, string name)
+    match sequences.get(name)
+        transitions.RuleInstance[] found
+            return found
+        none
+            return []
+
+ZoneLine | error zone_value(SourceLine line)
+    match line.zone_line
+        ZoneLine parsed
+            return parsed
+        none
+            return error("missing zone fields")
+
+string field_problem(SourceLine &line, map.Map<string, transitions.Rule[]> &groups)
+    int size = int(len(line.fields))
+    if line.kind == "unknown" or (line.kind == "continuation" and line.block < 0)
+        return "syntax error"
+    if (line.kind == "Rule" and size != 10) or (line.kind == "Zone" and not (5 <= size <= 9)) or (line.kind == "continuation" and not (3 <= size <= 7)) or (line.kind == "Link" and size != 3)
+        return "syntax error"
+    if line.kind == "Rule"
+        match parse_rule(line)
+            transitions.Rule parsed
+                transitions.Rule[] members = rules_named(groups, parsed.name)
+                .groups.set(parsed.name, members.append(parsed))
+            error failure
+                return failure.message
+    elif line.kind == "Zone" or line.kind == "continuation"
+        string[] fields = if line.kind == "Zone" then line.fields[2:<len(line.fields)] else line.fields
+        match parse_zone_line(fields)
+            ZoneLine parsed
+                line.zone_line = parsed
+            error failure
+                return failure.message
+    return ""
+
+string structural_problem(SourceLine line, SourceLine[] all_lines, Block[] blocks, map.Map<string, transitions.Rule[]> groups, set.Set<string> &seen_names)
+    ZoneLine parsed = zone_value(line)
+    if line.kind == "Zone"
+        string name = line.fields[1]
+        if seen_names.has(name)
+            return "duplicate zone " + name
+        .seen_names.add(name)
+    if parsed.rule_set != "" and not groups.has(parsed.rule_set)
+        return "unknown rule " + parsed.rule_set
+    match parsed.until
+        parser.Until boundary
+            Block block = blocks[line.block]
+            if line.kind == "continuation"
+                SourceLine previous = all_lines[block.indices[line.position - 1]]
+                if not previous.field_error
+                    ZoneLine earlier = zone_value(previous)
+                    match earlier.until
+                        parser.Until prior
+                            if boundary.value <= prior.value
+                                return "until not increasing"
+                        none
+                            return "until not increasing"
+            if line.position == int(len(block.indices)) - 1
+                return "missing continuation"
+        none
+            return ""
+    return ""
+
+class Zone(string name, ZoneLine[] lines)
+    string[] aliases = []
+    map.Map<int, int> applied
+    resolver.Timeline timeline = resolver.Timeline([])
+
+    string[] rule_sets()
+        string[] names = []
+        set.Set<string> seen
+        for ZoneLine entry = lines[]
+            if entry.rule_set != "" and not seen.has(entry.rule_set)
+                names = names.append(entry.rule_set)
+                .seen.add(entry.rule_set)
+        return names
+
+    int line_number_at(int timestamp)
+        for int index < int(len(lines))
+            if lines[index].start <= timestamp < lines[index].end
+                return index + 1
+        return -1
+
+string standard_letter(transitions.RuleInstance[] instances)
+    for transitions.RuleInstance instance = instances[]
+        if instance.rule.save == 0
+            return instance.rule.letter
+    return ""
+
+Zone make_zone(Block block, SourceLine[] all_lines, map.Map<string, transitions.RuleInstance[]> sequences)
+    ZoneLine[] entries = [for int index = block.indices[] then zone_value(all_lines[index])]
+    auto zone = Zone(block.name, entries)
+    resolver.Period[] switches = []
+    int start = calendar.neg_infinity
+    for int index < int(len(zone.lines))
+        ZoneLine entry = zone.lines[index]
+        entry.start = start
+        int starting_save = entry.save
+        string starting_letter = ""
+        transitions.Applied[] applied_instances = []
+        if entry.rule_set == ""
+            match entry.until
+                parser.Until boundary
+                    entry.end = boundary.value - transitions.adjustment(boundary.time_type, entry.stdoff, entry.save)
+                none
+                    entry.end = calendar.pos_infinity
+        else
+            transitions.RuleInstance[] instances = sequence_named(sequences, entry.rule_set)
+            transitions.LineRun run = transitions.run_instances(instances, entry.stdoff, start, entry.until)
+            entry.end = run.end
+            if len(run.pre_start) > 0
+                transitions.Rule last = run.pre_start[int(len(run.pre_start)) - 1]
+                starting_save = last.save
+                starting_letter = last.letter
+            else
+                starting_save = 0
+                starting_letter = standard_letter(instances)
+            applied_instances = run.applied
+        switches = switches.append(resolver.Period(start, entry.stdoff + starting_save, starting_save != 0, transitions.abbreviation(entry.format_text, starting_save, starting_letter)))
+        for transitions.Applied applied_instance = applied_instances[]
+            transitions.Rule rule = applied_instance.rule
+            switches = switches.append(resolver.Period(applied_instance.timestamp, entry.stdoff + rule.save, rule.save != 0, transitions.abbreviation(entry.format_text, rule.save, rule.letter)))
+            int old_count = 0
+            match zone.applied.get(rule.number)
+                int found
+                    old_count = found
+                none
+                    old_count = 0
+            .zone.applied.set(rule.number, old_count + 1)
+        start = entry.end
+        zone.lines[index] = entry
+    resolver.Period[] periods = []
+    for resolver.Period period = switches[]
+        if len(periods) == 0 or not periods[int(len(periods)) - 1].same_state(period)
+            periods = periods.append(period)
+    zone.timeline = resolver.Timeline(periods)
+    return zone
+
+int lookup_index(map.Map<string, int> indices, string name)
+    match indices.get(name)
+        int found
+            return found
+        none
+            return -1
+
+class Database(local string[] raw_lines)
+    SourceLine[] lines = []
+    Block[] blocks = []
+    map.Map<string, transitions.Rule[]> rules
+    map.Map<string, transitions.RuleInstance[]> sequences
+    Zone[] zones = []
+    map.Map<string, int> zone_ids
+    map.Map<string, int> alias_ids
+    for int index < int(len(raw_lines))
+        string content = parser.line_content(raw_lines[index])
+        if content != ""
+            lines = lines.append(SourceLine(index + 1, content))
+    local int previous = -1
+    for int index < int(len(lines))
+        if lines[index].kind == "Zone"
+            lines[index].block = int(len(blocks))
+            blocks = blocks.append(Block(lines[index].fields[1], lines[index].number, [index]))
+        elif lines[index].kind == "continuation" and previous >= 0
+            int block_index = lines[previous].block
+            if block_index >= 0 and lines[previous].accepts_continuation()
+                lines[index].block = block_index
+                lines[index].position = int(len(blocks[block_index].indices))
+                blocks[block_index].indices = blocks[block_index].indices.append(index)
+        previous = index
+    for int index < int(len(lines))
+        string failure = field_problem(&lines[index], &rules)
+        lines[index].problem = failure
+        lines[index].field_error = failure != ""
+    local set.Set<string> seen_zone_names
+    for int index < int(len(lines))
+        if not lines[index].field_error and (lines[index].kind == "Zone" or lines[index].kind == "continuation")
+            lines[index].problem = structural_problem(lines[index], lines, blocks, rules, &seen_zone_names)
+    for string name = rules.keys()[]
+        .sequences.set(name, transitions.instance_sequence(rules_named(rules, name)))
+    for int block_index < int(len(blocks))
+        bool valid = true
+        for int index = blocks[block_index].indices[]
+            if lines[index].problem != ""
+                valid = false
+        blocks[block_index].defined = valid
+        if valid
+            Zone zone = make_zone(blocks[block_index], lines, sequences)
+            .zone_ids.set(zone.name, int(len(zones)))
+            zones = zones.append(zone)
+    for int index < int(len(lines))
+        if lines[index].kind == "Link" and lines[index].problem == ""
+            string target = lines[index].fields[1]
+            string alias = lines[index].fields[2]
+            int zone_index = lookup_index(zone_ids, target)
+            if zone_index < 0
+                lines[index].problem = "unknown link target " + target
+            elif zone_ids.has(alias) or alias_ids.has(alias)
+                lines[index].problem = "duplicate link " + alias
+            else
+                .alias_ids.set(alias, zone_index)
+                zones[zone_index].aliases = zones[zone_index].aliases.append(alias)
+
+    int find_zone(string word)
+        int direct = lookup_index(zone_ids, word)
+        return if direct >= 0 then direct else lookup_index(alias_ids, word)
+
+    string[] error_lines()
+        return [for SourceLine line = lines[] if line.problem != "" then "line {line.number}: {line.problem}"]
+
+int offset_shift(resolver.Timeline timeline, int index)
+    return timeline.periods[index].offset - timeline.periods[index - 1].offset
+
+int[] transitions_between(resolver.Timeline timeline, int low, int high)
+    return [for int index = (1:<int(len(timeline.periods)))[] if low <= timeline.starts[index] < high then index]
+
+string change_at(resolver.Timeline timeline, int index)
+    return report.change_text(timeline.starts[index], timeline.periods[index - 1], timeline.periods[index])
+
+string transition_line(resolver.Timeline timeline, int index)
+    int timestamp = timeline.starts[index]
+    int shift = offset_shift(timeline, index)
+    string kind = if shift > 0 then "gap " + report.duration_text(shift) elif shift < 0 then "overlap " + report.duration_text(-shift) else "no shift"
+    string local_before = report.local_text(timestamp + timeline.periods[index - 1].offset)
+    string local_after = report.local_text(timestamp + timeline.periods[index].offset)
+    return "{change_at(timeline, index)} (local {local_before} -> {local_after}, {kind})"
+
+string shifts_text(resolver.Timeline timeline, int[] indices)
+    int gaps = 0
+    int overlaps = 0
+    int unchanged = 0
+    for int index = indices[]
+        int shift = offset_shift(timeline, index)
+        if shift > 0
+            gaps += 1
+        elif shift < 0
+            overlaps += 1
+        else
+            unchanged += 1
+    return "gaps {gaps}, overlaps {overlaps}, no shift {unchanged}"
+
+string candidate_text(resolver.Timeline timeline, int local_time, int index)
+    resolver.Period period = timeline.periods[index]
+    return "{report.ut_text(local_time - period.offset)} ({report.state_text(period)})"
+
+int chosen_candidate(int[] candidates, string option)
+    return if len(candidates) == 1 then candidates[0] elif len(candidates) == 2 and option == "EARLIER" then candidates[0] elif len(candidates) == 2 and option == "LATER" then candidates[1] else -1
+
+string unresolved_text(resolver.Timeline timeline, int local_time, int[] candidates)
+    if len(candidates) > 0
+        return "AMBIGUOUS " + [for int index = candidates[] then candidate_text(timeline, local_time, index)].join(" or ")
+    int index = timeline.skipping_transition(local_time)
+    int timestamp = timeline.starts[index]
+    string local_before = report.local_text(timestamp + timeline.periods[index - 1].offset)
+    string local_after = report.local_text(timestamp + timeline.periods[index].offset)
+    return "NONEXISTENT gap {local_before} to {local_after} at {report.ut_text(timestamp)}"
+
+Interval[] working_hours(resolver.Timeline timeline, int start, int end)
+    Interval[] pieces = []
+    for int index = timeline.nearby(start, end)[]
+        int offset = timeline.periods[index].offset
+        int low = math.max(start - offset, timeline.starts[index])
+        int high = math.min(end - offset, timeline.end_of(index))
+        if low < high
+            pieces = pieces.append(Interval(low, high))
+    return merge_intervals(pieces)
+
+int | none parse_value(string kind, string word)
+    int year = int.parse(word[0:<4])
+    if not (1800 <= year <= 2099)
+        return none
+    if kind == "year"
+        return year
+    int month = int.parse(word[5:<7])
+    int day = int.parse(word[8:<10])
+    if not (1 <= month <= 12) or not (1 <= day <= calendar.days_in_month(year, month))
+        return none
+    if kind == "date"
+        return calendar.day_number(year, month, day)
+    int hour = int.parse(word[11:<13])
+    int minute = int.parse(word[14:<16])
+    int second = int.parse(word[17:<19])
+    if hour > 23 or minute > 59 or second > 59
+        return none
+    return calendar.time_value(year, month, day, hour, minute, second)
+
+string[] argument_kinds(string command, int count)
+    if command == "MEETING"
+        return ["date"].concat(string[nat(count - 1)]("zone"))
+    if command == "TOUTC"
+        return ["zone", "local"]
+    if command == "TOLOCAL" or command == "OFFSET"
+        return ["zone", "ut"]
+    if command == "CONVERT"
+        return ["zone", "zone", "local"]
+    if command == "TRANSITIONS"
+        return ["zone", "year", "year"]
+    return ["zone", "local", "local"]
+
+class QueryRunner(Database database, int work_start, int work_end)
+    string[] answers = []
+    string[][] transition_blocks = []
+
+    void .run_query(string query_line)
+        string[] words = query_line.split(" ")
+        string command = words[0]
+        string[] arguments = words[1:<len(words)]
+        string option = ""
+        string last = arguments[int(len(arguments)) - 1]
+        if (command == "TOUTC" or command == "CONVERT") and (last == "EARLIER" or last == "LATER")
+            option = last
+            arguments = arguments[0:<len(arguments) - 1]
+        string[] kinds = argument_kinds(command, int(len(arguments)))
+        int[] values = []
+        string failure = ""
+        for int index < int(len(arguments))
+            string word = arguments[index]
+            if kinds[index] == "zone"
+                int zone_index = database.find_zone(word)
+                if zone_index < 0
+                    failure = "unknown zone " + word
+                    break
+                values = values.append(zone_index)
+            else
+                int parsed = 0
+                bool valid = false
+                match parse_value(kinds[index], word)
+                    int found
+                        parsed = found
+                        valid = true
+                    none
+                        valid = false
+                if not valid
+                    failure = "invalid value " + word
+                    break
+                values = values.append(parsed)
+        string result = ""
+        if failure != ""
+            result = "ERROR " + failure
+        else
+            result = .answer(query_line, command, values, arguments, option)
+        answers = answers.append(query_line + " => " + result)
+
+    string .answer(string query_line, string command, int[] values, string[] words, string option)
+        if command == "TOUTC"
+            return to_utc(database.zones[values[0]], values[1], option)
+        if command == "TOLOCAL"
+            return to_local(database.zones[values[0]], values[1])
+        if command == "CONVERT"
+            return convert(database.zones[values[0]], database.zones[values[1]], values[2], option)
+        if command == "OFFSET"
+            return offset(database.zones[values[0]], values[1])
+        if command == "TRANSITIONS"
+            if values[1] > values[2]
+                return "ERROR invalid range"
+            resolver.Timeline timeline = database.zones[values[0]].timeline
+            int[] selected = transitions_between(timeline, year_start(values[1]), year_start(values[2] + 1))
+            string[] block = [query_line].concat([for int index = selected[] then transition_line(timeline, index)]).append(shifts_text(timeline, selected))
+            transition_blocks = transition_blocks.append(block)
+            return "transitions: {len(selected)}"
+        if command == "DURATION"
+            return duration(database.zones[values[0]], values[1:<len(values)], words[1:<len(words)])
+        return meeting(values[0], values[1:<len(values)], words[1:<len(words)])
+
+    string to_utc(Zone zone, int local_time, string option)
+        int[] candidates = zone.timeline.candidates(local_time)
+        int index = chosen_candidate(candidates, option)
+        return if index < 0 then unresolved_text(zone.timeline, local_time, candidates) else candidate_text(zone.timeline, local_time, index)
+
+    string to_local(Zone zone, int timestamp)
+        resolver.Period period = zone.timeline.period_at(timestamp)
+        return "{report.local_text(timestamp + period.offset)} ({report.state_text(period)})"
+
+    string convert(Zone source_zone, Zone target_zone, int local_time, string option)
+        int[] candidates = source_zone.timeline.candidates(local_time)
+        int index = chosen_candidate(candidates, option)
+        if index < 0
+            return unresolved_text(source_zone.timeline, local_time, candidates)
+        int timestamp = local_time - source_zone.timeline.periods[index].offset
+        resolver.Period period = target_zone.timeline.period_at(timestamp)
+        int target_local = timestamp + period.offset
+        int shift = calendar.floor_div(target_local, calendar.seconds_per_day) - calendar.floor_div(local_time, calendar.seconds_per_day)
+        string shift_text = if shift > 0 then "+{shift}" else "{shift}"
+        return "{report.local_text(target_local)} ({report.state_text(period)}) at {report.ut_text(timestamp)}, day shift {shift_text}"
+
+    string offset(Zone zone, int timestamp)
+        resolver.Timeline timeline = zone.timeline
+        int index = timeline.index_at(timestamp)
+        string text = report.state_text(timeline.periods[index])
+        if index >= 1
+            text += " since " + report.ut_text(timeline.starts[index])
+        if index + 1 < int(len(timeline.periods))
+            text += " until " + report.ut_text(timeline.starts[index + 1])
+        return text
+
+    string duration(Zone zone, int[] locals, string[] words)
+        resolver.Period[] periods = []
+        for int index < 2
+            int[] candidates = zone.timeline.candidates(locals[index])
+            if len(candidates) == 2
+                return "AMBIGUOUS " + words[index]
+            if len(candidates) == 0
+                return "NONEXISTENT " + words[index]
+            periods = periods.append(zone.timeline.periods[candidates[0]])
+        int elapsed = (locals[1] - periods[1].offset) - (locals[0] - periods[0].offset)
+        int change = periods[1].offset - periods[0].offset
+        return "{elapsed} s ({report.duration_text(elapsed)}), wall clock {report.duration_text(locals[1] - locals[0])}, offset change {report.offset_text(change)}"
+
+    string meeting(int day, int[] zone_indices, string[] words)
+        int start = day * calendar.seconds_per_day + work_start
+        int end = day * calendar.seconds_per_day + work_end
+        Interval[] common = working_hours(database.zones[zone_indices[0]].timeline, start, end)
+        for 1 <= int index < int(len(zone_indices))
+            common = intersect_intervals(common, working_hours(database.zones[zone_indices[index]].timeline, start, end))
+        if len(common) == 0
+            return "NONE"
+        string[] parts = []
+        for Interval piece = common[]
+            string[] members = []
+            for int index < int(len(zone_indices))
+                resolver.Period period = database.zones[zone_indices[index]].timeline.period_at(piece.low)
+                members = members.append("{words[index]} {report.local_text(piece.low + period.offset)} {period.abbreviation}")
+            string span = "{report.ut_text(piece.low)} to {report.ut_text(piece.high)} ({report.duration_text(piece.high - piece.low)})"
+            parts = parts.append(span + " [" + members.join(", ") + "]")
+        return parts.join("; ")
+
+string rule_text(transitions.Rule rule)
+    string[] fields = rule.fields
+    string at = report.clock_text(rule.at) + rule.at_type
+    return "rule {rule.name} {fields[2]} {fields[3]} {fields[5]} {fields[6]} {at} {report.clock_text(rule.save)} {fields[9]}"
+
+string[] database_block(Database database)
+    int valid_rules = 0
+    int invalid_rules = 0
+    int valid_links = 0
+    int invalid_links = 0
+    for SourceLine line = database.lines[]
+        if line.kind == "Rule"
+            if line.problem == ""
+                valid_rules += 1
+            else
+                invalid_rules += 1
+        if line.kind == "Link"
+            if line.problem == ""
+                valid_links += 1
+            else
+                invalid_links += 1
+    set.Set<string> used
+    int zone_lines = 0
+    for Zone zone = database.zones[]
+        zone_lines += int(len(zone.lines))
+        for string name = zone.rule_sets()[]
+            .used.add(name)
+    string[] unused = [for string name = database.rules.keys()[] if not used.has(name) then name]
+    string[] invalid = [for Block block = database.blocks[] if not block.defined then "{block.name} (line {block.number})"]
+    string[] lines = [
+        "DATABASE", "rule lines: {valid_rules} valid, {invalid_rules} invalid",
+        "zones: {len(database.zones)} defined, {int(len(database.blocks)) - int(len(database.zones))} invalid",
+        "zone lines: {zone_lines} in defined zones", "links: {valid_links} defined, {invalid_links} invalid", "errors: {len(database.error_lines())}",
+        "unused rules: " + names_or_none(unused, " "), "invalid zones: " + names_or_none(invalid, ", ")
+    ]
+    for string name = database.rules.keys()[]
+        transitions.Rule[] rules = rules_named(database.rules, name)
+        int first_year = 2099
+        int last_year = 1800
+        bool maximum = false
+        for transitions.Rule rule = rules[]
+            first_year = math.min(first_year, rule.from_year)
+            last_year = math.max(last_year, rule.to_year)
+            maximum = maximum or rule.fields[3] == "max"
+        string last_text = if maximum then "max" else "{last_year}"
+        int zone_count = 0
+        for Zone zone = database.zones[]
+            for string used_name = zone.rule_sets()[]
+                if used_name == name
+                    zone_count += 1
+        lines = lines.append("rule set {name}: lines {len(rules)}, years {first_year}-{last_text}, zones {zone_count}")
+    return lines
+
+string[] dst_lines(resolver.Timeline timeline, int reference)
+    int[] dst_indices = [for int index = (0:<int(len(timeline.periods)))[] if timeline.periods[index].dst then index]
+    string[] lines = []
+    if len(dst_indices) > 0
+        int[] years = [for int index = dst_indices[] then calendar.split_time(timeline.starts[index]).year]
+        lines = lines.append("dst years: {math.min_all(years)}-{math.max_all(years)}")
+    else
+        lines = lines.append("dst years: none")
+    int year = calendar.split_time(reference).year
+    int low = year_start(year)
+    int high = year_start(year + 1)
+    Interval[] pieces = []
+    for int index = dst_indices[]
+        int start = math.max(low, timeline.starts[index])
+        int end = math.min(high, timeline.end_of(index))
+        if start < end
+            pieces = pieces.append(Interval(start, end))
+    int total = 0
+    for Interval piece = merge_intervals(pieces)[]
+        lines = lines.append("dst period: {report.ut_text(piece.low)} to {report.ut_text(piece.high)} ({report.duration_text(piece.high - piece.low)})")
+        total += piece.high - piece.low
+    return lines.append("dst total {year}: {report.duration_text(total)}")
+
+string[] zone_block(Database database, Zone zone, int reference)
+    resolver.Timeline timeline = zone.timeline
+    resolver.Period[] periods = timeline.periods
+    string[] lines = ["ZONE " + zone.name, "aliases: " + names_or_none(zone.aliases, " ")]
+    for int index < int(len(zone.lines))
+        ZoneLine entry = zone.lines[index]
+        string text = "line {index + 1}: {report.offset_text(entry.stdoff)} {entry.rules_notation()} {entry.format_text}"
+        if index >= 1
+            text += " from " + report.ut_text(entry.start)
+        match entry.until
+            parser.Until boundary
+                text += " until {entry.until_notation()} = {report.ut_text(entry.end)}"
+            none
+                text += ""
+        int count = int(len(transitions_between(timeline, entry.start, entry.end)))
+        lines = lines.append("{text}, transitions {count}")
+    for string name = zone.rule_sets()[]
+        for transitions.Rule rule = rules_named(database.rules, name)[]
+            int count = 0
+            match zone.applied.get(rule.number)
+                int found
+                    count = found
+                none
+                    count = 0
+            lines = lines.append("{rule_text(rule)}, applied {count}")
+    int[] offsets = [for resolver.Period period = periods[] then period.offset]
+    lines = lines.append("offset range: {report.offset_text(math.min_all(offsets))} to {report.offset_text(math.max_all(offsets))}")
+    map.Map<string, int> state_counts
+    for resolver.Period period = periods[]
+        string state = report.state_text(period)
+        int count = 0
+        match state_counts.get(state)
+            int found
+                count = found
+            none
+                count = 0
+        .state_counts.set(state, count + 1)
+    for string state = state_counts.keys()[]
+        int count = lookup_index(state_counts, state)
+        lines = lines.append("state {state}, periods {count}")
+    int reference_index = timeline.index_at(reference)
+    resolver.Period reference_period = periods[reference_index]
+    lines = lines.append("reference: {report.local_text(reference + reference_period.offset)} ({report.state_text(reference_period)}), line {zone.line_number_at(reference)}")
+    string previous_change = if reference_index >= 1 then change_at(timeline, reference_index) else "none"
+    string next_change = if reference_index + 1 < int(len(periods)) then change_at(timeline, reference_index + 1) else "none"
+    lines = lines.append("previous transition: " + previous_change).append("next transition: " + next_change)
+    int[] every = (1:<int(len(periods)))
+    lines = lines.append("transitions: {len(every)}, {shifts_text(timeline, every)}")
+    return lines.concat(dst_lines(timeline, reference))
+
+void run_database()
+    auto database = Database(read_lines("input/tzdata.txt"))
+    string[] params = read_lines("input/params.txt")
+    int reference = 0
+    match parse_value("ut", params[0].split(" ")[1])
+        int found
+            reference = found
+        none
+            reference = 0
+    string[] workday = params[1].split(" ")
+    auto runner = QueryRunner(database, clock_seconds(workday[1]), clock_seconds(workday[2]))
+    for string query_line = read_lines("input/queries.txt")[]
+        .runner.run_query(query_line)
+    string[][] blocks = [indented(database_block(database))]
+    for string name = database.zone_ids.keys().sorted()[]
+        int zone_index = lookup_index(database.zone_ids, name)
+        blocks = blocks.append(indented(zone_block(database, database.zones[zone_index], reference)))
+    bool directory_exists = file.is_directory("output")
+    if not directory_exists
+        file.mkdir("output")
+    report.write_lines("answers.txt", runner.answers)
+    report.write_lines("errors.txt", database.error_lines())
+    report.write_blocks("transitions.txt", runner.transition_blocks)
+    report.write_blocks("zone_summary.txt", blocks)
+
+if main
+    run_database()
