@@ -1,0 +1,711 @@
+import math
+import transactions = "./transactions.qui"
+import features = "./features.qui"
+import kmeans = "./kmeans.qui"
+import validation = "./validation.qui"
+import profiles = "./profiles.qui"
+import report = "./report.qui"
+
+string yes_no(bool value)
+    return if value then "yes" else "no"
+
+string[] blocks(string[][] sections)
+    string[] lines = []
+    for string[] section = sections[]
+        if len(lines) > 0
+            lines = lines.append("")
+        lines = lines.concat(section)
+    return lines
+
+int[] ordered_indices(real64[] values, bool descending = false)
+    int[] order = []
+    for int i < int(len(values))
+        int position = int(len(order))
+        order = order.append(i)
+        while position > 0
+            real64 previous = values[order[position - 1]]
+            bool before = if descending then values[i] > previous else values[i] < previous
+            if not before
+                break
+            order[position] = order[position - 1]
+            position -= 1
+        order[position] = i
+    return order
+
+class Generator(int state)
+    int .draw()
+        state = 48271 * state % 2147483647
+        return state
+
+real64[] nearest_gaps(real64[][] points, int[] chosen)
+    return [for real64[] point = points[] then math.min_all([for int index = chosen[] then kmeans.squared_distance(point, points[index])])]
+
+int[] maximin(real64[][] points, int k, int restart)
+    real64[] center = kmeans.mean_point(points)
+    real64[] spreads = [for real64[] point = points[] then kmeans.squared_distance(point, center)]
+    int[] order = ordered_indices(spreads)
+    int[] chosen = [order[restart - 1]]
+    while int(len(chosen)) < k
+        real64[] gaps = nearest_gaps(points, chosen)
+        int selected = 0
+        for 1 <= int i < int(len(gaps))
+            if gaps[i] > gaps[selected]
+                selected = i
+        chosen = chosen.append(selected)
+    return chosen
+
+int[] initial_indices(real64[][] points, int k, string method, int restart, Generator &generator)
+    if method == "maximin"
+        return maximin(points, k, restart)
+    int[] chosen = []
+    bool[] selected = array(len(points), fill = false)
+    if method == "forgy"
+        while int(len(chosen)) < k
+            int index = .generator.draw() % int(len(points))
+            if not selected[index]
+                selected[index] = true
+                chosen = chosen.append(index)
+        return chosen
+    chosen = chosen.append(.generator.draw() % int(len(points)))
+    while int(len(chosen)) < k
+        real64[] gaps = nearest_gaps(points, chosen)
+        real64 weight = math.sum(gaps)
+        real64 threshold = (real64(.generator.draw()) / 2147483647.0) * weight
+        real64 cumulative = 0.0
+        int index = -1
+        for int i < int(len(gaps))
+            cumulative += gaps[i]
+            if cumulative > threshold
+                index = i
+                break
+        if index < 0
+            for int i < int(len(gaps))
+                if gaps[i] > 0.0
+                    index = i
+        chosen = chosen.append(index)
+    return chosen
+
+class Refinement(int[] labels, int passes, int transfers, real64 within)
+
+Refinement refine(real64[][] points, int[] original, int k, int limit)
+    int[] labels = original
+    int[] sizes = [for int[] members = kmeans.groups(labels, k)[] then int(len(members))]
+    real64[][] centers = kmeans.cluster_centers(points, labels, k)
+    int passes = 0
+    int transfers = 0
+    while passes < limit
+        int changes = 0
+        for int i < int(len(points))
+            int own = labels[i]
+            if sizes[own] == 1
+                continue
+            real64 removal = (real64(sizes[own]) / real64(sizes[own] - 1)) * kmeans.squared_distance(points[i], centers[own])
+            int target = -1
+            real64 cost = 0.0
+            for int label < k
+                if label == own
+                    continue
+                real64 insertion = (real64(sizes[label]) / real64(sizes[label] + 1)) * kmeans.squared_distance(points[i], centers[label])
+                if target < 0 or insertion < cost
+                    target = label
+                    cost = insertion
+            if cost < removal
+                labels[i] = target
+                sizes[own] -= 1
+                sizes[target] += 1
+                centers[own] = kmeans.cluster_center(points, labels, own)
+                centers[target] = kmeans.cluster_center(points, labels, target)
+                changes += 1
+                transfers += 1
+        passes += 1
+        if changes == 0
+            break
+    real64 within = kmeans.sse(points, labels, kmeans.cluster_centers(points, labels, k))
+    return Refinement(labels, passes, transfers, within)
+
+class Run(string method, int restart, int[] seeds, local real64[][] points, local int limit)
+    kmeans.LloydResult result = kmeans.lloyd(points, points[seeds], limit)
+    Refinement improved = refine(points, result.labels, int(len(seeds)), limit)
+
+class Solution(int k, local real64[][] points, local int[] original)
+    int[][] members = kmeans.groups(original, k)
+    for 1 <= int i < k
+        int[] current = members[i]
+        int position = i
+        while position > 0
+            int[] previous = members[position - 1]
+            bool before = len(current) > len(previous) or (len(current) == len(previous) and current[0] < previous[0])
+            if not before
+                break
+            members[position] = previous
+            position -= 1
+        members[position] = current
+    int[] labels = array(len(points), fill = 0)
+    for int label < k
+        for int index = members[label][]
+            labels[index] = label
+    int[] sizes = [for int[] group = members[] then int(len(group))]
+    real64[][] centers = kmeans.cluster_centers(points, labels, k)
+    real64 within = kmeans.sse(points, labels, centers)
+
+class Candidate(int k, Run[] runs, int[] method_bests, int best, Solution solution, local real64[][] points, local real64[][] distances, local profiles.Rule[] naming_rules)
+    real64[] silhouettes = validation.silhouettes(distances, solution.labels, solution.sizes)
+    real64 silhouette = features.mean(silhouettes)
+    real64 calinski_harabasz = validation.calinski_harabasz(points, solution.centers, solution.sizes, solution.within)
+    real64 davies_bouldin = validation.davies_bouldin(points, solution.labels, solution.centers, solution.sizes)
+    real64 elbow_value = 0.0
+    real64 hartigan_value = 0.0
+    bool has_hartigan = false
+    int[] rule_numbers = []
+    string[] segment_names = []
+    local int[] used = array(len(naming_rules), fill = 0)
+    for real64[] center = solution.centers[]
+        int rule = profiles.rule_number(center, naming_rules)
+        used[rule] += 1
+        rule_numbers = rule_numbers.append(rule + 1)
+        string suffix = if used[rule] == 1 then "" else "_{used[rule]}"
+        segment_names = segment_names.append(naming_rules[rule].name + suffix)
+
+Candidate search(real64[][] points, int k, transactions.Params settings, profiles.Rule[] naming_rules, real64[][] distances, Generator &generator)
+    Run[] runs = []
+    int[] method_bests = []
+    int best = -1
+    for string method = settings.methods[]
+        int method_best = -1
+        for 1 <= int restart <= settings.restarts
+            int[] seeds = initial_indices(points, k, method, restart, &generator)
+            auto trial = Run(method, restart, seeds, points, settings.max_iterations)
+            int index = int(len(runs))
+            runs = runs.append(trial)
+            if method_best < 0 or report.rounded_key(trial.improved.within) < report.rounded_key(runs[method_best].improved.within)
+                method_best = index
+        method_bests = method_bests.append(method_best)
+        if best < 0 or report.rounded_key(runs[method_best].improved.within) < report.rounded_key(runs[best].improved.within)
+            best = method_best
+    auto solution = Solution(k, points, runs[best].improved.labels)
+    return Candidate(k, runs, method_bests, best, solution, points, distances, naming_rules)
+
+real64 gini(int[] spends)
+    int[] ordered = spends.sorted()
+    int count = int(len(ordered))
+    int total = math.sum(ordered)
+    int weighted = math.sum([for int i = (0:<count)[] then (i + 1) * ordered[i]])
+    return real64(2 * weighted - (count + 1) * total) / real64(count * total)
+
+map.Map<string, int> category_totals(features.Customer[] customers)
+    map.Map<string, int> totals
+    for features.Customer customer = customers[]
+        for string category = customer.category_spend.keys()[]
+            .totals.set(category, transactions.lookup(totals, category) + transactions.lookup(customer.category_spend, category))
+    return totals
+
+string[] category_ranking(map.Map<string, int> totals)
+    string[] positive = [for string category = totals.keys().sorted()[] if transactions.lookup(totals, category) > 0 then category]
+    real64[] amounts = [for string category = positive[] then real64(transactions.lookup(totals, category))]
+    return positive[ordered_indices(amounts, true)]
+
+real64[][] subsample_jaccards(real64[][] points, Solution solution, transactions.Params settings, Generator &generator)
+    int count = int(len(points))
+    int size = count * settings.subsample_percent / 100
+    real64[] empty_values = []
+    real64[][] values = array(nat(solution.k), fill = empty_values)
+    for int replicate < settings.subsamples
+        int[] order = 0:<count
+        for int i < size
+            int other = i + .generator.draw() % (count - i)
+            int saved = order[i]
+            order[i] = order[other]
+            order[other] = saved
+        int[] sample = order[0:<size].sorted()
+        kmeans.LloydResult trial = kmeans.lloyd(points[sample], solution.centers, settings.max_iterations)
+        for int segment < solution.k
+            real64 best = 0.0
+            for int label < solution.k
+                int both = 0
+                int either = 0
+                for int i < size
+                    bool member = solution.labels[sample[i]] == segment
+                    bool assigned = trial.labels[i] == label
+                    if member and assigned
+                        both += 1
+                    if member or assigned
+                        either += 1
+                if either > 0
+                    best = math.max(best, real64(both) / real64(either))
+            values[segment] = values[segment].append(best)
+    return values
+
+class Study(transactions.Params settings, transactions.Data data, profiles.Rule[] rules, local Generator &run_generator)
+    transactions.Order[] reference_orders = transactions.group_orders(data.rows, 1, settings.reference_day)
+    features.Customer[] customers = features.eligible_customers(reference_orders, settings.reference_day)
+    int n = int(len(customers))
+    map.Map<string, int> id_positions
+    for int i < n
+        .id_positions.set(customers[i].id, i)
+    features.Scale[] scaling = features.fit_scaling(customers)
+    real64[][] points = [for features.Customer customer = customers[] then features.standardize(customer.transformed, scaling)]
+    local real64[][] distance_values = validation.distance_table(points)
+    Candidate[] candidates = []
+    for settings.k_min <= int count <= settings.k_max
+        candidates = candidates.append(search(points, count, settings, rules, distance_values, &run_generator))
+    for int i < int(len(candidates))
+        candidates[i].elbow_value = validation.elbow(candidates[i].k, settings.k_min, settings.k_max, candidates[i].solution.within, candidates[0].solution.within, candidates[len(candidates) - 1].solution.within)
+        if i + 1 < int(len(candidates))
+            candidates[i].has_hartigan = true
+            candidates[i].hartigan_value = validation.hartigan(candidates[i].solution.within, candidates[i + 1].solution.within, n, candidates[i].k)
+    string[] criteria = ["elbow", "silhouette", "calinski_harabasz", "davies_bouldin", "hartigan"]
+    int[] votes = []
+    int[] vote_counts = array(len(candidates), fill = 0)
+    for int criterion < 4
+        int chosen = if criterion == 0 then 1 else 0
+        int end = int(len(candidates)) - (if criterion == 0 then 1 else 0)
+        for chosen + 1 <= int i < end
+            real64[] current_metrics = [candidates[i].elbow_value, candidates[i].silhouette, candidates[i].calinski_harabasz, candidates[i].davies_bouldin]
+            real64[] best_metrics = [candidates[chosen].elbow_value, candidates[chosen].silhouette, candidates[chosen].calinski_harabasz, candidates[chosen].davies_bouldin]
+            int value = report.rounded_key(current_metrics[criterion])
+            int previous = report.rounded_key(best_metrics[criterion])
+            if (criterion == 3 and value < previous) or (criterion != 3 and value > previous)
+                chosen = i
+        votes = votes.append(chosen)
+        vote_counts[chosen] += 1
+    local int hartigan_choice = int(len(candidates)) - 1
+    for int i < int(len(candidates)) - 1
+        if candidates[i].hartigan_value <= 10.0
+            hartigan_choice = i
+            break
+    votes = votes.append(hartigan_choice)
+    vote_counts[hartigan_choice] += 1
+    int chosen_index = 0
+    for 1 <= int i < int(len(candidates))
+        if vote_counts[i] > vote_counts[chosen_index] or (vote_counts[i] == vote_counts[chosen_index] and report.rounded_key(candidates[i].silhouette) > report.rounded_key(candidates[chosen_index].silhouette))
+            chosen_index = i
+    Candidate final = candidates[chosen_index]
+    int k = final.k
+    real64[] customer_distances = []
+    int[] other_segments = []
+    real64[] other_distances = []
+    int[][] rfm_scores = []
+    string[] rfm_codes = []
+    for int i < n
+        int own = final.solution.labels[i]
+        customer_distances = customer_distances.append(math.sqrt(kmeans.squared_distance(points[i], final.solution.centers[own])))
+        int other = -1
+        real64 best_distance = 0.0
+        for int segment < k
+            if segment == own
+                continue
+            real64 distance = kmeans.squared_distance(points[i], final.solution.centers[segment])
+            if other < 0 or distance < best_distance
+                other = segment
+                best_distance = distance
+        other_segments = other_segments.append(other)
+        other_distances = other_distances.append(math.sqrt(best_distance))
+        int[] ranks = [0, 0, 0]
+        for features.Customer customer = customers[]
+            if customer.recency > customers[i].recency
+                ranks[0] += 1
+            if customer.frequency < customers[i].frequency
+                ranks[1] += 1
+            if customer.spend < customers[i].spend
+                ranks[2] += 1
+        int[] scores = 1 + 5 * ranks / n
+        rfm_scores = rfm_scores.append(scores)
+        rfm_codes = rfm_codes.append("{scores[0]}{scores[1]}{scores[2]}")
+    int total_spend = math.sum([for features.Customer customer = customers[] then customer.spend])
+    map.Map<string, int> overall_categories = category_totals(customers)
+    string[] category_names = overall_categories.keys().sorted()
+    int[] segment_spends = []
+    map.Map<string, int>[] segment_categories = []
+    string[][] category_rankings = []
+    real64[] within_segments = []
+    for int segment < k
+        int[] members = final.solution.members[segment]
+        features.Customer[] group = customers[members]
+        segment_spends = segment_spends.append(math.sum([for features.Customer customer = group[] then customer.spend]))
+        map.Map<string, int> totals = category_totals(group)
+        segment_categories = segment_categories.append(totals)
+        category_rankings = category_rankings.append(category_ranking(totals))
+        within_segments = within_segments.append(math.sum([for int index = members[] then kmeans.squared_distance(points[index], final.solution.centers[segment])]))
+    real64[][] jaccards = subsample_jaccards(points, final.solution, settings, &run_generator)
+
+    string ids(int[] indices)
+        return [for int index = indices[] then customers[index].id].join(" ")
+
+    string segment_numbers()
+        return report.integers(1:k)
+
+    string[] features_file()
+        string[] lines = ["customer,recency,frequency,monetary,basket,categories,tenure,z_recency,z_frequency,z_monetary,z_basket,z_categories,z_tenure"]
+        for int i < n
+            features.Customer customer = customers[i]
+            string[] values = [customer.id, "{customer.recency}", "{customer.frequency}", report.amount(customer.spend), report.real_text(customer.basket), "{customer.categories}", "{customer.tenure}"]
+            values = values.concat([for real64 value = points[i][] then report.real_text(value)])
+            lines = lines.append(values.join(","))
+        return lines
+
+    string[] runs_file()
+        string[][] sections = []
+        for Candidate candidate = candidates[]
+            string[] lines = ["k {candidate.k}"]
+            for Run trial = candidate.runs[]
+                kmeans.LloydResult result = trial.result
+                Refinement improved = trial.improved
+                lines = lines.append("run {trial.method} {trial.restart} seeds {ids(trial.seeds)} iterations {result.iterations} converged {yes_no(result.converged)} reseeds {result.reseeds} sse {report.real_text(result.within)} passes {improved.passes} transfers {improved.transfers} refined {report.real_text(improved.within)}")
+            for int index = candidate.method_bests[]
+                Run trial = candidate.runs[index]
+                lines = lines.append("best {trial.method} restart {trial.restart} sse {report.real_text(trial.improved.within)}")
+            Run chosen = candidate.runs[candidate.best]
+            lines = lines.append("chosen {chosen.method} restart {chosen.restart} sse {report.real_text(chosen.improved.within)}")
+            lines = lines.append("sizes {report.integers(candidate.solution.sizes)}")
+            sections = sections.append(lines)
+        return blocks(sections)
+
+    string[] selection_file()
+        string[] index_lines = ["indices"]
+        string[] names = ["segments"]
+        string[] stability = ["stability"]
+        for int i < int(len(candidates))
+            Candidate candidate = candidates[i]
+            string hartigan_text = if candidate.has_hartigan then report.real_text(candidate.hartigan_value) else "-"
+            index_lines = index_lines.append("k={candidate.k} sse {report.real_text(candidate.solution.within)} elbow {report.real_text(candidate.elbow_value)} silhouette {report.real_text(candidate.silhouette)} calinski_harabasz {report.real_text(candidate.calinski_harabasz)} davies_bouldin {report.real_text(candidate.davies_bouldin)} hartigan {hartigan_text}")
+            string[] labels = [for int segment = (0:<candidate.k)[] then "{candidate.segment_names[segment]}:{candidate.solution.sizes[segment]}"]
+            names = names.append("k={candidate.k} " + labels.join(" "))
+            string[] parts = ["k={candidate.k}"]
+            for int first < int(len(candidate.method_bests))
+                Run left = candidate.runs[candidate.method_bests[first]]
+                for first + 1 <= int second < int(len(candidate.method_bests))
+                    Run right = candidate.runs[candidate.method_bests[second]]
+                    parts = parts.append("{left.method}:{right.method} {report.real_text(validation.adjusted_rand(left.improved.labels, right.improved.labels))}")
+            parts = parts.append("final")
+            for int index = candidate.method_bests[]
+                Run trial = candidate.runs[index]
+                parts = parts.append("{trial.method} {report.real_text(validation.adjusted_rand(trial.improved.labels, candidate.solution.labels))}")
+            string following = if i + 1 < int(len(candidates)) then report.real_text(validation.adjusted_rand(candidate.solution.labels, candidates[i + 1].solution.labels)) else "-"
+            stability = stability.append(parts.append("next {following}").join(" "))
+        string[] vote_lines = ["votes"]
+        for int i < 5
+            vote_lines = vote_lines.append("{criteria[i]} k={candidates[votes[i]].k}")
+        vote_lines = vote_lines.append("chosen k={k} votes {vote_counts[chosen_index]}")
+        return blocks([index_lines, vote_lines, names, stability])
+
+    string recommendation(int index)
+        int segment = final.solution.labels[index]
+        for string category = category_rankings[segment][]
+            if transactions.lookup(customers[index].category_spend, category) <= 0
+                return category
+        return "-"
+
+    string[] segments_file()
+        string[] lines = ["customer,segment,name,distance,other,other_distance,silhouette,recommend"]
+        for int i < n
+            int segment = final.solution.labels[i]
+            lines = lines.append("{customers[i].id},{segment + 1},{final.segment_names[segment]},{report.real_text(customer_distances[i])},{other_segments[i] + 1},{report.real_text(other_distances[i])},{report.real_text(final.silhouettes[i])},{recommendation(i)}")
+        return lines
+
+    string related(int[] members, int neighbor)
+        if neighbor < settings.k_min or neighbor > settings.k_max
+            return "k={neighbor} -"
+        int[] labels = candidates[neighbor - settings.k_min].solution.labels
+        int[] counts = array(nat(neighbor), fill = 0)
+        for int index = members[]
+            counts[labels[index]] += 1
+        int best = 0
+        for 1 <= int label < neighbor
+            if counts[label] > counts[best]
+                best = label
+        return "k={neighbor} segment {best + 1} shared {counts[best]}"
+
+    string[] profile_lines(int segment)
+        int[] members = final.solution.members[segment]
+        features.Customer[] group = customers[members]
+        int size = int(len(members))
+        real64[] center = final.solution.centers[segment]
+        int spend = segment_spends[segment]
+        string[] lines = ["segment {segment + 1} {final.segment_names[segment]} rule {final.rule_numbers[segment]} size {size} share {report.real_text(real64(size) / real64(n))} revenue {report.amount(spend)} revenue_share {report.real_text(real64(spend) / real64(total_spend))}"]
+        lines = lines.append("  center " + report.reals(center))
+        real64[] original = profiles.original_scale(center, scaling)
+        string[] feature_names = features.names()
+        string[] values = [for int feature = (0:<6)[] then "{feature_names[feature]} {report.real_text(original[feature])}"]
+        lines = lines.append("  value " + values.join(" "))
+        int[] trait_order = ordered_indices(math.abs(center), true)
+        string[] traits = [for int feature = trait_order[0:<2][] then (if center[feature] > 0.0 then "high_" else "low_") + feature_names[feature]]
+        lines = lines.append("  traits " + traits.join(" "))
+        int median_index = (size - 1) / 2
+        int recency = ([for features.Customer customer = group[] then customer.recency].sorted())[median_index]
+        int frequency = ([for features.Customer customer = group[] then customer.frequency].sorted())[median_index]
+        int monetary = ([for features.Customer customer = group[] then customer.spend].sorted())[median_index]
+        real64 basket = ([for features.Customer customer = group[] then customer.basket].sorted())[median_index]
+        int category_count = ([for features.Customer customer = group[] then customer.categories].sorted())[median_index]
+        int tenure = ([for features.Customer customer = group[] then customer.tenure].sorted())[median_index]
+        lines = lines.append("  median recency {recency} frequency {frequency} monetary {report.amount(monetary)} basket {report.real_text(basket)} categories {category_count} tenure {tenure}")
+        lines = lines.append("  related {related(members, k - 1)} {related(members, k + 1)}")
+        int[] top_order = ordered_indices([for features.Customer customer = group[] then real64(customer.spend)], true)
+        int top_count = math.min(size, settings.top_customers)
+        string[] top = [for int index = top_order[0:<top_count][] then "{group[index].id} {report.amount(group[index].spend)}"]
+        lines = lines.append("  top_customers " + top.join(" "))
+        real64[] gaps = []
+        int overdue = 0
+        int[] bins = array(len(settings.order_bins) + 1, fill = 0)
+        int gross = 0
+        int returned = 0
+        int cancelled = 0
+        for features.Customer customer = group[]
+            if customer.frequency >= 2
+                int active_days = customer.tenure - customer.recency
+                int intervals = customer.frequency - 1
+                gaps = gaps.append(real64(active_days) / real64(intervals))
+                if customer.recency * intervals > settings.overdue_factor * active_days
+                    overdue += 1
+            for transactions.Order order = customer.orders[]
+                int bin = math.sum<int>([for int boundary = settings.order_bins[] if order.net >= boundary * 100 then 1])
+                bins[bin] += 1
+            for transactions.Order order = reference_orders[]
+                if order.customer != customer.id
+                    continue
+                if order.net <= 0
+                    cancelled += 1
+                for transactions.Row row = order.rows[]
+                    if row.amount > 0
+                        gross += row.amount
+                    else
+                        returned -= row.amount
+        string mean_gap = if len(gaps) == 0 then "-" else report.real_text(features.mean(gaps))
+        lines = lines.append("  cadence customers {len(gaps)} mean_gap {mean_gap} overdue {overdue}")
+        lines = lines.append("  order_sizes " + report.integers(bins))
+        lines = lines.append("  sse {report.real_text(within_segments[segment])} share {report.real_text(within_segments[segment] / final.solution.within)}")
+        lines = lines.append("  gini {report.real_text(gini([for features.Customer customer = group[] then customer.spend]))}")
+        lines = lines.append("  returns rate {report.real_text(real64(returned) / real64(gross))} returned {report.amount(returned)} cancelled {cancelled}")
+        real64[] silhouettes = final.silhouettes[members]
+        int negative = math.sum<int>([for real64 value = silhouettes[] if value < 0.0 then 1])
+        lines = lines.append("  silhouette {report.real_text(features.mean(silhouettes))} negative {negative}")
+        int[] scores = array(3, fill = 0)
+        map.Map<string, int> counts
+        for int index = members[]
+            scores = scores + rfm_scores[index]
+            .counts.set(rfm_codes[index], transactions.lookup(counts, rfm_codes[index]) + 1)
+        string[] codes = counts.keys().sorted()
+        int mode_index = 0
+        for 1 <= int i < int(len(codes))
+            if transactions.lookup(counts, codes[i]) > transactions.lookup(counts, codes[mode_index])
+                mode_index = i
+        string mode = codes[mode_index]
+        lines = lines.append("  rfm r {report.real_text(real64(scores[0]) / real64(size))} f {report.real_text(real64(scores[1]) / real64(size))} m {report.real_text(real64(scores[2]) / real64(size))} mode {mode} {transactions.lookup(counts, mode)}")
+        string[] category_parts = ["  categories"]
+        int category_limit = math.min(int(len(category_rankings[segment])), settings.top_categories)
+        for string category = category_rankings[segment][0:<category_limit][]
+            real64 share = real64(transactions.lookup(segment_categories[segment], category)) / real64(spend)
+            real64 lift = share / (real64(transactions.lookup(overall_categories, category)) / real64(total_spend))
+            category_parts = category_parts.append("{category} {report.real_text(share)} {report.real_text(lift)}")
+        lines = lines.append(category_parts.join(" "))
+        string[] outliers = []
+        if size >= 2
+            real64[] distances = customer_distances[members]
+            real64 threshold = features.mean(distances) + settings.outlier_sd * features.sample_sd(distances)
+            outliers = [for int index = members[] if customer_distances[index] > threshold then customers[index].id]
+        string outlier_text = if len(outliers) == 0 then "" else " " + outliers.join(" ")
+        return lines.append("  outliers {len(outliers)}{outlier_text}")
+
+    string[] profiles_file()
+        int[] spends = [for features.Customer customer = customers[] then customer.spend]
+        string[][] sections = [["segments k={k} customers {n} revenue {report.amount(total_spend)} gini {report.real_text(gini(spends))}"]]
+        for int segment < k
+            sections = sections.append(profile_lines(segment))
+        string[] mix = ["category_mix " + segment_numbers()]
+        for string category = category_names[]
+            real64[] shares = [for int segment = (0:<k)[] then real64(transactions.lookup(segment_categories[segment], category)) / real64(segment_spends[segment])]
+            mix = mix.append(category + " " + report.reals(shares))
+        string[] recency = ["rfm_recency " + segment_numbers()]
+        for 5 >= int score >= 1
+            int[] counts = array(nat(k), fill = 0)
+            for int i < n
+                if rfm_scores[i][0] == score
+                    counts[final.solution.labels[i]] += 1
+            recency = recency.append("r={score} " + report.integers(counts))
+        int[] code_labels = [for string code = rfm_codes[] then int.parse(code)]
+        recency = recency.append("ari rfm_codes {report.real_text(validation.adjusted_rand(code_labels, final.solution.labels))}")
+        string[] center_lines = ["center_distances"]
+        for int segment < k
+            real64[] distances = [for real64[] center = final.solution.centers[] then math.sqrt(kmeans.squared_distance(final.solution.centers[segment], center))]
+            center_lines = center_lines.append("{segment + 1} " + report.reals(distances))
+        return blocks(sections.concat([mix, recency, center_lines]))
+
+    string[] robustness_file()
+        int sample_size = n * settings.subsample_percent / 100
+        string[] subsamples = ["subsamples {settings.subsamples} size {sample_size}"]
+        for int segment < k
+            subsamples = subsamples.append("segment {segment + 1} {final.segment_names[segment]} mean_jaccard {report.real_text(features.mean(jaccards[segment]))} min_jaccard {report.real_text(math.min_all(jaccards[segment]))}")
+        string[] ablation = ["ablation"]
+        string[] feature_names = features.names()
+        for int feature < 6
+            real64[][] reduced = [for real64[] point = points[] then point[0:<feature].concat(point[feature + 1:<len(point)])]
+            int[] seeds = maximin(reduced, k, 1)
+            auto trial = Run("maximin", 1, seeds, reduced, settings.max_iterations)
+            real64 index = validation.adjusted_rand(trial.improved.labels, final.solution.labels)
+            ablation = ablation.append("without {feature_names[feature]} seeds {ids(seeds)} iterations {trial.result.iterations} converged {yes_no(trial.result.converged)} transfers {trial.improved.transfers} sse {report.real_text(trial.improved.within)} ari {report.real_text(index)}")
+        int[] members = final.solution.members[0]
+        real64[][] selected_points = points[members]
+        int[] selected_seeds = maximin(selected_points, 2, 1)
+        auto split_run = Run("maximin", 1, selected_seeds, selected_points, settings.max_iterations)
+        auto parts = Solution(2, selected_points, split_run.improved.labels)
+        string[] drilldown = [
+            "drilldown segment 1 {final.segment_names[0]} size {len(members)} seeds {ids(members[selected_seeds])} iterations {split_run.result.iterations} converged {yes_no(split_run.result.converged)} transfers {split_run.improved.transfers}",
+            "sse before {report.real_text(within_segments[0])} after {report.real_text(split_run.improved.within)} gain {report.real_text(within_segments[0] - split_run.improved.within)}"
+        ]
+        for int part < 2
+            drilldown = drilldown.append("part {part + 1} size {parts.sizes[part]} center {report.reals(parts.centers[part])}")
+        return blocks([subsamples, ablation, drilldown])
+
+    string[] period_lines()
+        string[] lines = ["periods {settings.periods} days {settings.period_days}"]
+        for 1 <= int period <= settings.periods
+            int first_day = settings.reference_day - period * settings.period_days + 1
+            int last_day = settings.reference_day - (period - 1) * settings.period_days
+            int[] revenues = array(nat(k), fill = 0)
+            int[] active = array(nat(k), fill = 0)
+            int[] acquired = array(nat(k), fill = 0)
+            for int i < n
+                int segment = final.solution.labels[i]
+                bool used = false
+                for transactions.Order order = customers[i].orders[]
+                    if first_day <= order.day <= last_day
+                        revenues[segment] += order.net
+                        used = true
+                if used
+                    active[segment] += 1
+                int initial_day = settings.reference_day - customers[i].tenure
+                if first_day <= initial_day <= last_day
+                    acquired[segment] += 1
+            string revenue_text = [for int cents = revenues[] then report.amount(cents)].join(" ")
+            lines = lines.append("period {period} days {first_day} {last_day} revenue {revenue_text} active {report.integers(active)} acquired {report.integers(acquired)}")
+        return lines
+
+    string[] migration_lines()
+        transactions.Order[] orders = transactions.group_orders(data.rows, 1, settings.snapshot_day)
+        features.Customer[] snapshot = features.eligible_customers(orders, settings.snapshot_day)
+        map.Map<string, int> previous
+        for features.Customer customer = snapshot[]
+            real64[] point = features.standardize(customer.transformed, scaling)
+            kmeans.Assignment assigned = kmeans.assign([point], final.solution.centers)
+            .previous.set(customer.id, assigned.labels[0])
+        int[][] counts = array(nat(k + 1), fill = array(nat(k), fill = 0))
+        string[] moved = []
+        int stayed = 0
+        int fresh = 0
+        int lost = 0
+        for int i < n
+            int current = final.solution.labels[i]
+            int old = transactions.lookup(previous, customers[i].id, k)
+            counts[old][current] += 1
+            if old == k
+                fresh += 1
+            elif old == current
+                stayed += 1
+            else
+                moved = moved.append("{customers[i].id} {old + 1} {current + 1}")
+        for features.Customer customer = snapshot[]
+            if not id_positions.has(customer.id)
+                lost += 1
+        string[] lines = ["migration day {settings.snapshot_day} customers {len(snapshot)}", "from\to " + segment_numbers()]
+        for int origin <= k
+            string label = if origin == k then "none" else "{origin + 1}"
+            lines = lines.append(label + " " + report.integers(counts[origin]))
+        lines = lines.append("moved_customers").concat(moved)
+        return lines.append("stayed {stayed} moved {len(moved)} new {fresh} lost {lost}")
+
+    string[] outcome_lines()
+        int first_day = settings.reference_day + 1
+        int last_day = settings.reference_day + settings.outcome_days
+        transactions.Order[] orders = transactions.group_orders(data.rows, first_day, last_day)
+        map.Map<string, int> purchases
+        for transactions.Order order = orders[]
+            if order.net > 0
+                .purchases.set(order.customer, transactions.lookup(purchases, order.customer) + order.net)
+        string[] lines = ["outcome days {first_day} {last_day}"]
+        for int segment < k
+            int[] members = final.solution.members[segment]
+            int buyers = 0
+            int spend = 0
+            for int index = members[]
+                if purchases.has(customers[index].id)
+                    buyers += 1
+                    spend += transactions.lookup(purchases, customers[index].id)
+            int size = int(len(members))
+            lines = lines.append("segment {segment + 1} {final.segment_names[segment]} size {size} buyers {buyers} rate {report.real_text(real64(buyers) / real64(size))} revenue {report.amount(spend)} per_customer {report.real_text((real64(spend) / 100.0) / real64(size))}")
+        int outsiders = 0
+        int outsider_spend = 0
+        for string id = purchases.keys()[]
+            if not id_positions.has(id)
+                outsiders += 1
+                outsider_spend += transactions.lookup(purchases, id)
+        return lines.append("unsegmented buyers {outsiders} revenue {report.amount(outsider_spend)}")
+
+    string[] tracking_file()
+        return blocks([period_lines(), migration_lines(), outcome_lines()])
+
+    string[] data_lines()
+        int used = 0
+        int returned = 0
+        int later = 0
+        for transactions.Row row = data.rows[]
+            if row.day <= settings.reference_day
+                used += 1
+                if row.amount < 0
+                    returned += 1
+            else
+                later += 1
+        int valid = math.sum<int>([for transactions.Order order = reference_orders[] if order.net > 0 then 1])
+        string[] excluded = [for string id = data.customers[] if not id_positions.has(id) then id]
+        string excluded_text = if len(excluded) == 0 then "-" else excluded.join(" ")
+        return [
+            "rows {data.row_count} duplicates {data.duplicates} zero {data.zero} used {used} returns {returned} later {later}",
+            "orders {len(reference_orders)} valid {valid} cancelled {int(len(reference_orders)) - valid}",
+            "customers {len(data.customers)} clustered {n} excluded {len(excluded)}",
+            "excluded_ids {excluded_text}"
+        ]
+
+    string[] category_lines()
+        string[] lines = []
+        for string category = category_names[]
+            int total = transactions.lookup(overall_categories, category)
+            int buyers = math.sum<int>([for features.Customer customer = customers[] if transactions.lookup(customer.category_spend, category) > 0 then 1])
+            lines = lines.append("category {category} revenue {report.amount(total)} share {report.real_text(real64(total) / real64(total_spend))} customers {buyers}")
+        return lines
+
+    string[] feature_summary_lines()
+        string[] lines = []
+        string[] feature_names = features.names()
+        for int feature < 6
+            features.Scale scale = scaling[feature]
+            string transform_name = if features.root_feature(feature) then "sqrt" else "none"
+            lines = lines.append("feature {feature_names[feature]} transform {transform_name} raw_mean {report.real_text(scale.raw_mean)} raw_sd {report.real_text(scale.raw_sd)} mean {report.real_text(scale.mean_value)} sd {report.real_text(scale.deviation)}")
+        return lines
+
+    string[] correlation_lines()
+        string[] feature_names = features.names()
+        string[] lines = ["correlation " + feature_names.join(" ")]
+        for int first < 6
+            real64[] correlations = [for int second = (0:<6)[] then features.correlation(points, first, second)]
+            lines = lines.append(feature_names[first] + " " + report.reals(correlations))
+        return lines
+
+    string[] summary_file()
+        return blocks([data_lines(), category_lines(), feature_summary_lines(), correlation_lines()])
+
+void run()
+    auto settings = transactions.Params(transactions.read_lines("input/params.txt"))
+    transactions.Data data = transactions.read_data()
+    profiles.Rule[] rules = profiles.read_rules()
+    auto generator = Generator(settings.seed)
+    auto study = Study(settings, data, rules, &generator)
+    file.mkdir("output")
+    report.write_lines("features.csv", study.features_file())
+    report.write_lines("runs.txt", study.runs_file())
+    report.write_lines("selection.txt", study.selection_file())
+    report.write_lines("segments.csv", study.segments_file())
+    report.write_lines("profiles.txt", study.profiles_file())
+    report.write_lines("robustness.txt", study.robustness_file())
+    report.write_lines("tracking.txt", study.tracking_file())
+    report.write_lines("summary.txt", study.summary_file())
+
+if main
+    run()
