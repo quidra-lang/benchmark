@@ -492,7 +492,7 @@ graph_lines <- function(s) {
   vertices <- length(s$graph$vertices)
   edges <- length(s$edges)
   shared <- sum(vapply(s$edges, `[[`, 0L, 3L))
-  density <- if (vertices >= 2L) 2000 * edges %/% (vertices * (vertices - 1L)) else 0L
+  density <- if (vertices >= 2L) (2000 * edges) %/% (vertices * (vertices - 1L)) else 0L
   lines <- paste("GRAPH courses", vertices, "edges", edges, "shared", shared, "density", density)
   for (id in head(by_degree(s, s$graph$vertices), 5L)) lines <- c(lines, paste("DEGREE", id, "neighbours", degree(s$graph, id), "shared", shared_total(s$graph, id), "students", enrolment_count(s$courses[[id]])))
   groups <- graph_components(s$graph)
