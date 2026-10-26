@@ -215,7 +215,7 @@ make_turtle <- function(procedures) {
         }
         if (token$text == "RANDOM") {
             if (a <= 0) error(token, paste0("RANDOM doesn't like ", a, " as input"))
-            state$random <- 48271 * state$random %% 2147483647
+            state$random <- (48271 * state$random) %% 2147483647
             return(state$random %% a)
         }
         if (token$text == "ABS") return(abs(a))

@@ -5,7 +5,7 @@ use std::io::{self, Read};
 struct Fault {
     word: String,
     reason: String,
-    code: Option<i64>
+    code: Option<i64>,
 }
 type Running<T> = Result<T, Fault>;
 
@@ -13,7 +13,7 @@ fn fault(word: &str, reason: impl Into<String>, code: Option<i64>) -> Fault {
     Fault {
         word: word.into(),
         reason: reason.into(),
-        code
+        code,
     }
 }
 
@@ -25,7 +25,7 @@ struct Instruction {
     word: usize,
     text: String,
     slots: Vec<usize>,
-    target: usize
+    target: usize,
 }
 
 impl Instruction {
@@ -37,7 +37,7 @@ impl Instruction {
             word: 0,
             text: String::new(),
             slots: Vec::new(),
-            target: 0
+            target: 0,
         }
     }
 }
@@ -53,7 +53,7 @@ struct Word {
     deferred: Option<usize>,
     does: Option<(usize, usize)>,
     locals: usize,
-    code: Vec<Instruction>
+    code: Vec<Instruction>,
 }
 
 impl Word {
@@ -69,7 +69,7 @@ impl Word {
             deferred: None,
             does: None,
             locals: 0,
-            code: Vec::new()
+            code: Vec::new(),
         }
     }
 }
@@ -79,7 +79,7 @@ struct Control {
     index: usize,
     begin: usize,
     leaves: Vec<usize>,
-    ends: Vec<usize>
+    ends: Vec<usize>,
 }
 
 impl Control {
@@ -89,7 +89,7 @@ impl Control {
             index,
             begin,
             leaves: Vec::new(),
-            ends: Vec::new()
+            ends: Vec::new(),
         }
     }
 }
@@ -98,7 +98,7 @@ struct Compiler {
     word: usize,
     anonymous: bool,
     locals: BTreeMap<String, usize>,
-    control: Vec<Control>
+    control: Vec<Control>,
 }
 
 struct Forth {
@@ -114,11 +114,16 @@ struct Forth {
     compiler: Option<Compiler>,
     line: String,
     at: usize,
-    depth: usize
+    depth: usize,
 }
 
 fn compile_only(n: &str) -> bool {
-    ["IF", "ELSE", "THEN", "DO", "?DO", "LOOP", "+LOOP", "LEAVE", "UNLOOP", "I", "J", "BEGIN", "UNTIL", "WHILE", "REPEAT", "AGAIN", "CASE", "OF", "ENDOF", "ENDCASE", "EXIT", "RECURSE", "DOES>", ";", ">R", "R>", "R@", "ABORT\"", "[']", "{:"].contains(&n)
+    [
+        "IF", "ELSE", "THEN", "DO", "?DO", "LOOP", "+LOOP", "LEAVE", "UNLOOP", "I", "J", "BEGIN",
+        "UNTIL", "WHILE", "REPEAT", "AGAIN", "CASE", "OF", "ENDOF", "ENDCASE", "EXIT", "RECURSE",
+        "DOES>", ";", ">R", "R>", "R@", "ABORT\"", "[']", "{:",
+    ]
+    .contains(&n)
 }
 
 fn interpret_only(n: &str) -> bool {
@@ -144,7 +149,7 @@ impl Forth {
             compiler: None,
             line: String::new(),
             at: 0,
-            depth: 0
+            depth: 0,
         };
         for n in "+ - * / MOD /MOD */ */MOD NEGATE ABS MIN MAX 1+ 1- 2* 2/ = <> < > 0= 0<> 0< 0> WITHIN TRUE FALSE AND OR XOR INVERT DUP ?DUP DROP SWAP OVER ROT -ROT NIP TUCK 2DUP 2DROP 2SWAP 2OVER DEPTH PICK ROLL . .R .S ? CR EMIT SPACE SPACES BL ! @ +! , ALLOT HERE CELLS CELL+ BASE HEX DECIMAL CREATE VARIABLE CONSTANT VALUE DEFER ' EXECUTE CATCH THROW ABORT WORDS".split(' ') {
             let i = f.words.len();
@@ -219,12 +224,18 @@ impl Forth {
     }
 
     fn read_name(&mut self, owner: &str) -> Running<String> {
-        self.read_word().ok_or_else(|| fault(owner, "missing name", Some(-16)))
+        self.read_word()
+            .ok_or_else(|| fault(owner, "missing name", Some(-16)))
     }
 
     fn find(&self, raw: &str) -> Option<usize> {
         let n = raw.to_ascii_uppercase();
-        self.users.iter().rev().copied().find(|&i| self.words[i].name == n).or_else(|| self.builtins.get(&n).copied())
+        self.users
+            .iter()
+            .rev()
+            .copied()
+            .find(|&i| self.words[i].name == n)
+            .or_else(|| self.builtins.get(&n).copied())
     }
 
     fn number(&self, raw: &str, owner: &str, base: i64) -> Running<Option<i64>> {
@@ -240,7 +251,7 @@ impl Forth {
                 radix = match c {
                     b'$' => 16,
                     b'#' => 10,
-                    _ => 2
+                    _ => 2,
                 };
                 s = &s[1..];
             } else if !(2..=36).contains(&radix) {
@@ -281,7 +292,11 @@ impl Forth {
 
     fn check_name(&self, raw: &str) -> Running<()> {
         let n = raw.to_ascii_uppercase();
-        if compile_only(&n) || interpret_only(&n) || both(&n) || self.number(raw, raw, 10)?.is_some() {
+        if compile_only(&n)
+            || interpret_only(&n)
+            || both(&n)
+            || self.number(raw, raw, 10)?.is_some()
+        {
             Err(fault(raw, "invalid name", Some(-19)))
         } else {
             Ok(())
@@ -375,21 +390,29 @@ impl Forth {
                     self.words[i.word].deferred = Some(self.token_word(v, s)?);
                 }
                 "jump" => pc = i.target,
-                "zero" => if self.pop(1, s)?[0] == 0 {
-                    pc = i.target;
-                },
+                "zero" => {
+                    if self.pop(1, s)?[0] == 0 {
+                        pc = i.target;
+                    }
+                }
                 "exit" => break,
                 "does" => {
-                    let latest = self.users.last().copied().ok_or_else(|| fault(s, "no CREATE word", Some(-31)))?;
+                    let latest = self
+                        .users
+                        .last()
+                        .copied()
+                        .ok_or_else(|| fault(s, "no CREATE word", Some(-31)))?;
                     if self.words[latest].kind != "create" {
                         return Err(fault(s, "no CREATE word", Some(-31)));
                     }
                     self.words[latest].does = Some((definition, pc));
                     break;
                 }
-                "abort-string" => if self.pop(1, s)?[0] != 0 {
-                    return Err(fault(s, i.text.clone(), Some(-2)));
-                },
+                "abort-string" => {
+                    if self.pop(1, s)?[0] != 0 {
+                        return Err(fault(s, i.text.clone(), Some(-2)));
+                    }
+                }
                 "write" => self.pending.push_str(&i.text),
                 "do" | "?do" => {
                     let a = self.pop(2, s)?;
@@ -454,7 +477,7 @@ impl Forth {
                     self.return_need(2, s)?;
                     self.returns.truncate(self.returns.len() - 2);
                 }
-                _ => unreachable!()
+                _ => unreachable!(),
             }
         }
         if self.returns.len() > old_return {
@@ -467,7 +490,9 @@ impl Forth {
     fn execute(&mut self, mut i: usize, spelling: &str) -> Running<()> {
         let mut owner = spelling.to_string();
         while self.words[i].kind == "defer" {
-            i = self.words[i].deferred.ok_or_else(|| fault(&owner, "deferred word not set", Some(-21)))?;
+            i = self.words[i]
+                .deferred
+                .ok_or_else(|| fault(&owner, "deferred word not set", Some(-21)))?;
             owner = self.words[i].name.clone();
         }
         let spelling = owner.as_str();
@@ -491,7 +516,8 @@ impl Forth {
 
     fn builtin(&mut self, name: &str, owner: &str) -> Running<()> {
         match name {
-            "+" | "-" | "*" | "/" | "MOD" | "/MOD" | "MIN" | "MAX" | "=" | "<>" | "<" | ">" | "AND" | "OR" | "XOR" => {
+            "+" | "-" | "*" | "/" | "MOD" | "/MOD" | "MIN" | "MAX" | "=" | "<>" | "<" | ">"
+            | "AND" | "OR" | "XOR" => {
                 let a = self.pop(2, owner)?;
                 let (x, y) = (a[0], a[1]);
                 if ["/", "MOD", "/MOD"].contains(&name) && y == 0 {
@@ -511,7 +537,7 @@ impl Forth {
                     ">" => -i64::from(x > y),
                     "AND" => x & y,
                     "OR" => x | y,
-                    _ => x ^ y
+                    _ => x ^ y,
                 };
                 if name == "/MOD" {
                     self.push(x - y * v, owner)?;
@@ -530,7 +556,8 @@ impl Forth {
                 }
                 self.push(q, owner)?;
             }
-            "NEGATE" | "ABS" | "1+" | "1-" | "2*" | "2/" | "0=" | "0<>" | "0<" | "0>" | "INVERT" | "CELLS" | "CELL+" => {
+            "NEGATE" | "ABS" | "1+" | "1-" | "2*" | "2/" | "0=" | "0<>" | "0<" | "0>"
+            | "INVERT" | "CELLS" | "CELL+" => {
                 let a = self.pop(1, owner)?[0];
                 let v = match name {
                     "NEGATE" => -a,
@@ -545,7 +572,7 @@ impl Forth {
                     "0>" => -i64::from(a > 0),
                     "INVERT" => !a,
                     "CELLS" => 8 * a,
-                    _ => a + 8
+                    _ => a + 8,
                 };
                 self.push(v, owner)?;
             }
@@ -558,21 +585,24 @@ impl Forth {
             "BL" => self.push(32, owner)?,
             "DEPTH" => self.push(self.data.len() as i64, owner)?,
             "HERE" => self.push(self.memory.len() as i64 * 8, owner)?,
-            "DUP" | "?DUP" | "DROP" | "SWAP" | "OVER" | "ROT" | "-ROT" | "NIP" | "TUCK" | "2DUP" | "2DROP" | "2SWAP" | "2OVER" => {
+            "DUP" | "?DUP" | "DROP" | "SWAP" | "OVER" | "ROT" | "-ROT" | "NIP" | "TUCK"
+            | "2DUP" | "2DROP" | "2SWAP" | "2OVER" => {
                 let count = match name {
                     "DUP" | "?DUP" | "DROP" => 1,
                     "ROT" | "-ROT" => 3,
                     "2SWAP" | "2OVER" => 4,
-                    _ => 2
+                    _ => 2,
                 };
                 let a = self.pop(count, owner)?;
                 let values = match name {
                     "DUP" => vec![a[0], a[0]],
-                    "?DUP" => if a[0] == 0 {
-                        a.clone()
-                    } else {
-                        vec![a[0], a[0]]
-                    },
+                    "?DUP" => {
+                        if a[0] == 0 {
+                            a.clone()
+                        } else {
+                            vec![a[0], a[0]]
+                        }
+                    }
                     "DROP" | "2DROP" => Vec::new(),
                     "SWAP" => vec![a[1], a[0]],
                     "OVER" => vec![a[0], a[1], a[0]],
@@ -582,7 +612,7 @@ impl Forth {
                     "TUCK" => vec![a[1], a[0], a[1]],
                     "2DUP" => vec![a[0], a[1], a[0], a[1]],
                     "2SWAP" => vec![a[2], a[3], a[0], a[1]],
-                    _ => vec![a[0], a[1], a[2], a[3], a[0], a[1]]
+                    _ => vec![a[0], a[1], a[2], a[3], a[0], a[1]],
                 };
                 self.push_all(&values, owner)?;
             }
@@ -618,7 +648,8 @@ impl Forth {
             }
             ".S" => {
                 let b = self.radix(owner)?;
-                self.pending.push_str(&format!("<{}> ", Self::format(self.data.len() as i64, b)));
+                self.pending
+                    .push_str(&format!("<{}> ", Self::format(self.data.len() as i64, b)));
                 for &n in &self.data {
                     self.pending.push_str(&Self::format(n, b));
                     self.pending.push(' ');
@@ -681,7 +712,12 @@ impl Forth {
                 } else {
                     0
                 };
-                let mut w = Word::new(&raw.to_ascii_uppercase(), &raw, &name.to_ascii_lowercase(), self.memory.len() * 8);
+                let mut w = Word::new(
+                    &raw.to_ascii_uppercase(),
+                    &raw,
+                    &name.to_ascii_lowercase(),
+                    self.memory.len() * 8,
+                );
                 w.address = self.memory.len() * 8;
                 w.value = value;
                 let i = self.words.len();
@@ -693,7 +729,9 @@ impl Forth {
             }
             "'" => {
                 let raw = self.read_name(owner)?;
-                let w = self.find(&raw).ok_or_else(|| fault(&raw, "undefined word", Some(-13)))?;
+                let w = self
+                    .find(&raw)
+                    .ok_or_else(|| fault(&raw, "undefined word", Some(-13)))?;
                 let xt = self.token(w);
                 self.push(xt, owner)?;
             }
@@ -733,11 +771,13 @@ impl Forth {
                 }
             }
             "ABORT" => return Err(fault(owner, "aborted", Some(-1))),
-            "WORDS" => for &w in self.users.iter().rev() {
-                self.pending.push_str(&self.words[w].name);
-                self.pending.push(' ');
-            },
-            _ => unreachable!()
+            "WORDS" => {
+                for &w in self.users.iter().rev() {
+                    self.pending.push_str(&self.words[w].name);
+                    self.pending.push(' ');
+                }
+            }
+            _ => unreachable!(),
         }
         Ok(())
     }
@@ -747,19 +787,27 @@ impl Forth {
             return Err(fault(owner, "unterminated string", None));
         }
         let start = self.at + 1;
-        let offset = self.line[start..].find('"').ok_or_else(|| fault(owner, "unterminated string", None))?;
+        let offset = self.line[start..]
+            .find('"')
+            .ok_or_else(|| fault(owner, "unterminated string", None))?;
         self.at = start + offset + 1;
         Ok(self.line[start..start + offset].into())
     }
 
     fn target(&self, raw: &str, kind: &str) -> Running<usize> {
-        let w = self.find(raw).ok_or_else(|| fault(raw, "undefined word", Some(-13)))?;
+        let w = self
+            .find(raw)
+            .ok_or_else(|| fault(raw, "undefined word", Some(-13)))?;
         if self.words[w].kind != kind {
-            Err(fault(raw, if kind == "value" {
-                "not a value"
-            } else {
-                "not deferred"
-            }, None))
+            Err(fault(
+                raw,
+                if kind == "value" {
+                    "not a value"
+                } else {
+                    "not deferred"
+                },
+                None,
+            ))
         } else {
             Ok(w)
         }
@@ -772,7 +820,9 @@ impl Forth {
             return Ok(());
         }
         if name == "(" {
-            let end = self.line[self.at..].find(')').ok_or_else(|| fault(raw, "unterminated comment", None))?;
+            let end = self.line[self.at..]
+                .find(')')
+                .ok_or_else(|| fault(raw, "unterminated comment", None))?;
             self.at += end + 1;
             return Ok(());
         }
@@ -785,11 +835,14 @@ impl Forth {
         if name == ".\"" || name == "ABORT\"" {
             let text = self.string(raw)?;
             if let Some(c) = &self.compiler {
-                let mut i = Instruction::new(if name == ".\"" {
-                    "write"
-                } else {
-                    "abort-string"
-                }, raw);
+                let mut i = Instruction::new(
+                    if name == ".\"" {
+                        "write"
+                    } else {
+                        "abort-string"
+                    },
+                    raw,
+                );
                 i.text = text;
                 self.words[c.word].code.push(i);
             } else {
@@ -810,17 +863,16 @@ impl Forth {
                     }
                 }
             }
-            let w = self.target(&n, if name == "TO" {
-                "value"
-            } else {
-                "defer"
-            })?;
+            let w = self.target(&n, if name == "TO" { "value" } else { "defer" })?;
             if let Some(c) = &self.compiler {
-                let mut i = Instruction::new(if name == "TO" {
-                    "value-set"
-                } else {
-                    "defer-set"
-                }, raw);
+                let mut i = Instruction::new(
+                    if name == "TO" {
+                        "value-set"
+                    } else {
+                        "defer-set"
+                    },
+                    raw,
+                );
                 i.word = w;
                 self.words[c.word].code.push(i);
             } else {
@@ -847,19 +899,24 @@ impl Forth {
             } else {
                 ":NONAME".into()
             };
-            self.words.push(Word::new(&upper, &n, "colon", self.memory.len() * 8));
+            self.words
+                .push(Word::new(&upper, &n, "colon", self.memory.len() * 8));
             self.compiler = Some(Compiler {
                 word: i,
                 anonymous: name == ":NONAME",
                 locals: BTreeMap::new(),
-                control: Vec::new()
+                control: Vec::new(),
             });
             return Ok(());
         }
         if name == "FORGET" {
             let n = self.read_name(raw)?;
             let upper = n.to_ascii_uppercase();
-            let i = self.users.iter().rposition(|&w| self.words[w].name == upper).ok_or_else(|| fault(&n, "undefined word", Some(-13)))?;
+            let i = self
+                .users
+                .iter()
+                .rposition(|&w| self.words[w].name == upper)
+                .ok_or_else(|| fault(&n, "undefined word", Some(-13)))?;
             let here = self.words[self.users[i]].here / 8;
             self.users.truncate(i);
             self.memory.truncate(here);
@@ -875,12 +932,21 @@ impl Forth {
         if let Some(w) = self.find(raw) {
             self.execute(w, raw)
         } else {
-            let n = self.number(raw, raw, self.memory[0])?.ok_or_else(|| fault(raw, "undefined word", Some(-13)))?;
+            let n = self
+                .number(raw, raw, self.memory[0])?
+                .ok_or_else(|| fault(raw, "undefined word", Some(-13)))?;
             self.push(n, raw)
         }
     }
 
-    fn instruction(&mut self, c: &Compiler, op: &str, raw: &str, value: i64, target: usize) -> usize {
+    fn instruction(
+        &mut self,
+        c: &Compiler,
+        op: &str,
+        raw: &str,
+        value: i64,
+        target: usize,
+    ) -> usize {
         let code = &mut self.words[c.word].code;
         let mut i = Instruction::new(op, raw);
         i.value = value;
@@ -890,7 +956,10 @@ impl Forth {
     }
 
     fn top(c: &Compiler, kinds: &[&str], raw: &str) -> Running<()> {
-        if c.control.last().is_some_and(|t| kinds.contains(&t.kind.as_str())) {
+        if c.control
+            .last()
+            .is_some_and(|t| kinds.contains(&t.kind.as_str()))
+        {
             Ok(())
         } else {
             Err(fault(raw, "control structure mismatch", None))
@@ -904,7 +973,7 @@ impl Forth {
                     let kind = match t.kind.as_str() {
                         "ELSE" => "IF",
                         "WHILE" => "BEGIN",
-                        k => k
+                        k => k,
                     };
                     return Err(fault(raw, format!("unclosed {}", kind), None));
                 }
@@ -933,15 +1002,19 @@ impl Forth {
                 let end = self.words[c.word].code.len();
                 self.words[c.word].code[t.index].target = end;
             }
-            "BEGIN" => c.control.push(Control::new("BEGIN", self.words[c.word].code.len(), 0)),
+            "BEGIN" => c
+                .control
+                .push(Control::new("BEGIN", self.words[c.word].code.len(), 0)),
             "UNTIL" | "AGAIN" => {
                 Self::top(c, &["BEGIN"], raw)?;
                 let t = c.control.pop().unwrap();
-                self.instruction(c, if name == "UNTIL" {
-                    "zero"
-                } else {
-                    "jump"
-                }, raw, 0, t.index);
+                self.instruction(
+                    c,
+                    if name == "UNTIL" { "zero" } else { "jump" },
+                    raw,
+                    0,
+                    t.index,
+                );
             }
             "WHILE" => {
                 Self::top(c, &["BEGIN"], raw)?;
@@ -957,21 +1030,19 @@ impl Forth {
                 self.words[c.word].code[t.index].target = end;
             }
             "DO" | "?DO" => {
-                let i = self.instruction(c, if name == "DO" {
-                    "do"
-                } else {
-                    "?do"
-                }, raw, 0, 0);
+                let i = self.instruction(c, if name == "DO" { "do" } else { "?do" }, raw, 0, 0);
                 c.control.push(Control::new(name, i, 0));
             }
             "LOOP" | "+LOOP" => {
                 Self::top(c, &["DO", "?DO"], raw)?;
                 let t = c.control.pop().unwrap();
-                self.instruction(c, if name == "LOOP" {
-                    "loop"
-                } else {
-                    "+loop"
-                }, raw, 0, t.index + 1);
+                self.instruction(
+                    c,
+                    if name == "LOOP" { "loop" } else { "+loop" },
+                    raw,
+                    0,
+                    t.index + 1,
+                );
                 let end = self.words[c.word].code.len();
                 self.words[c.word].code[t.index].target = end;
                 for i in t.leaves {
@@ -979,11 +1050,17 @@ impl Forth {
                 }
             }
             "LEAVE" => {
-                let p = c.control.iter().rposition(|t| t.kind == "DO" || t.kind == "?DO").ok_or_else(|| fault(raw, "control structure mismatch", None))?;
+                let p = c
+                    .control
+                    .iter()
+                    .rposition(|t| t.kind == "DO" || t.kind == "?DO")
+                    .ok_or_else(|| fault(raw, "control structure mismatch", None))?;
                 let i = self.instruction(c, "leave", raw, 0, 0);
                 c.control[p].leaves.push(i);
             }
-            "CASE" => c.control.push(Control::new("CASE", self.words[c.word].code.len(), 0)),
+            "CASE" => c
+                .control
+                .push(Control::new("CASE", self.words[c.word].code.len(), 0)),
             "OF" => {
                 Self::top(c, &["CASE"], raw)?;
                 let i = self.instruction(c, "of", raw, 0, 0);
@@ -1021,7 +1098,9 @@ impl Forth {
             }
             "[']" => {
                 let n = self.read_name(raw)?;
-                let word = self.find(&n).ok_or_else(|| fault(&n, "undefined word", Some(-13)))?;
+                let word = self
+                    .find(&n)
+                    .ok_or_else(|| fault(&n, "undefined word", Some(-13)))?;
                 let xt = self.token(word);
                 self.instruction(c, "literal", raw, xt, 0);
             }
@@ -1059,7 +1138,9 @@ impl Forth {
                     i.word = word;
                     self.words[c.word].code.push(i);
                 } else {
-                    let n = self.number(raw, raw, self.memory[0])?.ok_or_else(|| fault(raw, "undefined word", Some(-13)))?;
+                    let n = self
+                        .number(raw, raw, self.memory[0])?
+                        .ok_or_else(|| fault(raw, "undefined word", Some(-13)))?;
                     self.instruction(c, "literal", raw, n, 0);
                 }
             }
@@ -1096,7 +1177,10 @@ fn main() {
     for line in input.lines() {
         if line == "BYE" {
             if let Some(c) = &f.compiler {
-                f.output.push(format!("ERROR {}: unterminated definition", f.words[c.word].original));
+                f.output.push(format!(
+                    "ERROR {}: unterminated definition",
+                    f.words[c.word].original
+                ));
             }
             break;
         }

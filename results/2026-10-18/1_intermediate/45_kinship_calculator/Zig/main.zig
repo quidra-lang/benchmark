@@ -6,9 +6,34 @@ const Error = Allocator.Error || Writer.Error || error{Invalid};
 const Sex = enum { M, F, X };
 const Status = enum { current, divorced, widowed };
 const Verb = enum {
-    PERSON, DEATH, REMOVE, PARENT, UNPARENT, SPOUSE, DIVORCE, UNDO, INFO, RELATION,
-    RELATIVES, WHO, PATH, COMMON, ANCESTORS, DESCENDANTS, COUSINS, SIBLINGS, GENERATIONS,
-    TREE, PEDIGREE, TIMELINE, CENSUS, KINSHIP, FIND, TERM, STATS, AUDIT,
+    PERSON,
+    DEATH,
+    REMOVE,
+    PARENT,
+    UNPARENT,
+    SPOUSE,
+    DIVORCE,
+    UNDO,
+    INFO,
+    RELATION,
+    RELATIVES,
+    WHO,
+    PATH,
+    COMMON,
+    ANCESTORS,
+    DESCENDANTS,
+    COUSINS,
+    SIBLINGS,
+    GENERATIONS,
+    TREE,
+    PEDIGREE,
+    TIMELINE,
+    CENSUS,
+    KINSHIP,
+    FIND,
+    TERM,
+    STATS,
+    AUDIT,
 };
 const Step = enum { parent, father, mother, child, son, daughter, sibling, brother, sister, spouse, husband, wife };
 
@@ -22,7 +47,9 @@ fn IndexList(comptime capacity: usize) type {
             list.data[list.len] = value;
             list.len += 1;
         }
-        fn slice(list: *const Self) []const usize { return list.data[0..list.len]; }
+        fn slice(list: *const Self) []const usize {
+            return list.data[0..list.len];
+        }
         fn contains(list: *const Self, value: usize) bool {
             for (list.slice()) |item| if (item == value) return true;
             return false;
@@ -55,8 +82,12 @@ const Marriage = struct {
     status: Status = .current,
     died: ?usize = null,
 
-    fn contains(marriage: Marriage, id: usize) bool { return marriage.first == id or marriage.second == id; }
-    fn other(marriage: Marriage, id: usize) usize { return if (marriage.first == id) marriage.second else marriage.first; }
+    fn contains(marriage: Marriage, id: usize) bool {
+        return marriage.first == id or marriage.second == id;
+    }
+    fn other(marriage: Marriage, id: usize) usize {
+        return if (marriage.first == id) marriage.second else marriage.first;
+    }
 };
 const Family = struct {
     people: [200]Person = @splat(.{}),
@@ -77,8 +108,7 @@ const Family = struct {
     }
     fn ordered(family: *const Family, input: Selection, age: bool) Selection {
         var result = input;
-        if (age) std.sort.heap(usize, result.data[0..result.len], family, ageLess)
-        else std.sort.heap(usize, result.data[0..result.len], family, idLess);
+        if (age) std.sort.heap(usize, result.data[0..result.len], family, ageLess) else std.sort.heap(usize, result.data[0..result.len], family, idLess);
         return result;
     }
 };
@@ -92,7 +122,8 @@ const Calculator = struct {
         const saved = try calculator.storage.create(Family);
         saved.* = calculator.family;
         try calculator.history.append(calculator.storage, .{
-            .source = try calculator.storage.dupe(u8, source), .family = saved,
+            .source = try calculator.storage.dupe(u8, source),
+            .family = saved,
         });
     }
 };
@@ -104,27 +135,40 @@ const Fraction = struct {
         if (numerator == 0) return .{};
         var n = numerator;
         var p = power;
-        while (p > 0 and n % 2 == 0) { n /= 2; p -= 1; }
+        while (p > 0 and n % 2 == 0) {
+            n /= 2;
+            p -= 1;
+        }
         return .{ .numerator = n, .power = p };
     }
     fn add(a: Fraction, b: Fraction) Fraction {
         const p = @max(a.power, b.power);
         return make((a.numerator << (p - a.power)) + (b.numerator << (p - b.power)), p);
     }
-    fn half(value: Fraction) Fraction { return make(value.numerator, value.power + 1); }
+    fn half(value: Fraction) Fraction {
+        return make(value.numerator, value.power + 1);
+    }
     pub fn format(value: Fraction, writer: *Writer) Writer.Error!void {
         try writer.print("{d}/{d}", .{ value.numerator, @as(u64, 1) << value.power });
     }
 };
 const Apex = struct { id: usize, a: i16, b: i16, share: usize = 0 };
 
-fn equal(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
-fn integer(text: Text) i32 { return std.fmt.parseInt(i32, text, 10) catch unreachable; }
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn integer(text: Text) i32 {
+    return std.fmt.parseInt(i32, text, 10) catch unreachable;
+}
 fn line(out: *Writer, comptime format: Text, args: anytype) Writer.Error!void {
     try out.print(format ++ "\n", args);
 }
 fn gender(sex: Sex, male: Text, female: Text, neutral: Text) Text {
-    return switch (sex) { .M => male, .F => female, .X => neutral };
+    return switch (sex) {
+        .M => male,
+        .F => female,
+        .X => neutral,
+    };
 }
 fn grand(out: *Writer, generation: i32) Writer.Error!void {
     if (generation == 1) return;
@@ -134,8 +178,12 @@ fn grand(out: *Writer, generation: i32) Writer.Error!void {
 fn ordinal(out: *Writer, value: i32) Writer.Error!void {
     const first = [_]Text{ "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth" };
     if (value <= 10) return out.writeAll(first[@intCast(value - 1)]);
-    const suffix: Text = if (@mod(value, 100) >= 11 and @mod(value, 100) <= 13) "th"
-        else switch (@mod(value, 10)) { 1 => "st", 2 => "nd", 3 => "rd", else => "th" };
+    const suffix: Text = if (@mod(value, 100) >= 11 and @mod(value, 100) <= 13) "th" else switch (@mod(value, 10)) {
+        1 => "st",
+        2 => "nd",
+        3 => "rd",
+        else => "th",
+    };
     try out.print("{d}{s}", .{ value, suffix });
 }
 fn writeTerm(out: *Writer, a: i32, b: i32, sex: Sex) Writer.Error!void {
@@ -202,8 +250,12 @@ const Analysis = struct {
         }
         return graph;
     }
-    fn person(graph: *const Analysis, id: usize) *const Person { return &graph.family.people[id]; }
-    fn parents(graph: *const Analysis, id: usize) []const usize { return graph.person(id).parents.slice(); }
+    fn person(graph: *const Analysis, id: usize) *const Person {
+        return &graph.family.people[id];
+    }
+    fn parents(graph: *const Analysis, id: usize) []const usize {
+        return graph.person(id).parents.slice();
+    }
     fn current(graph: *const Analysis, id: usize) ?Marriage {
         const index = graph.currents[id] orelse return null;
         return graph.family.marriages[index];
@@ -221,10 +273,14 @@ const Analysis = struct {
     }
     fn sharedParents(graph: *const Analysis, a: usize, b: usize) usize {
         var count: usize = 0;
-        for (graph.parents(a)) |parent| if (graph.person(b).parents.contains(parent)) { count += 1; };
+        for (graph.parents(a)) |parent| if (graph.person(b).parents.contains(parent)) {
+            count += 1;
+        };
         return count;
     }
-    fn siblings(graph: *const Analysis, a: usize, b: usize) bool { return a != b and graph.sharedParents(a, b) > 0; }
+    fn siblings(graph: *const Analysis, a: usize, b: usize) bool {
+        return a != b and graph.sharedParents(a, b) > 0;
+    }
     fn stepSiblings(graph: *const Analysis, a: usize, b: usize) bool {
         if (graph.sharedParents(a, b) != 0) return false;
         for (graph.parents(a)) |p| {
@@ -252,7 +308,9 @@ const Analysis = struct {
         ready.* = true;
         return result;
     }
-    fn ancestor(graph: *Analysis, a: usize, b: usize) bool { return a != b and graph.distances(b, true)[a] >= 0; }
+    fn ancestor(graph: *Analysis, a: usize, b: usize) bool {
+        return a != b and graph.distances(b, true)[a] >= 0;
+    }
     fn apex(graph: *Analysis, a: usize, b: usize) ?Apex {
         const first = graph.distances(a, true);
         const second = graph.distances(b, true);
@@ -266,7 +324,9 @@ const Analysis = struct {
                 best = .{ .id = id, .a = first[id], .b = second[id] };
         }
         if (best) |*chosen| {
-            for (graph.ids.slice()) |id| if (first[id] == chosen.a and second[id] == chosen.b) { chosen.share += 1; };
+            for (graph.ids.slice()) |id| if (first[id] == chosen.a and second[id] == chosen.b) {
+                chosen.share += 1;
+            };
         }
         return best;
     }
@@ -309,8 +369,7 @@ const Session = struct {
         var text: Writer.Allocating = .init(session.gpa);
         defer text.deinit();
         if (apex.a > 0 and apex.b > 0) {
-            if (apex.share == 1) try text.writer.writeAll("half-")
-            else if (apex.share >= 4) try text.writer.writeAll("double ");
+            if (apex.share == 1) try text.writer.writeAll("half-") else if (apex.share >= 4) try text.writer.writeAll("double ");
         }
         try writeTerm(&text.writer, apex.a, apex.b, sex);
         return text.toOwnedSlice();
@@ -327,8 +386,7 @@ const Session = struct {
             try result.append(session.gpa, switch (marriage.status) {
                 .current => gender(sex, "husband", "wife", "spouse"),
                 .divorced => gender(sex, "ex-husband", "ex-wife", "ex-spouse"),
-                .widowed => if (marriage.died == a) gender(sex, "late husband", "late wife", "late spouse")
-                    else gender(sex, "widower", "widow", "surviving spouse"),
+                .widowed => if (marriage.died == a) gender(sex, "late husband", "late wife", "late spouse") else gender(sex, "widower", "widow", "surviving spouse"),
             });
         } else {
             for (graph.children[a].slice()) |child| if (graph.person(child).parents.contains(b)) {
@@ -405,9 +463,11 @@ const Session = struct {
             try calculator.remember(source);
             for (&family.people) |*person| if (!person.active) {
                 person.* = .{
-                    .active = true, .id = try calculator.storage.dupe(u8, args[1]),
+                    .active = true,
+                    .id = try calculator.storage.dupe(u8, args[1]),
                     .name = try calculator.storage.dupe(u8, args[4]),
-                    .sex = std.meta.stringToEnum(Sex, args[2]).?, .birth = integer(args[3]),
+                    .sex = std.meta.stringToEnum(Sex, args[2]).?,
+                    .birth = integer(args[3]),
                 };
                 return line(session.out, "ADDED {s} {s} {s} {d}", .{ person.id, person.name, @tagName(person.sex), person.birth });
             };
@@ -594,9 +654,7 @@ const Session = struct {
         const children = graph.family.ordered(graph.children[id], true);
         for (children.slice()) |child| try session.visitTree(child, depth + 1, seen);
     }
-    fn enterPedigree(session: *Session, out: *Writer, id: usize, depth: usize, number: usize,
-        generation: usize, seen: *[200]bool, entries: *usize) Error!void
-    {
+    fn enterPedigree(session: *Session, out: *Writer, id: usize, depth: usize, number: usize, generation: usize, seen: *[200]bool, entries: *usize) Error!void {
         const graph = session.graph;
         const person = graph.person(id);
         entries.* += 1;
@@ -611,7 +669,7 @@ const Session = struct {
             fn less(family: *const Family, a: usize, b: usize) bool {
                 const first = family.people[a].sex;
                 const second = family.people[b].sex;
-                return if (first != second) @intFromEnum(first) < @intFromEnum(second) else family.idLess(a, b);
+                return if (first != second) @backingInt(first) < @backingInt(second) else family.idLess(a, b);
             }
         }.less);
         for (parents.slice(), 0..) |parent, i| try session.enterPedigree(out, parent, depth, 2 * number + i, generation + 1, seen, entries);
@@ -624,7 +682,9 @@ const Session = struct {
             if (relative.death) |year| {
                 if (year >= person.birth and year <= (person.death orelse year)) {
                     try events.append(session.gpa, .{
-                        .year = year, .rank = 5, .other = relative.id,
+                        .year = year,
+                        .rank = 5,
+                        .other = relative.id,
                         .text = try std.fmt.allocPrint(session.gpa, "lost {s} {s}", .{ kind, relative.id }),
                     });
                 }
@@ -638,20 +698,16 @@ const Session = struct {
         try events.append(session.gpa, .{ .year = person.birth, .rank = 0, .text = "born" });
         for (graph.family.marriages[0..graph.family.marriage_count]) |marriage| if (marriage.contains(id)) {
             const other = graph.person(marriage.other(id)).id;
-            try events.append(session.gpa, .{ .year = marriage.start, .rank = 1, .other = other,
-                .text = try std.fmt.allocPrint(session.gpa, "married {s}", .{other}) });
+            try events.append(session.gpa, .{ .year = marriage.start, .rank = 1, .other = other, .text = try std.fmt.allocPrint(session.gpa, "married {s}", .{other}) });
             if (marriage.status == .divorced) {
-                try events.append(session.gpa, .{ .year = marriage.end.?, .rank = 3, .other = other,
-                    .text = try std.fmt.allocPrint(session.gpa, "divorced {s}", .{other}) });
+                try events.append(session.gpa, .{ .year = marriage.end.?, .rank = 3, .other = other, .text = try std.fmt.allocPrint(session.gpa, "divorced {s}", .{other}) });
             } else if (marriage.status == .widowed and marriage.died == marriage.other(id)) {
-                try events.append(session.gpa, .{ .year = marriage.end.?, .rank = 4, .other = other,
-                    .text = try std.fmt.allocPrint(session.gpa, "widowed {s}", .{other}) });
+                try events.append(session.gpa, .{ .year = marriage.end.?, .rank = 4, .other = other, .text = try std.fmt.allocPrint(session.gpa, "widowed {s}", .{other}) });
             }
         };
         for (graph.children[id].slice()) |child| {
             const other = graph.person(child);
-            try events.append(session.gpa, .{ .year = other.birth, .rank = 2, .other = other.id,
-                .text = try std.fmt.allocPrint(session.gpa, "child {s}", .{other.id}) });
+            try events.append(session.gpa, .{ .year = other.birth, .rank = 2, .other = other.id, .text = try std.fmt.allocPrint(session.gpa, "child {s}", .{other.id}) });
         }
         try session.lost(&events, id, graph.parents(id), "parent");
         try session.lost(&events, id, graph.children[id].slice(), "child");
@@ -684,7 +740,8 @@ const Session = struct {
             if (latest) |marriage| {
                 if ((marriage.end orelse (year + 1)) > year)
                     try session.out.print("married {s}", .{graph.person(marriage.other(id)).id})
-                else try session.out.writeAll(@tagName(marriage.status));
+                else
+                    try session.out.writeAll(@tagName(marriage.status));
             } else try session.out.writeAll("single");
             try session.out.writeByte('\n');
         }
@@ -765,24 +822,24 @@ const Session = struct {
                     if (person.parents.len == 0) founders += 1;
                     if (person.death == null) living += 1;
                 }
-                for (family.marriages[0..family.marriage_count]) |marriage| if (marriage.status == .current) { couples += 1; };
-                return line(session.out, "STATS persons={d} living={d} links={d} couples={d} founders={d} generations={d}",
-                    .{ graph.ids.len, living, links, couples, founders, longest });
+                for (family.marriages[0..family.marriage_count]) |marriage| if (marriage.status == .current) {
+                    couples += 1;
+                };
+                return line(session.out, "STATS persons={d} living={d} links={d} couples={d} founders={d} generations={d}", .{ graph.ids.len, living, links, couples, founders, longest });
             },
             .AUDIT => {
                 var rows: std.ArrayList(Text) = .empty;
                 for (family.marriages[0..family.marriage_count]) |marriage| {
                     if (graph.apex(marriage.first, marriage.second)) |apex| {
                         try rows.append(session.gpa, try std.fmt.allocPrint(session.gpa, "  marriage {s} {s} {s}", .{
-                            graph.person(marriage.first).id, graph.person(marriage.second).id,
+                            graph.person(marriage.first).id,                           graph.person(marriage.second).id,
                             try session.blood(apex, graph.person(marriage.first).sex),
                         }));
                     }
                 }
                 for (graph.ids.slice()) |id| {
                     const value = graph.inbreeding(id);
-                    if (value.numerator != 0) try rows.append(session.gpa, try std.fmt.allocPrint(session.gpa,
-                        "  inbred {s} {f}", .{ graph.person(id).id, value }));
+                    if (value.numerator != 0) try rows.append(session.gpa, try std.fmt.allocPrint(session.gpa, "  inbred {s} {f}", .{ graph.person(id).id, value }));
                 }
                 try line(session.out, "AUDIT {d}", .{rows.items.len});
                 for (rows.items) |row| try line(session.out, "{s}", .{row});
@@ -808,7 +865,9 @@ const Session = struct {
             .TREE => {
                 const distances = graph.distances(id, false);
                 var count: usize = 0;
-                for (graph.ids.slice()) |other| if (other != id and distances[other] >= 0) { count += 1; };
+                for (graph.ids.slice()) |other| if (other != id and distances[other] >= 0) {
+                    count += 1;
+                };
                 try line(session.out, "TREE {s} {d}", .{ args[1], count });
                 var seen: [200]bool = @splat(false);
                 return session.visitTree(id, 0, &seen);
@@ -820,7 +879,9 @@ const Session = struct {
                 var entries: usize = 0;
                 try session.enterPedigree(&body.writer, id, @intCast(integer(args[2])), 1, 0, &seen, &entries);
                 var distinct: usize = 0;
-                for (seen) |entered| if (entered) { distinct += 1; };
+                for (seen) |entered| if (entered) {
+                    distinct += 1;
+                };
                 try line(session.out, "PEDIGREE {s} {s} entries={d} distinct={d}", .{ args[1], args[2], entries, distinct });
                 return session.out.writeAll(body.written());
             },
@@ -836,14 +897,15 @@ const Session = struct {
                     } else {
                         const neutral = try session.relations(other, id, .X);
                         for (actual, neutral) |word, alternative| {
-                            if (equal(word, query) or equal(alternative, query)) { matched = word; break; }
+                            if (equal(word, query) or equal(alternative, query)) {
+                                matched = word;
+                                break;
+                            }
                         }
                     }
-                    if (matched) |word| try rows.append(session.gpa, try std.fmt.allocPrint(session.gpa,
-                        "  {s}: {s}", .{ graph.person(other).id, word }));
+                    if (matched) |word| try rows.append(session.gpa, try std.fmt.allocPrint(session.gpa, "  {s}: {s}", .{ graph.person(other).id, word }));
                 }
-                if (verb == .WHO) try line(session.out, "WHO {s} {s} {d}", .{ args[1], query, rows.items.len })
-                else try line(session.out, "RELATIVES {s} {d}", .{ args[1], rows.items.len });
+                if (verb == .WHO) try line(session.out, "WHO {s} {s} {d}", .{ args[1], query, rows.items.len }) else try line(session.out, "RELATIVES {s} {d}", .{ args[1], rows.items.len });
                 for (rows.items) |row| try line(session.out, "{s}", .{row});
                 return;
             },
@@ -856,8 +918,7 @@ const Session = struct {
                     family: *const Family,
                     distances: *const [200]i16,
                     fn less(context: @This(), a: usize, b: usize) bool {
-                        return if (context.distances[a] != context.distances[b]) context.distances[a] < context.distances[b]
-                            else context.family.idLess(a, b);
+                        return if (context.distances[a] != context.distances[b]) context.distances[a] < context.distances[b] else context.family.idLess(a, b);
                     }
                 };
                 std.sort.heap(usize, selected.data[0..selected.len], Context{ .family = family, .distances = distances }, Context.less);
@@ -924,11 +985,9 @@ const Session = struct {
                 for (ordered.slice()) |other| {
                     if (other == id) continue;
                     const shared = graph.sharedParents(id, other);
-                    const kind: Text = if (shared == 2) "full" else if (shared == 1) "half"
-                        else if (graph.stepSiblings(id, other)) "step" else continue;
+                    const kind: Text = if (shared == 2) "full" else if (shared == 1) "half" else if (graph.stepSiblings(id, other)) "step" else continue;
                     if (shared > 0 and family.ageLess(other, id)) order += 1;
-                    try rows.append(session.gpa, try std.fmt.allocPrint(session.gpa, "  {s} {s} {d}",
-                        .{ graph.person(other).id, kind, graph.person(other).birth }));
+                    try rows.append(session.gpa, try std.fmt.allocPrint(session.gpa, "  {s} {s} {d}", .{ graph.person(other).id, kind, graph.person(other).birth }));
                 }
                 try line(session.out, "SIBLINGS {s} {d} order={d}", .{ args[1], rows.items.len, order });
                 for (rows.items) |row| try line(session.out, "{s}", .{row});
@@ -971,8 +1030,10 @@ pub fn main(init: std.process.Init) !void {
         var response: Writer.Allocating = .init(gpa);
         defer response.deinit();
         var session: Session = .{
-            .calculator = &calculator, .graph = try Analysis.create(gpa, &calculator.family),
-            .gpa = gpa, .out = &response.writer,
+            .calculator = &calculator,
+            .graph = try Analysis.create(gpa, &calculator.family),
+            .gpa = gpa,
+            .out = &response.writer,
         };
         session.execute(source) catch |err| switch (err) {
             error.Invalid => {

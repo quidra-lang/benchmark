@@ -4,19 +4,29 @@ const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 const Command = enum { PLAN, TIER, TAX, CUSTOMER, COUPON, PAYMETHOD, CREDIT, DAY, SUBSCRIBE, CHANGE, PAUSE, RESUME, CANCEL, USAGE, APPLY, PAY, REFUND, INVOICE, SUB, PREVIEW, STATEMENT, LEDGER, MRR, AGING, DUNNING, REVENUE, EVENTS };
 const State = enum { NONE, TRIALING, ACTIVE, PAST_DUE, UNPAID, PAUSED, CANCELED };
 const Cycle = enum {
-    WEEKLY, MONTHLY, YEARLY,
+    WEEKLY,
+    MONTHLY,
+    YEARLY,
     fn days(c: Cycle) i64 {
-        return switch (c) { .WEEKLY => 7, .MONTHLY => 30, .YEARLY => 360 };
+        return switch (c) {
+            .WEEKLY => 7,
+            .MONTHLY => 30,
+            .YEARLY => 360,
+        };
     }
 };
 const Mode = enum { GRADUATED, VOLUME };
 const Kind = enum { first, renewal, upgrade, final };
-fn integer(s: []const u8) i64 { return std.fmt.parseInt(i64, s, 10) catch unreachable; }
+fn integer(s: []const u8) i64 {
+    return std.fmt.parseInt(i64, s, 10) catch unreachable;
+}
 fn amount(s: []const u8) i64 {
     const dot = std.mem.findScalar(u8, s, '.').?;
-    return integer(s[0..dot]) * 100 + integer(s[dot + 1..]);
+    return integer(s[0..dot]) * 100 + integer(s[dot + 1 ..]);
 }
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
 const Tier = struct { limit: ?i64, unit: i64, flat: i64 };
 const Plan = struct {
     name: []const u8,
@@ -27,7 +37,9 @@ const Plan = struct {
     per_seat: bool = false,
     mode: ?Mode = null,
     tiers: std.ArrayList(Tier) = .empty,
-    fn fee(p: *const Plan, seats: i64) i64 { return p.price * (if (p.per_seat) seats else 1); }
+    fn fee(p: *const Plan, seats: i64) i64 {
+        return p.price * (if (p.per_seat) seats else 1);
+    }
     fn usageCharge(p: *const Plan, units: i64) i64 {
         var total: i64 = 0;
         var lower: i64 = 0;
@@ -117,11 +129,15 @@ const Billing = struct {
         const u = @abs(n);
         return std.fmt.allocPrint(self.gpa, "{s}{d}.{d:0>2}", .{ if (n < 0) "-" else "", u / 100, u % 100 });
     }
-    fn rate(self: *Billing, n: i64) Allocator.Error![]const u8 { return std.fmt.allocPrint(self.gpa, "{s}%", .{try self.money(n)}); }
+    fn rate(self: *Billing, n: i64) Allocator.Error![]const u8 {
+        return std.fmt.allocPrint(self.gpa, "{s}%", .{try self.money(n)});
+    }
     fn ordered(self: *Billing, comptime T: type, values: []const *T) Allocator.Error![]*T {
         const result = try self.gpa.dupe(*T, values);
         std.mem.sort(*T, result, {}, struct {
-            fn less(_: void, a: *T, b: *T) bool { return std.mem.order(u8, a.name, b.name) == .lt; }
+            fn less(_: void, a: *T, b: *T) bool {
+                return std.mem.order(u8, a.name, b.name) == .lt;
+            }
         }.less);
         return result;
     }
@@ -208,7 +224,9 @@ const Billing = struct {
     fn issue(self: *Billing, s: *Subscription, kind: Kind, items: std.ArrayList(Item)) Error!void {
         const t = self.totals(s, items.items);
         if (s.coupon != null and t.subtotal > 0) {
-            if (s.left) |left| if (left > 0) { s.left = left - 1; };
+            if (s.left) |left| if (left > 0) {
+                s.left = left - 1;
+            };
         }
         const inv = try self.gpa.create(Invoice);
         inv.* = .{ .id = self.invoices.items.len + 1, .sub = s, .day = self.day, .kind = kind, .items = items.items, .sums = t, .outstanding = t.due };
@@ -358,10 +376,17 @@ const Billing = struct {
                 p.* = .{ .name = id, .price = amount(a[2]), .cycle = std.meta.stringToEnum(Cycle, a[3]).? };
                 var i: usize = 4;
                 while (i < a.len) : (i += 1) {
-                    if (equal(a[i], "TRIAL")) { i += 1; p.trial = integer(a[i]); }
-                    else if (equal(a[i], "SETUP")) { i += 1; p.setup = amount(a[i]); }
-                    else if (equal(a[i], "PERSEAT")) { p.per_seat = true; }
-                    else { p.mode = std.meta.stringToEnum(Mode, a[i]).?; }
+                    if (equal(a[i], "TRIAL")) {
+                        i += 1;
+                        p.trial = integer(a[i]);
+                    } else if (equal(a[i], "SETUP")) {
+                        i += 1;
+                        p.setup = amount(a[i]);
+                    } else if (equal(a[i], "PERSEAT")) {
+                        p.per_seat = true;
+                    } else {
+                        p.mode = std.meta.stringToEnum(Mode, a[i]).?;
+                    }
                 }
                 try self.plans.put(self.gpa, id, p);
                 try self.out.print("PLAN {s} {s} {s}", .{ id, a[3], try self.money(p.price) });
@@ -461,7 +486,10 @@ const Billing = struct {
                 const cp: ?*Coupon = if (i < a.len) try self.coupon(a[i + 1]) else null;
                 const s = try self.gpa.create(Subscription);
                 s.* = .{ .id = self.subscriptions.items.len + 1, .customer = c, .plan = p, .seats = seats, .coupon = cp };
-                if (cp) |coupon_value| { coupon_value.redemptions += 1; s.left = coupon_value.applications; }
+                if (cp) |coupon_value| {
+                    coupon_value.redemptions += 1;
+                    s.left = coupon_value.applications;
+                }
                 try self.subscriptions.append(self.gpa, s);
                 try self.out.print("SUBSCRIBE sub {d} {s} {s} seats {d}", .{ s.id, id, p.name, seats });
                 if (cp) |coupon_value| try self.out.print(" coupon {s}", .{coupon_value.name});
@@ -600,7 +628,11 @@ const Billing = struct {
                     for (self.subscriptions.items) |s| {
                         if (s.plan != p or (s.state != .ACTIVE and s.state != .PAST_DUE)) continue;
                         const fee = p.fee(s.seats);
-                        plan_total += switch (p.cycle) { .MONTHLY => fee, .YEARLY => @divTrunc(fee, 12), .WEEKLY => @divTrunc(fee * 30, 7) };
+                        plan_total += switch (p.cycle) {
+                            .MONTHLY => fee,
+                            .YEARLY => @divTrunc(fee, 12),
+                            .WEEKLY => @divTrunc(fee * 30, 7),
+                        };
                         plan_count += 1;
                     }
                     if (plan_count > 0) try self.out.print("  {s} subs {d} mrr {s}\n", .{ p.name, plan_count, try self.money(plan_total) });

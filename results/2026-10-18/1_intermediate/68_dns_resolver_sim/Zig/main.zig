@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Text = []const u8;
-const Error = Allocator.Error || error{Invalid };
+const Error = Allocator.Error || error{Invalid};
 var reason: Text = "";
 const type_names = [_]Text{ "A", "NS", "CNAME", "SOA", "PTR", "MX", "TXT", "AAAA" };
 const response_names = [_]Text{ "ANSWER", "CNAME", "REFERRAL", "NODATA", "NXDOMAIN", "LAME", "TIMEOUT" };
@@ -60,7 +60,7 @@ fn number(s: Text) i64 {
     return std.fmt.parseInt(i64, s, 10) catch unreachable;
 }
 fn parseType(text: Text) ?Type {
-    for (type_names, 0..) |name, i| if (equal(name, text)) return @enumFromInt(i);
+    for (type_names, 0..) |name, i| if (equal(name, text)) return @fromBackingInt(@intCast(i));
     return null;
 }
 fn nameLength(name: Text) usize {
@@ -107,8 +107,8 @@ fn parseName(gpa: Allocator, word: Text, origin: ?Text, wildcard: bool) Error!Te
     const labels = try split(gpa, text, '.');
     for (labels, 0..) |label, i| {
         if (wildcard and i == 0 and equal(label, "*")) continue;
-        if (label.len == 0 or label.len > 63 or label[0] == '-' or label[label.len - 1] == '-') return bad(gpa, "bad name {s}", .{word });
-        for (label) |c| if (!std.ascii.isAlphanumeric(c) and c != '-') return bad(gpa, "bad name {s}", .{word });
+        if (label.len == 0 or label.len > 63 or label[0] == '-' or label[label.len - 1] == '-') return bad(gpa, "bad name {s}", .{word});
+        for (label) |c| if (!std.ascii.isAlphanumeric(c) and c != '-') return bad(gpa, "bad name {s}", .{word});
     }
     const lowered = try gpa.dupe(u8, text);
     for (lowered) |*c| c.* = std.ascii.toLower(c.*);
@@ -116,10 +116,10 @@ fn parseName(gpa: Allocator, word: Text, origin: ?Text, wildcard: bool) Error!Te
 }
 fn parseIPv4(gpa: Allocator, text: Text) Error!u32 {
     const fields = try split(gpa, text, '.');
-    if (fields.len != 4) return bad(gpa, "bad address {s}", .{text });
+    if (fields.len != 4) return bad(gpa, "bad address {s}", .{text});
     var result: u32 = 0;
     for (fields) |field| {
-        if (field.len > 3 or !integerWord(field) or number(field) > 255) return bad(gpa, "bad address {s}", .{text });
+        if (field.len > 3 or !integerWord(field) or number(field) > 255) return bad(gpa, "bad address {s}", .{text});
         result = result * 256 + @as(u32, @intCast(number(field)));
     }
     return result;
@@ -131,8 +131,8 @@ fn hexGroups(gpa: Allocator, text: Text, whole: Text) Error![]u16 {
     var result: std.ArrayList(u16) = .empty;
     if (text.len == 0) return result.items;
     for (try split(gpa, text, ':')) |group| {
-        if (group.len == 0 or group.len > 4) return bad(gpa, "bad address {s}", .{whole });
-        for (group) |c| if (!std.ascii.isHex(c)) return bad(gpa, "bad address {s}", .{whole });
+        if (group.len == 0 or group.len > 4) return bad(gpa, "bad address {s}", .{whole});
+        for (group) |c| if (!std.ascii.isHex(c)) return bad(gpa, "bad address {s}", .{whole});
         try result.append(gpa, std.fmt.parseInt(u16, group, 16) catch unreachable);
     }
     return result.items;
@@ -142,12 +142,12 @@ fn parseIPv6(gpa: Allocator, text: Text) Error![8]u16 {
     if (std.mem.find(u8, text, "::")) |at| {
         const left = try hexGroups(gpa, text[0..at], text);
         const right = try hexGroups(gpa, text[at + 2 ..], text);
-        if (left.len + right.len > 7) return bad(gpa, "bad address {s}", .{text });
+        if (left.len + right.len > 7) return bad(gpa, "bad address {s}", .{text});
         @memcpy(result[0..left.len], left);
         @memcpy(result[8 - right.len ..], right);
     } else {
         const groups = try hexGroups(gpa, text, text);
-        if (groups.len != 8) return bad(gpa, "bad address {s}", .{text });
+        if (groups.len != 8) return bad(gpa, "bad address {s}", .{text});
         @memcpy(result[0..], groups);
     }
     return result;
@@ -170,7 +170,7 @@ fn ipv6(gpa: Allocator, address: [8]u16) Allocator.Error!Text {
         i = end;
     }
     var groups: [8]Text = undefined;
-    for (address, 0..) |value, j| groups[j] = try std.fmt.allocPrint(gpa, "{x}", .{value });
+    for (address, 0..) |value, j| groups[j] = try std.fmt.allocPrint(gpa, "{x}", .{value});
     if (best) |at| return std.fmt.allocPrint(gpa, "{s}::{s}", .{ try join(gpa, groups[0..at], ":"), try join(gpa, groups[at + length ..], ":") });
     return join(gpa, &groups, ":");
 }
@@ -178,7 +178,7 @@ fn parseTTL(gpa: Allocator, text: Text) Error!i64 {
     if (integerWord(text)) {
         const n = number(text);
         if (n >= 1 and n <= 604800) return n;
-        return bad(gpa, "bad ttl {s}", .{text });
+        return bad(gpa, "bad ttl {s}", .{text});
     }
     const multipliers = [_]i64{ 604800, 86400, 3600, 60, 1 };
     var total: i64 = 0;
@@ -188,14 +188,14 @@ fn parseTTL(gpa: Allocator, text: Text) Error!i64 {
         const start = pos;
         while (pos < text.len and std.ascii.isDigit(text[pos])) pos += 1;
         const digits = text[start..pos];
-        if (digits.len > 3 or !integerWord(digits) or pos == text.len) return bad(gpa, "bad ttl {s}", .{text });
-        const unit = std.mem.findScalar(u8, "wdhms", std.ascii.toLower(text[pos])) orelse return bad(gpa, "bad ttl {s}", .{text });
-        if (previous != null and unit <= previous.?) return bad(gpa, "bad ttl {s}", .{text });
+        if (digits.len > 3 or !integerWord(digits) or pos == text.len) return bad(gpa, "bad ttl {s}", .{text});
+        const unit = std.mem.findScalar(u8, "wdhms", std.ascii.toLower(text[pos])) orelse return bad(gpa, "bad ttl {s}", .{text});
+        if (previous != null and unit <= previous.?) return bad(gpa, "bad ttl {s}", .{text});
         total += number(digits) * multipliers[unit];
         previous = unit;
         pos += 1;
     }
-    if (total < 1 or total > 604800) return bad(gpa, "bad ttl {s}", .{text });
+    if (total < 1 or total > 604800) return bad(gpa, "bad ttl {s}", .{text});
     return total;
 }
 const Record = struct {
@@ -209,7 +209,7 @@ const Record = struct {
     preference: i64 = 0,
     minimum: i64 = 0,
     fn text(self: Record, gpa: Allocator) Allocator.Error!Text {
-        return std.fmt.allocPrint(gpa, "{s} {d} {s} {s}", .{ self.owner, self.ttl, type_names[@intFromEnum(self.kind)], self.data });
+        return std.fmt.allocPrint(gpa, "{s} {d} {s} {s}", .{ self.owner, self.ttl, type_names[@backingInt(self.kind)], self.data });
     }
 };
 fn dataCompare(a: Record, b: Record) std.math.Order {
@@ -233,7 +233,7 @@ fn dataCompare(a: Record, b: Record) std.math.Order {
 fn recordLess(_: void, a: Record, b: Record) bool {
     const order = nameCompare(a.owner, b.owner);
     if (order != .eq) return order == .lt;
-    if (a.kind != b.kind) return @intFromEnum(a.kind) < @intFromEnum(b.kind);
+    if (a.kind != b.kind) return @backingInt(a.kind) < @backingInt(b.kind);
     return dataCompare(a, b) == .lt;
 }
 fn sortedRecords(gpa: Allocator, records: []const Record) Allocator.Error![]Record {
@@ -275,10 +275,10 @@ const Response = struct {
     additional: []const Record = &.{},
     message: Text = "",
     fn description(self: Response, gpa: Allocator) Allocator.Error!Text {
-        if (self.kind == .referral) return std.fmt.allocPrint(gpa, "REFERRAL {s}", .{self.referral });
-        if (self.kind == .cname) return std.fmt.allocPrint(gpa, "CNAME {s}", .{self.answer[0].target });
+        if (self.kind == .referral) return std.fmt.allocPrint(gpa, "REFERRAL {s}", .{self.referral});
+        if (self.kind == .cname) return std.fmt.allocPrint(gpa, "CNAME {s}", .{self.answer[0].target});
         if (self.kind == .servfail) return self.message;
-        return response_names[@intFromEnum(self.kind)];
+        return response_names[@backingInt(self.kind)];
     }
 };
 const Key = struct {
@@ -288,20 +288,9 @@ const Key = struct {
         return a.kind == b.kind and equal(a.name, b.name);
     }
 };
-const Entry = struct {
-    key: Key,
-    kind: CacheKind,
-    records: []const Record = &.{},
-    expiry: i64
-};
-const Stats = struct {
-    server: u32,
-    counts: [7]usize = @splat(0)
-};
-const Result = struct {
-    status: Text,
-    answer: []const Record = &.{}
-};
+const Entry = struct { key: Key, kind: CacheKind, records: []const Record = &.{}, expiry: i64 };
+const Stats = struct { server: u32, counts: [7]usize = @splat(0) };
+const Result = struct { status: Text, answer: []const Record = &.{} };
 const Resolver = struct {
     gpa: Allocator,
     out: Builder,
@@ -347,7 +336,7 @@ const Resolver = struct {
             var pending: std.ArrayList(u32) = .empty;
             for (words[1..]) |word| {
                 const address = try parseIPv4(gpa, word);
-                if (std.mem.findScalar(u32, self.roots.items, address) != null or std.mem.findScalar(u32, pending.items, address) != null) return bad(gpa, "duplicate root {s}", .{word });
+                if (std.mem.findScalar(u32, self.roots.items, address) != null or std.mem.findScalar(u32, pending.items, address) != null) return bad(gpa, "duplicate root {s}", .{word});
                 try pending.append(gpa, address);
             }
             try self.roots.appendSlice(gpa, pending.items);
@@ -366,9 +355,9 @@ const Resolver = struct {
         }
         const zone = self.current orelse return bad(gpa, "no current zone", .{});
         const owner = try parseName(gpa, words[0], zone.origin, true);
-        if (!below(owner, zone.origin)) return bad(gpa, "out of zone {s}", .{owner });
+        if (!below(owner, zone.origin)) return bad(gpa, "out of zone {s}", .{owner});
         const ttl = try parseTTL(gpa, words[1]);
-        const kind = parseType(words[2]) orelse return bad(gpa, "bad type {s}", .{words[2] });
+        const kind = parseType(words[2]) orelse return bad(gpa, "bad type {s}", .{words[2]});
         const fields = words[3..];
         const required: usize = if (kind == .mx) 2 else if (kind == .soa) 7 else 1;
         if (kind != .txt and fields.len != required) return bad(gpa, "wrong field count", .{});
@@ -387,21 +376,21 @@ const Resolver = struct {
                 record.data = record.target;
             },
             .mx => {
-                if (!integerWord(fields[0]) or number(fields[0]) > 65535) return bad(gpa, "bad preference {s}", .{fields[0] });
+                if (!integerWord(fields[0]) or number(fields[0]) > 65535) return bad(gpa, "bad preference {s}", .{fields[0]});
                 record.preference = number(fields[0]);
                 record.target = try parseName(gpa, fields[1], zone.origin, false);
                 record.data = try std.fmt.allocPrint(gpa, "{d} {s}", .{ record.preference, record.target });
             },
             .txt => {
                 record.data = try join(gpa, fields, " ");
-                if (record.data.len < 2 or record.data[0] != '"' or record.data[record.data.len - 1] != '"' or std.mem.findScalar(u8, record.data[1 .. record.data.len - 1], '"') != null) return bad(gpa, "bad text {s}", .{record.data });
+                if (record.data.len < 2 or record.data[0] != '"' or record.data[record.data.len - 1] != '"' or std.mem.findScalar(u8, record.data[1 .. record.data.len - 1], '"') != null) return bad(gpa, "bad text {s}", .{record.data});
             },
             .soa => {
                 const data = try gpa.dupe(Text, fields);
                 data[0] = try parseName(gpa, fields[0], zone.origin, false);
                 data[1] = try parseName(gpa, fields[1], zone.origin, false);
-                for (fields[2..6]) |field| if (!integerWord(field)) return bad(gpa, "bad number {s}", .{field });
-                if (!integerWord(fields[6]) or number(fields[6]) < 1 or number(fields[6]) > 86400) return bad(gpa, "bad minimum {s}", .{fields[6] });
+                for (fields[2..6]) |field| if (!integerWord(field)) return bad(gpa, "bad number {s}", .{field});
+                if (!integerWord(fields[6]) or number(fields[6]) < 1 or number(fields[6]) > 86400) return bad(gpa, "bad minimum {s}", .{fields[6]});
                 record.minimum = number(fields[6]);
                 record.data = try join(gpa, data, " ");
             },
@@ -410,7 +399,7 @@ const Resolver = struct {
         if (kind == .soa and !equal(owner, zone.origin)) return bad(gpa, "soa not at origin", .{});
         if (kind == .soa and zone.soa() != null) return bad(gpa, "duplicate soa", .{});
         for (zone.records.items) |old| if (equal(old.owner, owner) and old.kind == kind and equal(old.data, record.data)) return bad(gpa, "duplicate record", .{});
-        for (zone.records.items) |old| if (equal(old.owner, owner) and (kind == .cname or old.kind == .cname)) return bad(gpa, "cname conflict {s}", .{owner });
+        for (zone.records.items) |old| if (equal(old.owner, owner) and (kind == .cname or old.kind == .cname)) return bad(gpa, "cname conflict {s}", .{owner});
         try zone.records.append(gpa, record);
     }
     fn finishZones(self: *Resolver) Error!void {
@@ -460,7 +449,7 @@ const Resolver = struct {
             var wildcard: Text = "";
             for (chain[1..]) |ancestor| {
                 if (zone.exists(ancestor)) {
-                    wildcard = try std.fmt.allocPrint(gpa, "*.{s}", .{if (equal(ancestor, ".")) "" else ancestor });
+                    wildcard = try std.fmt.allocPrint(gpa, "*.{s}", .{if (equal(ancestor, ".")) "" else ancestor});
                     break;
                 }
             }
@@ -492,12 +481,12 @@ const Resolver = struct {
         const answer = try self.authoritative(server, name, kind, cut);
         for (self.stats.items) |*stats| {
             if (stats.server == server) {
-                stats.counts[@intFromEnum(answer.kind)] += 1;
+                stats.counts[@backingInt(answer.kind)] += 1;
                 return answer;
             }
         }
         var stats: Stats = .{ .server = server };
-        stats.counts[@intFromEnum(answer.kind)] = 1;
+        stats.counts[@backingInt(answer.kind)] = 1;
         try self.stats.append(self.gpa, stats);
         return answer;
     }
@@ -510,7 +499,7 @@ const Resolver = struct {
     }
     fn queryAddress(self: *Resolver, server: u32, name: Text, kind: Type, cut: Text, depth: usize) Error!?Response {
         const answer = try self.ask(server, name, kind, cut);
-        try self.trace(depth, "ASK {s} {s} {s} -> {s}", .{ try ipv4(self.gpa, server), name, type_names[@intFromEnum(kind)], try answer.description(self.gpa) });
+        try self.trace(depth, "ASK {s} {s} {s} -> {s}", .{ try ipv4(self.gpa, server), name, type_names[@backingInt(kind)], try answer.description(self.gpa) });
         return if (answer.kind == .lame or answer.kind == .timeout) null else answer;
     }
     fn queryServers(self: *Resolver, name: Text, kind: Type, cut: Text, names: []const Text, roots: bool, depth: usize, resolving: []const Key) Error!?Response {
@@ -533,8 +522,8 @@ const Resolver = struct {
                     loop = true;
                     break;
                 };
-                if (loop) try self.trace(depth, "GLUELESS {s} -> LOOP", .{host }) else {
-                    try self.trace(depth, "GLUELESS {s}", .{host });
+                if (loop) try self.trace(depth, "GLUELESS {s} -> LOOP", .{host}) else {
+                    try self.trace(depth, "GLUELESS {s}", .{host});
                     const answer = try self.resolve(host, .a, depth + 1, resolving);
                     if (equal(answer.status, "NOERROR")) {
                         for (answer.answer) |record| if (record.kind == .a) {
@@ -559,13 +548,13 @@ const Resolver = struct {
         if (self.cached(key)) |entry| {
             self.hits += 1;
             const result: Response = if (entry.kind == .pos) .{ .kind = .answer, .answer = try withTTL(gpa, entry.records, entry.expiry - self.clock) } else .{ .kind = if (entry.kind == .nodata) .nodata else .nxdomain };
-            try self.trace(depth, "CACHE HIT {s} {s} -> {s}", .{ name, type_names[@intFromEnum(kind)], response_names[@intFromEnum(result.kind)] });
+            try self.trace(depth, "CACHE HIT {s} {s} -> {s}", .{ name, type_names[@backingInt(kind)], response_names[@backingInt(result.kind)] });
             return result;
         }
         for (self.cache.items) |entry| {
             if (entry.kind == .nxdomain and below(name, entry.key.name)) {
                 self.hits += 1;
-                try self.trace(depth, "CACHE HIT {s} {s} -> NXDOMAIN", .{ name, type_names[@intFromEnum(kind)] });
+                try self.trace(depth, "CACHE HIT {s} {s} -> NXDOMAIN", .{ name, type_names[@backingInt(kind)] });
                 return .{ .kind = .nxdomain };
             }
         }
@@ -574,7 +563,7 @@ const Resolver = struct {
                 if (entry.kind == .pos) {
                     self.hits += 1;
                     const records = try withTTL(gpa, entry.records, entry.expiry - self.clock);
-                    try self.trace(depth, "CACHE HIT {s} {s} -> CNAME {s}", .{ name, type_names[@intFromEnum(kind)], records[0].target });
+                    try self.trace(depth, "CACHE HIT {s} {s} -> CNAME {s}", .{ name, type_names[@backingInt(kind)], records[0].target });
                     return .{ .kind = .cname, .answer = records };
                 }
             }
@@ -589,13 +578,13 @@ const Resolver = struct {
                     roots = false;
                     for (entry.records) |record| try names.append(gpa, record.target);
                     self.hits += 1;
-                    try self.trace(depth, "CACHE HIT {s} {s} -> REFERRAL {s}", .{ name, type_names[@intFromEnum(kind)], cut });
+                    try self.trace(depth, "CACHE HIT {s} {s} -> REFERRAL {s}", .{ name, type_names[@backingInt(kind)], cut });
                     break;
                 }
             }
         }
         while (true) {
-            var answer = (try self.queryServers(name, kind, cut, names.items, roots, depth, resolving)) orelse return .{ .kind = .servfail, .message = try std.fmt.allocPrint(gpa, "SERVFAIL no server for {s}", .{cut }) };
+            var answer = (try self.queryServers(name, kind, cut, names.items, roots, depth, resolving)) orelse return .{ .kind = .servfail, .message = try std.fmt.allocPrint(gpa, "SERVFAIL no server for {s}", .{cut}) };
             if (answer.kind == .referral) {
                 _ = try self.store(answer.authority);
                 var owners: std.ArrayList(Text) = .empty;
@@ -664,7 +653,7 @@ const Resolver = struct {
                 result = .{ .status = "NOERROR", .answer = chain.items };
                 break;
             } else if (answer.kind == .nodata or answer.kind == .nxdomain) {
-                result = .{ .status = response_names[@intFromEnum(answer.kind)], .answer = chain.items };
+                result = .{ .status = response_names[@backingInt(answer.kind)], .answer = chain.items };
                 break;
             } else {
                 result = .{ .status = answer.message };
@@ -676,8 +665,8 @@ const Resolver = struct {
         return result;
     }
     fn emitResult(self: *Resolver, result: Result) Error!void {
-        for (result.answer) |record| try self.out.line("answer {s}", .{try record.text(self.gpa) });
-        try self.out.line("status {s}", .{result.status });
+        for (result.answer) |record| try self.out.line("answer {s}", .{try record.text(self.gpa)});
+        try self.out.line("status {s}", .{result.status});
     }
     fn addressResolution(self: *Resolver, host: Text, prefix: Text) Error!void {
         const a = try self.resolve(host, .a, 0, &.{});
@@ -697,8 +686,8 @@ const Resolver = struct {
         const cmd = words[0];
         if (equal(cmd, "RESOLVE") or equal(cmd, "MX")) {
             const name = try parseName(gpa, words[1], null, true);
-            const kind = if (equal(cmd, "MX")) Type.mx else parseType(words[2]) orelse return bad(gpa, "bad type {s}", .{words[2] });
-            if (equal(cmd, "MX")) try self.out.line("mx {s}", .{name }) else try self.out.line("resolve {s} {s}", .{ name, type_names[@intFromEnum(kind)] });
+            const kind = if (equal(cmd, "MX")) Type.mx else parseType(words[2]) orelse return bad(gpa, "bad type {s}", .{words[2]});
+            if (equal(cmd, "MX")) try self.out.line("mx {s}", .{name}) else try self.out.line("resolve {s} {s}", .{ name, type_names[@backingInt(kind)] });
             const result = try self.resolve(name, kind, 0, &.{});
             try self.emitResult(result);
             if (equal(cmd, "MX")) {
@@ -706,7 +695,7 @@ const Resolver = struct {
                     for (result.answer) |record| {
                         if (record.kind == .mx) {
                             const prefix = try std.fmt.allocPrint(gpa, "exchange {d} {s}", .{ record.preference, record.target });
-                            if (equal(record.target, ".")) try self.out.line("{s} -> null", .{prefix }) else try self.addressResolution(record.target, prefix);
+                            if (equal(record.target, ".")) try self.out.line("{s} -> null", .{prefix}) else try self.addressResolution(record.target, prefix);
                         }
                     }
                 } else if (equal(result.status, "NODATA")) {
@@ -714,7 +703,7 @@ const Resolver = struct {
                     for (result.answer) |record| if (record.kind == .cname) {
                         host = record.target;
                     };
-                    try self.addressResolution(host, try std.fmt.allocPrint(gpa, "implicit {s}", .{host }));
+                    try self.addressResolution(host, try std.fmt.allocPrint(gpa, "implicit {s}", .{host}));
                 }
             }
         } else if (equal(cmd, "REVERSE")) {
@@ -724,14 +713,14 @@ const Resolver = struct {
                 const address = try parseIPv6(gpa, words[1]);
                 text = try ipv6(gpa, address);
                 var digits: Builder = .{ .gpa = gpa };
-                for (address) |value| try digits.print("{x:0>4}", .{value });
+                for (address) |value| try digits.print("{x:0>4}", .{value});
                 var labels: std.ArrayList(Text) = .empty;
                 var i = digits.result().len;
                 while (i > 0) {
                     i -= 1;
                     try labels.append(gpa, digits.result()[i .. i + 1]);
                 }
-                name = try std.fmt.allocPrint(gpa, "{s}.ip6.arpa.", .{try join(gpa, labels.items, ".") });
+                name = try std.fmt.allocPrint(gpa, "{s}.ip6.arpa.", .{try join(gpa, labels.items, ".")});
             } else {
                 const address = try parseIPv4(gpa, words[1]);
                 text = try ipv4(gpa, address);
@@ -744,12 +733,12 @@ const Resolver = struct {
             const server = try parseIPv4(gpa, words[1]);
             const name = try parseName(gpa, words[2], null, equal(cmd, "QUERY"));
             if (equal(cmd, "QUERY")) {
-                const kind = parseType(words[3]) orelse return bad(gpa, "bad type {s}", .{words[3] });
+                const kind = parseType(words[3]) orelse return bad(gpa, "bad type {s}", .{words[3]});
                 const answer = try self.ask(server, name, kind, ".");
-                try self.out.line("query {s} {s} {s} -> {s}", .{ try ipv4(gpa, server), name, type_names[@intFromEnum(kind)], try answer.description(gpa) });
-                for (answer.answer) |record| try self.out.line("answer {s}", .{try record.text(gpa) });
-                for (answer.authority) |record| try self.out.line("authority {s}", .{try record.text(gpa) });
-                for (answer.additional) |record| try self.out.line("additional {s}", .{try record.text(gpa) });
+                try self.out.line("query {s} {s} {s} -> {s}", .{ try ipv4(gpa, server), name, type_names[@backingInt(kind)], try answer.description(gpa) });
+                for (answer.answer) |record| try self.out.line("answer {s}", .{try record.text(gpa)});
+                for (answer.authority) |record| try self.out.line("authority {s}", .{try record.text(gpa)});
+                for (answer.additional) |record| try self.out.line("additional {s}", .{try record.text(gpa)});
             } else {
                 if (self.isDown(server) or !self.known(server)) {
                     try self.out.line("dump {s} {s} -> TIMEOUT", .{ try ipv4(gpa, server), name });
@@ -758,7 +747,7 @@ const Resolver = struct {
                 for (self.zones.items) |zone| {
                     if (zone.server == server and equal(zone.origin, name)) {
                         try self.out.line("dump {s} {s} records={d}", .{ try ipv4(gpa, server), name, zone.records.items.len });
-                        for (try sortedRecords(gpa, zone.records.items)) |record| try self.out.line("  {s}", .{try record.text(gpa) });
+                        for (try sortedRecords(gpa, zone.records.items)) |record| try self.out.line("  {s}", .{try record.text(gpa)});
                         return;
                     }
                 }
@@ -768,18 +757,18 @@ const Resolver = struct {
             const server = try parseIPv4(gpa, words[1]);
             const at = std.mem.findScalar(u32, self.down.items, server);
             if (equal(cmd, "DOWN")) {
-                if (at != null) return bad(gpa, "server {s} already down", .{words[1] });
+                if (at != null) return bad(gpa, "server {s} already down", .{words[1]});
                 try self.down.append(gpa, server);
-                try self.out.line("down {s}", .{try ipv4(gpa, server) });
+                try self.out.line("down {s}", .{try ipv4(gpa, server)});
             } else {
-                if (at == null) return bad(gpa, "server {s} not down", .{words[1] });
+                if (at == null) return bad(gpa, "server {s} not down", .{words[1]});
                 _ = self.down.orderedRemove(at.?);
-                try self.out.line("up {s}", .{try ipv4(gpa, server) });
+                try self.out.line("up {s}", .{try ipv4(gpa, server)});
             }
         } else if (equal(cmd, "SET")) {
             const key = words[1];
-            if (!equal(key, "MINTTL") and !equal(key, "MAXTTL") and !equal(key, "NEGTTL")) return bad(gpa, "bad setting {s}", .{key });
-            if (!integerWord(words[2]) or number(words[2]) < 1 or number(words[2]) > 604800) return bad(gpa, "bad value {s}", .{words[2] });
+            if (!equal(key, "MINTTL") and !equal(key, "MAXTTL") and !equal(key, "NEGTTL")) return bad(gpa, "bad setting {s}", .{key});
+            if (!integerWord(words[2]) or number(words[2]) < 1 or number(words[2]) > 604800) return bad(gpa, "bad value {s}", .{words[2]});
             const n = number(words[2]);
             const minimum = if (equal(key, "MINTTL")) n else self.minttl;
             const maximum = if (equal(key, "MAXTTL")) n else self.maxttl;
@@ -787,7 +776,7 @@ const Resolver = struct {
             if (equal(key, "MINTTL")) self.minttl = n else if (equal(key, "MAXTTL")) self.maxttl = n else self.negttl = n;
             try self.out.line("set {s}={d}", .{ key, n });
         } else if (equal(cmd, "TIME")) {
-            if (!integerWord(words[1]) or number(words[1]) < 1 or number(words[1]) > 1000000) return bad(gpa, "bad time {s}", .{words[1] });
+            if (!integerWord(words[1]) or number(words[1]) < 1 or number(words[1]) > 1000000) return bad(gpa, "bad time {s}", .{words[1]});
             self.clock += number(words[1]);
             var expired: usize = 0;
             var i: usize = 0;
@@ -812,13 +801,13 @@ const Resolver = struct {
                         _ = self.cache.orderedRemove(i);
                     } else i += 1;
                 }
-                try self.out.line("flush removed={d}", .{entries.items.len });
+                try self.out.line("flush removed={d}", .{entries.items.len});
             } else {
-                try self.out.line("cache entries={d}", .{entries.items.len });
+                try self.out.line("cache entries={d}", .{entries.items.len});
                 for (entries.items) |entry| {
                     if (entry.kind == .pos) {
-                        for (try withTTL(gpa, entry.records, entry.expiry - self.clock)) |record| try self.out.line("  {s}", .{try record.text(gpa) });
-                    } else try self.out.line("  {s} {d} {s} {s}", .{ entry.key.name, entry.expiry - self.clock, type_names[@intFromEnum(entry.key.kind)], if (entry.kind == .nodata) "NODATA" else "NXDOMAIN" });
+                        for (try withTTL(gpa, entry.records, entry.expiry - self.clock)) |record| try self.out.line("  {s}", .{try record.text(gpa)});
+                    } else try self.out.line("  {s} {d} {s} {s}", .{ entry.key.name, entry.expiry - self.clock, type_names[@backingInt(entry.key.kind)], if (entry.kind == .nodata) "NODATA" else "NXDOMAIN" });
                 }
             }
         } else if (equal(cmd, "STATS")) {
@@ -862,7 +851,7 @@ fn lessAddress(_: void, a: u32, b: u32) bool {
 }
 fn entryLess(_: void, a: Entry, b: Entry) bool {
     const order = nameCompare(a.key.name, b.key.name);
-    return if (order == .eq) @intFromEnum(a.key.kind) < @intFromEnum(b.key.kind) else order == .lt;
+    return if (order == .eq) @backingInt(a.key.kind) < @backingInt(b.key.kind) else order == .lt;
 }
 fn statsLess(_: void, a: Stats, b: Stats) bool {
     return a.server < b.server;

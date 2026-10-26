@@ -1,24 +1,39 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Text = []const u8;
-const Error = Allocator.Error || error{Invalid, NotTypable};
+const Error = Allocator.Error || error{ Invalid, NotTypable };
 var failure: Text = "";
-fn equal(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
-fn member(items: []const Text, value: Text) bool { for (items) |item| if (equal(item, value)) return true; return false; }
-fn lower(c: u8) bool { return c >= 'a' and c <= 'z'; }
-fn upper(c: u8) bool { return c >= 'A' and c <= 'Z'; }
-fn digit(c: u8) bool { return c >= '0' and c <= '9'; }
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn member(items: []const Text, value: Text) bool {
+    for (items) |item| if (equal(item, value)) return true;
+    return false;
+}
+fn lower(c: u8) bool {
+    return c >= 'a' and c <= 'z';
+}
+fn upper(c: u8) bool {
+    return c >= 'A' and c <= 'Z';
+}
+fn digit(c: u8) bool {
+    return c >= '0' and c <= '9';
+}
 const reserved = [_]Text{ "S", "K", "I", "NORMAL", "APPLICATIVE", "CBN", "CBV" };
 const Builder = struct {
     gpa: Allocator,
     bytes: std.ArrayList(u8) = .empty,
-    fn add(self: *Builder, text: Text) Allocator.Error!void { try self.bytes.appendSlice(self.gpa, text); }
+    fn add(self: *Builder, text: Text) Allocator.Error!void {
+        try self.bytes.appendSlice(self.gpa, text);
+    }
     fn print(self: *Builder, comptime format: Text, args: anytype) Allocator.Error!void {
         const text = try std.fmt.allocPrint(self.gpa, format, args);
         defer self.gpa.free(text);
         try self.add(text);
     }
-    fn line(self: *Builder, comptime format: Text, args: anytype) Allocator.Error!void { try self.print(format ++ "\n", args); }
+    fn line(self: *Builder, comptime format: Text, args: anytype) Allocator.Error!void {
+        try self.print(format ++ "\n", args);
+    }
 };
 const Kind = enum { variable, macro, numeral, abstraction, application, index, constant };
 const Term = struct {
@@ -37,16 +52,27 @@ const Pool = struct {
     nodes: std.ArrayList(*Term) = .empty,
     available: std.ArrayList(*Term) = .empty,
     fn node(self: *Pool, term: Term) Error!*Term {
-        if (self.available.pop()) |result| { result.* = term; return result; }
+        if (self.available.pop()) |result| {
+            result.* = term;
+            return result;
+        }
         const result = try self.gpa.create(Term);
         result.* = term;
         try self.nodes.append(self.gpa, result);
         return result;
     }
-    fn variable(self: *Pool, name: Text) Error!*Term { return self.node(.{ .kind = .variable, .name = name }); }
-    fn abstraction(self: *Pool, name: Text, body: *Term) Error!*Term { return self.node(.{ .kind = .abstraction, .name = name, .left = body }); }
-    fn application(self: *Pool, function: *Term, argument: *Term) Error!*Term { return self.node(.{ .kind = .application, .left = function, .right = argument }); }
-    fn constant(self: *Pool, name: Text) Error!*Term { return self.node(.{ .kind = .constant, .name = name }); }
+    fn variable(self: *Pool, name: Text) Error!*Term {
+        return self.node(.{ .kind = .variable, .name = name });
+    }
+    fn abstraction(self: *Pool, name: Text, body: *Term) Error!*Term {
+        return self.node(.{ .kind = .abstraction, .name = name, .left = body });
+    }
+    fn application(self: *Pool, function: *Term, argument: *Term) Error!*Term {
+        return self.node(.{ .kind = .application, .left = function, .right = argument });
+    }
+    fn constant(self: *Pool, name: Text) Error!*Term {
+        return self.node(.{ .kind = .constant, .name = name });
+    }
     fn mark(term: *Term) void {
         if (term.marked) return;
         term.marked = true;
@@ -66,7 +92,9 @@ const Pool = struct {
             try self.available.append(self.gpa, term);
         };
     }
-    fn deinit(self: *Pool) void { for (self.nodes.items) |term| if (term.alive) term.free.deinit(std.heap.page_allocator); }
+    fn deinit(self: *Pool) void {
+        for (self.nodes.items) |term| if (term.alive) term.free.deinit(std.heap.page_allocator);
+    }
 };
 fn freeVariables(term: *Term) Error!*std.StringHashMapUnmanaged(void) {
     if (term.freeReady) return &term.free;
@@ -83,12 +111,18 @@ fn freeVariables(term: *Term) Error!*std.StringHashMapUnmanaged(void) {
     term.freeReady = true;
     return &term.free;
 }
-fn hasFree(term: *Term, name: Text) Error!bool { return (try freeVariables(term)).contains(name); }
+fn hasFree(term: *Term, name: Text) Error!bool {
+    return (try freeVariables(term)).contains(name);
+}
 fn sortedKeys(gpa: Allocator, set: anytype) Error![]const Text {
     var result: std.ArrayList(Text) = .empty;
     var iterator = set.keyIterator();
     while (iterator.next()) |key| try result.append(gpa, key.*);
-    std.mem.sort(Text, result.items, {}, struct { fn less(_: void, a: Text, b: Text) bool { return std.mem.order(u8, a, b) == .lt; } }.less);
+    std.mem.sort(Text, result.items, {}, struct {
+        fn less(_: void, a: Text, b: Text) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.less);
     return result.items;
 }
 fn printInto(term: *Term, end: bool, debruijn: bool, out: *Builder) Error!void {
@@ -102,7 +136,12 @@ fn printInto(term: *Term, end: bool, debruijn: bool, out: *Builder) Error!void {
             if (!debruijn) try out.add("\\");
             var count: usize = 0;
             while (body.kind == .abstraction) {
-                if (debruijn) { try out.add("\\"); } else { if (count > 0) try out.add(" "); try out.add(body.name); }
+                if (debruijn) {
+                    try out.add("\\");
+                } else {
+                    if (count > 0) try out.add(" ");
+                    try out.add(body.name);
+                }
                 count += 1;
                 body = body.left.?;
             }
@@ -113,8 +152,11 @@ fn printInto(term: *Term, end: bool, debruijn: bool, out: *Builder) Error!void {
         .application => {
             try printInto(term.left.?, false, debruijn, out);
             try out.add(" ");
-            if (term.right.?.kind == .application) { try out.add("("); try printInto(term.right.?, true, debruijn, out); try out.add(")"); }
-            else try printInto(term.right.?, end, debruijn, out);
+            if (term.right.?.kind == .application) {
+                try out.add("(");
+                try printInto(term.right.?, true, debruijn, out);
+                try out.add(")");
+            } else try printInto(term.right.?, end, debruijn, out);
         },
     }
 }
@@ -140,7 +182,10 @@ fn substitute(pool: *Pool, term: *Term, name: Text, replacement: *Term) Error!*T
         var index: usize = 1;
         while (true) : (index += 1) {
             const candidate = try std.fmt.allocPrint(pool.gpa, "{s}{d}", .{ binder[0..end], index });
-            if (!try hasFree(replacement, candidate) and !try hasFree(body, candidate)) { binder = candidate; break; }
+            if (!try hasFree(replacement, candidate) and !try hasFree(body, candidate)) {
+                binder = candidate;
+                break;
+            }
         }
         body = try substitute(pool, body, term.name, try pool.variable(binder));
     }
@@ -157,7 +202,10 @@ const Canonicalizer = struct {
         if (term.kind == .variable) {
             if (!self.fromDB) {
                 var i = self.bound.items.len;
-                while (i > 0) { i -= 1; if (equal(self.bound.items[i].original, term.name)) return self.pool.variable(self.bound.items[i].renamed); }
+                while (i > 0) {
+                    i -= 1;
+                    if (equal(self.bound.items[i].original, term.name)) return self.pool.variable(self.bound.items[i].renamed);
+                }
             }
             return term;
         }
@@ -183,7 +231,10 @@ fn canonical(pool: *Pool, term: *Term, fromDB: bool) Error!*Term {
 fn deBruijn(pool: *Pool, term: *Term, bound: *std.ArrayList(Text)) Error!*Term {
     if (term.kind == .variable) {
         var i = bound.items.len;
-        while (i > 0) { i -= 1; if (equal(bound.items[i], term.name)) return pool.node(.{ .kind = .index, .value = bound.items.len - 1 - i }); }
+        while (i > 0) {
+            i -= 1;
+            if (equal(bound.items[i], term.name)) return pool.node(.{ .kind = .index, .value = bound.items.len - 1 - i });
+        }
         return term;
     }
     if (term.kind == .application) return pool.application(try deBruijn(pool, term.left.?, bound), try deBruijn(pool, term.right.?, bound));
@@ -198,7 +249,9 @@ const Parser = struct {
     bench: *Workbench,
     tokens: []const Token,
     position: usize = 0,
-    fn peek(self: *Parser) Token { return self.tokens[self.position]; }
+    fn peek(self: *Parser) Token {
+        return self.tokens[self.position];
+    }
     fn expect(self: *Parser, kind: Text) Error!Token {
         const token = self.peek();
         const matches = if (equal(kind, "variable")) token.kind == .variable else if (equal(kind, "macro")) token.kind == .macro else token.kind == .symbol and equal(token.text, kind);
@@ -217,8 +270,15 @@ const Parser = struct {
             if (!(token.kind == .variable or token.kind == .macro or token.kind == .numeral or equal(token.text, "("))) break;
             self.position += 1;
             var value: *Term = undefined;
-            if (equal(token.text, "(")) { value = try self.readTerm(); _ = try self.expect(")"); }
-            else value = try self.bench.pool.node(.{ .kind = switch (token.kind) { .variable => .variable, .macro => .macro, .numeral => .numeral, else => unreachable }, .name = token.text, .value = token.value });
+            if (equal(token.text, "(")) {
+                value = try self.readTerm();
+                _ = try self.expect(")");
+            } else value = try self.bench.pool.node(.{ .kind = switch (token.kind) {
+                .variable => .variable,
+                .macro => .macro,
+                .numeral => .numeral,
+                else => unreachable,
+            }, .name = token.text, .value = token.value });
             try elements.append(self.bench.scratch, value);
         }
         if (equal(self.peek().text, "\\")) {
@@ -229,7 +289,10 @@ const Parser = struct {
             _ = try self.expect(".");
             var value = try self.readTerm();
             var i = names.items.len;
-            while (i > 0) { i -= 1; value = try self.bench.pool.abstraction(names.items[i], value); }
+            while (i > 0) {
+                i -= 1;
+                value = try self.bench.pool.abstraction(names.items[i], value);
+            }
             try elements.append(self.bench.scratch, value);
         }
         if (elements.items.len == 0) return self.bench.bad("column {d}: expected term", .{self.peek().column});
@@ -237,12 +300,20 @@ const Parser = struct {
         for (elements.items[1..]) |next| result = try self.bench.pool.application(result, next);
         return result;
     }
-    fn finish(self: *Parser) Error!void { const token = self.peek(); if (token.kind != .end) return self.bench.bad("column {d}: unexpected '{s}'", .{ token.column, token.text }); }
+    fn finish(self: *Parser) Error!void {
+        const token = self.peek();
+        if (token.kind != .end) return self.bench.bad("column {d}: unexpected '{s}'", .{ token.column, token.text });
+    }
 };
 fn references(term: *Term, result: *std.ArrayList(Text), gpa: Allocator) Error!void {
-    if (term.kind == .macro) { try result.append(gpa, term.name); }
-    else if (term.kind == .abstraction) { try references(term.left.?, result, gpa); }
-    else if (term.kind == .application) { try references(term.left.?, result, gpa); try references(term.right.?, result, gpa); }
+    if (term.kind == .macro) {
+        try result.append(gpa, term.name);
+    } else if (term.kind == .abstraction) {
+        try references(term.left.?, result, gpa);
+    } else if (term.kind == .application) {
+        try references(term.left.?, result, gpa);
+        try references(term.right.?, result, gpa);
+    }
 }
 const Step = struct { term: *Term, kind: Text };
 fn etaRedex(term: *Term) Error!bool {
@@ -262,11 +333,29 @@ fn oneStep(pool: *Pool, term: *Term, strategy: Text, eta: bool) Error!?Step {
     }
     return null;
 }
-fn termSize(term: *Term) usize { return switch (term.kind) { .variable => 1, .abstraction => 1 + termSize(term.left.?), else => 1 + termSize(term.left.?) + termSize(term.right.?) }; }
-fn termDepth(term: *Term) usize { return switch (term.kind) { .variable => 1, .abstraction => 1 + termDepth(term.left.?), else => 1 + @max(termDepth(term.left.?), termDepth(term.right.?)) }; }
+fn termSize(term: *Term) usize {
+    return switch (term.kind) {
+        .variable => 1,
+        .abstraction => 1 + termSize(term.left.?),
+        else => 1 + termSize(term.left.?) + termSize(term.right.?),
+    };
+}
+fn termDepth(term: *Term) usize {
+    return switch (term.kind) {
+        .variable => 1,
+        .abstraction => 1 + termDepth(term.left.?),
+        else => 1 + @max(termDepth(term.left.?), termDepth(term.right.?)),
+    };
+}
 
 const SimpleType = struct { left: ?*SimpleType = null, right: ?*SimpleType = null, link: ?*SimpleType = null };
-fn resolve(value: *SimpleType) *SimpleType { if (value.link) |next| { value.link = resolve(next); return value.link.?; } return value; }
+fn resolve(value: *SimpleType) *SimpleType {
+    if (value.link) |next| {
+        value.link = resolve(next);
+        return value.link.?;
+    }
+    return value;
+}
 fn occurs(variableType: *SimpleType, raw: *SimpleType) bool {
     const value = resolve(raw);
     return variableType == value or value.left != null and (occurs(variableType, value.left.?) or occurs(variableType, value.right.?));
@@ -275,7 +364,11 @@ fn unify(rawA: *SimpleType, rawB: *SimpleType) Error!void {
     const a = resolve(rawA);
     const b = resolve(rawB);
     if (a == b) return;
-    if (a.left == null) { if (occurs(a, b)) return error.NotTypable; a.link = b; return; }
+    if (a.left == null) {
+        if (occurs(a, b)) return error.NotTypable;
+        a.link = b;
+        return;
+    }
     if (b.left == null) return unify(b, a);
     try unify(a.left.?, b.left.?);
     try unify(a.right.?, b.right.?);
@@ -286,12 +379,24 @@ const TypeInference = struct {
     free: std.StringHashMapUnmanaged(*SimpleType) = .empty,
     bound: std.ArrayList(TypeBinding) = .empty,
     names: std.AutoHashMapUnmanaged(*SimpleType, usize) = .empty,
-    fn fresh(self: *TypeInference) Error!*SimpleType { const value = try self.gpa.create(SimpleType); value.* = .{}; return value; }
-    fn arrow(self: *TypeInference, left: *SimpleType, right: *SimpleType) Error!*SimpleType { const value = try self.fresh(); value.left = left; value.right = right; return value; }
+    fn fresh(self: *TypeInference) Error!*SimpleType {
+        const value = try self.gpa.create(SimpleType);
+        value.* = .{};
+        return value;
+    }
+    fn arrow(self: *TypeInference, left: *SimpleType, right: *SimpleType) Error!*SimpleType {
+        const value = try self.fresh();
+        value.left = left;
+        value.right = right;
+        return value;
+    }
     fn infer(self: *TypeInference, term: *Term) Error!*SimpleType {
         if (term.kind == .variable) {
             var i = self.bound.items.len;
-            while (i > 0) { i -= 1; if (equal(self.bound.items[i].name, term.name)) return self.bound.items[i].value; }
+            while (i > 0) {
+                i -= 1;
+                if (equal(self.bound.items[i].name, term.name)) return self.bound.items[i].value;
+            }
             if (self.free.get(term.name)) |value| return value;
             const value = try self.fresh();
             try self.free.put(self.gpa, term.name, value);
@@ -332,15 +437,29 @@ fn churchInto(pool: *Pool, term: *Term, out: *Builder) Error!void {
         const inner = term.left.?.name;
         var body = term.left.?.left.?;
         var count: usize = 0;
-        while (body.kind == .application and body.left.?.kind == .variable and equal(body.left.?.name, outer)) { count += 1; body = body.right.?; }
-        if (body.kind == .variable and equal(body.name, inner)) { try out.print("{d}", .{count}); return; }
-        if (term.left.?.left.?.kind == .variable and equal(term.left.?.left.?.name, outer)) { try out.add("true"); return; }
+        while (body.kind == .application and body.left.?.kind == .variable and equal(body.left.?.name, outer)) {
+            count += 1;
+            body = body.right.?;
+        }
+        if (body.kind == .variable and equal(body.name, inner)) {
+            try out.print("{d}", .{count});
+            return;
+        }
+        if (term.left.?.left.?.kind == .variable and equal(term.left.?.left.?.name, outer)) {
+            try out.add("true");
+            return;
+        }
     }
     if (term.kind == .abstraction and term.left.?.kind == .application and term.left.?.left.?.kind == .application) {
         const body = term.left.?;
         const function = body.left.?.left.?;
         if (function.kind == .variable and equal(function.name, term.name) and !try hasFree(body.left.?.right.?, term.name) and !try hasFree(body.right.?, term.name)) {
-            try out.add("("); try churchInto(pool, body.left.?.right.?, out); try out.add(", "); try churchInto(pool, body.right.?, out); try out.add(")"); return;
+            try out.add("(");
+            try churchInto(pool, body.left.?.right.?, out);
+            try out.add(", ");
+            try churchInto(pool, body.right.?, out);
+            try out.add(")");
+            return;
         }
     }
     try printInto(try canonical(pool, term, false), true, false, out);
@@ -360,15 +479,28 @@ fn skiStep(pool: *Pool, term: *Term) Error!?Step {
     var head = term;
     var arguments: std.ArrayList(*Term) = .empty;
     defer arguments.deinit(std.heap.page_allocator);
-    while (head.kind == .application) { try arguments.append(std.heap.page_allocator, head.right.?); head = head.left.?; }
+    while (head.kind == .application) {
+        try arguments.append(std.heap.page_allocator, head.right.?);
+        head = head.left.?;
+    }
     std.mem.reverse(*Term, arguments.items);
     var result: ?*Term = null;
     var used: usize = 0;
     var kind: Text = "";
     if (head.kind == .constant) {
-        if (equal(head.name, "I") and arguments.items.len >= 1) { result = arguments.items[0]; used = 1; kind = "I"; }
-        else if (equal(head.name, "K") and arguments.items.len >= 2) { result = arguments.items[0]; used = 2; kind = "K"; }
-        else if (equal(head.name, "S") and arguments.items.len >= 3) { result = try pool.application(try pool.application(arguments.items[0], arguments.items[2]), try pool.application(arguments.items[1], arguments.items[2])); used = 3; kind = "S"; }
+        if (equal(head.name, "I") and arguments.items.len >= 1) {
+            result = arguments.items[0];
+            used = 1;
+            kind = "I";
+        } else if (equal(head.name, "K") and arguments.items.len >= 2) {
+            result = arguments.items[0];
+            used = 2;
+            kind = "K";
+        } else if (equal(head.name, "S") and arguments.items.len >= 3) {
+            result = try pool.application(try pool.application(arguments.items[0], arguments.items[2]), try pool.application(arguments.items[1], arguments.items[2]));
+            used = 3;
+            kind = "S";
+        }
     }
     if (result != null) {
         for (arguments.items[used..]) |argument| result = try pool.application(result.?, argument);
@@ -421,15 +553,27 @@ const Workbench = struct {
         var tokens: std.ArrayList(Token) = .empty;
         var i: usize = 0;
         while (i < text.len) {
-            if (text[i] == ' ') { i += 1; continue; }
+            if (text[i] == ' ') {
+                i += 1;
+                continue;
+            }
             const start = i;
             var kind: TokenKind = undefined;
             const c = text[i];
-            if (std.mem.findScalar(u8, "\\.()=;", c) != null) { kind = .symbol; i += 1; }
-            else if (lower(c)) { kind = .variable; while (i < text.len and (lower(text[i]) or digit(text[i]))) i += 1; }
-            else if (upper(c)) { kind = .macro; while (i < text.len and (upper(text[i]) or digit(text[i]) or text[i] == '_')) i += 1; }
-            else if (c == '#' and i + 1 < text.len and digit(text[i + 1])) { kind = .numeral; i += 1; while (i < text.len and digit(text[i])) i += 1; }
-            else return self.bad("column {d}: unexpected character '{c}'", .{ offset + i + 1, c });
+            if (std.mem.findScalar(u8, "\\.()=;", c) != null) {
+                kind = .symbol;
+                i += 1;
+            } else if (lower(c)) {
+                kind = .variable;
+                while (i < text.len and (lower(text[i]) or digit(text[i]))) i += 1;
+            } else if (upper(c)) {
+                kind = .macro;
+                while (i < text.len and (upper(text[i]) or digit(text[i]) or text[i] == '_')) i += 1;
+            } else if (c == '#' and i + 1 < text.len and digit(text[i + 1])) {
+                kind = .numeral;
+                i += 1;
+                while (i < text.len and digit(text[i])) i += 1;
+            } else return self.bad("column {d}: unexpected character '{c}'", .{ offset + i + 1, c });
             try tokens.append(self.scratch, .{ .kind = kind, .text = text[start..i], .column = offset + start + 1, .value = if (kind == .numeral) std.fmt.parseInt(usize, text[start + 1 .. i], 10) catch unreachable else 0 });
         }
         try tokens.append(self.scratch, .{ .kind = .end, .column = line.len + 1 });
@@ -438,7 +582,10 @@ const Workbench = struct {
     fn expand(self: *Workbench, term: *Term) Error!*Term {
         switch (term.kind) {
             .variable => return term,
-            .macro => { const value = self.macros.get(term.name) orelse return self.bad("unbound macro {s}", .{term.name}); return self.expand(value); },
+            .macro => {
+                const value = self.macros.get(term.name) orelse return self.bad("unbound macro {s}", .{term.name});
+                return self.expand(value);
+            },
             .numeral => {
                 var body = try self.pool.variable("x");
                 for (0..term.value) |_| body = try self.pool.application(try self.pool.variable("f"), body);
@@ -448,7 +595,11 @@ const Workbench = struct {
             else => return self.pool.application(try self.expand(term.left.?), try self.expand(term.right.?)),
         }
     }
-    fn refs(self: *Workbench, term: *Term) Error![]const Text { var result: std.ArrayList(Text) = .empty; try references(term, &result, self.scratch); return result.items; }
+    fn refs(self: *Workbench, term: *Term) Error![]const Text {
+        var result: std.ArrayList(Text) = .empty;
+        try references(term, &result, self.scratch);
+        return result.items;
+    }
     fn depends(self: *Workbench, name: Text, target: Text, seen: *std.StringHashMapUnmanaged(void)) Error!bool {
         if (equal(name, target)) return true;
         if (seen.contains(name) or member(reserved[0..3], name)) return false;
@@ -471,7 +622,8 @@ const Workbench = struct {
             term = step.term;
             count += 1;
             if (display) {
-                const text = try printed(term, false); defer std.heap.page_allocator.free(text);
+                const text = try printed(term, false);
+                defer std.heap.page_allocator.free(text);
                 try self.out.line("step {d} ({s}): {s}", .{ count, step.kind, text });
             }
             try self.pool.collect(self.macros, self.roots, term);
@@ -482,8 +634,10 @@ const Workbench = struct {
         defer bound.deinit(std.heap.page_allocator);
         const left = try deBruijn(&self.pool, a, &bound);
         const right = try deBruijn(&self.pool, b, &bound);
-        const first = try printed(left, true); defer std.heap.page_allocator.free(first);
-        const second = try printed(right, true); defer std.heap.page_allocator.free(second);
+        const first = try printed(left, true);
+        defer std.heap.page_allocator.free(first);
+        const second = try printed(right, true);
+        defer std.heap.page_allocator.free(second);
         return equal(first, second);
     }
     fn kam(self: *Workbench, term: *Term) Error!void {
@@ -496,7 +650,10 @@ const Workbench = struct {
         while (true) {
             const kind: Text = if (code.kind == .application) "push" else if (code.kind == .index) "access" else if (code.kind == .abstraction and stack.items.len > 0) "grab" else "";
             if (kind.len == 0) break;
-            if (count == self.limit) { try self.out.line("no result within {d} transitions", .{self.limit}); return; }
+            if (count == self.limit) {
+                try self.out.line("no result within {d} transitions", .{self.limit});
+                return;
+            }
             count += 1;
             if (equal(kind, "push")) {
                 const closure = try self.scratch.create(Closure);
@@ -509,16 +666,25 @@ const Workbench = struct {
                 @memcpy(next[1..], environment);
                 environment = next;
                 code = code.left.?;
-            } else { const closure = environment[code.value]; code = closure.code; environment = closure.environment; }
+            } else {
+                const closure = environment[code.value];
+                code = closure.code;
+                environment = closure.environment;
+            }
             if (self.steps) {
-                const text = try printed(code, true); defer std.heap.page_allocator.free(text);
+                const text = try printed(code, true);
+                defer std.heap.page_allocator.free(text);
                 try self.out.line("step {d} ({s}): {s} [env {d}, stack {d}]", .{ count, kind, text, environment.len, stack.items.len });
             }
         }
         var result = try reify(&self.pool, code, environment, 0);
         var i = stack.items.len;
-        while (i > 0) { i -= 1; result = try self.pool.application(result, try reify(&self.pool, stack.items[i].code, stack.items[i].environment, 0)); }
-        const text = try printed(try canonical(&self.pool, result, true), false); defer std.heap.page_allocator.free(text);
+        while (i > 0) {
+            i -= 1;
+            result = try self.pool.application(result, try reify(&self.pool, stack.items[i].code, stack.items[i].environment, 0));
+        }
+        const text = try printed(try canonical(&self.pool, result, true), false);
+        defer std.heap.page_allocator.free(text);
         try self.out.line("result: {s} (transitions: {d})", .{ text, count });
     }
     fn command(self: *Workbench, line: Text) Error!void {
@@ -534,7 +700,9 @@ const Workbench = struct {
             while (iterator.next()) |part| try parts.append(self.scratch, part);
             if (equal(name, "steps") or equal(name, "eta")) {
                 if (parts.items.len != 1 or !member(&.{ "on", "off" }, parts.items[0])) return self.bad("bad argument", .{});
-                if (equal(name, "steps")) { self.steps = equal(parts.items[0], "on"); } else self.eta = equal(parts.items[0], "on");
+                if (equal(name, "steps")) {
+                    self.steps = equal(parts.items[0], "on");
+                } else self.eta = equal(parts.items[0], "on");
             } else if (equal(name, "limit")) {
                 if (parts.items.len != 1 or parts.items[0].len == 0 or parts.items[0].len > 5) return self.bad("bad argument", .{});
                 for (parts.items[0]) |c| if (!digit(c)) return self.bad("bad argument", .{});
@@ -546,7 +714,8 @@ const Workbench = struct {
                 var count: usize = 0;
                 for (try sortedKeys(self.scratch, self.macros)) |macroName| {
                     if (member(reserved[0..3], macroName)) continue;
-                    const text = try printed(self.macros.get(macroName).?, false); defer std.heap.page_allocator.free(text);
+                    const text = try printed(self.macros.get(macroName).?, false);
+                    defer std.heap.page_allocator.free(text);
                     try self.out.line("{s} = {s}", .{ macroName, text });
                     count += 1;
                 }
@@ -569,10 +738,16 @@ const Workbench = struct {
             targetName = (try parser.expect(if (equal(name, "let")) "macro" else "variable")).text;
             _ = try parser.expect("=");
         }
-        if (equal(name, "reduce") and parser.peek().kind == .macro and member(reserved[3..], parser.peek().text)) { strategy = parser.peek().text; parser.position += 1; }
+        if (equal(name, "reduce") and parser.peek().kind == .macro and member(reserved[3..], parser.peek().text)) {
+            strategy = parser.peek().text;
+            parser.position += 1;
+        }
         var first = try parser.readTerm();
         var second: ?*Term = null;
-        if (member(&.{ "subst", "equal", "alpha" }, name)) { _ = try parser.expect(";"); second = try parser.readTerm(); }
+        if (member(&.{ "subst", "equal", "alpha" }, name)) {
+            _ = try parser.expect(";");
+            second = try parser.readTerm();
+        }
         try parser.finish();
         if (equal(name, "let")) {
             if (member(&reserved, targetName)) return self.bad("reserved name {s}", .{targetName});
@@ -594,62 +769,92 @@ const Workbench = struct {
         try roots.append(self.scratch, first);
         if (second) |term| try roots.append(self.scratch, term);
         self.roots = roots.items;
-        if (equal(name, "expand")) { try self.show(first, false); }
-        else if (equal(name, "subst")) { try self.show(try substitute(&self.pool, second.?, targetName, first), false); }
-        else if (equal(name, "alpha")) { try self.out.line("{s}", .{if (try self.equivalent(first, second.?)) "yes" else "no"}); }
-        else if (equal(name, "equal")) {
+        if (equal(name, "expand")) {
+            try self.show(first, false);
+        } else if (equal(name, "subst")) {
+            try self.show(try substitute(&self.pool, second.?, targetName, first), false);
+        } else if (equal(name, "alpha")) {
+            try self.out.line("{s}", .{if (try self.equivalent(first, second.?)) "yes" else "no"});
+        } else if (equal(name, "equal")) {
             const a = try self.reduce(first, "NORMAL", self.eta, false);
             const preserved = try self.scratch.dupe(*Term, &.{ first, second.?, a.term });
             self.roots = preserved;
             const b = try self.reduce(second.?, "NORMAL", self.eta, false);
             try self.out.line("{s}", .{if (!a.success or !b.success) "unknown" else if (try self.equivalent(a.term, b.term)) "yes" else "no"});
         } else if (equal(name, "debruijn")) {
-            var bound: std.ArrayList(Text) = .empty; defer bound.deinit(std.heap.page_allocator);
+            var bound: std.ArrayList(Text) = .empty;
+            defer bound.deinit(std.heap.page_allocator);
             try self.show(try deBruijn(&self.pool, first, &bound), true);
         } else if (equal(name, "fv")) {
             const names = try sortedKeys(self.scratch, (try freeVariables(first)).*);
-            if (names.len == 0) { try self.out.line("(none)", .{}); } else {
-                for (names, 0..) |item, i| { if (i > 0) try self.out.add(" "); try self.out.add(item); }
+            if (names.len == 0) {
+                try self.out.line("(none)", .{});
+            } else {
+                for (names, 0..) |item, i| {
+                    if (i > 0) try self.out.add(" ");
+                    try self.out.add(item);
+                }
                 try self.out.add("\n");
             }
-        } else if (equal(name, "size")) { try self.out.line("{d}", .{termSize(first)}); }
-        else if (equal(name, "depth")) { try self.out.line("{d}", .{termDepth(first)}); }
-        else if (equal(name, "type")) {
+        } else if (equal(name, "size")) {
+            try self.out.line("{d}", .{termSize(first)});
+        } else if (equal(name, "depth")) {
+            try self.out.line("{d}", .{termDepth(first)});
+        } else if (equal(name, "type")) {
             var inference: TypeInference = .{ .gpa = self.scratch };
-            const principal = inference.infer(first) catch |err| { if (err != error.NotTypable) return err; try self.out.line("not typable", .{}); return; };
-            var text: Builder = .{ .gpa = std.heap.page_allocator }; defer text.bytes.deinit(text.gpa);
+            const principal = inference.infer(first) catch |err| {
+                if (err != error.NotTypable) return err;
+                try self.out.line("not typable", .{});
+                return;
+            };
+            var text: Builder = .{ .gpa = std.heap.page_allocator };
+            defer text.bytes.deinit(text.gpa);
             try inference.print(principal, &text);
             try self.out.line("{s}", .{text.bytes.items});
         } else if (equal(name, "church")) {
             const result = try self.reduce(first, "NORMAL", false, false);
-            if (!result.success) { try self.out.line("no normal form within {d} steps", .{self.limit}); } else {
-                var text: Builder = .{ .gpa = std.heap.page_allocator }; defer text.bytes.deinit(text.gpa);
+            if (!result.success) {
+                try self.out.line("no normal form within {d} steps", .{self.limit});
+            } else {
+                var text: Builder = .{ .gpa = std.heap.page_allocator };
+                defer text.bytes.deinit(text.gpa);
                 try churchInto(&self.pool, try canonical(&self.pool, result.term, false), &text);
                 try self.out.line("{s}", .{text.bytes.items});
             }
-        } else if (equal(name, "ski")) { try self.show(try ski(&self.pool, first), false); }
-        else if (equal(name, "skireduce")) {
+        } else if (equal(name, "ski")) {
+            try self.show(try ski(&self.pool, first), false);
+        } else if (equal(name, "skireduce")) {
             var value = try ski(&self.pool, first);
             var count: usize = 0;
             while (true) {
                 const step = (try skiStep(&self.pool, value)) orelse {
-                    const text = try printed(value, false); defer std.heap.page_allocator.free(text);
-                    try self.out.line("result: {s} (steps: {d})", .{ text, count }); break;
+                    const text = try printed(value, false);
+                    defer std.heap.page_allocator.free(text);
+                    try self.out.line("result: {s} (steps: {d})", .{ text, count });
+                    break;
                 };
-                if (count == self.limit) { try self.out.line("no normal form within {d} steps", .{self.limit}); break; }
+                if (count == self.limit) {
+                    try self.out.line("no normal form within {d} steps", .{self.limit});
+                    break;
+                }
                 value = step.term;
                 count += 1;
                 if (self.steps) {
-                    const text = try printed(value, false); defer std.heap.page_allocator.free(text);
+                    const text = try printed(value, false);
+                    defer std.heap.page_allocator.free(text);
                     try self.out.line("step {d} ({s}): {s}", .{ count, step.kind, text });
                 }
                 try self.pool.collect(self.macros, self.roots, value);
             }
-        } else if (equal(name, "kam")) { try self.kam(first); }
-        else if (equal(name, "reduce")) {
+        } else if (equal(name, "kam")) {
+            try self.kam(first);
+        } else if (equal(name, "reduce")) {
             const result = try self.reduce(first, strategy, self.eta, self.steps);
-            if (!result.success) { try self.out.line("no normal form within {d} steps", .{self.limit}); } else {
-                const text = try printed(try canonical(&self.pool, result.term, false), false); defer std.heap.page_allocator.free(text);
+            if (!result.success) {
+                try self.out.line("no normal form within {d} steps", .{self.limit});
+            } else {
+                const text = try printed(try canonical(&self.pool, result.term, false), false);
+                defer std.heap.page_allocator.free(text);
                 try self.out.line("result: {s} (steps: {d})", .{ text, result.count });
             }
         }
@@ -683,7 +888,10 @@ pub fn main(init: std.process.Init) !void {
         defer commandArena.deinit();
         bench.scratch = commandArena.allocator();
         bench.roots = &.{};
-        bench.command(line) catch |err| { if (err != error.Invalid) return err; try out.line("error: {s}", .{failure}); };
+        bench.command(line) catch |err| {
+            if (err != error.Invalid) return err;
+            try out.line("error: {s}", .{failure});
+        };
         bench.roots = &.{};
         try bench.pool.collect(bench.macros, &.{}, null);
         try output.interface.writeAll(out.bytes.items);

@@ -35,7 +35,9 @@ func digits(_ word: String) -> Bool {
 }
 
 func integerWord(_ word: String) -> Bool {
-    if word == "0" { return true }
+    if word == "0" {
+        return true
+    }
     let positive = word.first == "-" ? String(word.dropFirst()) : word
     return positive.count >= 1 && positive.count <= 7 &&
         positive.first != "0" && digits(positive)
@@ -176,7 +178,9 @@ func convolution(_ image: Image, _ kernel: [Int], _ divisor: Int) -> Image {
     transformed(image, image.width, image.height) { x, y in
         let q = image.neighborhood(x, y)
         var total = 0
-        for i in 0..<9 { total += q[i] * kernel[i] }
+        for i in 0..<9 {
+            total += q[i] * kernel[i]
+        }
         return image.clamped(floorDivide(total, divisor))
     }
 }
@@ -204,10 +208,18 @@ func linePoints(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int) -> [Point] {
     var points = [Point]()
     while true {
         points.append(Point(x: x, y: y))
-        if x == x1 && y == y1 { break }
+        if x == x1 && y == y1 {
+            break
+        }
         let twice = 2 * error
-        if twice >= dy { error += dy; x += sx }
-        if twice <= dx { error += dx; y += sy }
+        if twice >= dy {
+            error += dy
+            x += sx
+        }
+        if twice <= dx {
+            error += dx
+            y += sy
+        }
     }
     return points
 }
@@ -220,7 +232,9 @@ func rectanglePoints(
     var points = [Point]()
     let firstY = max(top, 0), lastY = min(bottom, image.height - 1)
     let firstX = max(left, 0), lastX = min(right, image.width - 1)
-    if firstX > lastX || firstY > lastY { return points }
+    if firstX > lastX || firstY > lastY {
+        return points
+    }
     for y in firstY...lastY {
         for x in firstX...lastX {
             if fill || x == left || x == right || y == top || y == bottom {
@@ -242,8 +256,12 @@ func circlePoints(_ cx: Int, _ cy: Int, _ radius: Int) -> [Point] {
             Point(x: cx + b, y: cy - a), Point(x: cx + a, y: cy - b)
         ])
         b += 1
-        if error < 0 { error += 2 * b + 1 }
-        else { a -= 1; error += 2 * (b - a) + 1 }
+        if error < 0 {
+            error += 2 * b + 1
+        } else {
+            a -= 1
+            error += 2 * (b - a) + 1
+        }
     }
     return points
 }
@@ -259,11 +277,15 @@ func discPoints(_ image: Image, _ outline: [Point]) -> [Point] {
     }
     var points = [Point]()
     for (y, limits) in rows {
-        if y < 0 || y >= image.height { continue }
+        if y < 0 || y >= image.height {
+            continue
+        }
         let first = max(0, limits.left)
         let last = min(image.width - 1, limits.right)
         if first <= last {
-            for x in first...last { points.append(Point(x: x, y: y)) }
+            for x in first...last {
+                points.append(Point(x: x, y: y))
+            }
         }
     }
     return points
@@ -278,7 +300,9 @@ func floodPoints(_ image: Image, _ x: Int, _ y: Int) -> [Point] {
         result.append(p)
         for d in neighbors4 {
             let nx = p.x + d.x, ny = p.y + d.y
-            if !image.contains(nx, ny) || image.get(nx, ny) != target { continue }
+            if !image.contains(nx, ny) || image.get(nx, ny) != target {
+                continue
+            }
             let index = ny * image.width + nx
             if seen.insert(index).inserted {
                 stack.append(Point(x: nx, y: ny))
@@ -290,7 +314,9 @@ func floodPoints(_ image: Image, _ x: Int, _ y: Int) -> [Point] {
 
 func equalized(_ image: Image) -> Image {
     var counts = [Int](repeating: 0, count: image.maxval + 1)
-    for pixel in image.pixels { counts[pixel] += 1 }
+    for pixel in image.pixels {
+        counts[pixel] += 1
+    }
     var accumulated = 0
     let cdf = counts.map { count -> Int in
         accumulated += count
@@ -298,7 +324,9 @@ func equalized(_ image: Image) -> Image {
     }
     let size = image.pixels.count
     let minimum = cdf[image.pixels.min()!]
-    if minimum == size { return image.withPixels(image.pixels) }
+    if minimum == size {
+        return image.withPixels(image.pixels)
+    }
     let span = size - minimum
     return image.mapped {
         (2 * (cdf[$0] - minimum) * image.maxval + span) / (2 * span)
@@ -309,7 +337,9 @@ func components(_ image: Image, _ threshold: Int) -> [[Point]] {
     var visited = [Bool](repeating: false, count: image.pixels.count)
     var groups = [[Point]]()
     for start in image.pixels.indices {
-        if visited[start] || image.pixels[start] < threshold { continue }
+        if visited[start] || image.pixels[start] < threshold {
+            continue
+        }
         visited[start] = true
         var stack = [Point(x: start % image.width, y: start / image.width)]
         var group = [Point]()
@@ -317,7 +347,9 @@ func components(_ image: Image, _ threshold: Int) -> [[Point]] {
             group.append(p)
             for d in neighbors8 {
                 let nx = p.x + d.x, ny = p.y + d.y
-                if !image.contains(nx, ny) { continue }
+                if !image.contains(nx, ny) {
+                    continue
+                }
                 let index = ny * image.width + nx
                 if !visited[index] && image.pixels[index] >= threshold {
                     visited[index] = true
@@ -335,17 +367,22 @@ func componentText(_ image: Image, _ threshold: Int, _ group: [Point]) -> String
     var minY = group[0].y, maxY = group[0].y
     var sumX = 0, sumY = 0, perimeter = 0
     for p in group {
-        minX = min(minX, p.x); maxX = max(maxX, p.x)
-        minY = min(minY, p.y); maxY = max(maxY, p.y)
-        sumX += p.x; sumY += p.y
+        minX = min(minX, p.x)
+        maxX = max(maxX, p.x)
+        minY = min(minY, p.y)
+        maxY = max(maxY, p.y)
+        sumX += p.x
+        sumY += p.y
         if neighbors4.contains(where: {
             !image.contains(p.x + $0.x, p.y + $0.y) ||
                 image.get(p.x + $0.x, p.y + $0.y) < threshold
-        }) { perimeter += 1 }
+        }) {
+            perimeter += 1
+        }
     }
     let area = group.count
     return "area \(area) perimeter \(perimeter) box \(minX) \(minY) \(maxX) \(maxY) " +
-           "center \(sumX / area) \(sumY / area)"
+        "center \(sumX / area) \(sumY / area)"
 }
 
 func distanceMap(_ image: Image, _ threshold: Int) -> Image {
@@ -357,15 +394,23 @@ func distanceMap(_ image: Image, _ threshold: Int) -> Image {
     for y in 0..<h {
         for x in 0..<w {
             let index = y * w + x
-            if x > 0 { distances[index] = min(distances[index], distances[index - 1] + 1) }
-            if y > 0 { distances[index] = min(distances[index], distances[index - w] + 1) }
+            if x > 0 {
+                distances[index] = min(distances[index], distances[index - 1] + 1)
+            }
+            if y > 0 {
+                distances[index] = min(distances[index], distances[index - w] + 1)
+            }
         }
     }
     for y in stride(from: h - 1, through: 0, by: -1) {
         for x in stride(from: w - 1, through: 0, by: -1) {
             let index = y * w + x
-            if x < w - 1 { distances[index] = min(distances[index], distances[index + 1] + 1) }
-            if y < h - 1 { distances[index] = min(distances[index], distances[index + w] + 1) }
+            if x < w - 1 {
+                distances[index] = min(distances[index], distances[index + 1] + 1)
+            }
+            if y < h - 1 {
+                distances[index] = min(distances[index], distances[index + w] + 1)
+            }
         }
     }
     return image.withPixels(distances.map { min($0, image.maxval) })
@@ -375,13 +420,18 @@ func statistics(_ pixels: [Int], _ maxval: Int) -> String {
     let sorted = pixels.sorted()
     var counts = [Int](repeating: 0, count: maxval + 1)
     var total = 0
-    for p in pixels { counts[p] += 1; total += p }
+    for p in pixels {
+        counts[p] += 1
+        total += p
+    }
     var mode = 0
     for p in 1...maxval {
-        if counts[p] > counts[mode] { mode = p }
+        if counts[p] > counts[mode] {
+            mode = p
+        }
     }
     return "min \(sorted.first!) max \(sorted.last!) mean \(total / pixels.count) " +
-           "median \(sorted[(pixels.count - 1) / 2]) mode \(mode)"
+        "median \(sorted[(pixels.count - 1) / 2]) mode \(mode)"
 }
 
 func dithered(_ image: Image) -> Image {
@@ -452,7 +502,9 @@ struct Editor {
         var given = Array(words.dropFirst())
         let fill = (name == "RECT" || name == "CIRCLE") &&
             given.count == pattern.count + 1 && given.last == "FILL"
-        if fill { given.removeLast() }
+        if fill {
+            given.removeLast()
+        }
         try require(given.count == pattern.count, "bad arguments")
 
         let types = Array(pattern)
@@ -513,7 +565,9 @@ struct Editor {
             painted.insert(p.y * image.width + p.x)
         }
         var pixels = image.pixels
-        for index in painted { pixels[index] = value }
+        for index in painted {
+            pixels[index] = value
+        }
         commit(image.withPixels(pixels), painted.count)
     }
 
@@ -549,12 +603,16 @@ struct Editor {
             emit("dropped " + slot)
             return
         case "SLOTS":
-            if slots.isEmpty { emit("no slots") }
-            for key in slots.keys.sorted() { emit(key + " " + slots[key]!.summary()) }
+            if slots.isEmpty {
+                emit("no slots")
+            }
+            for key in slots.keys.sorted() {
+                emit(key + " " + slots[key]!.summary())
+            }
             return
         case "INFO":
             emit("image " + (current?.summary() ?? "none") +
-                 " undo \(undo.count) redo \(redo.count) slots \(slots.count)")
+                " undo \(undo.count) redo \(redo.count) slots \(slots.count)")
             return
         case "UNDO":
             try require(!undo.isEmpty, "nothing to undo")
@@ -611,11 +669,14 @@ struct Editor {
         case "ROTATE":
             try require([90, 180, 270].contains(a[0]))
             switch a[0] {
-            case 90: commit(transformed(image, h, w) { x, y in image.get(y, h - 1 - x) })
-            case 180: commit(transformed(image, w, h) {
-                x, y in image.get(w - 1 - x, h - 1 - y)
-            })
-            default: commit(transformed(image, h, w) { x, y in image.get(w - 1 - y, x) })
+            case 90:
+                commit(transformed(image, h, w) { x, y in image.get(y, h - 1 - x) })
+            case 180:
+                commit(transformed(image, w, h) {
+                    x, y in image.get(w - 1 - x, h - 1 - y)
+                })
+            default:
+                commit(transformed(image, h, w) { x, y in image.get(w - 1 - y, x) })
             }
         case "CROP":
             try checkedCrop(a, image)
@@ -647,7 +708,7 @@ struct Editor {
             commit(convolution(image, kernel, divisor))
         case "CONVOLVE":
             try require(a.prefix(9).allSatisfy { (-16...16).contains($0) } &&
-                        (1...256).contains(a[9]))
+                (1...256).contains(a[9]))
             commit(convolution(image, Array(a.prefix(9)), a[9]))
         case "SOBEL":
             commit(sobel(image))
@@ -670,12 +731,12 @@ struct Editor {
             paint(image, linePoints(a[0], a[1], a[2], a[3]), a[4])
         case "RECT":
             try require(withinLimit(Array(a.prefix(2))) &&
-                        (1...1000).contains(a[2]) && (1...1000).contains(a[3]) &&
-                        a[4] >= 0 && a[4] <= m)
+                (1...1000).contains(a[2]) && (1...1000).contains(a[3]) &&
+                a[4] >= 0 && a[4] <= m)
             paint(image, rectanglePoints(image, a[0], a[1], a[2], a[3], fill), a[4])
         case "CIRCLE":
             try require(withinLimit(Array(a.prefix(2))) &&
-                        (0...1000).contains(a[2]) && a[3] >= 0 && a[3] <= m)
+                (0...1000).contains(a[2]) && a[3] >= 0 && a[3] <= m)
             let outline = circlePoints(a[0], a[1], a[2])
             paint(image, fill ? discPoints(image, outline) : outline, a[3])
         case "FLOOD":
@@ -687,10 +748,14 @@ struct Editor {
             var counts = [Int](repeating: 0, count: 16)
             for value in 0...m {
                 let bin = value * 16 / (m + 1)
-                if lows[bin] == nil { lows[bin] = value }
+                if lows[bin] == nil {
+                    lows[bin] = value
+                }
                 highs[bin] = value
             }
-            for p in image.pixels { counts[p * 16 / (m + 1)] += 1 }
+            for p in image.pixels {
+                counts[p * 16 / (m + 1)] += 1
+            }
             let top = counts.max()!
             for bin in 0..<16 {
                 if let low = lows[bin] {
@@ -763,7 +828,7 @@ struct Editor {
 
 let text = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8)!
 let input = text.replacingOccurrences(of: "\r\n", with: "\n")
-                .replacingOccurrences(of: "\r", with: "\n")
+    .replacingOccurrences(of: "\r", with: "\n")
 let lines = input.components(separatedBy: "\n")
 var position = 0
 let commands = Int(lines[position])!
@@ -780,4 +845,6 @@ for _ in 0..<commands {
         editor.execute(words)
     }
 }
-for line in editor.output { print(line) }
+for line in editor.output {
+    print(line)
+}

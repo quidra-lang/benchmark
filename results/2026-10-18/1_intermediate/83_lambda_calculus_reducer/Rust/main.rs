@@ -10,7 +10,7 @@ enum Term {
     Num(usize),
     Lambda(String, T),
     Apply(T, T),
-    Index(usize)
+    Index(usize),
 }
 
 fn var(name: &str) -> T {
@@ -32,13 +32,13 @@ fn free(t: &T) -> BTreeSet<String> {
             let mut f = free(b);
             f.remove(n);
             f
-        },
+        }
         Term::Apply(a, b) => {
             let mut f = free(a);
             f.extend(free(b));
             f
-        },
-        _ => BTreeSet::new()
+        }
+        _ => BTreeSet::new(),
     }
 }
 
@@ -50,8 +50,8 @@ fn references(t: &T) -> Vec<String> {
             let mut r = references(a);
             r.extend(references(b));
             r
-        },
-        _ => Vec::new()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -72,11 +72,7 @@ fn printed(t: &T, end: bool, db: bool) -> String {
             } else {
                 format!("\\{}. {}", names.join(" "), printed(body, true, false))
             };
-            if end {
-                s
-            } else {
-                format!("({})", s)
-            }
+            if end { s } else { format!("({})", s) }
         }
         Term::Apply(a, b) => {
             let left = if matches!(a.as_ref(), Term::Lambda(_, _)) {
@@ -103,10 +99,13 @@ fn sequence_name(n: usize) -> String {
 }
 
 fn canonical(t: &T) -> T {
-
     fn visit(t: &T, env: &mut Vec<(String, String)>, f: &BTreeSet<String>, next: &mut usize) -> T {
         match t.as_ref() {
-            Term::Var(n) => var(env.iter().rev().find(|(a, _)| a == n).map_or(n.as_str(), |(_, b)| b.as_str())),
+            Term::Var(n) => var(env
+                .iter()
+                .rev()
+                .find(|(a, _)| a == n)
+                .map_or(n.as_str(), |(_, b)| b.as_str())),
             Term::Lambda(n, b) => {
                 while f.contains(&sequence_name(*next)) {
                     *next += 1;
@@ -119,7 +118,7 @@ fn canonical(t: &T) -> T {
                 lam(&fresh, body)
             }
             Term::Apply(a, b) => app(visit(a, env, f, next), visit(b, env, f, next)),
-            _ => t.clone()
+            _ => t.clone(),
         }
     }
     visit(t, &mut Vec::new(), &free(t), &mut 0)
@@ -127,7 +126,11 @@ fn canonical(t: &T) -> T {
 
 fn debruijn(t: &T, env: &mut Vec<String>) -> T {
     match t.as_ref() {
-        Term::Var(n) => env.iter().rev().position(|a| a == n).map_or_else(|| t.clone(), |i| Rc::new(Term::Index(i))),
+        Term::Var(n) => env
+            .iter()
+            .rev()
+            .position(|a| a == n)
+            .map_or_else(|| t.clone(), |i| Rc::new(Term::Index(i))),
         Term::Lambda(n, b) => {
             env.push(n.clone());
             let result = lam("", debruijn(b, env));
@@ -135,17 +138,19 @@ fn debruijn(t: &T, env: &mut Vec<String>) -> T {
             result
         }
         Term::Apply(a, b) => app(debruijn(a, env), debruijn(b, env)),
-        _ => t.clone()
+        _ => t.clone(),
     }
 }
 
 fn substitute(t: &T, x: &str, n: &T) -> T {
     match t.as_ref() {
-        Term::Var(v) => if v == x {
-            n.clone()
-        } else {
-            t.clone()
-        },
+        Term::Var(v) => {
+            if v == x {
+                n.clone()
+            } else {
+                t.clone()
+            }
+        }
         Term::Apply(a, b) => app(substitute(a, x, n), substitute(b, x, n)),
         Term::Lambda(y, b) => {
             let fb = free(b);
@@ -158,13 +163,14 @@ fn substitute(t: &T, x: &str, n: &T) -> T {
             }
             let base = y.trim_end_matches(|c: char| c.is_ascii_digit());
             let mut i = 1;
-            while fb.contains(&format!("{}{}", base, i)) || fnn.contains(&format!("{}{}", base, i)) {
+            while fb.contains(&format!("{}{}", base, i)) || fnn.contains(&format!("{}{}", base, i))
+            {
                 i += 1;
             }
             let z = format!("{}{}", base, i);
             lam(&z, substitute(&substitute(b, y, &var(&z)), x, n))
         }
-        _ => t.clone()
+        _ => t.clone(),
     }
 }
 
@@ -197,7 +203,8 @@ fn step(t: &T, strategy: &str, use_eta: bool) -> Option<(T, &'static str)> {
             }
             if strategy == "APPLICATIVE" || strategy == "CBV" {
                 if let Term::Lambda(x, body) = a.as_ref() {
-                    if strategy != "CBV" || matches!(b.as_ref(), Term::Var(_) | Term::Lambda(_, _)) {
+                    if strategy != "CBV" || matches!(b.as_ref(), Term::Var(_) | Term::Lambda(_, _))
+                    {
                         return Some((substitute(body, x, b), "beta"));
                     }
                 }
@@ -218,7 +225,7 @@ fn step(t: &T, strategy: &str, use_eta: bool) -> Option<(T, &'static str)> {
                 }
             }
         }
-        _ => ()
+        _ => (),
     }
     None
 }
@@ -226,14 +233,14 @@ fn step(t: &T, strategy: &str, use_eta: bool) -> Option<(T, &'static str)> {
 #[derive(Clone)]
 enum Type {
     Variable(usize),
-    Function(Rc<Type>, Rc<Type>)
+    Function(Rc<Type>, Rc<Type>),
 }
 type Ty = Rc<Type>;
 
 struct Inference {
     next: usize,
     bindings: BTreeMap<usize, Ty>,
-    globals: BTreeMap<String, Ty>
+    globals: BTreeMap<String, Ty>,
 }
 
 impl Inference {
@@ -255,7 +262,7 @@ impl Inference {
     fn occurs(&self, id: usize, t: &Ty) -> bool {
         match self.resolve(t).as_ref() {
             Type::Variable(i) => *i == id,
-            Type::Function(a, b) => self.occurs(id, a) || self.occurs(id, b)
+            Type::Function(a, b) => self.occurs(id, a) || self.occurs(id, b),
         }
     }
 
@@ -312,7 +319,7 @@ impl Inference {
                 self.unify(&a, &Rc::new(Type::Function(b, result.clone())))?;
                 Ok(result)
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
@@ -341,11 +348,11 @@ fn infer(t: &T) -> String {
     let mut i = Inference {
         next: 0,
         bindings: BTreeMap::new(),
-        globals: BTreeMap::new()
+        globals: BTreeMap::new(),
     };
     match i.visit(t, &mut Vec::new()) {
         Ok(t) => i.show(&t, &mut BTreeMap::new()),
-        Err(()) => "not typable".into()
+        Err(()) => "not typable".into(),
     }
 }
 
@@ -362,7 +369,10 @@ fn abstract_term(x: &str, e: &T) -> T {
     if matches!(b.as_ref(), Term::Var(n) if n == x) && !free(a).contains(x) {
         return a.clone();
     }
-    app(app(Rc::new(Term::Macro("S".into())), abstract_term(x, a)), abstract_term(x, b))
+    app(
+        app(Rc::new(Term::Macro("S".into())), abstract_term(x, a)),
+        abstract_term(x, b),
+    )
 }
 
 fn ski(t: &T) -> T {
@@ -370,7 +380,7 @@ fn ski(t: &T) -> T {
         Term::Var(_) => t.clone(),
         Term::Lambda(n, b) => abstract_term(n, &ski(b)),
         Term::Apply(a, b) => app(ski(a), ski(b)),
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 }
 
@@ -393,8 +403,19 @@ fn ski_step(t: &T) -> Option<(T, &'static str)> {
         match n.as_str() {
             "I" if !args.is_empty() => return Some((build(args[0].clone(), &args[1..]), "I")),
             "K" if args.len() >= 2 => return Some((build(args[0].clone(), &args[2..]), "K")),
-            "S" if args.len() >= 3 => return Some((build(app(app(args[0].clone(), args[2].clone()), app(args[1].clone(), args[2].clone())), &args[3..]), "S")),
-            _ => ()
+            "S" if args.len() >= 3 => {
+                return Some((
+                    build(
+                        app(
+                            app(args[0].clone(), args[2].clone()),
+                            app(args[1].clone(), args[2].clone()),
+                        ),
+                        &args[3..],
+                    ),
+                    "S",
+                ));
+            }
+            _ => (),
         }
     }
     for i in 0..args.len() {
@@ -427,7 +448,10 @@ fn church(t: &T) -> String {
         }
         if let Term::Apply(left, q) = inner.as_ref() {
             if let Term::Apply(h, p) = left.as_ref() {
-                if matches!(h.as_ref(), Term::Var(v) if v == f) && !free(p).contains(f) && !free(q).contains(f) {
+                if matches!(h.as_ref(), Term::Var(v) if v == f)
+                    && !free(p).contains(f)
+                    && !free(q).contains(f)
+                {
                     return format!("({}, {})", church(p), church(q));
                 }
             }
@@ -440,12 +464,12 @@ fn church(t: &T) -> String {
 struct Token {
     kind: String,
     text: String,
-    column: usize
+    column: usize,
 }
 
 struct Parser {
     tokens: Vec<Token>,
-    at: usize
+    at: usize,
 }
 
 impl Parser {
@@ -472,7 +496,9 @@ impl Parser {
                 kind = "var".into();
             } else if c.is_ascii_uppercase() {
                 i += 1;
-                while i < b.len() && (b[i].is_ascii_uppercase() || b[i].is_ascii_digit() || b[i] == b'_') {
+                while i < b.len()
+                    && (b[i].is_ascii_uppercase() || b[i].is_ascii_digit() || b[i] == b'_')
+                {
                     i += 1;
                 }
                 kind = "macro".into();
@@ -483,23 +509,24 @@ impl Parser {
                 }
                 kind = "num".into();
             } else {
-                return Err(format!("column {}: unexpected character '{}'", offset + i, c as char));
+                return Err(format!(
+                    "column {}: unexpected character '{}'",
+                    offset + i,
+                    c as char
+                ));
             }
             tokens.push(Token {
                 kind,
                 text: arg[start..i].into(),
-                column: offset + start
+                column: offset + start,
             });
         }
         tokens.push(Token {
             kind: "end".into(),
             text: String::new(),
-            column: line.len() + 1
+            column: line.len() + 1,
         });
-        Ok(Self {
-            tokens,
-            at: 0
-        })
+        Ok(Self { tokens, at: 0 })
     }
 
     fn expect(&mut self, kind: &str) -> Result<Token, String> {
@@ -508,7 +535,7 @@ impl Parser {
             let expected = match kind {
                 "var" => "variable".into(),
                 "macro" => "macro name".into(),
-                _ => format!("'{}'", kind)
+                _ => format!("'{}'", kind),
             };
             return Err(format!("column {}: expected {}", t.column, expected));
         }
@@ -526,10 +553,10 @@ impl Parser {
                     let e = self.term()?;
                     self.expect(")")?;
                     e
-                },
+                }
                 "num" => Rc::new(Term::Num(t.text[1..].parse().unwrap())),
                 "var" => var(&t.text),
-                _ => Rc::new(Term::Macro(t.text))
+                _ => Rc::new(Term::Macro(t.text)),
             });
         }
         if self.tokens[self.at].kind == "\\" {
@@ -547,7 +574,10 @@ impl Parser {
             elements.push(body);
         }
         if elements.is_empty() {
-            return Err(format!("column {}: expected term", self.tokens[self.at].column));
+            return Err(format!(
+                "column {}: expected term",
+                self.tokens[self.at].column
+            ));
         }
         Ok(build(elements[0].clone(), &elements[1..]))
     }
@@ -564,7 +594,7 @@ impl Parser {
 
 struct Closure {
     code: T,
-    env: Vec<Rc<Closure>>
+    env: Vec<Rc<Closure>>,
 }
 
 fn reify<'a>(mut t: &'a T, mut env: &'a [Rc<Closure>], mut depth: usize) -> T {
@@ -580,7 +610,7 @@ fn reify<'a>(mut t: &'a T, mut env: &'a [Rc<Closure>], mut depth: usize) -> T {
     match t.as_ref() {
         Term::Lambda(_, b) => lam("", reify(b, env, depth + 1)),
         Term::Apply(a, b) => app(reify(a, env, depth), reify(b, env, depth)),
-        _ => t.clone()
+        _ => t.clone(),
     }
 }
 
@@ -597,9 +627,9 @@ fn named_db(t: &T, env: &mut Vec<String>, f: &BTreeSet<String>, next: &mut usize
             let body = named_db(b, env, f, next);
             env.pop();
             lam(&n, body)
-        },
+        }
         Term::Apply(a, b) => app(named_db(a, env, f, next), named_db(b, env, f, next)),
-        _ => t.clone()
+        _ => t.clone(),
     }
 }
 
@@ -607,7 +637,7 @@ struct Workbench {
     macros: BTreeMap<String, T>,
     display: bool,
     eta: bool,
-    limit: usize
+    limit: usize,
 }
 
 impl Workbench {
@@ -615,12 +645,21 @@ impl Workbench {
         let mut macros = BTreeMap::new();
         macros.insert("I".into(), lam("x", var("x")));
         macros.insert("K".into(), lam("x", lam("y", var("x"))));
-        macros.insert("S".into(), lam("x", lam("y", lam("z", app(app(var("x"), var("z")), app(var("y"), var("z")))))));
+        macros.insert(
+            "S".into(),
+            lam(
+                "x",
+                lam(
+                    "y",
+                    lam("z", app(app(var("x"), var("z")), app(var("y"), var("z")))),
+                ),
+            ),
+        );
         Self {
             macros,
             display: false,
             eta: false,
-            limit: 10000
+            limit: 10000,
         }
     }
 
@@ -630,32 +669,52 @@ impl Workbench {
 
     fn expand(&self, t: &T) -> Result<T, String> {
         Ok(match t.as_ref() {
-            Term::Macro(n) => self.expand(self.macros.get(n).ok_or_else(|| format!("unbound macro {}", n))?)?,
+            Term::Macro(n) => self.expand(
+                self.macros
+                    .get(n)
+                    .ok_or_else(|| format!("unbound macro {}", n))?,
+            )?,
             Term::Num(n) => {
                 let mut b = var("x");
                 for _ in 0..*n {
                     b = app(var("f"), b);
                 }
                 lam("f", lam("x", b))
-            },
+            }
             Term::Lambda(n, b) => lam(n, self.expand(b)?),
             Term::Apply(a, b) => app(self.expand(a)?, self.expand(b)?),
-            _ => t.clone()
+            _ => t.clone(),
         })
     }
 
     fn depends(&self, name: &str, target: &str) -> bool {
-
-        fn visit(name: &str, target: &str, macros: &BTreeMap<String, T>, visited: &mut BTreeSet<String>) -> bool {
+        fn visit(
+            name: &str,
+            target: &str,
+            macros: &BTreeMap<String, T>,
+            visited: &mut BTreeSet<String>,
+        ) -> bool {
             if !visited.insert(name.into()) {
                 return false;
             }
-            macros.get(name).is_some_and(|t| references(t).iter().any(|n| n == target || visit(n, target, macros, visited)))
+            macros.get(name).is_some_and(|t| {
+                references(t)
+                    .iter()
+                    .any(|n| n == target || visit(n, target, macros, visited))
+            })
         }
         visit(name, target, &self.macros, &mut BTreeSet::new())
     }
 
-    fn reduce(&self, mut t: T, strategy: &str, eta: bool, display: bool, combinators: bool, output: &mut Vec<String>) -> Option<(T, usize)> {
+    fn reduce(
+        &self,
+        mut t: T,
+        strategy: &str,
+        eta: bool,
+        display: bool,
+        combinators: bool,
+        output: &mut Vec<String>,
+    ) -> Option<(T, usize)> {
         let mut count = 0;
         loop {
             let next = if combinators {
@@ -672,7 +731,12 @@ impl Workbench {
             count += 1;
             t = n;
             if display && self.display {
-                output.push(format!("step {} ({}): {}", count, kind, printed(&t, true, false)));
+                output.push(format!(
+                    "step {} ({}): {}",
+                    count,
+                    kind,
+                    printed(&t, true, false)
+                ));
             }
         }
     }
@@ -688,7 +752,7 @@ impl Workbench {
                 Term::Apply(_, _) => "push",
                 Term::Lambda(_, _) if !stack.is_empty() => "grab",
                 Term::Index(_) => "access",
-                _ => break
+                _ => break,
             };
             if count == self.limit {
                 out.push(format!("no result within {} transitions", self.limit));
@@ -698,7 +762,7 @@ impl Workbench {
                 Term::Apply(a, b) => {
                     stack.push(Rc::new(Closure {
                         code: b.clone(),
-                        env: env.clone()
+                        env: env.clone(),
                     }));
                     code = a.clone();
                 }
@@ -711,11 +775,18 @@ impl Workbench {
                     code = c.code.clone();
                     env = c.env.clone();
                 }
-                _ => unreachable!()
+                _ => unreachable!(),
             }
             count += 1;
             if self.display {
-                out.push(format!("step {} ({}): {} [env {}, stack {}]", count, kind, printed(&code, true, true), env.len(), stack.len()));
+                out.push(format!(
+                    "step {} ({}): {} [env {}, stack {}]",
+                    count,
+                    kind,
+                    printed(&code, true, true),
+                    env.len(),
+                    stack.len()
+                ));
             }
         }
         let mut result = reify(&code, &env, 0);
@@ -723,13 +794,40 @@ impl Workbench {
             result = app(result, reify(&c.code, &c.env, 0));
         }
         let named = named_db(&result, &mut Vec::new(), &free(&result), &mut 0);
-        out.push(format!("result: {} (transitions: {})", printed(&named, true, false), count));
+        out.push(format!(
+            "result: {} (transitions: {})",
+            printed(&named, true, false),
+            count
+        ));
         out
     }
 
     fn command(&mut self, line: &str) -> Result<Vec<String>, String> {
         let (command, arg) = line.split_once(' ').unwrap_or((line, ""));
-        if !["let", "unlet", "macros", "steps", "eta", "limit", "expand", "subst", "reduce", "equal", "alpha", "debruijn", "fv", "size", "depth", "type", "church", "ski", "skireduce", "kam"].contains(&command) {
+        if ![
+            "let",
+            "unlet",
+            "macros",
+            "steps",
+            "eta",
+            "limit",
+            "expand",
+            "subst",
+            "reduce",
+            "equal",
+            "alpha",
+            "debruijn",
+            "fv",
+            "size",
+            "depth",
+            "type",
+            "church",
+            "ski",
+            "skireduce",
+            "kam",
+        ]
+        .contains(&command)
+        {
             return Err(format!("unknown command {}", command));
         }
         let words: Vec<&str> = arg.split(' ').filter(|s| !s.is_empty()).collect();
@@ -745,7 +843,12 @@ impl Workbench {
             return Ok(Vec::new());
         }
         if command == "limit" {
-            if words.len() != 1 || words[0].is_empty() || words[0].len() > 5 || !words[0].bytes().all(|c| c.is_ascii_digit()) || !(1..=10000).contains(&words[0].parse::<usize>().unwrap()) {
+            if words.len() != 1
+                || words[0].is_empty()
+                || words[0].len() > 5
+                || !words[0].bytes().all(|c| c.is_ascii_digit())
+                || !(1..=10000).contains(&words[0].parse::<usize>().unwrap())
+            {
                 return Err("bad argument".into());
             }
             self.limit = words[0].parse().unwrap();
@@ -755,7 +858,12 @@ impl Workbench {
             if !words.is_empty() {
                 return Err("bad argument".into());
             }
-            let out: Vec<String> = self.macros.iter().filter(|(n, _)| !Self::reserved(n)).map(|(n, t)| format!("{} = {}", n, printed(t, true, false))).collect();
+            let out: Vec<String> = self
+                .macros
+                .iter()
+                .filter(|(n, _)| !Self::reserved(n))
+                .map(|(n, t)| format!("{} = {}", n, printed(t, true, false)))
+                .collect();
             return Ok(if out.is_empty() {
                 vec!["(none)".into()]
             } else {
@@ -763,7 +871,13 @@ impl Workbench {
             });
         }
         if command == "unlet" {
-            if words.len() != 1 || words[0].is_empty() || !words[0].as_bytes()[0].is_ascii_uppercase() || !words[0].bytes().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_') {
+            if words.len() != 1
+                || words[0].is_empty()
+                || !words[0].as_bytes()[0].is_ascii_uppercase()
+                || !words[0]
+                    .bytes()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
+            {
                 return Err("bad argument".into());
             }
             let n = words[0];
@@ -773,17 +887,25 @@ impl Workbench {
             if !self.macros.contains_key(n) {
                 return Err(format!("unbound macro {}", n));
             }
-            if let Some((used, _)) = self.macros.iter().find(|(name, t)| !Self::reserved(name) && references(t).iter().any(|r| r == n)) {
+            if let Some((used, _)) = self
+                .macros
+                .iter()
+                .find(|(name, t)| !Self::reserved(name) && references(t).iter().any(|r| r == n))
+            {
                 return Err(format!("{} is used by {}", n, used));
             }
             self.macros.remove(n);
             return Ok(vec![format!("removed {}", n)]);
         }
-        let mut p = Parser::new(line, arg, if line.contains(' ') {
-            command.len() + 2
-        } else {
-            line.len() + 1
-        })?;
+        let mut p = Parser::new(
+            line,
+            arg,
+            if line.contains(' ') {
+                command.len() + 2
+            } else {
+                line.len() + 1
+            },
+        )?;
         let mut name = String::new();
         let mut strategy = "NORMAL".to_string();
         let mut terms = Vec::new();
@@ -806,13 +928,16 @@ impl Workbench {
                 terms.push(p.term()?);
             }
             "reduce" => {
-                if p.tokens[p.at].kind == "macro" && ["NORMAL", "APPLICATIVE", "CBN", "CBV"].contains(&p.tokens[p.at].text.as_str()) {
+                if p.tokens[p.at].kind == "macro"
+                    && ["NORMAL", "APPLICATIVE", "CBN", "CBV"]
+                        .contains(&p.tokens[p.at].text.as_str())
+                {
                     strategy = p.tokens[p.at].text.clone();
                     p.at += 1;
                 }
                 terms.push(p.term()?);
             }
-            _ => terms.push(p.term()?)
+            _ => terms.push(p.term()?),
         }
         p.end()?;
         if command == "let" {
@@ -833,24 +958,30 @@ impl Workbench {
             }
             let exists = self.macros.contains_key(&name);
             self.macros.insert(name.clone(), t.clone());
-            return Ok(vec![format!("{} {}", if exists {
-                "redefined"
-            } else {
-                "defined"
-            }, name)]);
+            return Ok(vec![format!(
+                "{} {}",
+                if exists { "redefined" } else { "defined" },
+                name
+            )]);
         }
-        let terms: Vec<T> = terms.iter().map(|t| self.expand(t)).collect::<Result<_, _>>()?;
+        let terms: Vec<T> = terms
+            .iter()
+            .map(|t| self.expand(t))
+            .collect::<Result<_, _>>()?;
         let t = &terms[0];
         let mut out = Vec::new();
         let failure = format!("no normal form within {} steps", self.limit);
         match command {
             "expand" => out.push(printed(t, true, false)),
             "subst" => out.push(printed(&substitute(&terms[1], &name, t), true, false)),
-            "alpha" => out.push(if debruijn(t, &mut Vec::new()) == debruijn(&terms[1], &mut Vec::new()) {
-                "yes"
-            } else {
-                "no"
-            }.into()),
+            "alpha" => out.push(
+                if debruijn(t, &mut Vec::new()) == debruijn(&terms[1], &mut Vec::new()) {
+                    "yes"
+                } else {
+                    "no"
+                }
+                .into(),
+            ),
             "debruijn" => out.push(printed(&debruijn(t, &mut Vec::new()), true, true)),
             "fv" => {
                 let f = free(t);
@@ -861,17 +992,18 @@ impl Workbench {
                 });
             }
             "size" | "depth" => {
-
                 fn measure(t: &T, size: bool) -> usize {
                     match t.as_ref() {
                         Term::Var(_) => 1,
                         Term::Lambda(_, b) => 1 + measure(b, size),
-                        Term::Apply(a, b) => 1 + if size {
-                            measure(a, size) + measure(b, size)
-                        } else {
-                            measure(a, size).max(measure(b, size))
-                        },
-                        _ => unreachable!()
+                        Term::Apply(a, b) => {
+                            1 + if size {
+                                measure(a, size) + measure(b, size)
+                            } else {
+                                measure(a, size).max(measure(b, size))
+                            }
+                        }
+                        _ => unreachable!(),
                     }
                 }
                 out.push(measure(t, command == "size").to_string());
@@ -882,14 +1014,19 @@ impl Workbench {
             "equal" => {
                 let a = self.reduce(t.clone(), "NORMAL", self.eta, false, false, &mut out);
                 let b = self.reduce(terms[1].clone(), "NORMAL", self.eta, false, false, &mut out);
-                out.push(match (a, b) {
-                    (Some((a, _)), Some((b, _))) => if debruijn(&a, &mut Vec::new()) == debruijn(&b, &mut Vec::new()) {
-                        "yes"
-                    } else {
-                        "no"
-                    },
-                    _ => "unknown"
-                }.into());
+                out.push(
+                    match (a, b) {
+                        (Some((a, _)), Some((b, _))) => {
+                            if debruijn(&a, &mut Vec::new()) == debruijn(&b, &mut Vec::new()) {
+                                "yes"
+                            } else {
+                                "no"
+                            }
+                        }
+                        _ => "unknown",
+                    }
+                    .into(),
+                );
             }
             "church" => {
                 let result = self.reduce(t.clone(), "NORMAL", false, false, false, &mut out);
@@ -897,16 +1034,21 @@ impl Workbench {
             }
             _ => {
                 let combinators = command == "skireduce";
-                let result = self.reduce(if combinators {
-                    ski(t)
-                } else {
-                    t.clone()
-                }, &strategy, self.eta, true, combinators, &mut out);
-                out.push(result.map_or(failure, |(r, n)| format!("result: {} (steps: {})", printed(&if combinators {
-                    r
-                } else {
-                    canonical(&r)
-                }, true, false), n)));
+                let result = self.reduce(
+                    if combinators { ski(t) } else { t.clone() },
+                    &strategy,
+                    self.eta,
+                    true,
+                    combinators,
+                    &mut out,
+                );
+                out.push(result.map_or(failure, |(r, n)| {
+                    format!(
+                        "result: {} (steps: {})",
+                        printed(&if combinators { r } else { canonical(&r) }, true, false),
+                        n
+                    )
+                }));
             }
         }
         Ok(out)
@@ -925,10 +1067,12 @@ fn main() {
             continue;
         }
         match w.command(line) {
-            Ok(lines) => for line in lines {
-                println!("{}", line);
-            },
-            Err(e) => println!("error: {}", e)
+            Ok(lines) => {
+                for line in lines {
+                    println!("{}", line);
+                }
+            }
+            Err(e) => println!("error: {}", e),
         }
     }
 }

@@ -64,7 +64,7 @@ const Packing = struct {
         if (eq(self.method, "HARMONIC") or eq(self.method, "KBOUNDED"))
             try out.print(" k={d}", .{self.parameter});
         try out.print(" bins={d} inspections={d} waste={d}", .{
-            self.bins.items.len, self.inspections,
+            self.bins.items.len,                                        self.inspections,
             @as(i64, @intCast(self.bins.items.len)) * capacity - total,
         });
         if (eq(self.method, "KBOUNDED")) try out.print(" closes={d}", .{self.closes});
@@ -252,8 +252,12 @@ const Search = struct {
     fn init(gpa: Allocator, out: *std.Io.Writer, items: []const Item, capacity: i64, limit: usize, lower: i64, incumbent: []const Bin) Allocator.Error!Search {
         const ordered = try descending(gpa, items);
         var search: Search = .{
-            .gpa = gpa, .out = out, .items = ordered,
-            .capacity = capacity, .limit = limit, .lower = lower,
+            .gpa = gpa,
+            .out = out,
+            .items = ordered,
+            .capacity = capacity,
+            .limit = limit,
+            .lower = lower,
             .best = try cloneBins(gpa, incumbent),
         };
         var i = items.len;
@@ -500,8 +504,7 @@ const Lab = struct {
         try self.out.writeAll(method);
         if (eq(method, "HARMONIC") or eq(method, "KBOUNDED"))
             try self.out.print(" k={d}", .{parameter});
-        try self.out.print(" before={d} after={d} eliminated={d}\n",
-            .{ before, result.bins.items.len, before - result.bins.items.len });
+        try self.out.print(" before={d} after={d} eliminated={d}\n", .{ before, result.bins.items.len, before - result.bins.items.len });
         for (events.items) |event| try self.out.print("{s}\n", .{event});
         try self.printBins(result.bins.items, self.capacity.?, eq(method, "HARMONIC"));
     }
@@ -515,8 +518,8 @@ const Lab = struct {
     }
     fn outputCompare(self: *Lab, parameter: i64) Error!void {
         const methods = [_][]const u8{
-            "NEXTFIT", "FIRSTFIT", "BESTFIT", "WORSTFIT", "ALMOSTWORST",
-            "HARMONIC", "KBOUNDED", "FFD", "BFD", "WFD",
+            "NEXTFIT",  "FIRSTFIT", "BESTFIT", "WORSTFIT", "ALMOSTWORST",
+            "HARMONIC", "KBOUNDED", "FFD",     "BFD",      "WFD",
         };
         const lower = try bounds(self.gpa, self.items.items, self.capacity.?);
         var packings: [10]Packing = undefined;
@@ -533,9 +536,8 @@ const Lab = struct {
         try self.out.print("COMPARE k={d} L1={d} L2={d}\n", .{ parameter, lower.l1, lower.l2 });
         for (packings) |result| {
             try self.out.print("{s} bins={d} gap={d} waste={d} inspections={d}\n", .{
-                result.method, result.bins.items.len,
-                @as(i64, @intCast(result.bins.items.len)) - lower.l2,
-                @as(i64, @intCast(result.bins.items.len)) * self.capacity.? - self.total,
+                result.method,                                        result.bins.items.len,
+                @as(i64, @intCast(result.bins.items.len)) - lower.l2, @as(i64, @intCast(result.bins.items.len)) * self.capacity.? - self.total,
                 result.inspections,
             });
         }
@@ -568,7 +570,10 @@ const Lab = struct {
             labels[i] = label;
             var has = false;
             for (distinct.items) |existing| {
-                if (existing == label) { has = true; break; }
+                if (existing == label) {
+                    has = true;
+                    break;
+                }
             }
             if (!has) try distinct.append(self.gpa, label);
         }
@@ -708,7 +713,9 @@ const Lab = struct {
         }
         std.mem.sort(CutPiece, pieces.items, {}, descPiece);
         var enumerator: PatternSearch = .{
-            .gpa = self.gpa, .bar_length = length, .pieces = pieces.items,
+            .gpa = self.gpa,
+            .bar_length = length,
+            .pieces = pieces.items,
         };
         try enumerator.visit(0, length);
         const patterns = enumerator.patterns.items;
@@ -719,7 +726,10 @@ const Lab = struct {
         while (true) {
             var pending = false;
             for (remaining[0..pieces.items.len]) |need| {
-                if (need > 0) { pending = true; break; }
+                if (need > 0) {
+                    pending = true;
+                    break;
+                }
             }
             if (!pending) break;
             var chosen: usize = 0;
@@ -757,7 +767,7 @@ const Lab = struct {
         var bars: i64 = 0;
         var trim: i64 = 0;
         for (patterns, 0..) |pattern, index| {
-            if (uses[index] != 0) try self.out.print("USE {d} bars={d}\n", .{index + 1, uses[index]});
+            if (uses[index] != 0) try self.out.print("USE {d} bars={d}\n", .{ index + 1, uses[index] });
             bars += uses[index];
             trim += uses[index] * pattern.trim;
         }
@@ -801,7 +811,9 @@ const Lab = struct {
         for (args, 0..) |token, index| {
             const separator = std.mem.indexOfScalar(u8, token, 'x').?;
             try rectangles.append(self.gpa, .{
-                .id = index + 1, .w = number(token[0..separator]), .h = number(token[separator + 1 ..]),
+                .id = index + 1,
+                .w = number(token[0..separator]),
+                .h = number(token[separator + 1 ..]),
             });
         }
         return rectangles;
@@ -823,14 +835,17 @@ const Lab = struct {
                 }
             }
             if (chosen == null) {
-                const bottom: i64 = if (shelves.items.len == 0) 0 else
-                    shelves.items[shelves.items.len - 1].bottom + shelves.items[shelves.items.len - 1].height;
+                const bottom: i64 = if (shelves.items.len == 0) 0 else shelves.items[shelves.items.len - 1].bottom + shelves.items[shelves.items.len - 1].height;
                 chosen = shelves.items.len;
                 try shelves.append(self.gpa, .{ .bottom = bottom, .height = rect.h });
             }
             const shelf = &shelves.items[chosen.?];
             const placement: Placement = .{
-                .rect = rect, .x = shelf.used, .y = shelf.bottom, .w = rect.w, .h = rect.h,
+                .rect = rect,
+                .x = shelf.used,
+                .y = shelf.bottom,
+                .w = rect.w,
+                .h = rect.h,
             };
             try shelf.items.append(self.gpa, placement);
             try placements.append(self.gpa, placement);
@@ -880,7 +895,11 @@ const Lab = struct {
             }
             for (chosen_x..chosen_x + asU(rect.w)) |position| heights[position] = chosen_y + rect.h;
             try placements.append(self.gpa, .{
-                .rect = rect, .x = @intCast(chosen_x), .y = chosen_y, .w = rect.w, .h = rect.h,
+                .rect = rect,
+                .x = @intCast(chosen_x),
+                .y = chosen_y,
+                .w = rect.w,
+                .h = rect.h,
             });
         }
         var height: i64 = 0;
@@ -947,25 +966,32 @@ const Lab = struct {
             area += rect.w * rect.h;
             sheet.area += rect.w * rect.h;
             try sheet.placed.append(self.gpa, .{
-                .rect = rect, .x = free.x, .y = free.y, .w = pw,
-                .h = ph, .rotated = was_rotated,
+                .rect = rect,
+                .x = free.x,
+                .y = free.y,
+                .w = pw,
+                .h = ph,
+                .rotated = was_rotated,
             });
             const rw = free.w - pw;
             const rh = free.h - ph;
             const top: Free = .{
-                .x = free.x, .y = free.y + ph,
+                .x = free.x,
+                .y = free.y + ph,
                 .w = if (rw <= rh) free.w else pw,
                 .h = rh,
             };
             const right: Free = .{
-                .x = free.x + pw, .y = free.y,
-                .w = rw, .h = if (rw <= rh) ph else free.h,
+                .x = free.x + pw,
+                .y = free.y,
+                .w = rw,
+                .h = if (rw <= rh) ph else free.h,
             };
             if (top.w > 0 and top.h > 0) try sheet.free.append(self.gpa, top);
             if (right.w > 0 and right.h > 0) try sheet.free.append(self.gpa, right);
         }
         try self.out.print("GUILLOTINE W={d} H={d} mode={s} rule={s} rects={d} sheets={d} rotated={d} util={d}\n", .{
-            width, height, mode, rule, rectangles.items.len, sheets.items.len,
+            width,         height,                                                                       mode, rule, rectangles.items.len, sheets.items.len,
             rotated_count, @divTrunc(area * 100, @as(i64, @intCast(sheets.items.len)) * width * height),
         });
         for (sheets.items, 0..) |sheet, index| {
@@ -1047,7 +1073,9 @@ const Lab = struct {
         if (eq(command, "TRACE") or eq(command, "REDUCE")) {
             const method = args[1];
             const parameter = if (eq(method, "HARMONIC") or eq(method, "KBOUNDED"))
-                number(args[2]) else @as(i64, 0);
+                number(args[2])
+            else
+                @as(i64, 0);
             if ((eq(method, "HARMONIC") or eq(method, "KBOUNDED")) and parameter == 0)
                 return self.fail("BAD PARAMETER");
             if (eq(command, "TRACE")) return self.outputTrace(method, parameter);
@@ -1064,7 +1092,9 @@ const Lab = struct {
         if (eq(command, "COVER")) return self.outputCover();
         if (eq(command, "MULTIFIT")) return self.outputMultifit(number(args[1]));
         const parameter = if (eq(command, "HARMONIC") or eq(command, "KBOUNDED"))
-            number(args[1]) else @as(i64, 0);
+            number(args[1])
+        else
+            @as(i64, 0);
         if ((eq(command, "HARMONIC") or eq(command, "KBOUNDED")) and parameter == 0)
             return self.fail("BAD PARAMETER");
         return self.outputMethod(command, parameter);

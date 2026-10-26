@@ -15,9 +15,15 @@ fn find(xs: []const []const u8, s: []const u8) ?usize {
     }
     return null;
 }
-fn baseIndex(c: u8) usize { return std.mem.findScalar(u8, bases, c).?; }
-fn gc(s: []const u8) i64 { return @intCast(std.mem.countScalar(u8, s, 'G') + std.mem.countScalar(u8, s, 'C')); }
-fn transition(a: u8, b: u8) bool { return a != b and ((a == 'A' or a == 'G') == (b == 'A' or b == 'G')); }
+fn baseIndex(c: u8) usize {
+    return std.mem.findScalar(u8, bases, c).?;
+}
+fn gc(s: []const u8) i64 {
+    return @intCast(std.mem.countScalar(u8, s, 'G') + std.mem.countScalar(u8, s, 'C'));
+}
+fn transition(a: u8, b: u8) bool {
+    return a != b and ((a == 'A' or a == 'G') == (b == 'A' or b == 'G'));
+}
 fn complementBase(c: u8) u8 {
     const mask = std.mem.findScalar(u8, symbols, c).?;
     const comp = ((mask & 1) << 3) | ((mask & 2) << 1) | ((mask & 4) >> 1) | ((mask & 8) >> 3);
@@ -30,12 +36,12 @@ fn aa(codon: []const u8) u8 {
 }
 fn repeatCount(s: []const u8, i: usize, u: usize) usize {
     var count: usize = 1;
-    while (i + (count + 1) * u <= s.len and std.mem.eql(u8, s[i..i + u], s[i + count * u..i + (count + 1) * u])) count += 1;
+    while (i + (count + 1) * u <= s.len and std.mem.eql(u8, s[i .. i + u], s[i + count * u .. i + (count + 1) * u])) count += 1;
     return count;
 }
 fn palindrome(s: []const u8) bool {
     if (s.len % 2 != 0) return false;
-    for (s[0..s.len / 2], 0..) |c, i| {
+    for (s[0 .. s.len / 2], 0..) |c, i| {
         if (baseIndex(c) + baseIndex(s[s.len - i - 1]) != 3) return false;
     }
     return true;
@@ -65,7 +71,9 @@ const Param = struct {
     min: i64 = 0,
     max: i64 = 0,
 };
-fn numberParam(min: i64, max: i64) Param { return .{ .kind = .number, .min = min, .max = max }; }
+fn numberParam(min: i64, max: i64) Param {
+    return .{ .kind = .number, .min = min, .max = max };
+}
 const Dna = struct {
     gpa: Allocator,
     out: *std.Io.Writer,
@@ -91,7 +99,9 @@ const Dna = struct {
         const u: u64 = @intCast(w);
         return std.fmt.allocPrint(self.gpa, "{d}.{d:0>3}", .{ u / 1000, u % 1000 });
     }
-    fn temperature(self: *Dna, t: i64) Allocator.Error![]const u8 { return std.fmt.allocPrint(self.gpa, "{d}.{d}", .{ @divTrunc(t, 10), @mod(t, 10) }); }
+    fn temperature(self: *Dna, t: i64) Allocator.Error![]const u8 {
+        return std.fmt.allocPrint(self.gpa, "{d}.{d}", .{ @divTrunc(t, 10), @mod(t, 10) });
+    }
     fn list(self: *Dna, label: []const u8, items: []const usize) Error!void {
         try self.out.writeAll(label);
         if (items.len == 0) try self.out.writeAll(" none");
@@ -282,7 +292,7 @@ const Dna = struct {
         const strand = if (frame < 0) try self.reverse(s, true) else s;
         var cs: std.ArrayList([]const u8) = .empty;
         var i: usize = @intCast(@abs(frame) - 1);
-        while (i + 2 < strand.len) : (i += 3) try cs.append(self.gpa, strand[i..i + 3]);
+        while (i + 2 < strand.len) : (i += 3) try cs.append(self.gpa, strand[i .. i + 3]);
         return cs.items;
     }
     fn translate(self: *Dna, cs: []const []const u8) Allocator.Error![]const u8 {
@@ -315,7 +325,7 @@ const Dna = struct {
         }
         return result.items;
     }
-    fn align(self: *Dna, a: []const u8, b: []const u8, local: bool, match_score: i64, mismatch: i64, gap: i64) Error!void {
+    fn alignSequences(self: *Dna, a: []const u8, b: []const u8, local: bool, match_score: i64, mismatch: i64, gap: i64) Error!void {
         const m = a.len;
         const n = b.len;
         const width = n + 1;
@@ -428,12 +438,12 @@ const Dna = struct {
             .SLICE => {
                 const start: usize = @intCast(v[1]);
                 const end: usize = @intCast(v[2]);
-                try self.store(a[3], if (start <= end) s[start - 1..end] else try self.reverse(s[end - 1..start], true));
+                try self.store(a[3], if (start <= end) s[start - 1 .. end] else try self.reverse(s[end - 1 .. start], true));
             },
             .JOIN => {
                 var parts: [8][]const u8 = undefined;
                 for (a[1..], 0..) |id, i| parts[i] = self.registry.get(id).?;
-                try self.store(name, try std.mem.concat(self.gpa, u8, parts[0..a.len - 1]));
+                try self.store(name, try std.mem.concat(self.gpa, u8, parts[0 .. a.len - 1]));
             },
             .MUTATE => {
                 const p: usize = @intCast(v[1] - 1);
@@ -480,7 +490,7 @@ const Dna = struct {
                         weight += residue_masses[std.mem.findScalar(u8, amino_acids, c).?];
                         if (c == 'K' or c == 'R') charge += 1;
                         if (c == 'D' or c == 'E') charge -= 1;
-                        try letters.append(self.gpa, protein[i..i + 1]);
+                        try letters.append(self.gpa, protein[i .. i + 1]);
                     }
                     try self.out.print("{s}\nlength {d} mass {s} charge {s}{d}\n", .{ protein, protein.len, try self.milli(weight), if (charge > 0) "+" else "", charge });
                     for (try self.counted(letters.items), 0..) |c, i| {
@@ -497,7 +507,9 @@ const Dna = struct {
                     frame: i64,
                     protein: []const u8,
 
-                    fn less(_: void, a: @This(), b: @This()) bool { return a.left < b.left; }
+                    fn less(_: void, a: @This(), b: @This()) bool {
+                        return a.left < b.left;
+                    }
                 };
                 var results: std.ArrayList(Orf) = .empty;
                 for ([_]i64{ 1, 2, 3, -1, -2, -3 }) |frame| {
@@ -530,7 +542,7 @@ const Dna = struct {
                 const step: usize = @intCast(v[2]);
                 if (width > n) return self.fail("window too large", .{});
                 var i: usize = 0;
-                while (i + width <= n) : (i += step) try self.out.print("{d}-{d} {s}%\n", .{ i + 1, i + width, try self.pct(gc(s[i..i + width]), width) });
+                while (i + width <= n) : (i += step) try self.out.print("{d}-{d} {s}%\n", .{ i + 1, i + width, try self.pct(gc(s[i .. i + width]), width) });
             },
             .SKEW => {
                 const values = try self.gpa.alloc(i64, n + 1);
@@ -553,7 +565,7 @@ const Dna = struct {
                 const k: usize = @intCast(v[1]);
                 if (k > n) return self.fail("k too large", .{});
                 var items: std.ArrayList([]const u8) = .empty;
-                for (0..n - k + 1) |i| try items.append(self.gpa, s[i..i + k]);
+                for (0..n - k + 1) |i| try items.append(self.gpa, s[i .. i + k]);
                 const freq = try self.counted(items.items);
                 try self.out.print("{d} windows {d} distinct\n", .{ n - k + 1, freq.len });
                 for (freq[0..@min(freq.len, @as(usize, @intCast(v[2])))]) |c| try self.out.print("{s} {d}\n", .{ c.text, c.count });
@@ -598,9 +610,9 @@ const Dna = struct {
                 for (0..n) |i| {
                     var len: usize = @intCast(v[1]);
                     while (len <= @as(usize, @intCast(v[2])) and i + len <= n) : (len += 1) {
-                        if (palindrome(s[i..i + len])) {
+                        if (palindrome(s[i .. i + len])) {
                             found = true;
-                            try self.out.print("{d} {d} {s}\n", .{ i + 1, len, s[i..i + len] });
+                            try self.out.print("{d} {d} {s}\n", .{ i + 1, len, s[i .. i + len] });
                         }
                     }
                 }
@@ -640,7 +652,7 @@ const Dna = struct {
                 }
                 std.mem.sort(Repeat, results.items, {}, Repeat.less);
                 if (results.items.len == 0) try self.out.writeAll("none\n");
-                for (results.items) |r| try self.out.print("{d}-{d} {s}x{d}\n", .{ r.start + 1, r.start + r.unit * r.count, s[r.start..r.start + r.unit], r.count });
+                for (results.items) |r| try self.out.print("{d}-{d} {s}x{d}\n", .{ r.start + 1, r.start + r.unit * r.count, s[r.start .. r.start + r.unit], r.count });
             },
             .HAMMING => {
                 const b = self.registry.get(a[1]).?;
@@ -655,7 +667,7 @@ const Dna = struct {
                 }
                 try self.out.print("distance {d} transitions {d} transversions {d}\n", .{ distance, transitions, distance - transitions });
             },
-            .ALIGN => try self.align(s, self.registry.get(a[1]).?, std.mem.eql(u8, a[2], "LOCAL"), v[3], v[4], v[5]),
+            .ALIGN => try self.alignSequences(s, self.registry.get(a[1]).?, std.mem.eql(u8, a[2], "LOCAL"), v[3], v[4], v[5]),
             .CONSENSUS => {
                 for (a) |id| {
                     if (self.registry.get(id).?.len != n) return self.fail("length mismatch", .{});
@@ -708,7 +720,7 @@ const Dna = struct {
                         selfcomp = @max(selfcomp, 2 * (radius + 1));
                     }
                 }
-                const clamp = gc(s[n - @min(n, 5)..]);
+                const clamp = gc(s[n - @min(n, 5) ..]);
                 const t = tm(s);
                 const len: i64 = @intCast(n);
                 const g = gc(s);
@@ -752,7 +764,7 @@ const Dna = struct {
                             if (xi == yi) continue;
                             var overlap = @min(x.len, y.len) - 1;
                             while (overlap > best) : (overlap -= 1) {
-                                if (std.mem.eql(u8, x[x.len - overlap..], y[0..overlap])) {
+                                if (std.mem.eql(u8, x[x.len - overlap ..], y[0..overlap])) {
                                     best = overlap;
                                     bx = xi;
                                     by = yi;
@@ -794,7 +806,7 @@ const Dna = struct {
                 var decoded: std.ArrayList(u8) = .empty;
                 var i: usize = 0;
                 while (i < a[2].len) : (i += 2) {
-                    const value = std.fmt.parseInt(usize, a[2][i..i + 2], 16) catch unreachable;
+                    const value = std.fmt.parseInt(usize, a[2][i .. i + 2], 16) catch unreachable;
                     for ([_]usize{ value / 64, value / 16 % 4, value / 4 % 4, value % 4 }) |code| {
                         if (decoded.items.len >= length and code != 0) return self.fail("invalid padding", .{});
                         try decoded.append(self.gpa, bases[code]);
@@ -808,8 +820,12 @@ const Dna = struct {
 fn stringLess(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.order(u8, a, b) == .lt;
 }
-fn canPair(a: u8, b: u8) bool { return complementBase(a) == b or (a == 'G' and b == 'T') or (a == 'T' and b == 'G'); }
-fn foldValue(dp: *const [100][100]i64, i: isize, j: isize) i64 { return if (i > j) 0 else dp[@intCast(i)][@intCast(j)]; }
+fn canPair(a: u8, b: u8) bool {
+    return complementBase(a) == b or (a == 'G' and b == 'T') or (a == 'T' and b == 'G');
+}
+fn foldValue(dp: *const [100][100]i64, i: isize, j: isize) i64 {
+    return if (i > j) 0 else dp[@intCast(i)][@intCast(j)];
+}
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();

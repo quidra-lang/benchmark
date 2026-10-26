@@ -4,7 +4,9 @@ const Text = []const u8;
 const Error = Allocator.Error || error{Invalid};
 var failure: Text = "";
 
-fn equal(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
 fn bad(gpa: Allocator, comptime pattern: Text, args: anytype) Error {
     failure = std.fmt.allocPrint(gpa, pattern, args) catch return error.OutOfMemory;
     return error.Invalid;
@@ -12,24 +14,30 @@ fn bad(gpa: Allocator, comptime pattern: Text, args: anytype) Error {
 const Builder = struct {
     gpa: Allocator,
     bytes: std.ArrayList(u8) = .empty,
-    fn add(self: *Builder, text: Text) Allocator.Error!void { try self.bytes.appendSlice(self.gpa, text); }
+    fn add(self: *Builder, text: Text) Allocator.Error!void {
+        try self.bytes.appendSlice(self.gpa, text);
+    }
     fn print(self: *Builder, comptime pattern: Text, args: anytype) Allocator.Error!void {
         try self.add(try std.fmt.allocPrint(self.gpa, pattern, args));
     }
-    fn line(self: *Builder, comptime pattern: Text, args: anytype) Allocator.Error!void { try self.print(pattern ++ "\n", args); }
+    fn line(self: *Builder, comptime pattern: Text, args: anytype) Allocator.Error!void {
+        try self.print(pattern ++ "\n", args);
+    }
 };
 fn split(gpa: Allocator, text: Text, separator: Text, limit: usize) Allocator.Error![]Text {
     var result: std.ArrayList(Text) = .empty;
     var start: usize = 0;
     while (limit == 0 or result.items.len + 1 < limit) {
         const offset = std.mem.find(u8, text[start..], separator) orelse break;
-        try result.append(gpa, text[start..start + offset]);
+        try result.append(gpa, text[start .. start + offset]);
         start += offset + separator.len;
     }
     try result.append(gpa, text[start..]);
     return result.items;
 }
-fn textLess(_: void, a: Text, b: Text) bool { return std.mem.order(u8, a, b) == .lt; }
+fn textLess(_: void, a: Text, b: Text) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
 fn keys(gpa: Allocator, map: anytype) Allocator.Error![]Text {
     var result: std.ArrayList(Text) = .empty;
     var iterator = map.keyIterator();
@@ -53,7 +61,9 @@ fn numeric(text: Text) bool {
 fn numberWord(text: Text) bool {
     return text.len >= 1 and text.len <= 4 and numeric(text) and (text.len == 1 or text[0] != '0');
 }
-fn integer(text: Text) usize { return std.fmt.parseInt(usize, text, 10) catch unreachable; }
+fn integer(text: Text) usize {
+    return std.fmt.parseInt(usize, text, 10) catch unreachable;
+}
 const Version = struct { core: [3]usize, pre: []const Text, text: Text };
 fn makeVersion(gpa: Allocator, core: [3]usize, pre: []const Text) Allocator.Error!Version {
     const base = try std.fmt.allocPrint(gpa, "{d}.{d}.{d}", .{ core[0], core[1], core[2] });
@@ -102,18 +112,28 @@ const Operator = enum { eq, gt, ge, lt, le };
 const Comparator = struct { op: Operator, value: Version };
 const Alternative = struct { comparisons: []const Comparator, prerelease: []const [3]usize };
 const Constraint = struct {
-    alternatives: []const Alternative, normal: Text,
+    alternatives: []const Alternative,
+    normal: Text,
     fn matches(self: *const Constraint, value: Version) bool {
         for (self.alternatives) |branch| {
             var allowed = value.pre.len == 0;
             for (branch.prerelease) |core| {
-                if (std.mem.eql(usize, &core, &value.core)) { allowed = true; break; }
+                if (std.mem.eql(usize, &core, &value.core)) {
+                    allowed = true;
+                    break;
+                }
             }
             if (!allowed) continue;
             var valid = true;
             for (branch.comparisons) |comparison| {
                 const order = compare(value, comparison.value);
-                valid = switch (comparison.op) { .eq => order == .eq, .gt => order == .gt, .ge => order != .lt, .lt => order == .lt, .le => order != .gt };
+                valid = switch (comparison.op) {
+                    .eq => order == .eq,
+                    .gt => order == .gt,
+                    .ge => order != .lt,
+                    .lt => order == .lt,
+                    .le => order != .gt,
+                };
                 if (!valid) break;
             }
             if (valid) return true;
@@ -122,7 +142,13 @@ const Constraint = struct {
     }
 };
 fn operatorText(op: Operator) Text {
-    return switch (op) { .eq => "=", .gt => ">", .ge => ">=", .lt => "<", .le => "<=" };
+    return switch (op) {
+        .eq => "=",
+        .gt => ">",
+        .ge => ">=",
+        .lt => "<",
+        .le => "<=",
+    };
 }
 fn upperVersion(gpa: Allocator, core: [3]usize, at: usize) Allocator.Error!Version {
     var next = core;
@@ -141,7 +167,11 @@ fn parseConstraint(gpa: Allocator, text: Text) Allocator.Error!?*Constraint {
             var op: Text = "";
             var pattern = term;
             for ([_]Text{ ">=", "<=", ">", "<", "=", "^", "~" }) |candidate| {
-                if (std.mem.startsWith(u8, term, candidate)) { op = candidate; pattern = term[candidate.len..]; break; }
+                if (std.mem.startsWith(u8, term, candidate)) {
+                    op = candidate;
+                    pattern = term[candidate.len..];
+                    break;
+                }
             }
             var core = [_]usize{ 0, 0, 0 };
             var pre: []const Text = &.{};
@@ -180,8 +210,7 @@ fn parseConstraint(gpa: Allocator, text: Text) Allocator.Error!?*Constraint {
             } else if (equal(op, ">=") or equal(op, "<")) {
                 try comparisons.append(gpa, .{ .op = if (equal(op, ">=")) .ge else .lt, .value = lower });
             } else {
-                const at: usize = if (equal(op, "~")) (if (count == 1) @as(usize, 0) else 1)
-                    else if (core[0] != 0 or count == 1) 0 else if (core[1] != 0 or count == 2) 1 else 2;
+                const at: usize = if (equal(op, "~")) (if (count == 1) @as(usize, 0) else 1) else if (core[0] != 0 or count == 1) 0 else if (core[1] != 0 or count == 2) 1 else 2;
                 try comparisons.append(gpa, .{ .op = .ge, .value = lower });
                 try comparisons.append(gpa, .{ .op = .lt, .value = try upperVersion(gpa, core, at) });
             }
@@ -207,8 +236,12 @@ const Advisory = struct { name: Text, text: Text };
 const Requirement = struct { pair: Pair, chain: []const Text };
 const Snapshot = struct { requests: []const Pair, installed: Installation };
 const Resolution = struct { selected: ?Installation = null, failure: []const Text = &.{} };
-fn releaseLess(_: void, a: *Release, b: *Release) bool { return compare(a.version, b.version) == .gt; }
-fn label(gpa: Allocator, value: *Release) Allocator.Error!Text { return std.fmt.allocPrint(gpa, "{s}@{s}", .{ value.name, value.version.text }); }
+fn releaseLess(_: void, a: *Release, b: *Release) bool {
+    return compare(a.version, b.version) == .gt;
+}
+fn label(gpa: Allocator, value: *Release) Allocator.Error!Text {
+    return std.fmt.allocPrint(gpa, "{s}@{s}", .{ value.name, value.version.text });
+}
 fn clone(gpa: Allocator, items: Installation) Allocator.Error!Installation {
     var result: Installation = .empty;
     var iterator = items.iterator();
@@ -216,10 +249,14 @@ fn clone(gpa: Allocator, items: Installation) Allocator.Error!Installation {
     return result;
 }
 const Resolver = struct {
-    manager: *Manager, gpa: Allocator, preferred: Set, audit: bool,
+    manager: *Manager,
+    gpa: Allocator,
+    preferred: Set,
+    audit: bool,
     selected: Installation = .empty,
     origins: std.StringHashMapUnmanaged(Requirement) = .empty,
-    failure: ?[]const Text = null, depth: usize = 0,
+    failure: ?[]const Text = null,
+    depth: usize = 0,
     fn record(self: *Resolver, requirement: Requirement, reason: Text, extra: []const Text) Allocator.Error!void {
         if (self.failure != null and self.selected.count() <= self.depth) return;
         self.depth = self.selected.count();
@@ -275,18 +312,26 @@ const Resolver = struct {
                 const chosen = self.selected.get(other).?;
                 var conflict = false;
                 for (candidate.conflicts) |pair| {
-                    if (equal(pair.name, other) and self.manager.matches(chosen.version, pair.text)) { conflict = true; break; }
+                    if (equal(pair.name, other) and self.manager.matches(chosen.version, pair.text)) {
+                        conflict = true;
+                        break;
+                    }
                 }
                 if (!conflict) {
                     for (chosen.conflicts) |pair| {
-                        if (equal(pair.name, name) and self.manager.matches(candidate.version, pair.text)) { conflict = true; break; }
+                        if (equal(pair.name, name) and self.manager.matches(candidate.version, pair.text)) {
+                            conflict = true;
+                            break;
+                        }
                     }
                 }
-                if (conflict) { conflicting = other; break; }
+                if (conflict) {
+                    conflicting = other;
+                    break;
+                }
             }
             if (conflicting) |other| {
-                try self.record(requirement, try std.fmt.allocPrint(self.gpa, "{s} conflicts with {s}, which was selected by:", .{
-                    try label(self.gpa, candidate), try label(self.gpa, self.selected.get(other).?) }), self.origins.get(other).?.chain);
+                try self.record(requirement, try std.fmt.allocPrint(self.gpa, "{s} conflicts with {s}, which was selected by:", .{ try label(self.gpa, candidate), try label(self.gpa, self.selected.get(other).?) }), self.origins.get(other).?.chain);
                 continue;
             }
             try self.selected.put(self.gpa, name, candidate);
@@ -307,10 +352,13 @@ const Resolver = struct {
     }
 };
 const Manager = struct {
-    gpa: Allocator, out: *Builder,
+    gpa: Allocator,
+    out: *Builder,
     registry: std.StringHashMapUnmanaged(std.ArrayList(*Release)) = .empty,
     parsed: std.StringHashMapUnmanaged(*Constraint) = .empty,
-    requests: []const Pair = &.{}, installed: Installation = .empty, held: Set = .empty,
+    requests: []const Pair = &.{},
+    installed: Installation = .empty,
+    held: Set = .empty,
     advisories: std.StringHashMapUnmanaged(Advisory) = .empty,
     history: std.ArrayList(Snapshot) = .empty,
     fn constraint(self: *Manager, text: Text) Error!*Constraint {
@@ -322,7 +370,9 @@ const Manager = struct {
     fn checkedVersion(self: *Manager, text: Text) Error!Version {
         return (try parseVersion(self.gpa, text)) orelse return bad(self.gpa, "invalid version '{s}'", .{text});
     }
-    fn matches(self: *const Manager, value: Version, text: Text) bool { return self.parsed.get(text).?.matches(value); }
+    fn matches(self: *const Manager, value: Version, text: Text) bool {
+        return self.parsed.get(text).?.matches(value);
+    }
     fn find(self: *const Manager, name: Text, text: Text) ?*Release {
         if (self.registry.get(name)) |versions| {
             for (versions.items) |value| if (equal(value.version.text, text)) return value;
@@ -371,7 +421,10 @@ const Manager = struct {
                 if (arranged.contains(name)) continue;
                 const value = next.get(name).?;
                 var ready = true;
-                for (value.dependencies) |pair| if (!arranged.contains(pair.name)) { ready = false; break; };
+                for (value.dependencies) |pair| if (!arranged.contains(pair.name)) {
+                    ready = false;
+                    break;
+                };
                 if (!ready) continue;
                 if (self.installed.get(name)) |old| {
                     if (old != value) {
@@ -388,13 +441,18 @@ const Manager = struct {
             }
         }
         var dropping: Set = .empty;
-        for (try keys(scratch, self.installed)) |name| if (!next.contains(name)) { try dropping.put(scratch, name, {}); };
+        for (try keys(scratch, self.installed)) |name| if (!next.contains(name)) {
+            try dropping.put(scratch, name, {});
+        };
         while (dropping.count() > 0) {
             for (try keys(scratch, dropping)) |name| {
                 var ready = true;
                 for (try keys(scratch, dropping)) |other| {
                     for (self.installed.get(other).?.dependencies) |pair| {
-                        if (equal(pair.name, name)) { ready = false; break; }
+                        if (equal(pair.name, name)) {
+                            ready = false;
+                            break;
+                        }
                     }
                     if (!ready) break;
                 }
@@ -406,8 +464,7 @@ const Manager = struct {
                 }
             }
         }
-        if (added + upgraded + downgraded + removed == 0) try self.out.add("no changes\n")
-        else try self.out.line("{d} installed, {d} upgraded, {d} downgraded, {d} removed", .{ added, upgraded, downgraded, removed });
+        if (added + upgraded + downgraded + removed == 0) try self.out.add("no changes\n") else try self.out.line("{d} installed, {d} upgraded, {d} downgraded, {d} removed", .{ added, upgraded, downgraded, removed });
     }
     fn update(self: *Manager, requests: []const Pair, installed: Installation, save: bool) Allocator.Error!void {
         if (save) try self.history.append(self.gpa, .{ .requests = try self.gpa.dupe(Pair, self.requests), .installed = try clone(self.gpa, self.installed) });
@@ -415,7 +472,9 @@ const Manager = struct {
         self.installed = try clone(self.gpa, installed);
         var keep: Set = .empty;
         var iterator = self.held.keyIterator();
-        while (iterator.next()) |name| if (installed.contains(name.*)) { try keep.put(self.gpa, name.*, {}); };
+        while (iterator.next()) |name| if (installed.contains(name.*)) {
+            try keep.put(self.gpa, name.*, {});
+        };
         self.held = keep;
     }
     fn requested(self: *const Manager, name: Text) ?Text {
@@ -437,7 +496,10 @@ const Manager = struct {
         const value = self.installed.get(root).?;
         try self.out.print("{s}{s}", .{ prefix, try label(scratch, value) });
         if (text) |condition| try self.out.print(" [{s}]", .{condition});
-        if (seen.contains(root)) { try self.out.add(" (*)\n"); return; }
+        if (seen.contains(root)) {
+            try self.out.add(" (*)\n");
+            return;
+        }
         try self.out.add("\n");
         try seen.put(scratch, root, {});
         for (value.dependencies, 0..) |pair, i| {
@@ -485,7 +547,11 @@ const Manager = struct {
         } else if (equal(cmd, "COMPARE")) {
             const a = try self.checkedVersion(w[1]);
             const b = try self.checkedVersion(w[2]);
-            const relation: Text = switch (compare(a, b)) { .lt => "<", .eq => "=", .gt => ">" };
+            const relation: Text = switch (compare(a, b)) {
+                .lt => "<",
+                .eq => "=",
+                .gt => ">",
+            };
             try self.out.line("{s} {s} {s}", .{ w[1], relation, w[2] });
         } else if (equal(cmd, "MATCH")) {
             const parts = try split(scratch, line, " ", 3);
@@ -514,7 +580,11 @@ const Manager = struct {
                 try requests.appendSlice(scratch, self.requests);
                 var found = false;
                 for (requests.items) |*pair| {
-                    if (equal(pair.name, w[1])) { pair.text = text; found = true; break; }
+                    if (equal(pair.name, w[1])) {
+                        pair.text = text;
+                        found = true;
+                        break;
+                    }
                 }
                 if (!found) try requests.append(scratch, .{ .name = w[1], .text = text });
                 const result = try self.resolve(scratch, requests.items, try self.allPreferred(scratch), false);
@@ -546,7 +616,10 @@ const Manager = struct {
             var keep: Installation = .empty;
             var queue: std.ArrayList(Text) = .empty;
             for (self.requests) |pair| {
-                if (!equal(pair.name, w[1])) { try requests.append(scratch, pair); try queue.append(scratch, pair.name); }
+                if (!equal(pair.name, w[1])) {
+                    try requests.append(scratch, pair);
+                    try queue.append(scratch, pair.name);
+                }
             }
             var at: usize = 0;
             while (at < queue.items.len) : (at += 1) {
@@ -566,7 +639,10 @@ const Manager = struct {
         } else if (equal(cmd, "UPGRADE")) {
             if (w.len == 2 and !self.installed.contains(w[1])) return bad(self.gpa, "{s} is not installed", .{w[1]});
             var preferred: Set = .empty;
-            if (w.len == 2) { preferred = try self.allPreferred(scratch); _ = preferred.remove(w[1]); }
+            if (w.len == 2) {
+                preferred = try self.allPreferred(scratch);
+                _ = preferred.remove(w[1]);
+            }
             const result = try self.resolve(scratch, self.requests, preferred, false);
             if (result.selected) |selected| {
                 try self.plan(scratch, selected);
@@ -597,7 +673,10 @@ const Manager = struct {
             var roots: Set = .empty;
             var queue: std.ArrayList(Text) = .empty;
             for (self.requests) |pair| try roots.put(scratch, pair.name, {});
-            for (try keys(scratch, roots)) |name| { try queue.append(scratch, name); try seen.put(scratch, name, {}); }
+            for (try keys(scratch, roots)) |name| {
+                try queue.append(scratch, name);
+                try seen.put(scratch, name, {});
+            }
             var at: usize = 0;
             while (at < queue.items.len) : (at += 1) {
                 const name = queue.items[at];
@@ -637,7 +716,9 @@ const Manager = struct {
                 if (self.requested(name)) |text| try conditions.append(scratch, text);
                 var iterator = self.installed.valueIterator();
                 while (iterator.next()) |other| {
-                    for (other.*.dependencies) |pair| if (equal(pair.name, name)) { try conditions.append(scratch, pair.text); };
+                    for (other.*.dependencies) |pair| if (equal(pair.name, name)) {
+                        try conditions.append(scratch, pair.text);
+                    };
                 }
                 var wanted: ?*Release = null;
                 var latest: ?*Release = null;
@@ -645,7 +726,10 @@ const Manager = struct {
                     if (!value.yanked and value.version.pre.len == 0 and latest == null) latest = value;
                     if (wanted != null or (value.yanked and value != current)) continue;
                     var valid = true;
-                    for (conditions.items) |text| if (!self.matches(value.version, text)) { valid = false; break; };
+                    for (conditions.items) |text| if (!self.matches(value.version, text)) {
+                        valid = false;
+                        break;
+                    };
                     if (valid) wanted = value;
                 }
                 if (wanted.? != current or (latest != null and compare(latest.?.version, current.version) == .gt)) {
@@ -687,7 +771,11 @@ const Manager = struct {
                         i -= 1;
                         const value = values[i];
                         if (compare(value.version, current.version) == .gt and value.version.pre.len == 0 and !value.yanked and
-                            (try self.applicable(scratch, value)).len == 0) { fix = value; break; }
+                            (try self.applicable(scratch, value)).len == 0)
+                        {
+                            fix = value;
+                            break;
+                        }
                     }
                     const suffix = if (fix) |value| try std.fmt.allocPrint(scratch, "fix: {s}", .{value.version.text}) else "no fix";
                     try self.out.line("{s}: {s} ({s})", .{ try label(scratch, current), try join(scratch, ids, ", "), suffix });

@@ -575,7 +575,7 @@ class Inventory {
                 if ($command === 'VALUE') {
                     $this->emit(0, 'VALUE', ...$a);
                 } else {
-                    $this->emit(0, 'AGING', ...$a, 'day', $this->day);
+                    $this->emit(0, 'AGING', ...array_merge($a, ['day', $this->day]));
                 }
                 $totalQuantity = 0;
                 $totalValue = 0;

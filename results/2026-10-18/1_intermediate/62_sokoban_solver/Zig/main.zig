@@ -120,7 +120,11 @@ const Position = struct {
 };
 
 const Transform = enum {
-    ROT90, ROT180, ROT270, FLIPH, FLIPV,
+    ROT90,
+    ROT180,
+    ROT270,
+    FLIPH,
+    FLIPV,
 
     fn letters(self: Transform) []const u8 {
         return switch (self) {
@@ -519,7 +523,9 @@ fn pushSearch(gpa: Allocator, level: *const Level, start: Position, fixed: Boxes
                 try nodes.append(gpa, .{ .boxes = boxes, .representative = next_rep, .parent = parent, .box = box, .direction = direction });
                 const reached = if (target) |goal| destination == goal else level.solved(boxes);
                 if (reached) return .{
-                    .outcome = .found, .expanded = expanded, .states = nodes.items.len,
+                    .outcome = .found,
+                    .expanded = expanded,
+                    .states = nodes.items.len,
                     .notation = try solutionNotation(gpa, level, start, nodes.items),
                 };
             }
@@ -530,9 +536,32 @@ fn pushSearch(gpa: Allocator, level: *const Level, start: Position, fixed: Boxes
 
 const Kind = enum { number, steps, direction, name, transform, text };
 const Command = enum {
-    IMPORT, VALID, INFO, SHOW, EXPORT, MOVE, PUSH, BRING, PATH, UNDO, REDO, RESET,
-    STATUS, HISTORY, BOXES, REACH, DEADSQUARES, DEADLOCK, BOUND, SAVE, RESTORE,
-    CHECK, SOLVE, HINT, PLAY, TRANSFORM,
+    IMPORT,
+    VALID,
+    INFO,
+    SHOW,
+    EXPORT,
+    MOVE,
+    PUSH,
+    BRING,
+    PATH,
+    UNDO,
+    REDO,
+    RESET,
+    STATUS,
+    HISTORY,
+    BOXES,
+    REACH,
+    DEADSQUARES,
+    DEADLOCK,
+    BOUND,
+    SAVE,
+    RESTORE,
+    CHECK,
+    SOLVE,
+    HINT,
+    PLAY,
+    TRANSFORM,
 
     fn kinds(self: Command) []const Kind {
         return switch (self) {
@@ -630,7 +659,10 @@ const Game = struct {
             const direction = std.mem.findScalar(u8, directions, std.ascii.toLower(letter)).?;
             const result = self.level.step(position, direction);
             if (result.failure) |failure| return .{
-                .position = position, .letters = notation.items, .failed_step = index + 1, .failure = failure,
+                .position = position,
+                .letters = notation.items,
+                .failed_step = index + 1,
+                .failure = failure,
             };
             position = result.position;
             try notation.append(self.scratch, result.letter);
@@ -719,8 +751,7 @@ const Game = struct {
                 try printLine(self.out, "loaded {d}x{d}", .{ self.level.height, self.level.width });
             },
             .VALID => {
-                if (self.level.reason) |reason| try printLine(self.out, "invalid {s}", .{reason})
-                else try self.out.writeAll("valid\n");
+                if (self.level.reason) |reason| try printLine(self.out, "invalid {s}", .{reason}) else try self.out.writeAll("valid\n");
             },
             .INFO => try printLine(self.out, "size {d}x{d} walls {d} cells {d} boxes {d} dead {d}", .{
                 self.level.height, self.level.width, countFlags(self.level.walls), countFlags(self.level.interior), self.current.boxes.len, countFlags(self.level.dead),
@@ -818,8 +849,7 @@ const Game = struct {
                 const reach = self.level.reachable(self.current.player, self.current.boxes);
                 for (self.current.boxes.slice()) |box| {
                     try self.out.print("box {s} ", .{try self.level.cellText(self.scratch, box)});
-                    if (self.level.goalDistance(box)) |distance| try self.out.print("{d} ", .{distance})
-                    else try self.out.writeAll("dead ");
+                    if (self.level.goalDistance(box)) |distance| try self.out.print("{d} ", .{distance}) else try self.out.writeAll("dead ");
                     var letters: [4]u8 = undefined;
                     var len: usize = 0;
                     for (0..4) |direction| {

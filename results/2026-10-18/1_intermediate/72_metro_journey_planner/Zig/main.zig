@@ -64,10 +64,7 @@ const Station = struct {
     walks: std.StringHashMapUnmanaged(usize) = .empty,
 };
 
-const Direction = struct {
-    stops: []const *Station,
-    offsets: []const usize
-};
+const Direction = struct { stops: []const *Station, offsets: []const usize };
 
 const Line = struct {
     id: Text,
@@ -103,11 +100,7 @@ const Line = struct {
     }
 };
 
-const Kind = enum {
-    ride,
-    walk,
-    stay
-};
+const Kind = enum { ride, walk, stay };
 
 const Leg = struct {
     kind: Kind,
@@ -120,26 +113,13 @@ const Leg = struct {
     stops: usize = 0,
 };
 
-const Label = struct {
-    arrival: usize,
-    journey: []const Leg
-};
+const Label = struct { arrival: usize, journey: []const Leg };
 
 const Labels = []?Label;
 
-const Tariff = struct {
-    discount: usize,
-    window: usize,
-    prices: []const usize
-};
+const Tariff = struct { discount: usize, window: usize, prices: []const usize };
 
-const Departure = struct {
-    time: usize,
-    service: *Line,
-    which: usize,
-    terminal: *Station,
-    start: *Station
-};
+const Departure = struct { time: usize, service: *Line, which: usize, terminal: *Station, start: *Station };
 
 fn indexOf(stops: []const *Station, station: *Station) ?usize {
     for (stops, 0..) |candidate, i| if (candidate == station) return i;
@@ -158,19 +138,14 @@ fn improves(labels: Labels, target: *Station, arrival: usize) bool {
 }
 
 fn ride(service: *Line, d: Direction, a: usize, b: usize, depart: usize, arrive: usize) Leg {
-    return .{ .kind = .ride, .service = service, .terminal = d.stops[d.stops.len - 1],
-        .from = d.stops[a], .to = d.stops[b], .depart = depart, .arrive = arrive, .stops = b - a };
+    return .{ .kind = .ride, .service = service, .terminal = d.stops[d.stops.len - 1], .from = d.stops[a], .to = d.stops[b], .depart = depart, .arrive = arrive, .stops = b - a };
 }
 
 fn walk(a: *Station, b: *Station, depart: usize, arrive: usize) Leg {
     return .{ .kind = .walk, .from = a, .to = b, .depart = depart, .arrive = arrive };
 }
 
-fn counts(journey: []const Leg) struct {
-    rides: usize,
-    walks: usize
-}
-{
+fn counts(journey: []const Leg) struct { rides: usize, walks: usize } {
     var rides: usize = 0;
     var walks: usize = 0;
     for (journey) |leg| {
@@ -179,18 +154,14 @@ fn counts(journey: []const Leg) struct {
     return .{ .rides = rides, .walks = walks };
 }
 
-const Search = struct {
-    arena: std.heap.ArenaAllocator,
-    labels: Labels
-};
+const Search = struct { arena: std.heap.ArenaAllocator, labels: Labels };
 
 const Network = struct {
     gpa: Allocator,
     out: *Builder,
     stations: std.StringHashMapUnmanaged(*Station) = .empty,
     lines: std.StringHashMapUnmanaged(*Line) = .empty,
-    closed: std.AutoHashMapUnmanaged(usize,
-        void) = .empty,
+    closed: std.AutoHashMapUnmanaged(usize, void) = .empty,
     walk_count: usize = 0,
     tariff: ?Tariff = null,
     fn pair(a: *Station, b: *Station) usize {
@@ -205,11 +176,7 @@ const Network = struct {
     fn getLine(self: *Network, id: Text) Error!*Line {
         return self.lines.get(id) orelse return bad(self.gpa, "unknown line {s}", .{id});
     }
-    fn common(self: *Network, a: Text, b: Text) Error!struct {
-        origin: *Station,
-        destination: *Station
-    }
-    {
+    fn common(self: *Network, a: Text, b: Text) Error!struct { origin: *Station, destination: *Station } {
         const origin = try self.getStation(a);
         const destination = try self.getStation(b);
         if (origin == destination) return bad(self.gpa, "origin and destination are the same", .{});
@@ -252,7 +219,8 @@ const Network = struct {
                         if (target.closed) continue;
                         const arrival = service.time(q, d.offsets[j]);
                         if (improves(labels, target, arrival)) labels[target.index] = .{
-                            .arrival = arrival, .journey = try extend(gpa, current.journey, ride(service, d, i, j, depart, arrival)),
+                            .arrival = arrival,
+                            .journey = try extend(gpa, current.journey, ride(service, d, i, j, depart, arrival)),
                         };
                     }
                 }
@@ -261,7 +229,8 @@ const Network = struct {
                 const target = self.stations.get(id).?;
                 const arrival = current.arrival + source.walks.get(id).?;
                 if (!target.closed and arrival <= 1440 and improves(labels, target, arrival)) labels[target.index] = .{
-                    .arrival = arrival, .journey = try extend(gpa, current.journey, walk(source, target, current.arrival, arrival)),
+                    .arrival = arrival,
+                    .journey = try extend(gpa, current.journey, walk(source, target, current.arrival, arrival)),
                 };
             }
         }
@@ -282,8 +251,7 @@ const Network = struct {
                 const target = self.stations.get(neighbor).?;
                 const arrival = current.arrival + source.walks.get(neighbor).?;
                 if (!target.closed and arrival <= 1440 and improves(labels, target, arrival)) {
-                    labels[target.index] = .{ .arrival = arrival,
-                        .journey = try extend(gpa, current.journey, walk(source, target, current.arrival, arrival)) };
+                    labels[target.index] = .{ .arrival = arrival, .journey = try extend(gpa, current.journey, walk(source, target, current.arrival, arrival)) };
                     marked[target.index] = true;
                 }
             }
@@ -325,8 +293,7 @@ const Network = struct {
                         if (boarded) |q| {
                             const arrival = service.time(q, d.offsets[j]);
                             if (improves(following, target, arrival)) {
-                                following[target.index] = .{ .arrival = arrival,
-                                    .journey = try extend(gpa, prefix, ride(service, d, boarding, j, depart, arrival)) };
+                                following[target.index] = .{ .arrival = arrival, .journey = try extend(gpa, prefix, ride(service, d, boarding, j, depart, arrival)) };
                                 walking[target.index] = true;
                                 updated[target.index] = true;
                             }
@@ -355,18 +322,13 @@ const Network = struct {
     }
     fn printJourney(self: *Network, scratch: Allocator, heading: Text, start: usize, result: Label) Allocator.Error!void {
         const count = counts(result.journey);
-        try self.out.line("{s} {s} -> {s} total {d} rides {d} walks {d}", .{ heading,
-                try timeText(scratch, start), try timeText(scratch, result.arrival), result.arrival - start, count.rides, count.walks });
+        try self.out.line("{s} {s} -> {s} total {d} rides {d} walks {d}", .{ heading, try timeText(scratch, start), try timeText(scratch, result.arrival), result.arrival - start, count.rides, count.walks });
         var previous = start;
         for (result.journey) |leg| {
             switch (leg.kind) {
-                .ride => try self.out.line("RIDE {s} toward {s} {s} {s} -> {s} {s} wait {d} stops {d}", .{
-                        leg.service.?.id, leg.terminal.?.id, leg.from.id, try timeText(scratch, leg.depart),
-                        leg.to.id, try timeText(scratch, leg.arrive), leg.depart - previous, leg.stops }),
-                .walk => try self.out.line("WALK {s} {s} -> {s} {s}", .{ leg.from.id,
-                        try timeText(scratch, leg.depart), leg.to.id, try timeText(scratch, leg.arrive) }),
-                .stay => try self.out.line("STAY {s} {s} -> {s}", .{ leg.from.id,
-                        try timeText(scratch, leg.depart), try timeText(scratch, leg.arrive) }),
+                .ride => try self.out.line("RIDE {s} toward {s} {s} {s} -> {s} {s} wait {d} stops {d}", .{ leg.service.?.id, leg.terminal.?.id, leg.from.id, try timeText(scratch, leg.depart), leg.to.id, try timeText(scratch, leg.arrive), leg.depart - previous, leg.stops }),
+                .walk => try self.out.line("WALK {s} {s} -> {s} {s}", .{ leg.from.id, try timeText(scratch, leg.depart), leg.to.id, try timeText(scratch, leg.arrive) }),
+                .stay => try self.out.line("STAY {s} {s} -> {s}", .{ leg.from.id, try timeText(scratch, leg.depart), try timeText(scratch, leg.arrive) }),
             }
             previous = leg.arrive;
         }
@@ -390,12 +352,7 @@ const Network = struct {
         return (value + 19) / 20 * 10;
     }
     fn printFare(self: *Network, scratch: Allocator, origin: Text, destination: Text, start: usize, class: Text, result: Label) Allocator.Error!void {
-        const Ticket = struct {
-            leg: Leg,
-            zones: usize,
-            price: usize,
-            discount: usize
-        };
+        const Ticket = struct { leg: Leg, zones: usize, price: usize, discount: usize };
         var tickets: std.ArrayList(Ticket) = .empty;
         var total: usize = 0;
         var previous: ?usize = null;
@@ -405,9 +362,9 @@ const Network = struct {
             const service = leg.service.?;
             const a = indexOf(service.stops, leg.from).?;
             const b = indexOf(service.stops, leg.to).?;
-            var zones = [_]bool{false} ** 10;
+            var zones: [10]bool = @splat(false);
             var zone_count: usize = 0;
-            for (service.stops[@min(a, b)..@max(a, b) + 1]) |station| {
+            for (service.stops[@min(a, b) .. @max(a, b) + 1]) |station| {
                 if (!zones[station.zone]) {
                     zones[station.zone] = true;
                     zone_count += 1;
@@ -424,11 +381,8 @@ const Network = struct {
             try tickets.append(scratch, .{ .leg = leg, .zones = zone_count, .price = price, .discount = discount });
             previous = leg.arrive;
         }
-        try self.out.line("FARE {s} {s} {s} {s} rides {d} total {d}", .{ origin, destination,
-                try timeText(scratch, start), class, tickets.items.len, total });
-        for (tickets.items) |ticket| try self.out.line("TICKET {s} {s} {s} zones {d} price {d} discount {d} pay {d}", .{
-                ticket.leg.service.?.id, ticket.leg.from.id, ticket.leg.to.id, ticket.zones,
-                ticket.price, ticket.discount, ticket.price - ticket.discount });
+        try self.out.line("FARE {s} {s} {s} {s} rides {d} total {d}", .{ origin, destination, try timeText(scratch, start), class, tickets.items.len, total });
+        for (tickets.items) |ticket| try self.out.line("TICKET {s} {s} {s} zones {d} price {d} discount {d} pay {d}", .{ ticket.leg.service.?.id, ticket.leg.from.id, ticket.leg.to.id, ticket.zones, ticket.price, ticket.discount, ticket.price - ticket.discount });
     }
     fn command(self: *Network, scratch: Allocator, w: []const Text) Error!void {
         const cmd = w[0];
@@ -455,8 +409,7 @@ const Network = struct {
             const total = cumulative[cumulative.len - 1];
             if (last + total > 1440) return bad(self.gpa, "line {s} runs past 24:00", .{w[1]});
             const service = try self.gpa.create(Line);
-            service.* = .{ .id = w[1], .first = first, .last = last, .headway = number(w[4]),
-                .total = total, .stops = stops.items, .cumulative = cumulative };
+            service.* = .{ .id = w[1], .first = first, .last = last, .headway = number(w[4]), .total = total, .stops = stops.items, .cumulative = cumulative };
             try self.lines.put(self.gpa, service.id, service);
             try self.out.line("LINE {s} stops {d} time {d} trips {d}", .{ service.id, service.stops.len, total, service.trains() });
         } else if (equal(cmd, "TRANSFER")) {
@@ -522,7 +475,8 @@ const Network = struct {
                 try self.out.line("{s} {s}", .{ cmd, service.id });
             }
         } else if (equal(cmd, "ROUTE") or equal(cmd, "FEWEST") or equal(cmd, "PARETO") or equal(cmd, "FARE") or
-            equal(cmd, "LASTTRAIN") or equal(cmd, "ARRIVEBY") or equal(cmd, "PROFILE")) {
+            equal(cmd, "LASTTRAIN") or equal(cmd, "ARRIVEBY") or equal(cmd, "PROFILE"))
+        {
             const endpoints = try self.common(w[1], w[2]);
             const origin = endpoints.origin;
             const destination = endpoints.destination;
@@ -547,12 +501,10 @@ const Network = struct {
                     }
                 }
                 try self.out.line("PROFILE {s} {s} {s} {s} count {d}", .{ origin.id, destination.id, w[3], w[4], selected.items.len });
-                for (selected.items) |i| try self.out.line("{s} -> {s} total {d}", .{
-                        try timeText(scratch, start + i), try timeText(scratch, arrivals[i].?), arrivals[i].? - start - i });
+                for (selected.items) |i| try self.out.line("{s} -> {s} total {d}", .{ try timeText(scratch, start + i), try timeText(scratch, arrivals[i].?), arrivals[i].? - start - i });
             } else if (equal(cmd, "LASTTRAIN") or equal(cmd, "ARRIVEBY")) {
                 const last_train = equal(cmd, "LASTTRAIN");
-                const heading = if (last_train) try std.fmt.allocPrint(scratch, "LASTTRAIN {s} {s}", .{ origin.id, destination.id })
-                else try std.fmt.allocPrint(scratch, "ARRIVEBY {s} {s} by {s}", .{ origin.id, destination.id, w[3] });
+                const heading = if (last_train) try std.fmt.allocPrint(scratch, "LASTTRAIN {s} {s}", .{ origin.id, destination.id }) else try std.fmt.allocPrint(scratch, "ARRIVEBY {s} {s} by {s}", .{ origin.id, destination.id, w[3] });
                 var remaining: usize = if (last_train) 1440 else start;
                 while (remaining > 0) {
                     remaining -= 1;
@@ -597,10 +549,8 @@ const Network = struct {
                 var found = try self.search(origin, start);
                 defer found.arena.deinit();
                 if (found.labels[destination.index]) |label| {
-                    if (equal(cmd, "FARE")) try self.printFare(scratch, origin.id, destination.id, start, w[4], label)
-                    else try self.printJourney(scratch, try std.fmt.allocPrint(scratch, "ROUTE {s} {s}", .{ origin.id, destination.id }), start, label);
-                } else if (equal(cmd, "FARE")) try self.out.line("FARE {s} {s} {s} {s} unreachable", .{ origin.id, destination.id, w[3], w[4] })
-                else try self.out.line("ROUTE {s} {s} {s} unreachable", .{ origin.id, destination.id, w[3] });
+                    if (equal(cmd, "FARE")) try self.printFare(scratch, origin.id, destination.id, start, w[4], label) else try self.printJourney(scratch, try std.fmt.allocPrint(scratch, "ROUTE {s} {s}", .{ origin.id, destination.id }), start, label);
+                } else if (equal(cmd, "FARE")) try self.out.line("FARE {s} {s} {s} {s} unreachable", .{ origin.id, destination.id, w[3], w[4] }) else try self.out.line("ROUTE {s} {s} {s} unreachable", .{ origin.id, destination.id, w[3] });
             }
         } else if (equal(cmd, "VIA")) {
             const origin = try self.getStation(w[1]);
@@ -654,8 +604,7 @@ const Network = struct {
             try self.out.line("REACH {s} {s} {d} count {d}", .{ origin.id, w[2], duration, selected.items.len });
             for (selected.items) |station| {
                 const label = found.labels[station.index].?;
-                try self.out.line("{s} {s} {s} {d} rides {d}", .{ station.id, station.name,
-                        try timeText(scratch, label.arrival), label.arrival - start, counts(label.journey).rides });
+                try self.out.line("{s} {s} {s} {d} rides {d}", .{ station.id, station.name, try timeText(scratch, label.arrival), label.arrival - start, counts(label.journey).rides });
             }
         } else if (equal(cmd, "TIMETABLE")) {
             const station = try self.getStation(w[1]);
@@ -687,9 +636,7 @@ const Network = struct {
                     const at = indexOf(d.stops, station) orelse continue;
                     if ((departures and at + 1 == d.stops.len) or (!departures and at == 0)) continue;
                     const q = service.firstTrain(d.offsets[at], timeValue(w[2])) orelse continue;
-                    for (q..service.trains()) |train| try choices.append(scratch, .{
-                            .time = service.time(train, d.offsets[at]), .service = service, .which = which,
-                            .terminal = d.stops[d.stops.len - 1], .start = d.stops[0] });
+                    for (q..service.trains()) |train| try choices.append(scratch, .{ .time = service.time(train, d.offsets[at]), .service = service, .which = which, .terminal = d.stops[d.stops.len - 1], .start = d.stops[0] });
                 }
             }
             const Less = struct {
@@ -702,15 +649,11 @@ const Network = struct {
             std.mem.sort(Departure, choices.items, {}, Less.less);
             const count = @min(choices.items.len, number(w[3]));
             try self.out.line("{s} {s} {s} count {d}", .{ cmd, station.id, w[2], count });
-            for (choices.items[0..count]) |choice| try self.out.line("{s} {s} {s} {s}", .{
-                    try timeText(scratch, choice.time), choice.service.id, if (departures) @as(Text, "toward") else "from",
-                    if (departures) choice.terminal.id else choice.start.id });
+            for (choices.items[0..count]) |choice| try self.out.line("{s} {s} {s} {s}", .{ try timeText(scratch, choice.time), choice.service.id, if (departures) @as(Text, "toward") else "from", if (departures) choice.terminal.id else choice.start.id });
         } else if (equal(cmd, "TRIP") or equal(cmd, "SHOWLINE")) {
             const service = try self.getLine(w[1]);
             if (equal(cmd, "SHOWLINE")) {
-                try self.out.line("SHOWLINE {s} {s} first {s} last {s} headway {d} delay {d} trips {d}", .{ service.id,
-                        if (service.suspended) @as(Text, "suspended") else "running", try timeText(scratch, service.first),
-                        try timeText(scratch, service.last), service.headway, service.delay, service.trains() });
+                try self.out.line("SHOWLINE {s} {s} first {s} last {s} headway {d} delay {d} trips {d}", .{ service.id, if (service.suspended) @as(Text, "suspended") else "running", try timeText(scratch, service.first), try timeText(scratch, service.last), service.headway, service.delay, service.trains() });
                 for (service.stops, 0..) |station, i| {
                     try self.out.print("{d} {s} zone {d}", .{ service.cumulative[i], station.id, station.zone });
                     if (station.closed) try self.out.add(" closed");
@@ -727,8 +670,7 @@ const Network = struct {
                     try self.out.line("TRIP {s} toward {s} {s} none", .{ service.id, w[2], w[3] });
                     return;
                 };
-                try self.out.line("TRIP {s} toward {s} {s} trip {d} departs {s}", .{
-                        service.id, w[2], w[3], q + 1, try timeText(scratch, service.time(q, 0)) });
+                try self.out.line("TRIP {s} toward {s} {s} trip {d} departs {s}", .{ service.id, w[2], w[3], q + 1, try timeText(scratch, service.time(q, 0)) });
                 for (d.stops, 0..) |station, i| {
                     try self.out.print("{s} {s}", .{ try timeText(scratch, service.time(q, d.offsets[i])), station.id });
                     if (station.closed) try self.out.add(" closed");
@@ -738,8 +680,7 @@ const Network = struct {
             }
         } else if (equal(cmd, "INFO")) {
             const station = try self.getStation(w[1]);
-            try self.out.line("INFO {s} {s} zone {d} transfer {d} {s}", .{ station.id, station.name, station.zone,
-                    station.transfer, if (station.closed) @as(Text, "closed") else "open" });
+            try self.out.line("INFO {s} {s} zone {d} transfer {d} {s}", .{ station.id, station.name, station.zone, station.transfer, if (station.closed) @as(Text, "closed") else "open" });
             try self.out.add("LINES");
             var count: usize = 0;
             for (try keys(scratch, self.lines)) |id| {
@@ -762,7 +703,7 @@ const Network = struct {
                 if (self.stations.get(id).?.closed) try self.out.line("CLOSED {s}", .{id});
             }
             for (station_ids, 0..) |a, i| {
-                for (station_ids[i + 1..]) |b| {
+                for (station_ids[i + 1 ..]) |b| {
                     if (self.blocked(self.stations.get(a).?, self.stations.get(b).?)) try self.out.line("CLOSED {s}-{s}", .{ a, b });
                 }
             }

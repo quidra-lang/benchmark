@@ -2,9 +2,15 @@ const std = @import("std");
 const Text = []const u8;
 const I = i64;
 const Vec = [8]I;
-fn eq(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
-fn number(a: Text) I { return std.fmt.parseInt(I, a, 10) catch unreachable; }
-fn index(a: I) usize { return @intCast(a); }
+fn eq(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn number(a: Text) I {
+    return std.fmt.parseInt(I, a, 10) catch unreachable;
+}
+fn index(a: I) usize {
+    return @intCast(a);
+}
 fn sum(v: Vec) I {
     var answer: I = 0;
     for (v) |item| answer += item;
@@ -22,8 +28,13 @@ fn combine(a: Vec, b: Vec, sign: I) Vec {
 const Ids = struct {
     values: [100]usize = undefined,
     len: usize = 0,
-    fn add(s: *Ids, who: usize) void { s.values[s.len] = who; s.len += 1; }
-    fn items(s: *const Ids) []const usize { return s.values[0..s.len]; }
+    fn add(s: *Ids, who: usize) void {
+        s.values[s.len] = who;
+        s.len += 1;
+    }
+    fn items(s: *const Ids) []const usize {
+        return s.values[0..s.len];
+    }
     fn contains(s: *const Ids, who: usize) bool {
         for (s.items()) |item| if (item == who) return true;
         return false;
@@ -32,8 +43,12 @@ const Ids = struct {
 const Host = struct {
     a: std.mem.Allocator,
     out: *std.Io.Writer,
-    fn text(h: Host, comptime f: Text, args: anytype) !Text { return std.fmt.allocPrint(h.a, f, args); }
-    fn line(h: Host, comptime f: Text, args: anytype) !void { try h.out.print(f ++ "\n", args); }
+    fn text(h: Host, comptime f: Text, args: anytype) !Text {
+        return std.fmt.allocPrint(h.a, f, args);
+    }
+    fn line(h: Host, comptime f: Text, args: anytype) !void {
+        try h.out.print(f ++ "\n", args);
+    }
     fn vector(h: Host, v: Vec, m: usize) !Text {
         var b: std.Io.Writer.Allocating = .init(h.a);
         try b.writer.writeByte('(');
@@ -93,7 +108,9 @@ const Manager = struct {
         if (s.queued(who)) |at| return s.data.queue.items[at].amount;
         return @splat(0);
     }
-    fn needOf(s: *const Manager, who: usize) Vec { return combine(s.data.jobs[who].maximum, s.data.jobs[who].allocation, -1); }
+    fn needOf(s: *const Manager, who: usize) Vec {
+        return combine(s.data.jobs[who].maximum, s.data.jobs[who].allocation, -1);
+    }
     fn inspect(s: *const Manager, model: Model, detection: bool, verbose: bool) !Check {
         var work = model.available;
         var done: [100]bool = undefined;
@@ -108,7 +125,7 @@ const Manager = struct {
         const tag: Text = if (detection) "detect" else "safety";
         if (verbose) {
             const suffix = if (idle.len > 0) try s.h.text(" idle {s}", .{try s.h.people(idle, " ")}) else "";
-            try s.h.line("[{s}] start work={s}{s}", .{tag, try s.h.vector(work, model.m), suffix});
+            try s.h.line("[{s}] start work={s}{s}", .{ tag, try s.h.vector(work, model.m), suffix });
         }
         var result: Check = .{};
         while (true) {
@@ -122,41 +139,48 @@ const Manager = struct {
                         if (waiting.who == who) requirement = waiting.amount;
                     }
                 }
-                if (fits(requirement, work)) { chosen = who; break; }
+                if (fits(requirement, work)) {
+                    chosen = who;
+                    break;
+                }
             }
             const who = chosen orelse break;
             done[who] = true;
             work = combine(work, model.jobs[who].allocation, 1);
             result.order.add(who);
-            if (verbose) try s.h.line("[{s}] P{d} can finish, work={s}", .{tag, who, try s.h.vector(work, model.m)});
+            if (verbose) try s.h.line("[{s}] P{d} can finish, work={s}", .{ tag, who, try s.h.vector(work, model.m) });
         }
-        for (done, 0..) |finished, who| if (!finished) { result.remaining.add(who); };
-        if (verbose and result.remaining.len > 0) try s.h.line("[{s}] stuck work={s} remaining {s}", .{tag, try s.h.vector(work, model.m), try s.h.people(result.remaining, " ")});
+        for (done, 0..) |finished, who| if (!finished) {
+            result.remaining.add(who);
+        };
+        if (verbose and result.remaining.len > 0) try s.h.line("[{s}] stuck work={s} remaining {s}", .{ tag, try s.h.vector(work, model.m), try s.h.people(result.remaining, " ") });
         return result;
     }
     fn decide(s: *const Manager, who: usize, amount: Vec, reject: bool, verbose: bool) !Decision {
         if (reject) {
-            if (s.queued(who) != null) return .{.status = .rejected, .reason = try s.h.text("process P{d} is blocked", .{who})};
-            if (sum(amount) == 0) return .{.status = .rejected, .reason = "zero vector"};
-            if (!fits(amount, s.needOf(who))) return .{.status = .rejected, .reason = "request exceeds need"};
+            if (s.queued(who) != null) return .{ .status = .rejected, .reason = try s.h.text("process P{d} is blocked", .{who}) };
+            if (sum(amount) == 0) return .{ .status = .rejected, .reason = "zero vector" };
+            if (!fits(amount, s.needOf(who))) return .{ .status = .rejected, .reason = "request exceeds need" };
             if (eq(s.mode, "ORDER")) {
                 var last: ?usize = null;
-                for (s.data.jobs[who].allocation, 0..) |value, j| if (value > 0) { last = j; };
+                for (s.data.jobs[who].allocation, 0..) |value, j| if (value > 0) {
+                    last = j;
+                };
                 if (last) |end| for (amount[0 .. end + 1]) |value| {
-                    if (value > 0) return .{.status = .rejected, .reason = "resource order violation"};
+                    if (value > 0) return .{ .status = .rejected, .reason = "resource order violation" };
                 };
             }
         }
-        if (!fits(amount, s.data.available)) return .{.status = .blocked, .reason = "insufficient resources"};
-        if (!eq(s.mode, "AVOID")) return .{.status = .granted};
+        if (!fits(amount, s.data.available)) return .{ .status = .blocked, .reason = "insufficient resources" };
+        if (!eq(s.mode, "AVOID")) return .{ .status = .granted };
         var trial = s.data;
         trial.available = combine(trial.available, amount, -1);
         trial.jobs[who].allocation = combine(trial.jobs[who].allocation, amount, 1);
         const checked = try s.inspect(trial, false, verbose);
-        return if (checked.remaining.len == 0) .{.status = .granted, .order = checked.order} else .{.status = .blocked, .reason = "unsafe state"};
+        return if (checked.remaining.len == 0) .{ .status = .granted, .order = checked.order } else .{ .status = .blocked, .reason = "unsafe state" };
     }
     fn record(s: *Manager, kind: Text, who: usize, amount: Vec, waited: I) !void {
-        try s.data.events.append(s.h.a, .{.stamp = s.stamp, .kind = kind, .who = who, .amount = amount, .waited = waited});
+        try s.data.events.append(s.h.a, .{ .stamp = s.stamp, .kind = kind, .who = who, .amount = amount, .waited = waited });
     }
     fn grant(s: *Manager, who: usize, amount: Vec) void {
         s.data.available = combine(s.data.available, amount, -1);
@@ -170,7 +194,7 @@ const Manager = struct {
             if (choice.status == .granted) {
                 s.grant(waiting.who, waiting.amount);
                 _ = s.data.queue.orderedRemove(at);
-                try s.h.line("unblocked P{d} {s}", .{waiting.who, try s.h.vector(waiting.amount, s.data.m)});
+                try s.h.line("unblocked P{d} {s}", .{ waiting.who, try s.h.vector(waiting.amount, s.data.m) });
                 try s.record("unblocked", waiting.who, waiting.amount, s.stamp - waiting.since);
             } else at += 1;
         }
@@ -180,7 +204,7 @@ const Manager = struct {
         if (s.queued(who)) |at| _ = s.data.queue.orderedRemove(at);
         s.data.available = combine(s.data.available, released, 1);
         s.data.jobs[who].exists = false;
-        try s.h.line("{s} P{d} released {s}", .{kind, who, try s.h.vector(released, s.data.m)});
+        try s.h.line("{s} P{d} released {s}", .{ kind, who, try s.h.vector(released, s.data.m) });
         try s.record(kind, who, released, 0);
         if (retry_after) try s.retryQueue();
     }
@@ -235,7 +259,7 @@ const Manager = struct {
                 var next_labels = labels;
                 next_labels[path.len - 1] = j;
                 if (next_id == start) {
-                    try results.append(s.h.a, .{.path = path, .labels = next_labels});
+                    try results.append(s.h.a, .{ .path = path, .labels = next_labels });
                 } else if (next_id > start and !path.contains(next_id)) {
                     var extended = path;
                     extended.add(next_id);
@@ -250,14 +274,14 @@ const Manager = struct {
         if (resource_graph) {
             for (s.data.total[0..s.data.m]) |value| if (value != 1) return s.h.line("error: not single-instance", .{});
             for (0..s.data.m) |j| for (s.data.jobs, 0..) |job, who| {
-                if (job.exists and job.allocation[j] > 0) try s.h.line("assign {c} -> P{d}", .{@as(u8, 'A') + @as(u8, @intCast(j)), who});
+                if (job.exists and job.allocation[j] > 0) try s.h.line("assign {c} -> P{d}", .{ @as(u8, 'A') + @as(u8, @intCast(j)), who });
             };
             for (0..2) |stage| for (s.data.jobs, 0..) |job, who| {
                 if (!job.exists) continue;
                 const wanted = s.requestOf(who);
                 const needed = s.needOf(who);
                 for (0..s.data.m) |j| {
-                    if ((stage == 0 and wanted[j] > 0) or (stage == 1 and needed[j] > 0 and wanted[j] == 0)) try s.h.line("{s} P{d} -> {c}", .{if (stage == 0) @as(Text, "request") else "claim", who, @as(u8, 'A') + @as(u8, @intCast(j))});
+                    if ((stage == 0 and wanted[j] > 0) or (stage == 1 and needed[j] > 0 and wanted[j] == 0)) try s.h.line("{s} P{d} -> {c}", .{ if (stage == 0) @as(Text, "request") else "claim", who, @as(u8, 'A') + @as(u8, @intCast(j)) });
                 }
             };
         } else {
@@ -275,7 +299,7 @@ const Manager = struct {
                     }
                     if (labels.written().len > 0) {
                         edges += 1;
-                        try s.h.line("P{d} -> P{d} on {s}", .{who, next_id, labels.written()});
+                        try s.h.line("P{d} -> P{d} on {s}", .{ who, next_id, labels.written() });
                     }
                 }
             }
@@ -312,24 +336,35 @@ const Manager = struct {
     fn command(s: *Manager, tokens: []const Text) !void {
         const op = tokens[0];
         if (eq(op, "RESOURCES")) {
-            s.data = .{.m = tokens.len - 1};
+            s.data = .{ .m = tokens.len - 1 };
             for (tokens[1..], 0..) |token, j| s.data.total[j] = number(token);
             s.data.available = s.data.total;
             return s.h.line("resources {s}", .{try s.h.vector(s.data.total, s.data.m)});
         }
         if (eq(op, "MODE") or eq(op, "POLICY") or eq(op, "TRACE") or eq(op, "AUTODETECT")) {
             var label: Text = undefined;
-            if (eq(op, "MODE")) { s.mode = tokens[1]; label = "mode"; }
-            else if (eq(op, "POLICY")) { s.policy = tokens[1]; label = "policy"; }
-            else if (eq(op, "TRACE")) { s.tracing = eq(tokens[1], "ON"); label = "trace"; }
-            else { s.autodetect = eq(tokens[1], "ON"); label = "autodetect"; }
-            return s.h.line("{s} {s}", .{label, tokens[1]});
+            if (eq(op, "MODE")) {
+                s.mode = tokens[1];
+                label = "mode";
+            } else if (eq(op, "POLICY")) {
+                s.policy = tokens[1];
+                label = "policy";
+            } else if (eq(op, "TRACE")) {
+                s.tracing = eq(tokens[1], "ON");
+                label = "trace";
+            } else {
+                s.autodetect = eq(tokens[1], "ON");
+                label = "autodetect";
+            }
+            return s.h.line("{s} {s}", .{ label, tokens[1] });
         }
         if (eq(op, "SNAPSHOT") or eq(op, "RESTORE")) {
             var at: ?usize = null;
-            for (s.snapshots.items, 0..) |saved, j| if (eq(saved.name, tokens[1])) { at = j; };
+            for (s.snapshots.items, 0..) |saved, j| if (eq(saved.name, tokens[1])) {
+                at = j;
+            };
             if (eq(op, "SNAPSHOT")) {
-                const saved = Snapshot{.name = tokens[1], .data = try s.data.clone(s.h.a)};
+                const saved = Snapshot{ .name = tokens[1], .data = try s.data.clone(s.h.a) };
                 if (at) |j| s.snapshots.items[j] = saved else try s.snapshots.append(s.h.a, saved);
                 return s.h.line("saved {s}", .{tokens[1]});
             }
@@ -365,7 +400,9 @@ const Manager = struct {
             for (0..s.data.m) |j| {
                 if (j > 0) try s.h.out.writeByte(',');
                 var limit: I = 0;
-                for (s.data.jobs, 0..) |job, who| if (job.exists) { limit += s.needOf(who)[j]; };
+                for (s.data.jobs, 0..) |job, who| if (job.exists) {
+                    limit += s.needOf(who)[j];
+                };
                 var extra: I = 0;
                 while (extra <= limit) : (extra += 1) {
                     var trial = s.data;
@@ -398,10 +435,16 @@ const Manager = struct {
                 var preferred = selected.len < best.len or weight < best_weight;
                 if (selected.len == best.len and weight == best_weight) {
                     for (selected.items(), best.items()) |a, b| {
-                        if (a != b) { preferred = a < b; break; }
+                        if (a != b) {
+                            preferred = a < b;
+                            break;
+                        }
                     }
                 }
-                if (preferred and (try s.inspect(trial, true, false)).remaining.len == 0) { best = selected; best_weight = weight; }
+                if (preferred and (try s.inspect(trial, true, false)).remaining.len == 0) {
+                    best = selected;
+                    best_weight = weight;
+                }
             }
             return s.h.line("victims: {s}", .{try s.h.people(best, " ")});
         }
@@ -411,7 +454,10 @@ const Manager = struct {
                 const dead = (try s.inspect(s.data, true, s.tracing)).remaining;
                 if (dead.len == 0) break;
                 if (tokens.len == 2) {
-                    for (dead.items()) |who| { try s.terminate(who, "aborted", false); count_aborted += 1; }
+                    for (dead.items()) |who| {
+                        try s.terminate(who, "aborted", false);
+                        count_aborted += 1;
+                    }
                     try s.retryQueue();
                     break;
                 }
@@ -436,11 +482,11 @@ const Manager = struct {
                 try names.writer.writeByte(@as(u8, 'A') + @as(u8, @intCast(j)));
             }
             const row = names.written();
-            const widths: [4]usize = .{@max(10, row.len), @max(3, row.len), @max(4, row.len), @max(7, row.len)};
-            try s.tableRow("Process", &.{"Allocation", "Max", "Need", "Request"}, widths);
-            try s.tableRow("", &.{row, row, row, row}, widths);
+            const widths: [4]usize = .{ @max(10, row.len), @max(3, row.len), @max(4, row.len), @max(7, row.len) };
+            try s.tableRow("Process", &.{ "Allocation", "Max", "Need", "Request" }, widths);
+            try s.tableRow("", &.{ row, row, row, row }, widths);
             for (s.data.jobs, 0..) |job, who| if (job.exists) {
-                try s.tableRow(try s.h.text("P{d}", .{who}), &.{try s.tableVector(job.allocation), try s.tableVector(job.maximum), try s.tableVector(s.needOf(who)), try s.tableVector(s.requestOf(who))}, widths);
+                try s.tableRow(try s.h.text("P{d}", .{who}), &.{ try s.tableVector(job.allocation), try s.tableVector(job.maximum), try s.tableVector(s.needOf(who)), try s.tableVector(s.requestOf(who)) }, widths);
             };
             try s.tableRow("Available", &.{try s.tableVector(s.data.available)}, widths);
             try s.tableRow("Total", &.{try s.tableVector(s.data.total)}, widths);
@@ -448,7 +494,7 @@ const Manager = struct {
             try s.h.out.writeAll("blocked queue: ");
             for (s.data.queue.items, 0..) |waiting, j| {
                 if (j > 0) try s.h.out.writeAll(", ");
-                try s.h.out.print("P{d} {s} since t={d}", .{waiting.who, try s.h.vector(waiting.amount, s.data.m), waiting.since});
+                try s.h.out.print("P{d} {s} since t={d}", .{ waiting.who, try s.h.vector(waiting.amount, s.data.m), waiting.since });
             }
             return s.h.out.writeByte('\n');
         }
@@ -458,31 +504,33 @@ const Manager = struct {
                 const percent = @divTrunc(used * 1000, s.data.total[j]);
                 var wanted: I = 0;
                 for (s.data.queue.items) |waiting| wanted += waiting.amount[j];
-                try s.h.line("{c}: allocated {d}/{d} ({d}.{d}%), requested {d}", .{@as(u8, 'A') + @as(u8, @intCast(j)), used, s.data.total[j], @divTrunc(percent, 10), @mod(percent, 10), wanted});
+                try s.h.line("{c}: allocated {d}/{d} ({d}.{d}%), requested {d}", .{ @as(u8, 'A') + @as(u8, @intCast(j)), used, s.data.total[j], @divTrunc(percent, 10), @mod(percent, 10), wanted });
             }
-            const kinds = [_]Text{"granted", "blocked", "unblocked", "released", "finished", "aborted", "cancelled"};
+            const kinds = [_]Text{ "granted", "blocked", "unblocked", "released", "finished", "aborted", "cancelled" };
             var counts: [7]I = @splat(0);
             var waited_sum: I = 0;
             for (s.data.events.items) |event| {
-                for (kinds, 0..) |kind, j| if (eq(kind, event.kind)) { counts[j] += 1; };
+                for (kinds, 0..) |kind, j| if (eq(kind, event.kind)) {
+                    counts[j] += 1;
+                };
                 if (eq(event.kind, "unblocked")) waited_sum += event.waited;
             }
             try s.h.out.writeAll("events: ");
             for (kinds, counts, 0..) |kind, count, j| {
                 if (j > 0) try s.h.out.writeAll(", ");
-                try s.h.out.print("{s} {d}", .{kind, count});
+                try s.h.out.print("{s} {d}", .{ kind, count });
             }
             try s.h.out.writeByte('\n');
             if (counts[2] == 0) return s.h.line("waits: none", .{});
             const average = @divTrunc(waited_sum * 100, counts[2]);
-            return s.h.line("waits: {d} unblocked, total {d}, average {d}.{d:0>2}", .{counts[2], waited_sum, @divTrunc(average, 100), @mod(average, 100)});
+            return s.h.line("waits: {d} unblocked, total {d}, average {d}.{d:0>2}", .{ counts[2], waited_sum, @divTrunc(average, 100), @mod(average, 100) });
         }
         if (eq(op, "HISTORY")) {
             var printed = false;
             for (s.data.events.items) |event| {
                 if (tokens.len == 2 and !eq(tokens[1], event.kind) and !eq(tokens[1], try s.h.text("{d}", .{event.who}))) continue;
                 const suffix = if (eq(event.kind, "unblocked")) try s.h.text(" waited {d}", .{event.waited}) else "";
-                try s.h.line("t={d} {s} P{d} {s}{s}", .{event.stamp, event.kind, event.who, try s.h.vector(event.amount, s.data.m), suffix});
+                try s.h.line("t={d} {s} P{d} {s}{s}", .{ event.stamp, event.kind, event.who, try s.h.vector(event.amount, s.data.m), suffix });
                 printed = true;
             }
             if (!printed) try s.h.line("no events", .{});
@@ -502,25 +550,25 @@ const Manager = struct {
         if (eq(op, "PROCESS")) {
             if (s.data.jobs[who].exists) return s.h.line("error: duplicate process P{d}", .{who});
             if (!fits(amount, s.data.total)) return s.h.line("error: max exceeds total", .{});
-            s.data.jobs[who] = .{.exists = true, .maximum = amount, .created = s.stamp};
-            return s.h.line("process P{d} max {s}", .{who, try s.h.vector(amount, s.data.m)});
+            s.data.jobs[who] = .{ .exists = true, .maximum = amount, .created = s.stamp };
+            return s.h.line("process P{d} max {s}", .{ who, try s.h.vector(amount, s.data.m) });
         }
         if (eq(op, "REQUEST") or eq(op, "WHATIF")) {
             const choice = try s.decide(who, amount, true, s.tracing);
             if (eq(op, "WHATIF")) {
-                var description: Text = if (choice.status == .granted) "granted" else try s.h.text("{s} ({s})", .{@tagName(choice.status), choice.reason});
-                if (choice.status == .granted and eq(s.mode, "AVOID")) description = try s.h.text("{s}, safe sequence {s}", .{description, try s.h.people(choice.order, " ")});
-                return s.h.line("whatif P{d} {s}: {s}", .{who, try s.h.vector(amount, s.data.m), description});
+                var description: Text = if (choice.status == .granted) "granted" else try s.h.text("{s} ({s})", .{ @tagName(choice.status), choice.reason });
+                if (choice.status == .granted and eq(s.mode, "AVOID")) description = try s.h.text("{s}, safe sequence {s}", .{ description, try s.h.people(choice.order, " ") });
+                return s.h.line("whatif P{d} {s}: {s}", .{ who, try s.h.vector(amount, s.data.m), description });
             }
             if (choice.status == .rejected) return s.h.line("error: {s}", .{choice.reason});
             if (choice.status == .granted) {
                 s.grant(who, amount);
                 try s.record("granted", who, amount, 0);
-                return s.h.line("granted P{d} {s}", .{who, try s.h.vector(amount, s.data.m)});
+                return s.h.line("granted P{d} {s}", .{ who, try s.h.vector(amount, s.data.m) });
             }
-            try s.data.queue.append(s.h.a, .{.who = who, .amount = amount, .since = s.stamp});
+            try s.data.queue.append(s.h.a, .{ .who = who, .amount = amount, .since = s.stamp });
             try s.record("blocked", who, amount, 0);
-            try s.h.line("blocked P{d} {s}: {s}", .{who, try s.h.vector(amount, s.data.m), choice.reason});
+            try s.h.line("blocked P{d} {s}: {s}", .{ who, try s.h.vector(amount, s.data.m), choice.reason });
             if (s.autodetect) {
                 const dead = (try s.inspect(s.data, true, s.tracing)).remaining;
                 if (dead.len > 0) try s.h.line("deadlock detected: {s}", .{try s.h.people(dead, " ")});
@@ -532,7 +580,7 @@ const Manager = struct {
             const at = s.queued(who) orelse return s.h.line("error: process P{d} is not blocked", .{who});
             amount = s.data.queue.orderedRemove(at).amount;
             try s.record("cancelled", who, amount, 0);
-            return s.h.line("cancelled P{d} {s}", .{who, try s.h.vector(amount, s.data.m)});
+            return s.h.line("cancelled P{d} {s}", .{ who, try s.h.vector(amount, s.data.m) });
         }
         if (!global_vector and s.queued(who) != null) return s.h.line("error: process P{d} is blocked", .{who});
         if (eq(op, "FINISH")) return s.terminate(who, "finished", true);
@@ -547,7 +595,7 @@ const Manager = struct {
                     if ((try s.decide(who, trial, true, false)).status == .granted) answer[j] = candidate;
                 }
             }
-            return s.h.line("maxgrant P{d}: {s}", .{who, try s.h.vector(answer, s.data.m)});
+            return s.h.line("maxgrant P{d}: {s}", .{ who, try s.h.vector(answer, s.data.m) });
         }
         if (eq(op, "CLAIM")) {
             if (!fits(s.data.jobs[who].allocation, amount)) return s.h.line("error: claim below allocation", .{});
@@ -556,7 +604,7 @@ const Manager = struct {
             trial.jobs[who].maximum = amount;
             if (eq(s.mode, "AVOID") and (try s.inspect(trial, false, s.tracing)).remaining.len > 0) return s.h.line("error: claim makes state unsafe", .{});
             s.data = trial;
-            try s.h.line("claim P{d} max {s}", .{who, try s.h.vector(amount, s.data.m)});
+            try s.h.line("claim P{d} max {s}", .{ who, try s.h.vector(amount, s.data.m) });
             return s.retryQueue();
         }
         if (sum(amount) == 0) return s.h.line("error: zero vector", .{});
@@ -565,13 +613,13 @@ const Manager = struct {
             s.data.jobs[who].allocation = combine(s.data.jobs[who].allocation, amount, -1);
             s.data.available = combine(s.data.available, amount, 1);
             try s.record("released", who, amount, 0);
-            try s.h.line("released P{d} {s}", .{who, try s.h.vector(amount, s.data.m)});
+            try s.h.line("released P{d} {s}", .{ who, try s.h.vector(amount, s.data.m) });
             return s.retryQueue();
         }
         if (eq(op, "ADD")) {
             s.data.total = combine(s.data.total, amount, 1);
             s.data.available = combine(s.data.available, amount, 1);
-            try s.h.line("added {s} total {s}", .{try s.h.vector(amount, s.data.m), try s.h.vector(s.data.total, s.data.m)});
+            try s.h.line("added {s} total {s}", .{ try s.h.vector(amount, s.data.m), try s.h.vector(s.data.total, s.data.m) });
             return s.retryQueue();
         }
         if (!fits(amount, s.data.available)) return s.h.line("error: remove exceeds available", .{});
@@ -583,7 +631,7 @@ const Manager = struct {
         trial.available = combine(trial.available, amount, -1);
         if (eq(s.mode, "AVOID") and (try s.inspect(trial, false, s.tracing)).remaining.len > 0) return s.h.line("error: removal makes state unsafe", .{});
         s.data = trial;
-        try s.h.line("removed {s} total {s}", .{try s.h.vector(amount, s.data.m), try s.h.vector(s.data.total, s.data.m)});
+        try s.h.line("removed {s} total {s}", .{ try s.h.vector(amount, s.data.m), try s.h.vector(s.data.total, s.data.m) });
     }
 };
 fn readLine(r: *std.Io.Reader, a: std.mem.Allocator) !?Text {
@@ -602,7 +650,7 @@ pub fn main(init: std.process.Init) !void {
     var ob: [4096]u8 = undefined;
     var input = std.Io.File.stdin().readerStreaming(init.io, &ib);
     var output = std.Io.File.stdout().writerStreaming(init.io, &ob);
-    var manager: Manager = .{.h = .{.a = a, .out = &output.interface}};
+    var manager: Manager = .{ .h = .{ .a = a, .out = &output.interface } };
     const count = number(std.mem.trim(u8, (try readLine(&input.interface, a)).?, "\r"));
     for (0..index(count)) |j| {
         const line = std.mem.trim(u8, (try readLine(&input.interface, a)).?, "\r");

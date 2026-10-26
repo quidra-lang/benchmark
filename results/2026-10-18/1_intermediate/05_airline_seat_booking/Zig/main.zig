@@ -3,8 +3,12 @@ const Allocator = std.mem.Allocator;
 const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 const class_names = [_][]const u8{ "F", "J", "Y" };
 const tier_names = [_][]const u8{ "PLATINUM", "GOLD", "SILVER", "NONE" };
-fn integer(text: []const u8) usize { return std.fmt.parseInt(usize, text, 10) catch unreachable; }
-fn classIndex(text: []const u8) usize { return std.mem.findScalar(u8, "FJY", text[0]).?; }
+fn integer(text: []const u8) usize {
+    return std.fmt.parseInt(usize, text, 10) catch unreachable;
+}
+fn classIndex(text: []const u8) usize {
+    return std.mem.findScalar(u8, "FJY", text[0]).?;
+}
 fn split(gpa: Allocator, text: []const u8, delimiter: u8) Allocator.Error![][]const u8 {
     var result: std.ArrayList([]const u8) = .empty;
     var it = std.mem.splitScalar(u8, text, delimiter);
@@ -14,14 +18,16 @@ fn split(gpa: Allocator, text: []const u8, delimiter: u8) Allocator.Error![][]co
 const Seat = struct { row: usize, letter: u8, cabin: usize, block: usize, kind: u8 };
 const Cabin = struct { first: usize, last: usize, blocks: [][]const u8 };
 const Aircraft = struct {
-    name: []const u8, base: usize, limit: i64,
+    name: []const u8,
+    base: usize,
+    limit: i64,
     cabins: [3]?Cabin = .{ null, null, null },
     seats: std.ArrayList(Seat) = .empty,
-    grid: [100][26]?usize = .{.{null} ** 26} ** 100,
-    exits: [100]bool = .{false} ** 100,
-    blocked: [2600]bool = .{false} ** 2600,
+    grid: [100][26]?usize = @splat(@splat(null)),
+    exits: [100]bool = @splat(false),
+    blocked: [2600]bool = @splat(false),
     fn seatIndex(self: *const Aircraft, code: []const u8) ?usize {
-        const row = integer(code[0..code.len - 1]);
+        const row = integer(code[0 .. code.len - 1]);
         return self.grid[row][code[code.len - 1] - 'A'];
     }
     fn addCabin(self: *Aircraft, gpa: Allocator, c: usize, first: usize, last: usize, blocks: [][]const u8) Allocator.Error!void {
@@ -29,8 +35,7 @@ const Aircraft = struct {
         for (first..last + 1) |row| {
             for (blocks, 0..) |block, b| {
                 for (block, 0..) |letter, x| {
-                    const kind: u8 = if ((b == 0 and x == 0) or (b == blocks.len - 1 and x == block.len - 1)) 'W' else
-                        if (x == 0 or x == block.len - 1) 'A' else 'M';
+                    const kind: u8 = if ((b == 0 and x == 0) or (b == blocks.len - 1 and x == block.len - 1)) 'W' else if (x == 0 or x == block.len - 1) 'A' else 'M';
                     self.grid[row][letter - 'A'] = self.seats.items.len;
                     try self.seats.append(gpa, .{ .row = row, .letter = letter, .cabin = c, .block = b, .kind = kind });
                 }
@@ -47,15 +52,27 @@ const Aircraft = struct {
 };
 const PassengerType = enum { ADULT, CHILD, INFANT };
 const Passenger = struct {
-    name: []const u8, kind: PassengerType, preference: u8, cabin: usize,
+    name: []const u8,
+    kind: PassengerType,
+    preference: u8,
+    cabin: usize,
     booking: *Booking = undefined,
-    seat: ?usize = null, active: bool = true,
-    infant: ?*Passenger = null, guardian: ?*Passenger = null,
-    fn needsSeat(self: *const Passenger) bool { return self.kind != .INFANT; }
-    fn carrying(self: *const Passenger) bool { return if (self.infant) |p| p.active else false; }
+    seat: ?usize = null,
+    active: bool = true,
+    infant: ?*Passenger = null,
+    guardian: ?*Passenger = null,
+    fn needsSeat(self: *const Passenger) bool {
+        return self.kind != .INFANT;
+    }
+    fn carrying(self: *const Passenger) bool {
+        return if (self.infant) |p| p.active else false;
+    }
 };
 const Booking = struct {
-    pnr: []const u8, flight: *Flight, listed: []*Passenger, checked: bool = false,
+    pnr: []const u8,
+    flight: *Flight,
+    listed: []*Passenger,
+    checked: bool = false,
     fn count(self: *const Booking) usize {
         var result: usize = 0;
         for (self.listed) |p| {
@@ -71,10 +88,11 @@ const Booking = struct {
     }
 };
 const Flight = struct {
-    name: []const u8, aircraft: *Aircraft,
+    name: []const u8,
+    aircraft: *Aircraft,
     limits: [3]usize,
     blocked: [2600]bool,
-    occupied: [2600]?*Passenger = .{null} ** 2600,
+    occupied: [2600]?*Passenger = @splat(null),
     bookings: std.ArrayList(*Booking) = .empty,
     volunteers: std.ArrayList(*Passenger) = .empty,
     closed: bool = false,
@@ -170,7 +188,7 @@ const Flight = struct {
             };
             var x: usize = 0;
             while (x + k <= len) : (x += 1) {
-                if (self.adopt(ps, line[x..x + k], c)) return "ROW";
+                if (self.adopt(ps, line[x .. x + k], c)) return "ROW";
             }
         }
         for (2..k + 1) |h| {
@@ -225,7 +243,8 @@ const Airline = struct {
     bookings: std.StringHashMapUnmanaged(*Booking) = .empty,
     statuses: std.StringHashMapUnmanaged(usize) = .empty,
     defining: ?*Aircraft = null,
-    error_buffer: [1024]u8 = undefined, error_len: usize = 0,
+    error_buffer: [1024]u8 = undefined,
+    error_len: usize = 0,
     fn fail(self: *Airline, comptime fmt: []const u8, args: anytype) error{BadCommand} {
         const message = std.fmt.bufPrint(&self.error_buffer, fmt, args) catch unreachable;
         self.error_len = message.len;
@@ -257,8 +276,7 @@ const Airline = struct {
     fn deny(self: *Airline, f: *Flight, p: *Passenger, voluntary: bool, out: *std.Io.Writer) Error!i64 {
         var value: i64 = ([_]i64{ 500, 300, 150 })[p.cabin] * @as(i64, if (voluntary) 1 else 2);
         if (p.kind == .CHILD) value = @divFloor(value, 2);
-        try out.print("DENIED {s} {s} {s} {s} {d}\n", .{ @as([]const u8, if (voluntary) "VOLUNTARY" else "INVOLUNTARY"),
-            p.booking.pnr, p.name, class_names[p.cabin], value });
+        try out.print("DENIED {s} {s} {s} {s} {d}\n", .{ @as([]const u8, if (voluntary) "VOLUNTARY" else "INVOLUNTARY"), p.booking.pnr, p.name, class_names[p.cabin], value });
         f.remove(p);
         _ = self;
         return value;
@@ -289,9 +307,7 @@ const Airline = struct {
             if (self.flights.contains(a[1])) return self.fail("duplicate flight {s}", .{a[1]});
             const model = self.models.get(a[2]) orelse return self.fail("unknown aircraft {s}", .{a[2]});
             const f = try self.gpa.create(Flight);
-            f.* = .{ .name = a[1], .aircraft = model, .blocked = model.blocked,
-                .limits = .{ model.capacity(0) * (100 + integer(a[3])) / 100, model.capacity(1) * (100 + integer(a[3])) / 100,
-                    model.capacity(2) * (100 + integer(a[3])) / 100 } };
+            f.* = .{ .name = a[1], .aircraft = model, .blocked = model.blocked, .limits = .{ model.capacity(0) * (100 + integer(a[3])) / 100, model.capacity(1) * (100 + integer(a[3])) / 100, model.capacity(2) * (100 + integer(a[3])) / 100 } };
             try self.flights.put(self.gpa, f.name, f);
             try out.print("FLIGHT {s} {s}", .{ f.name, model.name });
             for (model.cabins, 0..) |cabin, c| {
@@ -318,8 +334,7 @@ const Airline = struct {
             for (a[4..], 0..) |token, i| {
                 const parts = try split(self.gpa, token, ':');
                 const p = try self.gpa.create(Passenger);
-                p.* = .{ .name = parts[0], .kind = std.meta.stringToEnum(PassengerType, parts[1]).?,
-                    .preference = if (parts.len == 3) parts[2][0] else 0, .cabin = c };
+                p.* = .{ .name = parts[0], .kind = std.meta.stringToEnum(PassengerType, parts[1]).?, .preference = if (parts.len == 3) parts[2][0] else 0, .cabin = c };
                 ps[i] = p;
                 if (p.kind == .ADULT) {
                     adults[adult_count] = p;
@@ -455,8 +470,7 @@ const Airline = struct {
                     f.place(p, seat);
                     p.cabin = higher;
                     count += 1;
-                    try out.print("UPGRADED {s} {s} {s} {s} -> {s} {s}\n", .{ p.booking.pnr, p.name, class_names[lower], old,
-                        class_names[higher], try f.displaySeat(self.gpa, p) });
+                    try out.print("UPGRADED {s} {s} {s} {s} -> {s} {s}\n", .{ p.booking.pnr, p.name, class_names[lower], old, class_names[higher], try f.displaySeat(self.gpa, p) });
                 }
             }
             try f.reassign(self.gpa, out);
@@ -532,8 +546,7 @@ const Airline = struct {
             try out.print("FIND {s} {s} {d}\n", .{ a[1], tier_names[self.tier(a[1])], found.items.len });
             for (found.items) |p| {
                 const f = p.booking.flight;
-                try out.print("{s} {s} {s} {s} {s}\n", .{ f.name, p.booking.pnr, class_names[p.cabin], try f.displaySeat(self.gpa, p),
-                    @as([]const u8, if (f.closed) "CLOSED" else "OPEN") });
+                try out.print("{s} {s} {s} {s} {s}\n", .{ f.name, p.booking.pnr, class_names[p.cabin], try f.displaySeat(self.gpa, p), @as([]const u8, if (f.closed) "CLOSED" else "OPEN") });
             }
         } else {
             const f = try self.findFlight(a[1], false);
@@ -571,8 +584,7 @@ const Airline = struct {
                 try out.print("MANIFEST {s} seated {d} unassigned {d} infants {d}\n", .{ f.name, seated.items.len, waiting.items.len, infants });
                 try seated.appendSlice(self.gpa, waiting.items);
                 for (seated.items) |p| {
-                    try out.print("{s} {s} {s} {s} {s}", .{ if (p.seat == null) "---" else try f.displaySeat(self.gpa, p),
-                        class_names[p.cabin], p.booking.pnr, p.name, @tagName(p.kind) });
+                    try out.print("{s} {s} {s} {s} {s}", .{ if (p.seat == null) "---" else try f.displaySeat(self.gpa, p), class_names[p.cabin], p.booking.pnr, p.name, @tagName(p.kind) });
                     if (p.carrying()) try out.print(" +{s}", .{p.infant.?.name});
                     if (self.tier(p.name) < 3) try out.print(" {s}", .{tier_names[self.tier(p.name)]});
                     if (p.booking.checked) try out.writeAll(" CHECKED");
@@ -595,11 +607,9 @@ const Airline = struct {
                     }
                     total_seated += seated;
                     total_seats += seats;
-                    try out.print("{s} {d}/{d} {d}.{d}% booked {d}/{d}\n", .{ class_names[c], seated, seats,
-                        (seated * 1000 / seats) / 10, (seated * 1000 / seats) % 10, f.booked(c), f.limits[c] });
+                    try out.print("{s} {d}/{d} {d}.{d}% booked {d}/{d}\n", .{ class_names[c], seated, seats, (seated * 1000 / seats) / 10, (seated * 1000 / seats) % 10, f.booked(c), f.limits[c] });
                 }
-                try out.print("ALL {d}/{d} {d}.{d}%\n", .{ total_seated, total_seats, (total_seated * 1000 / total_seats) / 10,
-                    (total_seated * 1000 / total_seats) % 10 });
+                try out.print("ALL {d}/{d} {d}.{d}%\n", .{ total_seated, total_seats, (total_seated * 1000 / total_seats) / 10, (total_seated * 1000 / total_seats) % 10 });
             } else if (std.mem.eql(u8, op, "BALANCE")) {
                 var weight: i64 = 0;
                 var moment: i64 = 0;
@@ -609,8 +619,7 @@ const Airline = struct {
                     weight += w;
                     moment += w * (@as(i64, @intCast(model.seats.items[seat].row)) - @as(i64, @intCast(model.base)));
                 }
-                try out.print("BALANCE {s} weight {d} moment {d} limit {d} {s}\n", .{ f.name, weight, moment, model.limit,
-                    @as([]const u8, if (moment < -model.limit) "NOSE-HEAVY" else if (moment > model.limit) "TAIL-HEAVY" else "OK") });
+                try out.print("BALANCE {s} weight {d} moment {d} limit {d} {s}\n", .{ f.name, weight, moment, model.limit, @as([]const u8, if (moment < -model.limit) "NOSE-HEAVY" else if (moment > model.limit) "TAIL-HEAVY" else "OK") });
             } else if (std.mem.eql(u8, op, "AVAIL")) {
                 const c = classIndex(a[2]);
                 try self.hasCabin(f, c);
@@ -641,8 +650,7 @@ const Airline = struct {
                 for (ordered.items, 0..) |entry, i| {
                     const p = entry.passenger;
                     const key = entry.key;
-                    const group = if (key[0] == 3) try std.fmt.allocPrint(self.gpa, "ZONE{d}", .{-key[1]}) else
-                        ([_][]const u8{ "PRE", "CABIN", "TIER" })[@intCast(key[0])];
+                    const group = if (key[0] == 3) try std.fmt.allocPrint(self.gpa, "ZONE{d}", .{-key[1]}) else ([_][]const u8{ "PRE", "CABIN", "TIER" })[@intCast(key[0])];
                     try out.print("{d} {s} {s} {s} {s}\n", .{ i + 1, group, try f.displaySeat(self.gpa, p), p.booking.pnr, p.name });
                 }
             }

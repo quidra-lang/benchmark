@@ -2,14 +2,20 @@ const std = @import("std");
 const Text = []const u8;
 const I = i64;
 const keys = [_]Text{
-    "PROTOCOL", "FRAMES", "WINDOW", "SEQBITS", "TIMEOUT", "DELAY",
-    "INTERVAL", "MAXTICKS", "DUPACK", "NAK", "BACKOFF", "CONGESTION",
-    "UNSAFE", "TRACE", "RANDOM", "LOSEDATA", "LOSECTRL", "CORRUPTDATA",
+    "PROTOCOL",    "FRAMES",    "WINDOW",    "SEQBITS",  "TIMEOUT",  "DELAY",
+    "INTERVAL",    "MAXTICKS",  "DUPACK",    "NAK",      "BACKOFF",  "CONGESTION",
+    "UNSAFE",      "TRACE",     "RANDOM",    "LOSEDATA", "LOSECTRL", "CORRUPTDATA",
     "CORRUPTCTRL", "DELAYDATA", "DELAYCTRL", "SNAPSHOT",
 };
-fn eq(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
-fn num(a: Text) I { return std.fmt.parseInt(I, a, 10) catch unreachable; }
-fn ix(a: I) usize { return @intCast(a); }
+fn eq(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn num(a: Text) I {
+    return std.fmt.parseInt(I, a, 10) catch unreachable;
+}
+fn ix(a: I) usize {
+    return @intCast(a);
+}
 fn find(a: Text, list: []const Text) ?usize {
     for (list, 0..) |b, i| if (eq(a, b)) return i;
     return null;
@@ -17,14 +23,20 @@ fn find(a: Text, list: []const Text) ?usize {
 const Host = struct {
     gpa: std.mem.Allocator,
     out: *std.Io.Writer,
-    fn text(h: Host, comptime fmt: Text, args: anytype) !Text { return std.fmt.allocPrint(h.gpa, fmt, args); }
-    fn line(h: Host, comptime fmt: Text, args: anytype) !void { try h.out.print(fmt ++ "\n", args); }
+    fn text(h: Host, comptime fmt: Text, args: anytype) !Text {
+        return std.fmt.allocPrint(h.gpa, fmt, args);
+    }
+    fn line(h: Host, comptime fmt: Text, args: anytype) !void {
+        try h.out.print(fmt ++ "\n", args);
+    }
     fn fixed(h: Host, a: I, b: I, digits: I) !Text {
         const scale: I = if (digits == 2) 100 else 10;
         const v = @divTrunc(a * scale, b);
         return if (digits == 2) h.text("{d}.{d:0>2}", .{ @divTrunc(v, scale), @mod(v, scale) }) else h.text("{d}.{d}", .{ @divTrunc(v, scale), @mod(v, scale) });
     }
-    fn time(h: Host, t: I) !Text { return if (t < 0) "-" else h.text("{d}", .{t}); }
+    fn time(h: Host, t: I) !Text {
+        return if (t < 0) "-" else h.text("{d}", .{t});
+    }
 };
 const Settings = struct {
     values: [22][]const Text = @splat(&.{}),
@@ -86,7 +98,9 @@ const Settings = struct {
                     var parts = std.mem.splitScalar(u8, word, ':');
                     const v = num(parts.next().?);
                     if (v < (if (j == 21) @as(I, 0) else 1) or v > (if (j == 21) @as(I, 2000) else 9999)) bad = true;
-                    for (seen.items) |previous| if (v == previous) { bad = true; };
+                    for (seen.items) |previous| if (v == previous) {
+                        bad = true;
+                    };
                     try seen.append(h.gpa, v);
                     if (j == 19 or j == 20) {
                         const e = num(parts.next().?);
@@ -121,7 +135,9 @@ const Settings = struct {
         if (c.w > limit and (!c.unsafe or eq(c.p, "SW"))) return try h.text("window {d} exceeds limit {d} for {s}", .{ c.w, limit, c.p });
         for (0..2) |kind| {
             var smallest: I = 10000;
-            for (c.values[15 + kind]) |word| if (c.contains(17 + kind, num(word))) { smallest = @min(smallest, num(word)); };
+            for (c.values[15 + kind]) |word| if (c.contains(17 + kind, num(word))) {
+                smallest = @min(smallest, num(word));
+            };
             if (smallest < 10000) return try h.text("{s} #{d} both lost and corrupted", .{ if (kind == 0) @as(Text, "data") else "control", smallest });
         }
         return null;
@@ -187,9 +203,15 @@ const Simulation = struct {
     discarded: I = 0,
     max_buffer: I = 0,
     latency: I = 0,
-    fn sr(s: *Simulation) bool { return eq(s.c.p, "SR"); }
-    fn modulus(s: *Simulation) I { return @as(I, 1) << @intCast(s.c.k); }
-    fn effective(s: *Simulation) I { return if (s.c.congestion) @min(s.c.w, s.cwnd) else s.c.w; }
+    fn sr(s: *Simulation) bool {
+        return eq(s.c.p, "SR");
+    }
+    fn modulus(s: *Simulation) I {
+        return @as(I, 1) << @intCast(s.c.k);
+    }
+    fn effective(s: *Simulation) I {
+        return if (s.c.congestion) @min(s.c.w, s.cwnd) else s.c.w;
+    }
     fn log(s: *Simulation, side: Text, comptime fmt: Text, args: anytype) !void {
         if (eq(s.c.trace, "ALL") or eq(s.c.trace, side)) {
             try s.h.out.print("{d} ", .{s.t});
@@ -284,7 +306,9 @@ const Simulation = struct {
         for (s.queue.items, 0..) |value, j| if (value == f) return j;
         return null;
     }
-    fn enqueue(s: *Simulation, f: I) !void { if (s.queued(f) == null) try s.queue.append(s.h.gpa, f); }
+    fn enqueue(s: *Simulation, f: I) !void {
+        if (s.queued(f) == null) try s.queue.append(s.h.gpa, f);
+    }
     fn goBack(s: *Simulation) void {
         s.next = s.base;
         s.timer = -1;
@@ -326,7 +350,9 @@ const Simulation = struct {
                 if (s.base > old_base) {
                     s.current = s.c.timeout;
                     s.duplicates = 0;
-                    for (ix(old_base)..ix(s.base)) |j| if (s.records[j].acked < 0) { s.records[j].acked = s.t; };
+                    for (ix(old_base)..ix(s.base)) |j| if (s.records[j].acked < 0) {
+                        s.records[j].acked = s.t;
+                    };
                 }
                 s.increase(s.base - old_base);
                 if (e.nak) {
@@ -414,13 +440,10 @@ const Simulation = struct {
         try s.h.line("config: {s} n={d} w={d} k={d} T={d} d={d}", .{ s.c.p, s.c.n, s.c.w, s.c.k, s.c.timeout, s.c.delay });
         const trace = try std.ascii.allocLowerString(s.h.gpa, s.c.trace);
         try s.h.line("options: interval={d} limit={d} dupack={s} nak={s} backoff={s} congestion={s} unsafe={s} trace={s} random={s}", .{
-            s.c.interval, s.c.limit,
-            if (s.c.dupack == 0) "off" else try s.h.time(s.c.dupack),
-            if (s.c.nak) @as(Text, "on") else "off",
-            if (s.c.backoff) @as(Text, "on") else "off",
-            if (s.c.congestion) @as(Text, "on") else "off",
-            if (s.c.unsafe) @as(Text, "on") else "off",
-            trace,
+            s.c.interval,                                                                                        s.c.limit,
+            if (s.c.dupack == 0) "off" else try s.h.time(s.c.dupack),                                            if (s.c.nak) @as(Text, "on") else "off",
+            if (s.c.backoff) @as(Text, "on") else "off",                                                         if (s.c.congestion) @as(Text, "on") else "off",
+            if (s.c.unsafe) @as(Text, "on") else "off",                                                          trace,
             if (s.c.random == 0) "off" else try s.h.text("{d}/{d}/{d}", .{ s.c.random, s.c.loss, s.c.corrupt }),
         });
         while (true) : (s.t += 1) {
@@ -439,7 +462,9 @@ const Simulation = struct {
             const done = s.base == s.c.n;
             if (!done) {
                 if (s.sr()) {
-                    for (ix(s.base)..ix(s.high)) |j| if (s.records[j].timer == s.t) { try s.timeoutFrame(@intCast(j)); };
+                    for (ix(s.base)..ix(s.high)) |j| if (s.records[j].timer == s.t) {
+                        try s.timeoutFrame(@intCast(j));
+                    };
                     var frame: I = -1;
                     if (s.queue.items.len > 0) {
                         frame = s.queue.orderedRemove(0);
@@ -477,7 +502,8 @@ const Simulation = struct {
     }
 };
 fn readLine(r: *std.Io.Reader, a: std.mem.Allocator) !?Text {
-    var b: std.Io.Writer.Allocating = .init(a); defer b.deinit();
+    var b: std.Io.Writer.Allocating = .init(a);
+    defer b.deinit();
     _ = try r.streamDelimiterEnding(&b.writer, '\n');
     if (r.bufferedLen() == 0 and b.written().len == 0) return null;
     if (r.bufferedLen() > 0) r.toss(1);
@@ -490,29 +516,45 @@ fn words(a: std.mem.Allocator, line: Text) ![]const Text {
     return list.toOwnedSlice(a);
 }
 pub fn main(init: std.process.Init) !void {
-    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator); defer arena.deinit();
-    const a = arena.allocator(); var ib: [4096]u8 = undefined; var ob: [4096]u8 = undefined;
-    var input = std.Io.File.stdin().readerStreaming(init.io, &ib); var output = std.Io.File.stdout().writerStreaming(init.io, &ob);
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ib: [4096]u8 = undefined;
+    var ob: [4096]u8 = undefined;
+    var input = std.Io.File.stdin().readerStreaming(init.io, &ib);
+    var output = std.Io.File.stdout().writerStreaming(init.io, &ob);
     const h: Host = .{ .gpa = a, .out = &output.interface };
     const count = num(std.mem.trim(u8, (try readLine(&input.interface, a)).?, "\r"));
     var results: std.ArrayList(Result) = .empty;
     for (0..ix(count)) |_| {
         const header = try words(a, (try readLine(&input.interface, a)).?);
-        const name = header[1]; var c: Settings = .{}; var problem: ?Text = null;
+        const name = header[1];
+        var c: Settings = .{};
+        var problem: ?Text = null;
         while (true) {
             const w = try words(a, (try readLine(&input.interface, a)).?);
             if (eq(w[0], "END")) break;
             if (problem != null) continue;
-            const key = find(w[0], &keys) orelse { problem = try h.text("unknown key {s}", .{w[0]}); continue; };
-            if (c.present[key]) { problem = try h.text("duplicate key {s}", .{w[0]}); continue; }
+            const key = find(w[0], &keys) orelse {
+                problem = try h.text("unknown key {s}", .{w[0]});
+                continue;
+            };
+            if (c.present[key]) {
+                problem = try h.text("duplicate key {s}", .{w[0]});
+                continue;
+            }
             c.present[key] = true;
             const correct = if (key == 14) w.len == 4 else if (key >= 15) w.len >= 2 else w.len == 2;
-            if (!correct) { problem = try h.text("wrong number of values for {s}", .{w[0]}); continue; }
+            if (!correct) {
+                problem = try h.text("wrong number of values for {s}", .{w[0]});
+                continue;
+            }
             c.values[key] = w[1..];
         }
         try h.line("== {s} ==", .{name});
         if (try c.validate(h, problem)) |message| {
-            try h.line("error: {s}", .{message}); try results.append(a, .{ .name = name });
+            try h.line("error: {s}", .{message});
+            try results.append(a, .{ .name = name });
         } else {
             var simulation: Simulation = .{ .h = h, .c = c };
             try results.append(a, try simulation.run(name));
@@ -523,18 +565,29 @@ pub fn main(init: std.process.Init) !void {
         var position = ranked.items.len;
         while (position > 0) : (position -= 1) {
             const previous = ranked.items[position - 1];
-            const left = result.delivered * previous.completion; const right = previous.delivered * result.completion;
+            const left = result.delivered * previous.completion;
+            const right = previous.delivered * result.completion;
             if (left < right or (left == right and result.delivered * previous.data <= previous.delivered * result.data)) break;
         }
         try ranked.insert(a, position, result);
     };
     try h.line("== ranking ==", .{});
     for (ranked.items, 0..) |result, j| try h.line("{d}. {s} {s} goodput={s} efficiency={s}%", .{ j + 1, result.name, result.protocol, try h.fixed(result.delivered, result.completion, 2), try h.fixed(result.delivered * 100, result.data, 1) });
-    for (results.items) |result| if (!eq(result.status, "done")) { try h.line("- {s} {s}", .{ result.name, result.status }); };
+    for (results.items) |result| if (!eq(result.status, "done")) {
+        try h.line("- {s} {s}", .{ result.name, result.status });
+    };
     try h.line("== protocols ==", .{});
     for ([_]Text{ "SW", "GBN", "SR" }) |protocol| {
-        var runs: I = 0; var delivered: I = 0; var ticks: I = 0; var data: I = 0;
-        for (ranked.items) |result| if (eq(result.protocol, protocol)) { runs += 1; delivered += result.delivered; ticks += result.completion; data += result.data; };
+        var runs: I = 0;
+        var delivered: I = 0;
+        var ticks: I = 0;
+        var data: I = 0;
+        for (ranked.items) |result| if (eq(result.protocol, protocol)) {
+            runs += 1;
+            delivered += result.delivered;
+            ticks += result.completion;
+            data += result.data;
+        };
         if (runs > 0) try h.line("{s}: runs={d} goodput={s} efficiency={s}%", .{ protocol, runs, try h.fixed(delivered, ticks, 2), try h.fixed(delivered * 100, data, 1) });
     }
     try output.interface.flush();

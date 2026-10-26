@@ -1,25 +1,9 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
-const CommandError = error{ BadCommand } || Allocator.Error || std.Io.Writer.Error;
+const CommandError = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 const systems = [_][]const u8{ "HEPBURN", "TRADITIONAL", "KUNREI", "NIHON", "WAPURO" };
-const row_names = [_][]const u8{
-    "a",
-    "ka",
-    "sa",
-    "ta",
-    "na",
-    "ha",
-    "ma",
-    "ya",
-    "ra",
-    "wa",
-    "ga",
-    "za",
-    "da",
-    "ba",
-    "pa"
-};
+const row_names = [_][]const u8{ "a", "ka", "sa", "ta", "na", "ha", "ma", "ya", "ra", "wa", "ga", "za", "da", "ba", "pa" };
 const base_rows = [_]usize{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 3, 5, 5 };
 const row_text = [_][]const u8{
     "a i u e o",
@@ -42,22 +26,11 @@ const iroha_text = "i ro ha ni ho he to ti ri nu ru wo wa ka yo ta re so tu ne n
 const mora_n: usize = 108;
 const mora_q: usize = 109;
 const mora_l: usize = 110;
-const Syllable = struct {
-    id: []const u8,
-    row: usize,
-    dan: []const u8
-};
+const Syllable = struct { id: []const u8, row: usize, dan: []const u8 };
 
-const Mora = struct {
-    id: usize,
-    column: usize
-};
+const Mora = struct { id: usize, column: usize };
 
-const Element = struct {
-    base: usize,
-    voice: usize,
-    size: usize
-};
+const Element = struct { base: usize, voice: usize, size: usize };
 
 const Word = struct {
     original: []const u8,
@@ -70,10 +43,7 @@ const Word = struct {
     sort_key: [4][]usize = undefined,
 };
 
-const Match = struct {
-    id: usize,
-    len: usize
-};
+const Match = struct { id: usize, len: usize };
 
 fn choice(value: []const u8, values: []const []const u8) ?usize {
     for (values, 0..) |candidate, i| {
@@ -133,11 +103,11 @@ fn spelling(gpa: Allocator, id: []const u8, system: usize) Allocator.Error![]con
     if (id.len == 3) {
         const prefix = id[0..2];
         if (std.mem.eql(u8, prefix, "sy"))
-            return std.fmt.allocPrint(gpa, "sh{s}", .{ id[2..] });
+            return std.fmt.allocPrint(gpa, "sh{s}", .{id[2..]});
         if (std.mem.eql(u8, prefix, "ty"))
-            return std.fmt.allocPrint(gpa, "ch{s}", .{ id[2..] });
+            return std.fmt.allocPrint(gpa, "ch{s}", .{id[2..]});
         if (std.mem.eql(u8, prefix, "zy") or (hepburn and std.mem.eql(u8, prefix, "dy")))
-            return std.fmt.allocPrint(gpa, "j{s}", .{ id[2..] });
+            return std.fmt.allocPrint(gpa, "j{s}", .{id[2..]});
     }
     return id;
 }
@@ -153,12 +123,7 @@ fn tokenizeWords(gpa: Allocator, text: []const u8) Allocator.Error![]Word {
         const start = i;
         while (i < text.len and wordCharacter(text[i]))
             i += 1;
-        try result.append(gpa, .{
-            .original = text[start..i],
-            .start = start,
-            .end = i,
-            .ordinal = result.items.len
-        });
+        try result.append(gpa, .{ .original = text[start..i], .start = start, .end = i, .ordinal = result.items.len });
     }
     return result.items;
 }
@@ -179,7 +144,7 @@ const Engine = struct {
         for (row_text, 0..) |text, row| {
             var ids = std.mem.splitScalar(u8, text, ' ');
             while (ids.next()) |id| {
-                self.table[len] = .{ .id = id, .row = row, .dan = id[id.len - 1..] };
+                self.table[len] = .{ .id = id, .row = row, .dan = id[id.len - 1 ..] };
                 len += 1;
             }
         }
@@ -192,7 +157,7 @@ const Engine = struct {
                 }
             }
             for ([_][]const u8{ "ya", "yu", "yo" }) |dan| {
-                const id = try std.fmt.allocPrint(gpa, "{s}{s}", .{ stem[0..stem.len - 1], dan });
+                const id = try std.fmt.allocPrint(gpa, "{s}{s}", .{ stem[0 .. stem.len - 1], dan });
                 self.table[len] = .{ .id = id, .row = row, .dan = dan };
                 len += 1;
             }
@@ -208,19 +173,19 @@ const Engine = struct {
         return self;
     }
 
-    fn fail(self: *Engine, message: []const u8) error{ BadCommand } {
+    fn fail(self: *Engine, message: []const u8) error{BadCommand} {
         @memcpy(self.error_buffer[0..message.len], message);
         self.error_len = message.len;
         return error.BadCommand;
     }
 
-    fn failFmt(self: *Engine, comptime fmt: []const u8, args: anytype) error{ BadCommand } {
+    fn failFmt(self: *Engine, comptime fmt: []const u8, args: anytype) error{BadCommand} {
         const text = std.fmt.bufPrint(&self.error_buffer, fmt, args) catch unreachable;
         self.error_len = text.len;
         return error.BadCommand;
     }
 
-    fn columnError(self: *Engine, column: usize, message: []const u8) error{ BadCommand } {
+    fn columnError(self: *Engine, column: usize, message: []const u8) error{BadCommand} {
         return self.failFmt("col {d}: {s}", .{ column, message });
     }
 
@@ -245,7 +210,7 @@ const Engine = struct {
         return name[name.len - 1];
     }
 
-    fn checkCase(self: *Engine, word: *Word) error{ BadCommand }!void {
+    fn checkCase(self: *Engine, word: *Word) error{BadCommand}!void {
         var letters: usize = 0;
         var uppers: usize = 0;
         for (word.original) |c| {
@@ -272,7 +237,7 @@ const Engine = struct {
 
     fn matchAt(self: *const Engine, text: []const u8, position: usize, system: usize) ?Match {
         var best: ?Match = null;
-        const choices: []const usize = if (system == 5) &.{ 0, 2, 3, 4 } else &.{ system };
+        const choices: []const usize = if (system == 5) &.{ 0, 2, 3, 4 } else &.{system};
         for (0..108) |id| {
             for (choices) |s| {
                 const candidate = self.spellings[s][id];
@@ -326,20 +291,17 @@ const Engine = struct {
                 p += advance;
                 continue;
             }
-            if ((system == 1 or system == 5) and c == 'm' and next != 0 and std.mem.findScalar(u8, "bmp",
-                next) != null) {
+            if ((system == 1 or system == 5) and c == 'm' and next != 0 and std.mem.findScalar(u8, "bmp", next) != null) {
                 try result.append(gpa, .{ .id = mora_n, .column = column });
                 p += 1;
                 continue;
             }
-            if (std.ascii.isAlphabetic(c) and std.mem.findScalar(u8, "aiueon", c) == null and next == c and self.matchAt(text,
-                p + 1, system) != null) {
+            if (std.ascii.isAlphabetic(c) and std.mem.findScalar(u8, "aiueon", c) == null and next == c and self.matchAt(text, p + 1, system) != null) {
                 try result.append(gpa, .{ .id = mora_q, .column = column });
                 p += 1;
                 continue;
             }
-            if ((system == 0 or system == 1 or system == 5) and c == 't' and std.mem.startsWith(u8, text[p + 1..],
-                "ch") and self.matchAt(text, p + 1, system) != null) {
+            if ((system == 0 or system == 1 or system == 5) and c == 't' and std.mem.startsWith(u8, text[p + 1 ..], "ch") and self.matchAt(text, p + 1, system) != null) {
                 try result.append(gpa, .{ .id = mora_q, .column = column });
                 p += 1;
                 continue;
@@ -402,7 +364,7 @@ const Engine = struct {
                     1 => "",
                     2 => if (v == 'o' and !vowel(first)) "h" else "",
                     3 => "-",
-                    else => self.table[morae[i - 1].id].id[self.table[morae[i - 1].id].id.len - 1..],
+                    else => self.table[morae[i - 1].id].id[self.table[morae[i - 1].id].id.len - 1 ..],
                 };
             } else if (m.id < mora_n) {
                 result[i] = self.spellings[target][m.id];
@@ -547,42 +509,20 @@ const Engine = struct {
             const current = try gpa.alloc(bool, morae.len + 1);
             @memset(current, false);
             for (0..morae.len + 1) |j|
-                current[j] = if (token == -2) previous[j] or (j > 0 and current[j - 1]) else
-                    j > 0 and previous[j - 1] and (token == -1 or token == @as(i32, @intCast(morae[j - 1].id)));
+                current[j] = if (token == -2) previous[j] or (j > 0 and current[j - 1]) else j > 0 and previous[j - 1] and (token == -1 or token == @as(i32, @intCast(morae[j - 1].id)));
             previous = current;
         }
         return previous[morae.len];
     }
 
     fn execute(self: *Engine, gpa: Allocator, line: []const u8, out: *std.Io.Writer) CommandError!void {
-        const commands = [_][]const u8{
-            "SET",
-            "TABLE",
-            "CONVERT",
-            "NORMALIZE",
-            "REVERSE",
-            "VALID",
-            "DETECT",
-            "DIFF",
-            "SAME",
-            "MORAE",
-            "SYLLABLES",
-            "ROW",
-            "STATS",
-            "SORT",
-            "INDEX",
-            "FIND",
-            "HAIKU",
-            "KAIBUN",
-            "SHIRITORI"
-        };
+        const commands = [_][]const u8{ "SET", "TABLE", "CONVERT", "NORMALIZE", "REVERSE", "VALID", "DETECT", "DIFF", "SAME", "MORAE", "SYLLABLES", "ROW", "STATS", "SORT", "INDEX", "FIND", "HAIKU", "KAIBUN", "SHIRITORI" };
         const first_space = std.mem.findScalar(u8, line, ' ');
         const op = if (first_space) |position| line[0..position] else line;
         if (choice(op, &commands) == null)
-            return self.failFmt("unknown command {s}", .{ op });
+            return self.failFmt("unknown command {s}", .{op});
         const fixed = std.mem.eql(u8, op, "SET") or std.mem.eql(u8, op, "TABLE");
-        const argument_count: usize = if (choice(op, &.{ "CONVERT", "DIFF", "SAME", "FIND" }) != null) 2 else if (choice(op,
-            &.{ "NORMALIZE", "DETECT" }) != null) 0 else 1;
+        const argument_count: usize = if (choice(op, &.{ "CONVERT", "DIFF", "SAME", "FIND" }) != null) 2 else if (choice(op, &.{ "NORMALIZE", "DETECT" }) != null) 0 else 1;
         var args: [2][]const u8 = undefined;
         var text: []const u8 = "";
         if (fixed) {
@@ -600,19 +540,18 @@ const Engine = struct {
         } else {
             var cursor = first_space orelse return self.fail("missing argument");
             for (0..argument_count) |i| {
-                const offset = std.mem.findScalar(u8, line[cursor + 1..], ' ') orelse return self.fail("missing argument");
+                const offset = std.mem.findScalar(u8, line[cursor + 1 ..], ' ') orelse return self.fail("missing argument");
                 const end = cursor + 1 + offset;
-                args[i] = line[cursor + 1..end];
+                args[i] = line[cursor + 1 .. end];
                 cursor = end;
             }
-            text = line[cursor + 1..];
+            text = line[cursor + 1 ..];
         }
         var system: usize = 0;
         var target: usize = 0;
-        const system_count: usize = if (std.mem.eql(u8, op, "TABLE")) 1 else if (fixed or choice(op, &.{ "NORMALIZE",
-            "DETECT" }) != null) 0 else if (choice(op, &.{ "CONVERT", "DIFF", "SAME" }) != null) 2 else 1;
+        const system_count: usize = if (std.mem.eql(u8, op, "TABLE")) 1 else if (fixed or choice(op, &.{ "NORMALIZE", "DETECT" }) != null) 0 else if (choice(op, &.{ "CONVERT", "DIFF", "SAME" }) != null) 2 else 1;
         for (0..system_count) |i| {
-            const value = choice(args[i], &systems) orelse return self.failFmt("unknown system {s}", .{ args[i] });
+            const value = choice(args[i], &systems) orelse return self.failFmt("unknown system {s}", .{args[i]});
             if (i == 0) {
                 system = value;
             } else {
@@ -621,23 +560,23 @@ const Engine = struct {
         }
         if (std.mem.eql(u8, op, "SET")) {
             const options = [_][]const u8{ "LONG", "CASE", "ORDER" };
-            const option = choice(args[0], &options) orelse return self.failFmt("unknown option {s}", .{ args[0] });
+            const option = choice(args[0], &options) orelse return self.failFmt("unknown option {s}", .{args[0]});
             const values: []const []const u8 = switch (option) {
                 0 => &.{ "KEEP", "DROP", "PASSPORT", "HYPHEN", "DOUBLE" },
                 1 => &.{ "KEEP", "LOWER", "UPPER", "TITLE" },
                 else => &.{ "GOJUON", "IROHA" },
             };
-            const value = choice(args[1], values) orelse return self.failFmt("unknown value {s}", .{ args[1] });
+            const value = choice(args[1], values) orelse return self.failFmt("unknown value {s}", .{args[1]});
             switch (option) {
                 0 => self.long_mode = value,
                 1 => self.case_mode = value,
-                else => self.iroha = value == 1
+                else => self.iroha = value == 1,
             }
             try out.print("{s}={s}", .{ args[0], args[1] });
             return;
         }
         if (std.mem.eql(u8, op, "TABLE")) {
-            const row = choice(args[1], &row_names) orelse return self.failFmt("unknown row {s}", .{ args[1] });
+            const row = choice(args[1], &row_names) orelse return self.failFmt("unknown row {s}", .{args[1]});
             var first = true;
             for (self.table, 0..) |m, i| {
                 if (m.row == row) {
@@ -652,8 +591,7 @@ const Engine = struct {
         const find_pattern: []const i32 = if (std.mem.eql(u8, op, "FIND")) try self.parsePattern(gpa, args[1], system) else &.{};
         const allow_slash = std.mem.eql(u8, op, "SAME") or std.mem.eql(u8, op, "HAIKU");
         for (text, 0..) |c, i| {
-            if (!wordCharacter(c) and std.mem.findScalar(u8, " 0123456789.,!?;:()\"", c) == null and !(allow_slash
-                and c == '/'))
+            if (!wordCharacter(c) and std.mem.findScalar(u8, " 0123456789.,!?;:()\"", c) == null and !(allow_slash and c == '/'))
                 return self.columnError(i + 1, "invalid character");
         }
         const words = try tokenizeWords(gpa, text);
@@ -700,9 +638,7 @@ const Engine = struct {
         }
         const slash_position = if (std.mem.eql(u8, op, "SAME")) std.mem.findScalar(u8, text, '/').? else text.len;
         for (words) |*word|
-            word.morae = try self.parse(gpa, word.original, word.start, if (std.mem.eql(u8, op, "NORMALIZE")) 5 else if (std.mem.eql(u8, op,
-                "SAME") and word.start > slash_position) target else
-                system);
+            word.morae = try self.parse(gpa, word.original, word.start, if (std.mem.eql(u8, op, "NORMALIZE")) 5 else if (std.mem.eql(u8, op, "SAME") and word.start > slash_position) target else system);
         if (choice(op, &.{ "CONVERT", "NORMALIZE", "REVERSE" }) != null) {
             var cursor: usize = 0;
             for (words) |word| {
@@ -720,8 +656,7 @@ const Engine = struct {
                     }
                     morae = reversed;
                 }
-                const written = try self.writeWord(gpa, word, if (std.mem.eql(u8, op, "NORMALIZE")) 0 else if (std.mem.eql(u8, op,
-                    "REVERSE")) system else target, false, morae);
+                const written = try self.writeWord(gpa, word, if (std.mem.eql(u8, op, "NORMALIZE")) 0 else if (std.mem.eql(u8, op, "REVERSE")) system else target, false, morae);
                 try out.writeAll(written);
                 cursor = word.end;
             }
@@ -743,10 +678,7 @@ const Engine = struct {
             return;
         }
         if (std.mem.eql(u8, op, "DIFF")) {
-            const Difference = struct {
-                a: []const u8,
-                b: []const u8
-            };
+            const Difference = struct { a: []const u8, b: []const u8 };
             var differences: std.ArrayList(Difference) = .empty;
             for (words) |word| {
                 const a = try self.writeWord(gpa, word, system, false, word.morae);
@@ -774,14 +706,14 @@ const Engine = struct {
             var exact = true;
             for (0..@min(left.len, right.len)) |i| {
                 if (!equalMorae(try self.loose(gpa, left[i]), try self.loose(gpa, right[i]))) {
-                    try out.print("DIFFERENT at word {d}", .{ i + 1 });
+                    try out.print("DIFFERENT at word {d}", .{i + 1});
                     return;
                 }
                 if (!equalMorae(left[i].morae, right[i].morae))
                     exact = false;
             }
             if (left.len != right.len) {
-                try out.print("DIFFERENT at word {d}", .{ @min(left.len, right.len) + 1 });
+                try out.print("DIFFERENT at word {d}", .{@min(left.len, right.len) + 1});
                 return;
             }
             try out.writeAll(if (exact) "EXACT" else "LOOSE");
@@ -791,7 +723,7 @@ const Engine = struct {
             var total: usize = 0;
             for (words) |word|
                 total += word.morae.len;
-            try out.print("{d}: ", .{ total });
+            try out.print("{d}: ", .{total});
             for (words, 0..) |word, i| {
                 if (i > 0)
                     try out.writeByte(' ');
@@ -820,7 +752,7 @@ const Engine = struct {
                 }
                 result[w] = bytes.items;
             }
-            try out.print("{d}: ", .{ total });
+            try out.print("{d}: ", .{total});
             for (result, 0..) |s, i| {
                 if (i > 0)
                     try out.writeByte(' ');
@@ -837,11 +769,7 @@ const Engine = struct {
                     first = false;
                     if (m.id < mora_n) {
                         const syllable = self.table[m.id];
-                        try out.print("{s}: {s} {s}", .{
-                            self.spellings[system][m.id],
-                            row_names[syllable.row],
-                            syllable.dan
-                        });
+                        try out.print("{s}: {s} {s}", .{ self.spellings[system][m.id], row_names[syllable.row], syllable.dan });
                     } else {
                         const display: []const u8 = if (m.id == mora_n) "N" else if (m.id == mora_q) "Q" else "-";
                         try out.print("{s}: special", .{display});
@@ -855,8 +783,8 @@ const Engine = struct {
             var voiced: usize = 0;
             var semi: usize = 0;
             var contracted: usize = 0;
-            var rows = [_]usize{ 0 } ** 10;
-            var special = [_]usize{ 0 } ** 3;
+            var rows: [10]usize = @splat(0);
+            var special: [3]usize = @splat(0);
             for (words) |word| {
                 for (word.morae) |m| {
                     total += 1;
@@ -874,13 +802,12 @@ const Engine = struct {
                         contracted += 1;
                 }
             }
-            try out.print("morae={d}", .{ total });
+            try out.print("morae={d}", .{total});
             for (rows, 0..) |n, i| {
                 if (n > 0)
                     try out.print(" {s}={d}", .{ row_names[i], n });
             }
-            try out.print(" voiced={d} semivoiced={d} contracted={d} N={d} Q={d} L={d}", .{ voiced, semi,
-                contracted, special[0], special[1], special[2] });
+            try out.print(" voiced={d} semivoiced={d} contracted={d} N={d} Q={d} L={d}", .{ voiced, semi, contracted, special[0], special[1], special[2] });
             return;
         }
         if (std.mem.eql(u8, op, "FIND")) {
@@ -901,7 +828,7 @@ const Engine = struct {
             return;
         }
         if (std.mem.eql(u8, op, "HAIKU")) {
-            var counts = [_]usize{ 0 } ** 5;
+            var counts: [5]usize = @splat(0);
             for (words) |word| {
                 const part = std.mem.countScalar(u8, text[0..word.start], '/');
                 counts[part] += word.morae.len;
@@ -910,11 +837,11 @@ const Engine = struct {
             const ok = std.mem.eql(usize, counts[0..line_count], expected[0..line_count]);
             const verdict: []const u8 = if (ok) "OK" else "NG";
             const poem: []const u8 = if (line_count == 3) "haiku" else "tanka";
-            try out.print("{s} {s} ", .{verdict, poem});
+            try out.print("{s} {s} ", .{ verdict, poem });
             for (counts[0..line_count], 0..) |n, i| {
                 if (i > 0)
                     try out.writeByte('-');
-                try out.print("{d}", .{ n });
+                try out.print("{d}", .{n});
             }
             return;
         }
@@ -939,10 +866,10 @@ const Engine = struct {
                 if (!std.mem.eql(u8, previous, heading)) {
                     if (i > 0)
                         try out.writeAll("; ");
-                    try out.print("{s}:", .{ heading });
+                    try out.print("{s}:", .{heading});
                     previous = heading;
                 }
-                try out.print(" {s}", .{ word.original });
+                try out.print(" {s}", .{word.original});
             }
             return;
         }
@@ -970,11 +897,7 @@ const Engine = struct {
             const tail = word.elements[word.elements.len - 1].base;
             if (i > 0 and head != words[i - 1].elements[words[i - 1].elements.len - 1].base) {
                 const previous = words[i - 1].elements[words[i - 1].elements.len - 1].base;
-                try out.print("NG {d}: {s} must start with {s}", .{
-                    i + 1,
-                    word.original,
-                    if (previous == 47) @as([]const u8, "N") else self.spellings[system][previous]
-                });
+                try out.print("NG {d}: {s} must start with {s}", .{ i + 1, word.original, if (previous == 47) @as([]const u8, "N") else self.spellings[system][previous] });
                 return;
             }
             for (words[0..i]) |earlier| {
@@ -988,7 +911,7 @@ const Engine = struct {
                 return;
             }
         }
-        try out.print("OK {d}", .{ words.len });
+        try out.print("OK {d}", .{words.len});
     }
 };
 
@@ -1010,7 +933,7 @@ pub fn main(init: std.process.Init) !void {
         var draft: std.Io.Writer = .fixed(&draft_buffer);
         engine.execute(arena.allocator(), line, &draft) catch |err| {
             if (err == error.BadCommand) {
-                try out.print("ERROR {s}\n", .{ engine.error_buffer[0..engine.error_len] });
+                try out.print("ERROR {s}\n", .{engine.error_buffer[0..engine.error_len]});
                 continue;
             }
             return err;

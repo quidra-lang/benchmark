@@ -5,8 +5,8 @@ end
 
 const SIGNATURES = Dict(
     "ABS"=>["I"], "SGN"=>["I"], "INT"=>["I"], "SQR"=>["I"], "RND"=>["I"],
-    "LEN"=>["S"], "ASC"=>["S"], "VAL"=>["S"], "CHR$"=>["I"], "STR$"=>["I"],
-    "LEFT$"=>["SI"], "RIGHT$"=>["SI"], "MID$"=>["SI","SII"], "INSTR"=>["SS"]
+    "LEN"=>["S"], "ASC"=>["S"], "VAL"=>["S"], "CHR\$"=>["I"], "STR\$"=>["I"],
+    "LEFT\$"=>["SI"], "RIGHT\$"=>["SI"], "MID\$"=>["SI","SII"], "INSTR"=>["SS"]
 )
 
 const ERROR_CODES = Dict(
@@ -569,20 +569,20 @@ function call_function(m::Machine,name,args)
         word = match_result.captures[1]
         length(word)>16 && fault("OVERFLOW")
         return checked(parse(Int,word))
-    elseif name == "CHR$"
+    elseif name == "CHR\$"
         (32<=a<=126) || fault("ILLEGAL FUNCTION CALL")
         return string(Char(a))
-    elseif name == "STR$"
+    elseif name == "STR\$"
         return string(a)
-    elseif name == "LEFT$"
+    elseif name == "LEFT\$"
         b<0 && fault("ILLEGAL FUNCTION CALL")
         return String(Vector{UInt8}(codeunits(a)[1:min(b,ncodeunits(a))]))
-    elseif name == "RIGHT$"
+    elseif name == "RIGHT\$"
         b<0 && fault("ILLEGAL FUNCTION CALL")
         b==0 && return ""
         count = min(b,ncodeunits(a))
         return String(Vector{UInt8}(codeunits(a)[ncodeunits(a)-count+1:end]))
-    elseif name == "MID$"
+    elseif name == "MID\$"
         (b<1 || (c!==nothing && c<0)) && fault("ILLEGAL FUNCTION CALL")
         b>ncodeunits(a) && return ""
         ending = c===nothing ? ncodeunits(a) : min(ncodeunits(a),b+c-1)

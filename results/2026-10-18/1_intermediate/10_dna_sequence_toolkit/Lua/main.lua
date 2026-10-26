@@ -259,7 +259,7 @@ end
 local bounds = {
     frame = {-3, 3}, orf = {1, 200}, window = {1, 500},
     kmer = {1, 12}, limit = {1, 100}, palindrome = {2, 20},
-    repeat = {1, 6}, repeat_count = {2, 50}, match = {1, 20},
+    ["repeat"] = {1, 6}, repeat_count = {2, 50}, match = {1, 20},
     mismatch = {-20, 0}, gap = {-20, -1}, loop = {0, 10},
     overlap = {1, 100}, length = {1, 500}
 }

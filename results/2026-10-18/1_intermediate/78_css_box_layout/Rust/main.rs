@@ -6,15 +6,34 @@ const SIDES: [&str; 4] = ["top", "right", "bottom", "left"];
 fn defaults() -> BTreeMap<String, String> {
     let mut values = BTreeMap::new();
     for (p, v) in [
-        ("display", "block"), ("position", "static"), ("box-sizing", "content-box"),
-        ("width", "auto"), ("height", "auto"), ("min-width", "0"), ("min-height", "0"),
-        ("max-width", "none"), ("max-height", "none"), ("flex-direction", "row"),
-        ("flex-wrap", "nowrap"), ("justify-content", "start"), ("align-items", "stretch"),
-        ("align-self", "auto"), ("row-gap", "0"), ("column-gap", "0"), ("order", "0"),
-        ("flex-grow", "0"), ("flex-shrink", "1"), ("flex-basis", "auto"),
-        ("grid-template-columns", "none"), ("grid-template-rows", "none"),
-        ("grid-column", "auto"), ("grid-row", "auto"),
-    ].iter().copied() {
+        ("display", "block"),
+        ("position", "static"),
+        ("box-sizing", "content-box"),
+        ("width", "auto"),
+        ("height", "auto"),
+        ("min-width", "0"),
+        ("min-height", "0"),
+        ("max-width", "none"),
+        ("max-height", "none"),
+        ("flex-direction", "row"),
+        ("flex-wrap", "nowrap"),
+        ("justify-content", "start"),
+        ("align-items", "stretch"),
+        ("align-self", "auto"),
+        ("row-gap", "0"),
+        ("column-gap", "0"),
+        ("order", "0"),
+        ("flex-grow", "0"),
+        ("flex-shrink", "1"),
+        ("flex-basis", "auto"),
+        ("grid-template-columns", "none"),
+        ("grid-template-rows", "none"),
+        ("grid-column", "auto"),
+        ("grid-row", "auto"),
+    ]
+    .iter()
+    .copied()
+    {
         values.insert(p.to_string(), v.to_string());
     }
     for side in SIDES.iter().copied() {
@@ -51,7 +70,9 @@ fn grid_value(t: &[&str]) -> bool {
         ["auto"] => true,
         [a] => positive(a),
         ["span", n] => positive(n),
-        [a, "/", b] => positive(a) && positive(b) && a.parse::<usize>().unwrap() < b.parse::<usize>().unwrap(),
+        [a, "/", b] => {
+            positive(a) && positive(b) && a.parse::<usize>().unwrap() < b.parse::<usize>().unwrap()
+        }
         [a, "/", "span", n] => positive(a) && positive(n),
         _ => false,
     }
@@ -79,14 +100,24 @@ fn valid(p: &str, t: &[&str]) -> bool {
         "order" => signed(v),
         "flex-direction" => ["row", "row-reverse", "column", "column-reverse"].contains(&v),
         "flex-wrap" => ["nowrap", "wrap"].contains(&v),
-        "justify-content" => ["start", "end", "center", "space-between", "space-around", "space-evenly"].contains(&v),
+        "justify-content" => [
+            "start",
+            "end",
+            "center",
+            "space-between",
+            "space-around",
+            "space-evenly",
+        ]
+        .contains(&v),
         "align-items" => ["stretch", "start", "end", "center"].contains(&v),
         "align-self" => ["auto", "stretch", "start", "end", "center"].contains(&v),
-        _ => if p.starts_with("border-") {
-            v == "0" || v == "1"
-        } else {
-            natural(v)
-        },
+        _ => {
+            if p.starts_with("border-") {
+                v == "0" || v == "1"
+            } else {
+                natural(v)
+            }
+        }
     }
 }
 
@@ -107,27 +138,40 @@ fn declaration(p: &str, value: &str) -> Option<Vec<(String, String)>> {
         if !(1..=2).contains(&t.len()) || !t.iter().all(|v| natural(v)) {
             return None;
         }
-        return Some(vec![("row-gap".to_string(), t[0].to_string()), ("column-gap".to_string(), t[t.len() - 1].to_string())]);
+        return Some(vec![
+            ("row-gap".to_string(), t[0].to_string()),
+            ("column-gap".to_string(), t[t.len() - 1].to_string()),
+        ]);
     }
-    if shorthand(p) && (1..=4).contains(&t.len()) && t.iter().all(|v| valid(&format!("{}-top", p), &[*v])) {
+    if shorthand(p)
+        && (1..=4).contains(&t.len())
+        && t.iter().all(|v| valid(&format!("{}-top", p), &[*v]))
+    {
         let pick = match t.len() {
-            1 => [0, 0, 0, 0], 2 => [0, 1, 0, 1], 3 => [0, 1, 2, 1], _ => [0, 1, 2, 3]
+            1 => [0, 0, 0, 0],
+            2 => [0, 1, 0, 1],
+            3 => [0, 1, 2, 1],
+            _ => [0, 1, 2, 3],
         };
-        return Some((0..4).map(|i| (format!("{}-{}", p, SIDES[i]), t[pick[i]].to_string())).collect());
+        return Some(
+            (0..4)
+                .map(|i| (format!("{}-{}", p, SIDES[i]), t[pick[i]].to_string()))
+                .collect(),
+        );
     }
     None
 }
 
 struct Rule {
     selectors: Vec<String>,
-    values: Vec<(String, String)>
+    values: Vec<(String, String)>,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Rect {
     x: i64,
     y: i64,
     w: i64,
-    h: i64
+    h: i64,
 }
 
 impl Rect {
@@ -138,7 +182,10 @@ impl Rect {
         x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
     }
     fn encloses(self, r: Rect) -> bool {
-        r.x >= self.x && r.y >= self.y && r.x + r.w <= self.x + self.w && r.y + r.h <= self.y + self.h
+        r.x >= self.x
+            && r.y >= self.y
+            && r.x + r.w <= self.x + self.w
+            && r.y + r.h <= self.y + self.h
     }
 }
 
@@ -173,19 +220,14 @@ impl Element {
         self.n(&format!("{}-{}", kind, SIDES[i]))
     }
     fn frame(&self, h: bool) -> i64 {
-        let (a, b) = if h {
-            (1, 3)
-        } else {
-            (0, 2)
-        };
-        self.edge("padding", a) + self.edge("padding", b) + self.edge("border", a) + self.edge("border", b)
+        let (a, b) = if h { (1, 3) } else { (0, 2) };
+        self.edge("padding", a)
+            + self.edge("padding", b)
+            + self.edge("border", a)
+            + self.edge("border", b)
     }
     fn margin(&self, h: bool) -> i64 {
-        let (a, b) = if h {
-            (1, 3)
-        } else {
-            (0, 2)
-        };
+        let (a, b) = if h { (1, 3) } else { (0, 2) };
         self.edge("margin", a) + self.edge("margin", b)
     }
     fn border_width(&self) -> i64 {
@@ -196,22 +238,34 @@ impl Element {
     }
     fn border(&self) -> Rect {
         Rect {
-            x: self.x, y: self.y, w: self.border_width(), h: self.border_height()
+            x: self.x,
+            y: self.y,
+            w: self.border_width(),
+            h: self.border_height(),
         }
     }
     fn content(&self) -> Rect {
         Rect {
-            x: self.x + self.edge("border", 3) + self.edge("padding", 3), y: self.y + self.edge("border", 0) + self.edge("padding", 0), w: self.cw, h: self.ch
+            x: self.x + self.edge("border", 3) + self.edge("padding", 3),
+            y: self.y + self.edge("border", 0) + self.edge("padding", 0),
+            w: self.cw,
+            h: self.ch,
         }
     }
     fn padding(&self) -> Rect {
         Rect {
-            x: self.x + self.edge("border", 3), y: self.y + self.edge("border", 0), w: self.cw + self.edge("padding", 1) + self.edge("padding", 3), h: self.ch + self.edge("padding", 0) + self.edge("padding", 2)
+            x: self.x + self.edge("border", 3),
+            y: self.y + self.edge("border", 0),
+            w: self.cw + self.edge("padding", 1) + self.edge("padding", 3),
+            h: self.ch + self.edge("padding", 0) + self.edge("padding", 2),
         }
     }
     fn margin_box(&self) -> Rect {
         Rect {
-            x: self.x - self.edge("margin", 3), y: self.y - self.edge("margin", 0), w: self.border_width() + self.margin(true), h: self.border_height() + self.margin(false)
+            x: self.x - self.edge("margin", 3),
+            y: self.y - self.edge("margin", 0),
+            w: self.border_width() + self.margin(true),
+            h: self.border_height() + self.margin(false),
         }
     }
     fn resolve(&self, prop: &str, reference: Option<i64>, h: bool) -> Option<i64> {
@@ -231,12 +285,10 @@ impl Element {
         })
     }
     fn clamp(&self, v: i64, reference: Option<i64>, h: bool) -> i64 {
-        let axis = if h {
-            "width"
-        } else {
-            "height"
-        };
-        let lo = self.resolve(&format!("min-{}", axis), reference, h).unwrap_or(0);
+        let axis = if h { "width" } else { "height" };
+        let lo = self
+            .resolve(&format!("min-{}", axis), reference, h)
+            .unwrap_or(0);
         let hi = self.resolve(&format!("max-{}", axis), reference, h);
         hi.map_or(v, |upper| v.min(upper)).max(lo)
     }
@@ -246,7 +298,7 @@ struct Area {
     row: usize,
     col: usize,
     rows: usize,
-    cols: usize
+    cols: usize,
 }
 
 struct Grid {
@@ -255,7 +307,7 @@ struct Grid {
     columns: Vec<String>,
     rows: Vec<String>,
     nc: usize,
-    nr: usize
+    nr: usize,
 }
 
 fn distribution(total: i64, weights: &[i64]) -> Vec<i64> {
@@ -277,12 +329,15 @@ fn distribution(total: i64, weights: &[i64]) -> Vec<i64> {
 fn placement(v: &str) -> (usize, usize) {
     let t: Vec<&str> = v.split(' ').collect();
     match t.as_slice() {
-        ["auto"] => (0, 1), ["span", n] => (0, n.parse().unwrap()), [a] => (a.parse().unwrap(), 1),
+        ["auto"] => (0, 1),
+        ["span", n] => (0, n.parse().unwrap()),
+        [a] => (a.parse().unwrap(), 1),
         [a, "/", b] => {
             let start: usize = a.parse().unwrap();
             (start, b.parse::<usize>().unwrap() - start)
-        },
-        [a, "/", "span", n] => (a.parse().unwrap(), n.parse().unwrap()), _ => unreachable!(),
+        }
+        [a, "/", "span", n] => (a.parse().unwrap(), n.parse().unwrap()),
+        _ => unreachable!(),
     }
 }
 
@@ -299,49 +354,53 @@ fn mark(a: &Area, occupied: &mut BTreeSet<(usize, usize)>) {
 }
 
 fn tracks(g: &Grid, h: bool, available: Option<i64>, gap: i64, contributions: &[i64]) -> Vec<i64> {
-    let count = if h {
-        g.nc
-    } else {
-        g.nr
-    };
-    let explicit = if h {
-        &g.columns
-    } else {
-        &g.rows
-    };
-    let specs: Vec<&str> = (0..count).map(|i| explicit.get(i).map_or("auto", String::as_str)).collect();
-    let mut sizes: Vec<i64> = specs.iter().enumerate().map(|(i, spec)| {
-        if natural(spec) {
-            spec.parse().unwrap()
-        } else if fraction(spec) && available.is_some() {
-            0
-        } else {
-            g.areas.iter().enumerate().filter(|(_, a)| (if h {
-                a.col
+    let count = if h { g.nc } else { g.nr };
+    let explicit = if h { &g.columns } else { &g.rows };
+    let specs: Vec<&str> = (0..count)
+        .map(|i| explicit.get(i).map_or("auto", String::as_str))
+        .collect();
+    let mut sizes: Vec<i64> = specs
+        .iter()
+        .enumerate()
+        .map(|(i, spec)| {
+            if natural(spec) {
+                spec.parse().unwrap()
+            } else if fraction(spec) && available.is_some() {
+                0
             } else {
-                a.row
-            }) == i + 1 && (if h {
-                a.cols
-            } else {
-                a.rows
-            }) == 1).map(|(j, _)| contributions[j]).max().unwrap_or(0)
-        }
-    }).collect();
+                g.areas
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| {
+                        (if h { a.col } else { a.row }) == i + 1
+                            && (if h { a.cols } else { a.rows }) == 1
+                    })
+                    .map(|(j, _)| contributions[j])
+                    .max()
+                    .unwrap_or(0)
+            }
+        })
+        .collect();
     if let Some(u) = available {
         let left = u - sizes.iter().sum::<i64>() - gap * count.saturating_sub(1) as i64;
         if left > 0 {
             let has_fr = specs.iter().any(|v| fraction(v));
-            let weights: Vec<i64> = specs.iter().map(|v| if has_fr {
-                if fraction(v) {
-                    v[..v.len() - 2].parse().unwrap()
-                } else {
-                    0
-                }
-            } else if *v == "auto" {
-                1
-            } else {
-                0
-            }).collect();
+            let weights: Vec<i64> = specs
+                .iter()
+                .map(|v| {
+                    if has_fr {
+                        if fraction(v) {
+                            v[..v.len() - 2].parse().unwrap()
+                        } else {
+                            0
+                        }
+                    } else if *v == "auto" {
+                        1
+                    } else {
+                        0
+                    }
+                })
+                .collect();
             let extra = distribution(left, &weights);
             for i in 0..count {
                 sizes[i] += extra[i];
@@ -354,7 +413,10 @@ fn tracks(g: &Grid, h: bool, available: Option<i64>, gap: i64, contributions: &[
 fn wrap(text: &str, width: i64) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for word in text.split(' ') {
-        if lines.last().map_or(true, |s| s.len() as i64 + 1 + word.len() as i64 > width) {
+        if lines
+            .last()
+            .map_or(true, |s| s.len() as i64 + 1 + word.len() as i64 > width)
+        {
             lines.push(word.to_string());
         } else {
             let line = lines.last_mut().unwrap();
@@ -382,12 +444,19 @@ struct Document {
     height: i64,
     rules: Vec<Rule>,
     elements: Vec<Element>,
-    by_id: BTreeMap<String, usize>
+    by_id: BTreeMap<String, usize>,
 }
 
 impl Document {
     fn flow(&self, e: usize) -> Vec<usize> {
-        self.elements[e].children.iter().copied().filter(|i| self.elements[*i].displayed && self.elements[*i].s("position") != "absolute").collect()
+        self.elements[e]
+            .children
+            .iter()
+            .copied()
+            .filter(|i| {
+                self.elements[*i].displayed && self.elements[*i].s("position") != "absolute"
+            })
+            .collect()
     }
     fn items(&self, e: usize) -> Vec<usize> {
         let mut items = self.flow(e);
@@ -400,7 +469,8 @@ impl Document {
             self.elements[e].s("align-items")
         } else {
             s
-        }).to_string()
+        })
+        .to_string()
     }
     fn place(&mut self, e: usize, child: usize, x: i64, y: i64) {
         let dx = self.elements[e].edge("border", 3) + self.elements[e].edge("padding", 3);
@@ -413,25 +483,47 @@ impl Document {
         let columns: Vec<String> = if self.elements[e].s("grid-template-columns") == "none" {
             vec!["auto".to_string()]
         } else {
-            self.elements[e].s("grid-template-columns").split(' ').map(str::to_string).collect()
+            self.elements[e]
+                .s("grid-template-columns")
+                .split(' ')
+                .map(str::to_string)
+                .collect()
         };
         let rows: Vec<String> = if self.elements[e].s("grid-template-rows") == "none" {
             Vec::new()
         } else {
-            self.elements[e].s("grid-template-rows").split(' ').map(str::to_string).collect()
+            self.elements[e]
+                .s("grid-template-rows")
+                .split(' ')
+                .map(str::to_string)
+                .collect()
         };
-        let mut areas: Vec<Area> = items.iter().map(|i| {
-            let (col, cols) = placement(self.elements[*i].s("grid-column"));
-            let (row, rows) = placement(self.elements[*i].s("grid-row"));
-            Area {
-                row, col, rows, cols
-            }
-        }).collect();
-        let nc = columns.len().max(areas.iter().map(|a| if a.col == 0 {
-            a.cols
-        } else {
-            a.col + a.cols - 1
-        }).max().unwrap_or(0));
+        let mut areas: Vec<Area> = items
+            .iter()
+            .map(|i| {
+                let (col, cols) = placement(self.elements[*i].s("grid-column"));
+                let (row, rows) = placement(self.elements[*i].s("grid-row"));
+                Area {
+                    row,
+                    col,
+                    rows,
+                    cols,
+                }
+            })
+            .collect();
+        let nc = columns.len().max(
+            areas
+                .iter()
+                .map(|a| {
+                    if a.col == 0 {
+                        a.cols
+                    } else {
+                        a.col + a.cols - 1
+                    }
+                })
+                .max()
+                .unwrap_or(0),
+        );
         let mut occupied = BTreeSet::new();
         for a in &areas {
             if a.row != 0 && a.col != 0 {
@@ -444,7 +536,9 @@ impl Document {
                 continue;
             }
             if a.row != 0 {
-                a.col = (1..=nc - a.cols + 1).find(|c| !overlaps(a, a.row, *c, &occupied)).unwrap_or(1);
+                a.col = (1..=nc - a.cols + 1)
+                    .find(|c| !overlaps(a, a.row, *c, &occupied))
+                    .unwrap_or(1);
             } else if a.col != 0 {
                 if a.col < cc {
                     cr += 1;
@@ -475,14 +569,27 @@ impl Document {
             }
             mark(a, &mut occupied);
         }
-        let nr = rows.len().max(areas.iter().map(|a| a.row + a.rows - 1).max().unwrap_or(0));
+        let nr = rows
+            .len()
+            .max(areas.iter().map(|a| a.row + a.rows - 1).max().unwrap_or(0));
         Grid {
-            items, areas, columns, rows, nc, nr
+            items,
+            areas,
+            columns,
+            rows,
+            nc,
+            nr,
         }
     }
     fn contribution(&self, e: usize) -> i64 {
         let node = &self.elements[e];
-        node.clamp(node.resolve("width", None, true).unwrap_or_else(|| self.max_content(e)), None, true) + node.frame(true) + node.margin(true)
+        node.clamp(
+            node.resolve("width", None, true)
+                .unwrap_or_else(|| self.max_content(e)),
+            None,
+            true,
+        ) + node.frame(true)
+            + node.margin(true)
     }
     fn max_content(&self, e: usize) -> i64 {
         let node = &self.elements[e];
@@ -491,19 +598,44 @@ impl Document {
         }
         let children = self.flow(e);
         if node.s("display") == "flex" && node.s("flex-direction").starts_with("row") {
-            children.iter().map(|c| self.contribution(*c)).sum::<i64>() + node.n("column-gap") * children.len().saturating_sub(1) as i64
+            children.iter().map(|c| self.contribution(*c)).sum::<i64>()
+                + node.n("column-gap") * children.len().saturating_sub(1) as i64
         } else if node.s("display") == "grid" {
             let g = self.grid(e);
             let p: Vec<i64> = g.items.iter().map(|i| self.contribution(*i)).collect();
-            tracks(&g, true, None, node.n("column-gap"), &p).iter().sum::<i64>() + node.n("column-gap") * (g.nc - 1) as i64
+            tracks(&g, true, None, node.n("column-gap"), &p)
+                .iter()
+                .sum::<i64>()
+                + node.n("column-gap") * (g.nc - 1) as i64
         } else {
-            children.iter().map(|c| self.contribution(*c)).max().unwrap_or(0)
+            children
+                .iter()
+                .map(|c| self.contribution(*c))
+                .max()
+                .unwrap_or(0)
         }
     }
-    fn layout(&mut self, e: usize, cw_ref: i64, ch_ref: Option<i64>, fw: Option<i64>, given_height: Option<i64>) -> i64 {
+    fn layout(
+        &mut self,
+        e: usize,
+        cw_ref: i64,
+        ch_ref: Option<i64>,
+        fw: Option<i64>,
+        given_height: Option<i64>,
+    ) -> i64 {
         let node = &self.elements[e];
-        let cw = fw.unwrap_or_else(|| node.clamp(node.resolve("width", Some(cw_ref), true).unwrap_or((cw_ref - node.margin(true) - node.frame(true)).max(0)), Some(cw_ref), true));
-        let fh = given_height.or_else(|| node.resolve("height", ch_ref, false).map(|h| node.clamp(h, ch_ref, false)));
+        let cw = fw.unwrap_or_else(|| {
+            node.clamp(
+                node.resolve("width", Some(cw_ref), true)
+                    .unwrap_or((cw_ref - node.margin(true) - node.frame(true)).max(0)),
+                Some(cw_ref),
+                true,
+            )
+        });
+        let fh = given_height.or_else(|| {
+            node.resolve("height", ch_ref, false)
+                .map(|h| node.clamp(h, ch_ref, false))
+        });
         self.elements[e].cw = cw;
         let text = self.elements[e].text.clone();
         let display = self.elements[e].s("display").to_string();
@@ -521,11 +653,7 @@ impl Document {
             for child in self.flow(e) {
                 self.layout(child, cw, fh, None, None);
                 let top = self.elements[child].edge("margin", 0);
-                let y = bottom + if first {
-                    top
-                } else {
-                    previous.max(top)
-                };
+                let y = bottom + if first { top } else { previous.max(top) };
                 self.place(e, child, self.elements[child].edge("margin", 3), y);
                 bottom = y + self.elements[child].border_height();
                 previous = self.elements[child].edge("margin", 2);
@@ -540,55 +668,71 @@ impl Document {
         let items = self.items(e);
         let horizontal = self.elements[e].s("flex-direction").starts_with("row");
         let reverse = self.elements[e].s("flex-direction").ends_with("reverse");
-        let gap = self.elements[e].n(if horizontal {
-            "column-gap"
-        } else {
-            "row-gap"
-        });
+        let gap = self.elements[e].n(if horizontal { "column-gap" } else { "row-gap" });
         let line_gap = self.elements[e].n("row-gap");
         let cw = self.elements[e].cw;
-        let reference = if horizontal {
-            Some(cw)
-        } else {
-            k
-        };
+        let reference = if horizontal { Some(cw) } else { k };
         let mut cross = vec![0; items.len()];
         let mut base = vec![0; items.len()];
         let mut hypothetical = vec![0; items.len()];
-        let outer: Vec<i64> = items.iter().map(|i| self.elements[*i].frame(horizontal) + self.elements[*i].margin(horizontal)).collect();
+        let outer: Vec<i64> = items
+            .iter()
+            .map(|i| self.elements[*i].frame(horizontal) + self.elements[*i].margin(horizontal))
+            .collect();
         for (i, child) in items.iter().copied().enumerate() {
             if !horizontal {
                 let node = &self.elements[child];
                 let r = (cw - node.margin(true) - node.frame(true)).max(0);
-                let value = node.resolve("width", Some(cw), true).unwrap_or_else(|| if self.align(e, child) == "stretch" {
-                    r
-                } else {
-                    self.max_content(child).min(r)
+                let value = node.resolve("width", Some(cw), true).unwrap_or_else(|| {
+                    if self.align(e, child) == "stretch" {
+                        r
+                    } else {
+                        self.max_content(child).min(r)
+                    }
                 });
                 cross[i] = node.clamp(value, Some(cw), true);
             }
-            let b = self.elements[child].resolve("flex-basis", reference, horizontal).or_else(|| self.elements[child].resolve(if horizontal {
-                "width"
-            } else {
-                "height"
-            }, reference, horizontal));
-            base[i] = b.unwrap_or_else(|| if horizontal {
-                self.max_content(child)
-            } else {
-                self.layout(child, cw, k, Some(cross[i]), None)
+            let b = self.elements[child]
+                .resolve("flex-basis", reference, horizontal)
+                .or_else(|| {
+                    self.elements[child].resolve(
+                        if horizontal { "width" } else { "height" },
+                        reference,
+                        horizontal,
+                    )
+                });
+            base[i] = b.unwrap_or_else(|| {
+                if horizontal {
+                    self.max_content(child)
+                } else {
+                    self.layout(child, cw, k, Some(cross[i]), None)
+                }
             });
             hypothetical[i] = self.elements[child].clamp(base[i], reference, horizontal);
         }
         let length = if horizontal {
             cw
         } else {
-            k.unwrap_or_else(|| self.elements[e].clamp((0..items.len()).map(|i| hypothetical[i] + outer[i]).sum::<i64>() + gap * items.len().saturating_sub(1) as i64, height_reference, false))
+            k.unwrap_or_else(|| {
+                self.elements[e].clamp(
+                    (0..items.len())
+                        .map(|i| hypothetical[i] + outer[i])
+                        .sum::<i64>()
+                        + gap * items.len().saturating_sub(1) as i64,
+                    height_reference,
+                    false,
+                )
+            })
         };
         let mut lines: Vec<Vec<usize>> = Vec::new();
         let mut used = 0;
         for i in 0..items.len() {
             let size = hypothetical[i] + outer[i];
-            if lines.is_empty() || (horizontal && self.elements[e].s("flex-wrap") == "wrap" && used + gap + size > length) {
+            if lines.is_empty()
+                || (horizontal
+                    && self.elements[e].s("flex-wrap") == "wrap"
+                    && used + gap + size > length)
+            {
                 lines.push(vec![i]);
                 used = size;
             } else {
@@ -599,49 +743,63 @@ impl Document {
         let mut line_start = 0;
         for line in &lines {
             let total_gap = gap * (line.len() - 1) as i64;
-            let grow = line.iter().map(|i| hypothetical[*i] + outer[*i]).sum::<i64>() + total_gap < length;
-            let weights: Vec<i64> = line.iter().map(|i| if grow {
-                self.elements[items[*i]].n("flex-grow")
-            } else {
-                self.elements[items[*i]].n("flex-shrink") * base[*i]
-            }).collect();
+            let grow = line
+                .iter()
+                .map(|i| hypothetical[*i] + outer[*i])
+                .sum::<i64>()
+                + total_gap
+                < length;
+            let weights: Vec<i64> = line
+                .iter()
+                .map(|i| {
+                    if grow {
+                        self.elements[items[*i]].n("flex-grow")
+                    } else {
+                        self.elements[items[*i]].n("flex-shrink") * base[*i]
+                    }
+                })
+                .collect();
             let mut target: Vec<i64> = line.iter().map(|i| hypothetical[*i]).collect();
-            let mut frozen: Vec<bool> = line.iter().enumerate().map(|(j, i)| weights[j] == 0 || if grow {
-                base[*i] > hypothetical[*i]
-            } else {
-                base[*i] < hypothetical[*i]
-            }).collect();
+            let mut frozen: Vec<bool> = line
+                .iter()
+                .enumerate()
+                .map(|(j, i)| {
+                    weights[j] == 0
+                        || if grow {
+                            base[*i] > hypothetical[*i]
+                        } else {
+                            base[*i] < hypothetical[*i]
+                        }
+                })
+                .collect();
             while frozen.iter().any(|v| !v) {
-                let free = length - total_gap - (0..line.len()).map(|j| (if frozen[j] {
-                    target[j]
-                } else {
-                    base[line[j]]
-                }) + outer[line[j]]).sum::<i64>();
-                let w: Vec<i64> = (0..line.len()).map(|j| if frozen[j] {
-                    0
-                } else {
-                    weights[j]
-                }).collect();
-                let assigned = distribution((if grow {
-                    free
-                } else {
-                    -free
-                }).max(0), &w);
+                let free = length
+                    - total_gap
+                    - (0..line.len())
+                        .map(|j| {
+                            (if frozen[j] { target[j] } else { base[line[j]] }) + outer[line[j]]
+                        })
+                        .sum::<i64>();
+                let w: Vec<i64> = (0..line.len())
+                    .map(|j| if frozen[j] { 0 } else { weights[j] })
+                    .collect();
+                let assigned = distribution((if grow { free } else { -free }).max(0), &w);
                 let mut violations = vec![0; line.len()];
                 for j in 0..line.len() {
                     if !frozen[j] {
-                        let tentative = base[line[j]] + if grow {
-                            assigned[j]
-                        } else {
-                            -assigned[j]
-                        };
-                        target[j] = self.elements[items[line[j]]].clamp(tentative, reference, horizontal);
+                        let tentative =
+                            base[line[j]] + if grow { assigned[j] } else { -assigned[j] };
+                        target[j] =
+                            self.elements[items[line[j]]].clamp(tentative, reference, horizontal);
                         violations[j] = target[j] - tentative;
                     }
                 }
                 let violation: i64 = violations.iter().sum();
                 for j in 0..line.len() {
-                    if violation == 0 || violation > 0 && violations[j] > 0 || violation < 0 && violations[j] < 0 {
+                    if violation == 0
+                        || violation > 0 && violations[j] > 0
+                        || violation < 0 && violations[j] < 0
+                    {
                         frozen[j] = true;
                     }
                 }
@@ -656,12 +814,24 @@ impl Document {
             let mut line_cross = if !horizontal {
                 cw
             } else {
-                line.iter().map(|i| cross[*i] + self.elements[items[*i]].frame(false) + self.elements[items[*i]].margin(false)).max().unwrap()
+                line.iter()
+                    .map(|i| {
+                        cross[*i]
+                            + self.elements[items[*i]].frame(false)
+                            + self.elements[items[*i]].margin(false)
+                    })
+                    .max()
+                    .unwrap()
             };
             if horizontal && lines.len() == 1 {
-                line_cross = k.unwrap_or_else(|| self.elements[e].clamp(line_cross, height_reference, false));
+                line_cross = k
+                    .unwrap_or_else(|| self.elements[e].clamp(line_cross, height_reference, false));
             }
-            let remaining = length - (0..line.len()).map(|j| target[j] + outer[line[j]]).sum::<i64>() - total_gap;
+            let remaining = length
+                - (0..line.len())
+                    .map(|j| target[j] + outer[line[j]])
+                    .sum::<i64>()
+                - total_gap;
             let mut spaces = vec![0; line.len()];
             if remaining > 0 {
                 let mode = self.elements[e].s("justify-content");
@@ -670,19 +840,19 @@ impl Document {
                 } else if mode == "center" {
                     spaces[0] = remaining / 2;
                 } else if mode.starts_with("space-") {
-                    let weights: Vec<i64> = (0..=line.len()).map(|j| if mode == "space-evenly" {
-                        1
-                    } else if j == 0 || j == line.len() {
-                        if mode == "space-between" {
-                            0
-                        } else {
-                            1
-                        }
-                    } else if mode == "space-around" {
-                        2
-                    } else {
-                        1
-                    }).collect();
+                    let weights: Vec<i64> = (0..=line.len())
+                        .map(|j| {
+                            if mode == "space-evenly" {
+                                1
+                            } else if j == 0 || j == line.len() {
+                                if mode == "space-between" { 0 } else { 1 }
+                            } else if mode == "space-around" {
+                                2
+                            } else {
+                                1
+                            }
+                        })
+                        .collect();
                     let assigned = distribution(remaining, &weights);
                     spaces.copy_from_slice(&assigned[..line.len()]);
                 }
@@ -694,7 +864,14 @@ impl Document {
                 let align = self.align(e, child);
                 if horizontal {
                     if align == "stretch" && self.elements[child].s("height") == "auto" {
-                        cross[i] = self.elements[child].clamp((line_cross - self.elements[child].margin(false) - self.elements[child].frame(false)).max(0), k, false);
+                        cross[i] = self.elements[child].clamp(
+                            (line_cross
+                                - self.elements[child].margin(false)
+                                - self.elements[child].frame(false))
+                            .max(0),
+                            k,
+                            false,
+                        );
                         self.layout(child, cw, k, Some(target[j]), Some(cross[i]));
                     } else {
                         self.layout(child, cw, k, Some(target[j]), None);
@@ -709,7 +886,14 @@ impl Document {
                 } else {
                     cursor
                 };
-                let cross_pos = line_start + offset(line_cross - cross[i] - self.elements[child].frame(!horizontal) - self.elements[child].margin(!horizontal), &align);
+                let cross_pos = line_start
+                    + offset(
+                        line_cross
+                            - cross[i]
+                            - self.elements[child].frame(!horizontal)
+                            - self.elements[child].margin(!horizontal),
+                        &align,
+                    );
                 let ml = self.elements[child].edge("margin", 3);
                 let mt = self.elements[child].edge("margin", 0);
                 if horizontal {
@@ -743,28 +927,56 @@ impl Document {
         for i in 0..g.items.len() {
             let a = &g.areas[i];
             let child = g.items[i];
-            let aw = columns[a.col - 1..a.col - 1 + a.cols].iter().sum::<i64>() + col_gap * (a.cols - 1) as i64;
+            let aw = columns[a.col - 1..a.col - 1 + a.cols].iter().sum::<i64>()
+                + col_gap * (a.cols - 1) as i64;
             areas[i] = aw;
-            widths[i] = self.elements[child].clamp(self.elements[child].resolve("width", Some(aw), true).unwrap_or((aw - self.elements[child].margin(true) - self.elements[child].frame(true)).max(0)), Some(aw), true);
+            widths[i] = self.elements[child].clamp(
+                self.elements[child]
+                    .resolve("width", Some(aw), true)
+                    .unwrap_or(
+                        (aw - self.elements[child].margin(true) - self.elements[child].frame(true))
+                            .max(0),
+                    ),
+                Some(aw),
+                true,
+            );
             self.layout(child, aw, None, Some(widths[i]), None);
-            contributions.push(self.elements[child].border_height() + self.elements[child].margin(false));
+            contributions
+                .push(self.elements[child].border_height() + self.elements[child].margin(false));
         }
         let rows = tracks(&g, false, k, row_gap, &contributions);
         for i in 0..g.items.len() {
             let a = &g.areas[i];
             let child = g.items[i];
             let align = self.align(e, child);
-            let ah = rows[a.row - 1..a.row - 1 + a.rows].iter().sum::<i64>() + row_gap * (a.rows - 1) as i64;
+            let ah = rows[a.row - 1..a.row - 1 + a.rows].iter().sum::<i64>()
+                + row_gap * (a.rows - 1) as i64;
             let ax = columns[..a.col - 1].iter().sum::<i64>() + col_gap * (a.col - 1) as i64;
             let ay = rows[..a.row - 1].iter().sum::<i64>() + row_gap * (a.row - 1) as i64;
             let fh = if align == "stretch" && self.elements[child].s("height") == "auto" {
-                Some(self.elements[child].clamp((ah - self.elements[child].margin(false) - self.elements[child].frame(false)).max(0), Some(ah), false))
+                Some(
+                    self.elements[child].clamp(
+                        (ah - self.elements[child].margin(false)
+                            - self.elements[child].frame(false))
+                        .max(0),
+                        Some(ah),
+                        false,
+                    ),
+                )
             } else {
                 None
             };
             self.layout(child, areas[i], Some(ah), Some(widths[i]), fh);
-            let dy = offset(ah - self.elements[child].border_height() - self.elements[child].margin(false), &align);
-            self.place(e, child, ax + self.elements[child].edge("margin", 3), ay + dy + self.elements[child].edge("margin", 0));
+            let dy = offset(
+                ah - self.elements[child].border_height() - self.elements[child].margin(false),
+                &align,
+            );
+            self.place(
+                e,
+                child,
+                ax + self.elements[child].edge("margin", 3),
+                ay + dy + self.elements[child].edge("margin", 0),
+            );
         }
         rows.iter().sum::<i64>() + row_gap * g.nr.saturating_sub(1) as i64
     }
@@ -784,25 +996,25 @@ impl Document {
             let mut specificity: BTreeMap<String, i32> = BTreeMap::new();
             for rule in &self.rules {
                 let node = &self.elements[i];
-                let best = rule.selectors.iter().filter_map(|s| {
-                    if let Some(id) = s.strip_prefix('#') {
-                        if id == node.id {
-                            Some(2)
+                let best = rule
+                    .selectors
+                    .iter()
+                    .filter_map(|s| {
+                        if let Some(id) = s.strip_prefix('#') {
+                            if id == node.id { Some(2) } else { None }
+                        } else if let Some(class) = s.strip_prefix('.') {
+                            if node.classes.contains(class) {
+                                Some(1)
+                            } else {
+                                None
+                            }
+                        } else if s == &node.kind {
+                            Some(0)
                         } else {
                             None
                         }
-                    } else if let Some(class) = s.strip_prefix('.') {
-                        if node.classes.contains(class) {
-                            Some(1)
-                        } else {
-                            None
-                        }
-                    } else if s == &node.kind {
-                        Some(0)
-                    } else {
-                        None
-                    }
-                }).max();
+                    })
+                    .max();
                 if let Some(best) = best {
                     for (p, v) in &rule.values {
                         if best >= *specificity.get(p).unwrap_or(&-1) {
@@ -814,7 +1026,10 @@ impl Document {
             }
             style.extend(self.elements[i].overrides.clone());
             self.elements[i].style = style;
-            self.elements[i].displayed = self.elements[i].s("display") != "none" && self.elements[i].parent.map_or(true, |p| self.elements[p].displayed);
+            self.elements[i].displayed = self.elements[i].s("display") != "none"
+                && self.elements[i]
+                    .parent
+                    .map_or(true, |p| self.elements[p].displayed);
         }
         if self.elements[0].displayed && self.elements[0].s("position") != "absolute" {
             self.layout(0, self.width, Some(self.height), None, None);
@@ -826,24 +1041,52 @@ impl Document {
                 continue;
             }
             let block = self.containing(i);
-            let cbw = block.map_or(self.width, |b| self.elements[b].cw + self.elements[b].edge("padding", 1) + self.elements[b].edge("padding", 3));
-            let cbh = block.map_or(self.height, |b| self.elements[b].ch + self.elements[b].edge("padding", 0) + self.elements[b].edge("padding", 2));
-            let side = |s: &str| if self.elements[i].s(s) == "auto" {
-                None
-            } else {
-                Some(self.elements[i].n(s))
+            let cbw = block.map_or(self.width, |b| {
+                self.elements[b].cw
+                    + self.elements[b].edge("padding", 1)
+                    + self.elements[b].edge("padding", 3)
+            });
+            let cbh = block.map_or(self.height, |b| {
+                self.elements[b].ch
+                    + self.elements[b].edge("padding", 0)
+                    + self.elements[b].edge("padding", 2)
+            });
+            let side = |s: &str| {
+                if self.elements[i].s(s) == "auto" {
+                    None
+                } else {
+                    Some(self.elements[i].n(s))
+                }
             };
-            let (left, right, top, bottom) = (side("left"), side("right"), side("top"), side("bottom"));
+            let (left, right, top, bottom) =
+                (side("left"), side("right"), side("top"), side("bottom"));
             let node = &self.elements[i];
-            let r = (cbw - left.unwrap_or(0) - right.unwrap_or(0) - node.margin(true) - node.frame(true)).max(0);
-            let w = node.resolve("width", Some(cbw), true).unwrap_or_else(|| if left.is_some() && right.is_some() {
-                r
-            } else {
-                self.max_content(i).min(r)
+            let r = (cbw
+                - left.unwrap_or(0)
+                - right.unwrap_or(0)
+                - node.margin(true)
+                - node.frame(true))
+            .max(0);
+            let w = node.resolve("width", Some(cbw), true).unwrap_or_else(|| {
+                if left.is_some() && right.is_some() {
+                    r
+                } else {
+                    self.max_content(i).min(r)
+                }
             });
             let fw = node.clamp(w, Some(cbw), true);
             let fh = if node.s("height") == "auto" && top.is_some() && bottom.is_some() {
-                Some(node.clamp((cbh - top.unwrap() - bottom.unwrap() - node.margin(false) - node.frame(false)).max(0), Some(cbh), false))
+                Some(
+                    node.clamp(
+                        (cbh - top.unwrap()
+                            - bottom.unwrap()
+                            - node.margin(false)
+                            - node.frame(false))
+                        .max(0),
+                        Some(cbh),
+                        false,
+                    ),
+                )
             } else {
                 None
             };
@@ -876,31 +1119,40 @@ impl Document {
             } else {
                 self.elements[i].parent
             };
-            let bx = reference.map_or(0, |p| self.elements[p].x + if absolute {
-                self.elements[p].edge("border", 3)
-            } else {
-                0
+            let bx = reference.map_or(0, |p| {
+                self.elements[p].x
+                    + if absolute {
+                        self.elements[p].edge("border", 3)
+                    } else {
+                        0
+                    }
             });
-            let by = reference.map_or(0, |p| self.elements[p].y + if absolute {
-                self.elements[p].edge("border", 0)
-            } else {
-                0
+            let by = reference.map_or(0, |p| {
+                self.elements[p].y
+                    + if absolute {
+                        self.elements[p].edge("border", 0)
+                    } else {
+                        0
+                    }
             });
             let node = &self.elements[i];
             let (dx, dy) = if node.s("position") == "relative" {
-                (if node.s("left") != "auto" {
-                    node.n("left")
-                } else if node.s("right") != "auto" {
-                    -node.n("right")
-                } else {
-                    0
-                }, if node.s("top") != "auto" {
-                    node.n("top")
-                } else if node.s("bottom") != "auto" {
-                    -node.n("bottom")
-                } else {
-                    0
-                })
+                (
+                    if node.s("left") != "auto" {
+                        node.n("left")
+                    } else if node.s("right") != "auto" {
+                        -node.n("right")
+                    } else {
+                        0
+                    },
+                    if node.s("top") != "auto" {
+                        node.n("top")
+                    } else if node.s("bottom") != "auto" {
+                        -node.n("bottom")
+                    } else {
+                        0
+                    },
+                )
             } else {
                 (0, 0)
             };
@@ -909,15 +1161,17 @@ impl Document {
         }
     }
     fn snapshot(&self) -> Vec<Option<Rect>> {
-        self.elements.iter().map(|e| if e.displayed {
-            Some(e.border())
-        } else {
-            None
-        }).collect()
+        self.elements
+            .iter()
+            .map(|e| if e.displayed { Some(e.border()) } else { None })
+            .collect()
     }
     fn changed(&self, old: &[Option<Rect>]) -> String {
         let current = self.snapshot();
-        let ids: Vec<&str> = (0..old.len()).filter(|i| old[*i] != current[*i]).map(|i| self.elements[i].id.as_str()).collect();
+        let ids: Vec<&str> = (0..old.len())
+            .filter(|i| old[*i] != current[*i])
+            .map(|i| self.elements[i].id.as_str())
+            .collect();
         if ids.is_empty() {
             "no change".to_string()
         } else {
@@ -933,8 +1187,10 @@ impl Document {
             let b = e.border();
             for y in b.y.max(0)..(b.y + b.h).min(self.height) {
                 for x in b.x.max(0)..(b.x + b.w).min(self.width) {
-                    let horizontal = e.edge("border", 0) == 1 && y == b.y || e.edge("border", 2) == 1 && y == b.y + b.h - 1;
-                    let vertical = e.edge("border", 3) == 1 && x == b.x || e.edge("border", 1) == 1 && x == b.x + b.w - 1;
+                    let horizontal = e.edge("border", 0) == 1 && y == b.y
+                        || e.edge("border", 2) == 1 && y == b.y + b.h - 1;
+                    let vertical = e.edge("border", 3) == 1 && x == b.x
+                        || e.edge("border", 1) == 1 && x == b.x + b.w - 1;
                     screen[y as usize][x as usize] = if horizontal && vertical {
                         b'+'
                     } else if horizontal {
@@ -960,7 +1216,10 @@ impl Document {
             }
         }
         let frame = "#".repeat(self.width as usize + 2);
-        let mut out = vec![format!("render {}x{}", self.width, self.height), frame.clone()];
+        let mut out = vec![
+            format!("render {}x{}", self.width, self.height),
+            frame.clone(),
+        ];
         for row in screen {
             out.push(format!("#{}#", String::from_utf8(row).unwrap()));
         }
@@ -973,24 +1232,36 @@ impl Document {
             "LAYOUT" => {
                 let mut out = vec![format!("layout {}x{}", self.width, self.height)];
                 for e in &self.elements {
-                    out.push(format!("{}{} {}", "  ".repeat(e.depth), e.id, if e.displayed {
-                        e.border().text()
-                    } else {
-                        "none".to_string()
-                    }));
+                    out.push(format!(
+                        "{}{} {}",
+                        "  ".repeat(e.depth),
+                        e.id,
+                        if e.displayed {
+                            e.border().text()
+                        } else {
+                            "none".to_string()
+                        }
+                    ));
                 }
                 out
-            },
+            }
             "BOX" => {
                 let e = match self.by_id.get(a[1]) {
-                    Some(i) => &self.elements[*i], None => return vec![format!("error: unknown element {}", a[1])]
+                    Some(i) => &self.elements[*i],
+                    None => return vec![format!("error: unknown element {}", a[1])],
                 };
                 if !e.displayed {
                     vec![format!("box {}: none", e.id)]
                 } else {
-                    vec![format!("box {}", e.id), format!("margin {}", e.margin_box().text()), format!("border {}", e.border().text()), format!("padding {}", e.padding().text()), format!("content {}", e.content().text())]
+                    vec![
+                        format!("box {}", e.id),
+                        format!("margin {}", e.margin_box().text()),
+                        format!("border {}", e.border().text()),
+                        format!("padding {}", e.padding().text()),
+                        format!("content {}", e.content().text()),
+                    ]
                 }
-            },
+            }
             "RENDER" => self.render(),
             "HIT" => {
                 let x: i64 = a[1].parse().unwrap();
@@ -998,36 +1269,51 @@ impl Document {
                 if x >= self.width || y >= self.height {
                     return vec![format!("error: point {} {} outside viewport", x, y)];
                 }
-                let mut at = (0..self.elements.len()).rev().find(|i| self.elements[*i].displayed && self.elements[*i].border().contains(x, y));
+                let mut at = (0..self.elements.len()).rev().find(|i| {
+                    self.elements[*i].displayed && self.elements[*i].border().contains(x, y)
+                });
                 let mut path = Vec::new();
                 while let Some(i) = at {
                     path.push(self.elements[i].id.clone());
                     at = self.elements[i].parent;
                 }
                 path.reverse();
-                vec![format!("hit {} {}: {}", x, y, if path.is_empty() {
-                    "none".to_string()
-                } else {
-                    path.join(" > ")
-                })]
-            },
+                vec![format!(
+                    "hit {} {}: {}",
+                    x,
+                    y,
+                    if path.is_empty() {
+                        "none".to_string()
+                    } else {
+                        path.join(" > ")
+                    }
+                )]
+            }
             "SET" => {
                 let (id, p) = (a[1], a[2]);
                 let value = a[3..].join(" ");
                 let i = match self.by_id.get(id) {
-                    Some(i) => *i, None => return vec![format!("error: unknown element {}", id)]
+                    Some(i) => *i,
+                    None => return vec![format!("error: unknown element {}", id)],
                 };
                 if !defaults().contains_key(p) && !shorthand(p) {
                     return vec![format!("error: unknown property {}", p)];
                 }
                 let values = match declaration(p, &value) {
-                    Some(v) => v, None => return vec![format!("error: invalid value for {}: {}", p, value)]
+                    Some(v) => v,
+                    None => return vec![format!("error: invalid value for {}: {}", p, value)],
                 };
                 let old = self.snapshot();
                 self.elements[i].overrides.extend(values);
                 self.reflow();
-                vec![format!("set {} {} {}: {}", id, p, value, self.changed(&old))]
-            },
+                vec![format!(
+                    "set {} {} {}: {}",
+                    id,
+                    p,
+                    value,
+                    self.changed(&old)
+                )]
+            }
             "VIEWPORT" => {
                 let w: i64 = a[1].parse().unwrap();
                 let h: i64 = a[2].parse().unwrap();
@@ -1039,22 +1325,32 @@ impl Document {
                 self.height = h;
                 self.reflow();
                 vec![format!("viewport {} {}: {}", w, h, self.changed(&old))]
-            },
+            }
             "OVERFLOW" => {
-                let ids: Vec<&str> = (0..self.elements.len()).filter(|i| {
-                    let e = &self.elements[*i];
-                    e.displayed && if e.text.is_some() {
-                        e.lines.iter().any(|s| s.len() as i64 > e.cw) || e.lines.len() as i64 > e.ch
+                let ids: Vec<&str> = (0..self.elements.len())
+                    .filter(|i| {
+                        let e = &self.elements[*i];
+                        e.displayed
+                            && if e.text.is_some() {
+                                e.lines.iter().any(|s| s.len() as i64 > e.cw)
+                                    || e.lines.len() as i64 > e.ch
+                            } else {
+                                self.flow(*i)
+                                    .iter()
+                                    .any(|c| !e.content().encloses(self.elements[*c].margin_box()))
+                            }
+                    })
+                    .map(|i| self.elements[i].id.as_str())
+                    .collect();
+                vec![format!(
+                    "overflow: {}",
+                    if ids.is_empty() {
+                        "none".to_string()
                     } else {
-                        self.flow(*i).iter().any(|c| !e.content().encloses(self.elements[*c].margin_box()))
+                        ids.join(" ")
                     }
-                }).map(|i| self.elements[i].id.as_str()).collect();
-                vec![format!("overflow: {}", if ids.is_empty() {
-                    "none".to_string()
-                } else {
-                    ids.join(" ")
-                })]
-            },
+                )]
+            }
             name => vec![format!("error: unknown command {}", name)],
         }
     }
@@ -1064,7 +1360,12 @@ fn main() {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input).unwrap();
     let mut lines = input.lines();
-    let size: Vec<i64> = lines.next().unwrap().split(' ').map(|s| s.parse().unwrap()).collect();
+    let size: Vec<i64> = lines
+        .next()
+        .unwrap()
+        .split(' ')
+        .map(|s| s.parse().unwrap())
+        .collect();
     let mut rules = Vec::new();
     for line in lines.by_ref() {
         if line == "---" {
@@ -1079,9 +1380,7 @@ fn main() {
                 values.extend(v);
             }
         }
-        rules.push(Rule {
-            selectors, values
-        });
+        rules.push(Rule { selectors, values });
     }
     let mut elements: Vec<Element> = Vec::new();
     let mut ancestors = Vec::new();
@@ -1107,7 +1406,23 @@ fn main() {
             Some(ancestors[depth - 1])
         };
         let e = Element {
-            kind: head[..hash].to_string(), id: parts[0].to_string(), classes: parts[1..].iter().map(|s| s.to_string()).collect(), text, parent, depth, children: Vec::new(), overrides: BTreeMap::new(), style: defaults(), displayed: false, cw: 0, ch: 0, rx: 0, ry: 0, x: 0, y: 0, lines: Vec::new()
+            kind: head[..hash].to_string(),
+            id: parts[0].to_string(),
+            classes: parts[1..].iter().map(|s| s.to_string()).collect(),
+            text,
+            parent,
+            depth,
+            children: Vec::new(),
+            overrides: BTreeMap::new(),
+            style: defaults(),
+            displayed: false,
+            cw: 0,
+            ch: 0,
+            rx: 0,
+            ry: 0,
+            x: 0,
+            y: 0,
+            lines: Vec::new(),
         };
         by_id.insert(e.id.clone(), index);
         elements.push(e);
@@ -1118,7 +1433,11 @@ fn main() {
         ancestors.push(index);
     }
     let mut document = Document {
-        width: size[0], height: size[1], rules, elements, by_id
+        width: size[0],
+        height: size[1],
+        rules,
+        elements,
+        by_id,
     };
     document.reflow();
     let mut output = String::new();

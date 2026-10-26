@@ -145,7 +145,7 @@ function content(a::Polynomial)
     end
     fraction(leading(a) < 0 ? -common : common, multiple)
 end
-primitive(a::Polynomial) = a / content(a)
+primitive_part(a::Polynomial) = a / content(a)
 squarefree(a::Polynomial) = degree(a) >= 1 ? quotient(a, polynomial_gcd(a, derivative(a))) : a
 
 function notation(a::Polynomial, variable::String = "x")
@@ -170,7 +170,7 @@ struct Root
     multiplicity::Int
 end
 function rational_roots(a::Polynomial)
-    remaining = primitive(a)
+    remaining = primitive_part(a)
     zeros = 0
     while iszero(first(remaining.coefficients))
         remaining = Polynomial(remaining.coefficients[2:end])
@@ -220,7 +220,7 @@ function squarefree_factors(a::Polynomial)
         shared = polynomial_gcd(remaining, common)
         factor = quotient(remaining, shared)
         if degree(factor) >= 1
-            text = notation(primitive(factor))
+            text = notation(primitive_part(factor))
             result *= factor_text(text == "x" ? text : "($text)", multiplicity)
         end
         common, remaining = quotient(common, shared), shared

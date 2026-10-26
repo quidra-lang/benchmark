@@ -10,9 +10,15 @@ const field_names = [_][]const u8{ "minute", "hour", "day-of-month", "month", "d
 const minimum = [_]usize{ 0, 0, 1, 1, 0 };
 const maximum = [_]usize{ 59, 23, 31, 12, 7 };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
-fn integer(text: []const u8) usize { return std.fmt.parseInt(usize, text, 10) catch unreachable; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
+fn integer(text: []const u8) usize {
+    return std.fmt.parseInt(usize, text, 10) catch unreachable;
+}
 fn digits(text: []const u8, low: usize, high: usize) bool {
     if (text.len < low or text.len > high) return false;
     for (text) |character| if (character < '0' or character > '9') return false;
@@ -28,11 +34,17 @@ fn Text(comptime capacity: usize) type {
             @memcpy(result.bytes[0..value.len], value);
             return result;
         }
-        fn slice(value: *const Self) []const u8 { return value.bytes[0..value.len]; }
-        pub fn format(value: Self, out: *Writer) Writer.Error!void { try out.writeAll(value.slice()); }
+        fn slice(value: *const Self) []const u8 {
+            return value.bytes[0..value.len];
+        }
+        pub fn format(value: Self, out: *Writer) Writer.Error!void {
+            try out.writeAll(value.slice());
+        }
     };
 }
-fn leap(year: usize) bool { return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0); }
+fn leap(year: usize) bool {
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0);
+}
 fn monthLength(year: usize, month: usize) usize {
     const lengths = [_]usize{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
     return if (month == 2 and leap(year)) 29 else lengths[month - 1];
@@ -47,7 +59,9 @@ const Date = struct {
         for (1..date.month) |month| result += monthLength(date.year, month);
         return result;
     }
-    fn weekday(date: Date) usize { return (date.number() + 6) % 7; }
+    fn weekday(date: Date) usize {
+        return (date.number() + 6) % 7;
+    }
     fn fromNumber(value: usize) Date {
         var rest = value;
         var year: usize = 2000;
@@ -73,19 +87,25 @@ const Datetime = struct {
         try out.print("{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2} {s}", .{ date.year, date.month, date.day, value.minute % 1440 / 60, value.minute % 60, weekdays[date.weekday()][0..3] });
     }
 };
-fn datetime(minute: usize) Datetime { return .{ .minute = minute }; }
+fn datetime(minute: usize) Datetime {
+    return .{ .minute = minute };
+}
 const Span = struct {
     minutes: usize,
     pub fn format(value: Span, out: *Writer) Writer.Error!void {
         try out.print("{d}d{d:0>2}h{d:0>2}m", .{ value.minutes / 1440, value.minutes % 1440 / 60, value.minutes % 60 });
     }
 };
-fn span(minutes: usize) Span { return .{ .minutes = minutes }; }
+fn span(minutes: usize) Span {
+    return .{ .minutes = minutes };
+}
 const Special = struct {
     kind: enum { last, last_weekday, before_last, nearest_weekday, nth_weekday, last_occurrence },
     value: usize = 0,
     occurrence: usize = 0,
-    fn eql(a: Special, b: Special) bool { return a.kind == b.kind and a.value == b.value and a.occurrence == b.occurrence; }
+    fn eql(a: Special, b: Special) bool {
+        return a.kind == b.kind and a.value == b.value and a.occurrence == b.occurrence;
+    }
     pub fn format(value: Special, out: *Writer) Writer.Error!void {
         switch (value.kind) {
             .last => try out.writeAll("L"),
@@ -127,8 +147,12 @@ const Cron = struct {
     expanded: Text(100),
     daily: [1440]u16 = undefined,
     daily_count: usize = 0,
-    fn orRule(cron: *const Cron) bool { return cron.fields[2].restricted and cron.fields[4].restricted; }
-    fn rule(cron: *const Cron) []const u8 { return if (cron.orRule()) "OR" else "AND"; }
+    fn orRule(cron: *const Cron) bool {
+        return cron.fields[2].restricted and cron.fields[4].restricted;
+    }
+    fn rule(cron: *const Cron) []const u8 {
+        return if (cron.orRule()) "OR" else "AND";
+    }
     fn nearest(date: Date, day: usize) usize {
         const weekday = (date.number() + 6 + day - date.day) % 7;
         return switch (weekday) {
@@ -157,7 +181,9 @@ const Cron = struct {
         }
         return .{ .month_day = month_day, .week_day = week_day, .condition = if (cron.orRule()) month_day or week_day else month_day and week_day };
     }
-    fn scheduled(cron: *const Cron, date: Date) bool { return cron.fields[3].values[date.month] and cron.matchDay(date).condition; }
+    fn scheduled(cron: *const Cron, date: Date) bool {
+        return cron.fields[3].values[date.month] and cron.matchDay(date).condition;
+    }
     fn fires(cron: *const Cron, minute: usize, holidays: *const [36526]bool) bool {
         return cron.fields[0].values[minute % 60] and cron.fields[1].values[minute % 1440 / 60] and !holidays[minute / 1440] and cron.scheduled(Date.fromNumber(minute / 1440));
     }
@@ -185,7 +211,10 @@ const FireIterator = struct {
         while (iterator.day >= iterator.first and iterator.day <= iterator.last) {
             const day: usize = @intCast(iterator.day);
             if (!iterator.ready) {
-                if (iterator.holidays[day] or !iterator.cron.scheduled(Date.fromNumber(day))) { iterator.advance(); continue; }
+                if (iterator.holidays[day] or !iterator.cron.scheduled(Date.fromNumber(day))) {
+                    iterator.advance();
+                    continue;
+                }
                 iterator.ready = true;
             }
             while (iterator.index >= 0 and iterator.index < @as(i32, @intCast(iterator.cron.daily_count))) {
@@ -202,7 +231,9 @@ const Job = struct { id: Text(16), cron: Cron, text: Text(100), enabled: bool = 
 const OrderedJobs = struct {
     values: [40]*const Job = undefined,
     len: usize = 0,
-    fn less(_: void, a: *const Job, b: *const Job) bool { return std.mem.order(u8, a.id.slice(), b.id.slice()) == .lt; }
+    fn less(_: void, a: *const Job, b: *const Job) bool {
+        return std.mem.order(u8, a.id.slice(), b.id.slice()) == .lt;
+    }
 };
 const State = struct {
     jobs: [40]Job = undefined,
@@ -234,7 +265,9 @@ const Session = struct {
         session.problem = try std.fmt.allocPrint(session.gpa, fmt, args);
         return error.Invalid;
     }
-    fn fieldError(session: *Session, index: usize, reason: []const u8) Error { return session.fail("{s} {s}", .{ field_names[index], reason }); }
+    fn fieldError(session: *Session, index: usize, reason: []const u8) Error {
+        return session.fail("{s} {s}", .{ field_names[index], reason });
+    }
     fn readValue(session: *Session, text: []const u8, index: usize) Error!usize {
         const month_names = [_][]const u8{ "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC" };
         const day_names = [_][]const u8{ "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
@@ -262,11 +295,7 @@ const Session = struct {
             if (item.len == 0) return session.fieldError(index, "empty item");
             var special: ?Special = null;
             if (index == 2 and (item[0] == 'L' or item[item.len - 1] == 'W')) {
-                if (equal(item, "L")) special = .{ .kind = .last }
-                else if (equal(item, "LW")) special = .{ .kind = .last_weekday }
-                else if (std.mem.startsWith(u8, item, "L-")) special = .{ .kind = .before_last, .value = try session.specialNumber(item[2..], index, 30, 2) }
-                else if (item[item.len - 1] == 'W') special = .{ .kind = .nearest_weekday, .value = try session.specialNumber(item[0 .. item.len - 1], index, 31, 2) }
-                else return session.fieldError(index, "invalid value");
+                if (equal(item, "L")) special = .{ .kind = .last } else if (equal(item, "LW")) special = .{ .kind = .last_weekday } else if (std.mem.startsWith(u8, item, "L-")) special = .{ .kind = .before_last, .value = try session.specialNumber(item[2..], index, 30, 2) } else if (item[item.len - 1] == 'W') special = .{ .kind = .nearest_weekday, .value = try session.specialNumber(item[0 .. item.len - 1], index, 31, 2) } else return session.fieldError(index, "invalid value");
             } else if (index == 4 and std.mem.findScalar(u8, item, '#') != null) {
                 const hash = std.mem.findScalar(u8, item, '#').?;
                 const weekday = try session.readValue(item[0..hash], index);
@@ -275,17 +304,25 @@ const Session = struct {
             } else if (index == 4 and item.len >= 2 and item[item.len - 1] == 'L') {
                 special = .{ .kind = .last_occurrence, .value = (try session.readValue(item[0 .. item.len - 1], index)) % 7 };
             }
-            if (special) |value| { result.addSpecial(value); continue; }
+            if (special) |value| {
+                result.addSpecial(value);
+                continue;
+            }
             const slash = std.mem.findScalar(u8, item, '/');
             const base = item[0 .. slash orelse item.len];
             var low: usize = undefined;
             var high: usize = undefined;
-            if (equal(base, "*")) { low = minimum[index]; high = maximum[index]; }
-            else if (std.mem.findScalar(u8, base, '-')) |dash| {
+            if (equal(base, "*")) {
+                low = minimum[index];
+                high = maximum[index];
+            } else if (std.mem.findScalar(u8, base, '-')) |dash| {
                 low = try session.readValue(base[0..dash], index);
                 high = try session.readValue(base[dash + 1 ..], index);
                 if (low > high) return session.fieldError(index, "invalid range");
-            } else { low = try session.readValue(base, index); high = if (slash == null) low else maximum[index]; }
+            } else {
+                low = try session.readValue(base, index);
+                high = if (slash == null) low else maximum[index];
+            }
             var step: usize = 1;
             if (slash) |position| {
                 const part = item[position + 1 ..];
@@ -310,12 +347,7 @@ const Session = struct {
         var words = input;
         if (words.len == 1 and words[0][0] == '@') {
             const macro = words[0];
-            words = if (equal(macro, "@yearly") or equal(macro, "@annually")) &.{ "0", "0", "1", "1", "*" }
-            else if (equal(macro, "@monthly")) &.{ "0", "0", "1", "*", "*" }
-            else if (equal(macro, "@weekly")) &.{ "0", "0", "*", "*", "0" }
-            else if (equal(macro, "@daily") or equal(macro, "@midnight")) &.{ "0", "0", "*", "*", "*" }
-            else if (equal(macro, "@hourly")) &.{ "0", "*", "*", "*", "*" }
-            else return session.fail("unknown macro", .{});
+            words = if (equal(macro, "@yearly") or equal(macro, "@annually")) &.{ "0", "0", "1", "1", "*" } else if (equal(macro, "@monthly")) &.{ "0", "0", "1", "*", "*" } else if (equal(macro, "@weekly")) &.{ "0", "0", "*", "*", "0" } else if (equal(macro, "@daily") or equal(macro, "@midnight")) &.{ "0", "0", "*", "*", "*" } else if (equal(macro, "@hourly")) &.{ "0", "*", "*", "*", "*" } else return session.fail("unknown macro", .{});
         }
         if (words.len != 5) return session.fail("field count", .{});
         var result: Cron = .{ .fields = undefined, .expanded = Text(100).init(try session.joinWords(words)) };
@@ -376,17 +408,23 @@ const Session = struct {
         return result.toOwnedSlice();
     }
     fn valueName(session: *Session, index: usize, value: usize) Error![]const u8 {
-        return switch (index) { 3 => months[value - 1], 4 => weekdays[value], else => try std.fmt.allocPrint(session.gpa, "{d}", .{value}) };
+        return switch (index) {
+            3 => months[value - 1],
+            4 => weekdays[value],
+            else => try std.fmt.allocPrint(session.gpa, "{d}", .{value}),
+        };
     }
     fn valueList(session: *Session, field: *const Field, index: usize, either: bool) Error![]const u8 {
         var parts: std.ArrayList([]const u8) = .empty;
         var start: usize = 0;
         while (start < 60) {
-            if (!field.values[start]) { start += 1; continue; }
+            if (!field.values[start]) {
+                start += 1;
+                continue;
+            }
             var end = start;
             while (end + 1 < 60 and field.values[end + 1]) : (end += 1) {}
-            if (end - start >= 2) try parts.append(session.gpa, try std.fmt.allocPrint(session.gpa, "{s} through {s}", .{ try session.valueName(index, start), try session.valueName(index, end) }))
-            else for (start..end + 1) |value| try parts.append(session.gpa, try session.valueName(index, value));
+            if (end - start >= 2) try parts.append(session.gpa, try std.fmt.allocPrint(session.gpa, "{s} through {s}", .{ try session.valueName(index, start), try session.valueName(index, end) })) else for (start..end + 1) |value| try parts.append(session.gpa, try session.valueName(index, value));
             start = end + 1;
         }
         return session.listJoin(parts.items, either);
@@ -425,28 +463,22 @@ const Session = struct {
             }
         } else {
             const minute_step = minute.stepped(0);
-            if (minute.count() == 60) try out.writeAll("Every minute")
-            else if (minute_step != 0) try out.print("Every {d} minutes", .{minute_step})
-            else try out.print("At {s} {s}", .{ if (minute.count() == 1) "minute" else "minutes", try session.valueList(minute, 0, false) });
+            if (minute.count() == 60) try out.writeAll("Every minute") else if (minute_step != 0) try out.print("Every {d} minutes", .{minute_step}) else try out.print("At {s} {s}", .{ if (minute.count() == 1) "minute" else "minutes", try session.valueList(minute, 0, false) });
             if (hour.count() == 24) {
                 if (minute.count() != 60 and minute_step == 0) try out.writeAll(" of every hour");
-            } else if (hour.stepped(1) != 0) try out.print(", every {d} hours", .{hour.stepped(1)})
-            else {
+            } else if (hour.stepped(1) != 0) try out.print(", every {d} hours", .{hour.stepped(1)}) else {
                 var first: usize = 0;
                 while (!hour.values[first]) : (first += 1) {}
                 var last: usize = 23;
                 while (!hour.values[last]) : (last -= 1) {}
-                if (last - first + 1 == hour.count()) try out.print(", between {d:0>2}:00 and {d:0>2}:59", .{ first, last })
-                else try out.print(", during hours {s}", .{try session.valueList(hour, 1, false)});
+                if (last - first + 1 == hour.count()) try out.print(", between {d:0>2}:00 and {d:0>2}:59", .{ first, last }) else try out.print(", during hours {s}", .{try session.valueList(hour, 1, false)});
             }
         }
         const month_full = cron.fields[2].count() == 31;
         const week_full = cron.fields[4].count() == 7;
         if (cron.orRule()) {
             if (!month_full and !week_full) try out.print(", on {s} or on {s}", .{ try session.dayClause(cron, false, false), try session.dayClause(cron, true, false) });
-        } else if (!month_full and !week_full) try out.print(", on {s} if it is {s}", .{ try session.dayClause(cron, false, false), try session.dayClause(cron, true, true) })
-        else if (!month_full) try out.print(", on {s}", .{try session.dayClause(cron, false, false)})
-        else if (!week_full) try out.print(", on {s}", .{try session.dayClause(cron, true, false)});
+        } else if (!month_full and !week_full) try out.print(", on {s} if it is {s}", .{ try session.dayClause(cron, false, false), try session.dayClause(cron, true, true) }) else if (!month_full) try out.print(", on {s}", .{try session.dayClause(cron, false, false)}) else if (!week_full) try out.print(", on {s}", .{try session.dayClause(cron, true, false)});
         if (cron.fields[3].count() != 12) try out.print(", in {s}", .{try session.valueList(&cron.fields[3], 3, false)});
         try out.writeByte('\n');
     }
@@ -468,8 +500,7 @@ const Session = struct {
                 peak = @max(peak, size);
             } else count += size;
         }
-        if (conflicts) try line(session.out, "CONFLICTS {d} peak {d}", .{ count, peak })
-        else try line(session.out, "TIMELINE {d}", .{count});
+        if (conflicts) try line(session.out, "CONFLICTS {d} peak {d}", .{ count, peak }) else try line(session.out, "TIMELINE {d}", .{count});
         var written: usize = 0;
         for (masks, 0..) |mask, offset| {
             if (written == 100) break;
@@ -478,14 +509,16 @@ const Session = struct {
             if (conflicts) try session.out.print("{f} {d}", .{ datetime(low + offset), size });
             for (jobs.values[0..jobs.len], 0..) |job, index| {
                 if ((mask & (@as(u64, 1) << @as(u6, @intCast(index)))) == 0) continue;
-                if (conflicts) try session.out.print(" {f}", .{job.id})
-                else {
+                if (conflicts) try session.out.print(" {f}", .{job.id}) else {
                     try line(session.out, "{f} {f}", .{ datetime(low + offset), job.id });
                     written += 1;
                     if (written == 100) break;
                 }
             }
-            if (conflicts) { try session.out.writeByte('\n'); written += 1; }
+            if (conflicts) {
+                try session.out.writeByte('\n');
+                written += 1;
+            }
         }
         if (count > 100) try line(session.out, "... {d} more", .{count - 100});
     }
@@ -496,7 +529,10 @@ const Session = struct {
         for (session.state.jobs[0..session.state.job_count]) |*job| {
             if (!job.enabled) continue;
             var times = job.cron.iterator(&session.state.holidays, low, low + 7 * 1440 - 1, false);
-            while (times.next()) |time| { counts[(time - low) / 1440][time % 1440 / 60] += 1; total += 1; }
+            while (times.next()) |time| {
+                counts[(time - low) / 1440][time % 1440 / 60] += 1;
+                total += 1;
+            }
         }
         try line(session.out, "WEEK {s} {d}", .{ input, total });
         for (counts, 0..) |hours, day| {
@@ -540,7 +576,10 @@ const Session = struct {
             var last_end: usize = 0;
             while (times.next()) |time| {
                 if (last_end > time) {
-                    if (job.policy == .FORBID) { stats[index].skipped += 1; continue; }
+                    if (job.policy == .FORBID) {
+                        stats[index].skipped += 1;
+                        continue;
+                    }
                     if (job.policy == .REPLACE) {
                         events[last_end - low] += 1;
                         events[time - low] -= 1;
@@ -560,7 +599,10 @@ const Session = struct {
         var at: usize = 0;
         for (events, 0..) |delta, offset| {
             running += delta;
-            if (running > peak) { peak = running; at = low + offset; }
+            if (running > peak) {
+                peak = running;
+                at = low + offset;
+            }
         }
         try session.out.print("SIMULATE {d} peak {d}", .{ jobs.len, peak });
         if (peak != 0) try session.out.print(" at {f}", .{datetime(at)});
@@ -572,13 +614,15 @@ const Session = struct {
     fn execute(session: *Session, words: []const []const u8) Error!void {
         const command = std.meta.stringToEnum(Command, words[0]) orelse return session.fail("unknown command", .{});
         const arity: i8 = switch (command) {
-            .JOB => -2, .VALIDATE => -1,
+            .JOB => -2,
+            .VALIDATE => -1,
             .LIST, .HOLIDAYS => 0,
             .REMOVE, .ENABLE, .DISABLE, .DESCRIBE, .WEEK, .EXCLUDE, .INCLUDE => 1,
             .RENAME, .EXPAND, .CALENDAR => 2,
             .RUNTIME, .MATCH, .GAP => 3,
             .NEXT, .PREV, .TIMELINE, .CONFLICTS, .SIMULATE => 4,
-            .COUNT => 5, .OVERLAP => 6,
+            .COUNT => 5,
+            .OVERLAP => 6,
         };
         const count = words.len - 1;
         if (if (arity < 0) count < @as(usize, @intCast(-arity)) else count != @as(usize, @intCast(arity))) return session.fail("wrong arguments", .{});
@@ -632,7 +676,10 @@ const Session = struct {
             .EXPAND => {
                 const job = try session.getJob(words[1]);
                 var selected: ?usize = null;
-                for (field_names, 0..) |name, index| if (equal(name, words[2])) { selected = index; break; };
+                for (field_names, 0..) |name, index| if (equal(name, words[2])) {
+                    selected = index;
+                    break;
+                };
                 const index = selected orelse return session.fail("invalid field", .{});
                 const field = &job.cron.fields[index];
                 try out.print("EXPAND {f} {s} {d}", .{ job.id, words[2], field.count() });
@@ -653,7 +700,10 @@ const Session = struct {
                 const reasons = [_]bool{ !job.cron.fields[0].values[time % 60], !job.cron.fields[1].values[time % 1440 / 60], !matched.condition and !matched.month_day, !job.cron.fields[3].values[date.month], !matched.condition and !matched.week_day, state.holidays[date.number()] };
                 const labels = field_names ++ [_][]const u8{"excluded"};
                 var yes = true;
-                for (reasons) |reason| if (reason) { yes = false; break; };
+                for (reasons) |reason| if (reason) {
+                    yes = false;
+                    break;
+                };
                 try out.print("MATCH {f} {f} {s}", .{ job.id, datetime(time), if (yes) "yes" else "no" });
                 for (reasons, labels) |reason, label| if (reason) try out.print(" {s}", .{label});
                 try out.writeByte('\n');
@@ -709,7 +759,11 @@ const Session = struct {
                         const gap = time - old;
                         frequencies[gap] += 1;
                         shortest = @min(shortest, gap);
-                        if (gap > longest) { longest = gap; from = old; to = time; }
+                        if (gap > longest) {
+                            longest = gap;
+                            from = old;
+                            to = time;
+                        }
                     }
                     previous = time;
                 }

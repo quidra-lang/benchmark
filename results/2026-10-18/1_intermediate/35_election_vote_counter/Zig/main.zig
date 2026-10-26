@@ -8,14 +8,22 @@ const ScoreKind = enum { first, last, borda };
 const Scores = [7]i64;
 const Matrix = [7]Scores;
 const Edges = [7][7]bool;
-const zero_scores: Scores = [_]i64{0} ** 7;
-const zero_matrix: Matrix = [_]Scores{zero_scores} ** 7;
-const no_edges: Edges = [_][7]bool{[_]bool{false} ** 7} ** 7;
+const zero_scores: Scores = @splat(0);
+const zero_matrix: Matrix = @splat(zero_scores);
+const no_edges: Edges = @splat(@as([7]bool, @splat(false)));
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn integer(text: []const u8) usize { return std.fmt.parseInt(usize, text, 10) catch unreachable; }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
-fn tieText(tie: bool) []const u8 { return if (tie) " (tie)" else ""; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn integer(text: []const u8) usize {
+    return std.fmt.parseInt(usize, text, 10) catch unreachable;
+}
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
+fn tieText(tie: bool) []const u8 {
+    return if (tie) " (tie)" else "";
+}
 fn totalScores(scores: Scores) i64 {
     var result: i64 = 0;
     for (scores) |score| result += score;
@@ -33,7 +41,9 @@ const MethodSpec = struct {
             else => .{ .kind = kind },
         };
     }
-    fn rankable(method: MethodSpec) bool { return method.kind != .CONDORCET and method.kind != .STV; }
+    fn rankable(method: MethodSpec) bool {
+        return method.kind != .CONDORCET and method.kind != .STV;
+    }
     pub fn format(method: MethodSpec, out: *Writer) Writer.Error!void {
         try out.writeAll(@tagName(method.kind));
         switch (method.kind) {
@@ -44,10 +54,10 @@ const MethodSpec = struct {
     }
 };
 const summary_methods = [_]MethodSpec{
-    .{ .kind = .PLURALITY }, .{ .kind = .RUNOFF }, .{ .kind = .IRV }, .{ .kind = .COOMBS },
-    .{ .kind = .BUCKLIN }, .{ .kind = .BORDA }, .{ .kind = .BALDWIN }, .{ .kind = .NANSON },
-    .{ .kind = .BLACK }, .{ .kind = .VETO }, .{ .kind = .COPELAND }, .{ .kind = .MINIMAX },
-    .{ .kind = .SCHULZE }, .{ .kind = .RANKEDPAIRS }, .{ .kind = .KEMENY },
+    .{ .kind = .PLURALITY }, .{ .kind = .RUNOFF },      .{ .kind = .IRV },      .{ .kind = .COOMBS },
+    .{ .kind = .BUCKLIN },   .{ .kind = .BORDA },       .{ .kind = .BALDWIN },  .{ .kind = .NANSON },
+    .{ .kind = .BLACK },     .{ .kind = .VETO },        .{ .kind = .COPELAND }, .{ .kind = .MINIMAX },
+    .{ .kind = .SCHULZE },   .{ .kind = .RANKEDPAIRS }, .{ .kind = .KEMENY },
 };
 const Name = struct {
     bytes: [12]u8 = undefined,
@@ -57,13 +67,19 @@ const Name = struct {
         @memcpy(name.bytes[0..text_value.len], text_value);
         return name;
     }
-    fn text(name: *const Name) []const u8 { return name.bytes[0..name.len]; }
-    pub fn format(name: Name, out: *Writer) Writer.Error!void { try out.writeAll(name.text()); }
+    fn text(name: *const Name) []const u8 {
+        return name.bytes[0..name.len];
+    }
+    pub fn format(name: Name, out: *Writer) Writer.Error!void {
+        try out.writeAll(name.text());
+    }
 };
 const Sequence = struct {
     items: [7]usize = undefined,
     len: usize = 0,
-    fn list(sequence: *const Sequence) []const usize { return sequence.items[0..sequence.len]; }
+    fn list(sequence: *const Sequence) []const usize {
+        return sequence.items[0..sequence.len];
+    }
     fn append(sequence: *Sequence, candidate: usize) void {
         sequence.items[sequence.len] = candidate;
         sequence.len += 1;
@@ -83,11 +99,16 @@ const Sequence = struct {
         for (sequence.list()) |candidate| if (field.index(candidate) != null) result.append(candidate);
         return result;
     }
-    fn extend(sequence: *Sequence, other: Sequence) void { for (other.list()) |candidate| sequence.append(candidate); }
+    fn extend(sequence: *Sequence, other: Sequence) void {
+        for (other.list()) |candidate| sequence.append(candidate);
+    }
     fn reversed(sequence: Sequence) Sequence {
         var result: Sequence = .{};
         var i = sequence.len;
-        while (i > 0) { i -= 1; result.append(sequence.items[i]); }
+        while (i > 0) {
+            i -= 1;
+            result.append(sequence.items[i]);
+        }
         return result;
     }
 };
@@ -97,7 +118,7 @@ const Election = struct {
     number: usize,
     names: [7]Name = undefined,
     count: usize = 0,
-    withdrawn: [7]bool = [_]bool{false} ** 7,
+    withdrawn: [7]bool = @splat(false),
     tie_order: Sequence = .{},
     entries: std.ArrayList(Entry) = .empty,
     fn find(election: *const Election, text: []const u8) ?usize {
@@ -111,7 +132,9 @@ const Election = struct {
     }
     fn total(election: *const Election) i64 {
         var result: i64 = 0;
-        for (election.entries.items) |entry| for (entry) |group| { result += group.votes; };
+        for (election.entries.items) |entry| for (entry) |group| {
+            result += group.votes;
+        };
         return result;
     }
 };
@@ -151,7 +174,7 @@ const TallyResult = struct { standings: Sequence, tie: bool, output: []const u8,
 const Tally = struct {
     election: *const Election,
     field: Sequence,
-    priority: [7]usize = [_]usize{0} ** 7,
+    priority: [7]usize = @splat(0),
     groups: []const Ballot,
     pairwise: Matrix = zero_matrix,
     total: i64 = 0,
@@ -164,7 +187,7 @@ const Tally = struct {
         for (election.tie_order.list(), 0..) |candidate, i| tally.priority[candidate] = i;
         for (tally.groups) |group| {
             tally.total += group.votes;
-            var positions = [_]usize{7} ** 7;
+            var positions: [7]usize = @splat(7);
             for (group.ranking.list(), 0..) |candidate, i| positions[candidate] = i;
             for (field.list()) |x| for (field.list()) |y| {
                 if (positions[x] < positions[y]) tally.pairwise[x][y] += group.votes;
@@ -172,15 +195,23 @@ const Tally = struct {
         }
         return tally;
     }
-    fn names(tally: *const Tally, candidates: Sequence) NamedList { return .{ .election = tally.election, .candidates = candidates }; }
-    fn ranking(tally: *const Tally, candidates: Sequence) NamedList { return .{ .election = tally.election, .candidates = candidates, .separator = " > " }; }
-    fn values(tally: *const Tally, candidates: Sequence, totals: Scores) ValueList { return .{ .election = tally.election, .candidates = candidates, .scores = totals }; }
+    fn names(tally: *const Tally, candidates: Sequence) NamedList {
+        return .{ .election = tally.election, .candidates = candidates };
+    }
+    fn ranking(tally: *const Tally, candidates: Sequence) NamedList {
+        return .{ .election = tally.election, .candidates = candidates, .separator = " > " };
+    }
+    fn values(tally: *const Tally, candidates: Sequence, totals: Scores) ValueList {
+        return .{ .election = tally.election, .candidates = candidates, .scores = totals };
+    }
     fn scores(tally: *const Tally, candidates: Sequence, kind: ScoreKind) Scores {
         var result = zero_scores;
         for (tally.groups) |group| {
             const ranked = group.ranking.filtered(candidates);
             switch (kind) {
-                .first => if (ranked.len > 0) { result[ranked.items[0]] += group.votes; },
+                .first => if (ranked.len > 0) {
+                    result[ranked.items[0]] += group.votes;
+                },
                 .last => {
                     if (ranked.len == candidates.len) {
                         result[ranked.items[ranked.len - 1]] += group.votes;
@@ -190,14 +221,18 @@ const Tally = struct {
                         }
                     }
                 },
-                .borda => for (ranked.list(), 0..) |candidate, i| { result[candidate] += group.votes * @as(i64, @intCast(candidates.len - i - 1)); },
+                .borda => for (ranked.list(), 0..) |candidate, i| {
+                    result[candidate] += group.votes * @as(i64, @intCast(candidates.len - i - 1));
+                },
             }
         }
         return result;
     }
     fn approval(tally: *const Tally, depth: usize) Scores {
         var result = zero_scores;
-        for (tally.groups) |group| for (group.ranking.list()[0..@min(depth, group.ranking.len)]) |candidate| { result[candidate] += group.votes; };
+        for (tally.groups) |group| for (group.ranking.list()[0..@min(depth, group.ranking.len)]) |candidate| {
+            result[candidate] += group.votes;
+        };
         return result;
     }
     fn order(tally: *const Tally, candidates: Sequence, values_: Scores, descending: bool) Sequence {
@@ -214,8 +249,12 @@ const Tally = struct {
         std.sort.heap(usize, result.items[0..result.len], Context{ .values = values_, .priority = tally.priority, .descending = descending }, Context.less);
         return result;
     }
-    fn priorityOrder(tally: *const Tally, candidates: Sequence) Sequence { return tally.order(candidates, zero_scores, true); }
-    fn topTie(order_: Sequence, counts: Scores) bool { return order_.len > 1 and counts[order_.items[0]] == counts[order_.items[1]]; }
+    fn priorityOrder(tally: *const Tally, candidates: Sequence) Sequence {
+        return tally.order(candidates, zero_scores, true);
+    }
+    fn topTie(order_: Sequence, counts: Scores) bool {
+        return order_.len > 1 and counts[order_.items[0]] == counts[order_.items[1]];
+    }
     fn eliminate(tally: *const Tally, candidates: Sequence, values_: Scores, history: []const Scores) Selection {
         var lowest = values_[candidates.items[0]];
         for (candidates.list()) |candidate| lowest = @min(lowest, values_[candidate]);
@@ -240,7 +279,10 @@ const Tally = struct {
             var qualifies = true;
             for (tally.field.list()) |y| {
                 if (x == y) continue;
-                if (if (loser) tally.pairwise[x][y] >= tally.pairwise[y][x] else tally.pairwise[x][y] <= tally.pairwise[y][x]) { qualifies = false; break; }
+                if (if (loser) tally.pairwise[x][y] >= tally.pairwise[y][x] else tally.pairwise[x][y] <= tally.pairwise[y][x]) {
+                    qualifies = false;
+                    break;
+                }
             }
             if (qualifies) return x;
         }
@@ -308,7 +350,9 @@ const Calculation = struct {
             try calculation.out.print("round {d}: {f}", .{ round, tally.values(remaining, first) });
             try line(&exhaustion.writer, "round {d}: active {d}, exhausted {d}", .{ round, active, tally.total - active });
             var majority = false;
-            for (remaining.list()) |candidate| if (2 * first[candidate] > active) { majority = true; };
+            for (remaining.list()) |candidate| if (2 * first[candidate] > active) {
+                majority = true;
+            };
             if (remaining.len == 1 or majority) {
                 try calculation.out.writeByte('\n');
                 var order = tally.order(remaining, first, true);
@@ -335,7 +379,9 @@ const Calculation = struct {
     fn bucklin(calculation: Calculation) Error!Outcome {
         const tally = calculation.tally;
         var nonblank: i64 = 0;
-        for (tally.groups) |group| if (group.ranking.len > 0) { nonblank += group.votes; };
+        for (tally.groups) |group| if (group.ranking.len > 0) {
+            nonblank += group.votes;
+        };
         const majority = @divTrunc(nonblank, 2) + 1;
         try line(calculation.out, "majority: {d}", .{majority});
         var history: [7]Scores = undefined;
@@ -346,7 +392,9 @@ const Calculation = struct {
             rounds += 1;
             try line(calculation.out, "round {d}: {f}", .{ rounds, tally.values(tally.field, current) });
             var reached = false;
-            for (tally.field.list()) |candidate| if (current[candidate] >= majority) { reached = true; };
+            for (tally.field.list()) |candidate| if (current[candidate] >= majority) {
+                reached = true;
+            };
             if (reached) break;
         }
         const Context = struct {
@@ -378,7 +426,10 @@ const Calculation = struct {
             if (nanson) {
                 const total = totalScores(current);
                 for (remaining.list()) |candidate| if (current[candidate] * @as(i64, @intCast(remaining.len)) < total) losers.append(candidate);
-                if (losers.len == 0) { try calculation.out.writeByte('\n'); break; }
+                if (losers.len == 0) {
+                    try calculation.out.writeByte('\n');
+                    break;
+                }
                 try line(calculation.out, "; eliminated {f}", .{tally.names(losers)});
             } else {
                 const selection = tally.eliminate(remaining, current, history[0..rounds]);
@@ -392,7 +443,10 @@ const Calculation = struct {
         }
         var order = tally.priorityOrder(remaining);
         var i = rounds;
-        while (i > 0) { i -= 1; order.extend(removed[i]); }
+        while (i > 0) {
+            i -= 1;
+            order.extend(removed[i]);
+        }
         return calculation.finish(.{ .standings = order, .tie = nanson and remaining.len > 1 });
     }
     fn black(calculation: Calculation) Error!Outcome {
@@ -483,7 +537,9 @@ const Calculation = struct {
             var eligible: Sequence = .{};
             for (remaining.list()) |x| {
                 var incoming = false;
-                for (remaining.list()) |y| if (x != y and edges[y][x]) { incoming = true; };
+                for (remaining.list()) |y| if (x != y and edges[y][x]) {
+                    incoming = true;
+                };
                 if (!incoming) eligible.append(x);
             }
             if (order.len == 0) tie = eligible.len > 1;
@@ -507,7 +563,9 @@ const Calculation = struct {
             }
         };
         var dominance = no_edges;
-        for (tally.field.list()) |x| for (tally.field.list()) |y| { dominance[x][y] = paths[x][y] > paths[y][x]; };
+        for (tally.field.list()) |x| for (tally.field.list()) |y| {
+            dominance[x][y] = paths[x][y] > paths[y][x];
+        };
         const result = calculation.dominanceOrder(dominance);
         try tally.pairLines(calculation.out, paths);
         try line(calculation.out, "ranking: {f}", .{tally.ranking(result.standings)});
@@ -557,7 +615,9 @@ const Calculation = struct {
         var search: KemenySearch = .{ .tally = tally, .candidates = tally.priorityOrder(tally.field) };
         search.visit(0);
         var first_count: usize = 0;
-        for (search.firsts) |present| if (present) { first_count += 1; };
+        for (search.firsts) |present| if (present) {
+            first_count += 1;
+        };
         try line(calculation.out, "score: {d}", .{search.best});
         try line(calculation.out, "optimal: {d}", .{search.optimal});
         try line(calculation.out, "ranking: {f}", .{tally.ranking(search.order)});
@@ -584,7 +644,10 @@ const Calculation = struct {
             @memset(owners, null);
             for (tally.groups, 0..) |group, i| {
                 if (group.ranking.len == 0) continue;
-                for (group.ranking.list()) |candidate| if (remaining.index(candidate) != null) { owners[i] = candidate; break; };
+                for (group.ranking.list()) |candidate| if (remaining.index(candidate) != null) {
+                    owners[i] = candidate;
+                    break;
+                };
                 const value = group.votes * per_vote[i];
                 if (owners[i]) |candidate| current[candidate] += value else exhausted += value;
             }
@@ -602,7 +665,9 @@ const Calculation = struct {
                 const surplus = current[first] - quota;
                 elected.append(first);
                 remaining.remove(first);
-                for (owners, 0..) |candidate, i| if (candidate == first) { per_vote[i] = @divTrunc(per_vote[i] * surplus, current[first]); };
+                for (owners, 0..) |candidate, i| if (candidate == first) {
+                    per_vote[i] = @divTrunc(per_vote[i] * surplus, current[first]);
+                };
                 try line(calculation.out, "; elected {f} (surplus {f})", .{ tally.election.names[first], Amount{ .value = surplus } });
             } else {
                 const selection = tally.eliminate(remaining, current, history[0..rounds]);
@@ -644,18 +709,18 @@ const Calculation = struct {
 const KemenySearch = struct {
     tally: *const Tally,
     candidates: Sequence,
-    used: [7]bool = [_]bool{false} ** 7,
+    used: [7]bool = @splat(false),
     path: Sequence = .{},
     order: Sequence = .{},
     best: i64 = -1,
     optimal: usize = 0,
-    firsts: [7]bool = [_]bool{false} ** 7,
+    firsts: [7]bool = @splat(false),
     fn visit(search: *KemenySearch, score: i64) void {
         if (search.path.len == search.candidates.len) {
             if (score > search.best) {
                 search.best = score;
                 search.optimal = 0;
-                search.firsts = [_]bool{false} ** 7;
+                search.firsts = @splat(false);
                 search.order = search.path;
             }
             if (score == search.best) {
@@ -712,7 +777,9 @@ const Session = struct {
             election.count += 1;
         }
         const Context = struct {
-            fn less(value: *const Election, a: usize, b: usize) bool { return std.mem.order(u8, value.names[a].text(), value.names[b].text()) == .lt; }
+            fn less(value: *const Election, a: usize, b: usize) bool {
+                return std.mem.order(u8, value.names[a].text(), value.names[b].text()) == .lt;
+            }
         };
         std.sort.heap(usize, election.tie_order.items[0..election.tie_order.len], @as(*const Election, &election), Context.less);
         session.state.election = election;
@@ -780,7 +847,7 @@ const Session = struct {
         const backward = tally.pairwise[second][first];
         try line(session.out, "{f} {d}, {f} {d}, neither {d}", .{ election.names[first], forward, election.names[second], backward, tally.total - forward - backward });
         var methods: [2][15]usize = undefined;
-        var counts = [_]usize{0} ** 2;
+        var counts: [2]usize = @splat(0);
         for (summary_methods, 0..) |method, index| {
             const result = try tally.run(session.gpa, method);
             const side: usize = if (result.standings.index(first).? < result.standings.index(second).?) 0 else 1;
@@ -801,7 +868,10 @@ const Session = struct {
         var words: [12][]const u8 = undefined;
         var count: usize = 0;
         var tokens = std.mem.tokenizeScalar(u8, text, ' ');
-        while (tokens.next()) |word| { words[count] = word; count += 1; }
+        while (tokens.next()) |word| {
+            words[count] = word;
+            count += 1;
+        }
         const w = words[0..count];
         const command = w[0];
         if (equal(command, "CANDIDATES")) return session.create(w[1..]);

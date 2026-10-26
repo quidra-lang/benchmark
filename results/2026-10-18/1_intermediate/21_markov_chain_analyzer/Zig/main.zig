@@ -3,10 +3,18 @@ const Allocator = std.mem.Allocator;
 const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 const max_states = 10;
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn integer(text: []const u8) i64 { return std.fmt.parseInt(i64, text, 10) catch unreachable; }
-fn index(text: []const u8) usize { return @intCast(integer(text)); }
-fn yes(value: bool) []const u8 { return if (value) "yes" else "no"; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn integer(text: []const u8) i64 {
+    return std.fmt.parseInt(i64, text, 10) catch unreachable;
+}
+fn index(text: []const u8) usize {
+    return @intCast(integer(text));
+}
+fn yes(value: bool) []const u8 {
+    return if (value) "yes" else "no";
+}
 fn gcd(a: i64, b: i64) i64 {
     var x = if (a < 0) -a else a;
     var y = if (b < 0) -b else b;
@@ -35,13 +43,27 @@ const Fraction = struct {
     fn sub(a: Fraction, b: Fraction) Fraction {
         return init(a.numerator * b.denominator - b.numerator * a.denominator, a.denominator * b.denominator);
     }
-    fn mul(a: Fraction, b: Fraction) Fraction { return init(a.numerator * b.numerator, a.denominator * b.denominator); }
-    fn div(a: Fraction, b: Fraction) Fraction { return init(a.numerator * b.denominator, a.denominator * b.numerator); }
-    fn absolute(a: Fraction) Fraction { return .{ .numerator = if (a.numerator < 0) -a.numerator else a.numerator, .denominator = a.denominator }; }
-    fn eq(a: Fraction, b: Fraction) bool { return a.numerator == b.numerator and a.denominator == b.denominator; }
-    fn less(a: Fraction, b: Fraction) bool { return a.numerator * b.denominator < b.numerator * a.denominator; }
-    fn isZero(a: Fraction) bool { return a.numerator == 0; }
-    fn value(a: Fraction) Value { return .{ .fraction = a }; }
+    fn mul(a: Fraction, b: Fraction) Fraction {
+        return init(a.numerator * b.numerator, a.denominator * b.denominator);
+    }
+    fn div(a: Fraction, b: Fraction) Fraction {
+        return init(a.numerator * b.denominator, a.denominator * b.numerator);
+    }
+    fn absolute(a: Fraction) Fraction {
+        return .{ .numerator = if (a.numerator < 0) -a.numerator else a.numerator, .denominator = a.denominator };
+    }
+    fn eq(a: Fraction, b: Fraction) bool {
+        return a.numerator == b.numerator and a.denominator == b.denominator;
+    }
+    fn less(a: Fraction, b: Fraction) bool {
+        return a.numerator * b.denominator < b.numerator * a.denominator;
+    }
+    fn isZero(a: Fraction) bool {
+        return a.numerator == 0;
+    }
+    fn value(a: Fraction) Value {
+        return .{ .fraction = a };
+    }
     pub fn format(a: Fraction, out: *std.Io.Writer) std.Io.Writer.Error!void {
         try out.print("{d}/{d}", .{ a.numerator, a.denominator });
     }
@@ -60,7 +82,9 @@ const zero_vector: Vector = @splat(Fraction.zero);
 const zero_matrix: Matrix = @splat(zero_vector);
 const zero_equations: Equations = @splat(@splat(Fraction.zero));
 
-fn delta(i: usize, j: usize) Fraction { return if (i == j) Fraction.one else Fraction.zero; }
+fn delta(i: usize, j: usize) Fraction {
+    return if (i == j) Fraction.one else Fraction.zero;
+}
 fn sum(values: []const Fraction) Fraction {
     var total = Fraction.zero;
     for (values) |value| total = total.add(value);
@@ -113,12 +137,16 @@ const StateList = struct {
         list.items[list.len] = state;
         list.len += 1;
     }
-    fn slice(list: *const StateList) []const usize { return list.items[0..list.len]; }
+    fn slice(list: *const StateList) []const usize {
+        return list.items[0..list.len];
+    }
     fn contains(list: *const StateList, state: usize) bool {
         for (list.slice()) |item| if (item == state) return true;
         return false;
     }
-    fn sort(list: *StateList) void { std.mem.sort(usize, list.items[0..list.len], {}, std.sort.asc(usize)); }
+    fn sort(list: *StateList) void {
+        std.mem.sort(usize, list.items[0..list.len], {}, std.sort.asc(usize));
+    }
 };
 const Component = struct {
     states: StateList = .{},
@@ -202,7 +230,7 @@ const Chain = struct {
         for (0..states.len - 1) |row| for (0..states.len) |col| {
             equations[row][col] = chain.p[states.items[col]][states.items[row]].sub(delta(col, row));
         };
-        @memset(equations[states.len - 1][0..states.len + 1], Fraction.one);
+        @memset(equations[states.len - 1][0 .. states.len + 1], Fraction.one);
         const solution = solve(&equations, states.len, states.len + 1);
         var distribution = zero_vector;
         for (states.slice(), 0..) |state, i| distribution[state] = solution[i][0];
@@ -276,8 +304,32 @@ const Chain = struct {
 };
 
 const Command = enum {
-    CHAIN, P, ROW, SHOW, CHECK, BUILD, GAMBLER, CLASSES, CLASSIFY, STEP, POWER, STATIONARY, RECURRENCE,
-    ABSORB, HITTING, PASSAGE, FIRSTPASSAGE, PATHPROB, MOSTLIKELY, REVERSIBLE, REVERSE, MIXING, LUMP, REWARD, RESTRICT, SIMULATE,
+    CHAIN,
+    P,
+    ROW,
+    SHOW,
+    CHECK,
+    BUILD,
+    GAMBLER,
+    CLASSES,
+    CLASSIFY,
+    STEP,
+    POWER,
+    STATIONARY,
+    RECURRENCE,
+    ABSORB,
+    HITTING,
+    PASSAGE,
+    FIRSTPASSAGE,
+    PATHPROB,
+    MOSTLIKELY,
+    REVERSIBLE,
+    REVERSE,
+    MIXING,
+    LUMP,
+    REWARD,
+    RESTRICT,
+    SIMULATE,
 };
 const Analyzer = struct {
     gpa: Allocator,
@@ -636,7 +688,7 @@ const Analyzer = struct {
             };
         }
         try self.out.print("MOSTLIKELY {s} {s} k={d} prob={f}\nPATH ", .{ words[1], words[2], steps, best[0][start].value() });
-        try self.labels(chain, path[0..steps + 1], " ");
+        try self.labels(chain, path[0 .. steps + 1], " ");
         try self.out.writeAll("\n");
     }
     fn reversible(self: *Analyzer, name: []const u8, chain: *const Chain) Error!void {
@@ -702,7 +754,9 @@ const Analyzer = struct {
         if (mixing_time) |time| try self.out.print("{d}\n", .{time}) else try self.out.writeAll("none\n");
         for (0..steps) |t| try self.out.print("TV {d} {f} from={s}\n", .{ t + 1, distances[t].value(), chain.names[worst[t]] });
     }
-    fn lessBlock(_: void, a: StateList, b: StateList) bool { return a.items[0] < b.items[0]; }
+    fn lessBlock(_: void, a: StateList, b: StateList) bool {
+        return a.items[0] < b.items[0];
+    }
     fn lump(self: *Analyzer, words: []const []const u8, chain: *const Chain) Error!void {
         var blocks: [max_states]StateList = undefined;
         var count: usize = 0;
@@ -732,8 +786,9 @@ const Analyzer = struct {
                 const value = chain.blockSum(state_index, &target);
                 if (!value.eq(baseline)) {
                     try self.out.print("LUMP {s} not lumpable block={s} target={s} {s}={f} {s}={f}\n", .{
-                        words[1], chain.names[representative], chain.names[target.items[0]],
-                        chain.names[representative], baseline.value(), chain.names[state_index], value.value(),
+                        words[1],                    chain.names[representative], chain.names[target.items[0]],
+                        chain.names[representative], baseline.value(),            chain.names[state_index],
+                        value.value(),
                     });
                     return;
                 }
@@ -811,7 +866,7 @@ const Analyzer = struct {
             visits[current] += 1;
         }
         try self.out.print("SIMULATE {s} {s} steps={d} seed={d} end={s}\nPATH ", .{ words[1], words[2], steps, seed, chain.names[current] });
-        try self.labels(chain, path[0..steps + 1], " ");
+        try self.labels(chain, path[0 .. steps + 1], " ");
         try self.out.writeAll("\n");
         for (0..chain.size) |i| try self.out.print("VISIT {s} {d}\n", .{ chain.names[i], visits[i] });
     }

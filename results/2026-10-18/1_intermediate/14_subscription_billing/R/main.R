@@ -11,6 +11,7 @@ cents <- function(text) {
   parts <- strsplit(text, ".", fixed = TRUE)[[1]]
   as.numeric(parts[1]) * 100 + as.numeric(parts[2])
 }
+integer_text <- function(value) sprintf("%.0f", value)
 signed_money <- function(value) paste0(if (value > 0) "+" else "", money(value))
 percentage <- function(value) paste0(money(value), "%")
 
@@ -123,7 +124,7 @@ opening_items <- function(sub, start) {
 usage_items <- function(sub, close = FALSE) {
   if (is.null(sub$plan$mode) || sub$usage == 0) return(list())
   units <- sub$usage
-  result <- list(item(paste("usage", sub$plan$name, units, "units"),
+  result <- list(item(paste("usage", sub$plan$name, integer_text(units), "units"),
                       usage_charge(sub$plan, units)))
   if (close) sub$usage <- 0
   result
@@ -508,7 +509,7 @@ cmd_usage <- function(args) {
   quantity <- as.numeric(args[2])
   if (quantity == 0) fail("invalid units")
   sub$usage <- sub$usage + quantity
-  emit("USAGE", "sub", sub$number, "units", quantity, "total", sub$usage)
+  emit("USAGE", "sub", sub$number, "units", integer_text(quantity), "total", integer_text(sub$usage))
 }
 cmd_apply <- function(args) {
   sub <- require_subscription(args[1])
@@ -581,7 +582,7 @@ cmd_sub <- function(args) {
     }
   }
   if (!is.null(sub$plan$mode) && sub$state != "CANCELED")
-    emit("usage", sub$usage, indent = 2)
+    emit("usage", integer_text(sub$usage), indent = 2)
   open <- vapply(Filter(function(x) x$outstanding > 0, sub$invoices),
                  function(x) x$number, numeric(1))
   if (length(open)) emit("open", open, indent = 2)

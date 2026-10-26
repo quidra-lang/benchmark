@@ -1,9 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Text = []const u8;
-const Error = Allocator.Error || error{
-    Invalid
-};
+const Error = Allocator.Error || error{Invalid};
 const Mark = [16]i64;
 const Row = [32]i64;
 var failure: Text = "";
@@ -24,7 +22,8 @@ fn number(s: Text, low: i64, high: i64) ?i64 {
     return if (n >= low and n <= high) n else null;
 }
 const Builder = struct {
-    gpa: Allocator, bytes: std.ArrayList(u8) = .empty,
+    gpa: Allocator,
+    bytes: std.ArrayList(u8) = .empty,
     fn add(self: *Builder, s: Text) Error!void {
         try self.bytes.appendSlice(self.gpa, s);
     }
@@ -42,17 +41,13 @@ fn split(gpa: Allocator, s: Text, separator: u8) Error![]Text {
     return a.items;
 }
 fn mark(gpa: Allocator, m: Mark, p: usize) Error!Text {
-    var out: Builder = .{
-        .gpa = gpa
-    };
+    var out: Builder = .{ .gpa = gpa };
     try out.add("(");
     for (m[0..p], 0..) |v, i| {
         if (i > 0) try out.add(",");
         if (v < 0) {
             try out.add("w");
-        } else try out.print("{d}", .{
-            v
-        });
+        } else try out.print("{d}", .{v});
     }
     try out.add(")");
     return out.bytes.items;
@@ -78,15 +73,17 @@ fn rowDescending(n: usize, a: Row, b: Row) bool {
     for (0..n) |i| if (a[i] != b[i]) return a[i] > b[i];
     return false;
 }
-const Target = struct {
-    low: i64, high: i64
-};
+const Target = struct { low: i64, high: i64 };
 const Graph = struct {
-    states: []Mark, parent: []i32, via: []usize, edges: [][16]i32, count: usize = 1, found: ?usize = null, aborted: bool = false,
+    states: []Mark,
+    parent: []i32,
+    via: []usize,
+    edges: [][16]i32,
+    count: usize = 1,
+    found: ?usize = null,
+    aborted: bool = false,
     fn init(gpa: Allocator, start: Mark, limit: usize) Error!Graph {
-        const result: Graph = .{
-            .states = try gpa.alloc(Mark, limit), .parent = try gpa.alloc(i32, limit), .via = try gpa.alloc(usize, limit), .edges = try gpa.alloc([16]i32, limit)
-        };
+        const result: Graph = .{ .states = try gpa.alloc(Mark, limit), .parent = try gpa.alloc(i32, limit), .via = try gpa.alloc(usize, limit), .edges = try gpa.alloc([16]i32, limit) };
         result.states[0] = start;
         result.parent[0] = -1;
         for (result.edges) |*row| row.* = @splat(-1);
@@ -94,10 +91,22 @@ const Graph = struct {
     }
 };
 const Net = struct {
-    gpa: Allocator, name: Text, places: [16]Text = undefined, transitions: [16]Text = undefined,
-    p: usize = 0, t: usize = 0, initial: Mark = @splat(0), capacity: Mark = @splat(0), priority: Mark = @splat(0), current: Mark = @splat(0),
-    pre: [16]Mark = @splat(@splat(0)), post: [16]Mark = @splat(@splat(0)), inhibitor: [16]Mark = @splat(@splat(0)),
-    arcs: usize = 0, inhibitors: usize = 0, history: std.ArrayList(Mark) = .empty,
+    gpa: Allocator,
+    name: Text,
+    places: [16]Text = undefined,
+    transitions: [16]Text = undefined,
+    p: usize = 0,
+    t: usize = 0,
+    initial: Mark = @splat(0),
+    capacity: Mark = @splat(0),
+    priority: Mark = @splat(0),
+    current: Mark = @splat(0),
+    pre: [16]Mark = @splat(@splat(0)),
+    post: [16]Mark = @splat(@splat(0)),
+    inhibitor: [16]Mark = @splat(@splat(0)),
+    arcs: usize = 0,
+    inhibitors: usize = 0,
+    history: std.ArrayList(Mark) = .empty,
     fn place(self: *const Net, s: Text) ?usize {
         for (self.places[0..self.p], 0..) |name, i| if (eq(name, s)) return i;
         return null;
@@ -109,22 +118,15 @@ const Net = struct {
     fn define(self: *Net, scratch: Allocator, w: []const Text) Error!void {
         const cmd = w[0];
         const n = w.len - 1;
-        if (!eq(cmd, "place") and !eq(cmd, "transition") and !eq(cmd, "arc") and !eq(cmd, "inhibit")) return bad(scratch, "unknown definition {s}", .{
-            cmd
-        });
-        if (!(if (eq(cmd, "place")) n == 2 or n == 3 else if (eq(cmd, "transition")) n == 1 or n == 2 else n == 3)) return bad(scratch, "wrong number of arguments", .{
-        });
+        if (!eq(cmd, "place") and !eq(cmd, "transition") and !eq(cmd, "arc") and !eq(cmd, "inhibit")) return bad(scratch, "unknown definition {s}", .{cmd});
+        if (!(if (eq(cmd, "place")) n == 2 or n == 3 else if (eq(cmd, "transition")) n == 1 or n == 2 else n == 3)) return bad(scratch, "wrong number of arguments", .{});
         const a = w[1];
         if (eq(cmd, "place") or eq(cmd, "transition")) {
-            if (self.place(a) != null or self.transition(a) != null) return bad(scratch, "duplicate name {s}", .{
-                a
-            });
+            if (self.place(a) != null or self.transition(a) != null) return bad(scratch, "duplicate name {s}", .{a});
             if (eq(cmd, "place")) {
                 const tokens = std.fmt.parseInt(i64, w[2], 10) catch unreachable;
                 const capacity = if (n == 3) std.fmt.parseInt(i64, w[3], 10) catch unreachable else 0;
-                if (n == 3 and tokens > capacity) return bad(scratch, "tokens exceed capacity of {s}", .{
-                    a
-                });
+                if (n == 3 and tokens > capacity) return bad(scratch, "tokens exceed capacity of {s}", .{a});
                 self.places[self.p] = a;
                 self.initial[self.p] = tokens;
                 self.capacity[self.p] = capacity;
@@ -136,47 +138,28 @@ const Net = struct {
             }
         } else if (eq(cmd, "arc")) {
             const b = w[2];
-            for ([_]Text{
-                a, b
-            }) |x| if (self.place(x) == null and self.transition(x) == null) return bad(scratch, "unknown node {s}", .{
-                x
-            });
+            for ([_]Text{ a, b }) |x| if (self.place(x) == null and self.transition(x) == null) return bad(scratch, "unknown node {s}", .{x});
             const pa = self.place(a);
             const pb = self.place(b);
-            if ((pa != null) == (pb != null)) return bad(scratch, "arc must connect a place and a transition", .{
-            });
+            if ((pa != null) == (pb != null)) return bad(scratch, "arc must connect a place and a transition", .{});
             const pi = pa orelse pb.?;
             const ti = self.transition(if (pa != null) b else a).?;
             const matrix = if (pa != null) &self.pre else &self.post;
-            if (matrix[pi][ti] != 0) return bad(scratch, "duplicate arc {s} {s}", .{
-                a, b
-            });
+            if (matrix[pi][ti] != 0) return bad(scratch, "duplicate arc {s} {s}", .{ a, b });
             matrix[pi][ti] = std.fmt.parseInt(i64, w[3], 10) catch unreachable;
             self.arcs += 1;
         } else {
-            const pi = self.place(a) orelse return bad(scratch, "unknown place {s}", .{
-                a
-            });
-            const ti = self.transition(w[2]) orelse return bad(scratch, "unknown transition {s}", .{
-                w[2]
-            });
-            if (self.inhibitor[pi][ti] != 0) return bad(scratch, "duplicate inhibitor {s} {s}", .{
-                a, w[2]
-            });
+            const pi = self.place(a) orelse return bad(scratch, "unknown place {s}", .{a});
+            const ti = self.transition(w[2]) orelse return bad(scratch, "unknown transition {s}", .{w[2]});
+            if (self.inhibitor[pi][ti] != 0) return bad(scratch, "duplicate inhibitor {s} {s}", .{ a, w[2] });
             self.inhibitor[pi][ti] = std.fmt.parseInt(i64, w[3], 10) catch unreachable;
             self.inhibitors += 1;
         }
     }
     fn reason(self: *const Net, scratch: Allocator, m: Mark, ti: usize) Error!?Text {
-        for (0..self.p) |pi| if (m[pi] >= 0 and m[pi] < self.pre[pi][ti]) return try std.fmt.allocPrint(scratch, "insufficient tokens in {s}", .{
-            self.places[pi]
-        });
-        for (0..self.p) |pi| if (self.inhibitor[pi][ti] > 0 and (m[pi] < 0 or m[pi] >= self.inhibitor[pi][ti])) return try std.fmt.allocPrint(scratch, "inhibited by {s}", .{
-            self.places[pi]
-        });
-        for (0..self.p) |pi| if (self.capacity[pi] > 0 and (m[pi] < 0 or m[pi] - self.pre[pi][ti] + self.post[pi][ti] > self.capacity[pi])) return try std.fmt.allocPrint(scratch, "capacity of {s} exceeded", .{
-            self.places[pi]
-        });
+        for (0..self.p) |pi| if (m[pi] >= 0 and m[pi] < self.pre[pi][ti]) return try std.fmt.allocPrint(scratch, "insufficient tokens in {s}", .{self.places[pi]});
+        for (0..self.p) |pi| if (self.inhibitor[pi][ti] > 0 and (m[pi] < 0 or m[pi] >= self.inhibitor[pi][ti])) return try std.fmt.allocPrint(scratch, "inhibited by {s}", .{self.places[pi]});
+        for (0..self.p) |pi| if (self.capacity[pi] > 0 and (m[pi] < 0 or m[pi] - self.pre[pi][ti] + self.post[pi][ti] > self.capacity[pi])) return try std.fmt.allocPrint(scratch, "capacity of {s} exceeded", .{self.places[pi]});
         return null;
     }
     fn enabled(self: *const Net, m: Mark, ti: usize) bool {
@@ -212,8 +195,7 @@ const Net = struct {
             if (!self.enabled(g.states[q], ti)) continue;
             const m = self.fire(g.states[q], ti);
             var k: usize = 0;
-            while (k < g.count and !same(g.states[k], m, self.p)) : (k += 1) {
-            }
+            while (k < g.count and !same(g.states[k], m, self.p)) : (k += 1) {}
             if (k == g.count) {
                 if (g.count == limit) {
                     g.aborted = true;
@@ -244,9 +226,7 @@ const Net = struct {
         return result.items;
     }
     fn pathText(self: *const Net, scratch: Allocator, indices: []const usize) Error!Text {
-        var out: Builder = .{
-            .gpa = scratch
-        };
+        var out: Builder = .{ .gpa = scratch };
         for (indices, 0..) |ti, i| {
             if (i > 0) try out.add(" ");
             try out.add(self.transitions[ti]);
@@ -283,22 +263,16 @@ const Net = struct {
     fn reach(self: *const Net, scratch: Allocator, out: *Builder, limit: usize, display: bool) Error!void {
         const g = try self.graph(scratch, self.current, limit, null);
         if (g.aborted) {
-            try out.line("reachability graph limit {d} exceeded", .{
-                limit
-            });
+            try out.line("reachability graph limit {d} exceeded", .{limit});
             return;
         }
         if (display) {
             for (0..g.count) |i| {
-                try out.print("M{d} {s}: ", .{
-                    i, try mark(scratch, g.states[i], self.p)
-                });
+                try out.print("M{d} {s}: ", .{ i, try mark(scratch, g.states[i], self.p) });
                 var first = true;
                 for (0..self.t) |ti| if (g.edges[i][ti] >= 0) {
                     if (!first) try out.add(" ");
-                    try out.print("{s}->M{d}", .{
-                        self.transitions[ti], g.edges[i][ti]
-                    });
+                    try out.print("{s}->M{d}", .{ self.transitions[ti], g.edges[i][ti] });
                     first = false;
                 };
                 if (first) try out.add("dead");
@@ -348,9 +322,7 @@ const Net = struct {
         for (home) |v| if (v) {
             homes += 1;
         };
-        try out.line("reachable markings: {d}\nedges: {d}\ncomponents: {d} (terminal {d})\ndead markings: {d}", .{
-            g.count, edges, components, terminals, dead
-        });
+        try out.line("reachable markings: {d}\nedges: {d}\ncomponents: {d} (terminal {d})\ndead markings: {d}", .{ g.count, edges, components, terminals, dead });
         for (0..g.count) |i| {
             var is_dead = true;
             for (g.edges[i][0..self.t]) |v| if (v >= 0) {
@@ -358,16 +330,12 @@ const Net = struct {
             };
             if (is_dead) {
                 const pth = try self.route(scratch, g, i);
-                try out.line("  M{d} {s} path {s}", .{
-                    i, try mark(scratch, g.states[i], self.p), if (pth.len == 0) "empty" else try self.pathText(scratch, pth)
-                });
+                try out.line("  M{d} {s} path {s}", .{ i, try mark(scratch, g.states[i], self.p), if (pth.len == 0) "empty" else try self.pathText(scratch, pth) });
             }
         }
         var bound: i64 = 0;
         for (maximum[0..self.p]) |v| bound = @max(bound, v);
-        try out.line("max tokens: {s}\nbound: {d}\nsafe: {s}\nhome markings: {d}\nreversible: {s}\npersistent: {s}", .{
-            try mark(scratch, maximum, self.p), bound, yes(bound <= 1), homes, yes(home[0]), yes(persistent)
-        });
+        try out.line("max tokens: {s}\nbound: {d}\nsafe: {s}\nhome markings: {d}\nreversible: {s}\npersistent: {s}", .{ try mark(scratch, maximum, self.p), bound, yes(bound <= 1), homes, yes(home[0]), yes(persistent) });
         try out.add("liveness: ");
         for (0..self.t) |ti| {
             const present = try scratch.alloc(bool, components);
@@ -384,9 +352,7 @@ const Net = struct {
             for (terminal, present) |term, have| if (term and !have) {
                 live = false;
             };
-            try out.print("{s}{s}={s}", .{
-                if (ti > 0) " " else "", self.transitions[ti], if (live) "L4" else if (cycle) "L3" else if (used) "L1" else "L0"
-            });
+            try out.print("{s}{s}={s}", .{ if (ti > 0) " " else "", self.transitions[ti], if (live) "L4" else if (cycle) "L3" else if (used) "L1" else "L0" });
         }
         try out.add("\n");
     }
@@ -427,9 +393,7 @@ const Net = struct {
                     };
                 }
                 if (g.count == limit) {
-                    try out.line("coverability tree limit {d} exceeded", .{
-                        limit
-                    });
+                    try out.line("coverability tree limit {d} exceeded", .{limit});
                     return;
                 }
                 const k = g.count;
@@ -444,19 +408,13 @@ const Net = struct {
             }
             dead[q] = degree == 0;
         }
-        try out.line("coverability tree nodes: {d}", .{
-            g.count
-        });
+        try out.line("coverability tree nodes: {d}", .{g.count});
         var maximum: Mark = @splat(0);
         for (0..g.count) |i| {
-            try out.print("  {d} {s} ", .{
-                i, try mark(scratch, g.states[i], self.p)
-            });
+            try out.print("  {d} {s} ", .{ i, try mark(scratch, g.states[i], self.p) });
             if (i == 0) {
                 try out.add("root");
-            } else try out.print("<- {d} {s}", .{
-                g.parent[i], self.transitions[g.via[i]]
-            });
+            } else try out.print("<- {d} {s}", .{ g.parent[i], self.transitions[g.via[i]] });
             if (old[i]) try out.add(" old");
             if (dead[i]) try out.add(" dead");
             try out.add("\n");
@@ -464,9 +422,7 @@ const Net = struct {
                 maximum[pi] = g.states[i][pi];
             };
         }
-        try out.line("bounds: {s}", .{
-            try mark(scratch, maximum, self.p)
-        });
+        try out.line("bounds: {s}", .{try mark(scratch, maximum, self.p)});
         try out.add("unbounded: ");
         var first = true;
         for (0..self.p) |pi| if (maximum[pi] < 0) {
@@ -478,9 +434,7 @@ const Net = struct {
         try out.add("\n");
     }
     fn setText(self: *const Net, scratch: Allocator, mask: u32) Error!Text {
-        var out: Builder = .{
-            .gpa = scratch
-        };
+        var out: Builder = .{ .gpa = scratch };
         try out.add("{");
         var first = true;
         for (0..self.p) |pi| if (mask & (@as(u32, 1) << @intCast(pi)) != 0) {
@@ -523,8 +477,7 @@ const Net = struct {
             };
             if (minimal) try result.append(scratch, mask);
         }
-        std.mem.sort(u32, result.items, {
-        }, setLess);
+        std.mem.sort(u32, result.items, {}, setLess);
         return result.items;
     }
     fn flows(self: *const Net, scratch: Allocator, transpose: bool) Error![]Row {
@@ -627,13 +580,9 @@ const Net = struct {
     fn invariants(self: *const Net, scratch: Allocator, out: *Builder, transpose: bool) Error!void {
         const f = try self.flows(scratch, transpose);
         const n = if (transpose) self.t else self.p;
-        var covered = [_]bool{
-            false
-        } ** 16;
+        var covered = @as([16]bool, @splat(false));
         var bounds: Mark = @splat(-1);
-        try out.line("{s}-semiflows: {d}", .{
-            if (transpose) "T" else "P", f.len
-        });
+        try out.line("{s}-semiflows: {d}", .{ if (transpose) "T" else "P", f.len });
         for (f) |c| {
             try out.add("  ");
             var first = true;
@@ -641,24 +590,17 @@ const Net = struct {
             for (0..n) |i| if (c[i] > 0) {
                 covered[i] = true;
                 if (!first) try out.add(" + ");
-                if (c[i] != 1) try out.print("{d}*", .{
-                    c[i]
-                });
+                if (c[i] != 1) try out.print("{d}*", .{c[i]});
                 try out.add(if (transpose) self.transitions[i] else self.places[i]);
                 first = false;
                 if (!transpose) value += c[i] * self.current[i];
             };
             if (transpose) {
                 if (try self.realize(scratch, c)) |path| {
-                    try out.line(": realizable {s}", .{
-                        try self.pathText(scratch, path)
-                    });
-                } else try out.line(": not realizable", .{
-                });
+                    try out.line(": realizable {s}", .{try self.pathText(scratch, path)});
+                } else try out.line(": not realizable", .{});
             } else {
-                try out.line(" = {d}", .{
-                    value
-                });
+                try out.line(" = {d}", .{value});
                 for (0..n) |i| if (c[i] > 0) {
                     const bound = @divTrunc(value, c[i]);
                     if (bounds[i] < 0 or bound < bounds[i]) bounds[i] = bound;
@@ -671,22 +613,16 @@ const Net = struct {
                 if (i > 0) try out.add(",");
                 if (b < 0) {
                     try out.add("-");
-                } else try out.print("{d}", .{
-                    b
-                });
+                } else try out.print("{d}", .{b});
             }
             try out.add(")\n");
         }
         var all = true;
         for (covered[0..n]) |v| all = all and v;
-        try out.line("{s}: {s}", .{
-            if (transpose) "consistent" else "conservative", yes(all)
-        });
+        try out.line("{s}: {s}", .{ if (transpose) "consistent" else "conservative", yes(all) });
     }
     fn classify(self: *const Net, scratch: Allocator, out: *Builder) Error!void {
-        var inputs = [_]u32{
-            0
-        } ** 16;
+        var inputs = @as([16]u32, @splat(0));
         var outputs = inputs;
         var ordinary = true;
         var pure = true;
@@ -724,24 +660,16 @@ const Net = struct {
         mg = mg and ordinary;
         fc = fc and ordinary;
         efc = efc and ordinary;
-        const labels = [_]Text{
-            "ordinary", "pure", "state machine", "marked graph", "free choice", "extended free choice"
-        };
-        const values = [_]bool{
-            ordinary, pure, sm, mg, fc, efc
-        };
-        for (labels, values) |label, value| try out.line("{s}: {s}", .{
-            label, yes(value)
-        });
+        const labels = [_]Text{ "ordinary", "pure", "state machine", "marked graph", "free choice", "extended free choice" };
+        const values = [_]bool{ ordinary, pure, sm, mg, fc, efc };
+        for (labels, values) |label, value| try out.line("{s}: {s}", .{ label, yes(value) });
         try out.add("commoner: ");
         if (!fc) {
-            try out.line("not applicable", .{
-            });
+            try out.line("not applicable", .{});
             return;
         }
         if (self.p > 12) {
-            try out.line("too many places", .{
-            });
+            try out.line("too many places", .{});
             return;
         }
         const traps = try self.sets(scratch, true);
@@ -753,14 +681,11 @@ const Net = struct {
                 };
             };
             if (!holds) {
-                try out.line("fails at {s}", .{
-                    try self.setText(scratch, s)
-                });
+                try out.line("fails at {s}", .{try self.setText(scratch, s)});
                 return;
             }
         }
-        try out.line("holds", .{
-        });
+        try out.line("holds", .{});
     }
     fn workflow(self: *const Net, scratch: Allocator, out: *Builder, limit: usize) Error!void {
         var sources: [16]usize = undefined;
@@ -784,22 +709,16 @@ const Net = struct {
             }
         }
         if (ns != 1) {
-            try out.line("workflow: no ({d} source places)", .{
-                ns
-            });
+            try out.line("workflow: no ({d} source places)", .{ns});
             return;
         }
         if (nt != 1) {
-            try out.line("workflow: no ({d} sink places)", .{
-                nt
-            });
+            try out.line("workflow: no ({d} sink places)", .{nt});
             return;
         }
         const i = sources[0];
         const o = sinks[0];
-        var adj = [_][32]bool{
-            @splat(false)
-        } ** 32;
+        var adj = @as([32][32]bool, @splat(@splat(false)));
         for (0..self.p) |pi| for (0..self.t) |ti| {
             adj[pi][self.p + ti] = self.pre[pi][ti] > 0;
             adj[self.p + ti][pi] = self.post[pi][ti] > 0;
@@ -807,30 +726,22 @@ const Net = struct {
         const forward = structuralVisit(adj, self.p + self.t, i, false);
         const back = structuralVisit(adj, self.p + self.t, o, true);
         for (0..self.p + self.t) |v| if (!forward[v] or !back[v]) {
-            try out.line("workflow: no ({s} is not on a path from {s} to {s})", .{
-                if (v < self.p) self.places[v] else self.transitions[v - self.p], self.places[i], self.places[o]
-            });
+            try out.line("workflow: no ({s} is not on a path from {s} to {s})", .{ if (v < self.p) self.places[v] else self.transitions[v - self.p], self.places[i], self.places[o] });
             return;
         };
-        try out.line("workflow: source {s} sink {s}", .{
-            self.places[i], self.places[o]
-        });
+        try out.line("workflow: source {s} sink {s}", .{ self.places[i], self.places[o] });
         var start: Mark = @splat(0);
         var goal: Mark = @splat(0);
         start[i] = 1;
         goal[o] = 1;
         const g = try self.graph(scratch, start, limit, null);
         if (g.aborted) {
-            try out.line("reachability graph limit {d} exceeded", .{
-                limit
-            });
+            try out.line("reachability graph limit {d} exceeded", .{limit});
             return;
         }
         var finish: ?usize = null;
         var proper = true;
-        var used = [_]bool{
-            false
-        } ** 16;
+        var used = @as([16]bool, @splat(false));
         for (0..g.count) |u| {
             if (same(g.states[u], goal, self.p)) finish = u;
             if (g.states[u][o] >= 1 and !same(g.states[u], goal, self.p)) proper = false;
@@ -845,69 +756,43 @@ const Net = struct {
         }
         var live = true;
         for (used[0..self.t]) |v| live = live and v;
-        try out.line("option to complete: {s}\nproper completion: {s}\nno dead transitions: {s}\nsound: {s}", .{
-            yes(option), yes(proper), yes(live), yes(option and proper and live)
-        });
+        try out.line("option to complete: {s}\nproper completion: {s}\nno dead transitions: {s}\nsound: {s}", .{ yes(option), yes(proper), yes(live), yes(option and proper and live) });
     }
     fn arcList(self: *const Net, scratch: Allocator, matrix: [16]Mark, ti: usize) Error!Text {
-        var out: Builder = .{
-            .gpa = scratch
-        };
+        var out: Builder = .{ .gpa = scratch };
         var first = true;
         for (0..self.p) |pi| if (matrix[pi][ti] > 0) {
             if (!first) try out.add(",");
-            try out.print("{s}:{d}", .{
-                self.places[pi], matrix[pi][ti]
-            });
+            try out.print("{s}:{d}", .{ self.places[pi], matrix[pi][ti] });
             first = false;
         };
         if (first) try out.add("-");
         return out.bytes.items;
     }
     fn execute(self: *Net, scratch: Allocator, out: *Builder, w: []const Text) Error!void {
-        const commands = [_]Text{
-            "MARKING", "RESET", "SET", "ENABLED", "FIRE", "UNDO", "SIMULATE", "CONFLICTS", "REACH", "GRAPH", "COVER", "PATH", "INCIDENCE", "PINV", "TINV", "SIPHONS", "TRAPS", "CLASSIFY", "WORKFLOW", "SHOW"
-        };
-        const arity = [_]i32{
-            0, 0, 2, 0, -1, 1, 3, 0, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0, 1, 0
-        };
+        const commands = [_]Text{ "MARKING", "RESET", "SET", "ENABLED", "FIRE", "UNDO", "SIMULATE", "CONFLICTS", "REACH", "GRAPH", "COVER", "PATH", "INCIDENCE", "PINV", "TINV", "SIPHONS", "TRAPS", "CLASSIFY", "WORKFLOW", "SHOW" };
+        const arity = [_]i32{ 0, 0, 2, 0, -1, 1, 3, 0, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0, 1, 0 };
         var cmd: usize = 0;
-        while (cmd < commands.len and !eq(w[0], commands[cmd])) : (cmd += 1) {
-        }
-        if (cmd == commands.len) return bad(scratch, "unknown command {s}", .{
-            w[0]
-        });
-        if (if (arity[cmd] < 0) w.len < 2 else w.len != @as(usize, @intCast(arity[cmd])) + 1) return bad(scratch, "wrong number of arguments", .{
-        });
+        while (cmd < commands.len and !eq(w[0], commands[cmd])) : (cmd += 1) {}
+        if (cmd == commands.len) return bad(scratch, "unknown command {s}", .{w[0]});
+        if (if (arity[cmd] < 0) w.len < 2 else w.len != @as(usize, @intCast(arity[cmd])) + 1) return bad(scratch, "wrong number of arguments", .{});
         var limit: usize = 0;
-        if (cmd == 8 or cmd == 9 or cmd == 10 or cmd == 11 or cmd == 18) limit = @intCast(number(w[1], 1, 2000) orelse return bad(scratch, "invalid limit {s}", .{
-            w[1]
-        }));
+        if (cmd == 8 or cmd == 9 or cmd == 10 or cmd == 11 or cmd == 18) limit = @intCast(number(w[1], 1, 2000) orelse return bad(scratch, "invalid limit {s}", .{w[1]}));
         switch (cmd) {
             0, 1 => {
                 if (cmd == 1) {
                     self.current = self.initial;
                     self.history.clearRetainingCapacity();
                 }
-                try out.line("marking {s}", .{
-                    try mark(scratch, self.current, self.p)
-                });
+                try out.line("marking {s}", .{try mark(scratch, self.current, self.p)});
             },
             2 => {
-                const pi = self.place(w[1]) orelse return bad(scratch, "unknown place {s}", .{
-                    w[1]
-                });
-                const value = number(w[2], 0, 999) orelse return bad(scratch, "invalid tokens {s}", .{
-                    w[2]
-                });
-                if (self.capacity[pi] > 0 and value > self.capacity[pi]) return bad(scratch, "tokens exceed capacity of {s}", .{
-                    w[1]
-                });
+                const pi = self.place(w[1]) orelse return bad(scratch, "unknown place {s}", .{w[1]});
+                const value = number(w[2], 0, 999) orelse return bad(scratch, "invalid tokens {s}", .{w[2]});
+                if (self.capacity[pi] > 0 and value > self.capacity[pi]) return bad(scratch, "tokens exceed capacity of {s}", .{w[1]});
                 self.current[pi] = value;
                 self.history.clearRetainingCapacity();
-                try out.line("marking {s}", .{
-                    try mark(scratch, self.current, self.p)
-                });
+                try out.line("marking {s}", .{try mark(scratch, self.current, self.p)});
             },
             3 => {
                 try out.add("enabled: ");
@@ -922,48 +807,28 @@ const Net = struct {
             },
             4 => {
                 const sequence = try scratch.alloc(usize, w.len - 1);
-                for (w[1..], sequence) |name, *ti| ti.* = self.transition(name) orelse return bad(scratch, "unknown transition {s}", .{
-                    name
-                });
+                for (w[1..], sequence) |name, *ti| ti.* = self.transition(name) orelse return bad(scratch, "unknown transition {s}", .{name});
                 for (sequence, 0..) |ti, step| {
                     if (try self.reason(scratch, self.current, ti)) |failure_reason| {
-                        try out.line("step {d}: {s} not enabled ({s}) at {s}", .{
-                            step + 1, self.transitions[ti], failure_reason, try mark(scratch, self.current, self.p)
-                        });
+                        try out.line("step {d}: {s} not enabled ({s}) at {s}", .{ step + 1, self.transitions[ti], failure_reason, try mark(scratch, self.current, self.p) });
                         return;
                     }
                     try self.commit(ti);
                 }
-                try out.line("fired {d} -> {s}", .{
-                    sequence.len, try mark(scratch, self.current, self.p)
-                });
+                try out.line("fired {d} -> {s}", .{ sequence.len, try mark(scratch, self.current, self.p) });
             },
             5 => {
-                const k: usize = @intCast(number(w[1], 1, 1000) orelse return bad(scratch, "invalid count {s}", .{
-                    w[1]
-                }));
-                if (k > self.history.items.len) return bad(scratch, "cannot undo {d}: history size {d}", .{
-                    k, self.history.items.len
-                });
+                const k: usize = @intCast(number(w[1], 1, 1000) orelse return bad(scratch, "invalid count {s}", .{w[1]}));
+                if (k > self.history.items.len) return bad(scratch, "cannot undo {d}: history size {d}", .{ k, self.history.items.len });
                 self.current = self.history.items[self.history.items.len - k];
                 self.history.shrinkRetainingCapacity(self.history.items.len - k);
-                try out.line("marking {s}", .{
-                    try mark(scratch, self.current, self.p)
-                });
+                try out.line("marking {s}", .{try mark(scratch, self.current, self.p)});
             },
             6 => {
-                const steps: usize = @intCast(number(w[1], 1, 1000) orelse return bad(scratch, "invalid steps {s}", .{
-                    w[1]
-                }));
-                var random = number(w[2], 1, 2147483646) orelse return bad(scratch, "invalid seed {s}", .{
-                    w[2]
-                });
-                if (!eq(w[3], "PRIORITY") and !eq(w[3], "RANDOM")) return bad(scratch, "invalid mode {s}", .{
-                    w[3]
-                });
-                var counts = [_]usize{
-                    0
-                } ** 16;
+                const steps: usize = @intCast(number(w[1], 1, 1000) orelse return bad(scratch, "invalid steps {s}", .{w[1]}));
+                var random = number(w[2], 1, 2147483646) orelse return bad(scratch, "invalid seed {s}", .{w[2]});
+                if (!eq(w[3], "PRIORITY") and !eq(w[3], "RANDOM")) return bad(scratch, "invalid mode {s}", .{w[3]});
+                var counts = @as([16]usize, @splat(0));
                 var done: usize = 0;
                 while (done < steps) : (done += 1) {
                     var available: [16]usize = undefined;
@@ -973,9 +838,7 @@ const Net = struct {
                         count += 1;
                     };
                     if (count == 0) {
-                        try out.line("dead (steps={d})", .{
-                            done
-                        });
+                        try out.line("dead (steps={d})", .{done});
                         break;
                     }
                     var selected = available[0];
@@ -987,24 +850,16 @@ const Net = struct {
                     };
                     try self.commit(selected);
                     counts[selected] += 1;
-                    try out.line("step {d}: {s} -> {s}", .{
-                        done + 1, self.transitions[selected], try mark(scratch, self.current, self.p)
-                    });
+                    try out.line("step {d}: {s} -> {s}", .{ done + 1, self.transitions[selected], try mark(scratch, self.current, self.p) });
                 }
-                if (done == steps) try out.line("completed (steps={d})", .{
-                    steps
-                });
+                if (done == steps) try out.line("completed (steps={d})", .{steps});
                 try out.add("counts: ");
-                for (0..self.t) |ti| try out.print("{s}{s}={d}", .{
-                    if (ti > 0) " " else "", self.transitions[ti], counts[ti]
-                });
+                for (0..self.t) |ti| try out.print("{s}{s}={d}", .{ if (ti > 0) " " else "", self.transitions[ti], counts[ti] });
                 try out.add("\n");
             },
             7 => {
                 for (0..2) |mode| {
-                    try out.print("{s}: ", .{
-                        if (mode == 0) "structural" else "effective"
-                    });
+                    try out.print("{s}: ", .{if (mode == 0) "structural" else "effective"});
                     var first = true;
                     for (0..self.t) |u| for (u + 1..self.t) |v| {
                         var conflict = false;
@@ -1013,9 +868,7 @@ const Net = struct {
                         } else conflict = self.enabled(self.current, u) and self.enabled(self.current, v) and (!self.enabled(self.fire(self.current, u), v) or !self.enabled(self.fire(self.current, v), u));
                         if (conflict) {
                             if (!first) try out.add(" ");
-                            try out.print("{s}/{s}", .{
-                                self.transitions[u], self.transitions[v]
-                            });
+                            try out.print("{s}/{s}", .{ self.transitions[u], self.transitions[v] });
                             first = false;
                         }
                     };
@@ -1023,45 +876,30 @@ const Net = struct {
                     try out.add("\n");
                 }
             },
-            8, 9 => try self.reach(scratch, out, limit, cmd == 9), 10 => try self.cover(scratch, out, limit),
+            8, 9 => try self.reach(scratch, out, limit, cmd == 9),
+            10 => try self.cover(scratch, out, limit),
             11 => {
                 const entries = try split(scratch, w[2], ',');
-                if (entries.len != self.p) return bad(scratch, "target needs {d} entries", .{
-                    self.p
-                });
+                if (entries.len != self.p) return bad(scratch, "target needs {d} entries", .{self.p});
                 const targets = try scratch.alloc(Target, self.p);
                 for (entries, targets) |text, *target| {
                     if (eq(text, "*")) {
-                        target.* = .{
-                            .low = 0, .high = -1
-                        };
+                        target.* = .{ .low = 0, .high = -1 };
                         continue;
                     }
                     const plus = std.mem.endsWith(u8, text, "+");
-                    const value = number(if (plus) text[0 .. text.len - 1] else text, 0, 9999999999) orelse return bad(scratch, "invalid target entry {s}", .{
-                        text
-                    });
-                    target.* = .{
-                        .low = value, .high = if (plus) -1 else value
-                    };
+                    const value = number(if (plus) text[0 .. text.len - 1] else text, 0, 9999999999) orelse return bad(scratch, "invalid target entry {s}", .{text});
+                    target.* = .{ .low = value, .high = if (plus) -1 else value };
                 }
                 const g = try self.graph(scratch, self.current, limit, targets);
                 if (g.found) |k| {
                     const pth = try self.route(scratch, g, k);
-                    try out.print("reached {s} length={d}", .{
-                        try mark(scratch, g.states[k], self.p), pth.len
-                    });
-                    if (pth.len > 0) try out.print(": {s}", .{
-                        try self.pathText(scratch, pth)
-                    });
+                    try out.print("reached {s} length={d}", .{ try mark(scratch, g.states[k], self.p), pth.len });
+                    if (pth.len > 0) try out.print(": {s}", .{try self.pathText(scratch, pth)});
                     try out.add("\n");
                 } else if (g.aborted) {
-                    try out.line("search limit {d} exceeded", .{
-                        limit
-                    });
-                } else try out.line("unreachable (markings explored: {d})", .{
-                    g.count
-                });
+                    try out.line("search limit {d} exceeded", .{limit});
+                } else try out.line("unreachable (markings explored: {d})", .{g.count});
             },
             12 => {
                 var rows: [17][17]Text = undefined;
@@ -1069,13 +907,9 @@ const Net = struct {
                 for (0..self.t) |ti| rows[0][ti + 1] = self.transitions[ti];
                 for (0..self.p) |pi| {
                     rows[pi + 1][0] = self.places[pi];
-                    for (0..self.t) |ti| rows[pi + 1][ti + 1] = try std.fmt.allocPrint(scratch, "{d}", .{
-                        self.post[pi][ti] - self.pre[pi][ti]
-                    });
+                    for (0..self.t) |ti| rows[pi + 1][ti + 1] = try std.fmt.allocPrint(scratch, "{d}", .{self.post[pi][ti] - self.pre[pi][ti]});
                 }
-                var widths = [_]usize{
-                    0
-                } ** 17;
+                var widths = @as([17]usize, @splat(0));
                 for (rows[0 .. self.p + 1]) |r| for (r[0 .. self.t + 1], 0..) |cell, c| {
                     widths[c] = @max(widths[c], cell.len);
                 };
@@ -1093,32 +927,22 @@ const Net = struct {
             },
             13, 14 => try self.invariants(scratch, out, cmd == 14),
             15, 16 => {
-                if (self.p > 12) return bad(scratch, "more than 12 places", .{
-                });
+                if (self.p > 12) return bad(scratch, "more than 12 places", .{});
                 const values = try self.sets(scratch, cmd == 16);
-                try out.line("minimal {s}: {d}", .{
-                    if (cmd == 16) "traps" else "siphons", values.len
-                });
+                try out.line("minimal {s}: {d}", .{ if (cmd == 16) "traps" else "siphons", values.len });
                 for (values) |mask| {
                     var tokens: i64 = 0;
                     for (0..self.p) |pi| if (mask & (@as(u32, 1) << @intCast(pi)) != 0) {
                         tokens += self.current[pi];
                     };
-                    try out.line("  {s} tokens={d}", .{
-                        try self.setText(scratch, mask), tokens
-                    });
+                    try out.line("  {s} tokens={d}", .{ try self.setText(scratch, mask), tokens });
                 }
             },
-            17 => try self.classify(scratch, out), 18 => try self.workflow(scratch, out, limit),
+            17 => try self.classify(scratch, out),
+            18 => try self.workflow(scratch, out, limit),
             19 => {
-                for (0..self.p) |pi| try out.line("place {s} tokens={d} capacity={s}", .{
-                    self.places[pi], self.initial[pi], if (self.capacity[pi] == 0) "none" else try std.fmt.allocPrint(scratch, "{d}", .{
-                        self.capacity[pi]
-                    })
-                });
-                for (0..self.t) |ti| try out.line("transition {s} priority={d} pre={s} post={s} inhibit={s}", .{
-                    self.transitions[ti], self.priority[ti], try self.arcList(scratch, self.pre, ti), try self.arcList(scratch, self.post, ti), try self.arcList(scratch, self.inhibitor, ti)
-                });
+                for (0..self.p) |pi| try out.line("place {s} tokens={d} capacity={s}", .{ self.places[pi], self.initial[pi], if (self.capacity[pi] == 0) "none" else try std.fmt.allocPrint(scratch, "{d}", .{self.capacity[pi]}) });
+                for (0..self.t) |ti| try out.line("transition {s} priority={d} pre={s} post={s} inhibit={s}", .{ self.transitions[ti], self.priority[ti], try self.arcList(scratch, self.pre, ti), try self.arcList(scratch, self.post, ti), try self.arcList(scratch, self.inhibitor, ti) });
             },
             else => unreachable,
         }
@@ -1138,9 +962,7 @@ fn setLess(_: void, a: u32, b: u32) bool {
     return false;
 }
 fn structuralVisit(adj: [32][32]bool, n: usize, start: usize, reverse: bool) [32]bool {
-    var seen = [_]bool{
-        false
-    } ** 32;
+    var seen = @as([32]bool, @splat(false));
     var queue: [32]usize = undefined;
     seen[start] = true;
     queue[0] = start;
@@ -1166,38 +988,28 @@ pub fn main(init: std.process.Init) !void {
     var output = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     for (0..blocks) |_| {
         const header = try split(gpa, std.mem.trimEnd(u8, lines.next().?, "\r"), ' ');
-        var net: Net = .{
-            .gpa = gpa, .name = header[1]
-        };
+        var net: Net = .{ .gpa = gpa, .name = header[1] };
         while (true) {
             const line = std.mem.trimEnd(u8, lines.next().?, "\r");
             if (eq(line, "END NET")) break;
             net.define(gpa, try split(gpa, line, ' ')) catch |err| {
                 if (err != error.Invalid) return err;
-                try output.interface.writeAll(try std.fmt.allocPrint(gpa, "error: {s}\n", .{
-                    failure
-                }));
+                try output.interface.writeAll(try std.fmt.allocPrint(gpa, "error: {s}\n", .{failure}));
             };
         }
         net.current = net.initial;
-        try output.interface.writeAll(try std.fmt.allocPrint(gpa, "net {s}: places={d} transitions={d} arcs={d} inhibitors={d}\n", .{
-            net.name, net.p, net.t, net.arcs, net.inhibitors
-        }));
+        try output.interface.writeAll(try std.fmt.allocPrint(gpa, "net {s}: places={d} transitions={d} arcs={d} inhibitors={d}\n", .{ net.name, net.p, net.t, net.arcs, net.inhibitors }));
         const count = try std.fmt.parseInt(usize, std.mem.trimEnd(u8, lines.next().?, "\r"), 10);
         for (0..count) |_| {
             var command_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer command_arena.deinit();
             const scratch = command_arena.allocator();
-            var out: Builder = .{
-                .gpa = scratch
-            };
+            var out: Builder = .{ .gpa = scratch };
             const line = std.mem.trimEnd(u8, lines.next().?, "\r");
             net.execute(scratch, &out, try split(scratch, line, ' ')) catch |err| {
                 if (err != error.Invalid) return err;
                 out.bytes.clearRetainingCapacity();
-                try out.line("error: {s}", .{
-                    failure
-                });
+                try out.line("error: {s}", .{failure});
             };
             try output.interface.writeAll(out.bytes.items);
         }

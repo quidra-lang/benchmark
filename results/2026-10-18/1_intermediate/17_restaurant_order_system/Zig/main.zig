@@ -5,13 +5,19 @@ const StationName = enum { GRILL, FRY, COLD, BAR };
 const Course = enum { DRINK, STARTER, MAIN, DESSERT };
 const State = enum { ORDERED, QUEUED, COOKING, READY, SERVED, VOID };
 const Command = enum { TABLE, STAFF, SEAT, CANCEL, MOVE, MENU, STOCK, HAPPY, ITEMS, ORDER, FIRE, TICK, SERVE, RUSH, REMAKE, VOID, STATION, COMP, TRANSFER, DISCOUNT, BILL, SPLIT, PAY, CLOSE, STATUS, KITCHEN, FLOOR, REPORT };
-fn integer(s: []const u8) i64 { return std.fmt.parseInt(i64, s, 10) catch unreachable; }
+fn integer(s: []const u8) i64 {
+    return std.fmt.parseInt(i64, s, 10) catch unreachable;
+}
 fn amount(s: []const u8) i64 {
     const dot = std.mem.findScalar(u8, s, '.').?;
-    return integer(s[0..dot]) * 100 + integer(s[dot + 1..]);
+    return integer(s[0..dot]) * 100 + integer(s[dot + 1 ..]);
 }
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn rounded(value: i64, rate: i64) i64 { return @divTrunc(value * rate + 50, 100); }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn rounded(value: i64, rate: i64) i64 {
+    return @divTrunc(value * rate + 50, 100);
+}
 const Server = struct { name: []const u8, load: usize = 0, parties: i64 = 0, sales: i64 = 0, tips: i64 = 0 };
 const Table = struct { number: i64, seats: usize, check: ?*Check = null };
 const Waiting = struct { name: []const u8, size: usize, since: i64 };
@@ -28,7 +34,9 @@ const Check = struct {
     closed: bool = false,
     fn activeCount(c: *const Check) usize {
         var n: usize = 0;
-        for (c.orders.items) |o| if (o.state != .VOID) { n += 1; };
+        for (c.orders.items) |o| if (o.state != .VOID) {
+            n += 1;
+        };
         return n;
     }
 };
@@ -47,7 +55,9 @@ const Order = struct {
     fired: i64 = 0,
     ready: i64 = 0,
     started: bool = false,
-    fn charge(o: *const Order) i64 { return if (o.comp == null) o.price * o.quantity else 0; }
+    fn charge(o: *const Order) i64 {
+        return if (o.comp == null) o.price * o.quantity else 0;
+    }
 };
 const Station = struct {
     up: bool = true,
@@ -59,10 +69,16 @@ const Station = struct {
     remakes: i64 = 0,
 };
 const Totals = struct {
-    subtotal: i64 = 0, discount: i64 = 0, service: i64 = 0, tax: i64 = 0, total: i64 = 0,
+    subtotal: i64 = 0,
+    discount: i64 = 0,
+    service: i64 = 0,
+    tax: i64 = 0,
+    total: i64 = 0,
     fn of(c: *const Check) Totals {
         var t: Totals = .{};
-        for (c.orders.items) |o| if (o.state != .VOID) { t.subtotal += o.charge(); };
+        for (c.orders.items) |o| if (o.state != .VOID) {
+            t.subtotal += o.charge();
+        };
         t.discount = rounded(t.subtotal, c.discount);
         const net = t.subtotal - t.discount;
         t.service = if (c.size >= 6) rounded(net, 18) else 0;
@@ -116,7 +132,10 @@ fn allocate(values: [21]i64, present: [21]bool, rate: i64) [21]i64 {
 }
 fn removeOrder(list: *std.ArrayList(*Order), order: *Order) void {
     for (list.items, 0..) |o, i| {
-        if (o == order) { _ = list.orderedRemove(i); return; }
+        if (o == order) {
+            _ = list.orderedRemove(i);
+            return;
+        }
     }
     unreachable;
 }
@@ -191,7 +210,9 @@ const Restaurant = struct {
     }
     fn allServed(self: *Restaurant, c: *Check) Error!void {
         var count: usize = 0;
-        for (c.orders.items) |o| if (o.state != .VOID and o.state != .SERVED) { count += 1; };
+        for (c.orders.items) |o| if (o.state != .VOID and o.state != .SERVED) {
+            count += 1;
+        };
         if (count > 0) return self.fail("table {d} has {d} unserved items", .{ c.table.number, count });
     }
     fn chooseTable(self: *Restaurant, size: usize) ?*Table {
@@ -204,7 +225,9 @@ const Restaurant = struct {
     }
     fn seatParty(self: *Restaurant, party: Waiting, t: *Table) Error!*Check {
         var server = self.servers.values()[0];
-        for (self.servers.values()) |s| if (s.load < server.load) { server = s; };
+        for (self.servers.values()) |s| if (s.load < server.load) {
+            server = s;
+        };
         const c = try self.gpa.create(Check);
         c.* = .{ .party = party.name, .size = party.size, .table = t, .server = server, .seated = self.time };
         t.check = c;
@@ -218,7 +241,10 @@ const Restaurant = struct {
         var i: usize = 0;
         while (i < self.waiting.items.len) {
             const p = self.waiting.items[i];
-            const t = self.chooseTable(p.size) orelse { i += 1; continue; };
+            const t = self.chooseTable(p.size) orelse {
+                i += 1;
+                continue;
+            };
             _ = self.waiting.orderedRemove(i);
             const c = try self.seatParty(p, t);
             try self.out.print("SEATED {s} {d} table {d} server {s} waited {d}\n", .{ p.name, p.size, t.number, c.server.name, self.time - p.since });
@@ -231,7 +257,9 @@ const Restaurant = struct {
         c.server.load -= 1;
         self.turns += 1;
         self.stay_total += self.time - c.seated;
-        for (c.orders.items) |o| if (o.state != .VOID) { self.sales[@intFromEnum(o.course)] += o.charge(); };
+        for (c.orders.items) |o| if (o.state != .VOID) {
+            self.sales[@backingInt(o.course)] += o.charge();
+        };
         c.closed = true;
         c.table.check = null;
         try self.out.print("FREE table {d} {s} stayed {d}\n", .{ c.table.number, c.party, self.time - c.seated });
@@ -239,7 +267,7 @@ const Restaurant = struct {
     }
     fn startCooking(self: *Restaurant, index: usize, time: i64) Error!void {
         const s = &self.stations[index];
-        const capacity: usize = if (index == @intFromEnum(StationName.BAR)) 2 else 1;
+        const capacity: usize = if (index == @backingInt(StationName.BAR)) 2 else 1;
         while (s.up and s.queue.items.len > 0 and s.cooking.items.len < capacity) {
             const o = s.queue.orderedRemove(0);
             o.state = .COOKING;
@@ -252,23 +280,30 @@ const Restaurant = struct {
         try self.out.print("TICK {s}\n", .{try self.clock(end)});
         while (true) {
             var next: i64 = std.math.maxInt(i64);
-            for (&self.stations) |*s| for (s.cooking.items) |o| { next = @min(next, o.ready); };
+            for (&self.stations) |*s| for (s.cooking.items) |o| {
+                next = @min(next, o.ready);
+            };
             if (next > end) break;
             for (&self.stations, 0..) |*s, index| {
                 std.mem.sort(*Order, s.cooking.items, {}, struct {
-                    fn less(_: void, a: *Order, b: *Order) bool { return a.id < b.id; }
+                    fn less(_: void, a: *Order, b: *Order) bool {
+                        return a.id < b.id;
+                    }
                 }.less);
                 var i: usize = 0;
                 while (i < s.cooking.items.len) {
                     const o = s.cooking.items[i];
-                    if (o.ready != next) { i += 1; continue; }
+                    if (o.ready != next) {
+                        i += 1;
+                        continue;
+                    }
                     _ = s.cooking.orderedRemove(i);
                     o.state = .READY;
                     const ticket = next - o.fired;
                     s.tickets += 1;
                     s.ticket_total += ticket;
                     s.ticket_max = @max(s.ticket_max, ticket);
-                    const name: StationName = @enumFromInt(index);
+                    const name: StationName = @fromBackingInt(@intCast(index));
                     try self.out.print("READY {s} {s} #{d} {s} x{d} table {d} seat {d}\n", .{ try self.clock(next), @tagName(name), o.id, o.item.name, o.quantity, o.check.table.number, o.seat });
                 }
             }
@@ -328,13 +363,15 @@ const Restaurant = struct {
         try self.out.print("TOTALS subtotal {s} discount {s} service {s} tax {s} total {s}\nPAYMENTS cash {s} card {s} tips {s}\nCOMPS {d} {s} VOIDS {d}\n", .{ try self.money(t.subtotal), try self.money(t.discount), try self.money(t.service), try self.money(t.tax), try self.money(t.total), try self.money(self.cash), try self.money(self.card), try self.money(self.tips), self.comps, try self.money(self.comp_amount), self.voids });
         const items = try self.gpa.dupe(*MenuItem, self.menu.values());
         std.mem.sort(*MenuItem, items, {}, struct {
-            fn less(_: void, a: *MenuItem, b: *MenuItem) bool { return if (a.served != b.served) a.served > b.served else std.mem.order(u8, a.name, b.name) == .lt; }
+            fn less(_: void, a: *MenuItem, b: *MenuItem) bool {
+                return if (a.served != b.served) a.served > b.served else std.mem.order(u8, a.name, b.name) == .lt;
+            }
         }.less);
         for (items[0..@min(3, items.len)], 0..) |m, i| {
             if (m.served > 0) try self.out.print("TOP {d} {s} {d}\n", .{ i + 1, m.name, m.served });
         }
         for (&self.stations, 0..) |*s, i| {
-            const name: StationName = @enumFromInt(i);
+            const name: StationName = @fromBackingInt(@intCast(i));
             try self.out.print("{s} tickets {d} avg ", .{ @tagName(name), s.tickets });
             if (s.tickets == 0) try self.out.writeAll("- max -") else try self.out.print("{d} max {d}", .{ @divTrunc(s.ticket_total, s.tickets), s.ticket_max });
             try self.out.print(" remakes {d}\n", .{s.remakes});
@@ -363,12 +400,18 @@ const Restaurant = struct {
             },
             .SEAT => {
                 for (self.tables.values()) |t| {
-                    if (t.check) |c| if (equal(c.party, id)) { return self.fail("{s} is already seated at table {d}", .{ id, t.number }); };
+                    if (t.check) |c| if (equal(c.party, id)) {
+                        return self.fail("{s} is already seated at table {d}", .{ id, t.number });
+                    };
                 }
-                for (self.waiting.items) |p| if (equal(p.name, id)) { return self.fail("{s} is already waiting", .{id}); };
+                for (self.waiting.items) |p| if (equal(p.name, id)) {
+                    return self.fail("{s} is already waiting", .{id});
+                };
                 const size: usize = @intCast(integer(a[2]));
                 var fits = false;
-                for (self.tables.values()) |t| if (t.seats >= size) { fits = true; };
+                for (self.tables.values()) |t| if (t.seats >= size) {
+                    fits = true;
+                };
                 if (!fits) return self.fail("no table for party of {d}", .{size});
                 if (self.servers.count() == 0) return self.fail("no server on duty", .{});
                 const p = Waiting{ .name = id, .size = size, .since = self.time };
@@ -382,7 +425,10 @@ const Restaurant = struct {
             },
             .CANCEL => {
                 var index: ?usize = null;
-                for (self.waiting.items, 0..) |p, i| if (equal(p.name, id)) { index = i; break; };
+                for (self.waiting.items, 0..) |p, i| if (equal(p.name, id)) {
+                    index = i;
+                    break;
+                };
                 const p = self.waiting.orderedRemove(index orelse return self.fail("{s} is not waiting", .{id}));
                 try self.out.print("CANCEL {s} {d} waited {d}\n", .{ id, p.size, self.time - p.since });
             },
@@ -425,7 +471,9 @@ const Restaurant = struct {
             .ITEMS => {
                 const items = try self.gpa.dupe(*MenuItem, self.menu.values());
                 std.mem.sort(*MenuItem, items, {}, struct {
-                    fn less(_: void, x: *MenuItem, y: *MenuItem) bool { return if (x.course != y.course) @intFromEnum(x.course) < @intFromEnum(y.course) else std.mem.order(u8, x.name, y.name) == .lt; }
+                    fn less(_: void, x: *MenuItem, y: *MenuItem) bool {
+                        return if (x.course != y.course) @backingInt(x.course) < @backingInt(y.course) else std.mem.order(u8, x.name, y.name) == .lt;
+                    }
                 }.less);
                 try self.out.print("ITEMS {d}\n", .{items.len});
                 for (items) |m| {
@@ -457,11 +505,15 @@ const Restaurant = struct {
                     .FIRE => {
                         const course = try self.courseName(a[2]);
                         var found = false;
-                        for (c.orders.items) |o| if (o.course == course and o.state == .ORDERED) { found = true; };
+                        for (c.orders.items) |o| if (o.course == course and o.state == .ORDERED) {
+                            found = true;
+                        };
                         if (!found) return self.fail("nothing to fire for {s} at table {d}", .{ a[2], c.table.number });
                         if (course == .MAIN or course == .DESSERT) {
-                            for (1..@intFromEnum(course)) |earlier| {
-                                for (c.orders.items) |o| if (@intFromEnum(o.course) == earlier and o.state == .ORDERED) { return self.fail("fire {s} first", .{@tagName(o.course)}); };
+                            for (1..@backingInt(course)) |earlier| {
+                                for (c.orders.items) |o| if (@backingInt(o.course) == earlier and o.state == .ORDERED) {
+                                    return self.fail("fire {s} first", .{@tagName(o.course)});
+                                };
                             }
                         }
                         try self.out.print("FIRE table {d} {s}", .{ c.table.number, a[2] });
@@ -469,7 +521,7 @@ const Restaurant = struct {
                             if (o.course != course or o.state != .ORDERED) continue;
                             o.state = .QUEUED;
                             o.fired = self.time;
-                            try self.stations[@intFromEnum(o.station)].queue.append(self.gpa, o);
+                            try self.stations[@backingInt(o.station)].queue.append(self.gpa, o);
                             try self.out.print(" #{d}", .{o.id});
                         }
                         try self.out.writeAll("\n");
@@ -477,7 +529,9 @@ const Restaurant = struct {
                     },
                     .SERVE => {
                         var found = false;
-                        for (c.orders.items) |o| if (o.state == .READY) { found = true; };
+                        for (c.orders.items) |o| if (o.state == .READY) {
+                            found = true;
+                        };
                         if (!found) return self.fail("nothing ready for table {d}", .{c.table.number});
                         try self.out.print("SERVE table {d}", .{c.table.number});
                         for (c.orders.items) |o| {
@@ -508,7 +562,10 @@ const Restaurant = struct {
                         if (paid < due) {
                             try self.out.print("PAY table {d} {s} {s} remaining {s}\n", .{ c.table.number, a[2], try self.money(paid), try self.money(due - paid) });
                         } else {
-                            if (!cash) { self.tips += paid - due; c.server.tips += paid - due; }
+                            if (!cash) {
+                                self.tips += paid - due;
+                                c.server.tips += paid - due;
+                            }
                             try self.out.print("PAY table {d} {s} {s} {s} {s}\n", .{ c.table.number, a[2], try self.money(paid), if (cash) "change" else "tip", try self.money(paid - due) });
                             try self.closeCheck(c);
                         }
@@ -534,7 +591,7 @@ const Restaurant = struct {
             .TICK => try self.tick(self.time + integer(id)),
             .RUSH, .REMAKE, .VOID, .COMP, .TRANSFER => {
                 const o = try self.order(id);
-                const s = &self.stations[@intFromEnum(o.station)];
+                const s = &self.stations[@backingInt(o.station)];
                 switch (op) {
                     .RUSH => {
                         if (o.state != .QUEUED) return self.fail("#{d} is not queued", .{o.id});
@@ -550,7 +607,7 @@ const Restaurant = struct {
                         try s.queue.insert(self.gpa, 0, o);
                         s.remakes += 1;
                         try self.out.print("REMAKE #{d} {s} {s}\n", .{ o.id, o.item.name, @tagName(o.station) });
-                        try self.startCooking(@intFromEnum(o.station), self.time);
+                        try self.startCooking(@backingInt(o.station), self.time);
                     },
                     .VOID => {
                         if (o.state == .VOID) return self.fail("#{d} is already void", .{o.id});
@@ -583,20 +640,22 @@ const Restaurant = struct {
             },
             .STATION => {
                 const name = try self.stationName(id);
-                const s = &self.stations[@intFromEnum(name)];
+                const s = &self.stations[@backingInt(name)];
                 const up = equal(a[2], "UP");
                 if (s.up == up) return self.fail("station {s} is {s}", .{ id, if (up) "not down" else "already down" });
                 s.up = up;
-                if (up) try self.startCooking(@intFromEnum(name), self.time);
+                if (up) try self.startCooking(@backingInt(name), self.time);
                 try self.out.print("STATION {s} {s}\n", .{ id, a[2] });
             },
             .KITCHEN => {
                 try self.out.print("KITCHEN {s}\n", .{try self.clock(self.time)});
                 for (&self.stations, 0..) |*s, i| {
-                    const name: StationName = @enumFromInt(i);
+                    const name: StationName = @fromBackingInt(@intCast(i));
                     const cooking = try self.gpa.dupe(*Order, s.cooking.items);
                     std.mem.sort(*Order, cooking, {}, struct {
-                        fn less(_: void, x: *Order, y: *Order) bool { return if (x.ready != y.ready) x.ready < y.ready else x.id < y.id; }
+                        fn less(_: void, x: *Order, y: *Order) bool {
+                            return if (x.ready != y.ready) x.ready < y.ready else x.id < y.id;
+                        }
                     }.less);
                     try self.out.print("{s} {s} cooking", .{ @tagName(name), if (s.up) "up" else "down" });
                     for (cooking) |o| try self.out.print(" #{d}@{s}", .{ o.id, try self.clock(o.ready) });
@@ -610,10 +669,14 @@ const Restaurant = struct {
             .FLOOR => {
                 const ordered = try self.gpa.dupe(*Table, self.tables.values());
                 std.mem.sort(*Table, ordered, {}, struct {
-                    fn less(_: void, x: *Table, y: *Table) bool { return x.number < y.number; }
+                    fn less(_: void, x: *Table, y: *Table) bool {
+                        return x.number < y.number;
+                    }
                 }.less);
                 var free: usize = 0;
-                for (ordered) |t| if (t.check == null) { free += 1; };
+                for (ordered) |t| if (t.check == null) {
+                    free += 1;
+                };
                 try self.out.print("FLOOR {s} free {d} seated {d} waiting {d}\n", .{ try self.clock(self.time), free, ordered.len - free, self.waiting.items.len });
                 for (ordered) |t| {
                     try self.out.print("table {d} seats {d}", .{ t.number, t.seats });

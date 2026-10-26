@@ -80,7 +80,7 @@ evaluate =: 3 : 0
     w =. +/ (weights*(board=side)) - weights*(board=other)
     m1 =. #legal board;side
     m2 =. #legal board;other
-    ((w+10*m1-m2*10),w,m1,m2)
+    ((w+10*(m1-m2)),w,m1,m2)
 )
 search =: 3 : 0
     'board side depth' =. y
@@ -451,7 +451,7 @@ monteCarlo =: 3 : 0
             else. l =. l+1 end.
         end.
         emit (name p),' ',(num w),' ',(num d),' ',num l
-        points =. 2*w+d
+        points =. (2*w)+d
         if. points>best do. best =. points [ bestp =. p end.
     end.
     emit 'best ',(name bestp),' ',num best

@@ -125,8 +125,8 @@ fn adjacent(n: usize, p: usize, diagonals: bool) Points {
 const Group = struct {
     color: u8,
     first: usize,
-    stones: [361]bool = [_]bool{false} ** 361,
-    liberties: [361]bool = [_]bool{false} ** 361,
+    stones: [361]bool = @as([361]bool, @splat(false)),
+    liberties: [361]bool = @as([361]bool, @splat(false)),
     size: usize = 0,
     liberty_count: usize = 0,
 };
@@ -160,11 +160,13 @@ fn group(board: *const Board, n: usize, origin: usize) Group {
 
 fn groups(allocator: Allocator, board: *const Board, n: usize, color: ?u8) ![]Group {
     var result: std.ArrayList(Group) = .empty;
-    var visited = [_]bool{false} ** 361;
+    var visited = @as([361]bool, @splat(false));
     for (board[0 .. n * n], 0..) |stone, p| {
         if (stone == '.' or visited[p] or (color != null and stone != color.?)) continue;
         const g = group(board, n, p);
-        for (0..n * n) |q| if (g.stones[q]) { visited[q] = true; };
+        for (0..n * n) |q| if (g.stones[q]) {
+            visited[q] = true;
+        };
         try result.append(allocator, g);
     }
     return result.items;
@@ -183,14 +185,18 @@ fn placement(board: *const Board, n: usize, color: u8, p: usize) Placement {
         return result;
     }
     result.board[p] = color;
-    var visited = [_]bool{false} ** 361;
+    var visited = @as([361]bool, @splat(false));
     const ns = adjacent(n, p, false);
     for (ns.items[0..ns.len]) |q| {
         if (result.board[q] != opponent(color) or visited[q]) continue;
         const enemy = group(&result.board, n, q);
-        for (0..n * n) |t| if (enemy.stones[t]) { visited[t] = true; };
+        for (0..n * n) |t| if (enemy.stones[t]) {
+            visited[t] = true;
+        };
         if (enemy.liberty_count == 0) {
-            for (0..n * n) |t| if (enemy.stones[t]) { result.board[t] = '.'; };
+            for (0..n * n) |t| if (enemy.stones[t]) {
+                result.board[t] = '.';
+            };
             result.captured += enemy.size;
         }
     }
@@ -200,14 +206,14 @@ fn placement(board: *const Board, n: usize, color: u8, p: usize) Placement {
 
 const Region = struct {
     first: usize,
-    points: [361]bool = [_]bool{false} ** 361,
+    points: [361]bool = @as([361]bool, @splat(false)),
     size: usize = 0,
     owner: u8 = '.',
 };
 
 fn regions(allocator: Allocator, board: *const Board, n: usize) ![]Region {
     var result: std.ArrayList(Region) = .empty;
-    var visited = [_]bool{false} ** 361;
+    var visited = @as([361]bool, @splat(false));
     for (0..n * n) |p| {
         if (board[p] != '.' or visited[p]) continue;
         var r = Region{ .first = p };
@@ -243,15 +249,15 @@ fn regions(allocator: Allocator, board: *const Board, n: usize) ![]Region {
 }
 
 const Area = struct {
-    points: [361]bool = [_]bool{false} ** 361,
-    touching: [361]bool = [_]bool{false} ** 361,
-    vital: [361]bool = [_]bool{false} ** 361,
+    points: [361]bool = @as([361]bool, @splat(false)),
+    touching: [361]bool = @as([361]bool, @splat(false)),
+    vital: [361]bool = @as([361]bool, @splat(false)),
 };
 
 fn safeGroups(allocator: Allocator, board: *const Board, n: usize, color: u8) ![]Group {
     const own = try groups(allocator, board, n, color);
     var areas: std.ArrayList(Area) = .empty;
-    var visited = [_]bool{false} ** 361;
+    var visited = @as([361]bool, @splat(false));
     for (0..n * n) |p| {
         if (board[p] == color or visited[p]) continue;
         var a = Area{};
@@ -290,8 +296,8 @@ fn safeGroups(allocator: Allocator, board: *const Board, n: usize, color: u8) ![
         }
         try areas.append(allocator, a);
     }
-    var live = [_]bool{false} ** 361;
-    var active = [_]bool{false} ** 361;
+    var live = @as([361]bool, @splat(false));
+    var active = @as([361]bool, @splat(false));
     for (0..own.len) |i| live[i] = true;
     for (0..areas.items.len) |i| active[i] = true;
     while (true) {
@@ -320,7 +326,9 @@ fn safeGroups(allocator: Allocator, board: *const Board, n: usize, color: u8) ![
         if (!changed) break;
     }
     var result: std.ArrayList(Group) = .empty;
-    for (own, 0..) |g, i| if (live[i]) { try result.append(allocator, g); };
+    for (own, 0..) |g, i| if (live[i]) {
+        try result.append(allocator, g);
+    };
     return result.items;
 }
 
@@ -336,16 +344,20 @@ fn ladderRead(board: Board, n: usize, target: usize, depth: usize, defending: bo
     const attacker = opponent(defender);
     var candidate = g.liberties;
     if (defending) {
-        var seen = [_]bool{false} ** 361;
+        var seen = @as([361]bool, @splat(false));
         for (0..n * n) |p| {
             if (!g.stones[p]) continue;
             const ns = adjacent(n, p, false);
             for (ns.items[0..ns.len]) |q| {
                 if (board[q] != attacker or seen[q]) continue;
                 const enemy = group(&board, n, q);
-                for (0..n * n) |s| if (enemy.stones[s]) { seen[s] = true; };
+                for (0..n * n) |s| if (enemy.stones[s]) {
+                    seen[s] = true;
+                };
                 if (enemy.liberty_count == 1) {
-                    for (0..n * n) |s| if (enemy.liberties[s]) { candidate[s] = true; };
+                    for (0..n * n) |s| if (enemy.liberties[s]) {
+                        candidate[s] = true;
+                    };
                 }
             }
         }
@@ -357,8 +369,7 @@ fn ladderRead(board: Board, n: usize, target: usize, depth: usize, defending: bo
         const after = group(&next.board, n, target);
         var good = false;
         if (defending) {
-            if (after.liberty_count >= 3) good = true
-            else if (after.liberty_count == 2) {
+            if (after.liberty_count >= 3) good = true else if (after.liberty_count == 2) {
                 good = !ladderRead(next.board, n, target, depth + 1, false).success;
             }
         } else if (after.liberty_count == 1) {
@@ -423,7 +434,7 @@ fn handicapNames(n: usize) []const Text {
 const Game = struct {
     n: usize = 19,
     komi: i32 = 13,
-    board: Board = [_]u8{'.'} ** 361,
+    board: Board = @as([361]u8, @splat('.')),
     turn: u8 = 'B',
     captures: [2]usize = .{ 0, 0 },
     passes: usize = 0,
@@ -434,7 +445,7 @@ const Game = struct {
     history: [500]Move = undefined,
     history_len: usize = 0,
     positions: [501]Board = undefined,
-    dead: [361]bool = [_]bool{false} ** 361,
+    dead: [361]bool = @as([361]bool, @splat(false)),
 
     fn init() Game {
         var self: Game = .{};
@@ -445,7 +456,7 @@ const Game = struct {
     fn reset(self: *Game, n: usize, komi: i32) void {
         self.n = n;
         self.komi = komi;
-        self.board = [_]u8{'.'} ** 361;
+        self.board = @as([361]u8, @splat('.'));
         self.turn = 'B';
         self.captures = .{ 0, 0 };
         self.passes = 0;
@@ -453,12 +464,14 @@ const Game = struct {
         self.handicap_len = 0;
         self.history_len = 0;
         self.positions[0] = self.board;
-        self.dead = [_]bool{false} ** 361;
+        self.dead = @as([361]bool, @splat(false));
     }
 
     fn clean(self: *const Game) Board {
         var b = self.board;
-        for (0..self.n * self.n) |p| if (self.dead[p]) { b[p] = '.'; };
+        for (0..self.n * self.n) |p| if (self.dead[p]) {
+            b[p] = '.';
+        };
         return b;
     }
 
@@ -482,8 +495,11 @@ const Game = struct {
 
     fn move(self: *Game, color: u8, p: ?usize) usize {
         var record = Move{ .color = color, .point = p, .captured = 0, .before = .{
-            .board = self.board, .turn = self.turn, .captures = self.captures,
-            .passes = self.passes, .over = self.over,
+            .board = self.board,
+            .turn = self.turn,
+            .captures = self.captures,
+            .passes = self.passes,
+            .over = self.over,
         } };
         if (p) |point_| {
             const next = self.check(color, point_);
@@ -499,7 +515,7 @@ const Game = struct {
         self.history[self.history_len] = record;
         self.history_len += 1;
         self.positions[self.history_len] = self.board;
-        self.dead = [_]bool{false} ** 361;
+        self.dead = @as([361]bool, @splat(false));
         return record.captured;
     }
 
@@ -510,13 +526,13 @@ const Game = struct {
             const rs = try regions(out.allocator, &b, self.n);
             for (rs) |r| {
                 const symbol: u8 = if (r.owner == 'B') 'x' else if (r.owner == 'W') 'o' else '.';
-                for (0..self.n * self.n) |p| if (r.points[p]) { cells[p] = symbol; };
+                for (0..self.n * self.n) |p| if (r.points[p]) {
+                    cells[p] = symbol;
+                };
             }
         }
         for (0..self.n * self.n) |p| {
-            if (b[p] == 'B') cells[p] = if (!mapped and self.dead[p]) 'x' else 'X'
-            else if (b[p] == 'W') cells[p] = if (!mapped and self.dead[p]) 'o' else 'O'
-            else if (!mapped) {
+            if (b[p] == 'B') cells[p] = if (!mapped and self.dead[p]) 'x' else 'X' else if (b[p] == 'W') cells[p] = if (!mapped and self.dead[p]) 'o' else 'O' else if (!mapped) {
                 var star = false;
                 for (handicapNames(self.n), 0..) |loc, i| {
                     if (self.n != 19 and i >= 4 and i != 8) continue;
@@ -563,7 +579,9 @@ const Game = struct {
             const bonus: i32 = if (i == 1) self.komi else 0;
             if (eq(method, "AREA")) {
                 var stone_count: usize = 0;
-                for (b[0 .. self.n * self.n]) |stone| if (stone == color) { stone_count += 1; };
+                for (b[0 .. self.n * self.n]) |stone| if (stone == color) {
+                    stone_count += 1;
+                };
                 total[i] = 2 * @as(i32, @intCast(stone_count + territory[i])) + bonus;
                 if (i == 0) {
                     try out.line("B stones {d} territory {d} total {s}", .{ stone_count, territory[i], try halfText(out.allocator, total[i]) });
@@ -602,9 +620,9 @@ const Game = struct {
         const cmd = parts[0];
         const args = parts[1..];
         const cmds = [_]Text{
-            "BOARD", "KOMI", "SUPERKO", "HANDICAP", "PLAY", "PASS", "REPLAY", "UNDO",
-            "SHOW", "MAP", "STATUS", "CAPTURES", "HISTORY", "MOVES", "GROUP", "GROUPS",
-            "ATARI", "LEGAL", "EYES", "SAFE", "LADDER", "DEAD", "REGIONS", "SCORE",
+            "BOARD", "KOMI",  "SUPERKO", "HANDICAP", "PLAY",    "PASS",  "REPLAY",  "UNDO",
+            "SHOW",  "MAP",   "STATUS",  "CAPTURES", "HISTORY", "MOVES", "GROUP",   "GROUPS",
+            "ATARI", "LEGAL", "EYES",    "SAFE",     "LADDER",  "DEAD",  "REGIONS", "SCORE",
         };
         const arities = [_]usize{ 2, 1, 1, 1, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1 };
         var index: usize = 0;
@@ -620,12 +638,7 @@ const Game = struct {
         const a: Text = if (args.len > 0) args[0] else "";
         const b: Text = if (args.len > 1) args[1] else "";
         var valid = true;
-        if (eq(cmd, "BOARD")) valid = among(a, &.{ "9", "13", "19" }) and parseKomi(b) != null
-        else if (eq(cmd, "KOMI")) valid = parseKomi(a) != null
-        else if (eq(cmd, "SUPERKO")) valid = among(a, &.{ "ON", "OFF" })
-        else if (eq(cmd, "HANDICAP")) valid = among(a, &.{ "2", "3", "4", "5", "6", "7", "8", "9" })
-        else if (among(cmd, &.{ "PLAY", "PASS", "LEGAL", "EYES", "SAFE" })) valid = among(a, &.{ "B", "W" })
-        else if (eq(cmd, "SCORE")) valid = among(a, &.{ "AREA", "TERRITORY" });
+        if (eq(cmd, "BOARD")) valid = among(a, &.{ "9", "13", "19" }) and parseKomi(b) != null else if (eq(cmd, "KOMI")) valid = parseKomi(a) != null else if (eq(cmd, "SUPERKO")) valid = among(a, &.{ "ON", "OFF" }) else if (eq(cmd, "HANDICAP")) valid = among(a, &.{ "2", "3", "4", "5", "6", "7", "8", "9" }) else if (among(cmd, &.{ "PLAY", "PASS", "LEGAL", "EYES", "SAFE" })) valid = among(a, &.{ "B", "W" }) else if (eq(cmd, "SCORE")) valid = among(a, &.{ "AREA", "TERRITORY" });
         if (!valid) {
             try out.line("ERROR bad arguments", .{});
             return;
@@ -681,7 +694,7 @@ const Game = struct {
             self.handicap_len = k;
             self.turn = 'W';
             self.positions[0] = self.board;
-            self.dead = [_]bool{false} ** 361;
+            self.dead = @as([361]bool, @splat(false));
             try out.print("handicap {d}", .{k});
             for (self.handicap[0..k]) |pt| try out.print(" {s}", .{try pointText(out.allocator, self.n, pt)});
             try out.write("\n");
@@ -750,7 +763,7 @@ const Game = struct {
                 self.captures = m.before.captures;
                 self.passes = m.before.passes;
                 self.over = m.before.over;
-                self.dead = [_]bool{false} ** 361;
+                self.dead = @as([361]bool, @splat(false));
                 const pt = if (m.point) |q| try pointText(out.allocator, self.n, q) else "pass";
                 try out.line("undo {c} {s}", .{ m.color, pt });
             }
@@ -760,8 +773,7 @@ const Game = struct {
             try out.line("size {d} komi {s} handicap {d} superko {s}", .{
                 self.n, try halfText(out.allocator, self.komi), self.handicap_len, if (self.superko) "on" else "off",
             });
-            if (self.over) try out.line("moves {d} game over", .{self.history_len})
-            else try out.line("moves {d} next {c} passes {d}", .{ self.history_len, self.turn, self.passes });
+            if (self.over) try out.line("moves {d} game over", .{self.history_len}) else try out.line("moves {d} next {c} passes {d}", .{ self.history_len, self.turn, self.passes });
         } else if (eq(cmd, "CAPTURES")) {
             try out.line("captures B {d} W {d}", .{ self.captures[0], self.captures[1] });
         } else if (eq(cmd, "HISTORY")) {
@@ -810,7 +822,9 @@ const Game = struct {
                 try out.write("\n");
             } else if (eq(cmd, "DEAD")) {
                 const is_dead = self.dead[p.?];
-                for (0..self.n * self.n) |q| if (g.stones[q]) { self.dead[q] = !is_dead; };
+                for (0..self.n * self.n) |q| if (g.stones[q]) {
+                    self.dead[q] = !is_dead;
+                };
                 try out.line("{s} {c} {s} size {d}", .{ if (is_dead) "alive" else "dead", g.color, first, g.size });
             } else if (g.liberty_count >= 3) {
                 try out.line("ladder {s} safe", .{a});
@@ -869,11 +883,15 @@ const Game = struct {
                 if (self.board[q] != '.') continue;
                 const ns = adjacent(self.n, q, false);
                 var shaped = true;
-                for (ns.items[0..ns.len]) |t| if (self.board[t] != a[0]) { shaped = false; };
+                for (ns.items[0..ns.len]) |t| if (self.board[t] != a[0]) {
+                    shaped = false;
+                };
                 if (!shaped) continue;
                 const diag = adjacent(self.n, q, true);
                 var enemy_count: usize = 0;
-                for (diag.items[0..diag.len]) |t| if (self.board[t] == opponent(a[0])) { enemy_count += 1; };
+                for (diag.items[0..diag.len]) |t| if (self.board[t] == opponent(a[0])) {
+                    enemy_count += 1;
+                };
                 const real = if (ns.len == 4) enemy_count <= 1 else enemy_count == 0;
                 try found.append(out.allocator, .{ .p = q, .real = real });
             }

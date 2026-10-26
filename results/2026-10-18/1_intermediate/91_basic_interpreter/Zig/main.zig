@@ -7,44 +7,8 @@ var output: std.ArrayList(u8) = .empty;
 var pending: std.ArrayList(u8) = .empty;
 
 var error_code: usize = 0;
-const messages = [_]S{
-    "NEXT WITHOUT FOR",
-    "RETURN WITHOUT GOSUB",
-    "OUT OF DATA",
-    "ILLEGAL FUNCTION CALL",
-    "OVERFLOW",
-    "OUT OF MEMORY",
-    "UNDEFINED LINE NUMBER",
-    "SUBSCRIPT OUT OF RANGE",
-    "DUPLICATE DEFINITION",
-    "DIVISION BY ZERO",
-    "TYPE MISMATCH",
-    "STRING TOO LONG",
-    "RESUME WITHOUT ERROR",
-    "FOR WITHOUT NEXT",
-    "WHILE WITHOUT WEND",
-    "WEND WITHOUT WHILE",
-    "INPUT PAST END"
-};
-const codes = [_]usize{
-    1,
-    3,
-    4,
-    5,
-    6,
-    7,
-    8,
-    9,
-    10,
-    11,
-    13,
-    15,
-    20,
-    26,
-    29,
-    30,
-    62
-};
+const messages = [_]S{ "NEXT WITHOUT FOR", "RETURN WITHOUT GOSUB", "OUT OF DATA", "ILLEGAL FUNCTION CALL", "OVERFLOW", "OUT OF MEMORY", "UNDEFINED LINE NUMBER", "SUBSCRIPT OUT OF RANGE", "DUPLICATE DEFINITION", "DIVISION BY ZERO", "TYPE MISMATCH", "STRING TOO LONG", "RESUME WITHOUT ERROR", "FOR WITHOUT NEXT", "WHILE WITHOUT WEND", "WEND WITHOUT WHILE", "INPUT PAST END" };
+const codes = [_]usize{ 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 20, 26, 29, 30, 62 };
 
 fn eq(a: S, b: S) bool {
     return std.mem.eql(u8, a, b);
@@ -76,35 +40,23 @@ fn message(s: S) !void {
 }
 
 fn checked(n: i64) !i64 {
-    if (n <  - 32768 or n > 32767) return runtime(6);
+    if (n < -32768 or n > 32767) return runtime(6);
     return n;
 }
 
-const Value = struct {
-    string: bool = false,
-    n: i64 = 0,
-    s: S = ""
-};
+const Value = struct { string: bool = false, n: i64 = 0, s: S = "" };
 
 fn integer(n: i64) Value {
     return .{ .n = n };
 }
 
 fn display(v: Value) !S {
-    return if (v.string) v.s else fmt("{d}", .{ v.n });
+    return if (v.string) v.s else fmt("{d}", .{v.n});
 }
 
-const TokenKind = enum {
-    word,
-    num,
-    str,
-    sym
-};
+const TokenKind = enum { word, num, str, sym };
 
-const Token = struct {
-    k: TokenKind,
-    s: S
-};
+const Token = struct { k: TokenKind, s: S };
 
 fn lex(s: S) ![]Token {
     var ts: std.ArrayList(Token) = .empty;
@@ -138,7 +90,7 @@ fn lex(s: S) ![]Token {
             while (i < s.len and (std.ascii.isUpper(s[i]) or std.ascii.isDigit(s[i]))) i += 1;
             if (i < s.len and s[i] == '$') i += 1;
             k = .word;
-        } else if (i + 1 < s.len and (eq(s[i..i + 2], "<>") or eq(s[i..i + 2], "<=") or eq(s[i..i + 2], ">="))) i += 2 else if (std.mem.indexOfScalar(u8, "+-*/^=<>() ,;:", s[i]) != null) i += 1 else return syntax();
+        } else if (i + 1 < s.len and (eq(s[i .. i + 2], "<>") or eq(s[i .. i + 2], "<=") or eq(s[i .. i + 2], ">="))) i += 2 else if (std.mem.indexOfScalar(u8, "+-*/^=<>() ,;:", s[i]) != null) i += 1 else return syntax();
         if (k != .str) value = s[start..i];
         try ts.append(A, .{ .k = k, .s = value });
     }
@@ -148,70 +100,27 @@ fn lex(s: S) ![]Token {
 fn varId(s: S) ?usize {
     if (s.len == 0) return null;
     const str = s[s.len - 1] == '$';
-    const v = if (str) s[0..s.len - 1] else s;
+    const v = if (str) s[0 .. s.len - 1] else s;
     if (v.len < 1 or v.len > 2 or !std.ascii.isUpper(v[0]) or (v.len == 2 and !std.ascii.isDigit(v[1]))) return null;
     return @as(usize, v[0] - 'A') * 11 + (if (v.len == 1) @as(usize, 0) else v[1] - '0' + 1) + (if (str) @as(usize, 286) else 0);
 }
 
 fn functionName(s: S) bool {
-    for ([_]S{
-        "ABS",
-        "SGN",
-        "INT",
-        "SQR",
-        "RND",
-        "LEN",
-        "ASC",
-        "VAL",
-        "CHR$",
-        "STR$",
-        "LEFT$",
-        "RIGHT$",
-        "MID$",
-        "INSTR"
-    }) |v| if (eq(s, v)) return true;
+    for ([_]S{ "ABS", "SGN", "INT", "SQR", "RND", "LEN", "ASC", "VAL", "CHR$", "STR$", "LEFT$", "RIGHT$", "MID$", "INSTR" }) |v| if (eq(s, v)) return true;
     return false;
 }
 
-const Expr = struct {
-    k: enum {
-        value,
-        variable,
-        array,
-        call,
-        unary,
-        binary,
-        special
-    },
-    s: S = "",
-    v: Value = .{},
-    id: usize = 0,
-    string: bool = false,
-    args: []const *Expr = &.{}
-};
+const Expr = struct { k: enum { value, variable, array, call, unary, binary, special }, s: S = "", v: Value = .{}, id: usize = 0, string: bool = false, args: []const *Expr = &.{} };
 
-fn expression(n: Expr) ! *Expr {
+fn expression(n: Expr) !*Expr {
     const p = try A.create(Expr);
     p.* = n;
     return p;
 }
 
-const Stmt = struct {
-    kind: S,
-    line: usize,
-    args: []const *Expr = &.{},
-    targets: []const *Expr = &.{},
-    nums: []const usize = &.{},
-    yes: [] *Stmt = &.{},
-    no: [] *Stmt = &.{},
-    yesline: ?usize = null,
-    noline: ?usize = null,
-    next: ?*Stmt = null,
-    index: usize = 0,
-    option: S = ""
-};
+const Stmt = struct { kind: S, line: usize, args: []const *Expr = &.{}, targets: []const *Expr = &.{}, nums: []const usize = &.{}, yes: []*Stmt = &.{}, no: []*Stmt = &.{}, yesline: ?usize = null, noline: ?usize = null, next: ?*Stmt = null, index: usize = 0, option: S = "" };
 
-fn statement(n: Stmt) ! *Stmt {
+fn statement(n: Stmt) !*Stmt {
     const p = try A.create(Stmt);
     p.* = n;
     return p;
@@ -238,12 +147,12 @@ const Parser = struct {
         p.i += 1;
         return n;
     }
-    fn integerExpr(p: *Parser) ! *Expr {
+    fn integerExpr(p: *Parser) !*Expr {
         const e = try p.parse(1);
         if (e.string) return syntax();
         return e;
     }
-    fn target(p: *Parser, scalar: bool, integer_only: bool) ! *Expr {
+    fn target(p: *Parser, scalar: bool, integer_only: bool) !*Expr {
         const s = p.peek();
         const id = varId(s) orelse return syntax();
         if (integer_only and id >= 286) return syntax();
@@ -259,15 +168,11 @@ const Parser = struct {
         }
         return expression(e);
     }
-    fn primary(p: *Parser) anyerror! *Expr {
+    fn primary(p: *Parser) anyerror!*Expr {
         if (p.accept("-")) {
             const x = try p.parse(7);
             if (x.string) return syntax();
-            return expression(.{
-                .k = .unary,
-                .s = "-",
-                .args = try A.dupe(*Expr, &.{ x })
-            });
+            return expression(.{ .k = .unary, .s = "-", .args = try A.dupe(*Expr, &.{x}) });
         }
         if (p.accept("(")) {
             const x = try p.parse(1);
@@ -282,11 +187,7 @@ const Parser = struct {
         }
         if (t.k == .str) {
             p.i += 1;
-            return expression(.{
-                .k = .value,
-                .string = true,
-                .v = .{ .string = true, .s = t.s }
-            });
+            return expression(.{ .k = .value, .string = true, .v = .{ .string = true, .s = t.s } });
         }
         if (eq(t.s, "ERR") or eq(t.s, "ERL")) {
             p.i += 1;
@@ -311,25 +212,16 @@ const Parser = struct {
                 const want = if (eq(s, "LEN") or eq(s, "ASC") or eq(s, "VAL") or eq(s, "INSTR")) true else if (eq(s, "LEFT$") or eq(s, "RIGHT$") or eq(s, "MID$")) i == 0 else false;
                 if (a.string != want) return syntax();
             }
-            return expression(.{
-                .k = .call,
-                .s = s,
-                .string = eq(s, "CHR$") or eq(s, "STR$") or eq(s, "LEFT$") or eq(s, "RIGHT$") or eq(s, "MID$"),
-                .args = try args.toOwnedSlice(A)
-            });
+            return expression(.{ .k = .call, .s = s, .string = eq(s, "CHR$") or eq(s, "STR$") or eq(s, "LEFT$") or eq(s, "RIGHT$") or eq(s, "MID$"), .args = try args.toOwnedSlice(A) });
         }
         return syntax();
     }
-    fn parse(p: *Parser, min: u8) anyerror! *Expr {
+    fn parse(p: *Parser, min: u8) anyerror!*Expr {
         var n: *Expr = undefined;
         if (min <= 3 and p.accept("NOT")) {
             const x = try p.parse(3);
             if (x.string) return syntax();
-            n = try expression(.{
-                .k = .unary,
-                .s = "NOT",
-                .args = try A.dupe(*Expr, &.{ x })
-            });
+            n = try expression(.{ .k = .unary, .s = "NOT", .args = try A.dupe(*Expr, &.{x}) });
         } else n = try p.primary();
         while (true) {
             const op = p.peek();
@@ -339,19 +231,14 @@ const Parser = struct {
             const r = try p.parse(if (pr == 8) 7 else pr + 1);
             if ((pr == 4 or eq(op, "+")) and n.string != r.string) return syntax();
             if (pr != 4 and !eq(op, "+") and (n.string or r.string)) return syntax();
-            n = try expression(.{
-                .k = .binary,
-                .s = op,
-                .string = eq(op, "+") and n.string,
-                .args = try A.dupe(*Expr, &.{ n, r })
-            });
+            n = try expression(.{ .k = .binary, .s = op, .string = eq(op, "+") and n.string, .args = try A.dupe(*Expr, &.{ n, r }) });
         }
         return n;
     }
     fn ended(p: *Parser) bool {
         return p.i == p.ts.len or eq(p.peek(), ":") or eq(p.peek(), "ELSE");
     }
-    fn list(p: *Parser, clause: bool) anyerror![] *Stmt {
+    fn list(p: *Parser, clause: bool) anyerror![]*Stmt {
         var a: std.ArrayList(*Stmt) = .empty;
         while (true) {
             try a.append(A, try p.stmt(clause));
@@ -359,7 +246,7 @@ const Parser = struct {
         }
         return a.toOwnedSlice(A);
     }
-    fn stmt(p: *Parser, clause: bool) anyerror! *Stmt {
+    fn stmt(p: *Parser, clause: bool) anyerror!*Stmt {
         const kind = p.peek();
         if (kind.len == 0) return syntax();
         p.i += 1;
@@ -389,11 +276,7 @@ const Parser = struct {
                         try p.expect("(");
                         const e = try p.integerExpr();
                         try p.expect(")");
-                        try args.append(A, try expression(.{
-                            .k = .special,
-                            .s = op,
-                            .args = try A.dupe(*Expr, &.{ e })
-                        }));
+                        try args.append(A, try expression(.{ .k = .special, .s = op, .args = try A.dupe(*Expr, &.{e}) }));
                         need_separator = false;
                     } else {
                         if (need_separator) return syntax();
@@ -418,11 +301,7 @@ const Parser = struct {
                 if (t.k != .num and t.k != .str) return syntax();
                 if (neg and t.k != .num) return syntax();
                 p.i += 1;
-                try args.append(A, try expression(.{
-                    .k = .value,
-                    .string = t.k == .str,
-                    .v = if (t.k == .str) .{ .string = true, .s = t.s } else integer((if (neg) @as(i64, - 1) else 1) * try std.fmt.parseInt(i64, t.s, 10))
-                }));
+                try args.append(A, try expression(.{ .k = .value, .string = t.k == .str, .v = if (t.k == .str) .{ .string = true, .s = t.s } else integer((if (neg) @as(i64, -1) else 1) * try std.fmt.parseInt(i64, t.s, 10)) }));
                 if (!p.accept(",")) break;
             }
         } else if (eq(kind, "IF")) {
@@ -476,40 +355,19 @@ const Parser = struct {
     }
 };
 
-const Array = struct {
-    bounds: [2]usize = .{ 0, 0 },
-    dim: usize,
-    values: []Value
-};
+const Array = struct { bounds: [2]usize = .{ 0, 0 }, dim: usize, values: []Value };
 
-const FrameKind = enum {
-    gosub,
-    forloop,
-    whileloop
-};
+const FrameKind = enum { gosub, forloop, whileloop };
 
-const Frame = struct {
-    k: FrameKind,
-    position: ?*Stmt = null,
-    id: usize = 0,
-    final: i64 = 0,
-    step: i64 = 0
-};
+const Frame = struct { k: FrameKind, position: ?*Stmt = null, id: usize = 0, final: i64 = 0, step: i64 = 0 };
 
-const Datum = struct {
-    line: usize,
-    v: Value
-};
+const Datum = struct { line: usize, v: Value };
 
 const Machine = struct {
-    vars: [572]Value = [_]Value{
-         .{}
-    } ** 572,
-    arrays: [572]?Array = [_]?Array{
-        null
-    } ** 572,
+    vars: [572]Value = @as([572]Value, @splat(.{})),
+    arrays: [572]?Array = @as([572]?Array, @splat(null)),
     stack: std.ArrayList(Frame) = .empty,
-    program: [] *Stmt,
+    program: []*Stmt,
     lines: std.AutoHashMapUnmanaged(usize, *Stmt) = .empty,
     data: std.ArrayList(Datum) = .empty,
     read: usize = 0,
@@ -528,7 +386,7 @@ const Machine = struct {
         @memset(values, .{ .string = id >= 286 });
         m.arrays[id] = .{ .bounds = bounds, .dim = dim, .values = values };
     }
-    fn reference(m: *Machine, e: *Expr) anyerror! *Value {
+    fn reference(m: *Machine, e: *Expr) anyerror!*Value {
         if (e.k == .variable) return &m.vars[e.id];
         var indices: [2]i64 = .{ 0, 0 };
         for (e.args, 0..) |a, i| indices[i] = (try m.eval(a)).n;
@@ -542,12 +400,11 @@ const Machine = struct {
     fn eval(m: *Machine, e: *Expr) anyerror!Value {
         switch (e.k) {
             .value => return e.v,
-            .variable,
-            .array => return (try m.reference(e)).*,
+            .variable, .array => return (try m.reference(e)).*,
             .special => return integer(if (eq(e.s, "ERR")) m.err else m.erl),
             .unary => {
                 const v = (try m.eval(e.args[0])).n;
-                return integer(if (eq(e.s, "NOT")) - 1 - v else try checked( - v));
+                return integer(if (eq(e.s, "NOT")) -1 - v else try checked(-v));
             },
             .call => {
                 const vals = try A.alloc(Value, e.args.len);
@@ -586,14 +443,14 @@ const Machine = struct {
                 }
                 const order = if (a.string) std.mem.order(u8, a.s, b.s) else if (a.n < b.n) std.math.Order.lt else if (a.n > b.n) std.math.Order.gt else std.math.Order.eq;
                 const yes = if (eq(op, "=")) order == .eq else if (eq(op, "<>")) order != .eq else if (eq(op, "<")) order == .lt else if (eq(op, "<=")) order != .gt else if (eq(op, ">")) order == .gt else order != .lt;
-                return integer(if (yes) - 1 else 0);
-            }
+                return integer(if (yes) -1 else 0);
+            },
         }
     }
     fn function(m: *Machine, s: S, a: []Value) !Value {
         const x = a[0];
         if (eq(s, "ABS")) return integer(try checked(@intCast(@abs(x.n))));
-        if (eq(s, "SGN")) return integer(if (x.n < 0) - 1 else if (x.n > 0) 1 else 0);
+        if (eq(s, "SGN")) return integer(if (x.n < 0) -1 else if (x.n > 0) 1 else 0);
         if (eq(s, "INT")) return x;
         if (eq(s, "SQR")) {
             if (x.n < 0) return runtime(5);
@@ -615,7 +472,7 @@ const Machine = struct {
             var u = std.mem.trimStart(u8, x.s, " ");
             var sign: i64 = 1;
             if (u.len > 0 and (u[0] == '-' or u[0] == '+')) {
-                if (u[0] == '-') sign =  - 1;
+                if (u[0] == '-') sign = -1;
                 u = u[1..];
             }
             var n: i64 = 0;
@@ -627,27 +484,21 @@ const Machine = struct {
         }
         if (eq(s, "CHR$")) {
             if (x.n < 32 or x.n > 126) return runtime(5);
-            return .{
-                .string = true,
-                .s = try fmt("{c}", .{ @as(u8, @intCast(x.n)) })
-            };
+            return .{ .string = true, .s = try fmt("{c}", .{@as(u8, @intCast(x.n))}) };
         }
-        if (eq(s, "STR$")) return .{
-            .string = true,
-            .s = try fmt("{d}", .{ x.n })
-        };
+        if (eq(s, "STR$")) return .{ .string = true, .s = try fmt("{d}", .{x.n}) };
         if (eq(s, "INSTR")) return integer(if (std.mem.indexOf(u8, x.s, a[1].s)) |i| @intCast(i + 1) else 0);
         if (eq(s, "LEFT$") or eq(s, "RIGHT$")) {
             if (a[1].n < 0) return runtime(5);
             const n = @min(x.s.len, @as(usize, @intCast(a[1].n)));
-            return .{ .string = true, .s = if (eq(s, "LEFT$")) x.s[0..n] else x.s[x.s.len - n..] };
+            return .{ .string = true, .s = if (eq(s, "LEFT$")) x.s[0..n] else x.s[x.s.len - n ..] };
         }
         if (a[1].n < 1 or (a.len == 3 and a[2].n < 0)) return runtime(5);
         const begin = @min(x.s.len, @as(usize, @intCast(a[1].n - 1)));
         const end = if (a.len == 3) @min(x.s.len, begin + @as(usize, @intCast(a[2].n))) else x.s.len;
         return .{ .string = true, .s = x.s[begin..end] };
     }
-    fn goto(m: *Machine, n: usize) ! *Stmt {
+    fn goto(m: *Machine, n: usize) !*Stmt {
         return m.lines.get(n) orelse runtime(8);
     }
     fn push(m: *Machine, f: Frame) !void {
@@ -666,7 +517,7 @@ const Machine = struct {
     }
     fn matching(m: *Machine, s: *Stmt, open: S, close: S) !?*Stmt {
         var depth: usize = 0;
-        for (m.program[s.index + 1..]) |q| {
+        for (m.program[s.index + 1 ..]) |q| {
             if (eq(q.kind, open)) depth += 1;
             if (eq(q.kind, close)) {
                 if (depth == 0) return q.next;
@@ -713,7 +564,7 @@ const Machine = struct {
                         valid = false;
                     };
                     const n = std.fmt.parseInt(i64, data, 10) catch 32768;
-                    if (valid and n >=  - 32768 and n <= 32767) {
+                    if (valid and n >= -32768 and n <= 32767) {
                         target.* = integer(n);
                         break;
                     }
@@ -816,7 +667,7 @@ const Machine = struct {
             if (s.nums.len > 0) next = try m.goto(s.nums[0]) else if (eq(s.option, "NEXT")) next = m.error_stmt.?.next else next = m.error_stmt;
             m.handling = false;
         } else if (eq(c, "END")) next = null else if (eq(c, "STOP")) {
-            try message(try fmt("BREAK IN LINE {d}", .{ s.line }));
+            try message(try fmt("BREAK IN LINE {d}", .{s.line}));
             next = null;
         }
         return next;
@@ -853,7 +704,7 @@ const Machine = struct {
     }
 };
 
-fn wire(list: [] *Stmt, next: ?*Stmt) void {
+fn wire(list: []*Stmt, next: ?*Stmt) void {
     for (list, 0..) |s, i| {
         s.next = if (i + 1 < list.len) list[i + 1] else next;
         wire(s.yes, s.next);
@@ -868,15 +719,13 @@ pub fn main(init: std.process.Init) !void {
     var it = std.mem.splitScalar(u8, all, '\n');
     const count = try std.fmt.parseInt(usize, it.next() orelse "0", 10);
     for (0..count) |_| {
-        var stored: [10000]?S = [_]?S{
-            null
-        } ** 10000;
+        var stored: [10000]?S = @as([10000]?S, @splat(null));
         while (it.next()) |raw| {
             const s = std.mem.trimEnd(u8, raw, "\r");
             if (eq(s, "RUN")) break;
             const space = std.mem.indexOfScalar(u8, s, ' ');
             const n = try std.fmt.parseInt(usize, if (space) |i| s[0..i] else s, 10);
-            stored[n] = if (space) |i| std.mem.trimStart(u8, s[i + 1..], " ") else null;
+            stored[n] = if (space) |i| std.mem.trimStart(u8, s[i + 1 ..], " ") else null;
         }
         var inputs: std.ArrayList(S) = .empty;
         while (it.next()) |raw| {
@@ -892,10 +741,7 @@ pub fn main(init: std.process.Init) !void {
                 bad = n;
                 break;
             };
-            var p = Parser{
-                .ts = ts,
-                .line = n
-            };
+            var p = Parser{ .ts = ts, .line = n };
             const statements = p.list(false) catch |e| {
                 if (e != error.Syntax) return e;
                 bad = n;
@@ -907,13 +753,10 @@ pub fn main(init: std.process.Init) !void {
             }
             try program.appendSlice(A, statements);
         };
-        if (bad) |n| try message(try fmt("ERROR IN LINE {d}: SYNTAX ERROR", .{ n })) else {
+        if (bad) |n| try message(try fmt("ERROR IN LINE {d}: SYNTAX ERROR", .{n})) else {
             wire(program.items, null);
             for (program.items, 0..) |s, i| s.index = i;
-            var m = Machine{
-                .program = program.items,
-                .inputs = inputs.items
-            };
+            var m = Machine{ .program = program.items, .inputs = inputs.items };
             try m.run();
         }
         if (pending.items.len > 0) try endLine();

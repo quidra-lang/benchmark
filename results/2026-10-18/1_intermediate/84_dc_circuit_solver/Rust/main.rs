@@ -1,13 +1,13 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, Read};
-use std::ops::{Add, Sub, Mul, Div, Neg};
-use std::cmp::Ordering;
+use std::ops::{Add, Div, Mul, Neg, Sub};
 type Answer = Result<Vec<String>, String>;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct Q {
     p: i64,
-    q: i64
+    q: i64,
 }
 
 impl Q {
@@ -19,20 +19,13 @@ impl Q {
             b = r;
         }
         Self {
-            p: if q < 0 {
-                -p / a
-            } else {
-                p / a
-            },
-            q: q.abs() / a
+            p: if q < 0 { -p / a } else { p / a },
+            q: q.abs() / a,
         }
     }
 
     fn integer(n: i64) -> Self {
-        Self {
-            p: n,
-            q: 1
-        }
+        Self { p: n, q: 1 }
     }
 
     fn text(self) -> String {
@@ -45,21 +38,17 @@ impl Q {
 
     fn value(self) -> String {
         let h = self.p.abs() * 1000000 / self.q;
-        format!("{} ({}{}.{:06})", self.text(), if self.p < 0 {
-            "-"
-        } else {
-            ""
-        }, h / 1000000, h % 1000000)
+        format!(
+            "{} ({}{}.{:06})",
+            self.text(),
+            if self.p < 0 { "-" } else { "" },
+            h / 1000000,
+            h % 1000000
+        )
     }
 }
-const ZERO: Q = Q {
-    p: 0,
-    q: 1
-};
-const ONE: Q = Q {
-    p: 1,
-    q: 1
-};
+const ZERO: Q = Q { p: 0, q: 1 };
+const ONE: Q = Q { p: 1, q: 1 };
 
 impl Add for Q {
     type Output = Self;
@@ -99,7 +88,7 @@ impl Neg for Q {
     fn neg(self) -> Self {
         Self {
             p: -self.p,
-            q: self.q
+            q: self.q,
         }
     }
 }
@@ -123,7 +112,15 @@ fn digits(s: &str) -> bool {
 fn number(raw: &str) -> Result<Q, String> {
     let mut s = raw;
     let mut factor = ONE;
-    for (suffix, multiplier) in [("meg", Q::integer(1000000)), ("k", Q::integer(1000)), ("m", Q::new(1, 1000)), ("u", Q::new(1, 1000000))].iter().copied() {
+    for (suffix, multiplier) in [
+        ("meg", Q::integer(1000000)),
+        ("k", Q::integer(1000)),
+        ("m", Q::new(1, 1000)),
+        ("u", Q::new(1, 1000000)),
+    ]
+    .iter()
+    .copied()
+    {
         if let Some(prefix) = s.strip_suffix(suffix) {
             s = prefix;
             factor = multiplier;
@@ -138,7 +135,10 @@ fn number(raw: &str) -> Result<Q, String> {
         Some(Q::integer(s.parse().unwrap()))
     } else if let Some((a, b)) = s.split_once('.') {
         if digits(a) && digits(b) {
-            Some(Q::new(format!("{}{}", a, b).parse().unwrap(), 10i64.pow(b.len() as u32)))
+            Some(Q::new(
+                format!("{}{}", a, b).parse().unwrap(),
+                10i64.pow(b.len() as u32),
+            ))
         } else {
             None
         }
@@ -151,11 +151,18 @@ fn number(raw: &str) -> Result<Q, String> {
     } else {
         None
     };
-    value.map(|v| v * factor).ok_or_else(|| format!("invalid value {}", raw))
+    value
+        .map(|v| v * factor)
+        .ok_or_else(|| format!("invalid value {}", raw))
 }
 
 fn valid_node(s: &str) -> bool {
-    s == "0" || !s.is_empty() && s.len() <= 8 && s.as_bytes()[0].is_ascii_lowercase() && s.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    s == "0"
+        || !s.is_empty()
+            && s.len() <= 8
+            && s.as_bytes()[0].is_ascii_lowercase()
+            && s.bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
 #[derive(Clone)]
@@ -163,7 +170,7 @@ struct Element {
     name: String,
     nodes: Vec<String>,
     reference: String,
-    value: Q
+    value: Q,
 }
 
 impl Element {
@@ -189,13 +196,13 @@ impl Element {
 }
 
 struct Union {
-    parent: BTreeMap<String, String>
+    parent: BTreeMap<String, String>,
 }
 
 impl Union {
     fn new(nodes: Vec<String>) -> Self {
         Self {
-            parent: nodes.into_iter().map(|n| (n.clone(), n)).collect()
+            parent: nodes.into_iter().map(|n| (n.clone(), n)).collect(),
         }
     }
 
@@ -240,11 +247,15 @@ fn reach(start: &str, edges: &[(String, String)]) -> BTreeSet<String> {
 
 fn solve(a: &[Vec<Q>], b: &[Q]) -> Option<Vec<Q>> {
     let n = b.len();
-    let mut m: Vec<Vec<Q>> = a.iter().zip(b).map(|(row, &v)| {
-        let mut r = row.clone();
-        r.push(v);
-        r
-    }).collect();
+    let mut m: Vec<Vec<Q>> = a
+        .iter()
+        .zip(b)
+        .map(|(row, &v)| {
+            let mut r = row.clone();
+            r.push(v);
+            r
+        })
+        .collect();
     for k in 0..n {
         let r = (k..n).find(|&i| m[i][k].p != 0)?;
         m.swap(k, r);
@@ -270,23 +281,34 @@ struct Equations {
     labels: Vec<String>,
     index: BTreeMap<String, usize>,
     a: Vec<Vec<Q>>,
-    b: Vec<Q>
+    b: Vec<Q>,
 }
 
 impl Equations {
     fn new(elements: &[Element]) -> Self {
-        let nodes: Vec<String> = elements.iter().flat_map(|e| e.nodes.iter().cloned()).filter(|n| n != "0").collect::<BTreeSet<_>>().into_iter().collect();
+        let nodes: Vec<String> = elements
+            .iter()
+            .flat_map(|e| e.nodes.iter().cloned())
+            .filter(|n| n != "0")
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         let sources: Vec<Element> = elements.iter().filter(|e| e.voltage()).cloned().collect();
         let mut labels = nodes.clone();
         labels.extend(sources.iter().map(|e| e.name.clone()));
-        let index = labels.iter().cloned().enumerate().map(|(i, n)| (n, i)).collect();
+        let index = labels
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, n)| (n, i))
+            .collect();
         let mut eq = Self {
             a: vec![vec![ZERO; labels.len()]; labels.len()],
             b: vec![ZERO; labels.len()],
             nodes,
             sources,
             labels,
-            index
+            index,
         };
         for e in elements {
             let (a, b, w) = (e.a(), e.b(), e.value);
@@ -322,9 +344,9 @@ impl Equations {
                         b'E' => {
                             eq.add(&e.name, &e.nodes[2], -w);
                             eq.add(&e.name, &e.nodes[3], w);
-                        },
+                        }
                         b'H' => eq.add(&e.name, &e.reference, -w),
-                        _ => unreachable!()
+                        _ => unreachable!(),
                     }
                 }
             }
@@ -371,11 +393,7 @@ impl Equations {
 
     fn alone(&self, e: &Element, unit: bool) -> Vec<Q> {
         let mut rhs = vec![ZERO; self.labels.len()];
-        let w = if unit {
-            ONE
-        } else {
-            e.value
-        };
+        let w = if unit { ONE } else { e.value };
         if e.kind() == b'V' {
             self.add_rhs(&mut rhs, &e.name, w);
         } else {
@@ -391,7 +409,7 @@ impl Equations {
             b'I' => e.value,
             b'G' => e.value * (self.v(y, &e.nodes[2]) - self.v(y, &e.nodes[3])),
             b'F' => e.value * y[self.index[&e.reference]],
-            _ => y[self.index[&e.name]]
+            _ => y[self.index[&e.name]],
         }
     }
 }
@@ -401,20 +419,29 @@ struct Resistor {
     name: String,
     a: String,
     b: String,
-    value: Q
+    value: Q,
 }
 
 struct Circuit {
-    elements: Vec<Element>
+    elements: Vec<Element>,
 }
 
 impl Circuit {
     fn nodes(&self) -> Vec<String> {
-        self.elements.iter().flat_map(|e| e.nodes.iter().cloned()).filter(|n| n != "0").collect::<BTreeSet<_>>().into_iter().collect()
+        self.elements
+            .iter()
+            .flat_map(|e| e.nodes.iter().cloned())
+            .filter(|n| n != "0")
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     fn get(&self, name: &str) -> Result<usize, String> {
-        self.elements.iter().position(|e| e.name == name).ok_or_else(|| format!("unknown element {}", name))
+        self.elements
+            .iter()
+            .position(|e| e.name == name)
+            .ok_or_else(|| format!("unknown element {}", name))
     }
 
     fn node(&self, name: &str) -> Result<(), String> {
@@ -426,8 +453,19 @@ impl Circuit {
     }
 
     fn floating(&self) -> Vec<String> {
-        let reached = reach("0", &self.elements.iter().filter(|e| b"RVEH".contains(&e.kind())).map(|e| (e.a().into(), e.b().into())).collect::<Vec<_>>());
-        self.nodes().into_iter().filter(|n| !reached.contains(n)).collect()
+        let reached = reach(
+            "0",
+            &self
+                .elements
+                .iter()
+                .filter(|e| b"RVEH".contains(&e.kind()))
+                .map(|e| (e.a().into(), e.b().into()))
+                .collect::<Vec<_>>(),
+        );
+        self.nodes()
+            .into_iter()
+            .filter(|n| !reached.contains(n))
+            .collect()
     }
 
     fn loops(&self) -> Vec<String> {
@@ -476,22 +514,19 @@ impl Circuit {
         if self.elements.iter().any(|e| e.name == name) {
             return Err(format!("duplicate element {}", name));
         }
-        let nodes = &w[1..if b"EG".contains(&kind) {
-            5
-        } else {
-            3
-        }];
+        let nodes = &w[1..if b"EG".contains(&kind) { 5 } else { 3 }];
         for &n in nodes {
             if !valid_node(n) {
                 return Err(format!("invalid node {}", n));
             }
         }
-        let reference = if b"FH".contains(&kind) {
-            w[3]
-        } else {
-            ""
-        };
-        if b"FH".contains(&kind) && !self.elements.iter().any(|e| e.name == reference && e.kind() == b'V') {
+        let reference = if b"FH".contains(&kind) { w[3] } else { "" };
+        if b"FH".contains(&kind)
+            && !self
+                .elements
+                .iter()
+                .any(|e| e.name == reference && e.kind() == b'V')
+        {
             return Err(format!("unknown voltage source {}", reference));
         }
         let value = number(w[w.len() - 1])?;
@@ -502,7 +537,7 @@ impl Circuit {
             name: name.into(),
             nodes: nodes.iter().map(|s| s.to_string()).collect(),
             reference: reference.into(),
-            value
+            value,
         });
         Ok(())
     }
@@ -521,13 +556,28 @@ impl Circuit {
         if x == y {
             return vec![format!("Req = {}", ZERO.value())];
         }
-        let edges: Vec<&Element> = self.elements.iter().filter(|e| e.kind() == b'R' && u.root(e.a()) != u.root(e.b())).collect();
-        let connected = reach(&x, &edges.iter().map(|e| (u.root(e.a()), u.root(e.b()))).collect::<Vec<_>>());
+        let edges: Vec<&Element> = self
+            .elements
+            .iter()
+            .filter(|e| e.kind() == b'R' && u.root(e.a()) != u.root(e.b()))
+            .collect();
+        let connected = reach(
+            &x,
+            &edges
+                .iter()
+                .map(|e| (u.root(e.a()), u.root(e.b())))
+                .collect::<Vec<_>>(),
+        );
         if !connected.contains(&y) {
             return vec!["Req = INFINITE".into()];
         }
         let groups: Vec<String> = connected.iter().filter(|n| *n != &y).cloned().collect();
-        let index: BTreeMap<String, usize> = groups.iter().cloned().enumerate().map(|(i, n)| (n, i)).collect();
+        let index: BTreeMap<String, usize> = groups
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, n)| (n, i))
+            .collect();
         let mut matrix = vec![vec![ZERO; groups.len()]; groups.len()];
         let mut rhs = vec![ZERO; groups.len()];
         for e in edges {
@@ -537,7 +587,10 @@ impl Circuit {
                 continue;
             }
             let g = ONE / e.value;
-            for (r, c, v) in [(&p, &p, g), (&q, &q, g), (&p, &q, -g), (&q, &p, -g)].iter().copied() {
+            for (r, c, v) in [(&p, &p, g), (&q, &q, g), (&p, &q, -g), (&q, &p, -g)]
+                .iter()
+                .copied()
+            {
                 if r != &y && c != &y {
                     let i = index[r];
                     let j = index[c];
@@ -546,20 +599,34 @@ impl Circuit {
             }
         }
         rhs[index[&x]] = ONE;
-        vec![format!("Req = {}", solve(&matrix, &rhs).unwrap()[index[&x]].value())]
+        vec![format!(
+            "Req = {}",
+            solve(&matrix, &rhs).unwrap()[index[&x]].value()
+        )]
     }
 
     fn reduce(&self, a: &str, b: &str) -> Vec<String> {
         if a == b {
             return vec![format!("Req = {}", ZERO.value())];
         }
-        let mut list: Vec<Resistor> = self.elements.iter().filter(|e| e.kind() == b'R').map(|e| Resistor {
-            name: e.name.clone(),
-            a: e.a().into(),
-            b: e.b().into(),
-            value: e.value
-        }).collect();
-        let connected = reach(a, &list.iter().map(|r| (r.a.clone(), r.b.clone())).collect::<Vec<_>>());
+        let mut list: Vec<Resistor> = self
+            .elements
+            .iter()
+            .filter(|e| e.kind() == b'R')
+            .map(|e| Resistor {
+                name: e.name.clone(),
+                a: e.a().into(),
+                b: e.b().into(),
+                value: e.value,
+            })
+            .collect();
+        let connected = reach(
+            a,
+            &list
+                .iter()
+                .map(|r| (r.a.clone(), r.b.clone()))
+                .collect::<Vec<_>>(),
+        );
         if !connected.contains(b) {
             return vec!["Req = INFINITE".into()];
         }
@@ -576,7 +643,10 @@ impl Circuit {
                 *degree.entry(r.a.clone()).or_insert(0) += 1;
                 *degree.entry(r.b.clone()).or_insert(0) += 1;
             }
-            if let Some((p, _)) = degree.iter().find(|(n, d)| n.as_str() != a && n.as_str() != b && **d == 1) {
+            if let Some((p, _)) = degree
+                .iter()
+                .find(|(n, d)| n.as_str() != a && n.as_str() != b && **d == 1)
+            {
                 let i = list.iter().position(|r| &r.a == p || &r.b == p).unwrap();
                 out.push(format!("remove {}", list.remove(i).name));
                 continue;
@@ -596,10 +666,18 @@ impl Circuit {
             let node = if parallel {
                 None
             } else {
-                degree.iter().find(|(n, d)| n.as_str() != a && n.as_str() != b && **d == 2).map(|(n, _)| n.clone())
+                degree
+                    .iter()
+                    .find(|(n, d)| n.as_str() != a && n.as_str() != b && **d == 2)
+                    .map(|(n, _)| n.clone())
             };
             if let Some(p) = &node {
-                let indices: Vec<usize> = list.iter().enumerate().filter(|(_, r)| &r.a == p || &r.b == p).map(|(i, _)| i).collect();
+                let indices: Vec<usize> = list
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| &r.a == p || &r.b == p)
+                    .map(|(i, _)| i)
+                    .collect();
                 pair = Some((indices[0], indices[1]));
             }
             let Some((i, j)) = pair else {
@@ -627,13 +705,16 @@ impl Circuit {
                 } else {
                     y.b.clone()
                 },
-                value
+                value,
             };
-            out.push(format!("{} = {} {} {} = {}", r.name, x.name, if parallel {
-                "||"
-            } else {
-                "+"
-            }, y.name, value.value()));
+            out.push(format!(
+                "{} = {} {} {} = {}",
+                r.name,
+                x.name,
+                if parallel { "||" } else { "+" },
+                y.name,
+                value.value()
+            ));
             list.remove(j);
             list.remove(i);
             list.push(r);
@@ -651,10 +732,11 @@ impl Circuit {
         let count = match c {
             ".OP" | ".POWER" | ".MATRIX" | ".CHECK" | ".CLEAR" | ".NODES" | ".PRINT" => 0,
             ".CURRENT" | ".KCL" | ".SENS" | ".SUPERPOSITION" | ".DELETE" => 1,
-            ".VOLTAGE" | ".THEVENIN" | ".NORTON" | ".MAXPOWER" | ".TF" | ".REQ" | ".REDUCE" | ".ALTER" => 2,
+            ".VOLTAGE" | ".THEVENIN" | ".NORTON" | ".MAXPOWER" | ".TF" | ".REQ" | ".REDUCE"
+            | ".ALTER" => 2,
             ".ZPARAM" => 4,
             ".SWEEP" => 5,
-            _ => return Err(format!("unknown command {}", c))
+            _ => return Err(format!("unknown command {}", c)),
         };
         if w.len() != count + 1 {
             return Err(format!("wrong argument count for {}", c));
@@ -665,30 +747,56 @@ impl Circuit {
                 self.elements.clear();
                 return Ok(vec![format!("cleared {} elements", n)]);
             }
-            ".PRINT" => return Ok(if self.elements.is_empty() {
-                vec!["empty netlist".into()]
-            } else {
-                self.elements.iter().map(|e| {
-                    let mut fields = vec![e.name.clone()];
-                    fields.extend(e.nodes.clone());
-                    if !e.reference.is_empty() {
-                        fields.push(e.reference.clone());
-                    }
-                    fields.push(e.value.text());
-                    fields.join(" ")
-                }).collect()
-            }),
+            ".PRINT" => {
+                return Ok(if self.elements.is_empty() {
+                    vec!["empty netlist".into()]
+                } else {
+                    self.elements
+                        .iter()
+                        .map(|e| {
+                            let mut fields = vec![e.name.clone()];
+                            fields.extend(e.nodes.clone());
+                            if !e.reference.is_empty() {
+                                fields.push(e.reference.clone());
+                            }
+                            fields.push(e.value.text());
+                            fields.join(" ")
+                        })
+                        .collect()
+                });
+            }
             ".NODES" => {
-                let ns = self.elements.iter().flat_map(|e| e.nodes.iter().cloned()).collect::<BTreeSet<_>>();
+                let ns = self
+                    .elements
+                    .iter()
+                    .flat_map(|e| e.nodes.iter().cloned())
+                    .collect::<BTreeSet<_>>();
                 return Ok(if ns.is_empty() {
                     vec!["no nodes".into()]
                 } else {
-                    ns.into_iter().map(|n| format!("{}: {}", n, self.elements.iter().filter(|e| e.nodes.contains(&n)).map(|e| e.name.as_str()).collect::<Vec<_>>().join(" "))).collect()
+                    ns.into_iter()
+                        .map(|n| {
+                            format!(
+                                "{}: {}",
+                                n,
+                                self.elements
+                                    .iter()
+                                    .filter(|e| e.nodes.contains(&n))
+                                    .map(|e| e.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            )
+                        })
+                        .collect()
                 });
             }
             ".DELETE" => {
                 let i = self.get(w[1])?;
-                if let Some(e) = self.elements.iter().find(|e| b"FH".contains(&e.kind()) && e.reference == w[1]) {
+                if let Some(e) = self
+                    .elements
+                    .iter()
+                    .find(|e| b"FH".contains(&e.kind()) && e.reference == w[1])
+                {
                     return Err(format!("{} is referenced by {}", w[1], e.name));
                 }
                 self.elements.remove(i);
@@ -702,7 +810,12 @@ impl Circuit {
                 }
                 let old = self.elements[i].value;
                 self.elements[i].value = v;
-                return Ok(vec![format!("altered {}: {} -> {}", w[1], old.text(), v.text())]);
+                return Ok(vec![format!(
+                    "altered {}: {} -> {}",
+                    w[1],
+                    old.text(),
+                    v.text()
+                )]);
             }
             ".CHECK" => {
                 let ns = self.nodes();
@@ -711,12 +824,26 @@ impl Circuit {
                 }
                 let mut out = Vec::new();
                 for n in ns {
-                    if self.elements.iter().map(|e| usize::from(e.a() == n) + usize::from(e.b() == n)).sum::<usize>() < 2 {
+                    if self
+                        .elements
+                        .iter()
+                        .map(|e| usize::from(e.a() == n) + usize::from(e.b() == n))
+                        .sum::<usize>()
+                        < 2
+                    {
                         out.push(format!("dangling node {}", n));
                     }
                 }
-                out.extend(self.floating().iter().map(|n| format!("floating node {}", n)));
-                out.extend(self.loops().iter().map(|n| format!("voltage source loop at {}", n)));
+                out.extend(
+                    self.floating()
+                        .iter()
+                        .map(|n| format!("floating node {}", n)),
+                );
+                out.extend(
+                    self.loops()
+                        .iter()
+                        .map(|n| format!("voltage source loop at {}", n)),
+                );
                 if out.is_empty() {
                     let eq = Equations::new(&self.elements);
                     if solve(&eq.a, &eq.b).is_none() {
@@ -764,11 +891,20 @@ impl Circuit {
                     let mut elements = self.elements.clone();
                     elements[i].value = x;
                     let eq = Equations::new(&elements);
-                    out.push(format!("{} = {}: {}", w[1], x.text(), solve(&eq.a, &eq.b).map_or("singular matrix".into(), |y| format!("V({}) = {}", w[5], eq.v(&y, w[5]).value()))));
+                    out.push(format!(
+                        "{} = {}: {}",
+                        w[1],
+                        x.text(),
+                        solve(&eq.a, &eq.b).map_or("singular matrix".into(), |y| format!(
+                            "V({}) = {}",
+                            w[5],
+                            eq.v(&y, w[5]).value()
+                        ))
+                    ));
                 }
                 return Ok(out);
             }
-            _ => ()
+            _ => (),
         }
         match c {
             ".CURRENT" => {
@@ -779,9 +915,11 @@ impl Circuit {
                 self.node(w[2])?;
             }
             ".KCL" | ".SENS" | ".SUPERPOSITION" => self.node(w[1])?,
-            ".ZPARAM" => for n in &w[1..] {
-                self.node(n)?;
-            },
+            ".ZPARAM" => {
+                for n in &w[1..] {
+                    self.node(n)?;
+                }
+            }
             ".TF" => {
                 self.node(w[1])?;
                 let e = &self.elements[self.get(w[2])?];
@@ -789,15 +927,29 @@ impl Circuit {
                     return Err(format!("not an independent source {}", e.name));
                 }
             }
-            _ => ()
+            _ => (),
         }
         self.structure()?;
         let eq = Equations::new(&self.elements);
         if c == ".MATRIX" {
-            let unknowns: Vec<String> = eq.nodes.iter().map(|n| format!("V({})", n)).chain(eq.sources.iter().map(|e| format!("I({})", e.name))).collect();
+            let unknowns: Vec<String> = eq
+                .nodes
+                .iter()
+                .map(|n| format!("V({})", n))
+                .chain(eq.sources.iter().map(|e| format!("I({})", e.name)))
+                .collect();
             let mut out = vec![format!("unknowns: {}", unknowns.join(" "))];
             for i in 0..eq.labels.len() {
-                out.push(format!("{}: {} | {}", eq.labels[i], eq.a[i].iter().map(|q| q.text()).collect::<Vec<_>>().join(" "), eq.b[i].text()));
+                out.push(format!(
+                    "{}: {} | {}",
+                    eq.labels[i],
+                    eq.a[i]
+                        .iter()
+                        .map(|q| q.text())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    eq.b[i].text()
+                ));
             }
             return Ok(out);
         }
@@ -806,11 +958,28 @@ impl Circuit {
         let mut out = Vec::new();
         match c {
             ".OP" => {
-                out.extend(eq.nodes.iter().map(|n| format!("V({}) = {}", n, v(n).value())));
-                out.extend(eq.sources.iter().map(|e| format!("I({}) = {}", e.name, eq.current(e, &y).value())));
+                out.extend(
+                    eq.nodes
+                        .iter()
+                        .map(|n| format!("V({}) = {}", n, v(n).value())),
+                );
+                out.extend(
+                    eq.sources
+                        .iter()
+                        .map(|e| format!("I({}) = {}", e.name, eq.current(e, &y).value())),
+                );
             }
-            ".CURRENT" => out.push(format!("I({}) = {}", w[1], eq.current(&self.elements[self.get(w[1])?], &y).value())),
-            ".VOLTAGE" => out.push(format!("V({},{}) = {}", w[1], w[2], (v(w[1]) - v(w[2])).value())),
+            ".CURRENT" => out.push(format!(
+                "I({}) = {}",
+                w[1],
+                eq.current(&self.elements[self.get(w[1])?], &y).value()
+            )),
+            ".VOLTAGE" => out.push(format!(
+                "V({},{}) = {}",
+                w[1],
+                w[2],
+                (v(w[1]) - v(w[2])).value()
+            )),
             ".POWER" => {
                 let (mut absorbed, mut delivered, mut total) = (ZERO, ZERO, ZERO);
                 for e in &self.elements {
@@ -859,14 +1028,17 @@ impl Circuit {
                     ".THEVENIN" => {
                         out.push(format!("Vth = {}", voltage.value()));
                         out.push(format!("Rth = {}", resistance.value()));
-                    },
+                    }
                     ".NORTON" => {
                         out.push(format!("In = {}", (voltage / resistance).value()));
                         out.push(format!("Rn = {}", resistance.value()));
-                    },
+                    }
                     _ => {
                         out.push(format!("RL = {}", resistance.value()));
-                        out.push(format!("Pmax = {}", (voltage * voltage / (Q::integer(4) * resistance)).value()));
+                        out.push(format!(
+                            "Pmax = {}",
+                            (voltage * voltage / (Q::integer(4) * resistance)).value()
+                        ));
                     }
                 }
             }
@@ -876,48 +1048,72 @@ impl Circuit {
                 out.push(format!("gain = {}", eq.v(&z, w[1]).value()));
                 if e.kind() == b'V' {
                     let i = z[eq.index[&e.name]];
-                    out.push(format!("input resistance = {}", if i.p == 0 {
-                        "INFINITE".into()
-                    } else {
-                        (-ONE / i).value()
-                    }));
-                } else {
-                    out.push(format!("input resistance = {}", (eq.v(&z, e.b()) - eq.v(&z, e.a())).value()));
-                }
-                out.push(format!("output resistance = {}", eq.v(&eq.injection(w[1], "0"), w[1]).value()));
-            }
-            ".SENS" => for e in &self.elements {
-                let mut d = vec![ZERO; eq.labels.len()];
-                match e.kind() {
-                    b'R' => {
-                        let t = eq.current(e, &y) / e.value;
-                        eq.add_rhs(&mut d, e.a(), t);
-                        eq.add_rhs(&mut d, e.b(), -t);
-                    },
-                    b'I' => {
-                        eq.add_rhs(&mut d, e.a(), -ONE);
-                        eq.add_rhs(&mut d, e.b(), ONE);
-                    },
-                    b'G' | b'F' => {
-                        let t = if e.kind() == b'G' {
-                            v(&e.nodes[2]) - v(&e.nodes[3])
+                    out.push(format!(
+                        "input resistance = {}",
+                        if i.p == 0 {
+                            "INFINITE".into()
                         } else {
-                            y[eq.index[&e.reference]]
-                        };
-                        eq.add_rhs(&mut d, e.a(), -t);
-                        eq.add_rhs(&mut d, e.b(), t);
-                    },
-                    b'V' => eq.add_rhs(&mut d, &e.name, ONE),
-                    b'E' => eq.add_rhs(&mut d, &e.name, v(&e.nodes[2]) - v(&e.nodes[3])),
-                    b'H' => eq.add_rhs(&mut d, &e.name, y[eq.index[&e.reference]]),
-                    _ => unreachable!()
+                            (-ONE / i).value()
+                        }
+                    ));
+                } else {
+                    out.push(format!(
+                        "input resistance = {}",
+                        (eq.v(&z, e.b()) - eq.v(&z, e.a())).value()
+                    ));
                 }
-                out.push(format!("dV({})/d{} = {}", w[1], e.name, eq.v(&solve(&eq.a, &d).unwrap(), w[1]).value()));
-            },
+                out.push(format!(
+                    "output resistance = {}",
+                    eq.v(&eq.injection(w[1], "0"), w[1]).value()
+                ));
+            }
+            ".SENS" => {
+                for e in &self.elements {
+                    let mut d = vec![ZERO; eq.labels.len()];
+                    match e.kind() {
+                        b'R' => {
+                            let t = eq.current(e, &y) / e.value;
+                            eq.add_rhs(&mut d, e.a(), t);
+                            eq.add_rhs(&mut d, e.b(), -t);
+                        }
+                        b'I' => {
+                            eq.add_rhs(&mut d, e.a(), -ONE);
+                            eq.add_rhs(&mut d, e.b(), ONE);
+                        }
+                        b'G' | b'F' => {
+                            let t = if e.kind() == b'G' {
+                                v(&e.nodes[2]) - v(&e.nodes[3])
+                            } else {
+                                y[eq.index[&e.reference]]
+                            };
+                            eq.add_rhs(&mut d, e.a(), -t);
+                            eq.add_rhs(&mut d, e.b(), t);
+                        }
+                        b'V' => eq.add_rhs(&mut d, &e.name, ONE),
+                        b'E' => eq.add_rhs(&mut d, &e.name, v(&e.nodes[2]) - v(&e.nodes[3])),
+                        b'H' => eq.add_rhs(&mut d, &e.name, y[eq.index[&e.reference]]),
+                        _ => unreachable!(),
+                    }
+                    out.push(format!(
+                        "dV({})/d{} = {}",
+                        w[1],
+                        e.name,
+                        eq.v(&solve(&eq.a, &d).unwrap(), w[1]).value()
+                    ));
+                }
+            }
             ".ZPARAM" => {
                 let z1 = eq.injection(w[1], w[2]);
                 let z2 = eq.injection(w[3], w[4]);
-                for (name, z, a, b) in [("z11", &z1, w[1], w[2]), ("z12", &z2, w[1], w[2]), ("z21", &z1, w[3], w[4]), ("z22", &z2, w[3], w[4])].iter().copied() {
+                for (name, z, a, b) in [
+                    ("z11", &z1, w[1], w[2]),
+                    ("z12", &z2, w[1], w[2]),
+                    ("z21", &z1, w[3], w[4]),
+                    ("z22", &z2, w[3], w[4]),
+                ]
+                .iter()
+                .copied()
+                {
                     out.push(format!("{} = {}", name, (eq.v(z, a) - eq.v(z, b)).value()));
                 }
             }
@@ -930,7 +1126,7 @@ impl Circuit {
                 }
                 out.push(format!("total: V({}) = {}", w[1], total.value()));
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
         Ok(out)
     }
@@ -940,7 +1136,7 @@ fn main() {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input).unwrap();
     let mut circuit = Circuit {
-        elements: Vec::new()
+        elements: Vec::new(),
     };
     for (i, line) in input.lines().enumerate() {
         if line == ".END" {
@@ -956,10 +1152,12 @@ fn main() {
             circuit.add(&words).map(|_| Vec::new())
         };
         match result {
-            Ok(lines) => for line in lines {
-                println!("{}", line);
-            },
-            Err(reason) => println!("error: line {}: {}", i + 1, reason)
+            Ok(lines) => {
+                for line in lines {
+                    println!("{}", line);
+                }
+            }
+            Err(reason) => println!("error: line {}: {}", i + 1, reason),
         }
     }
 }

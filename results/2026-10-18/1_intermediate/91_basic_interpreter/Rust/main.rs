@@ -25,11 +25,19 @@ enum Value {
 
 impl Value {
     fn number(&self) -> i64 {
-        if let Value::Integer(n) = self { *n } else { unreachable!() }
+        if let Value::Integer(n) = self {
+            *n
+        } else {
+            unreachable!()
+        }
     }
 
     fn text(&self) -> &str {
-        if let Value::Text(s) = self { s } else { unreachable!() }
+        if let Value::Text(s) = self {
+            s
+        } else {
+            unreachable!()
+        }
     }
 
     fn kind(&self) -> char {
@@ -64,7 +72,12 @@ struct Expression {
 
 impl Expression {
     fn new(kind: &str, data_type: char, value: Value) -> Self {
-        Self { kind: kind.into(), data_type, value, args: Vec::new() }
+        Self {
+            kind: kind.into(),
+            data_type,
+            value,
+            args: Vec::new(),
+        }
     }
 
     fn operation(kind: &str, data_type: char, op: &str, args: Vec<Self>) -> Self {
@@ -145,8 +158,7 @@ fn name_type(name: &str) -> char {
 
 fn signature(name: &str, args: &str) -> bool {
     match name {
-        "ABS" | "SGN" | "INT" | "SQR" | "RND" | "CHR$" | "STR$"
-            => args == "I",
+        "ABS" | "SGN" | "INT" | "SQR" | "RND" | "CHR$" | "STR$" => args == "I",
         "LEN" | "ASC" | "VAL" => args == "S",
         "LEFT$" | "RIGHT$" => args == "SI",
         "MID$" => args == "SI" || args == "SII",
@@ -158,9 +170,20 @@ fn signature(name: &str, args: &str) -> bool {
 fn function(name: &str) -> bool {
     matches!(
         name,
-        "ABS" | "SGN" | "INT" | "SQR" | "RND" | "LEN" | "ASC"
-            | "VAL" | "CHR$" | "STR$" | "LEFT$" | "RIGHT$"
-            | "MID$" | "INSTR"
+        "ABS"
+            | "SGN"
+            | "INT"
+            | "SQR"
+            | "RND"
+            | "LEN"
+            | "ASC"
+            | "VAL"
+            | "CHR$"
+            | "STR$"
+            | "LEFT$"
+            | "RIGHT$"
+            | "MID$"
+            | "INSTR"
     )
 }
 
@@ -175,8 +198,12 @@ fn tokenize(source: &str) -> Result<Vec<Token>> {
         } else if c == b'"' {
             let start = p;
             p += 1;
-            while p < bytes.len() && bytes[p] != b'"' { p += 1; }
-            if p == bytes.len() { return syntax(); }
+            while p < bytes.len() && bytes[p] != b'"' {
+                p += 1;
+            }
+            if p == bytes.len() {
+                return syntax();
+            }
             tokens.push(Token {
                 kind: 'S',
                 text: source[start..=p].into(),
@@ -185,10 +212,14 @@ fn tokenize(source: &str) -> Result<Vec<Token>> {
             p += 1;
         } else if c.is_ascii_digit() {
             let start = p;
-            while p < bytes.len() && bytes[p].is_ascii_digit() { p += 1; }
+            while p < bytes.len() && bytes[p].is_ascii_digit() {
+                p += 1;
+            }
             let word = &source[start..p];
             let n = word.parse::<i64>().map_err(|_| Failure::Syntax)?;
-            if n > 32767 { return syntax(); }
+            if n > 32767 {
+                return syntax();
+            }
             tokens.push(Token {
                 kind: 'I',
                 text: word.into(),
@@ -207,7 +238,9 @@ fn tokenize(source: &str) -> Result<Vec<Token>> {
             while p < bytes.len() && (bytes[p].is_ascii_uppercase() || bytes[p].is_ascii_digit()) {
                 p += 1;
             }
-            if p < bytes.len() && bytes[p] == b'$' { p += 1; }
+            if p < bytes.len() && bytes[p] == b'$' {
+                p += 1;
+            }
             let word = source[start..p].to_owned();
             tokens.push(Token {
                 kind: 'W',
@@ -215,13 +248,14 @@ fn tokenize(source: &str) -> Result<Vec<Token>> {
                 value: Value::Text(word),
             });
         } else {
-            let word = if p + 1 < bytes.len() &&
-                matches!(&source[p..p + 2], "<>" | "<=" | ">=") {
+            let word = if p + 1 < bytes.len() && matches!(&source[p..p + 2], "<>" | "<=" | ">=") {
                 &source[p..p + 2]
             } else {
                 &source[p..p + 1]
             };
-            if !b"+-*/^=<>() ,;:".contains(&c) { return syntax(); }
+            if !b"+-*/^=<>() ,;:".contains(&c) {
+                return syntax();
+            }
             tokens.push(Token {
                 kind: 'P',
                 text: word.into(),
@@ -230,7 +264,11 @@ fn tokenize(source: &str) -> Result<Vec<Token>> {
             p += word.len();
         }
     }
-    tokens.push(Token { kind: 'E', text: String::new(), value: Value::Text(String::new()) });
+    tokens.push(Token {
+        kind: 'E',
+        text: String::new(),
+        value: Value::Text(String::new()),
+    });
     Ok(tokens)
 }
 
@@ -250,7 +288,9 @@ impl Parser<'_> {
     }
 
     fn take(&mut self, text: &str) -> bool {
-        if !self.at(text) { return false; }
+        if !self.at(text) {
+            return false;
+        }
         self.position += 1;
         true
     }
@@ -260,7 +300,9 @@ impl Parser<'_> {
     }
 
     fn number(&mut self) -> Result<i64> {
-        if self.current().kind != 'I' { return syntax(); }
+        if self.current().kind != 'I' {
+            return syntax();
+        }
         let result = self.current().value.number();
         self.position += 1;
         Ok(result)
@@ -268,21 +310,26 @@ impl Parser<'_> {
 
     fn integer(&mut self, level: usize) -> Result<Expression> {
         let expr = self.expression(level)?;
-        if expr.data_type != 'I' { return syntax(); }
+        if expr.data_type != 'I' {
+            return syntax();
+        }
         Ok(expr)
     }
 
     fn target(&mut self) -> Result<Expression> {
         let token = self.current().clone();
-        if token.kind != 'W' || !variable(&token.text) { return syntax(); }
+        if token.kind != 'W' || !variable(&token.text) {
+            return syntax();
+        }
         self.position += 1;
-        let mut result = Expression::new(
-            "variable", name_type(&token.text), Value::Text(token.text),
-        );
+        let mut result =
+            Expression::new("variable", name_type(&token.text), Value::Text(token.text));
         if self.take("(") {
             result.kind = "array".into();
             result.args.push(self.integer(0)?);
-            if self.take(",") { result.args.push(self.integer(0)?); }
+            if self.take(",") {
+                result.args.push(self.integer(0)?);
+            }
             self.expect(")")?;
         }
         Ok(result)
@@ -299,7 +346,9 @@ impl Parser<'_> {
             self.expect(")")?;
             return Ok(result);
         }
-        if token.kind == 'W' && variable(&token.text) { return self.target(); }
+        if token.kind == 'W' && variable(&token.text) {
+            return self.target();
+        }
         if self.take("ERR") {
             return Ok(Expression::new("builtin", 'I', Value::Text("ERR".into())));
         }
@@ -310,12 +359,19 @@ impl Parser<'_> {
             self.position += 1;
             self.expect("(")?;
             let mut args = vec![self.expression(0)?];
-            while self.take(",") { args.push(self.expression(0)?); }
+            while self.take(",") {
+                args.push(self.expression(0)?);
+            }
             self.expect(")")?;
             let types: String = args.iter().map(|e| e.data_type).collect();
-            if !signature(&token.text, &types) { return syntax(); }
+            if !signature(&token.text, &types) {
+                return syntax();
+            }
             return Ok(Expression::operation(
-                "call", name_type(&token.text), &token.text, args,
+                "call",
+                name_type(&token.text),
+                &token.text,
+                args,
             ));
         }
         syntax()
@@ -323,12 +379,24 @@ impl Parser<'_> {
 
     fn expression(&mut self, level: usize) -> Result<Expression> {
         if level == 2 && self.take("NOT") {
-            return Ok(Expression::operation("unary", 'I', "NOT", vec![self.integer(2)?]));
+            return Ok(Expression::operation(
+                "unary",
+                'I',
+                "NOT",
+                vec![self.integer(2)?],
+            ));
         }
         if level == 6 && self.take("-") {
-            return Ok(Expression::operation("unary", 'I', "-", vec![self.integer(6)?]));
+            return Ok(Expression::operation(
+                "unary",
+                'I',
+                "-",
+                vec![self.integer(6)?],
+            ));
         }
-        if level == 8 { return self.primary(); }
+        if level == 8 {
+            return self.primary();
+        }
         let mut left = self.expression(level + 1)?;
         let operators: &[&str] = match level {
             0 => &["OR"],
@@ -344,56 +412,90 @@ impl Parser<'_> {
             self.position += 1;
             let right = self.expression(if level == 7 { 6 } else { level + 1 })?;
             if left.data_type != right.data_type
-                || (left.data_type == 'S' && level != 3 && op != "+") {
+                || (left.data_type == 'S' && level != 3 && op != "+")
+            {
                 return syntax();
             }
             left = Expression::operation(
-                "binary", if level == 3 { 'I' } else { left.data_type },
-                &op, vec![left, right],
+                "binary",
+                if level == 3 { 'I' } else { left.data_type },
+                &op,
+                vec![left, right],
             );
-            if level == 7 { break; }
+            if level == 7 {
+                break;
+            }
         }
         Ok(left)
     }
 
     fn clause(&mut self) -> Result<Clause> {
         if self.current().kind == 'I' {
-            Ok(Clause { line: Some(self.number()?), body: Vec::new() })
+            Ok(Clause {
+                line: Some(self.number()?),
+                body: Vec::new(),
+            })
         } else {
-            Ok(Clause { line: None, body: self.list(true)? })
+            Ok(Clause {
+                line: None,
+                body: self.list(true)?,
+            })
         }
     }
 
     fn list(&mut self, in_clause: bool) -> Result<Vec<usize>> {
         let mut result = vec![self.statement(in_clause)?];
-        while self.take(":") { result.push(self.statement(in_clause)?); }
+        while self.take(":") {
+            result.push(self.statement(in_clause)?);
+        }
         Ok(result)
     }
 
     fn statement(&mut self, in_clause: bool) -> Result<usize> {
         let word = self.current().text.clone();
-        if in_clause && matches!(word.as_str(), "IF" | "FOR" | "NEXT" | "WHILE" | "WEND" | "DATA") {
+        if in_clause
+            && matches!(
+                word.as_str(),
+                "IF" | "FOR" | "NEXT" | "WHILE" | "WEND" | "DATA"
+            )
+        {
             return syntax();
         }
         let mut statement = Statement::new(&word);
-        if self.take("REM") || self.take("RETURN") || self.take("WEND")
-            || self.take("END") || self.take("STOP") {
+        if self.take("REM")
+            || self.take("RETURN")
+            || self.take("WEND")
+            || self.take("END")
+            || self.take("STOP")
+        {
             return Ok(self.store(statement));
         }
         if self.take("PRINT") {
             let mut last_value = false;
             while self.current().kind != 'E' && !self.at(":") && !self.at("ELSE") {
                 if self.take(";") {
-                    statement.items.push(PrintItem { kind: ";".into(), expression: None });
+                    statement.items.push(PrintItem {
+                        kind: ";".into(),
+                        expression: None,
+                    });
                     last_value = false;
                 } else if self.take(",") {
-                    statement.items.push(PrintItem { kind: ",".into(), expression: None });
+                    statement.items.push(PrintItem {
+                        kind: ",".into(),
+                        expression: None,
+                    });
                     last_value = false;
                 } else {
-                    let kind = if self.at("TAB") { "TAB" } else if self.at("SPC") {
+                    let kind = if self.at("TAB") {
+                        "TAB"
+                    } else if self.at("SPC") {
                         "SPC"
-                    } else { "value" };
-                    if kind == "value" && last_value { return syntax(); }
+                    } else {
+                        "value"
+                    };
+                    if kind == "value" && last_value {
+                        return syntax();
+                    }
                     let expression = if kind == "value" {
                         self.expression(0)?
                     } else {
@@ -404,7 +506,8 @@ impl Parser<'_> {
                         value
                     };
                     statement.items.push(PrintItem {
-                        kind: kind.into(), expression: Some(expression),
+                        kind: kind.into(),
+                        expression: Some(expression),
                     });
                     last_value = kind == "value";
                 }
@@ -414,9 +517,13 @@ impl Parser<'_> {
         if self.take("INPUT") || self.take("READ") || self.take("DIM") {
             loop {
                 let target = self.target()?;
-                if word == "DIM" && target.kind != "array" { return syntax(); }
+                if word == "DIM" && target.kind != "array" {
+                    return syntax();
+                }
                 statement.targets.push(target);
-                if !self.take(",") { break; }
+                if !self.take(",") {
+                    break;
+                }
             }
             return Ok(self.store(statement));
         }
@@ -433,7 +540,9 @@ impl Parser<'_> {
                 } else {
                     token.value
                 });
-                if !self.take(",") { break; }
+                if !self.take(",") {
+                    break;
+                }
             }
             return Ok(self.store(statement));
         }
@@ -441,8 +550,12 @@ impl Parser<'_> {
             statement.expression = Some(self.integer(0)?);
             self.expect("THEN")?;
             statement.clauses.push(self.clause()?);
-            if self.take("ELSE") { statement.clauses.push(self.clause()?); }
-            if self.current().kind != 'E' { return syntax(); }
+            if self.take("ELSE") {
+                statement.clauses.push(self.clause()?);
+            }
+            if self.current().kind != 'E' {
+                return syntax();
+            }
             return Ok(self.store(statement));
         }
         if self.take("GOTO") || self.take("GOSUB") {
@@ -464,7 +577,9 @@ impl Parser<'_> {
                 };
                 loop {
                     statement.numbers.push(self.number()?);
-                    if !self.take(",") { break; }
+                    if !self.take(",") {
+                        break;
+                    }
                 }
             }
             return Ok(self.store(statement));
@@ -519,8 +634,9 @@ impl Parser<'_> {
         statement.target = Some(self.target()?);
         self.expect("=")?;
         statement.expression = Some(self.expression(0)?);
-        if statement.target.as_ref().unwrap().data_type !=
-            statement.expression.as_ref().unwrap().data_type {
+        if statement.target.as_ref().unwrap().data_type
+            != statement.expression.as_ref().unwrap().data_type
+        {
             return syntax();
         }
         Ok(self.store(statement))
@@ -534,7 +650,9 @@ impl Parser<'_> {
 
     fn parse(&mut self) -> Result<Vec<usize>> {
         let list = self.list(false)?;
-        if self.current().kind != 'E' { return syntax(); }
+        if self.current().kind != 'E' {
+            return syntax();
+        }
         Ok(list)
     }
 }
@@ -577,11 +695,24 @@ struct Machine {
 impl Machine {
     fn new(inputs: Vec<String>) -> Self {
         Self {
-            inputs, program: Vec::new(), vars: HashMap::new(),
-            arrays: HashMap::new(), stack: Vec::new(), entries: HashMap::new(),
-            sequence: Vec::new(), data: Vec::new(), data_pos: 0, input_pos: 0,
-            random: 1, handler: 0, handling: false, remembered: None,
-            err: 0, erl: 0, buffer: String::new(), output: Vec::new(),
+            inputs,
+            program: Vec::new(),
+            vars: HashMap::new(),
+            arrays: HashMap::new(),
+            stack: Vec::new(),
+            entries: HashMap::new(),
+            sequence: Vec::new(),
+            data: Vec::new(),
+            data_pos: 0,
+            input_pos: 0,
+            random: 1,
+            handler: 0,
+            handling: false,
+            remembered: None,
+            err: 0,
+            erl: 0,
+            buffer: String::new(),
+            output: Vec::new(),
         }
     }
 
@@ -592,18 +723,27 @@ impl Machine {
     }
 
     fn message(&mut self, text: String) {
-        if !self.buffer.is_empty() { self.end_line(); }
+        if !self.buffer.is_empty() {
+            self.end_line();
+        }
         self.output.push(text);
     }
 
     fn checked(n: i64) -> Result<i64> {
-        if !(-32768..=32767).contains(&n) { fault("OVERFLOW") } else { Ok(n) }
+        if !(-32768..=32767).contains(&n) {
+            fault("OVERFLOW")
+        } else {
+            Ok(n)
+        }
     }
 
     fn get(&self, name: &str) -> Value {
         self.vars.get(name).cloned().unwrap_or_else(|| {
-            if name_type(name) == 'S' { Value::Text(String::new()) }
-            else { Value::Integer(0) }
+            if name_type(name) == 'S' {
+                Value::Text(String::new())
+            } else {
+                Value::Integer(0)
+            }
         })
     }
 
@@ -611,16 +751,23 @@ impl Machine {
         let size = bounds.iter().fold(1_usize, |a, b| a * (*b as usize + 1));
         let initial = if name_type(name) == 'S' {
             Value::Text(String::new())
-        } else { Value::Integer(0) };
-        self.arrays.insert(name.into(), BasicArray {
-            bounds: bounds.to_vec(),
-            values: vec![initial; size],
-        });
+        } else {
+            Value::Integer(0)
+        };
+        self.arrays.insert(
+            name.into(),
+            BasicArray {
+                bounds: bounds.to_vec(),
+                values: vec![initial; size],
+            },
+        );
     }
 
     fn address(&mut self, target: &Expression) -> Result<(String, Option<usize>)> {
         let name = target.value.text().to_owned();
-        if target.kind == "variable" { return Ok((name, None)); }
+        if target.kind == "variable" {
+            return Ok((name, None));
+        }
         let mut indices = Vec::new();
         for index in &target.args {
             indices.push(self.evaluate(index)?.number());
@@ -629,7 +776,9 @@ impl Machine {
             self.declare(&name, &vec![10; indices.len()]);
         }
         let array = self.arrays.get(&name).unwrap();
-        if indices.len() != array.bounds.len() { return fault("SUBSCRIPT OUT OF RANGE"); }
+        if indices.len() != array.bounds.len() {
+            return fault("SUBSCRIPT OUT OF RANGE");
+        }
         let mut position = 0_usize;
         for (i, value) in indices.iter().enumerate() {
             if *value < 0 || *value > array.bounds[i] {
@@ -650,38 +799,60 @@ impl Machine {
     fn store(&mut self, address: &(String, Option<usize>), value: Value) {
         match address.1 {
             Some(index) => self.arrays.get_mut(&address.0).unwrap().values[index] = value,
-            None => { self.vars.insert(address.0.clone(), value); }
+            None => {
+                self.vars.insert(address.0.clone(), value);
+            }
         }
     }
 
     fn integer_power(mut base: i64, mut exponent: i64) -> Result<i64> {
-        if exponent < 0 { return fault("ILLEGAL FUNCTION CALL"); }
+        if exponent < 0 {
+            return fault("ILLEGAL FUNCTION CALL");
+        }
         let mut result = 1;
         while exponent > 0 {
-            if exponent & 1 != 0 { result = Self::checked(result * base)?; }
+            if exponent & 1 != 0 {
+                result = Self::checked(result * base)?;
+            }
             exponent >>= 1;
-            if exponent > 0 { base = Self::checked(base * base)?; }
+            if exponent > 0 {
+                base = Self::checked(base * base)?;
+            }
         }
         Ok(result)
     }
 
     fn evaluate(&mut self, expression: &Expression) -> Result<Value> {
         let op = expression.value.text_if();
-        if expression.kind == "constant" { return Ok(expression.value.clone()); }
+        if expression.kind == "constant" {
+            return Ok(expression.value.clone());
+        }
         if expression.kind == "variable" || expression.kind == "array" {
             let address = self.address(expression)?;
             return Ok(self.load(&address));
         }
         if expression.kind == "builtin" {
-            return Ok(Value::Integer(if op == "ERR" { self.err } else { self.erl }));
+            return Ok(Value::Integer(if op == "ERR" {
+                self.err
+            } else {
+                self.erl
+            }));
         }
         if expression.kind == "unary" {
             let a = self.evaluate(&expression.args[0])?.number();
-            return Ok(Value::Integer(if op == "NOT" { !a } else { Self::checked(-a)? }));
+            return Ok(Value::Integer(if op == "NOT" {
+                !a
+            } else {
+                Self::checked(-a)?
+            }));
         }
         let mut args = Vec::new();
-        for arg in &expression.args { args.push(self.evaluate(arg)?); }
-        if expression.kind == "call" { return self.call(op, &args); }
+        for arg in &expression.args {
+            args.push(self.evaluate(arg)?);
+        }
+        if expression.kind == "call" {
+            return self.call(op, &args);
+        }
         let (a, b) = (&args[0], &args[1]);
         if matches!(op, "=" | "<>" | "<" | ">" | "<=" | ">=") {
             let ordering = if a == b {
@@ -711,7 +882,9 @@ impl Machine {
         }
         if expression.data_type == 'S' {
             let result = format!("{}{}", a.text(), b.text());
-            if result.len() > 255 { return fault("STRING TOO LONG"); }
+            if result.len() > 255 {
+                return fault("STRING TOO LONG");
+            }
             return Ok(Value::Text(result));
         }
         let (x, y) = (a.number(), b.number());
@@ -720,11 +893,15 @@ impl Machine {
             "-" => Self::checked(x - y)?,
             "*" => Self::checked(x * y)?,
             "/" => {
-                if y == 0 { return fault("DIVISION BY ZERO"); }
+                if y == 0 {
+                    return fault("DIVISION BY ZERO");
+                }
                 Self::checked(x / y)?
             }
             "MOD" => {
-                if y == 0 { return fault("DIVISION BY ZERO"); }
+                if y == 0 {
+                    return fault("DIVISION BY ZERO");
+                }
                 x % y
             }
             "^" => Self::integer_power(x, y)?,
@@ -736,39 +913,59 @@ impl Machine {
     }
 
     fn call(&mut self, name: &str, args: &[Value]) -> Result<Value> {
-        let n = if args[0].kind() == 'I' { args[0].number() } else { 0 };
-        let s = if args[0].kind() == 'S' { args[0].text() } else { "" };
+        let n = if args[0].kind() == 'I' {
+            args[0].number()
+        } else {
+            0
+        };
+        let s = if args[0].kind() == 'S' {
+            args[0].text()
+        } else {
+            ""
+        };
         let k = if args.len() > 1 && args[1].kind() == 'I' {
             args[1].number()
-        } else { 0 };
+        } else {
+            0
+        };
         let result = match name {
             "ABS" => Value::Integer(Self::checked(n.abs())?),
             "SGN" => Value::Integer(n.signum()),
             "INT" => Value::Integer(n),
             "SQR" => {
-                if n < 0 { return fault("ILLEGAL FUNCTION CALL"); }
+                if n < 0 {
+                    return fault("ILLEGAL FUNCTION CALL");
+                }
                 Value::Integer((n as f64).sqrt().floor() as i64)
             }
             "RND" => {
-                if n < 1 { return fault("ILLEGAL FUNCTION CALL"); }
+                if n < 1 {
+                    return fault("ILLEGAL FUNCTION CALL");
+                }
                 self.random = self.random * 48271 % 2147483647;
                 Value::Integer(self.random % n + 1)
             }
             "LEN" => Value::Integer(s.len() as i64),
             "ASC" => {
-                if s.is_empty() { return fault("ILLEGAL FUNCTION CALL"); }
+                if s.is_empty() {
+                    return fault("ILLEGAL FUNCTION CALL");
+                }
                 Value::Integer(s.as_bytes()[0] as i64)
             }
             "VAL" => {
                 let bytes = s.as_bytes();
                 let mut i = 0;
-                while i < bytes.len() && bytes[i] == b' ' { i += 1; }
+                while i < bytes.len() && bytes[i] == b' ' {
+                    i += 1;
+                }
                 let start = i;
                 if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
                     i += 1;
                 }
                 let digit_start = i;
-                while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
                 let parsed = if digit_start == i {
                     0
                 } else {
@@ -777,41 +974,54 @@ impl Machine {
                 Value::Integer(Self::checked(parsed)?)
             }
             "CHR$" => {
-                if !(32..=126).contains(&n) { return fault("ILLEGAL FUNCTION CALL"); }
+                if !(32..=126).contains(&n) {
+                    return fault("ILLEGAL FUNCTION CALL");
+                }
                 Value::Text((n as u8 as char).to_string())
             }
             "STR$" => Value::Text(n.to_string()),
             "LEFT$" => {
-                if k < 0 { return fault("ILLEGAL FUNCTION CALL"); }
+                if k < 0 {
+                    return fault("ILLEGAL FUNCTION CALL");
+                }
                 Value::Text(s[..s.len().min(k as usize)].to_owned())
             }
             "RIGHT$" => {
-                if k < 0 { return fault("ILLEGAL FUNCTION CALL"); }
+                if k < 0 {
+                    return fault("ILLEGAL FUNCTION CALL");
+                }
                 Value::Text(s[s.len().saturating_sub(k as usize)..].to_owned())
             }
             "MID$" => {
-                let length = if args.len() == 3 { args[2].number() } else { s.len() as i64 };
-                if k < 1 || length < 0 { return fault("ILLEGAL FUNCTION CALL"); }
+                let length = if args.len() == 3 {
+                    args[2].number()
+                } else {
+                    s.len() as i64
+                };
+                if k < 1 || length < 0 {
+                    return fault("ILLEGAL FUNCTION CALL");
+                }
                 let start = (k as usize - 1).min(s.len());
                 let end = (start + length as usize).min(s.len());
                 Value::Text(s[start..end].to_owned())
             }
-            "INSTR" => {
-                Value::Integer(s.find(args[1].text()).map_or(0, |i| i as i64 + 1))
-            }
+            "INSTR" => Value::Integer(s.find(args[1].text()).map_or(0, |i| i as i64 + 1)),
             _ => unreachable!(),
         };
         Ok(result)
     }
 
     fn line(&self, number: i64) -> Result<usize> {
-        self.entries.get(&number).copied().ok_or_else(|| {
-            Failure::Runtime("UNDEFINED LINE NUMBER".into())
-        })
+        self.entries
+            .get(&number)
+            .copied()
+            .ok_or_else(|| Failure::Runtime("UNDEFINED LINE NUMBER".into()))
     }
 
     fn push(&mut self, frame: Frame) -> Result<()> {
-        if self.stack.len() == 100 { return fault("OUT OF MEMORY"); }
+        if self.stack.len() == 100 {
+            return fault("OUT OF MEMORY");
+        }
         self.stack.push(frame);
         Ok(())
     }
@@ -819,7 +1029,9 @@ impl Machine {
     fn search(&self, kind: &str, name: &str) -> Option<usize> {
         for i in (0..self.stack.len()).rev() {
             let frame = &self.stack[i];
-            if frame.kind == "GOSUB" { break; }
+            if frame.kind == "GOSUB" {
+                break;
+            }
             if frame.kind == kind && (name.is_empty() || name == frame.name) {
                 return Some(i);
             }
@@ -832,9 +1044,12 @@ impl Machine {
         let mut depth = 0;
         for id in self.sequence[start..].iter().copied() {
             let current = &self.program[id];
-            if current.kind == open { depth += 1; }
-            else if current.kind == close {
-                if depth == 0 { return Ok(current.next); }
+            if current.kind == open {
+                depth += 1;
+            } else if current.kind == close {
+                if depth == 0 {
+                    return Ok(current.next);
+                }
                 depth -= 1;
             }
         }
@@ -844,8 +1059,11 @@ impl Machine {
     fn subroutine(&mut self, number: i64, after: Option<usize>) -> Result<usize> {
         let destination = self.line(number)?;
         self.push(Frame {
-            kind: "GOSUB".into(), position: after, name: String::new(),
-            limit: 0, step: 0,
+            kind: "GOSUB".into(),
+            position: after,
+            name: String::new(),
+            limit: 0,
+            step: 0,
         })?;
         Ok(destination)
     }
@@ -863,14 +1081,17 @@ impl Machine {
             "PRINT" => {
                 for item in &s.items {
                     if item.kind == "," {
-                        self.buffer.push_str(&" ".repeat(10 - self.buffer.len() % 10));
+                        self.buffer
+                            .push_str(&" ".repeat(10 - self.buffer.len() % 10));
                     } else if item.kind != ";" {
                         let value = self.evaluate(item.expression.as_ref().unwrap())?;
                         if item.kind == "value" {
                             self.buffer.push_str(&value.display());
                         } else {
                             let n = value.number();
-                            if n < 0 { return fault("ILLEGAL FUNCTION CALL"); }
+                            if n < 0 {
+                                return fault("ILLEGAL FUNCTION CALL");
+                            }
                             let count = if item.kind == "SPC" {
                                 n as usize
                             } else {
@@ -880,7 +1101,8 @@ impl Machine {
                         }
                     }
                 }
-                if s.items.is_empty() || !matches!(s.items.last().unwrap().kind.as_str(), ";" | ",") {
+                if s.items.is_empty() || !matches!(s.items.last().unwrap().kind.as_str(), ";" | ",")
+                {
                     self.end_line();
                 }
             }
@@ -888,10 +1110,14 @@ impl Machine {
                 for target in &s.targets {
                     let address = self.address(target)?;
                     let value = if s.kind == "READ" {
-                        if self.data_pos >= self.data.len() { return fault("OUT OF DATA"); }
+                        if self.data_pos >= self.data.len() {
+                            return fault("OUT OF DATA");
+                        }
                         let value = self.data[self.data_pos].1.clone();
                         self.data_pos += 1;
-                        if value.kind() != target.data_type { return fault("TYPE MISMATCH"); }
+                        if value.kind() != target.data_type {
+                            return fault("TYPE MISMATCH");
+                        }
                         value
                     } else {
                         loop {
@@ -905,7 +1131,8 @@ impl Machine {
                             }
                             let bytes = text.as_bytes();
                             let start = if bytes.first() == Some(&b'-') { 1 } else { 0 };
-                            if start < bytes.len() && bytes[start..].iter().all(u8::is_ascii_digit) {
+                            if start < bytes.len() && bytes[start..].iter().all(u8::is_ascii_digit)
+                            {
                                 if let Ok(n) = text.parse::<i64>() {
                                     if (-32768..=32767).contains(&n) {
                                         break Value::Integer(n);
@@ -921,14 +1148,20 @@ impl Machine {
             "RESTORE" => {
                 self.data_pos = if let Some(number) = s.numbers.first() {
                     self.line(*number)?;
-                    self.data.iter().position(|(line, _)| line >= number)
+                    self.data
+                        .iter()
+                        .position(|(line, _)| line >= number)
                         .unwrap_or(self.data.len())
-                } else { 0 };
+                } else {
+                    0
+                };
             }
             "IF" => {
                 let branch = if self.evaluate(s.expression.as_ref().unwrap())?.number() != 0 {
                     0
-                } else { 1 };
+                } else {
+                    1
+                };
                 if let Some(clause) = s.clauses.get(branch) {
                     next = if let Some(line) = clause.line {
                         Some(self.line(line)?)
@@ -941,7 +1174,9 @@ impl Machine {
             "GOSUB" => next = Some(self.subroutine(s.numbers[0], next)?),
             "ON" => {
                 let index = self.evaluate(s.expression.as_ref().unwrap())?.number();
-                if index < 0 { return fault("ILLEGAL FUNCTION CALL"); }
+                if index < 0 {
+                    return fault("ILLEGAL FUNCTION CALL");
+                }
                 if index > 0 && index as usize <= s.numbers.len() {
                     let number = s.numbers[index as usize - 1];
                     next = Some(if s.mode == "GOTO" {
@@ -953,15 +1188,21 @@ impl Machine {
             }
             "RETURN" => {
                 let found = self.stack.iter().rposition(|f| f.kind == "GOSUB");
-                let Some(index) = found else { return fault("RETURN WITHOUT GOSUB"); };
+                let Some(index) = found else {
+                    return fault("RETURN WITHOUT GOSUB");
+                };
                 next = self.stack[index].position;
                 self.stack.truncate(index);
             }
             "FOR" => {
                 let mut vals = Vec::new();
-                for e in &s.expressions { vals.push(self.evaluate(e)?.number()); }
+                for e in &s.expressions {
+                    vals.push(self.evaluate(e)?.number());
+                }
                 let (start, end, step) = (vals[0], vals[1], vals[2]);
-                if step == 0 { return fault("ILLEGAL FUNCTION CALL"); }
+                if step == 0 {
+                    return fault("ILLEGAL FUNCTION CALL");
+                }
                 if let Some(index) = self.search("FOR", &s.name) {
                     self.stack.truncate(index);
                 }
@@ -970,8 +1211,11 @@ impl Machine {
                     next = self.matching(id, "FOR", "NEXT")?;
                 } else {
                     self.push(Frame {
-                        kind: "FOR".into(), position: next, name: s.name,
-                        limit: end, step,
+                        kind: "FOR".into(),
+                        position: next,
+                        name: s.name,
+                        limit: end,
+                        step,
                     })?;
                 }
             }
@@ -983,7 +1227,11 @@ impl Machine {
                 let frame = self.stack[index].clone();
                 let value = Self::checked(self.get(&frame.name).number() + frame.step)?;
                 self.vars.insert(frame.name, Value::Integer(value));
-                if if frame.step > 0 { value > frame.limit } else { value < frame.limit } {
+                if if frame.step > 0 {
+                    value > frame.limit
+                } else {
+                    value < frame.limit
+                } {
                     self.stack.pop();
                 } else {
                     next = frame.position;
@@ -992,8 +1240,11 @@ impl Machine {
             "WHILE" => {
                 if self.evaluate(s.expression.as_ref().unwrap())?.number() != 0 {
                     self.push(Frame {
-                        kind: "WHILE".into(), position: Some(id),
-                        name: String::new(), limit: 0, step: 0,
+                        kind: "WHILE".into(),
+                        position: Some(id),
+                        name: String::new(),
+                        limit: 0,
+                        step: 0,
                     })?;
                 } else {
                     next = self.matching(id, "WHILE", "WEND")?;
@@ -1010,25 +1261,39 @@ impl Machine {
                 for target in &s.targets {
                     let name = target.value.text();
                     let mut bounds = Vec::new();
-                    for e in &target.args { bounds.push(self.evaluate(e)?.number()); }
-                    if self.arrays.contains_key(name) { return fault("DUPLICATE DEFINITION"); }
-                    if bounds.iter().any(|n| *n < 0) { return fault("ILLEGAL FUNCTION CALL"); }
+                    for e in &target.args {
+                        bounds.push(self.evaluate(e)?.number());
+                    }
+                    if self.arrays.contains_key(name) {
+                        return fault("DUPLICATE DEFINITION");
+                    }
+                    if bounds.iter().any(|n| *n < 0) {
+                        return fault("ILLEGAL FUNCTION CALL");
+                    }
                     let size = bounds.iter().fold(1_i64, |a, b| a * (b + 1));
-                    if size > 10000 { return fault("OUT OF MEMORY"); }
+                    if size > 10000 {
+                        return fault("OUT OF MEMORY");
+                    }
                     self.declare(name, &bounds);
                 }
             }
             "RANDOMIZE" => {
                 let seed = self.evaluate(s.expression.as_ref().unwrap())?.number();
-                if seed < 1 { return fault("ILLEGAL FUNCTION CALL"); }
+                if seed < 1 {
+                    return fault("ILLEGAL FUNCTION CALL");
+                }
                 self.random = seed;
             }
             "handler" => {
-                if s.numbers[0] != 0 { self.line(s.numbers[0])?; }
+                if s.numbers[0] != 0 {
+                    self.line(s.numbers[0])?;
+                }
                 self.handler = s.numbers[0];
             }
             "RESUME" => {
-                if !self.handling { return fault("RESUME WITHOUT ERROR"); }
+                if !self.handling {
+                    return fault("RESUME WITHOUT ERROR");
+                }
                 next = if s.mode == "line" {
                     Some(self.line(s.numbers[0])?)
                 } else if s.mode == "NEXT" {
@@ -1062,7 +1327,9 @@ impl Machine {
     }
 
     fn finish(&mut self) -> Vec<String> {
-        if !self.buffer.is_empty() { self.end_line(); }
+        if !self.buffer.is_empty() {
+            self.end_line();
+        }
         self.output.push("READY".into());
         std::mem::take(&mut self.output)
     }
@@ -1071,7 +1338,12 @@ impl Machine {
         let mut parsed = Vec::new();
         for (line, content) in source {
             let result = tokenize(content).and_then(|tokens| {
-                Parser { tokens, position: 0, program: &mut self.program }.parse()
+                Parser {
+                    tokens,
+                    position: 0,
+                    program: &mut self.program,
+                }
+                .parse()
             });
             match result {
                 Ok(statements) => parsed.push((*line, statements)),
@@ -1110,7 +1382,8 @@ impl Machine {
                         position = self.line(self.handler).ok();
                     } else {
                         self.message(format!(
-                            "ERROR IN LINE {}: {}", self.program[id].line, problem,
+                            "ERROR IN LINE {}: {}",
+                            self.program[id].line, problem,
                         ));
                         position = None;
                     }
@@ -1160,10 +1433,14 @@ fn main() {
     for _ in 0..sessions {
         let mut source = BTreeMap::new();
         for line in lines.by_ref() {
-            if line == "RUN" { break; }
+            if line == "RUN" {
+                break;
+            }
             let bytes = line.as_bytes();
             let mut i = 0;
-            while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
             let number = line[..i].parse::<i64>().unwrap();
             if i == bytes.len() {
                 source.remove(&number);
@@ -1174,7 +1451,9 @@ fn main() {
         }
         let mut data = Vec::new();
         for line in lines.by_ref() {
-            if line == "END" { break; }
+            if line == "END" {
+                break;
+            }
             data.push(line.to_owned());
         }
         output.extend(Machine::new(data).run(&source));

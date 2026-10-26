@@ -5,8 +5,12 @@ const names = [_][]const u8{ "RETAILER", "WHOLESALER", "DISTRIBUTOR", "FACTORY" 
 const PolicyKind = enum { FIXED, PASS, BASESTOCK, MINMAX, MOVAVG, SMOOTH, STERMAN };
 const Metric = enum { ORDERS, INV, BACK, NET };
 const Command = enum { DEMAND, GENERATE, RUN, RESET, SAVE, LOAD, SET, BATCH, CAPACITY, COST, VISIBILITY, SHOCK, STATUS, SETTINGS, WEEK, TABLE, CHAIN, DEMANDS, COSTS, SUMMARY, BALANCE, FILLRATE, BULLWHIP, PEAKS, LEADTIME, PLOT, HISTOGRAM, COMPARE, OPTIMIZE, END };
-fn integer(s: []const u8) i64 { return std.fmt.parseInt(i64, s, 10) catch unreachable; }
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
+fn integer(s: []const u8) i64 {
+    return std.fmt.parseInt(i64, s, 10) catch unreachable;
+}
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
 fn sum(values: []const i64) i64 {
     var total: i64 = 0;
     for (values) |value| total += value;
@@ -31,9 +35,16 @@ const Record = struct {
     order: i64 = 0,
     holding_cost: i64 = 0,
     backlog_cost: i64 = 0,
-    fn cost(r: Record) i64 { return r.holding_cost + r.backlog_cost; }
+    fn cost(r: Record) i64 {
+        return r.holding_cost + r.backlog_cost;
+    }
     fn value(r: Record, metric: Metric) i64 {
-        return switch (metric) { .ORDERS => r.order, .INV => r.inventory, .BACK => r.backlog, .NET => r.inventory - r.backlog };
+        return switch (metric) {
+            .ORDERS => r.order,
+            .INV => r.inventory,
+            .BACK => r.backlog,
+            .NET => r.inventory - r.backlog,
+        };
     }
 };
 const Stage = struct {
@@ -64,9 +75,15 @@ const Simulation = struct {
     fn init(initial: [4]Initial, demand: [104]i64, horizon: usize) Simulation {
         var result = Simulation{ .horizon = horizon, .demand = demand, .stages = undefined };
         for (initial, 0..) |cfg, i| result.stages[i] = .{
-            .inventory = cfg.inventory, .shipping = @splat(cfg.quantity), .orders = @splat(cfg.quantity),
-            .shipping_delay = cfg.shipping_delay, .order_delay = cfg.order_delay, .policy = cfg.policy,
-            .expected = cfg.quantity * 100, .holding_rate = cfg.holding_rate, .backlog_rate = cfg.backlog_rate,
+            .inventory = cfg.inventory,
+            .shipping = @splat(cfg.quantity),
+            .orders = @splat(cfg.quantity),
+            .shipping_delay = cfg.shipping_delay,
+            .order_delay = cfg.order_delay,
+            .policy = cfg.policy,
+            .expected = cfg.quantity * 100,
+            .holding_rate = cfg.holding_rate,
+            .backlog_rate = cfg.backlog_rate,
         };
         return result;
     }
@@ -152,7 +169,9 @@ const Simulation = struct {
     }
     fn costs(self: *const Simulation) [4]i64 {
         var result: [4]i64 = @splat(0);
-        for (self.stages, 0..) |s, i| for (s.records[0..self.week]) |r| { result[i] += r.cost(); };
+        for (self.stages, 0..) |s, i| for (s.records[0..self.week]) |r| {
+            result[i] += r.cost();
+        };
         return result;
     }
     fn values(self: *const Simulation, stage: usize, metric: Metric) [104]i64 {
@@ -162,7 +181,9 @@ const Simulation = struct {
     }
 };
 const Statistics = struct {
-    total: i64 = 0, minimum: i64 = std.math.maxInt(i64), maximum: i64 = std.math.minInt(i64),
+    total: i64 = 0,
+    minimum: i64 = std.math.maxInt(i64),
+    maximum: i64 = std.math.minInt(i64),
     fn of(values: []const i64) Statistics {
         var s: Statistics = .{};
         for (values) |v| {
@@ -194,7 +215,9 @@ const Game = struct {
         const unit: u64 = @intCast(scale);
         return if (places == 2) std.fmt.allocPrint(self.gpa, "{d}.{d:0>2}", .{ scaled / unit, scaled % unit }) else std.fmt.allocPrint(self.gpa, "{d}.{d:0>4}", .{ scaled / unit, scaled % unit });
     }
-    fn money(self: *Game, cents: i64) Allocator.Error![]const u8 { return self.decimal(2, cents, 100); }
+    fn money(self: *Game, cents: i64) Allocator.Error![]const u8 {
+        return self.decimal(2, cents, 100);
+    }
     fn percentage(self: *Game, numerator: i64, denominator: i64) Allocator.Error![]const u8 {
         if (denominator == 0) return "n/a";
         return std.fmt.allocPrint(self.gpa, "{s}%", .{try self.decimal(2, numerator * 100, denominator)});
@@ -227,13 +250,20 @@ const Game = struct {
     }
     fn policy(self: *Game, args: []const []const u8) Error!Policy {
         const kind = std.meta.stringToEnum(PolicyKind, args[0]) orelse return self.fail("unknown policy {s}", .{args[0]});
-        const count: usize = switch (kind) { .PASS => 0, .FIXED, .BASESTOCK => 1, .MINMAX, .MOVAVG, .SMOOTH => 2, .STERMAN => 4 };
+        const count: usize = switch (kind) {
+            .PASS => 0,
+            .FIXED, .BASESTOCK => 1,
+            .MINMAX, .MOVAVG, .SMOOTH => 2,
+            .STERMAN => 4,
+        };
         if (args.len != count + 1) return self.fail("{s} needs {d} parameters", .{ args[0], count });
         var result = Policy{ .kind = kind, .text = try std.mem.join(self.gpa, " ", args) };
         for (args[1..], 0..) |arg, i| result.values[i] = if (kind == .STERMAN and i < 3) integer(arg[0..1]) * 100 + integer(arg[2..]) else integer(arg);
         const p = result.values;
         const valid = switch (kind) {
-            .PASS => true, .FIXED => p[0] <= 1000, .BASESTOCK => p[0] <= 10000,
+            .PASS => true,
+            .FIXED => p[0] <= 1000,
+            .BASESTOCK => p[0] <= 10000,
             .MINMAX => p[0] < p[1] and p[1] <= 10000,
             .MOVAVG => p[0] >= 1 and p[0] <= 52 and p[1] <= 10000,
             .SMOOTH => p[0] >= 1 and p[0] <= 10 and p[1] <= 10000,
@@ -242,7 +272,9 @@ const Game = struct {
         if (!valid) return self.fail("invalid parameter for {s}", .{args[0]});
         return result;
     }
-    fn reset(self: *Game) void { self.sim = Simulation.init(self.initial, self.base, self.base_horizon); }
+    fn reset(self: *Game) void {
+        self.sim = Simulation.init(self.initial, self.base, self.base_horizon);
+    }
     fn setDemand(self: *Game, demand: [104]i64, horizon: usize) Error!void {
         self.base = demand;
         self.base_horizon = horizon;
@@ -295,7 +327,9 @@ const Game = struct {
                         const elapsed = @as(i64, @intCast(t + 1)) - integer(a[i + 1]);
                         if (elapsed < 0) continue;
                         const value = integer(a[i + 2]);
-                        if (equal(a[i], "STEP")) level += value else if (equal(a[i], "RAMP")) level += value * (elapsed + 1) else if (elapsed == 0) { level += value; }
+                        if (equal(a[i], "STEP")) level += value else if (equal(a[i], "RAMP")) level += value * (elapsed + 1) else if (elapsed == 0) {
+                            level += value;
+                        }
                     }
                     if (level < 0) return self.fail("negative level at week {d}", .{t + 1});
                     random = @mod(48271 * random, 2147483647);
@@ -320,7 +354,10 @@ const Game = struct {
                 try self.out.print("RUN {d}-{d} demand {d} cost {s}\n", .{ first + 1, sim.week, sum(sim.demand[first..sim.week]), try self.money(cost) });
                 if (sim.week == sim.horizon) try self.out.print("HORIZON {d}\n", .{sim.horizon});
             },
-            .RESET => { self.reset(); try self.out.writeAll("RESET week 0\n"); },
+            .RESET => {
+                self.reset();
+                try self.out.writeAll("RESET week 0\n");
+            },
             .SAVE => {
                 const snapshot = try self.gpa.create(Simulation);
                 snapshot.* = sim.*;
@@ -444,7 +481,10 @@ const Game = struct {
                 for (&sim.stages, 0..) |*s, i| {
                     var h: i64 = 0;
                     var b: i64 = 0;
-                    for (s.records[0..sim.week]) |r| { h += r.holding_cost; b += r.backlog_cost; }
+                    for (s.records[0..sim.week]) |r| {
+                        h += r.holding_cost;
+                        b += r.backlog_cost;
+                    }
                     holding += h;
                     backlog += b;
                     try self.out.print("{s} holding {s} backlog {s} total {s}\n", .{ names[i], try self.money(h), try self.money(b), try self.money(h + b) });
@@ -460,7 +500,11 @@ const Game = struct {
                     var zero: usize = 0;
                     const values = sim.values(i, .ORDERS);
                     const stats = Statistics.of(values[0..sim.week]);
-                    for (s.records[0..sim.week]) |r| { inv += r.inventory; back += r.backlog; if (r.order == 0) zero += 1; }
+                    for (s.records[0..sim.week]) |r| {
+                        inv += r.inventory;
+                        back += r.backlog;
+                        if (r.order == 0) zero += 1;
+                    }
                     try self.out.print("{s} avg_inv {s} avg_back {s} orders {d} min {d} max {d} zero_weeks {d}\n", .{ names[i], try self.decimal(2, inv, n), try self.decimal(2, back, n), stats.total, stats.minimum, stats.maximum, zero });
                 }
             },
@@ -474,7 +518,10 @@ const Game = struct {
                 for (&sim.stages, 0..) |*s, i| {
                     var received: i64 = 0;
                     var shipped: i64 = 0;
-                    for (s.records[0..sim.week]) |r| { received += r.received; shipped += r.shipped; }
+                    for (s.records[0..sim.week]) |r| {
+                        received += r.received;
+                        shipped += r.shipped;
+                    }
                     try self.out.print("{s} start {d} received {d} shipped {d} end {d} owed {d}\n", .{ names[i], self.initial[i].inventory, received, shipped, s.inventory, s.backlog });
                     initial += self.initial[i].inventory + self.initial[i].quantity * @as(i64, @intCast(s.shipping_delay));
                     stock += s.inventory;
@@ -491,7 +538,11 @@ const Game = struct {
                     var ontime: i64 = 0;
                     var ordered: i64 = 0;
                     var stockouts: i64 = 0;
-                    for (s.records[0..sim.week]) |r| { ontime += r.ontime; ordered += r.incoming; if (r.backlog > 0) stockouts += 1; }
+                    for (s.records[0..sim.week]) |r| {
+                        ontime += r.ontime;
+                        ordered += r.incoming;
+                        if (r.backlog > 0) stockouts += 1;
+                    }
                     try self.out.print("{s} fill {s} ontime {d} ordered {d} stockout_weeks {d} service {s}\n", .{ names[i], try self.percentage(ontime, ordered), ontime, ordered, stockouts, try self.percentage(n - stockouts, n) });
                 }
             },
@@ -521,10 +572,19 @@ const Game = struct {
                     var longest: usize = 0;
                     var last: usize = 0;
                     for (s.records[0..sim.week], 0..) |r, t| {
-                        if (r.inventory > max_inv) { max_inv = r.inventory; inv_week = t + 1; }
-                        if (r.backlog > max_back) { max_back = r.backlog; back_week = t + 1; }
+                        if (r.inventory > max_inv) {
+                            max_inv = r.inventory;
+                            inv_week = t + 1;
+                        }
+                        if (r.backlog > max_back) {
+                            max_back = r.backlog;
+                            back_week = t + 1;
+                        }
                         streak = if (r.backlog > 0) streak + 1 else 0;
-                        if (streak > longest) { longest = streak; last = t + 1; }
+                        if (streak > longest) {
+                            longest = streak;
+                            last = t + 1;
+                        }
                     }
                     try self.out.print("{s} max_inv {d} week {s} max_back {d} week {s} longest_stockout {d}", .{ names[i], max_inv, try self.weekText(inv_week), max_back, try self.weekText(back_week), longest });
                     if (longest > 0) try self.out.print(" weeks {d}-{d}", .{ last - longest + 1, last });
@@ -538,7 +598,10 @@ const Game = struct {
                 const nominal = s.shipping_delay + s.order_delay;
                 var arrivals: [104]i64 = @splat(0);
                 var received = -@as(i64, @intCast(nominal)) * self.initial[i].quantity;
-                for (s.records[0..sim.week], 0..) |r, t| { received += r.received; arrivals[t] = received; }
+                for (s.records[0..sim.week], 0..) |r, t| {
+                    received += r.received;
+                    arrivals[t] = received;
+                }
                 var ordered: i64 = 0;
                 var count: usize = 0;
                 var completed: usize = 0;
@@ -581,9 +644,14 @@ const Game = struct {
                     const last = @divFloor(stats.maximum, width);
                     while (bin <= last) : (bin += 1) {
                         var count: usize = 0;
-                        for (values) |v| if (@divFloor(v, width) == bin) { count += 1; };
+                        for (values) |v| if (@divFloor(v, width) == bin) {
+                            count += 1;
+                        };
                         try self.out.print("{d}..{d} {d}", .{ bin * width, bin * width + width - 1, count });
-                        if (count > 0) { try self.out.writeAll(" "); try self.out.splatByteAll('*', count); }
+                        if (count > 0) {
+                            try self.out.writeAll(" ");
+                            try self.out.splatByteAll('*', count);
+                        }
                         try self.out.writeAll("\n");
                     }
                 } else if (mode == .NET) {
@@ -623,13 +691,18 @@ const Game = struct {
                     const candidate = self.trial(@splat(p));
                     var ontime: i64 = 0;
                     var incoming: i64 = 0;
-                    for (candidate.stages[0].records[0..candidate.week]) |r| { ontime += r.ontime; incoming += r.incoming; }
+                    for (candidate.stages[0].records[0..candidate.week]) |r| {
+                        ontime += r.ontime;
+                        incoming += r.incoming;
+                    }
                     const orders = candidate.values(3, .ORDERS);
                     const costs = candidate.costs();
                     try results.append(self.gpa, .{ .policy = p, .index = index, .cost = sum(&costs), .ontime = ontime, .incoming = incoming, .variation = variation(orders[0..candidate.week]) });
                 }
                 std.mem.sort(Result, results.items, {}, struct {
-                    fn less(_: void, x: Result, y: Result) bool { return if (x.cost != y.cost) x.cost < y.cost else x.index < y.index; }
+                    fn less(_: void, x: Result, y: Result) bool {
+                        return if (x.cost != y.cost) x.cost < y.cost else x.index < y.index;
+                    }
                 }.less);
                 const demand_variation = variation(sim.demand[0..sim.horizon]);
                 try self.out.print("COMPARE {d} weeks {d}\n", .{ policies.items.len, sim.horizon });
@@ -652,7 +725,11 @@ const Game = struct {
                     const costs = candidate.costs();
                     const total = sum(&costs);
                     const objective = if (selected) |index| costs[index] else total;
-                    if (objective < best_cost) { best = stock; best_cost = objective; best_total = total; }
+                    if (objective < best_cost) {
+                        best = stock;
+                        best_cost = objective;
+                        best_total = total;
+                    }
                 }
                 try self.out.print("OPTIMIZE {s} BASESTOCK {d} cost {s} total {s}\n", .{ id, best, try self.money(best_cost), try self.money(best_total) });
             },

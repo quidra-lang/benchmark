@@ -114,18 +114,13 @@ fn matchPath(gpa: Allocator, target: *Tree, source: Tree, path: Text) Allocator.
     if (source.get(path)) |text| try target.put(gpa, path, text) else _ = target.remove(path);
 }
 
-const Merged = struct {
-    files: Tree,
-    conflicts: []Text
-};
+const Merged = struct { files: Tree, conflicts: []Text };
 
 fn threeWay(gpa: Allocator, base: Tree, ours: Tree, theirs: Tree) Allocator.Error!Merged {
     var result: Tree = .empty;
     var conflicts: std.ArrayList(Text) = .empty;
     for (try paths(gpa, &.{ base, ours, theirs })) |path| {
-        if (agree(theirs, base, path) or agree(ours, theirs, path)) try matchPath(gpa, &result, ours, path)
-        else if (agree(ours, base, path)) try matchPath(gpa, &result, theirs, path)
-        else {
+        if (agree(theirs, base, path) or agree(ours, theirs, path)) try matchPath(gpa, &result, ours, path) else if (agree(ours, base, path)) try matchPath(gpa, &result, theirs, path) else {
             try conflicts.append(gpa, path);
             try matchPath(gpa, &result, ours, path);
         }
@@ -133,13 +128,7 @@ fn threeWay(gpa: Allocator, base: Tree, ours: Tree, theirs: Tree) Allocator.Erro
     return .{ .files = result, .conflicts = conflicts.items };
 }
 
-const Commit = struct {
-    id: Text,
-    sequence: usize,
-    parents: []const *Commit,
-    files: Tree,
-    message: Text
-};
+const Commit = struct { id: Text, sequence: usize, parents: []const *Commit, files: Tree, message: Text };
 
 fn parentTree(commit: *Commit) Tree {
     return if (commit.parents.len == 0) .empty else commit.parents[0].files;
@@ -219,16 +208,9 @@ fn glob(gpa: Allocator, pattern: Text, path: Text) Allocator.Error!bool {
     return previous[path.len];
 }
 
-const Operation = struct {
-    kind: Text,
-    target: *Commit
-};
+const Operation = struct { kind: Text, target: *Commit };
 
-const StashEntry = struct {
-    label: Text,
-    base: *Commit,
-    files: Tree
-};
+const StashEntry = struct { label: Text, base: *Commit, files: Tree };
 
 const Repository = struct {
     gpa: Allocator,
@@ -313,9 +295,7 @@ const Repository = struct {
             return;
         }
         for (changed) |path| {
-            if (!a.contains(path)) try self.out.line("A {s}: {s}", .{ path, b.get(path).? })
-            else if (!b.contains(path)) try self.out.line("D {s}: {s}", .{ path, a.get(path).? })
-            else try self.out.line("M {s}: {s} -> {s}", .{ path, a.get(path).?, b.get(path).? });
+            if (!a.contains(path)) try self.out.line("A {s}: {s}", .{ path, b.get(path).? }) else if (!b.contains(path)) try self.out.line("D {s}: {s}", .{ path, a.get(path).? }) else try self.out.line("M {s}: {s} -> {s}", .{ path, a.get(path).?, b.get(path).? });
         }
     }
     fn inProgress(self: *const Repository) Error!void {
@@ -376,8 +356,7 @@ const Repository = struct {
             try self.out.line("CONFLICT {s}", .{path});
         }
         self.pending = .{ .kind = kind, .target = target };
-        if (equal(kind, "merge")) try self.out.add("Automatic merge failed; fix conflicts and then commit the result.\n")
-        else if (equal(kind, "revert")) try self.out.line("error: could not revert {s}", .{target.id}) else try self.out.line("error: could not apply {s}", .{target.id});
+        if (equal(kind, "merge")) try self.out.add("Automatic merge failed; fix conflicts and then commit the result.\n") else if (equal(kind, "revert")) try self.out.line("error: could not revert {s}", .{target.id}) else try self.out.line("error: could not apply {s}", .{target.id});
     }
     fn roots(self: *const Repository, extra: bool) Allocator.Error![]*Commit {
         var result: std.ArrayList(*Commit) = .empty;
@@ -403,8 +382,7 @@ const Repository = struct {
         } else if (equal(cmd, "REMOVE")) {
             if (!self.work.contains(words[1])) return bad(gpa, "no such file '{s}'", .{words[1]});
             _ = self.work.remove(words[1]);
-        } else if (equal(cmd, "IGNORE")) try self.ignores.append(gpa, words[1])
-        else if (equal(cmd, "ADD")) {
+        } else if (equal(cmd, "IGNORE")) try self.ignores.append(gpa, words[1]) else if (equal(cmd, "ADD")) {
             const path = words[1];
             if (equal(path, "ALL")) {
                 for (try paths(gpa, &.{ self.work, self.index })) |p| if (!try self.ignored(p)) {
@@ -449,8 +427,7 @@ const Repository = struct {
             const message = (try split(gpa, line, ' ', 2))[1];
             var parents: std.ArrayList(*Commit) = .empty;
             try parents.append(gpa, h);
-            if (self.pending != null and equal(self.pending.?.kind, "merge")) try parents.append(gpa, self.pending.?.target)
-            else if (try same(gpa, self.index, h.files)) {
+            if (self.pending != null and equal(self.pending.?.kind, "merge")) try parents.append(gpa, self.pending.?.target) else if (try same(gpa, self.index, h.files)) {
                 try self.out.add("nothing to commit\n");
                 return;
             }
@@ -468,8 +445,7 @@ const Repository = struct {
                 if (self.conflicts.contains(path)) {
                     try self.out.line("UU {s}", .{path});
                     printed = true;
-                }
-                else if (self.index.contains(path)) {
+                } else if (self.index.contains(path)) {
                     const x: u8 = if (!h.files.contains(path)) 'A' else if (!agree(h.files, self.index, path)) 'M' else '.';
                     const y: u8 = if (!self.work.contains(path)) 'D' else if (!agree(self.work, self.index, path)) 'M' else '.';
                     if (x != '.' or y != '.') {
@@ -498,8 +474,7 @@ const Repository = struct {
                 var work: Tree = .empty;
                 for (try keys(gpa, self.index)) |path| try matchPath(gpa, &work, self.work, path);
                 try self.changes(self.index, work);
-            } else if (words.len == 2) try self.changes(h.files, self.index)
-            else {
+            } else if (words.len == 2) try self.changes(h.files, self.index) else {
                 const a = try self.revision(words[1]);
                 const b = try self.revision(words[2]);
                 try self.changes(a.files, b.files);
@@ -600,9 +575,7 @@ const Repository = struct {
             if (equal(cmd, "MERGE")) {
                 const base = try mergeBase(gpa, h, c);
                 try self.apply(base.files, c.files, "merge", c, try std.fmt.allocPrint(gpa, "Merge {s}", .{words[1]}), &.{ h, c }, base);
-            }
-            else if (equal(cmd, "REVERT")) try self.apply(c.files, parentTree(c), "revert", c, try std.fmt.allocPrint(gpa, "Revert \"{s}\"", .{c.message}), &.{h}, null)
-            else try self.apply(parentTree(c), c.files, "cherry-pick", c, c.message, &.{h}, null);
+            } else if (equal(cmd, "REVERT")) try self.apply(c.files, parentTree(c), "revert", c, try std.fmt.allocPrint(gpa, "Revert \"{s}\"", .{c.message}), &.{h}, null) else try self.apply(parentTree(c), c.files, "cherry-pick", c, c.message, &.{h}, null);
         } else if (equal(cmd, "REBASE")) {
             const upstream = try self.revision(words[1]);
             try self.inProgress();
@@ -635,8 +608,7 @@ const Repository = struct {
                     const next = try self.create(&.{tip}, files, old.message);
                     try self.out.line("pick {s} -> {s} {s}", .{ old.id, next.id, old.message });
                     tip = next;
-                }
-                else try self.out.line("skip {s} {s}", .{ old.id, old.message });
+                } else try self.out.line("skip {s} {s}", .{ old.id, old.message });
             }
             try self.moveHead(tip);
             try self.out.line("HEAD is now at {s} {s}", .{ tip.id, tip.message });

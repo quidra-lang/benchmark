@@ -27,7 +27,7 @@ fn roundRatio(numerator: i64, denominator: i64) i64 {
 fn timeText(gpa: Allocator, value: i64, vtt: bool) Allocator.Error![]const u8 {
     const t: u64 = @intCast(value);
     return std.fmt.allocPrint(gpa, "{d:0>2}:{d:0>2}:{d:0>2}{c}{d:0>3}", .{
-        t / 3600000, t / 60000 % 60, t / 1000 % 60,
+        t / 3600000,                    t / 60000 % 60, t / 1000 % 60,
         @as(u8, if (vtt) '.' else ','), t % 1000,
     });
 }
@@ -118,9 +118,36 @@ fn markup(line: []const u8, p: usize) Markup {
 }
 
 const Op = enum {
-    LIST, VALIDATE, SEARCH, AT, GAPS, STATS, PRINT, TOVTT, TOASS, FRAMES,
-    SHIFT, SHIFTFROM, SCALE, SYNC, SNAP, FIXOVERLAP, EXTEND, TIME, SORT,
-    RENUMBER, MERGE, SPLIT, INSERT, DELETE, TEXT, BALANCE, STRIP, CLEANHI, REPLACE, UNDO,
+    LIST,
+    VALIDATE,
+    SEARCH,
+    AT,
+    GAPS,
+    STATS,
+    PRINT,
+    TOVTT,
+    TOASS,
+    FRAMES,
+    SHIFT,
+    SHIFTFROM,
+    SCALE,
+    SYNC,
+    SNAP,
+    FIXOVERLAP,
+    EXTEND,
+    TIME,
+    SORT,
+    RENUMBER,
+    MERGE,
+    SPLIT,
+    INSERT,
+    DELETE,
+    TEXT,
+    BALANCE,
+    STRIP,
+    CLEANHI,
+    REPLACE,
+    UNDO,
 };
 const Kind = enum { position, time, gap, minimum, width, scale, signed, fps, string, text, replacement };
 const Arg = struct {
@@ -134,8 +161,12 @@ const Command = struct {
     op: Op,
     args: [4]Arg = .{ .{}, .{}, .{}, .{} },
     count: usize = 0,
-    fn n(self: Command, i: usize) i64 { return self.args[i].number; }
-    fn p(self: Command, i: usize) usize { return @intCast(self.n(i) - 1); }
+    fn n(self: Command, i: usize) i64 {
+        return self.args[i].number;
+    }
+    fn p(self: Command, i: usize) usize {
+        return @intCast(self.n(i) - 1);
+    }
 };
 const Record = struct { op: Op, cues: []Cue };
 
@@ -162,25 +193,35 @@ const Editor = struct {
         const fields = try split(self.gpa, line, ' ', false);
         const op = std.meta.stringToEnum(Op, fields[0]) orelse return self.fail("unknown command");
         const schema: []const Kind = switch (op) {
-            .SEARCH => &.{.string}, .AT => &.{.time},
+            .SEARCH => &.{.string},
+            .AT => &.{.time},
             .GAPS, .FIXOVERLAP, .MERGE => &.{.gap},
-            .FRAMES, .SNAP => &.{.fps}, .SHIFT => &.{.signed},
-            .SHIFTFROM => &.{ .position, .signed }, .SCALE => &.{ .scale, .scale },
-            .SYNC => &.{ .position, .time, .position, .time }, .EXTEND => &.{.minimum},
-            .TIME => &.{ .position, .time, .time }, .SPLIT => &.{.width},
+            .FRAMES, .SNAP => &.{.fps},
+            .SHIFT => &.{.signed},
+            .SHIFTFROM => &.{ .position, .signed },
+            .SCALE => &.{ .scale, .scale },
+            .SYNC => &.{ .position, .time, .position, .time },
+            .EXTEND => &.{.minimum},
+            .TIME => &.{ .position, .time, .time },
+            .SPLIT => &.{.width},
             .INSERT => &.{ .position, .time, .time, .text },
             .DELETE => if (fields.len == 3) &.{ .position, .position } else &.{.position},
-            .TEXT => &.{ .position, .text }, .REPLACE => &.{.replacement}, else => &.{},
+            .TEXT => &.{ .position, .text },
+            .REPLACE => &.{.replacement},
+            else => &.{},
         };
         const string_last = schema.len > 0 and switch (schema[schema.len - 1]) {
-            .string, .text, .replacement => true, else => false,
+            .string, .text, .replacement => true,
+            else => false,
         };
         if (fields.len < schema.len + 1 or (!string_last and fields.len != schema.len + 1))
             return self.fail("bad arguments");
         var command = Command{ .op = op, .count = schema.len };
         for (schema, 0..) |kind, i| {
             const raw = if (string_last and i == schema.len - 1)
-                try std.mem.join(self.gpa, " ", fields[i + 1..]) else fields[i + 1];
+                try std.mem.join(self.gpa, " ", fields[i + 1 ..])
+            else
+                fields[i + 1];
             var arg = Arg{};
             switch (kind) {
                 .string => arg.string = raw,
@@ -199,10 +240,10 @@ const Editor = struct {
                     if (arg.a < 1 or arg.a > 100000 or arg.b < 1 or arg.b > 100000) return self.fail("bad arguments");
                 },
                 else => {
-                    arg.number = if (kind == .time) timeValue(raw) orelse return self.fail("bad arguments") else
-                        if (kind == .signed and raw.len > 0 and raw[0] == '-')
-                            -(unsigned(raw[1..], 9) orelse return self.fail("bad arguments")) else
-                            unsigned(raw, 9) orelse return self.fail("bad arguments");
+                    arg.number = if (kind == .time) timeValue(raw) orelse return self.fail("bad arguments") else if (kind == .signed and raw.len > 0 and raw[0] == '-')
+                        -(unsigned(raw[1..], 9) orelse return self.fail("bad arguments"))
+                    else
+                        unsigned(raw, 9) orelse return self.fail("bad arguments");
                     const value = arg.number;
                     if ((kind == .position and value < 1) or (kind == .gap and value > 60000) or
                         (kind == .minimum and (value < 1 or value > 60000)) or
@@ -239,8 +280,7 @@ const Editor = struct {
         } else {
             const cues = try self.gpa.alloc(Cue, self.cues.len + 1);
             @memcpy(cues[0..self.cues.len], self.cues);
-            cues[self.cues.len] = .{ .index = index.?, .start = start.?, .end = end.?,
-                .text = try self.gpa.dupe([]const u8, block[2..]) };
+            cues[self.cues.len] = .{ .index = index.?, .start = start.?, .end = end.?, .text = try self.gpa.dupe([]const u8, block[2..]) };
             self.cues = cues;
         }
     }
@@ -251,9 +291,7 @@ const Editor = struct {
     }
     fn listCue(self: *Editor, out: *std.Io.Writer, i: usize) Error!void {
         const c = self.cues[i];
-        try out.print("{d} {d} {s} {s} {s}\n", .{ i + 1, c.index,
-            try timeText(self.gpa, c.start, false), try timeText(self.gpa, c.end, false),
-            try std.mem.join(self.gpa, "|", c.text) });
+        try out.print("{d} {d} {s} {s} {s}\n", .{ i + 1, c.index, try timeText(self.gpa, c.start, false), try timeText(self.gpa, c.end, false), try std.mem.join(self.gpa, "|", c.text) });
     }
     fn problem(out: *std.Io.Writer, count: *usize, comptime fmt: []const u8, args: anytype) Error!void {
         try out.print(fmt, args);
@@ -274,9 +312,7 @@ const Editor = struct {
             return;
         }
         switch (op) {
-            .SHIFT, .SHIFTFROM, .SCALE, .SYNC, .SNAP, .FIXOVERLAP, .EXTEND, .TIME,
-            .SORT, .RENUMBER, .MERGE, .SPLIT, .INSERT, .DELETE, .TEXT, .BALANCE,
-            .STRIP, .CLEANHI, .REPLACE => try self.history.append(self.gpa, .{ .op = op, .cues = try self.snapshot() }),
+            .SHIFT, .SHIFTFROM, .SCALE, .SYNC, .SNAP, .FIXOVERLAP, .EXTEND, .TIME, .SORT, .RENUMBER, .MERGE, .SPLIT, .INSERT, .DELETE, .TEXT, .BALANCE, .STRIP, .CLEANHI, .REPLACE => try self.history.append(self.gpa, .{ .op = op, .cues = try self.snapshot() }),
             else => {},
         }
         switch (op) {
@@ -288,16 +324,14 @@ const Editor = struct {
                     const d = c.duration();
                     if (c.index != @as(i64, @intCast(p))) try problem(out, &problems, "cue {d}: index {d} (expected {d})", .{ p, c.index, p });
                     if (d <= 0) try problem(out, &problems, "cue {d}: end not after start", .{p});
-                    if (i > 0 and c.start < self.cues[i - 1].end) try problem(out, &problems,
-                        "cue {d}: overlaps previous by {d} ms", .{ p, self.cues[i - 1].end - c.start });
+                    if (i > 0 and c.start < self.cues[i - 1].end) try problem(out, &problems, "cue {d}: overlaps previous by {d} ms", .{ p, self.cues[i - 1].end - c.start });
                     if (d >= 1 and d < 700) try problem(out, &problems, "cue {d}: too short ({d} ms)", .{ p, d });
                     if (d > 7000) try problem(out, &problems, "cue {d}: too long ({d} ms)", .{ p, d });
                     for (c.text, 0..) |text, j| {
                         if (text.len > 42) try problem(out, &problems, "cue {d}: line {d} too long ({d} chars)", .{ p, j + 1, text.len });
                     }
                     if (c.text.len >= 3) try problem(out, &problems, "cue {d}: too many lines ({d})", .{ p, c.text.len });
-                    if (d > 0 and c.characters() * 1000 > 21 * d) try problem(out, &problems,
-                        "cue {d}: too fast ({s} cps)", .{ p, try decimal(self.gpa, @divFloor(c.characters() * 100000, d)) });
+                    if (d > 0 and c.characters() * 1000 > 21 * d) try problem(out, &problems, "cue {d}: too fast ({s} cps)", .{ p, try decimal(self.gpa, @divFloor(c.characters() * 100000, d)) });
                 }
                 try out.print("VALIDATE problems={d}\n", .{problems});
             },
@@ -352,8 +386,7 @@ const Editor = struct {
                         longest = i;
                     }
                 }
-                try out.print("duration total={s} mean={s}\n", .{ try timeText(self.gpa, total, false),
-                    try timeText(self.gpa, @divFloor(total, @as(i64, @intCast(self.cues.len))), false) });
+                try out.print("duration total={s} mean={s}\n", .{ try timeText(self.gpa, total, false), try timeText(self.gpa, @divFloor(total, @as(i64, @intCast(self.cues.len))), false) });
                 try out.print("speed {s}\n", .{if (total == 0) "-" else try decimal(self.gpa, @divFloor(chars * 100000, total))});
                 try out.print("longest cue={d} duration={s}\n", .{ longest + 1, try timeText(self.gpa, maximum, false) });
                 if (self.cues.len == 1) try out.writeAll("gap none\n") else {
@@ -386,9 +419,12 @@ const Editor = struct {
                         while (p < text.len) {
                             const item = markup(text, p);
                             if (item.kind == .position and code == 0) code = item.detail;
-                            if (item.kind == .format) try bytes.appendSlice(self.gpa, text[p..p + item.len]);
+                            if (item.kind == .format) try bytes.appendSlice(self.gpa, text[p .. p + item.len]);
                             if (item.kind == .ordinary) try bytes.appendSlice(self.gpa, switch (text[p]) {
-                                '&' => "&amp;", '<' => "&lt;", '>' => "&gt;", else => text[p..p + 1],
+                                '&' => "&amp;",
+                                '<' => "&lt;",
+                                '>' => "&gt;",
+                                else => text[p .. p + 1],
                             });
                             p += item.len;
                         }
@@ -415,7 +451,7 @@ const Editor = struct {
                         while (p < text.len) {
                             const item = markup(text, p);
                             if (item.kind == .format) try out.writeAll(ass_tags[item.detail]) else if (item.kind != .font)
-                                try out.writeAll(text[p..p + item.len]);
+                                try out.writeAll(text[p .. p + item.len]);
                             p += item.len;
                         }
                     }
@@ -423,8 +459,7 @@ const Editor = struct {
                 }
             },
             .FRAMES => for (self.cues, 0..) |c, i| {
-                try out.print("{d} {d} {d}\n", .{ i + 1, @divFloor(c.start * args[0].a, 1000 * args[0].b),
-                    @divFloor(c.end * args[0].a, 1000 * args[0].b) });
+                try out.print("{d} {d} {d}\n", .{ i + 1, @divFloor(c.start * args[0].a, 1000 * args[0].b), @divFloor(c.end * args[0].a, 1000 * args[0].b) });
             },
             .SHIFT, .SHIFTFROM, .SCALE, .SYNC, .SNAP => {
                 const first = if (op == .SHIFTFROM) command.p(0) else 0;
@@ -455,7 +490,8 @@ const Editor = struct {
                     if (clamp) clamped += 1;
                 }
                 if (op == .SNAP) try out.print("SNAP changed={d}\n", .{changed}) else if (op == .SCALE)
-                    try out.print("SCALE cues={d}\n", .{self.cues.len}) else
+                    try out.print("SCALE cues={d}\n", .{self.cues.len})
+                else
                     try out.print("{s} cues={d} clamped={d}\n", .{ @tagName(op), self.cues.len - first, clamped });
             },
             .FIXOVERLAP => {
@@ -571,7 +607,7 @@ const Editor = struct {
                     var total: i64 = 0;
                     for (0..len) |i| {
                         counts[i] = 0;
-                        for (lines[i * 2..@min(i * 2 + 2, lines.len)]) |text| counts[i] += @intCast(text.len);
+                        for (lines[i * 2 .. @min(i * 2 + 2, lines.len)]) |text| counts[i] += @intCast(text.len);
                         total += counts[i];
                         order[i] = i;
                     }
@@ -586,8 +622,7 @@ const Editor = struct {
                     for (0..@as(usize, @intCast(c.duration() - allotted))) |i| times[order[i]] += 1;
                     var start = c.start;
                     for (0..len) |i| {
-                        try result.append(self.gpa, .{ .index = c.index, .start = start, .end = start + times[i],
-                            .text = lines[i * 2..@min(i * 2 + 2, lines.len)] });
+                        try result.append(self.gpa, .{ .index = c.index, .start = start, .end = start + times[i], .text = lines[i * 2 .. @min(i * 2 + 2, lines.len)] });
                         start += times[i];
                     }
                 }
@@ -599,7 +634,7 @@ const Editor = struct {
                 const result = try self.gpa.alloc(Cue, self.cues.len + 1);
                 @memcpy(result[0..p], self.cues[0..p]);
                 result[p] = .{ .index = command.n(0), .start = command.n(1), .end = command.n(2), .text = args[3].lines };
-                @memcpy(result[p + 1..], self.cues[p..]);
+                @memcpy(result[p + 1 ..], self.cues[p..]);
                 self.cues = result;
                 try out.print("INSERT cue={d} cues={d}\n", .{ command.n(0), self.cues.len });
             },
@@ -636,7 +671,8 @@ const Editor = struct {
                             const right = try std.mem.join(self.gpa, " ", ws[j..]);
                             const difference = @max(left.len, right.len) - @min(left.len, right.len);
                             if (left.len <= 42 and right.len <= 42 and (difference < best_difference or
-                                (difference == best_difference and left.len < best_first))) {
+                                (difference == best_difference and left.len < best_first)))
+                            {
                                 best_difference = difference;
                                 best_first = left.len;
                                 candidate = try self.gpa.dupe([]const u8, &.{ left, right });
@@ -672,7 +708,7 @@ const Editor = struct {
                                 p += item.len;
                             } else {
                                 const close: u8 = if (text[p] == '[') ']' else if (text[p] == '(') ')' else 0;
-                                const offset = if (close == 0) null else std.mem.findScalar(u8, text[p + 1..], close);
+                                const offset = if (close == 0) null else std.mem.findScalar(u8, text[p + 1 ..], close);
                                 if (offset) |end| {
                                     segments += 1;
                                     p += end + 2;
@@ -693,14 +729,13 @@ const Editor = struct {
                                 }
                                 if (is_label) {
                                     line_text = try normalized(self.gpa, try std.fmt.allocPrint(self.gpa, "{s}{s}", .{
-                                        @as([]const u8, if (dialogue_prefix) "- " else ""), body[colon + 1..],
+                                        @as([]const u8, if (dialogue_prefix) "- " else ""), body[colon + 1 ..],
                                     }));
                                     labels += 1;
                                 }
                             }
                         }
-                        if (line_text.len == 0 or (op == .CLEANHI and std.mem.eql(u8, line_text, "-"))) removed_lines += 1 else
-                            try lines.append(self.gpa, line_text);
+                        if (line_text.len == 0 or (op == .CLEANHI and std.mem.eql(u8, line_text, "-"))) removed_lines += 1 else try lines.append(self.gpa, line_text);
                     }
                     if (lines.items.len == 0) removed_cues += 1 else {
                         c.text = lines.items;
@@ -708,8 +743,7 @@ const Editor = struct {
                     }
                 }
                 self.cues = result.items;
-                if (op == .STRIP) try out.print("STRIP tags={d} removed_lines={d} removed_cues={d}\n", .{ tags, removed_lines, removed_cues }) else
-                    try out.print("CLEANHI segments={d} labels={d} removed_lines={d} removed_cues={d}\n", .{ segments, labels, removed_lines, removed_cues });
+                if (op == .STRIP) try out.print("STRIP tags={d} removed_lines={d} removed_cues={d}\n", .{ tags, removed_lines, removed_cues }) else try out.print("CLEANHI segments={d} labels={d} removed_lines={d} removed_cues={d}\n", .{ segments, labels, removed_lines, removed_cues });
             },
             .REPLACE => {
                 const old = args[0].lines[0];

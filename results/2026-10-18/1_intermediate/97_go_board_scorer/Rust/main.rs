@@ -12,7 +12,12 @@ fn color_index(color: u8) -> usize {
 }
 
 fn half(v: i32) -> String {
-    format!("{}{}.{}", if v < 0 { "-" } else { "" }, v.abs() / 2, if v.abs() % 2 == 1 { 5 } else { 0 })
+    format!(
+        "{}{}.{}",
+        if v < 0 { "-" } else { "" },
+        v.abs() / 2,
+        if v.abs() % 2 == 1 { 5 } else { 0 }
+    )
 }
 
 fn komi(s: &str) -> Option<i32> {
@@ -23,14 +28,25 @@ fn komi(s: &str) -> Option<i32> {
         return None;
     }
     let whole = parts[0];
-    if whole.is_empty() || (whole.len() > 1 && whole.starts_with('0')) || !whole.bytes().all(|x| x.is_ascii_digit()) {
+    if whole.is_empty()
+        || (whole.len() > 1 && whole.starts_with('0'))
+        || !whole.bytes().all(|x| x.is_ascii_digit())
+    {
         return None;
     }
     let whole: i32 = whole.parse().ok()?;
     if whole > 100 {
         return None;
     }
-    let fraction = if parts.len() == 1 { 0 } else if parts[1] == "0" { 0 } else if parts[1] == "5" { 1 } else { return None };
+    let fraction = if parts.len() == 1 {
+        0
+    } else if parts[1] == "0" {
+        0
+    } else if parts[1] == "5" {
+        1
+    } else {
+        return None;
+    };
     let result = 2 * whole + fraction;
     if negative && result == 0 {
         return None;
@@ -67,7 +83,11 @@ fn point_number(text: &str, size: usize) -> Option<usize> {
 }
 
 fn sgf(p: usize, size: usize) -> String {
-    format!("{}{}", (b'a' + (p % size) as u8) as char, (b'a' + (size - 1 - p / size) as u8) as char)
+    format!(
+        "{}{}",
+        (b'a' + (p % size) as u8) as char,
+        (b'a' + (size - 1 - p / size) as u8) as char
+    )
 }
 
 fn adjacent(p: usize, n: usize, diagonal: bool) -> Vec<usize> {
@@ -77,15 +97,18 @@ fn adjacent(p: usize, n: usize, diagonal: bool) -> Vec<usize> {
     } else {
         &[(-1, 0), (1, 0), (0, -1), (0, 1)]
     };
-    deltas.iter().filter_map(|&(dr, dc)| {
-        let r = row as i32 + dr;
-        let c = col as i32 + dc;
-        if r >= 0 && c >= 0 && r < n as i32 && c < n as i32 {
-            Some(r as usize * n + c as usize)
-        } else {
-            None
-        }
-    }).collect()
+    deltas
+        .iter()
+        .filter_map(|&(dr, dc)| {
+            let r = row as i32 + dr;
+            let c = col as i32 + dc;
+            if r >= 0 && c >= 0 && r < n as i32 && c < n as i32 {
+                Some(r as usize * n + c as usize)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn flood(board: &[u8], size: usize, p: usize, allowed: &[u8]) -> Vec<usize> {
@@ -117,13 +140,19 @@ struct Group {
 
 fn group(board: &[u8], size: usize, p: usize) -> Group {
     let stones = flood(board, size, p, &[board[p]]);
-    let mut liberties: Vec<usize> = stones.iter()
+    let mut liberties: Vec<usize> = stones
+        .iter()
         .flat_map(|&q| adjacent(q, size, false))
         .filter(|&q| board[q] == b'.')
         .collect();
     liberties.sort_unstable();
     liberties.dedup();
-    Group { color: board[p], first: stones[0], stones, liberties }
+    Group {
+        color: board[p],
+        first: stones[0],
+        stones,
+        liberties,
+    }
 }
 
 fn groups(board: &[u8], size: usize, color: Option<u8>) -> Vec<Group> {
@@ -150,7 +179,11 @@ struct Attempt {
 
 fn placement(board: &[u8], n: usize, color: u8, p: usize) -> Attempt {
     if board[p] != b'.' {
-        return Attempt { board: board.to_vec(), captured: 0, reason: Some("occupied") };
+        return Attempt {
+            board: board.to_vec(),
+            captured: 0,
+            reason: Some("occupied"),
+        };
     }
     let mut next = board.to_vec();
     next[p] = color;
@@ -170,8 +203,16 @@ fn placement(board: &[u8], n: usize, color: u8, p: usize) -> Attempt {
             }
         }
     }
-    let reason = if group(&next, n, p).liberties.is_empty() { Some("suicide") } else { None };
-    Attempt { board: next, captured, reason }
+    let reason = if group(&next, n, p).liberties.is_empty() {
+        Some("suicide")
+    } else {
+        None
+    };
+    Attempt {
+        board: next,
+        captured,
+        reason,
+    }
 }
 
 struct Region {
@@ -197,7 +238,15 @@ fn regions(board: &[u8], size: usize) -> Vec<Region> {
                 }
             }
         }
-        result.push(Region { first: p, points, owner: if border.len() == 1 { border.iter().copied().next() } else { None } });
+        result.push(Region {
+            first: p,
+            points,
+            owner: if border.len() == 1 {
+                border.iter().copied().next()
+            } else {
+                None
+            },
+        });
     }
     result
 }
@@ -214,20 +263,36 @@ fn safe(board: &[u8], size: usize, color: u8) -> Vec<Group> {
         for &q in &points {
             visited[q] = true;
         }
-        let touching: Vec<usize> = own.iter().enumerate().filter_map(|(i, g)| {
-            if points.iter().any(|&q| adjacent(q, size, false).iter().any(|s| g.stones.contains(s))) {
-                Some(i)
-            } else {
-                None
-            }
-        }).collect();
-        let vital: Vec<usize> = own.iter().enumerate().filter_map(|(i, g)| {
-            if points.iter().filter(|&&q| board[q] == b'.').all(|q| g.liberties.contains(q)) {
-                Some(i)
-            } else {
-                None
-            }
-        }).collect();
+        let touching: Vec<usize> = own
+            .iter()
+            .enumerate()
+            .filter_map(|(i, g)| {
+                if points.iter().any(|&q| {
+                    adjacent(q, size, false)
+                        .iter()
+                        .any(|s| g.stones.contains(s))
+                }) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let vital: Vec<usize> = own
+            .iter()
+            .enumerate()
+            .filter_map(|(i, g)| {
+                if points
+                    .iter()
+                    .filter(|&&q| board[q] == b'.')
+                    .all(|q| g.liberties.contains(q))
+                {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
         areas.push((touching, vital));
     }
     let mut good_groups = vec![true; own.len()];
@@ -236,7 +301,11 @@ fn safe(board: &[u8], size: usize, color: u8) -> Vec<Group> {
         let mut changed = false;
         for i in 0..own.len() {
             if good_groups[i] {
-                let count = areas.iter().enumerate().filter(|(j, (_, v))| good_areas[*j] && v.contains(&i)).count();
+                let count = areas
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, (_, v))| good_areas[*j] && v.contains(&i))
+                    .count();
                 if count < 2 {
                     good_groups[i] = false;
                     changed = true;
@@ -253,7 +322,10 @@ fn safe(board: &[u8], size: usize, color: u8) -> Vec<Group> {
             break;
         }
     }
-    own.into_iter().enumerate().filter_map(|(i, g)| if good_groups[i] { Some(g) } else { None }).collect()
+    own.into_iter()
+        .enumerate()
+        .filter_map(|(i, g)| if good_groups[i] { Some(g) } else { None })
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -262,9 +334,18 @@ struct Reading {
     chosen: Option<usize>,
 }
 
-fn defend(board: &[u8], size: usize, p: usize, depth: usize, memo: &mut HashMap<(Vec<u8>, usize, bool), Reading>) -> Reading {
+fn defend(
+    board: &[u8],
+    size: usize,
+    p: usize,
+    depth: usize,
+    memo: &mut HashMap<(Vec<u8>, usize, bool), Reading>,
+) -> Reading {
     if depth >= 40 {
-        return Reading { success: true, chosen: None };
+        return Reading {
+            success: true,
+            chosen: None,
+        };
     }
     let key = (board.to_vec(), depth, true);
     if let Some(result) = memo.get(&key) {
@@ -297,19 +378,34 @@ fn defend(board: &[u8], size: usize, p: usize, depth: usize, memo: &mut HashMap<
         }
         let m = group(&move_.board, size, p).liberties.len();
         if m >= 3 || (m == 2 && !attack(&move_.board, size, p, depth + 1, memo).success) {
-            let result = Reading { success: true, chosen: Some(q) };
+            let result = Reading {
+                success: true,
+                chosen: Some(q),
+            };
             memo.insert(key, result);
             return result;
         }
     }
-    let result = Reading { success: false, chosen: None };
+    let result = Reading {
+        success: false,
+        chosen: None,
+    };
     memo.insert(key, result);
     result
 }
 
-fn attack(board: &[u8], size: usize, p: usize, depth: usize, memo: &mut HashMap<(Vec<u8>, usize, bool), Reading>) -> Reading {
+fn attack(
+    board: &[u8],
+    size: usize,
+    p: usize,
+    depth: usize,
+    memo: &mut HashMap<(Vec<u8>, usize, bool), Reading>,
+) -> Reading {
     if depth >= 40 {
-        return Reading { success: false, chosen: None };
+        return Reading {
+            success: false,
+            chosen: None,
+        };
     }
     let key = (board.to_vec(), depth, false);
     if let Some(result) = memo.get(&key) {
@@ -319,12 +415,18 @@ fn attack(board: &[u8], size: usize, p: usize, depth: usize, memo: &mut HashMap<
     for q in group(board, size, p).liberties {
         let move_ = placement(board, size, opponent(defender), q);
         if move_.reason.is_none() && !defend(&move_.board, size, p, depth + 1, memo).success {
-            let result = Reading { success: true, chosen: Some(q) };
+            let result = Reading {
+                success: true,
+                chosen: Some(q),
+            };
             memo.insert(key, result);
             return result;
         }
     }
-    let result = Reading { success: false, chosen: None };
+    let result = Reading {
+        success: false,
+        chosen: None,
+    };
     memo.insert(key, result);
     result
 }
@@ -337,10 +439,26 @@ fn ladder(board: &[u8], size: usize, p: usize) -> (String, Option<usize>) {
     let mut memo = HashMap::new();
     if liberties == 1 {
         let result = defend(board, size, p, 0, &mut memo);
-        (if result.success { "escapes" } else { "captured" }.to_string(), if result.success { result.chosen } else { None })
+        (
+            if result.success {
+                "escapes"
+            } else {
+                "captured"
+            }
+            .to_string(),
+            if result.success { result.chosen } else { None },
+        )
     } else {
         let result = attack(board, size, p, 0, &mut memo);
-        (if result.success { "captured" } else { "escapes" }.to_string(), if result.success { result.chosen } else { None })
+        (
+            if result.success {
+                "captured"
+            } else {
+                "escapes"
+            }
+            .to_string(),
+            if result.success { result.chosen } else { None },
+        )
     }
 }
 
@@ -372,7 +490,11 @@ fn parse_records(s: &str, size: usize) -> Option<Vec<ReplayRecord>> {
     let mut records = Vec::new();
     let mut p = 0;
     while p < bytes.len() {
-        if p + 3 >= bytes.len() || bytes[p] != b';' || ![b'B', b'W'].contains(&bytes[p + 1]) || bytes[p + 2] != b'[' {
+        if p + 3 >= bytes.len()
+            || bytes[p] != b';'
+            || ![b'B', b'W'].contains(&bytes[p + 1])
+            || bytes[p + 2] != b'['
+        {
             return None;
         }
         let color = bytes[p + 1];
@@ -380,8 +502,10 @@ fn parse_records(s: &str, size: usize) -> Option<Vec<ReplayRecord>> {
         let point = if bytes[p] == b']' {
             None
         } else {
-            if p + 2 >= bytes.len() || !(b'a'..b'a' + size as u8).contains(&bytes[p]) ||
-                !(b'a'..b'a' + size as u8).contains(&bytes[p + 1]) {
+            if p + 2 >= bytes.len()
+                || !(b'a'..b'a' + size as u8).contains(&bytes[p])
+                || !(b'a'..b'a' + size as u8).contains(&bytes[p + 1])
+            {
                 return None;
             }
             let col = (bytes[p] - b'a') as usize;
@@ -395,7 +519,11 @@ fn parse_records(s: &str, size: usize) -> Option<Vec<ReplayRecord>> {
         p += 1;
         records.push(ReplayRecord { color, point });
     }
-    if records.is_empty() { None } else { Some(records) }
+    if records.is_empty() {
+        None
+    } else {
+        Some(records)
+    }
 }
 
 struct Game {
@@ -415,7 +543,13 @@ impl Game {
             size: 19,
             komi: 13,
             superko: false,
-            position: Position { board: Vec::new(), turn: b'B', captures: [0, 0], passes: 0, over: false },
+            position: Position {
+                board: Vec::new(),
+                turn: b'B',
+                captures: [0, 0],
+                passes: 0,
+                over: false,
+            },
             handicap: Vec::new(),
             history: Vec::new(),
             positions: Vec::new(),
@@ -428,7 +562,13 @@ impl Game {
     fn reset(&mut self, size: usize, komi: i32) {
         self.size = size;
         self.komi = komi;
-        self.position = Position { board: vec![b'.'; size * size], turn: b'B', captures: [0, 0], passes: 0, over: false };
+        self.position = Position {
+            board: vec![b'.'; size * size],
+            turn: b'B',
+            captures: [0, 0],
+            passes: 0,
+            over: false,
+        };
         self.handicap.clear();
         self.history.clear();
         self.positions = vec![self.position.board.clone()];
@@ -445,7 +585,10 @@ impl Game {
 
     fn check(&self, color: u8, point: usize) -> Attempt {
         let mut result = placement(&self.position.board, self.size, color, point);
-        if result.reason.is_none() && self.positions.len() >= 2 && result.board == self.positions[self.positions.len() - 2] {
+        if result.reason.is_none()
+            && self.positions.len() >= 2
+            && result.board == self.positions[self.positions.len() - 2]
+        {
             result.reason = Some("ko");
         }
         if result.reason.is_none() && self.superko && self.positions.contains(&result.board) {
@@ -470,7 +613,12 @@ impl Game {
             }
         }
         self.position.turn = opponent(color);
-        self.history.push(Move { color, point, captured, before });
+        self.history.push(Move {
+            color,
+            point,
+            captured,
+            before,
+        });
         self.positions.push(self.position.board.clone());
         self.dead.clear();
         captured
@@ -485,7 +633,11 @@ impl Game {
     }
 
     fn show(&self, output: &mut Vec<String>, map: bool) {
-        let board = if map { self.clean() } else { self.position.board.clone() };
+        let board = if map {
+            self.clean()
+        } else {
+            self.position.board.clone()
+        };
         let mut glyphs = board.clone();
         let star_names = handicap_names(self.size);
         let mut stars = HashSet::new();
@@ -507,18 +659,35 @@ impl Game {
         }
         for p in 0..board.len() {
             if board[p] == b'B' {
-                glyphs[p] = if !map && self.dead.contains(&p) { b'x' } else { b'X' };
+                glyphs[p] = if !map && self.dead.contains(&p) {
+                    b'x'
+                } else {
+                    b'X'
+                };
             } else if board[p] == b'W' {
-                glyphs[p] = if !map && self.dead.contains(&p) { b'o' } else { b'O' };
+                glyphs[p] = if !map && self.dead.contains(&p) {
+                    b'o'
+                } else {
+                    b'O'
+                };
             } else if !map {
                 glyphs[p] = if stars.contains(&p) { b'+' } else { b'.' };
             }
         }
-        let header = format!("   {}", COLS[..self.size].chars().map(|x| x.to_string()).collect::<Vec<_>>().join(" "));
+        let header = format!(
+            "   {}",
+            COLS[..self.size]
+                .chars()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
         output.push(header.clone());
         for row in (1..=self.size).rev() {
-            let items: Vec<_> = glyphs[(row - 1) * self.size..row * self.size].iter()
-                .map(|&c| (c as char).to_string()).collect();
+            let items: Vec<_> = glyphs[(row - 1) * self.size..row * self.size]
+                .iter()
+                .map(|&c| (c as char).to_string())
+                .collect();
             output.push(format!("{:>2} {} {}", row, items.join(" "), row));
         }
         output.push(header);
@@ -538,19 +707,44 @@ impl Game {
             let label = color as char;
             if method == "AREA" {
                 let stones = board.iter().filter(|&&x| x == color).count();
-                totals[index] = 2 * (stones + territory[index]) as i32 + if color == b'W' { self.komi } else { 0 };
+                totals[index] = 2 * (stones + territory[index]) as i32
+                    + if color == b'W' { self.komi } else { 0 };
                 output.push(if color == b'W' {
-                    format!("{label} stones {stones} territory {} komi {} total {}", territory[index], half(self.komi), half(totals[index]))
+                    format!(
+                        "{label} stones {stones} territory {} komi {} total {}",
+                        territory[index],
+                        half(self.komi),
+                        half(totals[index])
+                    )
                 } else {
-                    format!("{label} stones {stones} territory {} total {}", territory[index], half(totals[index]))
+                    format!(
+                        "{label} stones {stones} territory {} total {}",
+                        territory[index],
+                        half(totals[index])
+                    )
                 });
             } else {
-                let prisoners = self.position.captures[index] + self.dead.iter().filter(|&&p| self.position.board[p] == opponent(color)).count();
-                totals[index] = 2 * (territory[index] + prisoners) as i32 + if color == b'W' { self.komi } else { 0 };
+                let prisoners = self.position.captures[index]
+                    + self
+                        .dead
+                        .iter()
+                        .filter(|&&p| self.position.board[p] == opponent(color))
+                        .count();
+                totals[index] = 2 * (territory[index] + prisoners) as i32
+                    + if color == b'W' { self.komi } else { 0 };
                 output.push(if color == b'W' {
-                    format!("{label} territory {} prisoners {prisoners} komi {} total {}", territory[index], half(self.komi), half(totals[index]))
+                    format!(
+                        "{label} territory {} prisoners {prisoners} komi {} total {}",
+                        territory[index],
+                        half(self.komi),
+                        half(totals[index])
+                    )
                 } else {
-                    format!("{label} territory {} prisoners {prisoners} total {}", territory[index], half(totals[index]))
+                    format!(
+                        "{label} territory {} prisoners {prisoners} total {}",
+                        territory[index],
+                        half(totals[index])
+                    )
                 });
             }
         }
@@ -568,13 +762,25 @@ impl Game {
         let words: Vec<_> = line.split(' ').collect();
         let (command, args) = (words[0], &words[1..]);
         let two = ["BOARD", "PLAY"];
-        let one = ["KOMI", "SUPERKO", "HANDICAP", "PASS", "REPLAY", "GROUP", "LEGAL", "EYES", "SAFE", "LADDER", "DEAD", "SCORE"];
-        let zero = ["UNDO", "SHOW", "MAP", "STATUS", "CAPTURES", "HISTORY", "MOVES", "GROUPS", "ATARI", "REGIONS"];
+        let one = [
+            "KOMI", "SUPERKO", "HANDICAP", "PASS", "REPLAY", "GROUP", "LEGAL", "EYES", "SAFE",
+            "LADDER", "DEAD", "SCORE",
+        ];
+        let zero = [
+            "UNDO", "SHOW", "MAP", "STATUS", "CAPTURES", "HISTORY", "MOVES", "GROUPS", "ATARI",
+            "REGIONS",
+        ];
         if !two.contains(&command) && !one.contains(&command) && !zero.contains(&command) {
             output.push("ERROR unknown command".to_string());
             return;
         }
-        let expected = if two.contains(&command) { 2 } else if one.contains(&command) { 1 } else { 0 };
+        let expected = if two.contains(&command) {
+            2
+        } else if one.contains(&command) {
+            1
+        } else {
+            0
+        };
         if args.len() != expected {
             output.push("ERROR bad arguments".to_string());
             return;
@@ -646,7 +852,10 @@ impl Game {
             }
             "SUPERKO" => {
                 self.superko = args[0] == "ON";
-                output.push(format!("superko {}", if self.superko { "on" } else { "off" }));
+                output.push(format!(
+                    "superko {}",
+                    if self.superko { "on" } else { "off" }
+                ));
             }
             "HANDICAP" => {
                 if !self.history.is_empty() || self.position.board.iter().any(|&c| c != b'.') {
@@ -678,12 +887,25 @@ impl Game {
                 let color = args[0].as_bytes()[0];
                 let p = point.unwrap();
                 let attempt = self.check(color, p);
-                let why = if color != self.position.turn { Some("turn") } else { attempt.reason };
+                let why = if color != self.position.turn {
+                    Some("turn")
+                } else {
+                    attempt.reason
+                };
                 if let Some(reason) = why {
                     output.push(format!("ILLEGAL {} {} {}", color as char, args[1], reason));
                 } else {
                     let captured = self.play(color, Some(p), Some(attempt));
-                    output.push(format!("{} {}{}", color as char, args[1], if captured > 0 { format!(" captures {captured}") } else { String::new() }));
+                    output.push(format!(
+                        "{} {}{}",
+                        color as char,
+                        args[1],
+                        if captured > 0 {
+                            format!(" captures {captured}")
+                        } else {
+                            String::new()
+                        }
+                    ));
                 }
             }
             "PASS" => {
@@ -707,11 +929,16 @@ impl Game {
                     } else if record.color != self.position.turn {
                         Some("turn")
                     } else {
-                        record.point.and_then(|p| self.check(record.color, p).reason)
+                        record
+                            .point
+                            .and_then(|p| self.check(record.color, p).reason)
                     };
                     if let Some(reason) = why {
-                        stopped = format!(" stopped {} {} {reason}", record.color as char,
-                            record.point.map_or("pass".to_string(), |p| self.name(p)));
+                        stopped = format!(
+                            " stopped {} {} {reason}",
+                            record.color as char,
+                            record.point.map_or("pass".to_string(), |p| self.name(p))
+                        );
                         break;
                     }
                     self.play(record.color, record.point, None);
@@ -727,7 +954,11 @@ impl Game {
                     self.position = last.before;
                     self.positions.pop();
                     self.dead.clear();
-                    output.push(format!("undo {} {}", last.color as char, last.point.map_or("pass".to_string(), |p| self.name(p))));
+                    output.push(format!(
+                        "undo {} {}",
+                        last.color as char,
+                        last.point.map_or("pass".to_string(), |p| self.name(p))
+                    ));
                 } else {
                     output.push("ERROR nothing to undo".to_string());
                 }
@@ -735,21 +966,43 @@ impl Game {
             "SHOW" => self.show(output, false),
             "MAP" => self.show(output, true),
             "STATUS" => {
-                output.push(format!("size {} komi {} handicap {} superko {}", self.size, half(self.komi), self.handicap.len(),
-                    if self.superko { "on" } else { "off" }));
+                output.push(format!(
+                    "size {} komi {} handicap {} superko {}",
+                    self.size,
+                    half(self.komi),
+                    self.handicap.len(),
+                    if self.superko { "on" } else { "off" }
+                ));
                 output.push(if self.position.over {
                     format!("moves {} game over", self.history.len())
                 } else {
-                    format!("moves {} next {} passes {}", self.history.len(), self.position.turn as char, self.position.passes)
+                    format!(
+                        "moves {} next {} passes {}",
+                        self.history.len(),
+                        self.position.turn as char,
+                        self.position.passes
+                    )
                 });
             }
-            "CAPTURES" => output.push(format!("captures B {} W {}", self.position.captures[0], self.position.captures[1])),
+            "CAPTURES" => output.push(format!(
+                "captures B {} W {}",
+                self.position.captures[0], self.position.captures[1]
+            )),
             "HISTORY" => {
                 output.push(format!("history {}", self.history.len()));
                 for (i, entry) in self.history.iter().enumerate() {
                     let square = entry.point.map_or("pass".to_string(), |p| self.name(p));
-                    output.push(format!("{} {} {}{}", i + 1, entry.color as char, square,
-                        if entry.captured == 0 { String::new() } else { format!(" captures {}", entry.captured) }));
+                    output.push(format!(
+                        "{} {} {}{}",
+                        i + 1,
+                        entry.color as char,
+                        square,
+                        if entry.captured == 0 {
+                            String::new()
+                        } else {
+                            format!(" captures {}", entry.captured)
+                        }
+                    ));
                 }
             }
             "MOVES" => {
@@ -761,7 +1014,11 @@ impl Game {
                     }
                 }
                 for entry in &self.history {
-                    text.push_str(&format!(";{}[{}]", entry.color as char, entry.point.map_or(String::new(), |p| sgf(p, self.size))));
+                    text.push_str(&format!(
+                        ";{}[{}]",
+                        entry.color as char,
+                        entry.point.map_or(String::new(), |p| sgf(p, self.size))
+                    ));
                 }
                 text.push(')');
                 output.push(text);
@@ -774,38 +1031,88 @@ impl Game {
                 }
                 let g = group(&self.position.board, self.size, p);
                 if command == "GROUP" {
-                    output.push(format!("group {} {} size {} liberties {}", g.color as char, self.name(g.first), g.stones.len(), g.liberties.len()));
-                    output.push(format!("stones{}", g.stones.iter().map(|&q| format!(" {}", self.name(q))).collect::<Vec<_>>().join("")));
-                    output.push(format!("liberties{}", g.liberties.iter().map(|&q| format!(" {}", self.name(q))).collect::<Vec<_>>().join("")));
+                    output.push(format!(
+                        "group {} {} size {} liberties {}",
+                        g.color as char,
+                        self.name(g.first),
+                        g.stones.len(),
+                        g.liberties.len()
+                    ));
+                    output.push(format!(
+                        "stones{}",
+                        g.stones
+                            .iter()
+                            .map(|&q| format!(" {}", self.name(q)))
+                            .collect::<Vec<_>>()
+                            .join("")
+                    ));
+                    output.push(format!(
+                        "liberties{}",
+                        g.liberties
+                            .iter()
+                            .map(|&q| format!(" {}", self.name(q)))
+                            .collect::<Vec<_>>()
+                            .join("")
+                    ));
                 } else if command == "DEAD" {
                     let was_dead = self.dead.contains(&p);
                     for q in &g.stones {
-                        if was_dead { self.dead.remove(q); } else { self.dead.insert(*q); }
+                        if was_dead {
+                            self.dead.remove(q);
+                        } else {
+                            self.dead.insert(*q);
+                        }
                     }
-                    output.push(format!("{} {} {} size {}", if was_dead { "alive" } else { "dead" },
-                        g.color as char, self.name(g.first), g.stones.len()));
+                    output.push(format!(
+                        "{} {} {} size {}",
+                        if was_dead { "alive" } else { "dead" },
+                        g.color as char,
+                        self.name(g.first),
+                        g.stones.len()
+                    ));
                 } else {
                     let (status, move_) = ladder(&self.position.board, self.size, p);
-                    output.push(format!("ladder {} {status}{}", args[0], move_.map_or(String::new(), |q| format!(" {}", self.name(q)))));
+                    output.push(format!(
+                        "ladder {} {status}{}",
+                        args[0],
+                        move_.map_or(String::new(), |q| format!(" {}", self.name(q)))
+                    ));
                 }
             }
             "GROUPS" => {
                 let all = groups(&self.position.board, self.size, None);
                 output.push(format!("groups {}", all.len()));
                 for g in all {
-                    output.push(format!("{} {} size {} liberties {}{}", g.color as char, self.name(g.first), g.stones.len(),
-                        g.liberties.len(), if self.dead.contains(&g.first) { " dead" } else { "" }));
+                    output.push(format!(
+                        "{} {} size {} liberties {}{}",
+                        g.color as char,
+                        self.name(g.first),
+                        g.stones.len(),
+                        g.liberties.len(),
+                        if self.dead.contains(&g.first) {
+                            " dead"
+                        } else {
+                            ""
+                        }
+                    ));
                 }
             }
             "ATARI" => {
-                let all: Vec<_> = groups(&self.position.board, self.size, None).into_iter()
-                    .filter(|g| g.liberties.len() == 1).collect();
+                let all: Vec<_> = groups(&self.position.board, self.size, None)
+                    .into_iter()
+                    .filter(|g| g.liberties.len() == 1)
+                    .collect();
                 if all.is_empty() {
                     output.push("atari none".to_string());
                 }
                 for g in all {
-                    output.push(format!("atari {} {} size {} at {}", g.color as char, self.name(g.first), g.stones.len(),
-                        self.name(g.liberties[0])));
+                    output.push(format!(
+                        "atari {} {} size {} at {}",
+                        g.color as char,
+                        self.name(g.first),
+                        g.stones.len(),
+                        self.name(g.liberties[0])
+                    ));
                 }
             }
             "LEGAL" => {
@@ -834,10 +1141,16 @@ impl Game {
                     }
                     let neighbors = adjacent(p, self.size, false);
                     if neighbors.iter().all(|&q| self.position.board[q] == color) {
-                        let count = adjacent(p, self.size, true).into_iter()
-                            .filter(|&q| self.position.board[q] == opponent(color)).count();
+                        let count = adjacent(p, self.size, true)
+                            .into_iter()
+                            .filter(|&q| self.position.board[q] == opponent(color))
+                            .count();
                         let allowed = if neighbors.len() == 4 { 1 } else { 0 };
-                        found.push(format!("{} {}", self.name(p), if count <= allowed { "real" } else { "false" }));
+                        found.push(format!(
+                            "{} {}",
+                            self.name(p),
+                            if count <= allowed { "real" } else { "false" }
+                        ));
                     }
                 }
                 output.push(format!("eyes {} {}", color as char, found.len()));
@@ -855,7 +1168,13 @@ impl Game {
                 let all = regions(&self.clean(), self.size);
                 output.push(format!("regions {}", all.len()));
                 for area in all {
-                    output.push(format!("{} size {} {}", self.name(area.first), area.points.len(), area.owner.map_or("neutral", |c| if c == b'B' { "B" } else { "W" })));
+                    output.push(format!(
+                        "{} size {} {}",
+                        self.name(area.first),
+                        area.points.len(),
+                        area.owner
+                            .map_or("neutral", |c| if c == b'B' { "B" } else { "W" })
+                    ));
                 }
             }
             "SCORE" => self.score(args[0], output),

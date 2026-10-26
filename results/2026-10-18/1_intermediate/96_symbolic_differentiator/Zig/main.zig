@@ -271,8 +271,7 @@ const Machine = struct {
         while (true) {
             var factors: Expressions = .empty;
             for (pending) |f| {
-                if (f.k == 2) try factors.appendSlice(m.gpa, f.a)
-                else try factors.append(m.gpa, f);
+                if (f.k == 2) try factors.appendSlice(m.gpa, f.a) else try factors.append(m.gpa, f);
             }
             var c = Rational{ .p = 1 };
             var groups: std.ArrayList(ProductGroup) = .empty;
@@ -576,7 +575,9 @@ const Machine = struct {
             if (negative(f)) {
                 const exponent = try m.num(-f.a[1].q.p, f.a[1].q.q);
                 try bottom.append(m.gpa, if (equal(exponent, m.one))
-                    try m.showFactor(f.a[0]) else try m.showPower(f.a[0], exponent));
+                    try m.showFactor(f.a[0])
+                else
+                    try m.showPower(f.a[0], exponent));
             } else {
                 try top.append(m.gpa, try m.showFactor(f));
             }
@@ -594,12 +595,14 @@ const Machine = struct {
     fn show(m: *Machine, f: *Expr) anyerror!Text {
         if (f.k == 5) return if (f.q.q == 1)
             m.formatted("{d}", .{f.q.p})
-        else m.formatted("{d}/{d}", .{ f.q.p, f.q.q });
+        else
+            m.formatted("{d}/{d}", .{ f.q.p, f.q.q });
         if (f.k == 0) return f.s;
         if (f.k == 4) return m.formatted("{s}({s})", .{ f.s, try m.show(f.a[0]) });
         if (f.k == 3) return if (negative(f))
             m.quotient(.{ .p = 1 }, &.{f})
-        else m.showPower(f.a[0], f.a[1]);
+        else
+            m.showPower(f.a[0], f.a[1]);
         if (f.k == 2) {
             const info = coefficient(f);
             return m.quotient(info.c, info.factors);
@@ -820,14 +823,7 @@ const Machine = struct {
 
         const kind: Text = if (among(command_name, &.{ "SIMPLIFY", "EXPAND", "GRAD", "HESSIAN" }))
             "e"
-        else if (eql(command_name, "DIFF")) "ev"
-        else if (eql(command_name, "DIFFN")) "evn"
-        else if (eql(command_name, "IMPLICIT")) "evv"
-        else if (eql(command_name, "SUBST")) "eve"
-        else if (eql(command_name, "EVAL")) "ea"
-        else if (among(command_name, &.{ "TANGENT", "LIMIT" })) "evc"
-        else if (eql(command_name, "TAYLOR")) "evcn"
-        else return m.fail("unknown command {s}", .{command_name});
+        else if (eql(command_name, "DIFF")) "ev" else if (eql(command_name, "DIFFN")) "evn" else if (eql(command_name, "IMPLICIT")) "evv" else if (eql(command_name, "SUBST")) "eve" else if (eql(command_name, "EVAL")) "ea" else if (among(command_name, &.{ "TANGENT", "LIMIT" })) "evc" else if (eql(command_name, "TAYLOR")) "evcn" else return m.fail("unknown command {s}", .{command_name});
 
         var fields: Strings = .empty;
         if (split != null) {
@@ -876,7 +872,7 @@ const Machine = struct {
             for (vars, 0..) |v, i| {
                 const first = try m.derivative(f, v);
                 if (eql(command_name, "GRAD")) {
-                    try m.line(try m.formatted("d/d{s} = {s}", .{v, try m.show(first)}));
+                    try m.line(try m.formatted("d/d{s} = {s}", .{ v, try m.show(first) }));
                 } else {
                     for (vars[i..]) |w| {
                         try m.line(try m.formatted("d2/d{s}d{s} = {s}", .{
@@ -889,7 +885,7 @@ const Machine = struct {
             const other = strings.items[1];
             if (eql(variable, other)) return m.fail("same variable", .{});
             const value = try m.mul(&.{
-                m.minus, try m.derivative(f, variable),
+                m.minus,                                          try m.derivative(f, variable),
                 try m.power(try m.derivative(f, other), m.minus),
             });
             try m.line(try m.formatted("d{s}/d{s} = {s}", .{ other, variable, try m.show(value) }));
@@ -957,7 +953,8 @@ const Machine = struct {
                 const parts = if (f.k == 2) f.a else &.{f};
                 for (parts) |part| {
                     if (negative(part)) try bottoms.append(m.gpa, try m.power(
-                        part.a[0], try m.num(-part.a[1].q.p, part.a[1].q.q),
+                        part.a[0],
+                        try m.num(-part.a[1].q.p, part.a[1].q.q),
                     )) else try tops.append(m.gpa, part);
                 }
                 var numerator = try m.mul(tops.items);

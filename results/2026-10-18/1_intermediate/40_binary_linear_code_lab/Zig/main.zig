@@ -4,25 +4,81 @@ const Writer = std.Io.Writer;
 const Error = Allocator.Error || Writer.Error || error{Invalid};
 const Word = u32;
 const Verb = enum {
-    GEN, PCHECK, HAMMING, SIMPLEX, REPETITION, PARITY, RM, CYCLIC, DUAL, EXTEND,
-    PUNCTURE, SHORTEN, AUGMENT, EXPURGATE, PERMUTE, DIRECTSUM, UUV, PRODUCT,
-    LIST, DELETE, SHOW, INFO, SYSTEMATIC, WEIGHTS, COVERING, BURST, TRELLIS,
-    STDARRAY, EQUAL, ENCODE, SYNDROME, DECODE, BOUNDED, COSET, ERASURE, INTERLEAVE,
-    CRC, CRCCHECK, FACTOR, MACWILLIAMS, BOUNDS,
+    GEN,
+    PCHECK,
+    HAMMING,
+    SIMPLEX,
+    REPETITION,
+    PARITY,
+    RM,
+    CYCLIC,
+    DUAL,
+    EXTEND,
+    PUNCTURE,
+    SHORTEN,
+    AUGMENT,
+    EXPURGATE,
+    PERMUTE,
+    DIRECTSUM,
+    UUV,
+    PRODUCT,
+    LIST,
+    DELETE,
+    SHOW,
+    INFO,
+    SYSTEMATIC,
+    WEIGHTS,
+    COVERING,
+    BURST,
+    TRELLIS,
+    STDARRAY,
+    EQUAL,
+    ENCODE,
+    SYNDROME,
+    DECODE,
+    BOUNDED,
+    COSET,
+    ERASURE,
+    INTERLEAVE,
+    CRC,
+    CRCCHECK,
+    FACTOR,
+    MACWILLIAMS,
+    BOUNDS,
 };
 const Argument = enum { name, code, number, bits, erasure };
 const Format = struct { types: []const Argument, repeated: ?Argument = null, maximum: usize = 0 };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn one(shift: usize) Word { return @as(Word, 1) << @intCast(shift); }
-fn bit(word: Word, length: usize, column: usize) bool { return word & one(length - column - 1) != 0; }
-fn weight(word: Word) usize { return @popCount(word); }
-fn degree(word: Word) usize { return 31 - @as(usize, @clz(word)); }
-fn integer(text: []const u8) usize { return std.fmt.parseInt(usize, text, 10) catch unreachable; }
-fn binary(text: []const u8) Word { return std.fmt.parseInt(Word, text, 2) catch unreachable; }
-fn yes(value: bool) []const u8 { return if (value) "yes" else "no"; }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
-fn lessWord(_: void, a: Word, b: Word) bool { return a < b; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn one(shift: usize) Word {
+    return @as(Word, 1) << @intCast(shift);
+}
+fn bit(word: Word, length: usize, column: usize) bool {
+    return word & one(length - column - 1) != 0;
+}
+fn weight(word: Word) usize {
+    return @popCount(word);
+}
+fn degree(word: Word) usize {
+    return 31 - @as(usize, @clz(word));
+}
+fn integer(text: []const u8) usize {
+    return std.fmt.parseInt(usize, text, 10) catch unreachable;
+}
+fn binary(text: []const u8) Word {
+    return std.fmt.parseInt(Word, text, 2) catch unreachable;
+}
+fn yes(value: bool) []const u8 {
+    return if (value) "yes" else "no";
+}
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
+fn lessWord(_: void, a: Word, b: Word) bool {
+    return a < b;
+}
 
 const Bits = struct {
     word: Word,
@@ -31,7 +87,9 @@ const Bits = struct {
         for (0..value.length) |column| try out.writeByte(if (bit(value.word, value.length, column)) '1' else '0');
     }
 };
-fn bits(word: Word, length: usize) Bits { return .{ .word = word, .length = length }; }
+fn bits(word: Word, length: usize) Bits {
+    return .{ .word = word, .length = length };
+}
 
 const Name = struct {
     bytes: [8]u8 = undefined,
@@ -41,14 +99,23 @@ const Name = struct {
         @memcpy(result.bytes[0..text.len], text);
         return result;
     }
-    fn slice(value: *const Name) []const u8 { return value.bytes[0..value.len]; }
-    pub fn format(value: Name, out: *Writer) Writer.Error!void { try out.writeAll(value.slice()); }
+    fn slice(value: *const Name) []const u8 {
+        return value.bytes[0..value.len];
+    }
+    pub fn format(value: Name, out: *Writer) Writer.Error!void {
+        try out.writeAll(value.slice());
+    }
 };
 const Matrix = struct {
     rows: [30]Word = undefined,
     len: usize = 0,
-    fn add(matrix: *Matrix, row: Word) void { matrix.rows[matrix.len] = row; matrix.len += 1; }
-    fn slice(matrix: *const Matrix) []const Word { return matrix.rows[0..matrix.len]; }
+    fn add(matrix: *Matrix, row: Word) void {
+        matrix.rows[matrix.len] = row;
+        matrix.len += 1;
+    }
+    fn slice(matrix: *const Matrix) []const Word {
+        return matrix.rows[0..matrix.len];
+    }
 };
 const Echelon = struct { rows: Matrix, columns: [30]usize };
 const Division = struct { quotient: Word, remainder: Word };
@@ -93,7 +160,9 @@ fn rref(original: Matrix, length: usize) Echelon {
         const old = rows.rows[count];
         rows.rows[count] = rows.rows[found];
         rows.rows[found] = old;
-        for (0..rows.len) |row| if (row != count and bit(rows.rows[row], length, column)) { rows.rows[row] ^= rows.rows[count]; };
+        for (0..rows.len) |row| if (row != count and bit(rows.rows[row], length, column)) {
+            rows.rows[row] ^= rows.rows[count];
+        };
         columns[count] = column;
         count += 1;
     }
@@ -105,7 +174,10 @@ fn nullspace(original: Matrix, length: usize) Matrix {
     var result: Matrix = .{};
     for (0..length) |column| {
         var is_pivot = false;
-        for (reduced.columns[0..reduced.rows.len]) |pivot| if (pivot == column) { is_pivot = true; break; };
+        for (reduced.columns[0..reduced.rows.len]) |pivot| if (pivot == column) {
+            is_pivot = true;
+            break;
+        };
         if (is_pivot) continue;
         var word = one(length - column - 1);
         for (reduced.rows.slice(), 0..) |row, index| {
@@ -117,7 +189,9 @@ fn nullspace(original: Matrix, length: usize) Matrix {
 }
 fn spanWord(rows: Matrix, message: usize) Word {
     var result: Word = 0;
-    for (rows.slice(), 0..) |row, index| if (message & (@as(usize, 1) << @intCast(index)) != 0) { result ^= row; };
+    for (rows.slice(), 0..) |row, index| if (message & (@as(usize, 1) << @intCast(index)) != 0) {
+        result ^= row;
+    };
     return result;
 }
 fn distribution(words: []const Word) [25]usize {
@@ -158,11 +232,15 @@ const binomials = blk: {
     for (0..25) |n| {
         table[n][0] = 1;
         table[n][n] = 1;
-        if (n >= 2) for (1..n) |k| { table[n][k] = table[n - 1][k - 1] + table[n - 1][k]; };
+        if (n >= 2) for (1..n) |k| {
+            table[n][k] = table[n - 1][k - 1] + table[n - 1][k];
+        };
     }
     break :blk table;
 };
-fn binomial(n: usize, k: usize) i64 { return if (k > n) 0 else binomials[n][k]; }
+fn binomial(n: usize, k: usize) i64 {
+    return if (k > n) 0 else binomials[n][k];
+}
 fn volume(n: usize, t: usize) i64 {
     var sum: i64 = 0;
     for (binomials[n][0 .. t + 1]) |value| sum += value;
@@ -189,8 +267,12 @@ const Code = struct {
     words: []const Word = &.{},
     cached_leaders: ?[]const Word = null,
 
-    fn k(code: *const Code) usize { return code.g.len; }
-    fn encoder(code: *const Code) []const u8 { return if (code.polynomial == null) "matrix" else "polynomial"; }
+    fn k(code: *const Code) usize {
+        return code.g.len;
+    }
+    fn encoder(code: *const Code) []const u8 {
+        return if (code.polynomial == null) "matrix" else "polynomial";
+    }
     fn create(gpa: Allocator, n: usize, g: Matrix, h: ?Matrix, polynomial: ?Word) Allocator.Error!*Code {
         const code = try gpa.create(Code);
         code.* = .{ .n = n, .g = g, .h = h orelse nullspace(g, n), .polynomial = polynomial };
@@ -208,7 +290,9 @@ const Code = struct {
             return shifted | divide(shifted, polynomial).remainder;
         }
         var word: Word = 0;
-        for (code.g.slice(), 0..) |row, index| if (bit(message, code.k(), index)) { word ^= row; };
+        for (code.g.slice(), 0..) |row, index| if (bit(message, code.k(), index)) {
+            word ^= row;
+        };
         return word;
     }
     fn syndrome(code: *const Code, word: Word) usize {
@@ -260,7 +344,9 @@ const Laboratory = struct {
         for (lab.codes.items, 0..) |entry, index| if (equal(entry.name.slice(), name)) return index;
         return null;
     }
-    fn get(lab: *const Laboratory, name: []const u8) *Code { return lab.codes.items[lab.find(name).?].code; }
+    fn get(lab: *const Laboratory, name: []const u8) *Code {
+        return lab.codes.items[lab.find(name).?].code;
+    }
 };
 
 fn formatOf(verb: Verb) Format {
@@ -286,7 +372,9 @@ fn formatOf(verb: Verb) Format {
         .BOUNDS => .{ .types = &.{ .number, .number } },
     };
 }
-fn letter(character: u8) bool { return (character >= 'A' and character <= 'Z') or (character >= 'a' and character <= 'z'); }
+fn letter(character: u8) bool {
+    return (character >= 'A' and character <= 'Z') or (character >= 'a' and character <= 'z');
+}
 fn valid(text: []const u8, kind: Argument) bool {
     if (text.len == 0) return false;
     switch (kind) {
@@ -361,7 +449,7 @@ const Session = struct {
                 n = one(r) - 1;
                 var rows: Matrix = .{};
                 for (0..r) |_| rows.add(0);
-                for (1 .. n + 1) |column| {
+                for (1..n + 1) |column| {
                     for (0..r) |row| rows.rows[row] = (rows.rows[row] << 1) | @intFromBool(bit(@intCast(column), r, row));
                 }
                 if (verb == .HAMMING) {
@@ -373,7 +461,7 @@ const Session = struct {
                 n = integer(args[1]);
                 if (n < 2 or n > 24) return session.fail("bad parameter", .{});
                 if (verb == .REPETITION) g.add(one(n) - 1) else {
-                    for (0 .. n - 1) |row| g.add(one(n - row - 1) | 1);
+                    for (0..n - 1) |row| g.add(one(n - row - 1) | 1);
                 }
             },
             .RM => {
@@ -421,11 +509,16 @@ const Session = struct {
                 var rows = a.g;
                 if (verb == .SHORTEN) {
                     var pivot: ?usize = null;
-                    for (rows.slice(), 0..) |row, index| if (bit(row, a.n, column)) { pivot = index; break; };
+                    for (rows.slice(), 0..) |row, index| if (bit(row, a.n, column)) {
+                        pivot = index;
+                        break;
+                    };
                     if (pivot) |index| {
                         var kept: Matrix = .{};
                         const z = rows.rows[index];
-                        for (rows.slice(), 0..) |row, i| if (i != index) { kept.add(if (bit(row, a.n, column)) row ^ z else row); };
+                        for (rows.slice(), 0..) |row, i| if (i != index) {
+                            kept.add(if (bit(row, a.n, column)) row ^ z else row);
+                        };
                         rows = kept;
                     }
                 }
@@ -444,10 +537,15 @@ const Session = struct {
                 const a = lab.get(args[1]);
                 n = a.n;
                 var pivot: ?usize = null;
-                for (a.g.slice(), 0..) |row, index| if (weight(row) % 2 == 1) { pivot = index; break; };
+                for (a.g.slice(), 0..) |row, index| if (weight(row) % 2 == 1) {
+                    pivot = index;
+                    break;
+                };
                 if (pivot) |index| {
                     const z = a.g.rows[index];
-                    for (a.g.slice(), 0..) |row, i| if (i != index) { g.add(if (weight(row) % 2 == 1) row ^ z else row); };
+                    for (a.g.slice(), 0..) |row, i| if (i != index) {
+                        g.add(if (weight(row) % 2 == 1) row ^ z else row);
+                    };
                 } else g = a.g;
             },
             .PERMUTE => {
@@ -512,7 +610,9 @@ const Session = struct {
             }
             if (column != pivot) {
                 const mask = one(n - column - 1) | one(n - pivot - 1);
-                for (rows.rows[0..k]) |*row| if (bit(row.*, n, column) != bit(row.*, n, pivot)) { row.* ^= mask; };
+                for (rows.rows[0..k]) |*row| if (bit(row.*, n, column) != bit(row.*, n, pivot)) {
+                    row.* ^= mask;
+                };
                 const old = order[pivot];
                 order[pivot] = order[column];
                 order[column] = old;
@@ -520,7 +620,9 @@ const Session = struct {
             const old = rows.rows[pivot];
             rows.rows[pivot] = rows.rows[found];
             rows.rows[found] = old;
-            for (0..k) |row| if (row != pivot and bit(rows.rows[row], n, pivot)) { rows.rows[row] ^= rows.rows[pivot]; };
+            for (0..k) |row| if (row != pivot and bit(rows.rows[row], n, pivot)) {
+                rows.rows[row] ^= rows.rows[pivot];
+            };
         }
         const out = session.out;
         try out.print("systematic {s} perm", .{name});
@@ -539,8 +641,8 @@ const Session = struct {
         for (code.words[1..]) |word| detect = @min(detect, degree(word) - @as(usize, @ctz(word)));
         var seen: [4096]bool = @splat(false);
         seen[0] = true;
-        for (1 .. code.n + 1) |length| {
-            for (0 .. code.n - length + 1) |start| {
+        for (1..code.n + 1) |length| {
+            for (0..code.n - length + 1) |start| {
                 const limit: usize = if (length == 1) 1 else one(length - 2);
                 for (0..limit) |middle| {
                     const pattern: Word = if (length == 1) 1 else one(length - 1) | (@as(Word, @intCast(middle)) << 1) | 1;
@@ -587,7 +689,7 @@ const Session = struct {
             const ok = decoded.message == binary(message);
             correct += @intFromBool(ok);
             try line(out, "row {d} errors {d} corrected {d} message {f} {s}", .{
-                row + 1, weight(received_words[row] ^ sent_words[row]), weight(decoded.err),
+                row + 1,                         weight(received_words[row] ^ sent_words[row]), weight(decoded.err),
                 bits(decoded.message, code.k()), if (ok) "ok" else "wrong",
             });
         }
@@ -614,8 +716,10 @@ const Session = struct {
             var hamming: usize = 0;
             var griesmer: usize = 0;
             var sum: usize = 0;
-            for (0 .. n + 1) |k| if (@as(i64, one(k)) * v <= @as(i64, one(n))) { hamming = k; };
-            for (1 .. n + 1) |k| {
+            for (0..n + 1) |k| if (@as(i64, one(k)) * v <= @as(i64, one(n))) {
+                hamming = k;
+            };
+            for (1..n + 1) |k| {
                 const denominator: usize = one(k - 1);
                 sum += (d + denominator - 1) / denominator;
                 if (sum <= n) griesmer = k;
@@ -656,11 +760,11 @@ const Session = struct {
         try line(out, "macwilliams n {d} size {d}", .{ n, size });
         try out.writeAll("dual");
         var feasible = size & (size - 1) == 0;
-        for (0 .. n + 1) |j| {
+        for (0..n + 1) |j| {
             var numerator: i64 = 0;
-            for (0 .. n + 1) |x| {
+            for (0..n + 1) |x| {
                 var krawtchouk: i64 = 0;
-                for (0 .. j + 1) |y| {
+                for (0..j + 1) |y| {
                     const sign: i64 = if (y % 2 == 0) 1 else -1;
                     krawtchouk += sign * binomial(x, y) * binomial(n - x, j - y);
                 }
@@ -680,13 +784,15 @@ const Session = struct {
         const args = words[1..];
         const lab = session.lab;
         const out = session.out;
-        if (@intFromEnum(verb) <= @intFromEnum(Verb.PRODUCT)) return session.define(verb, args);
+        if (@backingInt(verb) <= @backingInt(Verb.PRODUCT)) return session.define(verb, args);
         switch (verb) {
             .CRC, .CRCCHECK, .FACTOR, .MACWILLIAMS, .BOUNDS => return session.independent(verb, args),
             .LIST => {
                 const entries = try session.gpa.dupe(Entry, lab.codes.items);
                 std.sort.heap(Entry, entries, {}, struct {
-                    fn less(_: void, a: Entry, b: Entry) bool { return std.mem.order(u8, a.name.slice(), b.name.slice()) == .lt; }
+                    fn less(_: void, a: Entry, b: Entry) bool {
+                        return std.mem.order(u8, a.name.slice(), b.name.slice()) == .lt;
+                    }
                 }.less);
                 try line(out, "codes {d}", .{entries.len});
                 for (entries) |entry| try line(out, "{f} n {d} k {d} encoder {s}", .{ entry.name, entry.code.n, entry.code.k(), entry.code.encoder() });
@@ -720,7 +826,7 @@ const Session = struct {
                     if (code.syndrome(rotated) != 0) cyclic = false;
                 }
                 try out.print("info {s} n {d} k {d} rate {d}/{d} d {d} t {d} perfect {s} mds {s} cyclic ", .{
-                    name, n, k, k / divisor, n / divisor, distance, t,
+                    name,                                      n,                          k, k / divisor, n / divisor, distance, t,
                     yes(volume(n, t) == @as(i64, one(n - k))), yes(distance == n - k + 1),
                 });
                 if (cyclic) try line(out, "{f}", .{bits(code.words[1], degree(code.words[1]) + 1)}) else try line(out, "no", .{});
@@ -756,7 +862,7 @@ const Session = struct {
             .TRELLIS => {
                 var profile: [25]usize = undefined;
                 var maximum: usize = 0;
-                for (0 .. n + 1) |cut| {
+                for (0..n + 1) |cut| {
                     const right = n - cut;
                     var prefix: Matrix = .{};
                     var suffix: Matrix = .{};
@@ -834,7 +940,10 @@ const Session = struct {
                 }
                 var count: usize = 0;
                 var candidate: Word = 0;
-                for (code.words) |word| if (word & mask == known) { count += 1; candidate = word; };
+                for (code.words) |word| if (word & mask == known) {
+                    count += 1;
+                    candidate = word;
+                };
                 try out.print("erasure {s} erased {d} candidates {d}", .{ name, erased, count });
                 if (count == 1) try out.print(" codeword {f} message {f}", .{ bits(candidate, n), bits(code.messageFor(candidate), k) });
                 try out.writeByte('\n');

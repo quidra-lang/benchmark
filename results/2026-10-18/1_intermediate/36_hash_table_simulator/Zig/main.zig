@@ -3,28 +3,50 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const Error = Allocator.Error || Writer.Error || error{Invalid};
 const Mode = enum {
-    CHAIN, LINEAR, QUADRATIC, DOUBLE, ROBINHOOD, CUCKOO,
-    fn parts(mode: Mode) usize { return if (mode == .CUCKOO) 2 else 1; }
-    fn usesTombstones(mode: Mode) bool { return mode == .LINEAR or mode == .QUADRATIC or mode == .DOUBLE; }
+    CHAIN,
+    LINEAR,
+    QUADRATIC,
+    DOUBLE,
+    ROBINHOOD,
+    CUCKOO,
+    fn parts(mode: Mode) usize {
+        return if (mode == .CUCKOO) 2 else 1;
+    }
+    fn usesTombstones(mode: Mode) bool {
+        return mode == .LINEAR or mode == .QUADRATIC or mode == .DOUBLE;
+    }
 };
 const Command = enum { CREATE, MAXLOAD, MINLOAD, TRACE, HASH, PUT, ADD, GET, DEL, PROBE, GEN, GENDEL, RESIZE, CONVERT, CLEAR, DUMP, MAP, STATS, KEYS, TOP, SCAN, CLUSTERS, DIST, COMPARE, BENCH };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn integer(text: []const u8) usize { return std.fmt.parseInt(usize, text, 10) catch unreachable; }
-fn signedInteger(text: []const u8) i64 { return std.fmt.parseInt(i64, text, 10) catch unreachable; }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn integer(text: []const u8) usize {
+    return std.fmt.parseInt(usize, text, 10) catch unreachable;
+}
+fn signedInteger(text: []const u8) i64 {
+    return std.fmt.parseInt(i64, text, 10) catch unreachable;
+}
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
 fn prime(value: usize) usize {
     var candidate = @max(value, 2);
     while (true) : (candidate += 1) {
         var valid = true;
         var divisor: usize = 2;
         while (divisor * divisor <= candidate) : (divisor += 1) {
-            if (candidate % divisor == 0) { valid = false; break; }
+            if (candidate % divisor == 0) {
+                valid = false;
+                break;
+            }
         }
         if (valid) return candidate;
     }
 }
-fn gauge(value: usize) u8 { return if (value >= 10) '+' else '0' + @as(u8, @intCast(value)); }
+fn gauge(value: usize) u8 {
+    return if (value >= 10) '+' else '0' + @as(u8, @intCast(value));
+}
 const Ratio = struct {
     hundredths: u64,
     fn init(numerator: u64, denominator: u64) Ratio {
@@ -42,26 +64,40 @@ const Key = struct {
         @memcpy(key.bytes[0..text_value.len], text_value);
         return key;
     }
-    fn text(key: *const Key) []const u8 { return key.bytes[0..key.len]; }
-    fn eql(a: Key, b: Key) bool { return equal(a.text(), b.text()); }
+    fn text(key: *const Key) []const u8 {
+        return key.bytes[0..key.len];
+    }
+    fn eql(a: Key, b: Key) bool {
+        return equal(a.text(), b.text());
+    }
     fn hash(key: Key, base: usize, modulus: usize) usize {
         var value: usize = 0;
         for (key.text()) |character| value = (value * base + character) % modulus;
         return value;
     }
-    fn less(_: void, a: Key, b: Key) bool { return std.mem.order(u8, a.text(), b.text()) == .lt; }
-    pub fn format(key: Key, out: *Writer) Writer.Error!void { try out.writeAll(key.text()); }
+    fn less(_: void, a: Key, b: Key) bool {
+        return std.mem.order(u8, a.text(), b.text()) == .lt;
+    }
+    pub fn format(key: Key, out: *Writer) Writer.Error!void {
+        try out.writeAll(key.text());
+    }
 };
 const Item = struct {
     key: Key,
     value: i64,
-    fn less(_: void, a: Item, b: Item) bool { return Key.less({}, a.key, b.key); }
-    pub fn format(item: Item, out: *Writer) Writer.Error!void { try out.print("{f}={d}", .{ item.key, item.value }); }
+    fn less(_: void, a: Item, b: Item) bool {
+        return Key.less({}, a.key, b.key);
+    }
+    pub fn format(item: Item, out: *Writer) Writer.Error!void {
+        try out.print("{f}={d}", .{ item.key, item.value });
+    }
 };
 const Slot = struct {
     item: ?Item = null,
     deleted: bool = false,
-    fn empty(slot: Slot) bool { return slot.item == null and !slot.deleted; }
+    fn empty(slot: Slot) bool {
+        return slot.item == null and !slot.deleted;
+    }
     fn content(slot: Slot, out: *Writer) Writer.Error!void {
         if (slot.item) |item| try out.print("{f}", .{item.key}) else try out.writeAll(if (slot.deleted) "D" else "-");
     }
@@ -106,11 +142,19 @@ const Placement = struct {
 };
 const Removal = struct { shifted: usize = 0, moves: std.ArrayList(Move) = .empty };
 const Counters = struct {
-    probes: u64 = 0, rehashes: u64 = 0, inserts: u64 = 0, updates: u64 = 0,
-    hits: u64 = 0, misses: u64 = 0, deletes: u64 = 0, absent: u64 = 0,
+    probes: u64 = 0,
+    rehashes: u64 = 0,
+    inserts: u64 = 0,
+    updates: u64 = 0,
+    hits: u64 = 0,
+    misses: u64 = 0,
+    deletes: u64 = 0,
+    absent: u64 = 0,
 };
 const Cost = struct {
-    key: Key, probes: usize, position: usize,
+    key: Key,
+    probes: usize,
+    position: usize,
     fn less(_: void, a: Cost, b: Cost) bool {
         return if (a.probes != b.probes) a.probes > b.probes else Key.less({}, a.key, b.key);
     }
@@ -155,8 +199,12 @@ const Table = struct {
         table.allocator.free(table.buckets);
         table.allocator.free(table.slots);
     }
-    fn slotCount(table: *const Table) usize { return table.capacity * table.mode.parts(); }
-    fn position(table: *const Table, index: usize) Position { return .{ .mode = table.mode, .capacity = table.capacity, .index = index }; }
+    fn slotCount(table: *const Table) usize {
+        return table.capacity * table.mode.parts();
+    }
+    fn position(table: *const Table, index: usize) Position {
+        return .{ .mode = table.mode, .capacity = table.capacity, .index = index };
+    }
     fn distance(table: *const Table, key: Key, index: usize) usize {
         return (index + table.capacity - key.hash(31, table.capacity)) % table.capacity;
     }
@@ -175,7 +223,10 @@ const Table = struct {
         if (table.mode == .CHAIN) {
             for (table.buckets[first].items, 0..) |item, i| {
                 try result.examine(gpa, first, .{ .item = item }, trace);
-                if (item.key.eql(key)) { result.found(item, first, i); break; }
+                if (item.key.eql(key)) {
+                    result.found(item, first, i);
+                    break;
+                }
             }
             return result;
         }
@@ -183,7 +234,10 @@ const Table = struct {
             for ([_]usize{ first, table.capacity + key.hash(37, table.capacity) }) |index| {
                 const slot = table.slots[index];
                 try result.examine(gpa, index, slot, trace);
-                if (slot.item) |item| if (item.key.eql(key)) { result.found(item, index, 0); break; };
+                if (slot.item) |item| if (item.key.eql(key)) {
+                    result.found(item, index, 0);
+                    break;
+                };
             }
             return result;
         }
@@ -193,10 +247,19 @@ const Table = struct {
             const index = (first + offset) % table.capacity;
             const slot = table.slots[index];
             try result.examine(gpa, index, slot, trace);
-            if (slot.empty()) { if (result.available == null) result.available = index; break; }
-            if (slot.deleted) { if (result.available == null) result.available = index; continue; }
+            if (slot.empty()) {
+                if (result.available == null) result.available = index;
+                break;
+            }
+            if (slot.deleted) {
+                if (result.available == null) result.available = index;
+                continue;
+            }
             const item = slot.item.?;
-            if (item.key.eql(key)) { result.found(item, index, 0); break; }
+            if (item.key.eql(key)) {
+                result.found(item, index, 0);
+                break;
+            }
             if (table.mode == .ROBINHOOD and table.distance(item.key, index) < i) break;
         }
         return result;
@@ -212,7 +275,10 @@ const Table = struct {
         }
         if (table.mode.usesTombstones()) {
             const found = initial orelse try table.search(gpa, item.key, false);
-            const index = found.available orelse { result.homeless = item; return result; };
+            const index = found.available orelse {
+                result.homeless = item;
+                return result;
+            };
             result.position = index;
             result.reused = table.slots[index].deleted;
             table.slots[index] = .{ .item = item };
@@ -256,7 +322,10 @@ const Table = struct {
                 result.position = (try table.search(gpa, item.key, false)).position;
                 return result;
             };
-            if (result.kicks == table.capacity) { result.homeless = current; return result; }
+            if (result.kicks == table.capacity) {
+                result.homeless = current;
+                return result;
+            }
             table.slots[index] = .{ .item = current };
             result.kicks += 1;
             if (trace) try result.moves.append(gpa, .{ .key = resident.key, .from = index });
@@ -293,7 +362,10 @@ const Table = struct {
         var replacement = try Table.init(allocator, mode, capacity);
         errdefer replacement.deinit();
         for (listed) |item| {
-            if (!(try replacement.place(gpa, item, null, false)).success) { replacement.deinit(); return null; }
+            if (!(try replacement.place(gpa, item, null, false)).success) {
+                replacement.deinit();
+                return null;
+            }
             replacement.size += 1;
         }
         return replacement;
@@ -351,8 +423,7 @@ const Table = struct {
     }
     fn writeMoves(table: *const Table, out: *Writer, moves: []const Move) Writer.Error!void {
         for (moves) |move| {
-            if (move.to) |destination| try line(out, "SHIFT {f} {d} -> {d}", .{ move.key, move.from, destination })
-            else try line(out, "KICK {f} {f}", .{ move.key, table.position(move.from) });
+            if (move.to) |destination| try line(out, "SHIFT {f} {d} -> {d}", .{ move.key, move.from, destination }) else try line(out, "KICK {f} {f}", .{ move.key, table.position(move.from) });
         }
     }
     fn put(table: *Table, gpa: Allocator, out: ?*Writer, key: Key, value: i64, add: bool, max_load: usize, detailed: bool, trace: bool) Error!bool {
@@ -387,7 +458,10 @@ const Table = struct {
                 if (table.mode == .CUCKOO) try writer.print(" kicks={d} failed", .{placed.kicks}) else try writer.writeAll(" full");
             }
             try writer.writeByte('\n');
-            if (trace) { try table.writePath(writer, found); try table.writeMoves(writer, placed.moves.items); }
+            if (trace) {
+                try table.writePath(writer, found);
+                try table.writeMoves(writer, placed.moves.items);
+            }
         }
         if (!placed.success) try table.automatic(gpa, out, if (table.mode == .CUCKOO) "kicks" else "full", prime(2 * table.capacity), placed.homeless);
         try table.loadCheck(gpa, out, max_load);
@@ -423,7 +497,10 @@ const Table = struct {
             try writer.print("DEL {f} OK at={f} probes={d}", .{ key, table.position(found.position), found.probes });
             if (table.mode == .ROBINHOOD) try writer.print(" shifted={d}", .{removed.shifted});
             try writer.writeByte('\n');
-            if (trace) { try table.writePath(writer, found); try table.writeMoves(writer, removed.moves.items); }
+            if (trace) {
+                try table.writePath(writer, found);
+                try table.writeMoves(writer, removed.moves.items);
+            }
         }
         try table.shrinkCheck(gpa, out, min_load, max_load);
         return true;
@@ -449,7 +526,10 @@ const Table = struct {
     fn metrics(table: *const Table, gpa: Allocator) Allocator.Error!Metrics {
         var total: u64 = 0;
         var longest: usize = 0;
-        for (try table.costs(gpa)) |cost| { total += cost.probes; longest = @max(longest, cost.probes); }
+        for (try table.costs(gpa)) |cost| {
+            total += cost.probes;
+            longest = @max(longest, cost.probes);
+        }
         return .{ .longest = longest, .average = Ratio.init(total, table.size) };
     }
     fn dump(table: *const Table, out: *Writer) Writer.Error!void {
@@ -463,8 +543,7 @@ const Table = struct {
             }
         } else {
             for (table.slots, 0..) |slot, index| {
-                if (table.mode == .CUCKOO) try out.print("T{d} {d} ", .{ index / table.capacity + 1, index % table.capacity })
-                else try out.print("{d} ", .{index});
+                if (table.mode == .CUCKOO) try out.print("T{d} {d} ", .{ index / table.capacity + 1, index % table.capacity }) else try out.print("{d} ", .{index});
                 if (slot.item) |item| {
                     try out.print("{f}", .{item});
                     if (table.mode == .ROBINHOOD) try out.print(" d={d}", .{table.distance(item.key, index)});
@@ -477,7 +556,9 @@ const Table = struct {
         try line(out, "MAP {s} cap={d}", .{ @tagName(table.mode), table.capacity });
         const cost_by_slot = try gpa.alloc(usize, table.slotCount());
         @memset(cost_by_slot, 0);
-        if (table.mode != .CHAIN) for (try table.costs(gpa)) |cost| { cost_by_slot[cost.position] = cost.probes; };
+        if (table.mode != .CHAIN) for (try table.costs(gpa)) |cost| {
+            cost_by_slot[cost.position] = cost.probes;
+        };
         const characters = try gpa.alloc(u8, table.capacity);
         for (0..table.mode.parts()) |part| {
             for (characters, 0..) |*character, index| {
@@ -501,8 +582,8 @@ const Table = struct {
         const values = try table.metrics(gpa);
         const count = table.counters;
         try line(out, "STATS {s} size={d} cap={d} slots={d} tomb={d} load={f}% longest={d} avg={f} probes={d} rehashes={d}", .{
-            @tagName(table.mode), table.size, table.capacity, table.slotCount(), table.tombstones,
-            Ratio.init(100 * table.size, table.slotCount()), values.longest, values.average, count.probes, count.rehashes,
+            @tagName(table.mode),                            table.size,     table.capacity, table.slotCount(), table.tombstones,
+            Ratio.init(100 * table.size, table.slotCount()), values.longest, values.average, count.probes,      count.rehashes,
         });
         try line(out, "OPS inserts={d} updates={d} hits={d} misses={d} deletes={d} absent={d}", .{ count.inserts, count.updates, count.hits, count.misses, count.deletes, count.absent });
     }
@@ -522,8 +603,14 @@ const Table = struct {
     fn appendRuns(table: *const Table, gpa: Allocator, lengths: *std.ArrayList(usize), part: usize) Allocator.Error!void {
         const offset = part * table.capacity;
         var empty: ?usize = null;
-        for (0..table.capacity) |i| if (table.slots[offset + i].empty()) { empty = i; break; };
-        const start = empty orelse { try lengths.append(gpa, table.capacity); return; };
+        for (0..table.capacity) |i| if (table.slots[offset + i].empty()) {
+            empty = i;
+            break;
+        };
+        const start = empty orelse {
+            try lengths.append(gpa, table.capacity);
+            return;
+        };
         var length: usize = 0;
         for (1..table.capacity + 1) |i| {
             if (!table.slots[offset + (start + i) % table.capacity].empty()) {
@@ -556,7 +643,9 @@ const Table = struct {
     }
 };
 
-fn smaller(_: void, a: usize, b: usize) bool { return a < b; }
+fn smaller(_: void, a: usize, b: usize) bool {
+    return a < b;
+}
 fn histogram(out: *Writer, values: []usize) Writer.Error!void {
     std.sort.heap(usize, values, {}, smaller);
     var index: usize = 0;
@@ -577,7 +666,9 @@ const State = struct {
     max_load: usize = 75,
     min_load: usize = 0,
     tracing: bool = false,
-    fn deinit(state: *State) void { if (state.table) |*table| table.deinit(); }
+    fn deinit(state: *State) void {
+        if (state.table) |*table| table.deinit();
+    }
 };
 const modes = [_]Mode{ .CHAIN, .LINEAR, .QUADRATIC, .DOUBLE, .ROBINHOOD, .CUCKOO };
 const Session = struct {
@@ -623,7 +714,10 @@ const Session = struct {
             var probes: u64 = 0;
             for (keys[count..]) |key| {
                 const found = try trial.search(session.gpa, key, false);
-                if (found.item == null) { misses += 1; probes += found.probes; }
+                if (found.item == null) {
+                    misses += 1;
+                    probes += found.probes;
+                }
             }
             const values = try trial.metrics(session.gpa);
             try line(session.out, "{s} cap={d} keys={d} hit={f} misses={d} miss={f} rehashes={d}", .{ @tagName(mode), trial.capacity, trial.size, values.average, misses, Ratio.init(probes, misses), trial.counters.rehashes });
@@ -679,9 +773,13 @@ const Session = struct {
         if (state.table == null) return session.fail("NO TABLE", .{});
         const table = &state.table.?;
         switch (command) {
-            .PUT, .ADD => { _ = try table.put(gpa, out, Key.init(words[1]), signedInteger(words[2]), command == .ADD, state.max_load, true, state.tracing); },
+            .PUT, .ADD => {
+                _ = try table.put(gpa, out, Key.init(words[1]), signedInteger(words[2]), command == .ADD, state.max_load, true, state.tracing);
+            },
             .GET => try table.get(gpa, out, Key.init(words[1]), state.tracing),
-            .DEL => { _ = try table.delete(gpa, out, Key.init(words[1]), state.min_load, state.max_load, true, state.tracing); },
+            .DEL => {
+                _ = try table.delete(gpa, out, Key.init(words[1]), state.min_load, state.max_load, true, state.tracing);
+            },
             .PROBE => {
                 const key = Key.init(words[1]);
                 const found = try table.search(gpa, key, true);
@@ -698,12 +796,10 @@ const Session = struct {
                 var changed: usize = 0;
                 for (0..count) |i| {
                     const key = generator.next();
-                    const success = if (command == .GEN) try table.put(gpa, out, key, @intCast(i + 1), false, state.max_load, false, false)
-                        else try table.delete(gpa, out, key, state.min_load, state.max_load, false, false);
+                    const success = if (command == .GEN) try table.put(gpa, out, key, @intCast(i + 1), false, state.max_load, false, false) else try table.delete(gpa, out, key, state.min_load, state.max_load, false, false);
                     if (success) changed += 1;
                 }
-                if (command == .GEN) try line(out, "GEN {d} new={d} updated={d}", .{ count, changed, count - changed })
-                else try line(out, "GENDEL {d} deleted={d} missing={d}", .{ count, changed, count - changed });
+                if (command == .GEN) try line(out, "GEN {d} new={d} updated={d}", .{ count, changed, count - changed }) else try line(out, "GENDEL {d} deleted={d} missing={d}", .{ count, changed, count - changed });
             },
             .RESIZE, .CONVERT => {
                 var mode = table.mode;
@@ -716,8 +812,7 @@ const Session = struct {
                 if (100 * table.size > state.max_load * capacity * mode.parts()) return session.fail("TOO SMALL", .{});
                 const listed = try table.items(gpa);
                 const replacement = (try Table.rebuild(state.allocator, gpa, listed, mode, capacity)) orelse return session.fail("REBUILD FAILED", .{});
-                if (command == .RESIZE) try line(out, "RESIZE {d} -> {d}", .{ table.capacity, capacity })
-                else try line(out, "CONVERT {s} -> {s} cap={d}", .{ @tagName(table.mode), @tagName(mode), capacity });
+                if (command == .RESIZE) try line(out, "RESIZE {d} -> {d}", .{ table.capacity, capacity }) else try line(out, "CONVERT {s} -> {s} cap={d}", .{ @tagName(table.mode), @tagName(mode), capacity });
                 table.adopt(replacement);
             },
             .CLEAR => {

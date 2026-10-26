@@ -41,11 +41,7 @@ fn color(c: u8) bool {
     return std.ascii.isUpper(c);
 }
 
-const Move = struct {
-    f: usize,
-    t: usize,
-    p: u8 = 0
-};
+const Move = struct { f: usize, t: usize, p: u8 = 0 };
 
 const Moves = struct {
     a: [2048]Move = undefined,
@@ -56,16 +52,7 @@ const Moves = struct {
     }
 };
 
-const Pos = struct {
-    b: [64]u8 = [_]u8{
-        '.'
-    } ** 64,
-    white: bool = true,
-    rights: u8 = 0,
-    ep: ?usize = null,
-    half: usize = 0,
-    full: usize = 1
-};
+const Pos = struct { b: [64]u8 = @as([64]u8, @splat('.')), white: bool = true, rights: u8 = 0, ep: ?usize = null, half: usize = 0, full: usize = 1 };
 
 fn attack(p: Pos, f: usize, t: usize) bool {
     if (f == t or p.b[f] == '.') return false;
@@ -80,11 +67,11 @@ fn attack(p: Pos, f: usize, t: usize) bool {
     const straight = dx == 0 or dy == 0;
     const diagonal = ax == ay;
     if (!(kind == 'Q' and (straight or diagonal)) and !(kind == 'R' and straight) and !(kind == 'B' and diagonal)) return false;
-    const sx: i32 = if (dx < 0) - 1 else if (dx > 0) 1 else 0;
-    const sy: i32 = if (dy < 0) - 1 else if (dy > 0) 1 else 0;
+    const sx: i32 = if (dx < 0) -1 else if (dx > 0) 1 else 0;
+    const sy: i32 = if (dy < 0) -1 else if (dy > 0) 1 else 0;
     var x = @as(i32, @intCast(f % 8)) + sx;
     var y = @as(i32, @intCast(f / 8)) + sy;
-    while (x != @as(i32, @intCast(t % 8)) or y != @as(i32, @intCast(t / 8))): ({
+    while (x != @as(i32, @intCast(t % 8)) or y != @as(i32, @intCast(t / 8))) : ({
         x += sx;
         y += sy;
     }) {
@@ -130,25 +117,20 @@ fn after(p: Pos, m: Move) Pos {
     q.b[m.t] = if (m.p == 0) c else if (p.white) m.p else std.ascii.toLower(m.p);
     q.b[m.f] = '.';
     if (std.ascii.toUpper(c) == 'K') q.rights &= if (p.white) @as(u8, 12) else 3;
-    for ([_]usize{
-        7,
-        0,
-        63,
-        56
-    }, 0..) |s, i| if (m.f == s or m.t == s) {
+    for ([_]usize{ 7, 0, 63, 56 }, 0..) |s, i| if (m.f == s or m.t == s) {
         q.rights &= ~(@as(u8, 1) << @intCast(i));
     };
-    q.ep = if (pawn and @abs(@as(i32, @intCast(m.t)) - @as(i32, @intCast(m.f))) == 16)(m.f + m.t) / 2 else null;
+    q.ep = if (pawn and @abs(@as(i32, @intCast(m.t)) - @as(i32, @intCast(m.f))) == 16) (m.f + m.t) / 2 else null;
     if (!p.white) q.full += 1;
     q.white = !p.white;
     return q;
 }
 
 fn castleReason(p: Pos, king: bool) ?S {
-    const bit: u3 = if (p.white)(if (king) @as(u3, 0) else 1) else (if (king) @as(u3, 2) else 3);
+    const bit: u3 = if (p.white) (if (king) @as(u3, 0) else 1) else (if (king) @as(u3, 2) else 3);
     if (p.rights & (@as(u8, 1) << bit) == 0) return "no castling right";
     const base: usize = if (p.white) 0 else 56;
-    const files: []const usize = if (king) & .{ 5, 6 } else & .{ 1, 2, 3 };
+    const files: []const usize = if (king) &.{ 5, 6 } else &.{ 1, 2, 3 };
     for (files) |f| if (p.b[base + f] != '.') return "path blocked";
     if (check(p, p.white)) return "in check";
     if (attacked(p, base + (if (king) @as(usize, 5) else 3), !p.white)) return "through check";
@@ -187,10 +169,7 @@ fn legal(p: Pos) Moves {
     for (ps.a[0..ps.n]) |m| if (!check(after(p, m), p.white)) {
         list.add(m);
     };
-    for ([_]bool{
-        true,
-        false
-    }) |k| if (castleReason(p, k) == null) {
+    for ([_]bool{ true, false }) |k| if (castleReason(p, k) == null) {
         const base: usize = if (p.white) 0 else 56;
         list.add(.{ .f = base + 4, .t = base + (if (k) @as(usize, 6) else 2) });
     };
@@ -201,14 +180,14 @@ fn disamb(p: Pos, m: Move, ls: Moves) !S {
     var any = false;
     var samef = false;
     var samer = false;
-    for (ls.a[0..ls.n]) |n| if (n.f != m.f and n.t == m.t and p.b[n.f] == p.b[m.f]and !castle(p, n)) {
+    for (ls.a[0..ls.n]) |n| if (n.f != m.f and n.t == m.t and p.b[n.f] == p.b[m.f] and !castle(p, n)) {
         any = true;
         if (n.f % 8 == m.f % 8) samef = true;
         if (n.f / 8 == m.f / 8) samer = true;
     };
     if (!any) return "";
-    if (!samef) return fmt("{c}", .{ @as(u8, @intCast(m.f % 8)) + 'a' });
-    if (!samer) return fmt("{c}", .{ @as(u8, @intCast(m.f / 8)) + '1' });
+    if (!samef) return fmt("{c}", .{@as(u8, @intCast(m.f % 8)) + 'a'});
+    if (!samer) return fmt("{c}", .{@as(u8, @intCast(m.f / 8)) + '1'});
     return name(m.f);
 }
 
@@ -222,23 +201,14 @@ fn san(p: Pos, m: Move, ls: Moves) !S {
     var s: S = "";
     if (castle(p, m)) s = if (m.t > m.f) "O-O" else "O-O-O" else {
         const pawn = std.ascii.toUpper(p.b[m.f]) == 'P';
-        const prefix = if (pawn)(if (capture(p, m)) try fmt("{c}", .{ @as(u8, @intCast(m.f % 8)) + 'a' }) else "") else try fmt("{c}{s}", .{ std.ascii.toUpper(p.b[m.f]), try disamb(p, m, ls) });
-        s = try fmt("{s}{s}{s}{s}", .{
-            prefix,
-            if (capture(p, m)) @as(S, "x") else "",
-            try name(m.t),
-            if (m.p != 0) try fmt("={c}", .{ m.p }) else ""
-        });
+        const prefix = if (pawn) (if (capture(p, m)) try fmt("{c}", .{@as(u8, @intCast(m.f % 8)) + 'a'}) else "") else try fmt("{c}{s}", .{ std.ascii.toUpper(p.b[m.f]), try disamb(p, m, ls) });
+        s = try fmt("{s}{s}{s}{s}", .{ prefix, if (capture(p, m)) @as(S, "x") else "", try name(m.t), if (m.p != 0) try fmt("={c}", .{m.p}) else "" });
     }
     return fmt("{s}{s}", .{ s, mark(p, m) });
 }
 
 fn uci(m: Move) !S {
-    return fmt("{s}{s}{s}", .{
-        try name(m.f),
-        try name(m.t),
-        if (m.p == 0) @as(S, "") else try fmt("{c}", .{ std.ascii.toLower(m.p) })
-    });
+    return fmt("{s}{s}{s}", .{ try name(m.f), try name(m.t), if (m.p == 0) @as(S, "") else try fmt("{c}", .{std.ascii.toLower(m.p)}) });
 }
 
 fn fen(p: Pos) !S {
@@ -266,20 +236,10 @@ fn fen(p: Pos) !S {
     for ("KQkq", 0..) |c, i| if (p.rights & (@as(u8, 1) << @intCast(i)) != 0) {
         try rights.append(A, c);
     };
-    return fmt("{s} {s} {s} {s} {d} {d}", .{
-        s.items,
-        if (p.white) @as(S, "w") else "b",
-        if (rights.items.len == 0) @as(S, "-") else rights.items,
-        if (p.ep) |e| try name(e) else "-",
-        p.half,
-        p.full
-    });
+    return fmt("{s} {s} {s} {s} {d} {d}", .{ s.items, if (p.white) @as(S, "w") else "b", if (rights.items.len == 0) @as(S, "-") else rights.items, if (p.ep) |e| try name(e) else "-", p.half, p.full });
 }
 
-const ReadFen = struct {
-    p: Pos = .{},
-    reason: ?S = null
-};
+const ReadFen = struct { p: Pos = .{}, reason: ?S = null };
 
 fn badFen(reason: S) ReadFen {
     return .{ .reason = reason };
@@ -322,7 +282,7 @@ fn readFen(w: []const S) ReadFen {
     if (!eq(w[1], "w") and !eq(w[1], "b")) return badFen("side");
     p.white = eq(w[1], "w");
     if (!eq(w[2], "-")) {
-        var last: i32 =  - 1;
+        var last: i32 = -1;
         if (w[2].len == 0) return badFen("castling");
         for (w[2]) |c| {
             const i = std.mem.indexOfScalar(u8, "KQkq", c) orelse return badFen("castling");
@@ -345,12 +305,7 @@ fn readFen(w: []const S) ReadFen {
     return .{ .p = p };
 }
 
-const Record = struct {
-    p: Pos,
-    s: S,
-    u: S,
-    c: u8
-};
+const Record = struct { p: Pos, s: S, u: S, c: u8 };
 
 var history: std.ArrayList(Record) = .empty;
 
@@ -388,7 +343,7 @@ fn repetition() !usize {
 fn draw() !S {
     var s: S = "";
     if (current.half >= 100) s = " fifty";
-    if (try repetition() >= 3) s = try fmt("{s} threefold", .{ s });
+    if (try repetition() >= 3) s = try fmt("{s} threefold", .{s});
     var minors: usize = 0;
     var allb = true;
     var parity: ?usize = null;
@@ -404,13 +359,13 @@ fn draw() !S {
             if (v != q) allb = false;
         } else parity = q;
     }
-    if (insufficient and (minors <= 1 or allb)) s = try fmt("{s} insufficient", .{ s });
+    if (insufficient and (minors <= 1 or allb)) s = try fmt("{s} insufficient", .{s});
     return s;
 }
 
 fn state() S {
     const n = legal(current).n;
-    return if (check(current, current.white))(if (n == 0) "checkmate" else "check") else (if (n == 0) "stalemate" else "normal");
+    return if (check(current, current.white)) (if (n == 0) "checkmate" else "check") else (if (n == 0) "stalemate" else "normal");
 }
 
 fn result() !S {
@@ -421,19 +376,11 @@ fn result() !S {
 
 fn play(m: Move) !void {
     const s = try san(current, m, legal(current));
-    try history.append(A, .{
-        .p = current,
-        .s = s,
-        .u = try uci(m),
-        .c = if (current.b[m.t] != '.') std.ascii.toLower(current.b[m.t]) else if (enpassant(current, m)) @as(u8, 'p') else '-'
-    });
+    try history.append(A, .{ .p = current, .s = s, .u = try uci(m), .c = if (current.b[m.t] != '.') std.ascii.toLower(current.b[m.t]) else if (enpassant(current, m)) @as(u8, 'p') else '-' });
     current = after(current, m);
 }
 
-const Parsed = struct {
-    m: Move = .{ .f = 0, .t = 0 },
-    reason: ?S = null
-};
+const Parsed = struct { m: Move = .{ .f = 0, .t = 0 }, reason: ?S = null };
 
 fn illegal(reason: S) Parsed {
     return .{ .reason = reason };
@@ -460,21 +407,21 @@ fn readMove(w: S, isuci: bool) !Parsed {
         }
     } else {
         if (u.len > 0 and (u[u.len - 1] == '+' or u[u.len - 1] == '#')) {
-            cm = u[u.len - 1..];
-            u = u[0..u.len - 1];
+            cm = u[u.len - 1 ..];
+            u = u[0 .. u.len - 1];
         }
         if (eq(u, "O-O") or eq(u, "O-O-O")) cast = eq(u, "O-O") else {
             if (u.len >= 2 and u[u.len - 2] == '=') {
                 prom = u[u.len - 1];
                 if (std.mem.indexOfScalar(u8, "QRBN", prom) == null) return illegal("syntax");
-                u = u[0..u.len - 2];
+                u = u[0 .. u.len - 2];
             }
             if (u.len < 2) return illegal("syntax");
-            t = sq(u[u.len - 2..]) orelse return illegal("syntax");
-            u = u[0..u.len - 2];
+            t = sq(u[u.len - 2 ..]) orelse return illegal("syntax");
+            u = u[0 .. u.len - 2];
             if (u.len > 0 and u[u.len - 1] == 'x') {
                 cap = true;
-                u = u[0..u.len - 1];
+                u = u[0 .. u.len - 1];
             }
             if (u.len > 0 and std.mem.indexOfScalar(u8, "KQRBN", u[0]) != null) {
                 kind = u[0];
@@ -543,11 +490,7 @@ fn matching(m: Move, isuci: bool, f: ?usize, t: usize, kind: u8, df: ?u8, dr: ?u
     return kind != 'P' or (m.f % 8 != m.t % 8) == cap;
 }
 
-const Stats = struct {
-    v: [7]u64 = [_]u64 {
-        0
-    } ** 7
-};
+const Stats = struct { v: [7]u64 = @as([7]u64, @splat(0)) };
 
 fn perft(p: Pos, d: usize) Stats {
     var s: Stats = .{};
@@ -576,10 +519,7 @@ fn perft(p: Pos, d: usize) Stats {
     return s;
 }
 
-const Named = struct {
-    m: Move,
-    s: S
-};
+const Named = struct { m: Move, s: S };
 
 fn less(_: void, a: Named, b: Named) bool {
     return std.mem.order(u8, a.s, b.s) == .lt;
@@ -605,7 +545,7 @@ fn command(w: []const S) !void {
         try line("OK");
     } else if (eq(c, "LOAD")) {
         const r = readFen(a);
-        if (r.reason) |why| try line(try fmt("ERROR bad fen ({s})", .{ why })) else {
+        if (r.reason) |why| try line(try fmt("ERROR bad fen ({s})", .{why})) else {
             current = r.p;
             start = current;
             history.clearRetainingCapacity();
@@ -616,8 +556,8 @@ fn command(w: []const S) !void {
         var r: usize = 8;
         while (r > 0) {
             r -= 1;
-            try put(try fmt("{d}", .{ r + 1 }));
-            for (0..8) |f| try put(try fmt(" {c}", .{ current.b[r * 8 + f] }));
+            try put(try fmt("{d}", .{r + 1}));
+            for (0..8) |f| try put(try fmt(" {c}", .{current.b[r * 8 + f]}));
             try put("\n");
         }
         try line("  a b c d e f g h");
@@ -636,16 +576,11 @@ fn command(w: []const S) !void {
         }
         if (isuci and sans.items.len > 0) {
             try put("san");
-            for (sans.items) |s| try put(try fmt(" {s}", .{ s }));
+            for (sans.items) |s| try put(try fmt(" {s}", .{s}));
             try put("\n");
         }
         if (failure) |s| try line(s) else if (!isuci) try line("OK");
-    } else if (eq(c, "STATUS")) try line(try fmt("status {s} {s} rep {d}{s}", .{
-        if (current.white) @as(S, "white") else "black",
-        state(),
-        try repetition(),
-        try draw()
-    })) else if (eq(c, "UNDO")) {
+    } else if (eq(c, "STATUS")) try line(try fmt("status {s} {s} rep {d}{s}", .{ if (current.white) @as(S, "white") else "black", state(), try repetition(), try draw() })) else if (eq(c, "UNDO")) {
         const n = number(a[0], 1, 9999).?;
         if (n > history.items.len) try line("ERROR cannot undo") else {
             current = history.items[history.items.len - n].p;
@@ -661,8 +596,8 @@ fn command(w: []const S) !void {
         }
         std.mem.sort(Named, ns.items, {}, less);
         if (eq(c, "LEGAL")) {
-            try put(try fmt("legal {d}", .{ ns.items.len }));
-            for (ns.items) |n| try put(try fmt(" {s}", .{ n.s }));
+            try put(try fmt("legal {d}", .{ns.items.len}));
+            for (ns.items) |n| try put(try fmt(" {s}", .{n.s}));
             try put("\n");
         } else {
             var total: u64 = 0;
@@ -671,7 +606,7 @@ fn command(w: []const S) !void {
                 total += v;
                 try line(try fmt("{s} {d}", .{ n.s, v }));
             }
-            try line(try fmt("total {d}", .{ total }));
+            try line(try fmt("total {d}", .{total}));
         }
     } else if (eq(c, "PERFT")) {
         const d = number(a[0], 1, 3).?;
@@ -679,43 +614,29 @@ fn command(w: []const S) !void {
         try line(try fmt("perft {d} nodes {d} captures {d} ep {d} castles {d} promotions {d} checks {d} mates {d}", .{ d, s[0], s[1], s[2], s[3], s[4], s[5], s[6] }));
     } else if (eq(c, "ATTACKS")) {
         const t = sq(a[0]).?;
-        try put(try fmt("attacks {s}", .{ a[0] }));
-        for ([_]bool{
-            true,
-            false
-        }) |white| {
+        try put(try fmt("attacks {s}", .{a[0]}));
+        for ([_]bool{ true, false }) |white| {
             var n: usize = 0;
             for (current.b, 0..) |piece, f| if (piece != '.' and color(piece) == white and attack(current, f, t)) {
                 n += 1;
             };
             try put(try fmt(" {s} {d}", .{ if (white) @as(S, "white") else "black", n }));
             for (current.b, 0..) |piece, f| if (piece != '.' and color(piece) == white and attack(current, f, t)) {
-                try put(try fmt(" {s}", .{ try name(f) }));
+                try put(try fmt(" {s}", .{try name(f)}));
             };
         }
         try put("\n");
     } else if (eq(c, "PINS")) {
-        var pins: [64]?usize = [_]?usize{
-            null
-        } ** 64;
+        var pins: [64]?usize = @as([64]?usize, @splat(null));
         var king: usize = 0;
         for (current.b, 0..) |piece, i| if (piece == (if (current.white) @as(u8, 'K') else 'k')) {
             king = i;
         };
-        for ([_][2]i32 {
-             .{ 0, 1 },
-             .{ 0, - 1 },
-             .{ 1, 0 },
-             .{ - 1, 0 },
-             .{ 1, 1 },
-             .{ 1, - 1 },
-             .{ - 1, 1 },
-             .{ - 1, - 1 }
-        }) |d| {
+        for ([_][2]i32{ .{ 0, 1 }, .{ 0, -1 }, .{ 1, 0 }, .{ -1, 0 }, .{ 1, 1 }, .{ 1, -1 }, .{ -1, 1 }, .{ -1, -1 } }) |d| {
             var x = @as(i32, @intCast(king % 8)) + d[0];
             var y = @as(i32, @intCast(king / 8)) + d[1];
             var first: ?usize = null;
-            while (x >= 0 and x < 8 and y >= 0 and y < 8): ({
+            while (x >= 0 and x < 8 and y >= 0 and y < 8) : ({
                 x += d[0];
                 y += d[1];
             }) {
@@ -736,22 +657,22 @@ fn command(w: []const S) !void {
         for (pins) |v| if (v != null) {
             n += 1;
         };
-        try put(try fmt("pins {d}", .{ n }));
+        try put(try fmt("pins {d}", .{n}));
         for (pins, 0..) |v, i| if (v) |j| try put(try fmt(" {s}-{s}", .{ try name(i), try name(j) }));
         try put("\n");
     } else if (eq(c, "HISTORY")) {
-        try line(try fmt("history {d}", .{ history.items.len }));
+        try line(try fmt("history {d}", .{history.items.len}));
         for (history.items, 1..) |r, i| try line(try fmt("{d} {s} {s} {c}", .{ i, r.u, r.s, r.c }));
     } else if (eq(c, "PGN")) {
         const res = try result();
-        try line(try fmt("[Result \"{s}\"]", .{ res }));
+        try line(try fmt("[Result \"{s}\"]", .{res}));
         if (loaded) {
             try line("[SetUp \"1\"]");
-            try line(try fmt("[FEN \"{s}\"]", .{ try fen(start) }));
+            try line(try fmt("[FEN \"{s}\"]", .{try fen(start)}));
         }
         for (history.items, 0..) |r, i| {
-            if (r.p.white) try put(try fmt("{d}. ", .{ r.p.full })) else if (i == 0) try put(try fmt("{d}... ", .{ r.p.full }));
-            try put(try fmt("{s} ", .{ r.s }));
+            if (r.p.white) try put(try fmt("{d}. ", .{r.p.full})) else if (i == 0) try put(try fmt("{d}... ", .{r.p.full}));
+            try put(try fmt("{s} ", .{r.s}));
         }
         try line(res);
     }

@@ -4,14 +4,9 @@ use std::io::{self, Read};
 type Board = [u8; 64];
 
 const WEIGHTS: [i32; 64] = [
-    100, -20, 10, 5, 5, 10, -20, 100,
-    -20, -50, -2, -2, -2, -2, -50, -20,
-    10, -2, -1, -1, -1, -1, -2, 10,
-    5, -2, -1, -1, -1, -1, -2, 5,
-    5, -2, -1, -1, -1, -1, -2, 5,
-    10, -2, -1, -1, -1, -1, -2, 10,
-    -20, -50, -2, -2, -2, -2, -50, -20,
-    100, -20, 10, 5, 5, 10, -20, 100,
+    100, -20, 10, 5, 5, 10, -20, 100, -20, -50, -2, -2, -2, -2, -50, -20, 10, -2, -1, -1, -1, -1,
+    -2, 10, 5, -2, -1, -1, -1, -1, -2, 5, 5, -2, -1, -1, -1, -1, -2, 5, 10, -2, -1, -1, -1, -1, -2,
+    10, -20, -50, -2, -2, -2, -2, -50, -20, 100, -20, 10, 5, 5, 10, -20, 100,
 ];
 
 fn opponent(side: u8) -> u8 {
@@ -69,7 +64,9 @@ fn flips(board: &Board, side: u8, p: usize) -> Vec<usize> {
 }
 
 fn legal(board: &Board, side: u8) -> Vec<usize> {
-    (0..64).filter(|&p| board[p] == b'.' && !flips(board, side, p).is_empty()).collect()
+    (0..64)
+        .filter(|&p| board[p] == b'.' && !flips(board, side, p).is_empty())
+        .collect()
 }
 
 fn place(board: &Board, side: u8, p: usize) -> Board {
@@ -138,8 +135,15 @@ impl Solver {
         } else if moves.is_empty() {
             -self.search(board, other, if depth < 0 { -1 } else { depth - 1 })
         } else {
-            moves.into_iter()
-                .map(|p| -self.search(&place(board, side, p), other, if depth < 0 { -1 } else { depth - 1 }))
+            moves
+                .into_iter()
+                .map(|p| {
+                    -self.search(
+                        &place(board, side, p),
+                        other,
+                        if depth < 0 { -1 } else { depth - 1 },
+                    )
+                })
                 .max()
                 .unwrap()
         };
@@ -151,14 +155,29 @@ impl Solver {
     }
 
     fn ranked(&mut self, board: &Board, side: u8, depth: i32) -> Vec<(i32, usize)> {
-        let mut results: Vec<_> = legal(board, side).into_iter()
-            .map(|p| (-self.search(&place(board, side, p), opponent(side), if depth < 0 { -1 } else { depth - 1 }), p))
+        let mut results: Vec<_> = legal(board, side)
+            .into_iter()
+            .map(|p| {
+                (
+                    -self.search(
+                        &place(board, side, p),
+                        opponent(side),
+                        if depth < 0 { -1 } else { depth - 1 },
+                    ),
+                    p,
+                )
+            })
             .collect();
         results.sort_by_key(|&(value, p)| (-value, p));
         results
     }
 
-    fn variation(&mut self, mut board: Board, mut side: u8, mut depth: i32) -> (Vec<String>, Board) {
+    fn variation(
+        &mut self,
+        mut board: Board,
+        mut side: u8,
+        mut depth: i32,
+    ) -> (Vec<String>, Board) {
         let mut steps = Vec::new();
         while depth != 0 && !terminal(&board) {
             let moves = self.ranked(&board, side, depth);
@@ -187,9 +206,16 @@ impl Solver {
         let moves = legal(board, side);
         let other = opponent(side);
         let result = if moves.is_empty() {
-            if legal(board, other).is_empty() { 1 } else { self.perft(board, other, depth - 1) }
+            if legal(board, other).is_empty() {
+                1
+            } else {
+                self.perft(board, other, depth - 1)
+            }
         } else {
-            moves.into_iter().map(|p| self.perft(&place(board, side, p), other, depth - 1)).sum()
+            moves
+                .into_iter()
+                .map(|p| self.perft(&place(board, side, p), other, depth - 1))
+                .sum()
         };
         if self.perft_cache.len() > 200_000 {
             self.perft_cache.clear();
@@ -215,7 +241,9 @@ fn stable(board: &Board) -> (usize, usize) {
                 for sign in [-1, 1] {
                     let mut r = p as i32 / 8 + dr * sign;
                     let mut c = p as i32 % 8 + dc * sign;
-                    if !inside(r, c) || (set[(r * 8 + c) as usize] && board[(r * 8 + c) as usize] == board[p]) {
+                    if !inside(r, c)
+                        || (set[(r * 8 + c) as usize] && board[(r * 8 + c) as usize] == board[p])
+                    {
                         anchor = true;
                     }
                     while inside(r, c) {
@@ -349,7 +377,11 @@ impl Othello {
     }
 
     fn snapshot(&self) -> Position {
-        Position { board: self.board, side: self.side, over: self.over }
+        Position {
+            board: self.board,
+            side: self.side,
+            over: self.over,
+        }
     }
 
     fn restore(&mut self, position: Position) {
@@ -391,7 +423,13 @@ impl Othello {
         self.board = place(&self.board, side, p);
         if !quiet {
             if let Some(value) = value {
-                println!("{} {} flips {} value {}", side as char, name(p), flipped, value);
+                println!(
+                    "{} {} flips {} value {}",
+                    side as char,
+                    name(p),
+                    flipped,
+                    value
+                );
             } else {
                 println!("{} {} flips {}", side as char, name(p), flipped);
             }
@@ -399,7 +437,14 @@ impl Othello {
         self.side = opponent(side);
         let passed = self.adjust(quiet);
         let after = self.snapshot();
-        self.history.push(Move { side, square: p, count: flipped, passed, before, after });
+        self.history.push(Move {
+            side,
+            square: p,
+            count: flipped,
+            passed,
+            before,
+            after,
+        });
         self.redo.clear();
         passed
     }
@@ -440,7 +485,16 @@ impl Othello {
             "c4" => "rot180",
             _ => "",
         };
-        let normalized: String = played.iter().map(|&p| name(if operation.is_empty() { p } else { transformed_square(p, operation) })).collect();
+        let normalized: String = played
+            .iter()
+            .map(|&p| {
+                name(if operation.is_empty() {
+                    p
+                } else {
+                    transformed_square(p, operation)
+                })
+            })
+            .collect();
         println!("record {} moves {} passes", played.len(), passes);
         println!("normal {}", normalized);
         println!("{}", self.status());
@@ -472,7 +526,13 @@ impl Othello {
             println!("moves 0");
         } else {
             let passes = self.history.iter().filter(|m| m.passed).count();
-            println!("moves {} flips {} avg {} passes {}", self.history.len(), total, average(total, self.history.len()), passes);
+            println!(
+                "moves {} flips {} avg {} passes {}",
+                self.history.len(),
+                total,
+                average(total, self.history.len()),
+                passes
+            );
         }
         for side in [b'B', b'W'] {
             let moves: Vec<_> = self.history.iter().filter(|m| m.side == side).collect();
@@ -483,8 +543,20 @@ impl Othello {
             let sum: usize = moves.iter().map(|m| m.count).sum();
             let maximum = moves.iter().map(|m| m.count).max().unwrap();
             let first = moves.iter().find(|m| m.count == maximum).unwrap();
-            let corners = moves.iter().filter(|m| [0, 7, 56, 63].contains(&m.square)).count();
-            println!("{} moves {} flips {} avg {} max {} {} corners {}", side as char, moves.len(), sum, average(sum, moves.len()), maximum, name(first.square), corners);
+            let corners = moves
+                .iter()
+                .filter(|m| [0, 7, 56, 63].contains(&m.square))
+                .count();
+            println!(
+                "{} moves {} flips {} avg {} max {} {} corners {}",
+                side as char,
+                moves.len(),
+                sum,
+                average(sum, moves.len()),
+                maximum,
+                name(first.square),
+                corners
+            );
         }
     }
 
@@ -507,7 +579,12 @@ impl Othello {
             }
             moves += 1;
         }
-        println!("{} {} moves {} passes", if seed.is_some() { "random" } else { "autoplay" }, moves, passes);
+        println!(
+            "{} {} moves {} passes",
+            if seed.is_some() { "random" } else { "autoplay" },
+            moves,
+            passes
+        );
         println!("moves {}", played);
         println!("{}", game_over(&self.board));
     }
@@ -522,7 +599,8 @@ impl Othello {
             let first = place(&self.board, self.side, p);
             for _ in 0..games {
                 let last = random_game(first, opponent(self.side), &mut random);
-                let difference = count(&last, self.side) as i32 - count(&last, opponent(self.side)) as i32;
+                let difference =
+                    count(&last, self.side) as i32 - count(&last, opponent(self.side)) as i32;
                 if difference > 0 {
                     wins += 1;
                 } else if difference == 0 {
@@ -546,19 +624,41 @@ impl Othello {
         let mut parts = line.split(' ');
         let command = parts.next().unwrap_or("");
         let args: Vec<&str> = parts.collect();
-        let zero = ["NEW", "DUMP", "SHOW", "SCORE", "LEGAL", "HISTORY", "SHEET", "STATS", "EVAL", "STABLE", "SOLVE"];
-        let numeric = ["UNDO", "REDO", "HINT", "PV", "AI", "ANALYZE", "RANDOM", "PERFT", "DIVIDE"];
-        let active = ["FLIPS", "MOVE", "PLAY", "HINT", "PV", "AI", "SOLVE", "AUTOPLAY", "RANDOM", "MC", "DIVIDE"];
-        let known = zero.contains(&command) || numeric.contains(&command) ||
-            ["LOAD", "TRANSFORM", "AUTOPLAY", "MC", "FLIPS", "MOVE", "PLAY", "RECORD"].contains(&command);
+        let zero = [
+            "NEW", "DUMP", "SHOW", "SCORE", "LEGAL", "HISTORY", "SHEET", "STATS", "EVAL", "STABLE",
+            "SOLVE",
+        ];
+        let numeric = [
+            "UNDO", "REDO", "HINT", "PV", "AI", "ANALYZE", "RANDOM", "PERFT", "DIVIDE",
+        ];
+        let active = [
+            "FLIPS", "MOVE", "PLAY", "HINT", "PV", "AI", "SOLVE", "AUTOPLAY", "RANDOM", "MC",
+            "DIVIDE",
+        ];
+        let known = zero.contains(&command)
+            || numeric.contains(&command)
+            || [
+                "LOAD",
+                "TRANSFORM",
+                "AUTOPLAY",
+                "MC",
+                "FLIPS",
+                "MOVE",
+                "PLAY",
+                "RECORD",
+            ]
+            .contains(&command);
         if !known {
             println!("ERROR unknown command");
             return;
         }
         let mut error = None;
         if command == "LOAD" {
-            if args.len() != 2 || args[0].len() != 64 || !args[0].bytes().all(|c| matches!(c, b'.' | b'B' | b'W')) ||
-                !["B", "W"].contains(&args[1]) {
+            if args.len() != 2
+                || args[0].len() != 64
+                || !args[0].bytes().all(|c| matches!(c, b'.' | b'B' | b'W'))
+                || !["B", "W"].contains(&args[1])
+            {
                 error = Some("bad board");
             }
         } else if command == "MOVE" || command == "FLIPS" {
@@ -566,7 +666,10 @@ impl Othello {
                 error = Some("bad arguments");
             } else {
                 let bytes = args[0].as_bytes();
-                if bytes.len() != 2 || !(b'a'..=b'h').contains(&bytes[0]) || !(b'1'..=b'8').contains(&bytes[1]) {
+                if bytes.len() != 2
+                    || !(b'a'..=b'h').contains(&bytes[0])
+                    || !(b'1'..=b'8').contains(&bytes[1])
+                {
                     error = Some("bad square");
                 }
             }
@@ -575,8 +678,13 @@ impl Othello {
                 error = Some("bad arguments");
             } else {
                 let bytes = args[0].as_bytes();
-                if bytes.is_empty() || bytes.len() > 120 || bytes.len() % 2 != 0 ||
-                    !bytes.chunks_exact(2).all(|pair| (b'a'..=b'h').contains(&pair[0]) && (b'1'..=b'8').contains(&pair[1])) {
+                if bytes.is_empty()
+                    || bytes.len() > 120
+                    || bytes.len() % 2 != 0
+                    || !bytes.chunks_exact(2).all(|pair| {
+                        (b'a'..=b'h').contains(&pair[0]) && (b'1'..=b'8').contains(&pair[1])
+                    })
+                {
                     error = Some("bad record");
                 }
             }
@@ -585,14 +693,26 @@ impl Othello {
                 error = Some("bad arguments");
             }
         } else if command == "TRANSFORM" {
-            if args.len() != 1 ||
-                !["rot90", "rot180", "rot270", "mirror", "flip", "diag", "anti"].contains(&args[0]) {
+            if args.len() != 1
+                || ![
+                    "rot90", "rot180", "rot270", "mirror", "flip", "diag", "anti",
+                ]
+                .contains(&args[0])
+            {
                 error = Some("bad arguments");
             }
         } else {
-            let expected = if command == "MC" || command == "AUTOPLAY" { 2 } else { 1 };
-            let valid_numbers = args.len() == expected &&
-                args.iter().all(|arg| !arg.is_empty() && arg.bytes().all(|c| c.is_ascii_digit()) && arg.parse::<u64>().is_ok());
+            let expected = if command == "MC" || command == "AUTOPLAY" {
+                2
+            } else {
+                1
+            };
+            let valid_numbers = args.len() == expected
+                && args.iter().all(|arg| {
+                    !arg.is_empty()
+                        && arg.bytes().all(|c| c.is_ascii_digit())
+                        && arg.parse::<u64>().is_ok()
+                });
             if !valid_numbers {
                 error = Some("bad arguments");
             } else {
@@ -619,7 +739,10 @@ impl Othello {
             println!("ERROR game over");
             return;
         }
-        let value = args.first().and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+        let value = args
+            .first()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
         match command {
             "NEW" => {
                 self.reset();
@@ -634,24 +757,45 @@ impl Othello {
                 println!("OK");
                 self.adjust(false);
             }
-            "DUMP" => println!("board {} {}", String::from_utf8_lossy(&self.board), self.side as char),
+            "DUMP" => println!(
+                "board {} {}",
+                String::from_utf8_lossy(&self.board),
+                self.side as char
+            ),
             "SHOW" => {
                 println!("  a b c d e f g h");
-                let moves = if self.over { Vec::new() } else { legal(&self.board, self.side) };
+                let moves = if self.over {
+                    Vec::new()
+                } else {
+                    legal(&self.board, self.side)
+                };
                 for r in 0..8 {
                     let mut text = (r + 1).to_string();
                     for c in 0..8 {
                         let p = r * 8 + c;
                         text.push(' ');
-                        text.push(if moves.contains(&p) { '*' } else { self.board[p] as char });
+                        text.push(if moves.contains(&p) {
+                            '*'
+                        } else {
+                            self.board[p] as char
+                        });
                     }
                     println!("{}", text);
                 }
                 println!("{}", self.status());
             }
-            "SCORE" => println!("score B {} W {} empty {}", count(&self.board, b'B'), count(&self.board, b'W'), count(&self.board, b'.')),
+            "SCORE" => println!(
+                "score B {} W {} empty {}",
+                count(&self.board, b'B'),
+                count(&self.board, b'W'),
+                count(&self.board, b'.')
+            ),
             "LEGAL" => {
-                let moves = if self.over { Vec::new() } else { legal(&self.board, self.side) };
+                let moves = if self.over {
+                    Vec::new()
+                } else {
+                    legal(&self.board, self.side)
+                };
                 let mut text = format!("legal {}", moves.len());
                 for p in moves {
                     text.push_str(&format!(" {}", name(p)));
@@ -710,7 +854,14 @@ impl Othello {
             "HISTORY" => {
                 println!("history {}", self.history.len());
                 for (i, row) in self.history.iter().enumerate() {
-                    println!("{} {} {} {}{}", i + 1, row.side as char, name(row.square), row.count, if row.passed { " pass" } else { "" });
+                    println!(
+                        "{} {} {} {}{}",
+                        i + 1,
+                        row.side as char,
+                        name(row.square),
+                        row.count,
+                        if row.passed { " pass" } else { "" }
+                    );
                 }
             }
             "SHEET" => self.sheet(),
@@ -727,7 +878,10 @@ impl Othello {
             }
             "EVAL" => {
                 let [value, weights, own, other] = evaluate(&self.board, self.side);
-                println!("eval {} weights {} mobility {} {}", value, weights, own, other);
+                println!(
+                    "eval {} weights {} mobility {} {}",
+                    value, weights, own, other
+                );
             }
             "STABLE" => {
                 let (black, white) = stable(&self.board);
@@ -750,11 +904,21 @@ impl Othello {
             "ANALYZE" => {
                 let mut losses = [0, 0];
                 for (i, row) in self.history.iter().enumerate() {
-                    let moves = self.solver.ranked(&row.before.board, row.side, value as i32);
+                    let moves = self
+                        .solver
+                        .ranked(&row.before.board, row.side, value as i32);
                     let (best, best_square) = moves[0];
                     let played = moves.iter().find(|(_, p)| *p == row.square).unwrap().0;
                     losses[if row.side == b'B' { 0 } else { 1 }] += best - played;
-                    println!("{} {} {} {} best {} {}", i + 1, row.side as char, name(row.square), played, name(best_square), best);
+                    println!(
+                        "{} {} {} {} best {} {}",
+                        i + 1,
+                        row.side as char,
+                        name(row.square),
+                        played,
+                        name(best_square),
+                        best
+                    );
                 }
                 println!("loss B {} W {}", losses[0], losses[1]);
             }
@@ -773,11 +937,19 @@ impl Othello {
             "AUTOPLAY" => self.automatic(value as i32, args[1].parse::<i32>().unwrap(), None),
             "RANDOM" => self.automatic(0, 0, Some(value as u64)),
             "MC" => self.monte_carlo(value, args[1].parse::<u64>().unwrap()),
-            "PERFT" => println!("perft {} {}", value, self.solver.perft(&self.board, self.side, value as u32)),
+            "PERFT" => println!(
+                "perft {} {}",
+                value,
+                self.solver.perft(&self.board, self.side, value as u32)
+            ),
             "DIVIDE" => {
                 let mut total = 0;
                 for p in legal(&self.board, self.side) {
-                    let amount = self.solver.perft(&place(&self.board, self.side, p), opponent(self.side), value as u32 - 1);
+                    let amount = self.solver.perft(
+                        &place(&self.board, self.side, p),
+                        opponent(self.side),
+                        value as u32 - 1,
+                    );
                     println!("{} {}", name(p), amount);
                     total += amount;
                 }

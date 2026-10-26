@@ -21,118 +21,17 @@ fn line(s: S) !void {
     try put("\n");
 }
 const kinds = "IOTSZJL";
-const rotations = [_]S{
-    "0",
-    "R",
-    "2",
-    "L"
-};
-const ops = [_]S{
-    "L",
-    "R",
-    "LL",
-    "RR",
-    "SD",
-    "DD",
-    "CW",
-    "CCW",
-    "HD",
-    "LOCK",
-    "HOLD"
-};
-const commands = [_]S{
-    "NEW",
-    "PRINT",
-    "NEXT",
-    "PREVIEW",
-    "STATUS",
-    "ANALYZE",
-    "ROW",
-    "GARBAGE",
-    "ATTACK",
-    "TICK",
-    "UNDO",
-    "SAVE",
-    "LOAD",
-    "SPINS",
-    "HINT",
-    "AUTO"
-};
-const clear_names = [_]S{
-    "SINGLE",
-    "DOUBLE",
-    "TRIPLE",
-    "TETRIS",
-    "TSPIN_MINI",
-    "TSPIN_MINI_SINGLE",
-    "TSPIN_MINI_DOUBLE",
-    "TSPIN",
-    "TSPIN_SINGLE",
-    "TSPIN_DOUBLE",
-    "TSPIN_TRIPLE"
-};
+const rotations = [_]S{ "0", "R", "2", "L" };
+const ops = [_]S{ "L", "R", "LL", "RR", "SD", "DD", "CW", "CCW", "HD", "LOCK", "HOLD" };
+const commands = [_]S{ "NEW", "PRINT", "NEXT", "PREVIEW", "STATUS", "ANALYZE", "ROW", "GARBAGE", "ATTACK", "TICK", "UNDO", "SAVE", "LOAD", "SPINS", "HINT", "AUTO" };
+const clear_names = [_]S{ "SINGLE", "DOUBLE", "TRIPLE", "TETRIS", "TSPIN_MINI", "TSPIN_MINI_SINGLE", "TSPIN_MINI_DOUBLE", "TSPIN", "TSPIN_SINGLE", "TSPIN_DOUBLE", "TSPIN_TRIPLE" };
 const Board = [22][10]bool;
 
-const Pos = struct {
-    s: usize = 0,
-    x: i32 = 4,
-    y: i32 = 22
-};
+const Pos = struct { s: usize = 0, x: i32 = 4, y: i32 = 22 };
 
-const State = struct {
-    b: Board = [_][10]bool{
-        [_]bool{
-            false
-        } ** 10
-    } ** 22,
-    rng: u64 = 1,
-    queue: [21]u8 = undefined,
-    qn: usize = 0,
-    hold: ?u8 = null,
-    used: bool = false,
-    k: u8 = 0,
-    p: Pos = .{},
-    motion: u8 = 0,
-    test: usize = 0,
-    keys: i64 = 0,
-    drop: i64 = 0,
-    fall: i64 = 0,
-    ground: i64 = 0,
-    resets: i64 = 0,
-    low: i32 = 0,
-    initial: i64 = 1,
-    level: i64 = 1,
-    score: i64 = 0,
-    lines: i64 = 0,
-    pieces: i64 = 0,
-    streak: i64 = 0,
-    chain: i64 = 0,
-    pending: [500]i64 = undefined,
-    pn: usize = 0,
-    drops: i64 = 0,
-    holds: i64 = 0,
-    operations: i64 = 0,
-    faults: i64 = 0,
-    perfect: i64 = 0,
-    sent: i64 = 0,
-    cancelled: i64 = 0,
-    received: i64 = 0,
-    maxcombo: i64 = 0,
-    maxchain: i64 = 0,
-    counts: [7]i64 = [_]i64 {
-        0
-    } ** 7,
-    clears: [11]i64 = [_]i64 {
-        0
-    } ** 11,
-    ended: bool = false
-};
+const State = struct { b: Board = @as([22][10]bool, @splat(@as([10]bool, @splat(false)))), rng: u64 = 1, queue: [21]u8 = undefined, qn: usize = 0, hold: ?u8 = null, used: bool = false, k: u8 = 0, p: Pos = .{}, motion: u8 = 0, kick_index: usize = 0, keys: i64 = 0, drop: i64 = 0, fall: i64 = 0, ground: i64 = 0, resets: i64 = 0, low: i32 = 0, initial: i64 = 1, level: i64 = 1, score: i64 = 0, lines: i64 = 0, pieces: i64 = 0, streak: i64 = 0, chain: i64 = 0, pending: [500]i64 = undefined, pn: usize = 0, drops: i64 = 0, holds: i64 = 0, operations: i64 = 0, faults: i64 = 0, perfect: i64 = 0, sent: i64 = 0, cancelled: i64 = 0, received: i64 = 0, maxcombo: i64 = 0, maxchain: i64 = 0, counts: [7]i64 = @as([7]i64, @splat(0)), clears: [11]i64 = @as([11]i64, @splat(0)), ended: bool = false };
 
-const Save = struct {
-    s: State,
-    start: State,
-    history: []State
-};
+const Save = struct { s: State, start: State, history: []State };
 
 var state: State = .{};
 
@@ -144,56 +43,10 @@ var saves: std.StringHashMapUnmanaged(Save) = .empty;
 
 var games: usize = 0;
 
-const Cell = struct {
-    x: i32,
-    y: i32
-};
+const Cell = struct { x: i32, y: i32 };
 
-fn blocks(k: u8, p: Pos)[4]Cell {
-    const initial = [7][4][2]i32 {
-         .{
-             .{ 0, 1 },
-             .{ 1, 1 },
-             .{ 2, 1 },
-             .{ 3, 1 }
-        },
-         .{
-             .{ 0, 0 },
-             .{ 1, 0 },
-             .{ 0, 1 },
-             .{ 1, 1 }
-        },
-         .{
-             .{ 1, 0 },
-             .{ 0, 1 },
-             .{ 1, 1 },
-             .{ 2, 1 }
-        },
-         .{
-             .{ 1, 0 },
-             .{ 2, 0 },
-             .{ 0, 1 },
-             .{ 1, 1 }
-        },
-         .{
-             .{ 0, 0 },
-             .{ 1, 0 },
-             .{ 1, 1 },
-             .{ 2, 1 }
-        },
-         .{
-             .{ 0, 0 },
-             .{ 0, 1 },
-             .{ 1, 1 },
-             .{ 2, 1 }
-        },
-         .{
-             .{ 2, 0 },
-             .{ 0, 1 },
-             .{ 1, 1 },
-             .{ 2, 1 }
-        }
-    };
+fn blocks(k: u8, p: Pos) [4]Cell {
+    const initial = [7][4][2]i32{ .{ .{ 0, 1 }, .{ 1, 1 }, .{ 2, 1 }, .{ 3, 1 } }, .{ .{ 0, 0 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 1 } }, .{ .{ 1, 0 }, .{ 0, 1 }, .{ 1, 1 }, .{ 2, 1 } }, .{ .{ 1, 0 }, .{ 2, 0 }, .{ 0, 1 }, .{ 1, 1 } }, .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 2, 1 } }, .{ .{ 0, 0 }, .{ 0, 1 }, .{ 1, 1 }, .{ 2, 1 } }, .{ .{ 2, 0 }, .{ 0, 1 }, .{ 1, 1 }, .{ 2, 1 } } };
     const n: i32 = if (k == 0) 4 else if (k == 1) 2 else 3;
     var result: [4]Cell = undefined;
     for (initial[k], 0..) |v, i| {
@@ -232,16 +85,13 @@ fn lowest(k: u8, p: Pos) i32 {
     return low;
 }
 
-const Motion = struct {
-    p: Pos,
-    test: usize = 0
-};
+const Motion = struct { p: Pos, kick_index: usize = 0 };
 
 fn move(b: Board, k: u8, p: Pos, op: usize) ?Motion {
     var q = p;
     if (op < 6) {
-        const dx: i32 = if (op == 0 or op == 2) - 1 else if (op == 1 or op == 3) 1 else 0;
-        const dy: i32 = if (op >= 4) - 1 else 0;
+        const dx: i32 = if (op == 0 or op == 2) -1 else if (op == 1 or op == 3) 1 else 0;
+        const dy: i32 = if (op >= 4) -1 else 0;
         var ok = false;
         while (true) {
             var n = q;
@@ -255,83 +105,25 @@ fn move(b: Board, k: u8, p: Pos, op: usize) ?Motion {
         return if (ok) .{ .p = q } else null;
     }
     q.s = (p.s + (if (op == 6) @as(usize, 1) else 3)) % 4;
-    if (k == 1) return if (fits(b, k, q)) .{ .p = q, .test = 1 } else null;
-    const normal = [4][5][2]i32 {
-         .{
-             .{ 0, 0 },
-             .{ - 1, 0 },
-             .{ - 1, 1 },
-             .{ 0, - 2 },
-             .{ - 1, - 2 }
-        },
-         .{
-             .{ 0, 0 },
-             .{ 1, 0 },
-             .{ 1, - 1 },
-             .{ 0, 2 },
-             .{ 1, 2 }
-        },
-         .{
-             .{ 0, 0 },
-             .{ 1, 0 },
-             .{ 1, 1 },
-             .{ 0, - 2 },
-             .{ 1, - 2 }
-        },
-         .{
-             .{ 0, 0 },
-             .{ - 1, 0 },
-             .{ - 1, - 1 },
-             .{ 0, 2 },
-             .{ - 1, 2 }
-        }
-    };
-    const ikicks = [4][5][2]i32 {
-         .{
-             .{ 0, 0 },
-             .{ - 2, 0 },
-             .{ 1, 0 },
-             .{ - 2, - 1 },
-             .{ 1, 2 }
-        },
-         .{
-             .{ 0, 0 },
-             .{ - 1, 0 },
-             .{ 2, 0 },
-             .{ - 1, 2 },
-             .{ 2, - 1 }
-        },
-         .{
-             .{ 0, 0 },
-             .{ 2, 0 },
-             .{ - 1, 0 },
-             .{ 2, 1 },
-             .{ - 1, - 2 }
-        },
-         .{
-             .{ 0, 0 },
-             .{ 1, 0 },
-             .{ - 2, 0 },
-             .{ 1, - 2 },
-             .{ - 2, 1 }
-        }
-    };
+    if (k == 1) return if (fits(b, k, q)) .{ .p = q, .kick_index = 1 } else null;
+    const normal = [4][5][2]i32{ .{ .{ 0, 0 }, .{ -1, 0 }, .{ -1, 1 }, .{ 0, -2 }, .{ -1, -2 } }, .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, -1 }, .{ 0, 2 }, .{ 1, 2 } }, .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, -2 }, .{ 1, -2 } }, .{ .{ 0, 0 }, .{ -1, 0 }, .{ -1, -1 }, .{ 0, 2 }, .{ -1, 2 } } };
+    const ikicks = [4][5][2]i32{ .{ .{ 0, 0 }, .{ -2, 0 }, .{ 1, 0 }, .{ -2, -1 }, .{ 1, 2 } }, .{ .{ 0, 0 }, .{ -1, 0 }, .{ 2, 0 }, .{ -1, 2 }, .{ 2, -1 } }, .{ .{ 0, 0 }, .{ 2, 0 }, .{ -1, 0 }, .{ 2, 1 }, .{ -1, -2 } }, .{ .{ 0, 0 }, .{ 1, 0 }, .{ -2, 0 }, .{ 1, -2 }, .{ -2, 1 } } };
     if (k == 0) {
         const from = if (op == 6) p.s else q.s;
-        for (ikicks[from], 1..) |d, test| {
+        for (ikicks[from], 1..) |d, kick_index| {
             var n = q;
             const sign: i32 = if (op == 6) 1 else -1;
             n.x += sign * d[0];
             n.y += sign * d[1];
-            if (fits(b, k, n)) return .{ .p = n, .test = test };
+            if (fits(b, k, n)) return .{ .p = n, .kick_index = kick_index };
         }
     } else {
         const row: usize = if (p.s == 1) 1 else if (p.s == 3) 3 else if (q.s == 1) 0 else 2;
-        for (normal[row], 1..) |d, test| {
+        for (normal[row], 1..) |d, kick_index| {
             var n = q;
             n.x += d[0];
             n.y += d[1];
-            if (fits(b, k, n)) return .{ .p = n, .test = test };
+            if (fits(b, k, n)) return .{ .p = n, .kick_index = kick_index };
         }
     }
     return null;
@@ -347,17 +139,9 @@ fn random(s: *State) u64 {
 }
 
 fn bag(s: *State) void {
-    var b = [_]u8{
-        0,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6
-    };
+    var b = [_]u8{ 0, 1, 2, 3, 4, 5, 6 };
     var i: usize = 6;
-    while (i > 0): (i -= 1) {
+    while (i > 0) : (i -= 1) {
         const j: usize = @intCast(random(s) % (i + 1));
         std.mem.swap(u8, &b[i], &b[j]);
     }
@@ -369,7 +153,7 @@ fn bag(s: *State) void {
 
 fn take(s: *State) u8 {
     const k = s.queue[0];
-    std.mem.copyForwards(u8, s.queue[0..s.qn - 1], s.queue[1..s.qn]);
+    std.mem.copyForwards(u8, s.queue[0 .. s.qn - 1], s.queue[1..s.qn]);
     s.qn -= 1;
     if (s.qn < 5) bag(s);
     return k;
@@ -390,30 +174,18 @@ fn summary() !void {
     const s = &state;
     try line(try fmt("summary game {d} score {d} level {d} lines {d} pieces {d}", .{ games, s.score, s.level, s.lines, s.pieces }));
     try line(try fmt("clears single {d} double {d} triple {d} tetris {d} perfect {d}", .{ s.clears[0], s.clears[1], s.clears[2], s.clears[3], s.perfect }));
-    try line(try fmt("tspins mini {d} mini_single {d} mini_double {d} zero {d} single {d} double {d} triple {d}", .{
-        s.clears[4],
-        s.clears[5],
-        s.clears[6],
-        s.clears[7],
-        s.clears[8],
-        s.clears[9],
-        s.clears[10]
-    }));
+    try line(try fmt("tspins mini {d} mini_single {d} mini_double {d} zero {d} single {d} double {d} triple {d}", .{ s.clears[4], s.clears[5], s.clears[6], s.clears[7], s.clears[8], s.clears[9], s.clears[10] }));
     try put("pieces");
     for (kinds, 0..) |k, i| try put(try fmt(" {c} {d}", .{ k, s.counts[i] }));
     try put("\n");
     try line(try fmt("best combo {d} chain {d} holds {d} drops {d} faults {d}", .{ s.maxcombo, s.maxchain, s.holds, s.drops, s.faults }));
     try line(try fmt("garbage sent {d} cancelled {d} received {d}", .{ s.sent, s.cancelled, s.received }));
-    try line(try fmt("rates app {s} apl {s} kpp {s}", .{
-        try ratio(s.sent, s.pieces),
-        try ratio(s.sent, s.lines),
-        try ratio(s.operations, s.pieces)
-    }));
+    try line(try fmt("rates app {s} apl {s} kpp {s}", .{ try ratio(s.sent, s.pieces), try ratio(s.sent, s.lines), try ratio(s.operations, s.pieces) }));
 }
 
 fn over(reason: S) !void {
     state.ended = true;
-    try line(try fmt("game over {s}", .{ reason }));
+    try line(try fmt("game over {s}", .{reason}));
     try summary();
 }
 
@@ -422,7 +194,7 @@ fn spawn(k: u8) !void {
     s.k = k;
     s.p = spawnPos(k);
     s.motion = 0;
-    s.test = 0;
+    s.kick_index = 0;
     s.keys = 0;
     s.drop = 0;
     s.fall = 0;
@@ -432,11 +204,11 @@ fn spawn(k: u8) !void {
     if (!fits(s.b, k, s.p)) try over("block out");
 }
 
-fn update(p: Pos, motion: u8, test: usize) void {
+fn update(p: Pos, motion: u8, kick_index: usize) void {
     const s = &state;
     s.p = p;
     s.motion = motion;
-    s.test = test;
+    s.kick_index = kick_index;
     const low = lowest(s.k, p);
     if (low < s.low) {
         s.low = low;
@@ -455,48 +227,33 @@ fn clear(b: *Board) usize {
             dest += 1;
         }
     }
-    while (dest < 22): (dest += 1) b[dest] = [_]bool{
-        false
-    } ** 10;
+    while (dest < 22) : (dest += 1) b[dest] = @as([10]bool, @splat(false));
     return n;
 }
 
-fn place(b: Board, k: u8, p: Pos) struct {
-    b: Board,
-    n: usize
-}
-{
+fn place(b: Board, k: u8, p: Pos) struct { b: Board, n: usize } {
     var q = b;
     for (blocks(k, p)) |c| q[@intCast(c.y - 1)][@intCast(c.x - 1)] = true;
     const n = clear(&q);
     return .{ .b = q, .n = n };
 }
 
-fn spin(b: Board, k: u8, p: Pos, test: usize) u8 {
+fn spin(b: Board, k: u8, p: Pos, kick_index: usize) u8 {
     if (k != 2) return 0;
-    const corners = [_]Cell{
-         .{ .x = p.x, .y = p.y },
-         .{ .x = p.x + 2, .y = p.y },
-         .{ .x = p.x + 2, .y = p.y - 2 },
-         .{ .x = p.x, .y = p.y - 2 }
-    };
+    const corners = [_]Cell{ .{ .x = p.x, .y = p.y }, .{ .x = p.x + 2, .y = p.y }, .{ .x = p.x + 2, .y = p.y - 2 }, .{ .x = p.x, .y = p.y - 2 } };
     var n: usize = 0;
     for (corners) |c| if (occupied(b, c)) {
         n += 1;
     };
     if (n < 3) return 0;
-    return if ((occupied(b, corners[p.s]) and occupied(b, corners[(p.s + 1) % 4])) or test == 5) 2 else 1;
+    return if ((occupied(b, corners[p.s]) and occupied(b, corners[(p.s + 1) % 4])) or kick_index == 5) 2 else 1;
 }
 
 fn typeIndex(n: usize, t: u8) ?usize {
-    return if (t == 0)(if (n == 0) null else n - 1) else if (t == 1) 4 + n else 7 + n;
+    return if (t == 0) (if (n == 0) null else n - 1) else if (t == 1) 4 + n else 7 + n;
 }
 
-const Reach = struct {
-    p: Pos,
-    parent: ?usize,
-    op: usize
-};
+const Reach = struct { p: Pos, parent: ?usize, op: usize };
 
 fn poskey(p: Pos) usize {
     return (p.s * 28 + @as(usize, @intCast(p.y))) * 20 + @as(usize, @intCast(p.x + 5));
@@ -505,13 +262,11 @@ fn poskey(p: Pos) usize {
 fn reachable(b: Board, k: u8, origin: Pos) ![]Reach {
     var list: std.ArrayList(Reach) = .empty;
     if (!fits(b, k, origin)) return list.items;
-    var seen: [4 * 28 * 20]bool = [_]bool{
-        false
-    } ** (4 * 28 * 20);
+    var seen: [4 * 28 * 20]bool = @as([4 * 28 * 20]bool, @splat(false));
     try list.append(A, .{ .p = origin, .parent = null, .op = 0 });
     seen[poskey(origin)] = true;
     var i: usize = 0;
-    while (i < list.items.len): (i += 1) {
+    while (i < list.items.len) : (i += 1) {
         const p = list.items[i].p;
         for (0..8) |op| if (move(b, k, p, op)) |m| {
             const key = poskey(m.p);
@@ -558,9 +313,7 @@ fn garbage(n: usize, h: usize) !bool {
         state.b[r] = state.b[r - n];
     }
     for (0..n) |i| {
-        state.b[i] = [_]bool{
-            true
-        } ** 10;
+        state.b[i] = @as([10]bool, @splat(true));
         state.b[i][h - 1] = false;
     }
     return true;
@@ -573,7 +326,7 @@ fn reduce(n0: i64) void {
         state.pending[0] -= c;
         n -= c;
         if (state.pending[0] == 0) {
-            std.mem.copyForwards(i64, state.pending[0..state.pn - 1], state.pending[1..state.pn]);
+            std.mem.copyForwards(i64, state.pending[0 .. state.pn - 1], state.pending[1..state.pn]);
             state.pn -= 1;
         }
     }
@@ -584,7 +337,7 @@ fn lock() !void {
     const k = s.k;
     const p = s.p;
     const seq = try shortest(s.b, k, p);
-    const t = if (s.motion == 2) spin(s.b, k, p, s.test) else 0;
+    const t = if (s.motion == 2) spin(s.b, k, p, s.kick_index) else 0;
     const placed = place(s.b, k, p);
     s.b = placed.b;
     const n = placed.n;
@@ -593,32 +346,8 @@ fn lock() !void {
     s.counts[k] += 1;
     s.operations += s.keys;
     const ti = typeIndex(n, t);
-    const bases = [_]i64 {
-        100,
-        300,
-        500,
-        800,
-        100,
-        200,
-        400,
-        400,
-        800,
-        1200,
-        1600
-    };
-    const sends = [_]i64 {
-        0,
-        1,
-        2,
-        4,
-        0,
-        0,
-        1,
-        0,
-        2,
-        4,
-        6
-    };
+    const bases = [_]i64{ 100, 300, 500, 800, 100, 200, 400, 400, 800, 1200, 1600 };
+    const sends = [_]i64{ 0, 1, 2, 4, 0, 0, 1, 0, 2, 4, 6 };
     const v = s.level;
     var points: i64 = if (ti) |i| bases[i] * v else 0;
     var send: i64 = if (ti) |i| sends[i] else 0;
@@ -636,19 +365,7 @@ fn lock() !void {
     }
     const combo = s.streak - 1;
     const cp = if (combo >= 1) 50 * combo * v else 0;
-    const combos = [_]i64 {
-        0,
-        1,
-        1,
-        2,
-        2,
-        3,
-        3,
-        4,
-        4,
-        4,
-        5
-    };
+    const combos = [_]i64{ 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5 };
     if (combo >= 0) send += combos[@intCast(@min(combo, 10))];
     var perfect = n > 0;
     for (s.b) |row| for (row) |filled| {
@@ -656,12 +373,7 @@ fn lock() !void {
     };
     var pp: i64 = 0;
     if (perfect) {
-        const ps = [_]i64 {
-            800,
-            1200,
-            1800,
-            2000
-        };
+        const ps = [_]i64{ 800, 1200, 1800, 2000 };
         pp = (if (n == 4 and b2b) @as(i64, 3200) else ps[n - 1]) * v;
         send += 10;
         s.perfect += 1;
@@ -672,36 +384,23 @@ fn lock() !void {
     s.sent += send;
     s.maxcombo = @max(s.maxcombo, combo);
     s.maxchain = @max(s.maxchain, s.chain);
-    try line(try fmt("lock {d} {c} {s} {d} {d} keys {d} {s} drop {d} lines {d} sent {d} +{d} total {d}", .{
-        s.pieces,
-        kinds[k],
-        rotations[p.s],
-        p.x,
-        p.y,
-        s.keys,
-        if (seq) |a| try fmt("{d}", .{ a.len }) else "-",
-        s.drop,
-        n,
-        send,
-        gained,
-        s.score
-    }));
+    try line(try fmt("lock {d} {c} {s} {d} {d} keys {d} {s} drop {d} lines {d} sent {d} +{d} total {d}", .{ s.pieces, kinds[k], rotations[p.s], p.x, p.y, s.keys, if (seq) |a| try fmt("{d}", .{a.len}) else "-", s.drop, n, send, gained, s.score }));
     if (seq) |a| if (s.keys > @as(i64, @intCast(a.len))) {
         s.faults += 1;
-        try line(try fmt("finesse {s}", .{ if (a.len == 0) @as(S, "none") else try operations(a) }));
+        try line(try fmt("finesse {s}", .{if (a.len == 0) @as(S, "none") else try operations(a)}));
     };
     if (ti) |i| {
         s.clears[i] += 1;
         try put(try fmt("clear {s} {d}", .{ clear_names[i], points }));
         if (b2b) try put(" b2b");
         if (combo >= 1) try put(try fmt(" combo {d} {d}", .{ combo, cp }));
-        if (perfect) try put(try fmt(" perfect {d}", .{ pp }));
+        if (perfect) try put(try fmt(" perfect {d}", .{pp}));
         try put("\n");
     }
     const level = s.initial + @divTrunc(s.lines, 10);
     if (level > v) {
         s.level = level;
-        try line(try fmt("level {d}", .{ level }));
+        try line(try fmt("level {d}", .{level}));
     }
     var lockout = true;
     for (blocks(k, p)) |c| if (c.y <= 20) {
@@ -749,13 +448,13 @@ fn operate(op: usize) !void {
                 s.fall = 0;
                 s.ground = 0;
             } else {
-                update(m.p, if (op >= 6) 2 else 1, m.test);
+                update(m.p, if (op >= 6) 2 else 1, m.kick_index);
                 if (s.ground > 0 and s.resets < 15) {
                     s.ground = 0;
                     s.resets += 1;
                 }
             }
-        } else try line(try fmt("fail {s}", .{ ops[op] }));
+        } else try line(try fmt("fail {s}", .{ops[op]}));
     } else if (op == 8) {
         const p = landing(s.b, s.k, s.p);
         const n = 2 * (s.p.y - p.y);
@@ -780,14 +479,7 @@ fn operate(op: usize) !void {
     }
 }
 
-const Evaluation = struct {
-    heights: [10]i64 = [_]i64 {
-        0
-    } ** 10,
-    holes: i64 = 0,
-    bump: i64 = 0,
-    value: i64 = 0
-};
+const Evaluation = struct { heights: [10]i64 = @as([10]i64, @splat(0)), holes: i64 = 0, bump: i64 = 0, value: i64 = 0 };
 
 fn evaluate(b: Board, n: usize) Evaluation {
     var e: Evaluation = .{};
@@ -806,13 +498,7 @@ fn evaluate(b: Board, n: usize) Evaluation {
     return e;
 }
 
-const Candidate = struct {
-    k: u8,
-    p: Pos,
-    ops: []usize,
-    value: i64,
-    serial: usize
-};
+const Candidate = struct { k: u8, p: Pos, ops: []usize, value: i64, serial: usize };
 
 fn sameCells(k: u8, a: Pos, b: Pos) bool {
     const aa = blocks(k, a);
@@ -834,7 +520,7 @@ fn candidates(list: *std.ArrayList(Candidate), k: u8, p: Pos, hold: bool) !void 
         var prefix: std.ArrayList(usize) = .empty;
         if (hold) try prefix.append(A, 10);
         var ok = true;
-        const rs: []const usize = if (r == 0) & .{} else if (r == 1) & .{ 6 } else if (r == 2) & .{ 6, 6 } else & .{ 7 };
+        const rs: []const usize = if (r == 0) &.{} else if (r == 1) &.{6} else if (r == 2) &.{ 6, 6 } else &.{7};
         for (rs) |op| {
             if (move(state.b, k, q, op)) |m| {
                 q = m.p;
@@ -867,13 +553,7 @@ fn candidates(list: *std.ArrayList(Candidate), k: u8, p: Pos, hold: bool) !void 
                     const commands_list = try A.alloc(usize, seq.items.len + 1);
                     @memcpy(commands_list[0..seq.items.len], seq.items);
                     commands_list[seq.items.len] = 8;
-                    try list.append(A, .{
-                        .k = k,
-                        .p = land,
-                        .ops = commands_list,
-                        .value = evaluate(b.b, b.n).value,
-                        .serial = list.items.len
-                    });
+                    try list.append(A, .{ .k = k, .p = land, .ops = commands_list, .value = evaluate(b.b, b.n).value, .serial = list.items.len });
                 }
                 if (dir == 0) break;
             }
@@ -933,7 +613,7 @@ fn command(w: []S) !void {
                 break;
             };
             if (op == null) {
-                try line(try fmt("ERROR unknown {s}", .{ word }));
+                try line(try fmt("ERROR unknown {s}", .{word}));
                 return;
             }
             try actions.append(A, op.?);
@@ -965,11 +645,7 @@ fn command(w: []S) !void {
                 valid_args = n != 0 and m != 0;
             }
         },
-        3,
-        8,
-        9,
-        14,
-        15 => {
+        3, 8, 9, 14, 15 => {
             valid_args = a.len == 1;
             if (valid_args) {
                 n = numeric(a[0], 1, switch (j) {
@@ -977,7 +653,7 @@ fn command(w: []S) !void {
                     8 => 20,
                     9 => 1000,
                     14 => 10,
-                    else => 50
+                    else => 50,
                 }) orelse 0;
                 valid_args = n != 0;
             }
@@ -1000,9 +676,8 @@ fn command(w: []S) !void {
                 valid_args = n > 0 and m > 0;
             }
         },
-        11,
-        12 => valid_args = a.len == 1 and saveName(a[0]),
-        else => valid_args = a.len == 0
+        11, 12 => valid_args = a.len == 1 and saveName(a[0]),
+        else => valid_args = a.len == 0,
     }
     if (!valid_args) {
         try line("ERROR bad arguments");
@@ -1036,7 +711,7 @@ fn command(w: []S) !void {
         var r: usize = 22;
         while (r > 0) {
             r -= 1;
-            try put(try fmt("{d: >2} ", .{ r + 1 }));
+            try put(try fmt("{d: >2} ", .{r + 1}));
             for (0..10) |col| {
                 const ch: u8 = if (state.b[r][col]) '#' else if (!state.ended and hasCell(state.k, state.p, col + 1, r + 1)) '@' else if (!state.ended and hasCell(state.k, land, col + 1, r + 1)) '+' else '.';
                 try out.append(A, ch);
@@ -1044,7 +719,7 @@ fn command(w: []S) !void {
             try put("\n");
         }
     } else if (j == 2) {
-        try put(try fmt("hold {c} next ", .{ if (state.hold) |k| kinds[k] else '-' }));
+        try put(try fmt("hold {c} next ", .{if (state.hold) |k| kinds[k] else '-'}));
         for (state.queue[0..5]) |k| try out.append(A, kinds[k]);
         try put("\n");
     } else if (j == 3) {
@@ -1055,16 +730,11 @@ fn command(w: []S) !void {
         try put("\n");
     } else if (j == 4) {
         try line(try fmt("score {d} level {d} lines {d} pieces {d}", .{ state.score, state.level, state.lines, state.pieces }));
-        try line(try fmt("piece {s} streak {d} chain {d} pending {d}", .{
-            if (state.ended) @as(S, "-") else try fmt("{c} {s} {d} {d}", .{ kinds[state.k], rotations[state.p.s], state.p.x, state.p.y }),
-            state.streak,
-            state.chain,
-            pending(state)
-        }));
+        try line(try fmt("piece {s} streak {d} chain {d} pending {d}", .{ if (state.ended) @as(S, "-") else try fmt("{c} {s} {d} {d}", .{ kinds[state.k], rotations[state.p.s], state.p.x, state.p.y }), state.streak, state.chain, pending(state) }));
     } else if (j == 5) {
         const e = evaluate(state.b, 0);
         try put("heights");
-        for (e.heights) |h| try put(try fmt(" {d}", .{ h }));
+        for (e.heights) |h| try put(try fmt(" {d}", .{h}));
         try put("\n");
         try line(try fmt("holes {d} bumpiness {d} value {d}", .{ e.holes, e.bump, e.value }));
     } else if (j == 6) {
@@ -1077,7 +747,7 @@ fn command(w: []S) !void {
     } else if (j == 7) {
         if (!try garbage(@intCast(n), @intCast(m))) return;
         var y: usize = 0;
-        while (y <= n): (y += 1) {
+        while (y <= n) : (y += 1) {
             var p = state.p;
             p.y += @intCast(y);
             if (fits(state.b, state.k, p)) {
@@ -1090,22 +760,9 @@ fn command(w: []S) !void {
     } else if (j == 8) {
         state.pending[state.pn] = @intCast(n);
         state.pn += 1;
-        try line(try fmt("pending {d}", .{ pending(state) }));
+        try line(try fmt("pending {d}", .{pending(state)}));
     } else if (j == 9) {
-        const intervals = [_]i64 {
-            60,
-            48,
-            37,
-            28,
-            21,
-            16,
-            11,
-            8,
-            6,
-            4,
-            3,
-            2
-        };
+        const intervals = [_]i64{ 60, 48, 37, 28, 21, 16, 11, 8, 6, 4, 3, 2 };
         for (0..@intCast(n)) |_| {
             if (move(state.b, state.k, state.p, 4)) |motion| {
                 state.ground = 0;
@@ -1144,18 +801,12 @@ fn command(w: []S) !void {
             return;
         }
         const rs = try reachable(state.b, state.k, state.p);
-        const Spin = struct {
-            p: Pos,
-            t: u8
-        };
+        const Spin = struct { p: Pos, t: u8 };
         var list: std.ArrayList(Spin) = .empty;
-        for (rs) |r| for ([_]usize{
-            6,
-            7
-        }) |op| if (move(state.b, state.k, r.p, op)) |motion| {
+        for (rs) |r| for ([_]usize{ 6, 7 }) |op| if (move(state.b, state.k, r.p, op)) |motion| {
             const p = motion.p;
             if (move(state.b, state.k, p, 4) != null) continue;
-            const t = spin(state.b, state.k, p, motion.test);
+            const t = spin(state.b, state.k, p, motion.kick_index);
             if (t == 0) continue;
             var found = false;
             for (list.items) |*v| if (same(v.p, p)) {
@@ -1170,13 +821,8 @@ fn command(w: []S) !void {
             }
         };
         std.mem.sort(Spin, list.items, {}, C.less);
-        for (list.items) |v| try line(try fmt("spin {s} {d} {d} {s}", .{
-            rotations[v.p.s],
-            v.p.x,
-            v.p.y,
-            clear_names[typeIndex(place(state.b, state.k, v.p).n, v.t).?]
-        }));
-        try line(try fmt("spins {d}", .{ list.items.len }));
+        for (list.items) |v| try line(try fmt("spin {s} {d} {d} {s}", .{ rotations[v.p.s], v.p.x, v.p.y, clear_names[typeIndex(place(state.b, state.k, v.p).n, v.t).?] }));
+        try line(try fmt("spins {d}", .{list.items.len}));
     } else if (j == 14) {
         const list = try ranked();
         for (list[0..@min(n, list.len)], 1..) |v, r| try line(try fmt("hint {d} {c} {s} value {d}", .{ r, kinds[v.k], try operations(v.ops), v.value }));

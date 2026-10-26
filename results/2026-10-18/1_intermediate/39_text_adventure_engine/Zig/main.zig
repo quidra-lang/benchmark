@@ -6,7 +6,9 @@ const PlaceKind = enum { nowhere, room, player, inside };
 const Place = struct {
     kind: PlaceKind = .nowhere,
     index: usize = 0,
-    fn equal(a: Place, b: Place) bool { return a.kind == b.kind and a.index == b.index; }
+    fn equal(a: Place, b: Place) bool {
+        return a.kind == b.kind and a.index == b.index;
+    }
 };
 const player: Place = .{ .kind = .player };
 const ContainerState = enum { open, closed, locked };
@@ -15,9 +17,10 @@ const Direction = enum { north, south, east, west, up, down };
 const directions = [_][]const u8{ "north", "south", "east", "west", "up", "down" };
 const Verb = enum { go, look, examine, take, drop, put, inventory, open, close, unlock, lock, use, light, extinguish, wait, score, save, restore, verbose, brief };
 const synonyms = [_][]const u8{
-    "go walk run", "look l", "examine x inspect read", "take get grab", "drop discard", "put insert place",
-    "inventory inv i", "open", "close shut", "unlock", "lock", "use apply", "light ignite", "extinguish douse snuff",
-    "wait z", "score", "save", "restore load", "verbose", "brief",
+    "go walk run",     "look l",                 "examine x inspect read", "take get grab", "drop discard", "put insert place",
+    "inventory inv i", "open",                   "close shut",             "unlock",        "lock",         "use apply",
+    "light ignite",    "extinguish douse snuff", "wait z",                 "score",         "save",         "restore load",
+    "verbose",         "brief",
 };
 const Exit = struct { destination: usize, key: ?usize = null, locked: bool = false };
 const Effect = union(enum) {
@@ -66,30 +69,43 @@ const GameState = struct {
 const Selection = struct {
     data: [200]usize = undefined,
     len: usize = 0,
-    fn add(selection: *Selection, item: usize) void { selection.data[selection.len] = item; selection.len += 1; }
-    fn slice(selection: *const Selection) []const usize { return selection.data[0..selection.len]; }
+    fn add(selection: *Selection, item: usize) void {
+        selection.data[selection.len] = item;
+        selection.len += 1;
+    }
+    fn slice(selection: *const Selection) []const usize {
+        return selection.data[0..selection.len];
+    }
 };
 const TreasureScore = struct { points: i32 = 0, stored: usize = 0, total: usize = 0 };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
 fn contains(words: []const []const u8, word: []const u8) bool {
     for (words) |value| if (equal(word, value)) return true;
     return false;
 }
-fn integer(text: []const u8) i32 { return std.fmt.parseInt(i32, text, 10) catch unreachable; }
+fn integer(text: []const u8) i32 {
+    return std.fmt.parseInt(i32, text, 10) catch unreachable;
+}
 fn directionOf(word: []const u8) ?Direction {
-    for (directions, 0..) |name, index| if (equal(word, name) or equal(word, name[0..1])) return @enumFromInt(index);
+    for (directions, 0..) |name, index| if (equal(word, name) or equal(word, name[0..1])) return @fromBackingInt(@intCast(index));
     return null;
 }
 fn verbOf(word: []const u8) ?Verb {
     for (synonyms, 0..) |group, index| {
         var tokens = std.mem.tokenizeScalar(u8, group, ' ');
-        while (tokens.next()) |alias| if (equal(alias, word)) return @enumFromInt(index);
+        while (tokens.next()) |alias| if (equal(alias, word)) return @fromBackingInt(@intCast(index));
     }
     return null;
 }
-fn all(phrase: []const []const u8) bool { return phrase.len == 1 and equal(phrase[0], "all"); }
-fn line(out: *Writer, comptime format: []const u8, args: anytype) Writer.Error!void { try out.print(format ++ "\n", args); }
+fn all(phrase: []const []const u8) bool {
+    return phrase.len == 1 and equal(phrase[0], "all");
+}
+fn line(out: *Writer, comptime format: []const u8, args: anytype) Writer.Error!void {
+    try out.print(format ++ "\n", args);
+}
 fn splitWords(gpa: Allocator, text: []const u8) Allocator.Error![]const []const u8 {
     var result: std.ArrayList([]const u8) = .empty;
     var tokens = std.mem.tokenizeScalar(u8, text, ' ');
@@ -98,7 +114,9 @@ fn splitWords(gpa: Allocator, text: []const u8) Allocator.Error![]const []const 
 }
 fn normalized(gpa: Allocator, text: []const u8) Allocator.Error![]const []const u8 {
     const lower = try gpa.dupe(u8, text);
-    for (lower) |*character| if (character.* >= 'A' and character.* <= 'Z') { character.* += 'a' - 'A'; };
+    for (lower) |*character| if (character.* >= 'A' and character.* <= 'Z') {
+        character.* += 'a' - 'A';
+    };
     var result: std.ArrayList([]const u8) = .empty;
     var tokens = std.mem.tokenizeScalar(u8, lower, ' ');
     while (tokens.next()) |word| {
@@ -149,7 +167,9 @@ const Adventure = struct {
         var flag: ?usize = null;
         var when_on = true;
         if (equal(words[index], "IF") or equal(words[index], "UNLESS")) {
-            when_on = equal(words[index], "IF"); flag = try game.flagId(words[index + 1]); index += 2;
+            when_on = equal(words[index], "IF");
+            flag = try game.flagId(words[index + 1]);
+            index += 2;
         }
         const effect: Effect = if (equal(words[index], "MESSAGE"))
             .{ .message = try joined(game.gpa, words[index + 1 ..]) }
@@ -161,10 +181,13 @@ const Adventure = struct {
             .{ .move = .{ .item = game.itemId(words[index + 1]), .place = .{ .kind = .room, .index = game.roomId(words[index + 2]) } } }
         else if (equal(words[index], "SET") or equal(words[index], "CLEAR"))
             .{ .flag = .{ .index = try game.flagId(words[index + 1]), .on = equal(words[index], "SET") } }
-        else .{ .points = integer(words[index + 1]) };
+        else
+            .{ .points = integer(words[index + 1]) };
         return .{ .flag = flag, .when_on = when_on, .effect = effect };
     }
-    fn lessItem(_: void, a: Item, b: Item) bool { return std.mem.order(u8, a.id, b.id) == .lt; }
+    fn lessItem(_: void, a: Item, b: Item) bool {
+        return std.mem.order(u8, a.id, b.id) == .lt;
+    }
     fn create(gpa: Allocator, definitions: []const []const u8) Error!*Adventure {
         const game = try gpa.create(Adventure);
         game.* = .{ .gpa = gpa };
@@ -185,8 +208,10 @@ const Adventure = struct {
             } else if (equal(kind, "DESC")) {
                 try game.rooms.items[game.roomId(words[1])].descriptions.append(gpa, try joined(gpa, words[2..]));
             } else if (equal(kind, "EXIT")) {
-                game.state.exits[game.roomId(words[1])][@intFromEnum(directionOf(words[2]).?)] = .{
-                    .destination = game.roomId(words[3]), .key = if (words.len > 4) game.itemId(words[5]) else null, .locked = words.len > 4,
+                game.state.exits[game.roomId(words[1])][@backingInt(directionOf(words[2]).?)] = .{
+                    .destination = game.roomId(words[3]),
+                    .key = if (words.len > 4) game.itemId(words[5]) else null,
+                    .locked = words.len > 4,
                 };
             } else if (equal(kind, "ITEM")) {
                 const x = game.itemId(words[1]);
@@ -195,15 +220,34 @@ const Adventure = struct {
                 item.weight = integer(words[3]);
                 try item.nouns.append(gpa, words[1]);
                 var index: usize = 4;
-                if (equal(words[index], "TREASURE")) { item.treasure = integer(words[index + 1]); index += 2; }
-                if (equal(words[index], "LIGHT")) { item.light = true; game.state.fuel[x] = integer(words[index + 1]); index += 2; }
-                if (equal(words[index], "CONTAINER")) {
-                    item.capacity = integer(words[index + 1]); index += 2;
-                    if (equal(words[index], "CLOSED")) { game.state.containers[x] = .closed; index += 1; }
-                    if (equal(words[index], "LOCKED")) { item.key = game.itemId(words[index + 1]); game.state.containers[x] = .locked; index += 2; }
+                if (equal(words[index], "TREASURE")) {
+                    item.treasure = integer(words[index + 1]);
+                    index += 2;
                 }
-                if (equal(words[index], "FIXED")) { item.fixed = true; index += 1; }
-                item.name = try joined(gpa, words[index..]); item.name_words = words[index..];
+                if (equal(words[index], "LIGHT")) {
+                    item.light = true;
+                    game.state.fuel[x] = integer(words[index + 1]);
+                    index += 2;
+                }
+                if (equal(words[index], "CONTAINER")) {
+                    item.capacity = integer(words[index + 1]);
+                    index += 2;
+                    if (equal(words[index], "CLOSED")) {
+                        game.state.containers[x] = .closed;
+                        index += 1;
+                    }
+                    if (equal(words[index], "LOCKED")) {
+                        item.key = game.itemId(words[index + 1]);
+                        game.state.containers[x] = .locked;
+                        index += 2;
+                    }
+                }
+                if (equal(words[index], "FIXED")) {
+                    item.fixed = true;
+                    index += 1;
+                }
+                item.name = try joined(gpa, words[index..]);
+                item.name_words = words[index..];
             } else if (equal(kind, "INSIDE")) {
                 game.state.places[game.itemId(words[1])] = .{ .kind = .inside, .index = game.itemId(words[2]) };
             } else if (equal(kind, "ALIAS")) {
@@ -214,17 +258,19 @@ const Adventure = struct {
                 try game.use_rules.append(gpa, .{ .first = game.itemId(words[1]), .second = game.itemId(words[2]), .rule = try game.parseRule(words, 3) });
             } else if (equal(kind, "ENTER")) {
                 try game.rooms.items[game.roomId(words[1])].enter.append(gpa, try game.parseRule(words, 2));
-            } else if (equal(kind, "TROPHY")) game.trophy = game.roomId(words[1])
-            else if (equal(kind, "START")) game.state.room = game.roomId(words[1])
-            else if (equal(kind, "MAXWEIGHT")) game.max_weight = integer(words[1]);
+            } else if (equal(kind, "TROPHY")) game.trophy = game.roomId(words[1]) else if (equal(kind, "START")) game.state.room = game.roomId(words[1]) else if (equal(kind, "MAXWEIGHT")) game.max_weight = integer(words[1]);
         }
         game.state.visited[game.state.room] = true;
         return game;
     }
-    fn floor(game: *const Adventure) Place { return .{ .kind = .room, .index = game.state.room }; }
+    fn floor(game: *const Adventure) Place {
+        return .{ .kind = .room, .index = game.state.room };
+    }
     fn direct(game: *const Adventure, place: Place) Selection {
         var result: Selection = .{};
-        for (0..game.items.items.len) |x| if (game.state.places[x].equal(place)) { result.add(x); };
+        for (0..game.items.items.len) |x| if (game.state.places[x].equal(place)) {
+            result.add(x);
+        };
         return result;
     }
     fn reachable(game: *const Adventure, x: usize, root: Place) bool {
@@ -235,13 +281,17 @@ const Adventure = struct {
             place = game.state.places[place.index];
         }
     }
-    fn carried(game: *const Adventure, x: usize) bool { return game.reachable(x, player); }
+    fn carried(game: *const Adventure, x: usize) bool {
+        return game.reachable(x, player);
+    }
     fn isLit(game: *const Adventure) bool {
         if (!game.rooms.items[game.state.room].dark) return true;
         for (0..game.items.items.len) |x| if (game.state.lit[x] and (game.carried(x) or game.reachable(x, game.floor()))) return true;
         return false;
     }
-    fn visible(game: *const Adventure, x: usize, lit: bool) bool { return game.carried(x) or (lit and game.reachable(x, game.floor())); }
+    fn visible(game: *const Adventure, x: usize, lit: bool) bool {
+        return game.carried(x) or (lit and game.reachable(x, game.floor()));
+    }
     fn contentWeight(game: *const Adventure, container: usize) i32 {
         var result: i32 = 0;
         for (0..game.items.items.len) |x| if (game.state.places[x].equal(.{ .kind = .inside, .index = container })) {
@@ -249,10 +299,14 @@ const Adventure = struct {
         };
         return result;
     }
-    fn totalWeight(game: *const Adventure, x: usize) i32 { return game.items.items[x].weight + game.contentWeight(x); }
+    fn totalWeight(game: *const Adventure, x: usize) i32 {
+        return game.items.items[x].weight + game.contentWeight(x);
+    }
     fn carriedWeight(game: *const Adventure) i32 {
         var result: i32 = 0;
-        for (0..game.items.items.len) |x| if (game.state.places[x].equal(player)) { result += game.totalWeight(x); };
+        for (0..game.items.items.len) |x| if (game.state.places[x].equal(player)) {
+            result += game.totalWeight(x);
+        };
         return result;
     }
     fn within(game: *const Adventure, item: usize, container: usize) bool {
@@ -269,7 +323,10 @@ const Adventure = struct {
             result.total += 1;
             var place = game.state.places[x];
             while (place.kind == .inside) place = game.state.places[place.index];
-            if (place.equal(.{ .kind = .room, .index = game.trophy })) { result.stored += 1; result.points += points; }
+            if (place.equal(.{ .kind = .room, .index = game.trophy })) {
+                result.stored += 1;
+                result.points += points;
+            }
         };
         return result;
     }
@@ -317,7 +374,9 @@ const Session = struct {
         session.problem = try std.fmt.allocPrint(session.gpa, format, args);
         return error.Invalid;
     }
-    fn say(session: *Session, comptime format: []const u8, args: anytype) Error!void { try line(session.out, format, args); }
+    fn say(session: *Session, comptime format: []const u8, args: anytype) Error!void {
+        try line(session.out, format, args);
+    }
     fn itemTree(session: *Session, place: Place, depth: usize) Error!void {
         const game = session.game;
         const children = game.direct(place);
@@ -333,7 +392,9 @@ const Session = struct {
         if (!game.isLit()) return session.say("It is pitch dark.", .{});
         const room = &game.rooms.items[game.state.room];
         try session.say("{s}", .{room.name});
-        if (full) for (room.descriptions.items) |text| { try session.say("{s}", .{text}); };
+        if (full) for (room.descriptions.items) |text| {
+            try session.say("{s}", .{text});
+        };
         try session.out.writeAll("Exits: ");
         var first = true;
         for (game.state.exits[game.state.room], 0..) |possible, d| if (possible) |exit| {
@@ -344,7 +405,10 @@ const Session = struct {
         };
         if (first) try session.out.writeAll("none");
         try session.out.writeByte('\n');
-        if (game.direct(game.floor()).len > 0) { try session.say("You see:", .{}); try session.itemTree(game.floor(), 1); }
+        if (game.direct(game.floor()).len > 0) {
+            try session.say("You see:", .{});
+            try session.itemTree(game.floor(), 1);
+        }
     }
     fn resolve(session: *Session, phrase: []const []const u8) Error!usize {
         const game = session.game;
@@ -359,7 +423,10 @@ const Session = struct {
         for (game.items.items, 0..) |item, x| {
             if (!game.visible(x, lit) or !contains(item.nouns.items, phrase[phrase.len - 1])) continue;
             var match = true;
-            for (phrase[0 .. phrase.len - 1]) |word| if (!contains(item.name_words, word)) { match = false; break; };
+            for (phrase[0 .. phrase.len - 1]) |word| if (!contains(item.name_words, word)) {
+                match = false;
+                break;
+            };
             if (match) matches.add(x);
         }
         if (matches.len == 0) return session.fail("You can't see any such thing.", .{});
@@ -370,16 +437,19 @@ const Session = struct {
     fn examine(session: *Session, x: usize) Error!void {
         const game = session.game;
         const item = &game.items.items[x];
-        if (item.details.items.len == 0) try session.say("You see nothing special about the {s}.", .{item.name})
-        else for (item.details.items) |text| { try session.say("{s}", .{text}); };
+        if (item.details.items.len == 0) try session.say("You see nothing special about the {s}.", .{item.name}) else for (item.details.items) |text| {
+            try session.say("{s}", .{text});
+        }
         if (item.light) try session.say("It is {s} (fuel {d}).", .{ if (game.state.lit[x]) "lit" else "unlit", game.state.fuel[x] });
         if (item.capacity != null) switch (game.state.containers[x]) {
             .locked => try session.say("It is locked.", .{}),
             .closed => try session.say("It is closed.", .{}),
             .open => {
                 const place: Place = .{ .kind = .inside, .index = x };
-                if (game.direct(place).len == 0) try session.say("It is empty.", .{})
-                else { try session.say("It contains:", .{}); try session.itemTree(place, 1); }
+                if (game.direct(place).len == 0) try session.say("It is empty.", .{}) else {
+                    try session.say("It contains:", .{});
+                    try session.itemTree(place, 1);
+                }
             },
         };
         if (item.treasure) |points| try session.say("It is a treasure worth {d} points.", .{points});
@@ -397,12 +467,15 @@ const Session = struct {
         if (from) |phrase| {
             const c = try session.resolve(phrase);
             try session.requireContainer(c);
-            container = c; source = .{ .kind = .inside, .index = c };
+            container = c;
+            source = .{ .kind = .inside, .index = c };
         }
         if (all(target)) {
             var candidates: Selection = .{};
             const direct = game.direct(source);
-            for (direct.slice()) |x| if (!game.items.items[x].fixed) { candidates.add(x); };
+            for (direct.slice()) |x| if (!game.items.items[x].fixed) {
+                candidates.add(x);
+            };
             if (candidates.len == 0) {
                 if (container) |c| return session.fail("There is nothing in the {s} to take.", .{game.items.items[c].name});
                 return session.fail("There is nothing here to take.", .{});
@@ -411,7 +484,11 @@ const Session = struct {
             for (candidates.slice()) |x| {
                 if (!game.carried(x) and game.carriedWeight() + game.totalWeight(x) > game.max_weight)
                     try session.say("{s}: You can't carry any more.", .{game.items.items[x].name})
-                else { game.state.places[x] = player; taken = true; try session.say("{s}: Taken.", .{game.items.items[x].name}); }
+                else {
+                    game.state.places[x] = player;
+                    taken = true;
+                    try session.say("{s}: Taken.", .{game.items.items[x].name});
+                }
             }
             return taken;
         }
@@ -422,7 +499,8 @@ const Session = struct {
         if (game.state.places[x].equal(player)) return session.fail("You already have the {s}.", .{game.items.items[x].name});
         if (game.items.items[x].fixed) return session.fail("The {s} is fixed in place.", .{game.items.items[x].name});
         if (!game.carried(x) and game.carriedWeight() + game.totalWeight(x) > game.max_weight) return session.fail("You can't carry any more.", .{});
-        game.state.places[x] = player; try session.say("Taken.", .{});
+        game.state.places[x] = player;
+        try session.say("Taken.", .{});
         return true;
     }
     fn drop(session: *Session, target: []const []const u8) Error!void {
@@ -430,12 +508,16 @@ const Session = struct {
         if (all(target)) {
             const direct = game.direct(player);
             if (direct.len == 0) return session.fail("You are empty-handed.", .{});
-            for (direct.slice()) |x| { game.state.places[x] = game.floor(); try session.say("{s}: Dropped.", .{game.items.items[x].name}); }
+            for (direct.slice()) |x| {
+                game.state.places[x] = game.floor();
+                try session.say("{s}: Dropped.", .{game.items.items[x].name});
+            }
             return;
         }
         const x = try session.resolve(target);
         if (!game.carried(x)) return session.fail("You aren't carrying the {s}.", .{game.items.items[x].name});
-        game.state.places[x] = game.floor(); try session.say("Dropped.", .{});
+        game.state.places[x] = game.floor();
+        try session.say("Dropped.", .{});
     }
     fn putItem(session: *Session, x: usize, y: usize) Error!?[]const u8 {
         const game = session.game;
@@ -455,7 +537,9 @@ const Session = struct {
             try session.requireContainer(y);
             const direct = game.direct(player);
             var candidates: Selection = .{};
-            for (direct.slice()) |x| if (x != y) { candidates.add(x); };
+            for (direct.slice()) |x| if (x != y) {
+                candidates.add(x);
+            };
             if (candidates.len == 0) return session.fail("You have nothing to put in the {s}.", .{game.items.items[y].name});
             var moved = false;
             for (candidates.slice()) |x| {
@@ -482,14 +566,14 @@ const Session = struct {
         if (game.state.containers[x] == .locked) return session.fail("The {s} is locked.", .{name});
         game.state.containers[x] = .open;
         const children = game.direct(.{ .kind = .inside, .index = x });
-        if (children.len == 0) try session.say("Opened.", .{})
-        else try session.say("Opening the {s} reveals {f}.", .{ name, Names{ .game = game, .selected = children } });
+        if (children.len == 0) try session.say("Opened.", .{}) else try session.say("Opening the {s} reveals {f}.", .{ name, Names{ .game = game, .selected = children } });
     }
     fn close(session: *Session, x: usize) Error!void {
         const game = session.game;
         if (game.items.items[x].capacity == null) return session.fail("You can't close the {s}.", .{game.items.items[x].name});
         if (game.state.containers[x] != .open) return session.fail("The {s} is already closed.", .{game.items.items[x].name});
-        game.state.containers[x] = .closed; try session.say("Closed.", .{});
+        game.state.containers[x] = .closed;
+        try session.say("Closed.", .{});
     }
     fn checkKey(session: *Session, key: usize, phrase: ?[]const []const u8) Error!void {
         const game = session.game;
@@ -506,7 +590,7 @@ const Session = struct {
         const game = session.game;
         const direction: ?Direction = if (target.len == 1) directionOf(target[0]) else null;
         if (direction) |d| {
-            const index = @intFromEnum(d);
+            const index = @backingInt(d);
             const exit = game.state.exits[game.state.room][index] orelse return session.fail("There is no exit {s}.", .{@tagName(d)});
             const key = exit.key orelse return session.fail("The way {s} has no lock.", .{@tagName(d)});
             if (exit.locked == locking) return session.fail("The way {s} is {s}.", .{ @tagName(d), if (locking) "already locked" else "not locked" });
@@ -530,8 +614,11 @@ const Session = struct {
         const game = session.game;
         if (rule.flag) |flag| if (game.state.flags[flag] != rule.when_on) return null;
         switch (rule.effect) {
-            .message => |text| { try session.say("{s}", .{text}); return true; },
-            .open => |effect| game.state.exits[effect.room][@intFromEnum(effect.direction)] = .{ .destination = effect.destination },
+            .message => |text| {
+                try session.say("{s}", .{text});
+                return true;
+            },
+            .open => |effect| game.state.exits[effect.room][@backingInt(effect.direction)] = .{ .destination = effect.destination },
             .move => |effect| game.state.places[effect.item] = effect.place,
             .flag => |effect| game.state.flags[effect.index] = effect.on,
             .points => |amount| game.state.bonus += amount,
@@ -546,7 +633,10 @@ const Session = struct {
         var executed: usize = 0;
         var message = false;
         for (game.use_rules.items) |entry| if (entry.first == x and entry.second == y) {
-            if (try session.runRule(entry.rule)) |printed| { executed += 1; message = message or printed; }
+            if (try session.runRule(entry.rule)) |printed| {
+                executed += 1;
+                message = message or printed;
+            }
         };
         if (executed == 0) return session.fail("Nothing happens.", .{});
         if (!message) try session.say("Done.", .{});
@@ -562,7 +652,7 @@ const Session = struct {
     }
     fn move(session: *Session, direction: Direction) Error!bool {
         const game = session.game;
-        const exit = game.state.exits[game.state.room][@intFromEnum(direction)] orelse return session.fail("You can't go that way.", .{});
+        const exit = game.state.exits[game.state.room][@backingInt(direction)] orelse return session.fail("You can't go that way.", .{});
         if (exit.locked) return session.fail("The way {s} is locked.", .{@tagName(direction)});
         game.state.room = exit.destination;
         const baseline = game.isLit();
@@ -584,8 +674,7 @@ const Session = struct {
             }
         };
         const lit = game.isLit();
-        if (baseline and !lit) try session.say("It is now pitch dark.", .{})
-        else if (!baseline and lit) try session.describe(true);
+        if (baseline and !lit) try session.say("It is now pitch dark.", .{}) else if (!baseline and lit) try session.describe(true);
         game.state.darkness = if (lit) 0 else game.state.darkness + 1;
         if (game.state.darkness == 2) try session.say("You hear something moving in the dark.", .{});
         if (game.state.darkness == 3) game.state.end = .dead;
@@ -616,8 +705,7 @@ const Session = struct {
             .extinguish => try session.light(try session.resolve(first), false),
             .wait => try session.say("Time passes.", .{}),
             .inventory => {
-                if (game.direct(player).len == 0) try session.say("You are empty-handed.", .{})
-                else {
+                if (game.direct(player).len == 0) try session.say("You are empty-handed.", .{}) else {
                     try session.say("You are carrying:", .{});
                     try session.itemTree(player, 1);
                     try session.say("Total weight: {d}/{d}", .{ game.carriedWeight(), game.max_weight });
@@ -630,13 +718,23 @@ const Session = struct {
                 });
                 try session.say("Treasures stored: {d} of {d}.", .{ treasure.stored, treasure.total });
             },
-            .save => { game.saved = game.state; try session.say("Game saved.", .{}); },
+            .save => {
+                game.saved = game.state;
+                try session.say("Game saved.", .{});
+            },
             .restore => {
                 game.state = game.saved orelse return session.fail("There is no saved game.", .{});
-                try session.say("Game restored.", .{}); try session.describe(true);
+                try session.say("Game restored.", .{});
+                try session.describe(true);
             },
-            .verbose => { game.verbose = true; try session.say("Verbose mode.", .{}); },
-            .brief => { game.verbose = false; try session.say("Brief mode.", .{}); },
+            .verbose => {
+                game.verbose = true;
+                try session.say("Verbose mode.", .{});
+            },
+            .brief => {
+                game.verbose = false;
+                try session.say("Brief mode.", .{});
+            },
         }
         const action = switch (verb) {
             .go, .take, .drop, .put, .open, .close, .unlock, .lock, .use, .light, .extinguish, .wait => true,
@@ -648,12 +746,15 @@ const Session = struct {
         if (words.len == 0) return session.fail("I beg your pardon?", .{});
         var rest = words[1..];
         var verb: Verb = undefined;
-        if (directionOf(words[0]) != null) { verb = .go; rest = words; }
-        else verb = verbOf(words[0]) orelse return session.fail("I don't know the verb \"{s}\".", .{words[0]});
+        if (directionOf(words[0]) != null) {
+            verb = .go;
+            rest = words;
+        } else verb = verbOf(words[0]) orelse return session.fail("I don't know the verb \"{s}\".", .{words[0]});
         if (session.game.state.end != .none and verb != .restore) return session.fail("The game is over.", .{});
         if (verb == .look and rest.len > 0) {
             if (!equal(rest[0], "at")) return session.fail("I don't understand that.", .{});
-            verb = .examine; rest = rest[1..];
+            verb = .examine;
+            rest = rest[1..];
         }
         const no_objects = switch (verb) {
             .look, .inventory, .wait, .score, .save, .restore, .verbose, .brief => true,

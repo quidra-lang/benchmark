@@ -33,17 +33,9 @@ fn listed(s: S, items: []const S) bool {
     return false;
 }
 
-const Type = enum {
-    nil,
-    int,
-    text
-};
+const Type = enum { nil, int, text };
 
-const Value = struct {
-    t: Type = .nil,
-    n: i64 = 0,
-    s: S = ""
-};
+const Value = struct { t: Type = .nil, n: i64 = 0, s: S = "" };
 
 fn integer(n: i64) Value {
     return .{ .t = .int, .n = n };
@@ -56,9 +48,9 @@ fn compatible(a: Type, b: Type) bool {
 fn cmp(a: Value, b: Value) i32 {
     if (a.t == .nil) return if (b.t == .nil) 0 else -1;
     if (b.t == .nil) return 1;
-    if (a.t == .int) return if (a.n < b.n) - 1 else if (a.n > b.n) 1 else 0;
+    if (a.t == .int) return if (a.n < b.n) -1 else if (a.n > b.n) 1 else 0;
     const o = std.mem.order(u8, a.s, b.s);
-    return if (o == .lt) - 1 else if (o == .gt) 1 else 0;
+    return if (o == .lt) -1 else if (o == .gt) 1 else 0;
 }
 
 fn truth(v: Value) bool {
@@ -68,8 +60,8 @@ fn truth(v: Value) bool {
 fn text(v: Value) !S {
     return switch (v.t) {
         .nil => "NULL",
-        .int => fmt("{d}", .{ v.n }),
-        .text => v.s
+        .int => fmt("{d}", .{v.n}),
+        .text => v.s,
     };
 }
 
@@ -79,66 +71,10 @@ fn same(a: []const Value, b: []const Value) bool {
     return true;
 }
 
-const TokenKind = enum {
-    name,
-    word,
-    int,
-    str,
-    sym
-};
+const TokenKind = enum { name, word, int, str, sym };
 
-const Token = struct {
-    k: TokenKind,
-    raw: S,
-    s: S
-};
-const reserved = [_]S{
-    "SELECT",
-    "DISTINCT",
-    "FROM",
-    "AS",
-    "JOIN",
-    "INNER",
-    "LEFT",
-    "OUTER",
-    "ON",
-    "WHERE",
-    "GROUP",
-    "BY",
-    "HAVING",
-    "ORDER",
-    "ASC",
-    "DESC",
-    "LIMIT",
-    "OFFSET",
-    "INSERT",
-    "INTO",
-    "VALUES",
-    "UPDATE",
-    "SET",
-    "DELETE",
-    "CREATE",
-    "TABLE",
-    "DROP",
-    "PRIMARY",
-    "KEY",
-    "NOT",
-    "NULL",
-    "INT",
-    "TEXT",
-    "AND",
-    "OR",
-    "IS",
-    "IN",
-    "BETWEEN",
-    "LIKE",
-    "COUNT",
-    "SUM",
-    "MIN",
-    "MAX",
-    "AVG",
-    "EXIT"
-};
+const Token = struct { k: TokenKind, raw: S, s: S };
+const reserved = [_]S{ "SELECT", "DISTINCT", "FROM", "AS", "JOIN", "INNER", "LEFT", "OUTER", "ON", "WHERE", "GROUP", "BY", "HAVING", "ORDER", "ASC", "DESC", "LIMIT", "OFFSET", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "DROP", "PRIMARY", "KEY", "NOT", "NULL", "INT", "TEXT", "AND", "OR", "IS", "IN", "BETWEEN", "LIKE", "COUNT", "SUM", "MIN", "MAX", "AVG", "EXIT" };
 
 fn lex(s: S) ![]Token {
     var ts: std.ArrayList(Token) = .empty;
@@ -174,59 +110,26 @@ fn lex(s: S) ![]Token {
                 k = .word;
                 value = upper;
             } else k = .name;
-        } else if (i + 1 < s.len and listed(s[i..i + 2], &.{ "<>", "!=", "<=", ">=", "||" })) {
+        } else if (i + 1 < s.len and listed(s[i .. i + 2], &.{ "<>", "!=", "<=", ">=", "||" })) {
             i += 2;
-        } else if (std.mem.indexOfScalar(u8, "(),.;*/%+-=<>", c) != null) i += 1 else return fail("unexpected character '{c}'", .{ c });
+        } else if (std.mem.indexOfScalar(u8, "(),.;*/%+-=<>", c) != null) i += 1 else return fail("unexpected character '{c}'", .{c});
         if (value.len == 0 and k != .str) value = s[start..i];
         try ts.append(A, .{ .k = k, .raw = s[start..i], .s = value });
     }
     return ts.toOwnedSlice(A);
 }
 
-const Expr = struct {
-    k: enum {
-        value,
-        col,
-        unary,
-        binary,
-        isnull,
-        in,
-        between,
-        like,
-        aggregate,
-        paren
-    },
-    s: S = "",
-    qual: S = "",
-    v: Value = .{},
-    args: []const *Expr = &.{},
-    neg: bool = false,
-    distinct: bool = false,
-    star: bool = false,
-    index: usize = 0,
-    t: Type = .nil,
-    heading: S = "",
-    bare: bool = false
-};
+const Expr = struct { k: enum { value, col, unary, binary, isnull, in, between, like, aggregate, paren }, s: S = "", qual: S = "", v: Value = .{}, args: []const *Expr = &.{}, neg: bool = false, distinct: bool = false, star: bool = false, index: usize = 0, t: Type = .nil, heading: S = "", bare: bool = false };
 
-fn expr(n: Expr) ! *Expr {
+fn expr(n: Expr) !*Expr {
     const p = try A.create(Expr);
     p.* = n;
     return p;
 }
 
-const Column = struct {
-    name: S,
-    t: Type,
-    notnull: bool = false,
-    pk: usize = 0
-};
+const Column = struct { name: S, t: Type, notnull: bool = false, pk: usize = 0 };
 
-const Table = struct {
-    name: S,
-    cols: []Column,
-    rows: []const []Value = &.{}
-};
+const Table = struct { name: S, cols: []Column, rows: []const []Value = &.{} };
 
 var tables: std.ArrayList(Table) = .empty;
 
@@ -236,59 +139,18 @@ fn findTable(s: S) ?usize {
 }
 
 fn tableId(s: S) !usize {
-    return findTable(s) orelse fail("unknown table {s}", .{ s });
+    return findTable(s) orelse fail("unknown table {s}", .{s});
 }
 
-const Source = struct {
-    name: S,
-    alias: S = "",
-    on: ?*Expr = null,
-    left: bool = false
-};
+const Source = struct { name: S, alias: S = "", on: ?*Expr = null, left: bool = false };
 
-const Item = struct {
-    e: *Expr,
-    alias: S = ""
-};
+const Item = struct { e: *Expr, alias: S = "" };
 
-const Order = struct {
-    e: *Expr,
-    desc: bool = false,
-    key: ?usize = null
-};
+const Order = struct { e: *Expr, desc: bool = false, key: ?usize = null };
 
-const Assignment = struct {
-    name: S,
-    e: *Expr
-};
+const Assignment = struct { name: S, e: *Expr };
 
-const Statement = struct {
-    k: enum {
-        empty,
-        exit,
-        create,
-        drop,
-        insert,
-        update,
-        delete,
-        select
-    },
-    name: S = "",
-    cols: []Column = &.{},
-    targets: []S = &.{},
-    tuples: [][] *Expr = &.{},
-    assigns: []Assignment = &.{},
-    where: ?*Expr = null,
-    sources: []Source = &.{},
-    items: []Item = &.{},
-    star: bool = false,
-    distinct: bool = false,
-    groups: [] *Expr = &.{},
-    having: ?*Expr = null,
-    orders: []Order = &.{},
-    limit: ?usize = null,
-    offset: usize = 0
-};
+const Statement = struct { k: enum { empty, exit, create, drop, insert, update, delete, select }, name: S = "", cols: []Column = &.{}, targets: []S = &.{}, tuples: [][]*Expr = &.{}, assigns: []Assignment = &.{}, where: ?*Expr = null, sources: []Source = &.{}, items: []Item = &.{}, star: bool = false, distinct: bool = false, groups: []*Expr = &.{}, having: ?*Expr = null, orders: []Order = &.{}, limit: ?usize = null, offset: usize = 0 };
 
 const Parser = struct {
     ts: []Token,
@@ -302,7 +164,7 @@ const Parser = struct {
         return true;
     }
     fn bad(p: *Parser) anyerror {
-        return fail("syntax error at '{s}'", .{ if (p.i < p.ts.len) p.ts[p.i].raw else ";" });
+        return fail("syntax error at '{s}'", .{if (p.i < p.ts.len) p.ts[p.i].raw else ";"});
     }
     fn expect(p: *Parser, s: S) !void {
         if (!p.accept(s)) return p.bad();
@@ -321,40 +183,22 @@ const Parser = struct {
     }
     fn heading(p: *Parser, start: usize, end: usize) !S {
         var s: S = "";
-        for (p.ts[start..end], 0..) |t, i| s = try fmt("{s}{s}{s}", .{
-            s,
-            if (i > 0 and t.k != .sym and p.ts[start + i - 1].k != .sym) @as(S, " ") else "",
-            t.raw
-        });
+        for (p.ts[start..end], 0..) |t, i| s = try fmt("{s}{s}{s}", .{ s, if (i > 0 and t.k != .sym and p.ts[start + i - 1].k != .sym) @as(S, " ") else "", t.raw });
         return s;
     }
-    fn primary(p: *Parser) anyerror! *Expr {
+    fn primary(p: *Parser) anyerror!*Expr {
         const start = p.i;
-        if (p.accept("-")) return expr(.{
-            .k = .unary,
-            .s = "-",
-            .args = try A.dupe(*Expr, &.{ try p.parse(7) })
-        });
+        if (p.accept("-")) return expr(.{ .k = .unary, .s = "-", .args = try A.dupe(*Expr, &.{try p.parse(7)}) });
         if (p.accept("(")) {
             const x = try p.parse(1);
             try p.expect(")");
-            return expr(.{
-                .k = .paren,
-                .args = try A.dupe(*Expr, &.{ x })
-            });
+            return expr(.{ .k = .paren, .args = try A.dupe(*Expr, &.{x}) });
         }
         if (p.i >= p.ts.len) return p.bad();
         const t = p.ts[p.i];
         p.i += 1;
-        if (t.k == .int) return expr(.{
-            .k = .value,
-            .v = integer(try std.fmt.parseInt(i64, t.s, 10)),
-            .bare = true
-        });
-        if (t.k == .str) return expr(.{
-            .k = .value,
-            .v = .{ .t = .text, .s = t.s }
-        });
+        if (t.k == .int) return expr(.{ .k = .value, .v = integer(try std.fmt.parseInt(i64, t.s, 10)), .bare = true });
+        if (t.k == .str) return expr(.{ .k = .value, .v = .{ .t = .text, .s = t.s } });
         if (eq(t.s, "NULL")) return expr(.{ .k = .value });
         if (t.k == .name) {
             var qual: S = "";
@@ -370,7 +214,7 @@ const Parser = struct {
             var n: Expr = .{ .k = .aggregate, .s = t.s };
             if (eq(t.s, "COUNT") and p.accept("*")) n.star = true else {
                 n.distinct = p.accept("DISTINCT");
-                n.args = try A.dupe(*Expr, &.{ try p.parse(1) });
+                n.args = try A.dupe(*Expr, &.{try p.parse(1)});
             }
             try p.expect(")");
             return expr(n);
@@ -378,31 +222,14 @@ const Parser = struct {
         p.i = start;
         return p.bad();
     }
-    fn parse(p: *Parser, min: u8) anyerror! *Expr {
+    fn parse(p: *Parser, min: u8) anyerror!*Expr {
         const start = p.i;
         var n: *Expr = undefined;
-        if (min <= 3 and p.accept("NOT")) n = try expr(.{
-            .k = .unary,
-            .s = "NOT",
-            .args = try A.dupe(*Expr, &.{ try p.parse(3) })
-        }) else n = try p.primary();
+        if (min <= 3 and p.accept("NOT")) n = try expr(.{ .k = .unary, .s = "NOT", .args = try A.dupe(*Expr, &.{try p.parse(3)}) }) else n = try p.primary();
         var compared = false;
         while (true) {
             const op = p.peek();
-            const prec: u8 = if (eq(op, "OR")) 1 else if (eq(op, "AND")) 2 else if (listed(op, &.{
-                "=",
-                "<>",
-                "!=",
-                "<",
-                "<=",
-                ">",
-                ">=",
-                "IS",
-                "IN",
-                "BETWEEN",
-                "LIKE",
-                "NOT"
-            })) 4 else if (listed(op, &.{ "+", "-", "||" })) 5 else if (listed(op, &.{ "*", "/", "%" })) 6 else 0;
+            const prec: u8 = if (eq(op, "OR")) 1 else if (eq(op, "AND")) 2 else if (listed(op, &.{ "=", "<>", "!=", "<", "<=", ">", ">=", "IS", "IN", "BETWEEN", "LIKE", "NOT" })) 4 else if (listed(op, &.{ "+", "-", "||" })) 5 else if (listed(op, &.{ "*", "/", "%" })) 6 else 0;
             if (prec == 0 or prec < min or (prec == 4 and compared)) break;
             p.i += 1;
             if (prec == 4) {
@@ -417,11 +244,7 @@ const Parser = struct {
                 if (eq(cmpop, "IS")) {
                     neg = p.accept("NOT");
                     try p.expect("NULL");
-                    n = try expr(.{
-                        .k = .isnull,
-                        .neg = neg,
-                        .args = try A.dupe(*Expr, &.{ n })
-                    });
+                    n = try expr(.{ .k = .isnull, .neg = neg, .args = try A.dupe(*Expr, &.{n}) });
                 } else if (eq(cmpop, "IN")) {
                     try p.expect("(");
                     var args: std.ArrayList(*Expr) = .empty;
@@ -436,29 +259,16 @@ const Parser = struct {
                     const a = try p.parse(5);
                     try p.expect("AND");
                     const b = try p.parse(5);
-                    n = try expr(.{
-                        .k = .between,
-                        .neg = neg,
-                        .args = try A.dupe(*Expr, &.{ n, a, b })
-                    });
+                    n = try expr(.{ .k = .between, .neg = neg, .args = try A.dupe(*Expr, &.{ n, a, b }) });
                 } else {
                     const r = try p.parse(5);
-                    n = try expr(.{
-                        .k = if (eq(cmpop, "LIKE")).like else .binary,
-                        .s = cmpop,
-                        .neg = neg,
-                        .args = try A.dupe(*Expr, &.{ n, r })
-                    });
+                    n = try expr(.{ .k = if (eq(cmpop, "LIKE")) .like else .binary, .s = cmpop, .neg = neg, .args = try A.dupe(*Expr, &.{ n, r }) });
                 }
                 compared = true;
                 continue;
             }
             const r = try p.parse(prec + 1);
-            n = try expr(.{
-                .k = .binary,
-                .s = op,
-                .args = try A.dupe(*Expr, &.{ n, r })
-            });
+            n = try expr(.{ .k = .binary, .s = op, .args = try A.dupe(*Expr, &.{ n, r }) });
         }
         n.heading = try p.heading(start, p.i);
         return n;
@@ -513,7 +323,7 @@ const Parser = struct {
             }
             s.targets = try targets.toOwnedSlice(A);
             try p.expect("VALUES");
-            var tuples: std.ArrayList([] *Expr) = .empty;
+            var tuples: std.ArrayList([]*Expr) = .empty;
             while (true) {
                 try p.expect("(");
                 var es: std.ArrayList(*Expr) = .empty;
@@ -616,33 +426,25 @@ const Parser = struct {
     }
 };
 
-const Scope = struct {
-    name: S,
-    table: usize,
-    offset: usize
-};
+const Scope = struct { name: S, table: usize, offset: usize };
 
 fn written(n: *Expr) !S {
     return if (n.qual.len == 0) n.s else fmt("{s}.{s}", .{ n.qual, n.s });
 }
 
 fn resolve(n: *Expr, scope: []const Scope) !Type {
-    var found: ?struct {
-        index: usize,
-        t: Type
-    }
- = null;
+    var found: ?struct { index: usize, t: Type } = null;
     var has_table = false;
     for (scope) |s| {
         if (n.qual.len > 0 and !eq(n.qual, s.name)) continue;
         has_table = true;
         for (tables.items[s.table].cols, 0..) |c, i| if (eq(c.name, n.s)) {
-            if (found != null) return fail("ambiguous column {s}", .{ n.s });
+            if (found != null) return fail("ambiguous column {s}", .{n.s});
             found = .{ .index = s.offset + i, .t = c.t };
         };
     }
-    if (!has_table and n.qual.len > 0) return fail("unknown table {s}", .{ n.qual });
-    const f = found orelse return fail("unknown column {s}", .{ try written(n) });
+    if (!has_table and n.qual.len > 0) return fail("unknown table {s}", .{n.qual});
+    const f = found orelse return fail("unknown column {s}", .{try written(n)});
     n.index = f.index;
     return f.t;
 }
@@ -658,14 +460,14 @@ fn checked(n: *Expr, scope: []const Scope, aggregates: bool, grouping: bool, gro
                 for (groups) |i| if (i == n.index) {
                     found = true;
                 };
-                if (!found) return fail("column {s} is not grouped", .{ try written(n) });
+                if (!found) return fail("column {s} is not grouped", .{try written(n)});
             }
         },
         .aggregate => {
-            if (!aggregates or inside) return fail("misuse of aggregate {s}", .{ n.s });
+            if (!aggregates or inside) return fail("misuse of aggregate {s}", .{n.s});
             if (!n.star) {
                 const a = try checked(n.args[0], scope, aggregates, grouping, groups, true);
-                if ((eq(n.s, "SUM") or eq(n.s, "AVG")) and !compatible(a, .int)) return fail("type mismatch for {s}", .{ n.s });
+                if ((eq(n.s, "SUM") or eq(n.s, "AVG")) and !compatible(a, .int)) return fail("type mismatch for {s}", .{n.s});
                 if (eq(n.s, "MIN") or eq(n.s, "MAX")) t = a;
             }
         },
@@ -675,13 +477,13 @@ fn checked(n: *Expr, scope: []const Scope, aggregates: bool, grouping: bool, gro
             for (n.args, 0..) |a, i| types[i] = try checked(a, scope, aggregates, grouping, groups, inside);
             const op = if (n.k == .in) @as(S, "IN") else if (n.k == .between) "BETWEEN" else if (n.k == .like) "LIKE" else n.s;
             if (n.k == .isnull) {} else if (n.k == .in or n.k == .between or (n.k == .binary and listed(n.s, &.{ "=", "<>", "!=", "<", "<=", ">", ">=" }))) {
-                for (types[1..]) |x| if (!compatible(types[0], x)) return fail("type mismatch for {s}", .{ op });
+                for (types[1..]) |x| if (!compatible(types[0], x)) return fail("type mismatch for {s}", .{op});
             } else {
-                const want: Type = if (eq(op, "||") or n.k == .like).text else .int;
-                for (types) |x| if (!compatible(x, want)) return fail("type mismatch for {s}", .{ op });
+                const want: Type = if (eq(op, "||") or n.k == .like) .text else .int;
+                for (types) |x| if (!compatible(x, want)) return fail("type mismatch for {s}", .{op});
                 if (eq(op, "||")) t = .text;
             }
-        }
+        },
     }
     n.t = t;
     return t;
@@ -689,7 +491,7 @@ fn checked(n: *Expr, scope: []const Scope, aggregates: bool, grouping: bool, gro
 
 fn condition(n: *Expr, scope: []const Scope, ag: bool, grouping: bool, groups: []const usize, kind: S) !void {
     const t = try checked(n, scope, ag, grouping, groups, false);
-    if (!compatible(t, .int)) return fail("type mismatch for {s}", .{ kind });
+    if (!compatible(t, .int)) return fail("type mismatch for {s}", .{kind});
 }
 
 fn logical(op: S, a: Value, b: Value) Value {
@@ -770,7 +572,7 @@ fn eval(n: *Expr, row: []const Value, group: []const []Value) anyerror!Value {
         .unary => {
             const v = try eval(n.args[0], row, group);
             if (eq(n.s, "NOT")) return negate(v);
-            return if (v.t == .nil) v else integer( - v.n);
+            return if (v.t == .nil) v else integer(-v.n);
         },
         .isnull => {
             const v = try eval(n.args[0], row, group);
@@ -807,22 +609,19 @@ fn eval(n: *Expr, row: []const Value, group: []const []Value) anyerror!Value {
             if (eq(n.s, "AND") or eq(n.s, "OR")) return logical(n.s, a, b);
             if (listed(n.s, &.{ "=", "<>", "!=", "<", "<=", ">", ">=" })) return relation(n.s, a, b);
             if (a.t == .nil or b.t == .nil) return .{};
-            if (eq(n.s, "||")) return .{
-                .t = .text,
-                .s = try fmt("{s}{s}", .{ a.s, b.s })
-            };
+            if (eq(n.s, "||")) return .{ .t = .text, .s = try fmt("{s}{s}", .{ a.s, b.s }) };
             if (eq(n.s, "+")) return integer(a.n + b.n);
             if (eq(n.s, "-")) return integer(a.n - b.n);
             if (eq(n.s, "*")) return integer(a.n * b.n);
             if (b.n == 0) return .{};
             return integer(if (eq(n.s, "/")) @divTrunc(a.n, b.n) else @rem(a.n, b.n));
-        }
+        },
     }
 }
 
 fn column(t: Table, s: S) !usize {
     for (t.cols, 0..) |c, i| if (eq(c.name, s)) return i;
-    return fail("unknown column {s}", .{ s });
+    return fail("unknown column {s}", .{s});
 }
 
 fn constraints(t: Table, rows: []const []Value, targets: []const bool) !void {
@@ -832,9 +631,9 @@ fn constraints(t: Table, rows: []const []Value, targets: []const bool) !void {
     };
     for (rows, 0..) |r, i| {
         if (!targets[i]) continue;
-        for (t.cols, 0..) |c, j| if (c.notnull and r[j].t == .nil) return fail("NULL value in column {s}", .{ c.name });
+        for (t.cols, 0..) |c, j| if (c.notnull and r[j].t == .nil) return fail("NULL value in column {s}", .{c.name});
         if (pk) |k| for (rows, 0..) |s, j| {
-            if (i != j and cmp(r[k], s[k]) == 0) return fail("duplicate primary key {s}", .{ try text(r[k]) });
+            if (i != j and cmp(r[k], s[k]) == 0) return fail("duplicate primary key {s}", .{try text(r[k])});
         };
     }
 }
@@ -845,11 +644,7 @@ fn hasAggregate(n: *Expr) bool {
     return false;
 }
 
-const Result = struct {
-    vals: []Value,
-    keys: []Value,
-    serial: usize
-};
+const Result = struct { vals: []Value, keys: []Value, serial: usize };
 
 fn pad(n: usize) !void {
     for (0..n) |_| try put(" ");
@@ -901,7 +696,7 @@ fn query(s: Statement) anyerror!void {
     for (s.sources) |src| {
         const ti = try tableId(src.name);
         const n = if (src.alias.len > 0) src.alias else src.name;
-        for (scope.items) |old| if (eq(n, old.name)) return fail("duplicate table name {s}", .{ n });
+        for (scope.items) |old| if (eq(n, old.name)) return fail("duplicate table name {s}", .{n});
         try scope.append(A, .{ .name = n, .table = ti, .offset = width });
         width += tables.items[ti].cols.len;
         if (src.on) |on| try condition(on, scope.items, false, false, &.{}, "ON");
@@ -918,9 +713,7 @@ fn query(s: Statement) anyerror!void {
     var items: std.ArrayList(Item) = .empty;
     if (s.star) {
         for (scope.items) |src| for (tables.items[src.table].cols) |c| {
-            try items.append(A, .{
-                .e = try expr(.{ .k = .col, .s = c.name, .qual = src.name })
-            });
+            try items.append(A, .{ .e = try expr(.{ .k = .col, .s = c.name, .qual = src.name }) });
         };
     } else try items.appendSlice(A, s.items);
     for (items.items) |item| {
@@ -930,7 +723,7 @@ fn query(s: Statement) anyerror!void {
     for (s.orders) |*order| {
         const e = order.e;
         if (e.k == .value and e.v.t == .int and e.bare) {
-            if (e.v.n < 1 or e.v.n > @as(i64, @intCast(items.items.len))) return fail("ORDER BY position {d} is out of range", .{ e.v.n });
+            if (e.v.n < 1 or e.v.n > @as(i64, @intCast(items.items.len))) return fail("ORDER BY position {d} is out of range", .{e.v.n});
             order.key = @intCast(e.v.n - 1);
         } else if (e.k == .col and e.bare) {
             for (items.items, 0..) |item, i| if (item.alias.len > 0 and eq(item.alias, e.s)) {
@@ -1003,7 +796,7 @@ fn query(s: Statement) anyerror!void {
         var g: std.ArrayList([]Value) = .empty;
         try g.append(A, r);
         try grouped.append(A, g);
-    };
+    }
     var result: std.ArrayList(Result) = .empty;
     const empty = try A.alloc(Value, width);
     @memset(empty, .{});
@@ -1045,23 +838,22 @@ fn query(s: Statement) anyerror!void {
 
 fn execute(s: Statement) anyerror!void {
     switch (s.k) {
-        .empty,
-        .exit => {},
+        .empty, .exit => {},
         .create => {
-            if (findTable(s.name) != null) return fail("table {s} already exists", .{ s.name });
+            if (findTable(s.name) != null) return fail("table {s} already exists", .{s.name});
             var pks: usize = 0;
             for (s.cols, 0..) |c, i| {
-                for (s.cols[0..i]) |old| if (eq(c.name, old.name)) return fail("duplicate column {s}", .{ c.name });
+                for (s.cols[0..i]) |old| if (eq(c.name, old.name)) return fail("duplicate column {s}", .{c.name});
                 pks += c.pk;
                 if (pks > 1) return fail("multiple primary keys", .{});
             }
             try tables.append(A, .{ .name = s.name, .cols = s.cols });
-            try line(try fmt("Table {s} created.", .{ s.name }));
+            try line(try fmt("Table {s} created.", .{s.name}));
         },
         .drop => {
             const i = try tableId(s.name);
             _ = tables.orderedRemove(i);
-            try line(try fmt("Table {s} dropped.", .{ s.name }));
+            try line(try fmt("Table {s} dropped.", .{s.name}));
         },
         .select => try query(s),
         .insert => {
@@ -1072,14 +864,14 @@ fn execute(s: Statement) anyerror!void {
                 for (t.cols, 0..) |_, i| try targets.append(A, i);
             } else for (s.targets) |n| {
                 const i = try column(t, n);
-                for (targets.items) |old| if (old == i) return fail("duplicate column {s}", .{ n });
+                for (targets.items) |old| if (old == i) return fail("duplicate column {s}", .{n});
                 try targets.append(A, i);
-            };
+            }
             for (s.tuples) |tuple| {
                 if (tuple.len != targets.items.len) return fail("expected {d} values, got {d}", .{ targets.items.len, tuple.len });
                 for (tuple, targets.items) |e, i| {
                     const ty = try checked(e, &.{}, false, false, &.{}, false);
-                    if (!compatible(ty, t.cols[i].t)) return fail("type mismatch for column {s}", .{ t.cols[i].name });
+                    if (!compatible(ty, t.cols[i].t)) return fail("type mismatch for column {s}", .{t.cols[i].name});
                 }
             }
             var rows: std.ArrayList([]Value) = .empty;
@@ -1097,22 +889,19 @@ fn execute(s: Statement) anyerror!void {
             tables.items[ti].rows = try rows.toOwnedSlice(A);
             try line(try fmt("{d} {s} inserted.", .{ s.tuples.len, if (s.tuples.len == 1) @as(S, "row") else "rows" }));
         },
-        .update,
-        .delete => {
+        .update, .delete => {
             const ti = try tableId(s.name);
             const t = tables.items[ti];
-            const scope = [_]Scope{
-                 .{ .name = t.name, .table = ti, .offset = 0 }
-            };
+            const scope = [_]Scope{.{ .name = t.name, .table = ti, .offset = 0 }};
             const targets = try A.alloc(usize, s.assigns.len);
             for (s.assigns, 0..) |assignment, j| {
                 const i = try column(t, assignment.name);
-                for (targets[0..j]) |old| if (old == i) return fail("duplicate column {s}", .{ assignment.name });
+                for (targets[0..j]) |old| if (old == i) return fail("duplicate column {s}", .{assignment.name});
                 targets[j] = i;
             }
             for (s.assigns, targets) |assignment, i| {
                 const ty = try checked(assignment.e, &scope, false, false, &.{}, false);
-                if (!compatible(ty, t.cols[i].t)) return fail("type mismatch for column {s}", .{ t.cols[i].name });
+                if (!compatible(ty, t.cols[i].t)) return fail("type mismatch for column {s}", .{t.cols[i].name});
             }
             if (s.where) |w| try condition(w, &scope, false, false, &.{}, "WHERE");
             var rows: std.ArrayList([]Value) = .empty;
@@ -1132,12 +921,8 @@ fn execute(s: Statement) anyerror!void {
             }
             if (s.k == .update) try constraints(t, rows.items, changed);
             tables.items[ti].rows = try rows.toOwnedSlice(A);
-            try line(try fmt("{d} {s} {s}.", .{
-                count,
-                if (count == 1) @as(S, "row") else "rows",
-                if (s.k == .update) @as(S, "updated") else "deleted"
-            }));
-        }
+            try line(try fmt("{d} {s} {s}.", .{ count, if (count == 1) @as(S, "row") else "rows", if (s.k == .update) @as(S, "updated") else "deleted" }));
+        },
     }
 }
 
@@ -1149,7 +934,7 @@ pub fn main(init: std.process.Init) !void {
     var start: usize = 0;
     var quoted = false;
     var comment = false;
-    while (i < all.len): (i += 1) {
+    while (i < all.len) : (i += 1) {
         const c = all[i];
         if (comment) {
             if (c == '\n') comment = false;
@@ -1164,25 +949,23 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
         if (!quoted and c == ';') {
-            const s = all[start..i + 1];
+            const s = all[start .. i + 1];
             start = i + 1;
             const ts = lex(s) catch |e| {
                 if (e != error.Invalid) return e;
-                try line(try fmt("ERROR: {s}", .{ why }));
+                try line(try fmt("ERROR: {s}", .{why}));
                 continue;
             };
-            var parser = Parser{
-                .ts = ts
-            };
+            var parser = Parser{ .ts = ts };
             const statement = parser.statement() catch |e| {
                 if (e != error.Invalid) return e;
-                try line(try fmt("ERROR: {s}", .{ why }));
+                try line(try fmt("ERROR: {s}", .{why}));
                 continue;
             };
             if (statement.k == .exit) break;
             execute(statement) catch |e| {
                 if (e != error.Invalid) return e;
-                try line(try fmt("ERROR: {s}", .{ why }));
+                try line(try fmt("ERROR: {s}", .{why}));
             };
         }
     }

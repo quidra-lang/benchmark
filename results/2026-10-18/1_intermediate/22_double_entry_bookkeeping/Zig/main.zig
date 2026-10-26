@@ -4,12 +4,24 @@ const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 const max_accounts = 200;
 const last_day = 36524;
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn prefix(a: []const u8, b: []const u8) bool { return std.mem.startsWith(u8, b, a); }
-fn integer(text: []const u8) i64 { return std.fmt.parseInt(i64, text, 10) catch unreachable; }
-fn magnitude(value: i64) i64 { return if (value < 0) -value else value; }
-fn cents(text: []const u8) i64 { return integer(text[0 .. text.len - 3]) * 100 + integer(text[text.len - 2 ..]); }
-fn money(value: i64) Money { return .{ .cents = value }; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn prefix(a: []const u8, b: []const u8) bool {
+    return std.mem.startsWith(u8, b, a);
+}
+fn integer(text: []const u8) i64 {
+    return std.fmt.parseInt(i64, text, 10) catch unreachable;
+}
+fn magnitude(value: i64) i64 {
+    return if (value < 0) -value else value;
+}
+fn cents(text: []const u8) i64 {
+    return integer(text[0 .. text.len - 3]) * 100 + integer(text[text.len - 2 ..]);
+}
+fn money(value: i64) Money {
+    return .{ .cents = value };
+}
 const Money = struct {
     cents: i64,
     pub fn format(value: Money, out: *std.Io.Writer) std.Io.Writer.Error!void {
@@ -34,8 +46,7 @@ const Date = struct {
     }
     fn number(date: Date) i64 {
         const prior = date.year - 1;
-        var result = 365 * (date.year - 2000) + @divTrunc(prior, 4) - @divTrunc(1999, 4)
-            - @divTrunc(prior, 100) + @divTrunc(1999, 100) + @divTrunc(prior, 400) - @divTrunc(1999, 400);
+        var result = 365 * (date.year - 2000) + @divTrunc(prior, 4) - @divTrunc(1999, 4) - @divTrunc(prior, 100) + @divTrunc(1999, 100) + @divTrunc(prior, 400) - @divTrunc(1999, 400);
         var month: i64 = 1;
         while (month < date.month) : (month += 1) result += monthDays(date.year, month);
         return result + date.day - 1;
@@ -51,9 +62,18 @@ const Date = struct {
     }
 };
 const AccountType = enum {
-    ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE, CONTRA_ASSET,
-    fn sign(kind: AccountType) i64 { return if (kind == .ASSET or kind == .EXPENSE) 1 else -1; }
-    fn class(kind: AccountType) AccountType { return if (kind == .CONTRA_ASSET) .ASSET else kind; }
+    ASSET,
+    LIABILITY,
+    EQUITY,
+    REVENUE,
+    EXPENSE,
+    CONTRA_ASSET,
+    fn sign(kind: AccountType) i64 {
+        return if (kind == .ASSET or kind == .EXPENSE) 1 else -1;
+    }
+    fn class(kind: AccountType) AccountType {
+        return if (kind == .CONTRA_ASSET) .ASSET else kind;
+    }
 };
 const Kind = enum { journal, recurring, reversal, closing, reopen, depreciation, interest, writeoff };
 const Account = struct { code: []const u8, kind: AccountType, name: []const u8, active: bool = true };
@@ -62,8 +82,12 @@ const Line = struct {
     account: usize,
     amount: i64,
     partner: ?[]const u8 = null,
-    fn difference(line: Line) i64 { return if (line.debit) line.amount else -line.amount; }
-    fn side(line: Line) []const u8 { return if (line.debit) "DR" else "CR"; }
+    fn difference(line: Line) i64 {
+        return if (line.debit) line.amount else -line.amount;
+    }
+    fn side(line: Line) []const u8 {
+        return if (line.debit) "DR" else "CR";
+    }
 };
 const DraftLine = struct { debit: bool, code: []const u8, amount: i64, partner: ?[]const u8 };
 const Entry = struct {
@@ -77,28 +101,44 @@ const Entry = struct {
     reverses: ?[]const u8 = null,
     fn amount(entry: Entry) i64 {
         var total: i64 = 0;
-        for (entry.lines) |line| if (line.debit) { total += line.amount; };
+        for (entry.lines) |line| if (line.debit) {
+            total += line.amount;
+        };
         return total;
     }
 };
 const Template = struct { name: []const u8, memo: []const u8, lines: []const Line, uses: usize = 0 };
 const Draft = struct {
-    journal: bool, key: []const u8, date: ?[]const u8, memo: []const u8,
+    journal: bool,
+    key: []const u8,
+    date: ?[]const u8,
+    memo: []const u8,
     lines: std.ArrayList(DraftLine) = .empty,
-    fn kind(draft: Draft) []const u8 { return if (draft.journal) "journal" else "template"; }
+    fn kind(draft: Draft) []const u8 {
+        return if (draft.journal) "journal" else "template";
+    }
 };
 const Totals = struct {
     debit: i64 = 0,
     credit: i64 = 0,
-    fn add(total: *Totals, line: Line) void { if (line.debit) total.debit += line.amount else total.credit += line.amount; }
-    fn difference(total: Totals) i64 { return total.debit - total.credit; }
+    fn add(total: *Totals, line: Line) void {
+        if (line.debit) total.debit += line.amount else total.credit += line.amount;
+    }
+    fn difference(total: Totals) i64 {
+        return total.debit - total.credit;
+    }
 };
 const AccountTotals = [max_accounts]Totals;
 const AccountOrder = struct {
     items: [max_accounts]usize = undefined,
     len: usize = 0,
-    fn append(order: *AccountOrder, item: usize) void { order.items[order.len] = item; order.len += 1; }
-    fn slice(order: *const AccountOrder) []const usize { return order.items[0..order.len]; }
+    fn append(order: *AccountOrder, item: usize) void {
+        order.items[order.len] = item;
+        order.len += 1;
+    }
+    fn slice(order: *const AccountOrder) []const usize {
+        return order.items[0..order.len];
+    }
 };
 const OpenItem = struct { entry: *const Entry, original: i64, remaining: i64 };
 const Settlement = struct {
@@ -106,19 +146,29 @@ const Settlement = struct {
     items: std.ArrayList(OpenItem) = .empty,
     head: usize = 0,
     unapplied: i64 = 0,
-    fn open(settlement: Settlement) []const OpenItem { return settlement.items.items[settlement.head..]; }
+    fn open(settlement: Settlement) []const OpenItem {
+        return settlement.items.items[settlement.head..];
+    }
 };
 const CloseRecord = struct { date: Date, entry: ?*Entry };
 const Section = enum {
-    REVENUE, EXPENSE, ASSETS, LIABILITIES, EQUITY,
+    REVENUE,
+    EXPENSE,
+    ASSETS,
+    LIABILITIES,
+    EQUITY,
     fn includes(section: Section, kind: AccountType) bool {
         return switch (section) {
-            .REVENUE => kind == .REVENUE, .EXPENSE => kind == .EXPENSE,
+            .REVENUE => kind == .REVENUE,
+            .EXPENSE => kind == .EXPENSE,
             .ASSETS => kind == .ASSET or kind == .CONTRA_ASSET,
-            .LIABILITIES => kind == .LIABILITY, .EQUITY => kind == .EQUITY,
+            .LIABILITIES => kind == .LIABILITY,
+            .EQUITY => kind == .EQUITY,
         };
     }
-    fn sign(section: Section) i64 { return if (section == .ASSETS or section == .EXPENSE) 1 else -1; }
+    fn sign(section: Section) i64 {
+        return if (section == .ASSETS or section == .EXPENSE) 1 else -1;
+    }
 };
 
 const Books = struct {
@@ -176,7 +226,9 @@ const Books = struct {
         if (a.number() > b.number()) return books.fail("invalid range {s} {s}", .{ first, last });
         return .{ .first = a, .last = b };
     }
-    fn accountLess(books: *const Books, a: usize, b: usize) bool { return std.mem.lessThan(u8, books.accounts[a].code, books.accounts[b].code); }
+    fn accountLess(books: *const Books, a: usize, b: usize) bool {
+        return std.mem.lessThan(u8, books.accounts[a].code, books.accounts[b].code);
+    }
     fn orderedAccounts(books: *const Books) AccountOrder {
         var result: AccountOrder = .{};
         for (0..books.account_count) |i| result.append(i);
@@ -205,7 +257,9 @@ const Books = struct {
         var difference: i64 = 0;
         for (books.entries.items) |posted| {
             if (posted.date.number() > last) continue;
-            for (posted.lines) |line| if (line.account == selected) { difference += line.difference(); };
+            for (posted.lines) |line| if (line.account == selected) {
+                difference += line.difference();
+            };
         }
         return difference * books.accounts[selected].kind.sign();
     }
@@ -215,7 +269,9 @@ const Books = struct {
             const day = posted.date.number();
             if (day > last) continue;
             var change: i64 = 0;
-            for (posted.lines) |line| if (line.account == selected) { change += line.difference(); };
+            for (posted.lines) |line| if (line.account == selected) {
+                change += line.difference();
+            };
             total += change * books.accounts[selected].kind.sign() * (last - @max(first, day) + 1);
         }
         return total;
@@ -228,11 +284,15 @@ const Books = struct {
         }
         return found;
     }
-    fn parentCode(books: *const Books, selected: usize) []const u8 { return if (books.parent(selected)) |i| books.accounts[i].code else "none"; }
+    fn parentCode(books: *const Books, selected: usize) []const u8 {
+        return if (books.parent(selected)) |i| books.accounts[i].code else "none";
+    }
     fn top(books: *const Books, selected: usize) usize {
         var found = selected;
         for (books.accounts[0..books.account_count], 0..) |other, i|
-            if (other.code.len < books.accounts[found].code.len and prefix(other.code, books.accounts[selected].code)) { found = i; };
+            if (other.code.len < books.accounts[found].code.len and prefix(other.code, books.accounts[selected].code)) {
+                found = i;
+            };
         return found;
     }
     fn post(books: *Books, id: []const u8, value: Date, kind: Kind, memo: []const u8, lines: []const Line) Allocator.Error!*Entry {
@@ -255,7 +315,9 @@ const Books = struct {
         try books.out.splatByteAll(' ', indent);
         try books.out.print("POST {s} {f} lines {d} amount {f}\n", .{ posted.id, posted.date, posted.lines.len, money(posted.amount()) });
     }
-    fn settlementLess(_: void, a: Settlement, b: Settlement) bool { return std.mem.lessThan(u8, a.partner, b.partner); }
+    fn settlementLess(_: void, a: Settlement, b: Settlement) bool {
+        return std.mem.lessThan(u8, a.partner, b.partner);
+    }
     fn settlements(books: *Books, selected: usize, day: i64) Allocator.Error![]Settlement {
         var result: std.ArrayList(Settlement) = .empty;
         var partners: std.StringHashMapUnmanaged(usize) = .empty;
@@ -297,7 +359,9 @@ const Books = struct {
         var roots: [max_accounts]usize = undefined;
         for (order.slice()) |i| roots[i] = books.top(i);
         var total = earnings orelse 0;
-        for (order.slice()) |i| if (heading.includes(books.accounts[i].kind)) { total += totals[i].difference() * heading.sign(); };
+        for (order.slice()) |i| if (heading.includes(books.accounts[i].kind)) {
+            total += totals[i].difference() * heading.sign();
+        };
         try books.out.print("  {s} {f}\n", .{ @tagName(heading), money(total) });
         for (order.slice()) |root| {
             if (roots[root] != root) continue;
@@ -357,7 +421,9 @@ const Books = struct {
         const totals = books.aggregate(0, value.number(), false);
         const order = books.orderedAccounts();
         var targets: AccountOrder = .{};
-        for (order.slice()) |i| if ((books.accounts[i].kind == .REVENUE or books.accounts[i].kind == .EXPENSE) and totals[i].difference() != 0) { targets.append(i); };
+        for (order.slice()) |i| if ((books.accounts[i].kind == .REVENUE or books.accounts[i].kind == .EXPENSE) and totals[i].difference() != 0) {
+            targets.append(i);
+        };
         try books.active(targets.slice());
         var lines: std.ArrayList(Line) = .empty;
         var income: i64 = 0;
@@ -398,11 +464,38 @@ const Books = struct {
         try books.out.print("  {s} 0-30 {f} 31-60 {f} 61-90 {f} 91+ {f} unapplied {f} balance {f}\n", .{ label, money(values[0]), money(values[1]), money(values[2]), money(values[3]), money(values[4]), money(balance_value) });
     }
     const Command = enum {
-        ACCOUNT, DEACTIVATE, JOURNAL, TEMPLATE, DR, CR, POST, DRAFT, REVERSE, RECUR,
-        DEPRECIATE, INTEREST, WRITEOFF, CLOSE, REOPEN, LEDGER, ACTIVITY, TRIAL,
-        INCOME, BALANCE, ROLLUP, AGING, ITEMS, ENTRY, DAYBOOK, ACCOUNTS, TEMPLATES, STATUS,
+        ACCOUNT,
+        DEACTIVATE,
+        JOURNAL,
+        TEMPLATE,
+        DR,
+        CR,
+        POST,
+        DRAFT,
+        REVERSE,
+        RECUR,
+        DEPRECIATE,
+        INTEREST,
+        WRITEOFF,
+        CLOSE,
+        REOPEN,
+        LEDGER,
+        ACTIVITY,
+        TRIAL,
+        INCOME,
+        BALANCE,
+        ROLLUP,
+        AGING,
+        ITEMS,
+        ENTRY,
+        DAYBOOK,
+        ACCOUNTS,
+        TEMPLATES,
+        STATUS,
     };
-    fn templateLess(_: void, a: *Template, b: *Template) bool { return std.mem.lessThan(u8, a.name, b.name); }
+    fn templateLess(_: void, a: *Template, b: *Template) bool {
+        return std.mem.lessThan(u8, a.name, b.name);
+    }
     fn execute(books: *Books, words: []const []const u8) Error!void {
         const command = std.meta.stringToEnum(Command, words[0]).?;
         switch (command) {
@@ -445,7 +538,11 @@ const Books = struct {
             .DRAFT => {
                 const block = books.draft orelse return books.fail("no open entry", .{});
                 var totals: Totals = .{};
-                for (block.lines.items) |line| if (line.debit) { totals.debit += line.amount; } else { totals.credit += line.amount; };
+                for (block.lines.items) |line| if (line.debit) {
+                    totals.debit += line.amount;
+                } else {
+                    totals.credit += line.amount;
+                };
                 try books.out.print("DRAFT {s} {s} lines {d} debit {f} credit {f} difference {f}\n", .{ block.kind(), block.key, block.lines.items.len, money(totals.debit), money(totals.credit), money(totals.difference()) });
             },
             .REVERSE => {
@@ -520,7 +617,9 @@ const Books = struct {
                 var total: i64 = 0;
                 for (try books.settlements(selected, value.number())) |settlement| {
                     var amount: i64 = 0;
-                    for (settlement.open()) |item| if (value.number() - item.entry.date.number() > age) { amount += item.remaining; };
+                    for (settlement.open()) |item| if (value.number() - item.entry.date.number() > age) {
+                        amount += item.remaining;
+                    };
                     if (amount > 0) {
                         try targets.append(books.gpa, .{ .partner = settlement.partner, .amount = amount });
                         total += amount;
@@ -600,21 +699,27 @@ const Books = struct {
                 const totals = books.aggregate(0, value.number(), false);
                 var earnings: i64 = 0;
                 for (books.accounts[0..books.account_count], 0..) |found, i|
-                    if (found.kind == .REVENUE or found.kind == .EXPENSE) { earnings -= totals[i].difference(); };
+                    if (found.kind == .REVENUE or found.kind == .EXPENSE) {
+                        earnings -= totals[i].difference();
+                    };
                 try books.out.print("BALANCE {f}\n", .{value});
                 const assets = try books.section(.ASSETS, &totals, null);
                 const liabilities = try books.section(.LIABILITIES, &totals, null);
                 const equity = try books.section(.EQUITY, &totals, earnings);
-                if (assets == liabilities + equity) try books.out.writeAll("  check ok\n")
-                else try books.out.print("  check mismatch {f}\n", .{money(assets - liabilities - equity)});
+                if (assets == liabilities + equity) try books.out.writeAll("  check ok\n") else try books.out.print("  check mismatch {f}\n", .{money(assets - liabilities - equity)});
             },
             .ROLLUP => {
                 const value = try books.date(words[2]);
                 const order = books.orderedAccounts();
                 var targets: AccountOrder = .{};
-                for (order.slice()) |i| if (prefix(words[1], books.accounts[i].code)) { targets.append(i); };
+                for (order.slice()) |i| if (prefix(words[1], books.accounts[i].code)) {
+                    targets.append(i);
+                };
                 try books.out.print("ROLLUP {s} {f}\n", .{ words[1], value });
-                if (targets.len == 0) { try books.out.writeAll("  (none)\n"); return; }
+                if (targets.len == 0) {
+                    try books.out.writeAll("  (none)\n");
+                    return;
+                }
                 const totals = books.aggregate(0, value.number(), false);
                 var debit: i64 = 0;
                 var credit: i64 = 0;
@@ -641,7 +746,10 @@ const Books = struct {
                 if (command == .ITEMS) {
                     try books.out.print("ITEMS {s} {s} {s} {f}\n", .{ found.code, found.name, words[2], value });
                     var settlement: Settlement = .{ .partner = words[2] };
-                    for (settlements_list) |candidate| if (equal(candidate.partner, words[2])) { settlement = candidate; break; };
+                    for (settlements_list) |candidate| if (equal(candidate.partner, words[2])) {
+                        settlement = candidate;
+                        break;
+                    };
                     var remaining: i64 = 0;
                     for (settlement.open()) |item| {
                         remaining += item.remaining;
@@ -717,7 +825,9 @@ const Books = struct {
             },
             .STATUS => {
                 var inactive: usize = 0;
-                for (books.accounts[0..books.account_count]) |found| if (!found.active) { inactive += 1; };
+                for (books.accounts[0..books.account_count]) |found| if (!found.active) {
+                    inactive += 1;
+                };
                 try books.out.print("STATUS accounts {d} inactive {d} entries {d} templates {d} closed {s} open {s}\n", .{ books.account_count, inactive, books.entries.items.len, books.templates.count(), try books.closedText(), if (books.draft) |block| block.key else "none" });
             },
         }

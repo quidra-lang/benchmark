@@ -30,21 +30,9 @@ fn split(gpa: Allocator, text: []const u8, delimiter: u8) Allocator.Error![][]co
     return result.items;
 }
 
-const Sport = enum {
-    TENNIS,
-    TABLETENNIS,
-    BADMINTON,
-    VOLLEYBALL,
-    BOWLING,
-    DARTS
-};
+const Sport = enum { TENNIS, TABLETENNIS, BADMINTON, VOLLEYBALL, BOWLING, DARTS };
 
-const Final = enum {
-    TB7,
-    TB10,
-    ADV,
-    SUPER
-};
+const Final = enum { TB7, TB10, ADV, SUPER };
 
 const Config = struct {
     id: []const u8,
@@ -64,16 +52,9 @@ const Config = struct {
     }
 };
 
-const Dart = struct {
-    name: []const u8,
-    value: i64,
-    double: bool
-};
+const Dart = struct { name: []const u8, value: i64, double: bool };
 
-const Route = struct {
-    darts: [3]usize = undefined,
-    len: usize = 0
-};
+const Route = struct { darts: [3]usize = undefined, len: usize = 0 };
 
 const DartTable = struct {
     items: [63]Dart = undefined,
@@ -83,11 +64,7 @@ const DartTable = struct {
         for ([_]u8{ 'S', 'T', 'D' }, 0..) |prefix, group| {
             for (0..20) |i| {
                 const n: i64 = @intCast(20 - i);
-                self.items[group * 20 + i] = .{
-                    .name = try std.fmt.allocPrint(gpa, "{c}{d}", .{ prefix, n }),
-                    .value = n * @as(i64, if (prefix == 'S') 1 else if (prefix == 'T') 3 else 2),
-                    .double = prefix == 'D'
-                };
+                self.items[group * 20 + i] = .{ .name = try std.fmt.allocPrint(gpa, "{c}{d}", .{ prefix, n }), .value = n * @as(i64, if (prefix == 'S') 1 else if (prefix == 'T') 3 else 2), .double = prefix == 'D' };
             }
         }
         self.items[60] = .{ .name = "25", .value = 25, .double = false };
@@ -105,29 +82,7 @@ const DartTable = struct {
     }
 
     fn checkout(self: *const DartTable, score: i64, maximum: usize) ?Route {
-        const b = [_]usize{
-            40,
-            41,
-            42,
-            43,
-            44,
-            45,
-            46,
-            47,
-            48,
-            49,
-            50,
-            51,
-            52,
-            53,
-            54,
-            55,
-            56,
-            57,
-            58,
-            59,
-            61
-        };
+        const b = [_]usize{ 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61 };
         for (b) |last| {
             if (self.items[last].value == score)
                 return .{ .darts = .{ last, 0, 0 }, .len = 1 };
@@ -174,30 +129,15 @@ const FinishedSet = struct {
         if (self.super_tie)
             try out.writeByte(']');
         if (self.tie_loser) |loser|
-            try out.print("({d})", .{ loser });
+            try out.print("({d})", .{loser});
     }
 };
 
-const EventKind = enum {
-    POINT,
-    ROLL,
-    THROW,
-    SUB,
-    TIMEOUT
-};
+const EventKind = enum { POINT, ROLL, THROW, SUB, TIMEOUT };
 
-const Event = struct {
-    kind: EventKind,
-    side: usize = 0,
-    first: i64 = 0,
-    second: i64 = 0
-};
+const Event = struct { kind: EventKind, side: usize = 0, first: i64 = 0, second: i64 = 0 };
 
-const TennisKind = enum {
-    normal,
-    tie,
-    super
-};
+const TennisKind = enum { normal, tie, super };
 
 const State = struct {
     finished: bool = false,
@@ -245,12 +185,7 @@ const State = struct {
     hits: [2]i64 = .{ 0, 0 },
 
     fn init(config: Config) State {
-        return .{
-            .server = config.first,
-            .lineup = config.lineup,
-            .remaining = .{ config.start, config.start },
-            .turn_start = config.start
-        };
+        return .{ .server = config.first, .lineup = config.lineup, .remaining = .{ config.start, config.start }, .turn_start = config.start };
     }
 
     fn finalTennisSet(self: *const State, config: Config) bool {
@@ -269,13 +204,11 @@ const State = struct {
         if (config.sport == .TENNIS) {
             if (self.tennisKind(config) == .normal)
                 return self.server;
-            return self.server ^ @as(usize, @intCast(@mod(@divFloor(self.points[0] + self.points[1] + 1,
-                2), 2)));
+            return self.server ^ @as(usize, @intCast(@mod(@divFloor(self.points[0] + self.points[1] + 1, 2), 2)));
         }
         if (config.sport == .TABLETENNIS) {
             const t = self.points[0] + self.points[1];
-            return config.first ^ (self.completed_len % 2) ^ @as(usize, @intCast(@mod(if (t < 20) @divFloor(t,
-                2) else t, 2)));
+            return config.first ^ (self.completed_len % 2) ^ @as(usize, @intCast(@mod(if (t < 20) @divFloor(t, 2) else t, 2)));
         }
         return self.server;
     }
@@ -317,10 +250,11 @@ const State = struct {
         if (side == serving)
             self.serve_wins[side] += 1;
         if (self.previous_winner != null and self.previous_winner.? == side)
-            self.current_run += 1 else {
-                self.previous_winner = side;
-                self.current_run = 1;
-            }
+            self.current_run += 1
+        else {
+            self.previous_winner = side;
+            self.current_run = 1;
+        }
         self.runs[side] = @max(self.runs[side], self.current_run);
         if (config.sport == .TENNIS and kind == .normal) {
             const receiver = 1 - self.server;
@@ -337,16 +271,18 @@ const State = struct {
                 if (self.points[side] >= target and self.points[side] - self.points[1 - side] >= 2) {
                     self.server = 1 - self.server;
                     if (kind == .super)
-                        self.endSet(config, side, .{ .score = self.points, .super_tie = true }) else {
-                            self.games[side] = 7;
-                            self.endSet(config, side, .{ .score = self.games, .tie_loser = self.points[1 - side] });
-                        }
+                        self.endSet(config, side, .{ .score = self.points, .super_tie = true })
+                    else {
+                        self.games[side] = 7;
+                        self.endSet(config, side, .{ .score = self.games, .tie_loser = self.points[1 - side] });
+                    }
                 }
             } else if (self.normalGameWin(config, side, 0)) {
                 self.service_games[self.server] += 1;
                 if (side == self.server)
-                    self.holds[side] += 1 else
-                        self.breaks[side] += 1;
+                    self.holds[side] += 1
+                else
+                    self.breaks[side] += 1;
                 self.games[side] += 1;
                 self.points = .{ 0, 0 };
                 self.server = 1 - self.server;
@@ -362,8 +298,7 @@ const State = struct {
             std.mem.rotate(i64, &self.lineup[side], 1);
         }
         const target: i64 = if (config.sport == .TABLETENNIS) 11 else if (config.sport == .BADMINTON) 21 else if (self.completed_len == 4) 15 else 25;
-        if ((self.points[side] >= target and self.points[side] - self.points[1 - side] >= 2) or (config.sport == .BADMINTON
-            and self.points[side] == 30))
+        if ((self.points[side] >= target and self.points[side] - self.points[1 - side] >= 2) or (config.sport == .BADMINTON and self.points[side] == 30))
             self.endSet(config, side, .{ .score = self.points });
     }
 
@@ -371,8 +306,7 @@ const State = struct {
         if (pins > self.standing)
             return error.TooManyPins;
         const len = self.frame_lengths[self.frame];
-        self.marks[self.frame][len] = if (self.new_pins and pins == 10) 'X' else if (pins == self.standing) '/' else if (pins == 0) '-' else @as(u8,
-            @intCast(pins)) + '0';
+        self.marks[self.frame][len] = if (self.new_pins and pins == 10) 'X' else if (pins == self.standing) '/' else if (pins == 0) '-' else @as(u8, @intCast(pins)) + '0';
         self.frames[self.frame][len] = pins;
         self.frame_lengths[self.frame] += 1;
         self.standing -= pins;
@@ -392,7 +326,7 @@ const State = struct {
     }
 
     fn frameScores(self: *const State) [10]?i64 {
-        var result = [_]?i64{ null } ** 10;
+        var result: [10]?i64 = @splat(null);
         for (0..10) |i| {
             const len = self.frame_lengths[i];
             if (len == 0)
@@ -417,7 +351,8 @@ const State = struct {
             } else if (len == 2) {
                 const base = self.frames[i][0] + self.frames[i][1];
                 if (base < 10)
-                    result[i] = base else if (later_len > 0) result[i] = 10 + later[0];
+                    result[i] = base
+                else if (later_len > 0) result[i] = 10 + later[0];
             }
         }
         return result;
@@ -522,11 +457,9 @@ const State = struct {
         if (trial.finished)
             return "match point";
         if (trial.completed_len > self.completed_len)
-            return if (config.sport == .TABLETENNIS or config.sport == .BADMINTON) "game point" else
-                "set point";
+            return if (config.sport == .TABLETENNIS or config.sport == .BADMINTON) "game point" else "set point";
         if (config.sport == .TENNIS and self.tennisKind(config) == .normal and trial.games[side] != self.games[side])
-            return if (side == self.nextServer(config)) "game point" else
-                "break point";
+            return if (side == self.nextServer(config)) "game point" else "break point";
         return null;
     }
 
@@ -542,20 +475,14 @@ const State = struct {
                 try out.writeAll(self.marks[i][0..self.frame_lengths[i]]);
                 if (scores[i]) |value| {
                     cumulative += value;
-                    try out.print("({d})", .{ cumulative });
+                    try out.print("({d})", .{cumulative});
                 }
             }
             try out.writeByte('\n');
             return;
         }
         const serving = self.nextServer(config);
-        try out.print("{s}: {s}{s} vs {s}{s}", .{
-            config.id,
-            config.names[0],
-            @as([]const u8, if (!self.finished and serving == 0) "*" else ""),
-            config.names[1],
-            @as([]const u8, if (!self.finished and serving == 1) "*" else "")
-        });
+        try out.print("{s}: {s}{s} vs {s}{s}", .{ config.id, config.names[0], @as([]const u8, if (!self.finished and serving == 0) "*" else ""), config.names[1], @as([]const u8, if (!self.finished and serving == 1) "*" else "") });
         if (config.sport == .DARTS) {
             try out.writeAll(" sets ");
             try writePair(out, self.wins, false);
@@ -592,8 +519,7 @@ const State = struct {
                         if (kind == .tie) {
                             try writePair(out, self.points, false);
                         } else if (!config.no_ad and self.points[0] >= 3 and self.points[1] >= 3) {
-                            const display = if (self.points[0] == self.points[1]) "40-40" else
-                                if (self.points[0] > self.points[1]) "AD-40" else "40-AD";
+                            const display = if (self.points[0] == self.points[1]) "40-40" else if (self.points[0] > self.points[1]) "AD-40" else "40-AD";
                             try out.writeAll(display);
                         } else {
                             const labels = [_][]const u8{ "0", "15", "30", "40" };
@@ -606,7 +532,7 @@ const State = struct {
                 } else {
                     try writePair(out, self.points, false);
                     if (config.sport == .VOLLEYBALL)
-                        try out.print(" server {d}", .{ self.lineup[self.server][0] });
+                        try out.print(" server {d}", .{self.lineup[self.server][0]});
                 }
                 for (0..2) |side| {
                     if (self.situation(config, side)) |condition|
@@ -622,26 +548,15 @@ const State = struct {
         for (0..sides) |side| {
             try out.print("{s} {s}: ", .{ config.id, config.names[side] });
             if (config.rally()) {
-                try out.print("points {d} serve {d}/{d} run {d}", .{
-                    self.rally_points[side],
-                    self.serve_wins[side],
-                    self.served[side],
-                    self.runs[side]
-                });
+                try out.print("points {d} serve {d}/{d} run {d}", .{ self.rally_points[side], self.serve_wins[side], self.served[side], self.runs[side] });
                 if (config.sport == .TENNIS)
-                    try out.print(" holds {d}/{d} breaks {d} break points {d}/{d}", .{
-                        self.holds[side],
-                        self.service_games[side],
-                        self.breaks[side],
-                        self.converted_breaks[side],
-                        self.opportunities[side]
-                    });
+                    try out.print(" holds {d}/{d} breaks {d} break points {d}/{d}", .{ self.holds[side], self.service_games[side], self.breaks[side], self.converted_breaks[side], self.opportunities[side] });
                 if (config.sport == .VOLLEYBALL) {
                     try out.print(" subs {d} timeouts {d} lineup ", .{ self.substitutions[side], self.timeouts[side] });
                     for (self.lineup[side], 0..) |number, i| {
                         if (i > 0)
                             try out.writeByte(',');
-                        try out.print("{d}", .{ number });
+                        try out.print("{d}", .{number});
                     }
                 }
             } else if (config.sport == .BOWLING) {
@@ -660,20 +575,8 @@ const State = struct {
                     try trial.roll(trial.standing);
                 try out.print("strikes {d} spares {d} open {d} max {d}", .{ strikes, spares, open, trial.finalBowlingScore() });
             } else {
-                const average: u64 = @intCast(if (self.dart_count[side] == 0) 0 else @divFloor(self.scored[side] * 300,
-                    self.dart_count[side]));
-                try out.print("darts {d} average {d}.{d:0>2} busts {d} high {d} tons {d} 180s {d} doubles {d}/{d}",
-                    .{
-                    self.dart_count[side],
-                    average / 100,
-                    average % 100,
-                    self.busts[side],
-                    self.high[side],
-                    self.tons[side],
-                    self.maximums[side],
-                    self.hits[side],
-                    self.attempts[side]
-                });
+                const average: u64 = @intCast(if (self.dart_count[side] == 0) 0 else @divFloor(self.scored[side] * 300, self.dart_count[side]));
+                try out.print("darts {d} average {d}.{d:0>2} busts {d} high {d} tons {d} 180s {d} doubles {d}/{d}", .{ self.dart_count[side], average / 100, average % 100, self.busts[side], self.high[side], self.tons[side], self.maximums[side], self.hits[side], self.attempts[side] });
             }
             try out.writeByte('\n');
         }
@@ -683,17 +586,14 @@ const State = struct {
         if (!self.finished)
             return error.MatchNotFinished;
         if (config.sport == .BOWLING)
-            try out.print("{s}: {s} {d}", .{ config.id, config.names[0], self.finalBowlingScore() }) else {
-                try out.print("{s}: {s} def. {s}", .{
-                    config.id,
-                    config.names[self.winner],
-                    config.names[1 - self.winner]
-                });
-                for (self.completed[0..self.completed_len]) |set| {
-                    try out.writeByte(' ');
-                    try set.write(out, self.winner == 1);
-                }
+            try out.print("{s}: {s} {d}", .{ config.id, config.names[0], self.finalBowlingScore() })
+        else {
+            try out.print("{s}: {s} def. {s}", .{ config.id, config.names[self.winner], config.names[1 - self.winner] });
+            for (self.completed[0..self.completed_len]) |set| {
+                try out.writeByte(' ');
+                try set.write(out, self.winner == 1);
             }
+        }
         try out.writeByte('\n');
     }
 };
@@ -702,11 +602,7 @@ fn writePair(out: *std.Io.Writer, values: [2]i64, reverse: bool) std.Io.Writer.E
     try out.print("{d}-{d}", .{ values[if (reverse) 1 else 0], values[if (reverse) 0 else 1] });
 }
 
-const Match = struct {
-    config: Config,
-    state: State,
-    history: std.ArrayList(Event) = .empty
-};
+const Match = struct { config: Config, state: State, history: std.ArrayList(Event) = .empty };
 
 fn oneOf(value: []const u8, choices: []const []const u8) bool {
     for (choices) |choice| {
@@ -718,11 +614,7 @@ fn oneOf(value: []const u8, choices: []const []const u8) bool {
 
 fn configure(gpa: Allocator, a: []const []const u8) Error!Config {
     const sport = std.meta.stringToEnum(Sport, a[2]).?;
-    var config = Config{
-        .id = a[1],
-        .sport = sport,
-        .names = .{ a[3], if (sport == .BOWLING) "" else a[4] }
-    };
+    var config = Config{ .id = a[1], .sport = sport, .names = .{ a[3], if (sport == .BOWLING) "" else a[4] } };
     if (sport == .DARTS)
         config.sets = 1;
     if (sport == .VOLLEYBALL) {
@@ -733,7 +625,7 @@ fn configure(gpa: Allocator, a: []const []const u8) Error!Config {
         }
     }
     const start: usize = if (sport == .BOWLING) 4 else if (sport == .VOLLEYBALL) 7 else 5;
-    var seen = [_]bool{ false } ** 7;
+    var seen: [7]bool = @splat(false);
     const keys = [_][]const u8{ "SETS", "DEUCE", "FINAL", "FIRST", "GAMES", "START", "LEGS" };
     for (a[start..]) |option| {
         const parts = try split(gpa, option, '=');
@@ -862,10 +754,11 @@ const Engine = struct {
             try self.matches.put(self.gpa, a[1], match);
         } else if (std.mem.eql(u8, op, "CHECKOUT")) {
             const score = integer(a[1]);
-            try out.print("checkout {d}: ", .{ score });
+            try out.print("checkout {d}: ", .{score});
             if (self.darts.checkout(score, 3)) |route|
-                try self.darts.write(out, route.darts[0..route.len]) else
-                    try out.writeAll("none");
+                try self.darts.write(out, route.darts[0..route.len])
+            else
+                try out.writeAll("none");
             try out.writeByte('\n');
         } else if (std.mem.eql(u8, op, "STANDINGS")) try self.standings(out) else {
             const match = self.matches.get(a[1]) orelse return error.UnknownMatch;
@@ -876,18 +769,14 @@ const Engine = struct {
                 match.state = State.init(match.config);
                 for (match.history.items) |entry|
                     try match.state.apply(match.config, &self.darts, entry);
-            } else if (std.mem.eql(u8, op, "SCORE")) try match.state.writeScore(match.config, &self.darts, out) else if (std.mem.eql(u8, op,
-                "STATS")) try match.state.stats(match.config, out) else if (std.mem.eql(u8, op, "RESULT")) try match.state.writeResult(match.config,
-                out) else {
+            } else if (std.mem.eql(u8, op, "SCORE")) try match.state.writeScore(match.config, &self.darts, out) else if (std.mem.eql(u8, op, "STATS")) try match.state.stats(match.config, out) else if (std.mem.eql(u8, op, "RESULT")) try match.state.writeResult(match.config, out) else {
                 const kind = std.meta.stringToEnum(EventKind, op).?;
                 const sport = match.config.sport;
-                if ((kind == .POINT and !match.config.rally()) or (kind == .ROLL and sport != .BOWLING) or (kind == .THROW
-                    and sport != .DARTS) or ((kind == .SUB or kind == .TIMEOUT) and sport != .VOLLEYBALL))
+                if ((kind == .POINT and !match.config.rally()) or (kind == .ROLL and sport != .BOWLING) or (kind == .THROW and sport != .DARTS) or ((kind == .SUB or kind == .TIMEOUT) and sport != .VOLLEYBALL))
                     return error.WrongEvent;
                 if (kind == .POINT) {
                     for (a[2]) |side|
-                        try self.event(match, .{ .kind = .POINT, .side = if (side == 'A') 0 else
-                            1 });
+                        try self.event(match, .{ .kind = .POINT, .side = if (side == 'A') 0 else 1 });
                 } else if (kind == .ROLL or kind == .THROW) {
                     for (a[2..]) |token| {
                         if (match.state.finished)
@@ -895,12 +784,7 @@ const Engine = struct {
                         const value: i64 = if (kind == .ROLL) integer(token) else @intCast(self.darts.index(token) orelse return error.InvalidDart);
                         try self.event(match, .{ .kind = kind, .first = value });
                     }
-                } else try self.event(match, .{
-                    .kind = kind,
-                    .side = if (std.mem.eql(u8, a[2], "A")) 0 else 1,
-                    .first = if (kind == .SUB) integer(a[3]) else 0,
-                    .second = if (kind == .SUB) integer(a[4]) else 0
-                });
+                } else try self.event(match, .{ .kind = kind, .side = if (std.mem.eql(u8, a[2], "A")) 0 else 1, .first = if (kind == .SUB) integer(a[3]) else 0, .second = if (kind == .SUB) integer(a[4]) else 0 });
             }
         }
     }
@@ -940,7 +824,7 @@ pub fn main(init: std.process.Init) !void {
         var draft: std.Io.Writer.Allocating = .init(gpa);
         engine.execute(line, &draft.writer) catch |err| {
             if (reason(err)) |message| {
-                try output.interface.print("ERROR {s}\n", .{ message });
+                try output.interface.print("ERROR {s}\n", .{message});
                 continue;
             }
             return err;

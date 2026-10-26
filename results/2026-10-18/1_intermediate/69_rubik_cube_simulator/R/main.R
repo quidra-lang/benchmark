@@ -333,7 +333,7 @@ unrotate <- function(sequence) {
         letter <- move_letter(code)
         if (letter %in% names(replacements)) {
             original <- replacements[[letter]]
-            expanded <- c(expanded, move_code(move_letter(original), move_amount(original) * move_amount(code) %% 4))
+            expanded <- c(expanded, move_code(move_letter(original), (move_amount(original) * move_amount(code)) %% 4))
         } else expanded <- c(expanded, code)
     }
     rotation <- identity
@@ -479,9 +479,9 @@ command <- function(line) {
                         n <- length(sequence)
                         !(n >= 1 && face == move_letter(sequence[n])) && !(n >= 2 && axis(move_letter(sequence[n])) == axis(move_letter(sequence[n - 1])) && axis(face) == axis(move_letter(sequence[n])))
                     }, faces)
-                    random <- random * 48271 %% 2147483647
+                    random <- (random * 48271) %% 2147483647
                     face <- usable[random %% length(usable) + 1]
-                    random <- random * 48271 %% 2147483647
+                    random <- (random * 48271) %% 2147483647
                     sequence <- c(sequence, move_code(face, c(1L, 3L, 2L)[random %% 3 + 1]))
                 }
             }

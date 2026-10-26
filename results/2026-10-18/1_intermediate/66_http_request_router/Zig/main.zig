@@ -1,9 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Text = []const u8;
-const Error = Allocator.Error || error{
-    Invalid
-};
+const Error = Allocator.Error || error{Invalid};
 
 var error_message: Text = "";
 
@@ -52,23 +50,11 @@ const Builder = struct {
     }
 };
 
-const Cut = struct {
-    left: Text,
-    right: Text,
-    found: bool
-};
+const Cut = struct { left: Text, right: Text, found: bool };
 
 fn cut(s: Text, separator: u8) Cut {
-    if (std.mem.findScalar(u8, s, separator)) |p| return .{
-        .left = s[0..p],
-        .right = s[p + 1..],
-        .found = true
-    };
-    return .{
-        .left = s,
-        .right = "",
-        .found = false
-    };
+    if (std.mem.findScalar(u8, s, separator)) |p| return .{ .left = s[0..p], .right = s[p + 1 ..], .found = true };
+    return .{ .left = s, .right = "", .found = false };
 }
 
 fn split(gpa: Allocator, s: Text, separator: u8) Allocator.Error![]Text {
@@ -79,11 +65,8 @@ fn split(gpa: Allocator, s: Text, separator: u8) Allocator.Error![]Text {
 }
 
 fn join(gpa: Allocator, parts: []const Text, separator: Text) Allocator.Error!Text {
-    var out: Builder = .{
-        .gpa = gpa
-    };
-    for (parts, 0..) |p,
-    i | {
+    var out: Builder = .{ .gpa = gpa };
+    for (parts, 0..) |p, i| {
         if (i > 0) try out.add(separator);
         try out.add(p);
     }
@@ -171,9 +154,7 @@ fn hex(c: u8) ?u8 {
 }
 
 fn encode(gpa: Allocator, s: Text) Allocator.Error!Text {
-    var out: Builder = .{
-        .gpa = gpa
-    };
+    var out: Builder = .{ .gpa = gpa };
     const alphabet = "0123456789ABCDEF";
     for (s) |c| {
         if (unreserved(c)) try out.byte(c) else {
@@ -186,13 +167,11 @@ fn encode(gpa: Allocator, s: Text) Allocator.Error!Text {
 }
 
 fn decode(gpa: Allocator, s: Text) Allocator.Error!Text {
-    var out: Builder = .{
-        .gpa = gpa
-    };
+    var out: Builder = .{ .gpa = gpa };
     var at: usize = 0;
-    while (at < s.len): (at += 1) {
+    while (at < s.len) : (at += 1) {
         if (s[at] == '%') {
-            try out.byte(hex(s[at + 1]).?*16 + hex(s[at + 2]).?);
+            try out.byte(hex(s[at + 1]).? * 16 + hex(s[at + 2]).?);
             at += 2;
         } else try out.byte(s[at]);
     }
@@ -201,7 +180,7 @@ fn decode(gpa: Allocator, s: Text) Allocator.Error!Text {
 
 fn escapeCheck(s: Text) bool {
     var at: usize = 0;
-    while (at < s.len): (at += 1) if (s[at] == '%') {
+    while (at < s.len) : (at += 1) if (s[at] == '%') {
         if (at + 2 >= s.len) return false;
         const a = hex(s[at + 1]) orelse return false;
         const b = hex(s[at + 2]) orelse return false;
@@ -213,13 +192,11 @@ fn escapeCheck(s: Text) bool {
 }
 
 fn normalize(gpa: Allocator, path: Text) Allocator.Error!Text {
-    var out: Builder = .{
-        .gpa = gpa
-    };
+    var out: Builder = .{ .gpa = gpa };
     var at: usize = 0;
-    while (at < path.len): (at += 1) {
+    while (at < path.len) : (at += 1) {
         if (path[at] == '%') {
-            const c = hex(path[at + 1]).?*16 + hex(path[at + 2]).?;
+            const c = hex(path[at + 1]).? * 16 + hex(path[at + 2]).?;
             if (unreserved(c)) try out.byte(c) else {
                 try out.byte('%');
                 try out.byte(std.ascii.toUpper(path[at + 1]));
@@ -235,43 +212,23 @@ fn normalize(gpa: Allocator, path: Text) Allocator.Error!Text {
             if (parts.items.len > 0) parts.items.len -= 1;
         } else if (p.len > 0 and !equal(p, ".")) try parts.append(gpa, p);
     }
-    return std.fmt.allocPrint(gpa, "/{s}", .{
-        try join(gpa, parts.items, "/")
-    });
+    return std.fmt.allocPrint(gpa, "/{s}", .{try join(gpa, parts.items, "/")});
 }
 
-const RulePath = struct {
-    base: Text,
-    wildcard: bool
-};
+const RulePath = struct { base: Text, wildcard: bool };
 
 fn rulePath(s: Text) ?RulePath {
     if (ends(s, "/*")) {
-        const base = s[0..s.len - 2];
+        const base = s[0 .. s.len - 2];
         if (equal(base, "/") or !canonical(base)) return null;
-        return .{
-            .base = base,
-            .wildcard = true
-        };
+        return .{ .base = base, .wildcard = true };
     }
-    return if (canonical(s)).{
-        .base = s,
-        .wildcard = false
-    } else null;
+    return if (canonical(s)) .{ .base = s, .wildcard = false } else null;
 }
 
-const PieceKind = enum {
-    literal,
-    param,
-    integer,
-    slug,
-    wild
-};
+const PieceKind = enum { literal, param, integer, slug, wild };
 
-const Piece = struct {
-    kind: PieceKind,
-    name: Text
-};
+const Piece = struct { kind: PieceKind, name: Text };
 
 fn parsePattern(gpa: Allocator, pattern: Text) Allocator.Error!?[]Piece {
     if (equal(pattern, "/")) return try gpa.alloc(Piece, 0);
@@ -279,19 +236,12 @@ fn parsePattern(gpa: Allocator, pattern: Text) Allocator.Error!?[]Piece {
     const parts = try split(gpa, pattern[1..], '/');
     var out: std.ArrayList(Piece) = .empty;
     var names: std.StringHashMapUnmanaged(void) = .empty;
-    for (parts, 0..) |p,
-    i | {
-        var piece: Piece = .{
-            .kind = .literal,
-            .name = p
-        };
+    for (parts, 0..) |p, i| {
+        var piece: Piece = .{ .kind = .literal, .name = p };
         if (!segment(p)) {
             if (p.len < 3 or p[0] != '{' or p[p.len - 1] != '}') return null;
-            const inside = p[1..p.len - 1];
-            piece = .{
-                .kind = .param,
-                .name = inside
-            };
+            const inside = p[1 .. p.len - 1];
+            piece = .{ .kind = .param, .name = inside };
             if (starts(inside, "*")) {
                 piece.kind = .wild;
                 piece.name = inside[1..];
@@ -304,35 +254,26 @@ fn parsePattern(gpa: Allocator, pattern: Text) Allocator.Error!?[]Piece {
                 }
             }
             if (!name(piece.name) or names.contains(piece.name)) return null;
-            try names.put(gpa, piece.name, { });
+            try names.put(gpa, piece.name, {});
         }
         try out.append(gpa, piece);
     }
     return out.items;
 }
 
-const method_names = [_]Text {
-    "DELETE",
-    "GET",
-    "HEAD",
-    "OPTIONS",
-    "PATCH",
-    "POST",
-    "PUT"
-};
+const method_names = [_]Text{ "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT" };
 
 fn methodBit(s: Text) ?u16 {
-    for (method_names, 0..) |m,
-    i | if (equal(m, s)) return @as(u16, 1) << @as(u4, @intCast(i));
+    for (method_names, 0..) |m, i| if (equal(m, s)) return @as(u16, 1) << @as(u4, @intCast(i));
     return null;
 }
 
 fn methodList(gpa: Allocator, methods: u16, options: bool, separator: Text) Allocator.Error!Text {
     var mask = methods;
-    if (mask & methodBit("GET").?!= 0) mask |= methodBit("HEAD").?;
+    if (mask & methodBit("GET").? != 0) mask |= methodBit("HEAD").?;
     if (options) mask |= methodBit("OPTIONS").?;
     var parts: std.ArrayList(Text) = .empty;
-    for (method_names) |m| if (mask & methodBit(m).?!= 0) {
+    for (method_names) |m| if (mask & methodBit(m).? != 0) {
         try parts.append(gpa, m);
     };
     return join(gpa, parts.items, separator);
@@ -359,24 +300,11 @@ fn higher(_: void, a: *Route, b: *Route) bool {
     return a.number < b.number;
 }
 
-const Redirect = struct {
-    from: Text,
-    to: Text,
-    wildcard: bool,
-    code: usize
-};
+const Redirect = struct { from: Text, to: Text, wildcard: bool, code: usize };
 
-const Client = struct {
-    level: usize,
-    last: usize,
-    allowed: usize = 0,
-    limited: usize = 0
-};
+const Client = struct { level: usize, last: usize, allowed: usize = 0, limited: usize = 0 };
 
-const Pair = struct {
-    name: Text,
-    value: Text
-};
+const Pair = struct { name: Text, value: Text };
 
 fn pairBefore(_: void, a: Pair, b: Pair) bool {
     return before(a.name, b.name);
@@ -386,44 +314,29 @@ fn matches(gpa: Allocator, r: *Route, segments: []const Text) Allocator.Error!?[
     const m = r.pieces.len - @intFromBool(r.wild);
     if ((!r.wild and segments.len != m) or (r.wild and segments.len < m)) return null;
     var params: std.ArrayList(Pair) = .empty;
-    for (r.pieces, 0..) |p,
-    j | {
+    for (r.pieces, 0..) |p, j| {
         if (p.kind == .wild) {
             var values: std.ArrayList(Text) = .empty;
             for (segments[j..]) |x| try values.append(gpa, try decode(gpa, x));
-            try params.append(gpa, .{
-                .name = p.name,
-                .value = try join(gpa, values.items, "/")
-            });
+            try params.append(gpa, .{ .name = p.name, .value = try join(gpa, values.items, "/") });
             break;
         }
         const x = segments[j];
         switch (p.kind) {
             .literal => if (!equal(p.name, x)) return null,
-            .param => try params.append(gpa, .{
-                .name = p.name,
-                .value = try decode(gpa, x)
-            }),
+            .param => try params.append(gpa, .{ .name = p.name, .value = try decode(gpa, x) }),
             .integer => {
                 if (!intValue(x)) return null;
-                try params.append(gpa, .{
-                    .name = p.name,
-                    .value = try std.fmt.allocPrint(gpa, "{d}", .{
-                        number(x)
-                    })
-                });
+                try params.append(gpa, .{ .name = p.name, .value = try std.fmt.allocPrint(gpa, "{d}", .{number(x)}) });
             },
             .slug => {
                 if (!slug(x)) return null;
-                try params.append(gpa, .{
-                    .name = p.name,
-                    .value = x
-                });
+                try params.append(gpa, .{ .name = p.name, .value = x });
             },
             .wild => unreachable,
         }
     }
-    std.mem.sort(Pair, params.items, { }, pairBefore);
+    std.mem.sort(Pair, params.items, {}, pairBefore);
     return params.items;
 }
 
@@ -438,15 +351,11 @@ fn qWeight(s: Text) ?usize {
     var weight: usize = 0;
     for (p.right) |c| weight = weight * 10 + c - '0';
     var length = p.right.len;
-    while (length < 3): (length += 1) weight *= 10;
+    while (length < 3) : (length += 1) weight *= 10;
     return weight;
 }
 
-const AcceptElement = struct {
-    range: Text,
-    specificity: usize,
-    weight: usize
-};
+const AcceptElement = struct { range: Text, specificity: usize, weight: usize };
 
 fn negotiate(gpa: Allocator, types: []Text, accept: ?Text) Allocator.Error!?Text {
     const header = accept orelse return types[0];
@@ -456,7 +365,7 @@ fn negotiate(gpa: Allocator, types: []Text, accept: ?Text) Allocator.Error!?Text
         var fields = std.mem.splitScalar(u8, text, ';');
         const range = try lower(gpa, trim(fields.next().?));
         var specificity: usize = 3;
-        if (equal(range, "*/*")) specificity = 1 else if (ends(range, "/*") and mediaPart(range[0..range.len - 2])) specificity = 2 else if (!media(range)) continue;
+        if (equal(range, "*/*")) specificity = 1 else if (ends(range, "/*") and mediaPart(range[0 .. range.len - 2])) specificity = 2 else if (!media(range)) continue;
         var weight: ?usize = 1000;
         while (fields.next()) |field| {
             const p = cut(trim(field), '=');
@@ -465,11 +374,7 @@ fn negotiate(gpa: Allocator, types: []Text, accept: ?Text) Allocator.Error!?Text
                 break;
             }
         }
-        if (weight) |w| try elements.append(gpa, .{
-            .range = range,
-            .specificity = specificity,
-            .weight = w
-        });
+        if (weight) |w| try elements.append(gpa, .{ .range = range, .specificity = specificity, .weight = w });
     }
     var selected: ?Text = null;
     var best: usize = 0;
@@ -478,7 +383,7 @@ fn negotiate(gpa: Allocator, types: []Text, accept: ?Text) Allocator.Error!?Text
         var weight: usize = 0;
         const main = cut(t, '/').left;
         for (elements.items) |e| {
-            const fits = equal(e.range, "*/*") or equal(e.range, t) or (ends(e.range, "/*") and equal(e.range[0..e.range.len - 2], main));
+            const fits = equal(e.range, "*/*") or equal(e.range, t) or (ends(e.range, "/*") and equal(e.range[0 .. e.range.len - 2], main));
             if (fits and e.specificity > specificity) {
                 specificity = e.specificity;
                 weight = e.weight;
@@ -493,9 +398,7 @@ fn negotiate(gpa: Allocator, types: []Text, accept: ?Text) Allocator.Error!?Text
 }
 
 fn quoted(gpa: Allocator, s: Text) Allocator.Error!Text {
-    var out: Builder = .{
-        .gpa = gpa
-    };
+    var out: Builder = .{ .gpa = gpa };
     try out.byte('"');
     for (s) |c| {
         if (c == '\\' or c == '"') try out.byte('\\');
@@ -506,31 +409,23 @@ fn quoted(gpa: Allocator, s: Text) Allocator.Error!Text {
 }
 
 fn html(gpa: Allocator, s: Text) Allocator.Error!Text {
-    var out: Builder = .{
-        .gpa = gpa
-    };
+    var out: Builder = .{ .gpa = gpa };
     for (s) |c| switch (c) {
         '&' => try out.add("&amp;"),
         '<' => try out.add("&lt;"),
         '>' => try out.add("&gt;"),
         '"' => try out.add("&quot;"),
-        else => try out.byte(c)
+        else => try out.byte(c),
     };
     return out.result();
 }
 
 fn jsonObject(gpa: Allocator, pairs: []const Pair) Allocator.Error!Text {
-    var out: Builder = .{
-        .gpa = gpa
-    };
+    var out: Builder = .{ .gpa = gpa };
     try out.byte('{');
-    for (pairs, 0..) |p,
-    i | {
+    for (pairs, 0..) |p, i| {
         if (i > 0) try out.byte(',');
-        try out.print("{s}:{s}", .{
-            try quoted(gpa, p.name),
-            try quoted(gpa, p.value)
-        });
+        try out.print("{s}:{s}", .{ try quoted(gpa, p.name), try quoted(gpa, p.value) });
     }
     try out.byte('}');
     return out.result();
@@ -538,16 +433,10 @@ fn jsonObject(gpa: Allocator, pairs: []const Pair) Allocator.Error!Text {
 
 fn encodedPairs(gpa: Allocator, pairs: []const Pair) Allocator.Error!Text {
     if (pairs.len == 0) return "-";
-    var out: Builder = .{
-        .gpa = gpa
-    };
-    for (pairs, 0..) |p,
-    i | {
+    var out: Builder = .{ .gpa = gpa };
+    for (pairs, 0..) |p, i| {
         if (i > 0) try out.byte('&');
-        try out.print("{s}={s}", .{
-            try encode(gpa, p.name),
-            try encode(gpa, p.value)
-        });
+        try out.print("{s}={s}", .{ try encode(gpa, p.name), try encode(gpa, p.value) });
     }
     return out.result();
 }
@@ -567,10 +456,7 @@ fn bodyFor(gpa: Allocator, r: *Route, params: []Pair, query: Text, headers: std.
     while (parts.next()) |text| {
         if (text.len == 0) continue;
         const p = cut(text, '=');
-        try queries.append(gpa, .{
-            .name = try queryDecode(gpa, p.left),
-            .value = try queryDecode(gpa, p.right)
-        });
+        try queries.append(gpa, .{ .name = try queryDecode(gpa, p.left), .value = try queryDecode(gpa, p.right) });
     }
     if (headers.get("cookie")) |cookie| {
         var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -578,64 +464,35 @@ fn bodyFor(gpa: Allocator, r: *Route, params: []Pair, query: Text, headers: std.
         while (words.next()) |text| {
             const p = cut(trim(text), '=');
             if (p.found and p.left.len > 0 and !seen.contains(p.left)) {
-                try seen.put(gpa, p.left, { });
-                try cookies.append(gpa, .{
-                    .name = p.left,
-                    .value = p.right
-                });
+                try seen.put(gpa, p.left, {});
+                try cookies.append(gpa, .{ .name = p.left, .value = p.right });
             }
         }
     }
-    std.mem.sort(Pair, cookies.items, { }, pairBefore);
-    var out: Builder = .{
-        .gpa = gpa
-    };
+    std.mem.sort(Pair, cookies.items, {}, pairBefore);
+    var out: Builder = .{ .gpa = gpa };
     if (equal(selected, "application/json")) {
         try out.add("{\"route\":");
         try out.add(try quoted(gpa, r.name));
         try out.add(",\"params\":");
         try out.add(try jsonObject(gpa, params));
         try out.add(",\"query\":[");
-        for (queries.items, 0..) |p,
-        i | {
+        for (queries.items, 0..) |p, i| {
             if (i > 0) try out.byte(',');
-            try out.print("[{s},{s}]", .{
-                try quoted(gpa, p.name),
-                try quoted(gpa, p.value)
-            });
+            try out.print("[{s},{s}]", .{ try quoted(gpa, p.name), try quoted(gpa, p.value) });
         }
         try out.add("],\"cookies\":");
         try out.add(try jsonObject(gpa, cookies.items));
         try out.byte('}');
     } else if (equal(selected, "text/html")) {
-        try out.print("<dl><dt>route</dt><dd>{s}</dd>", .{
-            try html(gpa, r.name)
-        });
-        const lists = [_][]const Pair {
-            params,
-            queries.items,
-            cookies.items
-        };
-        const labels = [_]Text {
-            "param",
-            "query",
-            "cookie"
-        };
-        for (lists, labels) |pairs,
-        label | for (pairs) |p| {
-            try out.print("<dt>{s} {s}</dt><dd>{s}</dd>", .{
-                label,
-                try html(gpa, p.name),
-                try html(gpa, p.value)
-            });
+        try out.print("<dl><dt>route</dt><dd>{s}</dd>", .{try html(gpa, r.name)});
+        const lists = [_][]const Pair{ params, queries.items, cookies.items };
+        const labels = [_]Text{ "param", "query", "cookie" };
+        for (lists, labels) |pairs, label| for (pairs) |p| {
+            try out.print("<dt>{s} {s}</dt><dd>{s}</dd>", .{ label, try html(gpa, p.name), try html(gpa, p.value) });
         };
         try out.add("</dl>");
-    } else try out.print("route={s} params={s} query={s} cookies={s}", .{
-        r.name,
-        try encodedPairs(gpa, params),
-        try encodedPairs(gpa, queries.items),
-        try encodedPairs(gpa, cookies.items)
-    });
+    } else try out.print("route={s} params={s} query={s} cookies={s}", .{ r.name, try encodedPairs(gpa, params), try encodedPairs(gpa, queries.items), try encodedPairs(gpa, cookies.items) });
     return out.result();
 }
 
@@ -646,38 +503,15 @@ fn etag(gpa: Allocator, body: Text) Allocator.Error!Text {
         a = (a + c) % 65521;
         b = (b + a) % 65521;
     }
-    return std.fmt.allocPrint(gpa, "\"{x:0>4}{x:0>4}\"", .{
-        b,
-        a
-    });
+    return std.fmt.allocPrint(gpa, "\"{x:0>4}{x:0>4}\"", .{ b, a });
 }
 
-const header_names = [_]Text {
-    "Location",
-    "Allow",
-    "Retry-After",
-    "WWW-Authenticate",
-    "Access-Control-Allow-Origin",
-    "Access-Control-Allow-Methods",
-    "Vary",
-    "ETag",
-    "Content-Type",
-    "Content-Length"
-};
+const header_names = [_]Text{ "Location", "Allow", "Retry-After", "WWW-Authenticate", "Access-Control-Allow-Origin", "Access-Control-Allow-Methods", "Vary", "ETag", "Content-Type", "Content-Length" };
 
-const Response = struct {
-    status: usize,
-    body: Text,
-    headers: [10]?Text = @splat(null),
-    content_type: Text = "text/plain",
-    head: bool = false
-};
+const Response = struct { status: usize, body: Text, headers: [10]?Text = @splat(null), content_type: Text = "text/plain", head: bool = false };
 
 fn reply(status: usize, body: Text) Response {
-    return .{
-        .status = status,
-        .body = body
-    };
+    return .{ .status = status, .body = body };
 }
 
 fn phrase(status: usize) Text {
@@ -698,7 +532,7 @@ fn phrase(status: usize) Text {
         412 => "Precondition Failed",
         429 => "Too Many Requests",
         501 => "Not Implemented",
-        else => unreachable
+        else => unreachable,
     };
 }
 
@@ -706,7 +540,7 @@ const Router = struct {
     gpa: Allocator,
     out: Builder,
     routes: std.ArrayList(*Route) = .empty,
-    priority: []* Route = &.{ },
+    priority: []*Route = &.{},
     by_name: std.StringHashMapUnmanaged(*Route) = .empty,
     tokens: std.StringHashMapUnmanaged(Text) = .empty,
     redirects: std.ArrayList(Redirect) = .empty,
@@ -724,57 +558,33 @@ const Router = struct {
         const n = w.len - 1;
         const gpa = self.gpa;
         const known = equal(cmd, "ROUTE") or equal(cmd, "TOKEN") or equal(cmd, "REDIRECT") or equal(cmd, "ORIGIN") or equal(cmd, "LIMIT") or equal(cmd, "TYPES");
-        if (!known) return bad(gpa, "unknown command {s}", .{
-            cmd
-        });
+        if (!known) return bad(gpa, "unknown command {s}", .{cmd});
         const count_ok = (equal(cmd, "ROUTE") and (n == 3 or n == 5)) or ((equal(cmd, "TOKEN") or equal(cmd, "LIMIT")) and n == 2) or (equal(cmd, "REDIRECT") and n == 3) or (equal(cmd, "ORIGIN") and n == 1) or (equal(cmd, "TYPES") and n >= 2);
-        if (!count_ok) return bad(gpa, "wrong number of arguments", .{ });
+        if (!count_ok) return bad(gpa, "wrong number of arguments", .{});
         if (equal(cmd, "ROUTE")) {
-            if (!name(w[1])) return bad(gpa, "bad route name {s}", .{
-                w[1]
-            });
-            if (self.by_name.contains(w[1])) return bad(gpa, "duplicate route {s}", .{
-                w[1]
-            });
+            if (!name(w[1])) return bad(gpa, "bad route name {s}", .{w[1]});
+            if (self.by_name.contains(w[1])) return bad(gpa, "duplicate route {s}", .{w[1]});
             var methods: u16 = 0;
             var words = std.mem.splitScalar(u8, w[2], ',');
             while (words.next()) |m| {
-                const bit = methodBit(m) orelse return bad(gpa, "bad methods {s}", .{
-                    w[2]
-                });
-                if (equal(m, "HEAD") or equal(m, "OPTIONS") or methods & bit != 0) return bad(gpa, "bad methods {s}", .{
-                    w[2]
-                });
+                const bit = methodBit(m) orelse return bad(gpa, "bad methods {s}", .{w[2]});
+                if (equal(m, "HEAD") or equal(m, "OPTIONS") or methods & bit != 0) return bad(gpa, "bad methods {s}", .{w[2]});
                 methods |= bit;
             }
-            const pieces = (try parsePattern(gpa, w[3])) orelse return bad(gpa, "bad pattern {s}", .{
-                w[3]
-            });
+            const pieces = (try parsePattern(gpa, w[3])) orelse return bad(gpa, "bad pattern {s}", .{w[3]});
             var route_role: Text = "";
             if (n == 5) {
-                if (!equal(w[4], "ROLE")) return bad(gpa, "unknown option {s}", .{
-                    w[4]
-                });
-                if (!role(w[5])) return bad(gpa, "bad role {s}", .{
-                    w[5]
-                });
+                if (!equal(w[4], "ROLE")) return bad(gpa, "unknown option {s}", .{w[4]});
+                if (!role(w[5])) return bad(gpa, "bad role {s}", .{w[5]});
                 route_role = if (equal(w[5], "none")) "" else w[5];
             }
             const r = try gpa.create(Route);
-            r.* = .{
-                .name = w[1],
-                .pattern = w[3],
-                .role = route_role,
-                .methods = methods,
-                .pieces = pieces,
-                .number = self.routes.items.len
-            };
+            r.* = .{ .name = w[1], .pattern = w[3], .role = route_role, .methods = methods, .pieces = pieces, .number = self.routes.items.len };
             for (pieces) |p| switch (p.kind) {
                 .literal => r.literals += 1,
-                .integer,
-                .slug => r.typed += 1,
+                .integer, .slug => r.typed += 1,
                 .wild => r.wild = true,
-                else => { }
+                else => {},
             };
             try self.routes.append(gpa, r);
             try self.by_name.put(gpa, r.name, r);
@@ -783,36 +593,17 @@ const Router = struct {
             for (w[1]) |c| if (!std.ascii.isAlphanumeric(c) and c != '.' and c != '_' and c != '-') {
                 valid = false;
             };
-            if (!valid) return bad(gpa, "bad token {s}", .{
-                w[1]
-            });
-            if (self.tokens.contains(w[1])) return bad(gpa, "duplicate token {s}", .{
-                w[1]
-            });
-            if (!role(w[2])) return bad(gpa, "bad role {s}", .{
-                w[2]
-            });
+            if (!valid) return bad(gpa, "bad token {s}", .{w[1]});
+            if (self.tokens.contains(w[1])) return bad(gpa, "duplicate token {s}", .{w[1]});
+            if (!role(w[2])) return bad(gpa, "bad role {s}", .{w[2]});
             try self.tokens.put(gpa, w[1], w[2]);
         } else if (equal(cmd, "REDIRECT")) {
-            const from = rulePath(w[1]) orelse return bad(gpa, "bad path {s}", .{
-                w[1]
-            });
-            const to = rulePath(w[2]) orelse return bad(gpa, "bad path {s}", .{
-                w[2]
-            });
-            if (from.wildcard != to.wildcard) return bad(gpa, "wildcard mismatch", .{ });
-            if (!equal(w[3], "301") and !equal(w[3], "302") and !equal(w[3], "307") and !equal(w[3], "308")) return bad(gpa, "bad redirect code {s}", .{
-                w[3]
-            });
-            for (self.redirects.items) |r| if (equal(r.from, from.base) and r.wildcard == from.wildcard) return bad(gpa, "duplicate redirect {s}", .{
-                w[1]
-            });
-            try self.redirects.append(gpa, .{
-                .from = from.base,
-                .to = to.base,
-                .wildcard = from.wildcard,
-                .code = number(w[3])
-            });
+            const from = rulePath(w[1]) orelse return bad(gpa, "bad path {s}", .{w[1]});
+            const to = rulePath(w[2]) orelse return bad(gpa, "bad path {s}", .{w[2]});
+            if (from.wildcard != to.wildcard) return bad(gpa, "wildcard mismatch", .{});
+            if (!equal(w[3], "301") and !equal(w[3], "302") and !equal(w[3], "307") and !equal(w[3], "308")) return bad(gpa, "bad redirect code {s}", .{w[3]});
+            for (self.redirects.items) |r| if (equal(r.from, from.base) and r.wildcard == from.wildcard) return bad(gpa, "duplicate redirect {s}", .{w[1]});
+            try self.redirects.append(gpa, .{ .from = from.base, .to = to.base, .wildcard = from.wildcard, .code = number(w[3]) });
         } else if (equal(cmd, "ORIGIN")) {
             const origin = w[1];
             var host: Text = "";
@@ -821,75 +612,43 @@ const Router = struct {
             for (host) |c| if (!(c >= 'a' and c <= 'z') and !std.ascii.isDigit(c) and c != '.' and c != '-' and c != ':') {
                 valid = false;
             };
-            if (!valid) return bad(gpa, "bad origin {s}", .{
-                origin
-            });
-            if (self.origins.contains(origin)) return bad(gpa, "duplicate origin {s}", .{
-                origin
-            });
-            try self.origins.put(gpa, origin, { });
+            if (!valid) return bad(gpa, "bad origin {s}", .{origin});
+            if (self.origins.contains(origin)) return bad(gpa, "duplicate origin {s}", .{origin});
+            try self.origins.put(gpa, origin, {});
         } else if (equal(cmd, "LIMIT")) {
-            if (!decimalIn(w[1], 1, 100) or !decimalIn(w[2], 1, 3600)) return bad(gpa, "bad limit", .{ });
-            if (self.capacity > 0) return bad(gpa, "duplicate limit", .{ });
+            if (!decimalIn(w[1], 1, 100) or !decimalIn(w[2], 1, 3600)) return bad(gpa, "bad limit", .{});
+            if (self.capacity > 0) return bad(gpa, "duplicate limit", .{});
             self.capacity = number(w[1]);
             self.period = number(w[2]);
         } else if (equal(cmd, "TYPES")) {
-            const r = self.by_name.get(w[1]) orelse return bad(gpa, "unknown route {s}", .{
-                w[1]
-            });
-            if (r.types != null) return bad(gpa, "duplicate types {s}", .{
-                w[1]
-            });
+            const r = self.by_name.get(w[1]) orelse return bad(gpa, "unknown route {s}", .{w[1]});
+            if (r.types != null) return bad(gpa, "duplicate types {s}", .{w[1]});
             var seen: std.StringHashMapUnmanaged(void) = .empty;
             for (w[2..]) |t| {
-                if (!media(t)) return bad(gpa, "bad media type {s}", .{
-                    t
-                });
-                if (seen.contains(t)) return bad(gpa, "duplicate media type {s}", .{
-                    t
-                });
-                try seen.put(gpa, t, { });
+                if (!media(t)) return bad(gpa, "bad media type {s}", .{t});
+                if (seen.contains(t)) return bad(gpa, "duplicate media type {s}", .{t});
+                try seen.put(gpa, t, {});
             }
             r.types = try gpa.dupe(Text, w[2..]);
         }
     }
     fn table(self: *Router) Error!void {
-        const limit = if (self.capacity > 0) try std.fmt.allocPrint(self.gpa, "{d}/{d}", .{
-            self.capacity,
-            self.period
-        }) else "none";
-        try self.out.line("CONFIG routes={d} tokens={d} redirects={d} origins={d} limit={s} errors={d}", .{
-            self.routes.items.len,
-            self.tokens.count(),
-            self.redirects.items.len,
-            self.origins.count(),
-            limit,
-            self.errors
-        });
+        const limit = if (self.capacity > 0) try std.fmt.allocPrint(self.gpa, "{d}/{d}", .{ self.capacity, self.period }) else "none";
+        try self.out.line("CONFIG routes={d} tokens={d} redirects={d} origins={d} limit={s} errors={d}", .{ self.routes.items.len, self.tokens.count(), self.redirects.items.len, self.origins.count(), limit, self.errors });
         self.priority = try self.gpa.dupe(*Route, self.routes.items);
-        std.mem.sort(*Route, self.priority, { }, higher);
-        for (self.priority, 0..) |r,
-        i | {
+        std.mem.sort(*Route, self.priority, {}, higher);
+        for (self.priority, 0..) |r, i| {
             if (r.types == null) {
                 const types = try self.gpa.alloc(Text, 1);
                 types[0] = "application/json";
                 r.types = types;
             }
-            try self.out.line("TABLE {d} {s} {s} {s} role={s} types={s}", .{
-                i + 1,
-                r.name,
-                try methodList(self.gpa, r.methods, false, ","),
-                r.pattern,
-                if (r.role.len == 0) "-" else r.role,
-                try join(self.gpa, r.types.?, ",")
-            });
+            try self.out.line("TABLE {d} {s} {s} {s} role={s} types={s}", .{ i + 1, r.name, try methodList(self.gpa, r.methods, false, ","), r.pattern, if (r.role.len == 0) "-" else r.role, try join(self.gpa, r.types.?, ",") });
         }
     }
     fn dispatch(self: *Router, method: Text, target: Text, h: std.StringHashMapUnmanaged(Text)) Error!Response {
         const gpa = self.gpa;
-        if (methodBit(method) == null) return reply(501, try std.fmt.allocPrint(gpa, "not implemented: {s}", .{
-            method
-        }));
+        if (methodBit(method) == null) return reply(501, try std.fmt.allocPrint(gpa, "not implemented: {s}", .{method}));
         const host = h.get("host") orelse "";
         if (host.len == 0) return reply(400, "bad request: missing host");
         var effective = method;
@@ -901,10 +660,7 @@ const Router = struct {
             var record: *Client = undefined;
             if (self.clients.get(c)) |existing| record = existing else {
                 record = try gpa.create(Client);
-                record.* = .{
-                    .level = self.capacity * self.period,
-                    .last = t
-                };
+                record.* = .{ .level = self.capacity * self.period, .last = t };
                 try self.clients.put(gpa, c, record);
             }
             if (self.capacity > 0) {
@@ -913,12 +669,8 @@ const Router = struct {
                 if (record.level < self.period) {
                     record.limited += 1;
                     const wait = (self.period - record.level + self.capacity - 1) / self.capacity;
-                    var response = reply(429, try std.fmt.allocPrint(gpa, "too many requests: client {s}", .{
-                        c
-                    }));
-                    response.headers[2] = try std.fmt.allocPrint(gpa, "{d}", .{
-                        wait
-                    });
+                    var response = reply(429, try std.fmt.allocPrint(gpa, "too many requests: client {s}", .{c}));
+                    response.headers[2] = try std.fmt.allocPrint(gpa, "{d}", .{wait});
                     return response;
                 }
                 record.level -= self.period;
@@ -928,55 +680,32 @@ const Router = struct {
         const p = cut(target, '?');
         const path = p.left;
         const query = p.right;
-        const suffix = if (p.found) try std.fmt.allocPrint(gpa, "?{s}", .{
-            query
-        }) else "";
+        const suffix = if (p.found) try std.fmt.allocPrint(gpa, "?{s}", .{query}) else "";
         const normalized = try normalize(gpa, path);
         if (!equal(normalized, path)) {
-            const location = try std.fmt.allocPrint(gpa, "{s}{s}", .{
-                normalized,
-                suffix
-            });
-            var response = reply(308, try std.fmt.allocPrint(gpa, "redirect to {s}", .{
-                location
-            }));
+            const location = try std.fmt.allocPrint(gpa, "{s}{s}", .{ normalized, suffix });
+            var response = reply(308, try std.fmt.allocPrint(gpa, "redirect to {s}", .{location}));
             response.headers[0] = location;
             return response;
         }
         for (self.redirects.items) |r| {
-            const prefix = try std.fmt.allocPrint(gpa, "{s}/", .{
-                r.from
-            });
+            const prefix = try std.fmt.allocPrint(gpa, "{s}/", .{r.from});
             if (equal(path, r.from) or (r.wildcard and starts(path, prefix))) {
-                const location = try std.fmt.allocPrint(gpa, "{s}{s}{s}", .{
-                    r.to,
-                    path[r.from.len..],
-                    suffix
-                });
-                var response = reply(r.code, try std.fmt.allocPrint(gpa, "redirect to {s}", .{
-                    location
-                }));
+                const location = try std.fmt.allocPrint(gpa, "{s}{s}{s}", .{ r.to, path[r.from.len..], suffix });
+                var response = reply(r.code, try std.fmt.allocPrint(gpa, "redirect to {s}", .{location}));
                 response.headers[0] = location;
                 return response;
             }
         }
         const segments = if (equal(path, "/")) try gpa.alloc(Text, 0) else try split(gpa, path[1..], '/');
-        const Match = struct {
-            route: *Route,
-            params: []Pair
-        };
+        const Match = struct { route: *Route, params: []Pair };
         var matching: std.ArrayList(Match) = .empty;
         var allowed: u16 = 0;
         for (self.priority) |r| if (try matches(gpa, r, segments)) |params| {
-            try matching.append(gpa, .{
-                .route = r,
-                .params = params
-            });
+            try matching.append(gpa, .{ .route = r, .params = params });
             allowed |= r.methods;
         };
-        if (matching.items.len == 0) return reply(404, try std.fmt.allocPrint(gpa, "not found: {s}", .{
-            path
-        }));
+        if (matching.items.len == 0) return reply(404, try std.fmt.allocPrint(gpa, "not found: {s}", .{path}));
         const allow = try methodList(gpa, allowed, true, ", ");
         if (equal(effective, "OPTIONS")) {
             var response = reply(204, "");
@@ -985,14 +714,12 @@ const Router = struct {
         }
         const lookup = if (equal(effective, "HEAD")) "GET" else effective;
         var selected: ?Match = null;
-        for (matching.items) |m| if (m.route.methods & methodBit(lookup).?!= 0) {
+        for (matching.items) |m| if (m.route.methods & methodBit(lookup).? != 0) {
             selected = m;
             break;
         };
         const selected_match = selected orelse {
-            var response = reply(405, try std.fmt.allocPrint(gpa, "method not allowed: {s}", .{
-                effective
-            }));
+            var response = reply(405, try std.fmt.allocPrint(gpa, "method not allowed: {s}", .{effective}));
             response.headers[1] = allow;
             return response;
         };
@@ -1011,9 +738,7 @@ const Router = struct {
                 response.headers[3] = "Bearer realm=\"api\", error=\"invalid_token\"";
                 return response;
             }
-            if (!equal(token_role.?, r.role) and !equal(token_role.?, "admin")) return reply(403, try std.fmt.allocPrint(gpa, "forbidden: requires role {s}", .{
-                r.role
-            }));
+            if (!equal(token_role.?, r.role) and !equal(token_role.?, "admin")) return reply(403, try std.fmt.allocPrint(gpa, "forbidden: requires role {s}", .{r.role}));
         }
         const selected_type = try negotiate(gpa, r.types.?, h.get("accept"));
         var response: Response = undefined;
@@ -1036,17 +761,13 @@ const Router = struct {
                 if (equal(lookup, "GET")) {
                     response = reply(304, "");
                     response.headers[7] = tag;
-                } else response = reply(412, try std.fmt.allocPrint(gpa, "precondition failed: {s}", .{
-                    tag
-                }));
+                } else response = reply(412, try std.fmt.allocPrint(gpa, "precondition failed: {s}", .{tag}));
             } else {
                 response = reply(200, body);
                 response.content_type = t;
                 response.headers[7] = tag;
             }
-        } else response = reply(406, try std.fmt.allocPrint(gpa, "not acceptable: {s}", .{
-            try join(gpa, r.types.?, ", ")
-        }));
+        } else response = reply(406, try std.fmt.allocPrint(gpa, "not acceptable: {s}", .{try join(gpa, r.types.?, ", ")}));
         if (r.types.?.len > 1) response.headers[6] = "Accept";
         return response;
     }
@@ -1068,20 +789,15 @@ const Router = struct {
         const head = equal(parts[0], "HEAD");
         if (!escapeCheck(parts[1])) return early(head, "bad request: percent escape");
         var h: std.StringHashMapUnmanaged(Text) = .empty;
-        for (header_lines, 0..) |text,
-        i | {
+        for (header_lines, 0..) |text, i| {
             const p = cut(text, ':');
             var valid = p.found and p.left.len > 0;
             for (p.left) |c| if (!std.ascii.isAlphanumeric(c) and c != '-') {
                 valid = false;
             };
-            if (!valid) return early(head, try std.fmt.allocPrint(self.gpa, "bad request: header line {d}", .{
-                i + 1
-            }));
+            if (!valid) return early(head, try std.fmt.allocPrint(self.gpa, "bad request: header line {d}", .{i + 1}));
             const header_name = try lower(self.gpa, p.left);
-            if (h.contains(header_name)) return early(head, try std.fmt.allocPrint(self.gpa, "bad request: duplicate header {s}", .{
-                header_name
-            }));
+            if (h.contains(header_name)) return early(head, try std.fmt.allocPrint(self.gpa, "bad request: duplicate header {s}", .{header_name}));
             try h.put(self.gpa, header_name, trim(p.right));
         }
         var response = try self.dispatch(parts[0], parts[1], h);
@@ -1098,54 +814,32 @@ const Router = struct {
         self.statuses[response.status] += 1;
         if (response.status != 204 and response.status != 304) {
             response.headers[8] = if (response.status == 200) response.content_type else "text/plain";
-            response.headers[9] = try std.fmt.allocPrint(self.gpa, "{d}", .{
-                response.body.len
-            });
+            response.headers[9] = try std.fmt.allocPrint(self.gpa, "{d}", .{response.body.len});
         }
-        try self.out.line("REQUEST {d}", .{
-            self.requests
-        });
-        try self.out.line("HTTP/1.1 {d} {s}", .{
-            response.status,
-            phrase(response.status)
-        });
-        for (header_names, response.headers) |header_name,
-        v | if (v) |text| {
-            try self.out.line("{s}: {s}", .{
-                header_name,
-                text
-            });
+        try self.out.line("REQUEST {d}", .{self.requests});
+        try self.out.line("HTTP/1.1 {d} {s}", .{ response.status, phrase(response.status) });
+        for (header_names, response.headers) |header_name, v| if (v) |text| {
+            try self.out.line("{s}: {s}", .{ header_name, text });
         };
-        if (response.status != 204 and response.status != 304 and !response.head) try self.out.line("{s}", .{
-            response.body
-        });
+        if (response.status != 204 and response.status != 304 and !response.head) try self.out.line("{s}", .{response.body});
     }
     fn urlfor(self: *Router, w: []Text) Error!Text {
         const gpa = self.gpa;
         const route_name = w[1];
-        const r = self.by_name.get(route_name) orelse return bad(gpa, "unknown route {s}", .{
-            route_name
-        });
+        const r = self.by_name.get(route_name) orelse return bad(gpa, "unknown route {s}", .{route_name});
         var parameters: std.StringHashMapUnmanaged(void) = .empty;
         for (r.pieces) |p| if (p.kind != .literal) {
-            try parameters.put(gpa, p.name, { });
+            try parameters.put(gpa, p.name, {});
         };
         var values: std.StringHashMapUnmanaged(Text) = .empty;
         var query: std.ArrayList(Pair) = .empty;
         for (w[2..]) |arg| {
             const p = cut(arg, '=');
-            if (!p.found or p.left.len == 0) return bad(gpa, "bad argument {s}", .{
-                arg
-            });
+            if (!p.found or p.left.len == 0) return bad(gpa, "bad argument {s}", .{arg});
             if (parameters.contains(p.left)) {
-                if (values.contains(p.left)) return bad(gpa, "duplicate parameter {s}", .{
-                    p.left
-                });
+                if (values.contains(p.left)) return bad(gpa, "duplicate parameter {s}", .{p.left});
                 try values.put(gpa, p.left, p.right);
-            } else try query.append(gpa, .{
-                .name = p.left,
-                .value = p.right
-            });
+            } else try query.append(gpa, .{ .name = p.left, .value = p.right });
         }
         var path: std.ArrayList(Text) = .empty;
         for (r.pieces) |p| {
@@ -1154,9 +848,7 @@ const Router = struct {
                 continue;
             }
             const argument = values.get(p.name);
-            if (p.kind != .wild and argument == null) return bad(gpa, "missing parameter {s}", .{
-                p.name
-            });
+            if (p.kind != .wild and argument == null) return bad(gpa, "missing parameter {s}", .{p.name});
             const v = argument orelse "";
             var valid = true;
             switch (p.kind) {
@@ -1172,9 +864,7 @@ const Router = struct {
                 },
                 .literal => unreachable,
             }
-            if (!valid) return bad(gpa, "bad value for {s}", .{
-                p.name
-            });
+            if (!valid) return bad(gpa, "bad value for {s}", .{p.name});
             if (p.kind == .wild) {
                 if (v.len > 0) {
                     var segments = std.mem.splitScalar(u8, v, '/');
@@ -1182,64 +872,41 @@ const Router = struct {
                 }
             } else try path.append(gpa, try encode(gpa, v));
         }
-        var url: Builder = .{
-            .gpa = gpa
-        };
+        var url: Builder = .{ .gpa = gpa };
         try url.byte('/');
         try url.add(try join(gpa, path.items, "/"));
         if (query.items.len > 0) {
             try url.byte('?');
             try url.add(try encodedPairs(gpa, query.items));
         }
-        return std.fmt.allocPrint(gpa, "URLFOR {s} {s}", .{
-            route_name,
-            url.result()
-        });
+        return std.fmt.allocPrint(gpa, "URLFOR {s} {s}", .{ route_name, url.result() });
     }
     fn summary(self: *Router) Error!void {
-        try self.out.line("SUMMARY requests={d} urlfor_ok={d} urlfor_error={d}", .{
-            self.requests,
-            self.url_ok,
-            self.url_error
-        });
-        for (self.statuses, 0..) |count,
-        code | if (count > 0) {
-            try self.out.line("STATUS {d} {d}", .{
-                code,
-                count
-            });
+        try self.out.line("SUMMARY requests={d} urlfor_ok={d} urlfor_error={d}", .{ self.requests, self.url_ok, self.url_error });
+        for (self.statuses, 0..) |count, code| if (count > 0) {
+            try self.out.line("STATUS {d} {d}", .{ code, count });
         };
-        for (self.routes.items) |r| try self.out.line("ROUTE {s} {d}", .{
-            r.name,
-            r.selections
-        });
+        for (self.routes.items) |r| try self.out.line("ROUTE {s} {d}", .{ r.name, r.selections });
         var names: std.ArrayList(Text) = .empty;
         var it = self.clients.keyIterator();
         while (it.next()) |key| try names.append(self.gpa, key.*);
-        std.mem.sort(Text, names.items, { }, struct {
+        std.mem.sort(Text, names.items, {}, struct {
             fn less(_: void, a: Text, b: Text) bool {
                 return before(a, b);
             }
         }.less);
         for (names.items) |c| {
             const record = self.clients.get(c).?;
-            try self.out.line("CLIENT {s} allowed={d} limited={d}", .{
-                c,
-                record.allowed,
-                record.limited
-            });
+            try self.out.line("CLIENT {s} allowed={d} limited={d}", .{ c, record.allowed, record.limited });
         }
     }
     fn run(self: *Router, lines: []Text) Error!void {
         var at: usize = 0;
-        while (!equal(lines[at], "REQUESTS")): (at += 1) {
-            self.config(try split(self.gpa, lines[at], ' ')) catch | err | {
+        while (!equal(lines[at], "REQUESTS")) : (at += 1) {
+            self.config(try split(self.gpa, lines[at], ' ')) catch |err| {
                 if (err != error.Invalid) return err;
                 self.errors += 1;
-                try self.out.line("CONFIG ERROR {d}: {s}", .{
-                    at + 1,
-                    error_message
-                });
+                try self.out.line("CONFIG ERROR {d}: {s}", .{ at + 1, error_message });
             };
         }
         at += 1;
@@ -1248,21 +915,17 @@ const Router = struct {
             const line = lines[at];
             at += 1;
             if (starts(line, "URLFOR ")) {
-                const result = self.urlfor(try split(self.gpa, line, ' ')) catch | err | {
+                const result = self.urlfor(try split(self.gpa, line, ' ')) catch |err| {
                     if (err != error.Invalid) return err;
                     self.url_error += 1;
-                    try self.out.line("URLFOR ERROR {s}", .{
-                        error_message
-                    });
+                    try self.out.line("URLFOR ERROR {s}", .{error_message});
                     continue;
                 };
                 self.url_ok += 1;
-                try self.out.line("{s}", .{
-                    result
-                });
+                try self.out.line("{s}", .{result});
             } else {
                 const start = at;
-                while (lines[at].len > 0): (at += 1) { }
+                while (lines[at].len > 0) : (at += 1) {}
                 const headers = lines[start..at];
                 at += 1;
                 try self.printResponse(try self.request(line, headers));
@@ -1272,21 +935,16 @@ const Router = struct {
     }
 };
 
-pub fn main(init: std.process.Init)!void {
+pub fn main(init: std.process.Init) !void {
     var storage = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer storage.deinit();
     const gpa = storage.allocator();
     var input_buffer: [4096]u8 = undefined;
-    var input = std.Io.File.stdin().readerStreaming(init.io, & input_buffer);
+    var input = std.Io.File.stdin().readerStreaming(init.io, &input_buffer);
     var output_buffer: [4096]u8 = undefined;
-    var output = std.Io.File.stdout().writerStreaming(init.io, & output_buffer);
+    var output = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
     const text = try input.interface.allocRemaining(gpa, .unlimited);
-    var router: Router = .{
-        .gpa = gpa,
-        .out = .{
-            .gpa = gpa
-        }
-    };
+    var router: Router = .{ .gpa = gpa, .out = .{ .gpa = gpa } };
     try router.run(try split(gpa, text, '\n'));
     try output.interface.writeAll(router.out.result());
     try output.interface.flush();

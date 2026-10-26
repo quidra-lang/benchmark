@@ -79,12 +79,12 @@ public class Main {
         return dateText(day) + " " + WEEKDAYS[day % 7];
     }
 
-    private static int cents(String text) {
+    private static long cents(String text) {
         String[] parts = text.split("\\.");
-        return Integer.parseInt(parts[0]) * 100 + Integer.parseInt(parts[1]);
+        return Long.parseLong(parts[0]) * 100 + Long.parseLong(parts[1]);
     }
 
-    private static String money(int value) {
+    private static String money(long value) {
         return String.format(Locale.ROOT, "%d.%02d", value / 100, value % 100);
     }
 
@@ -95,23 +95,23 @@ public class Main {
     private static final class Room {
         final int number;
         final String kind;
-        int rate;
+        long rate;
         boolean clean = true;
 
-        Room(int number, String kind, int rate) {
+        Room(int number, String kind, long rate) {
             this.number = number;
             this.kind = kind;
             this.rate = rate;
         }
     }
 
-    private record Night(int day, int room, int rate) {}
+    private record Night(int day, int room, long rate) {}
     private record Season(int start, int end, int percentage) {}
     private record NightKey(int day, int room) {}
-    private record Occupied(Reservation reservation, int rate) {}
-    private record Extra(String item, int amount) {}
+    private record Occupied(Reservation reservation, long rate) {}
+    private record Extra(String item, long amount) {}
     private record WaitingEntry(String id, String guest, String kind, int arrival, int departure) {}
-    private record Bill(int lodging, int discount, int penalty, int extras, int tax, int total) {}
+    private record Bill(long lodging, long discount, long penalty, long extras, long tax, long total) {}
 
     private static final class Reservation {
         final String id;
@@ -122,10 +122,10 @@ public class Main {
         List<Night> nights;
         String status = "booked";
         final List<Extra> extras = new ArrayList<>();
-        int deposit;
-        int paid;
+        long deposit;
+        long paid;
         Integer posting;
-        int fee;
+        long fee;
         Night penalty;
         Bill bill;
 
@@ -138,11 +138,11 @@ public class Main {
             this.nights = nights;
         }
 
-        int lodging() {
-            return nights.stream().mapToInt(Night::rate).sum();
+        long lodging() {
+            return nights.stream().mapToLong(Night::rate).sum();
         }
 
-        int firstRate() {
+        long firstRate() {
             return nights.get(0).rate();
         }
     }
@@ -227,7 +227,7 @@ public class Main {
             return new int[]{start, end};
         }
 
-        private int nightRate(Room room, int day) {
+        private long nightRate(Room room, int day) {
             int percentage = 100;
             for (int i = seasons.size() - 1; i >= 0; --i) {
                 Season season = seasons.get(i);
@@ -319,33 +319,33 @@ public class Main {
             }
         }
 
-        private int guestTotal(String guest) {
+        private long guestTotal(String guest) {
             return reservations.values().stream()
                 .filter(reservation -> reservation.guest.equals(guest))
-                .mapToInt(reservation -> reservation.paid).sum();
+                .mapToLong(reservation -> reservation.paid).sum();
         }
 
         private String tier(String guest) {
-            int points = guestTotal(guest) / 100;
+            long points = guestTotal(guest) / 100;
             return points >= 2000 ? "GOLD" : points >= 500 ? "SILVER" : "BRONZE";
         }
 
         private Bill calculateBill(Reservation reservation) {
-            int lodging = reservation.lodging();
+            long lodging = reservation.lodging();
             int percentage = switch (tier(reservation.guest)) {
                 case "GOLD" -> 10;
                 case "SILVER" -> 5;
                 default -> 0;
             };
-            int discount = lodging * percentage / 100;
-            int penalty = reservation.penalty == null ? 0 : reservation.penalty.rate();
-            int extras = reservation.extras.stream().mapToInt(Extra::amount).sum();
-            int subtotal = lodging - discount + penalty + extras;
-            int tax = subtotal / 10;
+            long discount = lodging * percentage / 100;
+            long penalty = reservation.penalty == null ? 0 : reservation.penalty.rate();
+            long extras = reservation.extras.stream().mapToLong(Extra::amount).sum();
+            long subtotal = lodging - discount + penalty + extras;
+            long tax = subtotal / 10;
             return new Bill(lodging, discount, penalty, extras, tax, subtotal + tax);
         }
 
-        private Object[] depositParts(Reservation reservation, int total) {
+        private Object[] depositParts(Reservation reservation, long total) {
             if (total >= reservation.deposit) {
                 return new Object[]{
                     "deposit", money(reservation.deposit),
@@ -422,7 +422,7 @@ public class Main {
 
         private void cmdRate(String[] a) {
             Room room = requireRoom(a[0]);
-            int previous = room.rate;
+            long previous = room.rate;
             room.rate = cents(a[1]);
             emit("RATE", a[0], money(previous), "->", a[1]);
         }
@@ -574,8 +574,8 @@ public class Main {
             }
             Reservation reservation = reservation(a[0], "booked");
             int days = reservation.arrival - today;
-            int firstRate = reservation.firstRate();
-            int fee = days >= 7 ? 0 : days >= 1 ? firstRate / 2 : firstRate;
+            long firstRate = reservation.firstRate();
+            long fee = days >= 7 ? 0 : days >= 1 ? firstRate / 2 : firstRate;
             release(reservation, null);
             reservation.fee = fee;
             reservation.paid = fee;
@@ -676,12 +676,12 @@ public class Main {
 
         private void cmdCharge(String[] a) {
             Reservation reservation = reservation(a[0], "inhouse");
-            int value = cents(a[1]);
+            long value = cents(a[1]);
             if (value == 0) {
                 throw new CommandError("invalid amount");
             }
             reservation.extras.add(new Extra(a[2], value));
-            int extras = reservation.extras.stream().mapToInt(Extra::amount).sum();
+            long extras = reservation.extras.stream().mapToLong(Extra::amount).sum();
             emit("CHARGE", a[0], a[2], a[1], "extras", money(extras));
         }
 
@@ -690,7 +690,7 @@ public class Main {
             if (!reservation.status.equals("booked") && !reservation.status.equals("inhouse")) {
                 throw new CommandError("invalid status " + a[0] + " " + reservation.status);
             }
-            int value = cents(a[1]);
+            long value = cents(a[1]);
             if (value == 0) {
                 throw new CommandError("invalid amount");
             }
@@ -788,10 +788,10 @@ public class Main {
             }
         }
 
-        private int[] dailyValues(int day) {
+        private long[] dailyValues(int day) {
             int available = rooms.size();
             int occupiedCount = 0;
-            int revenue = 0;
+            long revenue = 0;
             for (int number : rooms.keySet()) {
                 NightKey key = new NightKey(day, number);
                 if (blocks.contains(key)) --available;
@@ -801,10 +801,10 @@ public class Main {
                     revenue += entry.rate();
                 }
             }
-            return new int[]{available, occupiedCount, revenue};
+            return new long[]{available, occupiedCount, revenue};
         }
 
-        private Object[] metricsParts(int available, int occupiedCount, int revenue) {
+        private Object[] metricsParts(long available, long occupiedCount, long revenue) {
             String rate = available > 0 ? occupiedCount * 100 / available + "%" : "n/a";
             String average = occupiedCount > 0 ? money(revenue / occupiedCount) : "n/a";
             String revpar = available > 0 ? money(revenue / available) : "n/a";
@@ -816,10 +816,10 @@ public class Main {
 
         private void cmdStats(String[] a) {
             int[] dates = period(a[0], a[1], false, true);
-            int[] totals = {0, 0, 0};
+            long[] totals = {0, 0, 0};
             emit("STATS", a[0], "->", a[1]);
             for (int day = dates[0]; day <= dates[1]; ++day) {
-                int[] values = dailyValues(day);
+                long[] values = dailyValues(day);
                 for (int i = 0; i < 3; ++i) totals[i] += values[i];
                 List<Object> parts = new ArrayList<>(Arrays.asList(dateWeekday(day)));
                 parts.addAll(Arrays.asList(metricsParts(values[0], values[1], values[2])));
@@ -928,14 +928,14 @@ public class Main {
                     money(deposit ? reservation.deposit : reservation.paid)
                 );
             }
-            int total = guestTotal(a[0]);
+            long total = guestTotal(a[0]);
             emitIndented("total paid", money(total), "points", total / 100, "tier", tier(a[0]));
         }
 
         private void cmdRevenue(String[] a) {
             int[] dates = period(a[0], a[1], false, false);
-            int lodging = 0, discount = 0, penalty = 0, extras = 0, tax = 0;
-            int cancellations = 0, noshows = 0;
+            long lodging = 0, discount = 0, penalty = 0, extras = 0, tax = 0;
+            long cancellations = 0, noshows = 0;
             int checkouts = 0, cancelled = 0, absent = 0;
             for (Reservation reservation : reservations.values()) {
                 if (reservation.posting == null ||

@@ -1,13 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Text = []const u8;
-const Error = Allocator.Error || error{Invalid };
+const Error = Allocator.Error || error{Invalid};
 const Kind = enum { object, array, string, number, boolean, null };
-const Failure = struct {
-    reason: Text,
-    position: usize = 0,
-    json: bool = false
-};
+const Failure = struct { reason: Text, position: usize = 0, json: bool = false };
 var failure: Failure = undefined;
 fn equal(a: Text, b: Text) bool {
     return std.mem.eql(u8, a, b);
@@ -82,9 +78,13 @@ fn quote(gpa: Allocator, s: Text, mark: u8) Allocator.Error!Text {
             try out.byte('\\');
             try out.byte(c);
         } else switch (c) {
-            8 => try out.add("\\b"), 12 => try out.add("\\f"), 10 => try out.add("\\n"), 13 => try out.add("\\r"), 9 => try out.add("\\t"),
+            8 => try out.add("\\b"),
+            12 => try out.add("\\f"),
+            10 => try out.add("\\n"),
+            13 => try out.add("\\r"),
+            9 => try out.add("\\t"),
             else => if (c < 32 or c == 127) {
-                try out.print("\\u{x:0>4}", .{c });
+                try out.print("\\u{x:0>4}", .{c});
             } else try out.byte(c),
         }
     }
@@ -129,7 +129,10 @@ fn make(gpa: Allocator, kind: Kind) Allocator.Error!*Value {
 }
 fn compact(gpa: Allocator, v: *Value) Error!Text {
     switch (v.kind) {
-        .null => return "null", .boolean => return if (v.boolean) "true" else "false", .number => return std.fmt.allocPrint(gpa, "{d}", .{v.number }), .string => return quote(gpa, v.text, '"'),
+        .null => return "null",
+        .boolean => return if (v.boolean) "true" else "false",
+        .number => return std.fmt.allocPrint(gpa, "{d}", .{v.number}),
+        .string => return quote(gpa, v.text, '"'),
         else => {},
     }
     var out: Builder = .{ .gpa = gpa };
@@ -147,7 +150,7 @@ fn compact(gpa: Allocator, v: *Value) Error!Text {
 }
 fn pretty(gpa: Allocator, v: *Value, indent: Text) Error!Text {
     if (v.items.items.len == 0) return compact(gpa, v);
-    const inner = try std.fmt.allocPrint(gpa, "{s}  ", .{indent });
+    const inner = try std.fmt.allocPrint(gpa, "{s}  ", .{indent});
     var out: Builder = .{ .gpa = gpa };
     try out.byte(if (v.kind == .array) '[' else '{');
     try out.byte('\n');
@@ -168,7 +171,10 @@ fn pretty(gpa: Allocator, v: *Value, indent: Text) Error!Text {
 fn same(a: *Value, b: *Value) bool {
     if (a.kind != b.kind) return false;
     switch (a.kind) {
-        .null => return true, .string => return equal(a.text, b.text), .number => return a.number == b.number, .boolean => return a.boolean == b.boolean,
+        .null => return true,
+        .string => return equal(a.text, b.text),
+        .number => return a.number == b.number,
+        .boolean => return a.boolean == b.boolean,
         else => {},
     }
     if (a.items.items.len != b.items.items.len) return false;
@@ -221,7 +227,14 @@ const Reader = struct {
                 self.pos = start + 6;
             } else {
                 const decoded: u8 = if (e == mark) mark else switch (e) {
-                    '\\' => '\\', '/' => '/', 'b' => 8, 'f' => 12, 'n' => 10, 'r' => 13, 't' => 9, else => return jsonFail(start, try std.fmt.allocPrint(self.gpa, "invalid escape '\\{c}'", .{e }))
+                    '\\' => '\\',
+                    '/' => '/',
+                    'b' => 8,
+                    'f' => 12,
+                    'n' => 10,
+                    'r' => 13,
+                    't' => 9,
+                    else => return jsonFail(start, try std.fmt.allocPrint(self.gpa, "invalid escape '\\{c}'", .{e})),
                 };
                 try out.byte(decoded);
                 self.pos += 1;
@@ -266,7 +279,7 @@ const Reader = struct {
                     try self.require('"', "expected key");
                     const start = self.pos;
                     const key = try self.readString('"');
-                    if (v.find(key) != null) return jsonFail(start, try std.fmt.allocPrint(self.gpa, "duplicate key {s}", .{try quote(self.gpa, key, '"') }));
+                    if (v.find(key) != null) return jsonFail(start, try std.fmt.allocPrint(self.gpa, "duplicate key {s}", .{try quote(self.gpa, key, '"')}));
                     self.skip();
                     try self.require(':', "expected ':'");
                     self.pos += 1;
@@ -303,9 +316,9 @@ const Reader = struct {
                 v.boolean = equal(word, "true");
                 return v;
             }
-            return jsonFail(start, try std.fmt.allocPrint(self.gpa, "invalid literal '{s}'", .{word }));
+            return jsonFail(start, try std.fmt.allocPrint(self.gpa, "invalid literal '{s}'", .{word}));
         }
-        return jsonFail(self.pos, try std.fmt.allocPrint(self.gpa, "unexpected character '{c}'", .{c }));
+        return jsonFail(self.pos, try std.fmt.allocPrint(self.gpa, "unexpected character '{c}'", .{c}));
     }
     fn parse(self: *Reader) Error!*Value {
         const v = try self.readValue();
@@ -319,19 +332,12 @@ fn parseJson(gpa: Allocator, text: Text) Error!*Value {
     return p.parse();
 }
 const SelectorKind = enum { key, index, all, slice };
-const Selector = struct {
-    kind: SelectorKind,
-    key: Text = "",
-    index: i64 = 0,
-    start: ?i64 = null,
-    end: ?i64 = null,
-    descendant: bool = false
-};
+const Selector = struct { kind: SelectorKind, key: Text = "", index: i64 = 0, start: ?i64 = null, end: ?i64 = null, descendant: bool = false };
 const PathReader = struct {
     source: Reader,
     reason: Text,
     fn invalid(self: *PathReader) Error {
-        return bad(self.source.gpa, "{s}", .{self.reason });
+        return bad(self.source.gpa, "{s}", .{self.reason});
     }
     fn readIdentifier(self: *PathReader) Error!Text {
         const start = self.source.pos;
@@ -401,10 +407,7 @@ fn parseKey(gpa: Allocator, text: Text) Error!Text {
     if (p.source.pos != text.len) return p.invalid();
     return key;
 }
-const Step = struct {
-    key: ?Text = null,
-    position: usize
-};
+const Step = struct { key: ?Text = null, position: usize };
 const Match = struct {
     node: ?*Value,
     steps: []const Step = &.{},
@@ -420,8 +423,8 @@ const Match = struct {
         try out.byte('$');
         for (self.steps) |s| {
             if (s.key) |key| {
-                if (identifier(key)) try out.print(".{s}", .{key }) else try out.print("[{s}]", .{try quote(gpa, key, '\'') });
-            } else try out.print("[{d}]", .{s.position });
+                if (identifier(key)) try out.print(".{s}", .{key}) else try out.print("[{s}]", .{try quote(gpa, key, '\'')});
+            } else try out.print("[{d}]", .{s.position});
         }
         return out.result();
     }
@@ -479,7 +482,10 @@ fn fieldValue(v: *Value, path: []const Selector) ?*Value {
 fn rank(v: ?*Value) u8 {
     const x = v orelse return 3;
     return switch (x.kind) {
-        .null => 0, .number => 1, .string => 2, else => 3
+        .null => 0,
+        .number => 1,
+        .string => 2,
+        else => 3,
     };
 }
 fn compare(a: ?*Value, b: ?*Value) i8 {
@@ -492,7 +498,9 @@ fn compare(a: ?*Value, b: ?*Value) i8 {
         if (a.?.number > b.?.number) return 1;
     }
     if (x == 2) return switch (std.mem.order(u8, a.?.text, b.?.text)) {
-        .lt => -1, .eq => 0, .gt => 1
+        .lt => -1,
+        .eq => 0,
+        .gt => 1,
     };
     return 0;
 }
@@ -593,15 +601,15 @@ const Tool = struct {
         const command = if (separator) |p| line[0..p] else line;
         const argument = if (separator) |p| line[p + 1 ..] else "";
         const known = " GET COMPACT PRETTY TYPE LENGTH KEYS FLATTEN COUNT SUM MIN MAX AVG FILTER SET DELETE INSERT MERGE SORT RENAME UNDO ";
-        const needle = try std.fmt.allocPrint(gpa, " {s} ", .{command });
-        if (std.mem.find(u8, known, needle) == null) return bad(gpa, "unknown command '{s}'", .{command });
+        const needle = try std.fmt.allocPrint(gpa, " {s} ", .{command});
+        if (std.mem.find(u8, known, needle) == null) return bad(gpa, "unknown command '{s}'", .{command});
         var args = if (separator != null) try split(gpa, argument, ' ', 0) else try gpa.alloc(Text, 0);
         if (equal(command, "UNDO")) {
             try shape(gpa, args, 0, 0);
             if (self.history.items.len == 0) return bad(gpa, "nothing to undo", .{});
             self.document = self.history.items[self.history.items.len - 1];
             self.history.items.len -= 1;
-            try self.out.line("UNDO {d}", .{self.history.items.len });
+            try self.out.line("UNDO {d}", .{self.history.items.len});
             return;
         }
         if (equal(command, "SET") or equal(command, "MERGE") or equal(command, "INSERT")) {
@@ -631,8 +639,7 @@ const Tool = struct {
             operator = args[2];
             if (!equal(operator, "==") and !equal(operator, "!=") and !equal(operator, "<") and !equal(operator, "<=") and !equal(operator, ">") and !equal(operator, ">=") and !equal(operator, "EXISTS")) return bad(gpa, "bad operator", .{});
             if (!equal(operator, "EXISTS")) patch = try parseJson(gpa, args[3]);
-        } else if (equal(command, "SET") or equal(command, "MERGE")) patch = try parseJson(gpa, args[1])
-        else if (equal(command, "INSERT")) {
+        } else if (equal(command, "SET") or equal(command, "MERGE")) patch = try parseJson(gpa, args[1]) else if (equal(command, "INSERT")) {
             if (!integerNotation(args[1])) return bad(gpa, "bad index", .{});
             index = std.fmt.parseInt(i64, args[1], 10) catch unreachable;
             patch = try parseJson(gpa, args[2]);
@@ -647,16 +654,16 @@ const Tool = struct {
         if (equal(command, "DELETE") and path.len == 0) return bad(gpa, "cannot delete root", .{});
         if (equal(command, "MERGE") and patch.?.kind != .object) return bad(gpa, "merge value is not an object", .{});
         var matches = try evaluate(gpa, self.document, path);
-        if (equal(command, "LENGTH")) for (matches) |m| if (m.node.?.kind != .object and m.node.?.kind != .array and m.node.?.kind != .string) return bad(gpa, "no length at {s}", .{try m.location(gpa) });
+        if (equal(command, "LENGTH")) for (matches) |m| if (m.node.?.kind != .object and m.node.?.kind != .array and m.node.?.kind != .string) return bad(gpa, "no length at {s}", .{try m.location(gpa)});
         if (equal(command, "KEYS") or equal(command, "MERGE")) try requireKind(gpa, matches, .object, "not an object");
         if (equal(command, "FILTER") or equal(command, "INSERT") or equal(command, "SORT")) try requireKind(gpa, matches, .array, "not an array");
         if (equal(command, "INSERT")) for (matches) |m| {
             const n: i64 = @intCast(m.node.?.items.items.len);
-            if (index < -n - 1 or index > n) return bad(gpa, "index out of range at {s}", .{try m.location(gpa) });
+            if (index < -n - 1 or index > n) return bad(gpa, "index out of range at {s}", .{try m.location(gpa)});
         };
-        if (equal(command, "RENAME")) for (matches) |m| if (m.steps.len == 0 or m.steps[m.steps.len - 1].key == null) return bad(gpa, "not a member at {s}", .{try m.location(gpa) });
+        if (equal(command, "RENAME")) for (matches) |m| if (m.steps.len == 0 or m.steps[m.steps.len - 1].key == null) return bad(gpa, "not a member at {s}", .{try m.location(gpa)});
         if (equal(command, "COUNT")) {
-            try self.out.line("COUNT {d}", .{matches.len });
+            try self.out.line("COUNT {d}", .{matches.len});
             return;
         }
         if (equal(command, "SUM") or equal(command, "MIN") or equal(command, "MAX") or equal(command, "AVG")) {
@@ -672,10 +679,7 @@ const Tool = struct {
                 count += 1;
             };
             var text: Text = "null";
-            if (equal(command, "SUM")) text = try std.fmt.allocPrint(gpa, "{d}", .{total })
-            else if (equal(command, "MIN") and count > 0) text = try std.fmt.allocPrint(gpa, "{d}", .{minimum })
-            else if (equal(command, "MAX") and count > 0) text = try std.fmt.allocPrint(gpa, "{d}", .{maximum })
-            else if (equal(command, "AVG") and count > 0) {
+            if (equal(command, "SUM")) text = try std.fmt.allocPrint(gpa, "{d}", .{total}) else if (equal(command, "MIN") and count > 0) text = try std.fmt.allocPrint(gpa, "{d}", .{minimum}) else if (equal(command, "MAX") and count > 0) text = try std.fmt.allocPrint(gpa, "{d}", .{maximum}) else if (equal(command, "AVG") and count > 0) {
                 const magnitude = if (total < 0) -total else total;
                 const q = @divTrunc(magnitude * 200 + count, 2 * count);
                 text = try std.fmt.allocPrint(gpa, "{s}{d}.{d:0>2}", .{ if (total < 0 and q >= 1) @as(Text, "-") else "", @divTrunc(q, 100), @mod(q, 100) });
@@ -699,7 +703,7 @@ const Tool = struct {
                         @memcpy(steps[0..parent.steps.len], parent.steps);
                         steps[parent.steps.len] = .{ .key = last.key, .position = parent.node.?.find(last.key) orelse parent.node.?.items.items.len };
                         try selected.append(gpa, .{ .node = null, .steps = steps });
-                    } else try selected.appendSlice(gpa, try applySegment(gpa, &.{parent }, last));
+                    } else try selected.appendSlice(gpa, try applySegment(gpa, &.{parent}, last));
                 }
                 matches = selected.items;
             }
@@ -718,7 +722,7 @@ const Tool = struct {
                         _ = parent.items.orderedRemove(i);
                         if (parent.kind == .object) _ = parent.keys.orderedRemove(i);
                     } else {
-                        if (!equal(parent.keys.items[i], new_key) and parent.find(new_key) != null) return bad(gpa, "key exists at {s}", .{try target.location(gpa) });
+                        if (!equal(parent.keys.items[i], new_key) and parent.find(new_key) != null) return bad(gpa, "key exists at {s}", .{try target.location(gpa)});
                         parent.keys.items[i] = new_key;
                     }
                 } else {
@@ -726,8 +730,7 @@ const Tool = struct {
                     if (equal(command, "INSERT")) {
                         const j = if (index >= 0) index else @as(i64, @intCast(v.items.items.len)) + 1 + index;
                         try v.items.insert(gpa, @intCast(j), try patch.?.copy(gpa));
-                    } else if (equal(command, "MERGE")) try merge(gpa, v, patch.?)
-                    else {
+                    } else if (equal(command, "MERGE")) try merge(gpa, v, patch.?) else {
                         var at: usize = 1;
                         while (at < v.items.items.len) : (at += 1) {
                             const item = v.items.items[at];
@@ -751,17 +754,11 @@ const Tool = struct {
         var emitted = false;
         for (matches) |m| {
             const v = m.node.?;
-            if (equal(command, "GET")) try self.out.line("{s} = {s}", .{ try m.location(gpa), try compact(gpa, v) })
-            else if (equal(command, "COMPACT")) try self.out.line("{s}", .{try compact(gpa, v) })
-            else if (equal(command, "PRETTY")) try self.out.line("{s}", .{try pretty(gpa, v, "") })
-            else if (equal(command, "TYPE")) try self.out.line("{s} {s}", .{ try m.location(gpa), @tagName(v.kind) })
-            else if (equal(command, "LENGTH")) try self.out.line("{s} {d}", .{ try m.location(gpa), if (v.kind == .string) v.text.len else v.items.items.len })
-            else if (equal(command, "KEYS")) {
+            if (equal(command, "GET")) try self.out.line("{s} = {s}", .{ try m.location(gpa), try compact(gpa, v) }) else if (equal(command, "COMPACT")) try self.out.line("{s}", .{try compact(gpa, v)}) else if (equal(command, "PRETTY")) try self.out.line("{s}", .{try pretty(gpa, v, "")}) else if (equal(command, "TYPE")) try self.out.line("{s} {s}", .{ try m.location(gpa), @tagName(v.kind) }) else if (equal(command, "LENGTH")) try self.out.line("{s} {d}", .{ try m.location(gpa), if (v.kind == .string) v.text.len else v.items.items.len }) else if (equal(command, "KEYS")) {
                 var quoted_keys: std.ArrayList(Text) = .empty;
                 for (v.keys.items) |key| try quoted_keys.append(gpa, try quote(gpa, key, '"'));
                 try self.out.line("{s} [{s}]", .{ try m.location(gpa), try join(gpa, quoted_keys.items, ",") });
-            } else if (equal(command, "FLATTEN")) try self.leaves(m)
-            else if (equal(command, "FILTER")) {
+            } else if (equal(command, "FLATTEN")) try self.leaves(m) else if (equal(command, "FILTER")) {
                 for (0..v.items.items.len) |i| {
                     const element = try m.child(gpa, i);
                     if (holds(operator, fieldValue(element.node.?, field), patch)) {
@@ -785,7 +782,7 @@ const Tool = struct {
             while (!equal(lines[at], "END") and !equal(lines[at], "LOAD")) {
                 self.execute(lines[at]) catch |err| {
                     if (err != error.Invalid) return err;
-                    if (failure.json) try self.out.line("PARSE ERROR col {d}: {s}", .{ failure.position + 1, failure.reason }) else try self.out.line("ERROR {s}", .{failure.reason });
+                    if (failure.json) try self.out.line("PARSE ERROR col {d}: {s}", .{ failure.position + 1, failure.reason }) else try self.out.line("ERROR {s}", .{failure.reason});
                 };
                 at += 1;
             }

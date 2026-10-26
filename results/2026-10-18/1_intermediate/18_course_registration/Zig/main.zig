@@ -4,8 +4,12 @@ const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 const ParseError = error{InvalidPrereq} || Allocator.Error;
 const days = [_][]const u8{ "MO", "TU", "WE", "TH", "FR", "SA", "SU" };
 const Command = enum { COURSE, STUDENT, ENROLL, CHECK, OPTIONS, DROP, SWAP, CLOSE, OPEN, CAPACITY, LIMIT, PREREQ, CANCEL, ROSTER, SCHEDULE, FREE, INFO, AUDIT, HISTORY, STUDENTS, REPORT };
-fn integer(s: []const u8) i64 { return std.fmt.parseInt(i64, s, 10) catch unreachable; }
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
+fn integer(s: []const u8) i64 {
+    return std.fmt.parseInt(i64, s, 10) catch unreachable;
+}
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
 fn dayIndex(name: []const u8) ?usize {
     for (days, 0..) |day, i| if (equal(name, day)) return i;
     return null;
@@ -71,7 +75,9 @@ const Parser = struct {
         var letters: usize = 0;
         while (letters < word.len and std.ascii.isUpper(word[letters])) letters += 1;
         var course = letters >= 2 and letters <= 4 and word.len == letters + 3;
-        if (course) for (word[letters..]) |ch| { if (!std.ascii.isDigit(ch)) course = false; };
+        if (course) for (word[letters..]) |ch| {
+            if (!std.ascii.isDigit(ch)) course = false;
+        };
         const year = word.len == 2 and word[0] == 'Y' and word[1] >= '1' and word[1] <= '9';
         if (!course and !year) return error.InvalidPrereq;
         const node = try self.gpa.create(Node);
@@ -98,22 +104,34 @@ const Parser = struct {
         node.* = if (conjunction) .{ .all = children.items } else .{ .any = children.items };
         return node;
     }
-    fn term(self: *Parser) ParseError!*Node { return self.group(true); }
-    fn expression(self: *Parser) ParseError!*Node { return self.group(false); }
+    fn term(self: *Parser) ParseError!*Node {
+        return self.group(true);
+    }
+    fn expression(self: *Parser) ParseError!*Node {
+        return self.group(false);
+    }
 };
 const Prerequisite = struct {
     root: ?*Node = null,
     text: []const u8 = "-",
-    fn met(p: Prerequisite, s: *const Student) bool { return if (p.root) |root| root.satisfied(s) else true; }
-    fn contains(p: Prerequisite, code: []const u8) bool { return if (p.root) |root| root.contains(code) else false; }
+    fn met(p: Prerequisite, s: *const Student) bool {
+        return if (p.root) |root| root.satisfied(s) else true;
+    }
+    fn contains(p: Prerequisite, code: []const u8) bool {
+        return if (p.root) |root| root.contains(code) else false;
+    }
 };
 const Slot = struct {
     text: []const u8,
     day: usize,
     start: usize,
     end: usize,
-    fn overlaps(a: Slot, b: Slot) bool { return a.day == b.day and a.start < b.end and b.start < a.end; }
-    fn less(_: void, a: Slot, b: Slot) bool { return if (a.day != b.day) a.day < b.day else a.start < b.start; }
+    fn overlaps(a: Slot, b: Slot) bool {
+        return a.day == b.day and a.start < b.end and b.start < a.end;
+    }
+    fn less(_: void, a: Slot, b: Slot) bool {
+        return if (a.day != b.day) a.day < b.day else a.start < b.start;
+    }
 };
 const Grade = struct { code: []const u8, grade: u8, credits: i64 };
 const History = struct { command: usize, event: []const u8 };
@@ -130,12 +148,16 @@ const Student = struct {
     }
     fn credits(s: *const Student, excluded: ?*Course) i64 {
         var total: i64 = 0;
-        for (s.courses.items) |c| if (c != excluded) { total += c.credits; };
+        for (s.courses.items) |c| if (c != excluded) {
+            total += c.credits;
+        };
         return total;
     }
     fn earned(s: *const Student) i64 {
         var total: i64 = 0;
-        for (s.grades) |r| if (r.grade != 'F') { total += r.credits; };
+        for (s.grades) |r| if (r.grade != 'F') {
+            total += r.credits;
+        };
         return total;
     }
 };
@@ -154,7 +176,9 @@ const Course = struct {
         return total;
     }
     fn conflicts(a: *const Course, b: *const Course) bool {
-        for (a.slots) |left| for (b.slots) |right| { if (left.overlaps(right)) return true; };
+        for (a.slots) |left| for (b.slots) |right| {
+            if (left.overlaps(right)) return true;
+        };
         return false;
     }
     fn position(c: *const Course, s: *Student) usize {
@@ -199,7 +223,9 @@ const Registration = struct {
     fn ordered(self: *Registration, comptime T: type, values: []const *T) Allocator.Error![]*T {
         const result = try self.gpa.dupe(*T, values);
         std.mem.sort(*T, result, {}, struct {
-            fn less(_: void, a: *T, b: *T) bool { return std.mem.order(u8, a.name, b.name) == .lt; }
+            fn less(_: void, a: *T, b: *T) bool {
+                return std.mem.order(u8, a.name, b.name) == .lt;
+            }
         }.less);
         return result;
     }
@@ -235,7 +261,7 @@ const Registration = struct {
             if (h1 > 23 or h2 > 23 or m1 > 59 or m2 > 59 or h1 * 60 + m1 >= h2 * 60 + m2) return self.fail("invalid slot {s}", .{part});
             try result.append(self.gpa, .{ .text = part, .day = day, .start = @intCast(h1 * 60 + m1), .end = @intCast(h2 * 60 + m2) });
         }
-        for (result.items, 0..) |left, i| for (result.items[i + 1..]) |right| {
+        for (result.items, 0..) |left, i| for (result.items[i + 1 ..]) |right| {
             if (left.overlaps(right)) return self.fail("overlapping slots {s} {s}", .{ left.text, right.text });
         };
         return result.items;
@@ -249,17 +275,23 @@ const Registration = struct {
             const code = part[0..colon];
             const grade = part[colon + 1];
             if (std.mem.findScalar(u8, "ABCDF", grade) == null) return self.fail("invalid grade {s} {s} {c}", .{ name, code, grade });
-            for (result.items) |r| if (equal(r.code, code)) { return self.fail("duplicate record {s} {s}", .{ name, code }); };
-            try result.append(self.gpa, .{ .code = code, .grade = grade, .credits = integer(part[colon + 3..]) });
+            for (result.items) |r| if (equal(r.code, code)) {
+                return self.fail("duplicate record {s} {s}", .{ name, code });
+            };
+            try result.append(self.gpa, .{ .code = code, .grade = grade, .credits = integer(part[colon + 3 ..]) });
         }
         std.mem.sort(Grade, result.items, {}, struct {
-            fn less(_: void, a: Grade, b: Grade) bool { return std.mem.order(u8, a.code, b.code) == .lt; }
+            fn less(_: void, a: Grade, b: Grade) bool {
+                return std.mem.order(u8, a.code, b.code) == .lt;
+            }
         }.less);
         return result.items;
     }
     fn waitCount(self: *Registration, s: *Student) usize {
         var count: usize = 0;
-        for (self.courses.values()) |c| if (std.mem.findScalar(*Student, c.waiting.items, s) != null) { count += 1; };
+        for (self.courses.values()) |c| if (std.mem.findScalar(*Student, c.waiting.items, s) != null) {
+            count += 1;
+        };
         return count;
     }
     fn conflict(s: *Student, c: *Course, excluded: ?*Course) ?*Course {
@@ -290,7 +322,8 @@ const Registration = struct {
     }
     fn judgmentText(self: *Registration, result: Judgment) Allocator.Error![]const u8 {
         return switch (result.action) {
-            .ok => "OK", .enroll => "enroll",
+            .ok => "OK",
+            .enroll => "enroll",
             .waitlist => std.fmt.allocPrint(self.gpa, "waitlist {d}", .{result.position}),
             .reason => if (result.extra.len == 0) result.word else std.fmt.allocPrint(self.gpa, "{s} {s}", .{ result.word, result.extra }),
         };
@@ -314,7 +347,10 @@ const Registration = struct {
             while (c.enrolled.items.len < c.capacity) {
                 var selected: ?usize = null;
                 for (c.waiting.items, 0..) |s, i| {
-                    if (conflict(s, c, null) == null and s.credits(null) + c.credits <= s.limit) { selected = i; break; }
+                    if (conflict(s, c, null) == null and s.credits(null) + c.credits <= s.limit) {
+                        selected = i;
+                        break;
+                    }
                 }
                 const s = c.waiting.orderedRemove(selected orelse break);
                 try self.enroll(s, c);
@@ -333,7 +369,9 @@ const Registration = struct {
             for (c.slots) |slot| try meetings.append(self.gpa, .{ .slot = slot, .code = c.name });
         }
         std.mem.sort(Meeting, meetings.items, {}, struct {
-            fn less(_: void, a: Meeting, b: Meeting) bool { return Slot.less({}, a.slot, b.slot); }
+            fn less(_: void, a: Meeting, b: Meeting) bool {
+                return Slot.less({}, a.slot, b.slot);
+            }
         }.less);
         try self.out.print("SCHEDULE {s} courses {d} credits {d} weekly {s}\n", .{ s.name, s.courses.items.len, s.credits(null), try self.clock(weekly) });
         for (days, 0..) |day, i| {
@@ -359,14 +397,19 @@ const Registration = struct {
         const day = dayIndex(token) orelse return self.fail("invalid day {s}", .{token});
         var free: [840]bool = @splat(true);
         for (s.courses.items) |c| for (c.slots) |slot| {
-            if (slot.day == day and slot.end > 480 and slot.start < 1320) @memset(free[@max(slot.start, 480) - 480..@min(slot.end, 1320) - 480], false);
+            if (slot.day == day and slot.end > 480 and slot.start < 1320) @memset(free[@max(slot.start, 480) - 480 .. @min(slot.end, 1320) - 480], false);
         };
         var total: usize = 0;
-        for (free) |available| if (available) { total += 1; };
+        for (free) |available| if (available) {
+            total += 1;
+        };
         try self.out.print("FREE {s} {s} total {s}", .{ s.name, token, try self.clock(total) });
         var i: usize = 0;
         while (i < free.len) {
-            if (!free[i]) { i += 1; continue; }
+            if (!free[i]) {
+                i += 1;
+                continue;
+            }
             const start = i;
             while (i < free.len and free[i]) i += 1;
             try self.out.print(" {s}-{s}", .{ try self.clock(start + 480), try self.clock(i + 480) });
@@ -379,7 +422,7 @@ const Registration = struct {
         var total = Department{ .name = "" };
         const courses = try self.ordered(Course, self.courses.values());
         for (courses) |c| {
-            const name = c.name[0..c.name.len - 3];
+            const name = c.name[0 .. c.name.len - 3];
             const entry = try departments.getOrPut(self.gpa, name);
             if (!entry.found_existing) entry.value_ptr.* = .{ .name = name };
             const d = entry.value_ptr;
@@ -395,7 +438,9 @@ const Registration = struct {
         for (courses) |c| try self.out.print("  {s} {s} {d}/{d} {s} waitlist {d}\n", .{ c.name, if (c.open) "open" else "closed", c.enrolled.items.len, c.capacity, try self.rate(c.enrolled.items.len, c.capacity), c.waiting.items.len });
         const ordered_departments = try self.gpa.dupe(Department, departments.values());
         std.mem.sort(Department, ordered_departments, {}, struct {
-            fn less(_: void, a: Department, b: Department) bool { return std.mem.order(u8, a.name, b.name) == .lt; }
+            fn less(_: void, a: Department, b: Department) bool {
+                return std.mem.order(u8, a.name, b.name) == .lt;
+            }
         }.less);
         for (ordered_departments) |d| try self.out.print("  dept {s} courses {d} enrolled {d}/{d} rate {s} waitlisted {d}\n", .{ d.name, d.courses, d.enrolled, d.capacity, try self.rate(d.enrolled, d.capacity), d.waiting });
     }
@@ -525,7 +570,10 @@ const Registration = struct {
                         var i: usize = 0;
                         while (i < c.waiting.items.len) {
                             const s = c.waiting.items[i];
-                            if (prereq.met(s)) { i += 1; continue; }
+                            if (prereq.met(s)) {
+                                i += 1;
+                                continue;
+                            }
                             _ = c.waiting.orderedRemove(i);
                             try self.history(s, "unlist {s}", .{id});
                             try self.out.print("  UNLIST {s} {s}\n", .{ s.name, id });
@@ -533,7 +581,10 @@ const Registration = struct {
                     },
                     .CANCEL => {
                         try self.out.print("CANCEL {s} enrolled {d} waitlist {d}\n", .{ id, c.enrolled.items.len, c.waiting.items.len });
-                        for (c.enrolled.items) |s| { remove(Course, &s.courses, c); try self.history(s, "cancel {s}", .{id}); }
+                        for (c.enrolled.items) |s| {
+                            remove(Course, &s.courses, c);
+                            try self.history(s, "cancel {s}", .{id});
+                        }
                         for (c.waiting.items) |s| try self.history(s, "cancel {s} waitlist", .{id});
                         _ = self.courses.swapRemove(id);
                         try self.promote();

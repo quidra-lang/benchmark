@@ -3,12 +3,16 @@ const Allocator = std.mem.Allocator;
 const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 const types = [_][]const u8{ "SINGLE", "DOUBLE", "SUITE" };
 const weekdays = [_][]const u8{ "SAT", "SUN", "MON", "TUE", "WED", "THU", "FRI" };
-fn integer(s: []const u8) i64 { return std.fmt.parseInt(i64, s, 10) catch unreachable; }
+fn integer(s: []const u8) i64 {
+    return std.fmt.parseInt(i64, s, 10) catch unreachable;
+}
 fn amount(s: []const u8) i64 {
     const dot = std.mem.findScalar(u8, s, '.').?;
-    return integer(s[0..dot]) * 100 + integer(s[dot + 1..]);
+    return integer(s[0..dot]) * 100 + integer(s[dot + 1 ..]);
 }
-fn leap(y: i64) bool { return @mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0); }
+fn leap(y: i64) bool {
+    return @mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0);
+}
 fn monthDays(y: i64, m: i64) i64 {
     const days = [_]i64{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
     return if (m == 2 and leap(y)) 29 else days[@intCast(m - 1)];
@@ -124,14 +128,18 @@ const Hotel = struct {
         }
         return std.fmt.allocPrint(self.gpa, "{d:0>4}-{d:0>2}-{d:0>2}", .{ @as(u64, @intCast(y)), @as(u64, @intCast(m)), @as(u64, @intCast(n + 1)) });
     }
-    fn dated(self: *Hotel, day: i64) Allocator.Error![]const u8 { return std.fmt.allocPrint(self.gpa, "{s} {s}", .{ try self.dateText(day), weekdays[@intCast(@mod(day, 7))] }); }
+    fn dated(self: *Hotel, day: i64) Allocator.Error![]const u8 {
+        return std.fmt.allocPrint(self.gpa, "{s} {s}", .{ try self.dateText(day), weekdays[@intCast(@mod(day, 7))] });
+    }
     fn findRoom(self: *Hotel, number: i64) ?*Room {
         for (self.rooms.items) |r| {
             if (r.number == number) return r;
         }
         return null;
     }
-    fn room(self: *Hotel, token: []const u8) Error!*Room { return self.findRoom(integer(token)) orelse return self.fail("unknown room {s}", .{token}); }
+    fn room(self: *Hotel, token: []const u8) Error!*Room {
+        return self.findRoom(integer(token)) orelse return self.fail("unknown room {s}", .{token});
+    }
     fn reservation(self: *Hotel, id: []const u8) Error!*Reservation {
         return self.reservations.get(id) orelse return self.fail("unknown reservation {s}", .{id});
     }
@@ -327,7 +335,9 @@ const Hotel = struct {
             r.* = .{ .number = number, .kind = a[2], .rate = amount(a[3]) };
             try self.rooms.append(self.gpa, r);
             std.mem.sort(*Room, self.rooms.items, {}, struct {
-                fn less(_: void, left: *Room, right: *Room) bool { return left.number < right.number; }
+                fn less(_: void, left: *Room, right: *Room) bool {
+                    return left.number < right.number;
+                }
             }.less);
             try self.out.print("ROOM {d} {s} {s}\n", .{ number, r.kind, try self.money(r.rate) });
         } else if (std.mem.eql(u8, op, "RATE")) {

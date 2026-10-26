@@ -4,9 +4,15 @@ const Text = []const u8;
 const Int = i64;
 const Error = Allocator.Error;
 
-fn equal(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
-fn number(text: Text) Int { return std.fmt.parseInt(Int, text, 10) catch unreachable; }
-fn truth(value: bool) Int { return @intFromBool(value); }
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn number(text: Text) Int {
+    return std.fmt.parseInt(Int, text, 10) catch unreachable;
+}
+fn truth(value: bool) Int {
+    return @intFromBool(value);
+}
 fn words(gpa: Allocator, text: Text) Error![]const Text {
     var result: std.ArrayList(Text) = .empty;
     var iterator = std.mem.tokenizeScalar(u8, text, ' ');
@@ -16,13 +22,17 @@ fn words(gpa: Allocator, text: Text) Error![]const Text {
 const Builder = struct {
     gpa: Allocator,
     bytes: std.ArrayList(u8) = .empty,
-    fn add(self: *Builder, text: Text) Error!void { try self.bytes.appendSlice(self.gpa, text); }
+    fn add(self: *Builder, text: Text) Error!void {
+        try self.bytes.appendSlice(self.gpa, text);
+    }
     fn print(self: *Builder, comptime format: Text, args: anytype) Error!void {
         const text = try std.fmt.allocPrint(self.gpa, format, args);
         defer self.gpa.free(text);
         try self.add(text);
     }
-    fn line(self: *Builder, comptime format: Text, args: anytype) Error!void { try self.print(format ++ "\n", args); }
+    fn line(self: *Builder, comptime format: Text, args: anytype) Error!void {
+        try self.print(format ++ "\n", args);
+    }
 };
 
 const Expression = struct {
@@ -80,7 +90,10 @@ fn parseExpression(gpa: Allocator, text: Text) Error!*Expression {
     var i: usize = 0;
     while (i < text.len) {
         const c = text[i];
-        if (c == ' ') { i += 1; continue; }
+        if (c == ' ') {
+            i += 1;
+            continue;
+        }
         const start = i;
         if (std.ascii.isDigit(c)) {
             while (i < text.len and std.ascii.isDigit(text[i])) i += 1;
@@ -214,9 +227,15 @@ const Chart = struct {
         }
         return false;
     }
-    fn compound(self: *Chart, id: usize) bool { return id == 0 or self.states.items[id].kind == .state and self.states.items[id].childStates.items.len > 0; }
-    fn parallel(self: *Chart, id: usize) bool { return self.states.items[id].kind == .parallel and self.states.items[id].childStates.items.len > 0; }
-    fn problem(self: *Chart, comptime format: Text, args: anytype) Error!?Text { return try std.fmt.allocPrint(self.gpa, format, args); }
+    fn compound(self: *Chart, id: usize) bool {
+        return id == 0 or self.states.items[id].kind == .state and self.states.items[id].childStates.items.len > 0;
+    }
+    fn parallel(self: *Chart, id: usize) bool {
+        return self.states.items[id].kind == .parallel and self.states.items[id].childStates.items.len > 0;
+    }
+    fn problem(self: *Chart, comptime format: Text, args: anytype) Error!?Text {
+        return try std.fmt.allocPrint(self.gpa, format, args);
+    }
     fn reference(self: *Chart, expression: ?*const Expression) Error!?Text {
         const e = expression orelse return null;
         if (equal(e.op, "variable") and !equal(e.name, "_data") and !self.variables.contains(e.name)) return self.problem("unknown variable {s}", .{e.name});
@@ -287,17 +306,29 @@ const Chart = struct {
             definition.kind = fields[0];
             if (member(&.{ "state", "parallel", "final", "history" }, definition.kind)) {
                 const name = fields[1];
-                if (self.names.contains(name)) { definition.problem = try self.problem("duplicate state {s}", .{name}); continue; }
+                if (self.names.contains(name)) {
+                    definition.problem = try self.problem("duplicate state {s}", .{name});
+                    continue;
+                }
                 const parentName = if (fields.len > 2 and !equal(fields[2], "initial")) fields[2] else "";
                 var parent: usize = 0;
                 if (parentName.len > 0) {
-                    parent = self.names.get(parentName) orelse { definition.problem = try self.problem("unknown state {s}", .{parentName}); continue; };
-                    if (self.states.items[parent].kind == .final or self.states.items[parent].kind == .history) { definition.problem = try self.problem("{s} cannot have children", .{parentName}); continue; }
+                    parent = self.names.get(parentName) orelse {
+                        definition.problem = try self.problem("unknown state {s}", .{parentName});
+                        continue;
+                    };
+                    if (self.states.items[parent].kind == .final or self.states.items[parent].kind == .history) {
+                        definition.problem = try self.problem("{s} cannot have children", .{parentName});
+                        continue;
+                    }
                 }
                 const state = try self.gpa.create(State);
                 state.* = .{ .name = name, .kind = std.meta.stringToEnum(StateKind, definition.kind).?, .parent = parent, .depth = self.states.items[parent].depth + 1 };
                 if (state.kind == .state) {
-                    for (fields[2..], 2..) |field, index| if (equal(field, "initial")) { state.initialName = fields[index + 1]; break; };
+                    for (fields[2..], 2..) |field, index| if (equal(field, "initial")) {
+                        state.initialName = fields[index + 1];
+                        break;
+                    };
                 }
                 if (state.kind == .history) {
                     state.deep = equal(fields[3], "deep");
@@ -347,7 +378,9 @@ const Chart = struct {
                         const actions = try parseActions(self.gpa, definition.text[separator + 3 ..]);
                         definition.problem = try self.actionReferences(actions);
                         if (definition.problem == null) {
-                            if (equal(definition.kind, "entry")) { try state.entries.append(self.gpa, actions); } else try state.exits.append(self.gpa, actions);
+                            if (equal(definition.kind, "entry")) {
+                                try state.entries.append(self.gpa, actions);
+                            } else try state.exits.append(self.gpa, actions);
                         }
                     }
                 } else definition.problem = try self.problem("unknown state {s}", .{fields[1]});
@@ -367,7 +400,10 @@ const Chart = struct {
             }
         }
         var valid = true;
-        for (definitions) |definition| if (definition.problem) |message| { try self.out.line("error line {d}: {s}", .{ definition.line, message }); valid = false; };
+        for (definitions) |definition| if (definition.problem) |message| {
+            try self.out.line("error line {d}: {s}", .{ definition.line, message });
+            valid = false;
+        };
         if (!valid) return false;
         for (self.states.items) |state| if (state.childStates.items.len > 0) {
             state.initial = if (state.initialName.len > 0) self.names.get(state.initialName).? else state.childStates.items[0];
@@ -376,7 +412,11 @@ const Chart = struct {
             state.defaultTarget = if (state.defaultName.len > 0) self.names.get(state.defaultName).? else self.states.items[state.parent].initial;
         };
         for (root.children.items) |child| try self.visit(child);
-        std.mem.sort(Text, self.variableNames.items, {}, struct { fn less(_: void, a: Text, b: Text) bool { return std.mem.order(u8, a, b) == .lt; } }.less);
+        std.mem.sort(Text, self.variableNames.items, {}, struct {
+            fn less(_: void, a: Text, b: Text) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.less);
         self.active = try self.makeSet();
         return true;
     }
@@ -389,12 +429,26 @@ const Chart = struct {
             for (self.document.items) |id| {
                 if (!reachable[id]) continue;
                 const state = self.states.items[id];
-                if (state.parent != 0 and !reachable[state.parent]) { reachable[state.parent] = true; changed = true; }
-                if (self.compound(id) and !reachable[state.initial]) { reachable[state.initial] = true; changed = true; }
-                if (self.parallel(id)) for (state.childStates.items) |child| { if (!reachable[child]) { reachable[child] = true; changed = true; } };
+                if (state.parent != 0 and !reachable[state.parent]) {
+                    reachable[state.parent] = true;
+                    changed = true;
+                }
+                if (self.compound(id) and !reachable[state.initial]) {
+                    reachable[state.initial] = true;
+                    changed = true;
+                }
+                if (self.parallel(id)) for (state.childStates.items) |child| {
+                    if (!reachable[child]) {
+                        reachable[child] = true;
+                        changed = true;
+                    }
+                };
                 for (state.transitions.items) |transition| if (transition.target) |rawTarget| {
                     const target = if (self.states.items[rawTarget].kind == .history) self.states.items[rawTarget].defaultTarget else rawTarget;
-                    if (!reachable[target]) { reachable[target] = true; changed = true; }
+                    if (!reachable[target]) {
+                        reachable[target] = true;
+                        changed = true;
+                    }
                 };
             }
         }
@@ -413,7 +467,10 @@ const Chart = struct {
         if (equal(e.op, "+")) return a + b;
         if (equal(e.op, "-")) return a - b;
         if (equal(e.op, "*")) return a * b;
-        if (equal(e.op, "/") or equal(e.op, "%")) { if (b == 0) return null; return if (equal(e.op, "/")) @divTrunc(a, b) else @rem(a, b); }
+        if (equal(e.op, "/") or equal(e.op, "%")) {
+            if (b == 0) return null;
+            return if (equal(e.op, "/")) @divTrunc(a, b) else @rem(a, b);
+        }
         if (equal(e.op, "==")) return truth(a == b);
         if (equal(e.op, "!=")) return truth(a != b);
         if (equal(e.op, "<")) return truth(a < b);
@@ -422,7 +479,9 @@ const Chart = struct {
         if (equal(e.op, ">=")) return truth(a >= b);
         return truth(b != 0);
     }
-    fn enqueue(self: *Chart, name: Text, value: Int) Error!void { try self.queue.append(self.gpa, .{ .name = name, .value = value }); }
+    fn enqueue(self: *Chart, name: Text, value: Int) Error!void {
+        try self.queue.append(self.gpa, .{ .name = name, .value = value });
+    }
     fn reserve(self: *Chart, raw: Reservation) Error!void {
         self.creation += 1;
         var reservation = raw;
@@ -432,7 +491,10 @@ const Chart = struct {
     fn perform(self: *Chart, actions: []const Action) Error!void {
         for (actions) |action| {
             var value: Int = 0;
-            if (action.value) |expression| value = self.evaluate(expression) orelse { try self.enqueue("error.execution", 0); return; };
+            if (action.value) |expression| value = self.evaluate(expression) orelse {
+                try self.enqueue("error.execution", 0);
+                return;
+            };
             switch (action.kind) {
                 .assign => try self.variables.put(self.gpa, action.name, value),
                 .raise => try self.enqueue(action.name, value),
@@ -441,10 +503,16 @@ const Chart = struct {
                     var i: usize = 0;
                     while (i < self.reservations.items.len) {
                         const reservation = self.reservations.items[i];
-                        if (reservation.timer == null and equal(reservation.event.name, action.name)) { _ = self.reservations.orderedRemove(i); } else i += 1;
+                        if (reservation.timer == null and equal(reservation.event.name, action.name)) {
+                            _ = self.reservations.orderedRemove(i);
+                        } else i += 1;
                     }
                 },
-                .log => { if (action.value != null) { try self.out.line("{s}{d}", .{ action.text, value }); } else try self.out.line("{s}", .{action.text}); },
+                .log => {
+                    if (action.value != null) {
+                        try self.out.line("{s}{d}", .{ action.text, value });
+                    } else try self.out.line("{s}", .{action.text});
+                },
             }
         }
     }
@@ -500,7 +568,12 @@ const Chart = struct {
                 for (self.states.items[id].transitions.items) |transition| {
                     if (!matches(transition, trigger)) continue;
                     const value: ?Int = if (transition.guard) |guard| self.evaluate(guard) else 1;
-                    if (value) |actual| { if (actual != 0) { found = transition; break; } } else try self.enqueue("error.execution", 0);
+                    if (value) |actual| {
+                        if (actual != 0) {
+                            found = transition;
+                            break;
+                        }
+                    } else try self.enqueue("error.execution", 0);
                 }
             }
             const transition = found orelse continue;
@@ -508,7 +581,10 @@ const Chart = struct {
             try seen.append(self.gpa, transition);
             const selected = try self.transitionSet(transition);
             var conflict = false;
-            for (self.document.items) |candidate| if (selected.exits[candidate] and occupied[candidate]) { conflict = true; break; };
+            for (self.document.items) |candidate| if (selected.exits[candidate] and occupied[candidate]) {
+                conflict = true;
+                break;
+            };
             if (!conflict) {
                 try result.append(self.gpa, selected);
                 for (self.document.items) |candidate| occupied[candidate] = occupied[candidate] or selected.exits[candidate];
@@ -524,11 +600,20 @@ const Chart = struct {
                 if (!entries[id]) continue;
                 const state = self.states.items[id];
                 if (self.parallel(id)) {
-                    for (state.childStates.items) |child| if (!entries[child]) { entries[child] = true; changed = true; };
+                    for (state.childStates.items) |child| if (!entries[child]) {
+                        entries[child] = true;
+                        changed = true;
+                    };
                 } else if (self.compound(id)) {
                     var hasChild = false;
-                    for (state.childStates.items) |child| if (entries[child]) { hasChild = true; break; };
-                    if (!hasChild) { entries[state.initial] = true; changed = true; }
+                    for (state.childStates.items) |child| if (entries[child]) {
+                        hasChild = true;
+                        break;
+                    };
+                    if (!hasChild) {
+                        entries[state.initial] = true;
+                        changed = true;
+                    }
                 }
             }
         }
@@ -566,13 +651,19 @@ const Chart = struct {
         var index: usize = 0;
         while (index < self.document.items.len) : (index += 1) {
             const id = self.document.items[if (reverse) self.document.items.len - 1 - index else index];
-            if (set[id]) { if (count > 0) try result.add(","); try result.add(self.states.items[id].name); count += 1; }
+            if (set[id]) {
+                if (count > 0) try result.add(",");
+                try result.add(self.states.items[id].name);
+                count += 1;
+            }
         }
         return if (count == 0) "-" else result.bytes.items;
     }
     fn microstep(self: *Chart, trigger: Trigger, transitions: []const Selected) Error!void {
         const exits = try self.makeSet();
-        for (transitions) |selected| for (self.document.items) |id| { exits[id] = exits[id] or selected.exits[id]; };
+        for (transitions) |selected| for (self.document.items) |id| {
+            exits[id] = exits[id] or selected.exits[id];
+        };
         for (self.document.items) |id| {
             const history = self.states.items[id];
             if (history.kind != .history or !exits[history.parent]) continue;
@@ -595,7 +686,10 @@ const Chart = struct {
         self.expand(entries);
         if (self.trace) {
             var sources: Builder = .{ .gpa = self.gpa };
-            for (transitions, 0..) |selected, i| { if (i > 0) try sources.add(","); try sources.add(self.states.items[selected.transition.source].name); }
+            for (transitions, 0..) |selected, i| {
+                if (i > 0) try sources.add(",");
+                try sources.add(self.states.items[selected.transition.source].name);
+            }
             const display = switch (trigger.kind) {
                 .always => "always",
                 .timer => try std.fmt.allocPrint(self.gpa, "after({d})@{s}", .{ trigger.timer.?.delay, self.states.items[trigger.timer.?.source].name }),
@@ -615,17 +709,27 @@ const Chart = struct {
             var i: usize = 0;
             while (i < self.reservations.items.len) {
                 if (self.reservations.items[i].timer) |timer| {
-                    if (timer.source == id) { _ = self.reservations.orderedRemove(i); continue; }
+                    if (timer.source == id) {
+                        _ = self.reservations.orderedRemove(i);
+                        continue;
+                    }
                 }
                 i += 1;
             }
         }
-        for (transitions) |selected| { try self.perform(selected.transition.actions); self.states.items[selected.transition.source].taken += 1; }
+        for (transitions) |selected| {
+            try self.perform(selected.transition.actions);
+            self.states.items[selected.transition.source].taken += 1;
+        }
         try self.enter(entries);
     }
     fn performMicrostep(self: *Chart, trigger: Trigger, transitions: []const Selected, count: *usize) Error!bool {
         if (transitions.len == 0) return true;
-        if (count.* == 1000) { try self.out.line("LIVELOCK t={d}", .{self.time}); self.halted = true; return false; }
+        if (count.* == 1000) {
+            try self.out.line("LIVELOCK t={d}", .{self.time});
+            self.halted = true;
+            return false;
+        }
         count.* += 1;
         self.microsteps += 1;
         try self.microstep(trigger, transitions);
@@ -669,11 +773,18 @@ const Chart = struct {
         for (self.variableNames.items) |name| try self.out.line("  var {s} = {d}", .{ name, self.variables.get(name).? });
         for (self.document.items) |id| if (self.states.items[id].history) |recorded| {
             var list: Builder = .{ .gpa = self.gpa };
-            for (recorded, 0..) |target, i| { if (i > 0) try list.add(","); try list.add(self.states.items[target].name); }
+            for (recorded, 0..) |target, i| {
+                if (i > 0) try list.add(",");
+                try list.add(self.states.items[target].name);
+            }
             try self.out.line("  history {s} = {s}", .{ self.states.items[id].name, if (recorded.len == 0) "-" else list.bytes.items });
         };
         const reservations = try self.gpa.dupe(Reservation, self.reservations.items);
-        std.mem.sort(Reservation, reservations, {}, struct { fn less(_: void, a: Reservation, b: Reservation) bool { return reservationLess(a, b); } }.less);
+        std.mem.sort(Reservation, reservations, {}, struct {
+            fn less(_: void, a: Reservation, b: Reservation) bool {
+                return reservationLess(a, b);
+            }
+        }.less);
         for (reservations) |reservation| {
             if (reservation.timer) |timer| {
                 try self.out.line("  timer {d} after({d})@{s}", .{ reservation.due, timer.delay, self.states.items[timer.source].name });
@@ -689,7 +800,9 @@ const Chart = struct {
             const finish = self.time + number(fields[1]);
             while (!self.halted) {
                 var best: ?usize = null;
-                for (self.reservations.items, 0..) |reservation, i| if (reservation.due <= finish and (best == null or reservationLess(reservation, self.reservations.items[best.?]))) { best = i; };
+                for (self.reservations.items, 0..) |reservation, i| if (reservation.due <= finish and (best == null or reservationLess(reservation, self.reservations.items[best.?]))) {
+                    best = i;
+                };
                 const index = best orelse break;
                 const reservation = self.reservations.orderedRemove(index);
                 self.time = reservation.due;
@@ -697,7 +810,9 @@ const Chart = struct {
             }
             if (!self.halted) self.time = finish;
         } else if (equal(fields[0], "set")) {
-            if (self.variables.contains(fields[1])) { try self.variables.put(self.gpa, fields[1], number(fields[2])); } else try self.out.line("error: unknown variable {s}", .{fields[1]});
+            if (self.variables.contains(fields[1])) {
+                try self.variables.put(self.gpa, fields[1], number(fields[2]));
+            } else try self.out.line("error: unknown variable {s}", .{fields[1]});
         } else if (equal(fields[0], "trace")) {
             self.trace = equal(fields[1], "on");
         } else if (equal(fields[0], "eval")) {
@@ -707,7 +822,9 @@ const Chart = struct {
                 try self.out.line("error: {s}", .{message});
             } else {
                 self.data = 0;
-                if (self.evaluate(expression)) |value| { try self.out.line("{s} -> {d}", .{ raw, value }); } else try self.out.line("error: division by zero", .{});
+                if (self.evaluate(expression)) |value| {
+                    try self.out.line("{s} -> {d}", .{ raw, value });
+                } else try self.out.line("error: division by zero", .{});
             }
         } else if (equal(fields[0], "dump")) try self.dump();
     }
@@ -721,7 +838,9 @@ const Chart = struct {
         }
     }
 };
-fn reservationLess(a: Reservation, b: Reservation) bool { return a.due < b.due or a.due == b.due and a.order < b.order; }
+fn reservationLess(a: Reservation, b: Reservation) bool {
+    return a.due < b.due or a.due == b.due and a.order < b.order;
+}
 
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -751,7 +870,10 @@ pub fn main(init: std.process.Init) !void {
         }
         var chart: Chart = .{ .gpa = chartAllocator, .out = &out };
         const valid = try chart.define(definitions.items);
-        if (valid) { try chart.warn(); try chart.macrostep(true, .{}); }
+        if (valid) {
+            try chart.warn();
+            try chart.macrostep(true, .{});
+        }
         while (lines.next()) |raw| {
             lineNumber += 1;
             const line = std.mem.trimEnd(u8, raw, "\r");

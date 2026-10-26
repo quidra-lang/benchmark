@@ -735,7 +735,7 @@ cmd_guest <- function(a) {
          money(if (deposit) entry$deposit else entry$paid), indent = 2)
   }
   total <- guest_total(a[1])
-  emit("total paid", money(total), "points", floor(total / 100),
+  emit("total paid", money(total), "points", sprintf("%.0f", floor(total / 100)),
        "tier", tier(a[1]), indent = 2)
 }
 

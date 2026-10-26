@@ -9,9 +9,15 @@ const hb = [_][]const u8{ "Pop", "Uo", "Zip", "Zotz", "Tzec", "Xul", "Yaxkin", "
 const decade = [_][]const u8{ "Primidi", "Duodi", "Tridi", "Quartidi", "Quintidi", "Sextidi", "Septidi", "Octidi", "Nonidi", "Decadi" };
 const festivals = [_][]const u8{ "Vertu", "Genie", "Travail", "Opinion", "Recompenses", "Revolution" };
 
-fn ix(n: i64) usize { return @intCast(n); }
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn inRange(f: i64) bool { return f >= 1 and f <= max_fixed; }
+fn ix(n: i64) usize {
+    return @intCast(n);
+}
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn inRange(f: i64) bool {
+    return f >= 1 and f <= max_fixed;
+}
 fn indexOf(list: []const []const u8, text: []const u8) ?i64 {
     for (list, 0..) |name, i| if (equal(name, text)) return @intCast(i);
     return null;
@@ -27,7 +33,9 @@ fn yearNumber(text: []const u8) ?i64 {
     const y = number(text, 5, false) orelse return null;
     return if (y > 0) y else null;
 }
-fn integer(text: []const u8) i64 { return std.fmt.parseInt(i64, text, 10) catch unreachable; }
+fn integer(text: []const u8) i64 {
+    return std.fmt.parseInt(i64, text, 10) catch unreachable;
+}
 
 const Date = struct { year: i64, month: i64, day: i64 };
 const Molad = struct {
@@ -60,16 +68,34 @@ fn molad(y: i64) Molad {
 }
 
 const Calendar = enum {
-    GREGORIAN, JULIAN, ISO, ISLAMIC, HEBREW, PERSIAN, COPTIC, ETHIOPIC, FRENCH, MAYAN, JD, FIXED,
+    GREGORIAN,
+    JULIAN,
+    ISO,
+    ISLAMIC,
+    HEBREW,
+    PERSIAN,
+    COPTIC,
+    ETHIOPIC,
+    FRENCH,
+    MAYAN,
+    JD,
+    FIXED,
 
-    fn isYear(c: Calendar) bool { return @intFromEnum(c) <= @intFromEnum(Calendar.FRENCH); }
-    fn isYmd(c: Calendar) bool { return c.isYear() and c != .ISO; }
+    fn isYear(c: Calendar) bool {
+        return @backingInt(c) <= @backingInt(Calendar.FRENCH);
+    }
+    fn isYmd(c: Calendar) bool {
+        return c.isYear() and c != .ISO;
+    }
     fn leap(c: Calendar, y: i64) bool {
         return switch (c) {
             .GREGORIAN => @mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0),
             .JULIAN => @mod(y, 4) == 0,
             .ISO => c.start(y + 1) - c.start(y) == 371,
-            .ISLAMIC => switch (@mod(y, 30)) { 2, 5, 7, 10, 13, 16, 18, 21, 24, 26, 29 => true, else => false },
+            .ISLAMIC => switch (@mod(y, 30)) {
+                2, 5, 7, 10, 13, 16, 18, 21, 24, 26, 29 => true,
+                else => false,
+            },
             .HEBREW => @mod(7 * y + 1, 19) < 7,
             .PERSIAN => blk: {
                 const b = @mod(y - 474, 2820) + 474;
@@ -114,10 +140,14 @@ const Calendar = enum {
             else => unreachable,
         };
     }
-    fn monthCount(c: Calendar, y: i64) i64 { return @intCast(c.names(y).len); }
+    fn monthCount(c: Calendar, y: i64) i64 {
+        return @intCast(c.names(y).len);
+    }
     fn yearType(c: Calendar, y: i64) []const u8 {
         return switch (c.start(y + 1) - c.start(y)) {
-            353, 383 => "DEFICIENT", 354, 384 => "REGULAR", else => "COMPLETE",
+            353, 383 => "DEFICIENT",
+            354, 384 => "REGULAR",
+            else => "COMPLETE",
         };
     }
     fn monthDays(c: Calendar, y: i64, m: i64) i64 {
@@ -245,7 +275,7 @@ fn writeDate(out: *std.Io.Writer, c: Calendar, f: i64) Error!void {
         const h = @mod(count + 348, 365);
         try out.print("{d}.{d}.{d}.{d}.{d} {d} {s} {d} {s}", .{
             @divFloor(count, 144000), @mod(@divFloor(count, 7200), 20), @mod(@divFloor(count, 360), 20), @mod(@divFloor(count, 20), 18), @mod(count, 20),
-            @mod(count + 3, 13) + 1, tz[ix(@mod(count + 19, 20))], @mod(h, 20), hb[ix(@divFloor(h, 20))],
+            @mod(count + 3, 13) + 1,  tz[ix(@mod(count + 19, 20))],     @mod(h, 20),                     hb[ix(@divFloor(h, 20))],
         });
     } else try out.print("{d}", .{f + @as(i64, if (c == .JD) 1721425 else 0)});
 }
@@ -292,8 +322,13 @@ const holidays = [_]Holiday{
     .{ .name = "RevolutionDay", .calendar = .FRENCH, .month = "Sansculottides", .day = 6 },
 };
 const Occurrence = struct {
-    fixed: i64, order: usize, name: []const u8, calendar: Calendar,
-    fn less(_: void, a: Occurrence, b: Occurrence) bool { return if (a.fixed == b.fixed) a.order < b.order else a.fixed < b.fixed; }
+    fixed: i64,
+    order: usize,
+    name: []const u8,
+    calendar: Calendar,
+    fn less(_: void, a: Occurrence, b: Occurrence) bool {
+        return if (a.fixed == b.fixed) a.order < b.order else a.fixed < b.fixed;
+    }
 };
 fn writeHolidays(gpa: Allocator, out: *std.Io.Writer, y: i64) Error!void {
     const first = Calendar.GREGORIAN.start(y);
@@ -325,9 +360,18 @@ fn writeHolidays(gpa: Allocator, out: *std.Io.Writer, y: i64) Error!void {
 
 const Command = enum { CONVERT, ALL, VALID, WEEKDAY, INFO, LEAP, MONTHS, MONTHCAL, NTH, NEWYEAR, DIFF, COUNT, ADD, SPAN, EASTER, COMPUTUS, PASSOVER, HOLIDAYS, MOLAD, ROUND };
 const Unit = enum { DAYS, WEEKS, MONTHS, YEARS };
-fn calendar(text: []const u8) ?Calendar { return std.meta.stringToEnum(Calendar, text); }
+fn calendar(text: []const u8) ?Calendar {
+    return std.meta.stringToEnum(Calendar, text);
+}
 fn validate(cmd: Command, a: []const []const u8) Error!void {
-    const count: usize = switch (cmd) { .CONVERT, .DIFF, .COUNT, .ADD => 4, .MONTHCAL, .SPAN => 3, .NTH => 5, .PASSOVER, .HOLIDAYS, .MOLAD => 1, .ROUND => 6, else => 2 };
+    const count: usize = switch (cmd) {
+        .CONVERT, .DIFF, .COUNT, .ADD => 4,
+        .MONTHCAL, .SPAN => 3,
+        .NTH => 5,
+        .PASSOVER, .HOLIDAYS, .MOLAD => 1,
+        .ROUND => 6,
+        else => 2,
+    };
     if (a.len != count) return error.InvalidCommand;
     switch (cmd) {
         .EASTER, .COMPUTUS => {
@@ -381,7 +425,7 @@ fn writeMonth(out: *std.Io.Writer, c: Calendar, y: i64, m: i64, first: i64, last
     try out.writeAll(")\nMo Tu We Th Fr Sa Su\n");
     var cursor = first - @mod(first - 1, 7);
     while (cursor <= last) : (cursor += 7) {
-        var row = [_]u8{' '} ** 20;
+        var row: [20]u8 = @splat(' ');
         for (0..7) |i| {
             const f = cursor + @as(i64, @intCast(i));
             if (f < first or f > last) continue;

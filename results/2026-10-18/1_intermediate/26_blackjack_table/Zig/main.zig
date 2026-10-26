@@ -9,25 +9,63 @@ const Action = enum { hit, stand, double, split, surrender };
 const DoubleRule = enum { any, hard9, hard10 };
 const RuleName = enum { DEALER, PEN, MIN, MAX, BJ, DAS, DOUBLE, HANDS, RSA, SURRENDER, CHARLIE, SIDEMAX };
 const Command = enum {
-    SHOE, RULE, RULES, PLAYER, LEAVE, REBUY, BET, SIDE, DEAL, INSURANCE,
-    HIT, STAND, DOUBLE, SPLIT, SURRENDER, HINT, AUTO, STATUS, COUNT, STATS,
+    SHOE,
+    RULE,
+    RULES,
+    PLAYER,
+    LEAVE,
+    REBUY,
+    BET,
+    SIDE,
+    DEAL,
+    INSURANCE,
+    HIT,
+    STAND,
+    DOUBLE,
+    SPLIT,
+    SURRENDER,
+    HINT,
+    AUTO,
+    STATUS,
+    COUNT,
+    STATS,
 
     fn action(command: Command) ?Action {
-        return switch (command) { .HIT => .hit, .STAND => .stand, .DOUBLE => .double, .SPLIT => .split, .SURRENDER => .surrender, else => null };
+        return switch (command) {
+            .HIT => .hit,
+            .STAND => .stand,
+            .DOUBLE => .double,
+            .SPLIT => .split,
+            .SURRENDER => .surrender,
+            else => null,
+        };
     }
     fn idleOnly(command: Command) bool {
-        return switch (command) { .SHOE, .RULE, .PLAYER, .LEAVE, .REBUY, .BET, .SIDE, .DEAL => true, else => false };
+        return switch (command) {
+            .SHOE, .RULE, .PLAYER, .LEAVE, .REBUY, .BET, .SIDE, .DEAL => true,
+            else => false,
+        };
     }
     fn namedPlayer(command: Command) bool {
-        return command.action() != null or switch (command) { .LEAVE, .REBUY, .BET, .SIDE, .INSURANCE, .AUTO => true, else => false };
+        return command.action() != null or switch (command) {
+            .LEAVE, .REBUY, .BET, .SIDE, .INSURANCE, .AUTO => true,
+            else => false,
+        };
     }
     fn hasAmount(command: Command) bool {
-        return switch (command) { .REBUY, .BET, .SIDE, .INSURANCE => true, else => false };
+        return switch (command) {
+            .REBUY, .BET, .SIDE, .INSURANCE => true,
+            else => false,
+        };
     }
 };
 
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
-fn onOff(enabled: bool) []const u8 { return if (enabled) "ON" else "OFF"; }
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
+fn onOff(enabled: bool) []const u8 {
+    return if (enabled) "ON" else "OFF";
+}
 const Signed = struct {
     value: i64,
     pub fn format(value: Signed, out: *Writer) Writer.Error!void {
@@ -35,7 +73,9 @@ const Signed = struct {
         try out.print("{d}", .{value.value});
     }
 };
-fn signed(value: i64) Signed { return .{ .value = value }; }
+fn signed(value: i64) Signed {
+    return .{ .value = value };
+}
 
 const Name = struct {
     bytes: [8]u8 = @splat(0),
@@ -45,21 +85,35 @@ const Name = struct {
         @memcpy(result.bytes[0..text.len], text);
         return result;
     }
-    fn matches(value: Name, text: []const u8) bool { return std.mem.eql(u8, value.bytes[0..value.len], text); }
-    pub fn format(value: Name, out: *Writer) Writer.Error!void { try out.writeAll(value.bytes[0..value.len]); }
+    fn matches(value: Name, text: []const u8) bool {
+        return std.mem.eql(u8, value.bytes[0..value.len], text);
+    }
+    pub fn format(value: Name, out: *Writer) Writer.Error!void {
+        try out.writeAll(value.bytes[0..value.len]);
+    }
 };
 const HandName = struct {
     name: Name,
     index: usize,
-    pub fn format(value: HandName, out: *Writer) Writer.Error!void { try out.print("{f}[{d}]", .{ value.name, value.index + 1 }); }
+    pub fn format(value: HandName, out: *Writer) Writer.Error!void {
+        try out.print("{f}[{d}]", .{ value.name, value.index + 1 });
+    }
 };
 
 const Card = struct {
     code: u8,
-    fn rank(card: Card) u8 { return card.code % 13; }
-    fn suit(card: Card) u8 { return card.code / 13; }
-    fn points(card: Card) i64 { return @min(card.rank() + 1, 10); }
-    fn black(card: Card) bool { return card.suit() == 0 or card.suit() == 3; }
+    fn rank(card: Card) u8 {
+        return card.code % 13;
+    }
+    fn suit(card: Card) u8 {
+        return card.code / 13;
+    }
+    fn points(card: Card) i64 {
+        return @min(card.rank() + 1, 10);
+    }
+    fn black(card: Card) bool {
+        return card.suit() == 0 or card.suit() == 3;
+    }
     pub fn format(card: Card, out: *Writer) Writer.Error!void {
         try out.print("{c}{c}", .{ "A23456789TJQK"[card.rank()], "CDHS"[card.suit()] });
     }
@@ -88,7 +142,9 @@ const Hand = struct {
         const soft = ace and sum + 10 <= 21;
         return .{ .value = sum + (if (soft) @as(i64, 10) else 0), .soft = soft };
     }
-    fn natural(hand: *const Hand) bool { return !hand.split and hand.len == 2 and hand.total().value == 21; }
+    fn natural(hand: *const Hand) bool {
+        return !hand.split and hand.len == 2 and hand.total().value == 21;
+    }
     pub fn format(hand: Hand, out: *Writer) Writer.Error!void {
         for (hand.cards[0..hand.len], 0..) |card, i| {
             if (i > 0) try out.writeByte(' ');
@@ -119,11 +175,15 @@ const Rules = struct {
     side_maximum: i64 = 25,
 
     pub fn format(rules: Rules, out: *Writer) Writer.Error!void {
-        const doubling: []const u8 = switch (rules.doubling) { .any => "ANY", .hard9 => "9-11", .hard10 => "10-11" };
+        const doubling: []const u8 = switch (rules.doubling) {
+            .any => "ANY",
+            .hard9 => "9-11",
+            .hard10 => "10-11",
+        };
         try out.print("rules DEALER {s} PEN {d} MIN {d} MAX {d} BJ {s} DAS {s} DOUBLE {s} HANDS {d} RSA {s} SURRENDER {s} CHARLIE {d} SIDEMAX {d}", .{
-            if (rules.hit_soft17) "H17" else "S17", rules.penetration, rules.minimum, rules.maximum,
-            if (rules.six_to_five) "6:5" else "3:2", onOff(rules.double_after_split), doubling, rules.hands,
-            onOff(rules.resplit_aces), onOff(rules.surrender), rules.charlie, rules.side_maximum,
+            if (rules.hit_soft17) "H17" else "S17",  rules.penetration,               rules.minimum, rules.maximum,
+            if (rules.six_to_five) "6:5" else "3:2", onOff(rules.double_after_split), doubling,      rules.hands,
+            onOff(rules.resplit_aces),               onOff(rules.surrender),          rules.charlie, rules.side_maximum,
         });
     }
 };
@@ -154,7 +214,9 @@ const Player = struct {
     stats: Statistics = .{},
     hands: [4]Hand = undefined,
     hand_count: usize = 0,
-    fn label(player: *const Player, index: usize) HandName { return .{ .name = player.name, .index = index }; }
+    fn label(player: *const Player, index: usize) HandName {
+        return .{ .name = player.name, .index = index };
+    }
 };
 const Turn = struct { player: usize, hand: usize };
 
@@ -191,7 +253,9 @@ const Table = struct {
         };
         return null;
     }
-    fn cut(table: *const Table) usize { return table.shoe_len * table.rules.penetration / 100; }
+    fn cut(table: *const Table) usize {
+        return table.shoe_len * table.rules.penetration / 100;
+    }
     fn shuffle(table: *Table) void {
         table.shoe_len = 52 * table.decks;
         for (0..table.shoe_len) |i| table.shoe[i] = .{ .code = @intCast(i % 52) };
@@ -248,10 +312,11 @@ const Table = struct {
             const p = table.player(seat);
             for (p.hands[0..p.hand_count], 0..) |hand, i| {
                 const value = hand.total().value;
-                const result: Outcome = if (natural) (if (hand.natural()) .push else .lose)
-                    else if (hand.natural()) .blackjack
-                    else if (hand.reason) |reason| switch (reason) { .bust => .bust, .surrender => .surrender, .charlie => .charlie }
-                    else if (dealer_total > 21 or value > dealer_total) .win else if (value == dealer_total) .push else .lose;
+                const result: Outcome = if (natural) (if (hand.natural()) .push else .lose) else if (hand.natural()) .blackjack else if (hand.reason) |reason| switch (reason) {
+                    .bust => .bust,
+                    .surrender => .surrender,
+                    .charlie => .charlie,
+                } else if (dealer_total > 21 or value > dealer_total) .win else if (value == dealer_total) .push else .lose;
                 const profit: i64 = switch (result) {
                     .blackjack => if (table.rules.six_to_five) @divTrunc(hand.bet * 6, 5) else @divTrunc(hand.bet * 3, 2),
                     .win, .charlie => hand.bet,
@@ -397,8 +462,7 @@ const Table = struct {
                 if (hand.split_aces) return "split aces";
                 if (hand.len != 2) return "two cards only";
                 const t = hand.total();
-                if (table.rules.doubling != .any and (t.soft or t.value < (if (table.rules.doubling == .hard9) @as(i64, 9) else 10) or t.value > 11)
-                    or !table.rules.double_after_split and hand.split) return "double not allowed";
+                if (table.rules.doubling != .any and (t.soft or t.value < (if (table.rules.doubling == .hard9) @as(i64, 9) else 10) or t.value > 11) or !table.rules.double_after_split and hand.split) return "double not allowed";
                 if (p.bankroll < hand.bet) return "insufficient funds";
             },
             .split => {
@@ -467,8 +531,7 @@ const Table = struct {
         if (hand.split_aces) return if (can_split) .split else .stand;
         if (hand.len == 2 and hand.cards[0].points() == hand.cards[1].points() and can_split) {
             const pair = hand.cards[0].points();
-            if (pair == 1 or pair == 8 or pair == 9 and up != 7 and up != 10 and up != 11
-                or (pair == 2 or pair == 3 or pair == 7) and up <= 7 or pair == 6 and up <= 6 or pair == 4 and (up == 5 or up == 6)) return .split;
+            if (pair == 1 or pair == 8 or pair == 9 and up != 7 and up != 10 and up != 11 or (pair == 2 or pair == 3 or pair == 7) and up <= 7 or pair == 6 and up <= 6 or pair == 4 and (up == 5 or up == 6)) return .split;
         }
         const t = hand.total();
         const Symbol = enum { H, S, D, Ds, R };
@@ -476,14 +539,11 @@ const Table = struct {
         if (t.soft) {
             if (t.value >= 19) symbol = .S else if (t.value == 18) {
                 symbol = if (up >= 3 and up <= 6) .Ds else if (up == 2 or up == 7 or up == 8) .S else .H;
-            } else if (t.value == 17 and up >= 3 and up <= 6
-                or (t.value == 15 or t.value == 16) and up >= 4 and up <= 6
-                or (t.value == 13 or t.value == 14) and (up == 5 or up == 6)) symbol = .D;
+            } else if (t.value == 17 and up >= 3 and up <= 6 or (t.value == 15 or t.value == 16) and up >= 4 and up <= 6 or (t.value == 13 or t.value == 14) and (up == 5 or up == 6)) symbol = .D;
         } else {
             if (t.value >= 17) symbol = .S else if (t.value >= 13) {
                 symbol = if (up <= 6) .S else if (t.value == 16 and up >= 9 or t.value == 15 and up == 10) .R else .H;
-            } else if (t.value == 12) symbol = if (up >= 4 and up <= 6) .S else .H
-            else if (t.value == 11 and up <= 10 or t.value == 10 and up <= 9 or t.value == 9 and up >= 3 and up <= 6) symbol = .D;
+            } else if (t.value == 12) symbol = if (up >= 4 and up <= 6) .S else .H else if (t.value == 11 and up <= 10 or t.value == 10 and up <= 9 or t.value == 9 and up >= 3 and up <= 6) symbol = .D;
         }
         return switch (symbol) {
             .S => .stand,
@@ -495,8 +555,7 @@ const Table = struct {
     }
     fn status(table: *const Table, out: *Writer) Writer.Error!void {
         try out.print("table {s} round {d}", .{ @tagName(table.phase), table.round });
-        if (table.phase == .insurance) try out.print(" next {f}", .{table.owner(table.participants[table.insurance_turn]).name})
-        else if (table.phase == .play) {
+        if (table.phase == .insurance) try out.print(" next {f}", .{table.owner(table.participants[table.insurance_turn]).name}) else if (table.phase == .play) {
             const turn = table.current().?;
             try out.print(" turn {f}", .{table.owner(turn.player).label(turn.hand)});
         }
@@ -548,7 +607,7 @@ const Program = struct {
             .MAX => next.maximum = try program.integer(text, 1, 10000),
             .BJ => next.six_to_five = (try program.option(text, &.{ "3:2", "6:5" })) == 1,
             .DAS => next.double_after_split = (try program.option(text, &.{ "OFF", "ON" })) == 1,
-            .DOUBLE => next.doubling = @enumFromInt(try program.option(text, &.{ "ANY", "9-11", "10-11" })),
+            .DOUBLE => next.doubling = @fromBackingInt(@intCast(try program.option(text, &.{ "ANY", "9-11", "10-11" }))),
             .HANDS => next.hands = @intCast(try program.integer(text, 1, 4)),
             .RSA => next.resplit_aces = (try program.option(text, &.{ "OFF", "ON" })) == 1,
             .SURRENDER => next.surrender = (try program.option(text, &.{ "OFF", "ON" })) == 1,
@@ -602,7 +661,7 @@ const Program = struct {
                 try table.perform(selected, out);
             } else while (table.phase == .play and table.current().?.player == target.?) {
                 try table.perform(table.recommend(), out);
-            };
+            }
             return;
         }
         switch (command) {
@@ -621,7 +680,10 @@ const Program = struct {
             .PLAYER => {
                 if (table.find(first) != null) return program.fail("player exists", .{});
                 var empty: ?usize = null;
-                for (table.seats, 0..) |slot, seat| if (slot == null) { empty = seat; break; };
+                for (table.seats, 0..) |slot, seat| if (slot == null) {
+                    empty = seat;
+                    break;
+                };
                 const seat = empty orelse return program.fail("table full", .{});
                 table.seats[seat] = .{ .name = Name.init(first), .bankroll = value };
                 try line(out, "{f} sits at seat {d} with {d}", .{ table.owner(seat).name, seat + 1, value });
@@ -661,7 +723,9 @@ const Program = struct {
             .DEAL => {
                 if (table.decks == 0) return program.fail("no shoe", .{});
                 var bets = false;
-                for (table.seats) |slot| if (slot) |p| { bets = bets or p.bet != 0; };
+                for (table.seats) |slot| if (slot) |p| {
+                    bets = bets or p.bet != 0;
+                };
                 if (!bets) return program.fail("no bets", .{});
                 try table.deal(out);
             },
@@ -691,7 +755,9 @@ const Program = struct {
             },
             .STATS => {
                 var any = false;
-                for (table.seats) |slot| if (slot != null) { any = true; };
+                for (table.seats) |slot| if (slot != null) {
+                    any = true;
+                };
                 if (!any) return program.fail("no players", .{});
                 for (table.seats) |slot| if (slot) |p| try line(out, "stats {f} {f} net {f}", .{ p.name, p.stats, signed(p.net) });
                 try line(out, "stats dealer rounds {d} blackjacks {d} busts {d}", .{ table.round, table.dealer_blackjacks, table.dealer_busts });

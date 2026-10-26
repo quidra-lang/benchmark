@@ -5,8 +5,12 @@ const Int = i64;
 const Error = Allocator.Error || error{Invalid};
 var failure: Text = "";
 
-fn equal(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
-fn number(text: Text) Int { return std.fmt.parseInt(Int, text, 10) catch unreachable; }
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn number(text: Text) Int {
+    return std.fmt.parseInt(Int, text, 10) catch unreachable;
+}
 fn bad(gpa: Allocator, comptime pattern: Text, args: anytype) Error {
     failure = std.fmt.allocPrint(gpa, pattern, args) catch return error.OutOfMemory;
     return error.Invalid;
@@ -14,11 +18,15 @@ fn bad(gpa: Allocator, comptime pattern: Text, args: anytype) Error {
 const Builder = struct {
     gpa: Allocator,
     bytes: std.ArrayList(u8) = .empty,
-    fn add(self: *Builder, text: Text) Allocator.Error!void { try self.bytes.appendSlice(self.gpa, text); }
+    fn add(self: *Builder, text: Text) Allocator.Error!void {
+        try self.bytes.appendSlice(self.gpa, text);
+    }
     fn print(self: *Builder, comptime pattern: Text, args: anytype) Allocator.Error!void {
         try self.add(try std.fmt.allocPrint(self.gpa, pattern, args));
     }
-    fn line(self: *Builder, comptime pattern: Text, args: anytype) Allocator.Error!void { try self.print(pattern ++ "\n", args); }
+    fn line(self: *Builder, comptime pattern: Text, args: anytype) Allocator.Error!void {
+        try self.print(pattern ++ "\n", args);
+    }
 };
 fn signed(gpa: Allocator, value: Int) Allocator.Error!Text {
     return if (value >= 0) std.fmt.allocPrint(gpa, "+{d}", .{value}) else std.fmt.allocPrint(gpa, "{d}", .{value});
@@ -27,7 +35,9 @@ fn decimal(gpa: Allocator, numerator: Int, denominator: Int) Allocator.Error!Tex
     const value = @divTrunc(numerator * 100, denominator);
     return std.fmt.allocPrint(gpa, "{d}.{d:0>2}", .{ @divTrunc(value, 100), @mod(value, 100) });
 }
-fn textLess(_: void, a: Text, b: Text) bool { return std.mem.order(u8, a, b) == .lt; }
+fn textLess(_: void, a: Text, b: Text) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
 fn keys(gpa: Allocator, map: anytype) Allocator.Error![]Text {
     var result: std.ArrayList(Text) = .empty;
     var iterator = map.keyIterator();
@@ -43,7 +53,9 @@ fn join(gpa: Allocator, parts: []const Text, separator: Text) Allocator.Error!Te
     }
     return out.bytes.items;
 }
-fn leap(year: Int) bool { return @mod(year, 4) == 0 and @mod(year, 100) != 0 or @mod(year, 400) == 0; }
+fn leap(year: Int) bool {
+    return @mod(year, 4) == 0 and @mod(year, 100) != 0 or @mod(year, 400) == 0;
+}
 fn monthDays(year: Int, month: Int) Int {
     const days = [_]Int{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
     return if (month == 2 and leap(year)) 29 else days[@intCast(month - 1)];
@@ -75,21 +87,31 @@ fn dateText(gpa: Allocator, ordinal: Int) Allocator.Error!Text {
         month += 1;
     }
     const weekdays = [_]Text{ "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
-    return std.fmt.allocPrint(gpa, "{d:0>4}-{d:0>2}-{d:0>2} {s}", .{
-        year, month, remaining + 1, weekdays[@intCast(@mod(ordinal + 5, 7))] });
+    return std.fmt.allocPrint(gpa, "{d:0>4}-{d:0>2}-{d:0>2} {s}", .{ year, month, remaining + 1, weekdays[@intCast(@mod(ordinal + 5, 7))] });
 }
 const Crash = struct { limit: Int, cost: Int };
 const Task = struct {
-    name: Text, resource: Text, slot: usize, base: Int, units: Int,
-    not_before: Int = 0, crashed: Int = 0, crash: ?Crash = null, estimate: ?[3]Int = null,
-    fn duration(self: *const Task) Int { return self.base - self.crashed; }
+    name: Text,
+    resource: Text,
+    slot: usize,
+    base: Int,
+    units: Int,
+    not_before: Int = 0,
+    crashed: Int = 0,
+    crash: ?Crash = null,
+    estimate: ?[3]Int = null,
+    fn duration(self: *const Task) Int {
+        return self.base - self.crashed;
+    }
 };
 const Dependency = struct { from: *Task, to: *Task, kind: Text, lag: Int };
 const Timing = struct { es: Int = 0, ef: Int = 0, ls: Int = 0, lf: Int = 0, tf: Int = 0, free: Int = 0 };
 const Schedule = struct { times: [30]Timing = @splat(.{}), total: Int = 0 };
 const Baseline = struct { times: std.StringHashMapUnmanaged([2]Int) = .empty, total: Int };
 const Topology = struct { order: []*Task, cycle: ?Text = null };
-fn taskLess(_: void, a: *Task, b: *Task) bool { return std.mem.order(u8, a.name, b.name) == .lt; }
+fn taskLess(_: void, a: *Task, b: *Task) bool {
+    return std.mem.order(u8, a.name, b.name) == .lt;
+}
 fn margin(dep: Dependency, schedule: Schedule) Int {
     const a = schedule.times[dep.from.slot];
     const b = schedule.times[dep.to.slot];
@@ -98,12 +120,15 @@ fn margin(dep: Dependency, schedule: Schedule) Int {
     return b.es - a.ef - dep.lag;
 }
 const Project = struct {
-    gpa: Allocator, out: *Builder,
+    gpa: Allocator,
+    out: *Builder,
     tasks: std.StringHashMapUnmanaged(*Task) = .empty,
     deps: std.ArrayList(Dependency) = .empty,
     capacities: std.StringHashMapUnmanaged(Int) = .empty,
     holidays: std.AutoHashMapUnmanaged(Int, void) = .empty,
-    start: ?Int = null, deadline: ?Int = null, baseline: ?Baseline = null,
+    start: ?Int = null,
+    deadline: ?Int = null,
+    baseline: ?Baseline = null,
     fn get(self: *Project, name: Text) Error!*Task {
         return self.tasks.get(name) orelse return bad(self.gpa, "unknown task {s}", .{name});
     }
@@ -129,7 +154,7 @@ const Project = struct {
     }
     fn topology(self: *const Project, gpa: Allocator) Allocator.Error!Topology {
         const names = try self.sorted(gpa);
-        var removed = [_]bool{false} ** 30;
+        var removed: [30]bool = @splat(false);
         var order: std.ArrayList(*Task) = .empty;
         while (true) {
             var selected: ?*Task = null;
@@ -137,9 +162,15 @@ const Project = struct {
                 if (removed[task.slot]) continue;
                 var ready = true;
                 for (self.deps.items) |dep| {
-                    if (dep.to == task and !removed[dep.from.slot]) { ready = false; break; }
+                    if (dep.to == task and !removed[dep.from.slot]) {
+                        ready = false;
+                        break;
+                    }
                 }
-                if (ready) { selected = task; break; }
+                if (ready) {
+                    selected = task;
+                    break;
+                }
             }
             const task = selected orelse break;
             removed[task.slot] = true;
@@ -147,17 +178,25 @@ const Project = struct {
         }
         if (order.items.len == names.len) return .{ .order = order.items };
         var current: *Task = undefined;
-        for (names) |task| if (!removed[task.slot]) { current = task; break; };
-        var visited = [_]?usize{null} ** 30;
+        for (names) |task| if (!removed[task.slot]) {
+            current = task;
+            break;
+        };
+        var visited: [30]?usize = @splat(null);
         var chain: std.ArrayList(*Task) = .empty;
         while (true) {
             if (visited[current.slot]) |at| {
                 var cycle: std.ArrayList(*Task) = .empty;
                 try cycle.append(gpa, current);
                 var i = chain.items.len;
-                while (i > at + 1) { i -= 1; try cycle.append(gpa, chain.items[i]); }
+                while (i > at + 1) {
+                    i -= 1;
+                    try cycle.append(gpa, chain.items[i]);
+                }
                 var first: usize = 0;
-                for (cycle.items, 0..) |task, j| if (taskLess({}, task, cycle.items[first])) { first = j; };
+                for (cycle.items, 0..) |task, j| if (taskLess({}, task, cycle.items[first])) {
+                    first = j;
+                };
                 var text: std.ArrayList(Text) = .empty;
                 for (cycle.items[first..]) |task| try text.append(gpa, task.name);
                 for (cycle.items[0..first]) |task| try text.append(gpa, task.name);
@@ -182,8 +221,7 @@ const Project = struct {
             for (self.deps.items) |dep| {
                 if (dep.to != task) continue;
                 const a = result.times[dep.from.slot];
-                const value = if (equal(dep.kind, "SS")) a.es + dep.lag
-                    else if (equal(dep.kind, "FF")) a.ef + dep.lag - d else a.ef + dep.lag;
+                const value = if (equal(dep.kind, "SS")) a.es + dep.lag else if (equal(dep.kind, "FF")) a.ef + dep.lag - d else a.ef + dep.lag;
                 earliest = @max(earliest, value);
             }
             result.times[task.slot] = .{ .es = earliest, .ef = earliest + d };
@@ -199,8 +237,7 @@ const Project = struct {
             for (self.deps.items) |dep| {
                 if (dep.from != task) continue;
                 const b = result.times[dep.to.slot];
-                const candidate = if (equal(dep.kind, "SS")) b.ls - dep.lag + d
-                    else if (equal(dep.kind, "FF")) b.lf - dep.lag else b.ls - dep.lag;
+                const candidate = if (equal(dep.kind, "SS")) b.ls - dep.lag + d else if (equal(dep.kind, "FF")) b.lf - dep.lag else b.ls - dep.lag;
                 finish = @min(finish, candidate);
             }
             value.lf = finish;
@@ -217,7 +254,9 @@ const Project = struct {
     }
     fn critical(self: *const Project, gpa: Allocator, schedule: Schedule) Allocator.Error![]*Task {
         var result: std.ArrayList(*Task) = .empty;
-        for (try self.sorted(gpa)) |task| if (schedule.times[task.slot].tf == 0) { try result.append(gpa, task); };
+        for (try self.sorted(gpa)) |task| if (schedule.times[task.slot].tf == 0) {
+            try result.append(gpa, task);
+        };
         return result.items;
     }
     fn visitPath(self: *const Project, gpa: Allocator, schedule: Schedule, task: *Task, prefix: []const *Task, result: *std.ArrayList([]*Task)) Allocator.Error!void {
@@ -238,7 +277,10 @@ const Project = struct {
         for (try self.critical(gpa, schedule)) |task| {
             var incoming = false;
             for (self.deps.items) |dep| {
-                if (dep.to == task and schedule.times[dep.from.slot].tf == 0 and margin(dep, schedule) == 0) { incoming = true; break; }
+                if (dep.to == task and schedule.times[dep.from.slot].tf == 0 and margin(dep, schedule) == 0) {
+                    incoming = true;
+                    break;
+                }
             }
             if (!incoming) try self.visitPath(gpa, schedule, task, &.{}, &result);
         }
@@ -262,7 +304,9 @@ const Project = struct {
         }
         return result;
     }
-    fn workingDay(self: *const Project, day: Int) bool { return @mod(day + 5, 7) < 5 and !self.holidays.contains(day); }
+    fn workingDay(self: *const Project, day: Int) bool {
+        return @mod(day + 5, 7) < 5 and !self.holidays.contains(day);
+    }
     fn startOrder(self: *const Project, gpa: Allocator, schedule: Schedule) Allocator.Error![]*Task {
         const result = try self.sorted(gpa);
         const Less = struct {
@@ -283,26 +327,29 @@ const Project = struct {
         }
         for (try self.startOrder(scratch, schedule)) |task| {
             const value = schedule.times[task.slot];
-            try self.out.line("{s} {s} - {s}", .{ task.name, try dateText(scratch, days.items[@intCast(value.es)]),
-                try dateText(scratch, days.items[@intCast(value.ef - 1)]) });
+            try self.out.line("{s} {s} - {s}", .{ task.name, try dateText(scratch, days.items[@intCast(value.es)]), try dateText(scratch, days.items[@intCast(value.ef - 1)]) });
         }
         const first = days.items[0];
         const last = days.items[days.items.len - 1];
-        try self.out.line("project {s} - {s}, {d} working days, {d} calendar days", .{
-            try dateText(scratch, first), try dateText(scratch, last), schedule.total, last - first + 1 });
+        try self.out.line("project {s} - {s}, {d} working days, {d} calendar days", .{ try dateText(scratch, first), try dateText(scratch, last), schedule.total, last - first + 1 });
         if (self.deadline) |date| {
             var count: usize = 0;
             day = @min(date, last) + 1;
-            while (day <= @max(date, last)) : (day += 1) if (self.workingDay(day)) { count += 1; };
-            if (last <= date) try self.out.line("deadline {s} met, {d} working days to spare", .{ try dateText(scratch, date), count })
-            else try self.out.line("deadline {s} missed by {d} working days", .{ try dateText(scratch, date), count });
+            while (day <= @max(date, last)) : (day += 1) if (self.workingDay(day)) {
+                count += 1;
+            };
+            if (last <= date) try self.out.line("deadline {s} met, {d} working days to spare", .{ try dateText(scratch, date), count }) else try self.out.line("deadline {s} missed by {d} working days", .{ try dateText(scratch, date), count });
         }
         var selected: std.ArrayList(Int) = .empty;
         var iterator = self.holidays.keyIterator();
         while (iterator.next()) |date| {
             if (date.* >= first and date.* <= last and @mod(date.* + 5, 7) < 5) try selected.append(scratch, date.*);
         }
-        const Less = struct { fn less(_: void, a: Int, b: Int) bool { return a < b; } };
+        const Less = struct {
+            fn less(_: void, a: Int, b: Int) bool {
+                return a < b;
+            }
+        };
         std.mem.sort(Int, selected.items, {}, Less.less);
         try self.out.add("holidays in span: ");
         if (selected.items.len == 0) try self.out.add("none");
@@ -312,14 +359,16 @@ const Project = struct {
         }
         try self.out.add("\n");
     }
-    fn capacity(self: *const Project, resource: Text, limit: Int) Int { return self.capacities.get(resource) orelse limit; }
+    fn capacity(self: *const Project, resource: Text, limit: Int) Int {
+        return self.capacities.get(resource) orelse limit;
+    }
     fn level(self: *Project, scratch: Allocator, order: []const *Task, schedule: Schedule, limit: Int) Error!void {
         const names = try self.sorted(scratch);
         for (names) |task| {
             const cap = self.capacity(task.resource, limit);
             if (task.units > cap) return bad(self.gpa, "capacity {d} too small for {s}", .{ cap, task.name });
         }
-        var decided = [_]?Timing{null} ** 30;
+        var decided: [30]?Timing = @splat(null);
         var loads: std.StringHashMapUnmanaged(std.ArrayList(Int)) = .empty;
         var sequence: std.ArrayList(*Task) = .empty;
         var total: Int = 0;
@@ -328,7 +377,10 @@ const Project = struct {
             for (names) |task| {
                 if (decided[task.slot] != null) continue;
                 var ready = true;
-                for (self.deps.items) |dep| if (dep.to == task and decided[dep.from.slot] == null) { ready = false; break; };
+                for (self.deps.items) |dep| if (dep.to == task and decided[dep.from.slot] == null) {
+                    ready = false;
+                    break;
+                };
                 if (ready and (selected == null or schedule.times[task.slot].ls < schedule.times[selected.?.slot].ls)) selected = task;
             }
             const task = selected.?;
@@ -337,8 +389,7 @@ const Project = struct {
             for (self.deps.items) |dep| {
                 if (dep.to != task) continue;
                 const a = decided[dep.from.slot].?;
-                const value = if (equal(dep.kind, "SS")) a.es + dep.lag
-                    else if (equal(dep.kind, "FF")) a.ef + dep.lag - d else a.ef + dep.lag;
+                const value = if (equal(dep.kind, "SS")) a.es + dep.lag else if (equal(dep.kind, "FF")) a.ef + dep.lag - d else a.ef + dep.lag;
                 earliest = @max(earliest, value);
             }
             var load = loads.get(task.resource) orelse std.ArrayList(Int).empty;
@@ -347,7 +398,10 @@ const Project = struct {
                 var day = earliest;
                 while (day < earliest + d) : (day += 1) {
                     const used = if (@as(usize, @intCast(day)) < load.items.len) load.items[@intCast(day)] else 0;
-                    if (used + task.units > self.capacity(task.resource, limit)) { valid = false; break; }
+                    if (used + task.units > self.capacity(task.resource, limit)) {
+                        valid = false;
+                        break;
+                    }
                 }
                 if (valid) break;
                 earliest += 1;
@@ -364,14 +418,13 @@ const Project = struct {
             const value = decided[task.slot].?;
             try self.out.line("{s} start {d} finish {d} shift {d}", .{ task.name, value.es, value.ef, value.es - schedule.times[task.slot].es });
         }
-        for (try self.resources(scratch)) |resource| try self.out.line("resource {s} capacity {d} peak {d} -> {d}", .{
-            resource, self.capacity(resource, limit), peak(try self.usage(scratch, schedule, resource)), peak(loads.get(resource).?.items) });
+        for (try self.resources(scratch)) |resource| try self.out.line("resource {s} capacity {d} peak {d} -> {d}", .{ resource, self.capacity(resource, limit), peak(try self.usage(scratch, schedule, resource)), peak(loads.get(resource).?.items) });
     }
     fn command(self: *Project, scratch: Allocator, w: []const Text) Error!void {
         const cmd = w[0];
         if (equal(cmd, "TASK")) {
             if (self.tasks.contains(w[1])) return bad(self.gpa, "task {s} already exists", .{w[1]});
-            var occupied = [_]bool{false} ** 30;
+            var occupied: [30]bool = @splat(false);
             var iterator = self.tasks.valueIterator();
             while (iterator.next()) |task| occupied[task.*.slot] = true;
             const slot = std.mem.findScalar(bool, &occupied, false).?;
@@ -384,7 +437,10 @@ const Project = struct {
             const a = try self.get(w[1]);
             const b = try self.get(w[2]);
             var existing: ?usize = null;
-            for (self.deps.items, 0..) |dep, i| if (dep.from == a and dep.to == b) { existing = i; break; };
+            for (self.deps.items, 0..) |dep, i| if (dep.from == a and dep.to == b) {
+                existing = i;
+                break;
+            };
             if (equal(cmd, "DEP")) {
                 if (a == b) return bad(self.gpa, "self dependency {s}", .{a.name});
                 if (existing != null) return bad(self.gpa, "dependency {s} -> {s} already exists", .{ a.name, b.name });
@@ -397,14 +453,18 @@ const Project = struct {
             }
             return;
         } else if (equal(cmd, "REMOVE") or equal(cmd, "NOTBEFORE") or equal(cmd, "CRASHCOST") or equal(cmd, "UNCRASH") or
-            equal(cmd, "PERT") or equal(cmd, "SHOW") or equal(cmd, "IMPACT")) {
+            equal(cmd, "PERT") or equal(cmd, "SHOW") or equal(cmd, "IMPACT"))
+        {
             const task = try self.get(w[1]);
             if (equal(cmd, "REMOVE")) {
                 var count: usize = 0;
                 var i: usize = 0;
                 while (i < self.deps.items.len) {
                     const dep = self.deps.items[i];
-                    if (dep.from == task or dep.to == task) { _ = self.deps.orderedRemove(i); count += 1; } else i += 1;
+                    if (dep.from == task or dep.to == task) {
+                        _ = self.deps.orderedRemove(i);
+                        count += 1;
+                    } else i += 1;
                 }
                 _ = self.tasks.remove(task.name);
                 try self.out.line("task {s} removed with {d} dependencies", .{ task.name, count });
@@ -426,10 +486,9 @@ const Project = struct {
                 const p = number(w[4]);
                 if (o > m or m > p) return bad(self.gpa, "invalid estimate", .{});
                 task.estimate = .{ o, m, p };
-                try self.out.line("pert {s} expected {s} variance {s}", .{ task.name,
-                    try decimal(scratch, o + 4 * m + p, 6), try decimal(scratch, (p - o) * (p - o), 36) });
+                try self.out.line("pert {s} expected {s} variance {s}", .{ task.name, try decimal(scratch, o + 4 * m + p, 6), try decimal(scratch, (p - o) * (p - o), 36) });
             } else if (equal(cmd, "IMPACT")) {
-                var reached = [_]bool{false} ** 30;
+                var reached: [30]bool = @splat(false);
                 reached[task.slot] = true;
                 var queue: std.ArrayList(*Task) = .empty;
                 try queue.append(scratch, task);
@@ -445,7 +504,10 @@ const Project = struct {
                 reached[task.slot] = false;
                 try self.out.print("impact {s}:", .{task.name});
                 var count: usize = 0;
-                for (try self.sorted(scratch)) |other| if (reached[other.slot]) { try self.out.print(" {s}", .{other.name}); count += 1; };
+                for (try self.sorted(scratch)) |other| if (reached[other.slot]) {
+                    try self.out.print(" {s}", .{other.name});
+                    count += 1;
+                };
                 if (count == 0) try self.out.add(" none");
                 try self.out.add("\n");
             } else {
@@ -462,15 +524,12 @@ const Project = struct {
                     }
                     try self.out.add("\n");
                 }
-                if (task.crash) |data| try self.out.line("crash: max {d} used {d} cost {d}", .{ data.limit, task.crashed, data.cost })
-                else try self.out.add("crash: none\n");
-                if (task.estimate) |values| try self.out.line("pert: {d} {d} {d}", .{ values[0], values[1], values[2] })
-                else try self.out.add("pert: none\n");
+                if (task.crash) |data| try self.out.line("crash: max {d} used {d} cost {d}", .{ data.limit, task.crashed, data.cost }) else try self.out.add("crash: none\n");
+                if (task.estimate) |values| try self.out.line("pert: {d} {d} {d}", .{ values[0], values[1], values[2] }) else try self.out.add("pert: none\n");
                 const topo = try self.topology(scratch);
                 if (topo.cycle != null) try self.out.add("schedule: unavailable\n") else {
                     const value = self.compute(topo.order, null, 0).times[task.slot];
-                    try self.out.line("schedule: ES {d} EF {d} LS {d} LF {d} TF {d} FF {d}{s}", .{
-                        value.es, value.ef, value.ls, value.lf, value.tf, value.free, if (value.tf == 0) @as(Text, " critical") else "" });
+                    try self.out.line("schedule: ES {d} EF {d} LS {d} LF {d} TF {d} FF {d}{s}", .{ value.es, value.ef, value.ls, value.lf, value.tf, value.free, if (value.tf == 0) @as(Text, " critical") else "" });
                 }
             }
             return;
@@ -506,7 +565,10 @@ const Project = struct {
         if (equal(cmd, "VARIANCE") and self.baseline == null) return bad(self.gpa, "no baseline", .{});
         if (equal(cmd, "LOAD")) {
             var found = false;
-            for (try self.sorted(scratch)) |task| if (equal(task.resource, w[1])) { found = true; break; };
+            for (try self.sorted(scratch)) |task| if (equal(task.resource, w[1])) {
+                found = true;
+                break;
+            };
             if (!found) return bad(self.gpa, "unknown resource {s}", .{w[1]});
         }
         var schedule = self.compute(topo.order, null, 0);
@@ -547,12 +609,18 @@ const Project = struct {
         } else if (equal(cmd, "SLACK")) {
             const values = try scratch.alloc(Int, names.len);
             for (names, 0..) |task, i| values[i] = schedule.times[task.slot].tf;
-            const Less = struct { fn less(_: void, a: Int, b: Int) bool { return a < b; } };
+            const Less = struct {
+                fn less(_: void, a: Int, b: Int) bool {
+                    return a < b;
+                }
+            };
             std.mem.sort(Int, values, {}, Less.less);
             for (values, 0..) |value, i| {
                 if (i > 0 and value == values[i - 1]) continue;
                 try self.out.print("float {d}:", .{value});
-                for (names) |task| if (schedule.times[task.slot].tf == value) { try self.out.print(" {s}", .{task.name}); };
+                for (names) |task| if (schedule.times[task.slot].tf == value) {
+                    try self.out.print(" {s}", .{task.name});
+                };
                 try self.out.add("\n");
             }
         } else if (equal(cmd, "DRAG")) {
@@ -564,12 +632,13 @@ const Project = struct {
             var counts = [_]usize{ 0, 0, 0 };
             for (self.deps.items) |dep| counts[if (equal(dep.kind, "FS")) @as(usize, 0) else if (equal(dep.kind, "SS")) 1 else 2] += 1;
             const count = (try self.critical(scratch, schedule)).len;
-            try self.out.line("tasks {d}, critical {d}, dependencies {d} (FS {d}, SS {d}, FF {d})", .{
-                names.len, count, self.deps.items.len, counts[0], counts[1], counts[2] });
+            try self.out.line("tasks {d}, critical {d}, dependencies {d} (FS {d}, SS {d}, FF {d})", .{ names.len, count, self.deps.items.len, counts[0], counts[1], counts[2] });
             try self.out.add("work ");
             for (try self.resources(scratch), 0..) |resource, i| {
                 var work: Int = 0;
-                for (names) |task| if (equal(task.resource, resource)) { work += task.duration() * task.units; };
+                for (names) |task| if (equal(task.resource, resource)) {
+                    work += task.duration() * task.units;
+                };
                 if (i > 0) try self.out.add(", ");
                 try self.out.print("{s} {d}", .{ resource, work });
             }
@@ -593,8 +662,7 @@ const Project = struct {
                 try self.out.add(" |");
                 var day: Int = 0;
                 while (day < schedule.total) : (day += 1) {
-                    const symbol: Text = if (value.es <= day and day < value.ef) (if (value.tf == 0) "=" else "-")
-                        else if (value.ef <= day and day < value.lf) "." else " ";
+                    const symbol: Text = if (value.es <= day and day < value.ef) (if (value.tf == 0) "=" else "-") else if (value.ef <= day and day < value.lf) "." else " ";
                     try self.out.add(symbol);
                 }
                 try self.out.add("|\n");
@@ -610,7 +678,9 @@ const Project = struct {
             try self.out.line("\npeak {d} on day {d}", .{ highest, first });
             if (self.capacities.get(w[1])) |cap| {
                 var count: usize = 0;
-                for (values) |value| if (value > cap) { count += 1; };
+                for (values) |value| if (value > cap) {
+                    count += 1;
+                };
                 try self.out.line("capacity {d} exceeded on {d} days", .{ cap, count });
             }
         } else if (equal(cmd, "CRASH")) {
@@ -629,19 +699,23 @@ const Project = struct {
                             (chosen == null or data.cost < chosen.?.crash.?.cost)) chosen = task;
                     }
                 }
-                const task = chosen orelse { reason = "no candidate"; break; };
+                const task = chosen orelse {
+                    reason = "no candidate";
+                    break;
+                };
                 const cost = task.crash.?.cost;
-                if (cost > remaining) { reason = "insufficient budget"; break; }
+                if (cost > remaining) {
+                    reason = "insufficient budget";
+                    break;
+                }
                 const before = task.duration();
                 task.crashed += 1;
                 remaining -= cost;
                 spent += cost;
                 steps += 1;
-                try self.out.line("step {d}: {s} {d} -> {d}, cost {d}, project {d}", .{
-                    steps, task.name, before, before - 1, cost, self.compute(topo.order, null, 0).total });
+                try self.out.line("step {d}: {s} {d} -> {d}, cost {d}, project {d}", .{ steps, task.name, before, before - 1, cost, self.compute(topo.order, null, 0).total });
             }
-            try self.out.line("crash done: {d} days, cost {d}, project {d} -> {d}, budget left {d}, {s}", .{
-                steps, spent, initial, schedule.total, remaining, reason });
+            try self.out.line("crash done: {d} days, cost {d}, project {d} -> {d}, budget left {d}, {s}", .{ steps, spent, initial, schedule.total, remaining, reason });
         } else if (equal(cmd, "WHATIF")) {
             const changed = try self.get(w[1]);
             const after = self.compute(topo.order, changed, number(w[2]));
@@ -698,9 +772,13 @@ fn peak(values: []const Int) Int {
 fn padded(out: *Builder, scratch: Allocator, text: Text, width: usize, left: bool) Allocator.Error!void {
     _ = scratch;
     const count = width - @min(width, text.len);
-    if (left) for (0..count) |_| { try out.add(" "); };
+    if (left) for (0..count) |_| {
+        try out.add(" ");
+    };
     try out.add(text);
-    if (!left) for (0..count) |_| { try out.add(" "); };
+    if (!left) for (0..count) |_| {
+        try out.add(" ");
+    };
 }
 fn taskNames(gpa: Allocator, tasks: []const *Task, separator: Text) Allocator.Error!Text {
     var parts: std.ArrayList(Text) = .empty;

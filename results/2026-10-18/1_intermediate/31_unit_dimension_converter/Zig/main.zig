@@ -3,21 +3,52 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const Error = Allocator.Error || Writer.Error || error{Invalid};
 const Command = enum {
-    DEFINE, UNDEF, DEFS, CONVERT, INVERT, DIM, REDUCE, SIMPLIFY, ADD, SUB, MUL,
-    DIV, TEMP, COMPARE, LIST, TABLE, AUTO, SPLIT, LET, EVAL, VARS,
+    DEFINE,
+    UNDEF,
+    DEFS,
+    CONVERT,
+    INVERT,
+    DIM,
+    REDUCE,
+    SIMPLIFY,
+    ADD,
+    SUB,
+    MUL,
+    DIV,
+    TEMP,
+    COMPARE,
+    LIST,
+    TABLE,
+    AUTO,
+    SPLIT,
+    LET,
+    EVAL,
+    VARS,
 };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn letter(c: u8) bool { return (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z'); }
-fn digit(c: u8) bool { return c >= '0' and c <= '9'; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn letter(c: u8) bool {
+    return (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z');
+}
+fn digit(c: u8) bool {
+    return c >= '0' and c <= '9';
+}
 fn digits(text: []const u8) bool {
     if (text.len == 0) return false;
     for (text) |c| if (!digit(c)) return false;
     return true;
 }
-fn integer(text: []const u8) i64 { return std.fmt.parseInt(i64, text, 10) catch unreachable; }
-fn absolute(value: i64) i64 { return if (value < 0) -value else value; }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
+fn integer(text: []const u8) i64 {
+    return std.fmt.parseInt(i64, text, 10) catch unreachable;
+}
+fn absolute(value: i64) i64 {
+    return if (value < 0) -value else value;
+}
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
 fn gcd(a: i64, b: i64) i64 {
     var x = absolute(a);
     var y = absolute(b);
@@ -38,15 +69,33 @@ const Fraction = struct {
         const divisor = gcd(n, d) * @as(i64, if (d < 0) -1 else 1);
         return .{ .n = @divTrunc(n, divisor), .d = @divTrunc(d, divisor) };
     }
-    fn whole(n: i64) Fraction { return .{ .n = n }; }
-    fn add(a: Fraction, b: Fraction) Fraction { return init(a.n * b.d + b.n * a.d, a.d * b.d); }
-    fn sub(a: Fraction, b: Fraction) Fraction { return init(a.n * b.d - b.n * a.d, a.d * b.d); }
-    fn mul(a: Fraction, b: Fraction) Fraction { return init(a.n * b.n, a.d * b.d); }
-    fn div(a: Fraction, b: Fraction) Fraction { return init(a.n * b.d, a.d * b.n); }
-    fn neg(a: Fraction) Fraction { return .{ .n = -a.n, .d = a.d }; }
-    fn abs(a: Fraction) Fraction { return .{ .n = absolute(a.n), .d = a.d }; }
-    fn eq(a: Fraction, b: Fraction) bool { return a.n == b.n and a.d == b.d; }
-    fn less(a: Fraction, b: Fraction) bool { return a.n * b.d < b.n * a.d; }
+    fn whole(n: i64) Fraction {
+        return .{ .n = n };
+    }
+    fn add(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.d + b.n * a.d, a.d * b.d);
+    }
+    fn sub(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.d - b.n * a.d, a.d * b.d);
+    }
+    fn mul(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.n, a.d * b.d);
+    }
+    fn div(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.d, a.d * b.n);
+    }
+    fn neg(a: Fraction) Fraction {
+        return .{ .n = -a.n, .d = a.d };
+    }
+    fn abs(a: Fraction) Fraction {
+        return .{ .n = absolute(a.n), .d = a.d };
+    }
+    fn eq(a: Fraction, b: Fraction) bool {
+        return a.n == b.n and a.d == b.d;
+    }
+    fn less(a: Fraction, b: Fraction) bool {
+        return a.n * b.d < b.n * a.d;
+    }
     fn power(a: Fraction, exponent: i64) Fraction {
         const factor = if (exponent < 0) one.div(a) else a;
         var result = one;
@@ -77,12 +126,16 @@ const Notation = struct {
         try out.print("{f} {s} ({f})", .{ quantity.value, quantity.unit, Decimal{ .value = quantity.value } });
     }
 };
-fn notation(value: Fraction, unit: []const u8) Notation { return .{ .value = value, .unit = unit }; }
+fn notation(value: Fraction, unit: []const u8) Notation {
+    return .{ .value = value, .unit = unit };
+}
 
 const Dimension = struct {
-    exponents: [7]i64 = .{0} ** 7,
+    exponents: [7]i64 = @splat(0),
     const zero: Dimension = .{};
-    fn eq(a: Dimension, b: Dimension) bool { return std.mem.eql(i64, &a.exponents, &b.exponents); }
+    fn eq(a: Dimension, b: Dimension) bool {
+        return std.mem.eql(i64, &a.exponents, &b.exponents);
+    }
     fn add(a: Dimension, b: Dimension) Dimension {
         var result: Dimension = .{};
         for (&result.exponents, a.exponents, b.exponents) |*value, x, y| value.* = x + y;
@@ -125,62 +178,85 @@ const Definition = struct { value: Fraction, expression: []const u8 };
 const Unit = struct { symbol: []const u8, quantity: Quantity, prefix: bool, definition: ?Definition = null };
 const Variable = struct { name: []const u8, quantity: Quantity };
 const Kind = enum {
-    dimensionless, length, mass, time, current, temperature, amount, luminous_intensity,
-    area, volume, speed, acceleration, density, momentum, force, energy, power, pressure,
-    frequency, charge, voltage, resistance, conductance, capacitance, magnetic_flux,
-    flux_density, inductance, illuminance, catalytic_activity,
+    dimensionless,
+    length,
+    mass,
+    time,
+    current,
+    temperature,
+    amount,
+    luminous_intensity,
+    area,
+    volume,
+    speed,
+    acceleration,
+    density,
+    momentum,
+    force,
+    energy,
+    power,
+    pressure,
+    frequency,
+    charge,
+    voltage,
+    resistance,
+    conductance,
+    capacitance,
+    magnetic_flux,
+    flux_density,
+    inductance,
+    illuminance,
+    catalytic_activity,
 };
 const kind_dimensions = [_]Dimension{
-    .{}, .{ .exponents = .{ 0, 1, 0, 0, 0, 0, 0 } }, .{ .exponents = .{ 1, 0, 0, 0, 0, 0, 0 } },
-    .{ .exponents = .{ 0, 0, 1, 0, 0, 0, 0 } }, .{ .exponents = .{ 0, 0, 0, 1, 0, 0, 0 } },
-    .{ .exponents = .{ 0, 0, 0, 0, 1, 0, 0 } }, .{ .exponents = .{ 0, 0, 0, 0, 0, 1, 0 } },
-    .{ .exponents = .{ 0, 0, 0, 0, 0, 0, 1 } }, .{ .exponents = .{ 0, 2, 0, 0, 0, 0, 0 } },
-    .{ .exponents = .{ 0, 3, 0, 0, 0, 0, 0 } }, .{ .exponents = .{ 0, 1, -1, 0, 0, 0, 0 } },
-    .{ .exponents = .{ 0, 1, -2, 0, 0, 0, 0 } }, .{ .exponents = .{ 1, -3, 0, 0, 0, 0, 0 } },
-    .{ .exponents = .{ 1, 1, -1, 0, 0, 0, 0 } }, .{ .exponents = .{ 1, 1, -2, 0, 0, 0, 0 } },
-    .{ .exponents = .{ 1, 2, -2, 0, 0, 0, 0 } }, .{ .exponents = .{ 1, 2, -3, 0, 0, 0, 0 } },
-    .{ .exponents = .{ 1, -1, -2, 0, 0, 0, 0 } }, .{ .exponents = .{ 0, 0, -1, 0, 0, 0, 0 } },
-    .{ .exponents = .{ 0, 0, 1, 1, 0, 0, 0 } }, .{ .exponents = .{ 1, 2, -3, -1, 0, 0, 0 } },
-    .{ .exponents = .{ 1, 2, -3, -2, 0, 0, 0 } }, .{ .exponents = .{ -1, -2, 3, 2, 0, 0, 0 } },
-    .{ .exponents = .{ -1, -2, 4, 2, 0, 0, 0 } }, .{ .exponents = .{ 1, 2, -2, -1, 0, 0, 0 } },
-    .{ .exponents = .{ 1, 0, -2, -1, 0, 0, 0 } }, .{ .exponents = .{ 1, 2, -2, -2, 0, 0, 0 } },
-    .{ .exponents = .{ 0, -2, 0, 0, 0, 0, 1 } }, .{ .exponents = .{ 0, 0, -1, 0, 0, 1, 0 } },
+    .{},                                          .{ .exponents = .{ 0, 1, 0, 0, 0, 0, 0 } },   .{ .exponents = .{ 1, 0, 0, 0, 0, 0, 0 } },
+    .{ .exponents = .{ 0, 0, 1, 0, 0, 0, 0 } },   .{ .exponents = .{ 0, 0, 0, 1, 0, 0, 0 } },   .{ .exponents = .{ 0, 0, 0, 0, 1, 0, 0 } },
+    .{ .exponents = .{ 0, 0, 0, 0, 0, 1, 0 } },   .{ .exponents = .{ 0, 0, 0, 0, 0, 0, 1 } },   .{ .exponents = .{ 0, 2, 0, 0, 0, 0, 0 } },
+    .{ .exponents = .{ 0, 3, 0, 0, 0, 0, 0 } },   .{ .exponents = .{ 0, 1, -1, 0, 0, 0, 0 } },  .{ .exponents = .{ 0, 1, -2, 0, 0, 0, 0 } },
+    .{ .exponents = .{ 1, -3, 0, 0, 0, 0, 0 } },  .{ .exponents = .{ 1, 1, -1, 0, 0, 0, 0 } },  .{ .exponents = .{ 1, 1, -2, 0, 0, 0, 0 } },
+    .{ .exponents = .{ 1, 2, -2, 0, 0, 0, 0 } },  .{ .exponents = .{ 1, 2, -3, 0, 0, 0, 0 } },  .{ .exponents = .{ 1, -1, -2, 0, 0, 0, 0 } },
+    .{ .exponents = .{ 0, 0, -1, 0, 0, 0, 0 } },  .{ .exponents = .{ 0, 0, 1, 1, 0, 0, 0 } },   .{ .exponents = .{ 1, 2, -3, -1, 0, 0, 0 } },
+    .{ .exponents = .{ 1, 2, -3, -2, 0, 0, 0 } }, .{ .exponents = .{ -1, -2, 3, 2, 0, 0, 0 } }, .{ .exponents = .{ -1, -2, 4, 2, 0, 0, 0 } },
+    .{ .exponents = .{ 1, 2, -2, -1, 0, 0, 0 } }, .{ .exponents = .{ 1, 0, -2, -1, 0, 0, 0 } }, .{ .exponents = .{ 1, 2, -2, -2, 0, 0, 0 } },
+    .{ .exponents = .{ 0, -2, 0, 0, 0, 0, 1 } },  .{ .exponents = .{ 0, 0, -1, 0, 0, 1, 0 } },
 };
 fn kindName(dimension: Dimension) []const u8 {
-    for (kind_dimensions, 0..) |candidate, i| if (candidate.eq(dimension)) return @tagName(@as(Kind, @enumFromInt(i)));
+    for (kind_dimensions, 0..) |candidate, i| if (candidate.eq(dimension)) return @tagName(@as(Kind, @fromBackingInt(@intCast(i))));
     return "-";
 }
 fn builtin(symbol: []const u8, n: i64, d: i64, kind: Kind, prefix: bool) Unit {
-    return .{ .symbol = symbol, .quantity = .{ .value = Fraction.init(n, d), .dimension = kind_dimensions[@intFromEnum(kind)] }, .prefix = prefix };
+    return .{ .symbol = symbol, .quantity = .{ .value = Fraction.init(n, d), .dimension = kind_dimensions[@backingInt(kind)] }, .prefix = prefix };
 }
 const builtins = [_]Unit{
-    builtin("m", 1, 1, .length, true), builtin("g", 1, 1000, .mass, true),
-    builtin("s", 1, 1, .time, true), builtin("A", 1, 1, .current, true), builtin("K", 1, 1, .temperature, true),
-    builtin("mol", 1, 1, .amount, true), builtin("cd", 1, 1, .luminous_intensity, true),
-    builtin("N", 1, 1, .force, true), builtin("J", 1, 1, .energy, true), builtin("W", 1, 1, .power, true),
-    builtin("Pa", 1, 1, .pressure, true), builtin("Hz", 1, 1, .frequency, true), builtin("C", 1, 1, .charge, true),
-    builtin("V", 1, 1, .voltage, true), builtin("ohm", 1, 1, .resistance, true),
-    builtin("S", 1, 1, .conductance, true), builtin("F", 1, 1, .capacitance, true),
-    builtin("Wb", 1, 1, .magnetic_flux, true), builtin("T", 1, 1, .flux_density, true),
-    builtin("H", 1, 1, .inductance, true), builtin("lx", 1, 1, .illuminance, true),
-    builtin("kat", 1, 1, .catalytic_activity, true), builtin("L", 1, 1000, .volume, true),
-    builtin("t", 1000, 1, .mass, false), builtin("min", 60, 1, .time, false),
-    builtin("h", 3600, 1, .time, false), builtin("day", 86400, 1, .time, false),
-    builtin("in", 127, 5000, .length, false), builtin("ft", 381, 1250, .length, false),
-    builtin("yd", 1143, 1250, .length, false), builtin("mi", 201168, 125, .length, false),
-    builtin("nmi", 1852, 1, .length, false), builtin("ha", 10000, 1, .area, false),
-    builtin("kn", 463, 900, .speed, false), builtin("bar", 100000, 1, .pressure, true),
-    builtin("atm", 101325, 1, .pressure, false), builtin("Torr", 20265, 152, .pressure, false),
-    builtin("cal", 523, 125, .energy, true), builtin("Wh", 3600, 1, .energy, true),
-    builtin("Ah", 3600, 1, .charge, true), builtin("dC", 1, 1, .temperature, false), builtin("dF", 5, 9, .temperature, false),
+    builtin("m", 1, 1, .length, true),              builtin("g", 1, 1000, .mass, true),
+    builtin("s", 1, 1, .time, true),                builtin("A", 1, 1, .current, true),
+    builtin("K", 1, 1, .temperature, true),         builtin("mol", 1, 1, .amount, true),
+    builtin("cd", 1, 1, .luminous_intensity, true), builtin("N", 1, 1, .force, true),
+    builtin("J", 1, 1, .energy, true),              builtin("W", 1, 1, .power, true),
+    builtin("Pa", 1, 1, .pressure, true),           builtin("Hz", 1, 1, .frequency, true),
+    builtin("C", 1, 1, .charge, true),              builtin("V", 1, 1, .voltage, true),
+    builtin("ohm", 1, 1, .resistance, true),        builtin("S", 1, 1, .conductance, true),
+    builtin("F", 1, 1, .capacitance, true),         builtin("Wb", 1, 1, .magnetic_flux, true),
+    builtin("T", 1, 1, .flux_density, true),        builtin("H", 1, 1, .inductance, true),
+    builtin("lx", 1, 1, .illuminance, true),        builtin("kat", 1, 1, .catalytic_activity, true),
+    builtin("L", 1, 1000, .volume, true),           builtin("t", 1000, 1, .mass, false),
+    builtin("min", 60, 1, .time, false),            builtin("h", 3600, 1, .time, false),
+    builtin("day", 86400, 1, .time, false),         builtin("in", 127, 5000, .length, false),
+    builtin("ft", 381, 1250, .length, false),       builtin("yd", 1143, 1250, .length, false),
+    builtin("mi", 201168, 125, .length, false),     builtin("nmi", 1852, 1, .length, false),
+    builtin("ha", 10000, 1, .area, false),          builtin("kn", 463, 900, .speed, false),
+    builtin("bar", 100000, 1, .pressure, true),     builtin("atm", 101325, 1, .pressure, false),
+    builtin("Torr", 20265, 152, .pressure, false),  builtin("cal", 523, 125, .energy, true),
+    builtin("Wh", 3600, 1, .energy, true),          builtin("Ah", 3600, 1, .charge, true),
+    builtin("dC", 1, 1, .temperature, false),       builtin("dF", 5, 9, .temperature, false),
 };
 const Prefix = struct { symbol: []const u8, factor: Fraction };
 const prefixes = [_]Prefix{
     .{ .symbol = "G", .factor = Fraction.whole(1_000_000_000) }, .{ .symbol = "M", .factor = Fraction.whole(1_000_000) },
-    .{ .symbol = "k", .factor = Fraction.whole(1000) }, .{ .symbol = "h", .factor = Fraction.whole(100) },
-    .{ .symbol = "da", .factor = Fraction.whole(10) }, .{ .symbol = "d", .factor = Fraction.init(1, 10) },
-    .{ .symbol = "c", .factor = Fraction.init(1, 100) }, .{ .symbol = "m", .factor = Fraction.init(1, 1000) },
-    .{ .symbol = "u", .factor = Fraction.init(1, 1_000_000) }, .{ .symbol = "n", .factor = Fraction.init(1, 1_000_000_000) },
+    .{ .symbol = "k", .factor = Fraction.whole(1000) },          .{ .symbol = "h", .factor = Fraction.whole(100) },
+    .{ .symbol = "da", .factor = Fraction.whole(10) },           .{ .symbol = "d", .factor = Fraction.init(1, 10) },
+    .{ .symbol = "c", .factor = Fraction.init(1, 100) },         .{ .symbol = "m", .factor = Fraction.init(1, 1000) },
+    .{ .symbol = "u", .factor = Fraction.init(1, 1_000_000) },   .{ .symbol = "n", .factor = Fraction.init(1, 1_000_000_000) },
 };
 
 const Calculator = struct {
@@ -278,7 +354,9 @@ const Parser = struct {
         parser.length += 1;
         return parser;
     }
-    fn current(parser: *const Parser) Token { return parser.tokens[parser.position]; }
+    fn current(parser: *const Parser) Token {
+        return parser.tokens[parser.position];
+    }
     fn advance(parser: *Parser) Token {
         const token = parser.current();
         parser.position += 1;
@@ -291,11 +369,14 @@ const Parser = struct {
     }
     fn syntax(parser: *Parser) Error {
         const token = parser.current();
-        return if (token.kind == .end) parser.session.fail("SYNTAX {s} AT END", .{parser.source})
-            else parser.session.fail("SYNTAX {s} AT {d}", .{ parser.source, token.position });
+        return if (token.kind == .end) parser.session.fail("SYNTAX {s} AT END", .{parser.source}) else parser.session.fail("SYNTAX {s} AT {d}", .{ parser.source, token.position });
     }
-    fn expect(parser: *Parser, text: []const u8) Error!void { if (!parser.take(text)) return parser.syntax(); }
-    fn finish(parser: *Parser) Error!void { if (parser.current().kind != .end) return parser.syntax(); }
+    fn expect(parser: *Parser, text: []const u8) Error!void {
+        if (!parser.take(text)) return parser.syntax();
+    }
+    fn finish(parser: *Parser) Error!void {
+        if (parser.current().kind != .end) return parser.syntax();
+    }
     fn exponent(parser: *Parser) Error![]const u8 {
         const start = parser.current().position - 1;
         _ = parser.take("-");
@@ -423,7 +504,10 @@ const Session = struct {
         const body = if (negative) text[1..] else text;
         var separator: ?usize = null;
         for (body, 0..) |c, i| {
-            if (c == '.' or c == '/') { separator = i; break; }
+            if (c == '.' or c == '/') {
+                separator = i;
+                break;
+            }
         }
         const first = if (separator) |i| body[0..i] else body;
         const second = if (separator) |i| body[i + 1 ..] else "1";
@@ -471,7 +555,10 @@ const Session = struct {
                 for (names.items) |existing| if (equal(name, existing)) return;
                 try names.append(session.gpa, name);
             },
-            .power => |power| { try session.validateUnit(power.atom, names); _ = try session.checkExponent(power.exponent); },
+            .power => |power| {
+                try session.validateUnit(power.atom, names);
+                _ = try session.checkExponent(power.exponent);
+            },
             .product => |terms| for (terms) |term| try session.validateUnit(term.node, names),
         }
     }
@@ -488,8 +575,7 @@ const Session = struct {
                 var result: Quantity = .{ .value = Fraction.one, .dimension = Dimension.zero };
                 for (terms) |term| {
                     const value = session.unitValue(term.node);
-                    result = if (term.op == '*') .{ .value = result.value.mul(value.value), .dimension = result.dimension.add(value.dimension) }
-                        else .{ .value = result.value.div(value.value), .dimension = result.dimension.sub(value.dimension) };
+                    result = if (term.op == '*') .{ .value = result.value.mul(value.value), .dimension = result.dimension.add(value.dimension) } else .{ .value = result.value.div(value.value), .dimension = result.dimension.sub(value.dimension) };
                 }
                 return result;
             },
@@ -520,7 +606,10 @@ const Session = struct {
         switch (node.*) {
             .name => |name| {
                 for (names, 0..) |existing, i| {
-                    if (equal(existing, name)) { exponents[i] = 1; break; }
+                    if (equal(existing, name)) {
+                        exponents[i] = 1;
+                        break;
+                    }
                 }
             },
             .number => |value| result.coefficient = Fraction.whole(value),
@@ -540,7 +629,10 @@ const Session = struct {
         var output: Writer.Allocating = .init(session.gpa);
         defer output.deinit();
         var first = true;
-        if (!reduced.coefficient.eq(Fraction.one)) { try output.writer.print("{f}", .{reduced.coefficient}); first = false; }
+        if (!reduced.coefficient.eq(Fraction.one)) {
+            try output.writer.print("{f}", .{reduced.coefficient});
+            first = false;
+        }
         for (parsed.names, reduced.exponents) |name, exponent| {
             if (exponent == 0) continue;
             if (!first) try output.writer.writeByte(' ');
@@ -640,7 +732,9 @@ const Session = struct {
                 const name = try calculator.storage.dupe(u8, w[1]);
                 const expression = try calculator.storage.dupe(u8, w[4]);
                 calculator.units[calculator.unit_count] = .{
-                    .symbol = name, .quantity = defined, .prefix = false,
+                    .symbol = name,
+                    .quantity = defined,
+                    .prefix = false,
                     .definition = .{ .value = value, .expression = expression },
                 };
                 calculator.unit_count += 1;
@@ -649,11 +743,14 @@ const Session = struct {
             .UNDEF => {
                 var found: ?usize = null;
                 for (calculator.units[0..calculator.unit_count], 0..) |unit, i| {
-                    if (equal(unit.symbol, w[1])) { found = i; break; }
+                    if (equal(unit.symbol, w[1])) {
+                        found = i;
+                        break;
+                    }
                 }
                 const index = found orelse return session.fail("NOT DEFINED {s}", .{w[1]});
                 if (index < builtins.len) return session.fail("BUILTIN UNIT {s}", .{w[1]});
-                for (index + 1 .. calculator.unit_count) |i| calculator.units[i - 1] = calculator.units[i];
+                for (index + 1..calculator.unit_count) |i| calculator.units[i - 1] = calculator.units[i];
                 calculator.unit_count -= 1;
                 try line(out, "UNDEF {s}", .{w[1]});
             },
@@ -679,9 +776,7 @@ const Session = struct {
             .DIM, .REDUCE, .SIMPLIFY => {
                 const parsed = try session.parseUnit(w[1]);
                 const unit = parsed.quantity;
-                if (command == .DIM) try line(out, "DIM {s} = {f} factor={f} kind={s}", .{ w[1], unit.dimension, unit.value, kindName(unit.dimension) })
-                else if (command == .REDUCE) try line(out, "REDUCE {s} = {s}", .{ w[1], try session.reducedText(parsed) })
-                else try line(out, "SIMPLIFY {s} = {f}", .{ w[1], try session.quantityNotation(unit) });
+                if (command == .DIM) try line(out, "DIM {s} = {f} factor={f} kind={s}", .{ w[1], unit.dimension, unit.value, kindName(unit.dimension) }) else if (command == .REDUCE) try line(out, "REDUCE {s} = {s}", .{ w[1], try session.reducedText(parsed) }) else try line(out, "SIMPLIFY {s} = {f}", .{ w[1], try session.quantityNotation(unit) });
             },
             .ADD, .SUB, .MUL, .DIV, .COMPARE => {
                 const x = try session.number(w[1]);
@@ -698,7 +793,12 @@ const Session = struct {
                     if (right.n == 0) try line(out, "undefined", .{}) else try line(out, "{f}", .{left.div(right)});
                     return;
                 }
-                const op: u8 = switch (command) { .ADD => '+', .SUB => '-', .MUL => '*', else => '/' };
+                const op: u8 = switch (command) {
+                    .ADD => '+',
+                    .SUB => '-',
+                    .MUL => '*',
+                    else => '/',
+                };
                 if (command == .ADD or command == .SUB) {
                     try session.match(a.dimension, b.dimension);
                     if (target) |destination| try session.match(a.dimension, destination.dimension);
@@ -719,7 +819,9 @@ const Session = struct {
                 if (target) |destination| try line(out, "{f}", .{notation(coherent.div(destination.value), w[6])}) else {
                     try out.print("{f} {s}{c}", .{ product, w[2], op });
                     if (command == .DIV and (std.mem.findScalar(u8, w[4], '*') != null or std.mem.findScalar(u8, w[4], '/') != null))
-                        try out.print("({s})", .{w[4]}) else try out.writeAll(w[4]);
+                        try out.print("({s})", .{w[4]})
+                    else
+                        try out.writeAll(w[4]);
                     try line(out, " = {f}", .{notation(coherent, try session.simplified(dimension))});
                 }
             },
@@ -730,24 +832,26 @@ const Session = struct {
                 const kelvin = switch (source) {
                     .C => value.add(Fraction.init(5463, 20)),
                     .F => value.add(Fraction.init(45967, 100)).mul(Fraction.whole(5)).div(Fraction.whole(9)),
-                    .R => value.mul(Fraction.whole(5)).div(Fraction.whole(9)), .K => value,
+                    .R => value.mul(Fraction.whole(5)).div(Fraction.whole(9)),
+                    .K => value,
                 };
                 if (kelvin.n < 0) return session.fail("BELOW ABSOLUTE ZERO", .{});
                 const result = switch (target) {
                     .C => kelvin.sub(Fraction.init(5463, 20)),
                     .F => kelvin.mul(Fraction.whole(9)).div(Fraction.whole(5)).sub(Fraction.init(45967, 100)),
-                    .R => kelvin.mul(Fraction.whole(9)).div(Fraction.whole(5)), .K => kelvin,
+                    .R => kelvin.mul(Fraction.whole(9)).div(Fraction.whole(5)),
+                    .K => kelvin,
                 };
                 try line(out, "TEMP {f} {s} = {f}", .{ value, w[2], notation(result, w[4]) });
             },
             .LIST => {
-                const dimension = if (std.meta.stringToEnum(Kind, w[1])) |kind| kind_dimensions[@intFromEnum(kind)] else (try session.parseUnit(w[1])).quantity.dimension;
+                const dimension = if (std.meta.stringToEnum(Kind, w[1])) |kind| kind_dimensions[@backingInt(kind)] else (try session.parseUnit(w[1])).quantity.dimension;
                 const selected = try session.matching(dimension);
                 try line(out, "LIST {s} dim={f} kind={s} count={d}", .{ w[1], dimension, kindName(dimension), selected.len });
                 for (selected) |i| {
                     const unit = calculator.units[i];
                     try line(out, "UNIT {s} factor={f} origin={s} prefix={s}", .{
-                        unit.symbol, unit.quantity.value, @as([]const u8, if (unit.definition == null) "builtin" else "user"),
+                        unit.symbol,                                       unit.quantity.value, @as([]const u8, if (unit.definition == null) "builtin" else "user"),
                         @as([]const u8, if (unit.prefix) "yes" else "no"),
                     });
                 }
@@ -767,7 +871,10 @@ const Session = struct {
                 if (command == .AUTO) {
                     var basis: ?Unit = null;
                     for (builtins) |candidate| {
-                        if (candidate.prefix and candidate.quantity.dimension.eq(unit.dimension)) { basis = candidate; break; }
+                        if (candidate.prefix and candidate.quantity.dimension.eq(unit.dimension)) {
+                            basis = candidate;
+                            break;
+                        }
                     }
                     const reference = basis orelse return session.fail("NO PREFIXABLE UNIT {f}", .{unit.dimension});
                     const scaled = value.mul(unit.value).div(reference.quantity.value);
@@ -778,7 +885,15 @@ const Session = struct {
                     } else if (magnitude.n != 0) {
                         while (exponent > -9 and magnitude.less(Fraction.whole(10).power(exponent))) exponent -= 3;
                     }
-                    const prefix: []const u8 = switch (exponent) { 9 => "G", 6 => "M", 3 => "k", -3 => "m", -6 => "u", -9 => "n", else => "" };
+                    const prefix: []const u8 = switch (exponent) {
+                        9 => "G",
+                        6 => "M",
+                        3 => "k",
+                        -3 => "m",
+                        -6 => "u",
+                        -9 => "n",
+                        else => "",
+                    };
                     const symbol = try std.fmt.allocPrint(session.gpa, "{s}{s}", .{ prefix, reference.symbol });
                     try line(out, "AUTO {f} {s} = {f}", .{ value, w[2], notation(scaled.div(Fraction.whole(10).power(exponent)), symbol) });
                     return;

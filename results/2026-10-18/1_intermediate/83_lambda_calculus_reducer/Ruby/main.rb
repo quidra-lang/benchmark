@@ -580,13 +580,13 @@ class Workbench
     when 'equal'
       left = reduce(term)
       right = reduce(terms[1])
-      puts if !left || !right
-             'unknown'
-           elsif printed(canonical(left[0])) == printed(canonical(right[0]))
-             'yes'
-           else
-             'no'
-           end
+      if !left || !right
+        puts 'unknown'
+      elsif printed(canonical(left[0])) == printed(canonical(right[0]))
+        puts 'yes'
+      else
+        puts 'no'
+      end
     when 'church', 'reduce', 'skireduce'
       result = if command == 'church'
                  reduce(term, 'NORMAL', false)

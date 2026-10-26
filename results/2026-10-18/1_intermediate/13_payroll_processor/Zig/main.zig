@@ -5,13 +5,19 @@ const setting_names = @typeInfo(Setting).@"enum".field_names;
 const Setting = enum { STATE, SUPP, SSRATE, MEDRATE, ADDMED, UIRATE, MATCH, MATCHMAX, GARNCAP, SSBASE, ADDBASE, UIBASE, RETIRECAP, ALLOWANCE, NIGHT };
 const V = enum { r, o, d, n, p, accrued, salary, leave, leave_deduction, sales, commission, earnings, bonus, gross, retirement, health, federal, supplemental, state, ss, medicare, garnishment, net, employer_ss, employer_medicare, unemployment, match, employer_total, w, y, f, j };
 const value_count = @typeInfo(V).@"enum".field_names.len;
-fn integer(s: []const u8) i64 { return std.fmt.parseInt(i64, s, 10) catch unreachable; }
+fn integer(s: []const u8) i64 {
+    return std.fmt.parseInt(i64, s, 10) catch unreachable;
+}
 fn amount(s: []const u8) i64 {
     const dot = std.mem.findScalar(u8, s, '.').?;
-    return integer(s[0..dot]) * 100 + integer(s[dot + 1..]);
+    return integer(s[0..dot]) * 100 + integer(s[dot + 1 ..]);
 }
-fn period(day: usize) usize { return (day - 1) / 14 + 1; }
-fn weekday(day: usize) []const u8 { return ([_][]const u8{ "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" })[(day - 1) % 7]; }
+fn period(day: usize) usize {
+    return (day - 1) / 14 + 1;
+}
+fn weekday(day: usize) []const u8 {
+    return ([_][]const u8{ "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" })[(day - 1) % 7];
+}
 const PayType = enum { HOURLY, SALARIED, COMMISSION };
 const Band = struct {
     bound: i64,
@@ -35,8 +41,12 @@ const Stub = struct {
     post_pto: i64 = 0,
     post_garnishment: i64 = 0,
     balances: [10]i64 = @splat(0),
-    fn get(s: *const Stub, key: V) i64 { return s.values[@intFromEnum(key)]; }
-    fn set(s: *Stub, key: V, value: i64) void { s.values[@intFromEnum(key)] = value; }
+    fn get(s: *const Stub, key: V) i64 {
+        return s.values[@backingInt(key)];
+    }
+    fn set(s: *Stub, key: V, value: i64) void {
+        s.values[@backingInt(key)] = value;
+    }
     fn add(s: *Stub, other: Stub) void {
         for (0..value_count) |i| s.values[i] += other.values[i];
     }
@@ -95,12 +105,16 @@ const Payroll = struct {
         self.error_message = std.fmt.allocPrint(self.gpa, fmt, args) catch return error.OutOfMemory;
         return error.BadCommand;
     }
-    fn setting(self: *Payroll, key: Setting) i64 { return self.config[@intFromEnum(key)]; }
+    fn setting(self: *Payroll, key: Setting) i64 {
+        return self.config[@backingInt(key)];
+    }
     fn money(self: *Payroll, n: i64) Allocator.Error![]const u8 {
         const u: u64 = @intCast(n);
         return std.fmt.allocPrint(self.gpa, "{d}.{d:0>2}", .{ u / 100, u % 100 });
     }
-    fn rateText(self: *Payroll, n: i64) Allocator.Error![]const u8 { return std.fmt.allocPrint(self.gpa, "{s}%", .{try self.money(n)}); }
+    fn rateText(self: *Payroll, n: i64) Allocator.Error![]const u8 {
+        return std.fmt.allocPrint(self.gpa, "{s}%", .{try self.money(n)});
+    }
     fn duration(self: *Payroll, m: i64) Allocator.Error![]const u8 {
         const u: u64 = @intCast(m);
         return std.fmt.allocPrint(self.gpa, "{d}:{d:0>2}", .{ u / 60, u % 60 });
@@ -112,7 +126,9 @@ const Payroll = struct {
     fn people(self: *Payroll) Error![]*Employee {
         const result = try self.gpa.dupe(*Employee, self.employees.values());
         std.mem.sort(*Employee, result, {}, struct {
-            fn less(_: void, left: *Employee, right: *Employee) bool { return left.id < right.id; }
+            fn less(_: void, left: *Employee, right: *Employee) bool {
+                return left.id < right.id;
+            }
         }.less);
         return result;
     }
@@ -287,7 +303,7 @@ const Payroll = struct {
         const id: []const u8 = if (a.len > 1) a[1] else "";
         if (std.mem.eql(u8, op, "SET")) {
             const key = std.meta.stringToEnum(Setting, id) orelse return self.fail("unknown setting {s}", .{id});
-            const i = @intFromEnum(key);
+            const i = @backingInt(key);
             if (i < 9) try self.rateCheck(a[2]);
             const old = self.config[i];
             const value = amount(a[2]);
@@ -309,7 +325,9 @@ const Payroll = struct {
             if (!replaced) {
                 try table.append(self.gpa, .{ .bound = bound, .rate = rate });
                 std.mem.sort(Band, table.items, {}, struct {
-                    fn less(_: void, left: Band, right: Band) bool { return left.bound < right.bound; }
+                    fn less(_: void, left: Band, right: Band) bool {
+                        return left.bound < right.bound;
+                    }
                 }.less);
             }
             try self.out.print("{s} {s} {s} {s}\n", .{ op, try self.money(bound), try self.rateText(rate), if (replaced) "replaced" else "added" });
@@ -481,7 +499,9 @@ const Payroll = struct {
                         if (worked + end - start > 960) return self.fail("daily limit {s} {s}", .{ id, a[2] });
                         try shifts.append(self.gpa, .{ .start = start, .end = end });
                         std.mem.sort(Shift, shifts.items, {}, struct {
-                            fn less(_: void, left: Shift, right: Shift) bool { return left.start < right.start; }
+                            fn less(_: void, left: Shift, right: Shift) bool {
+                                return left.start < right.start;
+                            }
                         }.less);
                         try self.out.print("TIME {s} day {d} {s}-{s} {s}\n", .{ id, d, try self.clock(start), try self.clock(end), try self.duration(end - start) });
                     } else {

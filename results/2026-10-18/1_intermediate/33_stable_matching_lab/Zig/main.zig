@@ -3,14 +3,38 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const Error = Allocator.Error || Writer.Error || error{Invalid};
 const Command = enum {
-    MARKET, ROOMS, HOUSES, RANDOM, PREF, CAPACITY, SHOW, GS, GSR, CHECK,
-    LATTICE, EGALITARIAN, MINREGRET, HR, ROOMMATES, TTC, SERIAL, BOSTON, MANIPULATE, STATS,
+    MARKET,
+    ROOMS,
+    HOUSES,
+    RANDOM,
+    PREF,
+    CAPACITY,
+    SHOW,
+    GS,
+    GSR,
+    CHECK,
+    LATTICE,
+    EGALITARIAN,
+    MINREGRET,
+    HR,
+    ROOMMATES,
+    TTC,
+    SERIAL,
+    BOSTON,
+    MANIPULATE,
+    STATS,
 };
 const Kind = enum { two_sided, roommates, housing };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn integer(text: []const u8) usize { return std.fmt.parseInt(usize, text, 10) catch unreachable; }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn integer(text: []const u8) usize {
+    return std.fmt.parseInt(usize, text, 10) catch unreachable;
+}
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
 
 const Name = struct {
     bytes: [8]u8 = undefined,
@@ -20,13 +44,19 @@ const Name = struct {
         @memcpy(name.bytes[0..value.len], value);
         return name;
     }
-    fn text(name: *const Name) []const u8 { return name.bytes[0..name.len]; }
-    pub fn format(name: Name, out: *Writer) Writer.Error!void { try out.writeAll(name.text()); }
+    fn text(name: *const Name) []const u8 {
+        return name.bytes[0..name.len];
+    }
+    pub fn format(name: Name, out: *Writer) Writer.Error!void {
+        try out.writeAll(name.text());
+    }
 };
 const Sequence = struct {
     items: [24]usize = undefined,
     len: usize = 0,
-    fn list(sequence: *const Sequence) []const usize { return sequence.items[0..sequence.len]; }
+    fn list(sequence: *const Sequence) []const usize {
+        return sequence.items[0..sequence.len];
+    }
     fn append(sequence: *Sequence, agent: usize) void {
         sequence.items[sequence.len] = agent;
         sequence.len += 1;
@@ -47,7 +77,7 @@ const Sequence = struct {
     }
 };
 const Matching = struct {
-    partners: [24]?usize = [_]?usize{null} ** 24,
+    partners: [24]?usize = @splat(null),
     fn same(a: Matching, b: Matching, count: usize) bool {
         for (a.partners[0..count], b.partners[0..count]) |first, second| if (first != second) return false;
         return true;
@@ -60,8 +90,8 @@ const Market = struct {
     houses: [12]Name = undefined,
     count: usize = 0,
     proposer_count: usize = 0,
-    preferences: [24]Sequence = [_]Sequence{.{}} ** 24,
-    capacities: [24]usize = [_]usize{1} ** 24,
+    preferences: [24]Sequence = @splat(Sequence{}),
+    capacities: [24]usize = @splat(1),
     current: ?Matching = null,
     source: ?Command = null,
     fn find(market: *const Market, text: []const u8) ?usize {
@@ -72,12 +102,20 @@ const Market = struct {
         for (market.houses[0..market.count], 0..) |name, i| if (equal(name.text(), text)) return i;
         return null;
     }
-    fn rank(market: *const Market, agent: usize, partner: ?usize) usize { return market.preferences[agent].rank(partner); }
+    fn rank(market: *const Market, agent: usize, partner: ?usize) usize {
+        return market.preferences[agent].rank(partner);
+    }
     fn acceptable(market: *const Market, a: usize, b: usize) bool {
         return market.preferences[a].index(b) != null and market.preferences[b].index(a) != null;
     }
-    fn clear(market: *Market) void { market.current = null; market.source = null; }
-    fn save(market: *Market, matching: Matching, command: Command) void { market.current = matching; market.source = command; }
+    fn clear(market: *Market) void {
+        market.current = null;
+        market.source = null;
+    }
+    fn save(market: *Market, matching: Matching, command: Command) void {
+        market.current = matching;
+        market.source = command;
+    }
     fn effective(market: *const Market, agent: usize) Sequence {
         var result = market.preferences[agent];
         if (result.index(agent)) |i| result.len = i + 1 else result.append(agent);
@@ -135,10 +173,10 @@ const MatchingResult = struct { matching: Matching, proposals: usize, log: []con
 const ProposalState = struct {
     gpa: Allocator,
     market: *const Market,
-    next: [24]usize = [_]usize{0} ** 24,
-    counts: [24]usize = [_]usize{0} ** 24,
-    queued: [24]bool = [_]bool{false} ** 24,
-    holding: [24]Sequence = [_]Sequence{.{}} ** 24,
+    next: [24]usize = @splat(0),
+    counts: [24]usize = @splat(0),
+    queued: [24]bool = @splat(false),
+    holding: [24]Sequence = @splat(Sequence{}),
     queue: std.ArrayList(usize) = .empty,
     fn able(state: *const ProposalState, agent: usize) bool {
         return state.counts[agent] < state.market.capacities[agent] and state.next[agent] < state.market.preferences[agent].len;
@@ -208,7 +246,7 @@ fn boston(market: *const Market) MatchingResult {
     for (market.preferences[0..market.proposer_count]) |preference| rounds = @max(rounds, preference.len);
     var applications: usize = 0;
     for (0..rounds) |round| {
-        var applicants: [24]Sequence = [_]Sequence{.{}} ** 24;
+        var applicants: [24]Sequence = @splat(Sequence{});
         for (0..market.proposer_count) |p| {
             if (matching.partners[p] != null or round >= market.preferences[p].len) continue;
             applicants[market.preferences[p].items[round]].append(p);
@@ -237,7 +275,8 @@ fn checkMatching(gpa: Allocator, market: *const Market, matching: Matching) Allo
                 if (matching.partners[a] == b) {
                     if (!market.acceptable(a, b)) try result.unacceptable.append(gpa, .{ .first = a, .second = b });
                 } else if (market.acceptable(a, b) and market.rank(a, b) < market.rank(a, matching.partners[a]) and
-                    market.rank(b, a) < market.rank(b, matching.partners[b])) {
+                    market.rank(b, a) < market.rank(b, matching.partners[b]))
+                {
                     try result.blocking.append(gpa, .{ .first = a, .second = b });
                 }
             }
@@ -280,11 +319,11 @@ const Candidate = struct {
 };
 const RotationList = struct { items: [12]Sequence = undefined, len: usize = 0 };
 fn rotations(market: *const Market, matching: Matching) RotationList {
-    var owners: [24]?usize = [_]?usize{null} ** 24;
+    var owners: [24]?usize = @splat(null);
     for (0..market.proposer_count) |p| {
         if (matching.partners[p]) |r| owners[r] = p;
     }
-    var successors: [12]?usize = [_]?usize{null} ** 12;
+    var successors: [12]?usize = @splat(null);
     for (0..market.proposer_count) |p| {
         const partner = matching.partners[p] orelse continue;
         const preference = &market.preferences[p];
@@ -297,10 +336,10 @@ fn rotations(market: *const Market, matching: Matching) RotationList {
         }
     }
     var result: RotationList = .{};
-    var covered: [12]bool = [_]bool{false} ** 12;
+    var covered: [12]bool = @splat(false);
     for (0..market.proposer_count) |start| {
         if (covered[start]) continue;
-        var seen: [12]bool = [_]bool{false} ** 12;
+        var seen: [12]bool = @splat(false);
         var path: Sequence = .{};
         var current: ?usize = start;
         while (current) |p| {
@@ -327,14 +366,21 @@ const RankSummary = struct {
     pub fn format(summary: RankSummary, out: *Writer) Writer.Error!void {
         var total: usize = 0;
         var first: usize = 0;
-        for (summary.ranks.list()) |rank_value| { total += rank_value; first += @intFromBool(rank_value == 1); }
+        for (summary.ranks.list()) |rank_value| {
+            total += rank_value;
+            first += @intFromBool(rank_value == 1);
+        }
         try out.print("sum={d} average=", .{total});
         if (summary.ranks.len == 0) {
             try out.writeAll("- truncated=-");
         } else {
             var a = total;
             var b = summary.ranks.len;
-            while (b != 0) { const remainder = a % b; a = b; b = remainder; }
+            while (b != 0) {
+                const remainder = a % b;
+                a = b;
+                b = remainder;
+            }
             const cents = total * 100 / summary.ranks.len;
             try out.print("{d}/{d} truncated={d}.{d:0>2}", .{ total / a, summary.ranks.len / a, cents / 100, cents % 100 });
         }
@@ -408,8 +454,8 @@ const Session = struct {
     fn check(session: *Session, market: *const Market, words: []const []const u8) Error!void {
         if (market.kind == .housing) return session.fail("WRONG TYPE {f}", .{market.name});
         var matching: Matching = .{};
-        var used: [24]bool = [_]bool{false} ** 24;
-        var counts: [24]usize = [_]usize{0} ** 24;
+        var used: [24]bool = @splat(false);
+        var counts: [24]usize = @splat(0);
         for (words[2..]) |word| {
             const separator = std.mem.findScalar(u8, word, '-').?;
             const x = word[0..separator];
@@ -461,7 +507,10 @@ const Session = struct {
                 const notation = try buffer.toOwnedSlice();
                 var number: usize = 0;
                 for (result.notations.items, 0..) |previous, i| {
-                    if (equal(previous, notation)) { number = i + 1; break; }
+                    if (equal(previous, notation)) {
+                        number = i + 1;
+                        break;
+                    }
                 }
                 if (number == 0) {
                     try result.notations.append(session.gpa, notation);
@@ -471,7 +520,10 @@ const Session = struct {
                 for (rotation.list(), 0..) |p, i| next.partners[p] = matching.partners[rotation.items[(i + 1) % rotation.len]];
                 var seen = false;
                 for (result.matchings.items) |previous| {
-                    if (previous.matching.same(next, market.proposer_count)) { seen = true; break; }
+                    if (previous.matching.same(next, market.proposer_count)) {
+                        seen = true;
+                        break;
+                    }
                 }
                 if (seen) continue;
                 if (result.matchings.items.len == 50) return session.fail("TOO MANY MATCHINGS", .{});
@@ -514,7 +566,7 @@ const Session = struct {
             if (preference.len != market.count - 1) return session.fail("INCOMPLETE {f}", .{market.names[a]});
         }
         var lists = market.preferences;
-        var held: [24]?usize = [_]?usize{null} ** 24;
+        var held: [24]?usize = @splat(null);
         var queue: std.ArrayList(usize) = .empty;
         for (0..market.count) |a| try queue.append(session.gpa, a);
         var trace: Writer.Allocating = .init(session.gpa);
@@ -541,10 +593,13 @@ const Session = struct {
             while (true) {
                 var start: ?usize = null;
                 for (lists[0..market.count], 0..) |list_value, a| {
-                    if (list_value.len > 1) { start = a; break; }
+                    if (list_value.len > 1) {
+                        start = a;
+                        break;
+                    }
                 }
                 var p = start orelse break;
-                var seen: [24]?usize = [_]?usize{null} ** 24;
+                var seen: [24]?usize = @splat(null);
                 var path: Sequence = .{};
                 while (seen[p] == null) {
                     seen[p] = path.len;
@@ -554,7 +609,10 @@ const Session = struct {
                 }
                 var xs: Sequence = .{};
                 var ys: Sequence = .{};
-                for (path.list()[seen[p].? ..]) |a| { xs.append(a); ys.append(lists[a].items[0]); }
+                for (path.list()[seen[p].?..]) |a| {
+                    xs.append(a);
+                    ys.append(lists[a].items[0]);
+                }
                 rotation_count += 1;
                 try trace.writer.print("ROTATION {d}", .{rotation_count});
                 for (xs.list(), ys.list()) |x, y| try trace.writer.print(" {f}-{f}", .{ market.names[x], market.names[y] });
@@ -584,8 +642,8 @@ const Session = struct {
         try session.out.writeByte('\n');
     }
     fn tradingCycles(session: *Session, market: *const Market) Error!void {
-        var remaining: [24]bool = [_]bool{true} ** 24;
-        var assigned: [24]?usize = [_]?usize{null} ** 24;
+        var remaining: [24]bool = @splat(true);
+        var assigned: [24]?usize = @splat(null);
         var count = market.count;
         var cycles: usize = 0;
         var trace: Writer.Allocating = .init(session.gpa);
@@ -598,10 +656,13 @@ const Session = struct {
                 if (start == null) start = a;
                 const effective = market.effective(a);
                 for (effective.list()) |h| {
-                    if (remaining[h]) { pointers[a] = h; break; }
+                    if (remaining[h]) {
+                        pointers[a] = h;
+                        break;
+                    }
                 }
             }
-            var seen: [24]?usize = [_]?usize{null} ** 24;
+            var seen: [24]?usize = @splat(null);
             var path: Sequence = .{};
             var current = start.?;
             while (seen[current] == null) {
@@ -611,7 +672,7 @@ const Session = struct {
             }
             cycles += 1;
             try trace.writer.print("CYCLE {d}", .{cycles});
-            for (path.list()[seen[current].? ..]) |a| {
+            for (path.list()[seen[current].?..]) |a| {
                 assigned[a] = pointers[a];
                 remaining[a] = false;
                 count -= 1;
@@ -631,12 +692,17 @@ const Session = struct {
             order.append(a);
         }
         if (order.len != market.count) return session.fail("BAD ORDER", .{});
-        var assigned: [24]?usize = [_]?usize{null} ** 24;
-        var available: [12]bool = [_]bool{true} ** 12;
+        var assigned: [24]?usize = @splat(null);
+        var available: [12]bool = @splat(true);
         var count: usize = 0;
         for (order.list()) |a| {
             for (market.preferences[a].list()) |h| {
-                if (available[h]) { assigned[a] = h; available[h] = false; count += 1; break; }
+                if (available[h]) {
+                    assigned[a] = h;
+                    available[h] = false;
+                    count += 1;
+                    break;
+                }
             }
         }
         var worse: Sequence = .{};
@@ -653,8 +719,7 @@ const Session = struct {
         const b0 = boston(market).matching.partners[agent_value];
         const g0 = (try deferred(session.gpa, market, false, false)).matching.partners[agent_value];
         const swaps = if (truth.len == 0) 0 else truth.len - 1;
-        try line(session.out, "MANIPULATE {f} {f} boston={f} gs={f} swaps={d}", .{ market.name, market.names[agent_value],
-            Partner{ .market = market, .agent = b0 }, Partner{ .market = market, .agent = g0 }, swaps });
+        try line(session.out, "MANIPULATE {f} {f} boston={f} gs={f} swaps={d}", .{ market.name, market.names[agent_value], Partner{ .market = market, .agent = b0 }, Partner{ .market = market, .agent = g0 }, swaps });
         var improved = false;
         for (0..swaps) |i| {
             var trial = market.*;
@@ -677,7 +742,7 @@ const Session = struct {
         const matching = market.current orelse return session.fail("NO MATCHING", .{});
         var proposer_ranks: Sequence = .{};
         var receiver_ranks: Sequence = .{};
-        var occupied: [24]bool = [_]bool{false} ** 24;
+        var occupied: [24]bool = @splat(false);
         for (0..market.proposer_count) |p| {
             if (matching.partners[p]) |r| {
                 proposer_ranks.append(market.rank(p, r));
@@ -695,7 +760,10 @@ const Session = struct {
         var words: [32][]const u8 = undefined;
         var count: usize = 0;
         var iterator = std.mem.tokenizeScalar(u8, text, ' ');
-        while (iterator.next()) |word| { words[count] = word; count += 1; }
+        while (iterator.next()) |word| {
+            words[count] = word;
+            count += 1;
+        }
         const w = words[0..count];
         const command = std.meta.stringToEnum(Command, w[0]).?;
         const name = w[1];
@@ -705,7 +773,10 @@ const Session = struct {
                 try session.newName(name);
                 var market: Market = .{ .name = Name.init(name), .kind = if (command == .MARKET) .two_sided else .roommates };
                 for (w[2..]) |word| {
-                    if (equal(word, "|")) { market.proposer_count = market.count; continue; }
+                    if (equal(word, "|")) {
+                        market.proposer_count = market.count;
+                        continue;
+                    }
                     if (market.find(word) != null) return session.fail("DUPLICATE AGENT {s}", .{word});
                     market.names[market.count] = Name.init(word);
                     market.count += 1;
@@ -807,8 +878,7 @@ const Session = struct {
                     }
                     const selected = result.matchings.items[best];
                     market.save(selected.matching, command);
-                    try line(out, "{s} {s} matching={d} {s}={d}", .{ @tagName(command), name, best + 1,
-                        if (command == .EGALITARIAN) "cost" else "regret", if (command == .EGALITARIAN) selected.cost else selected.regret });
+                    try line(out, "{s} {s} matching={d} {s}={d}", .{ @tagName(command), name, best + 1, if (command == .EGALITARIAN) "cost" else "regret", if (command == .EGALITARIAN) selected.cost else selected.regret });
                     try line(out, "MATCHING {f}", .{Pairs{ .market = market, .matching = selected.matching }});
                 }
             },

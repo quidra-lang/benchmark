@@ -6,56 +6,100 @@ const Style = enum { APA, IEEE, CHICAGO, MLA };
 const Kind = enum { article, book, inproceedings, incollection, techreport, phdthesis, misc };
 const Command = enum { FORMAT, BIBLIOGRAPHY, CITE, KEYGEN, CHECK, SEARCH, EXPORT, STATS };
 const Placeholder = enum {
-    author, editor, title, journal, booktitle, edition, volume, number, pages,
-    publisher, institution, school, address, howpublished, month, year, doi, note,
-    pp, eds, mon,
+    author,
+    editor,
+    title,
+    journal,
+    booktitle,
+    edition,
+    volume,
+    number,
+    pages,
+    publisher,
+    institution,
+    school,
+    address,
+    howpublished,
+    month,
+    year,
+    doi,
+    note,
+    pp,
+    eds,
+    mon,
 };
 const known_fields = [_][]const u8{
-    "author", "editor", "title", "journal", "booktitle", "edition", "volume", "number", "pages",
-    "publisher", "institution", "school", "address", "howpublished", "month", "year", "doi", "note",
+    "author",    "editor",      "title",  "journal", "booktitle",    "edition", "volume", "number", "pages",
+    "publisher", "institution", "school", "address", "howpublished", "month",   "year",   "doi",    "note",
 };
 const small_words = [_][]const u8{
-    "a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into", "nor", "of",
-    "on", "or", "over", "per", "so", "the", "to", "up", "via", "with", "yet",
+    "a",  "an", "and",  "as",  "at", "but", "by", "for", "from", "in",   "into", "nor", "of",
+    "on", "or", "over", "per", "so", "the", "to", "up",  "via",  "with", "yet",
 };
 const months = [_][]const u8{
     "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December",
 };
 const month_short = [_][]const u8{ "Jan.", "Feb.", "Mar.", "Apr.", "May", "June", "July", "Aug.", "Sep.", "Oct.", "Nov.", "Dec." };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn less(_: void, a: []const u8, b: []const u8) bool { return std.mem.order(u8, a, b) == .lt; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn less(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
 fn contains(values: []const []const u8, value: []const u8) bool {
     for (values) |item| if (equal(item, value)) return true;
     return false;
 }
-fn letter(c: u8) bool { return c >= 'A' and c <= 'Z' or c >= 'a' and c <= 'z'; }
-fn digit(c: u8) bool { return c >= '0' and c <= '9'; }
-fn lowercase(c: u8) bool { return c >= 'a' and c <= 'z'; }
-fn uppercase(c: u8) bool { return c >= 'A' and c <= 'Z'; }
-fn lowerByte(c: u8) u8 { return if (uppercase(c)) c + 32 else c; }
-fn upperByte(c: u8) u8 { return if (lowercase(c)) c - 32 else c; }
+fn letter(c: u8) bool {
+    return c >= 'A' and c <= 'Z' or c >= 'a' and c <= 'z';
+}
+fn digit(c: u8) bool {
+    return c >= '0' and c <= '9';
+}
+fn lowercase(c: u8) bool {
+    return c >= 'a' and c <= 'z';
+}
+fn uppercase(c: u8) bool {
+    return c >= 'A' and c <= 'Z';
+}
+fn lowerByte(c: u8) u8 {
+    return if (uppercase(c)) c + 32 else c;
+}
+fn upperByte(c: u8) u8 {
+    return if (lowercase(c)) c - 32 else c;
+}
 fn digits(text: []const u8) bool {
     if (text.len == 0) return false;
     for (text) |c| if (!digit(c)) return false;
     return true;
 }
-fn integer(text: []const u8) usize { return std.fmt.parseInt(usize, text, 10) catch unreachable; }
+fn integer(text: []const u8) usize {
+    return std.fmt.parseInt(usize, text, 10) catch unreachable;
+}
 fn join(gpa: Allocator, separator: []const u8, parts: []const []const u8) Allocator.Error![]const u8 {
     return std.mem.join(gpa, separator, parts);
 }
 fn format(gpa: Allocator, comptime pattern: []const u8, args: anytype) Allocator.Error![]const u8 {
     return std.fmt.allocPrint(gpa, pattern, args);
 }
-fn line(out: *Writer, comptime pattern: []const u8, args: anytype) Writer.Error!void { try out.print(pattern ++ "\n", args); }
+fn line(out: *Writer, comptime pattern: []const u8, args: anytype) Writer.Error!void {
+    try out.print(pattern ++ "\n", args);
+}
 
 const Text = struct {
     gpa: Allocator,
     bytes: std.ArrayList(u8) = .empty,
 
-    fn add(text: *Text, value: []const u8) Allocator.Error!void { try text.bytes.appendSlice(text.gpa, value); }
-    fn byte(text: *Text, value: u8) Allocator.Error!void { try text.bytes.append(text.gpa, value); }
-    fn result(text: Text) []const u8 { return text.bytes.items; }
+    fn add(text: *Text, value: []const u8) Allocator.Error!void {
+        try text.bytes.appendSlice(text.gpa, value);
+    }
+    fn byte(text: *Text, value: u8) Allocator.Error!void {
+        try text.bytes.append(text.gpa, value);
+    }
+    fn result(text: Text) []const u8 {
+        return text.bytes.items;
+    }
 };
 
 fn lower(gpa: Allocator, text: []const u8) Allocator.Error![]const u8 {
@@ -199,14 +243,18 @@ const Person = struct {
         }
         if (parts.len == 1) {
             if (first_lower) |first| return .{
-                .first = try join(gpa, " ", words[0..first]), .von = try join(gpa, " ", words[first..after_lower]),
-                .last = try join(gpa, " ", words[after_lower..]), .jr = "",
+                .first = try join(gpa, " ", words[0..first]),
+                .von = try join(gpa, " ", words[first..after_lower]),
+                .last = try join(gpa, " ", words[after_lower..]),
+                .jr = "",
             };
             return .{ .first = try join(gpa, " ", words[0 .. words.len - 1]), .von = "", .last = words[words.len - 1], .jr = "" };
         }
         return .{
-            .first = parts[parts.len - 1], .von = try join(gpa, " ", words[0..after_lower]),
-            .last = try join(gpa, " ", words[after_lower..]), .jr = if (parts.len == 3) parts[1] else "",
+            .first = parts[parts.len - 1],
+            .von = try join(gpa, " ", words[0..after_lower]),
+            .last = try join(gpa, " ", words[after_lower..]),
+            .jr = if (parts.len == 3) parts[1] else "",
         };
     }
     fn same(a: Person, b: Person) bool {
@@ -240,7 +288,9 @@ const Person = struct {
         const given = if (use_initials) try person.initials(gpa) else try plain(gpa, person.first);
         var result = try person.surname(gpa);
         if (person.first.len != 0) result = if (inverted)
-            try join(gpa, ", ", &.{ result, given }) else try join(gpa, " ", &.{ given, result });
+            try join(gpa, ", ", &.{ result, given })
+        else
+            try join(gpa, " ", &.{ given, result });
         if (person.jr.len != 0) result = try join(gpa, ", ", &.{ result, try plain(gpa, person.jr) });
         return result;
     }
@@ -256,7 +306,9 @@ const NameList = struct {
         for (names, parts[0..names.len]) |*name, part| name.* = try Person.parse(gpa, part);
         return .{ .names = names, .et_al = et_al };
     }
-    fn single(list: NameList) bool { return list.names.len == 1 and !list.et_al; }
+    fn single(list: NameList) bool {
+        return list.names.len == 1 and !list.et_al;
+    }
     fn same(a: NameList, b: NameList) bool {
         if (a.et_al != b.et_al or a.names.len != b.names.len) return false;
         for (a.names, b.names) |left, right| if (!left.same(right)) return false;
@@ -264,15 +316,11 @@ const NameList = struct {
     }
     fn authors(list: NameList, gpa: Allocator, style: Style) Allocator.Error![]const u8 {
         const values = try gpa.alloc([]const u8, list.names.len);
-        for (list.names, 0..) |name, i| values[i] = try name.notation(gpa,
-            style == .APA or style != .IEEE and i == 0, style == .APA or style == .IEEE);
+        for (list.names, 0..) |name, i| values[i] = try name.notation(gpa, style == .APA or style != .IEEE and i == 0, style == .APA or style == .IEEE);
         return switch (style) {
-            .APA => if (list.et_al) format(gpa, "{s}, et al.", .{try join(gpa, ", ", values)})
-                else if (values.len > 20) format(gpa, "{s}, . . . {s}", .{ try join(gpa, ", ", values[0..19]), values[values.len - 1] })
-                else listNames(gpa, values, "&", false),
+            .APA => if (list.et_al) format(gpa, "{s}, et al.", .{try join(gpa, ", ", values)}) else if (values.len > 20) format(gpa, "{s}, . . . {s}", .{ try join(gpa, ", ", values[0..19]), values[values.len - 1] }) else listNames(gpa, values, "&", false),
             .IEEE => if (list.et_al or values.len >= 7) format(gpa, "{s} et al.", .{values[0]}) else listNames(gpa, values, "and", true),
-            .CHICAGO => if (list.et_al or values.len >= 11) format(gpa, "{s}, et al.", .{try join(gpa, ", ", values[0..@min(7, values.len)])})
-                else listNames(gpa, values, "and", false),
+            .CHICAGO => if (list.et_al or values.len >= 11) format(gpa, "{s}, et al.", .{try join(gpa, ", ", values[0..@min(7, values.len)])}) else listNames(gpa, values, "and", false),
             .MLA => if (list.et_al or values.len >= 3) format(gpa, "{s}, et al.", .{values[0]}) else listNames(gpa, values, "and", false),
         };
     }
@@ -298,15 +346,27 @@ const Entry = struct {
     sort_title: []const u8,
     suffix: u8 = 0,
 
-    fn primary(entry: Entry) NameList { return entry.authors orelse entry.editors.?; }
-    fn has(entry: Entry, name: []const u8) bool { return findField(entry.fields, name) != null; }
-    fn raw(entry: Entry, name: []const u8) []const u8 { return if (findField(entry.fields, name)) |field| field.raw else ""; }
-    fn value(entry: Entry, name: []const u8) []const u8 { return if (findField(entry.fields, name)) |field| field.value else ""; }
+    fn primary(entry: Entry) NameList {
+        return entry.authors orelse entry.editors.?;
+    }
+    fn has(entry: Entry, name: []const u8) bool {
+        return findField(entry.fields, name) != null;
+    }
+    fn raw(entry: Entry, name: []const u8) []const u8 {
+        return if (findField(entry.fields, name)) |field| field.raw else "";
+    }
+    fn value(entry: Entry, name: []const u8) []const u8 {
+        return if (findField(entry.fields, name)) |field| field.value else "";
+    }
     fn year(entry: Entry, gpa: Allocator, style: Style) Allocator.Error![]const u8 {
         return if ((style == .APA or style == .CHICAGO) and entry.suffix != 0)
-            format(gpa, "{s}{c}", .{ entry.value("year"), entry.suffix }) else entry.value("year");
+            format(gpa, "{s}{c}", .{ entry.value("year"), entry.suffix })
+        else
+            entry.value("year");
     }
-    fn keyLess(_: void, a: *Entry, b: *Entry) bool { return less({}, a.key, b.key); }
+    fn keyLess(_: void, a: *Entry, b: *Entry) bool {
+        return less({}, a.key, b.key);
+    }
     fn titleLess(_: void, a: *Entry, b: *Entry) bool {
         const order = std.mem.order(u8, a.sort_title, b.sort_title);
         return if (order == .eq) keyLess({}, a, b) else order == .lt;
@@ -404,8 +464,13 @@ const Database = struct {
         }
         const entry = try db.gpa.create(Entry);
         entry.* = .{
-            .key = key, .kind = kind, .fields = fields.items, .authors = authors, .editors = editors,
-            .sort_last = try lower(db.gpa, try plain(db.gpa, primary.names[0].last)), .sort_title = sort_title,
+            .key = key,
+            .kind = kind,
+            .fields = fields.items,
+            .authors = authors,
+            .editors = editors,
+            .sort_last = try lower(db.gpa, try plain(db.gpa, primary.names[0].last)),
+            .sort_title = sort_title,
         };
         try db.entries.append(db.gpa, entry);
         try db.by_key.put(db.gpa, key, entry);
@@ -494,8 +559,12 @@ const templates = [4][6][]const u8{
 const Part = union(enum) { literal: u8, field: Placeholder, optional: []const Part };
 const Values = struct {
     items: [21][]const u8 = @splat(""),
-    fn set(values: *Values, name: Placeholder, text: []const u8) void { values.items[@intFromEnum(name)] = text; }
-    fn get(values: Values, name: Placeholder) []const u8 { return values.items[@intFromEnum(name)]; }
+    fn set(values: *Values, name: Placeholder, text: []const u8) void {
+        values.items[@backingInt(name)] = text;
+    }
+    fn get(values: Values, name: Placeholder) []const u8 {
+        return values.items[@backingInt(name)];
+    }
 };
 const ReferenceFormatter = struct {
     parsed: [4][6][]const Part,
@@ -537,15 +606,20 @@ const ReferenceFormatter = struct {
         if (entry.authors != null) return "";
         const single = entry.primary().single();
         return switch (style) {
-            .APA => if (single) " (Ed.)" else " (Eds.)", .IEEE => if (single) ", Ed." else ", Eds.",
-            .CHICAGO => if (single) ", ed." else ", eds.", .MLA => if (single) ", editor" else ", editors",
+            .APA => if (single) " (Ed.)" else " (Eds.)",
+            .IEEE => if (single) ", Ed." else ", Eds.",
+            .CHICAGO => if (single) ", ed." else ", eds.",
+            .MLA => if (single) ", editor" else ", editors",
         };
     }
     fn edition(gpa: Allocator, text: []const u8) Allocator.Error![]const u8 {
         if (!digits(text)) return format(gpa, "{s} ed.", .{text});
         const number = integer(text);
         const suffix: []const u8 = if (number % 100 >= 11 and number % 100 <= 13) "th" else switch (number % 10) {
-            1 => "st", 2 => "nd", 3 => "rd", else => "th",
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            else => "th",
         };
         return format(gpa, "{s}{s} ed.", .{ text, suffix });
     }
@@ -588,7 +662,10 @@ const ReferenceFormatter = struct {
                 .optional => |children| {
                     var visible = true;
                     for (children) |child| {
-                        const empty = switch (child) { .field => |name| fields.get(name).len == 0, else => false };
+                        const empty = switch (child) {
+                            .field => |name| fields.get(name).len == 0,
+                            else => false,
+                        };
                         if (empty) {
                             visible = false;
                             break;
@@ -607,9 +684,14 @@ const ReferenceFormatter = struct {
         var result: Text = .{ .gpa = gpa };
         if (style == .IEEE) try result.add(try format(gpa, "[{d}] ", .{number}));
         const kind: usize = switch (entry.kind) {
-            .article => 0, .book => 1, .inproceedings, .incollection => 2, .techreport => 3, .phdthesis => 4, .misc => 5,
+            .article => 0,
+            .book => 1,
+            .inproceedings, .incollection => 2,
+            .techreport => 3,
+            .phdthesis => 4,
+            .misc => 5,
         };
-        try render(&result, formatter.parsed[@intFromEnum(style)][kind], try values(gpa, entry, style, repeated));
+        try render(&result, formatter.parsed[@backingInt(style)][kind], try values(gpa, entry, style, repeated));
         return result.result();
     }
 };
@@ -648,7 +730,9 @@ fn shortName(gpa: Allocator, entry: Entry, style: Style, parenthetical: bool) Al
         else => unreachable,
     };
 }
-fn numberLess(_: void, a: usize, b: usize) bool { return a < b; }
+fn numberLess(_: void, a: usize, b: usize) bool {
+    return a < b;
+}
 fn numberRanges(gpa: Allocator, numbers: []usize) Allocator.Error![]const u8 {
     std.sort.heap(usize, numbers, {}, numberLess);
     var parts: std.ArrayList([]const u8) = .empty;
@@ -669,7 +753,9 @@ fn citationText(gpa: Allocator, citation: Citation, style: Style, order: []const
     var parts: std.ArrayList([]const u8) = .empty;
     if (citation.kind == .citeauthor or citation.kind == .citeyear) {
         for (citation.entries) |entry| try parts.append(gpa, if (citation.kind == .citeauthor)
-            try shortName(gpa, entry.*, style, false) else try entry.year(gpa, style));
+            try shortName(gpa, entry.*, style, false)
+        else
+            try entry.year(gpa, style));
         return join(gpa, if (citation.kind == .citeauthor) "; " else ", ", parts.items);
     }
     const parenthetical = citation.kind != .citet;
@@ -701,7 +787,8 @@ fn citationText(gpa: Allocator, citation: Citation, style: Style, order: []const
         const year_text = try join(gpa, ", ", years.items);
         try parts.append(gpa, if (parenthetical)
             try format(gpa, "{s}{s}{s}", .{ name, @as([]const u8, if (style == .APA) ", " else " "), year_text })
-            else try format(gpa, "{s} ({s})", .{ name, year_text }));
+        else
+            try format(gpa, "{s} ({s})", .{ name, year_text }));
         i = end;
     }
     const text = try join(gpa, "; ", parts.items);
@@ -774,7 +861,10 @@ const Session = struct {
                 if (!seen) try entries.append(session.gpa, entry);
             }
             try citations.append(session.gpa, .{
-                .start = start, .end = end + 1, .kind = std.meta.stringToEnum(CitationKind, text[start + 1 .. brace]).?, .entries = entries.items,
+                .start = start,
+                .end = end + 1,
+                .kind = std.meta.stringToEnum(CitationKind, text[start + 1 .. brace]).?,
+                .entries = entries.items,
             });
             position = end + 1;
         }
@@ -937,7 +1027,9 @@ const Session = struct {
             while (tokens.next()) |word| try words.append(session.gpa, word);
         }
         const expected: usize = switch (command) {
-            .FORMAT, .CITE, .SEARCH => 2, .BIBLIOGRAPHY, .EXPORT => 1, .KEYGEN, .CHECK, .STATS => 0,
+            .FORMAT, .CITE, .SEARCH => 2,
+            .BIBLIOGRAPHY, .EXPORT => 1,
+            .KEYGEN, .CHECK, .STATS => 0,
         };
         const arguments = words.items[1..];
         if (if (command == .FORMAT) arguments.len < expected else arguments.len != expected)

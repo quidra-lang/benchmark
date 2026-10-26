@@ -1,14 +1,14 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
-const Error = error{ BadCommand } || Allocator.Error || std.Io.Writer.Error;
+const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 fn integer(text: []const u8) i64 {
     return std.fmt.parseInt(i64, text, 10) catch unreachable;
 }
 
 fn amount(text: []const u8) i64 {
     const dot = std.mem.findScalar(u8, text, '.').?;
-    return integer(text[0..dot]) * 100 + integer(text[dot + 1..]);
+    return integer(text[0..dot]) * 100 + integer(text[dot + 1 ..]);
 }
 
 fn money(gpa: Allocator, n: i64) Allocator.Error![]const u8 {
@@ -35,8 +35,7 @@ fn normalizeISBN(gpa: Allocator, token: []const u8) (error{InvalidISBN} || Alloc
             return error.InvalidISBN;
         var total: i64 = 0;
         for (s[0..10], 0..) |ch, i|
-            total += @as(i64, @intCast(10 - i)) * @as(i64, if (ch == 'X') 10 else
-                ch - '0');
+            total += @as(i64, @intCast(10 - i)) * @as(i64, if (ch == 'X') 10 else ch - '0');
         if (@mod(total, 11) != 0)
             return error.InvalidISBN;
         const result = try gpa.alloc(u8, 13);
@@ -44,8 +43,7 @@ fn normalizeISBN(gpa: Allocator, token: []const u8) (error{InvalidISBN} || Alloc
         @memcpy(result[3..12], s[0..9]);
         var sum: usize = 0;
         for (result[0..12], 0..) |ch, i|
-            sum += @as(usize, if (i % 2 == 0) 1 else
-                3) * (ch - '0');
+            sum += @as(usize, if (i % 2 == 0) 1 else 3) * (ch - '0');
         result[12] = @as(u8, @intCast((10 - sum % 10) % 10)) + '0';
         return result;
     }
@@ -62,24 +60,11 @@ fn normalizeISBN(gpa: Allocator, token: []const u8) (error{InvalidISBN} || Alloc
     return error.InvalidISBN;
 }
 
-const MemberType = enum {
-    STUDENT,
-    STAFF
-};
+const MemberType = enum { STUDENT, STAFF };
 
-const ChargeKind = enum {
-    FINE,
-    FEE,
-    PRICE
-};
+const ChargeKind = enum { FINE, FEE, PRICE };
 
-const Charge = struct {
-    day: i64,
-    kind: ChargeKind,
-    isbn: []const u8,
-    value: i64,
-    unpaid: i64
-};
+const Charge = struct { day: i64, kind: ChargeKind, isbn: []const u8, value: i64, unpaid: i64 };
 
 const Member = struct {
     id: []const u8,
@@ -124,13 +109,7 @@ const Member = struct {
     }
 };
 
-const CopyState = enum {
-    AVAILABLE,
-    LOANED,
-    HOLD,
-    LOST,
-    WITHDRAWN
-};
+const CopyState = enum { AVAILABLE, LOANED, HOLD, LOST, WITHDRAWN };
 
 const Title = struct {
     isbn: []const u8,
@@ -166,10 +145,7 @@ const Copy = struct {
     expiry: i64 = 0,
 };
 
-const LoanEnd = struct {
-    late: i64,
-    fine: i64
-};
+const LoanEnd = struct { late: i64, fine: i64 };
 
 fn titleCopy(m: *Member, t: *Title, state: CopyState) ?*Copy {
     for (t.copies.items) |c| {
@@ -194,7 +170,7 @@ const Library = struct {
     waived: i64 = 0,
     error_message: []const u8 = "",
 
-    fn fail(self: *Library, message: []const u8) error{ BadCommand } {
+    fn fail(self: *Library, message: []const u8) error{BadCommand} {
         self.error_message = message;
         return error.BadCommand;
     }
@@ -267,14 +243,8 @@ const Library = struct {
     fn addCharge(self: *Library, m: *Member, t: *Title, kind: ChargeKind, value: i64) Allocator.Error!void {
         if (value == 0)
             return;
-        try m.items.append(self.gpa, .{
-            .day = self.day,
-            .kind = kind,
-            .isbn = t.isbn,
-            .value = value,
-            .unpaid = value
-        });
-        self.charged[@intFromEnum(kind)] += value;
+        try m.items.append(self.gpa, .{ .day = self.day, .kind = kind, .isbn = t.isbn, .value = value, .unpaid = value });
+        self.charged[@backingInt(kind)] += value;
     }
 
     fn release(self: *Library, c: *Copy, out: *std.Io.Writer) Error!void {
@@ -295,16 +265,7 @@ const Library = struct {
         const late = self.daysLate(c);
         const value = self.lateFine(c);
         try self.addCharge(m, c.title, .FINE, value);
-        try m.history.append(self.gpa, try std.fmt.allocPrint(self.gpa, "{s} {s} copy {d} from {d} to {d} late {d} fine {s}",
-            .{
-            result,
-            c.title.isbn,
-            c.number,
-            c.loan_day,
-            self.day,
-            late,
-            try money(self.gpa, value)
-        }));
+        try m.history.append(self.gpa, try std.fmt.allocPrint(self.gpa, "{s} {s} copy {d} from {d} to {d} late {d} fine {s}", .{ result, c.title.isbn, c.number, c.loan_day, self.day, late, try money(self.gpa, value) }));
         c.state = .AVAILABLE;
         c.member = null;
         return .{ .late = late, .fine = value };
@@ -315,21 +276,11 @@ const Library = struct {
         const t = c.title;
         const result = try self.endLoan(c, "LOST");
         const last = m.history.items.len - 1;
-        m.history.items[last] = try std.fmt.allocPrint(self.gpa, "{s} price {s}", .{ m.history.items[last],
-            try money(self.gpa, t.price) });
+        m.history.items[last] = try std.fmt.allocPrint(self.gpa, "{s} price {s}", .{ m.history.items[last], try money(self.gpa, t.price) });
         try self.addCharge(m, t, .PRICE, t.price);
         c.state = .LOST;
         self.lost += 1;
-        try out.print("{s} {s} {s} copy {d} late {d} fine {s} price {s} balance {s}\n", .{
-            heading,
-            m.id,
-            t.isbn,
-            c.number,
-            result.late,
-            try money(self.gpa, result.fine),
-            try money(self.gpa, t.price),
-            try money(self.gpa, m.balance())
-        });
+        try out.print("{s} {s} {s} copy {d} late {d} fine {s} price {s} balance {s}\n", .{ heading, m.id, t.isbn, c.number, result.late, try money(self.gpa, result.fine), try money(self.gpa, t.price), try money(self.gpa, m.balance()) });
         if (t.holdings() == 0) {
             for (t.queue.items) |member|
                 try out.print("DROPPED {s} {s}\n", .{ t.isbn, member.id });
@@ -351,8 +302,7 @@ const Library = struct {
         c.due = self.openDay(self.day + c.member.?.period());
         c.renewals += 1;
         self.renewed += 1;
-        try out.print("RENEW {s} {s} copy {d} due {d} renewals {d}\n", .{ c.member.?.id, c.title.isbn,
-            c.number, c.due, c.renewals });
+        try out.print("RENEW {s} {s} copy {d} due {d} renewals {d}\n", .{ c.member.?.id, c.title.isbn, c.number, c.due, c.renewals });
     }
 
     fn execute(self: *Library, line: []const u8, out: *std.Io.Writer) Error!void {
@@ -365,7 +315,7 @@ const Library = struct {
             const ordered_titles = try self.titlesSorted();
             const loan_order = try self.copiesInState(.LOANED, null);
             std.mem.sort(*Copy, loan_order, {}, automaticLess);
-            try out.print("DAY {d}\n", .{ target });
+            try out.print("DAY {d}\n", .{target});
             while (self.day < target) {
                 self.day += 1;
                 var automatic: std.ArrayList(*Copy) = .empty;
@@ -383,8 +333,7 @@ const Library = struct {
                 for (expired.items) |c| {
                     const m = c.member.?;
                     try self.addCharge(m, c.title, .FEE, m.fee());
-                    try out.print("EXPIRED {s} copy {d} {s} fee {s}\n", .{ c.title.isbn, c.number, m.id, try money(self.gpa,
-                        m.fee()) });
+                    try out.print("EXPIRED {s} copy {d} {s} fee {s}\n", .{ c.title.isbn, c.number, m.id, try money(self.gpa, m.fee()) });
                     try self.release(c, out);
                 }
             }
@@ -395,7 +344,7 @@ const Library = struct {
             if (self.closed.contains(target))
                 return self.fail("already closed");
             try self.closed.put(self.gpa, target, {});
-            try out.print("CLOSED {d}\n", .{ target });
+            try out.print("CLOSED {d}\n", .{target});
             for (try self.titlesSorted()) |t| for (t.copies.items) |c| {
                 if (c.state == .LOANED and c.due == target) {
                     c.due = self.openDay(target);
@@ -415,14 +364,9 @@ const Library = struct {
             }
             const t = existing orelse blk: {
                 const title = try self.gpa.create(Title);
-                title.* = .{
-                    .isbn = isbn,
-                    .name = name,
-                    .folded = try std.ascii.allocLowerString(self.gpa, name),
-                    .price = amount(a[3])
-                };
+                title.* = .{ .isbn = isbn, .name = name, .folded = try std.ascii.allocLowerString(self.gpa, name), .price = amount(a[3]) };
                 try self.titles.put(self.gpa, isbn, title);
-                break: blk title;
+                break :blk title;
             };
             t.price = amount(a[3]);
             const count: usize = @intCast(integer(a[2]));
@@ -442,8 +386,7 @@ const Library = struct {
             const m = try self.gpa.create(Member);
             m.* = .{ .id = a[1], .kind = kind, .name = try std.mem.join(self.gpa, " ", a[3..]) };
             try self.members.put(self.gpa, m.id, m);
-            try out.print("ADDMEMBER {s} {s} loans {d} days {d}\n", .{ m.id, @tagName(m.kind), m.loanLimit(),
-                m.period() });
+            try out.print("ADDMEMBER {s} {s} loans {d} days {d}\n", .{ m.id, @tagName(m.kind), m.loanLimit(), m.period() });
         } else if (std.mem.eql(u8, op, "WITHDRAW")) {
             const t = try self.findTitle(a[1]);
             const n = integer(a[2]);
@@ -454,8 +397,7 @@ const Library = struct {
                 return self.fail("copy not available");
             c.state = .WITHDRAWN;
             try out.print("WITHDRAW {s} copy {d} total {d}\n", .{ t.isbn, n, t.holdings() });
-        } else if (std.mem.eql(u8, op, "BORROW") or std.mem.eql(u8, op, "RETURN") or std.mem.eql(u8, op, "RENEW") or std.mem.eql(u8, op, "RESERVE") or std.mem.eql(u8, op,
-            "CANCEL") or std.mem.eql(u8, op, "LOST")) {
+        } else if (std.mem.eql(u8, op, "BORROW") or std.mem.eql(u8, op, "RETURN") or std.mem.eql(u8, op, "RENEW") or std.mem.eql(u8, op, "RESERVE") or std.mem.eql(u8, op, "CANCEL") or std.mem.eql(u8, op, "LOST")) {
             const m = try self.findMember(a[1]);
             const t = try self.findTitle(a[2]);
             const current = titleCopy(m, t, .LOANED);
@@ -493,19 +435,13 @@ const Library = struct {
             } else if (std.mem.eql(u8, op, "RETURN") or std.mem.eql(u8, op, "LOST")) {
                 const c = current orelse return self.fail("not borrowed");
                 if (std.mem.eql(u8, op, "LOST"))
-                    try self.processLoss(c, "LOST", out) else {
-                        const result = try self.endLoan(c, "RETURNED");
-                        self.returned += 1;
-                        try out.print("RETURN {s} {s} copy {d} late {d} fine {s} balance {s}\n", .{
-                            m.id,
-                            t.isbn,
-                            c.number,
-                            result.late,
-                            try money(self.gpa, result.fine),
-                            try money(self.gpa, m.balance())
-                        });
-                        try self.release(c, out);
-                    }
+                    try self.processLoss(c, "LOST", out)
+                else {
+                    const result = try self.endLoan(c, "RETURNED");
+                    self.returned += 1;
+                    try out.print("RETURN {s} {s} copy {d} late {d} fine {s} balance {s}\n", .{ m.id, t.isbn, c.number, result.late, try money(self.gpa, result.fine), try money(self.gpa, m.balance()) });
+                    try self.release(c, out);
+                }
             } else if (std.mem.eql(u8, op, "RENEW")) {
                 const c = current orelse return self.fail("not borrowed");
                 if (m.blocked())
@@ -536,8 +472,9 @@ const Library = struct {
                 std.mem.sort(i64, due.items, {}, std.sort.asc(i64));
                 try out.print("RESERVE {s} {s} position {d} estimate ", .{ m.id, t.isbn, p });
                 if (p <= due.items.len)
-                    try out.print("{d}\n", .{ due.items[p - 1] }) else
-                        try out.writeAll("none\n");
+                    try out.print("{d}\n", .{due.items[p - 1]})
+                else
+                    try out.writeAll("none\n");
             } else {
                 const queued = std.mem.findScalar(*Member, t.queue.items, m);
                 if (queued == null and held == null)
@@ -575,10 +512,7 @@ const Library = struct {
             const m = try self.findMember(a[1]);
             if (m.balance() == 0)
                 return self.fail("no fines");
-            const Applied = struct {
-                item: usize,
-                value: i64
-            };
+            const Applied = struct { item: usize, value: i64 };
             var applied: std.ArrayList(Applied) = .empty;
             const total = amount(a[2]);
             var remaining = total;
@@ -593,20 +527,10 @@ const Library = struct {
                 try applied.append(self.gpa, .{ .item = i, .value = value });
             }
             self.paid += total - remaining;
-            try out.print("PAYFINE {s} paid {s} change {s} balance {s}\n", .{
-                m.id,
-                try money(self.gpa, total - remaining),
-                try money(self.gpa, remaining),
-                try money(self.gpa, m.balance())
-            });
+            try out.print("PAYFINE {s} paid {s} change {s} balance {s}\n", .{ m.id, try money(self.gpa, total - remaining), try money(self.gpa, remaining), try money(self.gpa, m.balance()) });
             for (applied.items) |entry| {
                 const item = m.items.items[entry.item];
-                try out.print("ITEM {d} {s} paid {s} remaining {s}\n", .{
-                    entry.item + 1,
-                    @tagName(item.kind),
-                    try money(self.gpa, entry.value),
-                    try money(self.gpa, item.unpaid)
-                });
+                try out.print("ITEM {d} {s} paid {s} remaining {s}\n", .{ entry.item + 1, @tagName(item.kind), try money(self.gpa, entry.value), try money(self.gpa, item.unpaid) });
             }
         } else if (std.mem.eql(u8, op, "WAIVE")) {
             const m = try self.findMember(a[1]);
@@ -619,13 +543,7 @@ const Library = struct {
             const value = item.unpaid;
             item.unpaid = 0;
             self.waived += value;
-            try out.print("WAIVE {s} item {d} {s} amount {s} balance {s}\n", .{
-                m.id,
-                n,
-                @tagName(item.kind),
-                try money(self.gpa, value),
-                try money(self.gpa, m.balance())
-            });
+            try out.print("WAIVE {s} item {d} {s} amount {s} balance {s}\n", .{ m.id, n, @tagName(item.kind), try money(self.gpa, value), try money(self.gpa, m.balance()) });
         } else if (std.mem.eql(u8, op, "FINES")) {
             const m = try self.findMember(a[1]);
             var count: usize = 0;
@@ -636,14 +554,7 @@ const Library = struct {
             try out.print("FINES {s} items {d} balance {s}\n", .{ m.id, count, try money(self.gpa, m.balance()) });
             for (m.items.items, 0..) |item, i| {
                 if (item.unpaid > 0)
-                    try out.print("{d} day {d} {s} {s} amount {s} remaining {s}\n", .{
-                        i + 1,
-                        item.day,
-                        @tagName(item.kind),
-                        item.isbn,
-                        try money(self.gpa, item.value),
-                        try money(self.gpa, item.unpaid)
-                    });
+                    try out.print("{d} day {d} {s} {s} amount {s} remaining {s}\n", .{ i + 1, item.day, @tagName(item.kind), item.isbn, try money(self.gpa, item.value), try money(self.gpa, item.unpaid) });
             }
         } else if (std.mem.eql(u8, op, "SEARCH")) {
             const keyword = try std.ascii.allocLowerString(self.gpa, try std.mem.join(self.gpa, " ", a[1..]));
@@ -653,7 +564,7 @@ const Library = struct {
                     try selected.append(self.gpa, t);
             }
             std.mem.sort(*Title, selected.items, {}, searchLess);
-            try out.print("SEARCH {d}\n", .{ selected.items.len });
+            try out.print("SEARCH {d}\n", .{selected.items.len});
             for (selected.items) |t|
                 try out.print("{s} {d}/{d} {s}\n", .{ t.isbn, t.countState(.AVAILABLE), t.holdings(), t.name });
         } else if (std.mem.eql(u8, op, "OVERDUE")) {
@@ -663,16 +574,9 @@ const Library = struct {
                     try copies.append(self.gpa, c);
             }
             std.mem.sort(*Copy, copies.items, {}, overdueLess);
-            try out.print("OVERDUE {d}\n", .{ copies.items.len });
+            try out.print("OVERDUE {d}\n", .{copies.items.len});
             for (copies.items) |c|
-                try out.print("{s} {s} copy {d} due {d} late {d} fine {s}\n", .{
-                    c.member.?.id,
-                    c.title.isbn,
-                    c.number,
-                    c.due,
-                    self.daysLate(c),
-                    try money(self.gpa, self.lateFine(c))
-                });
+                try out.print("{s} {s} copy {d} due {d} late {d} fine {s}\n", .{ c.member.?.id, c.title.isbn, c.number, c.due, self.daysLate(c), try money(self.gpa, self.lateFine(c)) });
         } else if (std.mem.eql(u8, op, "NOTICES")) {
             var lines: std.ArrayList([]const u8) = .empty;
             for (try self.membersSorted()) |m| {
@@ -680,55 +584,34 @@ const Library = struct {
                 std.mem.sort(*Copy, loans, false, dueLess);
                 for (loans) |c| {
                     if (c.due < self.day)
-                        try lines.append(self.gpa, try std.fmt.allocPrint(self.gpa, "OVERDUE {s} {s} due {d}", .{ m.id,
-                            c.title.isbn, c.due }));
+                        try lines.append(self.gpa, try std.fmt.allocPrint(self.gpa, "OVERDUE {s} {s} due {d}", .{ m.id, c.title.isbn, c.due }));
                 }
                 for (loans) |c| {
                     if (c.due >= self.day and c.due <= self.day + 2)
-                        try lines.append(self.gpa, try std.fmt.allocPrint(self.gpa, "DUESOON {s} {s} due {d}", .{ m.id,
-                            c.title.isbn, c.due }));
+                        try lines.append(self.gpa, try std.fmt.allocPrint(self.gpa, "DUESOON {s} {s} due {d}", .{ m.id, c.title.isbn, c.due }));
                 }
                 const holds = try self.copiesInState(.HOLD, m);
                 std.mem.sort(*Copy, holds, true, dueLess);
                 for (holds) |c|
-                    try lines.append(self.gpa, try std.fmt.allocPrint(self.gpa, "PICKUP {s} {s} until {d}", .{ m.id,
-                        c.title.isbn, c.expiry }));
+                    try lines.append(self.gpa, try std.fmt.allocPrint(self.gpa, "PICKUP {s} {s} until {d}", .{ m.id, c.title.isbn, c.expiry }));
             }
-            try out.print("NOTICES {d}\n", .{ lines.items.len });
+            try out.print("NOTICES {d}\n", .{lines.items.len});
             for (lines.items) |text|
-                try out.print("{s}\n", .{ text });
+                try out.print("{s}\n", .{text});
         } else if (std.mem.eql(u8, op, "MEMBER") or std.mem.eql(u8, op, "MEMBERS")) {
             const single = std.mem.eql(u8, op, "MEMBER");
-            const ms = if (single) try self.gpa.dupe(*Member, &.{ try self.findMember(a[1]) }) else try self.membersSorted();
+            const ms = if (single) try self.gpa.dupe(*Member, &.{try self.findMember(a[1])}) else try self.membersSorted();
             if (!single)
-                try out.print("MEMBERS {d}\n", .{ ms.len });
+                try out.print("MEMBERS {d}\n", .{ms.len});
             for (ms) |m| {
                 const loans = try self.copiesInState(.LOANED, m);
                 std.mem.sort(*Copy, loans, false, dueLess);
                 const status: []const u8 = if (m.blocked()) "BLOCKED" else "OK";
                 if (!single) {
-                    try out.print("{s} {s} loans {d} reservations {d} balance {s} {s}\n", .{
-                        m.id,
-                        @tagName(m.kind),
-                        loans.len,
-                        self.reservations(m),
-                        try money(self.gpa, m.balance()),
-                        status
-                    });
+                    try out.print("{s} {s} loans {d} reservations {d} balance {s} {s}\n", .{ m.id, @tagName(m.kind), loans.len, self.reservations(m), try money(self.gpa, m.balance()), status });
                     continue;
                 }
-                try out.print("MEMBER {s} {s} {s}\nSTATUS loans {d}/{d} reservations {d}/{d} balance {s} {s}\n",
-                    .{
-                    m.id,
-                    @tagName(m.kind),
-                    m.name,
-                    loans.len,
-                    m.loanLimit(),
-                    self.reservations(m),
-                    m.reservationLimit(),
-                    try money(self.gpa, m.balance()),
-                    status
-                });
+                try out.print("MEMBER {s} {s} {s}\nSTATUS loans {d}/{d} reservations {d}/{d} balance {s} {s}\n", .{ m.id, @tagName(m.kind), m.name, loans.len, m.loanLimit(), self.reservations(m), m.reservationLimit(), try money(self.gpa, m.balance()), status });
                 for (loans) |c| {
                     try out.print("LOAN {s} copy {d} due {d} renewals {d}", .{ c.title.isbn, c.number, c.due, c.renewals });
                     if (c.due < self.day)
@@ -746,78 +629,38 @@ const Library = struct {
             }
         } else if (std.mem.eql(u8, op, "BOOK")) {
             const t = try self.findTitle(a[1]);
-            try out.print("BOOK {s} {s}\nPRICE {s} copies {d} borrowed {d}\n", .{
-                t.isbn,
-                t.name,
-                try money(self.gpa, t.price),
-                t.holdings(),
-                t.borrowed
-            });
+            try out.print("BOOK {s} {s}\nPRICE {s} copies {d} borrowed {d}\n", .{ t.isbn, t.name, try money(self.gpa, t.price), t.holdings(), t.borrowed });
             for (t.copies.items) |c| {
                 try out.print("COPY {d} {s}", .{ c.number, @tagName(c.state) });
                 if (c.state == .LOANED)
-                    try out.print(" {s} due {d}", .{ c.member.?.id, c.due }) else if (c.state == .HOLD) try out.print(" {s} until {d}",
-                        .{ c.member.?.id, c.expiry });
+                    try out.print(" {s} due {d}", .{ c.member.?.id, c.due })
+                else if (c.state == .HOLD) try out.print(" {s} until {d}", .{ c.member.?.id, c.expiry });
                 try out.writeByte('\n');
             }
-            try out.print("QUEUE {d}", .{ t.queue.items.len });
+            try out.print("QUEUE {d}", .{t.queue.items.len});
             for (t.queue.items) |m|
-                try out.print(" {s}", .{ m.id });
+                try out.print(" {s}", .{m.id});
             try out.writeByte('\n');
         } else if (std.mem.eql(u8, op, "INVENTORY")) {
             var counts = [_]usize{ 0, 0, 0, 0, 0 };
             for (self.titles.values()) |t| for (t.copies.items) |c| {
-                counts[@intFromEnum(c.state)] += 1;
+                counts[@backingInt(c.state)] += 1;
             };
-            try out.print("INVENTORY titles {d} copies {d} available {d} loaned {d} hold {d} lost {d} withdrawn {d}\n",
-                .{
-                self.titles.values().len,
-                counts[0] + counts[1] + counts[2],
-                counts[0],
-                counts[1],
-                counts[2],
-                counts[3],
-                counts[4]
-            });
+            try out.print("INVENTORY titles {d} copies {d} available {d} loaned {d} hold {d} lost {d} withdrawn {d}\n", .{ self.titles.values().len, counts[0] + counts[1] + counts[2], counts[0], counts[1], counts[2], counts[3], counts[4] });
             for (try self.titlesSorted()) |t|
-                try out.print("{s} copies {d} available {d} loaned {d} hold {d} queue {d}\n", .{
-                    t.isbn,
-                    t.holdings(),
-                    t.countState(.AVAILABLE),
-                    t.countState(.LOANED),
-                    t.countState(.HOLD),
-                    t.queue.items.len
-                });
+                try out.print("{s} copies {d} available {d} loaned {d} hold {d} queue {d}\n", .{ t.isbn, t.holdings(), t.countState(.AVAILABLE), t.countState(.LOANED), t.countState(.HOLD), t.queue.items.len });
         } else if (std.mem.eql(u8, op, "HISTORY")) {
             const m = try self.findMember(a[1]);
             try out.print("HISTORY {s} {d}\n", .{ m.id, m.history.items.len });
             for (m.history.items) |text|
-                try out.print("{s}\n", .{ text });
+                try out.print("{s}\n", .{text});
         } else if (std.mem.eql(u8, op, "STATS")) {
-            try out.print("STATS day {d} titles {d} members {d} closed {d}\n", .{
-                self.day,
-                self.titles.values().len,
-                self.members.values().len,
-                self.closed.count()
-            });
-            try out.print("LOANS borrowed {d} returned {d} renewed {d} lost {d} active {d}\n", .{
-                self.borrowed,
-                self.returned,
-                self.renewed,
-                self.lost,
-                (try self.copiesInState(.LOANED, null)).len
-            });
+            try out.print("STATS day {d} titles {d} members {d} closed {d}\n", .{ self.day, self.titles.values().len, self.members.values().len, self.closed.count() });
+            try out.print("LOANS borrowed {d} returned {d} renewed {d} lost {d} active {d}\n", .{ self.borrowed, self.returned, self.renewed, self.lost, (try self.copiesInState(.LOANED, null)).len });
             var outstanding: i64 = 0;
             for (self.members.values()) |m|
                 outstanding += m.balance();
-            try out.print("MONEY fines {s} fees {s} charges {s} paid {s} waived {s} outstanding {s}\n", .{
-                try money(self.gpa, self.charged[0]),
-                try money(self.gpa, self.charged[1]),
-                try money(self.gpa, self.charged[2]),
-                try money(self.gpa, self.paid),
-                try money(self.gpa, self.waived),
-                try money(self.gpa, outstanding)
-            });
+            try out.print("MONEY fines {s} fees {s} charges {s} paid {s} waived {s} outstanding {s}\n", .{ try money(self.gpa, self.charged[0]), try money(self.gpa, self.charged[1]), try money(self.gpa, self.charged[2]), try money(self.gpa, self.paid), try money(self.gpa, self.waived), try money(self.gpa, outstanding) });
             var top: std.ArrayList(*Title) = .empty;
             for (try self.titlesSorted()) |t| {
                 if (t.borrowed > 0)
@@ -874,7 +717,7 @@ pub fn main(init: std.process.Init) !void {
         var draft: std.Io.Writer.Allocating = .init(gpa);
         library.execute(line, &draft.writer) catch |err| {
             if (err == error.BadCommand) {
-                try output.interface.print("ERROR {s}\n", .{ library.error_message });
+                try output.interface.print("ERROR {s}\n", .{library.error_message});
                 continue;
             }
             return err;

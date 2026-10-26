@@ -2,24 +2,81 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const CommandError = error{
-    MissingDelimiter, BadAddress, UnknownCommand, InvalidSuffix, InvalidMark, InvalidDestination,
-    InvalidGlobalCommand, InvalidFileName, UnexpectedAddress, TooManyAddresses, AddressOutOfRange,
-    InvalidRange, NoMatch, NoPreviousPattern, NoPreviousSubstitution, MarkNotSet, NothingToUndo,
-    NothingToRedo, NothingToPut, NoSuchFile, LineTooLong, BadLine, BufferFull,
+    MissingDelimiter,
+    BadAddress,
+    UnknownCommand,
+    InvalidSuffix,
+    InvalidMark,
+    InvalidDestination,
+    InvalidGlobalCommand,
+    InvalidFileName,
+    UnexpectedAddress,
+    TooManyAddresses,
+    AddressOutOfRange,
+    InvalidRange,
+    NoMatch,
+    NoPreviousPattern,
+    NoPreviousSubstitution,
+    MarkNotSet,
+    NothingToUndo,
+    NothingToRedo,
+    NothingToPut,
+    NoSuchFile,
+    LineTooLong,
+    BadLine,
+    BufferFull,
 };
 const ParseError = CommandError || Allocator.Error;
 const Error = ParseError || Writer.Error;
 const ElementKind = enum { number, offset, current, last, mark, forward, backward, separator, all };
 const Kind = enum {
-    empty, append, insert, change, print, numbered, listed, number, count, yank, marks, history, files,
-    delete, put, join, join_spaced, window, indent, unindent, undo, redo, change_case, read, write,
-    write_append, edit, write_print, mark, move, copy, sort, substitute, global, inverse_global,
+    empty,
+    append,
+    insert,
+    change,
+    print,
+    numbered,
+    listed,
+    number,
+    count,
+    yank,
+    marks,
+    history,
+    files,
+    delete,
+    put,
+    join,
+    join_spaced,
+    window,
+    indent,
+    unindent,
+    undo,
+    redo,
+    change_case,
+    read,
+    write,
+    write_append,
+    edit,
+    write_print,
+    mark,
+    move,
+    copy,
+    sort,
+    substitute,
+    global,
+    inverse_global,
 
     fn noAddress(kind: Kind) bool {
-        return switch (kind) { .undo, .redo, .history, .marks, .files, .edit => true, else => false };
+        return switch (kind) {
+            .undo, .redo, .history, .marks, .files, .edit => true,
+            else => false,
+        };
     }
     fn oneAddress(kind: Kind) bool {
-        return switch (kind) { .append, .insert, .put, .number, .read, .mark, .window => true, else => false };
+        return switch (kind) {
+            .append, .insert, .put, .number, .read, .mark, .window => true,
+            else => false,
+        };
     }
 };
 const Element = struct { kind: ElementKind, value: i64 = 0, symbol: u8 = 0, text: []const u8 = "" };
@@ -27,7 +84,9 @@ const Address = struct {
     left: []const Element,
     right: ?[]const Element = null,
     separator: u8 = 0,
-    fn count(address: Address) usize { return if (address.right != null) 2 else if (address.left.len == 0) 0 else 1; }
+    fn count(address: Address) usize {
+        return if (address.right != null) 2 else if (address.left.len == 0) 0 else 1;
+    }
 };
 const Delimited = struct { text: []const u8, replacement: []const ?u8, raw: []const u8 };
 const Command = struct {
@@ -44,25 +103,36 @@ const Command = struct {
     subcommand: ?*const Command = null,
     fn modifies(command: Command) bool {
         return switch (command.kind) {
-            .append, .insert, .change, .delete, .put, .join, .join_spaced, .move, .copy, .substitute,
-            .indent, .unindent, .change_case, .sort, .read, .edit => true,
+            .append, .insert, .change, .delete, .put, .join, .join_spaced, .move, .copy, .substitute, .indent, .unindent, .change_case, .sort, .read, .edit => true,
             .global, .inverse_global => command.subcommand.?.modifies(),
             else => false,
         };
     }
 };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn digit(c: u8) bool { return c >= '0' and c <= '9'; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn digit(c: u8) bool {
+    return c >= '0' and c <= '9';
+}
 fn digits(text: []const u8) bool {
     if (text.len == 0) return false;
     for (text) |c| if (!digit(c)) return false;
     return true;
 }
-fn number(text: []const u8) usize { return std.fmt.parseInt(usize, text, 10) catch unreachable; }
-fn printSuffix(c: u8) bool { return c == 'p' or c == 'n' or c == 'l'; }
-fn sortForm(text: []const u8) bool { return equal(text, "sort") or std.mem.startsWith(u8, text, "sort "); }
-fn line(out: *Writer, comptime format: []const u8, args: anytype) Writer.Error!void { try out.print(format ++ "\n", args); }
+fn number(text: []const u8) usize {
+    return std.fmt.parseInt(usize, text, 10) catch unreachable;
+}
+fn printSuffix(c: u8) bool {
+    return c == 'p' or c == 'n' or c == 'l';
+}
+fn sortForm(text: []const u8) bool {
+    return equal(text, "sort") or std.mem.startsWith(u8, text, "sort ");
+}
+fn line(out: *Writer, comptime format: []const u8, args: anytype) Writer.Error!void {
+    try out.print(format ++ "\n", args);
+}
 
 const Parser = struct {
     gpa: Allocator,
@@ -118,7 +188,11 @@ const Parser = struct {
                 element = .{ .kind = if (c == '/') .forward else .backward, .text = (try parser.delimited(c)).text };
             } else {
                 const kind: ElementKind = switch (c) {
-                    '.' => .current, '$' => .last, ',', ';' => .separator, '%' => .all, else => break,
+                    '.' => .current,
+                    '$' => .last,
+                    ',', ';' => .separator,
+                    '%' => .all,
+                    else => break,
                 };
                 element = .{ .kind = kind, .symbol = c };
                 parser.position += 1;
@@ -174,7 +248,10 @@ fn fileName(argument: []const u8) CommandError![]const u8 {
 fn substitution(gpa: Allocator, argument: []const u8) ParseError!Command {
     var command: Command = .{ .kind = .substitute, .count = 1 };
     var repeated = true;
-    for (argument) |c| if (c != 'g' and !printSuffix(c) and !digit(c)) { repeated = false; break; };
+    for (argument) |c| if (c != 'g' and !printSuffix(c) and !digit(c)) {
+        repeated = false;
+        break;
+    };
     var flags = argument;
     if (!repeated) {
         const delimiter = argument[0];
@@ -218,8 +295,19 @@ fn parseCommand(gpa: Allocator, text: []const u8) ParseError!Command {
     const first: u8 = if (text.len == 0) 0 else text[0];
     const argument = if (text.len == 0) "" else text[1..];
     const plain: ?Kind = switch (first) {
-        0 => .empty, 'a' => .append, 'i' => .insert, 'c' => .change, 'p' => .print, 'n' => .numbered,
-        'l' => .listed, '=' => .number, '#' => .count, 'y' => .yank, 'K' => .marks, 'h' => .history, 'f' => .files,
+        0 => .empty,
+        'a' => .append,
+        'i' => .insert,
+        'c' => .change,
+        'p' => .print,
+        'n' => .numbered,
+        'l' => .listed,
+        '=' => .number,
+        '#' => .count,
+        'y' => .yank,
+        'K' => .marks,
+        'h' => .history,
+        'f' => .files,
         else => null,
     };
     if (plain) |kind| {
@@ -228,19 +316,28 @@ fn parseCommand(gpa: Allocator, text: []const u8) ParseError!Command {
     }
     switch (first) {
         'd', 'x', 'j', 'J' => return .{
-            .kind = switch (first) { 'd' => .delete, 'x' => .put, 'j' => .join, else => .join_spaced },
+            .kind = switch (first) {
+                'd' => .delete,
+                'x' => .put,
+                'j' => .join,
+                else => .join_spaced,
+            },
             .suffix = try suffix(argument),
         },
         'z', '>', '<', 'u' => return .{
-            .kind = switch (first) { 'z' => .window, '>' => .indent, '<' => .unindent, else => .undo },
+            .kind = switch (first) {
+                'z' => .window,
+                '>' => .indent,
+                '<' => .unindent,
+                else => .undo,
+            },
             .count = try optionalCount(argument),
         },
         '~' => {
             if (argument.len != 0 and !equal(argument, "u") and !equal(argument, "l")) return error.InvalidSuffix;
             return .{ .kind = .change_case, .case_mode = if (argument.len == 0) 0 else argument[0] };
         },
-        'r' => return if (argument.len == 0 or digits(argument)) .{ .kind = .redo, .count = try optionalCount(argument) }
-            else .{ .kind = .read, .name = try fileName(argument) },
+        'r' => return if (argument.len == 0 or digits(argument)) .{ .kind = .redo, .count = try optionalCount(argument) } else .{ .kind = .read, .name = try fileName(argument) },
         'w' => return if (argument.len == 0) .{ .kind = .write_print } else .{ .kind = .write, .name = try fileName(argument) },
         'W', 'e' => return .{ .kind = if (first == 'W') .write_append else .edit, .name = try fileName(argument) },
         'k' => {
@@ -268,15 +365,23 @@ fn parseCommand(gpa: Allocator, text: []const u8) ParseError!Command {
     }
 }
 
-fn textCommand(text: []const u8) bool { return equal(text, "a") or equal(text, "i") or equal(text, "c"); }
+fn textCommand(text: []const u8) bool {
+    return equal(text, "a") or equal(text, "i") or equal(text, "c");
+}
 fn hasText(gpa: Allocator, text: []const u8) ParseError!bool {
     var parser: Parser = .{ .gpa = gpa, .text = text };
-    _ = parser.scan() catch |err| { if (err == error.MissingDelimiter) return false; return err; };
+    _ = parser.scan() catch |err| {
+        if (err == error.MissingDelimiter) return false;
+        return err;
+    };
     const command = text[parser.position..];
     if (textCommand(command)) return true;
     if (command.len < 2 or (command[0] != 'g' and command[0] != 'v') or command[1] == ' ' or command[1] == '\\') return false;
     parser = .{ .gpa = gpa, .text = command, .position = 2 };
-    _ = parser.delimited(command[1]) catch |err| { if (err == error.MissingDelimiter) return false; return err; };
+    _ = parser.delimited(command[1]) catch |err| {
+        if (err == error.MissingDelimiter) return false;
+        return err;
+    };
     return textCommand(command[parser.position..]);
 }
 
@@ -291,7 +396,9 @@ const FileData = struct {
 const File = struct {
     name: []const u8,
     data: *const FileData,
-    fn lessThan(_: void, a: File, b: File) bool { return std.mem.order(u8, a.name, b.name) == .lt; }
+    fn lessThan(_: void, a: File, b: File) bool {
+        return std.mem.order(u8, a.name, b.name) == .lt;
+    }
 };
 const State = struct {
     lines: []const Line = &.{},
@@ -401,15 +508,13 @@ const Editor = struct {
 
     fn evaluateAddress(editor: *Editor, address: Address) CommandError!Values {
         if (address.count() == 0) return .{};
-        const left = if (address.left.len != 0) try editor.evaluate(address.left)
-            else if (address.separator == ',') @as(i64, 1) else @as(i64, @intCast(editor.state.current));
+        const left = if (address.left.len != 0) try editor.evaluate(address.left) else if (address.separator == ',') @as(i64, 1) else @as(i64, @intCast(editor.state.current));
         if (address.count() == 1) return .{ .items = .{ left, left }, .count = 1 };
         if (address.separator == ';') {
             if (left < 0 or left > editor.buffer.items.len) return error.AddressOutOfRange;
             editor.state.current = @intCast(left);
         }
-        const right = if (address.right.?.len == 0) @as(i64, @intCast(editor.buffer.items.len))
-            else try editor.evaluate(address.right.?);
+        const right = if (address.right.?.len == 0) @as(i64, @intCast(editor.buffer.items.len)) else try editor.evaluate(address.right.?);
         return .{ .items = .{ left, right }, .count = 2 };
     }
 
@@ -420,7 +525,9 @@ const Editor = struct {
         if (kind.noAddress()) return .{ .first = 0, .last = 0 };
         if (kind.oneAddress()) {
             const a = if (addresses.count != 0) addresses.items[0] else switch (kind) {
-                .number, .read => size, .window => current + 1, else => current,
+                .number, .read => size,
+                .window => current + 1,
+                else => current,
             };
             const minimum: i64 = if (kind == .mark or kind == .window) 1 else 0;
             if (a < minimum or a > size) return error.AddressOutOfRange;
@@ -433,9 +540,18 @@ const Editor = struct {
             b = addresses.items[addresses.count - 1];
         } else switch (kind) {
             .write_print, .write, .write_append, .count => return .{ .first = 1, .last = editor.buffer.items.len },
-            .global, .inverse_global, .sort => { a = 1; b = size; },
-            .join, .join_spaced => { a = current; b = current + 1; },
-            else => { a = current; b = current; },
+            .global, .inverse_global, .sort => {
+                a = 1;
+                b = size;
+            },
+            .join, .join_spaced => {
+                a = current;
+                b = current + 1;
+            },
+            else => {
+                a = current;
+                b = current;
+            },
         }
         if (a < 1 or b < 1 or a > size or b > size) return error.AddressOutOfRange;
         if (a > b or a == b and (kind == .join or kind == .join_spaced)) return error.InvalidRange;
@@ -467,7 +583,10 @@ const Editor = struct {
         for (text) |c| {
             escaped[length] = c;
             length += 1;
-            if (c == '\\') { escaped[length] = c; length += 1; }
+            if (c == '\\') {
+                escaped[length] = c;
+                length += 1;
+            }
         }
         escaped[length] = '$';
         length += 1;
@@ -536,7 +655,7 @@ const Editor = struct {
             if (part) |c| try expanded.writer.writeByte(c) else try expanded.writer.writeAll(search);
         }
         var substituted: usize = 0;
-        for (bounds.first - 1 .. bounds.last) |index| {
+        for (bounds.first - 1..bounds.last) |index| {
             const original = editor.buffer.items[index].text;
             var result: Writer.Allocating = .init(editor.gpa);
             var position: usize = 0;
@@ -545,7 +664,9 @@ const Editor = struct {
                 try result.writer.writeAll(original[position..match]);
                 occurrences += 1;
                 try result.writer.writeAll(if (occurrences == command.count or command.all and occurrences >= command.count)
-                    expanded.written() else search);
+                    expanded.written()
+                else
+                    search);
                 position = match + search.len;
             }
             if (occurrences < command.count) continue;
@@ -568,16 +689,18 @@ const Editor = struct {
         if (command.kind == .write or command.kind == .write_append) {
             const text = try editor.contents(editor.storage, bounds);
             const previous: ?*const FileData = if (command.kind == .write_append and index != null)
-                editor.state.files.items[index.?].data else null;
+                editor.state.files.items[index.?].data
+            else
+                null;
             const created = try editor.storage.create(FileData);
             created.* = .{
-                .previous = previous, .lines = text,
+                .previous = previous,
+                .lines = text,
                 .count = text.len + (if (previous) |old| old.count else 0),
                 .bytes = bytes(text) + (if (previous) |old| old.bytes else 0),
             };
             data = created;
-            if (index) |i| editor.state.files.items[i].data = data
-            else try editor.state.files.append(editor.gpa, .{ .name = command.name, .data = data });
+            if (index) |i| editor.state.files.items[i].data = data else try editor.state.files.append(editor.gpa, .{ .name = command.name, .data = data });
         } else {
             data = editor.state.files.items[index orelse return error.NoSuchFile].data;
             var chunks: std.ArrayList(*const FileData) = .empty;
@@ -608,7 +731,10 @@ const Editor = struct {
         const state = editor.state;
         const out = editor.out;
         switch (kind) {
-            .empty => { try editor.printLine(b, 'p'); state.current = b; },
+            .empty => {
+                try editor.printLine(b, 'p');
+                state.current = b;
+            },
             .print, .numbered, .listed => {
                 const form: u8 = if (kind == .print) 'p' else if (kind == .numbered) 'n' else 'l';
                 for (a..b + 1) |i| try editor.printLine(i, form);
@@ -644,8 +770,7 @@ const Editor = struct {
             .change, .delete => {
                 state.cut = try editor.contents(editor.storage, bounds);
                 try editor.buffer.replaceRange(editor.gpa, a - 1, b - a + 1, &.{});
-                if (kind == .change and text.len != 0) try editor.insert(a - 1, text)
-                else state.current = @min(a, editor.buffer.items.len);
+                if (kind == .change and text.len != 0) try editor.insert(a - 1, text) else state.current = @min(a, editor.buffer.items.len);
             },
             .yank => state.cut = try editor.contents(editor.storage, bounds),
             .put => {
@@ -691,9 +816,7 @@ const Editor = struct {
                         item.text = item.text[removed..];
                     } else {
                         const changed = try editor.storage.dupe(u8, item.text);
-                        for (changed) |*c| c.* = if (command.case_mode == 'u') std.ascii.toUpper(c.*)
-                            else if (command.case_mode == 'l') std.ascii.toLower(c.*)
-                            else if (c.* >= 'A' and c.* <= 'Z') c.* + 32 else if (c.* >= 'a' and c.* <= 'z') c.* - 32 else c.*;
+                        for (changed) |*c| c.* = if (command.case_mode == 'u') std.ascii.toUpper(c.*) else if (command.case_mode == 'l') std.ascii.toLower(c.*) else if (c.* >= 'A' and c.* <= 'Z') c.* + 32 else if (c.* >= 'a' and c.* <= 'z') c.* - 32 else c.*;
                         item.text = changed;
                     }
                 }
@@ -757,17 +880,29 @@ fn bytes(text: []const []const u8) usize {
 
 fn errorReason(err: anyerror) ?[]const u8 {
     return switch (err) {
-        error.MissingDelimiter => "missing delimiter", error.BadAddress => "bad address",
-        error.UnknownCommand => "unknown command", error.InvalidSuffix => "invalid suffix",
-        error.InvalidMark => "invalid mark", error.InvalidDestination => "invalid destination",
-        error.InvalidGlobalCommand => "invalid global command", error.InvalidFileName => "invalid file name",
-        error.UnexpectedAddress => "unexpected address", error.TooManyAddresses => "too many addresses",
-        error.AddressOutOfRange => "address out of range", error.InvalidRange => "invalid range",
-        error.NoMatch => "no match", error.NoPreviousPattern => "no previous pattern",
-        error.NoPreviousSubstitution => "no previous substitution", error.MarkNotSet => "mark not set",
-        error.NothingToUndo => "nothing to undo", error.NothingToRedo => "nothing to redo",
-        error.NothingToPut => "nothing to put", error.NoSuchFile => "no such file",
-        error.LineTooLong => "line too long", error.BadLine => "bad line", error.BufferFull => "buffer full",
+        error.MissingDelimiter => "missing delimiter",
+        error.BadAddress => "bad address",
+        error.UnknownCommand => "unknown command",
+        error.InvalidSuffix => "invalid suffix",
+        error.InvalidMark => "invalid mark",
+        error.InvalidDestination => "invalid destination",
+        error.InvalidGlobalCommand => "invalid global command",
+        error.InvalidFileName => "invalid file name",
+        error.UnexpectedAddress => "unexpected address",
+        error.TooManyAddresses => "too many addresses",
+        error.AddressOutOfRange => "address out of range",
+        error.InvalidRange => "invalid range",
+        error.NoMatch => "no match",
+        error.NoPreviousPattern => "no previous pattern",
+        error.NoPreviousSubstitution => "no previous substitution",
+        error.MarkNotSet => "mark not set",
+        error.NothingToUndo => "nothing to undo",
+        error.NothingToRedo => "nothing to redo",
+        error.NothingToPut => "nothing to put",
+        error.NoSuchFile => "no such file",
+        error.LineTooLong => "line too long",
+        error.BadLine => "bad line",
+        error.BufferFull => "buffer full",
         else => null,
     };
 }
@@ -809,7 +944,11 @@ pub fn main(init: std.process.Init) !void {
         var next = try state.copy(gpa);
         var response: Writer.Allocating = .init(gpa);
         var editor: Editor = .{
-            .gpa = gpa, .storage = storage.allocator(), .state = &next, .stable = state.lines, .out = &response.writer,
+            .gpa = gpa,
+            .storage = storage.allocator(),
+            .state = &next,
+            .stable = state.lines,
+            .out = &response.writer,
         };
         try editor.buffer.appendSlice(gpa, state.lines);
         editor.process(command, text.items, state) catch |err| {

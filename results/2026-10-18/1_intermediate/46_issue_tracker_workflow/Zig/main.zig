@@ -10,9 +10,15 @@ const Phase = enum { PLANNED, ACTIVE, ENDED };
 const Field = enum { id, kind, status, priority, assignee, reviewer, estimate, sprint, comments, blocked, done, title };
 const Operation = enum { eq, ne, lt, le, gt, ge, contains };
 
-fn equal(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
-fn number(text: Text) u32 { return std.fmt.parseInt(u32, text, 10) catch unreachable; }
-fn line(out: *Writer, comptime format: Text, arguments: anytype) Writer.Error!void { try out.print(format ++ "\n", arguments); }
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn number(text: Text) u32 {
+    return std.fmt.parseInt(u32, text, 10) catch unreachable;
+}
+fn line(out: *Writer, comptime format: Text, arguments: anytype) Writer.Error!void {
+    try out.print(format ++ "\n", arguments);
+}
 fn lower(gpa: Allocator, text: Text) Allocator.Error!Text {
     const result = try gpa.dupe(u8, text);
     for (result) |*character| character.* = std.ascii.toLower(character.*);
@@ -50,8 +56,12 @@ const Issue = struct {
     duplicate: ?usize = null,
     history: std.ArrayList(Text) = .empty,
 
-    fn done(issue: Issue) bool { return issue.state == .RESOLVED or issue.state == .CLOSED or issue.state == .DONE; }
-    fn points(issue: Issue) u32 { return issue.estimate orelse 0; }
+    fn done(issue: Issue) bool {
+        return issue.state == .RESOLVED or issue.state == .CLOSED or issue.state == .DONE;
+    }
+    fn points(issue: Issue) u32 {
+        return issue.estimate orelse 0;
+    }
 };
 
 const Sprint = struct {
@@ -86,15 +96,21 @@ const Tracker = struct {
         for (tracker.sprints.items, 0..) |sprint, index| if (equal(sprint.name, name)) return index;
         return null;
     }
-    fn lessIssue(tracker: *const Tracker, a: usize, b: usize) bool { return tracker.issues.items[a].number < tracker.issues.items[b].number; }
+    fn lessIssue(tracker: *const Tracker, a: usize, b: usize) bool {
+        return tracker.issues.items[a].number < tracker.issues.items[b].number;
+    }
     fn ordered(tracker: *const Tracker) [100]usize {
         var result: [100]usize = @splat(0);
         for (0..tracker.issues.items.len) |index| result[index] = index;
         std.sort.heap(usize, result[0..tracker.issues.items.len], tracker, lessIssue);
         return result;
     }
-    fn assigneeName(tracker: *const Tracker, user: ?usize) Text { return if (user) |index| tracker.users.items[index] else "-"; }
-    fn sprintName(tracker: *const Tracker, sprint: ?usize) Text { return if (sprint) |index| tracker.sprints.items[index].name else "-"; }
+    fn assigneeName(tracker: *const Tracker, user: ?usize) Text {
+        return if (user) |index| tracker.users.items[index] else "-";
+    }
+    fn sprintName(tracker: *const Tracker, sprint: ?usize) Text {
+        return if (sprint) |index| tracker.sprints.items[index].name else "-";
+    }
     fn unfinishedBlocker(tracker: *const Tracker, target: usize) ?usize {
         var best: ?usize = null;
         for (tracker.issues.items, 0..) |issue, index| {
@@ -103,7 +119,9 @@ const Tracker = struct {
         }
         return best;
     }
-    fn blocked(tracker: *const Tracker, index: usize) bool { return !tracker.issues.items[index].done() and tracker.unfinishedBlocker(index) != null; }
+    fn blocked(tracker: *const Tracker, index: usize) bool {
+        return !tracker.issues.items[index].done() and tracker.unfinishedBlocker(index) != null;
+    }
     fn wip(tracker: *const Tracker, user: ?usize) usize {
         var count: usize = 0;
         for (tracker.issues.items) |issue| {
@@ -151,14 +169,20 @@ fn compareNumber(actual: ?u32, operation: Operation, expected: ?u32) bool {
     if (operation == .ne) return actual != expected;
     const left = actual orelse return false;
     const right = expected.?;
-    return switch (operation) { .lt => left < right, .le => left <= right, .gt => left > right, .ge => left >= right, else => unreachable };
+    return switch (operation) {
+        .lt => left < right,
+        .le => left <= right,
+        .gt => left > right,
+        .ge => left >= right,
+        else => unreachable,
+    };
 }
 
 fn conditionMatches(tracker: *const Tracker, index: usize, condition: Condition) bool {
     const issue = tracker.issues.items[index];
     const actual_number: ?u32 = switch (condition.field) {
         .id => issue.number,
-        .priority => @intFromEnum(issue.priority),
+        .priority => @backingInt(issue.priority),
         .estimate => issue.estimate,
         .comments => issue.comments,
         else => null,
@@ -172,7 +196,10 @@ fn conditionMatches(tracker: *const Tracker, index: usize, condition: Condition)
         for (0..issue.title.len - condition.value.len + 1) |offset| {
             var match = true;
             for (condition.value, 0..) |character, position| {
-                if (std.ascii.toLower(issue.title[offset + position]) != character) { match = false; break; }
+                if (std.ascii.toLower(issue.title[offset + position]) != character) {
+                    match = false;
+                    break;
+                }
             }
             if (match) return true;
         }
@@ -234,13 +261,20 @@ const Session = struct {
     out: *Writer,
     problem: Text = "",
 
-    fn fail(session: *Session, message: Text) error{Invalid} { session.problem = message; return error.Invalid; }
+    fn fail(session: *Session, message: Text) error{Invalid} {
+        session.problem = message;
+        return error.Invalid;
+    }
     fn failFormat(session: *Session, comptime format: Text, arguments: anytype) Error {
         const text = std.fmt.allocPrint(session.tracker.gpa, format, arguments) catch return error.OutOfMemory;
         return session.fail(text);
     }
-    fn requireIssue(session: *Session, text: Text) Error!usize { return session.tracker.issueIndex(number(text)) orelse return session.fail("unknown issue"); }
-    fn requireSprint(session: *Session, text: Text) Error!usize { return session.tracker.sprintIndex(text) orelse return session.fail("unknown sprint"); }
+    fn requireIssue(session: *Session, text: Text) Error!usize {
+        return session.tracker.issueIndex(number(text)) orelse return session.fail("unknown issue");
+    }
+    fn requireSprint(session: *Session, text: Text) Error!usize {
+        return session.tracker.sprintIndex(text) orelse return session.fail("unknown sprint");
+    }
     fn requireUser(session: *Session, text: Text) Error!?usize {
         if (equal(text, "-")) return null;
         return session.tracker.userIndex(text) orelse return session.fail("unknown user");
@@ -299,7 +333,10 @@ const Session = struct {
         const operations = [_]Operation{ .ge, .le, .ne, .eq, .lt, .gt, .contains };
         var operator_index: ?usize = null;
         for (operators, 0..) |candidate, index| {
-            if (std.mem.startsWith(u8, rest, candidate)) { operator_index = index; break; }
+            if (std.mem.startsWith(u8, rest, candidate)) {
+                operator_index = index;
+                break;
+            }
         }
         const selected = operator_index orelse return session.failFormat("syntax near {s}", .{token});
         const value = rest[operators[selected].len..];
@@ -315,24 +352,36 @@ const Session = struct {
         if (field == .id or field == .estimate or field == .comments) {
             var valid = value.len >= 1 and value.len <= 6;
             for (value) |character| valid = valid and std.ascii.isDigit(character);
-            if (valid) { result.expected = number(value); return result; }
+            if (valid) {
+                result.expected = number(value);
+                return result;
+            }
         }
         if (field == .priority) {
-            if (std.meta.stringToEnum(Priority, value)) |priority| { result.expected = @intFromEnum(priority); return result; }
+            if (std.meta.stringToEnum(Priority, value)) |priority| {
+                result.expected = @backingInt(priority);
+                return result;
+            }
         }
         if ((field == .kind and std.meta.stringToEnum(Kind, value) != null) or
             (field == .status and std.meta.stringToEnum(State, value) != null) or
             ((field == .assignee or field == .reviewer) and session.tracker.userIndex(value) != null) or
             (field == .sprint and session.tracker.sprintIndex(value) != null) or
             ((field == .blocked or field == .done) and (equal(value, "yes") or equal(value, "no")))) return result;
-        if (field == .title) { result.value = try lower(session.tracker.gpa, value); return result; }
+        if (field == .title) {
+            result.value = try lower(session.tracker.gpa, value);
+            return result;
+        }
         return session.failFormat("bad value {s}", .{token});
     }
     fn checkQuery(session: *Session, text: Text) Error!Query {
         var query: Query = .{};
         var position: usize = 0;
         while (position < text.len) {
-            if (text[position] == ' ') { position += 1; continue; }
+            if (text[position] == ' ') {
+                position += 1;
+                continue;
+            }
             const start = position;
             if (text[position] == '(' or text[position] == ')') position += 1 else {
                 while (position < text.len and text[position] != ' ' and text[position] != '(' and text[position] != ')') : (position += 1) {}
@@ -344,12 +393,11 @@ const Session = struct {
         var depth: usize = 0;
         for (query.tokens[0..query.count], 0..) |token, index| {
             if (operand) {
-                if (equal(token, "(")) depth += 1
-                else if (equal(token, "AND") or equal(token, "OR") or equal(token, ")")) return session.failFormat("syntax near {s}", .{token})
-                else if (!equal(token, "NOT")) { query.conditions[index] = try session.checkCondition(token); operand = false; }
-            } else if (equal(token, "AND") or equal(token, "OR")) operand = true
-            else if (equal(token, ")") and depth > 0) depth -= 1
-            else return session.failFormat("syntax near {s}", .{token});
+                if (equal(token, "(")) depth += 1 else if (equal(token, "AND") or equal(token, "OR") or equal(token, ")")) return session.failFormat("syntax near {s}", .{token}) else if (!equal(token, "NOT")) {
+                    query.conditions[index] = try session.checkCondition(token);
+                    operand = false;
+                }
+            } else if (equal(token, "AND") or equal(token, "OR")) operand = true else if (equal(token, ")") and depth > 0) depth -= 1 else return session.failFormat("syntax near {s}", .{token});
         }
         if (operand or depth != 0) return session.fail("syntax at end");
         return query;
@@ -364,9 +412,12 @@ const Session = struct {
         while (rank > 0) {
             rank -= 1;
             for (ids[0..tracker.issues.items.len]) |index| {
-                if (@intFromEnum(tracker.issues.items[index].priority) != rank) continue;
+                if (@backingInt(tracker.issues.items[index].priority) != rank) continue;
                 var parser: Parser = .{ .tracker = tracker, .query = &parsed, .issue = index };
-                if (parser.expression()) { matches[count] = index; count += 1; }
+                if (parser.expression()) {
+                    matches[count] = index;
+                    count += 1;
+                }
             }
         }
         try line(session.out, "QUERY {d}", .{count});
@@ -400,7 +451,11 @@ const Session = struct {
         } else if (equal(command, "WORKLOAD")) {
             var users: [20]Text = undefined;
             @memcpy(users[0..tracker.users.items.len], tracker.users.items);
-            std.sort.heap(Text, users[0..tracker.users.items.len], {}, struct { fn less(_: void, a: Text, b: Text) bool { return std.mem.order(u8, a, b) == .lt; } }.less);
+            std.sort.heap(Text, users[0..tracker.users.items.len], {}, struct {
+                fn less(_: void, a: Text, b: Text) bool {
+                    return std.mem.order(u8, a, b) == .lt;
+                }
+            }.less);
             try line(session.out, "WORKLOAD {d}", .{tracker.users.items.len});
             for (users[0..tracker.users.items.len]) |user| {
                 const index = tracker.userIndex(user).?;
@@ -411,7 +466,8 @@ const Session = struct {
                 var total: u32 = 0;
                 for (tracker.issues.items) |issue| {
                     if (issue.assignee == index and !issue.done()) {
-                        assigned += 1; total += issue.points();
+                        assigned += 1;
+                        total += issue.points();
                         if (issue.state == .IN_PROGRESS) progressing += 1;
                         if (issue.state == .REVIEW) review += 1;
                     }
@@ -457,10 +513,14 @@ const Session = struct {
             try session.out.writeAll("PLAN estimate ");
             try session.printOptional(issue.estimate);
             try line(session.out, " sprint {s} comments {d}", .{ tracker.sprintName(issue.sprint), issue.comments });
-            try session.out.writeAll("LINKS blocks "); try session.printLinks(index, .blocks);
-            try session.out.writeAll(" blocked_by "); try session.printLinks(index, .blockers);
-            try session.out.writeAll(" duplicate_of "); try session.printOptional(if (issue.duplicate) |target| tracker.issues.items[target].number else null);
-            try session.out.writeAll(" duplicated_by "); try session.printLinks(index, .duplicates);
+            try session.out.writeAll("LINKS blocks ");
+            try session.printLinks(index, .blocks);
+            try session.out.writeAll(" blocked_by ");
+            try session.printLinks(index, .blockers);
+            try session.out.writeAll(" duplicate_of ");
+            try session.printOptional(if (issue.duplicate) |target| tracker.issues.items[target].number else null);
+            try session.out.writeAll(" duplicated_by ");
+            try session.printLinks(index, .duplicates);
             try session.out.writeByte('\n');
         }
     }
@@ -499,14 +559,17 @@ const Session = struct {
             if (tracker.active()) |active| return session.failFormat("sprint active {s}", .{tracker.sprints.items[active].name});
             const summary = tracker.summary(index);
             if (summary.count == 0) return session.fail("sprint empty");
-            sprint.phase = .ACTIVE; sprint.start = tracker.day; sprint.records[tracker.day] = summary.remaining;
+            sprint.phase = .ACTIVE;
+            sprint.start = tracker.day;
+            sprint.records[tracker.day] = summary.remaining;
             try line(session.out, "SPRINT START {s} day {d} issues {d} points {d} remaining {d}", .{ name, tracker.day, summary.count, summary.total, summary.remaining });
         } else {
             if (sprint.phase != .ACTIVE) return session.fail("sprint not active");
             const summary = tracker.summary(index);
             sprint.records[tracker.day] = summary.remaining;
             sprint.velocity = summary.total - summary.remaining;
-            sprint.phase = .ENDED; sprint.end = tracker.day;
+            sprint.phase = .ENDED;
+            sprint.end = tracker.day;
             try line(session.out, "SPRINT END {s} day {d} velocity {d} done {d} returned {d}", .{ name, tracker.day, sprint.velocity, summary.done, summary.count - summary.done });
             const ids = tracker.ordered();
             for (ids[0..tracker.issues.items.len]) |issue_index| {

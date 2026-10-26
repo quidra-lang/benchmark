@@ -510,10 +510,16 @@ fn emphasis(gpa: Allocator, pieces: []const Piece) Allocator.Error!Text {
         }
         if (closer) |close| {
             const opening: Text = if (piece.delimiter == '~') "<del>" else switch (piece.length) {
-                1 => "<em>", 2 => "<strong>", 3 => "<em><strong>", else => unreachable,
+                1 => "<em>",
+                2 => "<strong>",
+                3 => "<em><strong>",
+                else => unreachable,
             };
             const closing: Text = if (piece.delimiter == '~') "</del>" else switch (piece.length) {
-                1 => "</em>", 2 => "</strong>", 3 => "</strong></em>", else => unreachable,
+                1 => "</em>",
+                2 => "</strong>",
+                3 => "</strong></em>",
+                else => unreachable,
             };
             try out.add(opening);
             try out.add(try emphasis(gpa, pieces[at + 1 .. close]));
@@ -583,7 +589,8 @@ const Renderer = struct {
                 }
             }
             if (valid and next < text.len and text[next] == ')') return .{
-                .reference = .{ .url = url.text, .title = title }, .end = next + 1,
+                .reference = .{ .url = url.text, .title = title },
+                .end = next + 1,
             };
         }
         const reference = self.references.get(try normalize(self.gpa, label)) orelse return null;
@@ -624,8 +631,7 @@ const Renderer = struct {
         const content = try self.inlineHtml(label, false, false);
         var out: Builder = .{ .gpa = self.gpa };
         const url = try escape(self.gpa, dest.reference.url);
-        if (image) try out.print("<img src=\"{s}\" alt=\"{s}\"", .{ url, try stripTags(self.gpa, content) })
-        else try out.print("<a href=\"{s}\"", .{url});
+        if (image) try out.print("<img src=\"{s}\" alt=\"{s}\"", .{ url, try stripTags(self.gpa, content) }) else try out.print("<a href=\"{s}\"", .{url});
         if (dest.reference.title) |title| try out.print(" title=\"{s}\"", .{try escape(self.gpa, title)});
         if (image) try out.add(" />") else try out.print(">{s}</a>", .{content});
         return .{ .html = out.result(), .end = dest.end };
@@ -765,8 +771,7 @@ const Renderer = struct {
             var slug: Builder = .{ .gpa = self.gpa };
             for (text) |character| {
                 const letter = std.ascii.toLower(character);
-                if (labelCharacter(letter)) try slug.byte(letter)
-                else if (contains(whitespace, letter)) try slug.byte('-');
+                if (labelCharacter(letter)) try slug.byte(letter) else if (contains(whitespace, letter)) try slug.byte('-');
             }
             const base: Text = if (slug.result().len == 0) "heading" else slug.result();
             identifier = base;
@@ -884,8 +889,7 @@ const Renderer = struct {
             while (parents.items.len > 0 and self.headings.items[parents.items[parents.items.len - 1]].level >= self.headings.items[index].level) {
                 parents.items.len -= 1;
             }
-            if (parents.items.len == 0) try roots.append(self.gpa, index)
-            else try self.headings.items[parents.items[parents.items.len - 1]].children.append(self.gpa, index);
+            if (parents.items.len == 0) try roots.append(self.gpa, index) else try self.headings.items[parents.items[parents.items.len - 1]].children.append(self.gpa, index);
             try parents.append(self.gpa, index);
         }
         return std.fmt.allocPrint(self.gpa, "<nav class=\"toc\">\n{s}\n</nav>", .{try self.tocList(roots.items)});

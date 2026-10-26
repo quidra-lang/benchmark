@@ -34,14 +34,75 @@ const Value = union(Kind) {
 const Entry = struct { key: Text, value: Value, expiry: ?i64 = null };
 const Snapshot = struct { name: Text, entries: []const Entry };
 const Verb = enum {
-    SET, GET, MSET, MGET, INCR, DECR, INCRBY, DECRBY, APPEND, STRLEN, GETRANGE,
-    LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN, LINDEX, LSET, LREM, LTRIM, LINSERT,
-    HSET, HGET, HDEL, HGETALL, HLEN, HEXISTS, HKEYS, HVALS, HINCRBY,
-    SADD, SREM, SISMEMBER, SMEMBERS, SCARD, SINTER, SUNION, SDIFF,
-    SINTERSTORE, SUNIONSTORE, SDIFFSTORE,
-    ZADD, ZSCORE, ZINCRBY, ZREM, ZCARD, ZRANK, ZRANGE, ZRANGEBYSCORE,
-    DEL, EXISTS, TYPE, RENAME, RENAMENX, KEYS, EXPIRE, TTL, PERSIST, TICK, TIME, DBSIZE, FLUSH, INFO,
-    BEGIN, COMMIT, ROLLBACK, SNAPSHOT, RESTORE,
+    SET,
+    GET,
+    MSET,
+    MGET,
+    INCR,
+    DECR,
+    INCRBY,
+    DECRBY,
+    APPEND,
+    STRLEN,
+    GETRANGE,
+    LPUSH,
+    RPUSH,
+    LPOP,
+    RPOP,
+    LRANGE,
+    LLEN,
+    LINDEX,
+    LSET,
+    LREM,
+    LTRIM,
+    LINSERT,
+    HSET,
+    HGET,
+    HDEL,
+    HGETALL,
+    HLEN,
+    HEXISTS,
+    HKEYS,
+    HVALS,
+    HINCRBY,
+    SADD,
+    SREM,
+    SISMEMBER,
+    SMEMBERS,
+    SCARD,
+    SINTER,
+    SUNION,
+    SDIFF,
+    SINTERSTORE,
+    SUNIONSTORE,
+    SDIFFSTORE,
+    ZADD,
+    ZSCORE,
+    ZINCRBY,
+    ZREM,
+    ZCARD,
+    ZRANK,
+    ZRANGE,
+    ZRANGEBYSCORE,
+    DEL,
+    EXISTS,
+    TYPE,
+    RENAME,
+    RENAMENX,
+    KEYS,
+    EXPIRE,
+    TTL,
+    PERSIST,
+    TICK,
+    TIME,
+    DBSIZE,
+    FLUSH,
+    INFO,
+    BEGIN,
+    COMMIT,
+    ROLLBACK,
+    SNAPSHOT,
+    RESTORE,
 };
 const Group = enum { text, list, hash, set, zset, key, control };
 const Format = struct { group: Group, minimum: usize, maximum: ?usize = null, parity: ?usize = null };
@@ -92,9 +153,15 @@ const syntax_error = "ERR syntax error";
 const positive = "ERR value is out of range, must be positive";
 const no_key = "ERR no such key";
 
-fn equal(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
-fn upper(c: u8) u8 { return if (c >= 'a' and c <= 'z') c - 'a' + 'A' else c; }
-fn lower(c: u8) u8 { return if (c >= 'A' and c <= 'Z') c - 'A' + 'a' else c; }
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn upper(c: u8) u8 {
+    return if (c >= 'a' and c <= 'z') c - 'a' + 'A' else c;
+}
+fn lower(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c - 'A' + 'a' else c;
+}
 fn sameCase(a: Text, b: Text) bool {
     if (a.len != b.len) return false;
     for (a, b) |x, y| if (upper(x) != upper(y)) return false;
@@ -113,8 +180,12 @@ fn copied(comptime T: type, gpa: Allocator, items: []const T) Allocator.Error!st
     try result.appendSlice(gpa, items);
     return result;
 }
-fn lessText(_: void, a: Text, b: Text) bool { return std.mem.order(u8, a, b) == .lt; }
-fn lessField(_: void, a: Field, b: Field) bool { return lessText({}, a.name, b.name); }
+fn lessText(_: void, a: Text, b: Text) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+fn lessField(_: void, a: Field, b: Field) bool {
+    return lessText({}, a.name, b.name);
+}
 fn lessScore(_: void, a: Score, b: Score) bool {
     return if (a.score == b.score) lessText({}, a.name, b.name) else a.score < b.score;
 }
@@ -125,7 +196,9 @@ fn range(length: usize, first: i64, last: i64) Range {
     const stop = @min(n - 1, if (last < 0) last + n else last);
     return if (start <= stop) .{ .start = @intCast(start), .end = @intCast(stop + 1) } else .{ .start = 0, .end = 0 };
 }
-fn line(out: *Writer, comptime fmt: Text, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
+fn line(out: *Writer, comptime fmt: Text, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
 const Quoted = struct {
     text: Text,
     pub fn format(value: Quoted, out: *Writer) Writer.Error!void {
@@ -148,7 +221,10 @@ fn splitArguments(gpa: Allocator, source: Text) Allocator.Error!?[]const Text {
     var words: std.ArrayList(Text) = .empty;
     var position: usize = 0;
     while (position < source.len) {
-        if (source[position] == ' ') { position += 1; continue; }
+        if (source[position] == ' ') {
+            position += 1;
+            continue;
+        }
         if (source[position] != '"') {
             const start = position;
             while (position < source.len and source[position] != ' ') : (position += 1) {}
@@ -161,7 +237,10 @@ fn splitArguments(gpa: Allocator, source: Text) Allocator.Error!?[]const Text {
         while (position < source.len) {
             var c = source[position];
             position += 1;
-            if (c == '"') { closed = true; break; }
+            if (c == '"') {
+                closed = true;
+                break;
+            }
             if (c == '\\') {
                 if (position == source.len or (source[position] != '"' and source[position] != '\\')) return null;
                 c = source[position];
@@ -195,7 +274,10 @@ const Store = struct {
         return true;
     }
     fn put(store: *Store, key: Text, value: Value, expiry: ?i64) Allocator.Error!void {
-        if (value.empty()) { _ = store.remove(key); return; }
+        if (value.empty()) {
+            _ = store.remove(key);
+            return;
+        }
         const entry: Entry = .{ .key = key, .value = try value.retain(store.storage), .expiry = expiry };
         if (store.index(key)) |i| store.entries.items[i] = entry else try store.entries.append(store.storage, entry);
     }
@@ -208,11 +290,16 @@ const Store = struct {
         var removed: usize = 0;
         while (i < store.entries.items.len) {
             const expired = if (store.entries.items[i].expiry) |expiry| expiry <= store.time else false;
-            if (expired) { _ = store.entries.orderedRemove(i); removed += 1; } else i += 1;
+            if (expired) {
+                _ = store.entries.orderedRemove(i);
+                removed += 1;
+            } else i += 1;
         }
         return removed;
     }
-    fn copy(store: *const Store) Allocator.Error![]const Entry { return store.storage.dupe(Entry, store.entries.items); }
+    fn copy(store: *const Store) Allocator.Error![]const Entry {
+        return store.storage.dupe(Entry, store.entries.items);
+    }
     fn restore(store: *Store, entries: []const Entry) Allocator.Error!void {
         store.entries.clearRetainingCapacity();
         try store.entries.appendSlice(store.storage, entries);
@@ -266,7 +353,10 @@ const Session = struct {
     out: *Writer,
     problem: Text = "",
 
-    fn fail(session: *Session, message: Text) error{Invalid} { session.problem = message; return error.Invalid; }
+    fn fail(session: *Session, message: Text) error{Invalid} {
+        session.problem = message;
+        return error.Invalid;
+    }
     fn number(session: *Session, source: Text, message: Text) Error!i64 {
         if (equal(source, "0")) return 0;
         const start: usize = if (source.len != 0 and source[0] == '-') 1 else 0;
@@ -304,7 +394,9 @@ const Session = struct {
     fn readScores(session: *Session, key: Text) Error![]const Score {
         return if (try session.getValue(key, .zset)) |value| value.zset else &.{};
     }
-    fn integerReply(session: *Session, value: anytype) Writer.Error!void { try line(session.out, "(integer) {d}", .{value}); }
+    fn integerReply(session: *Session, value: anytype) Writer.Error!void {
+        try line(session.out, "(integer) {d}", .{value});
+    }
     fn textReply(session: *Session, value: ?Text) Writer.Error!void {
         if (value) |content| try line(session.out, "{f}", .{Quoted{ .text = content }}) else try line(session.out, "(nil)", .{});
     }
@@ -345,7 +437,10 @@ const Session = struct {
                         const last: usize = @max(source[j], source[j + 2]);
                         for (first..last + 1) |code| part.characters[code] = true;
                         j += 3;
-                    } else { part.characters[source[j]] = true; j += 1; }
+                    } else {
+                        part.characters[source[j]] = true;
+                        j += 1;
+                    }
                 }
                 try parts.append(session.gpa, part);
                 i = end;
@@ -378,7 +473,10 @@ const Session = struct {
                 var i: usize = 2;
                 while (i < args.len) : (i += 1) {
                     var selected: ?usize = null;
-                    for (names, 0..) |name, j| if (sameCase(args[i], name)) { selected = j; break; };
+                    for (names, 0..) |name, j| if (sameCase(args[i], name)) {
+                        selected = j;
+                        break;
+                    };
                     const option = selected orelse return session.fail(syntax_error);
                     if (options[option]) return session.fail(syntax_error);
                     options[option] = true;
@@ -503,7 +601,10 @@ const Session = struct {
                 var removed: usize = 0;
                 for (0..values.len) |i| {
                     const at = if (count < 0) values.len - i - 1 else i;
-                    if (equal(values[at], args[2]) and removed < limit) { marked[at] = true; removed += 1; }
+                    if (equal(values[at], args[2]) and removed < limit) {
+                        marked[at] = true;
+                        removed += 1;
+                    }
                 }
                 var kept: std.ArrayList(Text) = .empty;
                 for (values, marked) |value, erase| if (!erase) try kept.append(session.gpa, value);
@@ -563,7 +664,10 @@ const Session = struct {
             .HGET => return session.textReply(if (fieldIndex(Field, fields.items, args[1])) |i| fields.items[i].value else null),
             .HDEL => {
                 var removed: usize = 0;
-                for (args[1..]) |field| if (fieldIndex(Field, fields.items, field)) |i| { _ = fields.orderedRemove(i); removed += 1; };
+                for (args[1..]) |field| if (fieldIndex(Field, fields.items, field)) |i| {
+                    _ = fields.orderedRemove(i);
+                    removed += 1;
+                };
                 try store.update(key, .{ .hash = fields.items });
                 return session.integerReply(removed);
             },
@@ -584,7 +688,12 @@ const Session = struct {
     fn setCommand(session: *Session, verb: Verb, args: []const Text) Error!void {
         const store = session.store;
         const storing = verb == .SINTERSTORE or verb == .SUNIONSTORE or verb == .SDIFFSTORE;
-        const operation: Verb = switch (verb) { .SINTERSTORE => .SINTER, .SUNIONSTORE => .SUNION, .SDIFFSTORE => .SDIFF, else => verb };
+        const operation: Verb = switch (verb) {
+            .SINTERSTORE => .SINTER,
+            .SUNIONSTORE => .SUNION,
+            .SDIFFSTORE => .SDIFF,
+            else => verb,
+        };
         if (operation == .SINTER or operation == .SUNION or operation == .SDIFF) {
             var sources: std.ArrayList([]const Text) = .empty;
             const first_source: usize = @intFromBool(storing);
@@ -617,8 +726,14 @@ const Session = struct {
         for (args[1..]) |member| {
             const found = textIndex(members.items, member);
             if (verb == .SADD) {
-                if (found == null) { try members.append(session.gpa, member); changed += 1; }
-            } else if (found) |i| { _ = members.orderedRemove(i); changed += 1; }
+                if (found == null) {
+                    try members.append(session.gpa, member);
+                    changed += 1;
+                }
+            } else if (found) |i| {
+                _ = members.orderedRemove(i);
+                changed += 1;
+            }
         }
         try store.update(args[0], .{ .set = members.items });
         return session.integerReply(changed);
@@ -676,7 +791,10 @@ const Session = struct {
         }
         if (verb == .ZREM) {
             var removed: usize = 0;
-            for (args[1..]) |member| if (fieldIndex(Score, members.items, member)) |i| { _ = members.orderedRemove(i); removed += 1; };
+            for (args[1..]) |member| if (fieldIndex(Score, members.items, member)) |i| {
+                _ = members.orderedRemove(i);
+                removed += 1;
+            };
             try store.update(key, .{ .zset = members.items });
             return session.integerReply(removed);
         }
@@ -718,7 +836,10 @@ const Session = struct {
                 var condition: usize = 0;
                 if (args.len == 3) {
                     const names = [_]Text{ "NX", "XX", "GT", "LT" };
-                    for (names, 0..) |name, i| if (sameCase(args[2], name)) { condition = i + 1; break; };
+                    for (names, 0..) |name, i| if (sameCase(args[2], name)) {
+                        condition = i + 1;
+                        break;
+                    };
                     if (condition == 0) return session.fail(try std.fmt.allocPrint(session.gpa, "ERR Unsupported option {s}", .{args[2]}));
                 }
                 const seconds = try session.number(args[1], not_integer);
@@ -733,7 +854,9 @@ const Session = struct {
                     else => false,
                 };
                 if (rejected) return session.integerReply(@as(usize, 0));
-                if (seconds <= 0) { _ = store.entries.orderedRemove(at); } else store.entries.items[at].expiry = expiry;
+                if (seconds <= 0) {
+                    _ = store.entries.orderedRemove(at);
+                } else store.entries.items[at].expiry = expiry;
                 return session.integerReply(@as(usize, 1));
             },
             .TICK => {
@@ -752,11 +875,10 @@ const Session = struct {
                 var counts: [5]usize = @splat(0);
                 var expires: usize = 0;
                 for (store.entries.items) |entry| {
-                    counts[@intFromEnum(std.meta.activeTag(entry.value))] += 1;
+                    counts[@backingInt(std.meta.activeTag(entry.value))] += 1;
                     expires += @intFromBool(entry.expiry != null);
                 }
-                return line(session.out, "keys={d},expires={d},string={d},list={d},hash={d},set={d},zset={d},time={d},depth={d},snapshots={d}",
-                    .{ store.entries.items.len, expires, counts[0], counts[1], counts[2], counts[3], counts[4], store.time, store.transactions.items.len, store.snapshots.items.len });
+                return line(session.out, "keys={d},expires={d},string={d},list={d},hash={d},set={d},zset={d},time={d},depth={d},snapshots={d}", .{ store.entries.items.len, expires, counts[0], counts[1], counts[2], counts[3], counts[4], store.time, store.transactions.items.len, store.snapshots.items.len });
             },
             else => {
                 const key = args[0];
@@ -794,8 +916,7 @@ const Session = struct {
             },
             .SNAPSHOT => {
                 const saved = try store.copy();
-                if (fieldIndex(Snapshot, store.snapshots.items, args[0])) |i| store.snapshots.items[i].entries = saved else
-                    try store.snapshots.append(store.storage, .{ .name = args[0], .entries = saved });
+                if (fieldIndex(Snapshot, store.snapshots.items, args[0])) |i| store.snapshots.items[i].entries = saved else try store.snapshots.append(store.storage, .{ .name = args[0], .entries = saved });
             },
             .RESTORE => {
                 const i = fieldIndex(Snapshot, store.snapshots.items, args[0]) orelse return session.fail("ERR no such snapshot");

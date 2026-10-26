@@ -8,17 +8,18 @@ import (
 	"strconv"
 	"strings"
 )
+
 var algorithms = []string{"FCFS", "SJF", "SRTF", "RR", "PRIORITY", "HRRN", "EDF", "LOTTERY", "MLFQ"}
 var keys = []string{"cs", "q", "k", "s", "seed"}
 
 type Process struct {
-	id string
+	id                          string
 	arrival, priority, deadline int
-	bursts []int
+	bursts                      []int
 }
 
 type State struct {
-	state string
+	state                                                                      string
 	burst, left, effective, wait, level, used, enqueued, start, finish, slices int
 }
 
@@ -27,19 +28,19 @@ type Burst struct {
 }
 
 type Snapshot struct {
-	states []State
-	queues [3][]int
+	states    []State
+	queues    [3][]int
 	cpu, mode int
 }
 
 type Result struct {
-	p []Process
-	states []State
-	bursts [][]Burst
-	labels, events []string
-	snapshots []Snapshot
+	p                                                          []Process
+	states                                                     []State
+	bursts                                                     [][]Burst
+	labels, events                                             []string
+	snapshots                                                  []Snapshot
 	end, switches, busy, swtime, idle, qmax, qsum, met, missed int
-	totals [3]int
+	totals                                                     [3]int
 }
 
 func integer(s string) int {
@@ -57,7 +58,7 @@ func has(a []string, s string) bool {
 }
 
 func ratio(u, v int) string {
-	n := 100*u/v
+	n := 100 * u / v
 	return fmt.Sprintf("%d.%02d", n/100, n%100)
 }
 
@@ -95,7 +96,7 @@ func simulate(p []Process, a string, params map[string]int) *Result {
 	n := len(p)
 	r := &Result{p: p, states: make([]State, n), bursts: make([][]Burst, n)}
 	for i, x := range p {
-		r.states[i] = State{state:"FUTURE", left: x.bursts[0], effective: x.priority, start: -1, finish: -1}
+		r.states[i] = State{state: "FUTURE", left: x.bursts[0], effective: x.priority, start: -1, finish: -1}
 		r.bursts[i] = make([]Burst, (len(x.bursts)+1)/2)
 		for j := range r.bursts[i] {
 			r.bursts[i][j].start = -1
@@ -134,9 +135,9 @@ func simulate(p []Process, a string, params map[string]int) *Result {
 		}
 		deadline := func(i int) int {
 			if p[i].deadline == 0 {
-				return 1<<60
+				return 1 << 60
 			}
-			return p[i].arrival+p[i].deadline
+			return p[i].arrival + p[i].deadline
 		}
 		if a == "PRIORITY" {
 			for _, i := range queues[0] {
@@ -158,26 +159,26 @@ func simulate(p []Process, a string, params map[string]int) *Result {
 				s.left = p[i].bursts[s.burst]
 				r.bursts[i][s.burst/2].ready = t
 				enqueue(i)
-				log("IODONE "+p[i].id)
+				log("IODONE " + p[i].id)
 			}
 		}
 		for i := range p {
 			if r.states[i].state == "FUTURE" && p[i].arrival == t {
 				r.bursts[i][0].ready = t
 				enqueue(i)
-				log("ARRIVE "+p[i].id)
+				log("ARRIVE " + p[i].id)
 			}
 		}
 		if mode == 1 && sw == 0 {
 			start(cpu)
-			log("START "+p[cpu].id)
+			log("START " + p[cpu].id)
 		} else if mode == 2 {
 			i := cpu
 			s := &r.states[i]
 			if s.left == 0 && s.burst == len(p[i].bursts)-1 {
 				s.state = "DONE"
 				s.finish = t
-				log("DONE "+p[i].id)
+				log("DONE " + p[i].id)
 				mode = 0
 				cpu = -1
 			} else {
@@ -210,12 +211,12 @@ func simulate(p []Process, a string, params map[string]int) *Result {
 					cpu = -1
 				} else if (a == "RR" || a == "LOTTERY") && run == params["q"] {
 					enqueue(i)
-					log("EXPIRE "+p[i].id)
+					log("EXPIRE " + p[i].id)
 					mode = 0
 					cpu = -1
 				} else if preempt {
 					enqueue(i)
-					log("PREEMPT "+p[i].id)
+					log("PREEMPT " + p[i].id)
 					mode = 0
 					cpu = -1
 				}
@@ -255,13 +256,13 @@ func simulate(p []Process, a string, params map[string]int) *Result {
 				if a == "LOTTERY" {
 					total := 0
 					for _, i := range q {
-						total += 10-p[i].priority
+						total += 10 - p[i].priority
 					}
-					x = 48271*x%2147483647
-					draw := int(x%int64(total))
+					x = 48271 * x % 2147483647
+					draw := int(x % int64(total))
 					sum := 0
 					for j, i := range q {
-						sum += 10-p[i].priority
+						sum += 10 - p[i].priority
 						if sum > draw {
 							selected = j
 							break
@@ -288,7 +289,7 @@ func simulate(p []Process, a string, params map[string]int) *Result {
 					}
 				}
 				i := q[selected]
-				queues[l] = append(q[:selected], q[selected+1: ]...)
+				queues[l] = append(q[:selected], q[selected+1:]...)
 				s := &r.states[i]
 				s.effective = p[i].priority
 				s.wait = 0
@@ -303,10 +304,10 @@ func simulate(p []Process, a string, params map[string]int) *Result {
 					mode = 1
 					sw = params["cs"]
 					s.state = "SWITCH"
-					log("SWITCH "+p[i].id)
+					log("SWITCH " + p[i].id)
 				} else {
 					start(i)
-					log("DISPATCH "+p[i].id)
+					log("DISPATCH " + p[i].id)
 				}
 			}
 		}
@@ -329,7 +330,7 @@ func simulate(p []Process, a string, params map[string]int) *Result {
 			label = p[cpu].id
 			r.busy++
 			if s.left == 0 {
-				r.bursts[cpu][s.burst/2].end = t+1
+				r.bursts[cpu][s.burst/2].end = t + 1
 			}
 		} else if mode == 1 {
 			sw--
@@ -347,14 +348,14 @@ func simulate(p []Process, a string, params map[string]int) *Result {
 	}
 	for i, z := range p {
 		s := r.states[i]
-		turn := s.finish-z.arrival
+		turn := s.finish - z.arrival
 		total := 0
 		for _, b := range z.bursts {
 			total += b
 		}
 		r.totals[0] += turn
-		r.totals[1] += turn-total
-		r.totals[2] += s.start-z.arrival
+		r.totals[1] += turn - total
+		r.totals[2] += s.start - z.arrival
 		if z.deadline > 0 {
 			if s.finish <= z.arrival+z.deadline {
 				r.met++
@@ -372,8 +373,8 @@ func metrics(r *Result, i int) [3]int {
 	for _, b := range p.bursts {
 		total += b
 	}
-	t := s.finish-p.arrival
-	return [3]int{t, t-total, s.start-p.arrival}
+	t := s.finish - p.arrival
+	return [3]int{t, t - total, s.start - p.arrival}
 }
 
 func summary(r *Result) string {
@@ -399,7 +400,7 @@ func listline(p Process) string {
 
 type App struct {
 	registry map[string]Process
-	out *bufio.Writer
+	out      *bufio.Writer
 }
 
 func (app *App) emit(a ...any) {
@@ -421,21 +422,21 @@ func (app *App) command(w []string) {
 	switch c {
 	case "PROC":
 		if found {
-			err("duplicate process "+w[1])
+			err("duplicate process " + w[1])
 		}
 		if len(app.registry) == 10 {
 			err("too many processes")
 		}
 		if n(2) > 200 {
-			err("invalid arrival "+w[1])
+			err("invalid arrival " + w[1])
 		}
 		if n(3) > 9 {
-			err("invalid priority "+w[1])
+			err("invalid priority " + w[1])
 		}
 		b := []int{}
 		ok := (len(w)-4)%2 == 1
-		for i, s := range w[4: ] {
-			v := integer(s[1: ])
+		for i, s := range w[4:] {
+			v := integer(s[1:])
 			expected := byte('C')
 			if i%2 == 1 {
 				expected = 'I'
@@ -446,7 +447,7 @@ func (app *App) command(w []string) {
 			b = append(b, v)
 		}
 		if !ok {
-			err("invalid bursts "+w[1])
+			err("invalid bursts " + w[1])
 		}
 		p = Process{w[1], n(2), n(3), 0, b}
 		app.registry[p.id] = p
@@ -463,9 +464,9 @@ func (app *App) command(w []string) {
 	case "GEN":
 		count := n(2)
 		for i := 1; i <= count; i++ {
-			id := w[1]+strconv.Itoa(i)
+			id := w[1] + strconv.Itoa(i)
 			if _, ok := app.registry[id]; ok {
-				err("duplicate process "+id)
+				err("duplicate process " + id)
 			}
 		}
 		if len(app.registry)+count > 10 {
@@ -474,11 +475,11 @@ func (app *App) command(w []string) {
 		app.emit("GEN", fmt.Sprintf("count=%d", count))
 		x := int64(n(3))
 		next := func() int {
-			x = x*48271%2147483647
+			x = x * 48271 % 2147483647
 			return int(x)
 		}
 		for i := 1; i <= count; i++ {
-			id := w[1]+strconv.Itoa(i)
+			id := w[1] + strconv.Itoa(i)
 			arrival, priority, m := next()%21, next()%10, 1+next()%3
 			b := []int{}
 			for j := 0; j < m; j++ {
@@ -494,21 +495,21 @@ func (app *App) command(w []string) {
 		return
 	case "SETPRIO", "DEADLINE", "DROP":
 		if !found {
-			err("unknown process "+w[1])
+			err("unknown process " + w[1])
 		}
 		if c == "DROP" {
 			delete(app.registry, w[1])
 			app.emit(c, w[1])
 		} else if c == "SETPRIO" {
 			if n(2) > 9 {
-				err("invalid priority "+w[1])
+				err("invalid priority " + w[1])
 			}
 			p.priority = n(2)
 			app.registry[p.id] = p
 			app.emit(c, p.id, fmt.Sprintf("priority=%d", p.priority))
 		} else {
 			if n(2) > 1000 {
-				err("invalid deadline "+w[1])
+				err("invalid deadline " + w[1])
 			}
 			p.deadline = n(2)
 			app.registry[p.id] = p
@@ -542,16 +543,16 @@ func (app *App) command(w []string) {
 	} else if c == "RANK" {
 		metric = w[1]
 		if !has([]string{"turnaround", "waiting", "response", "end", "switches", "missed"}, metric) {
-			err("unknown metric "+metric)
+			err("unknown metric " + metric)
 		}
 	} else {
 		a = w[1]
 		if !has(algorithms, a) {
-			err("unknown algorithm "+a)
+			err("unknown algorithm " + a)
 		}
 		if c == "DIFF" {
 			if !has(algorithms, w[2]) {
-				err("unknown algorithm "+w[2])
+				err("unknown algorithm " + w[2])
 			}
 			start = 3
 		}
@@ -567,31 +568,31 @@ func (app *App) command(w []string) {
 		start = 5
 		k := w[2]
 		if !has(keys, k) {
-			err("unknown key "+k)
+			err("unknown key " + k)
 		}
 		if !allowed(a, k) {
-			err("key "+k+" not allowed for "+a)
+			err("key " + k + " not allowed for " + a)
 		}
 		if n(3) > n(4) || !valid(k, n(3)) || !valid(k, n(4)) || n(4)-n(3) > 20 {
 			err("invalid range")
 		}
 		seen[k] = true
 	}
-	params := map[string]int{"cs":0, "q":4, "k":5, "s":0, "seed":1}
-	for _, word := range w[start: ] {
+	params := map[string]int{"cs": 0, "q": 4, "k": 5, "s": 0, "seed": 1}
+	for _, word := range w[start:] {
 		kv := strings.Split(word, "=")
 		k, v := kv[0], integer(kv[1])
 		if !has(keys, k) {
-			err("unknown key "+k)
+			err("unknown key " + k)
 		}
 		if !multi && !allowed(a, k) {
-			err("key "+k+" not allowed for "+a)
+			err("key " + k + " not allowed for " + a)
 		}
 		if seen[k] {
-			err("duplicate key "+k)
+			err("duplicate key " + k)
 		}
 		if !valid(k, v) {
-			err("invalid "+k)
+			err("invalid " + k)
 		}
 		seen[k] = true
 		params[k] = v
@@ -648,7 +649,7 @@ func (app *App) command(w []string) {
 			app.emit(c, notation("", params, true))
 			row := func(v []string) {
 				fmt.Fprintf(app.out, "%-8s", v[0])
-				for _, x := range v[1: ] {
+				for _, x := range v[1:] {
 					fmt.Fprintf(app.out, " %8s", x)
 				}
 				fmt.Fprintln(app.out)
@@ -693,7 +694,7 @@ func (app *App) command(w []string) {
 			rank := 1
 			for j, i := range ids {
 				if j > 0 && value(i) != value(ids[j-1]) {
-					rank = j+1
+					rank = j + 1
 				}
 				v := strconv.Itoa(value(i))
 				if metric == "turnaround" || metric == "waiting" || metric == "response" {
@@ -838,9 +839,9 @@ func (app *App) command(w []string) {
 			}
 			lo, hi := v[imin], v[imax]
 			sort.Ints(v)
-			med := v[len(v)/2]*2
+			med := v[len(v)/2] * 2
 			if len(v)%2 == 0 {
-				med = v[len(v)/2-1]+v[len(v)/2]
+				med = v[len(v)/2-1] + v[len(v)/2]
 			}
 			app.emit(fmt.Sprintf("%s min=%d (%s) max=%d (%s) median=%d.%d total=%d", k, lo, ps[imin].id, hi, ps[imax].id, med/2, med%2*5, r.totals[j]))
 		}
@@ -848,7 +849,7 @@ func (app *App) command(w []string) {
 		app.emit(c, a, note)
 		segments := []string{}
 		for lo := 0; lo < r.end; {
-			hi := lo+1
+			hi := lo + 1
 			for hi < r.end && r.labels[hi] == r.labels[lo] {
 				hi++
 			}
@@ -856,14 +857,14 @@ func (app *App) command(w []string) {
 			lo = hi
 		}
 		for i := 0; i < len(segments); i += 8 {
-			app.emit("GANTT", strings.Join(segments[i: min(i+8, len(segments))], ""))
+			app.emit("GANTT", strings.Join(segments[i:min(i+8, len(segments))], ""))
 		}
 		for i, p := range ps {
 			s := r.states[i]
 			m := metrics(r, i)
 			line := fmt.Sprintf("%s arrival=%d done=%d turnaround=%d waiting=%d response=%d slices=%d", p.id, p.arrival, s.finish, m[0], m[1], m[2], s.slices)
 			if p.deadline > 0 {
-				d := p.arrival+p.deadline
+				d := p.arrival + p.deadline
 				line += fmt.Sprintf(" deadline=%d late=%d", d, max(0, s.finish-d))
 			}
 			app.emit(line)

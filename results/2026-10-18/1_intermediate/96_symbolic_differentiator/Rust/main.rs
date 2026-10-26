@@ -224,8 +224,16 @@ fn compare_terms(left: &Expression, right: &Expression) -> Ordering {
     bases.sort_by(compare);
     bases.dedup();
     for current in bases {
-        let x = a.iter().find(|f| base(f) == &current).map(exponent).unwrap_or_else(zero);
-        let y = b.iter().find(|f| base(f) == &current).map(exponent).unwrap_or_else(zero);
+        let x = a
+            .iter()
+            .find(|f| base(f) == &current)
+            .map(exponent)
+            .unwrap_or_else(zero);
+        let y = b
+            .iter()
+            .find(|f| base(f) == &current)
+            .map(exponent)
+            .unwrap_or_else(zero);
         let comparison = compare_exponents(&x, &y);
         if comparison != Ordering::Equal {
             return comparison.reverse();
@@ -312,12 +320,13 @@ fn multiply(expressions: Vec<Expression>) -> Outcome<Expression> {
                 reduced.push(power(key, add(powers)?)?);
             }
         }
-        let composite = reduced.iter().any(|f| {
-            matches!(f, Expression::Number(_) | Expression::Product(_))
-        });
-        let duplicate = reduced.iter().enumerate().any(|(i, f)| {
-            reduced[..i].iter().any(|g| base(f) == base(g))
-        });
+        let composite = reduced
+            .iter()
+            .any(|f| matches!(f, Expression::Number(_) | Expression::Product(_)));
+        let duplicate = reduced
+            .iter()
+            .enumerate()
+            .any(|(i, f)| reduced[..i].iter().any(|g| base(f) == base(g)));
         if composite || duplicate {
             remaining = vec![Expression::Number(scalar)];
             remaining.extend(reduced);
@@ -429,9 +438,7 @@ fn function(name: &str, argument: Expression) -> Outcome<Expression> {
     if name == "ln" && argument == one() {
         return Ok(zero());
     }
-    if ["sin", "cos", "tan"].contains(&name)
-        && coefficient(&argument).0.numerator < 0
-    {
+    if ["sin", "cos", "tan"].contains(&name) && coefficient(&argument).0.numerator < 0 {
         let positive = multiply(vec![minus_one(), argument])?;
         let transformed = function(name, positive)?;
         return if name == "cos" {
@@ -547,9 +554,10 @@ fn substitute(
     values: &HashMap<String, Expression>,
 ) -> Outcome<Expression> {
     match expression {
-        Expression::Variable(name) => {
-            Ok(values.get(name).cloned().unwrap_or_else(|| expression.clone()))
-        }
+        Expression::Variable(name) => Ok(values
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| expression.clone())),
         Expression::Number(_) => Ok(expression.clone()),
         Expression::Sum(parts) => {
             let mut replaced = Vec::new();
@@ -568,9 +576,7 @@ fn substitute(
         Expression::Power(base, exponent) => {
             power(substitute(base, values)?, substitute(exponent, values)?)
         }
-        Expression::Function(name, argument) => {
-            function(name, substitute(argument, values)?)
-        }
+        Expression::Function(name, argument) => function(name, substitute(argument, values)?),
     }
 }
 
@@ -1010,7 +1016,9 @@ fn valid_literal(source: &str) -> bool {
     };
     !numerator.is_empty()
         && numerator.bytes().all(|b| b.is_ascii_digit())
-        && denominator.map_or(true, |d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+        && denominator.map_or(true, |d| {
+            !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())
+        })
 }
 
 fn parse_literal(source: &str) -> Outcome<Expression> {
@@ -1044,7 +1052,11 @@ fn parse_order(source: &str) -> Outcome<usize> {
     }
 }
 
-fn substitute_one(expression: &Expression, variable: &str, value: Expression) -> Outcome<Expression> {
+fn substitute_one(
+    expression: &Expression,
+    variable: &str,
+    value: Expression,
+) -> Outcome<Expression> {
     substitute(expression, &HashMap::from([(variable.to_owned(), value)]))
 }
 
@@ -1150,7 +1162,12 @@ fn process_command(
                 derivative(&expression, &variable)?,
                 power(derivative(&expression, &other)?, minus_one())?,
             ])?;
-            Ok(vec![format!("d{}/d{} = {}", other, variable, show(&result))])
+            Ok(vec![format!(
+                "d{}/d{} = {}",
+                other,
+                variable,
+                show(&result)
+            )])
         }
         "SUBST" => {
             let variable = parse_variable(fields[1])?;
@@ -1190,7 +1207,11 @@ fn process_command(
         "TANGENT" => {
             let variable = parse_variable(fields[1])?;
             let point = parse_literal(fields[2])?;
-            let slope = substitute_one(&derivative(&expression, &variable)?, &variable, point.clone())?;
+            let slope = substitute_one(
+                &derivative(&expression, &variable)?,
+                &variable,
+                point.clone(),
+            )?;
             let y = substitute_one(&expression, &variable, point.clone())?;
             let negative_point = match &point {
                 Expression::Number(r) => Expression::Number(r.negate()),
@@ -1203,7 +1224,10 @@ fn process_command(
             ])?;
             let first = format!("tangent: y = {}", show(&line));
             if slope == zero() {
-                return Ok(vec![first, format!("normal: {} = {}", variable, show(&point))]);
+                return Ok(vec![
+                    first,
+                    format!("normal: {} = {}", variable, show(&point)),
+                ]);
             }
             let reciprocal = power(slope, minus_one())?;
             let normal = add(vec![
@@ -1228,9 +1252,7 @@ fn process_command(
             let mut denominator = Vec::new();
             for factor in factors {
                 match &factor {
-                    Expression::Power(base, exponent)
-                        if matches!(&**exponent, Expression::Number(r) if r.numerator < 0) =>
-                    {
+                    Expression::Power(base, exponent) if matches!(&**exponent, Expression::Number(r) if r.numerator < 0) => {
                         if let Expression::Number(r) = &**exponent {
                             denominator.push(power(*base.clone(), Expression::Number(r.negate()))?);
                         }
@@ -1296,7 +1318,12 @@ fn main() {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input).unwrap();
     let mut lines = input.lines();
-    let count = lines.next().unwrap_or("0").trim().parse::<usize>().unwrap_or(0);
+    let count = lines
+        .next()
+        .unwrap_or("0")
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(0);
     let mut definitions = HashMap::new();
     let mut output = Vec::new();
     for _ in 0..count {

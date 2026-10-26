@@ -3,9 +3,30 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const Error = Allocator.Error || Writer.Error || error{Invalid};
 const Command = enum {
-    MIDI, NOTE, FREQ, TUNING, PITCH, INTERVAL, INVERT, TRANSPOSE, SCALE,
-    CHORD, VOICE, IDENTIFY, MELODY, ENHARMONIC, KEYSIG, RELATIVE, CIRCLE,
-    DIATONIC, PROGRESSION, ANALYZE, FINDKEY, DEGREE, SPELL, KEYDIST,
+    MIDI,
+    NOTE,
+    FREQ,
+    TUNING,
+    PITCH,
+    INTERVAL,
+    INVERT,
+    TRANSPOSE,
+    SCALE,
+    CHORD,
+    VOICE,
+    IDENTIFY,
+    MELODY,
+    ENHARMONIC,
+    KEYSIG,
+    RELATIVE,
+    CIRCLE,
+    DIATONIC,
+    PROGRESSION,
+    ANALYZE,
+    FINDKEY,
+    DEGREE,
+    SPELL,
+    KEYDIST,
 };
 const letters = "CDEFGAB";
 const naturals = [_]i32{ 0, 2, 4, 5, 7, 9, 11 };
@@ -15,24 +36,42 @@ const flat_names = [_][]const u8{ "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab
 const romans = [_][]const u8{ "I", "II", "III", "IV", "V", "VI", "VII" };
 const lower_romans = [_][]const u8{ "i", "ii", "iii", "iv", "v", "vi", "vii" };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn digit(c: u8) bool { return c >= '0' and c <= '9'; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn digit(c: u8) bool {
+    return c >= '0' and c <= '9';
+}
 fn digits(text: []const u8) bool {
     if (text.len == 0) return false;
     for (text) |c| if (!digit(c)) return false;
     return true;
 }
-fn integer(text: []const u8) i32 { return std.fmt.parseInt(i32, text, 10) catch unreachable; }
-fn absolute(value: i32) i32 { return if (value < 0) -value else value; }
-fn bit(pitch_class: i32) u16 { return @as(u16, 1) << @as(u4, @intCast(pitch_class)); }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
+fn integer(text: []const u8) i32 {
+    return std.fmt.parseInt(i32, text, 10) catch unreachable;
+}
+fn absolute(value: i32) i32 {
+    return if (value < 0) -value else value;
+}
+fn bit(pitch_class: i32) u16 {
+    return @as(u16, 1) << @as(u4, @intCast(pitch_class));
+}
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
 
 const Pitch = struct {
     letter: usize,
     alteration: i32,
-    fn natural(pitch: Pitch) i32 { return naturals[pitch.letter]; }
-    fn class(pitch: Pitch) i32 { return @mod(pitch.natural() + pitch.alteration, 12); }
-    fn same(a: Pitch, b: Pitch) bool { return a.letter == b.letter and a.alteration == b.alteration; }
+    fn natural(pitch: Pitch) i32 {
+        return naturals[pitch.letter];
+    }
+    fn class(pitch: Pitch) i32 {
+        return @mod(pitch.natural() + pitch.alteration, 12);
+    }
+    fn same(a: Pitch, b: Pitch) bool {
+        return a.letter == b.letter and a.alteration == b.alteration;
+    }
     pub fn format(pitch: Pitch, out: *Writer) Writer.Error!void {
         try out.print("{c}{s}", .{ letters[pitch.letter], accidentals[@intCast(pitch.alteration + 2)] });
     }
@@ -40,22 +79,40 @@ const Pitch = struct {
 const Note = struct {
     pitch: Pitch,
     octave: i32,
-    fn midi(note: Note) i32 { return 12 * (note.octave + 1) + note.pitch.natural() + note.pitch.alteration; }
-    fn position(note: Note) i32 { return 7 * note.octave + @as(i32, @intCast(note.pitch.letter)); }
-    fn valid(note: Note) bool { return note.octave >= -1 and note.octave <= 9 and note.midi() >= 0 and note.midi() <= 127; }
-    pub fn format(note: Note, out: *Writer) Writer.Error!void { try out.print("{f}{d}", .{ note.pitch, note.octave }); }
+    fn midi(note: Note) i32 {
+        return 12 * (note.octave + 1) + note.pitch.natural() + note.pitch.alteration;
+    }
+    fn position(note: Note) i32 {
+        return 7 * note.octave + @as(i32, @intCast(note.pitch.letter));
+    }
+    fn valid(note: Note) bool {
+        return note.octave >= -1 and note.octave <= 9 and note.midi() >= 0 and note.midi() <= 127;
+    }
+    pub fn format(note: Note, out: *Writer) Writer.Error!void {
+        try out.print("{f}{d}", .{ note.pitch, note.octave });
+    }
 };
 const IntervalQuality = enum { P, M, m, A, d, AA, dd };
 const Interval = struct {
     quality: IntervalQuality,
     number: i32,
-    fn distance(interval: Interval) i32 { return interval.number - 1; }
-    fn perfect(interval: Interval) bool { return switch (@mod(interval.distance(), 7)) { 0, 3, 4 => true, else => false }; }
+    fn distance(interval: Interval) i32 {
+        return interval.number - 1;
+    }
+    fn perfect(interval: Interval) bool {
+        return switch (@mod(interval.distance(), 7)) {
+            0, 3, 4 => true,
+            else => false,
+        };
+    }
     fn semitones(interval: Interval) i32 {
         const difference: i32 = switch (interval.quality) {
             .dd => if (interval.perfect()) -2 else -3,
             .d => if (interval.perfect()) -1 else -2,
-            .m => -1, .A => 1, .AA => 2, .P, .M => 0,
+            .m => -1,
+            .A => 1,
+            .AA => 2,
+            .P, .M => 0,
         };
         return 12 * @divTrunc(interval.distance(), 7) + naturals[@intCast(@mod(interval.distance(), 7))] + difference;
     }
@@ -70,7 +127,9 @@ const Interval = struct {
         if ((small.quality == .m or small.quality == .M) and (small.number == 3 or small.number == 6)) return "imperfect";
         return "dissonant";
     }
-    pub fn format(interval: Interval, out: *Writer) Writer.Error!void { try out.print("{s}{d}", .{ @tagName(interval.quality), interval.number }); }
+    pub fn format(interval: Interval, out: *Writer) Writer.Error!void {
+        try out.print("{s}{d}", .{ @tagName(interval.quality), interval.number });
+    }
 };
 fn rawInterval(text: []const u8) ?Interval {
     var start: usize = 0;
@@ -86,9 +145,11 @@ fn rawInterval(text: []const u8) ?Interval {
     return result;
 }
 const Pattern = struct {
-    items: [7]Interval = [_]Interval{.{ .quality = .P, .number = 1 }} ** 7,
+    items: [7]Interval = @splat(Interval{ .quality = .P, .number = 1 }),
     len: usize = 0,
-    fn list(pattern: *const Pattern) []const Interval { return pattern.items[0..pattern.len]; }
+    fn list(pattern: *const Pattern) []const Interval {
+        return pattern.items[0..pattern.len];
+    }
 };
 fn makePattern(comptime text: []const u8) Pattern {
     @setEvalBranchQuota(20000);
@@ -101,10 +162,24 @@ fn makePattern(comptime text: []const u8) Pattern {
     return result;
 }
 const ScaleName = enum {
-    major, natural_minor, harmonic_minor, melodic_minor, ionian, dorian,
-    phrygian, lydian, mixolydian, aeolian, locrian, major_pentatonic,
-    minor_pentatonic, blues, whole_tone,
-    fn pattern(name: ScaleName) *const Pattern { return &scale_patterns[@intFromEnum(name)]; }
+    major,
+    natural_minor,
+    harmonic_minor,
+    melodic_minor,
+    ionian,
+    dorian,
+    phrygian,
+    lydian,
+    mixolydian,
+    aeolian,
+    locrian,
+    major_pentatonic,
+    minor_pentatonic,
+    blues,
+    whole_tone,
+    fn pattern(name: ScaleName) *const Pattern {
+        return &scale_patterns[@backingInt(name)];
+    }
 };
 const scale_patterns = [_]Pattern{
     makePattern("P1 M2 M3 P4 P5 M6 M7"), makePattern("P1 M2 m3 P4 P5 m6 m7"),
@@ -113,18 +188,37 @@ const scale_patterns = [_]Pattern{
     makePattern("P1 m2 m3 P4 P5 m6 m7"), makePattern("P1 M2 M3 A4 P5 M6 M7"),
     makePattern("P1 M2 M3 P4 P5 M6 m7"), makePattern("P1 M2 m3 P4 P5 m6 m7"),
     makePattern("P1 m2 m3 P4 d5 m6 m7"), makePattern("P1 M2 M3 P5 M6"),
-    makePattern("P1 m3 P4 P5 m7"), makePattern("P1 m3 P4 A4 P5 m7"),
+    makePattern("P1 m3 P4 P5 m7"),       makePattern("P1 m3 P4 A4 P5 m7"),
     makePattern("P1 M2 M3 A4 A5 A6"),
 };
 const QualityName = enum {
-    maj, min, dim, aug, sus2, sus4, @"6", m6, @"7", maj7, m7, mMaj7, m7b5, dim7, @"9", add9,
-    fn data(name: QualityName) *const Quality { return &quality_table[@intFromEnum(name)]; }
+    maj,
+    min,
+    dim,
+    aug,
+    sus2,
+    sus4,
+    @"6",
+    m6,
+    @"7",
+    maj7,
+    m7,
+    mMaj7,
+    m7b5,
+    dim7,
+    @"9",
+    add9,
+    fn data(name: QualityName) *const Quality {
+        return &quality_table[@backingInt(name)];
+    }
 };
 const Quality = struct {
     pattern: Pattern,
     suffix: []const u8,
     numeral: []const u8,
-    fn lower(quality: Quality) bool { return quality.numeral[0] == 'i'; }
+    fn lower(quality: Quality) bool {
+        return quality.numeral[0] == 'i';
+    }
 };
 const quality_table = [_]Quality{
     .{ .pattern = makePattern("P1 M3 P5"), .suffix = "", .numeral = "I" },
@@ -145,23 +239,39 @@ const quality_table = [_]Quality{
     .{ .pattern = makePattern("P1 M3 P5 M9"), .suffix = "add9", .numeral = "Iadd9" },
 };
 const Mode = enum {
-    major, minor, ionian, dorian, phrygian, lydian, mixolydian, aeolian, locrian,
-    fn offset(mode: Mode) i32 { return ([_]i32{ 0, -3, 0, -2, -4, 1, -1, -3, -5 })[@intFromEnum(mode)]; }
+    major,
+    minor,
+    ionian,
+    dorian,
+    phrygian,
+    lydian,
+    mixolydian,
+    aeolian,
+    locrian,
+    fn offset(mode: Mode) i32 {
+        return ([_]i32{ 0, -3, 0, -2, -4, 1, -1, -3, -5 })[@backingInt(mode)];
+    }
     fn scale(mode: Mode) ScaleName {
-        return ([_]ScaleName{ .major, .natural_minor, .ionian, .dorian, .phrygian, .lydian, .mixolydian, .aeolian, .locrian })[@intFromEnum(mode)];
+        return ([_]ScaleName{ .major, .natural_minor, .ionian, .dorian, .phrygian, .lydian, .mixolydian, .aeolian, .locrian })[@backingInt(mode)];
     }
 };
 const Key = struct {
     tonic: Pitch,
     mode: Mode,
-    fn fifths(key: Key) i32 { return ([_]i32{ 0, 2, 4, -1, 1, 3, 5 })[key.tonic.letter] + 7 * key.tonic.alteration + key.mode.offset(); }
-    pub fn format(key: Key, out: *Writer) Writer.Error!void { try out.print("{f} {s}", .{ key.tonic, @tagName(key.mode) }); }
+    fn fifths(key: Key) i32 {
+        return ([_]i32{ 0, 2, 4, -1, 1, 3, 5 })[key.tonic.letter] + 7 * key.tonic.alteration + key.mode.offset();
+    }
+    pub fn format(key: Key, out: *Writer) Writer.Error!void {
+        try out.print("{f} {s}", .{ key.tonic, @tagName(key.mode) });
+    }
 };
 const Numeral = struct { degree: usize, alteration: i32, quality: QualityName };
 const Chord = struct {
     root: Pitch,
     quality: QualityName,
-    pub fn format(chord: Chord, out: *Writer) Writer.Error!void { try out.print("{f}{s}", .{ chord.root, chord.quality.data().suffix }); }
+    pub fn format(chord: Chord, out: *Writer) Writer.Error!void {
+        try out.print("{f}{s}", .{ chord.root, chord.quality.data().suffix });
+    }
 };
 const Roman = struct {
     degree: usize,
@@ -178,12 +288,17 @@ const Degree = struct {
         var i: i32 = 0;
         while (i < absolute(value.alteration)) : (i += 1) try out.writeByte(if (value.alteration < 0) 'b' else '#');
     }
-    pub fn format(value: Degree, out: *Writer) Writer.Error!void { try value.prefix(out); try out.print("{d}", .{value.index + 1}); }
+    pub fn format(value: Degree, out: *Writer) Writer.Error!void {
+        try value.prefix(out);
+        try out.print("{d}", .{value.index + 1});
+    }
 };
 const Motion = struct { interval: Interval, down: bool, semitones: i32 };
 const Frequency = struct {
     cents: i32,
-    pub fn format(value: Frequency, out: *Writer) Writer.Error!void { try out.print("{d}.{d:0>2}", .{ @divTrunc(value.cents, 100), @mod(value.cents, 100) }); }
+    pub fn format(value: Frequency, out: *Writer) Writer.Error!void {
+        try out.print("{d}.{d:0>2}", .{ @divTrunc(value.cents, 100), @mod(value.cents, 100) });
+    }
 };
 const Signed = struct {
     value: i32,
@@ -196,7 +311,9 @@ const Signed = struct {
 const Pitches = struct {
     items: [7]Pitch = undefined,
     len: usize = 0,
-    fn list(pitches: *const Pitches) []const Pitch { return pitches.items[0..pitches.len]; }
+    fn list(pitches: *const Pitches) []const Pitch {
+        return pitches.items[0..pitches.len];
+    }
     fn mask(pitches: *const Pitches) u16 {
         var result: u16 = 0;
         for (pitches.list()) |pitch| result |= bit(pitch.class());
@@ -214,9 +331,18 @@ fn pitchPrefix(text: []const u8) ?PitchPrefix {
         alteration = -2;
     } else if (text.len > 1) {
         switch (text[1]) {
-            'b' => { len = 2; alteration = -1; },
-            '#' => { len = 2; alteration = 1; },
-            'x' => { len = 2; alteration = 2; },
+            'b' => {
+                len = 2;
+                alteration = -1;
+            },
+            '#' => {
+                len = 2;
+                alteration = 1;
+            },
+            'x' => {
+                len = 2;
+                alteration = 2;
+            },
             else => {},
         }
     }
@@ -233,7 +359,9 @@ fn rawNote(text: []const u8) ?Note {
     const note: Note = .{ .pitch = prefix.pitch, .octave = octave };
     return if (note.valid()) note else null;
 }
-fn fromMidi(pitch: Pitch, midi: i32) Note { return .{ .pitch = pitch, .octave = @divExact(midi - pitch.natural() - pitch.alteration, 12) - 1 }; }
+fn fromMidi(pitch: Pitch, midi: i32) Note {
+    return .{ .pitch = pitch, .octave = @divExact(midi - pitch.natural() - pitch.alteration, 12) - 1 };
+}
 fn standardNote(midi: i32, flat: bool) Note {
     return .{ .pitch = rawPitch((if (flat) flat_names else sharp_names)[@intCast(@mod(midi, 12))]).?, .octave = @divFloor(midi, 12) - 1 };
 }
@@ -241,7 +369,9 @@ fn fifthsPitch(fifths: i32) Pitch {
     const letter = std.mem.findScalar(u8, letters, "FCGDAEB"[@intCast(@mod(fifths + 1, 7))]).?;
     return .{ .letter = letter, .alteration = @divFloor(fifths + 1, 7) };
 }
-fn keyAt(fifths: i32, mode: Mode) Key { return .{ .tonic = fifthsPitch(fifths - mode.offset()), .mode = mode }; }
+fn keyAt(fifths: i32, mode: Mode) Key {
+    return .{ .tonic = fifthsPitch(fifths - mode.offset()), .mode = mode };
+}
 fn chordMask(root: Note, quality: QualityName) u16 {
     var result: u16 = 0;
     for (quality.data().pattern.list()) |interval| result |= bit(@mod(root.midi() + interval.semitones(), 12));
@@ -273,7 +403,9 @@ fn arity(command: Command) struct { min: usize, max: usize } {
 const IndexedNote = struct {
     note: Note,
     index: usize,
-    fn less(_: void, a: IndexedNote, b: IndexedNote) bool { return if (a.note.midi() != b.note.midi()) a.note.midi() < b.note.midi() else a.index < b.index; }
+    fn less(_: void, a: IndexedNote, b: IndexedNote) bool {
+        return if (a.note.midi() != b.note.midi()) a.note.midi() < b.note.midi() else a.index < b.index;
+    }
 };
 
 const Session = struct {
@@ -285,9 +417,15 @@ const Session = struct {
         session.problem = std.fmt.allocPrint(session.gpa, fmt, args) catch return error.OutOfMemory;
         return error.Invalid;
     }
-    fn pitch(session: *Session, text: []const u8) Error!Pitch { return rawPitch(text) orelse session.fail("BAD PITCH {s}", .{text}); }
-    fn note(session: *Session, text: []const u8) Error!Note { return rawNote(text) orelse session.fail("BAD NOTE {s}", .{text}); }
-    fn interval(session: *Session, text: []const u8) Error!Interval { return rawInterval(text) orelse session.fail("BAD INTERVAL {s}", .{text}); }
+    fn pitch(session: *Session, text: []const u8) Error!Pitch {
+        return rawPitch(text) orelse session.fail("BAD PITCH {s}", .{text});
+    }
+    fn note(session: *Session, text: []const u8) Error!Note {
+        return rawNote(text) orelse session.fail("BAD NOTE {s}", .{text});
+    }
+    fn interval(session: *Session, text: []const u8) Error!Interval {
+        return rawInterval(text) orelse session.fail("BAD INTERVAL {s}", .{text});
+    }
     fn number(session: *Session, text: []const u8) Error!i32 {
         if (!digits(text) or (text.len > 1 and text[0] == '0')) return session.fail("BAD NUMBER {s}", .{text});
         const value = std.fmt.parseInt(i32, text, 10) catch return session.fail("BAD NUMBER {s}", .{text});
@@ -305,9 +443,15 @@ const Session = struct {
         if (if (tuning) value < 40000 or value > 48000 else value == 0) return session.fail("BAD FREQUENCY {s}", .{text});
         return value;
     }
-    fn quality(session: *Session, text: []const u8) Error!QualityName { return std.meta.stringToEnum(QualityName, text) orelse session.fail("BAD QUALITY {s}", .{text}); }
-    fn mode(session: *Session, text: []const u8) Error!Mode { return std.meta.stringToEnum(Mode, text) orelse session.fail("BAD MODE {s}", .{text}); }
-    fn scaleName(session: *Session, text: []const u8) Error!ScaleName { return std.meta.stringToEnum(ScaleName, text) orelse session.fail("BAD SCALE {s}", .{text}); }
+    fn quality(session: *Session, text: []const u8) Error!QualityName {
+        return std.meta.stringToEnum(QualityName, text) orelse session.fail("BAD QUALITY {s}", .{text});
+    }
+    fn mode(session: *Session, text: []const u8) Error!Mode {
+        return std.meta.stringToEnum(Mode, text) orelse session.fail("BAD MODE {s}", .{text});
+    }
+    fn scaleName(session: *Session, text: []const u8) Error!ScaleName {
+        return std.meta.stringToEnum(ScaleName, text) orelse session.fail("BAD SCALE {s}", .{text});
+    }
     fn key(session: *Session, tonic: []const u8, mode_text: []const u8) Error!Key {
         const root = try session.pitch(tonic);
         const mode_value = try session.mode(mode_text);
@@ -331,7 +475,7 @@ const Session = struct {
             if (!lower and !equal(roman, name)) continue;
             for (quality_table, 0..) |entry, q| {
                 if (entry.lower() == lower and equal(entry.numeral[1..], text[end..]))
-                    return .{ .degree = index, .alteration = alteration, .quality = @enumFromInt(q) };
+                    return .{ .degree = index, .alteration = alteration, .quality = @fromBackingInt(@intCast(q)) };
             }
         }
         return session.fail("BAD NUMERAL {s}", .{text});
@@ -339,7 +483,7 @@ const Session = struct {
     fn symbol(session: *Session, text: []const u8) Error!Chord {
         const prefix = pitchPrefix(text) orelse return session.fail("BAD SYMBOL {s}", .{text});
         for (quality_table, 0..) |entry, index| {
-            if (equal(entry.suffix, text[prefix.len..])) return .{ .root = prefix.pitch, .quality = @enumFromInt(index) };
+            if (equal(entry.suffix, text[prefix.len..])) return .{ .root = prefix.pitch, .quality = @fromBackingInt(@intCast(index)) };
         }
         return session.fail("BAD SYMBOL {s}", .{text});
     }
@@ -355,7 +499,9 @@ const Session = struct {
         for (pattern.list(), 0..) |interval_value, i| result.items[i] = try session.raise(root, interval_value);
         return result;
     }
-    fn scale(session: *Session, key_value: Key) Error!Pitches { return session.build(key_value.tonic, key_value.mode.scale().pattern()); }
+    fn scale(session: *Session, key_value: Key) Error!Pitches {
+        return session.build(key_value.tonic, key_value.mode.scale().pattern());
+    }
     fn label(session: *Session, key_value: Key, pitch_value: Pitch) Error!Degree {
         const index: usize = @intCast(@mod(@as(i32, @intCast(pitch_value.letter)) - @as(i32, @intCast(key_value.tonic.letter)), 7));
         const pitches = try session.scale(key_value);
@@ -365,13 +511,30 @@ const Session = struct {
         var distance = second.position() - first.position();
         var semitones = second.midi() - first.midi();
         const down = distance < 0 or (distance == 0 and semitones < 0);
-        if (down) { distance = -distance; semitones = -semitones; }
+        if (down) {
+            distance = -distance;
+            semitones = -semitones;
+        }
         const difference = semitones - (12 * @divTrunc(distance, 7) + naturals[@intCast(@mod(distance, 7))]);
-        const perfect = switch (@mod(distance, 7)) { 0, 3, 4 => true, else => false };
+        const perfect = switch (@mod(distance, 7)) {
+            0, 3, 4 => true,
+            else => false,
+        };
         const quality_value: ?IntervalQuality = if (perfect) switch (difference) {
-            -2 => .dd, -1 => .d, 0 => .P, 1 => .A, 2 => .AA, else => null,
+            -2 => .dd,
+            -1 => .d,
+            0 => .P,
+            1 => .A,
+            2 => .AA,
+            else => null,
         } else switch (difference) {
-            -3 => .dd, -2 => .d, -1 => .m, 0 => .M, 1 => .A, 2 => .AA, else => null,
+            -3 => .dd,
+            -2 => .d,
+            -1 => .m,
+            0 => .M,
+            1 => .A,
+            2 => .AA,
+            else => null,
         };
         return .{ .interval = .{ .quality = quality_value orelse return session.fail("UNNAMEABLE INTERVAL", .{}), .number = distance + 1 }, .down = down, .semitones = semitones };
     }
@@ -382,7 +545,10 @@ const Session = struct {
         var words: [16][]const u8 = undefined;
         var count: usize = 0;
         var tokens = std.mem.tokenizeScalar(u8, text, ' ');
-        while (tokens.next()) |word| { words[count] = word; count += 1; }
+        while (tokens.next()) |word| {
+            words[count] = word;
+            count += 1;
+        }
         const w = words[0..count];
         const command = std.meta.stringToEnum(Command, w[0]) orelse return session.fail("UNKNOWN COMMAND {s}", .{w[0]});
         const limits = arity(command);
@@ -423,7 +589,15 @@ const Session = struct {
             .INVERT => {
                 const original = try session.interval(w[1]);
                 const simple = original.simple();
-                const quality_value: IntervalQuality = switch (simple.quality) { .P => .P, .M => .m, .m => .M, .A => .d, .d => .A, .AA => .dd, .dd => .AA };
+                const quality_value: IntervalQuality = switch (simple.quality) {
+                    .P => .P,
+                    .M => .m,
+                    .m => .M,
+                    .A => .d,
+                    .d => .A,
+                    .AA => .dd,
+                    .dd => .AA,
+                };
                 const inverted: Interval = .{ .quality = quality_value, .number = 9 - simple.number };
                 if (inverted.number == 1 and (quality_value == .d or quality_value == .dd)) return session.fail("CANNOT INVERT", .{});
                 try line(out, "INVERT {s} {f} {f}", .{ w[1], simple, inverted });
@@ -517,11 +691,14 @@ const Session = struct {
                 const bass = candidates[0];
                 for (candidates[0..candidate_count]) |root| {
                     for (quality_table, 0..) |entry, q| {
-                        const quality_value: QualityName = @enumFromInt(q);
+                        const quality_value: QualityName = @fromBackingInt(@intCast(q));
                         if (chordMask(root, quality_value) != mask) continue;
                         var inversion_value: usize = 0;
                         for (entry.pattern.list(), 0..) |interval_value, i| {
-                            if (@mod(root.midi() + interval_value.semitones(), 12) == bass.pitch.class()) { inversion_value = i; break; }
+                            if (@mod(root.midi() + interval_value.semitones(), 12) == bass.pitch.class()) {
+                                inversion_value = i;
+                                break;
+                            }
                         }
                         try out.print("IDENTIFY {f}", .{Chord{ .root = root.pitch, .quality = quality_value }});
                         if (inversion_value != 0) try out.print("/{f}", .{bass.pitch});
@@ -565,11 +742,16 @@ const Session = struct {
                         const pitch_value: Pitch = .{ .letter = letter, .alteration = alteration };
                         if (pitch_value.class() != input.pitch.class()) continue;
                         const note_value = fromMidi(pitch_value, input.midi());
-                        if (note_value.valid()) { notes[len] = note_value; len += 1; }
+                        if (note_value.valid()) {
+                            notes[len] = note_value;
+                            len += 1;
+                        }
                     }
                 }
                 std.sort.heap(Note, notes[0..len], {}, struct {
-                    fn less(_: void, a: Note, b: Note) bool { return a.position() < b.position(); }
+                    fn less(_: void, a: Note, b: Note) bool {
+                        return a.position() < b.position();
+                    }
                 }.less);
                 try out.print("ENHARMONIC {s}", .{w[1]});
                 for (notes[0..len]) |note_value| try out.print(" {f}", .{note_value});
@@ -580,8 +762,7 @@ const Session = struct {
                 if (command == .KEYSIG) {
                     const fifths = key_value.fifths();
                     if (fifths == 0) return line(out, "KEYSIG {f} none", .{key_value});
-                    const names = if (fifths > 0) [_][]const u8{ "F#", "C#", "G#", "D#", "A#", "E#", "B#" }
-                        else [_][]const u8{ "Bb", "Eb", "Ab", "Db", "Gb", "Cb", "Fb" };
+                    const names = if (fifths > 0) [_][]const u8{ "F#", "C#", "G#", "D#", "A#", "E#", "B#" } else [_][]const u8{ "Bb", "Eb", "Ab", "Db", "Gb", "Cb", "Fb" };
                     try out.print("KEYSIG {f} {s}={d}", .{ key_value, if (fifths > 0) "sharps" else "flats", absolute(fifths) });
                     for (names[0..@intCast(absolute(fifths))]) |name| try out.print(" {s}", .{name});
                     try out.writeByte('\n');
@@ -631,7 +812,8 @@ const Session = struct {
                         const seventh = @mod(key_scale.items[(i + 6) % 7].class() - key_scale.items[i].class(), 12);
                         const quality_value: QualityName = if (kind == 0)
                             (if (third == 4) .maj else if (fifth == 7) .min else .dim)
-                            else (if (third == 4) (if (seventh == 11) .maj7 else .@"7") else if (fifth == 7) .m7 else .m7b5);
+                        else
+                            (if (third == 4) (if (seventh == 11) .maj7 else .@"7") else if (fifth == 7) .m7 else .m7b5);
                         try out.print(" {f}={f}", .{ Roman{ .degree = i, .quality = quality_value }, Chord{ .root = key_scale.items[i], .quality = quality_value } });
                     }
                     try out.writeByte('\n');
@@ -658,11 +840,20 @@ const Session = struct {
                         for (pitches[0 .. count - 1]) |pitch_value| {
                             var found = false;
                             for (key_scale.list()) |candidate| {
-                                if (candidate.same(pitch_value)) { found = true; break; }
+                                if (candidate.same(pitch_value)) {
+                                    found = true;
+                                    break;
+                                }
                             }
-                            if (!found) { matches = false; break; }
+                            if (!found) {
+                                matches = false;
+                                break;
+                            }
                         }
-                        if (matches) { keys[len] = key_value; len += 1; }
+                        if (matches) {
+                            keys[len] = key_value;
+                            len += 1;
+                        }
                     }
                 }
                 try out.print("FINDKEY {d}", .{len});
@@ -675,7 +866,10 @@ const Session = struct {
                 const key_scale = try session.scale(key_value);
                 var pitch_value = standardNote(midi, key_value.fifths() < 0).pitch;
                 for (key_scale.list()) |candidate| {
-                    if (candidate.class() == @mod(midi, 12)) { pitch_value = candidate; break; }
+                    if (candidate.class() == @mod(midi, 12)) {
+                        pitch_value = candidate;
+                        break;
+                    }
                 }
                 const note_value = fromMidi(pitch_value, midi);
                 if (!note_value.valid()) return session.fail("OUT OF RANGE", .{});
@@ -691,8 +885,7 @@ const Session = struct {
                 const first = first_scale.mask();
                 const second = second_scale.mask();
                 const same_tonic = a.tonic.class() == b.tonic.class();
-                const relation: []const u8 = if (first == second) (if (same_tonic) "same" else "relative")
-                    else if (same_tonic) "parallel" else if (absolute(difference) == 1) "close" else "distant";
+                const relation: []const u8 = if (first == second) (if (same_tonic) "same" else "relative") else if (same_tonic) "parallel" else if (absolute(difference) == 1) "close" else "distant";
                 try line(out, "KEYDIST {f} {f} fifths={f} common={d} relation={s}", .{ a, b, Signed{ .value = difference }, @popCount(first & second), relation });
             },
         }

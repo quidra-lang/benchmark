@@ -37,9 +37,15 @@ const Node = struct {
     name: Text = "",
     content: Content,
 
-    fn kind(node: *const Node) Kind { return std.meta.activeTag(node.content); }
+    fn kind(node: *const Node) Kind {
+        return std.meta.activeTag(node.content);
+    }
     fn tag(node: *const Node) u8 {
-        return switch (node.content) { .directory => 'd', .file => '-', .link => 'l' };
+        return switch (node.content) {
+            .directory => 'd',
+            .file => '-',
+            .link => 'l',
+        };
     }
     fn size(node: *const Node) u64 {
         return switch (node.content) {
@@ -79,7 +85,10 @@ const Node = struct {
     }
 };
 const Failure = enum {
-    none, missing, not_directory, loop,
+    none,
+    missing,
+    not_directory,
+    loop,
     fn reason(failure: Failure) Text {
         return switch (failure) {
             .none => "",
@@ -94,12 +103,16 @@ const Resolution = struct {
     failure: Failure = .none,
     parent: ?*Node = null,
     name: Text = "",
-    fn absent(result: Resolution) bool { return result.parent != null; }
+    fn absent(result: Resolution) bool {
+        return result.parent != null;
+    }
 };
 const Options = struct {
     flags: [26]bool = @splat(false),
     args: []const Text,
-    fn has(opts: Options, flag: u8) bool { return opts.flags[flag - 'a']; }
+    fn has(opts: Options, flag: u8) bool {
+        return opts.flags[flag - 'a'];
+    }
 };
 fn options(args: []const Text) Options {
     var result: Options = .{ .args = args };
@@ -110,7 +123,9 @@ fn options(args: []const Text) Options {
     result.args = args[at..];
     return result;
 }
-fn equal(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
 fn lastComponent(path: Text) Text {
     const at = std.mem.findLast(u8, path, "/") orelse return path;
     return path[at + 1 ..];
@@ -128,8 +143,7 @@ fn descendant(node: *Node, ancestor: *Node) bool {
     }
 }
 fn joined(gpa: Allocator, path: Text, name: Text) Allocator.Error!Text {
-    return if (equal(path, "/")) std.fmt.allocPrint(gpa, "/{s}", .{name})
-        else std.fmt.allocPrint(gpa, "{s}/{s}", .{ path, name });
+    return if (equal(path, "/")) std.fmt.allocPrint(gpa, "/{s}", .{name}) else std.fmt.allocPrint(gpa, "{s}/{s}", .{ path, name });
 }
 const Output = struct {
     shell: *Shell,
@@ -195,7 +209,8 @@ const Shell = struct {
         errdefer shell.gpa.free(copied_name);
         var at: usize = 0;
         while (at < parent.content.directory.items.len and
-            std.mem.order(u8, parent.content.directory.items[at].name, name) == .lt) : (at += 1) {}
+            std.mem.order(u8, parent.content.directory.items[at].name, name) == .lt) : (at += 1)
+        {}
         try parent.content.directory.insert(shell.gpa, at, node);
         shell.gpa.free(node.name);
         node.name = copied_name;
@@ -241,7 +256,9 @@ const Shell = struct {
                 const file = try shell.create(parent, name, .{ .file = .empty });
                 try shell.writeFile(file, lines.items, false);
             },
-            .link => |target| { _ = try shell.create(parent, name, .{ .link = try shell.gpa.dupe(u8, target) }); },
+            .link => |target| {
+                _ = try shell.create(parent, name, .{ .link = try shell.gpa.dupe(u8, target) });
+            },
             .directory => |children| {
                 const directory = try shell.create(parent, name, .{ .directory = .empty });
                 for (children.items) |child| try shell.clone(child, directory, child.name);
@@ -252,14 +269,16 @@ const Shell = struct {
         var expansions: usize = 0;
         return shell.resolveFrom(path, shell.current, follow, parents, true, &expansions);
     }
-    fn resolveFrom(shell: *Shell, path: Text, base: *Node, follow: bool, parents: bool,
-        original: bool, expansions: *usize) Allocator.Error!Resolution {
+    fn resolveFrom(shell: *Shell, path: Text, base: *Node, follow: bool, parents: bool, original: bool, expansions: *usize) Allocator.Error!Resolution {
         var node = if (path[0] == '/') shell.root else base;
         var parts = std.mem.tokenizeScalar(u8, path, '/');
         while (parts.next()) |part| {
             if (node.kind() != .directory) return .{ .failure = .not_directory };
             if (equal(part, ".")) continue;
-            if (equal(part, "..")) { node = node.parent; continue; }
+            if (equal(part, "..")) {
+                node = node.parent;
+                continue;
+            }
             const last = parts.peek() == null;
             const child = node.child(part) orelse blk: {
                 if (original and last) return .{ .failure = .missing, .parent = node, .name = part };
@@ -324,7 +343,9 @@ const Shell = struct {
         if (destination_result.node == null and !destination_result.absent())
             return shell.say("cp: cannot copy '{s}' to '{s}': {s}", .{ source_path, destination, destination_result.failure.reason() });
         const display = if (destination_result.node != null and destination_result.node.?.kind() == .directory)
-            try joined(shell.scratch, destination, lastComponent(source_path)) else destination;
+            try joined(shell.scratch, destination, lastComponent(source_path))
+        else
+            destination;
         const target = try shell.resolve(display, source.kind() != .directory, false);
         if (source.kind() == .directory) {
             if (target.node != null) return shell.say("cp: cannot copy '{s}' to '{s}': File exists", .{ source_path, display });
@@ -345,7 +366,9 @@ const Shell = struct {
         const Entry = struct {
             name: Text,
             node: *Node,
-            fn newer(_: void, a: @This(), b: @This()) bool { return a.node.modified > b.node.modified; }
+            fn newer(_: void, a: @This(), b: @This()) bool {
+                return a.node.modified > b.node.modified;
+            }
         };
         for (paths) |path| {
             const result = try shell.resolve(path, !opts.has('l'), false);
@@ -398,9 +421,7 @@ const Shell = struct {
         } else ".";
         var filter: Find = .{};
         while (at < args.len) : (at += 2) {
-            if (equal(args[at], "-name")) filter.pattern = args[at + 1]
-            else if (equal(args[at], "-type")) filter.kind = args[at + 1][0]
-            else filter.depth = std.fmt.parseInt(usize, args[at + 1], 10) catch unreachable;
+            if (equal(args[at], "-name")) filter.pattern = args[at + 1] else if (equal(args[at], "-type")) filter.kind = args[at + 1][0] else filter.depth = std.fmt.parseInt(usize, args[at + 1], 10) catch unreachable;
         }
         const result = try shell.resolve(path, true, false);
         const node = result.node orelse return shell.say("find: '{s}': {s}", .{ path, result.failure.reason() });
@@ -431,8 +452,7 @@ const Shell = struct {
         var total: u64 = if (node.kind() == .directory) 0 else node.size();
         if (node.kind() == .directory) {
             for (node.content.directory.items) |child| {
-                total += try shell.usage(child, try joined(shell.scratch, path, child.name), opts,
-                    !opts.has('s') and (child.kind() == .directory or opts.has('a')), output);
+                total += try shell.usage(child, try joined(shell.scratch, path, child.name), opts, !opts.has('s') and (child.kind() == .directory or opts.has('a')), output);
             }
         }
         if (show) try output.print("{d} {s}", .{ total, path });
@@ -567,8 +587,7 @@ const Shell = struct {
             while (first < part.lines.len) {
                 var end = first + 1;
                 while (end < part.lines.len and equal(part.lines[first].text, part.lines[end].text)) : (end += 1) {}
-                if (opts.has('c')) try output.print("{d} {s}", .{ end - first, part.lines[first].text })
-                else try output.line(part.lines[first]);
+                if (opts.has('c')) try output.print("{d} {s}", .{ end - first, part.lines[first].text }) else try output.line(part.lines[first]);
                 first = end;
             }
         }
@@ -638,16 +657,14 @@ const Shell = struct {
                     .link => "symbolic link",
                     .file => |lines| if (lines.items.len == 0) "regular empty file" else "regular file",
                 };
-                try output.print("{s}: {s}, size {d}, inode {d}, links {d}, modified {d}",
-                    .{ path, kind, node.size(), node.inode, node.links(), node.modified });
+                try output.print("{s}: {s}, size {d}, inode {d}, links {d}, modified {d}", .{ path, kind, node.size(), node.inode, node.links(), node.modified });
             },
             .rm, .rmdir => {
                 const opts = if (verb == .rm) options(args) else Options{ .args = args };
                 for (opts.args) |path| {
                     const last = lastComponent(path);
                     if (equal(last, ".") or equal(last, "..")) {
-                        if (verb == .rm) try shell.say("rm: refusing to remove '.' or '..' directory: skipping '{s}'", .{path})
-                        else try shell.say("rmdir: failed to remove '{s}': Invalid argument", .{path});
+                        if (verb == .rm) try shell.say("rm: refusing to remove '.' or '..' directory: skipping '{s}'", .{path}) else try shell.say("rmdir: failed to remove '{s}': Invalid argument", .{path});
                         continue;
                     }
                     const result = try shell.resolve(path, false, false);
@@ -667,8 +684,7 @@ const Shell = struct {
                         reason = result.failure.reason();
                     }
                     if (reason) |message| {
-                        if (verb == .rm) try shell.say("rm: cannot remove '{s}': {s}", .{ path, message })
-                        else try shell.say("rmdir: failed to remove '{s}': {s}", .{ path, message });
+                        if (verb == .rm) try shell.say("rm: cannot remove '{s}': {s}", .{ path, message }) else try shell.say("rmdir: failed to remove '{s}': {s}", .{ path, message });
                     }
                 }
             },
@@ -682,8 +698,7 @@ const Shell = struct {
                         return shell.say("{s}: target '{s}' is not a directory", .{ @tagName(verb), destination });
                 }
                 for (sources) |source| {
-                    if (verb == .mv) try shell.move(source, destination)
-                    else try shell.copy(source, destination, opts.has('r'));
+                    if (verb == .mv) try shell.move(source, destination) else try shell.copy(source, destination, opts.has('r'));
                 }
             },
             .ln => {
@@ -692,16 +707,13 @@ const Shell = struct {
                 const result = try shell.resolve(path, false, false);
                 if (result.absent()) {
                     _ = try shell.create(result.parent.?, result.name, .{ .link = try shell.gpa.dupe(u8, target) });
-                } else try shell.say("ln: failed to create symbolic link '{s}': {s}",
-                    .{ path, if (result.node != null) @as(Text, "File exists") else result.failure.reason() });
+                } else try shell.say("ln: failed to create symbolic link '{s}': {s}", .{ path, if (result.node != null) @as(Text, "File exists") else result.failure.reason() });
             },
             .readlink, .realpath => {
                 const path = args[0];
                 const result = try shell.resolve(path, verb == .realpath, false);
                 const node = result.node orelse return shell.say("{s}: {s}: {s}", .{ @tagName(verb), path, result.failure.reason() });
-                if (verb == .realpath) try output.text(try shell.absolute(node))
-                else if (node.kind() == .link) try output.text(node.content.link)
-                else try shell.say("readlink: {s}: Invalid argument", .{path});
+                if (verb == .realpath) try output.text(try shell.absolute(node)) else if (node.kind() == .link) try output.text(node.content.link) else try shell.say("readlink: {s}: Invalid argument", .{path});
             },
             .find => try shell.find(args, output),
             .du => try shell.diskUsage(args, output),
@@ -794,9 +806,7 @@ const Grep = struct {
             if (contains(line.text, filter.pattern, filter.options.has('i')) == filter.options.has('v')) continue;
             selected += 1;
             if (!filter.options.has('c')) {
-                if (filter.options.has('n')) try output.print("{s}{d}:{s}", .{ prefix, i + 1, line.text })
-                else if (prefix.len != 0) try output.print("{s}{s}", .{ prefix, line.text })
-                else try output.line(line);
+                if (filter.options.has('n')) try output.print("{s}{d}:{s}", .{ prefix, i + 1, line.text }) else if (prefix.len != 0) try output.print("{s}{s}", .{ prefix, line.text }) else try output.line(line);
             }
         }
         if (filter.options.has('c')) try output.print("{s}{d}", .{ prefix, selected });
@@ -808,14 +818,19 @@ fn digits(value: u64) usize {
     while (remaining >= 10) : (remaining /= 10) count += 1;
     return count;
 }
-fn lower(c: u8) u8 { return if (c >= 'A' and c <= 'Z') c - 'A' + 'a' else c; }
+fn lower(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c - 'A' + 'a' else c;
+}
 fn contains(text: Text, pattern: Text, ignore_case: bool) bool {
     if (!ignore_case) return std.mem.find(u8, text, pattern) != null;
     if (pattern.len > text.len) return false;
     for (0..text.len - pattern.len + 1) |i| {
         var matched = true;
         for (pattern, text[i .. i + pattern.len]) |a, b| {
-            if (lower(a) != lower(b)) { matched = false; break; }
+            if (lower(a) != lower(b)) {
+                matched = false;
+                break;
+            }
         }
         if (matched) return true;
     }
@@ -828,8 +843,7 @@ fn globMatch(pattern: Text, text: Text) bool {
         var next: [17]bool = @splat(false);
         next[0] = character == '*' and previous[0];
         for (1..text.len + 1) |i| {
-            next[i] = if (character == '*') previous[i] or next[i - 1]
-                else previous[i - 1] and (character == '?' or character == text[i - 1]);
+            next[i] = if (character == '*') previous[i] or next[i - 1] else previous[i - 1] and (character == '?' or character == text[i - 1]);
         }
         previous = next;
     }

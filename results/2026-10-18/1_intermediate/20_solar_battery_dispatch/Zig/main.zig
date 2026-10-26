@@ -3,10 +3,18 @@ const Allocator = std.mem.Allocator;
 const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 const weekdays = [_][]const u8{ "MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN" };
 const flow_names = [_][]const u8{ "PV>LOAD", "PV>BATTERY", "PV>GRID", "PV>CURTAIL", "BATTERY>LOAD", "BATTERY>GRID", "GRID>LOAD", "GRID>BATTERY" };
-fn integer(s: []const u8) i64 { return std.fmt.parseInt(i64, s, 10) catch unreachable; }
-fn ix(n: i64) usize { return @intCast(n); }
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn ceilDiv(a: i64, b: i64) i64 { return @divFloor(a + b - 1, b); }
+fn integer(s: []const u8) i64 {
+    return std.fmt.parseInt(i64, s, 10) catch unreachable;
+}
+fn ix(n: i64) usize {
+    return @intCast(n);
+}
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn ceilDiv(a: i64, b: i64) i64 {
+    return @divFloor(a + b - 1, b);
+}
 fn money(gpa: Allocator, cents: i64) Allocator.Error![]const u8 {
     const magnitude = @abs(cents);
     return std.fmt.allocPrint(gpa, "{s}{d}.{d:0>2}", .{ if (cents < 0) "-" else "", magnitude / 100, magnitude % 100 });
@@ -23,24 +31,68 @@ fn bar(out: *std.Io.Writer, width: i64) std.Io.Writer.Error!void {
 }
 
 const Settings = struct {
-    capacity: i64, initial: i64, charge: i64, discharge: i64, ceff: i64, deff: i64, reserve: i64, cost: i64,
-    export_limit: i64, feedin: i64, fixed: i64, demand: i64, pvscale: i64 = 100,
+    capacity: i64,
+    initial: i64,
+    charge: i64,
+    discharge: i64,
+    ceff: i64,
+    deff: i64,
+    reserve: i64,
+    cost: i64,
+    export_limit: i64,
+    feedin: i64,
+    fixed: i64,
+    demand: i64,
+    pvscale: i64 = 100,
 };
 const Item = enum {
-    CAPACITY, INITIAL, CHARGE, DISCHARGE, CEFF, DEFF, RESERVE, COST, EXPORT, FEEDIN, FIXED, DEMAND, PVSCALE,
+    CAPACITY,
+    INITIAL,
+    CHARGE,
+    DISCHARGE,
+    CEFF,
+    DEFF,
+    RESERVE,
+    COST,
+    EXPORT,
+    FEEDIN,
+    FIXED,
+    DEMAND,
+    PVSCALE,
     const fields = [_][]const u8{ "capacity", "initial", "charge", "discharge", "ceff", "deff", "reserve", "cost", "export_limit", "feedin", "fixed", "demand", "pvscale" };
-    fn minimum(item: Item) i64 { return switch (item) { .CAPACITY, .CHARGE, .DISCHARGE, .CEFF, .DEFF => 1, else => 0 }; }
-    fn maximum(item: Item) i64 {
-        return switch (item) { .INITIAL, .CEFF, .DEFF, .RESERVE => 100, .CHARGE, .DISCHARGE => 20000, .FEEDIN => 10000, .PVSCALE => 300, else => 100000 };
+    fn minimum(item: Item) i64 {
+        return switch (item) {
+            .CAPACITY, .CHARGE, .DISCHARGE, .CEFF, .DEFF => 1,
+            else => 0,
+        };
     }
-    fn get(item: Item, s: Settings) i64 { switch (item) { inline else => |tag| return @field(s, fields[@intFromEnum(tag)]), } }
-    fn set(item: Item, s: *Settings, value: i64) void { switch (item) { inline else => |tag| @field(s, fields[@intFromEnum(tag)]) = value, } }
+    fn maximum(item: Item) i64 {
+        return switch (item) {
+            .INITIAL, .CEFF, .DEFF, .RESERVE => 100,
+            .CHARGE, .DISCHARGE => 20000,
+            .FEEDIN => 10000,
+            .PVSCALE => 300,
+            else => 100000,
+        };
+    }
+    fn get(item: Item, s: Settings) i64 {
+        switch (item) {
+            inline else => |tag| return @field(s, fields[@backingInt(tag)]),
+        }
+    }
+    fn set(item: Item, s: *Settings, value: i64) void {
+        switch (item) {
+            inline else => |tag| @field(s, fields[@backingInt(tag)]) = value,
+        }
+    }
 };
 const Kind = enum { SELF, TOU, PEAKSHAVE, BACKUP, EXPORTPEAK };
 const Strategy = struct {
     kind: Kind,
     parameter: i64 = 0,
-    fn hasParameter(s: Strategy) bool { return s.kind == .TOU or s.kind == .PEAKSHAVE or s.kind == .BACKUP; }
+    fn hasParameter(s: Strategy) bool {
+        return s.kind == .TOU or s.kind == .PEAKSHAVE or s.kind == .BACKUP;
+    }
     fn text(s: Strategy, gpa: Allocator) Allocator.Error![]const u8 {
         return if (s.hasParameter()) std.fmt.allocPrint(gpa, "{s} {d}", .{ @tagName(s.kind), s.parameter }) else @tagName(s.kind);
     }
@@ -50,9 +102,15 @@ const Data = struct {
     period_names: []const []const u8,
     hours: []HourInput,
     holiday: []bool,
-    fn days(data: Data) usize { return data.holiday.len; }
-    fn weekend(data: Data, day: usize) bool { return data.holiday[day] or day % 7 >= 5; }
-    fn dayName(data: Data, day: usize) []const u8 { return if (data.holiday[day]) "HOL" else weekdays[day % 7]; }
+    fn days(data: Data) usize {
+        return data.holiday.len;
+    }
+    fn weekend(data: Data, day: usize) bool {
+        return data.holiday[day] or day % 7 >= 5;
+    }
+    fn dayName(data: Data, day: usize) []const u8 {
+        return if (data.holiday[day]) "HOL" else weekdays[day % 7];
+    }
     fn periodIndex(data: Data, name: []const u8) ?usize {
         for (data.period_names, 0..) |period, i| if (equal(period, name)) return i;
         return null;
@@ -68,13 +126,25 @@ const Data = struct {
     }
 };
 const Metrics = struct {
-    load: i64 = 0, pv: i64 = 0, charge: i64 = 0, discharge: i64 = 0, drawn: i64 = 0, soc: i64 = 0,
-    imported: i64 = 0, exported: i64 = 0, curtailed: i64 = 0, shortfall: i64 = 0, loss: i64 = 0,
-    import_cost: i64 = 0, export_income: i64 = 0,
+    load: i64 = 0,
+    pv: i64 = 0,
+    charge: i64 = 0,
+    discharge: i64 = 0,
+    drawn: i64 = 0,
+    soc: i64 = 0,
+    imported: i64 = 0,
+    exported: i64 = 0,
+    curtailed: i64 = 0,
+    shortfall: i64 = 0,
+    loss: i64 = 0,
+    import_cost: i64 = 0,
+    export_income: i64 = 0,
     fn add(total: *Metrics, values: Metrics) void {
         inline for (@typeInfo(Metrics).@"struct".field_names) |name| @field(total, name) += @field(values, name);
     }
-    fn net(values: Metrics) i64 { return values.import_cost - values.export_income; }
+    fn net(values: Metrics) i64 {
+        return values.import_cost - values.export_income;
+    }
 };
 const Record = struct { values: Metrics, period: usize, flows: [8]i64 };
 const Outage = struct { first: usize, last: usize };
@@ -92,9 +162,15 @@ const Result = struct {
     peak: i64 = 0,
     demand_charge: i64 = 0,
     bill: i64 = 0,
-    fn deinit(result: *Result) void { std.heap.page_allocator.free(result.records); }
-    fn endSoc(result: Result) i64 { return result.records[result.records.len - 1].values.soc; }
-    fn sufficiency(result: Result, gpa: Allocator) Allocator.Error![]const u8 { return percentage(gpa, @max(0, result.total.load - result.total.imported), result.total.load); }
+    fn deinit(result: *Result) void {
+        std.heap.page_allocator.free(result.records);
+    }
+    fn endSoc(result: Result) i64 {
+        return result.records[result.records.len - 1].values.soc;
+    }
+    fn sufficiency(result: Result, gpa: Allocator) Allocator.Error![]const u8 {
+        return percentage(gpa, @max(0, result.total.load - result.total.imported), result.total.load);
+    }
     fn sum(result: Result, first: usize, last: usize) Metrics {
         var total: Metrics = .{};
         for (result.records[first..last]) |record| total.add(record.values);
@@ -161,11 +237,9 @@ fn simulate(data: Data, s: Settings, prices: [6]i64, strategy: Strategy, outage:
         }
         const curtailed = surplus - e1;
         record.* = .{
-            .values = .{ .load = input.load, .pv = pv, .charge = x1 + x2, .discharge = d1 + d2, .drawn = y1 + y2, .soc = soc,
-                .imported = g + x2, .exported = e1 + d2, .curtailed = curtailed, .shortfall = if (off) deficit else 0,
-                .loss = x1 - stored1 + x2 - @divFloor(x2 * s.ceff, 100) + y1 - d1 + y2 - d2,
-                .import_cost = @divFloor((g + x2) * prices[p], 100000), .export_income = @divFloor((e1 + d2) * s.feedin, 100000) },
-            .period = p, .flows = .{ u, x1, e1, curtailed, d1, d2, g, x2 },
+            .values = .{ .load = input.load, .pv = pv, .charge = x1 + x2, .discharge = d1 + d2, .drawn = y1 + y2, .soc = soc, .imported = g + x2, .exported = e1 + d2, .curtailed = curtailed, .shortfall = if (off) deficit else 0, .loss = x1 - stored1 + x2 - @divFloor(x2 * s.ceff, 100) + y1 - d1 + y2 - d2, .import_cost = @divFloor((g + x2) * prices[p], 100000), .export_income = @divFloor((e1 + d2) * s.feedin, 100000) },
+            .period = p,
+            .flows = .{ u, x1, e1, curtailed, d1, d2, g, x2 },
         };
         result.total.add(record.values);
         result.periods[p].add(record.values);
@@ -185,12 +259,21 @@ fn baseline(data: Data, settings: Settings, prices: [6]i64) Allocator.Error!Resu
 
 const Command = enum { RUN, SET, PRICE, RESET, CONFIG, NOBATTERY, COMPARE, SIZE, SWEEP, OUTAGE, DIFF, HOURLY, DAILY, BILL, SAVINGS, BYPERIOD, DAYTYPE, PEAKS, PROFILE, FLOWS, SELFSUFF, CYCLES, USAGE, HISTOGRAM, CHART, END };
 const Comparison = struct {
-    strategy: Strategy, bill: i64, load: i64, imported: i64, order: usize,
-    fn less(_: void, a: Comparison, b: Comparison) bool { return if (a.bill == b.bill) a.order < b.order else a.bill < b.bill; }
+    strategy: Strategy,
+    bill: i64,
+    load: i64,
+    imported: i64,
+    order: usize,
+    fn less(_: void, a: Comparison, b: Comparison) bool {
+        return if (a.bill == b.bill) a.order < b.order else a.bill < b.bill;
+    }
 };
 const Peak = struct {
-    index: usize, imported: i64,
-    fn less(_: void, a: Peak, b: Peak) bool { return if (a.imported == b.imported) a.index < b.index else a.imported > b.imported; }
+    index: usize,
+    imported: i64,
+    fn less(_: void, a: Peak, b: Peak) bool {
+        return if (a.imported == b.imported) a.index < b.index else a.imported > b.imported;
+    }
 };
 const App = struct {
     data: Data,
@@ -257,7 +340,10 @@ const App = struct {
         const cmd = std.meta.stringToEnum(Command, words[0]) orelse return app.fail(gpa, "unknown command {s}", .{words[0]});
         const a = words[1..];
         switch (cmd) {
-            .END => { try app.arity(gpa, a, 0); return true; },
+            .END => {
+                try app.arity(gpa, a, 0);
+                return true;
+            },
             .RUN => {
                 const strategy = try app.oneStrategy(gpa, a);
                 var trial = try simulate(app.data, app.settings, app.prices, strategy, null);
@@ -291,7 +377,10 @@ const App = struct {
                 app.prices = app.initial_prices;
                 try out.writeAll("RESET\n");
             },
-            .CONFIG => { try app.arity(gpa, a, 0); try app.config(out); },
+            .CONFIG => {
+                try app.arity(gpa, a, 0);
+                try app.config(out);
+            },
             .NOBATTERY => {
                 try app.arity(gpa, a, 0);
                 var base = try baseline(app.data, app.settings, app.prices);
@@ -408,7 +497,10 @@ const App = struct {
                 if (count < 1) return app.fail(gpa, "invalid count", .{});
                 try app.report(gpa, out, cmd, 0, ix(count));
             },
-            else => { try app.arity(gpa, a, 0); try app.report(gpa, out, cmd, 0, 0); },
+            else => {
+                try app.arity(gpa, a, 0);
+                try app.report(gpa, out, cmd, 0, 0);
+            },
         }
         return false;
     }

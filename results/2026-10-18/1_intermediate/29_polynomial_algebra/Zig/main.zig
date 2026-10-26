@@ -2,22 +2,70 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const SemanticError = error{
-    BadCommand, SameName, ZeroDenominator, DivisionByZero, NonconstantDivisor,
-    DegreeLimit, ZeroPolynomial, BadInterval, DegreeTooLow, NotCoprime,
+    BadCommand,
+    SameName,
+    ZeroDenominator,
+    DivisionByZero,
+    NonconstantDivisor,
+    DegreeLimit,
+    ZeroPolynomial,
+    BadInterval,
+    DegreeTooLow,
+    NotCoprime,
 };
 const Error = SemanticError || Allocator.Error || Writer.Error;
 const Command = enum {
-    DEF, PRINT, DELETE, LIST, DEGREE, ADD, SUB, MUL, POW, DIV, GCD, XGCD, LCM,
-    INVMOD, CRT, MODPOW, DERIV, INTEG, AREA, TANGENT, TAYLOR, COMPOSE, EVAL,
-    ROOTS, FACTOR, SQFREE, DESCARTES, STURM, ISOLATE, RESULTANT, DISCRIM,
-    POWERSUM, INTERP, SPECIAL,
+    DEF,
+    PRINT,
+    DELETE,
+    LIST,
+    DEGREE,
+    ADD,
+    SUB,
+    MUL,
+    POW,
+    DIV,
+    GCD,
+    XGCD,
+    LCM,
+    INVMOD,
+    CRT,
+    MODPOW,
+    DERIV,
+    INTEG,
+    AREA,
+    TANGENT,
+    TAYLOR,
+    COMPOSE,
+    EVAL,
+    ROOTS,
+    FACTOR,
+    SQFREE,
+    DESCARTES,
+    STURM,
+    ISOLATE,
+    RESULTANT,
+    DISCRIM,
+    POWERSUM,
+    INTERP,
+    SPECIAL,
 };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn integer(text: []const u8) i64 { return std.fmt.parseInt(i64, text, 10) catch unreachable; }
-fn natural(text: []const u8) usize { return @intCast(integer(text)); }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
-fn absolute(value: i64) i64 { return if (value < 0) -value else value; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn integer(text: []const u8) i64 {
+    return std.fmt.parseInt(i64, text, 10) catch unreachable;
+}
+fn natural(text: []const u8) usize {
+    return @intCast(integer(text));
+}
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
+fn absolute(value: i64) i64 {
+    return if (value < 0) -value else value;
+}
 fn gcd(a: i64, b: i64) i64 {
     var x = absolute(a);
     var y = absolute(b);
@@ -39,7 +87,9 @@ const Fraction = struct {
         const divisor = gcd(n, d) * @as(i64, if (d < 0) -1 else 1);
         return .{ .n = @divTrunc(n, divisor), .d = @divTrunc(d, divisor) };
     }
-    fn whole(n: i64) Fraction { return .{ .n = n }; }
+    fn whole(n: i64) Fraction {
+        return .{ .n = n };
+    }
     fn parse(text: []const u8) SemanticError!Fraction {
         const slash = std.mem.findScalar(u8, text, '/');
         const n = integer(if (slash) |i| text[0..i] else text);
@@ -47,17 +97,39 @@ const Fraction = struct {
         if (d == 0) return error.ZeroDenominator;
         return init(n, d);
     }
-    fn add(a: Fraction, b: Fraction) Fraction { return init(a.n * b.d + b.n * a.d, a.d * b.d); }
-    fn sub(a: Fraction, b: Fraction) Fraction { return init(a.n * b.d - b.n * a.d, a.d * b.d); }
-    fn mul(a: Fraction, b: Fraction) Fraction { return init(a.n * b.n, a.d * b.d); }
-    fn div(a: Fraction, b: Fraction) Fraction { return init(a.n * b.d, a.d * b.n); }
-    fn neg(a: Fraction) Fraction { return .{ .n = -a.n, .d = a.d }; }
-    fn abs(a: Fraction) Fraction { return .{ .n = absolute(a.n), .d = a.d }; }
-    fn isZero(a: Fraction) bool { return a.n == 0; }
-    fn sign(a: Fraction) i32 { return if (a.n < 0) -1 else if (a.n > 0) 1 else 0; }
-    fn eq(a: Fraction, b: Fraction) bool { return a.n == b.n and a.d == b.d; }
-    fn less(a: Fraction, b: Fraction) bool { return a.n * b.d < b.n * a.d; }
-    fn lessThan(_: void, a: Fraction, b: Fraction) bool { return a.less(b); }
+    fn add(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.d + b.n * a.d, a.d * b.d);
+    }
+    fn sub(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.d - b.n * a.d, a.d * b.d);
+    }
+    fn mul(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.n, a.d * b.d);
+    }
+    fn div(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.d, a.d * b.n);
+    }
+    fn neg(a: Fraction) Fraction {
+        return .{ .n = -a.n, .d = a.d };
+    }
+    fn abs(a: Fraction) Fraction {
+        return .{ .n = absolute(a.n), .d = a.d };
+    }
+    fn isZero(a: Fraction) bool {
+        return a.n == 0;
+    }
+    fn sign(a: Fraction) i32 {
+        return if (a.n < 0) -1 else if (a.n > 0) 1 else 0;
+    }
+    fn eq(a: Fraction, b: Fraction) bool {
+        return a.n == b.n and a.d == b.d;
+    }
+    fn less(a: Fraction, b: Fraction) bool {
+        return a.n * b.d < b.n * a.d;
+    }
+    fn lessThan(_: void, a: Fraction, b: Fraction) bool {
+        return a.less(b);
+    }
     fn power(a: Fraction, exponent: usize) Fraction {
         var result = one;
         for (0..exponent) |_| result = result.mul(a);
@@ -88,10 +160,18 @@ const Polynomial = struct {
     fn constant(gpa: Allocator, value: Fraction) Allocator.Error!Polynomial {
         return if (value.isZero()) zero else init(gpa, &.{value});
     }
-    fn degree(value: Polynomial) i32 { return @as(i32, @intCast(value.coefficients.len)) - 1; }
-    fn isZero(value: Polynomial) bool { return value.coefficients.len == 0; }
-    fn leading(value: Polynomial) Fraction { return value.coefficients[value.coefficients.len - 1]; }
-    fn at(value: Polynomial, index: usize) Fraction { return if (index < value.coefficients.len) value.coefficients[index] else Fraction.zero; }
+    fn degree(value: Polynomial) i32 {
+        return @as(i32, @intCast(value.coefficients.len)) - 1;
+    }
+    fn isZero(value: Polynomial) bool {
+        return value.coefficients.len == 0;
+    }
+    fn leading(value: Polynomial) Fraction {
+        return value.coefficients[value.coefficients.len - 1];
+    }
+    fn at(value: Polynomial, index: usize) Fraction {
+        return if (index < value.coefficients.len) value.coefficients[index] else Fraction.zero;
+    }
     fn add(a: Polynomial, gpa: Allocator, b: Polynomial) Allocator.Error!Polynomial {
         const result = try gpa.alloc(Fraction, @max(a.coefficients.len, b.coefficients.len));
         for (result, 0..) |*value, i| value.* = a.at(i).add(b.at(i));
@@ -228,14 +308,20 @@ const Polynomial = struct {
         }
         return Fraction.init(if (a.leading().n < 0) -numerator else numerator, denominator);
     }
-    fn primitive(a: Polynomial, gpa: Allocator) Allocator.Error!Polynomial { return a.divideScalar(gpa, a.content()); }
+    fn primitive(a: Polynomial, gpa: Allocator) Allocator.Error!Polynomial {
+        return a.divideScalar(gpa, a.content());
+    }
     fn squareFreePart(a: Polynomial, gpa: Allocator) Allocator.Error!Polynomial {
         if (a.degree() < 1) return a;
         const common = try greatestCommonDivisor(gpa, a, try a.derivative(gpa, 1));
         return (try a.divide(gpa, common)).quotient;
     }
-    fn notation(a: Polynomial, variable_text: []const u8) Notation { return .{ .value = a, .variable = variable_text }; }
-    pub fn format(a: Polynomial, out: *Writer) Writer.Error!void { try a.notation("x").format(out); }
+    fn notation(a: Polynomial, variable_text: []const u8) Notation {
+        return .{ .value = a, .variable = variable_text };
+    }
+    pub fn format(a: Polynomial, out: *Writer) Writer.Error!void {
+        try a.notation("x").format(out);
+    }
 };
 const Notation = struct {
     value: Polynomial,
@@ -269,9 +355,15 @@ fn checkPower(a: Polynomial, exponent: usize) SemanticError!void {
 fn checkComposition(a: Polynomial, b: Polynomial) SemanticError!void {
     if (a.degree() >= 1 and b.degree() >= 1 and a.degree() * b.degree() > 30) return error.DegreeLimit;
 }
-fn checkNonzero(a: Polynomial) SemanticError!void { if (a.isZero()) return error.ZeroPolynomial; }
-fn checkDivisor(a: Polynomial) SemanticError!void { if (a.isZero()) return error.DivisionByZero; }
-fn checkPositiveDegree(a: Polynomial) SemanticError!void { if (a.degree() == 0) return error.DegreeTooLow; }
+fn checkNonzero(a: Polynomial) SemanticError!void {
+    if (a.isZero()) return error.ZeroPolynomial;
+}
+fn checkDivisor(a: Polynomial) SemanticError!void {
+    if (a.isZero()) return error.DivisionByZero;
+}
+fn checkPositiveDegree(a: Polynomial) SemanticError!void {
+    if (a.degree() == 0) return error.DegreeTooLow;
+}
 
 const Expression = union(enum) {
     number: i64,
@@ -300,7 +392,10 @@ const Expression = union(enum) {
                 switch (binary.operation) {
                     '+' => return a.add(gpa, b),
                     '-' => return a.sub(gpa, b),
-                    '*' => { try checkProduct(a, b); return a.mul(gpa, b); },
+                    '*' => {
+                        try checkProduct(a, b);
+                        return a.mul(gpa, b);
+                    },
                     else => {
                         try checkDivisor(b);
                         if (b.degree() >= 1) return error.NonconstantDivisor;
@@ -325,13 +420,20 @@ const Parser = struct {
     count: usize = 0,
     position: usize = 0,
 
-    fn digit(ch: u8) bool { return ch >= '0' and ch <= '9'; }
-    fn upper(ch: u8) bool { return ch >= 'A' and ch <= 'Z'; }
+    fn digit(ch: u8) bool {
+        return ch >= '0' and ch <= '9';
+    }
+    fn upper(ch: u8) bool {
+        return ch >= 'A' and ch <= 'Z';
+    }
     fn init(session: *Session, source: []const u8) Parser {
         var parser: Parser = .{ .session = session };
         var i: usize = 0;
         while (i < source.len) {
-            if (source[i] == ' ') { i += 1; continue; }
+            if (source[i] == ' ') {
+                i += 1;
+                continue;
+            }
             const start = i;
             i += 1;
             const kind: TokenKind = if (digit(source[start])) .number else if (upper(source[start])) .name else .symbol;
@@ -346,8 +448,12 @@ const Parser = struct {
         parser.tokens[parser.count] = .{ .kind = .end, .text = "", .position = source.len + 1 };
         return parser;
     }
-    fn current(parser: *const Parser) Token { return parser.tokens[parser.position]; }
-    fn at(parser: *const Parser, symbol: []const u8) bool { return equal(parser.current().text, symbol); }
+    fn current(parser: *const Parser) Token {
+        return parser.tokens[parser.position];
+    }
+    fn at(parser: *const Parser, symbol: []const u8) bool {
+        return equal(parser.current().text, symbol);
+    }
     fn syntax(parser: *Parser) Error {
         if (parser.current().kind == .end) return parser.session.fail("SYNTAX AT END", .{});
         return parser.session.fail("SYNTAX AT {d}", .{parser.current().position});
@@ -409,11 +515,17 @@ const Parser = struct {
             parser.position += 1;
             return parser.node(.{ .number = integer(token.text) });
         }
-        if (parser.at("x")) { parser.position += 1; return parser.node(.variable); }
+        if (parser.at("x")) {
+            parser.position += 1;
+            return parser.node(.variable);
+        }
         if (token.kind == .name) {
             parser.position += 1;
             var order: usize = 0;
-            while (parser.at("'")) { parser.position += 1; order += 1; }
+            while (parser.at("'")) {
+                parser.position += 1;
+                order += 1;
+            }
             const reference = try parser.node(.{ .name = .{ .text = token.text, .order = order } });
             if (!parser.at("(")) return reference;
             parser.position += 1;
@@ -443,14 +555,15 @@ const Endpoint = struct {
         return if (a.infinity == 0 and b.infinity == 0) a.value.less(b.value) else a.infinity < b.infinity;
     }
     pub fn format(value: Endpoint, out: *Writer) Writer.Error!void {
-        if (value.infinity == 0) try out.print("{f}", .{value.value})
-        else try out.writeAll(if (value.infinity < 0) "-inf" else "inf");
+        if (value.infinity == 0) try out.print("{f}", .{value.value}) else try out.writeAll(if (value.infinity < 0) "-inf" else "inf");
     }
 };
 const Root = struct {
     value: Fraction,
     multiplicity: usize,
-    fn lessThan(_: void, a: Root, b: Root) bool { return a.value.less(b.value); }
+    fn lessThan(_: void, a: Root, b: Root) bool {
+        return a.value.less(b.value);
+    }
 };
 const Roots = struct { content: Fraction, remaining: Polynomial, roots: []const Root };
 const Factor = struct { value: Polynomial, multiplicity: usize };
@@ -612,7 +725,10 @@ fn interpolate(session: *Session, values: []const Fraction) Error!Polynomial {
     const count = values.len / 2;
     const points = try gpa.alloc(Fraction, count);
     const differences = try gpa.alloc(Fraction, count);
-    for (0..count) |i| { points[i] = values[2 * i]; differences[i] = values[2 * i + 1]; }
+    for (0..count) |i| {
+        points[i] = values[2 * i];
+        differences[i] = values[2 * i + 1];
+    }
     for (1..count) |j| {
         for (0..j) |i| if (points[j].eq(points[i])) return session.fail("DUPLICATE X {f}", .{points[j]});
     }
@@ -651,7 +767,11 @@ fn special(session: *Session, text: []const u8, degree: usize) Error!Polynomial 
             .laguerre => try Polynomial.init(gpa, &.{ Fraction.whole(2 * j + 1), Fraction.whole(-1) }),
             else => try Polynomial.init(gpa, &.{ Fraction.zero, Fraction.whole(2) }),
         };
-        const scale = switch (kind) { .legendre, .laguerre => j, .hermite => 2 * j, else => 1 };
+        const scale = switch (kind) {
+            .legendre, .laguerre => j,
+            .hermite => 2 * j,
+            else => 1,
+        };
         var next = try (try factor.mul(gpa, current)).sub(gpa, try previous.scale(gpa, Fraction.whole(scale)));
         if (kind == .legendre or kind == .laguerre) next = try next.scale(gpa, Fraction.init(1, j + 1));
         previous = current;
@@ -668,8 +788,12 @@ const Name = struct {
         @memcpy(name.bytes[0..text.len], text);
         return name;
     }
-    fn matches(name: Name, text: []const u8) bool { return equal(name.bytes[0..name.len], text); }
-    pub fn format(name: Name, out: *Writer) Writer.Error!void { try out.writeAll(name.bytes[0..name.len]); }
+    fn matches(name: Name, text: []const u8) bool {
+        return equal(name.bytes[0..name.len], text);
+    }
+    pub fn format(name: Name, out: *Writer) Writer.Error!void {
+        try out.writeAll(name.bytes[0..name.len]);
+    }
 };
 const Stored = struct {
     name: Name,
@@ -687,18 +811,20 @@ const Storage = struct {
     }
     fn set(storage: *Storage, entry: Stored) Allocator.Error!void {
         const saved: Stored = .{ .name = entry.name, .value = try Polynomial.init(storage.gpa, entry.value.coefficients) };
-        if (storage.find(entry.name.bytes[0..entry.name.len])) |i| storage.entries.items[i] = saved
-        else try storage.entries.append(storage.gpa, saved);
+        if (storage.find(entry.name.bytes[0..entry.name.len])) |i| storage.entries.items[i] = saved else try storage.entries.append(storage.gpa, saved);
     }
 };
 fn nameArguments(command: Command) []const usize {
     return switch (command) {
-        .PRINT, .DELETE, .DEGREE, .AREA, .TAYLOR, .EVAL, .ROOTS, .FACTOR, .SQFREE,
-        .DESCARTES, .STURM, .ISOLATE, .DISCRIM, .POWERSUM => &.{1},
+        .PRINT, .DELETE, .DEGREE, .AREA, .TAYLOR, .EVAL, .ROOTS, .FACTOR, .SQFREE, .DESCARTES, .STURM, .ISOLATE, .DISCRIM, .POWERSUM => &.{1},
         .ADD, .SUB, .MUL, .GCD, .LCM, .INVMOD, .COMPOSE => &.{ 2, 3 },
         .POW, .DERIV, .INTEG, .TANGENT => &.{2},
-        .DIV => &.{ 3, 4 }, .XGCD => &.{ 4, 5 }, .CRT => &.{ 2, 3, 4, 5 },
-        .MODPOW => &.{ 2, 4 }, .RESULTANT => &.{ 1, 2 }, else => &.{},
+        .DIV => &.{ 3, 4 },
+        .XGCD => &.{ 4, 5 },
+        .CRT => &.{ 2, 3, 4, 5 },
+        .MODPOW => &.{ 2, 4 },
+        .RESULTANT => &.{ 1, 2 },
+        else => &.{},
     };
 }
 const Session = struct {
@@ -739,7 +865,10 @@ const Session = struct {
         var words_buffer: [64][]const u8 = undefined;
         var word_count: usize = 0;
         var iterator = std.mem.splitScalar(u8, text, ' ');
-        while (iterator.next()) |word| { words_buffer[word_count] = word; word_count += 1; }
+        while (iterator.next()) |word| {
+            words_buffer[word_count] = word;
+            word_count += 1;
+        }
         const words = words_buffer[0..word_count];
         const command = std.meta.stringToEnum(Command, words[0]).?;
         if (command == .DIV and equal(words[1], words[2]) or command == .XGCD and
@@ -748,14 +877,28 @@ const Session = struct {
         for (nameArguments(command), 0..) |index, i| operands[i] = try session.lookup(words[index]);
         var literals: [62]Fraction = undefined;
         var literal_count: usize = 0;
-        const literal_indices: []const usize = switch (command) { .AREA => &.{ 2, 3 }, .TANGENT => &.{3}, .TAYLOR => &.{2}, else => &.{} };
-        for (literal_indices) |index| { literals[literal_count] = try Fraction.parse(words[index]); literal_count += 1; }
+        const literal_indices: []const usize = switch (command) {
+            .AREA => &.{ 2, 3 },
+            .TANGENT => &.{3},
+            .TAYLOR => &.{2},
+            else => &.{},
+        };
+        for (literal_indices) |index| {
+            literals[literal_count] = try Fraction.parse(words[index]);
+            literal_count += 1;
+        }
         if (command == .EVAL or command == .INTERP) {
-            for (words[2..]) |word| { literals[literal_count] = try Fraction.parse(word); literal_count += 1; }
+            for (words[2..]) |word| {
+                literals[literal_count] = try Fraction.parse(word);
+                literal_count += 1;
+            }
         }
         var left: Endpoint = .{};
         var right: Endpoint = .{};
-        if (command == .STURM) { left = try Endpoint.parse(words[2]); right = try Endpoint.parse(words[3]); }
+        if (command == .STURM) {
+            left = try Endpoint.parse(words[2]);
+            right = try Endpoint.parse(words[3]);
+        }
         const a = operands[0];
         const b = operands[1];
         switch (command) {
@@ -772,12 +915,14 @@ const Session = struct {
                 for (entries) |entry| try line(out, "{f} = {f}", .{ entry.name, entry.value });
             },
             .DEGREE => {
-                if (a.isZero()) try line(out, "deg({s}) = -inf", .{words[1]})
-                else try line(out, "deg({s}) = {d}", .{ words[1], a.degree() });
+                if (a.isZero()) try line(out, "deg({s}) = -inf", .{words[1]}) else try line(out, "deg({s}) = {d}", .{ words[1], a.degree() });
             },
             .ADD => try session.save(words[1], try a.add(gpa, b)),
             .SUB => try session.save(words[1], try a.sub(gpa, b)),
-            .MUL => { try checkProduct(a, b); try session.save(words[1], try a.mul(gpa, b)); },
+            .MUL => {
+                try checkProduct(a, b);
+                try session.save(words[1], try a.mul(gpa, b));
+            },
             .POW => {
                 const exponent = natural(words[3]);
                 try checkPower(a, exponent);
@@ -858,11 +1003,13 @@ const Session = struct {
             .TAYLOR => {
                 const point = literals[0];
                 const shifted = try a.compose(gpa, try Polynomial.init(gpa, &.{ point, Fraction.one }));
-                const variable_text = if (point.isZero()) "x" else if (point.n > 0) try std.fmt.allocPrint(gpa, "(x - {f})", .{point})
-                    else try std.fmt.allocPrint(gpa, "(x + {f})", .{point.neg()});
+                const variable_text = if (point.isZero()) "x" else if (point.n > 0) try std.fmt.allocPrint(gpa, "(x - {f})", .{point}) else try std.fmt.allocPrint(gpa, "(x + {f})", .{point.neg()});
                 try line(out, "taylor({s}, {f}) = {f}", .{ words[1], point, shifted.notation(variable_text) });
             },
-            .COMPOSE => { try checkComposition(a, b); try session.save(words[1], try a.compose(gpa, b)); },
+            .COMPOSE => {
+                try checkComposition(a, b);
+                try session.save(words[1], try a.compose(gpa, b));
+            },
             .EVAL => for (literals[0..literal_count]) |point| try line(out, "{s}({f}) = {f}", .{ words[1], point, a.evaluate(point) }),
             .ROOTS, .FACTOR => {
                 try checkNonzero(a);
@@ -959,11 +1106,17 @@ const Session = struct {
 
 fn errorReason(err: anyerror, session: *const Session) ?[]const u8 {
     return switch (err) {
-        error.BadCommand => session.problem.?, error.SameName => "SAME NAME",
-        error.ZeroDenominator => "ZERO DENOMINATOR", error.DivisionByZero => "DIVISION BY ZERO",
-        error.NonconstantDivisor => "NONCONSTANT DIVISOR", error.DegreeLimit => "DEGREE LIMIT",
-        error.ZeroPolynomial => "ZERO POLYNOMIAL", error.BadInterval => "BAD INTERVAL",
-        error.DegreeTooLow => "DEGREE TOO LOW", error.NotCoprime => "NOT COPRIME", else => null,
+        error.BadCommand => session.problem.?,
+        error.SameName => "SAME NAME",
+        error.ZeroDenominator => "ZERO DENOMINATOR",
+        error.DivisionByZero => "DIVISION BY ZERO",
+        error.NonconstantDivisor => "NONCONSTANT DIVISOR",
+        error.DegreeLimit => "DEGREE LIMIT",
+        error.ZeroPolynomial => "ZERO POLYNOMIAL",
+        error.BadInterval => "BAD INTERVAL",
+        error.DegreeTooLow => "DEGREE TOO LOW",
+        error.NotCoprime => "NOT COPRIME",
+        else => null,
     };
 }
 fn readLine(gpa: Allocator, input: *std.Io.Reader) ![]const u8 {

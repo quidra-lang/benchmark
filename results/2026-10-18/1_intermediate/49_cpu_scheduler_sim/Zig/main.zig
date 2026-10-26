@@ -136,7 +136,7 @@ const Scheduler = struct {
         for (words) |word| {
             const split = std.mem.findScalar(u8, word, '=').?;
             const name = word[0..split];
-            const value = number(word[split + 1..]);
+            const value = number(word[split + 1 ..]);
             const key = lookup(name, &keys) orelse {
                 try s.line("ERROR unknown key {s}", .{name});
                 return null;
@@ -449,7 +449,11 @@ const Simulation = struct {
             const a = s.j[i];
             const b = s.j[other];
             const better = switch (s.algorithm) {
-                1, 2 => a.left < b.left, 4 => a.effective < b.effective, 5 => (t - a.enqueued + a.left) * b.left > (t - b.enqueued + b.left) * a.left, 6 => s.deadline(i) < s.deadline(other), else => false,
+                1, 2 => a.left < b.left,
+                4 => a.effective < b.effective,
+                5 => (t - a.enqueued + a.left) * b.left > (t - b.enqueued + b.left) * a.left,
+                6 => s.deadline(i) < s.deadline(other),
+                else => false,
             };
             if (better) selected = position;
         }

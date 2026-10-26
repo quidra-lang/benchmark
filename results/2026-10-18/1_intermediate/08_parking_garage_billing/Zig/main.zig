@@ -4,14 +4,18 @@ const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 const types = [_][]const u8{ "MOTORCYCLE", "CAR", "ECAR", "VAN", "BUS" };
 const kinds = [_][]const u8{ "MOTO", "COMPACT", "LARGE", "EV" };
 const preferences = [_][]const usize{ &.{ 0, 1, 2 }, &.{ 1, 2 }, &.{ 3, 1, 2 }, &.{2}, &.{2} };
-fn integer(s: []const u8) i64 { return std.fmt.parseInt(i64, s, 10) catch unreachable; }
+fn integer(s: []const u8) i64 {
+    return std.fmt.parseInt(i64, s, 10) catch unreachable;
+}
 fn index(names: []const []const u8, s: []const u8) ?usize {
     for (names, 0..) |name, i| {
         if (std.mem.eql(u8, name, s)) return i;
     }
     return null;
 }
-fn date(t: i64) i64 { return @divTrunc(t, 1440) + 1; }
+fn date(t: i64) i64 {
+    return @divTrunc(t, 1440) + 1;
+}
 const Spot = struct {
     level: usize,
     number: usize,
@@ -29,7 +33,9 @@ const Vehicle = struct {
     validation: i64 = 0,
     payment: ?[3]i64 = null,
 
-    fn width(v: *const Vehicle) usize { return if (v.kind == 4) 3 else 1; }
+    fn width(v: *const Vehicle) usize {
+        return if (v.kind == 4) 3 else 1;
+    }
 };
 const Waiting = struct {
     plate: []const u8,
@@ -85,9 +91,15 @@ const Garage = struct {
         const u: u64 = @intCast(@mod(t, 1440));
         return std.fmt.allocPrint(self.gpa, "{d}-{d:0>2}:{d:0>2}", .{ date(t), u / 60, u % 60 });
     }
-    fn decimal(self: *Garage, q: i64) Allocator.Error![]const u8 { return std.fmt.allocPrint(self.gpa, "{d}.{d}", .{ @divTrunc(q, 10), @mod(q, 10) }); }
-    fn pass(self: *Garage, plate: []const u8) bool { return (self.passes.get(plate) orelse 0) >= date(self.now); }
-    fn parked(self: *Garage, plate: []const u8) Error!*Vehicle { return self.vehicles.get(plate) orelse return self.fail("{s} is not parked", .{plate}); }
+    fn decimal(self: *Garage, q: i64) Allocator.Error![]const u8 {
+        return std.fmt.allocPrint(self.gpa, "{d}.{d}", .{ @divTrunc(q, 10), @mod(q, 10) });
+    }
+    fn pass(self: *Garage, plate: []const u8) bool {
+        return (self.passes.get(plate) orelse 0) >= date(self.now);
+    }
+    fn parked(self: *Garage, plate: []const u8) Error!*Vehicle {
+        return self.vehicles.get(plate) orelse return self.fail("{s} is not parked", .{plate});
+    }
     fn waiting(self: *Garage, plate: []const u8) ?usize {
         for (self.queue.items, 0..) |w, i| {
             if (std.mem.eql(u8, w.plate, plate)) return i;
@@ -106,13 +118,15 @@ const Garage = struct {
     fn findSpot(self: *Garage, s: []const u8) Error!usize {
         const dash = std.mem.findScalar(u8, s, '-').?;
         const l: usize = @intCast(integer(s[1..dash]));
-        const n: usize = @intCast(integer(s[dash + 1..]));
+        const n: usize = @intCast(integer(s[dash + 1 ..]));
         if (l > self.level_count) return self.fail("unknown spot {s}", .{s});
         const level = self.levels[l - 1];
         if (n > level.end - level.first) return self.fail("unknown spot {s}", .{s});
         return level.first + n - 1;
     }
-    fn free(self: *Garage, i: usize) bool { return !self.spots[i].closed and self.spots[i].occupant == null; }
+    fn free(self: *Garage, i: usize) bool {
+        return !self.spots[i].closed and self.spots[i].occupant == null;
+    }
     fn assign(self: *Garage, kind: usize) ?usize {
         if (kind == 4) {
             for (self.levels[0..self.level_count]) |l| {

@@ -5,19 +5,22 @@ use std::io::{self, Read};
 struct Expr {
     op: String,
     text: String,
-    args: Vec<Expr>
+    args: Vec<Expr>,
 }
 
 struct Expression<'a> {
     tokens: Vec<String>,
     at: usize,
     variables: &'a BTreeMap<String, i64>,
-    states: &'a BTreeMap<String, usize>
+    states: &'a BTreeMap<String, usize>,
 }
 
 impl<'a> Expression<'a> {
-
-    fn new(text: &str, variables: &'a BTreeMap<String, i64>, states: &'a BTreeMap<String, usize>) -> Self {
+    fn new(
+        text: &str,
+        variables: &'a BTreeMap<String, i64>,
+        states: &'a BTreeMap<String, usize>,
+    ) -> Self {
         let b = text.as_bytes();
         let mut i = 0;
         let mut tokens = Vec::new();
@@ -37,14 +40,19 @@ impl<'a> Expression<'a> {
                 }
             } else {
                 i += 1;
-                if i < b.len() && ["||", "&&", "==", "!=", "<=", ">="].contains(&&text[start..i + 1]) {
+                if i < b.len()
+                    && ["||", "&&", "==", "!=", "<=", ">="].contains(&&text[start..i + 1])
+                {
                     i += 1;
                 }
             }
             tokens.push(text[start..i].into());
         }
         Self {
-            tokens, at: 0, variables, states
+            tokens,
+            at: 0,
+            variables,
+            states,
         }
     }
 
@@ -56,7 +64,7 @@ impl<'a> Expression<'a> {
                 return Ok(Expr {
                     op: format!("unary{}", t),
                     text: String::new(),
-                    args: vec![self.parse(5)?]
+                    args: vec![self.parse(5)?],
                 });
             }
             if t == "(" {
@@ -68,7 +76,7 @@ impl<'a> Expression<'a> {
                 return Ok(Expr {
                     op: "number".into(),
                     text: t,
-                    args: Vec::new()
+                    args: Vec::new(),
                 });
             }
             if t == "in" {
@@ -81,7 +89,7 @@ impl<'a> Expression<'a> {
                 return Ok(Expr {
                     op: "in".into(),
                     text: name,
-                    args: Vec::new()
+                    args: Vec::new(),
                 });
             }
             if t != "_data" && !self.variables.contains_key(&t) {
@@ -90,7 +98,7 @@ impl<'a> Expression<'a> {
             return Ok(Expr {
                 op: "variable".into(),
                 text: t,
-                args: Vec::new()
+                args: Vec::new(),
             });
         }
         let operators: &[&str] = match level {
@@ -98,14 +106,16 @@ impl<'a> Expression<'a> {
             1 => &["&&"],
             2 => &["==", "!=", "<", "<=", ">", ">="],
             3 => &["+", "-"],
-            _ => &["*", "/", "%"]
+            _ => &["*", "/", "%"],
         };
         let mut left = self.parse(level + 1)?;
         while self.at < self.tokens.len() && operators.contains(&self.tokens[self.at].as_str()) {
             let op = self.tokens[self.at].clone();
             self.at += 1;
             left = Expr {
-                op, text: String::new(), args: vec![left, self.parse(level + 1)?]
+                op,
+                text: String::new(),
+                args: vec![left, self.parse(level + 1)?],
             };
         }
         Ok(left)
@@ -118,7 +128,7 @@ struct Action {
     name: String,
     expr: Option<Expr>,
     text: Option<String>,
-    delay: i64
+    delay: i64,
 }
 
 struct State {
@@ -139,14 +149,30 @@ struct State {
     entered: usize,
     taken: usize,
     dwell: i64,
-    entry_time: i64
+    entry_time: i64,
 }
 
 impl State {
-
     fn new(id: String, kind: String, parent: usize) -> Self {
         Self {
-            id, kind, parent, children: Vec::new(), initial_name: None, deep: false, default_name: None, entries: Vec::new(), exits: Vec::new(), transitions: Vec::new(), depth: 0, initial: 0, default: 0, history: None, entered: 0, taken: 0, dwell: 0, entry_time: 0
+            id,
+            kind,
+            parent,
+            children: Vec::new(),
+            initial_name: None,
+            deep: false,
+            default_name: None,
+            entries: Vec::new(),
+            exits: Vec::new(),
+            transitions: Vec::new(),
+            depth: 0,
+            initial: 0,
+            default: 0,
+            history: None,
+            entered: 0,
+            taken: 0,
+            dwell: 0,
+            entry_time: 0,
         }
     }
 }
@@ -160,27 +186,26 @@ struct Transition {
     guard: Option<Expr>,
     target: Option<usize>,
     mode: String,
-    actions: Vec<Action>
+    actions: Vec<Action>,
 }
 
 struct Definition {
     line: usize,
     text: String,
-    node: Option<usize>
+    node: Option<usize>,
 }
 
 #[derive(Clone)]
 struct Event {
     name: String,
-    value: i64
+    value: i64,
 }
 
 impl Event {
-
     fn new(name: impl Into<String>, value: i64) -> Self {
         Self {
             name: name.into(),
-            value
+            value,
         }
     }
 }
@@ -190,20 +215,21 @@ struct Reservation {
     due: i64,
     creation: usize,
     transition: Option<usize>,
-    event: Option<Event>
+    event: Option<Event>,
 }
 
 struct Trigger {
     kind: &'static str,
     event: Option<Event>,
-    transition: Option<usize>
+    transition: Option<usize>,
 }
 
 impl Trigger {
-
     fn kind(kind: &'static str) -> Self {
         Self {
-            kind, event: None, transition: None
+            kind,
+            event: None,
+            transition: None,
         }
     }
 
@@ -211,7 +237,7 @@ impl Trigger {
         Self {
             kind: "event",
             event: Some(event),
-            transition: None
+            transition: None,
         }
     }
 }
@@ -219,7 +245,7 @@ impl Trigger {
 struct Selected {
     transition: usize,
     scope: Option<usize>,
-    exits: BTreeSet<usize>
+    exits: BTreeSet<usize>,
 }
 
 struct Chart {
@@ -238,11 +264,10 @@ struct Chart {
     halted: bool,
     macros: usize,
     micros: usize,
-    creation: usize
+    creation: usize,
 }
 
 impl Chart {
-
     fn new() -> Self {
         Self {
             output: Vec::new(),
@@ -260,12 +285,17 @@ impl Chart {
             halted: false,
             macros: 0,
             micros: 0,
-            creation: 0
+            creation: 0,
         }
     }
 
     fn children(&self, i: usize) -> Vec<usize> {
-        self.states[i].children.iter().copied().filter(|c| self.states[*c].kind != "history").collect()
+        self.states[i]
+            .children
+            .iter()
+            .copied()
+            .filter(|c| self.states[*c].kind != "history")
+            .collect()
     }
 
     fn compound(&self, i: usize) -> bool {
@@ -304,7 +334,7 @@ impl Chart {
                 name: String::new(),
                 expr: None,
                 text: None,
-                delay: 0
+                delay: 0,
             };
             match w[0] {
                 "raise" => {
@@ -312,14 +342,14 @@ impl Chart {
                     if w.len() > 2 {
                         a.expr = Some(self.expression(&w[2..].join(" "))?);
                     }
-                },
+                }
                 "send" => {
                     a.name = w[1].into();
                     a.delay = w[2].parse().unwrap();
                     if w.len() > 3 {
                         a.expr = Some(self.expression(&w[3..].join(" "))?);
                     }
-                },
+                }
                 "cancel" => a.name = w[1].into(),
                 "log" => {
                     let rest = &raw[4..];
@@ -332,7 +362,7 @@ impl Chart {
                     } else {
                         a.expr = Some(self.expression(rest)?);
                     }
-                },
+                }
                 _ => {
                     if !self.variables.contains_key(w[0]) {
                         return Err(format!("unknown variable {}", w[0]));
@@ -352,7 +382,10 @@ impl Chart {
         if w[0] == "state" {
             if let Some(i) = d.node {
                 if let Some(name) = &self.states[i].initial_name {
-                    let child = *self.ids.get(name).ok_or_else(|| format!("unknown state {}", name))?;
+                    let child = *self
+                        .ids
+                        .get(name)
+                        .ok_or_else(|| format!("unknown state {}", name))?;
                     if self.states[child].parent != i || self.states[child].kind == "history" {
                         return Err(format!("{} is not a child of {}", name, self.states[i].id));
                     }
@@ -366,14 +399,20 @@ impl Chart {
                 return Err(format!("{} needs a compound parent", s.id));
             }
             if let Some(name) = &s.default_name {
-                let target = *self.ids.get(name).ok_or_else(|| format!("unknown state {}", name))?;
+                let target = *self
+                    .ids
+                    .get(name)
+                    .ok_or_else(|| format!("unknown state {}", name))?;
                 if !self.descendant(target, s.parent) || self.states[target].kind == "history" {
                     return Err(format!("{} is not a descendant of {}", name, p.id));
                 }
             }
         }
         if w[0] == "entry" || w[0] == "exit" {
-            let i = *self.ids.get(w[1]).ok_or_else(|| format!("unknown state {}", w[1]))?;
+            let i = *self
+                .ids
+                .get(w[1])
+                .ok_or_else(|| format!("unknown state {}", w[1]))?;
             if self.states[i].kind == "history" {
                 return Err(format!("{} cannot have actions", w[1]));
             }
@@ -385,7 +424,10 @@ impl Chart {
             }
         }
         if w[0] == "on" {
-            let source = *self.ids.get(w[1]).ok_or_else(|| format!("unknown state {}", w[1]))?;
+            let source = *self
+                .ids
+                .get(w[1])
+                .ok_or_else(|| format!("unknown state {}", w[1]))?;
             if ["final", "history"].contains(&self.states[source].kind.as_str()) {
                 return Err(format!("{} cannot have transitions", w[1]));
             }
@@ -402,11 +444,7 @@ impl Chart {
             } else {
                 let word = rest.split(' ').next().unwrap();
                 rest = rest[word.len()..].trim_start_matches(' ');
-                trigger = if word == "always" {
-                    "always"
-                } else {
-                    "event"
-                };
+                trigger = if word == "always" { "always" } else { "event" };
                 if trigger == "event" {
                     descriptors = word.split('|').map(str::to_string).collect();
                 }
@@ -427,7 +465,12 @@ impl Chart {
                 };
                 rest = &rest[3..];
                 let name = rest.split(' ').next().unwrap();
-                target = Some(*self.ids.get(name).ok_or_else(|| format!("unknown state {}", name))?);
+                target = Some(
+                    *self
+                        .ids
+                        .get(name)
+                        .ok_or_else(|| format!("unknown state {}", name))?,
+                );
                 rest = rest[name.len()..].trim_start_matches(' ');
             }
             let actions = if rest.starts_with("/ ") {
@@ -437,7 +480,14 @@ impl Chart {
             };
             self.states[source].transitions.push(self.transitions.len());
             self.transitions.push(Transition {
-                source, trigger: trigger.into(), descriptors, delay, guard, target, mode: mode.into(), actions
+                source,
+                trigger: trigger.into(),
+                descriptors,
+                delay,
+                guard,
+                target,
+                mode: mode.into(),
+                actions,
             });
         }
         Ok(())
@@ -459,7 +509,9 @@ impl Chart {
                     Some(format!("duplicate state {}", w[1]))
                 } else if parent_name.is_some_and(|p| !self.ids.contains_key(p)) {
                     Some(format!("unknown state {}", parent_name.unwrap()))
-                } else if parent_name.is_some_and(|p| ["final", "history"].contains(&self.states[self.ids[p]].kind.as_str())) {
+                } else if parent_name.is_some_and(|p| {
+                    ["final", "history"].contains(&self.states[self.ids[p]].kind.as_str())
+                }) {
                     Some(format!("{} cannot have children", parent_name.unwrap()))
                 } else {
                     None
@@ -491,7 +543,9 @@ impl Chart {
                 }
             }
             definitions.push(Definition {
-                line, text: text.into(), node
+                line,
+                text: text.into(),
+                node,
             });
         }
         for d in &definitions {
@@ -509,10 +563,16 @@ impl Chart {
         }
         for i in 0..self.states.len() {
             if self.compound(i) {
-                self.states[i].initial = self.states[i].initial_name.as_ref().map_or_else(|| self.children(i)[0], |n| self.ids[n]);
+                self.states[i].initial = self.states[i]
+                    .initial_name
+                    .as_ref()
+                    .map_or_else(|| self.children(i)[0], |n| self.ids[n]);
             }
             if self.states[i].kind == "history" {
-                self.states[i].default = self.states[i].default_name.as_ref().map_or(self.states[self.states[i].parent].initial, |n| self.ids[n]);
+                self.states[i].default = self.states[i]
+                    .default_name
+                    .as_ref()
+                    .map_or(self.states[self.states[i].parent].initial, |n| self.ids[n]);
             }
         }
 
@@ -558,7 +618,8 @@ impl Chart {
         }
         for &i in &self.document {
             if self.states[i].kind != "history" && !reached.contains(&i) {
-                self.output.push(format!("warning: unreachable state {}", self.states[i].id));
+                self.output
+                    .push(format!("warning: unreachable state {}", self.states[i].id));
             }
         }
     }
@@ -606,7 +667,7 @@ impl Chart {
             "<=" => i64::from(a <= b),
             ">" => i64::from(a > b),
             ">=" => i64::from(a >= b),
-            _ => i64::from(b != 0)
+            _ => i64::from(b != 0),
         })
     }
 
@@ -616,7 +677,7 @@ impl Chart {
             due: self.time + delay,
             creation: self.creation,
             transition,
-            event
+            event,
         });
     }
 
@@ -632,32 +693,45 @@ impl Chart {
             match a.kind.as_str() {
                 "assign" => {
                     self.variables.insert(a.name.clone(), v);
-                },
+                }
                 "raise" => self.queue.push_back(Event::new(a.name.clone(), v)),
                 "send" => self.reserve(None, Some(Event::new(a.name.clone(), v)), a.delay),
-                "cancel" => self.reservations.retain(|r| r.event.as_ref().is_none_or(|e| e.name != a.name)),
-                "log" => self.output.push(a.text.clone().unwrap_or_default() + &if a.expr.is_some() {
-                    v.to_string()
-                } else {
-                    String::new()
-                }),
-                _ => unreachable!()
+                "cancel" => self
+                    .reservations
+                    .retain(|r| r.event.as_ref().is_none_or(|e| e.name != a.name)),
+                "log" => self.output.push(
+                    a.text.clone().unwrap_or_default()
+                        + &if a.expr.is_some() {
+                            v.to_string()
+                        } else {
+                            String::new()
+                        },
+                ),
+                _ => unreachable!(),
             }
         }
     }
 
     fn effective(&self, t: &Transition) -> Vec<usize> {
-        t.target.map_or(Vec::new(), |i| if self.states[i].kind == "history" {
-            self.states[i].history.clone().unwrap_or_else(|| vec![self.states[i].default])
-        } else {
-            vec![i]
+        t.target.map_or(Vec::new(), |i| {
+            if self.states[i].kind == "history" {
+                self.states[i]
+                    .history
+                    .clone()
+                    .unwrap_or_else(|| vec![self.states[i].default])
+            } else {
+                vec![i]
+            }
         })
     }
 
     fn scope(&self, t: &Transition) -> Option<usize> {
         t.target?;
         let targets = self.effective(t);
-        if t.mode == "local" && self.compound(t.source) && targets.iter().all(|i| self.descendant(*i, t.source)) {
+        if t.mode == "local"
+            && self.compound(t.source)
+            && targets.iter().all(|i| self.descendant(*i, t.source))
+        {
             return Some(t.source);
         }
         let mut p = self.states[t.source].parent;
@@ -673,7 +747,10 @@ impl Chart {
             "timer" => trigger.transition == Some(index),
             _ => {
                 let name = &trigger.event.as_ref().unwrap().name;
-                t.trigger == "event" && t.descriptors.iter().any(|d| d == "*" || d == name || name.starts_with(&(d.clone() + ".")))
+                t.trigger == "event"
+                    && t.descriptors
+                        .iter()
+                        .any(|d| d == "*" || d == name || name.starts_with(&(d.clone() + ".")))
             }
         }
     }
@@ -693,7 +770,11 @@ impl Chart {
                     if !self.matches(t, trigger, index) {
                         continue;
                     }
-                    let enabled = match t.guard.as_ref().map_or(Ok(true), |e| self.evaluate(e).map(|v| v != 0)) {
+                    let enabled = match t
+                        .guard
+                        .as_ref()
+                        .map_or(Ok(true), |e| self.evaluate(e).map(|v| v != 0))
+                    {
                         Ok(v) => v,
                         Err(()) => {
                             self.queue.push_back(Event::new("error.execution", 0));
@@ -717,13 +798,19 @@ impl Chart {
         let mut result = Vec::new();
         for i in candidates {
             let scope = self.scope(&self.transitions[i]);
-            let exits = scope.map_or(BTreeSet::new(), |p| self.active.iter().copied().filter(|i| self.descendant(*i, p)).collect());
+            let exits = scope.map_or(BTreeSet::new(), |p| {
+                self.active
+                    .iter()
+                    .copied()
+                    .filter(|i| self.descendant(*i, p))
+                    .collect()
+            });
             if exits.is_disjoint(&occupied) {
                 occupied.extend(&exits);
                 result.push(Selected {
                     transition: i,
                     scope,
-                    exits
+                    exits,
                 });
             }
         }
@@ -749,7 +836,9 @@ impl Chart {
 
     fn complete(&self, i: usize) -> bool {
         if self.compound(i) {
-            self.children(i).iter().any(|c| self.states[*c].kind == "final" && self.active.contains(c))
+            self.children(i)
+                .iter()
+                .any(|c| self.states[*c].kind == "final" && self.active.contains(c))
         } else {
             self.parallel(i) && self.children(i).iter().all(|c| self.complete(*c))
         }
@@ -773,10 +862,12 @@ impl Chart {
             }
             if self.states[i].kind == "final" {
                 let p = self.states[i].parent;
-                self.queue.push_back(Event::new(format!("done.state.{}", self.states[p].id), 0));
+                self.queue
+                    .push_back(Event::new(format!("done.state.{}", self.states[p].id), 0));
                 let g = self.states[p].parent;
                 if self.parallel(g) && self.children(g).iter().all(|c| self.complete(*c)) {
-                    self.queue.push_back(Event::new(format!("done.state.{}", self.states[g].id), 0));
+                    self.queue
+                        .push_back(Event::new(format!("done.state.{}", self.states[g].id), 0));
                 }
             }
         }
@@ -786,7 +877,11 @@ impl Chart {
         if values.is_empty() {
             "-".into()
         } else {
-            values.iter().map(|i| self.states[*i].id.as_str()).collect::<Vec<_>>().join(",")
+            values
+                .iter()
+                .map(|i| self.states[*i].id.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
         }
     }
 
@@ -796,28 +891,40 @@ impl Chart {
             "timer" => {
                 let t = &self.transitions[trigger.transition.unwrap()];
                 format!("after({})@{}", t.delay, self.states[t.source].id)
-            },
+            }
             _ => {
                 let e = trigger.event.as_ref().unwrap();
-                e.name.clone() + &if e.value == 0 {
-                    String::new()
-                } else {
-                    format!("={}", e.value)
-                }
+                e.name.clone()
+                    + &if e.value == 0 {
+                        String::new()
+                    } else {
+                        format!("={}", e.value)
+                    }
             }
         }
     }
 
     fn micro(&mut self, selected: &[Selected], trigger: &Trigger) {
-        let exits: BTreeSet<usize> = selected.iter().flat_map(|s| s.exits.iter().copied()).collect();
+        let exits: BTreeSet<usize> = selected
+            .iter()
+            .flat_map(|s| s.exits.iter().copied())
+            .collect();
         for i in self.document.clone() {
             if self.states[i].kind == "history" && exits.contains(&self.states[i].parent) {
                 let p = self.states[i].parent;
-                let history = self.document.iter().copied().filter(|c| self.active.contains(c) && if self.states[i].deep {
-                    self.atomic(*c) && self.descendant(*c, p)
-                } else {
-                    self.states[*c].parent == p && self.states[*c].kind != "history"
-                }).collect();
+                let history = self
+                    .document
+                    .iter()
+                    .copied()
+                    .filter(|c| {
+                        self.active.contains(c)
+                            && if self.states[i].deep {
+                                self.atomic(*c) && self.descendant(*c, p)
+                            } else {
+                                self.states[*c].parent == p && self.states[*c].kind != "history"
+                            }
+                    })
+                    .collect();
                 self.states[i].history = Some(history);
             }
         }
@@ -835,10 +942,31 @@ impl Chart {
         }
         self.expand(&mut entries);
         if self.trace {
-            let sources = selected.iter().map(|s| self.transitions[s.transition].source).collect::<Vec<_>>();
-            let exit_list = self.document.iter().rev().copied().filter(|i| exits.contains(i)).collect::<Vec<_>>();
-            let entry_list = self.document.iter().copied().filter(|i| entries.contains(i)).collect::<Vec<_>>();
-            self.output.push(format!("[t={}] {} ({}): exit {}; enter {}", self.time, self.display(trigger), self.list(&sources), self.list(&exit_list), self.list(&entry_list)));
+            let sources = selected
+                .iter()
+                .map(|s| self.transitions[s.transition].source)
+                .collect::<Vec<_>>();
+            let exit_list = self
+                .document
+                .iter()
+                .rev()
+                .copied()
+                .filter(|i| exits.contains(i))
+                .collect::<Vec<_>>();
+            let entry_list = self
+                .document
+                .iter()
+                .copied()
+                .filter(|i| entries.contains(i))
+                .collect::<Vec<_>>();
+            self.output.push(format!(
+                "[t={}] {} ({}): exit {}; enter {}",
+                self.time,
+                self.display(trigger),
+                self.list(&sources),
+                self.list(&exit_list),
+                self.list(&entry_list)
+            ));
         }
         for i in self.document.clone().into_iter().rev() {
             if exits.contains(&i) {
@@ -848,7 +976,8 @@ impl Chart {
                 self.active.remove(&i);
                 self.states[i].dwell += self.time - self.states[i].entry_time;
                 let transitions = &self.transitions;
-                self.reservations.retain(|r| r.transition.is_none_or(|t| transitions[t].source != i));
+                self.reservations
+                    .retain(|r| r.transition.is_none_or(|t| transitions[t].source != i));
             }
         }
         for choice in selected {
@@ -917,11 +1046,20 @@ impl Chart {
         }
         let w: Vec<&str> = line.split(' ').collect();
         match w[0] {
-            "event" => self.macrostep(Trigger::event(Event::new(w[1], w.get(2).map_or(0, |s| s.parse().unwrap())))),
+            "event" => self.macrostep(Trigger::event(Event::new(
+                w[1],
+                w.get(2).map_or(0, |s| s.parse().unwrap()),
+            ))),
             "tick" => {
                 let finish = self.time + w[1].parse::<i64>().unwrap();
                 while !self.halted {
-                    let next = self.reservations.iter().enumerate().filter(|(_, r)| r.due <= finish).min_by_key(|(_, r)| (r.due, r.creation)).map(|(i, _)| i);
+                    let next = self
+                        .reservations
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, r)| r.due <= finish)
+                        .min_by_key(|(_, r)| (r.due, r.creation))
+                        .map(|(i, _)| i);
                     let Some(index) = next else {
                         break;
                     };
@@ -931,7 +1069,7 @@ impl Chart {
                         Trigger {
                             kind: "timer",
                             event: None,
-                            transition: Some(t)
+                            transition: Some(t),
                         }
                     } else {
                         Trigger::event(r.event.unwrap())
@@ -940,14 +1078,15 @@ impl Chart {
                 if !self.halted {
                     self.time = finish;
                 }
-            },
+            }
             "set" => {
                 if self.variables.contains_key(w[1]) {
                     self.variables.insert(w[1].into(), w[2].parse().unwrap());
                 } else {
-                    self.output.push(format!("error: unknown variable {}", w[1]));
+                    self.output
+                        .push(format!("error: unknown variable {}", w[1]));
                 }
-            },
+            }
             "trace" => self.trace = w[1] == "on",
             "eval" => {
                 let text = &line[5..];
@@ -958,16 +1097,17 @@ impl Chart {
                         let result = self.evaluate(&e);
                         self.output.push(match result {
                             Ok(value) => format!("{} -> {}", text, value),
-                            Err(()) => "error: division by zero".into()
+                            Err(()) => "error: division by zero".into(),
                         });
                     }
                 }
-            },
+            }
             "dump" => {
                 self.output.push(format!("dump t={}", self.time));
                 for &i in &self.document {
                     if self.active.contains(&i) {
-                        self.output.push("  ".repeat(self.states[i].depth) + &self.states[i].id);
+                        self.output
+                            .push("  ".repeat(self.states[i].depth) + &self.states[i].id);
                     }
                 }
                 for (name, value) in &self.variables {
@@ -975,7 +1115,11 @@ impl Chart {
                 }
                 for &i in &self.document {
                     if let Some(h) = &self.states[i].history {
-                        self.output.push(format!("  history {} = {}", self.states[i].id, self.list(h)));
+                        self.output.push(format!(
+                            "  history {} = {}",
+                            self.states[i].id,
+                            self.list(h)
+                        ));
                     }
                 }
                 let mut reservations = self.reservations.clone();
@@ -983,28 +1127,39 @@ impl Chart {
                 for r in reservations {
                     if let Some(i) = r.transition {
                         let t = &self.transitions[i];
-                        self.output.push(format!("  timer {} after({})@{}", r.due, t.delay, self.states[t.source].id));
+                        self.output.push(format!(
+                            "  timer {} after({})@{}",
+                            r.due, t.delay, self.states[t.source].id
+                        ));
                     } else {
                         let e = r.event.unwrap();
-                        self.output.push(format!("  send {} {} {}", r.due, e.name, e.value));
+                        self.output
+                            .push(format!("  send {} {} {}", r.due, e.name, e.value));
                     }
                 }
-            },
+            }
             _ => unreachable!(),
         }
     }
 
     fn statistics(&mut self) {
-        self.output.push(format!("end t={} macrosteps={} microsteps={}", self.time, self.macros, self.micros));
+        self.output.push(format!(
+            "end t={} macrosteps={} microsteps={}",
+            self.time, self.macros, self.micros
+        ));
         for &i in &self.document {
             let s = &self.states[i];
             if s.kind != "history" {
-                let dwell = s.dwell + if self.active.contains(&i) {
-                    self.time - s.entry_time
-                } else {
-                    0
-                };
-                self.output.push(format!("  {} entered={} taken={} time={}", s.id, s.entered, s.taken, dwell));
+                let dwell = s.dwell
+                    + if self.active.contains(&i) {
+                        self.time - s.entry_time
+                    } else {
+                        0
+                    };
+                self.output.push(format!(
+                    "  {} entered={} taken={} time={}",
+                    s.id, s.entered, s.taken, dwell
+                ));
             }
         }
     }

@@ -10,28 +10,72 @@ const Strategy = enum { HUNT, PROB, RANDOM };
 const ViewKind = enum { reef, unattacked, miss, hit, sunk };
 const LogMode = enum { normal, match, silent };
 const Command = enum {
-    NEW, PLACE, REMOVE, AUTOPLACE, LAYOUT, REEF, SALVO, CHAIN, TOUCH,
-    FIRE, AI, TORPEDO, SONAR, RESIGN, CONTROL, SEED,
-    HINT, DENSITY, SHOW, RADAR, EXPORT, FLEET, STATUS, STATS, MATCH, SERIES, TOURNEY,
+    NEW,
+    PLACE,
+    REMOVE,
+    AUTOPLACE,
+    LAYOUT,
+    REEF,
+    SALVO,
+    CHAIN,
+    TOUCH,
+    FIRE,
+    AI,
+    TORPEDO,
+    SONAR,
+    RESIGN,
+    CONTROL,
+    SEED,
+    HINT,
+    DENSITY,
+    SHOW,
+    RADAR,
+    EXPORT,
+    FLEET,
+    STATUS,
+    STATS,
+    MATCH,
+    SERIES,
+    TOURNEY,
     fn setupOnly(command: Command) bool {
-        return switch (command) { .PLACE, .REMOVE, .AUTOPLACE, .LAYOUT, .REEF, .SALVO, .CHAIN, .TOUCH => true, else => false };
+        return switch (command) {
+            .PLACE, .REMOVE, .AUTOPLACE, .LAYOUT, .REEF, .SALVO, .CHAIN, .TOUCH => true,
+            else => false,
+        };
     }
     fn isTurn(command: Command) bool {
-        return switch (command) { .FIRE, .AI, .TORPEDO, .SONAR => true, else => false };
+        return switch (command) {
+            .FIRE, .AI, .TORPEDO, .SONAR => true,
+            else => false,
+        };
     }
 };
 
-fn number(text: []const u8) u64 { return std.fmt.parseInt(u64, text, 10) catch unreachable; }
-fn playerIndex(text: []const u8) usize { return @intCast(number(text) - 1); }
-fn advance(state: u64) u64 { return 48271 * state % 2147483647; }
-fn strategy(text: []const u8) Strategy { return std.meta.stringToEnum(Strategy, text).?; }
+fn number(text: []const u8) u64 {
+    return std.fmt.parseInt(u64, text, 10) catch unreachable;
+}
+fn playerIndex(text: []const u8) usize {
+    return @intCast(number(text) - 1);
+}
+fn advance(state: u64) u64 {
+    return 48271 * state % 2147483647;
+}
+fn strategy(text: []const u8) Strategy {
+    return std.meta.stringToEnum(Strategy, text).?;
+}
 fn shipIndex(text: []const u8) usize {
     for (ship_names, 0..) |name, ship| if (std.mem.eql(u8, name, text)) return ship;
     unreachable;
 }
-fn switchName(enabled: bool) []const u8 { return if (enabled) "ON" else "OFF"; }
-fn rowName(row: usize) u8 { return 'A' + @as(u8, @intCast(row)); }
-fn parseCell(text: []const u8) usize { return @as(usize, text[0] - 'A') * 10 + @as(usize, @intCast(number(text[1..]))) - 1; }
+fn switchName(enabled: bool) []const u8 {
+    return if (enabled) "ON" else "OFF";
+}
+fn rowName(row: usize) u8 {
+    return 'A' + @as(u8, @intCast(row));
+}
+fn parseCell(text: []const u8) usize {
+    return @as(usize, text[0] - 'A') * 10 + @as(usize, @intCast(number(text[1..]))) - 1;
+}
 fn step(cell: usize, dr: i32, dc: i32) ?usize {
     const row = @as(i32, @intCast(cell / 10)) + dr;
     const column = @as(i32, @intCast(cell % 10)) + dc;
@@ -41,17 +85,25 @@ fn step(cell: usize, dr: i32, dc: i32) ?usize {
 fn touching(a: usize, b: usize) bool {
     return @max(a / 10, b / 10) - @min(a / 10, b / 10) <= 1 and @max(a % 10, b % 10) - @min(a % 10, b % 10) <= 1;
 }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
 
 const Position = struct {
     cell: usize,
-    pub fn format(value: Position, out: *Writer) Writer.Error!void { try out.print("{c}{d}", .{ rowName(value.cell / 10), value.cell % 10 + 1 }); }
+    pub fn format(value: Position, out: *Writer) Writer.Error!void {
+        try out.print("{c}{d}", .{ rowName(value.cell / 10), value.cell % 10 + 1 });
+    }
 };
-fn coordinate(cell: usize) Position { return .{ .cell = cell }; }
+fn coordinate(cell: usize) Position {
+    return .{ .cell = cell };
+}
 const Range = struct {
     first: usize,
     last: usize,
-    pub fn format(value: Range, out: *Writer) Writer.Error!void { try out.print("{f}-{f}", .{ coordinate(value.first), coordinate(value.last) }); }
+    pub fn format(value: Range, out: *Writer) Writer.Error!void {
+        try out.print("{f}-{f}", .{ coordinate(value.first), coordinate(value.last) });
+    }
 };
 const OptionalNumber = struct {
     value: ?u64,
@@ -62,7 +114,9 @@ const OptionalNumber = struct {
 const Placement = struct {
     cells: [5]usize = @splat(0),
     len: usize = 0,
-    fn range(placement: Placement) Range { return .{ .first = placement.cells[0], .last = placement.cells[placement.len - 1] }; }
+    fn range(placement: Placement) Range {
+        return .{ .first = placement.cells[0], .last = placement.cells[placement.len - 1] };
+    }
 };
 fn positions(start: usize, horizontal: bool, length: usize) ?Placement {
     if ((if (horizontal) start % 10 else start / 10) + length > 10) return null;
@@ -115,7 +169,12 @@ const Shot = union(enum) {
     miss,
     hit,
     sunk: usize,
-    fn isHit(shot: Shot) bool { return switch (shot) { .hit, .sunk => true, else => false }; }
+    fn isHit(shot: Shot) bool {
+        return switch (shot) {
+            .hit, .sunk => true,
+            else => false,
+        };
+    }
     pub fn format(shot: Shot, out: *Writer) Writer.Error!void {
         switch (shot) {
             .already => try out.writeAll("ALREADY"),
@@ -166,12 +225,16 @@ const Player = struct {
     }
     fn placed(player: *const Player) usize {
         var count: usize = 0;
-        for (player.ships) |ship| if (ship.len > 0) { count += 1; };
+        for (player.ships) |ship| if (ship.len > 0) {
+            count += 1;
+        };
         return count;
     }
     fn afloat(player: *const Player) usize {
         var count: usize = 0;
-        for (player.ships, 0..) |ship, i| if (ship.len > 0 and !player.sunk(i)) { count += 1; };
+        for (player.ships, 0..) |ship, i| if (ship.len > 0 and !player.sunk(i)) {
+            count += 1;
+        };
         return count;
     }
     fn setShip(player: *Player, ship: usize, placement: Placement) void {
@@ -191,7 +254,10 @@ const Player = struct {
             player.streak += 1;
             player.best_streak = @max(player.best_streak, player.streak);
         } else player.streak = 0;
-        switch (shot) { .sunk => player.sinks += 1, else => {} }
+        switch (shot) {
+            .sunk => player.sinks += 1,
+            else => {},
+        }
     }
 };
 const View = struct {
@@ -214,14 +280,18 @@ const View = struct {
                     if (view.excluded[cell] or (view.cells[cell] != .unattacked and view.cells[cell] != .hit)) possible = false;
                     if (view.cells[cell] == .hit) hits += 1;
                 }
-                if (possible) for (placement.cells[0..placement.len]) |cell| { result[cell] += 1 + 10 * hits; };
+                if (possible) for (placement.cells[0..placement.len]) |cell| {
+                    result[cell] += 1 + 10 * hits;
+                };
             };
         }
         return result;
     }
     fn best(view: *const View, distribution: *const [100]usize) usize {
         var chosen: ?usize = null;
-        for (view.cells, 0..) |kind, cell| if (kind == .unattacked and (chosen == null or distribution[cell] > distribution[chosen.?])) { chosen = cell; };
+        for (view.cells, 0..) |kind, cell| if (kind == .unattacked and (chosen == null or distribution[cell] > distribution[chosen.?])) {
+            chosen = cell;
+        };
         return chosen.?;
     }
 };
@@ -235,18 +305,24 @@ const Game = struct {
     phase: Phase = .setup,
     current: usize = 0,
     winner: usize = 0,
-    fn allowance(game: *const Game, player: usize) usize { return if (game.salvo) game.players[player].afloat() else 1; }
+    fn allowance(game: *const Game, player: usize) usize {
+        return if (game.salvo) game.players[player].afloat() else 1;
+    }
     fn placementProblem(game: *const Game, player: usize, maybe_cells: ?Placement) ?PlacementProblem {
         const placement = maybe_cells orelse return .bounds;
         const cells = placement.cells[0..placement.len];
         for (cells) |cell| if (game.reefs[cell]) return .reef;
         var first: usize = 5;
-        for (cells) |cell| if (game.players[player].owner[cell]) |ship| { first = @min(first, ship); };
+        for (cells) |cell| if (game.players[player].owner[cell]) |ship| {
+            first = @min(first, ship);
+        };
         if (first < 5) return .{ .overlap = first };
         if (!game.touch) {
             for (cells) |cell| {
                 const nearby = surroundings(cell);
-                for (nearby.cells[0..nearby.len]) |neighbor| if (game.players[player].owner[neighbor]) |ship| { first = @min(first, ship); };
+                for (nearby.cells[0..nearby.len]) |neighbor| if (game.players[player].owner[neighbor]) |ship| {
+                    first = @min(first, ship);
+                };
             }
             if (first < 5) return .{ .touch = first };
         }
@@ -314,7 +390,9 @@ const Game = struct {
         for (0..5) |ship| result.remaining[ship] = !opponent.sunk(ship);
         for (0..100) |cell| {
             result.cells[cell] = if (game.reefs[cell]) .reef else if (!opponent.attacked[cell]) .unattacked else if (opponent.owner[cell]) |ship|
-                (if (result.remaining[ship]) .hit else .sunk) else .miss;
+                (if (result.remaining[ship]) .hit else .sunk)
+            else
+                .miss;
         }
         if (!game.touch) for (result.cells, 0..) |kind, cell| {
             if (kind != .sunk) continue;
@@ -333,7 +411,10 @@ const Game = struct {
         if (ai == .RANDOM) {
             var candidates: [100]usize = undefined;
             var count: usize = 0;
-            for (0..100) |cell| if (current_view.candidate(cell)) { candidates[count] = cell; count += 1; };
+            for (0..100) |cell| if (current_view.candidate(cell)) {
+                candidates[count] = cell;
+                count += 1;
+            };
             const random = advance(game.players[player].random);
             if (mutate) game.players[player].random = random;
             return .{ .cell = candidates[@intCast(random % count)], .info = .{ .number = count } };
@@ -356,7 +437,9 @@ const Game = struct {
             if (current_view.candidate(owner.candidates[i])) return .{ .cell = owner.candidates[i], .info = .stack };
         }
         var shortest: usize = 5;
-        for (current_view.remaining, ship_lengths) |remaining, length| if (remaining) { shortest = @min(shortest, length); };
+        for (current_view.remaining, ship_lengths) |remaining, length| if (remaining) {
+            shortest = @min(shortest, length);
+        };
         for (0..100) |cell| if (current_view.candidate(cell) and (cell / 10 + cell % 10) % shortest == 0) return .{ .cell = cell, .info = .parity };
         unreachable;
     }
@@ -414,7 +497,10 @@ const Game = struct {
         var reef: ?usize = null;
         for (0..10) |i| {
             const cell = row * 10 + (if (west) i else 9 - i);
-            if (game.reefs[cell]) { reef = cell; break; }
+            if (game.reefs[cell]) {
+                reef = cell;
+                break;
+            }
             if (opponent.owner[cell] != null) {
                 target = cell;
                 shot = game.shoot(player, cell);
@@ -424,9 +510,7 @@ const Game = struct {
         }
         if (shot == null) game.players[player].record(.miss);
         try out.print("TORPEDO {d} {c} {s} ", .{ player + 1, rowName(row), if (west) "W" else "E" });
-        if (shot) |result| try line(out, "{f} {f}", .{ result, coordinate(target) })
-        else if (reef) |cell| try line(out, "REEF {f}", .{coordinate(cell)})
-        else try out.writeAll("MISS\n");
+        if (shot) |result| try line(out, "{f} {f}", .{ result, coordinate(target) }) else if (reef) |cell| try line(out, "REEF {f}", .{coordinate(cell)}) else try out.writeAll("MISS\n");
         try game.finishTurn(player, if (shot) |result| result.isHit() else false, .normal, out);
     }
     fn sonar(game: *Game, player: usize, cell: usize, out: *Writer) Writer.Error!void {
@@ -435,7 +519,9 @@ const Game = struct {
         const opponent = &game.players[1 - player];
         const nearby = surroundings(cell);
         var count: usize = @intFromBool(opponent.owner[cell] != null and !opponent.attacked[cell]);
-        for (nearby.cells[0..nearby.len]) |at| if (opponent.owner[at] != null and !opponent.attacked[at]) { count += 1; };
+        for (nearby.cells[0..nearby.len]) |at| if (opponent.owner[at] != null and !opponent.attacked[at]) {
+            count += 1;
+        };
         try line(out, "SONAR {d} {f} {d}", .{ player + 1, coordinate(cell), count });
         try game.finishTurn(player, false, .normal, out);
     }
@@ -455,9 +541,15 @@ const Game = struct {
             try out.writeByte(rowName(row));
             for (0..10) |column| {
                 const cell = row * 10 + column;
-                const symbol: u8 = if (radar) switch (current_view.cells[cell]) { .reef => '~', .unattacked => '.', .miss => 'o', .hit => 'x', .sunk => '#' }
-                    else if (game.reefs[cell]) '~' else if (owner.owner[cell]) |ship|
-                    (if (owner.attacked[cell]) std.ascii.toLower(ship_symbols[ship]) else ship_symbols[ship]) else if (owner.attacked[cell]) 'o' else '.';
+                const symbol: u8 = if (radar) switch (current_view.cells[cell]) {
+                    .reef => '~',
+                    .unattacked => '.',
+                    .miss => 'o',
+                    .hit => 'x',
+                    .sunk => '#',
+                } else if (game.reefs[cell]) '~' else if (owner.owner[cell]) |ship|
+                    (if (owner.attacked[cell]) std.ascii.toLower(ship_symbols[ship]) else ship_symbols[ship])
+                else if (owner.attacked[cell]) 'o' else '.';
                 try out.print(" {c}", .{symbol});
             }
             try out.writeByte('\n');
@@ -474,8 +566,7 @@ const Game = struct {
             try out.writeByte(rowName(row));
             for (0..10) |column| {
                 const cell = row * 10 + column;
-                if (current_view.cells[cell] == .unattacked) try out.print("{d: >5}", .{scores[cell]})
-                else try out.writeAll(if (current_view.cells[cell] == .reef) "    ~" else "    -");
+                if (current_view.cells[cell] == .unattacked) try out.print("{d: >5}", .{scores[cell]}) else try out.writeAll(if (current_view.cells[cell] == .reef) "    ~" else "    -");
             }
             try out.writeByte('\n');
         }
@@ -496,19 +587,26 @@ const Game = struct {
         for (owner.ships, 0..) |ship, i| {
             if (ship.len == 0) try line(out, "{s} unplaced", .{ship_names[i]}) else {
                 var count: usize = 0;
-                for (ship.cells[0..ship.len]) |cell| if (owner.attacked[cell]) { count += 1; };
+                for (ship.cells[0..ship.len]) |cell| if (owner.attacked[cell]) {
+                    count += 1;
+                };
                 try line(out, "{s} {f} {d}/{d} {s}", .{ ship_names[i], ship.range(), count, ship_lengths[i], if (owner.sunk(i)) "SUNK" else "AFLOAT" });
             }
         }
     }
     fn status(game: *const Game, out: *Writer) Writer.Error!void {
         var reef_count: usize = 0;
-        for (game.reefs) |reef| if (reef) { reef_count += 1; };
-        const phase_name: []const u8 = switch (game.phase) { .setup => "SETUP", .battle => "BATTLE", .over => "OVER" };
+        for (game.reefs) |reef| if (reef) {
+            reef_count += 1;
+        };
+        const phase_name: []const u8 = switch (game.phase) {
+            .setup => "SETUP",
+            .battle => "BATTLE",
+            .over => "OVER",
+        };
         try out.print("STATUS {s} salvo {s} chain {s} touch {s} reefs {d}", .{ phase_name, switchName(game.salvo), switchName(game.chain), switchName(game.touch), reef_count });
         if (game.phase == .setup) try line(out, " placed {d} {d}", .{ game.players[0].placed(), game.players[1].placed() }) else {
-            if (game.phase == .battle) try out.print(" turn {d} shots {d}", .{ game.current + 1, game.allowance(game.current) })
-            else try out.print(" winner {d}", .{game.winner + 1});
+            if (game.phase == .battle) try out.print(" turn {d} shots {d}", .{ game.current + 1, game.allowance(game.current) }) else try out.print(" winner {d}", .{game.winner + 1});
             try line(out, " afloat {d} {d}", .{ game.players[0].afloat(), game.players[1].afloat() });
         }
     }
@@ -553,7 +651,12 @@ const Program = struct {
             if (game.phase != .setup) return program.fail("setup closed", .{});
             if (command == .SALVO or command == .CHAIN or command == .TOUCH) {
                 const enabled = std.mem.eql(u8, words[1], "ON");
-                switch (command) { .SALVO => game.salvo = enabled, .CHAIN => game.chain = enabled, .TOUCH => game.touch = enabled, else => unreachable }
+                switch (command) {
+                    .SALVO => game.salvo = enabled,
+                    .CHAIN => game.chain = enabled,
+                    .TOUCH => game.touch = enabled,
+                    else => unreachable,
+                }
                 return line(out, "{s} {s}", .{ words[0], switchName(enabled) });
             }
             if (command == .REEF) {
@@ -688,7 +791,7 @@ const Program = struct {
                 random = advance(random);
                 const first_seed = random;
                 random = advance(random);
-                const result = try game.match(first_seed, random, @enumFromInt(first), @enumFromInt(second), null);
+                const result = try game.match(first_seed, random, @fromBackingInt(@intCast(first)), @fromBackingInt(@intCast(second)), null);
                 totals[if (result.winner == 0) first else second].wins += 1;
                 totals[first].shots += result.players[0].shots;
                 totals[second].shots += result.players[1].shots;
@@ -706,7 +809,7 @@ const Total = struct {
     fn before(_: void, a: Total, b: Total) bool {
         if (a.wins != b.wins) return a.wins > b.wins;
         if (a.shots != b.shots) return a.shots < b.shots;
-        return @intFromEnum(a.ai) < @intFromEnum(b.ai);
+        return @backingInt(a.ai) < @backingInt(b.ai);
     }
 };
 

@@ -7,21 +7,53 @@ const Operation = enum { ADD, SUB, MUL, DIV, SQRT, FMA };
 const Relation = enum { LT, EQ, GT };
 const IntegerType = enum { I8, U8, I16, U16, I32, U32 };
 const Command = enum {
-    FORMAT, ENCODE, DECODE, ADD, SUB, MUL, DIV, SQRT, FMA, CONVERT,
-    COMPARE, NEXTUP, NEXTDOWN, ULP, TOINT, TABLE, SUM, KAHAN, DOT,
+    FORMAT,
+    ENCODE,
+    DECODE,
+    ADD,
+    SUB,
+    MUL,
+    DIV,
+    SQRT,
+    FMA,
+    CONVERT,
+    COMPARE,
+    NEXTUP,
+    NEXTDOWN,
+    ULP,
+    TOINT,
+    TABLE,
+    SUM,
+    KAHAN,
+    DOT,
     fn operation(command: Command) ?Operation {
         return switch (command) {
-            .ADD => .ADD, .SUB => .SUB, .MUL => .MUL, .DIV => .DIV, .SQRT => .SQRT, .FMA => .FMA,
+            .ADD => .ADD,
+            .SUB => .SUB,
+            .MUL => .MUL,
+            .DIV => .DIV,
+            .SQRT => .SQRT,
+            .FMA => .FMA,
             else => null,
         };
     }
 };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn parseNumber(word: []const u8) u64 { return std.fmt.parseInt(u64, word, 10) catch unreachable; }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
-fn compareUnsigned(a: u64, b: u64) Relation { return if (a < b) .LT else if (a > b) .GT else .EQ; }
-fn compareSigned(a: i64, b: i64) Relation { return if (a < b) .LT else if (a > b) .GT else .EQ; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn parseNumber(word: []const u8) u64 {
+    return std.fmt.parseInt(u64, word, 10) catch unreachable;
+}
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
+fn compareUnsigned(a: u64, b: u64) Relation {
+    return if (a < b) .LT else if (a > b) .GT else .EQ;
+}
+fn compareSigned(a: i64, b: i64) Relation {
+    return if (a < b) .LT else if (a > b) .GT else .EQ;
+}
 fn bitLength(value: u64) i32 {
     var n = value;
     var length: i32 = 0;
@@ -40,8 +72,7 @@ fn gcd(a: u64, b: u64) u64 {
 }
 const Scaled = struct { n: u64, d: u64 };
 fn scaled(n: u64, d: u64, exponent: i32) Scaled {
-    return if (exponent >= 0) .{ .n = n << @intCast(exponent), .d = d }
-        else .{ .n = n, .d = d << @intCast(-exponent) };
+    return if (exponent >= 0) .{ .n = n << @intCast(exponent), .d = d } else .{ .n = n, .d = d << @intCast(-exponent) };
 }
 fn integerSqrt(value: u64) u64 {
     if (value == 0) return 0;
@@ -68,8 +99,7 @@ fn roundUnits(exact: Exact, exponent: i32, mode: Mode, square_root: bool) Units 
     var whole = if (square_root) integerSqrt(ratio.n / ratio.d) else ratio.n / ratio.d;
     const inexact = if (square_root) whole * whole * ratio.d != ratio.n else ratio.n % ratio.d != 0;
     const midpoint = 2 * whole + 1;
-    const halfway = if (square_root) compareUnsigned(4 * ratio.n, ratio.d * midpoint * midpoint)
-        else compareUnsigned(2 * (ratio.n % ratio.d), ratio.d);
+    const halfway = if (square_root) compareUnsigned(4 * ratio.n, ratio.d * midpoint * midpoint) else compareUnsigned(2 * (ratio.n % ratio.d), ratio.d);
     if (increment(mode, exact.negative, whole, inexact, halfway)) whole += 1;
     return .{ .whole = whole, .inexact = inexact };
 }
@@ -102,8 +132,12 @@ const Name = struct {
         @memcpy(result.bytes[0..text.len], text);
         return result;
     }
-    fn matches(name: Name, text: []const u8) bool { return equal(name.bytes[0..name.len], text); }
-    pub fn format(name: Name, out: *Writer) Writer.Error!void { try out.writeAll(name.bytes[0..name.len]); }
+    fn matches(name: Name, text: []const u8) bool {
+        return equal(name.bytes[0..name.len], text);
+    }
+    pub fn format(name: Name, out: *Writer) Writer.Error!void {
+        try out.writeAll(name.bytes[0..name.len]);
+    }
 };
 const Binary = struct {
     value: u32,
@@ -150,7 +184,9 @@ const Exact = struct {
     }
     fn sum(terms: []const Exact, mode: Mode) Exact {
         var exponent: ?i32 = null;
-        for (terms) |term| if (term.n != 0 and (exponent == null or term.exponent < exponent.?)) { exponent = term.exponent; };
+        for (terms) |term| if (term.n != 0 and (exponent == null or term.exponent < exponent.?)) {
+            exponent = term.exponent;
+        };
         if (exponent == null) {
             var same = true;
             for (terms) |term| same = same and term.negative == terms[0].negative;
@@ -162,10 +198,11 @@ const Exact = struct {
             const aligned: i64 = @intCast(term.n << @intCast(term.exponent - exponent.?));
             numerator += if (term.negative) -aligned else aligned;
         }
-        return .{ .n = @intCast(if (numerator < 0) -numerator else numerator), .exponent = exponent.?,
-            .negative = numerator < 0 or numerator == 0 and mode == .RDN };
+        return .{ .n = @intCast(if (numerator < 0) -numerator else numerator), .exponent = exponent.?, .negative = numerator < 0 or numerator == 0 and mode == .RDN };
     }
-    fn decimal(exact: Exact, keep_zero_sign: bool) Decimal { return .{ .exact = exact, .keep_zero_sign = keep_zero_sign }; }
+    fn decimal(exact: Exact, keep_zero_sign: bool) Decimal {
+        return .{ .exact = exact, .keep_zero_sign = keep_zero_sign };
+    }
     pub fn format(exact: Exact, out: *Writer) Writer.Error!void {
         if (exact.n == 0) return out.writeByte('0');
         const ratio = scaled(exact.n, exact.d, exact.exponent);
@@ -212,32 +249,58 @@ const MiniFormat = struct {
         const bias: i32 = @intCast((@as(u32, 1) << @intCast(e - 1)) - 1);
         const hidden = @as(u32, 1) << @intCast(m);
         const mask = (@as(u32, 1) << @intCast(e)) - 1;
-        return .{ .name = .init(name), .e = e, .m = m, .width = 1 + e + m, .bias = bias, .emin = 1 - bias, .emax = bias,
-            .hidden = hidden, .exponent_mask = mask, .sign_bit = @as(u32, 1) << @intCast(e + m), .infinity = mask * hidden };
+        return .{ .name = .init(name), .e = e, .m = m, .width = 1 + e + m, .bias = bias, .emin = 1 - bias, .emax = bias, .hidden = hidden, .exponent_mask = mask, .sign_bit = @as(u32, 1) << @intCast(e + m), .infinity = mask * hidden };
     }
     fn fields(f: MiniFormat, pattern: u32) Fields {
         const exponent = (pattern >> @intCast(f.m)) & f.exponent_mask;
-        return .{ .negative = pattern & f.sign_bit != 0, .exponent = exponent, .fraction = pattern & (f.hidden - 1),
-            .q = (if (exponent == 0) f.emin else @as(i32, @intCast(exponent)) - f.bias) - f.m };
+        return .{ .negative = pattern & f.sign_bit != 0, .exponent = exponent, .fraction = pattern & (f.hidden - 1), .q = (if (exponent == 0) f.emin else @as(i32, @intCast(exponent)) - f.bias) - f.m };
     }
-    fn isNaN(f: MiniFormat, pattern: u32) bool { return f.fields(pattern).exponent == f.exponent_mask and f.fields(pattern).fraction != 0; }
-    fn isSignaling(f: MiniFormat, pattern: u32) bool { return f.isNaN(pattern) and f.fields(pattern).fraction < f.hidden / 2; }
-    fn isInfinity(f: MiniFormat, pattern: u32) bool { return pattern & (f.sign_bit - 1) == f.infinity; }
-    fn isZero(f: MiniFormat, pattern: u32) bool { return pattern & (f.sign_bit - 1) == 0; }
-    fn isFinite(f: MiniFormat, pattern: u32) bool { return f.fields(pattern).exponent != f.exponent_mask; }
-    fn nan(f: MiniFormat) u32 { return f.infinity + f.hidden / 2; }
-    fn zero(f: MiniFormat, negative: bool) u32 { return if (negative) f.sign_bit else 0; }
-    fn inf(f: MiniFormat, negative: bool) u32 { return f.zero(negative) + f.infinity; }
-    fn flip(f: MiniFormat, pattern: u32) u32 { return pattern ^ f.sign_bit; }
+    fn isNaN(f: MiniFormat, pattern: u32) bool {
+        return f.fields(pattern).exponent == f.exponent_mask and f.fields(pattern).fraction != 0;
+    }
+    fn isSignaling(f: MiniFormat, pattern: u32) bool {
+        return f.isNaN(pattern) and f.fields(pattern).fraction < f.hidden / 2;
+    }
+    fn isInfinity(f: MiniFormat, pattern: u32) bool {
+        return pattern & (f.sign_bit - 1) == f.infinity;
+    }
+    fn isZero(f: MiniFormat, pattern: u32) bool {
+        return pattern & (f.sign_bit - 1) == 0;
+    }
+    fn isFinite(f: MiniFormat, pattern: u32) bool {
+        return f.fields(pattern).exponent != f.exponent_mask;
+    }
+    fn nan(f: MiniFormat) u32 {
+        return f.infinity + f.hidden / 2;
+    }
+    fn zero(f: MiniFormat, negative: bool) u32 {
+        return if (negative) f.sign_bit else 0;
+    }
+    fn inf(f: MiniFormat, negative: bool) u32 {
+        return f.zero(negative) + f.infinity;
+    }
+    fn flip(f: MiniFormat, pattern: u32) u32 {
+        return pattern ^ f.sign_bit;
+    }
     fn exact(f: MiniFormat, pattern: u32) Exact {
         const parts = f.fields(pattern);
         return .{ .n = if (parts.exponent == 0) parts.fraction else f.hidden + parts.fraction, .exponent = parts.q, .negative = parts.negative };
     }
-    fn bits(f: MiniFormat, pattern: u32) BitText { return .{ .f = f, .pattern = pattern }; }
-    fn hex(f: MiniFormat, pattern: u32) Hex { return .{ .value = pattern, .width = (f.width + 3) / 4 }; }
-    fn valueText(f: MiniFormat, pattern: u32) ValueText { return .{ .f = f, .pattern = pattern }; }
-    fn patternText(f: MiniFormat, pattern: u32) PatternText { return .{ .f = f, .pattern = pattern }; }
-    fn resultText(f: MiniFormat, result: Result) ResultText { return .{ .f = f, .result = result }; }
+    fn bits(f: MiniFormat, pattern: u32) BitText {
+        return .{ .f = f, .pattern = pattern };
+    }
+    fn hex(f: MiniFormat, pattern: u32) Hex {
+        return .{ .value = pattern, .width = (f.width + 3) / 4 };
+    }
+    fn valueText(f: MiniFormat, pattern: u32) ValueText {
+        return .{ .f = f, .pattern = pattern };
+    }
+    fn patternText(f: MiniFormat, pattern: u32) PatternText {
+        return .{ .f = f, .pattern = pattern };
+    }
+    fn resultText(f: MiniFormat, result: Result) ResultText {
+        return .{ .f = f, .result = result };
+    }
     fn overflow(f: MiniFormat, negative: bool, mode: Mode) Result {
         const infinity = mode == .RNE or mode == .RNA or mode == .RUP and !negative or mode == .RDN and negative;
         return .{ .pattern = f.zero(negative) + (if (infinity) f.infinity else f.infinity - 1), .flags = Flags.overflow | Flags.inexact };
@@ -250,10 +313,12 @@ const MiniFormat = struct {
         var exponent = @max(t, f.emin) - f.m;
         const units = roundUnits(exact_value, exponent, mode, square_root);
         var n = units.whole;
-        if (n == 2 * f.hidden) { n = f.hidden; exponent += 1; }
+        if (n == 2 * f.hidden) {
+            n = f.hidden;
+            exponent += 1;
+        }
         if (exponent > f.emax - f.m) return f.overflow(negative, mode);
-        const magnitude = if (n >= f.hidden) @as(u32, @intCast(exponent + f.m + f.bias)) * f.hidden + @as(u32, @intCast(n)) - f.hidden
-            else @as(u32, @intCast(n));
+        const magnitude = if (n >= f.hidden) @as(u32, @intCast(exponent + f.m + f.bias)) * f.hidden + @as(u32, @intCast(n)) - f.hidden else @as(u32, @intCast(n));
         var flags: u8 = if (units.inexact) Flags.inexact else 0;
         if (units.inexact and t < f.emin and (t < f.emin - 1 or roundUnits(exact_value, t - f.m, mode, square_root).whole < 2 * f.hidden)) flags |= Flags.underflow;
         return .{ .pattern = f.zero(negative) + magnitude, .flags = flags };
@@ -373,8 +438,7 @@ fn calculate(f: MiniFormat, operation: Operation, mode: Mode, inputs: []const u3
 }
 
 fn nextUp(f: MiniFormat, pattern: u32) u32 {
-    return if (pattern == f.infinity) pattern else if (f.isZero(pattern)) 1
-        else if (f.fields(pattern).negative) pattern - 1 else pattern + 1;
+    return if (pattern == f.infinity) pattern else if (f.isZero(pattern)) 1 else if (f.fields(pattern).negative) pattern - 1 else pattern + 1;
 }
 fn orderKey(f: MiniFormat, pattern: u32) i64 {
     return if (f.fields(pattern).negative) -@as(i64, pattern - f.sign_bit) - 1 else pattern;
@@ -425,7 +489,10 @@ const Program = struct {
         var d: u64 = 1;
         var fractional = false;
         for (body) |ch| {
-            if (ch == '.') { fractional = true; continue; }
+            if (ch == '.') {
+                fractional = true;
+                continue;
+            }
             n = n * 10 + ch - '0';
             if (fractional) d *= 10;
         }
@@ -550,8 +617,7 @@ const Program = struct {
                 const g = try program.getFormat(words[2]);
                 const a = try program.operand(f, words[3]);
                 const mode = try program.parseMode(words, 4);
-                const result: Result = if (f.isNaN(a)) .{ .pattern = g.nan(), .flags = if (f.isSignaling(a)) Flags.invalid else 0 }
-                    else if (f.isInfinity(a)) .{ .pattern = g.inf(f.fields(a).negative) } else g.round(f.exact(a), mode);
+                const result: Result = if (f.isNaN(a)) .{ .pattern = g.nan(), .flags = if (f.isSignaling(a)) Flags.invalid else 0 } else if (f.isInfinity(a)) .{ .pattern = g.inf(f.fields(a).negative) } else g.round(f.exact(a), mode);
                 try line(out, "CONVERT {f} {f} {s} {f}", .{ f.name, g.name, @tagName(mode), g.resultText(result) });
             },
             .ADD, .SUB, .MUL, .DIV, .SQRT, .FMA => {
@@ -585,8 +651,7 @@ const Program = struct {
             .DECODE => {
                 const a = try program.operand(f, words[2]);
                 const parts = f.fields(a);
-                const classification: []const u8 = if (f.isNaN(a)) (if (f.isSignaling(a)) "snan" else "qnan")
-                    else if (f.isInfinity(a)) "infinity" else if (f.isZero(a)) "zero" else if (parts.exponent == 0) "subnormal" else "normal";
+                const classification: []const u8 = if (f.isNaN(a)) (if (f.isSignaling(a)) "snan" else "qnan") else if (f.isInfinity(a)) "infinity" else if (f.isZero(a)) "zero" else if (parts.exponent == 0) "subnormal" else "normal";
                 try line(out, "DECODE {f} {f} {f} {s} sign={d}", .{ f.name, f.bits(a), f.hex(a), classification, @intFromBool(parts.negative) });
                 try out.print("FIELDS exponent={d} fraction={d}", .{ parts.exponent, parts.fraction });
                 if (f.isFinite(a)) {
@@ -607,27 +672,29 @@ const Program = struct {
                 const kind = std.meta.stringToEnum(IntegerType, words[3]) orelse return program.fail("BAD TYPE {s}", .{words[3]});
                 const mode = try program.parseMode(words, 4);
                 const range: struct { minimum: i64, maximum: i64 } = switch (kind) {
-                    .I8 => .{ .minimum = -128, .maximum = 127 }, .U8 => .{ .minimum = 0, .maximum = 255 },
-                    .I16 => .{ .minimum = -32768, .maximum = 32767 }, .U16 => .{ .minimum = 0, .maximum = 65535 },
-                    .I32 => .{ .minimum = -2147483648, .maximum = 2147483647 }, .U32 => .{ .minimum = 0, .maximum = 4294967295 },
+                    .I8 => .{ .minimum = -128, .maximum = 127 },
+                    .U8 => .{ .minimum = 0, .maximum = 255 },
+                    .I16 => .{ .minimum = -32768, .maximum = 32767 },
+                    .U16 => .{ .minimum = 0, .maximum = 65535 },
+                    .I32 => .{ .minimum = -2147483648, .maximum = 2147483647 },
+                    .U32 => .{ .minimum = 0, .maximum = 4294967295 },
                 };
                 try out.print("TOINT {f} {s} {s} ", .{ f.name, @tagName(kind), @tagName(mode) });
                 if (!f.isFinite(a)) try line(out, "invalid flags=invalid", .{}) else {
                     const units = roundUnits(f.exact(a), 0, mode, false);
                     const whole: i64 = @intCast(units.whole);
                     const integer = if (f.fields(a).negative) -whole else whole;
-                    if (integer < range.minimum or integer > range.maximum) try line(out, "invalid flags=invalid", .{})
-                    else try line(out, "{d} {f}", .{ integer, Flags{ .bits = if (units.inexact) Flags.inexact else 0 } });
+                    if (integer < range.minimum or integer > range.maximum) try line(out, "invalid flags=invalid", .{}) else try line(out, "{d} {f}", .{ integer, Flags{ .bits = if (units.inexact) Flags.inexact else 0 } });
                 }
             },
             .NEXTUP, .NEXTDOWN, .ULP => {
                 const a = try program.operand(f, words[2]);
-                const result: Result = if (f.isNaN(a)) .{ .pattern = f.nan(), .flags = if (f.isSignaling(a)) Flags.invalid else 0 }
-                    else .{ .pattern = switch (command) {
-                        .NEXTUP => nextUp(f, a), .NEXTDOWN => f.flip(nextUp(f, f.flip(a))),
-                        .ULP => if (f.isInfinity(a)) f.infinity else f.round(.{ .n = 1, .exponent = f.fields(a).q }, .RNE).pattern,
-                        else => unreachable,
-                    } };
+                const result: Result = if (f.isNaN(a)) .{ .pattern = f.nan(), .flags = if (f.isSignaling(a)) Flags.invalid else 0 } else .{ .pattern = switch (command) {
+                    .NEXTUP => nextUp(f, a),
+                    .NEXTDOWN => f.flip(nextUp(f, f.flip(a))),
+                    .ULP => if (f.isInfinity(a)) f.infinity else f.round(.{ .n = 1, .exponent = f.fields(a).q }, .RNE).pattern,
+                    else => unreachable,
+                } };
                 try line(out, "{s} {f} {f}", .{ @tagName(command), f.name, f.resultText(result) });
             },
             .FORMAT => unreachable,

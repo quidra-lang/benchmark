@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const Color = [3]i64;
-const Invalid = error{ Invalid };
+const Invalid = error{Invalid};
 const CommandError = Invalid || std.Io.Writer.Error;
 const names = [_][]const u8{
     "black",
@@ -162,20 +162,12 @@ fn hsl(c: Color) [3]i64 {
     const n = std.mem.min(i64, &c);
     const d = m - n;
     const delta = if (m + n >= 255) m + n - 255 else 255 - m - n;
-    return .{
-        hue(c),
-        if (d == 0) 0 else percent(d, 255 - delta),
-        percent(m + n, 510)
-    };
+    return .{ hue(c), if (d == 0) 0 else percent(d, 255 - delta), percent(m + n, 510) };
 }
 
 fn hsv(c: Color) [3]i64 {
     const m = std.mem.max(i64, &c);
-    return .{
-        hue(c),
-        if (m == 0) 0 else percent(m - std.mem.min(i64, &c), m),
-        percent(m, 255)
-    };
+    return .{ hue(c), if (m == 0) 0 else percent(m - std.mem.min(i64, &c), m), percent(m, 255) };
 }
 
 fn hwb(c: Color) [3]i64 {
@@ -186,34 +178,21 @@ fn cmyk(c: Color) [4]i64 {
     const m = std.mem.max(i64, &c);
     if (m == 0)
         return .{ 0, 0, 0, 100 };
-    return .{
-        percent(m - c[0], m),
-        percent(m - c[1], m),
-        percent(m - c[2], m),
-        percent(255 - m, 255)
-    };
+    return .{ percent(m - c[0], m), percent(m - c[1], m), percent(m - c[2], m), percent(255 - m, 255) };
 }
 
 fn ycbcr(c: Color) [3]i64 {
     const r = c[0];
     const g = c[1];
     const b = c[2];
-    return .{
-        clamp(rounded(299 * r + 587 * g + 114 * b, 1000)),
-        clamp(rounded(128000 - 169 * r - 331 * g + 500 * b, 1000)),
-        clamp(rounded(128000 + 500 * r - 419 * g - 81 * b, 1000))
-    };
+    return .{ clamp(rounded(299 * r + 587 * g + 114 * b, 1000)), clamp(rounded(128000 - 169 * r - 331 * g + 500 * b, 1000)), clamp(rounded(128000 + 500 * r - 419 * g - 81 * b, 1000)) };
 }
 
 fn yiq(c: Color) [3]i64 {
     const r = c[0];
     const g = c[1];
     const b = c[2];
-    return .{
-        rounded(299 * r + 587 * g + 114 * b, 1000),
-        rounded(596 * r - 274 * g - 322 * b, 1000),
-        rounded(211 * r - 523 * g + 312 * b, 1000)
-    };
+    return .{ rounded(299 * r + 587 * g + 114 * b, 1000), rounded(596 * r - 274 * g - 322 * b, 1000), rounded(211 * r - 523 * g + 312 * b, 1000) };
 }
 fn baseFactors(h: i64) [3]i64 {
     const q = @divTrunc(h, 60);
@@ -225,7 +204,7 @@ fn baseFactors(h: i64) [3]i64 {
         2 => .{ 0, 60, x },
         3 => .{ 0, x, 60 },
         4 => .{ x, 0, 60 },
-        else => .{ 60, 0, x }
+        else => .{ 60, 0, x },
     };
 }
 
@@ -263,10 +242,8 @@ fn writeModel(out: *std.Io.Writer, op: []const u8, c: Color) std.Io.Writer.Error
         try out.print("cmyk({d}%,{d}%,{d}%,{d}%)", .{ v[0], v[1], v[2], v[3] });
         return;
     }
-    const v = if (std.mem.eql(u8, op, "HSL")) hsl(c) else if (std.mem.eql(u8, op, "HSV")) hsv(c) else if (std.mem.eql(u8, op, "HWB")) hwb(c) else if (std.mem.eql(u8, op,
-        "YCBCR")) ycbcr(c) else yiq(c);
-    const label: []const u8 = if (std.mem.eql(u8, op, "HSL")) "hsl" else if (std.mem.eql(u8, op, "HSV")) "hsv" else if (std.mem.eql(u8, op,
-        "HWB")) "hwb" else if (std.mem.eql(u8, op, "YCBCR")) "ycbcr" else "yiq";
+    const v = if (std.mem.eql(u8, op, "HSL")) hsl(c) else if (std.mem.eql(u8, op, "HSV")) hsv(c) else if (std.mem.eql(u8, op, "HWB")) hwb(c) else if (std.mem.eql(u8, op, "YCBCR")) ycbcr(c) else yiq(c);
+    const label: []const u8 = if (std.mem.eql(u8, op, "HSL")) "hsl" else if (std.mem.eql(u8, op, "HSV")) "hsv" else if (std.mem.eql(u8, op, "HWB")) "hwb" else if (std.mem.eql(u8, op, "YCBCR")) "ycbcr" else "yiq";
     const suffix: []const u8 = if (oneOf(op, &.{ "HSL", "HSV", "HWB" })) "%" else "";
     try out.print("{s}({d},{d}{s},{d}{s})", .{ label, v[0], v[1], suffix, v[2], suffix });
 }
@@ -280,40 +257,26 @@ fn ansi(n: i64) Color {
     }
     const levels = [_]i64{ 0, 95, 135, 175, 215, 255 };
     const i = n - 16;
-    return .{
-        levels[@intCast(@divTrunc(i, 36))],
-        levels[@intCast(@mod(@divTrunc(i, 6), 6))],
-        levels[@intCast(@mod(i, 6))]
-    };
+    return .{ levels[@intCast(@divTrunc(i, 36))], levels[@intCast(@mod(@divTrunc(i, 6), 6))], levels[@intCast(@mod(i, 6))] };
 }
 
 fn luminance(c: Color) i64 {
     return 2126 * c[0] * c[0] + 7152 * c[1] * c[1] + 722 * c[2] * c[2];
 }
 
-const Contrast = struct {
-    ratio: i64,
-    verdict: []const u8
-};
+const Contrast = struct { ratio: i64, verdict: []const u8 };
 
 fn contrast(a: Color, b: Color) Contrast {
     const y1 = luminance(a);
     const y2 = luminance(b);
     const high = @max(y1, y2) + 32512500;
     const low = @min(y1, y2) + 32512500;
-    return .{
-        .ratio = rounded(100 * high, low),
-        .verdict = if (high >= 7 * low) "AAA" else if (2 * high >= 9 * low) "AA" else "FAIL"
-    };
+    return .{ .ratio = rounded(100 * high, low), .verdict = if (high >= 7 * low) "AAA" else if (2 * high >= 9 * low) "AA" else "FAIL" };
 }
 
 fn writeContrast(out: *std.Io.Writer, a: Color, b: Color) std.Io.Writer.Error!void {
     const result = contrast(a, b);
-    try out.print("{d}.{d:0>2} {s}", .{
-        @divTrunc(result.ratio, 100),
-        @as(u8, @intCast(@mod(result.ratio, 100))),
-        result.verdict
-    });
+    try out.print("{d}.{d:0>2} {s}", .{ @divTrunc(result.ratio, 100), @as(u8, @intCast(@mod(result.ratio, 100))), result.verdict });
 }
 
 fn rotated(c: Color, d: i64) Color {
@@ -394,7 +357,7 @@ fn palette(k: usize, colors: []const Color) [32]Box {
         right.len = sorted.len - middle;
         @memcpy(left.colors[0..middle], sorted.colors[0..middle]);
         @memcpy(right.colors[0..right.len], sorted.colors[middle..sorted.len]);
-        std.mem.copyBackwards(Box, boxes[selected + 2..len + 1], boxes[selected + 1..len]);
+        std.mem.copyBackwards(Box, boxes[selected + 2 .. len + 1], boxes[selected + 1 .. len]);
         boxes[selected] = left;
         boxes[selected + 1] = right;
         len += 1;
@@ -473,7 +436,7 @@ const Engine = struct {
             return result;
         }
         if (s.len >= 5 and std.mem.eql(u8, s[0..4], "rgb(") and s[s.len - 1] == ')') {
-            var parts = std.mem.splitScalar(u8, s[4..s.len - 1], ',');
+            var parts = std.mem.splitScalar(u8, s[4 .. s.len - 1], ',');
             var result: Color = undefined;
             var count: usize = 0;
             while (parts.next()) |part| {
@@ -525,7 +488,7 @@ const Engine = struct {
                 self.entries[self.len] = entry;
                 self.len += 1;
             }
-            try out.print("{s} ", .{ a[0] });
+            try out.print("{s} ", .{a[0]});
             try writeColor(out, value);
             return;
         }
@@ -534,9 +497,9 @@ const Engine = struct {
             if (!validName(a[0]))
                 return error.Invalid;
             const index = self.registeredIndex(a[0]) orelse return error.Invalid;
-            std.mem.copyForwards(Entry, self.entries[index..self.len - 1], self.entries[index + 1..self.len]);
+            std.mem.copyForwards(Entry, self.entries[index .. self.len - 1], self.entries[index + 1 .. self.len]);
             self.len -= 1;
-            try out.print("{s} removed", .{ a[0] });
+            try out.print("{s} removed", .{a[0]});
             return;
         }
         if (std.mem.eql(u8, op, "LIST")) {
@@ -552,7 +515,7 @@ const Engine = struct {
             for (order[0..self.len], 0..) |index, i| {
                 if (i > 0)
                     try out.writeByte(' ');
-                try out.print("{s}=", .{ self.entries[index].getName() });
+                try out.print("{s}=", .{self.entries[index].getName()});
                 try writeColor(out, self.entries[index].color);
             }
             return;
@@ -585,7 +548,7 @@ const Engine = struct {
                 try out.writeByte(' ');
                 try writeModel(out, m, c);
             }
-            try out.print(" {s}", .{ name });
+            try out.print(" {s}", .{name});
             return;
         }
         if (oneOf(op, &.{ "FROMHSL", "FROMHSV", "FROMHWB" })) {
@@ -593,8 +556,7 @@ const Engine = struct {
             const h = try number(a[0], 0, 359);
             const s = try number(a[1], 0, 100);
             const v = try number(a[2], 0, 100);
-            try writeColor(out, if (std.mem.eql(u8, op, "FROMHSL")) fromHsl(h, s, v) else if (std.mem.eql(u8, op, "FROMHSV")) fromHsv(h,
-                s, v) else fromHwb(h, s, v));
+            try writeColor(out, if (std.mem.eql(u8, op, "FROMHSL")) fromHsl(h, s, v) else if (std.mem.eql(u8, op, "FROMHSV")) fromHsv(h, s, v) else fromHwb(h, s, v));
             return;
         }
         if (std.mem.eql(u8, op, "FROMCMYK")) {
@@ -603,11 +565,7 @@ const Engine = struct {
             const m = try number(a[1], 0, 100);
             const y = try number(a[2], 0, 100);
             const k = try number(a[3], 0, 100);
-            try writeColor(out, .{
-                rounded(255 * (100 - c) * (100 - k), 10000),
-                rounded(255 * (100 - m) * (100 - k), 10000),
-                rounded(255 * (100 - y) * (100 - k), 10000)
-            });
+            try writeColor(out, .{ rounded(255 * (100 - c) * (100 - k), 10000), rounded(255 * (100 - m) * (100 - k), 10000), rounded(255 * (100 - y) * (100 - k), 10000) });
             return;
         }
         if (std.mem.eql(u8, op, "FROMYCBCR") or std.mem.eql(u8, op, "FROMYIQ")) {
@@ -616,15 +574,7 @@ const Engine = struct {
             const y = try number(a[0], 0, 255);
             const u = try number(a[1], if (is_yiq) -255 else 0, 255);
             const v = try number(a[2], if (is_yiq) -255 else 0, 255);
-            var result: Color = if (is_yiq) .{
-                1000 * y + 956 * u + 619 * v,
-                1000 * y - 272 * u - 647 * v,
-                1000 * y - 1106 * u + 1703 * v
-            } else .{
-                1000 * y + 1402 * (v - 128),
-                1000 * y - 344 * (u - 128) - 714 * (v - 128),
-                1000 * y + 1772 * (u - 128)
-            };
+            var result: Color = if (is_yiq) .{ 1000 * y + 956 * u + 619 * v, 1000 * y - 272 * u - 647 * v, 1000 * y - 1106 * u + 1703 * v } else .{ 1000 * y + 1402 * (v - 128), 1000 * y - 344 * (u - 128) - 714 * (v - 128), 1000 * y + 1772 * (u - 128) };
             for (0..3) |j|
                 result[j] = clamp(rounded(result[j], 1000));
             try writeColor(out, result);
@@ -637,11 +587,7 @@ const Engine = struct {
             var v: i64 = 0;
             for (a[0][2..]) |c|
                 v = 16 * v + (try hexDigit(c));
-            try writeColor(out, .{
-                rounded(255 * @divTrunc(v, 2048), 31),
-                rounded(255 * @mod(@divTrunc(v, 32), 64), 63),
-                rounded(255 * @mod(v, 32), 31)
-            });
+            try writeColor(out, .{ rounded(255 * @divTrunc(v, 2048), 31), rounded(255 * @mod(@divTrunc(v, 32), 64), 63), rounded(255 * @mod(v, 32), 31) });
             return;
         }
         if (std.mem.eql(u8, op, "FROMANSI")) {
@@ -652,9 +598,8 @@ const Engine = struct {
         if (std.mem.eql(u8, op, "RGB565")) {
             try requireCount(a, 1);
             const c = try self.color(a[0]);
-            const v = 2048 * rounded(31 * c[0], 255) + 32 * rounded(63 * c[1], 255) + rounded(31 * c[2],
-                255);
-            try out.print("0x{X:0>4}", .{ @as(u16, @intCast(v)) });
+            const v = 2048 * rounded(31 * c[0], 255) + 32 * rounded(63 * c[1], 255) + rounded(31 * c[2], 255);
+            try out.print("0x{X:0>4}", .{@as(u16, @intCast(v))});
             return;
         }
         if (std.mem.eql(u8, op, "ANSI")) {
@@ -666,9 +611,9 @@ const Engine = struct {
                 if (distance(c, ansi(i)) < distance(c, ansi(best)))
                     best = i;
             }
-            try out.print("{d} ", .{ best });
+            try out.print("{d} ", .{best});
             try writeColor(out, ansi(best));
-            try out.print(" {d}", .{ distance(c, ansi(best)) });
+            try out.print(" {d}", .{distance(c, ansi(best))});
             return;
         }
         if (std.mem.eql(u8, op, "WEBSAFE") or std.mem.eql(u8, op, "INVERT")) {
@@ -676,8 +621,7 @@ const Engine = struct {
             const c = try self.color(a[0]);
             var result: Color = undefined;
             for (c, 0..) |x, j|
-                result[j] = if (std.mem.eql(u8, op, "INVERT")) 255 - x else
-                    51 * rounded(x, 51);
+                result[j] = if (std.mem.eql(u8, op, "INVERT")) 255 - x else 51 * rounded(x, 51);
             try writeColor(out, result);
             return;
         }
@@ -687,10 +631,7 @@ const Engine = struct {
             const r = c[0];
             const g = c[1];
             const b = c[2];
-            const value = if (std.mem.eql(u8, a[1], "LUMA")) rounded(299 * r + 587 * g + 114 * b, 1000) else if (std.mem.eql(u8, a[1],
-                "AVERAGE")) rounded(r + g + b, 3) else if (std.mem.eql(u8, a[1], "LIGHTNESS")) rounded(std.mem.max(i64, &c) + std.mem.min(i64, &c),
-                2) else if (std.mem.eql(u8, a[1], "HSP")) squareRoot(@divTrunc(299 * r * r + 587 * g * g + 114 * b * b,
-                1000)) else return error.Invalid;
+            const value = if (std.mem.eql(u8, a[1], "LUMA")) rounded(299 * r + 587 * g + 114 * b, 1000) else if (std.mem.eql(u8, a[1], "AVERAGE")) rounded(r + g + b, 3) else if (std.mem.eql(u8, a[1], "LIGHTNESS")) rounded(std.mem.max(i64, &c) + std.mem.min(i64, &c), 2) else if (std.mem.eql(u8, a[1], "HSP")) squareRoot(@divTrunc(299 * r * r + 587 * g * g + 114 * b * b, 1000)) else return error.Invalid;
             try writeColor(out, .{ value, value, value });
             return;
         }
@@ -711,8 +652,7 @@ const Engine = struct {
             var e = @mod(v2[0] - v1[0], 360);
             if (e > 180)
                 e -= 360;
-            try writeColor(out, fromHsl(@mod(v1[0] + away(e * p, 100), 360), v1[1] + away((v2[1] - v1[1]) * p,
-                100), v1[2] + away((v2[2] - v1[2]) * p, 100)));
+            try writeColor(out, fromHsl(@mod(v1[0] + away(e * p, 100), 360), v1[1] + away((v2[1] - v1[1]) * p, 100), v1[2] + away((v2[2] - v1[2]) * p, 100)));
             return;
         }
         if (std.mem.eql(u8, op, "GRADIENT")) {
@@ -746,8 +686,7 @@ const Engine = struct {
             if (oneOf(mode, &.{ "HUE", "SATURATION", "COLOR", "LUMINOSITY" })) {
                 const v1 = hsl(base);
                 const v2 = hsl(top);
-                try writeColor(out, fromHsl(if (std.mem.eql(u8, mode, "HUE") or std.mem.eql(u8, mode, "COLOR")) v2[0] else v1[0], if (std.mem.eql(u8, mode,
-                    "SATURATION") or std.mem.eql(u8, mode, "COLOR")) v2[1] else v1[1], if (std.mem.eql(u8, mode, "LUMINOSITY")) v2[2] else v1[2]));
+                try writeColor(out, fromHsl(if (std.mem.eql(u8, mode, "HUE") or std.mem.eql(u8, mode, "COLOR")) v2[0] else v1[0], if (std.mem.eql(u8, mode, "SATURATION") or std.mem.eql(u8, mode, "COLOR")) v2[1] else v1[1], if (std.mem.eql(u8, mode, "LUMINOSITY")) v2[2] else v1[2]));
                 return;
             }
             var result: Color = undefined;
@@ -769,21 +708,22 @@ const Engine = struct {
                     result[j] = rounded(100 * p * fg[j] + q * (100 - p) * bg[j], opacity);
             }
             try writeColor(out, result);
-            try out.print(" {d}%", .{ rounded(opacity, 100) });
+            try out.print(" {d}%", .{rounded(opacity, 100)});
             return;
         }
         if (std.mem.eql(u8, op, "SIMULATE")) {
             try requireCount(a, 2);
             const c = try self.color(a[0]);
             const coefficients: [3][3]i64 = if (std.mem.eql(u8, a[1], "PROTANOPIA"))
-                .{ .{567, 433, 0}, .{558, 442, 0}, .{0, 242, 758} }
+                .{ .{ 567, 433, 0 }, .{ 558, 442, 0 }, .{ 0, 242, 758 } }
             else if (std.mem.eql(u8, a[1], "DEUTERANOPIA"))
-                .{ .{625, 375, 0}, .{700, 300, 0}, .{0, 300, 700} }
+                .{ .{ 625, 375, 0 }, .{ 700, 300, 0 }, .{ 0, 300, 700 } }
             else if (std.mem.eql(u8, a[1], "TRITANOPIA"))
-                .{ .{950, 50, 0}, .{0, 433, 567}, .{0, 475, 525} }
+                .{ .{ 950, 50, 0 }, .{ 0, 433, 567 }, .{ 0, 475, 525 } }
             else if (std.mem.eql(u8, a[1], "ACHROMATOPSIA"))
-                .{ .{299, 587, 114}, .{299, 587, 114}, .{299, 587, 114} }
-            else return error.Invalid;
+                .{ .{ 299, 587, 114 }, .{ 299, 587, 114 }, .{ 299, 587, 114 } }
+            else
+                return error.Invalid;
             var result: Color = undefined;
             for (coefficients, 0..) |row, j|
                 result[j] = rounded(row[0] * c[0] + row[1] * c[1] + row[2] * c[2], 1000);
@@ -800,8 +740,7 @@ const Engine = struct {
         if (oneOf(op, &.{ "COMPLEMENT", "TRIADIC", "TETRADIC", "SPLITCOMP" })) {
             try requireCount(a, 1);
             const c = try self.color(a[0]);
-            const offsets: []const i64 = if (std.mem.eql(u8, op, "COMPLEMENT")) &.{ 180 } else if (std.mem.eql(u8, op, "TRIADIC")) &.{ 120,
-                240 } else if (std.mem.eql(u8, op, "TETRADIC")) &.{ 90, 180, 270 } else &.{ 150, 210 };
+            const offsets: []const i64 = if (std.mem.eql(u8, op, "COMPLEMENT")) &.{180} else if (std.mem.eql(u8, op, "TRIADIC")) &.{ 120, 240 } else if (std.mem.eql(u8, op, "TETRADIC")) &.{ 90, 180, 270 } else &.{ 150, 210 };
             var result: [3]Color = undefined;
             for (offsets, 0..) |d, i|
                 result[i] = rotated(c, d);
@@ -856,9 +795,9 @@ const Engine = struct {
                     best_color = entry.color;
                 }
             }
-            try out.print("{s} ", .{ best_name });
+            try out.print("{s} ", .{best_name});
             try writeColor(out, best_color);
-            try out.print(" {d}", .{ d });
+            try out.print(" {d}", .{d});
             return;
         }
         if (std.mem.eql(u8, op, "DISTANCE")) {
@@ -936,29 +875,12 @@ const Engine = struct {
             }
             const lightness: []const u8 = if (l <= 20) "very dark" else if (l <= 40) "dark" else if (l <= 60) "medium" else if (l <= 80) "light" else "very light";
             if (s < 10) {
-                try out.print("{s} gray", .{ lightness });
+                try out.print("{s} gray", .{lightness});
                 return;
             }
-            const hues = [_][]const u8{
-                "red",
-                "orange",
-                "yellow",
-                "chartreuse",
-                "green",
-                "spring-green",
-                "cyan",
-                "azure",
-                "blue",
-                "violet",
-                "magenta",
-                "rose"
-            };
+            const hues = [_][]const u8{ "red", "orange", "yellow", "chartreuse", "green", "spring-green", "cyan", "azure", "blue", "violet", "magenta", "rose" };
             const saturation: []const u8 = if (s < 40) "muted" else if (s < 80) "moderate" else "vivid";
-            try out.print("{s} {s} {s}", .{
-                lightness,
-                saturation,
-                hues[@intCast(@divTrunc(@mod(h + 15, 360), 30))]
-            });
+            try out.print("{s} {s} {s}", .{ lightness, saturation, hues[@intCast(@divTrunc(@mod(h + 15, 360), 30))] });
             return;
         }
         if (std.mem.eql(u8, op, "PALETTE") or std.mem.eql(u8, op, "KMEANS")) {
@@ -973,7 +895,7 @@ const Engine = struct {
                     if (j > 0)
                         try out.writeByte(' ');
                     try writeColor(out, box.mean());
-                    try out.print(":{d}", .{ box.len });
+                    try out.print(":{d}", .{box.len});
                 }
                 return;
             }
@@ -984,8 +906,8 @@ const Engine = struct {
             var iterations: usize = 0;
             for (0..20) |_| {
                 iterations += 1;
-                counts = [_]i64{ 0 } ** 32;
-                var sums = [_]Color{ .{ 0, 0, 0 } } ** 32;
+                counts = @splat(0);
+                var sums: [32]Color = @splat(.{ 0, 0, 0 });
                 for (colors) |c| {
                     var best: usize = 0;
                     for (1..k) |j| {
@@ -1010,11 +932,11 @@ const Engine = struct {
                 if (unchanged)
                     break;
             }
-            try out.print("{d}", .{ iterations });
+            try out.print("{d}", .{iterations});
             for (0..k) |j| {
                 try out.writeByte(' ');
                 try writeColor(out, representatives[j]);
-                try out.print(":{d}", .{ counts[j] });
+                try out.print(":{d}", .{counts[j]});
             }
             return;
         }

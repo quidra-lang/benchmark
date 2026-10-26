@@ -12,13 +12,39 @@ const Move = struct {
     kind: MoveKind,
     cell: usize,
     fn name(move: Move) []const u8 {
-        return switch (move.kind) { .auto_reveal => "auto-reveal", .auto_flag => "auto-flag", else => @tagName(move.kind) };
+        return switch (move.kind) {
+            .auto_reveal => "auto-reveal",
+            .auto_flag => "auto-flag",
+            else => @tagName(move.kind),
+        };
     }
 };
 
 const Command = enum {
-    NEW, PRESET, LAYOUT, SAFETY, RESTART, REVEAL, FLAG, UNFLAG, QUESTION, CHORD, UNDO, SHOW,
-    STATUS, CELL, HISTORY, REPLAY, HINT, AUTO, ANALYZE, PROB, FRONTIER, SOLVE, BOARDINFO, STATS,
+    NEW,
+    PRESET,
+    LAYOUT,
+    SAFETY,
+    RESTART,
+    REVEAL,
+    FLAG,
+    UNFLAG,
+    QUESTION,
+    CHORD,
+    UNDO,
+    SHOW,
+    STATUS,
+    CELL,
+    HISTORY,
+    REPLAY,
+    HINT,
+    AUTO,
+    ANALYZE,
+    PROB,
+    FRONTIER,
+    SOLVE,
+    BOARDINFO,
+    STATS,
     fn arity(command: Command) usize {
         return switch (command) {
             .NEW => 4,
@@ -28,7 +54,10 @@ const Command = enum {
         };
     }
     fn hasCell(command: Command) bool {
-        return switch (command) { .REVEAL, .FLAG, .UNFLAG, .QUESTION, .CHORD, .CELL, .PROB => true, else => false };
+        return switch (command) {
+            .REVEAL, .FLAG, .UNFLAG, .QUESTION, .CHORD, .CELL, .PROB => true,
+            else => false,
+        };
     }
     fn activeOnly(command: Command) bool {
         return switch (command) {
@@ -37,12 +66,21 @@ const Command = enum {
         };
     }
     fn undoable(command: Command) bool {
-        return switch (command) { .REVEAL, .FLAG, .UNFLAG, .QUESTION, .CHORD, .AUTO, .SOLVE => true, else => false };
+        return switch (command) {
+            .REVEAL, .FLAG, .UNFLAG, .QUESTION, .CHORD, .AUTO, .SOLVE => true,
+            else => false,
+        };
     }
     fn undoName(command: Command) []const u8 {
         return switch (command) {
-            .REVEAL => "reveal", .FLAG => "flag", .UNFLAG => "unflag", .QUESTION => "question",
-            .CHORD => "chord", .AUTO => "auto", .SOLVE => "solve", else => unreachable,
+            .REVEAL => "reveal",
+            .FLAG => "flag",
+            .UNFLAG => "unflag",
+            .QUESTION => "question",
+            .CHORD => "chord",
+            .AUTO => "auto",
+            .SOLVE => "solve",
+            else => unreachable,
         };
     }
 };
@@ -77,7 +115,10 @@ const OptionalNumber = struct {
 const Nearby = struct {
     cells: [8]usize = @splat(0),
     len: usize = 0,
-    fn append(nearby: *Nearby, cell: usize) void { nearby.cells[nearby.len] = cell; nearby.len += 1; }
+    fn append(nearby: *Nearby, cell: usize) void {
+        nearby.cells[nearby.len] = cell;
+        nearby.len += 1;
+    }
     fn contains(nearby: *const Nearby, cell: usize) bool {
         for (nearby.cells[0..nearby.len]) |other| if (cell == other) return true;
         return false;
@@ -121,7 +162,10 @@ const Component = struct {
         for (component.constraints.items) |c| if (c.remaining < 0 or c.remaining > @as(i32, @intCast(c.unknown.len))) return;
         var search: Counter = .{ .component = component };
         var index: [max_cells]usize = undefined;
-        for (component.cells.items, 0..) |cell, i| { index[cell] = i; search.order[i] = i; }
+        for (component.cells.items, 0..) |cell, i| {
+            index[cell] = i;
+            search.order[i] = i;
+        }
         for (component.constraints.items, 0..) |c, i| {
             search.remaining[i] = @intCast(c.unknown.len);
             for (c.unknown.cells[0..c.unknown.len]) |cell| search.links[index[cell]].append(i);
@@ -163,7 +207,10 @@ const Counter = struct {
                 if (search.sums[c] > required or search.sums[c] + search.remaining[c] < required) possible = false;
             }
             if (possible) search.visit(depth + 1, mines + value);
-            for (links.cells[0..links.len]) |c| { search.sums[c] -= @intCast(value); search.remaining[c] += 1; }
+            for (links.cells[0..links.len]) |c| {
+                search.sums[c] -= @intCast(value);
+                search.remaining[c] += 1;
+            }
         }
     }
 };
@@ -172,7 +219,10 @@ const Frontier = struct { components: std.ArrayList(Component) = .empty, at: [ma
 
 fn rootOf(parents: *[max_cells]usize, first: usize) usize {
     var cell = first;
-    while (parents[cell] != cell) { parents[cell] = parents[parents[cell]]; cell = parents[cell]; }
+    while (parents[cell] != cell) {
+        parents[cell] = parents[parents[cell]];
+        cell = parents[cell];
+    }
     return cell;
 }
 
@@ -211,30 +261,46 @@ const Game = struct {
         }
         if (placement) |fixed| game.setPlacement(fixed);
     }
-    fn cellCount(game: *const Game) usize { return game.width * game.height; }
-    fn isFinished(game: *const Game) bool { return game.state == .won or game.state == .lost; }
+    fn cellCount(game: *const Game) usize {
+        return game.width * game.height;
+    }
+    fn isFinished(game: *const Game) bool {
+        return game.state == .won or game.state == .lost;
+    }
     fn remainingMines(game: *const Game) i32 {
         var left: i32 = @intCast(game.mine_count);
-        for (game.marks[0..game.cellCount()]) |mark| if (mark == .flag) { left -= 1; };
+        for (game.marks[0..game.cellCount()]) |mark| if (mark == .flag) {
+            left -= 1;
+        };
         return left;
     }
     fn revealedCount(game: *const Game) usize {
         var opened: usize = 0;
-        for (game.revealed[0..game.cellCount()]) |value| if (value) { opened += 1; };
+        for (game.revealed[0..game.cellCount()]) |value| if (value) {
+            opened += 1;
+        };
         return opened;
     }
-    fn position(game: *const Game, cell: usize) Position { return .{ .index = cell, .width = game.width }; }
-    fn isUnknown(game: *const Game, cell: usize) bool { return !game.revealed[cell] and game.marks[cell] != .flag; }
+    fn position(game: *const Game, cell: usize) Position {
+        return .{ .index = cell, .width = game.width };
+    }
+    fn isUnknown(game: *const Game, cell: usize) bool {
+        return !game.revealed[cell] and game.marks[cell] != .flag;
+    }
     fn flagNeighbors(game: *const Game, cell: usize) usize {
         var flags: usize = 0;
         const nearby = &game.neighbors[cell];
-        for (nearby.cells[0..nearby.len]) |neighbor| if (game.marks[neighbor] == .flag) { flags += 1; };
+        for (nearby.cells[0..nearby.len]) |neighbor| if (game.marks[neighbor] == .flag) {
+            flags += 1;
+        };
         return flags;
     }
     fn unknownNeighbors(game: *const Game, cell: usize) Nearby {
         var unknown: Nearby = .{};
         const nearby = &game.neighbors[cell];
-        for (nearby.cells[0..nearby.len]) |neighbor| if (game.isUnknown(neighbor)) { unknown.append(neighbor); };
+        for (nearby.cells[0..nearby.len]) |neighbor| if (game.isUnknown(neighbor)) {
+            unknown.append(neighbor);
+        };
         return unknown;
     }
     fn setPlacement(game: *Game, placement: [max_cells]bool) void {
@@ -242,7 +308,9 @@ const Game = struct {
         game.placed = true;
         for (game.neighbors[0..game.cellCount()], 0..) |nearby, cell| {
             game.numbers[cell] = 0;
-            for (nearby.cells[0..nearby.len]) |neighbor| if (game.mines[neighbor]) { game.numbers[cell] += 1; };
+            for (nearby.cells[0..nearby.len]) |neighbor| if (game.mines[neighbor]) {
+                game.numbers[cell] += 1;
+            };
         }
         game.state = .playing;
     }
@@ -257,7 +325,10 @@ const Game = struct {
                 .cell => cell != first,
                 .block => @abs(@as(i32, @intCast(cell % game.width)) - sx) >= 2 or @abs(@as(i32, @intCast(cell / game.width)) - sy) >= 2,
             };
-            if (eligible) { candidates[length] = cell; length += 1; }
+            if (eligible) {
+                candidates[length] = cell;
+                length += 1;
+            }
         }
         var placement: [max_cells]bool = @splat(false);
         var random = game.seed;
@@ -300,7 +371,11 @@ const Game = struct {
     }
     fn reveal(game: *Game, first: usize, safety: Safety) usize {
         if (!game.placed) game.generatePlacement(first, safety);
-        if (game.mines[first]) { game.state = .lost; game.exploded = first; return 0; }
+        if (game.mines[first]) {
+            game.state = .lost;
+            game.exploded = first;
+            return 0;
+        }
         var queue: [max_cells]usize = undefined;
         queue[0] = first;
         var head: usize = 0;
@@ -332,7 +407,9 @@ const Game = struct {
     fn checkWin(game: *Game) void {
         if (game.state != .playing or game.revealedCount() != game.cellCount() - game.mine_count) return;
         game.state = .won;
-        for (game.mines[0..game.cellCount()], 0..) |mine, cell| if (mine) { game.marks[cell] = .flag; };
+        for (game.mines[0..game.cellCount()], 0..) |mine, cell| if (mine) {
+            game.marks[cell] = .flag;
+        };
     }
     fn show(game: *const Game, out: *std.Io.Writer) std.Io.Writer.Error!void {
         for (0..game.height) |y| {
@@ -341,9 +418,11 @@ const Game = struct {
                 const cell = y * game.width + x;
                 row[x] = if (game.state == .lost and game.mines[cell])
                     (if (cell == game.exploded) '!' else if (game.marks[cell] == .flag) 'F' else '*')
-                else if (game.state == .lost and game.marks[cell] == .flag) 'X'
-                else if (game.revealed[cell]) (if (game.numbers[cell] == 0) '.' else '0' + game.numbers[cell])
-                else switch (game.marks[cell]) { .none => '#', .flag => 'F', .question => '?' };
+                else if (game.state == .lost and game.marks[cell] == .flag) 'X' else if (game.revealed[cell]) (if (game.numbers[cell] == 0) '.' else '0' + game.numbers[cell]) else switch (game.marks[cell]) {
+                    .none => '#',
+                    .flag => 'F',
+                    .question => '?',
+                };
             }
             try out.writeAll(row[0..game.width]);
             try out.writeByte('\n');
@@ -364,18 +443,25 @@ const Game = struct {
         const constraints = game.makeConstraints();
         var result: Deduction = .{};
         for (constraints.items[0..constraints.len]) |c| if (c.remaining == 0) {
-            for (c.unknown.cells[0..c.unknown.len]) |cell| if (result.safe[cell] == null) { result.safe[cell] = .{ .kind = .single, .first = c.cell }; };
+            for (c.unknown.cells[0..c.unknown.len]) |cell| if (result.safe[cell] == null) {
+                result.safe[cell] = .{ .kind = .single, .first = c.cell };
+            };
         };
         if (result.any(game.cellCount())) return result;
         for (constraints.items[0..constraints.len]) |c| if (c.remaining == @as(i32, @intCast(c.unknown.len))) {
-            for (c.unknown.cells[0..c.unknown.len]) |cell| if (result.mines[cell] == null) { result.mines[cell] = .{ .kind = .single, .first = c.cell }; };
+            for (c.unknown.cells[0..c.unknown.len]) |cell| if (result.mines[cell] == null) {
+                result.mines[cell] = .{ .kind = .single, .first = c.cell };
+            };
         };
         if (result.any(game.cellCount())) return result;
         for (constraints.items[0..constraints.len]) |a| {
             for (constraints.items[0..constraints.len]) |b| {
                 if (a.unknown.len >= b.unknown.len) continue;
                 var subset = true;
-                for (a.unknown.cells[0..a.unknown.len]) |cell| if (!b.unknown.contains(cell)) { subset = false; break; };
+                for (a.unknown.cells[0..a.unknown.len]) |cell| if (!b.unknown.contains(cell)) {
+                    subset = false;
+                    break;
+                };
                 if (!subset) continue;
                 const difference: i32 = @intCast(b.unknown.len - a.unknown.len);
                 const left = b.remaining - a.remaining;
@@ -388,7 +474,9 @@ const Game = struct {
         }
         if (result.any(game.cellCount())) return result;
         if (game.state == .playing and game.remainingMines() == 0)
-            for (0..game.cellCount()) |cell| if (game.isUnknown(cell)) { result.safe[cell] = .{ .kind = .count }; };
+            for (0..game.cellCount()) |cell| if (game.isUnknown(cell)) {
+                result.safe[cell] = .{ .kind = .count };
+            };
         return result;
     }
     fn buildFrontier(game: *const Game, gpa: Allocator) Allocator.Error!Frontier {
@@ -459,7 +547,9 @@ const Game = struct {
                 }
             }
             var unknown_count: usize = 0;
-            for (0..game.cellCount()) |cell| if (game.isUnknown(cell)) { unknown_count += 1; };
+            for (0..game.cellCount()) |cell| if (game.isUnknown(cell)) {
+                unknown_count += 1;
+            };
             const background: usize = @intCast(@max(game.remainingMines(), 0));
             var chosen: ?usize = null;
             var best_numerator: usize = 0;
@@ -485,8 +575,12 @@ const Game = struct {
         const copy = try game.clone(gpa, true);
         for (game.moves.items[0..count]) |move| {
             switch (move.kind) {
-                .reveal, .auto_reveal, .guess => { _ = copy.reveal(move.cell, safety); },
-                .chord => { _ = copy.chord(move.cell, safety); },
+                .reveal, .auto_reveal, .guess => {
+                    _ = copy.reveal(move.cell, safety);
+                },
+                .chord => {
+                    _ = copy.chord(move.cell, safety);
+                },
                 .flag, .auto_flag => copy.marks[move.cell] = .flag,
                 .unflag => copy.marks[move.cell] = .none,
                 .question => copy.marks[move.cell] = if (copy.marks[move.cell] == .question) .none else .question,
@@ -496,7 +590,9 @@ const Game = struct {
         }
         return copy;
     }
-    fn isBlank(game: *const Game, cell: usize) bool { return !game.mines[cell] and game.numbers[cell] == 0; }
+    fn isBlank(game: *const Game, cell: usize) bool {
+        return !game.mines[cell] and game.numbers[cell] == 0;
+    }
     fn boardInfo(game: *const Game) struct { bv: usize, openings: usize, largest: usize } {
         var visited: [max_cells]bool = @splat(false);
         var openings: usize = 0;
@@ -516,7 +612,10 @@ const Game = struct {
                 while (head < length) : (head += 1) {
                     const nearby = &game.neighbors[queue[head]];
                     for (nearby.cells[0..nearby.len]) |neighbor| {
-                        if (!area[neighbor]) { area[neighbor] = true; area_size += 1; }
+                        if (!area[neighbor]) {
+                            area[neighbor] = true;
+                            area_size += 1;
+                        }
                         if (game.isBlank(neighbor) and !visited[neighbor]) {
                             visited[neighbor] = true;
                             queue[length] = neighbor;
@@ -529,7 +628,10 @@ const Game = struct {
             if (!game.mines[first] and game.numbers[first] > 0) {
                 const nearby = &game.neighbors[first];
                 var has_blank = false;
-                for (nearby.cells[0..nearby.len]) |neighbor| if (game.isBlank(neighbor)) { has_blank = true; break; };
+                for (nearby.cells[0..nearby.len]) |neighbor| if (game.isBlank(neighbor)) {
+                    has_blank = true;
+                    break;
+                };
                 if (!has_blank) isolated += 1;
             }
         }
@@ -538,7 +640,12 @@ const Game = struct {
 };
 
 const Statistics = struct {
-    played: usize = 0, wins: usize = 0, losses: usize = 0, streak: usize = 0, best: usize = 0, fastest: ?usize = null,
+    played: usize = 0,
+    wins: usize = 0,
+    losses: usize = 0,
+    streak: usize = 0,
+    best: usize = 0,
+    fastest: ?usize = null,
     fn record(stats: *Statistics, game: *const Game) void {
         stats.played += 1;
         if (game.state == .won) {
@@ -546,7 +653,10 @@ const Statistics = struct {
             stats.streak += 1;
             stats.best = @max(stats.best, stats.streak);
             stats.fastest = @min(stats.fastest orelse game.moves.items.len, game.moves.items.len);
-        } else { stats.losses += 1; stats.streak = 0; }
+        } else {
+            stats.losses += 1;
+            stats.streak = 0;
+        }
     }
 };
 
@@ -563,7 +673,9 @@ const Program = struct {
         program.error_message = try std.fmt.allocPrint(program.scratch, fmt, args);
         return error.BadCommand;
     }
-    fn emit(program: *Program, comptime fmt: []const u8, args: anytype) Error!void { try program.out.print(fmt ++ "\n", args); }
+    fn emit(program: *Program, comptime fmt: []const u8, args: anytype) Error!void {
+        try program.out.print(fmt ++ "\n", args);
+    }
     fn parseNumber(program: *Program, word: []const u8) Error!i64 {
         if (word.len > 10 or (word.len > 1 and word[0] == '0')) return program.fail("bad arguments", .{});
         for (word) |c| if (c < '0' or c > '9') return program.fail("bad arguments", .{});
@@ -609,13 +721,13 @@ const Program = struct {
         var preset: Preset = .beginner;
         var safety = program.safety;
         for (words[1..], 0..) |word, i| {
-            if (command == .PRESET and i == 0) preset = std.meta.stringToEnum(Preset, word) orelse return program.fail("bad arguments", .{})
-            else if (command == .SAFETY) safety = std.meta.stringToEnum(Safety, word) orelse return program.fail("bad arguments", .{})
-            else values[i] = try program.parseNumber(word);
+            if (command == .PRESET and i == 0) preset = std.meta.stringToEnum(Preset, word) orelse return program.fail("bad arguments", .{}) else if (command == .SAFETY) safety = std.meta.stringToEnum(Safety, word) orelse return program.fail("bad arguments", .{}) else values[i] = try program.parseNumber(word);
         }
         if (command == .NEW or command == .PRESET) {
             const dimensions: [3]i64 = if (command == .NEW) values[0..3].* else switch (preset) {
-                .beginner => .{ 9, 9, 10 }, .intermediate => .{ 16, 16, 40 }, .expert => .{ 30, 16, 99 },
+                .beginner => .{ 9, 9, 10 },
+                .intermediate => .{ 16, 16, 40 },
+                .expert => .{ 30, 16, 99 },
             };
             const width = dimensions[0];
             const height = dimensions[1];
@@ -698,7 +810,9 @@ const Program = struct {
                 } else {
                     var opened: usize = 0;
                     const nearby = &game.neighbors[cell];
-                    for (nearby.cells[0..nearby.len]) |neighbor| if (game.revealed[neighbor]) { opened += 1; };
+                    for (nearby.cells[0..nearby.len]) |neighbor| if (game.revealed[neighbor]) {
+                        opened += 1;
+                    };
                     try program.emit("cell {f} hidden mark {s} open {d}", .{ game.position(cell), @tagName(game.marks[cell]), opened });
                 }
             },
@@ -732,16 +846,13 @@ const Program = struct {
             },
             .AUTO, .SOLVE => {
                 const totals = if (command == .AUTO) try game.playAuto(program.safety) else try game.playSolve(program.safety);
-                if (command == .AUTO) try program.emit("auto rounds {d} flagged {d} revealed {d}", .{ totals.rounds, totals.flagged, totals.opened })
-                else try program.emit("solve guesses {d} rounds {d} flagged {d} revealed {d}", .{ totals.guesses, totals.rounds, totals.flagged, totals.opened });
+                if (command == .AUTO) try program.emit("auto rounds {d} flagged {d} revealed {d}", .{ totals.rounds, totals.flagged, totals.opened }) else try program.emit("solve guesses {d} rounds {d} flagged {d} revealed {d}", .{ totals.guesses, totals.rounds, totals.flagged, totals.opened });
                 try program.finishOutput(game);
             },
             .ANALYZE => {
                 const copy = try game.clone(program.scratch, false);
                 const totals = try copy.playAuto(program.safety);
-                if (copy.state == .lost) try program.emit("analyze boom {f} rounds {d}", .{ copy.position(copy.exploded), totals.rounds })
-                else if (copy.state == .won) try program.emit("analyze clear rounds {d}", .{totals.rounds})
-                else try program.emit("analyze stuck rounds {d} revealed {d}/{d}", .{ totals.rounds, copy.revealedCount(), copy.cellCount() - copy.mine_count });
+                if (copy.state == .lost) try program.emit("analyze boom {f} rounds {d}", .{ copy.position(copy.exploded), totals.rounds }) else if (copy.state == .won) try program.emit("analyze clear rounds {d}", .{totals.rounds}) else try program.emit("analyze stuck rounds {d} revealed {d}/{d}", .{ totals.rounds, copy.revealedCount(), copy.cellCount() - copy.mine_count });
             },
             .PROB => {
                 if (game.revealed[cell]) return program.fail("already revealed", .{});
@@ -752,11 +863,18 @@ const Program = struct {
                     component.count();
                     if (component.configurations == 0) try program.emit("prob {f} inconsistent", .{game.position(cell)}) else {
                         var numerator: usize = 0;
-                        for (component.cells.items, 0..) |candidate, i| if (candidate == cell) { numerator = component.mine_counts[i]; break; };
+                        for (component.cells.items, 0..) |candidate, i| if (candidate == cell) {
+                            numerator = component.mine_counts[i];
+                            break;
+                        };
                         const denominator = component.configurations;
                         var a = numerator;
                         var b = denominator;
-                        while (b != 0) { const remainder = a % b; a = b; b = remainder; }
+                        while (b != 0) {
+                            const remainder = a % b;
+                            a = b;
+                            b = remainder;
+                        }
                         try program.emit("prob {f} {d}/{d} size {d} configs {d}", .{ game.position(cell), numerator / a, denominator / a, component.cells.items.len, denominator });
                     }
                 } else try program.emit("prob {f} unconstrained", .{game.position(cell)});
@@ -768,8 +886,7 @@ const Program = struct {
                 try program.emit("frontier {d} components {d}", .{ count, frontier.components.items.len });
                 for (frontier.components.items) |*component| {
                     component.count();
-                    if (component.configurations == 0) try program.emit("component {f} size {d} inconsistent", .{ game.position(component.cells.items[0]), component.cells.items.len })
-                    else try program.emit("component {f} size {d} configs {d} min {d} max {d}", .{ game.position(component.cells.items[0]), component.cells.items.len, component.configurations, component.minimum, component.maximum });
+                    if (component.configurations == 0) try program.emit("component {f} size {d} inconsistent", .{ game.position(component.cells.items[0]), component.cells.items.len }) else try program.emit("component {f} size {d} configs {d} min {d} max {d}", .{ game.position(component.cells.items[0]), component.cells.items.len, component.configurations, component.minimum, component.maximum });
                 }
             },
             .BOARDINFO => {
@@ -778,7 +895,9 @@ const Program = struct {
             },
             .NEW, .PRESET, .LAYOUT, .SAFETY, .STATS => unreachable,
         }
-        if (snapshot) |saved| if (game.moves.items.len > saved.move_count) { try game.undo.append(game.gpa, saved); };
+        if (snapshot) |saved| if (game.moves.items.len > saved.move_count) {
+            try game.undo.append(game.gpa, saved);
+        };
         if (!was_finished and game.isFinished()) program.stats.record(game);
     }
 };

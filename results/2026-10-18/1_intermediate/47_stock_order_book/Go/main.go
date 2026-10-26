@@ -10,20 +10,20 @@ import (
 )
 
 type Order struct {
-	id, trader, kind, side, condition, status string
+	id, trader, kind, side, condition, status                                   string
 	price, trigger, peak, quantity, remaining, visible, filled, value, priority int
-	history []string
+	history                                                                     []string
 }
 
 type Trader struct {
 	bought, sold, cash, fees, limit int
-	limited bool
+	limited                         bool
 }
 
 type Trade struct {
-	price, quantity int
+	price, quantity  int
 	buy, sell, taker *Order
-	bf, sf int
+	bf, sf           int
 }
 
 type Level struct {
@@ -31,13 +31,13 @@ type Level struct {
 }
 
 type Engine struct {
-	orders []*Order
-	ids map[string]*Order
-	traders map[string]*Trader
-	trades []Trade
+	orders                                  []*Order
+	ids                                     map[string]*Order
+	traders                                 map[string]*Trader
+	trades                                  []Trade
 	priority, maker, taker, band, tick, lot int
-	halted bool
-	out *bufio.Writer
+	halted                                  bool
+	out                                     *bufio.Writer
 }
 
 func num(s string) int {
@@ -86,7 +86,7 @@ func (e *Engine) register(t string) *Trader {
 func (e *Engine) exposure(t, s string, exclude *Order) int {
 	v := 0
 	if x := e.traders[t]; x != nil {
-		v = x.bought-x.sold
+		v = x.bought - x.sold
 	}
 	if s == "SELL" {
 		v = -v
@@ -105,7 +105,7 @@ func (e *Engine) risk(t, s string, q int, exclude *Order) bool {
 }
 
 func (e *Engine) outside(p int) bool {
-	d := p-e.last()
+	d := p - e.last()
 	if d < 0 {
 		d = -d
 	}
@@ -135,7 +135,7 @@ func details(o *Order) string {
 		p = strconv.Itoa(o.price)
 	}
 	if o.filled > 0 {
-		a = dec(o.value*100/o.filled)
+		a = dec(o.value * 100 / o.filled)
 	}
 	s := fmt.Sprintf("%s %s %s %s %s %s %d/%d avg %s", o.id, o.trader, o.kind, o.side, p, o.status, o.filled, o.quantity, a)
 	if o.trigger > 0 {
@@ -146,7 +146,7 @@ func details(o *Order) string {
 
 func (e *Engine) position(t string) {
 	x := e.traders[t]
-	n := x.bought-x.sold
+	n := x.bought - x.sold
 	e.emit("POSITION", t, "bought", x.bought, "sold", x.sold, "net", n, "cash", x.cash, "fees", x.fees, "pnl", x.cash+n*e.last())
 }
 
@@ -185,18 +185,18 @@ func (e *Engine) execute(o *Order) {
 		for _, x := range []*Order{o, y} {
 			x.remaining -= q
 			x.filled += q
-			x.value += q*p
+			x.value += q * p
 			x.history = append(x.history, fmt.Sprintf("FILL %d %d %d", len(e.trades), p, q))
 		}
 		y.visible -= q
 		bt, st := e.traders[b.trader], e.traders[s.trader]
 		bt.bought += q
-		bt.cash -= q*p+bf
+		bt.cash -= q*p + bf
 		bt.fees += bf
 		st.sold += q
-		st.cash += q*p-sf
+		st.cash += q*p - sf
 		st.fees += sf
-		e.tradeLine(len(e.trades)-1)
+		e.tradeLine(len(e.trades) - 1)
 		if y.remaining == 0 {
 			y.status = "FILLED"
 		} else {
@@ -205,7 +205,7 @@ func (e *Engine) execute(o *Order) {
 				e.priority++
 				y.priority = e.priority
 				y.visible = min(y.peak, y.remaining)
-				h := y.remaining-y.visible
+				h := y.remaining - y.visible
 				y.history = append(y.history, fmt.Sprintf("REFRESH %d %d", y.visible, h))
 				e.emit("REFRESH", y.id, y.visible, h)
 			}
@@ -301,7 +301,7 @@ func (e *Engine) command(w []string) {
 		}
 	}
 	if c == "LIMIT" || c == "MARKET" || c == "STOP" || c == "STOPLIMIT" || c == "ICEBERG" {
-		o := &Order{id: w[1], trader: w[2], side: w[3], kind: c, status:"ARRIVING", history: []string{"ACCEPT"}}
+		o := &Order{id: w[1], trader: w[2], side: w[3], kind: c, status: "ARRIVING", history: []string{"ACCEPT"}}
 		prices := []int{}
 		switch c {
 		case "MARKET":
@@ -451,7 +451,7 @@ func (e *Engine) command(w []string) {
 				reject(reason)
 				return
 			}
-			o.quantity = o.filled+q
+			o.quantity = o.filled + q
 			kept := !moved && q < o.remaining
 			mode := "lost"
 			if kept {
@@ -583,7 +583,7 @@ func (e *Engine) command(w []string) {
 		}
 		b, a := e.levels("BUY"), e.levels("SELL")
 		e.emit("BOOK bids", len(b), "asks", len(a))
-		for i := min(n, len(a))-1; i >= 0; i-- {
+		for i := min(n, len(a)) - 1; i >= 0; i-- {
 			x := a[i]
 			e.emit("ASK", x.price, x.quantity, x.count)
 		}
@@ -601,7 +601,7 @@ func (e *Engine) command(w []string) {
 		v, a := 0, 0
 		for _, x := range e.trades {
 			v += x.quantity
-			a += x.price*x.quantity
+			a += x.price * x.quantity
 		}
 		if v == 0 {
 			e.emit("VWAP none")
@@ -620,7 +620,7 @@ func (e *Engine) command(w []string) {
 			}
 			e.emit(c, "bid", bt, "ask", at)
 		} else {
-			s := a.price+b.price
+			s := a.price + b.price
 			e.emit(c, "bid", b.price, "ask", a.price, "spread", a.price-b.price, "mid", fmt.Sprintf("%d.%d", s/2, s%2*5))
 		}
 	case "IMPACT":
@@ -639,7 +639,7 @@ func (e *Engine) command(w []string) {
 			if r > 0 {
 				u := min(r, x.quantity)
 				r -= u
-				cost += u*x.price
+				cost += u * x.price
 				worst = x.price
 				used++
 			}
@@ -658,13 +658,13 @@ func (e *Engine) command(w []string) {
 		if c == "TRADES" {
 			m := min(k, len(e.trades))
 			e.emit(c, m, "of", len(e.trades))
-			for i := len(e.trades)-m; i < len(e.trades); i++ {
+			for i := len(e.trades) - m; i < len(e.trades); i++ {
 				e.tradeLine(i)
 			}
 		} else {
 			e.emit(c, (len(e.trades)+k-1)/k)
 			for i := 0; i < len(e.trades); i += k {
-				g := e.trades[i: min(i+k, len(e.trades))]
+				g := e.trades[i:min(i+k, len(e.trades))]
 				hi, lo, v := g[0].price, g[0].price, 0
 				for _, x := range g {
 					hi = max(hi, x.price)
@@ -681,7 +681,7 @@ func (e *Engine) command(w []string) {
 		}
 		pnl := func(t string) int {
 			x := e.traders[t]
-			return x.cash+(x.bought-x.sold)*e.last()
+			return x.cash + (x.bought-x.sold)*e.last()
 		}
 		sort.Slice(names, func(i, j int) bool {
 			a, b := names[i], names[j]
@@ -718,7 +718,7 @@ func (e *Engine) command(w []string) {
 				hi = max(hi, x.price)
 				lo = min(lo, x.price)
 				v += x.quantity
-				f += x.bf+x.sf
+				f += x.bf + x.sf
 			}
 			e.emit(c, "trades", len(e.trades), "volume", v, "open", e.trades[0].price, "high", hi, "low", lo, "close", e.last(), "fees", f)
 		}

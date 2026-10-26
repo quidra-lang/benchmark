@@ -4,9 +4,15 @@ const Writer = std.Io.Writer;
 const Error = Allocator.Error || Writer.Error || error{Invalid};
 const Command = enum { CREATE, LOAD, INSERT, BULKLOAD, DELETE, DELRANGE, GET, RANGE, COUNT, MIN, MAX, FLOOR, CEIL, RANK, SELECT, SEEK, NEXT, PREV, PRINT, PAGES, DUMP, HEIGHT, STATS, VERIFY, REBUILD, COMPACT, SAVE, RESTORE, TRACE };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn integer(text: []const u8) i64 { return std.fmt.parseInt(i64, text, 10) catch unreachable; }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn integer(text: []const u8) i64 {
+    return std.fmt.parseInt(i64, text, 10) catch unreachable;
+}
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
 
 const Value = struct {
     bytes: [12]u8 = undefined,
@@ -16,19 +22,29 @@ const Value = struct {
         @memcpy(value.bytes[0..source.len], source);
         return value;
     }
-    fn text(value: *const Value) []const u8 { return value.bytes[0..value.len]; }
-    pub fn format(value: Value, out: *Writer) Writer.Error!void { try out.writeAll(value.text()); }
+    fn text(value: *const Value) []const u8 {
+        return value.bytes[0..value.len];
+    }
+    pub fn format(value: Value, out: *Writer) Writer.Error!void {
+        try out.writeAll(value.text());
+    }
 };
 const Entry = struct {
     key: i64,
     value: Value,
-    fn eql(a: Entry, b: Entry) bool { return a.key == b.key and equal(a.value.text(), b.value.text()); }
-    pub fn format(entry: Entry, out: *Writer) Writer.Error!void { try out.print("{d}={f}", .{ entry.key, entry.value }); }
+    fn eql(a: Entry, b: Entry) bool {
+        return a.key == b.key and equal(a.value.text(), b.value.text());
+    }
+    pub fn format(entry: Entry, out: *Writer) Writer.Error!void {
+        try out.print("{d}={f}", .{ entry.key, entry.value });
+    }
 };
 const Node = struct {
     entries: std.ArrayList(Entry) = .empty,
     children: std.ArrayList(usize) = .empty,
-    fn leaf(node: *const Node) bool { return node.children.items.len == 0; }
+    fn leaf(node: *const Node) bool {
+        return node.children.items.len == 0;
+    }
     fn position(node: *const Node, key: i64) usize {
         for (node.entries.items, 0..) |entry, i| if (key <= entry.key) return i;
         return node.entries.items.len;
@@ -76,7 +92,9 @@ const Trace = struct {
     fn emit(trace: *Trace, comptime fmt: []const u8, args: anytype) Writer.Error!void {
         if (trace.enabled) try line(trace.out, fmt, args);
     }
-    fn record(trace: *Trace, name: []const u8) Allocator.Error!void { try trace.cases.append(trace.gpa, name); }
+    fn record(trace: *Trace, name: []const u8) Allocator.Error!void {
+        try trace.cases.append(trace.gpa, name);
+    }
 };
 
 const Tree = struct {
@@ -98,7 +116,9 @@ const Tree = struct {
         for (tree.pages.items) |slot| if (slot) |item| item.destroy(tree.gpa);
         tree.pages.deinit(tree.gpa);
     }
-    fn node(tree: *const Tree, page: usize) *Node { return tree.pages.items[page].?; }
+    fn node(tree: *const Tree, page: usize) *Node {
+        return tree.pages.items[page].?;
+    }
     fn newPage(tree: *Tree) Allocator.Error!usize {
         const result = try tree.gpa.create(Node);
         result.* = .{};
@@ -115,8 +135,7 @@ const Tree = struct {
         tree.pages.items[page] = null;
     }
     fn clone(tree: *const Tree) Allocator.Error!Tree {
-        var result: Tree = .{ .gpa = tree.gpa, .degree = tree.degree, .root = tree.root,
-            .splits = tree.splits, .merges = tree.merges, .borrows = tree.borrows };
+        var result: Tree = .{ .gpa = tree.gpa, .degree = tree.degree, .root = tree.root, .splits = tree.splits, .merges = tree.merges, .borrows = tree.borrows };
         errdefer result.deinit();
         try result.pages.ensureTotalCapacity(tree.gpa, tree.pages.items.len);
         for (tree.pages.items) |slot| result.pages.appendAssumeCapacity(if (slot) |item| try item.clone(tree.gpa) else null);
@@ -124,12 +143,16 @@ const Tree = struct {
     }
     fn countNodes(tree: *const Tree) usize {
         var count: usize = 0;
-        for (tree.pages.items) |slot| if (slot != null) { count += 1; };
+        for (tree.pages.items) |slot| if (slot != null) {
+            count += 1;
+        };
         return count;
     }
     fn countEntries(tree: *const Tree) usize {
         var count: usize = 0;
-        for (tree.pages.items) |slot| if (slot) |item| { count += item.entries.items.len; };
+        for (tree.pages.items) |slot| if (slot) |item| {
+            count += item.entries.items.len;
+        };
         return count;
     }
     fn changes(tree: *const Tree, before: *const Tree) struct { writes: usize, frees: usize } {
@@ -139,7 +162,9 @@ const Tree = struct {
             const old = if (page < before.pages.items.len) before.pages.items[page] else null;
             if (old == null or !item.sameContent(old.?)) writes += 1;
         };
-        for (before.pages.items, 0..) |slot, page| if (slot != null and (page >= tree.pages.items.len or tree.pages.items[page] == null)) { frees += 1; };
+        for (before.pages.items, 0..) |slot, page| if (slot != null and (page >= tree.pages.items.len or tree.pages.items[page] == null)) {
+            frees += 1;
+        };
         return .{ .writes = writes, .frees = frees };
     }
     fn height(tree: *const Tree) usize {
@@ -178,21 +203,17 @@ const Tree = struct {
             page = item.children.items[position];
         }
     }
-    fn checkNode(tree: *const Tree, page: usize, location: []const u8, depth: usize, low: ?i64, high: ?i64,
-        expected: *?usize, gpa: Allocator) Allocator.Error!?[]const u8 {
+    fn checkNode(tree: *const Tree, page: usize, location: []const u8, depth: usize, low: ?i64, high: ?i64, expected: *?usize, gpa: Allocator) Allocator.Error!?[]const u8 {
         const item = tree.node(page);
         const count = item.entries.items.len;
         const minimum = if (page == tree.root) @as(usize, if (item.leaf()) 0 else 1) else tree.degree - 1;
         const maximum = 2 * tree.degree - 1;
-        if (count < minimum or count > maximum) return try std.fmt.allocPrint(gpa,
-            "COUNT at={s} node={f} keys={d} allowed={d}..{d}", .{ location, item.*, count, minimum, maximum });
+        if (count < minimum or count > maximum) return try std.fmt.allocPrint(gpa, "COUNT at={s} node={f} keys={d} allowed={d}..{d}", .{ location, item.*, count, minimum, maximum });
         for (item.entries.items, 0..) |entry, i| {
-            if (i + 1 < count and entry.key >= item.entries.items[i + 1].key) return try std.fmt.allocPrint(gpa,
-                "ORDER at={s} node={f} {d}>={d}", .{ location, item.*, entry.key, item.entries.items[i + 1].key });
+            if (i + 1 < count and entry.key >= item.entries.items[i + 1].key) return try std.fmt.allocPrint(gpa, "ORDER at={s} node={f} {d}>={d}", .{ location, item.*, entry.key, item.entries.items[i + 1].key });
         }
         for (item.entries.items) |entry| {
-            if ((low != null and entry.key <= low.?) or (high != null and entry.key >= high.?)) return try std.fmt.allocPrint(gpa,
-                "RANGE at={s} node={f} key={d} low={f} high={f}", .{ location, item.*, entry.key, Bound{ .value = low, .lower = true }, Bound{ .value = high, .lower = false } });
+            if ((low != null and entry.key <= low.?) or (high != null and entry.key >= high.?)) return try std.fmt.allocPrint(gpa, "RANGE at={s} node={f} key={d} low={f} high={f}", .{ location, item.*, entry.key, Bound{ .value = low, .lower = true }, Bound{ .value = high, .lower = false } });
         }
         if (item.leaf()) {
             if (expected.*) |reference| {
@@ -201,8 +222,7 @@ const Tree = struct {
         }
         for (item.children.items, 0..) |child, i| {
             const path = try std.fmt.allocPrint(gpa, "{s}.{d}", .{ location, i });
-            if (try tree.checkNode(child, path, depth + 1, if (i == 0) low else item.entries.items[i - 1].key,
-                if (i == count) high else item.entries.items[i].key, expected, gpa)) |problem| return problem;
+            if (try tree.checkNode(child, path, depth + 1, if (i == 0) low else item.entries.items[i - 1].key, if (i == count) high else item.entries.items[i].key, expected, gpa)) |problem| return problem;
         }
         return null;
     }
@@ -350,8 +370,7 @@ const Tree = struct {
         trace.cases.clearRetainingCapacity();
         try tree.removeAt(tree.root, key, trace);
     }
-    fn scanNode(tree: *const Tree, page: usize, low: i64, high: i64, gpa: Allocator,
-        result: *std.ArrayList(Entry), visited: *usize) Allocator.Error!void {
+    fn scanNode(tree: *const Tree, page: usize, low: i64, high: i64, gpa: Allocator, result: *std.ArrayList(Entry), visited: *usize) Allocator.Error!void {
         visited.* += 1;
         const item = tree.node(page);
         const count = item.entries.items.len;
@@ -365,10 +384,16 @@ const Tree = struct {
     fn dumpNode(tree: *const Tree, page: usize, out: *Writer) Writer.Error!void {
         const item = tree.node(page);
         try out.writeByte('(');
-        if (!item.leaf()) { try out.writeByte(' '); try tree.dumpNode(item.children.items[0], out); }
+        if (!item.leaf()) {
+            try out.writeByte(' ');
+            try tree.dumpNode(item.children.items[0], out);
+        }
         for (item.entries.items, 0..) |entry, i| {
             try out.print(" {f}", .{entry});
-            if (!item.leaf()) { try out.writeByte(' '); try tree.dumpNode(item.children.items[i + 1], out); }
+            if (!item.leaf()) {
+                try out.writeByte(' ');
+                try tree.dumpNode(item.children.items[i + 1], out);
+            }
         }
         try out.writeAll(" )");
     }
@@ -401,8 +426,7 @@ const Tree = struct {
             for (0..groups) |group| {
                 const length = size + @intFromBool(group < extra);
                 try nodes.append(scratch, built.items.len);
-                try built.append(scratch, .{ .rows = source[entry_index..][0..length],
-                    .children = if (children.len == 0) &.{} else children[child_index..][0..length + 1] });
+                try built.append(scratch, .{ .rows = source[entry_index..][0..length], .children = if (children.len == 0) &.{} else children[child_index..][0 .. length + 1] });
                 entry_index += length;
                 child_index += length + 1;
                 if (group + 1 < groups) {
@@ -410,7 +434,10 @@ const Tree = struct {
                     entry_index += 1;
                 }
             }
-            if (groups == 1) { old_root = nodes.items[0]; break; }
+            if (groups == 1) {
+                old_root = nodes.items[0];
+                break;
+            }
             source = separators.items;
             children = nodes.items;
         }
@@ -432,7 +459,7 @@ const Loader = struct {
         if (equal(token, "(") or equal(token, ")")) return error.Invalid;
         const split = std.mem.findScalar(u8, token, '=').?;
         loader.position += 1;
-        return .{ .key = integer(token[0..split]), .value = Value.init(token[split + 1..]) };
+        return .{ .key = integer(token[0..split]), .value = Value.init(token[split + 1 ..]) };
     }
     fn parseNode(loader: *Loader) (Allocator.Error || error{Invalid})!usize {
         if (loader.position == loader.tokens.len or !equal(loader.tokens[loader.position], "(")) return error.Invalid;
@@ -475,8 +502,11 @@ fn candidate(rows: []const Entry, key: i64, relation: Relation, last: bool) ?Ent
     var result: ?Entry = null;
     for (rows) |entry| {
         const matches = switch (relation) {
-            .all => true, .less => entry.key < key, .greater => entry.key > key,
-            .at_most => entry.key <= key, .at_least => entry.key >= key,
+            .all => true,
+            .less => entry.key < key,
+            .greater => entry.key > key,
+            .at_most => entry.key <= key,
+            .at_least => entry.key >= key,
         };
         if (!matches) continue;
         result = entry;
@@ -494,8 +524,7 @@ const Session = struct {
         return error.Invalid;
     }
     fn summary(session: *Session, prefix: []const u8, tree: *const Tree) Error!void {
-        try line(session.out, "{s} nodes={d} keys={d} {s}", .{ prefix, tree.countNodes(), tree.countEntries(),
-            if (try tree.violation(session.gpa) == null) "OK" else "DAMAGED" });
+        try line(session.out, "{s} nodes={d} keys={d} {s}", .{ prefix, tree.countNodes(), tree.countEntries(), if (try tree.violation(session.gpa) == null) "OK" else "DAMAGED" });
     }
     fn execute(session: *Session, words: []const []const u8) Error!void {
         const command = std.meta.stringToEnum(Command, words[0]).?;
@@ -534,8 +563,7 @@ const Session = struct {
         }
         const tree = if (lab.index) |*value| value else return session.fail("NO INDEX", .{});
         const needs_valid = switch (command) {
-            .INSERT, .BULKLOAD, .DELETE, .DELRANGE, .RANGE, .COUNT, .MIN, .MAX, .FLOOR, .CEIL,
-            .RANK, .SELECT, .SEEK, .NEXT, .PREV, .HEIGHT, .COMPACT => true,
+            .INSERT, .BULKLOAD, .DELETE, .DELRANGE, .RANGE, .COUNT, .MIN, .MAX, .FLOOR, .CEIL, .RANK, .SELECT, .SEEK, .NEXT, .PREV, .HEIGHT, .COMPACT => true,
             else => false,
         };
         if (needs_valid and try tree.violation(session.gpa) != null) return session.fail("DAMAGED", .{});
@@ -569,8 +597,7 @@ const Session = struct {
                 while (i < words.len) : (i += 2) {
                     if (try tree.upsert(integer(words[i]), Value.init(words[i + 1]), &trace) == null) inserted += 1 else updated += 1;
                 }
-                try line(out, "BULKLOAD pairs={d} new={d} updated={d} splits={d} height={d} writes={d}",
-                    .{ (words.len - 1) / 2, inserted, updated, tree.splits - splits, tree.height(), tree.changes(&before).writes });
+                try line(out, "BULKLOAD pairs={d} new={d} updated={d} splits={d} height={d} writes={d}", .{ (words.len - 1) / 2, inserted, updated, tree.splits - splits, tree.height(), tree.changes(&before).writes });
             },
             .DELETE => {
                 const found = tree.search(first);
@@ -599,8 +626,7 @@ const Session = struct {
                     removed += 1;
                 };
                 const changes = tree.changes(&before);
-                try line(out, "DELRANGE {d} {d} removed={d} merges={d} borrows={d} height={d} writes={d} frees={d}",
-                    .{ first, second, removed, tree.merges - merges, tree.borrows - borrows, tree.height(), changes.writes, changes.frees });
+                try line(out, "DELRANGE {d} {d} removed={d} merges={d} borrows={d} height={d} writes={d} frees={d}", .{ first, second, removed, tree.merges - merges, tree.borrows - borrows, tree.height(), changes.writes, changes.frees });
             },
             .GET => {
                 const found = tree.search(first);
@@ -620,7 +646,9 @@ const Session = struct {
                 var visited: usize = 0;
                 try tree.scanNode(tree.root, first, second, session.gpa, &result, &visited);
                 try out.print("{s} {d} {d} count={d} visited={d}", .{ words[0], first, second, result.items.len, visited });
-                if (command == .RANGE) for (result.items) |entry| { try out.print(" {f}", .{entry}); };
+                if (command == .RANGE) for (result.items) |entry| {
+                    try out.print(" {f}", .{entry});
+                };
                 try out.writeByte('\n');
             },
             .MIN, .MAX => {
@@ -634,7 +662,9 @@ const Session = struct {
             },
             .RANK => {
                 var rank: usize = 0;
-                for (rows) |entry| if (entry.key < first) { rank += 1; };
+                for (rows) |entry| if (entry.key < first) {
+                    rank += 1;
+                };
                 try line(out, "RANK {d} {d}", .{ first, rank });
             },
             .SELECT => try line(out, "SELECT {d} {f}", .{ first, rows[@intCast(first - 1)] }),
@@ -646,11 +676,15 @@ const Session = struct {
             },
             .NEXT, .PREV => {
                 const entry = if (command == .NEXT) switch (lab.cursor) {
-                    .begin => candidate(rows, 0, .all, false), .key => |key| candidate(rows, key, .greater, false),
-                    .end => null, .unset => unreachable,
+                    .begin => candidate(rows, 0, .all, false),
+                    .key => |key| candidate(rows, key, .greater, false),
+                    .end => null,
+                    .unset => unreachable,
                 } else switch (lab.cursor) {
-                    .end => candidate(rows, 0, .all, true), .key => |key| candidate(rows, key, .less, true),
-                    .begin => null, .unset => unreachable,
+                    .end => candidate(rows, 0, .all, true),
+                    .key => |key| candidate(rows, key, .less, true),
+                    .begin => null,
+                    .unset => unreachable,
                 };
                 lab.cursor = if (entry) |value| .{ .key = value.key } else if (command == .NEXT) .end else .begin;
                 try out.print("{s} ", .{words[0]});
@@ -678,7 +712,7 @@ const Session = struct {
                     if (item.leaf()) try out.writeByte('-') else for (item.children.items, 0..) |child, i| {
                         if (i > 0) try out.writeByte(',');
                         try out.print("{d}", .{child});
-                    };
+                    }
                     try out.writeByte('\n');
                 };
             },
@@ -690,11 +724,12 @@ const Session = struct {
             .HEIGHT => try line(out, "HEIGHT {d}", .{tree.height()}),
             .STATS => {
                 var leaves: usize = 0;
-                for (tree.pages.items) |slot| if (slot) |item| { if (item.leaf()) leaves += 1; };
+                for (tree.pages.items) |slot| if (slot) |item| {
+                    if (item.leaf()) leaves += 1;
+                };
                 const nodes = tree.countNodes();
                 const fill = 100 * rows.len / ((2 * tree.degree - 1) * nodes);
-                try line(out, "STATS t={d} nodes={d} leaves={d} keys={d} fill={d}% splits={d} merges={d} borrows={d}",
-                    .{ tree.degree, nodes, leaves, rows.len, fill, tree.splits, tree.merges, tree.borrows });
+                try line(out, "STATS t={d} nodes={d} leaves={d} keys={d} fill={d}% splits={d} merges={d} borrows={d}", .{ tree.degree, nodes, leaves, rows.len, fill, tree.splits, tree.merges, tree.borrows });
             },
             .VERIFY => {
                 if (try tree.violation(session.gpa)) |problem| try line(out, "VERIFY FAIL {s}", .{problem}) else try line(out, "VERIFY OK", .{});
@@ -703,8 +738,7 @@ const Session = struct {
                 var replacement = try Tree.init(lab.gpa, tree.degree);
                 errdefer replacement.deinit();
                 for (rows) |entry| _ = try replacement.upsert(entry.key, entry.value, &trace);
-                try line(out, "REBUILD entries={d} keys={d} nodes={d} splits={d} height={d}",
-                    .{ rows.len, replacement.countEntries(), replacement.countNodes(), replacement.splits, replacement.height() });
+                try line(out, "REBUILD entries={d} keys={d} nodes={d} splits={d} height={d}", .{ rows.len, replacement.countEntries(), replacement.countNodes(), replacement.splits, replacement.height() });
                 lab.replace(replacement);
             },
             .COMPACT => {

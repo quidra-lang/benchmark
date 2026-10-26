@@ -6,22 +6,36 @@ const Error = Allocator.Error || error{Invalid};
 const Failure = struct { word: Text, reason: Text, code: ?Int = null };
 var failure: Failure = undefined;
 var reasonBuffer: [256]u8 = undefined;
-fn equal(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
 fn sameName(a: Text, b: Text) bool {
     if (a.len != b.len) return false;
     for (a, b) |x, y| if (std.ascii.toUpper(x) != std.ascii.toUpper(y)) return false;
     return true;
 }
-fn member(text: Text, list: []const Text) bool { for (list) |item| if (equal(text, item)) return true; return false; }
+fn member(text: Text, list: []const Text) bool {
+    for (list) |item| if (equal(text, item)) return true;
+    return false;
+}
 fn uppercase(gpa: Allocator, text: Text) Allocator.Error!Text {
     const result = try gpa.dupe(u8, text);
     for (result) |*c| c.* = std.ascii.toUpper(c.*);
     return result;
 }
-fn issue(raw: Text, reason: Text, code: ?Int) Error { failure = .{ .word = raw, .reason = reason, .code = code }; return error.Invalid; }
-fn flag(value: bool) Int { return if (value) -1 else 0; }
-fn u(value: Int) usize { return @intCast(value); }
-fn si(value: usize) Int { return @intCast(value); }
+fn issue(raw: Text, reason: Text, code: ?Int) Error {
+    failure = .{ .word = raw, .reason = reason, .code = code };
+    return error.Invalid;
+}
+fn flag(value: bool) Int {
+    return if (value) -1 else 0;
+}
+fn u(value: Int) usize {
+    return @intCast(value);
+}
+fn si(value: usize) Int {
+    return @intCast(value);
+}
 const compileOnly = [_]Text{ "IF", "ELSE", "THEN", "DO", "?DO", "LOOP", "+LOOP", "LEAVE", "UNLOOP", "I", "J", "BEGIN", "UNTIL", "WHILE", "REPEAT", "AGAIN", "CASE", "OF", "ENDOF", "ENDCASE", "EXIT", "RECURSE", "DOES>", ";", ">R", "R>", "R@", "ABORT\"", "[']", "{:" };
 const interpretOnly = [_]Text{ ":", ":NONAME", "FORGET" };
 const bothModes = [_]Text{ ".\"", "(", "\\", "TO", "IS" };
@@ -29,13 +43,17 @@ const builtinNames = "+ - * / MOD /MOD */ */MOD NEGATE ABS MIN MAX 1+ 1- 2* 2/ =
 const Builder = struct {
     gpa: Allocator,
     bytes: std.ArrayList(u8) = .empty,
-    fn add(self: *Builder, text: Text) Allocator.Error!void { try self.bytes.appendSlice(self.gpa, text); }
+    fn add(self: *Builder, text: Text) Allocator.Error!void {
+        try self.bytes.appendSlice(self.gpa, text);
+    }
     fn print(self: *Builder, comptime format: Text, args: anytype) Allocator.Error!void {
         const text = try std.fmt.allocPrint(self.gpa, format, args);
         defer self.gpa.free(text);
         try self.add(text);
     }
-    fn line(self: *Builder, comptime format: Text, args: anytype) Allocator.Error!void { try self.print(format ++ "\n", args); }
+    fn line(self: *Builder, comptime format: Text, args: anytype) Allocator.Error!void {
+        try self.print(format ++ "\n", args);
+    }
 };
 const Action = struct { kind: Text, raw: Text, text: Text = "", value: Int = 0, word: ?*Word = null, target: usize = 0, slots: []const usize = &.{} };
 const WordKind = enum { builtin, colon, create, variable, constant, value, deferred };
@@ -86,10 +104,15 @@ const Machine = struct {
         while (self.position < self.source.len and self.source[self.position] != ' ') self.position += 1;
         return if (start == self.position) null else self.source[start..self.position];
     }
-    fn readName(self: *Machine, raw: Text) Error!Text { return self.read() orelse return issue(raw, "missing name", -16); }
+    fn readName(self: *Machine, raw: Text) Error!Text {
+        return self.read() orelse return issue(raw, "missing name", -16);
+    }
     fn lookup(self: *Machine, name: Text) ?*Word {
         var i = self.dictionary.items.len;
-        while (i > 0) { i -= 1; if (sameName(self.dictionary.items[i].name, name)) return self.dictionary.items[i]; }
+        while (i > 0) {
+            i -= 1;
+            if (sameName(self.dictionary.items[i].name, name)) return self.dictionary.items[i];
+        }
         for (self.builtins.items) |word| if (sameName(word.name, name)) return word;
         return null;
     }
@@ -98,9 +121,18 @@ const Machine = struct {
         var text = raw;
         var base = rawBase;
         if (raw.len > 0) switch (raw[0]) {
-            '$' => { base = 16; text = raw[1..]; },
-            '#' => { base = 10; text = raw[1..]; },
-            '%' => { base = 2; text = raw[1..]; },
+            '$' => {
+                base = 16;
+                text = raw[1..];
+            },
+            '#' => {
+                base = 10;
+                text = raw[1..];
+            },
+            '%' => {
+                base = 2;
+                text = raw[1..];
+            },
             else => if (base < 2 or base > 36) return issue(raw, "invalid base", -40),
         };
         const negative = std.mem.startsWith(u8, text, "-");
@@ -138,8 +170,12 @@ const Machine = struct {
         try self.data.append(self.gpa, value);
         if (self.data.items.len > 1000) return issue(raw, "stack overflow", -3);
     }
-    fn pushAll(self: *Machine, values: []const Int, raw: Text) Error!void { for (values) |value| try self.push(value, raw); }
-    fn returnNeed(self: *Machine, count: usize, raw: Text) Error!void { if (self.returns.items.len < count) return issue(raw, "return stack underflow", -6); }
+    fn pushAll(self: *Machine, values: []const Int, raw: Text) Error!void {
+        for (values) |value| try self.push(value, raw);
+    }
+    fn returnNeed(self: *Machine, count: usize, raw: Text) Error!void {
+        if (self.returns.items.len < count) return issue(raw, "return stack underflow", -6);
+    }
     fn returnPush(self: *Machine, value: Int, raw: Text) Error!void {
         try self.returns.append(self.gpa, value);
         if (self.returns.items.len > 1000) return issue(raw, "return stack overflow", -5);
@@ -160,11 +196,19 @@ const Machine = struct {
             absolute = @divTrunc(absolute, base);
             if (absolute == 0) break;
         }
-        if (value < 0) { start -= 1; buffer[start] = '-'; }
+        if (value < 0) {
+            start -= 1;
+            buffer[start] = '-';
+        }
         return buffer[start..];
     }
-    fn write(self: *Machine, text: Text) Error!void { try self.pending.appendSlice(self.gpa, text); }
-    fn flush(self: *Machine) Error!void { try self.out.line("{s}", .{std.mem.trimEnd(u8, self.pending.items, " ")}); self.pending.clearRetainingCapacity(); }
+    fn write(self: *Machine, text: Text) Error!void {
+        try self.pending.appendSlice(self.gpa, text);
+    }
+    fn flush(self: *Machine) Error!void {
+        try self.out.line("{s}", .{std.mem.trimEnd(u8, self.pending.items, " ")});
+        self.pending.clearRetainingCapacity();
+    }
     fn executionToken(self: *Machine, word: *Word) Error!Int {
         if (self.tokenNumbers.get(word)) |token| return token;
         try self.tokens.append(self.gpa, word);
@@ -176,7 +220,10 @@ const Machine = struct {
         if (value < 1 or value > si(self.tokens.items.len)) return issue(raw, "invalid argument", -24);
         return self.tokens.items[u(value - 1)];
     }
-    fn executeToken(self: *Machine, value: Int, raw: Text) Error!void { const word = try self.validToken(value, raw); try self.execute(word, word.name); }
+    fn executeToken(self: *Machine, value: Int, raw: Text) Error!void {
+        const word = try self.validToken(value, raw);
+        try self.execute(word, word.name);
+    }
     fn addAction(self: *Machine, action: Action) Error!usize {
         const index = self.compiling.?.actions.items.len;
         try self.compiling.?.actions.append(self.gpa, action);
@@ -227,7 +274,13 @@ const Machine = struct {
         } else if (equal(name, "LEAVE")) {
             var found: ?usize = null;
             var i = self.controls.items.len;
-            while (i > 0) { i -= 1; if (member(self.controls.items[i].kind, &.{ "DO", "?DO" })) { found = i; break; } }
+            while (i > 0) {
+                i -= 1;
+                if (member(self.controls.items[i].kind, &.{ "DO", "?DO" })) {
+                    found = i;
+                    break;
+                }
+            }
             const index = found orelse return issue(raw, "control structure mismatch", null);
             const actionIndex = try self.addAction(.{ .kind = "LEAVE", .raw = raw });
             try self.controls.items[index].leaves.append(self.gpa, actionIndex);
@@ -263,7 +316,10 @@ const Machine = struct {
         var ignored = false;
         var closed = false;
         while (self.read()) |name| {
-            if (sameName(name, ":}")) { closed = true; break; }
+            if (sameName(name, ":}")) {
+                closed = true;
+                break;
+            }
             if (equal(name, "--")) ignored = true;
             if (!ignored) try names.append(self.gpa, name);
         }
@@ -286,17 +342,25 @@ const Machine = struct {
     fn assign(self: *Machine, raw: Text, name: Text) Error!void {
         const targetName = try self.readName(raw);
         if (equal(name, "TO") and self.compiling != null) {
-            if (self.localSlot(targetName)) |slot| { _ = try self.addAction(.{ .kind = "localSet", .raw = raw, .target = slot }); return; }
+            if (self.localSlot(targetName)) |slot| {
+                _ = try self.addAction(.{ .kind = "localSet", .raw = raw, .target = slot });
+                return;
+            }
         }
         const target = self.lookup(targetName) orelse return issue(targetName, "undefined word", -13);
         const required: WordKind = if (equal(name, "TO")) .value else .deferred;
         if (target.kind != required) return issue(targetName, if (equal(name, "TO")) "not a value" else "not deferred", null);
         const action: Action = .{ .kind = name, .raw = raw, .word = target };
-        if (self.compiling != null) { _ = try self.addAction(action); } else try self.runtimeAction(action, &.{});
+        if (self.compiling != null) {
+            _ = try self.addAction(action);
+        } else try self.runtimeAction(action, &.{});
     }
     fn process(self: *Machine, raw: Text) Error!void {
         const name = try uppercase(self.gpa, raw);
-        if (equal(name, "\\")) { self.position = self.source.len; return; }
+        if (equal(name, "\\")) {
+            self.position = self.source.len;
+            return;
+        }
         if (equal(name, "(")) {
             const end = std.mem.findScalar(u8, self.source[self.position..], ')') orelse return issue(raw, "unterminated comment", null);
             self.position += end + 1;
@@ -306,7 +370,11 @@ const Machine = struct {
         if (self.compiling != null and member(name, &interpretOnly)) return issue(raw, "interpret only", null);
         if (member(name, &.{ ".\"", "ABORT\"" })) {
             const text = try self.readString(raw);
-            if (self.compiling == null) { try self.write(text); } else { _ = try self.addAction(.{ .kind = name, .raw = raw, .text = text }); }
+            if (self.compiling == null) {
+                try self.write(text);
+            } else {
+                _ = try self.addAction(.{ .kind = name, .raw = raw, .text = text });
+            }
             return;
         }
         if (member(name, &.{ "TO", "IS" })) return self.assign(raw, name);
@@ -323,7 +391,13 @@ const Machine = struct {
             const targetName = try self.readName(raw);
             var found: ?usize = null;
             var i = self.dictionary.items.len;
-            while (i > 0) { i -= 1; if (sameName(self.dictionary.items[i].name, targetName)) { found = i; break; } }
+            while (i > 0) {
+                i -= 1;
+                if (sameName(self.dictionary.items[i].name, targetName)) {
+                    found = i;
+                    break;
+                }
+            }
             const index = found orelse return issue(targetName, "undefined word", -13);
             self.memory.shrinkRetainingCapacity(self.dictionary.items[index].here);
             self.dictionary.shrinkRetainingCapacity(index);
@@ -338,7 +412,9 @@ const Machine = struct {
                     return issue(raw, std.fmt.bufPrint(&reasonBuffer, "unclosed {s}", .{kind}) catch unreachable, null);
                 }
                 self.compiling = null;
-                if (equal(word.name, ":NONAME")) { try self.push(try self.executionToken(word), raw); } else try self.dictionary.append(self.gpa, word);
+                if (equal(word.name, ":NONAME")) {
+                    try self.push(try self.executionToken(word), raw);
+                } else try self.dictionary.append(self.gpa, word);
                 return;
             }
             if (equal(name, "DOES>")) {
@@ -346,8 +422,14 @@ const Machine = struct {
                 _ = try self.addAction(.{ .kind = "DOES>", .raw = raw, .word = word });
                 return;
             }
-            if (equal(name, "EXIT")) { _ = try self.addAction(.{ .kind = "EXIT", .raw = raw }); return; }
-            if (equal(name, "RECURSE")) { _ = try self.addAction(.{ .kind = "call", .raw = raw, .word = word }); return; }
+            if (equal(name, "EXIT")) {
+                _ = try self.addAction(.{ .kind = "EXIT", .raw = raw });
+                return;
+            }
+            if (equal(name, "RECURSE")) {
+                _ = try self.addAction(.{ .kind = "call", .raw = raw, .word = word });
+                return;
+            }
             if (equal(name, "[']")) {
                 const targetName = try self.readName(raw);
                 const target = self.lookup(targetName) orelse return issue(targetName, "undefined word", -13);
@@ -355,10 +437,22 @@ const Machine = struct {
                 return;
             }
             if (equal(name, "{:")) return self.declareLocals(raw);
-            if (member(name, &.{ ">R", "R>", "R@", "I", "J", "UNLOOP" })) { _ = try self.addAction(.{ .kind = name, .raw = raw }); return; }
-            if (self.localSlot(name)) |slot| { _ = try self.addAction(.{ .kind = "localGet", .raw = raw, .target = slot }); return; }
-            if (self.lookup(raw)) |target| { _ = try self.addAction(.{ .kind = "call", .raw = raw, .word = target }); return; }
-            if (try numeric(raw, self.memory.items[0])) |value| { _ = try self.addAction(.{ .kind = "push", .raw = raw, .value = value }); return; }
+            if (member(name, &.{ ">R", "R>", "R@", "I", "J", "UNLOOP" })) {
+                _ = try self.addAction(.{ .kind = name, .raw = raw });
+                return;
+            }
+            if (self.localSlot(name)) |slot| {
+                _ = try self.addAction(.{ .kind = "localGet", .raw = raw, .target = slot });
+                return;
+            }
+            if (self.lookup(raw)) |target| {
+                _ = try self.addAction(.{ .kind = "call", .raw = raw, .word = target });
+                return;
+            }
+            if (try numeric(raw, self.memory.items[0])) |value| {
+                _ = try self.addAction(.{ .kind = "push", .raw = raw, .value = value });
+                return;
+            }
             return issue(raw, "undefined word", -13);
         }
         if (self.lookup(raw)) |target| return self.execute(target, raw);
@@ -367,23 +461,43 @@ const Machine = struct {
     }
     fn runtimeAction(self: *Machine, action: Action, locals: []Int) Error!void {
         const raw = action.raw;
-        if (equal(action.kind, "push")) { try self.push(action.value, raw); }
-        else if (equal(action.kind, "call")) { try self.execute(action.word.?, raw); }
-        else if (equal(action.kind, ".\"")) { try self.write(action.text); }
-        else if (equal(action.kind, "ABORT\"")) { if ((try self.take(1, raw))[0] != 0) return issue(raw, action.text, -2); }
-        else if (equal(action.kind, "localGet")) { try self.push(locals[action.target], raw); }
-        else if (equal(action.kind, "localSet")) { locals[action.target] = (try self.take(1, raw))[0]; }
-        else if (equal(action.kind, "locals")) {
+        if (equal(action.kind, "push")) {
+            try self.push(action.value, raw);
+        } else if (equal(action.kind, "call")) {
+            try self.execute(action.word.?, raw);
+        } else if (equal(action.kind, ".\"")) {
+            try self.write(action.text);
+        } else if (equal(action.kind, "ABORT\"")) {
+            if ((try self.take(1, raw))[0] != 0) return issue(raw, action.text, -2);
+        } else if (equal(action.kind, "localGet")) {
+            try self.push(locals[action.target], raw);
+        } else if (equal(action.kind, "localSet")) {
+            locals[action.target] = (try self.take(1, raw))[0];
+        } else if (equal(action.kind, "locals")) {
             if (self.data.items.len < action.slots.len) return issue(raw, "stack underflow", -4);
             const start = self.data.items.len - action.slots.len;
             for (action.slots, self.data.items[start..]) |slot, value| locals[slot] = value;
             self.data.shrinkRetainingCapacity(start);
-        } else if (equal(action.kind, "TO")) { self.memory.items[action.word.?.address] = (try self.take(1, raw))[0]; }
-        else if (equal(action.kind, "IS")) { const value = (try self.take(1, raw))[0]; _ = try self.validToken(value, raw); action.word.?.token = value; }
-        else if (equal(action.kind, ">R")) { try self.returnPush((try self.take(1, raw))[0], raw); }
-        else if (equal(action.kind, "R>")) { try self.returnNeed(1, raw); const value = self.returns.pop().?; try self.push(value, raw); }
-        else if (member(action.kind, &.{ "R@", "I", "J" })) { const count: usize = if (equal(action.kind, "J")) 3 else 1; try self.returnNeed(count, raw); try self.push(self.returns.items[self.returns.items.len - count], raw); }
-        else if (equal(action.kind, "UNLOOP")) { try self.returnNeed(2, raw); self.returns.shrinkRetainingCapacity(self.returns.items.len - 2); }
+        } else if (equal(action.kind, "TO")) {
+            self.memory.items[action.word.?.address] = (try self.take(1, raw))[0];
+        } else if (equal(action.kind, "IS")) {
+            const value = (try self.take(1, raw))[0];
+            _ = try self.validToken(value, raw);
+            action.word.?.token = value;
+        } else if (equal(action.kind, ">R")) {
+            try self.returnPush((try self.take(1, raw))[0], raw);
+        } else if (equal(action.kind, "R>")) {
+            try self.returnNeed(1, raw);
+            const value = self.returns.pop().?;
+            try self.push(value, raw);
+        } else if (member(action.kind, &.{ "R@", "I", "J" })) {
+            const count: usize = if (equal(action.kind, "J")) 3 else 1;
+            try self.returnNeed(count, raw);
+            try self.push(self.returns.items[self.returns.items.len - count], raw);
+        } else if (equal(action.kind, "UNLOOP")) {
+            try self.returnNeed(2, raw);
+            self.returns.shrinkRetainingCapacity(self.returns.items.len - 2);
+        }
     }
     fn definition(self: *Machine, word: *Word, start: usize, raw: Text) Error!void {
         if (self.depth == 100) return issue(raw, "nesting too deep", -7);
@@ -404,27 +518,43 @@ const Machine = struct {
                 newest.doesStart = pc;
                 break;
             }
-            if (equal(action.kind, "jump")) { pc = action.target; }
-            else if (equal(action.kind, "zero")) { if ((try self.take(1, action.raw))[0] == 0) pc = action.target; }
-            else if (member(action.kind, &.{ "DO", "?DO" })) {
+            if (equal(action.kind, "jump")) {
+                pc = action.target;
+            } else if (equal(action.kind, "zero")) {
+                if ((try self.take(1, action.raw))[0] == 0) pc = action.target;
+            } else if (member(action.kind, &.{ "DO", "?DO" })) {
                 const values = try self.take(2, action.raw);
-                if (equal(action.kind, "?DO") and values[0] == values[1]) { pc = action.target; } else { try self.returnPush(values[0], action.raw); try self.returnPush(values[1], action.raw); }
+                if (equal(action.kind, "?DO") and values[0] == values[1]) {
+                    pc = action.target;
+                } else {
+                    try self.returnPush(values[0], action.raw);
+                    try self.returnPush(values[1], action.raw);
+                }
             } else if (member(action.kind, &.{ "LOOP", "+LOOP" })) {
                 const step: Int = if (equal(action.kind, "+LOOP")) (try self.take(1, action.raw))[0] else 1;
                 try self.returnNeed(2, action.raw);
                 const index = self.returns.items[self.returns.items.len - 1];
                 const limit = self.returns.items[self.returns.items.len - 2];
                 const next = index + step;
-                if ((index - limit < 0) != (next - limit < 0)) { self.returns.shrinkRetainingCapacity(self.returns.items.len - 2); } else { self.returns.items[self.returns.items.len - 1] = next; pc = action.target; }
+                if ((index - limit < 0) != (next - limit < 0)) {
+                    self.returns.shrinkRetainingCapacity(self.returns.items.len - 2);
+                } else {
+                    self.returns.items[self.returns.items.len - 1] = next;
+                    pc = action.target;
+                }
             } else if (equal(action.kind, "LEAVE")) {
                 try self.returnNeed(2, action.raw);
                 self.returns.shrinkRetainingCapacity(self.returns.items.len - 2);
                 pc = action.target;
             } else if (equal(action.kind, "OF")) {
                 const values = try self.take(2, action.raw);
-                if (values[0] != values[1]) { try self.push(values[0], action.raw); pc = action.target; }
-            } else if (equal(action.kind, "ENDCASE")) { _ = try self.take(1, action.raw); }
-            else try self.runtimeAction(action, locals);
+                if (values[0] != values[1]) {
+                    try self.push(values[0], action.raw);
+                    pc = action.target;
+                }
+            } else if (equal(action.kind, "ENDCASE")) {
+                _ = try self.take(1, action.raw);
+            } else try self.runtimeAction(action, locals);
         }
         if (self.returns.items.len > saved) self.returns.shrinkRetainingCapacity(saved);
         self.depth -= 1;
@@ -439,7 +569,10 @@ const Machine = struct {
         }
         switch (word.kind) {
             .colon => try self.definition(word, 0, raw),
-            .create => { try self.push(si(word.address) * 8, raw); if (word.does) |part| try self.definition(part, word.doesStart, raw); },
+            .create => {
+                try self.push(si(word.address) * 8, raw);
+                if (word.does) |part| try self.definition(part, word.doesStart, raw);
+            },
             .variable => try self.push(si(word.address) * 8, raw),
             .constant => try self.push(word.value, raw),
             .value => try self.push(self.memory.items[word.address], raw),
@@ -484,16 +617,33 @@ const Machine = struct {
             try self.push(code, raw);
             return;
         }
-        if (equal(name, "THROW")) { const code = (try self.take(1, raw))[0]; if (code != 0) return issue(raw, std.fmt.bufPrint(&reasonBuffer, "exception {d}", .{code}) catch unreachable, code); return; }
+        if (equal(name, "THROW")) {
+            const code = (try self.take(1, raw))[0];
+            if (code != 0) return issue(raw, std.fmt.bufPrint(&reasonBuffer, "exception {d}", .{code}) catch unreachable, code);
+            return;
+        }
         if (equal(name, "ABORT")) return issue(raw, "aborted", -1);
-        if (equal(name, "WORDS")) { var i = self.dictionary.items.len; while (i > 0) { i -= 1; try self.write(self.dictionary.items[i].name); try self.write(" "); } return; }
+        if (equal(name, "WORDS")) {
+            var i = self.dictionary.items.len;
+            while (i > 0) {
+                i -= 1;
+                try self.write(self.dictionary.items[i].name);
+                try self.write(" ");
+            }
+            return;
+        }
         if (equal(name, "CR")) return self.flush();
         if (equal(name, "SPACE")) return self.write(" ");
         if (equal(name, ".S")) {
             var buffer: [64]u8 = undefined;
             const count = try self.formatNumber(si(self.data.items.len), raw, &buffer);
-            try self.write("<"); try self.write(count); try self.write("> ");
-            for (self.data.items) |value| { try self.write(try self.formatNumber(value, raw, &buffer)); try self.write(" "); }
+            try self.write("<");
+            try self.write(count);
+            try self.write("> ");
+            for (self.data.items) |value| {
+                try self.write(try self.formatNumber(value, raw, &buffer));
+                try self.write(" ");
+            }
             return;
         }
         if (equal(name, "TRUE")) return self.push(-1, raw);
@@ -502,8 +652,14 @@ const Machine = struct {
         if (equal(name, "BASE")) return self.push(0, raw);
         if (equal(name, "HERE")) return self.push(si(self.memory.items.len) * 8, raw);
         if (equal(name, "DEPTH")) return self.push(si(self.data.items.len), raw);
-        if (equal(name, "HEX")) { self.memory.items[0] = 16; return; }
-        if (equal(name, "DECIMAL")) { self.memory.items[0] = 10; return; }
+        if (equal(name, "HEX")) {
+            self.memory.items[0] = 16;
+            return;
+        }
+        if (equal(name, "DECIMAL")) {
+            self.memory.items[0] = 10;
+            return;
+        }
         var count: usize = 1;
         if (member(name, &.{ "+", "-", "*", "/", "MOD", "/MOD", "MIN", "MAX", "=", "<>", "<", ">", "AND", "OR", "XOR", "SWAP", "OVER", "NIP", "TUCK", "2DUP", "2DROP", ".R", "!", "+!" })) count = 2;
         if (member(name, &.{ "*/", "*/MOD", "WITHIN", "ROT", "-ROT" })) count = 3;
@@ -511,58 +667,100 @@ const Machine = struct {
         const values = try self.take(count, raw);
         var a = values[0];
         const b = values[1];
-        if (equal(name, "+")) { try self.push(a + b, raw); }
-        else if (equal(name, "-")) { try self.push(a - b, raw); }
-        else if (equal(name, "*")) { try self.push(a * b, raw); }
-        else if (member(name, &.{ "/", "MOD", "/MOD", "*/", "*/MOD" })) {
+        if (equal(name, "+")) {
+            try self.push(a + b, raw);
+        } else if (equal(name, "-")) {
+            try self.push(a - b, raw);
+        } else if (equal(name, "*")) {
+            try self.push(a * b, raw);
+        } else if (member(name, &.{ "/", "MOD", "/MOD", "*/", "*/MOD" })) {
             const dividend = if (count == 3) a * b else a;
             const divisor = if (count == 3) values[2] else b;
             if (divisor == 0) return issue(raw, "division by zero", -10);
             const q = @divFloor(dividend, divisor);
             const r = dividend - divisor * q;
-            if (equal(name, "MOD")) { try self.push(r, raw); } else if (member(name, &.{ "/MOD", "*/MOD" })) { try self.pushAll(&.{ r, q }, raw); } else try self.push(q, raw);
-        } else if (equal(name, "NEGATE")) { try self.push(-a, raw); }
-        else if (equal(name, "ABS")) { try self.push(if (a < 0) -a else a, raw); }
-        else if (equal(name, "MIN")) { try self.push(@min(a, b), raw); }
-        else if (equal(name, "MAX")) { try self.push(@max(a, b), raw); }
-        else if (equal(name, "1+")) { try self.push(a + 1, raw); }
-        else if (equal(name, "1-")) { try self.push(a - 1, raw); }
-        else if (equal(name, "2*")) { try self.push(2 * a, raw); }
-        else if (equal(name, "2/")) { try self.push(@divFloor(a, 2), raw); }
-        else if (equal(name, "=")) { try self.push(flag(a == b), raw); }
-        else if (equal(name, "<>")) { try self.push(flag(a != b), raw); }
-        else if (equal(name, "<")) { try self.push(flag(a < b), raw); }
-        else if (equal(name, ">")) { try self.push(flag(a > b), raw); }
-        else if (equal(name, "0=")) { try self.push(flag(a == 0), raw); }
-        else if (equal(name, "0<>")) { try self.push(flag(a != 0), raw); }
-        else if (equal(name, "0<")) { try self.push(flag(a < 0), raw); }
-        else if (equal(name, "0>")) { try self.push(flag(a > 0), raw); }
-        else if (equal(name, "WITHIN")) { try self.push(flag(b <= a and a < values[2]), raw); }
-        else if (equal(name, "AND")) { try self.push(a & b, raw); }
-        else if (equal(name, "OR")) { try self.push(a | b, raw); }
-        else if (equal(name, "XOR")) { try self.push(a ^ b, raw); }
-        else if (equal(name, "INVERT")) { try self.push(~a, raw); }
-        else if (equal(name, "DUP")) { try self.pushAll(&.{ a, a }, raw); }
-        else if (equal(name, "?DUP")) { try self.push(a, raw); if (a != 0) try self.push(a, raw); }
-        else if (member(name, &.{ "DROP", "2DROP" })) {}
-        else if (equal(name, "SWAP")) { try self.pushAll(&.{ b, a }, raw); }
-        else if (equal(name, "OVER")) { try self.pushAll(&.{ a, b, a }, raw); }
-        else if (equal(name, "ROT")) { try self.pushAll(&.{ b, values[2], a }, raw); }
-        else if (equal(name, "-ROT")) { try self.pushAll(&.{ values[2], a, b }, raw); }
-        else if (equal(name, "NIP")) { try self.push(b, raw); }
-        else if (equal(name, "TUCK")) { try self.pushAll(&.{ b, a, b }, raw); }
-        else if (equal(name, "2DUP")) { try self.pushAll(&.{ a, b, a, b }, raw); }
-        else if (equal(name, "2SWAP")) { try self.pushAll(&.{ values[2], values[3], a, b }, raw); }
-        else if (equal(name, "2OVER")) { try self.pushAll(&.{ a, b, values[2], values[3], a, b }, raw); }
-        else if (member(name, &.{ "PICK", "ROLL" })) {
+            if (equal(name, "MOD")) {
+                try self.push(r, raw);
+            } else if (member(name, &.{ "/MOD", "*/MOD" })) {
+                try self.pushAll(&.{ r, q }, raw);
+            } else try self.push(q, raw);
+        } else if (equal(name, "NEGATE")) {
+            try self.push(-a, raw);
+        } else if (equal(name, "ABS")) {
+            try self.push(if (a < 0) -a else a, raw);
+        } else if (equal(name, "MIN")) {
+            try self.push(@min(a, b), raw);
+        } else if (equal(name, "MAX")) {
+            try self.push(@max(a, b), raw);
+        } else if (equal(name, "1+")) {
+            try self.push(a + 1, raw);
+        } else if (equal(name, "1-")) {
+            try self.push(a - 1, raw);
+        } else if (equal(name, "2*")) {
+            try self.push(2 * a, raw);
+        } else if (equal(name, "2/")) {
+            try self.push(@divFloor(a, 2), raw);
+        } else if (equal(name, "=")) {
+            try self.push(flag(a == b), raw);
+        } else if (equal(name, "<>")) {
+            try self.push(flag(a != b), raw);
+        } else if (equal(name, "<")) {
+            try self.push(flag(a < b), raw);
+        } else if (equal(name, ">")) {
+            try self.push(flag(a > b), raw);
+        } else if (equal(name, "0=")) {
+            try self.push(flag(a == 0), raw);
+        } else if (equal(name, "0<>")) {
+            try self.push(flag(a != 0), raw);
+        } else if (equal(name, "0<")) {
+            try self.push(flag(a < 0), raw);
+        } else if (equal(name, "0>")) {
+            try self.push(flag(a > 0), raw);
+        } else if (equal(name, "WITHIN")) {
+            try self.push(flag(b <= a and a < values[2]), raw);
+        } else if (equal(name, "AND")) {
+            try self.push(a & b, raw);
+        } else if (equal(name, "OR")) {
+            try self.push(a | b, raw);
+        } else if (equal(name, "XOR")) {
+            try self.push(a ^ b, raw);
+        } else if (equal(name, "INVERT")) {
+            try self.push(~a, raw);
+        } else if (equal(name, "DUP")) {
+            try self.pushAll(&.{ a, a }, raw);
+        } else if (equal(name, "?DUP")) {
+            try self.push(a, raw);
+            if (a != 0) try self.push(a, raw);
+        } else if (member(name, &.{ "DROP", "2DROP" })) {} else if (equal(name, "SWAP")) {
+            try self.pushAll(&.{ b, a }, raw);
+        } else if (equal(name, "OVER")) {
+            try self.pushAll(&.{ a, b, a }, raw);
+        } else if (equal(name, "ROT")) {
+            try self.pushAll(&.{ b, values[2], a }, raw);
+        } else if (equal(name, "-ROT")) {
+            try self.pushAll(&.{ values[2], a, b }, raw);
+        } else if (equal(name, "NIP")) {
+            try self.push(b, raw);
+        } else if (equal(name, "TUCK")) {
+            try self.pushAll(&.{ b, a, b }, raw);
+        } else if (equal(name, "2DUP")) {
+            try self.pushAll(&.{ a, b, a, b }, raw);
+        } else if (equal(name, "2SWAP")) {
+            try self.pushAll(&.{ values[2], values[3], a, b }, raw);
+        } else if (equal(name, "2OVER")) {
+            try self.pushAll(&.{ a, b, values[2], values[3], a, b }, raw);
+        } else if (member(name, &.{ "PICK", "ROLL" })) {
             if (a < 0) return issue(raw, "invalid argument", -24);
             if (a >= si(self.data.items.len)) return issue(raw, "stack underflow", -4);
             const index = self.data.items.len - 1 - u(a);
             const value = self.data.items[index];
             if (equal(name, "ROLL")) _ = self.data.orderedRemove(index);
             try self.push(value, raw);
-        } else if (equal(name, ".")) { var buffer: [64]u8 = undefined; try self.write(try self.formatNumber(a, raw, &buffer)); try self.write(" "); }
-        else if (equal(name, ".R")) {
+        } else if (equal(name, ".")) {
+            var buffer: [64]u8 = undefined;
+            try self.write(try self.formatNumber(a, raw, &buffer));
+            try self.write(" ");
+        } else if (equal(name, ".R")) {
             var buffer: [64]u8 = undefined;
             const text = try self.formatNumber(a, raw, &buffer);
             var padding = b - si(text.len);
@@ -571,20 +769,33 @@ const Machine = struct {
         } else if (equal(name, "?")) {
             const cell = try self.address(a, raw);
             var buffer: [64]u8 = undefined;
-            try self.write(try self.formatNumber(self.memory.items[cell], raw, &buffer)); try self.write(" ");
-        } else if (equal(name, "EMIT")) { if (a < 32 or a > 126) return issue(raw, "invalid argument", -24); try self.pending.append(self.gpa, @intCast(a)); }
-        else if (equal(name, "SPACES")) { while (a > 0) : (a -= 1) try self.write(" "); }
-        else if (equal(name, "!")) { const cell = try self.address(b, raw); self.memory.items[cell] = a; }
-        else if (equal(name, "@")) { try self.push(self.memory.items[try self.address(a, raw)], raw); }
-        else if (equal(name, "+!")) { const cell = try self.address(b, raw); self.memory.items[cell] += a; }
-        else if (equal(name, ",")) { try self.memory.append(self.gpa, a); }
-        else if (equal(name, "ALLOT")) {
+            try self.write(try self.formatNumber(self.memory.items[cell], raw, &buffer));
+            try self.write(" ");
+        } else if (equal(name, "EMIT")) {
+            if (a < 32 or a > 126) return issue(raw, "invalid argument", -24);
+            try self.pending.append(self.gpa, @intCast(a));
+        } else if (equal(name, "SPACES")) {
+            while (a > 0) : (a -= 1) try self.write(" ");
+        } else if (equal(name, "!")) {
+            const cell = try self.address(b, raw);
+            self.memory.items[cell] = a;
+        } else if (equal(name, "@")) {
+            try self.push(self.memory.items[try self.address(a, raw)], raw);
+        } else if (equal(name, "+!")) {
+            const cell = try self.address(b, raw);
+            self.memory.items[cell] += a;
+        } else if (equal(name, ",")) {
+            try self.memory.append(self.gpa, a);
+        } else if (equal(name, "ALLOT")) {
             if (a < 0 or @rem(a, 8) != 0) return issue(raw, "invalid argument", -24);
             const start = self.memory.items.len;
             try self.memory.resize(self.gpa, start + u(@divTrunc(a, 8)));
             @memset(self.memory.items[start..], 0);
-        } else if (equal(name, "CELLS")) { try self.push(8 * a, raw); }
-        else if (equal(name, "CELL+")) { try self.push(a + 8, raw); }
+        } else if (equal(name, "CELLS")) {
+            try self.push(8 * a, raw);
+        } else if (equal(name, "CELL+")) {
+            try self.push(a + 8, raw);
+        }
     }
     fn processLine(self: *Machine, line: Text) Error!void {
         self.source = line;

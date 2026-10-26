@@ -4,23 +4,48 @@ const Writer = std.Io.Writer;
 const Error = Allocator.Error || Writer.Error || error{Invalid};
 const Kind = enum { SEG, LAZY, FEN, RFEN, SPARSE, SQRT, PERSIST, GRID };
 const Operation = enum {
-    SUM, MIN, MAX, GCD,
+    SUM,
+    MIN,
+    MAX,
+    GCD,
     fn combine(op: Operation, a: i64, b: i64) i64 {
-        return switch (op) { .SUM => a + b, .MIN => @min(a, b), .MAX => @max(a, b), .GCD => gcd(a, b) };
+        return switch (op) {
+            .SUM => a + b,
+            .MIN => @min(a, b),
+            .MAX => @max(a, b),
+            .GCD => gcd(a, b),
+        };
     }
     fn label(op: Operation) []const u8 {
-        return switch (op) { .SUM => "sum", .MIN => "min", .MAX => "max", .GCD => "gcd" };
+        return switch (op) {
+            .SUM => "sum",
+            .MIN => "min",
+            .MAX => "max",
+            .GCD => "gcd",
+        };
     }
 };
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn number(text: []const u8) i64 { return std.fmt.parseInt(i64, text, 10) catch unreachable; }
-fn integer(n: usize) i64 { return @intCast(n); }
-fn magnitude(n: i64) i64 { return if (n < 0) -n else n; }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn number(text: []const u8) i64 {
+    return std.fmt.parseInt(i64, text, 10) catch unreachable;
+}
+fn integer(n: usize) i64 {
+    return @intCast(n);
+}
+fn magnitude(n: i64) i64 {
+    return if (n < 0) -n else n;
+}
 fn gcd(a: i64, b: i64) i64 {
     var x = magnitude(a);
     var y = magnitude(b);
-    while (y != 0) { const remainder = @mod(x, y); x = y; y = remainder; }
+    while (y != 0) {
+        const remainder = @mod(x, y);
+        x = y;
+        y = remainder;
+    }
     return x;
 }
 fn isqrt(n: usize) usize {
@@ -31,17 +56,28 @@ fn isqrt(n: usize) usize {
 fn log2(n: usize) usize {
     var result: usize = 0;
     var power: usize = 1;
-    while (power * 2 <= n) { result += 1; power *= 2; }
+    while (power * 2 <= n) {
+        result += 1;
+        power *= 2;
+    }
     return result;
 }
-fn power2(n: usize) usize { return @as(usize, 1) << @intCast(n); }
-fn lowbit(n: usize) usize { return n & (~n + 1); }
-fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void { try out.print(fmt ++ "\n", args); }
+fn power2(n: usize) usize {
+    return @as(usize, 1) << @intCast(n);
+}
+fn lowbit(n: usize) usize {
+    return n & (~n + 1);
+}
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
 fn writeNumbers(out: *Writer, values: anytype) Writer.Error!void {
     for (values) |value| try out.print(" {d}", .{value});
     try out.writeByte('\n');
 }
-fn less(_: void, a: i64, b: i64) bool { return a < b; }
+fn less(_: void, a: i64, b: i64) bool {
+    return a < b;
+}
 
 fn Owned(comptime T: type) type {
     return struct {
@@ -70,10 +106,18 @@ fn replace(comptime T: type, slot: *?*Owned(T), args: anytype) Allocator.Error!v
 const Interval = struct {
     left: usize,
     right: usize,
-    fn leaf(range: Interval) bool { return range.left == range.right; }
-    fn middle(range: Interval) usize { return (range.left + range.right) / 2; }
-    fn length(range: Interval) usize { return range.right - range.left + 1; }
-    fn covered(range: Interval, left: usize, right: usize) bool { return left <= range.left and range.right <= right; }
+    fn leaf(range: Interval) bool {
+        return range.left == range.right;
+    }
+    fn middle(range: Interval) usize {
+        return (range.left + range.right) / 2;
+    }
+    fn length(range: Interval) usize {
+        return range.right - range.left + 1;
+    }
+    fn covered(range: Interval, left: usize, right: usize) bool {
+        return left <= range.left and range.right <= right;
+    }
 };
 const Layout = struct {
     ranges: []?Interval,
@@ -94,7 +138,9 @@ const Layout = struct {
         shape.build(2 * node, left, middle);
         shape.build(2 * node + 1, middle + 1, right);
     }
-    fn at(shape: Layout, node: usize) Interval { return shape.ranges[node].?; }
+    fn at(shape: Layout, node: usize) Interval {
+        return shape.ranges[node].?;
+    }
 };
 const Answer = struct {
     value: i64,
@@ -129,7 +175,9 @@ const SegmentTree = struct {
             tree.pull(node);
         }
     }
-    fn pull(tree: *SegmentTree, node: usize) void { tree.values[node] = tree.op.combine(tree.values[2 * node], tree.values[2 * node + 1]); }
+    fn pull(tree: *SegmentTree, node: usize) void {
+        tree.values[node] = tree.op.combine(tree.values[2 * node], tree.values[2 * node + 1]);
+    }
     fn query(tree: *const SegmentTree, left: usize, right: usize, node: usize) Answer {
         const range = tree.shape.at(node);
         if (range.covered(left, right)) return .{ .value = tree.values[node], .visited = 1 };
@@ -144,12 +192,17 @@ const SegmentTree = struct {
     }
     fn update(tree: *SegmentTree, index: usize, value: i64, node: usize) usize {
         const range = tree.shape.at(node);
-        if (range.leaf()) { tree.values[node] = if (tree.op == .GCD) magnitude(value) else value; return 1; }
+        if (range.leaf()) {
+            tree.values[node] = if (tree.op == .GCD) magnitude(value) else value;
+            return 1;
+        }
         const visited = tree.update(index, value, if (index <= range.middle()) 2 * node else 2 * node + 1);
         tree.pull(node);
         return visited + 1;
     }
-    fn describe(tree: *const SegmentTree, answer: Answer) SegmentAnswer { return .{ .op = tree.op, .answer = answer }; }
+    fn describe(tree: *const SegmentTree, answer: Answer) SegmentAnswer {
+        return .{ .op = tree.op, .answer = answer };
+    }
     fn dump(tree: *const SegmentTree, out: *Writer) Writer.Error!void {
         try line(out, "SEG DUMP {s} nodes={d}", .{ @tagName(tree.op), tree.shape.count });
         for (tree.shape.ranges, 0..) |maybe, node| if (maybe) |range| {
@@ -162,9 +215,15 @@ const Aggregate = struct {
     sum: i64,
     min: i64,
     max: i64,
-    fn merge(a: Aggregate, b: Aggregate) Aggregate { return .{ .sum = a.sum + b.sum, .min = @min(a.min, b.min), .max = @max(a.max, b.max) }; }
-    fn eql(a: Aggregate, b: Aggregate) bool { return a.sum == b.sum and a.min == b.min and a.max == b.max; }
-    pub fn format(value: Aggregate, out: *Writer) Writer.Error!void { try out.print("sum={d} min={d} max={d}", .{ value.sum, value.min, value.max }); }
+    fn merge(a: Aggregate, b: Aggregate) Aggregate {
+        return .{ .sum = a.sum + b.sum, .min = @min(a.min, b.min), .max = @max(a.max, b.max) };
+    }
+    fn eql(a: Aggregate, b: Aggregate) bool {
+        return a.sum == b.sum and a.min == b.min and a.max == b.max;
+    }
+    pub fn format(value: Aggregate, out: *Writer) Writer.Error!void {
+        try out.print("sum={d} min={d} max={d}", .{ value.sum, value.min, value.max });
+    }
 };
 const LazyAnswer = struct {
     value: Aggregate,
@@ -178,7 +237,9 @@ const Work = struct {
     visited: usize = 0,
     covered: usize = 0,
     pushes: usize = 0,
-    pub fn format(work: Work, out: *Writer) Writer.Error!void { try out.print("visited={d} covered={d} pushes={d}", .{ work.visited, work.covered, work.pushes }); }
+    pub fn format(work: Work, out: *Writer) Writer.Error!void {
+        try out.print("visited={d} covered={d} pushes={d}", .{ work.visited, work.covered, work.pushes });
+    }
 };
 const LazyTree = struct {
     shape: Layout,
@@ -204,14 +265,18 @@ const LazyTree = struct {
             tree.pull(node);
         }
     }
-    fn pull(tree: *LazyTree, node: usize) void { tree.values[node] = Aggregate.merge(tree.values[2 * node], tree.values[2 * node + 1]); }
+    fn pull(tree: *LazyTree, node: usize) void {
+        tree.values[node] = Aggregate.merge(tree.values[2 * node], tree.values[2 * node + 1]);
+    }
     fn apply(tree: *LazyTree, node: usize, value: i64, assignment: bool) void {
         const range = tree.shape.at(node);
         const old = tree.values[node];
-        tree.values[node] = if (assignment) .{ .sum = value * integer(range.length()), .min = value, .max = value }
-            else .{ .sum = old.sum + value * integer(range.length()), .min = old.min + value, .max = old.max + value };
+        tree.values[node] = if (assignment) .{ .sum = value * integer(range.length()), .min = value, .max = value } else .{ .sum = old.sum + value * integer(range.length()), .min = old.min + value, .max = old.max + value };
         if (range.leaf()) return;
-        if (assignment) { tree.assign[node] = value; tree.add[node] = 0; } else tree.add[node] += value;
+        if (assignment) {
+            tree.assign[node] = value;
+            tree.add[node] = 0;
+        } else tree.add[node] += value;
     }
     fn push(tree: *LazyTree, node: usize) usize {
         if (tree.assign[node] == null and tree.add[node] == 0) return 0;
@@ -226,7 +291,11 @@ const LazyTree = struct {
     fn update(tree: *LazyTree, left: usize, right: usize, value: i64, assignment: bool, node: usize, work: *Work) void {
         work.visited += 1;
         const range = tree.shape.at(node);
-        if (range.covered(left, right)) { work.covered += 1; tree.apply(node, value, assignment); return; }
+        if (range.covered(left, right)) {
+            work.covered += 1;
+            tree.apply(node, value, assignment);
+            return;
+        }
         work.pushes += tree.push(node);
         if (left <= range.middle()) tree.update(left, right, value, assignment, 2 * node, work);
         if (right > range.middle()) tree.update(left, right, value, assignment, 2 * node + 1, work);
@@ -266,13 +335,19 @@ const Fenwick = struct {
     fn add(tree: *Fenwick, position: usize, value: i64) usize {
         var p = position;
         var visited: usize = 0;
-        while (p < tree.values.len) : (p += lowbit(p)) { tree.values[p] += value; visited += 1; }
+        while (p < tree.values.len) : (p += lowbit(p)) {
+            tree.values[p] += value;
+            visited += 1;
+        }
         return visited;
     }
     fn prefix(tree: *const Fenwick, position: usize) Answer {
         var p = position;
         var answer: Answer = .{ .value = 0, .visited = 0 };
-        while (p > 0) : (p -= lowbit(p)) { answer.value += tree.values[p]; answer.visited += 1; }
+        while (p > 0) : (p -= lowbit(p)) {
+            answer.value += tree.values[p];
+            answer.visited += 1;
+        }
         return answer;
     }
     fn dump(tree: *const Fenwick, out: *Writer, label: []const u8) Writer.Error!void {
@@ -288,7 +363,10 @@ const PointFenwick = struct {
         for (contents, 0..) |value, i| _ = tree.bits.add(i + 1, value);
         return tree;
     }
-    fn add(tree: *PointFenwick, index: usize, value: i64) usize { tree.contents[index] += value; return tree.bits.add(index + 1, value); }
+    fn add(tree: *PointFenwick, index: usize, value: i64) usize {
+        tree.contents[index] += value;
+        return tree.bits.add(index + 1, value);
+    }
     fn query(tree: *const PointFenwick, left: usize, right: usize) Answer {
         const a = tree.bits.prefix(right + 1);
         const b = tree.bits.prefix(left);
@@ -303,7 +381,10 @@ const PointFenwick = struct {
             if (pos + step > tree.contents.len) continue;
             visited += 1;
             const value = tree.bits.values[pos + step];
-            if (value < rest) { rest -= value; pos += step; }
+            if (value < rest) {
+                rest -= value;
+                pos += step;
+            }
         }
         return .{ .index = if (pos == tree.contents.len) null else pos, .visited = visited };
     }
@@ -363,7 +444,10 @@ const SparseTable = struct {
             tree.maximum[level] = try gpa.alloc(usize, length);
             tree.entries += length;
             for (0..length) |i| {
-                if (level == 0) { tree.minimum[level][i] = i; tree.maximum[level][i] = i; } else {
+                if (level == 0) {
+                    tree.minimum[level][i] = i;
+                    tree.maximum[level][i] = i;
+                } else {
                     const half = power2(level - 1);
                     tree.minimum[level][i] = tree.select(tree.minimum[level - 1][i], tree.minimum[level - 1][i + half], true);
                     tree.maximum[level][i] = tree.select(tree.maximum[level - 1][i], tree.maximum[level - 1][i + half], false);
@@ -403,12 +487,16 @@ const Split = struct {
         const whole = if (first == last) 0 else last - first - 1;
         return .{ .first = first, .last = last, .whole = whole, .cells = right - left + 1 - whole * block };
     }
-    pub fn format(split: Split, out: *Writer) Writer.Error!void { try out.print("whole={d} cells={d}", .{ split.whole, split.cells }); }
+    pub fn format(split: Split, out: *Writer) Writer.Error!void {
+        try out.print("whole={d} cells={d}", .{ split.whole, split.cells });
+    }
 };
 const SqrtAnswer = struct {
     sum: i64,
     split: Split,
-    pub fn format(answer: SqrtAnswer, out: *Writer) Writer.Error!void { try out.print("sum={d} {f}", .{ answer.sum, answer.split }); }
+    pub fn format(answer: SqrtAnswer, out: *Writer) Writer.Error!void {
+        try out.print("sum={d} {f}", .{ answer.sum, answer.split });
+    }
 };
 const SqrtBlocks = struct {
     block: usize,
@@ -427,7 +515,10 @@ const SqrtBlocks = struct {
         const split = Split.init(left, right, tree.block);
         for (left..right + 1) |i| {
             const block = i / tree.block;
-            if (block == split.first or block == split.last) { tree.raw[i] += value; tree.sums[block] += value; }
+            if (block == split.first or block == split.last) {
+                tree.raw[i] += value;
+                tree.sums[block] += value;
+            }
         }
         if (split.whole > 0) for (split.first + 1..split.last) |block| {
             tree.tags[block] += value;
@@ -442,7 +533,9 @@ const SqrtBlocks = struct {
             const block = i / tree.block;
             if (block == split.first or block == split.last) sum += tree.raw[i] + tree.tags[block];
         }
-        if (split.whole > 0) for (split.first + 1..split.last) |block| { sum += tree.sums[block]; };
+        if (split.whole > 0) for (split.first + 1..split.last) |block| {
+            sum += tree.sums[block];
+        };
         return .{ .sum = sum, .split = split };
     }
     fn dump(tree: *const SqrtBlocks, out: *Writer) Writer.Error!void {
@@ -471,7 +564,10 @@ const PersistentTree = struct {
         std.sort.heap(i64, values, {}, less);
         var distinct: usize = 0;
         for (values) |value| {
-            if (distinct == 0 or value != values[distinct - 1]) { values[distinct] = value; distinct += 1; }
+            if (distinct == 0 or value != values[distinct - 1]) {
+                values[distinct] = value;
+                distinct += 1;
+            }
         }
         var tree: PersistentTree = .{ .gpa = gpa, .n = contents.len, .values = values[0..distinct], .value_roots = try gpa.alloc(*const PersistentNode, contents.len + 1), .position_nodes = 2 * contents.len - 1, .value_nodes = 2 * distinct - 1 };
         try tree.versions.append(gpa, try tree.build(contents, 0, contents.len - 1));
@@ -530,7 +626,9 @@ const PersistentTree = struct {
         const b = sum(current.right.?, middle + 1, nr, left, right);
         return .{ .value = a.value + b.value, .visited = a.visited + b.visited + 1 };
     }
-    fn query(tree: *const PersistentTree, version: usize, left: usize, right: usize) Answer { return sum(tree.versions.items[version], 0, tree.n - 1, left, right); }
+    fn query(tree: *const PersistentTree, version: usize, left: usize, right: usize) Answer {
+        return sum(tree.versions.items[version], 0, tree.n - 1, left, right);
+    }
     fn kth(tree: *const PersistentTree, left: usize, right: usize, rank: usize) Answer {
         var u = tree.value_roots[right + 1];
         var w = tree.value_roots[left];
@@ -541,8 +639,16 @@ const PersistentTree = struct {
         while (p < q) {
             const middle = (p + q) / 2;
             const difference: usize = @intCast(u.left.?.value - w.left.?.value);
-            if (k <= difference) { u = u.left.?; w = w.left.?; q = middle; }
-            else { k -= difference; u = u.right.?; w = w.right.?; p = middle + 1; }
+            if (k <= difference) {
+                u = u.left.?;
+                w = w.left.?;
+                q = middle;
+            } else {
+                k -= difference;
+                u = u.right.?;
+                w = w.right.?;
+                p = middle + 1;
+            }
             visited += 1;
         }
         return .{ .value = tree.values[p], .visited = visited };
@@ -556,7 +662,9 @@ const GridFenwick = struct {
     fn init(gpa: Allocator, height: usize, width: usize, contents: []const i64) Allocator.Error!GridFenwick {
         var tree: GridFenwick = .{ .height = height, .width = width, .values = try gpa.alloc(i64, (height + 1) * (width + 1)) };
         @memset(tree.values, 0);
-        for (0..height) |i| for (0..width) |j| { _ = tree.add(i, j, contents[i * width + j]); };
+        for (0..height) |i| for (0..width) |j| {
+            _ = tree.add(i, j, contents[i * width + j]);
+        };
         return tree;
     }
     fn add(tree: *GridFenwick, row: usize, column: usize, value: i64) usize {
@@ -564,7 +672,10 @@ const GridFenwick = struct {
         var y = row + 1;
         while (y <= tree.height) : (y += lowbit(y)) {
             var z = column + 1;
-            while (z <= tree.width) : (z += lowbit(z)) { tree.values[y * (tree.width + 1) + z] += value; visited += 1; }
+            while (z <= tree.width) : (z += lowbit(z)) {
+                tree.values[y * (tree.width + 1) + z] += value;
+                visited += 1;
+            }
         }
         return visited;
     }
@@ -573,7 +684,10 @@ const GridFenwick = struct {
         var y = row;
         while (y > 0) : (y -= lowbit(y)) {
             var z = column;
-            while (z > 0) : (z -= lowbit(z)) { answer.value += tree.values[y * (tree.width + 1) + z]; answer.visited += 1; }
+            while (z > 0) : (z -= lowbit(z)) {
+                answer.value += tree.values[y * (tree.width + 1) + z];
+                answer.visited += 1;
+            }
         }
         return answer;
     }
@@ -607,10 +721,14 @@ const State = struct {
     sqrt: ?*Owned(SqrtBlocks) = null,
     persistent: ?*Owned(PersistentTree) = null,
     grid: ?*Owned(GridFenwick) = null,
-    fn array(state: *State) []i64 { return state.values[0..state.n]; }
+    fn array(state: *State) []i64 {
+        return state.values[0..state.n];
+    }
     fn count(state: *const State) usize {
         var result: usize = 0;
-        inline for (array_fields) |field| { if (@field(state, field) != null) result += 1; }
+        inline for (array_fields) |field| {
+            if (@field(state, field) != null) result += 1;
+        }
         return result;
     }
     fn discard(state: *State) void {
@@ -619,7 +737,10 @@ const State = struct {
             @field(state, field) = null;
         }
     }
-    fn deinit(state: *State) void { state.discard(); if (state.grid) |box| box.destroy(); }
+    fn deinit(state: *State) void {
+        state.discard();
+        if (state.grid) |box| box.destroy();
+    }
     fn load(state: *State, values: []const i64) void {
         state.discard();
         state.n = values.len;
@@ -643,7 +764,9 @@ const State = struct {
 const VersionAnswer = struct {
     version: usize,
     answer: Answer,
-    pub fn format(result: VersionAnswer, out: *Writer) Writer.Error!void { try out.print("version={d} {f}", .{ result.version, result.answer }); }
+    pub fn format(result: VersionAnswer, out: *Writer) Writer.Error!void {
+        try out.print("version={d} {f}", .{ result.version, result.answer });
+    }
 };
 const MoQuery = struct {
     left: usize,
@@ -675,7 +798,9 @@ const MoWindow = struct {
         window.moves += 1;
     }
 };
-fn arg(words: []const []const u8, index: usize) i64 { return number(words[index]); }
+fn arg(words: []const []const u8, index: usize) i64 {
+    return number(words[index]);
+}
 fn tokenize(gpa: Allocator, text: []const u8) Allocator.Error![]const []const u8 {
     var result: std.ArrayList([]const u8) = .empty;
     var iterator = std.mem.tokenizeScalar(u8, text, ' ');
@@ -736,7 +861,12 @@ const Session = struct {
         var diff: usize = 0;
         if (state.segment) |box| {
             const answer = box.value.query(range.left, range.right, 1);
-            const expected = switch (box.value.op) { .SUM => direct.sum, .MIN => direct.min, .MAX => direct.max, .GCD => divisor };
+            const expected = switch (box.value.op) {
+                .SUM => direct.sum,
+                .MIN => direct.min,
+                .MAX => direct.max,
+                .GCD => divisor,
+            };
             try session.report(.SEG, answer.value == expected, box.value.describe(answer), &ok, &diff);
         }
         if (state.lazy) |box| {
@@ -794,10 +924,22 @@ const Session = struct {
         var left: usize = 0;
         var right: i64 = -1;
         for (order) |query| {
-            while (left > query.left) { left -= 1; window.add(left); }
-            while (right < integer(query.right)) { right += 1; window.add(@intCast(right)); }
-            while (left < query.left) { window.remove(left); left += 1; }
-            while (right > integer(query.right)) { window.remove(@intCast(right)); right -= 1; }
+            while (left > query.left) {
+                left -= 1;
+                window.add(left);
+            }
+            while (right < integer(query.right)) {
+                right += 1;
+                window.add(@intCast(right));
+            }
+            while (left < query.left) {
+                window.remove(left);
+                left += 1;
+            }
+            while (right > integer(query.right)) {
+                window.remove(@intCast(right));
+                right -= 1;
+            }
             answers[query.number - 1] = window.distinct;
         }
         try line(session.out, "MO queries={d} block={d} moves={d}", .{ queries.len, block, window.moves });
@@ -879,7 +1021,9 @@ const Session = struct {
                     return tree.bits.dump(out, "T");
                 }
                 if (equal(action, "LOWER")) {
-                    for (tree.contents, 0..) |value, i| if (value < 0) { return session.fail("NEGATIVE {d}", .{i}); };
+                    for (tree.contents, 0..) |value, i| if (value < 0) {
+                        return session.fail("NEGATIVE {d}", .{i});
+                    };
                     const target = arg(words, 2);
                     const answer = tree.lower(target);
                     try out.print("FEN LOWER {d} index=", .{target});

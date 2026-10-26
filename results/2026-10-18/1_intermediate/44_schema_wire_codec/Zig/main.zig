@@ -42,7 +42,7 @@ const Field = struct {
     name: Text,
     required: bool,
     repeated: bool,
-    packed: bool,
+    is_packed: bool,
     group: ?Text,
     value_type: *const SchemaType = undefined,
     index: usize = 0,
@@ -63,7 +63,7 @@ const Schema = struct {
     }
     fn load(schema: *Schema, reader: *std.Io.Reader) !void {
         const names = [_]Text{ "uint32", "uint64", "sint32", "sint64", "bool", "fixed32", "sfixed32", "fixed64", "string", "bytes" };
-        for (names, 0..) |name, i| _ = try schema.add(name, @enumFromInt(i));
+        for (names, 0..) |name, i| _ = try schema.add(name, @fromBackingInt(@intCast(i)));
         var current: *SchemaType = undefined;
         while (true) {
             const source = std.mem.trim(u8, (try readLine(reader, schema.gpa)).?, "\r");
@@ -78,8 +78,11 @@ const Schema = struct {
                 const field = try schema.gpa.create(Field);
                 field.* = .{
                     .number = try std.fmt.parseInt(u64, words[1], 10),
-                    .type_name = words[2], .name = words[3], .required = equal(mode, "REQUIRED"),
-                    .repeated = equal(mode, "REPEATED"), .packed = words.len > 5 and equal(words[5], "PACKED"),
+                    .type_name = words[2],
+                    .name = words[3],
+                    .required = equal(mode, "REQUIRED"),
+                    .repeated = equal(mode, "REPEATED"),
+                    .is_packed = words.len > 5 and equal(words[5], "PACKED"),
                     .group = if (equal(mode, "ONEOF")) words[5] else null,
                 };
                 try current.fields.append(schema.gpa, field);
@@ -87,10 +90,14 @@ const Schema = struct {
         }
         for (schema.types.items) |value_type| {
             std.sort.heap(*Field, value_type.fields.items, {}, struct {
-                fn less(_: void, a: *Field, b: *Field) bool { return a.number < b.number; }
+                fn less(_: void, a: *Field, b: *Field) bool {
+                    return a.number < b.number;
+                }
             }.less);
             std.sort.heap(EnumMember, value_type.members.items, {}, struct {
-                fn less(_: void, a: EnumMember, b: EnumMember) bool { return a.number < b.number; }
+                fn less(_: void, a: EnumMember, b: EnumMember) bool {
+                    return a.number < b.number;
+                }
             }.less);
             for (value_type.fields.items, 0..) |field, i| {
                 field.index = i;
@@ -145,9 +152,15 @@ const Message = struct {
     }
 };
 
-fn equal(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
-fn digit(c: u8) bool { return c >= '0' and c <= '9'; }
-fn letter(c: u8) bool { return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z'); }
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn digit(c: u8) bool {
+    return c >= '0' and c <= '9';
+}
+fn letter(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');
+}
 fn hexDigit(c: u8) ?u8 {
     return if (digit(c)) c - '0' else if (c >= 'a' and c <= 'f') c - 'a' + 10 else null;
 }
@@ -185,7 +198,13 @@ fn line(out: *Writer, comptime format: Text, args: anytype) Writer.Error!void {
     try out.print(format ++ "\n", args);
 }
 fn wireName(wire: u3) Text {
-    return switch (wire) { 0 => "varint", 1 => "i64", 2 => "len", 5 => "i32", else => unreachable };
+    return switch (wire) {
+        0 => "varint",
+        1 => "i64",
+        2 => "len",
+        5 => "i32",
+        else => unreachable,
+    };
 }
 fn writeHex(out: *Writer, bytes: Text, empty_dash: bool) Writer.Error!void {
     if (bytes.len == 0 and empty_dash) return out.writeByte('-');
@@ -317,7 +336,9 @@ fn writeText(out: *Writer, message: *const Message) Writer.Error!void {
 }
 
 const max_unsigned = 9007199254740991;
-fn zigzag(value: i64) u64 { return @intCast(if (value >= 0) 2 * value else -2 * value - 1); }
+fn zigzag(value: i64) u64 {
+    return @intCast(if (value >= 0) 2 * value else -2 * value - 1);
+}
 fn unzigzag(value: u64) i64 {
     const half: i64 = @intCast(value / 2);
     return if (value % 2 == 0) half else -1 - half;
@@ -344,8 +365,7 @@ fn writeElement(gpa: Allocator, out: *Writer, value_type: *const SchemaType, val
         return;
     }
     const signed = if (value == .boolean) @as(i64, if (value.boolean) 1 else 0) else value.number;
-    var number: u64 = if (value_type.kind == .signed32 or value_type.kind == .signed64) zigzag(signed) else
-        @intCast(if (value_type.kind == .sfixed32 and signed < 0) signed + 4294967296 else signed);
+    var number: u64 = if (value_type.kind == .signed32 or value_type.kind == .signed64) zigzag(signed) else @intCast(if (value_type.kind == .sfixed32 and signed < 0) signed + 4294967296 else signed);
     if (value_type.wire() == 0) {
         try writeVarint(out, number);
     } else {
@@ -358,7 +378,7 @@ fn writeElement(gpa: Allocator, out: *Writer, value_type: *const SchemaType, val
 }
 fn writeField(gpa: Allocator, out: *Writer, field: *const Field, values: []const Value) Error!void {
     if (values.len == 0) return;
-    if (field.packed) {
+    if (field.is_packed) {
         var payload: Writer.Allocating = .init(gpa);
         defer payload.deinit();
         for (values) |value| try writeElement(gpa, &payload.writer, field.value_type, value);
@@ -368,7 +388,7 @@ fn writeField(gpa: Allocator, out: *Writer, field: *const Field, values: []const
     } else for (values) |value| {
         try writeVarint(out, field.number * 8 + field.value_type.wire());
         try writeElement(gpa, out, field.value_type, value);
-    };
+    }
 }
 fn encode(gpa: Allocator, message: *const Message) Error!Text {
     var output: Writer.Allocating = .init(gpa);
@@ -508,7 +528,9 @@ const Literal = struct {
         try tokens.append(session.gpa, .{ .data = .{ .end = {} }, .column = source.len + 1 });
         return .{ .session = session, .tokens = try tokens.toOwnedSlice(session.gpa) };
     }
-    fn peek(literal: *const Literal) Token { return literal.tokens[literal.position]; }
+    fn peek(literal: *const Literal) Token {
+        return literal.tokens[literal.position];
+    }
     fn symbol(literal: *const Literal, c: u8) bool {
         const token = literal.peek();
         return token.data == .symbol and token.data.symbol == c;
@@ -576,8 +598,12 @@ const Literal = struct {
     }
     fn element(literal: *Literal, value_type: *const SchemaType) Error!Value {
         const shape: Shape = switch (value_type.kind) {
-            .boolean => .boolean, .string => .string, .bytes => .bytes,
-            .enumeration => .name, .message => .message, else => .integer,
+            .boolean => .boolean,
+            .string => .string,
+            .bytes => .bytes,
+            .enumeration => .name,
+            .message => .message,
+            else => .integer,
         };
         try literal.require(shape);
         const token = literal.peek();
@@ -601,7 +627,9 @@ const Literal = struct {
 const Segment = struct {
     field: *const Field,
     index: ?usize,
-    fn wholeList(segment: Segment) bool { return segment.field.repeated and segment.index == null; }
+    fn wholeList(segment: Segment) bool {
+        return segment.field.repeated and segment.index == null;
+    }
 };
 const Verb = enum { VARINT, ZIGZAG, SCHEMA, ENCODE, SIZE, DECODE, LITERAL, JSON, CANON, EXPLAIN, GET, PATCH, CLEAR, MERGE, DIFF };
 const Session = struct {
@@ -629,8 +657,7 @@ const Session = struct {
             if (field.required and values.len == 0)
                 return session.fail(try std.fmt.allocPrint(session.gpa, "missing required field {s}", .{path}));
             if (field.value_type.kind == .message) for (values, 0..) |value, i| {
-                const next = if (field.repeated) try std.fmt.allocPrint(session.gpa, "{s}[{d}].", .{ path, i }) else
-                    try std.fmt.allocPrint(session.gpa, "{s}.", .{path});
+                const next = if (field.repeated) try std.fmt.allocPrint(session.gpa, "{s}[{d}].", .{ path, i }) else try std.fmt.allocPrint(session.gpa, "{s}.", .{path});
                 try session.checkRequired(value.message, next);
             };
         }
@@ -674,8 +701,8 @@ const Session = struct {
             if (number == 0) return session.byteError("invalid field number", offset);
             if (wire != 0 and wire != 1 and wire != 2 and wire != 5) return session.byteError("invalid wire type", offset);
             const field = value_type.byNumber(number);
-            const packed = if (field) |candidate| candidate.repeated and candidate.value_type.wire() != 2 and wire == 2 else false;
-            if (field) |candidate| if (wire != candidate.value_type.wire() and !packed) return session.byteError("wire type mismatch", offset);
+            const is_packed = if (field) |candidate| candidate.repeated and candidate.value_type.wire() != 2 and wire == 2 else false;
+            if (field) |candidate| if (wire != candidate.value_type.wire() and !is_packed) return session.byteError("wire type mismatch", offset);
             const raw = try reader.read(wire);
             if (explain) {
                 try session.out.splatByteAll(' ', depth * 2);
@@ -696,7 +723,7 @@ const Session = struct {
                 if (explain) try session.out.writeByte('\n');
                 const child = try session.readMessage(known.value_type, data, raw.payload, raw.payload + raw.bytes.len, depth + 1, explain);
                 try values.append(session.gpa, .{ .message = child });
-            } else if (packed) {
+            } else if (is_packed) {
                 var elements: Reader = .{ .session = session, .data = data, .position = raw.payload, .end = raw.payload + raw.bytes.len };
                 if (explain) try session.out.writeAll(" packed");
                 while (elements.position < elements.end) {
@@ -810,8 +837,7 @@ const Session = struct {
             const x = a.values(field);
             const y = b.values(field);
             for (0..@max(x.len, y.len)) |i| {
-                const path = if (field.repeated) try std.fmt.allocPrint(session.gpa, "{s}{s}[{d}]", .{ prefix, field.name, i }) else
-                    try std.fmt.allocPrint(session.gpa, "{s}{s}", .{ prefix, field.name });
+                const path = if (field.repeated) try std.fmt.allocPrint(session.gpa, "{s}{s}[{d}]", .{ prefix, field.name, i }) else try std.fmt.allocPrint(session.gpa, "{s}{s}", .{ prefix, field.name });
                 if (i < x.len and i < y.len and field.value_type.kind == .message) {
                     try session.differences(x[i].message, y[i].message, try std.fmt.allocPrint(session.gpa, "{s}.", .{path}), count);
                 } else if (i >= x.len or i >= y.len or !valueEqual(x[i], y[i])) {
@@ -829,11 +855,11 @@ const Session = struct {
         for (value_type.fields.items) |field| {
             try session.out.splatByteAll(' ', depth * 2);
             try session.out.print("{d} {s}: ", .{ field.number, field.name });
-            if (field.required) try session.out.writeAll("required ") else if (field.packed) {
+            if (field.required) try session.out.writeAll("required ") else if (field.is_packed) {
                 try session.out.writeAll("repeated packed ");
             } else if (field.repeated) try session.out.writeAll("repeated ") else if (field.group) |group| {
                 try session.out.print("oneof {s} ", .{group});
-            };
+            }
             try session.out.writeAll(field.value_type.name);
             if (field.value_type.kind == .enumeration) {
                 try session.out.writeAll(" (");
@@ -874,8 +900,7 @@ const Session = struct {
         if (verb == .VARINT or verb == .ZIGZAG) {
             if (!integerText(words[1])) return session.fail("invalid number");
             const number = std.fmt.parseInt(i64, words[1], 10) catch unreachable;
-            const valid = if (verb == .VARINT) number >= 0 and number <= max_unsigned else
-                number >= -4503599627370496 and number <= 4503599627370495;
+            const valid = if (verb == .VARINT) number >= 0 and number <= max_unsigned else number >= -4503599627370496 and number <= 4503599627370495;
             if (!valid) return session.fail("invalid number");
             const value: u64 = if (verb == .ZIGZAG) zigzag(number) else @intCast(number);
             var bytes: Writer.Allocating = .init(session.gpa);

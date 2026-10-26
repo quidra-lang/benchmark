@@ -5,13 +5,46 @@ const max_records = 2000;
 const max_path = 802;
 
 const Query = enum {
-    SUMMARY, MALFORMED, STATUS, METHODS, TOP, HOURLY, TIMELINE,
-    BANDWIDTH, VISITORS, LATENCY, HISTOGRAM, APDEX, ERRORS, SLOWEST,
-    SESSIONS, BURST, PEAK, GAPS, IP, RANGE, FILTER, UNFILTER, RESET, STATE,
+    SUMMARY,
+    MALFORMED,
+    STATUS,
+    METHODS,
+    TOP,
+    HOURLY,
+    TIMELINE,
+    BANDWIDTH,
+    VISITORS,
+    LATENCY,
+    HISTOGRAM,
+    APDEX,
+    ERRORS,
+    SLOWEST,
+    SESSIONS,
+    BURST,
+    PEAK,
+    GAPS,
+    IP,
+    RANGE,
+    FILTER,
+    UNFILTER,
+    RESET,
+    STATE,
 };
 const Argument = enum {
-    limit, minutes, width, threshold, length, times, kind, path, ip,
-    date, clock, key, subject, value,
+    limit,
+    minutes,
+    width,
+    threshold,
+    length,
+    times,
+    kind,
+    path,
+    ip,
+    date,
+    clock,
+    key,
+    subject,
+    value,
 };
 const GroupKey = enum { path, ip, method, date, endpoint };
 const RankMode = enum { count, apdex, errors, slowest };
@@ -165,8 +198,7 @@ fn queryForm(query: Query) []const Argument {
 
 fn requiresRecords(query: Query) bool {
     return switch (query) {
-        .STATUS, .METHODS, .TOP, .HOURLY, .TIMELINE, .BANDWIDTH,
-        .VISITORS, .HISTOGRAM, .APDEX, .ERRORS, .SLOWEST, .BURST, .PEAK, .GAPS => true,
+        .STATUS, .METHODS, .TOP, .HOURLY, .TIMELINE, .BANDWIDTH, .VISITORS, .HISTOGRAM, .APDEX, .ERRORS, .SLOWEST, .BURST, .PEAK, .GAPS => true,
         else => false,
     };
 }
@@ -203,8 +235,7 @@ fn intervalLabel(allocator: Allocator, seconds: i64) ![]const u8 {
         days -= if (leap(year)) @as(i64, 366) else 365;
     var month: i64 = 1;
     while (days >= monthDays(year, month)) : (month += 1) days -= monthDays(year, month);
-    return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}",
-        .{ year, month, days + 1, @divTrunc(minutes, 60), @mod(minutes, 60) });
+    return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{ year, month, days + 1, @divTrunc(minutes, 60), @mod(minutes, 60) });
 }
 
 fn normalizePath(allocator: Allocator, raw: []const u8) ![]const u8 {
@@ -239,7 +270,12 @@ fn normalizePath(allocator: Allocator, raw: []const u8) ![]const u8 {
 }
 
 fn decimal(allocator: Allocator, numerator: i64, denominator: i64, comptime places: usize) ![]const u8 {
-    const scale: i64 = switch (places) { 1 => 10, 2 => 100, 3 => 1000, else => @compileError("unsupported decimal width") };
+    const scale: i64 = switch (places) {
+        1 => 10,
+        2 => 100,
+        3 => 1000,
+        else => @compileError("unsupported decimal width"),
+    };
     const value = @divTrunc(numerator * scale, denominator);
     const format = "{d}.{d:0>" ++ std.fmt.comptimePrint("{d}", .{places}) ++ "}";
     return std.fmt.allocPrint(allocator, format, .{ @divTrunc(value, scale), @mod(value, scale) });
@@ -340,8 +376,7 @@ const Stats = struct {
     fn rating(self: Stats) []const u8 {
         const value = 100 * self.points();
         const total = 2 * self.count;
-        return if (value >= 94 * total) "excellent" else if (value >= 85 * total) "good" else
-            if (value >= 70 * total) "fair" else if (value >= 50 * total) "poor" else "unacceptable";
+        return if (value >= 94 * total) "excellent" else if (value >= 85 * total) "good" else if (value >= 70 * total) "fair" else if (value >= 50 * total) "poor" else "unacceptable";
     }
 };
 
@@ -439,7 +474,7 @@ const Analyzer = struct {
     malformed_count: usize = 0,
     line_count: usize = 0,
     filters: [4][max_path]u8 = undefined,
-    filter_lengths: [4]usize = .{0} ** 4,
+    filter_lengths: [4]usize = @splat(0),
     range: ?DateRange = null,
 
     fn ingest(self: *Analyzer, allocator: Allocator, input: []const u8) !void {
@@ -456,12 +491,15 @@ const Analyzer = struct {
             .line = self.line_count,
             .date = fields[0],
             .stamp = try std.fmt.allocPrint(allocator, "{s} {s}", .{ fields[0], fields[1] }),
-            .ip = fields[2], .method = fields[3],
+            .ip = fields[2],
+            .method = fields[3],
             .path = try normalizePath(allocator, fields[4]),
             .ip_number = parseIp(fields[2]).?,
             .hour = @intCast(number(fields[1][0..2])),
             .seconds = secondsOf(fields[0], fields[1]),
-            .status = number(fields[5]), .bytes = number(fields[6]), .latency = number(fields[7]),
+            .status = number(fields[5]),
+            .bytes = number(fields[6]),
+            .latency = number(fields[7]),
         };
         self.record_count += 1;
     }
@@ -521,14 +559,15 @@ const Analyzer = struct {
                 const total = Stats.of(rows, 0);
                 try out.print("SUMMARY lines {d} valid {d} malformed {d}\n", .{ self.line_count, self.record_count, self.malformed_count });
                 try out.print("requests {d} bytes {d} ips {d} paths {d}\n", .{ n, total.bytes, try distinctCount(allocator, rows, .ip), try distinctCount(allocator, rows, .path) });
-                if (rows.len == 0) try out.writeAll("span none\n") else
-                    try out.print("span {s} {s} {d}\n", .{ rows[0].stamp, rows[rows.len - 1].stamp, rows[rows.len - 1].seconds - rows[0].seconds });
+                if (rows.len == 0) try out.writeAll("span none\n") else try out.print("span {s} {s} {d}\n", .{ rows[0].stamp, rows[rows.len - 1].stamp, rows[rows.len - 1].seconds - rows[0].seconds });
             },
             .MALFORMED => {
                 try out.print("MALFORMED {d}\n", .{self.malformed_count});
                 for (reasons, 0..) |reason, index| {
                     var count: usize = 0;
-                    for (self.malformed[0..self.malformed_count]) |bad| if (bad.reason == index) { count += 1; };
+                    for (self.malformed[0..self.malformed_count]) |bad| if (bad.reason == index) {
+                        count += 1;
+                    };
                     if (count == 0) continue;
                     try out.print("{s} {d}", .{ reason, count });
                     for (self.malformed[0..self.malformed_count]) |bad| if (bad.reason == index)
@@ -537,8 +576,8 @@ const Analyzer = struct {
                 }
             },
             .STATUS => {
-                var classes = [_]i64{0} ** 5;
-                var statuses = [_]i64{0} ** 600;
+                var classes: [5]i64 = @splat(0);
+                var statuses: [600]i64 = @splat(0);
                 for (rows) |row| {
                     classes[@intCast(@divTrunc(row.status, 100) - 1)] += 1;
                     statuses[@intCast(row.status)] += 1;
@@ -554,8 +593,7 @@ const Analyzer = struct {
                 const groups = try grouped(allocator, rows, kind, 0);
                 std.mem.sort(Group, groups, Rank{ .mode = .count, .key = kind }, groupLess);
                 const limit = if (query == .METHODS) groups.len else @min(@as(usize, @intCast(number(args[1]))), groups.len);
-                if (query == .METHODS) try out.print("METHODS {d}\n", .{n}) else
-                    try out.print("TOP {s} {d} of {d}\n", .{ args[0], limit, groups.len });
+                if (query == .METHODS) try out.print("METHODS {d}\n", .{n}) else try out.print("TOP {s} {d} of {d}\n", .{ args[0], limit, groups.len });
                 var rank: usize = 0;
                 for (groups[0..limit], 0..) |group, i| {
                     if (i == 0 or group.stats.count != groups[i - 1].stats.count) rank = i + 1;
@@ -564,7 +602,7 @@ const Analyzer = struct {
                 }
             },
             .HOURLY => {
-                var counts = [_]usize{0} ** 24;
+                var counts: [24]usize = @splat(0);
                 for (rows) |row| counts[row.hour] += 1;
                 const maximum = std.mem.max(usize, &counts);
                 const first = std.mem.indexOfScalar(usize, &counts, maximum).?;
@@ -579,16 +617,18 @@ const Analyzer = struct {
                 for (rows, 0..) |row, i| values[i] = @divTrunc(if (query == .TIMELINE) row.seconds else row.latency, width);
                 const low = std.mem.min(i64, values);
                 const high = std.mem.max(i64, values);
-                if (high - low + 1 > 60) { try out.writeAll("ERROR too many buckets\n"); return; }
-                var buffer = [_]usize{0} ** 60;
+                if (high - low + 1 > 60) {
+                    try out.writeAll("ERROR too many buckets\n");
+                    return;
+                }
+                var buffer: [60]usize = @splat(0);
                 const counts = buffer[0..@as(usize, @intCast(high - low + 1))];
                 for (values) |value| counts[@intCast(value - low)] += 1;
                 const maximum = std.mem.max(usize, counts);
                 try out.print("{s} {d} {d}\n", .{ @tagName(query), parameter, counts.len });
                 for (counts, 0..) |count, i| {
                     const start = (low + integer(i)) * width;
-                    const label = if (query == .TIMELINE) try intervalLabel(allocator, start) else
-                        try std.fmt.allocPrint(allocator, "{d}-{d}", .{ start, start + width - 1 });
+                    const label = if (query == .TIMELINE) try intervalLabel(allocator, start) else try std.fmt.allocPrint(allocator, "{d}-{d}", .{ start, start + width - 1 });
                     try barLine(out, label, count, maximum);
                 }
             },
@@ -607,7 +647,9 @@ const Analyzer = struct {
                 for (days) |day| {
                     const unique = try distinctCount(allocator, day.rows, .ip);
                     var fresh: usize = 0;
-                    for (ips) |ip| if (same(ip.rows[0].date, day.rows[0].date)) { fresh += 1; };
+                    for (ips) |ip| if (same(ip.rows[0].date, day.rows[0].date)) {
+                        fresh += 1;
+                    };
                     try out.print("{s} unique {d} new {d} returning {d}\n", .{ day.rows[0].date, unique, fresh, unique - fresh });
                 }
             },
@@ -619,7 +661,10 @@ const Analyzer = struct {
                     buffer[count] = row.latency;
                     count += 1;
                 };
-                if (count == 0) { try out.writeAll("LATENCY no records\n"); return; }
+                if (count == 0) {
+                    try out.writeAll("LATENCY no records\n");
+                    return;
+                }
                 const values = buffer[0..count];
                 std.mem.sort(i64, values, {}, latencyLess);
                 const trim = count / 10;
@@ -630,17 +675,16 @@ const Analyzer = struct {
                     if (i >= trim and i < count - trim) trimmed += value;
                 }
                 try out.print("LATENCY {s} count {d} min {d} p50 {d} p90 {d} p99 {d} max {d} mean {s} trimmed {s}\n", .{
-                    label, count, values[0], values[(50 * count + 99) / 100 - 1], values[(90 * count + 99) / 100 - 1],
-                    values[(99 * count + 99) / 100 - 1], values[count - 1],
-                    try decimal(allocator, total, integer(count), 2), try decimal(allocator, trimmed, integer(count - 2 * trim), 2),
+                    label,                               count,             values[0],                                        values[(50 * count + 99) / 100 - 1],                           values[(90 * count + 99) / 100 - 1],
+                    values[(99 * count + 99) / 100 - 1], values[count - 1], try decimal(allocator, total, integer(count), 2), try decimal(allocator, trimmed, integer(count - 2 * trim), 2),
                 });
             },
             .APDEX => {
                 const threshold = number(args[0]);
                 const total = Stats.of(rows, threshold);
                 try out.print("APDEX {d} {s} {s} satisfied {d} tolerating {d} frustrated {d}\n", .{
-                    threshold, try decimal(allocator, total.points(), 2 * n, 3), total.rating(),
-                    total.satisfied, total.tolerating, n - total.satisfied - total.tolerating,
+                    threshold,       try decimal(allocator, total.points(), 2 * n, 3), total.rating(),
+                    total.satisfied, total.tolerating,                                 n - total.satisfied - total.tolerating,
                 });
                 const groups = try grouped(allocator, rows, .path, threshold);
                 std.mem.sort(Group, groups, Rank{ .mode = .apdex, .key = .path }, groupLess);
@@ -657,8 +701,7 @@ const Analyzer = struct {
                 for (groups) |group| {
                     const stats = group.stats;
                     if (stats.client + stats.server == 0) continue;
-                    try out.print("{s} {d} {d} {d} {s}\n", .{ group.rows[0].path, stats.count, stats.client, stats.server,
-                        try percentage(allocator, stats.client + stats.server, stats.count) });
+                    try out.print("{s} {d} {d} {d} {s}\n", .{ group.rows[0].path, stats.count, stats.client, stats.server, try percentage(allocator, stats.client + stats.server, stats.count) });
                 }
             },
             .SLOWEST => {
@@ -667,12 +710,14 @@ const Analyzer = struct {
                 const limit = @min(@as(usize, @intCast(number(args[0]))), groups.len);
                 try out.print("SLOWEST {d} of {d}\n", .{ limit, groups.len });
                 for (groups[0..limit], 1..) |group, rank|
-                    try out.print("{d} {s} {s} count {d} avg {s} max {d}\n", .{ rank, group.rows[0].method, group.rows[0].path,
-                        group.stats.count, try decimal(allocator, group.stats.latency, group.stats.count, 2), group.stats.maximum });
+                    try out.print("{d} {s} {s} count {d} avg {s} max {d}\n", .{ rank, group.rows[0].method, group.rows[0].path, group.stats.count, try decimal(allocator, group.stats.latency, group.stats.count, 2), group.stats.maximum });
             },
             .SESSIONS => {
                 const found = try ipRows(allocator, rows, args[0]);
-                if (found.len == 0) { try out.writeAll("SESSIONS no records\n"); return; }
+                if (found.len == 0) {
+                    try out.writeAll("SESSIONS no records\n");
+                    return;
+                }
                 const minutes = if (args.len == 2) number(args[1]) else 30;
                 const starts = try allocator.alloc(usize, found.len + 1);
                 starts[0] = 0;
@@ -685,15 +730,14 @@ const Analyzer = struct {
                 var duration: i64 = 0;
                 for (0..count) |i| duration += found[starts[i + 1] - 1].seconds - found[starts[i]].seconds;
                 try out.print("SESSIONS {s} timeout {d} count {d} requests {d} avg_duration {s} avg_requests {s}\n", .{
-                    args[0], minutes, count, found.len, try decimal(allocator, duration, integer(count), 1),
+                    args[0],                                                       minutes, count, found.len, try decimal(allocator, duration, integer(count), 1),
                     try decimal(allocator, integer(found.len), integer(count), 1),
                 });
                 for (0..count) |i| {
                     const session = found[starts[i]..starts[i + 1]];
                     const first = session[0];
                     const last = session[session.len - 1];
-                    try out.print("{d} {s} {s} {d} {d} {d}\n", .{ i + 1, first.stamp, last.stamp, last.seconds - first.seconds,
-                        session.len, try distinctCount(allocator, session, .path) });
+                    try out.print("{d} {s} {s} {d} {d} {d}\n", .{ i + 1, first.stamp, last.stamp, last.seconds - first.seconds, session.len, try distinctCount(allocator, session, .path) });
                 }
             },
             .BURST => {
@@ -701,13 +745,19 @@ const Analyzer = struct {
                 const threshold = number(args[1]);
                 const failed = try allocator.alloc(*const Record, rows.len);
                 var failure_count: usize = 0;
-                for (rows) |row| if (row.status >= 400) { failed[failure_count] = row; failure_count += 1; };
+                for (rows) |row| if (row.status >= 400) {
+                    failed[failure_count] = row;
+                    failure_count += 1;
+                };
                 const groups = try grouped(allocator, failed[0..failure_count], .ip, 0);
                 const buffer = try allocator.alloc(Window, groups.len);
                 var count: usize = 0;
                 for (groups) |group| {
                     const window = peak(group.rows, width);
-                    if (integer(window.count) >= threshold) { buffer[count] = window; count += 1; }
+                    if (integer(window.count) >= threshold) {
+                        buffer[count] = window;
+                        count += 1;
+                    }
                 }
                 const matches = buffer[0..count];
                 std.mem.sort(Window, matches, {}, windowLess);
@@ -722,14 +772,19 @@ const Analyzer = struct {
             .GAPS => {
                 const width = number(args[0]);
                 var count: usize = 0;
-                for (1..rows.len) |i| if (rows[i].seconds - rows[i - 1].seconds >= width) { count += 1; };
+                for (1..rows.len) |i| if (rows[i].seconds - rows[i - 1].seconds >= width) {
+                    count += 1;
+                };
                 try out.print("GAPS {d} {d}\n", .{ width, count });
                 for (1..rows.len) |i| if (rows[i].seconds - rows[i - 1].seconds >= width)
                     try out.print("{s} {s} {d}\n", .{ rows[i - 1].stamp, rows[i].stamp, rows[i].seconds - rows[i - 1].seconds });
             },
             .IP => {
                 const found = try ipRows(allocator, rows, args[0]);
-                if (found.len == 0) { try out.writeAll("IP no records\n"); return; }
+                if (found.len == 0) {
+                    try out.writeAll("IP no records\n");
+                    return;
+                }
                 const total = Stats.of(found, 0);
                 try out.print("IP {s} requests {d} bytes {d} errors {d} paths {d}\n", .{
                     args[0], found.len, total.bytes, total.client + total.server, try distinctCount(allocator, found, .path),
@@ -739,7 +794,7 @@ const Analyzer = struct {
                 std.mem.sort(Group, method_groups, Rank{ .mode = .count, .key = .method }, groupLess);
                 for (method_groups) |group| try out.print(" {s} {d}", .{ group.rows[0].method, group.stats.count });
                 try out.writeAll("\nclasses");
-                var classes = [_]usize{0} ** 5;
+                var classes: [5]usize = @splat(0);
                 for (found) |row| classes[@intCast(@divTrunc(row.status, 100) - 1)] += 1;
                 for (classes, 1..) |count, category| try out.print(" {d}xx {d}", .{ category, count });
                 try out.writeByte('\n');
@@ -751,7 +806,10 @@ const Analyzer = struct {
             .RANGE => {
                 const first = secondsOf(args[0], args[1]);
                 const last = secondsOf(args[2], args[3]);
-                if (first > last) { try out.writeAll("ERROR invalid range\n"); return; }
+                if (first > last) {
+                    try out.writeAll("ERROR invalid range\n");
+                    return;
+                }
                 var range = DateRange{ .first = first, .last = last, .first_label = undefined, .last_label = undefined };
                 _ = try std.fmt.bufPrint(&range.first_label, "{s} {s}", .{ args[0], args[1] });
                 _ = try std.fmt.bufPrint(&range.last_label, "{s} {s}", .{ args[2], args[3] });
@@ -767,18 +825,24 @@ const Analyzer = struct {
             },
             .UNFILTER => {
                 if (same(args[0], "RANGE")) {
-                    if (self.range == null) { try out.writeAll("ERROR not filtered\n"); return; }
+                    if (self.range == null) {
+                        try out.writeAll("ERROR not filtered\n");
+                        return;
+                    }
                     self.range = null;
                 } else {
                     const key = indexOf(args[0], &filter_keys).?;
-                    if (self.filter_lengths[key] == 0) { try out.writeAll("ERROR not filtered\n"); return; }
+                    if (self.filter_lengths[key] == 0) {
+                        try out.writeAll("ERROR not filtered\n");
+                        return;
+                    }
                     self.filter_lengths[key] = 0;
                 }
                 try out.print("UNFILTER {s} active {d}\n", .{ args[0], (try self.selected(allocator)).len });
             },
             .RESET => {
                 self.range = null;
-                self.filter_lengths = .{0} ** 4;
+                self.filter_lengths = @splat(0);
                 try out.print("RESET active {d}\n", .{(try self.selected(allocator)).len});
             },
             .STATE => {

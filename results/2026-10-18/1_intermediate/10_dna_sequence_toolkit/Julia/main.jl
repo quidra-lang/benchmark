@@ -104,7 +104,7 @@ function repeat_count(sequence::String, position::Int, width::Int)
     count
 end
 
-function primitive(unit::String)
+function primitive_motif(unit::String)
     n = length(unit)
     all(n % width != 0 || repeat(unit[1:width], div(n, width)) != unit
         for width in 1:(n-1))
@@ -340,7 +340,7 @@ function repeats!(tool::Toolkit, sequence::String, minimum::Int, maximum::Int, c
         while position + width - 1 <= length(sequence)
             unit = sequence[position:position+width-1]
             repeated = repeat_count(sequence, position, width)
-            if primitive(unit) && repeated >= count
+            if primitive_motif(unit) && repeated >= count
                 push!(rows, (position, width, repeated, unit))
                 position += width * repeated
             else

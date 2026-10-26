@@ -119,30 +119,11 @@ fn cellSizes(gpa: Allocator, colors: []const usize) Allocator.Error![]usize {
     return sizes;
 }
 
-const Edge = struct {
-    a: usize,
-    b: usize
-};
+const Edge = struct { a: usize, b: usize };
 
-const Canon = struct {
-    nodes: usize = 0,
-    leaves: usize = 0,
-    text: Text = "",
-    labels: ?[]const usize = null,
-    best: std.ArrayList([]const usize) = .empty
-};
+const Canon = struct { nodes: usize = 0, leaves: usize = 0, text: Text = "", labels: ?[]const usize = null, best: std.ArrayList([]const usize) = .empty };
 
-const Invariants = struct {
-    degrees: []usize,
-    sizes: []usize,
-    edges: usize,
-    triangles: usize,
-    components: usize,
-    girth: Text,
-    diameter: Text,
-    radius: Text,
-    bipartite: bool
-};
+const Invariants = struct { degrees: []usize, sizes: []usize, edges: usize, triangles: usize, components: usize, girth: Text, diameter: Text, radius: Text, bipartite: bool };
 
 const Graph = struct {
     n: usize,
@@ -214,8 +195,7 @@ const Graph = struct {
                         distance[w] = distance[v] + 1;
                         parent[w] = @intCast(v);
                         try queue.append(gpa, w);
-                    }
-                    else if (parent[v] != @as(i32, @intCast(w))) {
+                    } else if (parent[v] != @as(i32, @intCast(w))) {
                         const length: usize = @intCast(distance[v] + distance[w] + 1);
                         if (shortest == 0 or length < shortest) shortest = length;
                     }
@@ -234,8 +214,7 @@ const Graph = struct {
                         if (coloring[w] == 0) {
                             coloring[w] = -coloring[v];
                             try pending.append(gpa, w);
-                        }
-                        else if (coloring[w] == coloring[v]) bipartite = false;
+                        } else if (coloring[w] == coloring[v]) bipartite = false;
                     };
                 }
             }
@@ -243,10 +222,7 @@ const Graph = struct {
             radius = @min(radius, eccentricity);
         }
         std.mem.sort(usize, sizes.items, {}, greaterNumber);
-        return .{ .degrees = degrees, .sizes = sizes.items, .edges = (try self.edges(gpa)).len, .triangles = triangles, .components = sizes.items.len,
-            .girth = if (shortest == 0) "none" else try std.fmt.allocPrint(gpa, "{d}", .{shortest}),
-            .diameter = if (sizes.items.len == 1) try std.fmt.allocPrint(gpa, "{d}", .{diameter}) else "INF",
-            .radius = if (sizes.items.len == 1) try std.fmt.allocPrint(gpa, "{d}", .{radius}) else "INF", .bipartite = bipartite };
+        return .{ .degrees = degrees, .sizes = sizes.items, .edges = (try self.edges(gpa)).len, .triangles = triangles, .components = sizes.items.len, .girth = if (shortest == 0) "none" else try std.fmt.allocPrint(gpa, "{d}", .{shortest}), .diameter = if (sizes.items.len == 1) try std.fmt.allocPrint(gpa, "{d}", .{diameter}) else "INF", .radius = if (sizes.items.len == 1) try std.fmt.allocPrint(gpa, "{d}", .{radius}) else "INF", .bipartite = bipartite };
     }
     fn clique(self: *const Graph, gpa: Allocator) Error![]usize {
         var best: []usize = &.{};
@@ -267,11 +243,7 @@ const Graph = struct {
         }
         return best;
     }
-    fn chromatic(self: *const Graph, gpa: Allocator) Error!struct {
-        count: usize,
-        colors: []usize
-    }
-    {
+    fn chromatic(self: *const Graph, gpa: Allocator) Error!struct { count: usize, colors: []usize } {
         const colors = try gpa.alloc(usize, self.n);
         for (1..self.n + 1) |limit| if (colorSearch(self, colors, 0, limit)) return .{ .count = limit, .colors = colors };
         unreachable;
@@ -305,10 +277,7 @@ fn degreeColors(gpa: Allocator, g: *const Graph) Allocator.Error![]usize {
     return degrees;
 }
 
-const Refinement = struct {
-    colors: []usize,
-    rounds: usize
-};
+const Refinement = struct { colors: []usize, rounds: usize };
 
 fn signatureLess(signatures: [][]usize, a: usize, b: usize) bool {
     return compare(signatures[a], signatures[b]) == .lt;
@@ -435,10 +404,7 @@ const Dsu = struct {
     }
 };
 
-const Example = struct {
-    mapping: []usize,
-    induced: bool
-};
+const Example = struct { mapping: []usize, induced: bool };
 
 const Embeddings = struct {
     gpa: Allocator,
@@ -479,36 +445,7 @@ const Embeddings = struct {
 
 const command_names = [_]Text{ "GRAPH", "CYCLE", "PATH", "COMPLETE", "BIPARTITE", "STAR", "WHEEL", "PETERSEN", "HYPERCUBE", "CIRCULANT", "GRID", "COMPLEMENT", "LINE", "PRODUCT", "UNION", "RELABEL", "INDUCED", "CANONIZE", "DELETE", "LIST", "SHOW", "INVARIANTS", "REFINE", "CANON", "ISO", "AUT", "SUBISO", "CLASSIFY" };
 
-const Command = enum {
-    graph,
-    cycle,
-    path,
-    complete,
-    bipartite,
-    star,
-    wheel,
-    petersen,
-    hypercube,
-    circulant,
-    grid,
-    complement,
-    line,
-    product,
-    union_graph,
-    relabel,
-    induced,
-    canonize,
-    delete,
-    list,
-    show,
-    invariants,
-    refine,
-    canon,
-    iso,
-    aut,
-    subiso,
-    classify
-};
+const Command = enum { graph, cycle, path, complete, bipartite, star, wheel, petersen, hypercube, circulant, grid, complement, line, product, union_graph, relabel, induced, canonize, delete, list, show, invariants, refine, canon, iso, aut, subiso, classify };
 
 const Lab = struct {
     gpa: Allocator,
@@ -604,40 +541,46 @@ const Lab = struct {
         const args = words[1..];
         var found: ?Command = null;
         for (command_names, 0..) |candidate, i| if (equal(candidate, name)) {
-            found = @enumFromInt(i);
+            found = @fromBackingInt(@intCast(i));
             break;
         };
         const cmd = found orelse return bad(gpa, "unknown command {s}", .{name});
-        const defining = @intFromEnum(cmd) < 18;
+        const defining = @backingInt(cmd) < 18;
         var minimum: usize = 1;
         var maximum: ?usize = 1;
         switch (cmd) {
             .list => {
                 minimum = 0;
                 maximum = 0;
-            }, .graph, .relabel, .refine => {
+            },
+            .graph, .relabel, .refine => {
                 minimum = if (cmd == .refine) 1 else 2;
                 maximum = null;
             },
             .circulant, .induced => {
                 minimum = 3;
                 maximum = null;
-            }, .bipartite, .grid, .product, .union_graph => {
+            },
+            .bipartite, .grid, .product, .union_graph => {
                 minimum = 3;
                 maximum = 3;
             },
             .cycle, .path, .complete, .star, .wheel, .hypercube, .complement, .line, .canonize, .iso, .subiso => {
                 minimum = 2;
                 maximum = 2;
-            }, else => {
             },
+            else => {},
         }
         if (args.len < minimum or (maximum != null and args.len > maximum.?)) return bad(gpa, "bad arguments", .{});
         const name_positions = try gpa.alloc(bool, args.len);
         @memset(name_positions, false);
         if (defining) name_positions[0] = true;
         const existing: []const usize = switch (cmd) {
-            .complement, .line, .relabel, .induced, .canonize => &.{1}, .product, .union_graph => &.{ 1, 2 }, .delete, .show, .invariants, .refine, .canon, .aut => &.{0}, .iso, .subiso => &.{ 0, 1 }, else => &.{}
+            .complement, .line, .relabel, .induced, .canonize => &.{1},
+            .product, .union_graph => &.{ 1, 2 },
+            .delete, .show, .invariants, .refine, .canon, .aut => &.{0},
+            .iso, .subiso => &.{ 0, 1 },
+            else => &.{},
         };
         for (existing) |i| name_positions[i] = true;
         for (args, 0..) |arg, i| {
@@ -665,7 +608,8 @@ const Lab = struct {
                             if (g.has(a, b)) return bad(gpa, "duplicate edge {s}", .{word});
                             g.join(a, b);
                         },
-                        .cycle => for (0..n) |v| g.join(v, (v + 1) % n), .path => for (0..n - 1) |v| g.join(v, v + 1),
+                        .cycle => for (0..n) |v| g.join(v, (v + 1) % n),
+                        .path => for (0..n - 1) |v| g.join(v, v + 1),
                         .complete => for (0..n) |a| {
                             for (a + 1..n) |b| g.join(a, b);
                         },
@@ -737,8 +681,7 @@ const Lab = struct {
                     if (cmd == .union_graph) {
                         for (try a.edges(gpa)) |edge| g.join(edge.a, edge.b);
                         for (try b.edges(gpa)) |edge| g.join(edge.a + a.n, edge.b + a.n);
-                    }
-                    else {
+                    } else {
                         for (0..a.n) |x| for (try b.edges(gpa)) |edge| {
                             g.join(x * b.n + edge.a, x * b.n + edge.b);
                         };
@@ -845,15 +788,7 @@ const Lab = struct {
                 const a_data = try g.invariants(gpa);
                 const b_data = try b.invariants(gpa);
                 var message: ?Text = null;
-                if (g.n != b.n) message = try std.fmt.allocPrint(gpa, "vertices {d} {d}", .{ g.n, b.n })
-                else if (a_data.edges != b_data.edges) message = try std.fmt.allocPrint(gpa, "edges {d} {d}", .{ a_data.edges, b_data.edges })
-                else if (compare(a_data.degrees, b_data.degrees) != .eq) message = "degrees"
-                else if (a_data.triangles != b_data.triangles) message = try std.fmt.allocPrint(gpa, "triangles {d} {d}", .{ a_data.triangles, b_data.triangles })
-                else if (a_data.components != b_data.components) message = try std.fmt.allocPrint(gpa, "components {d} {d}", .{ a_data.components, b_data.components })
-                else if (!equal(a_data.girth, b_data.girth)) message = try std.fmt.allocPrint(gpa, "girth {s} {s}", .{ a_data.girth, b_data.girth })
-                else if (!equal(a_data.diameter, b_data.diameter)) message = try std.fmt.allocPrint(gpa, "diameter {s} {s}", .{ a_data.diameter, b_data.diameter })
-                else if (a_data.bipartite != b_data.bipartite) message = try std.fmt.allocPrint(gpa, "bipartite {s} {s}", .{ yes(a_data.bipartite), yes(b_data.bipartite) })
-                else {
+                if (g.n != b.n) message = try std.fmt.allocPrint(gpa, "vertices {d} {d}", .{ g.n, b.n }) else if (a_data.edges != b_data.edges) message = try std.fmt.allocPrint(gpa, "edges {d} {d}", .{ a_data.edges, b_data.edges }) else if (compare(a_data.degrees, b_data.degrees) != .eq) message = "degrees" else if (a_data.triangles != b_data.triangles) message = try std.fmt.allocPrint(gpa, "triangles {d} {d}", .{ a_data.triangles, b_data.triangles }) else if (a_data.components != b_data.components) message = try std.fmt.allocPrint(gpa, "components {d} {d}", .{ a_data.components, b_data.components }) else if (!equal(a_data.girth, b_data.girth)) message = try std.fmt.allocPrint(gpa, "girth {s} {s}", .{ a_data.girth, b_data.girth }) else if (!equal(a_data.diameter, b_data.diameter)) message = try std.fmt.allocPrint(gpa, "diameter {s} {s}", .{ a_data.diameter, b_data.diameter }) else if (a_data.bipartite != b_data.bipartite) message = try std.fmt.allocPrint(gpa, "bipartite {s} {s}", .{ yes(a_data.bipartite), yes(b_data.bipartite) }) else {
                     const ac = try refine(gpa, g, try degreeColors(gpa, g));
                     const bc = try refine(gpa, b, try degreeColors(gpa, b));
                     if (ac.rounds != bc.rounds or compare(try cellSizes(gpa, ac.colors), try cellSizes(gpa, bc.colors)) != .eq) message = "refinement" else if (!equal((try g.canon(gpa)).text, (try b.canon(gpa)).text)) message = "canonical";
@@ -869,7 +804,10 @@ const Lab = struct {
                     try self.out.line("mapping {s}", .{try integers(gpa, mapping)});
                 }
             },
-            .aut => try self.automorphisms(args[0], g), .subiso => try self.subiso(args[0], args[1], g, self.graphs.get(args[1]).?), .classify => try self.classify(number(args[0])), else => unreachable,
+            .aut => try self.automorphisms(args[0], g),
+            .subiso => try self.subiso(args[0], args[1], g, self.graphs.get(args[1]).?),
+            .classify => try self.classify(number(args[0])),
+            else => unreachable,
         }
     }
 };
@@ -886,7 +824,7 @@ pub fn main(init: std.process.Init) !void {
     const lines = try split(gpa, text, '\n');
     const n = number(lines[0]);
     var lab: Lab = .{ .gpa = gpa, .out = .{ .gpa = gpa } };
-    for (lines[1..n + 1]) |line| {
+    for (lines[1 .. n + 1]) |line| {
         lab.command(try split(gpa, line, ' ')) catch |err| {
             if (err != error.Invalid) return err;
             try lab.out.line("error: {s}", .{failure});

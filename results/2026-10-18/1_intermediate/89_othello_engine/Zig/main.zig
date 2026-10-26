@@ -4,14 +4,14 @@ const Allocator = std.mem.Allocator;
 const Board = [64]u8;
 
 const weights = [_]i32{
-    100, -20, 10, 5, 5, 10, -20, 100,
+    100, -20, 10, 5,  5,  10, -20, 100,
     -20, -50, -2, -2, -2, -2, -50, -20,
-    10, -2, -1, -1, -1, -1, -2, 10,
-    5, -2, -1, -1, -1, -1, -2, 5,
-    5, -2, -1, -1, -1, -1, -2, 5,
-    10, -2, -1, -1, -1, -1, -2, 10,
+    10,  -2,  -1, -1, -1, -1, -2,  10,
+    5,   -2,  -1, -1, -1, -1, -2,  5,
+    5,   -2,  -1, -1, -1, -1, -2,  5,
+    10,  -2,  -1, -1, -1, -1, -2,  10,
     -20, -50, -2, -2, -2, -2, -50, -20,
-    100, -20, 10, 5, 5, 10, -20, 100,
+    100, -20, 10, 5,  5,  10, -20, 100,
 };
 
 fn eq(a: Text, b: Text) bool {
@@ -56,7 +56,7 @@ fn other(side: u8) u8 {
 }
 
 fn initialBoard() Board {
-    var board = [_]u8{'.'} ** 64;
+    var board: [64]u8 = @splat('.');
     board[27] = 'W';
     board[36] = 'W';
     board[28] = 'B';
@@ -225,7 +225,8 @@ const Solver = struct {
         for (0..result.len) |i| {
             var j = i;
             while (j > 0 and (result.data[j].value > result.data[j - 1].value or
-                (result.data[j].value == result.data[j - 1].value and result.data[j].p < result.data[j - 1].p))) : (j -= 1) {
+                (result.data[j].value == result.data[j - 1].value and result.data[j].p < result.data[j - 1].p))) : (j -= 1)
+            {
                 std.mem.swap(Ranking, &result.data[j], &result.data[j - 1]);
             }
         }
@@ -283,7 +284,7 @@ const Variation = struct {
 };
 
 fn stable(board: *const Board) [2]usize {
-    var known = [_]bool{false} ** 64;
+    var known: [64]bool = @splat(false);
     const axes = [_][2]i32{ .{ 0, 1 }, .{ 1, 0 }, .{ 1, 1 }, .{ 1, -1 } };
     while (true) {
         var found: Squares = .{};
@@ -338,7 +339,7 @@ fn transform(p: usize, operation: Text) usize {
 }
 
 fn transformBoard(board: *const Board, operation: Text) Board {
-    var result = [_]u8{'.'} ** 64;
+    var result: [64]u8 = @splat('.');
     for (0..64) |p| result[transform(p, operation)] = board[p];
     return result;
 }
@@ -378,7 +379,9 @@ fn validRecord(s: Text) bool {
 
 fn number(s: Text) ?u64 {
     if (s.len == 0) return null;
-    for (s) |c| if (c < '0' or c > '9') { return null; };
+    for (s) |c| if (c < '0' or c > '9') {
+        return null;
+    };
     return std.fmt.parseInt(u64, s, 10) catch null;
 }
 
@@ -433,8 +436,7 @@ const Game = struct {
     }
 
     fn status(self: *const Game, out: *Builder) !void {
-        if (self.pos.over) try gameOver(&self.pos.board, out)
-        else try out.line("{c} to move", .{self.pos.side});
+        if (self.pos.over) try gameOver(&self.pos.board, out) else try out.line("{c} to move", .{self.pos.side});
     }
 
     fn adjust(self: *Game, out: *Builder, quiet: bool) !bool {
@@ -456,8 +458,7 @@ const Game = struct {
         self.pos.board = place(&self.pos.board, s, p);
         if (!quiet) {
             const sq = squareName(p);
-            if (value) |v| try out.line("{c} {s} flips {d} value {d}", .{ s, &sq, flipped, v })
-            else try out.line("{c} {s} flips {d}", .{ s, &sq, flipped });
+            if (value) |v| try out.line("{c} {s} flips {d} value {d}", .{ s, &sq, flipped, v }) else try out.line("{c} {s} flips {d}", .{ s, &sq, flipped });
         }
         self.pos.side = other(s);
         const passed = try self.adjust(out, quiet);
@@ -479,10 +480,10 @@ const Game = struct {
         var passes: usize = 0;
         var squares: [60]usize = undefined;
         for (0..text.len / 2) |i| {
-            const p = squareIndex(text[2*i .. 2*i + 2]);
+            const p = squareIndex(text[2 * i .. 2 * i + 2]);
             if (trial.reason(p)) |why| {
                 const sq = squareName(p);
-                try out.line("ILLEGAL move {d} {s} {s}", .{ i+1, &sq, why });
+                try out.line("ILLEGAL move {d} {s} {s}", .{ i + 1, &sq, why });
                 return;
             }
             squares[i] = p;
@@ -497,8 +498,8 @@ const Game = struct {
         var normalized: [120]u8 = undefined;
         for (squares[0 .. text.len / 2], 0..) |p, i| {
             const sq = squareName(if (operation.len == 0) p else transform(p, operation));
-            normalized[2*i] = sq[0];
-            normalized[2*i+1] = sq[1];
+            normalized[2 * i] = sq[0];
+            normalized[2 * i + 1] = sq[1];
         }
         try out.line("record {d} moves {d} passes", .{ trial.nh, passes });
         try out.line("normal {s}", .{normalized[0..text.len]});
@@ -511,11 +512,11 @@ const Game = struct {
         for (0..64) |p| {
             fields[p] = try std.fmt.allocPrint(out.gpa, "{c}", .{board[p]});
         }
-        for (0..self.nh) |i| fields[self.history[i].p] = try std.fmt.allocPrint(out.gpa, "{d}", .{i+1});
+        for (0..self.nh) |i| fields[self.history[i].p] = try std.fmt.allocPrint(out.gpa, "{d}", .{i + 1});
         try out.line("   a  b  c  d  e  f  g  h", .{});
         for (0..8) |r| {
-            try out.print("{d}", .{r+1});
-            for (fields[8*r .. 8*r+8]) |item| try out.print("{s: >3}", .{item});
+            try out.print("{d}", .{r + 1});
+            for (fields[8 * r .. 8 * r + 8]) |item| try out.print("{s: >3}", .{item});
             try out.add("\n");
         }
     }
@@ -527,9 +528,8 @@ const Game = struct {
             flipped += m.flipped;
             if (m.passed) passes += 1;
         }
-        if (self.nh == 0) try out.line("moves 0", .{})
-        else try out.line("moves {d} flips {d} avg {d}.{d:0>2} passes {d}", .{
-            self.nh, flipped, flipped*100/self.nh/100, (flipped*100/self.nh)%100, passes,
+        if (self.nh == 0) try out.line("moves 0", .{}) else try out.line("moves {d} flips {d} avg {d}.{d:0>2} passes {d}", .{
+            self.nh, flipped, flipped * 100 / self.nh / 100, (flipped * 100 / self.nh) % 100, passes,
         });
         for ([_]u8{ 'B', 'W' }) |side| {
             var n: usize = 0;
@@ -551,9 +551,9 @@ const Game = struct {
                 try out.line("{c} moves 0", .{side});
             } else {
                 const sq = squareName(square);
-                const scaled = total*100/n;
+                const scaled = total * 100 / n;
                 try out.line("{c} moves {d} flips {d} avg {d}.{d:0>2} max {d} {s} corners {d}", .{
-                    side, n, total, scaled/100, scaled%100, highest, &sq, corners,
+                    side, n, total, scaled / 100, scaled % 100, highest, &sq, corners,
                 });
             }
         }
@@ -584,13 +584,13 @@ const Game = struct {
                 break :blk available.data[@intCast(random.draw() % @as(u64, @intCast(available.len)))];
             } else (try self.solver.ranked(self.pos.board, self.pos.side, if (self.pos.side == 'B') black else white)).data[0].p;
             const sq = squareName(p);
-            line[2*moves] = sq[0];
-            line[2*moves+1] = sq[1];
+            line[2 * moves] = sq[0];
+            line[2 * moves + 1] = sq[1];
             moves += 1;
             if (try self.play(p, out, true, null)) passes += 1;
         }
         try out.line("{s} {d} moves {d} passes", .{ if (seed != null) "random" else "autoplay", moves, passes });
-        try out.line("moves {s}", .{line[0 .. 2*moves]});
+        try out.line("moves {s}", .{line[0 .. 2 * moves]});
         try gameOver(&self.pos.board, out);
     }
 
@@ -612,7 +612,7 @@ const Game = struct {
             }
             const sq = squareName(p);
             try out.line("{s} {d} {d} {d}", .{ &sq, wins, draws, losses });
-            const points = 2*wins + draws;
+            const points = 2 * wins + draws;
             if (points > best) {
                 best = points;
                 best_square = p;
@@ -645,11 +645,9 @@ const Game = struct {
                 if (!eq(args[1], "B") and !eq(args[1], "W")) error_message = "bad board";
             }
         } else if (eq(cmd, "MOVE") or eq(cmd, "FLIPS")) {
-            if (args.len != 1) error_message = "bad arguments"
-            else if (!validSquare(args[0])) error_message = "bad square";
+            if (args.len != 1) error_message = "bad arguments" else if (!validSquare(args[0])) error_message = "bad square";
         } else if (eq(cmd, "PLAY") or eq(cmd, "RECORD")) {
-            if (args.len != 1) error_message = "bad arguments"
-            else if (!validRecord(args[0])) error_message = "bad record";
+            if (args.len != 1) error_message = "bad arguments" else if (!validRecord(args[0])) error_message = "bad record";
         } else if (includes(cmd, &zero)) {
             if (args.len != 0) error_message = "bad arguments";
         } else if (eq(cmd, "TRANSFORM")) {
@@ -684,9 +682,9 @@ const Game = struct {
             try out.line("  a b c d e f g h", .{});
             const moves = if (self.pos.over) Squares{} else legal(&self.pos.board, self.pos.side);
             for (0..8) |r| {
-                try out.print("{d}", .{r+1});
+                try out.print("{d}", .{r + 1});
                 for (0..8) |c| {
-                    const p = 8*r+c;
+                    const p = 8 * r + c;
                     try out.print(" {c}", .{if (moves.has(p)) @as(u8, '*') else self.pos.board[p]});
                 }
                 try out.add("\n");
@@ -706,11 +704,9 @@ const Game = struct {
             try out.add("\n");
         } else if (eq(cmd, "MOVE") or eq(cmd, "FLIPS")) {
             const p = squareIndex(args[0]);
-            if (self.reason(p)) |why| try out.line("ILLEGAL {s}", .{why})
-            else if (eq(cmd, "MOVE")) _ = try self.play(p, out, false, null)
-            else {
+            if (self.reason(p)) |why| try out.line("ILLEGAL {s}", .{why}) else if (eq(cmd, "MOVE")) _ = try self.play(p, out, false, null) else {
                 const flipped = flips(&self.pos.board, self.pos.side, p);
-                try out.print("flips {s} {d}", .{args[0], flipped.len});
+                try out.print("flips {s} {d}", .{ args[0], flipped.len });
                 for (flipped.data[0..flipped.len]) |q| {
                     const sq = squareName(q);
                     try out.print(" {s}", .{&sq});
@@ -718,11 +714,11 @@ const Game = struct {
                 try out.add("\n");
             }
         } else if (eq(cmd, "PLAY")) {
-            for (0..args[0].len/2) |i| {
-                const p = squareIndex(args[0][2*i .. 2*i+2]);
+            for (0..args[0].len / 2) |i| {
+                const p = squareIndex(args[0][2 * i .. 2 * i + 2]);
                 if (self.reason(p)) |why| {
                     const sq = squareName(p);
-                    try out.line("ILLEGAL move {d} {s} {s}", .{i+1, &sq, why});
+                    try out.line("ILLEGAL move {d} {s} {s}", .{ i + 1, &sq, why });
                     break;
                 }
                 _ = try self.play(p, out, false, null);
@@ -738,9 +734,9 @@ const Game = struct {
                 var i = self.nr;
                 while (i > 0) {
                     i -= 1;
-                    self.redo[i+n] = self.redo[i];
+                    self.redo[i + n] = self.redo[i];
                 }
-                for (0..n) |j| self.redo[j] = self.history[start+j];
+                for (0..n) |j| self.redo[j] = self.history[start + j];
                 self.nh = start;
                 self.nr += n;
                 try self.status(out);
@@ -749,18 +745,18 @@ const Game = struct {
             if (n > self.nr) {
                 try out.line("ERROR cannot redo", .{});
             } else {
-                for (0..n) |j| self.history[self.nh+j] = self.redo[j];
+                for (0..n) |j| self.history[self.nh + j] = self.redo[j];
                 self.nh += n;
-                self.pos = self.redo[n-1].after;
+                self.pos = self.redo[n - 1].after;
                 self.nr -= n;
-                for (0..self.nr) |j| self.redo[j] = self.redo[n+j];
+                for (0..self.nr) |j| self.redo[j] = self.redo[n + j];
                 try self.status(out);
             }
         } else if (eq(cmd, "HISTORY")) {
             try out.line("history {d}", .{self.nh});
             for (self.history[0..self.nh], 0..) |m, i| {
                 const sq = squareName(m.p);
-                try out.line("{d} {c} {s} {d}{s}", .{i+1, m.side, &sq, m.flipped, if (m.passed) " pass" else ""});
+                try out.line("{d} {c} {s} {d}{s}", .{ i + 1, m.side, &sq, m.flipped, if (m.passed) " pass" else "" });
             }
         } else if (eq(cmd, "SHEET")) {
             try self.sheet(out);
@@ -771,25 +767,25 @@ const Game = struct {
             try out.line("OK", .{});
         } else if (eq(cmd, "EVAL")) {
             const values = evaluate(&self.pos.board, self.pos.side);
-            try out.line("eval {d} weights {d} mobility {d} {d}", .{values[0], values[1], values[2], values[3]});
+            try out.line("eval {d} weights {d} mobility {d} {d}", .{ values[0], values[1], values[2], values[3] });
         } else if (eq(cmd, "STABLE")) {
             const values = stable(&self.pos.board);
-            try out.line("stable B {d} W {d}", .{values[0], values[1]});
+            try out.line("stable B {d} W {d}", .{ values[0], values[1] });
         } else if (eq(cmd, "HINT")) {
             const choices = try self.solver.ranked(self.pos.board, self.pos.side, @intCast(n));
             for (choices.data[0..choices.len]) |choice| {
                 const sq = squareName(choice.p);
-                try out.line("{s} {d}", .{&sq, choice.value});
+                try out.line("{s} {d}", .{ &sq, choice.value });
             }
         } else if (eq(cmd, "PV")) {
             const value = try self.solver.search(self.pos.board, self.pos.side, @intCast(n));
             const pv = try self.solver.variation(self.pos.board, self.pos.side, @intCast(n), out.gpa);
-            try out.line("pv {d} {s}", .{value, pv.path});
+            try out.line("pv {d} {s}", .{ value, pv.path });
         } else if (eq(cmd, "AI")) {
             const choices = try self.solver.ranked(self.pos.board, self.pos.side, @intCast(n));
             _ = try self.play(choices.data[0].p, out, false, choices.data[0].value);
         } else if (eq(cmd, "ANALYZE")) {
-            var losses = [_]i32{0,0};
+            var losses = [_]i32{ 0, 0 };
             for (self.history[0..self.nh], 0..) |m, i| {
                 const choices = try self.solver.ranked(m.before.board, m.side, @intCast(n));
                 const best = choices.data[0];
@@ -800,9 +796,9 @@ const Game = struct {
                 losses[if (m.side == 'B') 0 else 1] += best.value - played;
                 const sq = squareName(m.p);
                 const winner = squareName(best.p);
-                try out.line("{d} {c} {s} {d} best {s} {d}", .{i+1, m.side, &sq, played, &winner, best.value});
+                try out.line("{d} {c} {s} {d} best {s} {d}", .{ i + 1, m.side, &sq, played, &winner, best.value });
             }
-            try out.line("loss B {d} W {d}", .{losses[0], losses[1]});
+            try out.line("loss B {d} W {d}", .{ losses[0], losses[1] });
         } else if (eq(cmd, "SOLVE")) {
             if (count(&self.pos.board, '.') >= 9) {
                 try out.line("ERROR too many empties", .{});
@@ -810,11 +806,11 @@ const Game = struct {
                 const choices = try self.solver.ranked(self.pos.board, self.pos.side, -1);
                 for (choices.data[0..choices.len]) |choice| {
                     const sq = squareName(choice.p);
-                    try out.line("{s} {d}", .{&sq, choice.value});
+                    try out.line("{s} {d}", .{ &sq, choice.value });
                 }
                 const pv = try self.solver.variation(self.pos.board, self.pos.side, -1, out.gpa);
                 try out.line("line {s}", .{pv.path});
-                try out.line("final B {d} W {d}", .{count(&pv.board, 'B'), count(&pv.board, 'W')});
+                try out.line("final B {d} W {d}", .{ count(&pv.board, 'B'), count(&pv.board, 'W') });
             }
         } else if (eq(cmd, "AUTOPLAY")) {
             try self.automatic(@intCast(n), @intCast(number(args[1]).?), null, out);
@@ -830,7 +826,7 @@ const Game = struct {
             for (moves.data[0..moves.len]) |p| {
                 const value = try self.solver.perft(place(&self.pos.board, self.pos.side, p), other(self.pos.side), @intCast(n - 1));
                 const sq = squareName(p);
-                try out.line("{s} {d}", .{&sq, value});
+                try out.line("{s} {d}", .{ &sq, value });
                 total += value;
             }
             try out.line("total {d}", .{total});

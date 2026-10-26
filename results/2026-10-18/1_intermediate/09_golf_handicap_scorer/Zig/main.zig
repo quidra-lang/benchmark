@@ -1,14 +1,20 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
-fn integer(s: []const u8) i64 { return std.fmt.parseInt(i64, s, 10) catch unreachable; }
+fn integer(s: []const u8) i64 {
+    return std.fmt.parseInt(i64, s, 10) catch unreachable;
+}
 fn sum(xs: []const i64) i64 {
     var result: i64 = 0;
     for (xs) |x| result += x;
     return result;
 }
-fn away(n: i64, d: i64) i64 { return if (n < 0) -@divTrunc(-n * 2 + d, 2 * d) else @divTrunc(n * 2 + d, 2 * d); }
-fn halfUp(n: i64, d: i64) i64 { return @divFloor(2 * n + d, 2 * d); }
+fn away(n: i64, d: i64) i64 {
+    return if (n < 0) -@divTrunc(-n * 2 + d, 2 * d) else @divTrunc(n * 2 + d, 2 * d);
+}
+fn halfUp(n: i64, d: i64) i64 {
+    return @divFloor(2 * n + d, 2 * d);
+}
 const Tee = struct {
     id: []const u8,
     rating: i64,
@@ -88,13 +94,16 @@ const Result = struct {
 fn allocation(h: i64, c: *Course) [18]i64 {
     var strokes: [18]i64 = undefined;
     for (c.si, 0..) |si, i| {
-        strokes[i] = if (h >= 0) @divTrunc(h, 18) + @as(i64, if (si <= @mod(h, 18)) 1 else 0)
-            else -@divTrunc(-h, 18) - @as(i64, if (si >= 19 - @mod(-h, 18)) 1 else 0);
+        strokes[i] = if (h >= 0) @divTrunc(h, 18) + @as(i64, if (si <= @mod(h, 18)) 1 else 0) else -@divTrunc(-h, 18) - @as(i64, if (si >= 19 - @mod(-h, 18)) 1 else 0);
     }
     return strokes;
 }
-fn handicap(index: i64, c: *Course, t: *Tee) i64 { return halfUp(index * t.slope + 113 * (t.rating - 10 * c.par), 1130); }
-fn points(net: ?i64, par: i64) i64 { return if (net) |n| @max(0, par + 2 - n) else 0; }
+fn handicap(index: i64, c: *Course, t: *Tee) i64 {
+    return halfUp(index * t.slope + 113 * (t.rating - 10 * c.par), 1130);
+}
+fn points(net: ?i64, par: i64) i64 {
+    return if (net) |n| @max(0, par + 2 - n) else 0;
+}
 fn rule(n: usize) struct { k: usize, adjustment: i64 } {
     if (n <= 5) return .{ .k = 1, .adjustment = if (n == 3) -20 else if (n == 4) -10 else 0 };
     if (n == 6) return .{ .k = 2, .adjustment = -10 };
@@ -266,10 +275,7 @@ const Golf = struct {
             rows.items[rows.len] = i;
             rows.len += 1;
             for (0..18) |h| {
-                values[i][h] = if (gross) r.rounds[i].scores[h]
-                    else if (std.mem.eql(u8, e.format, "STABLEFORD")) r.points[i][h]
-                    else if (std.mem.eql(u8, e.format, "PAR")) (if (r.nets[i][h] == null or r.nets[i][h].? > e.course.pars[h]) @as(i64, -1) else if (r.nets[i][h].? == e.course.pars[h]) @as(i64, 0) else @as(i64, 1))
-                    else r.nets[i][h].?;
+                values[i][h] = if (gross) r.rounds[i].scores[h] else if (std.mem.eql(u8, e.format, "STABLEFORD")) r.points[i][h] else if (std.mem.eql(u8, e.format, "PAR")) (if (r.nets[i][h] == null or r.nets[i][h].? > e.course.pars[h]) @as(i64, -1) else if (r.nets[i][h].? == e.course.pars[h]) @as(i64, 0) else @as(i64, 1)) else r.nets[i][h].?;
             }
         }
         for (rows.items[0..rows.len]) |i| keys[i] = countback(values[i]);

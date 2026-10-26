@@ -41,25 +41,40 @@ fn yes(value: bool) Text {
     return if (value) "yes" else "no";
 }
 const Edge = struct {
-    from: usize, to: usize, capacity: Int, cost: Int = 0, lower: Int = 0, flow: Int = 0,
+    from: usize,
+    to: usize,
+    capacity: Int,
+    cost: Int = 0,
+    lower: Int = 0,
+    flow: Int = 0,
 };
 const Augmentation = struct {
-    path: []const i32, amount: Int, stage: usize = 0, unit: Int = 0,
+    path: []const i32,
+    amount: Int,
+    stage: usize = 0,
+    unit: Int = 0,
 };
 const Piece = struct {
-    path: []const i32, amount: Int, cycle: bool,
+    path: []const i32,
+    amount: Int,
+    cycle: bool,
 };
 const Search = struct {
-    levels: []?usize, parents: []i32,
+    levels: []?usize,
+    parents: []i32,
 };
 const Maximum = struct {
-    paths: []Augmentation, phases: usize,
+    paths: []Augmentation,
+    phases: usize,
 };
 const Cheapest = struct {
-    paths: []Augmentation, total: Int, cost: Int,
+    paths: []Augmentation,
+    total: Int,
+    cost: Int,
 };
 const Balances = struct {
-    incoming: []Int, outgoing: []Int,
+    incoming: []Int,
+    outgoing: []Int,
 };
 const Graph = struct {
     names: std.ArrayList(Text) = .empty,
@@ -303,11 +318,17 @@ const Graph = struct {
         while (true) {
             var first: ?usize = null;
             for (remaining, 0..) |flow, i| {
-                if (flow > 0) { first = i; break; }
+                if (flow > 0) {
+                    first = i;
+                    break;
+                }
             }
             var source = self.edges.items[first orelse return result.items].from;
             for (balance, 0..) |amount, vertex| {
-                if (amount > 0) { source = vertex; break; }
+                if (amount > 0) {
+                    source = vertex;
+                    break;
+                }
             }
             var vertices: std.ArrayList(usize) = .empty;
             var route: std.ArrayList(i32) = .empty;
@@ -316,7 +337,10 @@ const Graph = struct {
                 const vertex = vertices.items[vertices.items.len - 1];
                 var chosen: usize = 0;
                 for (self.edges.items, 0..) |edge, i| {
-                    if (edge.from == vertex and remaining[i] > 0) { chosen = i; break; }
+                    if (edge.from == vertex and remaining[i] > 0) {
+                        chosen = i;
+                        break;
+                    }
                 }
                 try route.append(gpa, @intCast(chosen + 1));
                 const target = self.edges.items[chosen].to;
@@ -345,7 +369,9 @@ const Graph = struct {
 
 const MatchPair = struct { left: usize, right: usize };
 const Matching = struct {
-    pairs: []const MatchPair, mates_a: []?usize, mates_b: []?usize,
+    pairs: []const MatchPair,
+    mates_a: []?usize,
+    mates_b: []?usize,
     fn attempt(self: *Matching, a: usize, examined: []bool) bool {
         for (self.pairs) |pair| {
             const b = pair.right;
@@ -362,8 +388,15 @@ const Matching = struct {
     }
 };
 const Assignment = struct {
-    gpa: Allocator, words: []const Text, size: usize, maximize: bool,
-    mapping: []usize, used: []bool, best: ?[]usize = null, optimum: Int = 0, count: usize = 0,
+    gpa: Allocator,
+    words: []const Text,
+    size: usize,
+    maximize: bool,
+    mapping: []usize,
+    used: []bool,
+    best: ?[]usize = null,
+    optimum: Int = 0,
+    count: usize = 0,
     fn visit(self: *Assignment, row: usize, total: Int) Allocator.Error!void {
         if (row == self.size) {
             if (self.best == null or (if (self.maximize) total > self.optimum else total < self.optimum)) {
@@ -387,8 +420,13 @@ const Assignment = struct {
 };
 const Owner = enum { none, flow, circulation };
 const Network = struct {
-    gpa: Allocator, out: *Builder, graph: Graph = .{}, demands: std.ArrayList(Int) = .empty,
-    owner: Owner = .none, source: usize = 0, target: usize = 0,
+    gpa: Allocator,
+    out: *Builder,
+    graph: Graph = .{},
+    demands: std.ArrayList(Int) = .empty,
+    owner: Owner = .none,
+    source: usize = 0,
+    target: usize = 0,
     fn vertex(self: *Network, name: Text) Error!usize {
         for (self.graph.names.items, 0..) |candidate, i| if (equal(candidate, name)) return i;
         return bad(self.gpa, "UNKNOWN NODE {s}", .{name});
@@ -409,8 +447,7 @@ const Network = struct {
         return self.graph.value(source);
     }
     fn flowList(self: *Network) Allocator.Error!void {
-        for (self.graph.edges.items, 0..) |edge, i| try self.out.line("FLOW {d} {s} {s} {d}/{d}", .{
-            i + 1, self.graph.names.items[edge.from], self.graph.names.items[edge.to], edge.flow, edge.capacity });
+        for (self.graph.edges.items, 0..) |edge, i| try self.out.line("FLOW {d} {s} {s} {d}/{d}", .{ i + 1, self.graph.names.items[edge.from], self.graph.names.items[edge.to], edge.flow, edge.capacity });
     }
     fn matching(self: *Network, scratch: Allocator, w: []const Text) Error!void {
         const left = try split(scratch, w[1], ',');
@@ -430,9 +467,15 @@ const Network = struct {
                 const fields = try split(scratch, text, '-');
                 var a: ?usize = null;
                 var b: ?usize = null;
-                for (left, 0..) |name, i| if (equal(name, fields[0])) { a = i; break; };
+                for (left, 0..) |name, i| if (equal(name, fields[0])) {
+                    a = i;
+                    break;
+                };
                 if (a == null) return bad(self.gpa, "UNKNOWN VERTEX {s}", .{fields[0]});
-                for (right, 0..) |name, i| if (equal(name, fields[1])) { b = i; break; };
+                for (right, 0..) |name, i| if (equal(name, fields[1])) {
+                    b = i;
+                    break;
+                };
                 if (b == null) return bad(self.gpa, "UNKNOWN VERTEX {s}", .{fields[1]});
                 for (pairs.items) |pair| {
                     if (pair.left == a.? and pair.right == b.?) return bad(self.gpa, "DUPLICATE PAIR {s}", .{text});
@@ -455,7 +498,10 @@ const Network = struct {
         var queue: std.ArrayList(usize) = .empty;
         var size: usize = 0;
         for (match.mates_a, 0..) |mate, a| {
-            if (mate == null) { marked_a[a] = true; try queue.append(scratch, a); } else size += 1;
+            if (mate == null) {
+                marked_a[a] = true;
+                try queue.append(scratch, a);
+            } else size += 1;
         }
         var at: usize = 0;
         while (at < queue.items.len) : (at += 1) {
@@ -465,7 +511,10 @@ const Network = struct {
                 if (pair.left == a and (match.mates_a[a] == null or b != match.mates_a[a].?) and !marked_b[b]) {
                     marked_b[b] = true;
                     if (match.mates_b[b]) |mate| {
-                        if (!marked_a[mate]) { marked_a[mate] = true; try queue.append(scratch, mate); }
+                        if (!marked_a[mate]) {
+                            marked_a[mate] = true;
+                            try queue.append(scratch, mate);
+                        }
                     }
                 }
             }
@@ -480,11 +529,19 @@ const Network = struct {
         try self.commaNames(right, match.mates_b, null);
         try self.out.add("\n");
         var cover_count: usize = 0;
-        for (marked_a) |marked| if (!marked) { cover_count += 1; };
-        for (marked_b) |marked| if (marked) { cover_count += 1; };
+        for (marked_a) |marked| if (!marked) {
+            cover_count += 1;
+        };
+        for (marked_b) |marked| if (marked) {
+            cover_count += 1;
+        };
         try self.out.print("COVER size={d}", .{cover_count});
-        for (left, 0..) |name, a| if (!marked_a[a]) { try self.out.print(" {s}", .{name}); };
-        for (right, 0..) |name, b| if (marked_b[b]) { try self.out.print(" {s}", .{name}); };
+        for (left, 0..) |name, a| if (!marked_a[a]) {
+            try self.out.print(" {s}", .{name});
+        };
+        for (right, 0..) |name, b| if (marked_b[b]) {
+            try self.out.print(" {s}", .{name});
+        };
         try self.out.add("\n");
         if (queue.items.len > 0) {
             try self.out.add("HALL ");
@@ -510,8 +567,7 @@ const Network = struct {
         const size = index(w[2]);
         if (size < 1 or size > 8) return bad(self.gpa, "BAD SIZE", .{});
         if (w.len - 3 != size * size) return bad(self.gpa, "BAD LENGTH", .{});
-        var search: Assignment = .{ .gpa = scratch, .words = w, .size = size, .maximize = equal(w[1], "MAX"),
-            .mapping = try scratch.alloc(usize, size), .used = try scratch.alloc(bool, size) };
+        var search: Assignment = .{ .gpa = scratch, .words = w, .size = size, .maximize = equal(w[1], "MAX"), .mapping = try scratch.alloc(usize, size), .used = try scratch.alloc(bool, size) };
         @memset(search.used, false);
         try search.visit(0, 0);
         const best = search.best orelse {
@@ -587,16 +643,14 @@ const Network = struct {
             switch (self.owner) {
                 .none => try self.out.add("STATE none\n"),
                 .circulation => try self.out.line("STATE circulation cost={d}", .{g.totalCost()}),
-                .flow => try self.out.line("STATE flow {s} {s} value={d} cost={d}", .{
-                    g.names.items[self.source], g.names.items[self.target], g.value(self.source), g.totalCost() }),
+                .flow => try self.out.line("STATE flow {s} {s} value={d} cost={d}", .{ g.names.items[self.source], g.names.items[self.target], g.value(self.source), g.totalCost() }),
             }
             const balance = try g.balances(scratch);
-            for (g.names.items, 0..) |name, i| try self.out.line("NODE {s} demand={d} out={d} in={d}", .{
-                name, self.demands.items[i], balance.outgoing[i], balance.incoming[i] });
-            for (g.edges.items, 0..) |edge, i| try self.out.line("EDGE {d} {s} {s} cap={d} cost={d} low={d} flow={d}", .{
-                i + 1, g.names.items[edge.from], g.names.items[edge.to], edge.capacity, edge.cost, edge.lower, edge.flow });
+            for (g.names.items, 0..) |name, i| try self.out.line("NODE {s} demand={d} out={d} in={d}", .{ name, self.demands.items[i], balance.outgoing[i], balance.incoming[i] });
+            for (g.edges.items, 0..) |edge, i| try self.out.line("EDGE {d} {s} {s} cap={d} cost={d} low={d} flow={d}", .{ i + 1, g.names.items[edge.from], g.names.items[edge.to], edge.capacity, edge.cost, edge.lower, edge.flow });
         } else if (equal(cmd, "AUGMENT") or equal(cmd, "MAXFLOW") or equal(cmd, "DINIC") or equal(cmd, "SCALING") or
-            equal(cmd, "MINCUT") or equal(cmd, "SENSITIVITY") or equal(cmd, "MINCOST") or equal(cmd, "DISJOINT")) {
+            equal(cmd, "MINCUT") or equal(cmd, "SENSITIVITY") or equal(cmd, "MINCOST") or equal(cmd, "DISJOINT"))
+        {
             const ends = try self.endpointsCheck(w[1], w[2]);
             const source = ends.source;
             const target = ends.target;
@@ -626,8 +680,7 @@ const Network = struct {
                 }
                 try self.out.line("SENSITIVITY {s} {s} value={d} up={d} down={d}", .{ w[1], w[2], value, ups, downs });
                 for (g.edges.items, 0..) |edge, i| {
-                    if (up[i] or down[i]) try self.out.line("CRITICAL {d} {s} {s} up={s} down={s}", .{
-                        i + 1, g.names.items[edge.from], g.names.items[edge.to], yes(up[i]), yes(down[i]) });
+                    if (up[i] or down[i]) try self.out.line("CRITICAL {d} {s} {s} up={s} down={s}", .{ i + 1, g.names.items[edge.from], g.names.items[edge.to], yes(up[i]), yes(down[i]) });
                 }
             } else if (equal(cmd, "MINCOST")) {
                 if (try g.negativeCycle(scratch, false)) return bad(self.gpa, "NEGATIVE CYCLE", .{});
@@ -643,8 +696,7 @@ const Network = struct {
                 self.source = source;
                 self.target = target;
                 try self.out.line("MINCOST {s} {s} k={s} flow={d} cost={d}", .{ w[1], w[2], w[3], found.total, found.cost });
-                for (found.paths, 0..) |pushed, i| try self.out.line("AUG {d} amount={d} cost={d} {s}", .{
-                    i + 1, pushed.amount, pushed.unit, try working.notation(scratch, pushed.path, null) });
+                for (found.paths, 0..) |pushed, i| try self.out.line("AUG {d} amount={d} cost={d} {s}", .{ i + 1, pushed.amount, pushed.unit, try working.notation(scratch, pushed.path, null) });
                 try self.flowList();
             } else if (equal(cmd, "DISJOINT")) {
                 var working: Graph = .{};
@@ -659,8 +711,7 @@ const Network = struct {
                         try working.names.append(scratch, name);
                     }
                 }
-                for (g.edges.items) |edge| try working.edges.append(scratch, .{
-                    .from = exits[edge.from], .to = entrances[edge.to], .capacity = if (edge.capacity > 0) 1 else 0 });
+                for (g.edges.items) |edge| try working.edges.append(scratch, .{ .from = exits[edge.from], .to = entrances[edge.to], .capacity = if (edge.capacity > 0) 1 else 0 });
                 if (equal(w[3], "VERTEX")) {
                     for (0..g.names.items.len) |i| {
                         if (i != source and i != target) try working.edges.append(scratch, .{ .from = entrances[i], .to = exits[i], .capacity = 1 });
@@ -669,7 +720,9 @@ const Network = struct {
                 _ = try working.maximum(scratch, entrances[source], entrances[target], "MAXFLOW");
                 const parts = try working.decompose(scratch);
                 var count: usize = 0;
-                for (parts) |part| if (!part.cycle) { count += 1; };
+                for (parts) |part| if (!part.cycle) {
+                    count += 1;
+                };
                 try self.out.line("DISJOINT {s} {s} {s} count={d}", .{ w[1], w[2], w[3], count });
                 count = 0;
                 for (parts) |part| {
@@ -682,8 +735,7 @@ const Network = struct {
                 const initial = self.start(source, target);
                 if (equal(cmd, "AUGMENT")) {
                     if (try g.augment(scratch, source, target, 1)) |pushed| {
-                        try self.out.line("AUGMENT {s} {s} value={d} amount={d} {s}", .{
-                            w[1], w[2], g.value(source), pushed.amount, try g.notation(scratch, pushed.path, null) });
+                        try self.out.line("AUGMENT {s} {s} value={d} amount={d} {s}", .{ w[1], w[2], g.value(source), pushed.amount, try g.notation(scratch, pushed.path, null) });
                     } else try self.out.line("AUGMENT {s} {s} value={d} none", .{ w[1], w[2], g.value(source) });
                 } else {
                     const found = try g.maximum(scratch, source, target, cmd);
@@ -695,13 +747,16 @@ const Network = struct {
                         }
                         try self.out.line("MINCUT {s} {s} value={d} edges={d}", .{ w[1], w[2], g.value(source), count });
                         try self.out.add("SOURCE");
-                        for (g.names.items, 0..) |name, i| if (reached.levels[i] != null) { try self.out.print(" {s}", .{name}); };
+                        for (g.names.items, 0..) |name, i| if (reached.levels[i] != null) {
+                            try self.out.print(" {s}", .{name});
+                        };
                         try self.out.add("\nSINK");
-                        for (g.names.items, 0..) |name, i| if (reached.levels[i] == null) { try self.out.print(" {s}", .{name}); };
+                        for (g.names.items, 0..) |name, i| if (reached.levels[i] == null) {
+                            try self.out.print(" {s}", .{name});
+                        };
                         try self.out.add("\n");
                         for (g.edges.items, 0..) |edge, i| {
-                            if (reached.levels[edge.from] != null and reached.levels[edge.to] == null) try self.out.line("CUT {d} {s} {s} {d}", .{
-                                i + 1, g.names.items[edge.from], g.names.items[edge.to], edge.capacity });
+                            if (reached.levels[edge.from] != null and reached.levels[edge.to] == null) try self.out.line("CUT {d} {s} {s} {d}", .{ i + 1, g.names.items[edge.from], g.names.items[edge.to], edge.capacity });
                         }
                     } else {
                         try self.out.print("{s} {s} {s} value={d} start={d}", .{ cmd, w[1], w[2], g.value(source), initial });
@@ -729,15 +784,13 @@ const Network = struct {
             cycles = 0;
             for (parts) |part| {
                 if (part.cycle) cycles += 1 else paths += 1;
-                try self.out.line("{s} {d} amount={d} {s}", .{ if (part.cycle) @as(Text, "CYCLE") else "PATH",
-                    if (part.cycle) cycles else paths, part.amount, try self.graph.notation(scratch, part.path, null) });
+                try self.out.line("{s} {d} amount={d} {s}", .{ if (part.cycle) @as(Text, "CYCLE") else "PATH", if (part.cycle) cycles else paths, part.amount, try self.graph.notation(scratch, part.path, null) });
             }
         } else if (equal(cmd, "VERIFY")) {
             var violations: std.ArrayList(Text) = .empty;
             const g = &self.graph;
             for (g.edges.items, 0..) |edge, i| {
-                if (edge.flow < edge.lower) try violations.append(scratch, try std.fmt.allocPrint(scratch,
-                    "LOW {d} flow={d} low={d}", .{ i + 1, edge.flow, edge.lower }));
+                if (edge.flow < edge.lower) try violations.append(scratch, try std.fmt.allocPrint(scratch, "LOW {d} flow={d} low={d}", .{ i + 1, edge.flow, edge.lower }));
             }
             const balance = try g.balances(scratch);
             for (g.names.items, 0..) |name, i| {
@@ -790,7 +843,9 @@ const Network = struct {
                 try self.out.line("CIRCULATION infeasible required={d} achieved={d}", .{ required, achieved });
                 try self.out.add("CUT");
                 const reached = try working.bfs(scratch, source, 1);
-                for (g.names.items, 0..) |name, i| if (reached.levels[i] != null) { try self.out.print(" {s}", .{name}); };
+                for (g.names.items, 0..) |name, i| if (reached.levels[i] != null) {
+                    try self.out.print(" {s}", .{name});
+                };
                 try self.out.add("\n");
             } else {
                 for (g.edges.items, 0..) |*edge, i| edge.flow = edge.lower + working.edges.items[i].flow;

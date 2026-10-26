@@ -1,50 +1,22 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Text = []const u8;
-const Error = Allocator.Error || error{Invalid };
+const Error = Allocator.Error || error{Invalid};
 const faces = "URFDLB";
 const colors = "WRGYOB";
 const letters = "RLMrlxUDEudyFBSfbz";
 const State = [54]u8;
 const Permutation = [54]u8;
 const Vector = [3]i8;
-const Move = struct {
-    letter: u8,
-    amount: u8
-};
-const Place = struct {
-    cubie: Vector,
-    normal: Vector
-};
-const Turn = struct {
-    axis: usize,
-    count: usize,
-    layers: []const i8
-};
-const Group = struct {
-    names: []const Text,
-    stickers: []const []const usize
-};
-const Piece = struct {
-    id: ?usize = null,
-    orientation: usize = 0
-};
-const Pieces = struct {
-    count: usize,
-    values: [12]Piece = undefined
-};
-const Rotation = struct {
-    moves: []const Move,
-    effect: Permutation
-};
-const Normalized = struct {
-    cube: State,
-    rotation: usize
-};
-const Saved = struct {
-    cube: State,
-    history: []const Move
-};
+const Move = struct { letter: u8, amount: u8 };
+const Place = struct { cubie: Vector, normal: Vector };
+const Turn = struct { axis: usize, count: usize, layers: []const i8 };
+const Group = struct { names: []const Text, stickers: []const []const usize };
+const Piece = struct { id: ?usize = null, orientation: usize = 0 };
+const Pieces = struct { count: usize, values: [12]Piece = undefined };
+const Rotation = struct { moves: []const Move, effect: Permutation };
+const Normalized = struct { cube: State, rotation: usize };
+const Saved = struct { cube: State, history: []const Move };
 const Macros = std.StringHashMapUnmanaged([]const Move);
 const corner_group: Group = .{
     .names = &.{ "URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB" },
@@ -56,7 +28,7 @@ const edge_group: Group = .{
 };
 const center_group: Group = .{
     .names = &.{ "U", "R", "F", "D", "L", "B" },
-    .stickers = &.{ &.{4 }, &.{13 }, &.{22 }, &.{31 }, &.{40 }, &.{49 } },
+    .stickers = &.{ &.{4}, &.{13}, &.{22}, &.{31}, &.{40}, &.{49} },
 };
 var reason: Text = "";
 fn equal(a: Text, b: Text) bool {
@@ -138,15 +110,24 @@ fn quarter(vector: Vector, axis: usize) Vector {
 }
 fn turn(letter: u8) Turn {
     return switch (letter) {
-        'R' => .{ .axis = 0, .count = 1, .layers = &.{1 } }, 'L' => .{ .axis = 0, .count = 3, .layers = &.{-1 } },
-        'M' => .{ .axis = 0, .count = 3, .layers = &.{0 } }, 'r' => .{ .axis = 0, .count = 1, .layers = &.{ 0, 1 } },
-        'l' => .{ .axis = 0, .count = 3, .layers = &.{ -1, 0 } }, 'x' => .{ .axis = 0, .count = 1, .layers = &.{ -1, 0, 1 } },
-        'U' => .{ .axis = 1, .count = 1, .layers = &.{1 } }, 'D' => .{ .axis = 1, .count = 3, .layers = &.{-1 } },
-        'E' => .{ .axis = 1, .count = 3, .layers = &.{0 } }, 'u' => .{ .axis = 1, .count = 1, .layers = &.{ 0, 1 } },
-        'd' => .{ .axis = 1, .count = 3, .layers = &.{ -1, 0 } }, 'y' => .{ .axis = 1, .count = 1, .layers = &.{ -1, 0, 1 } },
-        'F' => .{ .axis = 2, .count = 1, .layers = &.{1 } }, 'B' => .{ .axis = 2, .count = 3, .layers = &.{-1 } },
-        'S' => .{ .axis = 2, .count = 1, .layers = &.{0 } }, 'f' => .{ .axis = 2, .count = 1, .layers = &.{ 0, 1 } },
-        'b' => .{ .axis = 2, .count = 3, .layers = &.{ -1, 0 } }, 'z' => .{ .axis = 2, .count = 1, .layers = &.{ -1, 0, 1 } },
+        'R' => .{ .axis = 0, .count = 1, .layers = &.{1} },
+        'L' => .{ .axis = 0, .count = 3, .layers = &.{-1} },
+        'M' => .{ .axis = 0, .count = 3, .layers = &.{0} },
+        'r' => .{ .axis = 0, .count = 1, .layers = &.{ 0, 1 } },
+        'l' => .{ .axis = 0, .count = 3, .layers = &.{ -1, 0 } },
+        'x' => .{ .axis = 0, .count = 1, .layers = &.{ -1, 0, 1 } },
+        'U' => .{ .axis = 1, .count = 1, .layers = &.{1} },
+        'D' => .{ .axis = 1, .count = 3, .layers = &.{-1} },
+        'E' => .{ .axis = 1, .count = 3, .layers = &.{0} },
+        'u' => .{ .axis = 1, .count = 1, .layers = &.{ 0, 1 } },
+        'd' => .{ .axis = 1, .count = 3, .layers = &.{ -1, 0 } },
+        'y' => .{ .axis = 1, .count = 1, .layers = &.{ -1, 0, 1 } },
+        'F' => .{ .axis = 2, .count = 1, .layers = &.{1} },
+        'B' => .{ .axis = 2, .count = 3, .layers = &.{-1} },
+        'S' => .{ .axis = 2, .count = 1, .layers = &.{0} },
+        'f' => .{ .axis = 2, .count = 1, .layers = &.{ 0, 1 } },
+        'b' => .{ .axis = 2, .count = 3, .layers = &.{ -1, 0 } },
+        'z' => .{ .axis = 2, .count = 1, .layers = &.{ -1, 0, 1 } },
         else => unreachable,
     };
 }
@@ -393,10 +374,10 @@ const Model = struct {
     }
     fn check(self: *const Model, word: Text) Error!?Text {
         const gpa = self.gpa;
-        if (word.len != 54) return try std.fmt.allocPrint(gpa, "length {d}", .{word.len });
+        if (word.len != 54) return try std.fmt.allocPrint(gpa, "length {d}", .{word.len});
         var counts: [6]usize = @splat(0);
         for (word, 0..) |color, i| {
-            const at = std.mem.findScalar(u8, colors, color) orelse return try std.fmt.allocPrint(gpa, "char {d}", .{i + 1 });
+            const at = std.mem.findScalar(u8, colors, color) orelse return try std.fmt.allocPrint(gpa, "char {d}", .{i + 1});
             counts[at] += 1;
         }
         for (counts, 0..) |count, i| if (count != 9) return try std.fmt.allocPrint(gpa, "count {c} {d}", .{ colors[i], count });
@@ -405,8 +386,8 @@ const Model = struct {
         const normalized = self.normalize(cube) orelse return "centers";
         var c = identify(cube, corner_group);
         var e = identify(cube, edge_group);
-        for (c.values[0..c.count], 0..) |piece, i| if (piece.id == null) return try std.fmt.allocPrint(gpa, "corner {s}", .{corner_group.names[i] });
-        for (e.values[0..e.count], 0..) |piece, i| if (piece.id == null) return try std.fmt.allocPrint(gpa, "edge {s}", .{edge_group.names[i] });
+        for (c.values[0..c.count], 0..) |piece, i| if (piece.id == null) return try std.fmt.allocPrint(gpa, "corner {s}", .{corner_group.names[i]});
+        for (e.values[0..e.count], 0..) |piece, i| if (piece.id == null) return try std.fmt.allocPrint(gpa, "edge {s}", .{edge_group.names[i]});
         for ([_]Group{ corner_group, edge_group }, [_]Pieces{ c, e }) |group, pieces| {
             for (group.names, 0..) |name, id| {
                 var found = false;
@@ -414,7 +395,7 @@ const Model = struct {
                     found = true;
                     break;
                 };
-                if (!found) return try std.fmt.allocPrint(gpa, "missing {s}", .{name });
+                if (!found) return try std.fmt.allocPrint(gpa, "missing {s}", .{name});
             }
         }
         c = identify(normalized.cube, corner_group);
@@ -433,7 +414,16 @@ const Model = struct {
         var rotation = identity();
         for (moves) |move| {
             const replacement: ?Text = switch (move.letter) {
-                'M' => "R L' x'", 'E' => "U D' y'", 'S' => "F' B z", 'r' => "L x", 'l' => "R x'", 'u' => "D y", 'd' => "U y'", 'f' => "B z", 'b' => "F z'", else => null,
+                'M' => "R L' x'",
+                'E' => "U D' y'",
+                'S' => "F' B z",
+                'r' => "L x",
+                'l' => "R x'",
+                'u' => "D y",
+                'd' => "U y'",
+                'f' => "B z",
+                'b' => "F z'",
+                else => null,
             };
             var expanded: []const Move = undefined;
             if (replacement) |text| {
@@ -486,7 +476,7 @@ const Parser = struct {
         while (self.peek() == ' ') self.pos += 1;
     }
     fn syntax(self: *const Parser) Error {
-        return bad(self.gpa, "syntax at {d}", .{@min(self.pos + 1, self.line.len + 1) });
+        return bad(self.gpa, "syntax at {d}", .{@min(self.pos + 1, self.line.len + 1)});
     }
     fn power(self: *Parser, moves: []const Move) Error![]Move {
         var count: usize = 1;
@@ -553,7 +543,7 @@ const Parser = struct {
                 while (self.peek() >= 'a' and self.peek() <= 'z') self.pos += 1;
                 const name = self.line[start..self.pos];
                 if (name.len == 0 or self.peek() != '}') return self.syntax();
-                const nested = self.macros.get(name) orelse return bad(self.gpa, "undefined {s}", .{name });
+                const nested = self.macros.get(name) orelse return bad(self.gpa, "undefined {s}", .{name});
                 self.pos += 1;
                 part = try self.power(nested);
             } else return result.items;
@@ -604,14 +594,14 @@ const Simulator = struct {
         const arguments = if (at) |i| line[i + 1 ..] else "";
         var found: ?Command = null;
         for (command_names, 0..) |candidate, i| if (equal(candidate, name)) {
-            found = @enumFromInt(i);
+            found = @fromBackingInt(@intCast(i));
             break;
         };
-        const cmd = found orelse return bad(gpa, "unknown command {s}", .{name });
-        const no_arguments = @intFromEnum(cmd) <= @intFromEnum(Command.macros);
-        const word_command = @intFromEnum(cmd) >= @intFromEnum(Command.check) and @intFromEnum(cmd) <= @intFromEnum(Command.scramble);
-        const sequence_command = @intFromEnum(cmd) >= @intFromEnum(Command.apply) and @intFromEnum(cmd) <= @intFromEnum(Command.until);
-        const head_command = @intFromEnum(cmd) >= @intFromEnum(Command.define);
+        const cmd = found orelse return bad(gpa, "unknown command {s}", .{name});
+        const no_arguments = @backingInt(cmd) <= @backingInt(Command.macros);
+        const word_command = @backingInt(cmd) >= @backingInt(Command.check) and @backingInt(cmd) <= @backingInt(Command.scramble);
+        const sequence_command = @backingInt(cmd) >= @backingInt(Command.apply) and @backingInt(cmd) <= @backingInt(Command.until);
+        const head_command = @backingInt(cmd) >= @backingInt(Command.define);
         const words: []const Text = if (arguments.len == 0) &.{} else try split(gpa, arguments, ' ');
         const count: usize = if (cmd == .scramble) 2 else 1;
         var invalid = (no_arguments and at != null) or (word_command and words.len != count) or (head_command and at == null);
@@ -629,8 +619,10 @@ const Simulator = struct {
             head = words[0];
             seq_start = name.len + head.len + 2;
             invalid = switch (cmd) {
-                .define => !nameWord(head), .mirror => !contains(&.{ "LR", "UD", "FB" }, head),
-                .rotate => !contains(&.{ "x", "x2", "x'", "y", "y2", "y'", "z", "z2", "z'" }, head), else => unreachable,
+                .define => !nameWord(head),
+                .mirror => !contains(&.{ "LR", "UD", "FB" }, head),
+                .rotate => !contains(&.{ "x", "x2", "x'", "y", "y2", "y'", "z", "z2", "z'" }, head),
+                else => unreachable,
             };
         }
         if (invalid) return bad(gpa, "bad arguments", .{});
@@ -640,7 +632,7 @@ const Simulator = struct {
             moves = try parser.whole();
         }
         if (((cmd == .undo or cmd == .redo) and number(words[0]) < 1) or (cmd == .search and number(words[0]) > 4) or (cmd == .scramble and (number(words[0]) < 1 or number(words[0]) > 50 or number(words[1]) < 1 or number(words[1]) > 2147483646))) return bad(gpa, "bad value", .{});
-        if (cmd == .where and !contains(corner_group.names, words[0]) and !contains(edge_group.names, words[0])) return bad(gpa, "unknown piece {s}", .{words[0] });
+        if (cmd == .where and !contains(corner_group.names, words[0]) and !contains(edge_group.names, words[0])) return bad(gpa, "unknown piece {s}", .{words[0]});
         switch (cmd) {
             .reset => {
                 self.cube = self.model.solved;
@@ -668,24 +660,24 @@ const Simulator = struct {
                             try cells.byte(self.cube[face * 9 + (row - 3) * 3 + column]);
                         };
                     }
-                    try self.out.line("{s}", .{cells.result() });
+                    try self.out.line("{s}", .{cells.result()});
                 }
             },
-            .state => try self.out.line("state {s}", .{&self.cube }),
+            .state => try self.out.line("state {s}", .{&self.cube}),
             .issolved => {
                 const n = misplaced(self.cube);
-                if (n == 0) try self.out.add("solved\n") else try self.out.line("unsolved {d}", .{n });
+                if (n == 0) try self.out.add("solved\n") else try self.out.line("unsolved {d}", .{n});
             },
-            .history => try self.out.line("history {s}", .{try sequenceText(gpa, self.history.items) }),
-            .solution => try self.out.line("solution {s}", .{try sequenceText(gpa, try simplify(gpa, try inverse(gpa, self.history.items))) }),
+            .history => try self.out.line("history {s}", .{try sequenceText(gpa, self.history.items)}),
+            .solution => try self.out.line("solution {s}", .{try sequenceText(gpa, try simplify(gpa, try inverse(gpa, self.history.items)))}),
             .analyze, .stage, .where => {
                 const normalized = self.model.normalize(self.cube).?;
                 const cube = normalized.cube;
                 if (cmd == .analyze) {
                     const rotation = self.model.rotations[normalized.rotation].moves;
-                    try self.out.line("rotation {s}", .{if (rotation.len == 0) "none" else try movesText(gpa, rotation) });
-                    try self.out.line("corners {s}", .{try cycles(gpa, cube, corner_group) });
-                    try self.out.line("edges {s}", .{try cycles(gpa, cube, edge_group) });
+                    try self.out.line("rotation {s}", .{if (rotation.len == 0) "none" else try movesText(gpa, rotation)});
+                    try self.out.line("corners {s}", .{try cycles(gpa, cube, corner_group)});
+                    try self.out.line("edges {s}", .{try cycles(gpa, cube, edge_group)});
                 } else if (cmd == .where) {
                     const group = if (contains(corner_group.names, words[0])) corner_group else edge_group;
                     const pieces = identify(cube, group);
@@ -717,15 +709,15 @@ const Simulator = struct {
                 var iterator = self.macros.keyIterator();
                 while (iterator.next()) |name_ptr| try names.append(gpa, name_ptr.*);
                 std.mem.sort(Text, names.items, {}, textLess);
-                try self.out.line("macros {d}", .{names.items.len });
+                try self.out.line("macros {d}", .{names.items.len});
                 for (names.items) |macro_name| try self.out.line("macro {s} {s}", .{ macro_name, try sequenceText(gpa, self.macros.get(macro_name).?) });
             },
             .check, .load => {
                 const invalidity = try self.model.check(words[0]);
                 if (cmd == .check) {
-                    if (invalidity) |text| try self.out.line("invalid {s}", .{text }) else try self.out.add("valid\n");
+                    if (invalidity) |text| try self.out.line("invalid {s}", .{text}) else try self.out.add("valid\n");
                 } else {
-                    if (invalidity) |text| return bad(gpa, "invalid {s}", .{text });
+                    if (invalidity) |text| return bad(gpa, "invalid {s}", .{text});
                     @memcpy(&self.cube, words[0]);
                     self.history = .empty;
                     self.redo = .empty;
@@ -734,7 +726,7 @@ const Simulator = struct {
             },
             .undo, .redo => {
                 const source = if (cmd == .undo) &self.history else &self.redo;
-                if (source.items.len == 0) return bad(gpa, "nothing to {s}", .{if (cmd == .undo) "undo" else "redo" });
+                if (source.items.len == 0) return bad(gpa, "nothing to {s}", .{if (cmd == .undo) "undo" else "redo"});
                 const n: usize = @intCast(@min(number(words[0]), source.items.len));
                 for (0..n) |_| {
                     const move = source.items[source.items.len - 1];
@@ -753,7 +745,7 @@ const Simulator = struct {
                 const limit: usize = @intCast(number(words[0]));
                 for (0..limit + 1) |depth| {
                     if (try self.model.search(self.cube, depth, 0)) |solution| {
-                        try self.out.line("found {s}", .{try sequenceText(gpa, solution) });
+                        try self.out.line("found {s}", .{try sequenceText(gpa, solution)});
                         return;
                     }
                 }
@@ -761,15 +753,15 @@ const Simulator = struct {
             },
             .save => {
                 try self.saves.put(gpa, words[0], .{ .cube = self.cube, .history = try gpa.dupe(Move, self.history.items) });
-                try self.out.line("saved {s}", .{words[0] });
+                try self.out.line("saved {s}", .{words[0]});
             },
             .restore => {
-                const save = self.saves.get(words[0]) orelse return bad(gpa, "no save {s}", .{words[0] });
+                const save = self.saves.get(words[0]) orelse return bad(gpa, "no save {s}", .{words[0]});
                 self.cube = save.cube;
                 self.history = .empty;
                 try self.history.appendSlice(gpa, save.history);
                 self.redo = .empty;
-                try self.out.line("restored {s}", .{words[0] });
+                try self.out.line("restored {s}", .{words[0]});
             },
             .scramble => {
                 var scramble: std.ArrayList(Move) = .empty;
@@ -789,14 +781,14 @@ const Simulator = struct {
                     try scramble.append(gpa, .{ .letter = face, .amount = amounts[@intCast(seed % 3)] });
                 }
                 try self.record(scramble.items);
-                try self.out.line("scramble {s}", .{try movesText(gpa, scramble.items) });
+                try self.out.line("scramble {s}", .{try movesText(gpa, scramble.items)});
             },
             .apply => {
                 try self.record(moves);
-                try self.out.line("applied {d}", .{moves.len });
+                try self.out.line("applied {d}", .{moves.len});
             },
-            .invert => try self.out.line("inverse {s}", .{try sequenceText(gpa, try inverse(gpa, moves)) }),
-            .simplify => try self.out.line("simplified {s}", .{try sequenceText(gpa, try simplify(gpa, moves)) }),
+            .invert => try self.out.line("inverse {s}", .{try sequenceText(gpa, try inverse(gpa, moves))}),
+            .simplify => try self.out.line("simplified {s}", .{try sequenceText(gpa, try simplify(gpa, moves))}),
             .metrics => {
                 var htm: usize = 0;
                 var qtm: usize = 0;
@@ -811,14 +803,14 @@ const Simulator = struct {
                 }
                 try self.out.line("metrics htm {d} qtm {d} stm {d} etm {d}", .{ htm, qtm, stm, moves.len });
             },
-            .order => try self.out.line("order {d}", .{order(self.model.effect(moves)) }),
+            .order => try self.out.line("order {d}", .{order(self.model.effect(moves))}),
             .cycles => {
                 const cube = self.model.apply(self.model.solved, moves);
-                try self.out.line("corners {s}", .{try cycles(gpa, cube, corner_group) });
-                try self.out.line("edges {s}", .{try cycles(gpa, cube, edge_group) });
-                try self.out.line("centers {s}", .{try cycles(gpa, cube, center_group) });
+                try self.out.line("corners {s}", .{try cycles(gpa, cube, corner_group)});
+                try self.out.line("edges {s}", .{try cycles(gpa, cube, edge_group)});
+                try self.out.line("centers {s}", .{try cycles(gpa, cube, center_group)});
             },
-            .unrotate => try self.out.line("unrotated {s}", .{try sequenceText(gpa, try self.model.unrotate(moves)) }),
+            .unrotate => try self.out.line("unrotated {s}", .{try sequenceText(gpa, try self.model.unrotate(moves))}),
             .until => {
                 const p = self.model.effect(moves);
                 const limit = order(p);
@@ -827,7 +819,7 @@ const Simulator = struct {
                 while (k <= limit) : (k += 1) {
                     cube = permute(cube, p);
                     if (misplaced(cube) == 0) {
-                        try self.out.line("until {d}", .{k });
+                        try self.out.line("until {d}", .{k});
                         return;
                     }
                 }
@@ -842,20 +834,32 @@ const Simulator = struct {
                 const mirrored = try gpa.dupe(Move, moves);
                 for (mirrored) |*move| {
                     const opposite: ?u8 = switch (move.letter) {
-                        'R' => 'L', 'L' => 'R', 'U' => 'D', 'D' => 'U', 'F' => 'B', 'B' => 'F', 'r' => 'l', 'l' => 'r', 'u' => 'd', 'd' => 'u', 'f' => 'b', 'b' => 'f', else => null
+                        'R' => 'L',
+                        'L' => 'R',
+                        'U' => 'D',
+                        'D' => 'U',
+                        'F' => 'B',
+                        'B' => 'F',
+                        'r' => 'l',
+                        'l' => 'r',
+                        'u' => 'd',
+                        'd' => 'u',
+                        'f' => 'b',
+                        'b' => 'f',
+                        else => null,
                     };
                     if (turn(move.letter).axis != axis) move.amount = 4 - move.amount else if (opposite) |letter| {
                         move.letter = letter;
                         move.amount = 4 - move.amount;
                     }
                 }
-                try self.out.line("mirror {s}", .{try sequenceText(gpa, mirrored) });
+                try self.out.line("mirror {s}", .{try sequenceText(gpa, mirrored)});
             },
             .rotate => {
                 const rotation = self.model.effect(try literalMoves(gpa, head));
                 const rotated = try gpa.alloc(Move, moves.len);
                 for (moves, 0..) |move, i| rotated[i] = self.model.conjugate(rotation, move);
-                try self.out.line("rotated {s}", .{try sequenceText(gpa, rotated) });
+                try self.out.line("rotated {s}", .{try sequenceText(gpa, rotated)});
             },
         }
     }
@@ -880,7 +884,7 @@ pub fn main(init: std.process.Init) !void {
     for (lines[1 .. count + 1]) |line| {
         simulator.command(line) catch |err| {
             if (err != error.Invalid) return err;
-            try simulator.out.line("error: {s}", .{reason });
+            try simulator.out.line("error: {s}", .{reason});
         };
     }
     try output.interface.writeAll(simulator.out.result());

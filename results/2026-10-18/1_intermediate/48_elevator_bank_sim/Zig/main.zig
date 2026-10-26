@@ -217,7 +217,7 @@ const Host = struct {
                 6 => for (words, 0..) |word, i| {
                     const split = std.mem.findScalar(u8, word, ':').?;
                     c.lows[i] = number(word[0..split]);
-                    c.highs[i] = number(word[split + 1..]);
+                    c.highs[i] = number(word[split + 1 ..]);
                     valid = valid and c.lows[i] >= 1 and c.lows[i] < c.highs[i] and c.highs[i] <= c.floors;
                 },
                 7 => {

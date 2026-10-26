@@ -75,7 +75,7 @@ func stripTags(text string) string {
 }
 
 func runEnd(text string, at int) int {
-	end := at+1
+	end := at + 1
 	for end < len(text) && text[end] == text[at] {
 		end++
 	}
@@ -111,7 +111,7 @@ func closingBracket(text string, at int) int {
 			if close < 0 {
 				at = end
 			} else {
-				at = close+end-at
+				at = close + end - at
 			}
 			continue
 		case '[':
@@ -128,24 +128,24 @@ func closingBracket(text string, at int) int {
 }
 
 type reference struct {
-	url string
+	url   string
 	title *string
 }
 
 type block struct {
 	kind, text string
-	number int
-	ordered bool
-	lines []string
-	children []*block
-	items [][]*block
+	number     int
+	ordered    bool
+	lines      []string
+	children   []*block
+	items      [][]*block
 	alignments []string
-	rows [][]string
+	rows       [][]string
 }
 
 type marker struct {
-	kind string
-	number int
+	kind    string
+	number  int
 	ordered bool
 	content string
 }
@@ -194,7 +194,7 @@ func listMarker(line string) *marker {
 	if match == nil {
 		return nil
 	}
-	m := &marker{kind: match[1], number: 1, content: line[len(match[0]): ]}
+	m := &marker{kind: match[1], number: 1, content: line[len(match[0]):]}
 	if match[2] != "" {
 		m.kind = match[3]
 		m.ordered = true
@@ -244,7 +244,7 @@ func splitCells(line string) []string {
 
 type parser struct {
 	references map[string]reference
-	footnotes map[string]string
+	footnotes  map[string]string
 }
 
 func (p *parser) definition(line string) bool {
@@ -463,9 +463,9 @@ func (p *parser) parse(lines []string) []*block {
 }
 
 type piece struct {
-	html string
-	delimiter byte
-	length int
+	html        string
+	delimiter   byte
+	length      int
 	open, close bool
 }
 
@@ -479,7 +479,7 @@ func emphasis(pieces []piece) string {
 		}
 		end := len(pieces)
 		if p.open {
-			for next := at+1; next < len(pieces); next++ {
+			for next := at + 1; next < len(pieces); next++ {
 				q := pieces[next]
 				if q.delimiter == p.delimiter && q.length == p.length && q.close {
 					end = next
@@ -503,7 +503,7 @@ func emphasis(pieces []piece) string {
 			}
 		}
 		out.WriteString(opening)
-		out.WriteString(emphasis(pieces[at+1:end]))
+		out.WriteString(emphasis(pieces[at+1 : end]))
 		out.WriteString(closing)
 		at = end
 	}
@@ -511,33 +511,33 @@ func emphasis(pieces []piece) string {
 }
 
 type headingEntry struct {
-	level int
+	level     int
 	id, label string
-	children []*headingEntry
+	children  []*headingEntry
 }
 
 type renderer struct {
-	references map[string]reference
-	footnotes map[string]string
-	usedIDs map[string]bool
-	headings []*headingEntry
+	references      map[string]reference
+	footnotes       map[string]string
+	usedIDs         map[string]bool
+	headings        []*headingEntry
 	footnoteNumbers map[string]int
-	footnoteNames []string
-	footnoteCounts []int
+	footnoteNames   []string
+	footnoteCounts  []int
 }
 
 func (r *renderer) destination(text string, at int, label string) (reference, int, bool) {
 	if at < len(text) && text[at] == '[' {
 		relative := strings.IndexByte(text[at+1:], ']')
 		if relative >= 0 {
-			close := at+1+relative
-			key := text[at+1:close]
+			close := at + 1 + relative
+			key := text[at+1 : close]
 			if !strings.Contains(key, "[") {
 				if key == "" {
 					key = label
 				}
 				ref, found := r.references[normalize(key)]
-				return ref, close+1, found
+				return ref, close + 1, found
 			}
 		}
 	} else if at < len(text) && text[at] == '(' {
@@ -555,7 +555,7 @@ func (r *renderer) destination(text string, at int, label string) (reference, in
 			}
 		}
 		if valid && next < len(text) && text[next] == ')' {
-			return reference{url, title}, next+1, true
+			return reference{url, title}, next + 1, true
 		}
 	}
 	ref, found := r.references[normalize(label)]
@@ -563,9 +563,9 @@ func (r *renderer) destination(text string, at int, label string) (reference, in
 }
 
 func referenceID(number, count int) string {
-	id := "fnref-"+strconv.Itoa(number)
+	id := "fnref-" + strconv.Itoa(number)
 	if count > 1 {
-		id += "-"+strconv.Itoa(count)
+		id += "-" + strconv.Itoa(count)
 	}
 	return id
 }
@@ -573,7 +573,7 @@ func referenceID(number, count int) string {
 func (r *renderer) footnoteReference(name string) string {
 	number, exists := r.footnoteNumbers[name]
 	if !exists {
-		number = len(r.footnoteNames)+1
+		number = len(r.footnoteNames) + 1
 		r.footnoteNumbers[name] = number
 		r.footnoteNames = append(r.footnoteNames, name)
 		r.footnoteCounts = append(r.footnoteCounts, 0)
@@ -581,7 +581,7 @@ func (r *renderer) footnoteReference(name string) string {
 	r.footnoteCounts[number-1]++
 	id := referenceID(number, r.footnoteCounts[number-1])
 	value := strconv.Itoa(number)
-	return `<sup id="`+id+`"><a href="#fn-`+value+`">`+value+`</a></sup>`
+	return `<sup id="` + id + `"><a href="#fn-` + value + `">` + value + `</a></sup>`
 }
 
 func (r *renderer) inline(text string, links, notes bool) string {
@@ -590,7 +590,7 @@ func (r *renderer) inline(text string, links, notes bool) string {
 		ch := text[at]
 		if ch == '\\' {
 			if at+1 < len(text) && strings.ContainsRune(punctuation, rune(text[at+1])) {
-				pieces = append(pieces, piece{html: escape(text[at+1: at+2])})
+				pieces = append(pieces, piece{html: escape(text[at+1 : at+2])})
 				at += 2
 			} else if at+1 < len(text) && text[at+1] == '\n' {
 				pieces = append(pieces, piece{html: "<br />\n"})
@@ -605,31 +605,31 @@ func (r *renderer) inline(text string, links, notes bool) string {
 			end := runEnd(text, at)
 			close := backtickCloser(text, end, end-at)
 			if close < 0 {
-				pieces = append(pieces, piece{html: text[at: end]})
+				pieces = append(pieces, piece{html: text[at:end]})
 				at = end
 			} else {
 				code := strings.ReplaceAll(text[end:close], "\n", " ")
 				if strings.HasPrefix(code, " ") && strings.HasSuffix(code, " ") && strings.Trim(code, " ") != "" {
-					code = code[1:len(code)-1]
+					code = code[1 : len(code)-1]
 				}
-				pieces = append(pieces, piece{html: "<code>"+escape(code)+"</code>"})
-				at = close+end-at
+				pieces = append(pieces, piece{html: "<code>" + escape(code) + "</code>"})
+				at = close + end - at
 			}
 			continue
 		}
 		if links && ch == '<' {
 			if offset := strings.IndexByte(text[at+1:], '>'); offset >= 0 {
-				close := at+1+offset
-				target := text[at+1:close]
+				close := at + 1 + offset
+				target := text[at+1 : close]
 				href := ""
-				if !strings.ContainsAny(target, " \n<") && (strings.HasPrefix(target, "http://") && len(target)>7 || strings.HasPrefix(target, "https://") && len(target)>8) {
+				if !strings.ContainsAny(target, " \n<") && (strings.HasPrefix(target, "http://") && len(target) > 7 || strings.HasPrefix(target, "https://") && len(target) > 8) {
 					href = target
 				} else if emailPattern.MatchString(target) {
-					href = "mailto:"+target
+					href = "mailto:" + target
 				}
 				if href != "" {
-					pieces = append(pieces, piece{html: `<a href="`+escape(href)+`">`+escape(target)+`</a>`})
-					at = close+1
+					pieces = append(pieces, piece{html: `<a href="` + escape(href) + `">` + escape(target) + `</a>`})
+					at = close + 1
 					continue
 				}
 			}
@@ -645,7 +645,7 @@ func (r *renderer) inline(text string, links, notes bool) string {
 			url := text[at:end]
 			if url != "http://" && url != "https://" {
 				value := escape(url)
-				pieces = append(pieces, piece{html: `<a href="`+value+`">`+value+`</a>`})
+				pieces = append(pieces, piece{html: `<a href="` + value + `">` + value + `</a>`})
 				at = end
 				continue
 			}
@@ -653,11 +653,11 @@ func (r *renderer) inline(text string, links, notes bool) string {
 		if ch == '[' || ch == '!' && at+1 < len(text) && text[at+1] == '[' {
 			if links && notes && strings.HasPrefix(text[at:], "[^") {
 				if offset := strings.IndexByte(text[at+2:], ']'); offset >= 0 {
-					close := at+2+offset
-					name := strings.ToLower(text[at+2:close])
+					close := at + 2 + offset
+					name := strings.ToLower(text[at+2 : close])
 					if _, found := r.footnotes[name]; found {
 						pieces = append(pieces, piece{html: r.footnoteReference(name)})
-						at = close+1
+						at = close + 1
 						continue
 					}
 				}
@@ -669,18 +669,18 @@ func (r *renderer) inline(text string, links, notes bool) string {
 			}
 			close := closingBracket(text, opening)
 			if (image || links) && close >= 0 {
-				label := text[opening+1:close]
+				label := text[opening+1 : close]
 				if ref, end, ok := r.destination(text, close+1, label); ok {
 					content := r.inline(label, false, false)
 					title := ""
 					if ref.title != nil {
-						title = ` title="`+escape(*ref.title)+`"`
+						title = ` title="` + escape(*ref.title) + `"`
 					}
 					var html string
 					if image {
-						html = `<img src="`+escape(ref.url)+`" alt="`+stripTags(content)+`"`+title+` />`
+						html = `<img src="` + escape(ref.url) + `" alt="` + stripTags(content) + `"` + title + ` />`
 					} else {
-						html = `<a href="`+escape(ref.url)+`"`+title+`>`+content+`</a>`
+						html = `<a href="` + escape(ref.url) + `"` + title + `>` + content + `</a>`
 					}
 					pieces = append(pieces, piece{html: html})
 					at = end
@@ -693,7 +693,7 @@ func (r *renderer) inline(text string, links, notes bool) string {
 		}
 		if strings.ContainsRune("*_~", rune(ch)) {
 			end := runEnd(text, at)
-			length := end-at
+			length := end - at
 			before, after := byte(' '), byte(' ')
 			if at > 0 {
 				before = text[at-1]
@@ -708,12 +708,12 @@ func (r *renderer) inline(text string, links, notes bool) string {
 			if ch != '~' && length <= 3 || ch == '~' && length == 2 {
 				pieces = append(pieces, piece{delimiter: ch, length: length, open: open, close: close})
 			} else {
-				pieces = append(pieces, piece{html: text[at: end]})
+				pieces = append(pieces, piece{html: text[at:end]})
 			}
 			at = end
 			continue
 		}
-		pieces = append(pieces, piece{html: escape(text[at: at+1])})
+		pieces = append(pieces, piece{html: escape(text[at : at+1])})
 		at++
 	}
 	return emphasis(pieces)
@@ -732,7 +732,7 @@ func (r *renderer) heading(level int, text string) string {
 	id := ""
 	start := strings.LastIndex(text, " {#")
 	if strings.HasSuffix(text, "}") && start >= 0 && labelPattern.MatchString(text[start+3:len(text)-1]) {
-		id = text[start+3:len(text)-1]
+		id = text[start+3 : len(text)-1]
 		text = strings.TrimRight(text[:start], " ")
 	}
 	if id == "" {
@@ -750,14 +750,14 @@ func (r *renderer) heading(level int, text string) string {
 		}
 		id = base
 		for suffix := 1; r.usedIDs[id]; suffix++ {
-			id = base+"-"+strconv.Itoa(suffix)
+			id = base + "-" + strconv.Itoa(suffix)
 		}
 	}
 	r.usedIDs[id] = true
 	html := r.inline(text, true, true)
 	r.headings = append(r.headings, &headingEntry{level: level, id: id, label: stripTags(html)})
 	n := strconv.Itoa(level)
-	return `<h`+n+` id="`+id+`">`+html+`</h`+n+`>`
+	return `<h` + n + ` id="` + id + `">` + html + `</h` + n + `>`
 }
 
 func (r *renderer) item(blocks []*block) string {
@@ -767,7 +767,7 @@ func (r *renderer) item(blocks []*block) string {
 	for index, b := range blocks {
 		if b.kind == "paragraph" {
 			text := b.text
-			if index == 0 && len(text)>4 && (strings.HasPrefix(text, "[ ] ") || strings.HasPrefix(text, "[x] ") || strings.HasPrefix(text, "[X] ")) {
+			if index == 0 && len(text) > 4 && (strings.HasPrefix(text, "[ ] ") || strings.HasPrefix(text, "[x] ") || strings.HasPrefix(text, "[X] ")) {
 				if text[1] == ' ' {
 					out.WriteString(`<input type="checkbox" disabled="" /> `)
 				} else {
@@ -796,11 +796,11 @@ func (r *renderer) item(blocks []*block) string {
 func (r *renderer) tableCells(tag string, b *block, cells []string) string {
 	var out strings.Builder
 	for index, cell := range cells {
-		out.WriteString("<"+tag)
+		out.WriteString("<" + tag)
 		if b.alignments[index] != "" {
-			out.WriteString(` style="text-align:`+b.alignments[index]+`"`)
+			out.WriteString(` style="text-align:` + b.alignments[index] + `"`)
 		}
-		out.WriteString(">"+r.inline(cell, true, true)+"</"+tag+">\n")
+		out.WriteString(">" + r.inline(cell, true, true) + "</" + tag + ">\n")
 	}
 	return out.String()
 }
@@ -810,14 +810,14 @@ func (r *renderer) render(b *block) string {
 	case "heading":
 		return r.heading(b.number, b.text)
 	case "paragraph":
-		return "<p>"+r.inline(b.text, true, true)+"</p>"
+		return "<p>" + r.inline(b.text, true, true) + "</p>"
 	case "rule":
 		return "<hr />"
 	case "code":
 		var out strings.Builder
 		out.WriteString("<pre><code")
 		if b.text != "" {
-			out.WriteString(` class="language-`+escape(b.text)+`"`)
+			out.WriteString(` class="language-` + escape(b.text) + `"`)
 		}
 		out.WriteByte('>')
 		for _, line := range b.lines {
@@ -827,35 +827,35 @@ func (r *renderer) render(b *block) string {
 		out.WriteString("</code></pre>")
 		return out.String()
 	case "quote":
-		return "<blockquote>\n"+r.blocks(b.children)+"</blockquote>"
+		return "<blockquote>\n" + r.blocks(b.children) + "</blockquote>"
 	case "alert":
 		kind := strings.ToLower(b.text)
-		title := strings.ToUpper(kind[:1])+kind[1:]
-		return `<div class="alert alert-`+kind+`">`+"\n"+`<p class="alert-title">`+title+"</p>\n"+r.blocks(b.children)+"</div>"
+		title := strings.ToUpper(kind[:1]) + kind[1:]
+		return `<div class="alert alert-` + kind + `">` + "\n" + `<p class="alert-title">` + title + "</p>\n" + r.blocks(b.children) + "</div>"
 	case "list":
 		tag := "ul"
 		if b.ordered {
 			tag = "ol"
 		}
 		var out strings.Builder
-		out.WriteString("<"+tag)
+		out.WriteString("<" + tag)
 		if b.ordered && b.number != 1 {
-			out.WriteString(` start="`+strconv.Itoa(b.number)+`"`)
+			out.WriteString(` start="` + strconv.Itoa(b.number) + `"`)
 		}
 		out.WriteString(">\n")
 		for _, item := range b.items {
 			out.WriteString(r.item(item))
 			out.WriteByte('\n')
 		}
-		out.WriteString("</"+tag+">")
+		out.WriteString("</" + tag + ">")
 		return out.String()
 	case "table":
 		var out strings.Builder
-		out.WriteString("<table>\n<thead>\n<tr>\n"+r.tableCells("th", b, b.lines)+"</tr>\n</thead>\n")
-		if len(b.rows)>0 {
+		out.WriteString("<table>\n<thead>\n<tr>\n" + r.tableCells("th", b, b.lines) + "</tr>\n</thead>\n")
+		if len(b.rows) > 0 {
 			out.WriteString("<tbody>\n")
 			for _, row := range b.rows {
-				out.WriteString("<tr>\n"+r.tableCells("td", b, row)+"</tr>\n")
+				out.WriteString("<tr>\n" + r.tableCells("td", b, row) + "</tr>\n")
 			}
 			out.WriteString("</tbody>\n")
 		}
@@ -871,8 +871,8 @@ func tocList(entries []*headingEntry) string {
 	var out strings.Builder
 	out.WriteString("<ul>\n")
 	for _, h := range entries {
-		out.WriteString(`<li><a href="#`+h.id+`">`+h.label+`</a>`)
-		if len(h.children)>0 {
+		out.WriteString(`<li><a href="#` + h.id + `">` + h.label + `</a>`)
+		if len(h.children) > 0 {
 			out.WriteByte('\n')
 			out.WriteString(tocList(h.children))
 			out.WriteByte('\n')
@@ -884,15 +884,15 @@ func tocList(entries []*headingEntry) string {
 }
 
 func (r *renderer) toc() string {
-	if len(r.headings)==0 {
+	if len(r.headings) == 0 {
 		return "<nav class=\"toc\">\n</nav>"
 	}
 	var roots, parents []*headingEntry
 	for _, h := range r.headings {
-		for len(parents)>0 && parents[len(parents)-1].level >= h.level {
+		for len(parents) > 0 && parents[len(parents)-1].level >= h.level {
 			parents = parents[:len(parents)-1]
 		}
-		if len(parents)==0 {
+		if len(parents) == 0 {
 			roots = append(roots, h)
 		} else {
 			parent := parents[len(parents)-1]
@@ -900,16 +900,16 @@ func (r *renderer) toc() string {
 		}
 		parents = append(parents, h)
 	}
-	return "<nav class=\"toc\">\n"+tocList(roots)+"\n</nav>"
+	return "<nav class=\"toc\">\n" + tocList(roots) + "\n</nav>"
 }
 
 func (r *renderer) footnoteList() string {
 	var out strings.Builder
 	out.WriteString("<section class=\"footnotes\">\n<ol>\n")
 	for index, name := range r.footnoteNames {
-		out.WriteString(`<li id="fn-`+strconv.Itoa(index+1)+`">`+r.inline(r.footnotes[name], true, false))
+		out.WriteString(`<li id="fn-` + strconv.Itoa(index+1) + `">` + r.inline(r.footnotes[name], true, false))
 		for count := 1; count <= r.footnoteCounts[index]; count++ {
-			out.WriteString(` <a href="#`+referenceID(index+1, count)+`">&#8617;</a>`)
+			out.WriteString(` <a href="#` + referenceID(index+1, count) + `">&#8617;</a>`)
 		}
 		out.WriteString("</li>\n")
 	}
@@ -936,7 +936,7 @@ func main() {
 	r := &renderer{references: p.references, footnotes: p.footnotes, usedIDs: make(map[string]bool), footnoteNumbers: make(map[string]int)}
 	html := r.blocks(blocks)
 	html = strings.ReplaceAll(html, tocMarker, r.toc())
-	if len(r.footnoteNames)>0 {
+	if len(r.footnoteNames) > 0 {
 		html += r.footnoteList()
 	}
 	fmt.Print(html)

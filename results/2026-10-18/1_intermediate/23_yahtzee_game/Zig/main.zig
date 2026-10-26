@@ -12,10 +12,18 @@ const categories = [_]Category{ .ONES, .TWOS, .THREES, .FOURS, .FIVES, .SIXES, .
 const powers = [_]usize{ 1, 6, 36, 216, 1296, 7776 };
 const lower_mask: u13 = 0x1fc0;
 
-fn equal(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
-fn dieBit(die: usize) Mask { return @as(Mask, 1) << @intCast(4 - die); }
-fn held(mask: Mask, die: usize) bool { return mask & dieBit(die) != 0; }
-fn categoryBit(category: usize) u13 { return @as(u13, 1) << @intCast(category); }
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn dieBit(die: usize) Mask {
+    return @as(Mask, 1) << @intCast(4 - die);
+}
+fn held(mask: Mask, die: usize) bool {
+    return mask & dieBit(die) != 0;
+}
+fn categoryBit(category: usize) u13 {
+    return @as(u13, 1) << @intCast(category);
+}
 fn countsOf(dice: Dice) Counts {
     var result: Counts = @splat(0);
     for (dice) |face| result[face - 1] += 1;
@@ -24,17 +32,24 @@ fn countsOf(dice: Dice) Counts {
 fn decode(code: usize) Counts {
     var value = code;
     var result: Counts = undefined;
-    for (&result) |*count| { count.* = @intCast(value % 6); value /= 6; }
+    for (&result) |*count| {
+        count.* = @intCast(value % 6);
+        value /= 6;
+    }
     return result;
 }
 fn heldCode(dice: Dice, mask: Mask) usize {
     var result: usize = 0;
-    for (dice, 0..) |face, i| if (held(mask, i)) { result += powers[face - 1]; };
+    for (dice, 0..) |face, i| if (held(mask, i)) {
+        result += powers[face - 1];
+    };
     return result;
 }
 fn mostFrequent(counts: Counts) usize {
     var best: usize = 0;
-    for (1..6) |i| if (counts[i] >= counts[best]) { best = i; };
+    for (1..6) |i| if (counts[i] >= counts[best]) {
+        best = i;
+    };
     return best;
 }
 fn yahtzee(counts: Counts) bool {
@@ -42,7 +57,7 @@ fn yahtzee(counts: Counts) bool {
     return false;
 }
 fn normalScore(category: Category, counts: Counts) i32 {
-    const c: usize = @intFromEnum(category);
+    const c: usize = @backingInt(category);
     if (c < 6) return @intCast((c + 1) * counts[c]);
     var total: i32 = 0;
     var largest: u8 = 0;
@@ -77,7 +92,9 @@ const Player = struct {
         for (player.scores[0..6]) |score| result += score orelse 0;
         return result;
     }
-    fn upperBonus(player: Player) i32 { return if (player.upper() >= 63) 35 else 0; }
+    fn upperBonus(player: Player) i32 {
+        return if (player.upper() >= 63) 35 else 0;
+    }
     fn total(player: Player) i32 {
         var result = player.upperBonus() + player.yahtzee_bonus;
         for (player.scores) |score| result += score orelse 0;
@@ -85,7 +102,9 @@ const Player = struct {
     }
     fn round(player: Player) usize {
         var result: usize = 1;
-        for (player.scores) |score| if (score != null) { result += 1; };
+        for (player.scores) |score| if (score != null) {
+            result += 1;
+        };
         return result;
     }
 };
@@ -98,20 +117,27 @@ const Candidates = struct {
 };
 fn evaluate(player: *const Player, counts: Counts, rule: Joker) Candidates {
     var result: Candidates = .{};
-    for (player.scores, 0..) |score, i| if (score == null) { result.allowed |= categoryBit(i); };
+    for (player.scores, 0..) |score, i| if (score == null) {
+        result.allowed |= categoryBit(i);
+    };
     result.joker = rule != .OFF and yahtzee(counts) and player.scores[11] != null;
     if (result.joker and rule == .FORCED) {
         const upper = mostFrequent(counts);
-        if (result.allowed & categoryBit(upper) != 0) result.allowed = categoryBit(upper)
-        else if (result.allowed & lower_mask != 0) result.allowed &= lower_mask;
+        if (result.allowed & categoryBit(upper) != 0) result.allowed = categoryBit(upper) else if (result.allowed & lower_mask != 0) result.allowed &= lower_mask;
     }
     var best_score: i32 = -1;
     for (categories, 0..) |category, i| {
         if (player.scores[i] != null) continue;
         result.points[i] = if (result.allowed & categoryBit(i) == 0) 0 else if (result.joker) switch (category) {
-            .FULLHOUSE => 25, .SMALL => 30, .LARGE => 40, else => normalScore(category, counts),
+            .FULLHOUSE => 25,
+            .SMALL => 30,
+            .LARGE => 40,
+            else => normalScore(category, counts),
         } else normalScore(category, counts);
-        if (result.points[i] > best_score) { best_score = result.points[i]; result.best = category; }
+        if (result.points[i] > best_score) {
+            best_score = result.points[i];
+            result.best = category;
+        }
     }
     return result;
 }
@@ -144,7 +170,11 @@ const Fraction = struct {
     pub fn format(value: Fraction, out: *std.Io.Writer) std.Io.Writer.Error!void {
         var a = value.numerator;
         var b = value.denominator;
-        while (b != 0) { const remainder = @mod(a, b); a = b; b = remainder; }
+        while (b != 0) {
+            const remainder = @mod(a, b);
+            a = b;
+            b = remainder;
+        }
         const numerator = @divExact(value.numerator, a);
         const denominator = @divExact(value.denominator, a);
         try out.print("{d}", .{numerator});
@@ -159,10 +189,18 @@ const Average = struct {
         try out.print("{d}.{d:0>2}", .{ @divTrunc(hundredths, 100), @mod(hundredths, 100) });
     }
 };
-fn pattern(mask: Mask) Pattern { return .{ .mask = mask }; }
-fn faces(dice: ?Dice, mask: Mask) Faces { return .{ .dice = dice, .mask = mask }; }
-fn fraction(numerator: i64, denominator: i64) Fraction { return .{ .numerator = numerator, .denominator = denominator }; }
-fn average(sum: i64, count: usize) Average { return .{ .sum = sum, .count = count }; }
+fn pattern(mask: Mask) Pattern {
+    return .{ .mask = mask };
+}
+fn faces(dice: ?Dice, mask: Mask) Faces {
+    return .{ .dice = dice, .mask = mask };
+}
+fn fraction(numerator: i64, denominator: i64) Fraction {
+    return .{ .numerator = numerator, .denominator = denominator };
+}
+fn average(sum: i64, count: usize) Average {
+    return .{ .sum = sum, .count = count };
+}
 
 const Outcome = struct { code: usize, weight: i64 };
 const Outcomes = struct {
@@ -192,7 +230,7 @@ const Adviser = struct {
         const counts = decode(code);
         const best: i64 = if (depth == 0) blk: {
             const scores = evaluate(adviser.player, counts, adviser.joker);
-            break :blk scores.points[@intFromEnum(scores.best)];
+            break :blk scores.points[@backingInt(scores.best)];
         } else try adviser.choose(counts, depth, 0, 0);
         try adviser.values.put(adviser.gpa, key, best);
         return best;
@@ -242,7 +280,9 @@ const Game = struct {
     fn emit(game: *Game, comptime fmt: []const u8, args: anytype) Error!void {
         if (!game.quiet) try game.program.emit(fmt, args);
     }
-    fn current(game: *Game) *Player { return &game.players[game.turn.?.seat]; }
+    fn current(game: *Game) *Player {
+        return &game.players[game.turn.?.seat];
+    }
     fn checkTurn(game: *Game) Error!void {
         if (game.turn == null) return game.program.fail("game over", .{});
     }
@@ -286,7 +326,10 @@ const Game = struct {
         var mask: Mask = 0;
         for (values) |value| {
             var selected: ?usize = null;
-            for (game.turn.?.dice, 0..) |face, i| if (!held(mask, i) and face == value) { selected = i; break; };
+            for (game.turn.?.dice, 0..) |face, i| if (!held(mask, i) and face == value) {
+                selected = i;
+                break;
+            };
             const die = selected orelse return game.program.fail("not showing {d}", .{value});
             mask |= dieBit(die);
         }
@@ -295,7 +338,7 @@ const Game = struct {
     fn score(game: *Game, category: Category, preview: bool) Error!void {
         try game.checkRolled();
         const player = game.current();
-        const c = @intFromEnum(category);
+        const c = @backingInt(category);
         if (player.scores[c] != null) return game.program.fail("{s} already used", .{@tagName(category)});
         const counts = countsOf(game.turn.?.dice);
         const scores = evaluate(player, counts, game.rules.joker);
@@ -317,12 +360,11 @@ const Game = struct {
             game.turn = if (game.entry_count == 13 * game.player_count) null else .{ .seat = (entry.before.seat + 1) % game.player_count };
         }
         try game.emit("{s} {s} {d} in {s}{s}{s}{s} total {d}", .{
-            player.name, if (preview) "would score" else "scores", points, @tagName(category),
-            if (scores.joker) " joker" else "", if (bonus != 0) " ybonus 100" else "", if (upper_bonus != 0) " ubonus 35" else "", total,
+            player.name,                        if (preview) "would score" else "scores", points,                                     @tagName(category),
+            if (scores.joker) " joker" else "", if (bonus != 0) " ybonus 100" else "",    if (upper_bonus != 0) " ubonus 35" else "", total,
         });
         if (!preview) {
-            if (game.turn == null) try game.emit("game over", .{})
-            else try game.emit("turn {d} {s}", .{ game.current().round(), game.current().name });
+            if (game.turn == null) try game.emit("game over", .{}) else try game.emit("turn {d} {s}", .{ game.current().round(), game.current().name });
         }
     }
     fn undo(game: *Game) Error!void {
@@ -332,7 +374,7 @@ const Game = struct {
         game.redo_entries[game.redo_count] = .{ .after = game.turn, .entry = entry };
         game.redo_count += 1;
         const player = &game.players[entry.before.seat];
-        player.scores[@intFromEnum(entry.category)] = null;
+        player.scores[@backingInt(entry.category)] = null;
         player.yahtzee_bonus -= entry.bonus;
         game.turn = entry.before;
         try game.emit("undo {s} {s} {d}", .{ player.name, @tagName(entry.category), entry.points });
@@ -343,7 +385,7 @@ const Game = struct {
         const saved = game.redo_entries[game.redo_count];
         const entry = saved.entry;
         const player = &game.players[entry.before.seat];
-        player.scores[@intFromEnum(entry.category)] = entry.points;
+        player.scores[@backingInt(entry.category)] = entry.points;
         player.yahtzee_bonus += entry.bonus;
         game.entries[game.entry_count] = entry;
         game.entry_count += 1;
@@ -360,17 +402,25 @@ const Game = struct {
             for (0..6) |start| {
                 var end = start;
                 while (end < 6 and counts[end] > 0) : (end += 1) {}
-                if (end - start >= best_length) { best_start = start; best_length = end - start; }
+                if (end - start >= best_length) {
+                    best_start = start;
+                    best_length = end - start;
+                }
             }
             if (best_length >= 3) {
                 for (best_start + 1..best_start + best_length + 1) |value| {
-                    for (dice, 0..) |face, i| if (face == value) { mask |= dieBit(i); break; };
+                    for (dice, 0..) |face, i| if (face == value) {
+                        mask |= dieBit(i);
+                        break;
+                    };
                 }
                 return mask;
             }
         }
         const frequent = mostFrequent(counts) + 1;
-        for (dice, 0..) |face, i| if (if (strategy == .HIGH) face >= 5 else face == frequent) { mask |= dieBit(i); };
+        for (dice, 0..) |face, i| if (if (strategy == .HIGH) face >= 5 else face == frequent) {
+            mask |= dieBit(i);
+        };
         return mask;
     }
     fn botTurn(game: *Game) Error!void {
@@ -416,8 +466,12 @@ const Program = struct {
         program.error_message = try std.fmt.allocPrint(program.gpa, fmt, args);
         return error.BadCommand;
     }
-    fn emit(program: *Program, comptime fmt: []const u8, args: anytype) Error!void { try program.out.print(fmt ++ "\n", args); }
-    fn table(program: *Program) Error!*Game { return program.game orelse return program.fail("no game", .{}); }
+    fn emit(program: *Program, comptime fmt: []const u8, args: anytype) Error!void {
+        try program.out.print(fmt ++ "\n", args);
+    }
+    fn table(program: *Program) Error!*Game {
+        return program.game orelse return program.fail("no game", .{});
+    }
     fn positive(program: *Program, word: []const u8, maximum: i64) Error!i64 {
         if (word[0] < '1' or word[0] > '9') return program.fail("bad value {s}", .{word});
         for (word) |c| if (c < '0' or c > '9') return program.fail("bad value {s}", .{word});
@@ -456,7 +510,7 @@ const Program = struct {
                 sums[i] += outcome.weight * points;
                 if (points > 0) chances[i] += outcome.weight;
             }
-            best += outcome.weight * scores.points[@intFromEnum(scores.best)];
+            best += outcome.weight * scores.points[@backingInt(scores.best)];
         }
         try program.emit("odds {f} outcomes {d}", .{ pattern(mask), outcome_count });
         for (categories, 0..) |c, i| if (game.current().scores[i] == null) {
@@ -478,7 +532,10 @@ const Program = struct {
         for (0..32) |i| {
             const mask: Mask = @intCast(i);
             const value = try adviser.expected(heldCode(turn.dice, mask), depth);
-            if (value > best) { best = value; chosen = mask; }
+            if (value > best) {
+                best = value;
+                chosen = mask;
+            }
         }
         try program.emit("advise {f}: {f} expect {f}", .{ pattern(chosen), faces(turn.dice, chosen), fraction(best, denominator) });
     }
@@ -492,7 +549,10 @@ const Program = struct {
                 var buffer: [32]u8 = undefined;
                 const cell = if (row == 0) player.name else blk: {
                     const value: ?i32 = if (row <= 13) player.scores[row - 1] else switch (row) {
-                        14 => player.upper(), 15 => player.upperBonus(), 16 => player.yahtzee_bonus, else => player.total(),
+                        14 => player.upper(),
+                        15 => player.upperBonus(),
+                        16 => player.yahtzee_bonus,
+                        else => player.total(),
                     };
                     break :blk if (value) |number| std.fmt.bufPrint(&buffer, "{d}", .{number}) catch unreachable else "-";
                 };
@@ -535,8 +595,7 @@ const Program = struct {
             .RULE => {
                 if (!equal(words[1], "ROLLS") and !equal(words[1], "JOKER")) return program.fail("unknown rule {s}", .{words[1]});
                 var changed = program.rules;
-                if (equal(words[1], "ROLLS")) changed.rolls = @intCast(try program.positive(words[2], 4))
-                else changed.joker = std.meta.stringToEnum(Joker, words[2]) orelse return program.fail("bad value {s}", .{words[2]});
+                if (equal(words[1], "ROLLS")) changed.rolls = @intCast(try program.positive(words[2], 4)) else changed.joker = std.meta.stringToEnum(Joker, words[2]) orelse return program.fail("bad value {s}", .{words[2]});
                 if (program.game != null) return program.fail("game in progress", .{});
                 program.rules = changed;
                 try program.emit("rule {s} {s}", .{ words[1], words[2] });
@@ -595,7 +654,7 @@ const Program = struct {
                 const scores = evaluate(game.current(), countsOf(game.turn.?.dice), game.rules.joker);
                 try program.out.writeAll("suggest");
                 for (categories, 0..) |category, i| if (scores.points[i] >= 0) try program.out.print(" {s} {d}", .{ @tagName(category), scores.points[i] });
-                try program.out.print(" best {s} {d}\n", .{ @tagName(scores.best), scores.points[@intFromEnum(scores.best)] });
+                try program.out.print(" best {s} {d}\n", .{ @tagName(scores.best), scores.points[@backingInt(scores.best)] });
             },
             .ADVISE => try program.advise(try program.table()),
             .AUTO => {
@@ -610,8 +669,7 @@ const Program = struct {
             },
             .STATUS => {
                 const game = try program.table();
-                if (game.turn) |turn| try program.emit("status round {d} player {s} rolls {d} dice {f} holds {f}", .{ game.current().round(), game.current().name, turn.rolls, faces(if (turn.rolls == 0) null else turn.dice, 31), pattern(turn.hold) })
-                else try program.emit("status game over", .{});
+                if (game.turn) |turn| try program.emit("status round {d} player {s} rolls {d} dice {f} holds {f}", .{ game.current().round(), game.current().name, turn.rolls, faces(if (turn.rolls == 0) null else turn.dice, 31), pattern(turn.hold) }) else try program.emit("status game over", .{});
             },
             .CARD => try program.card(try program.table()),
             .BONUS => {
@@ -619,7 +677,9 @@ const Program = struct {
                 for (game.players[0..game.player_count]) |player| {
                     const upper = player.upper();
                     var maximum = upper;
-                    for (player.scores[0..6], 0..) |score, i| if (score == null) { maximum += @intCast(5 * (i + 1)); };
+                    for (player.scores[0..6], 0..) |score, i| if (score == null) {
+                        maximum += @intCast(5 * (i + 1));
+                    };
                     const status = if (upper >= 63) "made" else if (maximum < 63) "lost" else "open";
                     try program.emit("bonus {s} upper {d} need {d} max {d} {s}", .{ player.name, upper, @max(63 - upper, 0), maximum, status });
                 }
@@ -655,7 +715,11 @@ const Program = struct {
                 var total: i64 = 0;
                 var squares: i64 = 0;
                 try program.out.writeAll("faces");
-                for (game.face_totals) |count| { total += count; squares += count * count; try program.out.print(" {d}", .{count}); }
+                for (game.face_totals) |count| {
+                    total += count;
+                    squares += count * count;
+                    try program.out.print(" {d}", .{count});
+                }
                 try program.out.print(" total {d} chi2 {f}\n", .{ total, fraction(6 * squares - total * total, if (total == 0) 1 else total) });
             },
             .STANDINGS, .END => {

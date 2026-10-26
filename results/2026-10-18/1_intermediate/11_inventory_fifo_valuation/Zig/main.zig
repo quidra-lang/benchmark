@@ -2,10 +2,12 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
 const categories = [_][]const u8{ "received", "returned", "adjusted-in", "adjusted-out", "shipped", "written-down", "expired", "recalled" };
-fn integer(s: []const u8) i64 { return std.fmt.parseInt(i64, s, 10) catch unreachable; }
+fn integer(s: []const u8) i64 {
+    return std.fmt.parseInt(i64, s, 10) catch unreachable;
+}
 fn amount(s: []const u8) i64 {
     const dot = std.mem.findScalar(u8, s, '.').?;
-    return integer(s[0..dot]) * 100 + integer(s[dot + 1..]);
+    return integer(s[0..dot]) * 100 + integer(s[dot + 1 ..]);
 }
 const Warehouse = struct {
     code: []const u8,

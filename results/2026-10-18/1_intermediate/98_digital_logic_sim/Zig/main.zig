@@ -49,42 +49,23 @@ fn name(s: S, upper: bool) bool {
 }
 
 fn number(s: S, positive: bool) !u64 {
-    if (s.len == 0 or s.len > 9 or (s.len > 1 and s[0] == '0')) return fail("bad number {s}", .{ s });
-    for (s) |c| if (!std.ascii.isDigit(c)) return fail("bad number {s}", .{ s });
-    const n = std.fmt.parseInt(u64, s, 10) catch return fail("bad number {s}", .{ s });
-    if (positive and n == 0) return fail("bad number {s}", .{ s });
+    if (s.len == 0 or s.len > 9 or (s.len > 1 and s[0] == '0')) return fail("bad number {s}", .{s});
+    for (s) |c| if (!std.ascii.isDigit(c)) return fail("bad number {s}", .{s});
+    const n = std.fmt.parseInt(u64, s, 10) catch return fail("bad number {s}", .{s});
+    if (positive and n == 0) return fail("bad number {s}", .{s});
     return n;
 }
 
 fn value(s: S) !u8 {
-    if (s.len != 1 or std.mem.indexOfScalar(u8, "01X", s[0]) == null) return fail("bad value {s}", .{ s });
+    if (s.len != 1 or std.mem.indexOfScalar(u8, "01X", s[0]) == null) return fail("bad value {s}", .{s});
     return s[0];
 }
 
-const Kind = enum {
-    AND,
-    OR,
-    NAND,
-    NOR,
-    XOR,
-    XNOR,
-    NOT,
-    BUF,
-    MUX2,
-    DFF
-};
+const Kind = enum { AND, OR, NAND, NOR, XOR, XNOR, NOT, BUF, MUX2, DFF };
 
-const Body = struct {
-    w: []S,
-    ln: usize
-};
+const Body = struct { w: []S, ln: usize };
 
-const Module = struct {
-    name: S,
-    inputs: []S,
-    outputs: []S,
-    body: []Body
-};
+const Module = struct { name: S, inputs: []S, outputs: []S, body: []Body };
 
 var modules: std.ArrayList(Module) = .empty;
 
@@ -94,7 +75,7 @@ fn lookup(s: S) ?usize {
 }
 
 fn module(s: S) !usize {
-    return lookup(s) orelse fail("unknown module {s}", .{ s });
+    return lookup(s) orelse fail("unknown module {s}", .{s});
 }
 
 fn definition(header: []S, body: []Body, ln: usize) anyerror!void {
@@ -106,24 +87,21 @@ fn definition(header: []S, body: []Body, ln: usize) anyerror!void {
         op = i;
     };
     const split = op orelse return fail("bad module header", .{});
-    if (!name(header[1], true)) return fail("bad module name {s}", .{ header[1] });
-    if (lookup(header[1]) != null) return fail("duplicate module {s}", .{ header[1] });
+    if (!name(header[1], true)) return fail("bad module name {s}", .{header[1]});
+    if (lookup(header[1]) != null) return fail("duplicate module {s}", .{header[1]});
     var ports: std.ArrayList(S) = .empty;
     for (header[3..], 3..) |w, i| {
         if (i == split) continue;
-        if (!name(w, false)) return fail("bad name {s}", .{ w });
-        if (contains(ports.items, w)) return fail("duplicate port {s}", .{ w });
+        if (!name(w, false)) return fail("bad name {s}", .{w});
+        if (contains(ports.items, w)) return fail("duplicate port {s}", .{w});
         try ports.append(A, w);
     }
     const inputs = header[3..split];
-    const outputs = header[split + 1..];
+    const outputs = header[split + 1 ..];
     var driven: std.ArrayList(S) = .empty;
     try driven.appendSlice(A, inputs);
     var used: std.ArrayList(S) = .empty;
-    var references: std.ArrayList(struct {
-        s: S,
-        ln: usize
-    }) = .empty;
+    var references: std.ArrayList(struct { s: S, ln: usize }) = .empty;
     var ng: usize = 0;
     var ni: usize = 0;
     for (body) |b| {
@@ -136,88 +114,69 @@ fn definition(header: []S, body: []Body, ln: usize) anyerror!void {
                 arrows += 1;
             };
             if (arrows != 1) return fail("bad gate syntax", .{});
-            if (!name(w[1], false)) return fail("bad name {s}", .{ w[1] });
+            if (!name(w[1], false)) return fail("bad name {s}", .{w[1]});
             const c = w.len - 5;
             const good = switch (k) {
-                .NOT,
-                .BUF => c == 1,
+                .NOT, .BUF => c == 1,
                 .MUX2 => c == 3,
                 .DFF => c == 2,
-                else => c >= 2 and c <= 8
+                else => c >= 2 and c <= 8,
             };
             if (!good) return fail("bad input count {d} for {s}", .{ c, w[0] });
-            for (w[2..w.len - 3]) |s| if (!name(s, false)) return fail("bad name {s}", .{ s });
+            for (w[2 .. w.len - 3]) |s| if (!name(s, false)) return fail("bad name {s}", .{s});
             const dest = w[w.len - 2];
-            if (!name(dest, false)) return fail("bad name {s}", .{ dest });
-            const d = number(w[w.len - 1], false) catch return fail("bad delay {s}", .{ w[w.len - 1] });
-            if (d > 1000) return fail("bad delay {s}", .{ w[w.len - 1] });
-            if (contains(used.items, w[1])) return fail("duplicate name {s}", .{ w[1] });
-            if (contains(driven.items, dest)) return fail("multiple drivers for {s}", .{ dest });
+            if (!name(dest, false)) return fail("bad name {s}", .{dest});
+            const d = number(w[w.len - 1], false) catch return fail("bad delay {s}", .{w[w.len - 1]});
+            if (d > 1000) return fail("bad delay {s}", .{w[w.len - 1]});
+            if (contains(used.items, w[1])) return fail("duplicate name {s}", .{w[1]});
+            if (contains(driven.items, dest)) return fail("multiple drivers for {s}", .{dest});
             try used.append(A, w[1]);
             try driven.append(A, dest);
-            for (w[2..w.len - 3]) |s| try references.append(A, .{ .s = s, .ln = b.ln });
+            for (w[2 .. w.len - 3]) |s| try references.append(A, .{ .s = s, .ln = b.ln });
             ng += 1;
         } else if (eq(w[0], "INST")) {
             if (w.len < 3) return fail("bad instance syntax", .{});
-            if (!name(w[1], false)) return fail("bad name {s}", .{ w[1] });
+            if (!name(w[1], false)) return fail("bad name {s}", .{w[1]});
             const mi = try module(w[2]);
             const m = modules.items[mi];
             var ps: std.ArrayList(S) = .empty;
             var os: std.ArrayList(S) = .empty;
             for (w[3..]) |conn| {
-                const e = std.mem.indexOfScalar(u8, conn, '=') orelse return fail("bad connection {s}", .{ conn });
-                if (e == 0 or e + 1 == conn.len or std.mem.indexOfScalar(u8, conn[e + 1..], '=') != null) return fail("bad connection {s}", .{ conn });
+                const e = std.mem.indexOfScalar(u8, conn, '=') orelse return fail("bad connection {s}", .{conn});
+                if (e == 0 or e + 1 == conn.len or std.mem.indexOfScalar(u8, conn[e + 1 ..], '=') != null) return fail("bad connection {s}", .{conn});
                 const p = conn[0..e];
-                const s = conn[e + 1..];
-                if (!contains(m.inputs, p) and !contains(m.outputs, p)) return fail("unknown port {s}", .{ p });
-                if (contains(ps.items, p)) return fail("duplicate connection {s}", .{ p });
-                if (!name(s, false)) return fail("bad name {s}", .{ s });
+                const s = conn[e + 1 ..];
+                if (!contains(m.inputs, p) and !contains(m.outputs, p)) return fail("unknown port {s}", .{p});
+                if (contains(ps.items, p)) return fail("duplicate connection {s}", .{p});
+                if (!name(s, false)) return fail("bad name {s}", .{s});
                 try ps.append(A, p);
                 if (contains(m.outputs, p)) try os.append(A, s) else try references.append(A, .{ .s = s, .ln = b.ln });
             }
-            for (m.inputs) |p| if (!contains(ps.items, p)) return fail("unconnected input {s}", .{ p });
-            if (contains(used.items, w[1])) return fail("duplicate name {s}", .{ w[1] });
+            for (m.inputs) |p| if (!contains(ps.items, p)) return fail("unconnected input {s}", .{p});
+            if (contains(used.items, w[1])) return fail("duplicate name {s}", .{w[1]});
             for (os.items) |s| {
-                if (contains(driven.items, s)) return fail("multiple drivers for {s}", .{ s });
+                if (contains(driven.items, s)) return fail("multiple drivers for {s}", .{s});
                 try driven.append(A, s);
             }
             try used.append(A, w[1]);
             ni += 1;
-        } else return fail("unknown statement {s}", .{ w[0] });
+        } else return fail("unknown statement {s}", .{w[0]});
     }
     for (references.items) |r| if (!contains(driven.items, r.s)) {
         error_line = r.ln;
-        return fail("undriven signal {s}", .{ r.s });
+        return fail("undriven signal {s}", .{r.s});
     };
     error_line = ln;
-    for (outputs) |s| if (!contains(driven.items, s)) return fail("undriven signal {s}", .{ s });
+    for (outputs) |s| if (!contains(driven.items, s)) return fail("undriven signal {s}", .{s});
     try modules.append(A, .{ .name = header[1], .inputs = inputs, .outputs = outputs, .body = body });
     try line(try fmt("defined {s} inputs {d} outputs {d} gates {d} instances {d}", .{ header[1], inputs.len, outputs.len, ng, ni }));
 }
 
-const Raw = struct {
-    name: S,
-    k: Kind,
-    inputs: []S,
-    output: S,
-    delay: u64
-};
+const Raw = struct { name: S, k: Kind, inputs: []S, output: S, delay: u64 };
 
-const Gate = struct {
-    name: S,
-    k: Kind,
-    ins: []usize,
-    output: usize,
-    delay: u64
-};
+const Gate = struct { name: S, k: Kind, ins: []usize, output: usize, delay: u64 };
 
-const Flat = struct {
-    mi: usize,
-    n: usize,
-    signals: []S,
-    outputs: []usize,
-    gates: []Gate
-};
+const Flat = struct { mi: usize, n: usize, signals: []S, outputs: []usize, gates: []Gate };
 
 fn actual(s: S, prefix: S, map: std.StringHashMap(S)) !S {
     return map.get(s) orelse try fmt("{s}{s}", .{ prefix, s });
@@ -230,19 +189,13 @@ fn expand(mi: usize, prefix: S, map: std.StringHashMap(S), raw: *std.ArrayList(R
             var child = std.StringHashMap(S).init(A);
             for (w[3..]) |conn| {
                 const e = std.mem.indexOfScalar(u8, conn, '=').?;
-                try child.put(conn[0..e], try actual(conn[e + 1..], prefix, map));
+                try child.put(conn[0..e], try actual(conn[e + 1 ..], prefix, map));
             }
             try expand(lookup(w[2]).?, try fmt("{s}{s}.", .{ prefix, w[1] }), child, raw);
         } else {
             const ins = try A.alloc(S, w.len - 5);
-            for (w[2..w.len - 3], 0..) |s, i| ins[i] = try actual(s, prefix, map);
-            try raw.append(A, .{
-                .name = try fmt("{s}{s}", .{ prefix, w[1] }),
-                .k = std.meta.stringToEnum(Kind, w[0]).?,
-                .inputs = ins,
-                .output = try actual(w[w.len - 2], prefix, map),
-                .delay = try number(w[w.len - 1], false)
-            });
+            for (w[2 .. w.len - 3], 0..) |s, i| ins[i] = try actual(s, prefix, map);
+            try raw.append(A, .{ .name = try fmt("{s}{s}", .{ prefix, w[1] }), .k = std.meta.stringToEnum(Kind, w[0]).?, .inputs = ins, .output = try actual(w[w.len - 2], prefix, map), .delay = try number(w[w.len - 1], false) });
         }
     }
 }
@@ -259,13 +212,7 @@ fn flatten(mi: usize) !Flat {
     const sig = try A.alloc(S, m.inputs.len + raw.items.len);
     @memcpy(sig[0..m.inputs.len], m.inputs);
     for (raw.items, 0..) |g, i| sig[m.inputs.len + i] = g.output;
-    const f = Flat{
-        .mi = mi,
-        .n = m.inputs.len,
-        .signals = sig,
-        .outputs = try A.alloc(usize, m.outputs.len),
-        .gates = try A.alloc(Gate, raw.items.len)
-    };
+    const f = Flat{ .mi = mi, .n = m.inputs.len, .signals = sig, .outputs = try A.alloc(usize, m.outputs.len), .gates = try A.alloc(Gate, raw.items.len) };
     for (m.outputs, 0..) |s, i| f.outputs[i] = signal(f, s).?;
     for (raw.items, 0..) |g, i| {
         const ins = try A.alloc(usize, g.inputs.len);
@@ -310,9 +257,9 @@ fn order(f: Flat) !?[]usize {
 
 fn combinational(f: Flat) ![]usize {
     const m = modules.items[f.mi];
-    for (f.gates) |g| if (g.k == .DFF) return fail("{s} is not combinational", .{ m.name });
-    const ord = (try order(f)) orelse return fail("{s} has a combinational loop", .{ m.name });
-    if (f.n > 8) return fail("too many inputs {d}", .{ f.n });
+    for (f.gates) |g| if (g.k == .DFF) return fail("{s} is not combinational", .{m.name});
+    const ord = (try order(f)) orelse return fail("{s} has a combinational loop", .{m.name});
+    if (f.n > 8) return fail("too many inputs {d}", .{f.n});
     return ord;
 }
 
@@ -340,11 +287,9 @@ fn gateValue(g: Gate, v: []const u8) u8 {
         if (v[s] == '1') parity = !parity;
     }
     const x: u8 = switch (g.k) {
-        .AND,
-        .NAND => if (zeros) '0' else if (unknown) 'X' else '1',
-        .OR,
-        .NOR => if (ones) '1' else if (unknown) 'X' else '0',
-        else => if (unknown) 'X' else if (parity) '1' else '0'
+        .AND, .NAND => if (zeros) '0' else if (unknown) 'X' else '1',
+        .OR, .NOR => if (ones) '1' else if (unknown) 'X' else '0',
+        else => if (unknown) 'X' else if (parity) '1' else '0',
     };
     return if (g.k == .NAND or g.k == .NOR or g.k == .XNOR) invert(x) else x;
 }
@@ -396,8 +341,8 @@ fn timing(f: Flat, period: bool) !void {
     for (f.gates) |g| if (g.k == .DFF) {
         ff += 1;
     };
-    if (period and ff == 0) return fail("{s} has no flip-flops", .{ m.name });
-    const ord = (try order(f)) orelse return fail("{s} has a combinational loop", .{ m.name });
+    if (period and ff == 0) return fail("{s} has no flip-flops", .{m.name});
+    const ord = (try order(f)) orelse return fail("{s} has a combinational loop", .{m.name});
     const latest = try A.alloc(?u64, f.signals.len);
     const earliest = try A.alloc(?u64, f.signals.len);
     const prev = try A.alloc(?usize, f.signals.len);
@@ -436,36 +381,18 @@ fn timing(f: Flat, period: bool) !void {
             if (latest[s]) |l| {
                 try line(try fmt("{s} min {d} max {d}", .{ f.signals[s], earliest[s].?, l }));
                 if (endpoint == null or l > latest[endpoint.?].?) endpoint = s;
-            } else try line(try fmt("{s} unreachable", .{ f.signals[s] }));
+            } else try line(try fmt("{s} unreachable", .{f.signals[s]}));
         }
     }
-    const prefix = if (period) try fmt("flip-flops {d} period", .{ ff }) else "critical";
-    if (endpoint) |s| try line(try fmt("{s} {d}: {s}", .{ prefix, latest[s].?, try path(f, s, prev) })) else try line(try fmt("{s} none", .{ prefix }));
+    const prefix = if (period) try fmt("flip-flops {d} period", .{ff}) else "critical";
+    if (endpoint) |s| try line(try fmt("{s} {d}: {s}", .{ prefix, latest[s].?, try path(f, s, prev) })) else try line(try fmt("{s} none", .{prefix}));
 }
 
-const Event = struct {
-    time: u64,
-    s: usize,
-    v: u8,
-    serial: u64
-};
+const Event = struct { time: u64, s: usize, v: u8, serial: u64 };
 
-const Change = struct {
-    time: u64,
-    v: u8
-};
+const Change = struct { time: u64, v: u8 };
 
-const Simulation = struct {
-    f: Flat,
-    vals: []u8,
-    records: []std.ArrayList(Change),
-    events: std.ArrayList(Event) = .empty,
-    watch: std.ArrayList(usize) = .empty,
-    time: u64 = 0,
-    processed: u64 = 0,
-    serial: u64 = 0,
-    halted: bool = false
-};
+const Simulation = struct { f: Flat, vals: []u8, records: []std.ArrayList(Change), events: std.ArrayList(Event) = .empty, watch: std.ArrayList(usize) = .empty, time: u64 = 0, processed: u64 = 0, serial: u64 = 0, halted: bool = false };
 
 var sim: ?Simulation = null;
 
@@ -523,7 +450,7 @@ fn run(s: *Simulation, t: u64) !void {
         while (s.events.items.len > 0) {
             if (s.events.items[0].time != tau) break;
             if (count == 1000) {
-                try line(try fmt("halted: oscillation at time {d}", .{ tau }));
+                try line(try fmt("halted: oscillation at time {d}", .{tau}));
                 s.events.clearRetainingCapacity();
                 s.time = tau;
                 s.halted = true;
@@ -553,18 +480,18 @@ fn run(s: *Simulation, t: u64) !void {
 }
 
 fn sig(s: *Simulation, n: S) !usize {
-    return signal(s.f, n) orelse fail("unknown signal {s}", .{ n });
+    return signal(s.f, n) orelse fail("unknown signal {s}", .{n});
 }
 
 fn inputSig(s: *Simulation, n: S) !usize {
-    const i = signal(s.f, n) orelse return fail("not an input {s}", .{ n });
-    if (i >= s.f.n) return fail("not an input {s}", .{ n });
+    const i = signal(s.f, n) orelse return fail("not an input {s}", .{n});
+    if (i >= s.f.n) return fail("not an input {s}", .{n});
     return i;
 }
 
 fn time(s: *Simulation, n: S) !u64 {
     const t = try number(n, false);
-    if (t < s.time) return fail("time {d} is in the past", .{ t });
+    if (t < s.time) return fail("time {d} is in the past", .{t});
     return t;
 }
 
@@ -582,8 +509,8 @@ fn observation(s: *Simulation, c: S, a: []S) !void {
             for (ids[0..j]) |v| if (v == i) {
                 repeated = true;
             };
-            if (eq(c, "WATCH") and (watched(s, i) or repeated)) return fail("already watched {s}", .{ n });
-            if (eq(c, "UNWATCH") and (!watched(s, i) or repeated)) return fail("not watched {s}", .{ n });
+            if (eq(c, "WATCH") and (watched(s, i) or repeated)) return fail("already watched {s}", .{n});
+            if (eq(c, "UNWATCH") and (!watched(s, i) or repeated)) return fail("not watched {s}", .{n});
             ids[j] = i;
         }
         if (eq(c, "WATCH")) try s.watch.appendSlice(A, ids) else {
@@ -597,7 +524,7 @@ fn observation(s: *Simulation, c: S, a: []S) !void {
             }
         }
         try put("watching");
-        if (s.watch.items.len == 0) try put(" nothing") else for (s.watch.items) |i| try put(try fmt(" {s}", .{ s.f.signals[i] }));
+        if (s.watch.items.len == 0) try put(" nothing") else for (s.watch.items) |i| try put(try fmt(" {s}", .{s.f.signals[i]}));
         try put("\n");
     } else if (eq(c, "SHOW")) {
         for (a) |n| {
@@ -624,14 +551,14 @@ fn observation(s: *Simulation, c: S, a: []S) !void {
             const g = s.f.gates[i - s.f.n];
             try put(try fmt("{s}={c} driven by {s} {s}", .{ a[0], s.vals[i], g.name, @tagName(g.k) }));
             for (g.ins) |j| try put(try fmt(" {s}={c}", .{ s.f.signals[j], s.vals[j] }));
-            try line(try fmt(" delay {d}", .{ g.delay }));
+            try line(try fmt(" delay {d}", .{g.delay}));
         }
         var count: usize = 0;
         for (s.f.gates) |g| if (reads(g, i)) {
             count += 1;
         };
-        try put(try fmt("fanout {d}", .{ count }));
-        for (s.f.gates) |g| if (reads(g, i)) try put(try fmt(" {s}", .{ g.name }));
+        try put(try fmt("fanout {d}", .{count}));
+        for (s.f.gates) |g| if (reads(g, i)) try put(try fmt(" {s}", .{g.name}));
         try put("\n");
     } else if (eq(c, "HISTORY")) {
         const i = try sig(s, a[0]);
@@ -644,12 +571,12 @@ fn observation(s: *Simulation, c: S, a: []S) !void {
         if (t0 >= t1 or t1 > s.time) return fail("bad range {d} {d}", .{ t0, t1 });
         if (s.watch.items.len == 0) return fail("nothing watched", .{});
         for (s.watch.items) |i| {
-            try put(try fmt("{s} ", .{ s.f.signals[i] }));
+            try put(try fmt("{s} ", .{s.f.signals[i]}));
             var t = t0;
             var j: usize = 0;
             var v: u8 = 'X';
-            while (t < t1): (t += 1) {
-                while (j < s.records[i].items.len and s.records[i].items[j].time <= t): (j += 1) v = s.records[i].items[j].v;
+            while (t < t1) : (t += 1) {
+                while (j < s.records[i].items.len and s.records[i].items[j].time <= t) : (j += 1) v = s.records[i].items[j].v;
                 try out.append(A, v);
             }
             try put("\n");
@@ -674,20 +601,14 @@ fn observation(s: *Simulation, c: S, a: []S) !void {
             if (v == '0') zeros += 1;
             if (v == '1') ones += 1;
         }
-        try line(try fmt("circuit {s} time {d} pending {d} events {d} halted {s}", .{
-            modules.items[s.f.mi].name,
-            s.time,
-            s.events.items.len,
-            s.processed,
-            if (s.halted) @as(S, "yes") else "no"
-        }));
+        try line(try fmt("circuit {s} time {d} pending {d} events {d} halted {s}", .{ modules.items[s.f.mi].name, s.time, s.events.items.len, s.processed, if (s.halted) @as(S, "yes") else "no" }));
         try line(try fmt("values 0:{d} 1:{d} X:{d}", .{ zeros, ones, s.vals.len - zeros - ones }));
     }
 }
 
 fn inspect(c: S, a: []S) !void {
     if (eq(c, "MODULES")) {
-        try line(try fmt("modules {d}", .{ modules.items.len }));
+        try line(try fmt("modules {d}", .{modules.items.len}));
         for (modules.items, 0..) |m, i| {
             const f = try flatten(i);
             try line(try fmt("{s} inputs {d} outputs {d} gates {d}", .{ m.name, m.inputs.len, m.outputs.len, f.gates.len }));
@@ -709,7 +630,7 @@ fn inspect(c: S, a: []S) !void {
         try line(try fmt("netlist {s} gates {d} signals {d}", .{ m.name, f.gates.len, f.signals.len }));
         for (f.gates) |g| {
             try put(try fmt("{s} {s}", .{ g.name, @tagName(g.k) }));
-            for (g.ins) |i| try put(try fmt(" {s}", .{ f.signals[i] }));
+            for (g.ins) |i| try put(try fmt(" {s}", .{f.signals[i]}));
             try line(try fmt(" -> {s} {d}", .{ f.signals[g.output], g.delay }));
         }
     } else if (eq(c, "STATS")) {
@@ -724,18 +645,11 @@ fn inspect(c: S, a: []S) !void {
             levels[g.output] = l + 1;
             depth = @max(depth, l + 1);
         };
-        try line(try fmt("stats {s} gates {d} signals {d} depth {s}", .{
-            m.name,
-            f.gates.len,
-            f.signals.len,
-            if (ord == null) @as(S, "-") else try fmt("{d}", .{ depth })
-        }));
-        var counts: [10]usize = [_]usize{
-            0
-        } ** 10;
-        for (f.gates) |g| counts[@intFromEnum(g.k)] += 1;
+        try line(try fmt("stats {s} gates {d} signals {d} depth {s}", .{ m.name, f.gates.len, f.signals.len, if (ord == null) @as(S, "-") else try fmt("{d}", .{depth}) }));
+        var counts: [10]usize = @as([10]usize, @splat(0));
+        for (f.gates) |g| counts[@backingInt(g.k)] += 1;
         try put("types");
-        for (counts, 0..) |n, i| if (n > 0) try put(try fmt(" {s} {d}", .{ @tagName(@as(Kind, @enumFromInt(i))), n }));
+        for (counts, 0..) |n, i| if (n > 0) try put(try fmt(" {s} {d}", .{ @tagName(@as(Kind, @fromBackingInt(@intCast(i)))), n }));
         try put("\n");
         var best: usize = 0;
         var maximum: usize = 0;
@@ -754,14 +668,14 @@ fn inspect(c: S, a: []S) !void {
         const ord = try combinational(f);
         const rows = @as(usize, 1) << @intCast(f.n);
         if (eq(c, "TRUTHTABLE")) {
-            for (m.inputs) |s| try put(try fmt("{s} ", .{ s }));
+            for (m.inputs) |s| try put(try fmt("{s} ", .{s}));
             try put("|");
-            for (m.outputs) |s| try put(try fmt(" {s}", .{ s }));
+            for (m.outputs) |s| try put(try fmt(" {s}", .{s}));
             try put("\n");
             for (0..rows) |r| {
-                for (try bits(f.n, r)) |v| try put(try fmt("{c} ", .{ v }));
+                for (try bits(f.n, r)) |v| try put(try fmt("{c} ", .{v}));
                 try put("|");
-                for (try evaluate(f, ord, r, null, 'X')) |v| try put(try fmt(" {c}", .{ v }));
+                for (try evaluate(f, ord, r, null, 'X')) |v| try put(try fmt(" {c}", .{v}));
                 try put("\n");
             }
         } else if (eq(c, "EQUIV")) {
@@ -796,7 +710,7 @@ fn inspect(c: S, a: []S) !void {
             try line(try fmt("faults {d} detected {d}", .{ 2 * f.signals.len, detected }));
             for (undetected.items) |s| try line(s);
             try put("tests");
-            for (tests, 0..) |yes, r| if (yes) try put(try fmt(" {s}", .{ try bits(f.n, r) }));
+            for (tests, 0..) |yes, r| if (yes) try put(try fmt(" {s}", .{try bits(f.n, r)}));
             try put("\n");
         }
     }
@@ -805,64 +719,15 @@ fn inspect(c: S, a: []S) !void {
 fn command(w: []S) !void {
     const c = w[0];
     const a = w[1..];
-    const names = [_]S{
-        "BUILD",
-        "RESET",
-        "SET",
-        "APPLY",
-        "PULSE",
-        "CLOCK",
-        "RUN",
-        "WATCH",
-        "UNWATCH",
-        "SHOW",
-        "CHECK",
-        "PROBE",
-        "WAVE",
-        "HISTORY",
-        "ACTIVITY",
-        "STATUS",
-        "MODULES",
-        "NETLIST",
-        "HIERARCHY",
-        "STATS",
-        "TRUTHTABLE",
-        "EQUIV",
-        "FAULTS",
-        "CRITICAL",
-        "PERIOD"
-    };
+    const names = [_]S{ "BUILD", "RESET", "SET", "APPLY", "PULSE", "CLOCK", "RUN", "WATCH", "UNWATCH", "SHOW", "CHECK", "PROBE", "WAVE", "HISTORY", "ACTIVITY", "STATUS", "MODULES", "NETLIST", "HIERARCHY", "STATS", "TRUTHTABLE", "EQUIV", "FAULTS", "CRITICAL", "PERIOD" };
     var id: ?usize = null;
     for (names, 0..) |n, i| if (eq(c, n)) {
         id = i;
         break;
     };
-    const j = id orelse return fail("unknown command {s}", .{ c });
-    const counts = [_]i32 {
-        1,
-        0,
-        3,
-        2,
-        3,
-        4,
-        1, - 1, - 1, - 2,
-        2,
-        1,
-        2,
-        1,
-        1,
-        0,
-        0,
-        1,
-        1,
-        1,
-        1,
-        2,
-        1,
-        1,
-        1
-    };
-    if ((counts[j] >= 0 and a.len != @as(usize, @intCast(counts[j]))) or (counts[j] ==  - 1 and a.len == 0)) return fail("wrong argument count", .{});
+    const j = id orelse return fail("unknown command {s}", .{c});
+    const counts = [_]i32{ 1, 0, 3, 2, 3, 4, 1, -1, -1, -2, 2, 1, 2, 1, 1, 0, 0, 1, 1, 1, 1, 2, 1, 1, 1 };
+    if ((counts[j] >= 0 and a.len != @as(usize, @intCast(counts[j]))) or (counts[j] == -1 and a.len == 0)) return fail("wrong argument count", .{});
     if (j >= 1 and j <= 15) {
         if (sim == null) return fail("no circuit", .{});
         const s = &sim.?;
@@ -881,8 +746,8 @@ fn command(w: []S) !void {
             try line(try fmt("set {s} {c} at {d}", .{ a[1], v, t }));
         } else if (eq(c, "APPLY")) {
             const t = try time(s, a[0]);
-            if (a[1].len != s.f.n) return fail("bad vector {s}", .{ a[1] });
-            for (a[1]) |v| if (std.mem.indexOfScalar(u8, "01X", v) == null) return fail("bad vector {s}", .{ a[1] });
+            if (a[1].len != s.f.n) return fail("bad vector {s}", .{a[1]});
+            for (a[1]) |v| if (std.mem.indexOfScalar(u8, "01X", v) == null) return fail("bad vector {s}", .{a[1]});
             for (a[1], 0..) |v, i| try schedule(s, t, i, v);
             try line(try fmt("apply {s} at {d}", .{ a[1], t }));
         } else if (eq(c, "PULSE")) {
@@ -920,7 +785,7 @@ pub fn main(init: std.process.Init) !void {
         error_line = ln;
         if (w.len > 0 and eq(w[0], "MODULE")) {
             var body: std.ArrayList(Body) = .empty;
-            while (i < lines.items.len and !eq(lines.items[i], "ENDMODULE")): (i += 1) try body.append(A, .{ .w = try words(lines.items[i]), .ln = i + 1 });
+            while (i < lines.items.len and !eq(lines.items[i], "ENDMODULE")) : (i += 1) try body.append(A, .{ .w = try words(lines.items[i]), .ln = i + 1 });
             i += 1;
             definition(w, body.items, ln) catch |e| {
                 if (e != error.Invalid) return e;

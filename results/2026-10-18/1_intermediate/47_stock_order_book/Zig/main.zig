@@ -380,7 +380,8 @@ const Engine = struct {
                 q = number(w[5]);
                 if (kind == .ICEBERG) peak = number(w[6]) else if (w.len == 7) condition = std.meta.stringToEnum(Condition, w[6]).?;
             },
-            .MARKET => q = number(w[4]), .STOP => {
+            .MARKET => q = number(w[4]),
+            .STOP => {
                 r = number(w[4]);
                 q = number(w[5]);
             },
@@ -388,7 +389,7 @@ const Engine = struct {
                 r = number(w[4]);
                 p = number(w[5]);
                 q = number(w[6]);
-            }
+            },
         }
         const stop = kind == .STOP or kind == .STOPLIMIT;
         var reason: ?Text = null;
@@ -420,7 +421,8 @@ const Engine = struct {
     fn command(e: *Engine, w: []const Text) !void {
         const verb = std.meta.stringToEnum(Verb, w[0]).?;
         switch (verb) {
-            .LIMIT, .MARKET, .STOP, .STOPLIMIT, .ICEBERG => return e.newOrder(w, std.meta.stringToEnum(Kind, w[0]).?), .CANCEL, .REPLACE => {
+            .LIMIT, .MARKET, .STOP, .STOPLIMIT, .ICEBERG => return e.newOrder(w, std.meta.stringToEnum(Kind, w[0]).?),
+            .CANCEL, .REPLACE => {
                 const replace = verb == .REPLACE;
                 if (replace and e.halted) return e.reject(w[1], "halted");
                 const i = e.findOrder(w[1]) orelse return e.reject(w[1], "unknown order");
@@ -472,7 +474,9 @@ const Engine = struct {
                 const v = number(w[1]);
                 if (verb != .BAND and v == 0) return e.fail("invalid size");
                 switch (verb) {
-                    .BAND => e.band = v, .TICK => e.tick = v, else => e.lot = v
+                    .BAND => e.band = v,
+                    .TICK => e.tick = v,
+                    else => e.lot = v,
                 }
                 try e.line("{s} {d}", .{ w[0], v });
             },

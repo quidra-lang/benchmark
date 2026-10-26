@@ -36,24 +36,31 @@ const std::array<std::string, 5> STRATEGY_NAMES = {"BASIC", "LOW", "HIGH", "SMAR
 enum class State { None, Between, Passing, Playing };
 
 class CommandError : public std::runtime_error {
-public:
+  public:
     using std::runtime_error::runtime_error;
 };
 
-[[noreturn]] void fail(const std::string& reason) { throw CommandError(reason); }
+[[noreturn]] void fail(const std::string &reason) {
+    throw CommandError(reason);
+}
 
 bool one_of(std::string_view word, std::initializer_list<std::string_view> choices) {
     return std::find(choices.begin(), choices.end(), word) != choices.end();
 }
 
-std::string seat_name(int seat) { return std::string(1, SEATS[seat]); }
+std::string seat_name(int seat) {
+    return std::string(1, SEATS[seat]);
+}
 
-std::string card_text(int card) { return {RANKS[card % 13], SUITS[card / 13]}; }
+std::string card_text(int card) {
+    return {RANKS[card % 13], SUITS[card / 13]};
+}
 
-std::string cards_text(const CardSet& cards) {
+std::string cards_text(const CardSet &cards) {
     std::string text;
     for (int card : cards) {
-        if (!text.empty()) text += ' ';
+        if (!text.empty())
+            text += ' ';
         text += card_text(card);
     }
     return text.empty() ? "-" : text;
@@ -61,10 +68,14 @@ std::string cards_text(const CardSet& cards) {
 
 std::string direction_name(char code) {
     switch (code) {
-    case 'L': return "LEFT";
-    case 'R': return "RIGHT";
-    case 'A': return "ACROSS";
-    default: return "HOLD";
+    case 'L':
+        return "LEFT";
+    case 'R':
+        return "RIGHT";
+    case 'A':
+        return "ACROSS";
+    default:
+        return "HOLD";
     }
 }
 
@@ -72,12 +83,13 @@ std::string strategy_name(Strategy strategy) {
     return STRATEGY_NAMES[static_cast<std::size_t>(strategy)];
 }
 
-int seat_value(const std::string& word) {
-    if (word.size() != 1 || SEATS.find(word[0]) == std::string::npos) fail("bad seat " + word);
+int seat_value(const std::string &word) {
+    if (word.size() != 1 || SEATS.find(word[0]) == std::string::npos)
+        fail("bad seat " + word);
     return static_cast<int>(SEATS.find(word[0]));
 }
 
-int card_value(const std::string& word) {
+int card_value(const std::string &word) {
     if (word.size() != 2 || RANKS.find(word[0]) == std::string::npos ||
         SUITS.find(word[1]) == std::string::npos) {
         fail("bad card " + word);
@@ -85,15 +97,16 @@ int card_value(const std::string& word) {
     return static_cast<int>(SUITS.find(word[1]) * 13 + RANKS.find(word[0]));
 }
 
-Strategy strategy_value(const std::string& word) {
+Strategy strategy_value(const std::string &word) {
     auto found = std::find(STRATEGY_NAMES.begin(), STRATEGY_NAMES.end(), word);
-    if (found == STRATEGY_NAMES.end()) fail("bad value " + word);
+    if (found == STRATEGY_NAMES.end())
+        fail("bad value " + word);
     return static_cast<Strategy>(found - STRATEGY_NAMES.begin());
 }
 
-int bounded(const std::string& word, int low, int high) {
+int bounded(const std::string &word, int low, int high) {
     int value = 0;
-    const char* end = word.data() + word.size();
+    const char *end = word.data() + word.size();
     auto [last, error] = std::from_chars(word.data(), end, value);
     if (error != std::errc() || last != end || value < low || value > high) {
         fail("bad value " + word);
@@ -109,41 +122,44 @@ bool by_rank_descending(int a, int b) {
     return std::make_pair(-(a % 13), a / 13) < std::make_pair(-(b % 13), b / 13);
 }
 
-int lowest(const CardSet& cards) { return *std::min_element(cards.begin(), cards.end(), by_rank); }
+int lowest(const CardSet &cards) {
+    return *std::min_element(cards.begin(), cards.end(), by_rank);
+}
 
-int highest(const CardSet& cards) {
+int highest(const CardSet &cards) {
     return *std::min_element(cards.begin(), cards.end(), by_rank_descending);
 }
 
-std::vector<int> sorted_cards(const CardSet& cards, bool (*order)(int, int)) {
+std::vector<int> sorted_cards(const CardSet &cards, bool (*order)(int, int)) {
     std::vector<int> sorted(cards.begin(), cards.end());
     std::sort(sorted.begin(), sorted.end(), order);
     return sorted;
 }
 
-template <typename Predicate>
-CardSet filter_cards(const CardSet& cards, Predicate predicate) {
+template <typename Predicate> CardSet filter_cards(const CardSet &cards, Predicate predicate) {
     CardSet result;
     std::copy_if(cards.begin(), cards.end(), std::inserter(result, result.end()), predicate);
     return result;
 }
 
-int count_suit(const CardSet& cards, int suit) {
+int count_suit(const CardSet &cards, int suit) {
     return static_cast<int>(
         std::count_if(cards.begin(), cards.end(), [suit](int card) { return card / 13 == suit; }));
 }
 
-bool penalty(int card) { return card == QS || card / 13 == 3; }
+bool penalty(int card) {
+    return card == QS || card / 13 == 3;
+}
 
-template <typename T>
-std::string pairs(const std::string& label, const std::array<T, 4>& values) {
+template <typename T> std::string pairs(const std::string &label, const std::array<T, 4> &values) {
     std::ostringstream out;
     out << label;
-    for (int seat = 0; seat < 4; ++seat) out << ' ' << SEATS[seat] << ' ' << values[seat];
+    for (int seat = 0; seat < 4; ++seat)
+        out << ' ' << SEATS[seat] << ' ' << values[seat];
     return out.str();
 }
 
-std::array<int, 4> ranking(const std::array<int, 4>& scores) {
+std::array<int, 4> ranking(const std::array<int, 4> &scores) {
     std::array<int, 4> seats = {0, 1, 2, 3};
     std::stable_sort(seats.begin(), seats.end(),
                      [&scores](int a, int b) { return scores[a] < scores[b]; });
@@ -151,31 +167,35 @@ std::array<int, 4> ranking(const std::array<int, 4>& scores) {
 }
 
 class Generator {
-public:
-    explicit Generator(std::int64_t seed) : state_(seed) {}
+  public:
+    explicit Generator(std::int64_t seed) : state_(seed) {
+    }
 
     std::int64_t draw() {
         state_ = 48271 * state_ % 2147483647;
         return state_;
     }
 
-    void shuffle(std::vector<int>& deck) {
+    void shuffle(std::vector<int> &deck) {
         for (int i = static_cast<int>(deck.size()) - 1; i > 0; --i) {
             int j = static_cast<int>(draw() % (i + 1));
             std::swap(deck[i], deck[j]);
         }
     }
 
-private:
+  private:
     std::int64_t state_;
 };
 
-bool switch_value(const std::string& word) {
-    if (!one_of(word, {"ON", "OFF"})) fail("bad value " + word);
+bool switch_value(const std::string &word) {
+    if (!one_of(word, {"ON", "OFF"}))
+        fail("bad value " + word);
     return word == "ON";
 }
 
-std::string switch_text(bool on) { return on ? "ON" : "OFF"; }
+std::string switch_text(bool on) {
+    return on ? "ON" : "OFF";
+}
 
 struct Rules {
     int target = 100;
@@ -186,14 +206,15 @@ struct Rules {
     bool blood = false;
     std::string pass = "LRAH";
 
-    Rules with(const std::string& name, const std::string& word) const {
+    Rules with(const std::string &name, const std::string &word) const {
         Rules next = *this;
         if (name == "TARGET") {
             next.target = bounded(word, 1, 1000);
         } else if (name == "LIMIT") {
             next.limit = bounded(word, 1, 100);
         } else if (name == "MOON") {
-            if (!one_of(word, {"ADD", "SUB", "AUTO"})) fail("bad value " + word);
+            if (!one_of(word, {"ADD", "SUB", "AUTO"}))
+                fail("bad value " + word);
             next.moon = word;
         } else if (name == "JACK") {
             next.jack = switch_value(word);
@@ -226,7 +247,7 @@ struct Stats {
     int queens = 0;
     int moons = 0;
 
-    Stats& operator+=(const Stats& other) {
+    Stats &operator+=(const Stats &other) {
         tricks += other.tricks;
         hearts += other.hearts;
         queens += other.queens;
@@ -247,19 +268,21 @@ struct Play {
 
 using Trick = std::vector<Play>;
 
-int trick_winner(const Trick& plays) {
+int trick_winner(const Trick &plays) {
     int led = plays[0].card / 13;
-    const Play* best = &plays[0];
-    for (const Play& play : plays) {
-        if (play.card / 13 == led && play.card % 13 > best->card % 13) best = &play;
+    const Play *best = &plays[0];
+    for (const Play &play : plays) {
+        if (play.card / 13 == led && play.card % 13 > best->card % 13)
+            best = &play;
     }
     return best->seat;
 }
 
-std::string plays_text(const Trick& plays) {
+std::string plays_text(const Trick &plays) {
     std::string text;
-    for (const Play& play : plays) {
-        if (!text.empty()) text += ' ';
+    for (const Play &play : plays) {
+        if (!text.empty())
+            text += ' ';
         text += seat_name(play.seat) + " " + card_text(play.card);
     }
     return text;
@@ -296,11 +319,12 @@ struct Snapshot {
 };
 
 struct Game {
-    Game(const Rules& rules, const std::array<Strategy, 4>& bots, Generator generator)
-        : rules(rules), bots(bots), generator(generator) {}
+    Game(const Rules &rules, const std::array<Strategy, 4> &bots, Generator generator)
+        : rules(rules), bots(bots), generator(generator) {
+    }
 
-    const Rules& rules;
-    const std::array<Strategy, 4>& bots;
+    const Rules &rules;
+    const std::array<Strategy, 4> &bots;
     Generator generator;
     State state = State::Between;
     int number = 0;
@@ -315,26 +339,31 @@ struct Game {
     std::vector<LogLine> log;
 
     int point(int card) const {
-        if (card == QS) return 13;
-        if (card / 13 == 3) return 1;
+        if (card == QS)
+            return 13;
+        if (card / 13 == 3)
+            return 1;
         return card == JD && rules.jack ? -10 : 0;
     }
 
-    int points(const CardSet& cards) const {
+    int points(const CardSet &cards) const {
         int sum = 0;
-        for (int card : cards) sum += point(card);
+        for (int card : cards)
+            sum += point(card);
         return sum;
     }
 
-    int trick_points(const Trick& plays) const {
+    int trick_points(const Trick &plays) const {
         int sum = 0;
-        for (const Play& play : plays) sum += point(play.card);
+        for (const Play &play : plays)
+            sum += point(play.card);
         return sum;
     }
 
-    void write(int level, const std::string& line) {
+    void write(int level, const std::string &line) {
         log.push_back({level, line});
-        if (level > 0) round.record.push_back(line);
+        if (level > 0)
+            round.record.push_back(line);
     }
 
     void deal() {
@@ -354,7 +383,8 @@ struct Game {
         }
         std::vector<int> deck;
         for (int card = 0; card < 52; ++card) {
-            if (!used.count(card)) deck.push_back(card);
+            if (!used.count(card))
+                deck.push_back(card);
         }
         generator.shuffle(deck);
         for (std::size_t i = 0; i < deck.size(); ++i) {
@@ -377,45 +407,52 @@ struct Game {
     void begin_play() {
         state = State::Playing;
         for (int seat = 0; seat < 4; ++seat) {
-            if (round.hands[seat].count(TWO_OF_CLUBS)) round.leader = seat;
+            if (round.hands[seat].count(TWO_OF_CLUBS))
+                round.leader = seat;
         }
         write(2, "lead " + seat_name(round.leader));
     }
 
-    void pass_cards(int seat, const CardSet& cards) {
-        for (int card : cards) round.hands[seat].erase(card);
+    void pass_cards(int seat, const CardSet &cards) {
+        for (int card : cards)
+            round.hands[seat].erase(card);
         passes[seat] = cards;
         write(2, seat_name(seat) + " passes " + cards_text(cards));
         if (passes.size() == 4) {
             int offset = pass_code == 'L' ? 1 : pass_code == 'R' ? 3 : 2;
-            for (const auto& [source, passed] : passes) {
+            for (const auto &[source, passed] : passes) {
                 round.hands[(source + offset) % 4].insert(passed.begin(), passed.end());
             }
             begin_play();
         }
     }
 
-    int actor() const { return (round.leader + static_cast<int>(round.current.size())) % 4; }
+    int actor() const {
+        return (round.leader + static_cast<int>(round.current.size())) % 4;
+    }
 
     CardSet legal() const {
-        const CardSet& hand = round.hands[actor()];
+        const CardSet &hand = round.hands[actor()];
         if (round.current.empty()) {
-            if (round.tricks.empty()) return {TWO_OF_CLUBS};
+            if (round.tricks.empty())
+                return {TWO_OF_CLUBS};
             CardSet non_hearts = filter_cards(hand, [](int card) { return card / 13 != 3; });
             return !round.broken && !non_hearts.empty() ? non_hearts : hand;
         }
         int suit = round.current[0].card / 13;
         CardSet followers = filter_cards(hand, [suit](int card) { return card / 13 == suit; });
-        if (!followers.empty()) return followers;
+        if (!followers.empty())
+            return followers;
         if (round.tricks.empty() && !rules.blood) {
             CardSet safe = filter_cards(hand, [](int card) { return !penalty(card); });
-            if (!safe.empty()) return safe;
+            if (!safe.empty())
+                return safe;
         }
         return hand;
     }
 
     CardSet choose_pass(int seat) const {
-        const CardSet& hand = round.hands[seat];
+        const CardSet &hand = round.hands[seat];
         std::vector<int> low = sorted_cards(hand, by_rank);
         std::vector<int> high = sorted_cards(hand, by_rank_descending);
         std::vector<int> hearts;
@@ -423,7 +460,8 @@ struct Game {
                      [](int card) { return card / 13 == 3; });
         std::vector<int> special;
         for (int card : {QS, KS, AS}) {
-            if (hand.count(card)) special.push_back(card);
+            if (hand.count(card))
+                special.push_back(card);
         }
         std::vector<int> order;
         switch (bots[seat]) {
@@ -441,7 +479,8 @@ struct Game {
             break;
         case Strategy::Smart: {
             bool is_protected = hand.count(QS) && count_suit(hand, 2) >= 5;
-            if (!is_protected) order = special;
+            if (!is_protected)
+                order = special;
             int clubs = count_suit(hand, 0);
             int diamonds = count_suit(hand, 1);
             if (clubs > 0 || diamonds > 0) {
@@ -461,47 +500,55 @@ struct Game {
         }
         CardSet chosen;
         for (int card : order) {
-            if (chosen.size() == 3) break;
+            if (chosen.size() == 3)
+                break;
             chosen.insert(card);
         }
         return chosen;
     }
 
     bool queen_played() const {
-        for (const CardSet& cards : round.taken) {
-            if (cards.count(QS)) return true;
+        for (const CardSet &cards : round.taken) {
+            if (cards.count(QS))
+                return true;
         }
         return std::any_of(round.current.begin(), round.current.end(),
-                           [](const Play& play) { return play.card == QS; });
+                           [](const Play &play) { return play.card == QS; });
     }
 
     bool others_took_penalty(int seat) const {
         for (int other = 0; other < 4; ++other) {
-            const CardSet& cards = round.taken[other];
-            if (other != seat && std::any_of(cards.begin(), cards.end(), penalty)) return true;
+            const CardSet &cards = round.taken[other];
+            if (other != seat && std::any_of(cards.begin(), cards.end(), penalty))
+                return true;
         }
         return false;
     }
 
     int choose_play() const {
         int seat = actor();
-        const CardSet& hand = round.hands[seat];
+        const CardSet &hand = round.hands[seat];
         CardSet playable = legal();
         Strategy strategy = bots[seat];
-        if (strategy == Strategy::Low) return lowest(playable);
-        if (strategy == Strategy::High) return highest(playable);
-        if (strategy == Strategy::Moon && others_took_penalty(seat)) strategy = Strategy::Basic;
+        if (strategy == Strategy::Low)
+            return lowest(playable);
+        if (strategy == Strategy::High)
+            return highest(playable);
+        if (strategy == Strategy::Moon && others_took_penalty(seat))
+            strategy = Strategy::Basic;
         if (round.current.empty()) {
             if (strategy == Strategy::Smart && !queen_played() && !hand.count(QS)) {
                 CardSet small_spades = filter_cards(
                     playable, [](int card) { return card / 13 == 2 && card % 13 < 10; });
-                if (!small_spades.empty()) return lowest(small_spades);
+                if (!small_spades.empty())
+                    return lowest(small_spades);
             }
             int chosen_suit = -1;
             int chosen_count = 0;
             for (int suit = 0; suit < 4; ++suit) {
                 int count = count_suit(playable, suit);
-                if (count == 0) continue;
+                if (count == 0)
+                    continue;
                 bool better =
                     strategy == Strategy::Moon ? count > chosen_count : count < chosen_count;
                 if (chosen_suit < 0 || better) {
@@ -516,8 +563,9 @@ struct Game {
         int led = round.current[0].card / 13;
         if (count_suit(hand, led) > 0) {
             int winning = 0;
-            for (const Play& play : round.current) {
-                if (play.card / 13 == led) winning = std::max(winning, play.card % 13);
+            for (const Play &play : round.current) {
+                if (play.card / 13 == led)
+                    winning = std::max(winning, play.card % 13);
             }
             if (strategy == Strategy::Moon) {
                 int high = highest(playable);
@@ -525,7 +573,8 @@ struct Game {
             }
             CardSet lower =
                 filter_cards(playable, [winning](int card) { return card % 13 < winning; });
-            if (!lower.empty()) return highest(lower);
+            if (!lower.empty())
+                return highest(lower);
             if (strategy == Strategy::Smart && round.current.size() == 3) {
                 CardSet without_queen = playable;
                 without_queen.erase(QS);
@@ -537,16 +586,19 @@ struct Game {
             CardSet safe = filter_cards(playable, [](int card) { return !penalty(card); });
             return lowest(safe.empty() ? playable : safe);
         }
-        if (playable.count(QS)) return QS;
+        if (playable.count(QS))
+            return QS;
         if (strategy == Strategy::Smart && !queen_played()) {
-            if (playable.count(AS)) return AS;
-            if (playable.count(KS)) return KS;
+            if (playable.count(AS))
+                return AS;
+            if (playable.count(KS))
+                return KS;
         }
         CardSet hearts = filter_cards(playable, [](int card) { return card / 13 == 3; });
         return highest(hearts.empty() ? playable : hearts);
     }
 
-    std::string trick_line(const Trick& plays, std::size_t number) const {
+    std::string trick_line(const Trick &plays, std::size_t number) const {
         return "trick " + std::to_string(number) + ": " + plays_text(plays) + " -> " +
                seat_name(trick_winner(plays)) + " " + std::to_string(trick_points(plays));
     }
@@ -556,16 +608,19 @@ struct Game {
         undo_stack.push_back({round, log.size(), {seat, card}});
         round.hands[seat].erase(card);
         round.current.push_back({seat, card});
-        if (card / 13 == 3 || (card == QS && rules.qs_break)) round.broken = true;
+        if (card / 13 == 3 || (card == QS && rules.qs_break))
+            round.broken = true;
         if (round.current.size() == 4) {
             int winner = trick_winner(round.current);
-            for (const Play& played : round.current) round.taken[winner].insert(played.card);
+            for (const Play &played : round.current)
+                round.taken[winner].insert(played.card);
             ++round.trick_counts[winner];
             round.tricks.push_back(round.current);
             write(2, trick_line(round.current, round.tricks.size()));
             round.current.clear();
             round.leader = winner;
-            if (round.tricks.size() == 13) finish_hand();
+            if (round.tricks.size() == 13)
+                finish_hand();
         }
     }
 
@@ -579,7 +634,7 @@ struct Game {
 
     void claim(int seat) {
         CardSet remaining;
-        for (CardSet& hand : round.hands) {
+        for (CardSet &hand : round.hands) {
             remaining.insert(hand.begin(), hand.end());
             hand.clear();
         }
@@ -591,7 +646,7 @@ struct Game {
         finish_hand();
     }
 
-    bool game_over(const std::array<int, 4>& totals) const {
+    bool game_over(const std::array<int, 4> &totals) const {
         return number >= rules.limit ||
                *std::max_element(totals.begin(), totals.end()) >= rules.target;
     }
@@ -600,9 +655,10 @@ struct Game {
         std::array<int, 4> hand_points{};
         std::optional<int> shooter;
         for (int seat = 0; seat < 4; ++seat) {
-            const CardSet& cards = round.taken[seat];
+            const CardSet &cards = round.taken[seat];
             hand_points[seat] = points(cards);
-            if (std::count_if(cards.begin(), cards.end(), penalty) == 14) shooter = seat;
+            if (std::count_if(cards.begin(), cards.end(), penalty) == 14)
+                shooter = seat;
         }
         if (shooter) {
             int moon_seat = *shooter;
@@ -619,13 +675,14 @@ struct Game {
                 hand_points[moon_seat] -= 26;
             } else {
                 for (int seat = 0; seat < 4; ++seat) {
-                    if (seat != moon_seat) hand_points[seat] += 26;
+                    if (seat != moon_seat)
+                        hand_points[seat] += 26;
                 }
             }
             write(1, "moon " + seat_name(moon_seat) + " " + method);
         }
         for (int seat = 0; seat < 4; ++seat) {
-            const CardSet& cards = round.taken[seat];
+            const CardSet &cards = round.taken[seat];
             scores[seat] += hand_points[seat];
             stats[seat] += Stats{round.trick_counts[seat], count_suit(cards, 3),
                                  static_cast<int>(cards.count(QS)), shooter == seat ? 1 : 0};
@@ -643,7 +700,8 @@ struct Game {
                 write(0, "rank " + std::to_string(place + 1) + " " + seat_name(seat) + " " +
                              std::to_string(scores[seat]));
             }
-            for (const std::string& line : stats_lines()) write(0, line);
+            for (const std::string &line : stats_lines())
+                write(0, line);
         }
     }
 
@@ -657,17 +715,21 @@ struct Game {
 
     void auto_pass() {
         for (int seat = 0; seat < 4; ++seat) {
-            if (!passes.count(seat)) pass_cards(seat, choose_pass(seat));
+            if (!passes.count(seat))
+                pass_cards(seat, choose_pass(seat));
         }
     }
 
     void auto_hand() {
-        if (state == State::Passing) auto_pass();
-        while (state == State::Playing) play(choose_play());
+        if (state == State::Passing)
+            auto_pass();
+        while (state == State::Playing)
+            play(choose_play());
     }
 
     void auto_game() {
-        if (state == State::Passing || state == State::Playing) auto_hand();
+        if (state == State::Passing || state == State::Playing)
+            auto_hand();
         while (state != State::None) {
             deal();
             auto_hand();
@@ -675,10 +737,11 @@ struct Game {
     }
 };
 
-CardSet distinct_cards(const std::vector<int>& cards) {
+CardSet distinct_cards(const std::vector<int> &cards) {
     CardSet seen;
     for (int card : cards) {
-        if (!seen.insert(card).second) fail("duplicate card " + card_text(card));
+        if (!seen.insert(card).second)
+            fail("duplicate card " + card_text(card));
     }
     return seen;
 }
@@ -686,28 +749,33 @@ CardSet distinct_cards(const std::vector<int>& cards) {
 std::string average_text(long long total, int games) {
     long long numerator = 100 * total;
     long long cents = numerator / games;
-    if (numerator % games != 0 && numerator < 0) --cents;
+    if (numerator % games != 0 && numerator < 0)
+        --cents;
     std::ostringstream out;
-    if (cents < 0) out << '-';
+    if (cents < 0)
+        out << '-';
     out << std::llabs(cents) / 100 << '.' << std::setw(2) << std::setfill('0')
         << std::llabs(cents) % 100;
     return out.str();
 }
 
 class Table {
-public:
-    std::vector<std::string> command(const std::vector<std::string>& words);
+  public:
+    std::vector<std::string> command(const std::vector<std::string> &words);
 
-private:
+  private:
     Rules rules;
     std::array<Strategy, 4> bots = {Strategy::Basic, Strategy::Basic, Strategy::Basic,
                                     Strategy::Basic};
     std::optional<Game> game;
 
-    bool active() const { return game && game->state != State::None; }
+    bool active() const {
+        return game && game->state != State::None;
+    }
 
     void require_game() const {
-        if (!active()) fail("no game");
+        if (!active())
+            fail("no game");
     }
 
     void require_hand() const {
@@ -717,29 +785,33 @@ private:
     }
 
     void require_playing() const {
-        if (!active() || game->state != State::Playing) fail("not playing");
+        if (!active() || game->state != State::Playing)
+            fail("not playing");
     }
 
     void require_passing() const {
-        if (!active() || game->state != State::Passing) fail("not passing");
+        if (!active() || game->state != State::Passing)
+            fail("not passing");
     }
 
     void require_between() const {
         require_game();
-        if (game->state != State::Between) fail("hand in progress");
+        if (game->state != State::Between)
+            fail("hand in progress");
     }
 
-    std::vector<std::string> simulate(const std::string& name, int seed, int count) const;
+    std::vector<std::string> simulate(const std::string &name, int seed, int count) const;
 };
 
-std::vector<std::string> Table::simulate(const std::string& name, int seed, int count) const {
+std::vector<std::string> Table::simulate(const std::string &name, int seed, int count) const {
     Generator generator(seed);
     if (name == "GAME") {
         Game simulated(rules, bots, generator);
         simulated.auto_game();
         std::vector<std::string> output = {"game seed " + std::to_string(seed)};
-        for (const LogLine& line : simulated.log) {
-            if (line.level <= count) output.push_back(line.text);
+        for (const LogLine &line : simulated.log) {
+            if (line.level <= count)
+                output.push_back(line.text);
         }
         return output;
     }
@@ -750,7 +822,8 @@ std::vector<std::string> Table::simulate(const std::string& name, int seed, int 
     int hands = 0;
     for (int rotation = 0; rotation < rounds; ++rotation) {
         std::array<Strategy, 4> strategies{};
-        for (int seat = 0; seat < 4; ++seat) strategies[(seat + rotation) % 4] = bots[seat];
+        for (int seat = 0; seat < 4; ++seat)
+            strategies[(seat + rotation) % 4] = bots[seat];
         for (int i = 0; i < count; ++i) {
             Game simulated(rules, strategies, generator);
             simulated.auto_game();
@@ -772,9 +845,11 @@ std::vector<std::string> Table::simulate(const std::string& name, int seed, int 
     for (int seat = 0; seat < 4; ++seat) {
         std::ostringstream line;
         line << SEATS[seat];
-        if (name == "ROTATE") line << ' ' << strategy_name(bots[seat]);
+        if (name == "ROTATE")
+            line << ' ' << strategy_name(bots[seat]);
         line << " places";
-        for (int place : places[seat]) line << ' ' << place;
+        for (int place : places[seat])
+            line << ' ' << place;
         line << " total " << totals[seat] << " average " << average_text(totals[seat], games) << ' '
              << stats[seat].text();
         output.push_back(line.str());
@@ -782,18 +857,19 @@ std::vector<std::string> Table::simulate(const std::string& name, int seed, int 
     return output;
 }
 
-std::vector<std::string> Table::command(const std::vector<std::string>& words) {
-    const std::string& name = words[0];
+std::vector<std::string> Table::command(const std::vector<std::string> &words) {
+    const std::string &name = words[0];
     std::vector<std::string> args(words.begin() + 1, words.end());
-    if (!one_of(name, {"RULE", "BOT", "SETTINGS", "GAME", "MATCH", "ROTATE", "NEW", "ABANDON",
-                       "STACK", "DEAL", "SHOW", "PASS", "PLAY", "AUTO", "UNDO", "CLAIM", "LEGAL",
-                       "PREVIEW", "SCORE", "TAKEN", "TRICKS", "VOIDS", "UNSEEN", "STATS",
-                       "HISTORY", "REPLAY"})) {
+    if (!one_of(name, {"RULE",    "BOT",    "SETTINGS", "GAME",    "MATCH", "ROTATE", "NEW",
+                       "ABANDON", "STACK",  "DEAL",     "SHOW",    "PASS",  "PLAY",   "AUTO",
+                       "UNDO",    "CLAIM",  "LEGAL",    "PREVIEW", "SCORE", "TAKEN",  "TRICKS",
+                       "VOIDS",   "UNSEEN", "STATS",    "HISTORY", "REPLAY"})) {
         fail("unknown command " + name);
     }
     if (name == "RULE") {
         Rules changed = rules.with(args[0], args[1]);
-        if (active()) fail("game in progress");
+        if (active())
+            fail("game in progress");
         rules = changed;
         return {"rule " + args[0] + " " + args[1]};
     }
@@ -804,7 +880,8 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
     }
     if (name == "SETTINGS") {
         std::array<std::string, 4> names;
-        for (int seat = 0; seat < 4; ++seat) names[seat] = strategy_name(bots[seat]);
+        for (int seat = 0; seat < 4; ++seat)
+            names[seat] = strategy_name(bots[seat]);
         return {rules.text(), pairs("bots", names)};
     }
     if (name == "GAME" || name == "MATCH" || name == "ROTATE") {
@@ -816,7 +893,8 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
     }
     if (name == "NEW") {
         int seed = bounded(args[0], 1, 2147483646);
-        if (active()) fail("game in progress");
+        if (active())
+            fail("game in progress");
         game.emplace(rules, bots, Generator(seed));
         return {"new game seed " + std::to_string(seed)};
     }
@@ -828,11 +906,14 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
 
     int seat = -1;
     std::vector<int> cards;
-    if (one_of(name, {"STACK", "PASS", "PLAY", "CLAIM"})) seat = seat_value(args[0]);
+    if (one_of(name, {"STACK", "PASS", "PLAY", "CLAIM"}))
+        seat = seat_value(args[0]);
     if (one_of(name, {"STACK", "PASS", "PLAY"})) {
-        for (std::size_t i = 1; i < args.size(); ++i) cards.push_back(card_value(args[i]));
+        for (std::size_t i = 1; i < args.size(); ++i)
+            cards.push_back(card_value(args[i]));
     }
-    if (name == "STACK" && cards.size() != 13) fail("need 13 cards");
+    if (name == "STACK" && cards.size() != 13)
+        fail("need 13 cards");
     if (name == "AUTO" && !one_of(args[0], {"PASS", "CARD", "TRICK", "HAND", "GAME"})) {
         fail("bad value " + args[0]);
     }
@@ -849,7 +930,7 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
     } else if (one_of(name, {"SCORE", "STATS", "HISTORY", "REPLAY"})) {
         require_game();
     } else if (name == "AUTO") {
-        const std::string& mode = args[0];
+        const std::string &mode = args[0];
         if (mode == "PASS") {
             require_passing();
         } else if (mode == "CARD" || mode == "TRICK") {
@@ -860,14 +941,14 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
             require_game();
         }
     }
-    Game& current = *game;
-    Round& round = current.round;
+    Game &current = *game;
+    Round &round = current.round;
     std::size_t before = current.log.size();
     std::vector<std::string> output;
     if (name == "STACK") {
         CardSet stacked = distinct_cards(cards);
         for (int card : cards) {
-            for (const auto& [other, held] : current.stacked) {
+            for (const auto &[other, held] : current.stacked) {
                 if (other != seat && held.count(card)) {
                     fail(card_text(card) + " stacked for " + seat_name(other));
                 }
@@ -884,7 +965,8 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
         }
         return output;
     } else if (name == "PASS") {
-        if (current.passes.count(seat)) fail(seat_name(seat) + " already passed");
+        if (current.passes.count(seat))
+            fail(seat_name(seat) + " already passed");
         CardSet chosen = distinct_cards(cards);
         for (int card : cards) {
             if (!round.hands[seat].count(card)) {
@@ -894,7 +976,8 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
         current.pass_cards(seat, chosen);
     } else if (name == "PLAY") {
         int card = cards[0];
-        if (seat != current.actor()) fail("waiting for " + seat_name(current.actor()));
+        if (seat != current.actor())
+            fail("waiting for " + seat_name(current.actor()));
         if (!round.hands[seat].count(card)) {
             fail(seat_name(seat) + " does not hold " + card_text(card));
         }
@@ -911,7 +994,7 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
         output.push_back(seat_name(seat) + " plays " + card_text(card));
         current.play(card);
     } else if (name == "AUTO") {
-        const std::string& mode = args[0];
+        const std::string &mode = args[0];
         if (mode == "PASS") {
             current.auto_pass();
         } else if (mode == "CARD") {
@@ -930,15 +1013,19 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
             current.auto_game();
         }
     } else if (name == "UNDO") {
-        if (current.undo_stack.empty()) fail("nothing to undo");
+        if (current.undo_stack.empty())
+            fail("nothing to undo");
         Play undone = current.undo_card();
         return {"undo " + seat_name(undone.seat) + " " + card_text(undone.card)};
     } else if (name == "CLAIM") {
-        if (seat != current.actor()) fail("waiting for " + seat_name(current.actor()));
-        if (!round.current.empty()) fail("trick in progress");
+        if (seat != current.actor())
+            fail("waiting for " + seat_name(current.actor()));
+        if (!round.current.empty())
+            fail("trick in progress");
         for (int card : round.hands[seat]) {
             for (int other = 0; other < 4; ++other) {
-                if (other == seat) continue;
+                if (other == seat)
+                    continue;
                 for (int other_card : round.hands[other]) {
                     if (other_card / 13 == card / 13 && other_card % 13 > card % 13) {
                         fail("claim rejected");
@@ -958,7 +1045,7 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
             while (copy.state == State::Playing && copy.round.tricks.size() == count) {
                 copy.play(copy.choose_play());
             }
-            const Trick& trick = copy.round.tricks.back();
+            const Trick &trick = copy.round.tricks.back();
             output.push_back("preview " + card_text(card) + " -> " +
                              seat_name(trick_winner(trick)) + " " +
                              std::to_string(copy.trick_points(trick)));
@@ -985,59 +1072,72 @@ std::vector<std::string> Table::command(const std::vector<std::string>& words) {
         for (std::size_t i = 0; i < round.tricks.size(); ++i) {
             output.push_back(current.trick_line(round.tricks[i], i + 1));
         }
-        if (!round.current.empty()) output.push_back("current: " + plays_text(round.current));
-        if (output.empty()) output.push_back("no tricks");
+        if (!round.current.empty())
+            output.push_back("current: " + plays_text(round.current));
+        if (output.empty())
+            output.push_back("no tricks");
         return output;
     } else if (name == "VOIDS") {
         std::vector<Trick> tricks = round.tricks;
-        if (!round.current.empty()) tricks.push_back(round.current);
+        if (!round.current.empty())
+            tricks.push_back(round.current);
         std::array<std::set<int>, 4> voids;
-        for (const Trick& trick : tricks) {
+        for (const Trick &trick : tricks) {
             int led = trick[0].card / 13;
-            for (const Play& play : trick) {
-                if (play.card / 13 != led) voids[play.seat].insert(led);
+            for (const Play &play : trick) {
+                if (play.card / 13 != led)
+                    voids[play.seat].insert(led);
             }
         }
         std::array<std::string, 4> texts;
         for (int other = 0; other < 4; ++other) {
-            for (int suit : voids[other]) texts[other] += SUITS[suit];
-            if (texts[other].empty()) texts[other] = "-";
+            for (int suit : voids[other])
+                texts[other] += SUITS[suit];
+            if (texts[other].empty())
+                texts[other] = "-";
         }
         return {pairs("voids", texts)};
     } else if (name == "UNSEEN") {
         int actor = current.actor();
         CardSet seen = round.hands[actor];
-        for (const CardSet& taken : round.taken) seen.insert(taken.begin(), taken.end());
-        for (const Play& play : round.current) seen.insert(play.card);
+        for (const CardSet &taken : round.taken)
+            seen.insert(taken.begin(), taken.end());
+        for (const Play &play : round.current)
+            seen.insert(play.card);
         CardSet unseen;
         for (int card = 0; card < 52; ++card) {
-            if (!seen.count(card)) unseen.insert(card);
+            if (!seen.count(card))
+                unseen.insert(card);
         }
         return {"unseen " + seat_name(actor) + ": " + cards_text(unseen)};
     } else if (name == "STATS") {
         return current.stats_lines();
     } else if (name == "HISTORY") {
-        for (const HandRecord& hand : current.history) {
+        for (const HandRecord &hand : current.history) {
             std::string line = "hand " + std::to_string(hand.number) + " pass " +
                                direction_name(hand.pass_code) + " " + pairs("points", hand.points);
-            if (hand.shooter) line += " moon " + seat_name(*hand.shooter);
+            if (hand.shooter)
+                line += " moon " + seat_name(*hand.shooter);
             output.push_back(line);
         }
-        if (output.empty()) output.push_back("no hands");
+        if (output.empty())
+            output.push_back("no hands");
         return output;
     } else if (name == "REPLAY") {
         int hand = bounded(args[0], 1, static_cast<int>(current.history.size()));
         return current.history[hand - 1].record;
     }
-    for (std::size_t i = before; i < current.log.size(); ++i) output.push_back(current.log[i].text);
+    for (std::size_t i = before; i < current.log.size(); ++i)
+        output.push_back(current.log[i].text);
     return output;
 }
 
-std::vector<std::string> split(const std::string& line) {
+std::vector<std::string> split(const std::string &line) {
     std::vector<std::string> words;
     std::istringstream in(line);
     std::string word;
-    while (in >> word) words.push_back(word);
+    while (in >> word)
+        words.push_back(word);
     return words;
 }
 
@@ -1048,8 +1148,9 @@ int main() {
     Table table;
     for (int i = 0; i < count && std::getline(std::cin, line); ++i) {
         try {
-            for (const std::string& text : table.command(split(line))) std::cout << text << '\n';
-        } catch (const CommandError& error) {
+            for (const std::string &text : table.command(split(line)))
+                std::cout << text << '\n';
+        } catch (const CommandError &error) {
             std::cout << "error: " << error.what() << '\n';
         }
     }

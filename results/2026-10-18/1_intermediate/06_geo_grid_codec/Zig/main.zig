@@ -2,8 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Error = error{Invalid} || Allocator.Error || std.Io.Writer.Error;
 const system_names = [_][]const u8{ "GEOHASH", "MAIDENHEAD", "PLUSCODE", "GARS", "GEOREF", "MESH" };
-const sequences = [_][]const i64{ &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9 }, &.{ 2, 4, 6, 8 }, &.{ 2, 4, 6, 8, 10, 11 },
-    &.{ 5, 6, 7 }, &.{ 2, 4, 8, 10, 12 }, &.{ 4, 6, 8, 9, 10, 11 } };
+const sequences = [_][]const i64{ &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9 }, &.{ 2, 4, 6, 8 }, &.{ 2, 4, 6, 8, 10, 11 }, &.{ 5, 6, 7 }, &.{ 2, 4, 8, 10, 12 }, &.{ 4, 6, 8, 9, 10, 11 } };
 const geohash = "0123456789bcdefghjkmnpqrstuvwxyz";
 const plus_digits = "23456789CFGHJMPQRVWX";
 const l24 = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -42,7 +41,7 @@ fn coordinate(text: []const u8, latitude: bool) error{Invalid}!i64 {
     if (whole.len == 0 or whole.len > 3) return error.Invalid;
     var n = try digits(whole) * 1000000;
     if (dot) |i| {
-        const fraction = body[i + 1..];
+        const fraction = body[i + 1 ..];
         if (fraction.len == 0 or fraction.len > 6) return error.Invalid;
         n += try digits(fraction) * std.math.pow(i64, 10, @intCast(6 - fraction.len));
     }
@@ -50,9 +49,15 @@ fn coordinate(text: []const u8, latitude: bool) error{Invalid}!i64 {
     if (if (latitude) n < -90000000 or n > 90000000 else n < -180000000 or n >= 180000000) return error.Invalid;
     return n;
 }
-fn absolute(n: i64) i64 { return @intCast(@abs(n)); }
-fn rounded(a: i64, b: i64) i64 { return @divFloor(2 * a + b, 2 * b); }
-fn index(set: []const u8, ch: u8) error{Invalid}!i64 { return @intCast(std.mem.findScalar(u8, set, ch) orelse return error.Invalid); }
+fn absolute(n: i64) i64 {
+    return @intCast(@abs(n));
+}
+fn rounded(a: i64, b: i64) i64 {
+    return @divFloor(2 * a + b, 2 * b);
+}
+fn index(set: []const u8, ch: u8) error{Invalid}!i64 {
+    return @intCast(std.mem.findScalar(u8, set, ch) orelse return error.Invalid);
+}
 fn system(text: []const u8) error{Invalid}!usize {
     for (system_names, 0..) |name, i| {
         if (std.mem.eql(u8, text, name)) return i;
@@ -67,7 +72,9 @@ fn precision(s: usize, text: []const u8) error{Invalid}!i64 {
     if (position(s, p) == null) return error.Invalid;
     return p;
 }
-fn meshScale(p: i64) i64 { return ([_]i64{ 1, 8, 80, 160, 320, 640 })[position(5, p).?]; }
+fn meshScale(p: i64) i64 {
+    return ([_]i64{ 1, 8, 80, 160, 320, 640 })[position(5, p).?];
+}
 const Grid = struct { w: i64, h: i64 };
 fn grid(s: usize, p: i64) Grid {
     const i = position(s, p).?;
@@ -85,8 +92,7 @@ fn fixedDigits(gpa: Allocator, n: i64, width: usize) Allocator.Error![]const u8 
 }
 fn coordText(gpa: Allocator, n: i64) Allocator.Error![]const u8 {
     const magnitude = absolute(n);
-    return std.fmt.allocPrint(gpa, "{s}{d}.{s}", .{ @as([]const u8, if (n < 0) "-" else ""), @divFloor(magnitude, 1000000),
-        try fixedDigits(gpa, @mod(magnitude, 1000000), 6) });
+    return std.fmt.allocPrint(gpa, "{s}{d}.{s}", .{ @as([]const u8, if (n < 0) "-" else ""), @divFloor(magnitude, 1000000), try fixedDigits(gpa, @mod(magnitude, 1000000), 6) });
 }
 fn radixDigits(value: i64, radices: []const i64, output: *[6]i64) void {
     var n = value;
@@ -98,7 +104,12 @@ fn radixDigits(value: i64, radices: []const i64, output: *[6]i64) void {
     }
 }
 const Cell = struct {
-    s: usize, p: i64, x: i64, y: i64, w: i64, h: i64,
+    s: usize,
+    p: i64,
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
     fn init(s: usize, p: i64, x: i64, y: i64) Cell {
         const g = grid(s, p);
         return .{ .s = s, .p = p, .x = x, .y = y, .w = g.w, .h = g.h };
@@ -107,8 +118,12 @@ const Cell = struct {
         const g = grid(self.s, q);
         return .init(self.s, q, @divFloor(self.x * g.w, self.w), @divFloor(self.y * g.h, self.h));
     }
-    fn key(self: Cell) [3]i64 { return .{ self.p, self.x, self.y }; }
-    fn same(self: Cell, other: Cell) bool { return self.p == other.p and self.x == other.x and self.y == other.y; }
+    fn key(self: Cell) [3]i64 {
+        return .{ self.p, self.x, self.y };
+    }
+    fn same(self: Cell, other: Cell) bool {
+        return self.p == other.p and self.x == other.x and self.y == other.y;
+    }
     fn less(_: void, a: Cell, b: Cell) bool {
         return a.p < b.p or (a.p == b.p and (a.y > b.y or (a.y == b.y and a.x < b.x)));
     }
@@ -343,8 +358,8 @@ fn decode(s: usize, code: []const u8) Error!Cell {
             if (p >= 8) {
                 const m: usize = @intCast(@divFloor(p - 4, 2));
                 const scale = 6 * std.math.pow(i64, 10, @intCast(m - 1));
-                const a = try digits(code[4..4 + m]);
-                const b = try digits(code[4 + m..]);
+                const a = try digits(code[4 .. 4 + m]);
+                const b = try digits(code[4 + m ..]);
                 if (a >= scale or b >= scale) return error.Invalid;
                 x = x * scale + a;
                 y = y * scale + b;
@@ -378,9 +393,15 @@ fn decode(s: usize, code: []const u8) Error!Cell {
     }
     return .init(s, p, x, y);
 }
-fn arity(a: []const []const u8, n: usize) error{Invalid}!void { if (a.len != n + 1) return error.Invalid; }
-fn readCell(a: []const []const u8, si: usize, ci: usize) Error!Cell { return decode(try system(a[si]), a[ci]); }
-fn writeCode(gpa: Allocator, out: *std.Io.Writer, c: Cell, missing: []const u8) Error!void { try out.writeAll((try encode(gpa, c)) orelse missing); }
+fn arity(a: []const []const u8, n: usize) error{Invalid}!void {
+    if (a.len != n + 1) return error.Invalid;
+}
+fn readCell(a: []const []const u8, si: usize, ci: usize) Error!Cell {
+    return decode(try system(a[si]), a[ci]);
+}
+fn writeCode(gpa: Allocator, out: *std.Io.Writer, c: Cell, missing: []const u8) Error!void {
+    try out.writeAll((try encode(gpa, c)) orelse missing);
+}
 fn execute(gpa: Allocator, line: []const u8, out: *std.Io.Writer) Error!void {
     const a = try split(gpa, line, ' ');
     const op = a[0];
@@ -396,8 +417,7 @@ fn execute(gpa: Allocator, line: []const u8, out: *std.Io.Writer) Error!void {
         const s = try system(a[1]);
         const p = try precision(s, a[2]);
         const g = grid(s, p);
-        try out.print("w={s} h={s} cells={d}", .{ try coordText(gpa, @divFloor(360000000, g.w)), try coordText(gpa, @divFloor(180000000, g.h)),
-            if (s == 5) 8000 * meshScale(p) * meshScale(p) else g.w * g.h });
+        try out.print("w={s} h={s} cells={d}", .{ try coordText(gpa, @divFloor(360000000, g.w)), try coordText(gpa, @divFloor(180000000, g.h)), if (s == 5) 8000 * meshScale(p) * meshScale(p) else g.w * g.h });
     } else if (std.mem.eql(u8, op, "DECODE") or std.mem.eql(u8, op, "NEIGHBORS") or std.mem.eql(u8, op, "PARENT") or std.mem.eql(u8, op, "CHILDREN")) {
         try arity(a, 2);
         const c = try readCell(a, 1, 2);
@@ -405,16 +425,15 @@ fn execute(gpa: Allocator, line: []const u8, out: *std.Io.Writer) Error!void {
         const pos = position(c.s, c.p).?;
         if (std.mem.eql(u8, op, "DECODE")) {
             try out.print("sw={s},{s} ne={s},{s} c={s},{s}", .{
-                try coordText(gpa, -90000000 + @divFloor(180000000 * c.y, c.h)), try coordText(gpa, -180000000 + @divFloor(360000000 * c.x, c.w)),
-                try coordText(gpa, -90000000 + @divFloor(180000000 * (c.y + 1), c.h)), try coordText(gpa, -180000000 + @divFloor(360000000 * (c.x + 1), c.w)),
+                try coordText(gpa, -90000000 + @divFloor(180000000 * c.y, c.h)),               try coordText(gpa, -180000000 + @divFloor(360000000 * c.x, c.w)),
+                try coordText(gpa, -90000000 + @divFloor(180000000 * (c.y + 1), c.h)),         try coordText(gpa, -180000000 + @divFloor(360000000 * (c.x + 1), c.w)),
                 try coordText(gpa, -90000000 + @divFloor(180000000 * (2 * c.y + 1), 2 * c.h)), try coordText(gpa, -180000000 + @divFloor(360000000 * (2 * c.x + 1), 2 * c.w)),
             });
         } else if (std.mem.eql(u8, op, "NEIGHBORS")) {
             const offsets = [_][2]i64{ .{ 0, 1 }, .{ 1, 1 }, .{ 1, 0 }, .{ 1, -1 }, .{ 0, -1 }, .{ -1, -1 }, .{ -1, 0 }, .{ -1, 1 } };
             for (offsets, 0..) |d, i| {
                 if (i > 0) try out.writeByte(' ');
-                if (c.y + d[1] < 0 or c.y + d[1] >= c.h) try out.writeByte('-') else
-                    try writeCode(gpa, out, .init(c.s, c.p, @mod(c.x + d[0], c.w), c.y + d[1]), "-");
+                if (c.y + d[1] < 0 or c.y + d[1] >= c.h) try out.writeByte('-') else try writeCode(gpa, out, .init(c.s, c.p, @mod(c.x + d[0], c.w), c.y + d[1]), "-");
             }
         } else if (std.mem.eql(u8, op, "PARENT")) {
             if (pos == 0) try out.writeAll("NONE") else try writeCode(gpa, out, c.ancestor(sequence[pos - 1]), "-");
@@ -584,11 +603,7 @@ fn execute(gpa: Allocator, line: []const u8, out: *std.Io.Writer) Error!void {
         const y2 = (c.y + 1) * d.h;
         const y3 = d.y * c.h;
         const y4 = (d.y + 1) * c.h;
-        const relation: []const u8 = if (x1 == x3 and x2 == x4 and y1 == y3 and y2 == y4) "EQUAL" else
-            if (x1 >= x3 and x2 <= x4 and y1 >= y3 and y2 <= y4) "INSIDE" else
-            if (x3 >= x1 and x4 <= x2 and y3 >= y1 and y4 <= y2) "CONTAINS" else
-            if (x1 < x4 and x3 < x2 and y1 < y4 and y3 < y2) "OVERLAP" else
-            if (y1 <= y4 and y3 <= y2 and ((x1 <= x4 and x3 <= x2) or (c.x + 1 == c.w and d.x == 0) or (d.x + 1 == d.w and c.x == 0))) "TOUCH" else "DISJOINT";
+        const relation: []const u8 = if (x1 == x3 and x2 == x4 and y1 == y3 and y2 == y4) "EQUAL" else if (x1 >= x3 and x2 <= x4 and y1 >= y3 and y2 <= y4) "INSIDE" else if (x3 >= x1 and x4 <= x2 and y3 >= y1 and y4 <= y2) "CONTAINS" else if (x1 < x4 and x3 < x2 and y1 < y4 and y3 < y2) "OVERLAP" else if (y1 <= y4 and y3 <= y2 and ((x1 <= x4 and x3 <= x2) or (c.x + 1 == c.w and d.x == 0) or (d.x + 1 == d.w and c.x == 0))) "TOUCH" else "DISJOINT";
         try out.writeAll(relation);
     } else if (std.mem.eql(u8, op, "SHORTEN") or std.mem.eql(u8, op, "RECOVER")) {
         try arity(a, 3);
@@ -599,8 +614,7 @@ fn execute(gpa: Allocator, line: []const u8, out: *std.Io.Writer) Error!void {
             if (c.p < 8) return error.Invalid;
             const dy = absolute(180000000 * (2 * c.y + 1) - (lat + 90000000) * 2 * c.h);
             const dx = absolute(360000000 * (2 * c.x + 1) - (lon + 180000000) * 2 * c.w);
-            try out.writeAll(if (dy < 15000 * 2 * c.h and dx < 15000 * 2 * c.w) a[1][6..] else
-                if (dy < 300000 * 2 * c.h and dx < 300000 * 2 * c.w) a[1][4..] else a[1]);
+            try out.writeAll(if (dy < 15000 * 2 * c.h and dx < 15000 * 2 * c.w) a[1][6..] else if (dy < 300000 * 2 * c.h and dx < 300000 * 2 * c.w) a[1][4..] else a[1]);
         } else {
             const short = a[1];
             const at = std.mem.findScalar(u8, short, '+') orelse return error.Invalid;
@@ -618,10 +632,8 @@ fn execute(gpa: Allocator, line: []const u8, out: *std.Io.Writer) Error!void {
             const mx = @divFloor(distance * c.w, 360000000);
             const cy = 180000000 * (2 * y + 1);
             const cx = 360000000 * (2 * x + 1);
-            if ((lat + 90000000 + @divFloor(distance, 2)) * 2 * c.h < cy and cy - distance * 2 * c.h >= 0) y -= my else
-                if ((lat + 90000000 - @divFloor(distance, 2)) * 2 * c.h > cy and cy + distance * 2 * c.h <= 180000000 * 2 * c.h) y += my;
-            if ((lon + 180000000 + @divFloor(distance, 2)) * 2 * c.w < cx) x = @mod(x - mx, c.w) else
-                if ((lon + 180000000 - @divFloor(distance, 2)) * 2 * c.w > cx) x = @mod(x + mx, c.w);
+            if ((lat + 90000000 + @divFloor(distance, 2)) * 2 * c.h < cy and cy - distance * 2 * c.h >= 0) y -= my else if ((lat + 90000000 - @divFloor(distance, 2)) * 2 * c.h > cy and cy + distance * 2 * c.h <= 180000000 * 2 * c.h) y += my;
+            if ((lon + 180000000 + @divFloor(distance, 2)) * 2 * c.w < cx) x = @mod(x - mx, c.w) else if ((lon + 180000000 - @divFloor(distance, 2)) * 2 * c.w > cx) x = @mod(x + mx, c.w);
             try writeCode(gpa, out, .init(2, c.p, x, y), "-");
         }
     } else if (std.mem.eql(u8, op, "UTMZONE")) {
@@ -648,10 +660,7 @@ fn execute(gpa: Allocator, line: []const u8, out: *std.Io.Writer) Error!void {
         const e = try number(a[if (mgrs) 3 else 1], if (mgrs) 100000 else 0, if (mgrs) 899999 else 699999);
         const n = try number(a[if (mgrs) 4 else 2], 0, if (mgrs) 9999999 else 1299999);
         const d: usize = @intCast(try number(a[if (mgrs) 5 else 3], 0, 5));
-        if (mgrs) try out.print("{d}{s} {c}{c}", .{ zone, a[2], columns[@intCast(@mod(zone, 3))][@intCast(@divFloor(e, 100000) - 1)],
-            mgrs_rows[@intCast(@mod(@divFloor(n, 100000) + @as(i64, if (@mod(zone, 2) == 0) 5 else 0), 20))] }) else
-            try out.print("{c}{c}", .{ g25[@intCast(5 * (3 - @divFloor(n, 500000)) + 2 + @divFloor(e, 500000))],
-                g25[@intCast(5 * (4 - @mod(@divFloor(n, 100000), 5)) + @mod(@divFloor(e, 100000), 5))] });
+        if (mgrs) try out.print("{d}{s} {c}{c}", .{ zone, a[2], columns[@intCast(@mod(zone, 3))][@intCast(@divFloor(e, 100000) - 1)], mgrs_rows[@intCast(@mod(@divFloor(n, 100000) + @as(i64, if (@mod(zone, 2) == 0) 5 else 0), 20))] }) else try out.print("{c}{c}", .{ g25[@intCast(5 * (3 - @divFloor(n, 500000)) + 2 + @divFloor(e, 500000))], g25[@intCast(5 * (4 - @mod(@divFloor(n, 100000), 5)) + @mod(@divFloor(e, 100000), 5))] });
         if (d > 0) {
             const east = try fixedDigits(gpa, @mod(e, 100000), 5);
             const north = try fixedDigits(gpa, @mod(n, 100000), 5);
@@ -667,7 +676,7 @@ fn execute(gpa: Allocator, line: []const u8, out: *std.Io.Writer) Error!void {
         if (mgrs) {
             const gzd = a[1];
             if (gzd.len < 2 or gzd.len > 3 or gzd[0] == '0') return error.Invalid;
-            const zone = try digits(gzd[0..gzd.len - 1]);
+            const zone = try digits(gzd[0 .. gzd.len - 1]);
             if (zone < 1 or zone > 60) return error.Invalid;
             _ = try index(bands, gzd[gzd.len - 1]);
             if (a[2].len != 2) return error.Invalid;
