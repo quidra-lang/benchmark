@@ -80,7 +80,7 @@ loess_local =: 4 : 0
     end.
     lower =. cholesky matrix
     beta =. lower cholesky_solve right
-    unit =. 1 0}size$0.0
+    unit =. 1 (0)}size$0.0
     zeta =. lower cholesky_solve unit
     weights =. count$0.0
     for_offset. i.q do.
