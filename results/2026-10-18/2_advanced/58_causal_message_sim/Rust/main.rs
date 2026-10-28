@@ -696,5 +696,8 @@ fn main() {
         ("trace.txt", simulation.trace()), ("deliveries.txt", simulation.deliveries()),
         ("snapshots.txt", simulation.snapshot_lines(&raw)),
         ("analysis.txt", simulation.analysis_lines(&raw, &params)), ("diagram.txt", simulation.diagram()),
-    ] { fs::write(format!("output/{}", file), lines.join("\n") + "\n").unwrap(); }
+    ] {
+        let contents = if lines.is_empty() { String::new() } else { lines.join("\n") + "\n" };
+        fs::write(format!("output/{}", file), contents).unwrap();
+    }
 }
