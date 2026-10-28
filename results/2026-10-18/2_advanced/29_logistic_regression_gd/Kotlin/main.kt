@@ -172,7 +172,8 @@ private class Study(val data: Dataset) {
             it.lambda
         }
         val gd = Model("gd", Optimizers.gd(x, trainTargets, lambda, data.number("GD", 0), data.integer("GD", 1)), this)
-        val sgd = Model("sgd", Optimizers.sgd(x, trainTargets, lambda, data.number("SGD", 0), data.integer("SGD", 1), data.integer("SGD", 2), data.integer("SGD", 3)), this)
+        val sgd = Model("sgd", Optimizers.sgd(x, trainTargets, lambda, data.number("SGD", 0),
+             data.integer("SGD", 1), data.integer("SGD", 2), data.integer("SGD", 3)), this)
         newton = Model("newton", Optimizers.newton(x, trainTargets, lambda), this);
         models = listOf(gd, sgd, newton);
         influence = Influence(newton.weights, x, trainTargets, lambda)
@@ -294,7 +295,9 @@ private class Study(val data: Dataset) {
         val testCounts = IntArray(classes);
         for (label in labels) trainCounts[label]++;
         for (label in testLabels) testCounts[label]++
-        return listOf("data train $n test $m base_features $d degree ${data.integer("DEGREE", 0)} features $p", "binary positive_class $positive train ${trainTargets.sum()}/$n test ${testTargets.sum()}/$m", "classes $classes train ${trainCounts.joinToString(" ")} test ${testCounts.joinToString(" ")}")
+        return listOf("data train $n test $m base_features $d degree ${data.integer("DEGREE", 0)} features $p",
+             "binary positive_class $positive train ${trainTargets.sum()}/$n test ${testTargets.sum()}/$m",
+             "classes $classes train ${trainCounts.joinToString(" ")} test ${testCounts.joinToString(" ")}")
     }
     fun cvPart(): List<String> {
         val lines = mutableListOf("cross_validation folds 5 newton_iterations 10")
@@ -347,7 +350,8 @@ private class Study(val data: Dataset) {
         val c = Metrics.confusion(model.testProbabilities, testTargets, threshold);
         val positive = testTargets.sum();
         val negative = m - positive
-        val lines = mutableListOf("model ${model.name} lambda ${f(lambda)}", "train correct ${correct(model.trainProbabilities, trainTargets)}/$n accuracy ${Metrics.ratio(correct(model.trainProbabilities, trainTargets), n)}", "test tp ${c.tp} fp ${c.fp} tn ${c.tn} fn ${c.fn}")
+        val lines = mutableListOf("model ${model.name} lambda ${f(lambda)}", "train correct ${correct(model.trainProbabilities, trainTargets)}/$n accuracy ${Metrics.ratio(correct(model.trainProbabilities, trainTargets), n)}",
+             "test tp ${c.tp} fp ${c.fp} tn ${c.tn} fn ${c.fn}")
         lines.add("test accuracy ${Metrics.ratio(c.correct, m)} precision ${Metrics.ratio(c.tp, c.tp + c.fp)} recall ${Metrics.ratio(c.tp, c.tp + c.fn)} specificity ${Metrics.ratio(c.tn, c.tn + c.fp)} f1 ${Metrics.ratio(2 * c.tp, 2 * c.tp + c.fp + c.fn)}")
         var brier = 0.0;
         for (i in 0 until m) {
@@ -508,7 +512,8 @@ private class Study(val data: Dataset) {
         val random = Minstd(data.integer("PERMUTATION", 1));
         val baseline = Logistic.average(newton.weights, z, testTargets);
         val auc = Metrics.auc(newton.testProbabilities, testTargets)
-        val lines = mutableListOf("importance repeats $repeats seed ${data.integer("PERMUTATION", 1)}", "baseline log_loss ${six(baseline)} auc $auc softmax_accuracy ${Metrics.ratio(softCorrect(z, testLabels), m)}")
+        val lines = mutableListOf("importance repeats $repeats seed ${data.integer("PERMUTATION", 1)}",
+             "baseline log_loss ${six(baseline)} auc $auc softmax_accuracy ${Metrics.ratio(softCorrect(z, testLabels), m)}")
         for (k in 0 until d) {
             var loss = 0.0;
             var numerators = 0L;

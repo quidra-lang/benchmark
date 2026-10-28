@@ -58,10 +58,12 @@ fun output(c: Channel, tick: Int, rate: Int) {
     if (instrument.arpeggio.isNotEmpty()) semitones += instrument.arpeggio[c.age % instrument.arpeggio.size]
     var frequency = Instruments.transpose(c.frequency,semitones) + c.detune
     if (c.effect.name in listOf("4","6")) frequency += Instruments.oscillate(c.vibratoPosition,c.vibratoDepth,4)
-    if (instrument.vibratoDelay >= 0 && c.age >= instrument.vibratoDelay) frequency += Instruments.oscillate((c.age - instrument.vibratoDelay) * instrument.vibratoSpeed % 64,instrument.vibratoDepth,4)
+    if (instrument.vibratoDelay >= 0 && c.age >= instrument.vibratoDelay) frequency += Instruments.oscillate((c.age - instrument.vibratoDelay) * instrument.vibratoSpeed % 64,
+        instrument.vibratoDepth,4)
     c.outputFrequency = Instruments.clamp(frequency,1000,50L * rate);
     c.envelope = Instruments.envelope(instrument,c.age,c.off,c.releaseAge,c.releaseValue);
-    c.outputVolume = if (c.effect.name == "7") Instruments.clamp((c.volume + Instruments.oscillate(c.tremoloPosition,c.tremoloDepth,255)).toLong(),0,15).toInt() else c.volume;
+    c.outputVolume = if (c.effect.name == "7") Instruments.clamp((c.volume + Instruments.oscillate(c.tremoloPosition,
+        c.tremoloDepth,255)).toLong(),0,15).toInt() else c.volume;
     c.amplitude = c.envelope * c.outputVolume;
     c.increment = (c.outputFrequency * 65536 / (100L * rate)).toInt()
 }
@@ -176,7 +178,8 @@ class Player(val song: SongParser.Song, val settings: SongParser.Settings) {
             }
             "V" -> {
                 val instrument = c.instrument;
-                if (instrument != null && (instrument.wave == "PULSE" && argument <= 3 || instrument.wave == "NOISE" && argument <= 1)) c.mode = argument else warning(index,"invalid mode ${Report.hex2(argument)}")
+                if (instrument != null && (instrument.wave == "PULSE" && argument <= 3 || instrument.wave == "NOISE" && argument <= 1)) c.mode = argument else warning(index,
+                    "invalid mode ${Report.hex2(argument)}")
             }
         }
     }
@@ -207,9 +210,12 @@ class Player(val song: SongParser.Song, val settings: SongParser.Settings) {
             val c = channels[i];
             val e = c.effect;
             val name = e.name
-            if (c.note >= 0 && c.age >= 1 && c.instrument!!.sweep != 0) c.frequency = Instruments.clamp(c.frequency + 10 * c.instrument!!.sweep,1000,50L * song.rate)
+            if (c.note >= 0 && c.age >= 1 && c.instrument!!.sweep != 0) c.frequency = Instruments.clamp(c.frequency + 10 * c.instrument!!.sweep,
+                1000,50L * song.rate)
             if (tick >= 1) {
-                if (name == "1") c.frequency = Instruments.clamp(c.frequency + 10 * e.argument,1000,50L * song.rate) else if (name == "2") c.frequency = Instruments.clamp(c.frequency - 10 * e.argument,1000,50L * song.rate);
+                if (name == "1") c.frequency = Instruments.clamp(c.frequency + 10 * e.argument,
+                    1000,50L * song.rate) else if (name == "2") c.frequency = Instruments.clamp(c.frequency - 10 * e.argument,
+                    1000,50L * song.rate);
                 if (name in listOf("3","5")) approach(c,10 * c.portamentoSpeed);
                 if (name in listOf("Q","R") && c.slideSpeed != 0) approach(c,10 * c.slideSpeed);
                 if (name in listOf("5","6","A")) c.volume = Instruments.clamp((c.volume + e.x - e.y).toLong(),0,15).toInt()
@@ -359,7 +365,11 @@ fun statsLines(p: Player): List<String> {
     val mixer = p.mixer;
     val n = mixer.size;
     val stats = Report.statistics(mixer.samples,0,n,128);
-    val result = mutableListOf("title=${song.title}","rate=${song.rate}","samples=$n","duration_ms=${n.toLong() * 1000 / song.rate}","end=${p.reason}","loop_start=${if (p.loopStart < 0) "-" else p.loopStart.toString()}","loop_length=${if (p.loopStart < 0) "-" else (n - p.loopStart).toString()}","rows=${p.rows.size}","ticks=${p.ticks}","clipped=${mixer.clipped}","peak=${stats.peak}","min=${stats.minimum}","max=${stats.maximum}","rms=${stats.rms}","zero_crossings=${stats.crossings}","adler32=${Report.hex8(Report.adler(mixer.samples,n))}")
+    val result = mutableListOf("title=${song.title}","rate=${song.rate}","samples=$n","duration_ms=${n.toLong() * 1000 / song.rate}",
+        "end=${p.reason}","loop_start=${if (p.loopStart < 0) "-" else p.loopStart.toString()}",
+        "loop_length=${if (p.loopStart < 0) "-" else (n - p.loopStart).toString()}","rows=${p.rows.size}",
+        "ticks=${p.ticks}","clipped=${mixer.clipped}","peak=${stats.peak}","min=${stats.minimum}",
+        "max=${stats.maximum}","rms=${stats.rms}","zero_crossings=${stats.crossings}","adler32=${Report.hex8(Report.adler(mixer.samples,n))}")
     val path = mutableListOf<String>();
     var previousPosition = -1;
     for (row in p.rows) if (row.position != previousPosition) {

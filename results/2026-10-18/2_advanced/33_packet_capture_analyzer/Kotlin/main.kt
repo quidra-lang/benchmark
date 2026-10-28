@@ -110,7 +110,9 @@ listOf("dns.additional","string"),
 listOf("dns.a","ipv4"),
 listOf("data.len","integer")
 )
-val aliases = listOf(listOf("eth.addr","mac","eth.dst","eth.src"),listOf("ip.addr","ipv4","ip.src","ip.dst"),listOf("udp.port","integer","udp.srcport","udp.dstport"),listOf("tcp.port","integer","tcp.srcport","tcp.dstport"))
+val aliases = listOf(listOf("eth.addr","mac","eth.dst","eth.src"),listOf("ip.addr","ipv4","ip.src",
+    "ip.dst"),listOf("udp.port","integer","udp.srcport","udp.dstport"),listOf("tcp.port","integer",
+    "tcp.srcport","tcp.dstport"))
 val protocols = listOf("eth","arp","ip","icmp","udp","tcp","dns","data")
 val flagNames = listOf("FIN","SYN","RST","PSH","ACK","URG","ECE","CWR")
 val checksums = listOf("ip","icmp","udp","tcp");
@@ -435,7 +437,8 @@ fun details(packets: List<Packet>, number: Int): List<String> {
     return result
 }
 fun stats(packets: List<Packet>): List<String> {
-    val result = mutableListOf("packets ${packets.size}","bytes ${packets.sumOf { it.length.toLong() }}","duration ${seconds(packets.last().time - packets.first().time)}","hierarchy")
+    val result = mutableListOf("packets ${packets.size}","bytes ${packets.sumOf { it.length.toLong() }}",
+        "duration ${seconds(packets.last().time - packets.first().time)}","hierarchy")
     for (item in listOf("eth","  arp","  ip","    icmp","    udp","      dns","    tcp")) {
         val selected = packets.filter {
             item.trim() in it.layers

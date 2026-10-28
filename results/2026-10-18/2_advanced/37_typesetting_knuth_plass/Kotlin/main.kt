@@ -181,7 +181,8 @@ class Typesetter(val document: DocumentParser.Document, val params: Map<String,I
             };
             previous = block
         }
-        for (entry in document.bibliography) if (entry.key in bibliography) warn(entry.line,"duplicate bibliography key ${entry.key}") else bibliography[entry.key] = entry
+        for (entry in document.bibliography) if (entry.key in bibliography) warn(entry.line,
+            "duplicate bibliography key ${entry.key}") else bibliography[entry.key] = entry
     }
     fun command(kind: String, argument: String, line: Int): Token {
         if (kind in listOf("ref","page") && argument !in labels) warn(line,"undefined label $argument");
@@ -219,7 +220,8 @@ class Typesetter(val document: DocumentParser.Document, val params: Map<String,I
             val colon = content.indexOf(':');
             val name = if (colon < 0) content else content.substring(0,colon);
             val argument = if (colon < 0) "" else content.substring(colon + 1);
-            if (name in setOf("ref","page","fn","idx","cite") && colon >= 0 && argument.isNotEmpty()) block.tokens.add(command(name,argument,source.line)) else warn(source.line,"bad command {$content}");
+            if (name in setOf("ref","page","fn","idx","cite") && colon >= 0 && argument.isNotEmpty()) block.tokens.add(command(name,
+                argument,source.line)) else warn(source.line,"bad command {$content}");
             position = closing + 1
         }
     }
@@ -241,7 +243,8 @@ class Typesetter(val document: DocumentParser.Document, val params: Map<String,I
                 if (width > block.width) warn(block.line,"table too wide by ${width - block.width}")
             }
             else if (block.kind == "verbatim") {
-                for (source in block.inner) if (source.text.length > block.width) warn(source.line,"verbatim line too long by ${source.text.length - block.width}")
+                for (source in block.inner) if (source.text.length > block.width) warn(source.line,
+                    "verbatim line too long by ${source.text.length - block.width}")
             }
             else if (block.kind in DocumentParser.body) for (i in block.body.indices) {
                 if (i > 0) block.tokens.add(Token(""," ",0));
@@ -340,7 +343,8 @@ class Typesetter(val document: DocumentParser.Document, val params: Map<String,I
         };
         return Expanded(words,located)
     }
-    fun breakText(words: List<String>, marks: List<Mark>, first: Int, later: Int, alignment: String, firstPrefix: String, laterPrefix: String, name: String, body: Boolean, optimal: Boolean): Broken {
+    fun breakText(words: List<String>, marks: List<Mark>, first: Int, later: Int, alignment: String,
+         firstPrefix: String, laterPrefix: String, name: String, body: Boolean, optimal: Boolean): Broken {
         val metrics = Metrics(words,first,later,dictionary);
         val result = LineBreaker.split(metrics,optimal,params);
         val broken = Broken();
@@ -420,7 +424,9 @@ class Typesetter(val document: DocumentParser.Document, val params: Map<String,I
         val footnoteBroken = mutableListOf<Broken>()
         for (i in footnotes.indices) {
             val prefix = "[${i + 1}] ";
-            val broken = breakText(words(footnotes[i]),emptyList(),document.width - prefix.length,document.width - prefix.length,"left",prefix," ".repeat(prefix.length),"footnote ${i + 1}",false,optimal);
+            val broken = breakText(words(footnotes[i]),emptyList(),document.width - prefix.length,
+                document.width - prefix.length,"left",prefix," ".repeat(prefix.length),"footnote ${i + 1}",
+                false,optimal);
             footnoteLines[i + 1] = broken.lines;
             footnoteBroken.add(broken)
         }
@@ -467,7 +473,8 @@ class Typesetter(val document: DocumentParser.Document, val params: Map<String,I
                         laterPrefix = "            "
                     }
                 }
-                val broken = breakText(expanded.words,expanded.marks,first,later,block.align,firstPrefix,laterPrefix,"paragraph ${block.paragraph}",true,optimal);
+                val broken = breakText(expanded.words,expanded.marks,first,later,block.align,
+                    firstPrefix,laterPrefix,"paragraph ${block.paragraph}",true,optimal);
                 layout.bodies[block.paragraph] = broken;
                 layout.broken.add(broken);
                 val body = mutableListOf<Line>();
@@ -500,7 +507,10 @@ class Typesetter(val document: DocumentParser.Document, val params: Map<String,I
                 blocks.add(LayoutBlock("heading",false,false,lines(listOf(title,"=".repeat(title.length)),block)))
                 if (kind == "bibliography") for (entry in cited) {
                     val prefix = "[${entry.label}]".padEnd(referenceWidth);
-                    val broken = breakText(words("${entry.author}. ${entry.year}. ${entry.title}"),emptyList(),block.width - referenceWidth,block.width - referenceWidth,"left",prefix," ".repeat(referenceWidth),"reference ${entry.label}",false,optimal);
+                    val broken = breakText(words("${entry.author}. ${entry.year}. ${entry.title}"),
+                        emptyList(),block.width - referenceWidth,block.width - referenceWidth,
+                        "left",prefix," ".repeat(referenceWidth),"reference ${entry.label}",
+                        false,optimal);
                     layout.broken.add(broken);
                     for (line in broken.lines) line.origin = block;
                     blocks.add(LayoutBlock("flow",true,false,broken.lines))

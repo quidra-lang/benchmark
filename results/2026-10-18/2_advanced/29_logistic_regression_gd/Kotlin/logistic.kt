@@ -25,7 +25,8 @@ object Logistic {
         for (j in 1 until weights.size) total += weights[j] * weights[j];
         return total
     }
-    fun objective(weights: DoubleArray, vectors: Array<DoubleArray>, targets: IntArray, lambda: Double): Double = average(weights, vectors, targets) + lambda * penalty(weights) / 2
+    fun objective(weights: DoubleArray, vectors: Array<DoubleArray>, targets: IntArray, lambda: Double): Double = average(weights,
+         vectors, targets) + lambda * penalty(weights) / 2
     fun gradient(weights: DoubleArray, vectors: Array<DoubleArray>, targets: IntArray, lambda: Double): DoubleArray {
         val totals = DoubleArray(weights.size)
         for (i in vectors.indices) {

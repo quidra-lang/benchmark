@@ -10,7 +10,8 @@ object Repair {
         val result=mutableListOf(vertices[0]);
         for(i in 1 until vertices.size) {
             val p=vertices[i];
-            val q=Measure.Vec(spacing*Math.floorDiv(2*p.x+spacing,2L*spacing),spacing*Math.floorDiv(2*p.y+spacing,2L*spacing),spacing*Math.floorDiv(2*p.z+spacing,2L*spacing));
+            val q=Measure.Vec(spacing*Math.floorDiv(2*p.x+spacing,2L*spacing),spacing*Math.floorDiv(2*p.y+spacing,
+                2L*spacing),spacing*Math.floorDiv(2*p.z+spacing,2L*spacing));
             result+=q;
             if(p!=q)changes+=Snap(i,p,q)
         };
@@ -24,7 +25,8 @@ object Repair {
             } else i
         }
     }
-    fun clean(triangles: List<ObjIo.Face>,points: List<Measure.Vec>,representatives: IntArray,zero: Boolean,duplicate: Boolean,removed: MutableList<Removed>): MutableList<ObjIo.Face> {
+    fun clean(triangles: List<ObjIo.Face>,points: List<Measure.Vec>,representatives: IntArray,
+        zero: Boolean,duplicate: Boolean,removed: MutableList<Removed>): MutableList<ObjIo.Face> {
         val result=mutableListOf<ObjIo.Face>();
         val seen=mutableSetOf<List<Int>>();
         for(t in triangles) {

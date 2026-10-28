@@ -86,7 +86,8 @@ fun learn(name: String, model: Environment.Model, settings: Settings, optimal: L
             if (name == "mc") records.add(MonteCarlo.Step(x,action,reward))
             else {
                 val nextAction = if (name == "sarsa" && !world.terminal(y)) TdLearning.choose(learning.q,y,epsilon,rng) else 0;
-                val nextValue = if (world.terminal(y)) 0L else if (name == "sarsa") learning.q[y][nextAction] else TdLearning.next(learning.q[y],epsilon,name == "expected_sarsa");
+                val nextValue = if (world.terminal(y)) 0L else if (name == "sarsa") learning.q[y][nextAction] else TdLearning.next(learning.q[y],
+                    epsilon,name == "expected_sarsa");
                 TdLearning.update(learning.q,world,x,action,y,nextValue,gamma,alpha);
                 if (name == "dyna_q") {
                     dyna.observe(x,action,y);
@@ -193,7 +194,8 @@ fun absorption(model: Environment.Model, policy: IntArray, limit: Int): LongArra
         pits = nextPits;
         steps = nextSteps
     }
-    return longArrayOf(goals[world.start] / 10000,pits[world.start] / 10000,(100000000 - goals[world.start] - pits[world.start]) / 10000,steps[world.start] / 10000)
+    return longArrayOf(goals[world.start] / 10000,pits[world.start] / 10000,(100000000 - goals[world.start] - pits[world.start]) / 10000,
+        steps[world.start] / 10000)
 }
 fun behaviour(model: Environment.Model, policy: IntArray, settings: Settings): DynamicProgramming.Evaluation {
     val world = model.world;
@@ -204,7 +206,8 @@ fun behaviour(model: Environment.Model, policy: IntArray, settings: Settings): D
         var delta = 0L;
         for (x in world.states) {
             var weighted = 0L;
-            for (a in 0..3) weighted += (epsilon + if (a == policy[x]) 4L * (1000 - epsilon) else 0L) * DynamicProgramming.bellman(model,values,x,a,settings.get("GAMMA"));
+            for (a in 0..3) weighted += (epsilon + if (a == policy[x]) 4L * (1000 - epsilon) else 0L) * DynamicProgramming.bellman(model,
+                values,x,a,settings.get("GAMMA"));
             val v = DynamicProgramming.floor(weighted,4000);
             delta = maxOf(delta,abs(v - values[x]));
             values[x] = v
@@ -256,7 +259,9 @@ fun maxIndex(world: Environment, values: LongArray): Int {
     for (x in world.states) if (values[x] > values[best]) best = x;
     return best
 }
-fun valueLines(model: Environment.Model, settings: Settings, vi: DynamicProgramming.Iteration, inPlace: DynamicProgramming.Iteration, pi: DynamicProgramming.PolicyIteration, q: Array<LongArray>, optimalPolicy: IntArray, distance: IntArray): List<String> {
+fun valueLines(model: Environment.Model, settings: Settings, vi: DynamicProgramming.Iteration,
+     inPlace: DynamicProgramming.Iteration, pi: DynamicProgramming.PolicyIteration, q: Array<LongArray>,
+     optimalPolicy: IntArray, distance: IntArray): List<String> {
     val world = model.world;
     val output = mutableListOf<String>();
     var section = mutableListOf<String>();
@@ -320,7 +325,8 @@ fun valueLines(model: Environment.Model, settings: Settings, vi: DynamicProgramm
     val evaluationSweeps = pi.rounds.sumOf {
         it.sweeps.toLong()
     }
-    part(output,listOf("comparison policy_differences ${world.states.size - agree(world,pi.policy,optimalPolicy)} max_value_difference ${Report.fixed(differences[at])} at ${Report.cell(world,at)}","backups value_iteration ${vi.changes.size * n * 4} in_place_iterations ${inPlace.changes.size} in_place ${inPlace.changes.size * n * 4} policy_iteration ${evaluationSweeps * n + pi.rounds.size * n * 4}"))
+    part(output,listOf("comparison policy_differences ${world.states.size - agree(world,pi.policy,optimalPolicy)} max_value_difference ${Report.fixed(differences[at])} at ${Report.cell(world,at)}",
+        "backups value_iteration ${vi.changes.size * n * 4} in_place_iterations ${inPlace.changes.size} in_place ${inPlace.changes.size * n * 4} policy_iteration ${evaluationSweeps * n + pi.rounds.size * n * 4}"))
     part(output,listOf("gamma_sweep") + settings.values("GAMMA_SWEEP").map {
         sensitivity("gamma $it",model,settings,it.toInt(),optimalPolicy)
     })
@@ -386,7 +392,8 @@ fun learningLines(settings: Settings, learning: List<Learning>): List<String> {
     };
     return output
 }
-fun evaluationLines(model: Environment.Model, settings: Settings, vi: DynamicProgramming.Iteration, optimalQ: Array<LongArray>, optimalPolicy: IntArray, policies: List<IntArray>, learning: List<Learning>): List<String> {
+fun evaluationLines(model: Environment.Model, settings: Settings, vi: DynamicProgramming.Iteration,
+     optimalQ: Array<LongArray>, optimalPolicy: IntArray, policies: List<IntArray>, learning: List<Learning>): List<String> {
     val world = model.world;
     val output = mutableListOf<String>();
     part(output,listOf("summary states ${world.states.size} start ${Report.cell(world,world.start)} rollouts ${settings.get("ROLLOUTS")} step_limit ${settings.get("STEP_LIMIT")}"))
@@ -507,7 +514,9 @@ fun evaluationLines(model: Environment.Model, settings: Settings, vi: DynamicPro
             phases.add("${result.name} $start-$end alpha ${settings.schedule("ALPHA",start)} epsilon ${settings.schedule("EPSILON",start)} mean_return ${Report.average(selected.sumOf { it.total },selected.size.toLong())} mean_steps ${Report.average(selected.sumOf { it.steps.toLong() },selected.size.toLong())} goals ${selected.count { it.ending == 0 }}")
         }
     }
-    for (section in listOf(policyValues,improvements,absorptions,behaviours,qErrors,actionErrors,rolloutLines,terminalLines,agreementLines,training,visited,lastEpisodes,phases)) part(output,section)
+    for (section in listOf(policyValues,improvements,absorptions,behaviours,qErrors,actionErrors,
+        rolloutLines,terminalLines,agreementLines,training,visited,lastEpisodes,phases)) part(output,
+        section)
     return output
 }
 fun main() {

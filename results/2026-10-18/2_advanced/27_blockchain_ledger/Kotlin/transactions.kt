@@ -39,7 +39,8 @@ object Transactions {
         }
         return Transaction("$body;sig=${signatures.joinToString(",")}", inputs.toList(), outputs, signatures, null)
     }
-    fun coinbase(height: Int, outputs: List<Payment>): Transaction = Transaction("cb=$height;out=${outputs.joinToString(",")}", emptyList(), outputs, emptyList(), height)
+    fun coinbase(height: Int, outputs: List<Payment>): Transaction = Transaction("cb=$height;out=${outputs.joinToString(",")}",
+         emptyList(), outputs, emptyList(), height)
     fun check(transaction: Transaction, utxo: Map<Reference, Coin>, spent: Set<Reference>, height: Int, owners: Map<String, Wallet>, maturity: Int): Check {
         for (output in transaction.outputs) if (output.address !in owners || output.amount == 0) return Check("bad-output", 0)
         val seen = mutableSetOf<Reference>()
@@ -56,6 +57,7 @@ object Transactions {
     }
     fun apply(utxo: MutableMap<Reference, Coin>, transaction: Transaction, height: Int) {
         for (reference in transaction.inputs) utxo.remove(reference)
-        for ((i, output) in transaction.outputs.withIndex()) utxo[Reference(transaction.txid, i)] = Coin(output.address, output.amount, height, transaction.coinbase)
+        for ((i, output) in transaction.outputs.withIndex()) utxo[Reference(transaction.txid,
+             i)] = Coin(output.address, output.amount, height, transaction.coinbase)
     }
 }

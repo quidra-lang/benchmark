@@ -2,7 +2,9 @@ object DocumentParser {
     val body = setOf("paragraph","item","enum","quote","term");
     val preamble = setOf("page","header","footer");
     val empty = setOf("newpage","verbatim","toc","lot","index","bibliography");
-    val names = setOf("width","indent","align","page","header","footer","newpage","hyphenation","bib","title","author","h1","h2","item","enum","quote","term","table","verbatim","toc","lot","index","bibliography")
+    val names = setOf("width","indent","align","page","header","footer","newpage","hyphenation",
+        "bib","title","author","h1","h2","item","enum","quote","term","table","verbatim","toc",
+        "lot","index","bibliography")
     data class Source(val line: Int, val text: String)
     data class Warning(val line: Int, val text: String)
     class Bib(val line: Int, val key: String, val author: String, val year: String, val title: String) {

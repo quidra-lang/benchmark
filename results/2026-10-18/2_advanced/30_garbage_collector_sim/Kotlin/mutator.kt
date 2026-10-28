@@ -28,7 +28,8 @@ object Mutator {
             val fields = line.split(' ')
             when (fields[0]) {
                 "HEAP" -> config.heap = fields[1].toInt()
-                "COLLECTOR" -> config.collectors.add(CollectorEntry(fields[1], fields[2], if (fields.size > 3) fields[3].toInt() else 0, if (fields.size > 4) fields[4].toInt() else 0))
+                "COLLECTOR" -> config.collectors.add(CollectorEntry(fields[1], fields[2], if (fields.size > 3) fields[3].toInt() else 0,
+                     if (fields.size > 4) fields[4].toInt() else 0))
                 "MAPS" -> config.maps = fields.drop(1)
                 "MMU" -> config.windows.addAll(fields.drop(1).map(String::toInt))
                 else -> config.width = fields[1].toInt()
@@ -75,7 +76,8 @@ object Mutator {
             }
             else -> command.label = tokens[1]
         }
-        if (command.name == "ALLOC" && (command.pointers > 6 || command.data > 24) || command.name == "POP" && command.count == 0) return Parsed(command, "range")
+        if (command.name == "ALLOC" && (command.pointers > 6 || command.data > 24) || command.name == "POP" && command.count == 0) return Parsed(command,
+             "range")
         return Parsed(command, "")
     }
 }

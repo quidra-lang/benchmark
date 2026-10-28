@@ -3,7 +3,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.math.abs
 
-private data class Checkpoint(val command: Command, val stack: Int, val live: Pair, val allocated: Pair, val phase: Pair, val survivors: Pair, val reachable: Set<Int>)
+private data class Checkpoint(val command: Command, val stack: Int, val live: Pair, val allocated: Pair,
+     val phase: Pair, val survivors: Pair, val reachable: Set<Int>)
 private data class Pause(val line: Int, val work: Int, val freed: Pair, val collection: Boolean)
 private data class Segment(val start: Int, val length: Int, val mutator: Boolean, val before: Int)
 private fun used(objects: Collection<HeapObject>): Int = objects.sumOf {
@@ -310,7 +311,8 @@ private class Timeline {
     fun mmu(width: Int): String {
         if (width > length) return "-";
         var minimum = width;
-        for (segment in segments) for (begin in intArrayOf(segment.start, segment.start + segment.length - width)) if (begin >= 0 && begin <= length - width) minimum = minOf(minimum, prefix(begin + width) - prefix(begin));
+        for (segment in segments) for (begin in intArrayOf(segment.start, segment.start + segment.length - width)) if (begin >= 0 && begin <= length - width) minimum = minOf(minimum,
+             prefix(begin + width) - prefix(begin));
         return Heap.percent(minimum, width)
     }
 }
@@ -425,7 +427,9 @@ private class Run(val entry: CollectorEntry, val config: Config, val script: Scr
             }
         }
         val blocks = collector.freeList()
-        val lines = mutableListOf("heap objects ${pair(collector.objects)} reachable $live garbage $garbage", "free total ${Heap.total(blocks)} largest ${Heap.largest(blocks)} blocks ${blocks.size} sizes ${Heap.classes(blocks.map { it.length })} fragmentation ${fragmentation(blocks)}", "locality pointers $pointers forward $forward backward $backward mean_distance ${if (pointers == 0) "-" else Heap.dec2(distance, pointers)}")
+        val lines = mutableListOf("heap objects ${pair(collector.objects)} reachable $live garbage $garbage",
+             "free total ${Heap.total(blocks)} largest ${Heap.largest(blocks)} blocks ${blocks.size} sizes ${Heap.classes(blocks.map { it.length })} fragmentation ${fragmentation(blocks)}",
+             "locality pointers $pointers forward $forward backward $backward mean_distance ${if (pointers == 0) "-" else Heap.dec2(distance, pointers)}")
         if (generational) {
             val gc = collector as Generational;
             val young = Pair();

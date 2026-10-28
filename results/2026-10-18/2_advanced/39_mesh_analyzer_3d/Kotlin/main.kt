@@ -218,9 +218,16 @@ private fun summary(a: Analysis,out: MutableList<String>) {
     val merged=(1 until a.representatives.size).count {
         a.representatives[it]!=it
     };
-    out+=listOf("[summary]","lines ${s.lines}","vertices ${s.vertices.size-1}","polygons ${s.polygons.size}","errors ${s.errors.size}","ignored ${s.ignored}","nonplanar_polygons ${a.nonplanar.size}");
+    out+=listOf("[summary]","lines ${s.lines}","vertices ${s.vertices.size-1}","polygons ${s.polygons.size}",
+        "errors ${s.errors.size}","ignored ${s.ignored}","nonplanar_polygons ${a.nonplanar.size}");
     for((size,n) in sizes)out+="polygon_size $size $n";
-    out+=listOf("triangles ${a.triangles.size}","snapped ${a.changes.size}","merged $merged","removed_repeated ${reasons.getOrDefault("repeated",0)}","removed_zero_area ${reasons.getOrDefault("zero_area",0)}","removed_duplicate ${reasons.getOrDefault("duplicate",0)}","faces ${a.initial}","inconsistent_before ${a.inconsistentBefore.size}","flipped_faces ${a.flipped}","outward_components ${a.outward}","boundary_loops ${a.loops.size}","holes_filled ${a.loops.count{it.filled}}","fill_faces ${a.added}","final_vertices ${a.points.size-1}","final_faces ${a.faces.size}","components ${a.components.size}","solids ${a.components.count{it.solid}}","total_area ${Measure.real(Measure.area(a.faces,a.points))}","total_volume ${Measure.fraction(a.components.filter{it.solid}.sumOf{it.volume},6)}")
+    out+=listOf("triangles ${a.triangles.size}","snapped ${a.changes.size}","merged $merged",
+        "removed_repeated ${reasons.getOrDefault("repeated",0)}","removed_zero_area ${reasons.getOrDefault("zero_area",0)}",
+        "removed_duplicate ${reasons.getOrDefault("duplicate",0)}","faces ${a.initial}","inconsistent_before ${a.inconsistentBefore.size}",
+        "flipped_faces ${a.flipped}","outward_components ${a.outward}","boundary_loops ${a.loops.size}",
+        "holes_filled ${a.loops.count{it.filled}}","fill_faces ${a.added}","final_vertices ${a.points.size-1}",
+        "final_faces ${a.faces.size}","components ${a.components.size}","solids ${a.components.count{it.solid}}",
+        "total_area ${Measure.real(Measure.area(a.faces,a.points))}","total_volume ${Measure.fraction(a.components.filter{it.solid}.sumOf{it.volume},6)}")
 }
 private fun cleanup(a: Analysis,out: MutableList<String>) {
     out+=listOf("[cleanup]","snapped ${a.changes.size}");
@@ -238,7 +245,15 @@ private fun components(a: Analysis,out: MutableList<String>) {
                 a.faces[it-1].group==g
             }
         };
-        out+=listOf("[component ${c.number}]","groups ${listing(groups)}","faces ${c.faces.size}","vertices ${c.vertices.size}","edges ${c.edges.size}","boundary_edges ${c.boundary.size}","nonmanifold_edges ${c.nonmanifold.size}","nonmanifold_vertices ${c.nonmanifoldVertices.size}","boundary_loops ${d.loops}","closed ${yes(d.closed)}","manifold ${yes(d.manifold)}","orientable ${yes(d.orientable)}","consistent ${yes(d.consistent)}","solid ${yes(d.solid)}","euler ${d.euler}",if(d.genus!=null)"genus ${d.genus}" else if(d.crosscaps!=null)"crosscaps ${d.crosscaps}" else "genus -","volume ${if(d.solid)Measure.fraction(d.volume,6) else "-"}","area ${Measure.real(d.area)}","normal_sum ${d.normal}","bbox ${d.bbox.joinToString(" ")}","inside ${listing(d.inside)}","centroid ${d.centroid}");
+        out+=listOf("[component ${c.number}]","groups ${listing(groups)}","faces ${c.faces.size}",
+            "vertices ${c.vertices.size}","edges ${c.edges.size}","boundary_edges ${c.boundary.size}",
+            "nonmanifold_edges ${c.nonmanifold.size}","nonmanifold_vertices ${c.nonmanifoldVertices.size}",
+            "boundary_loops ${d.loops}","closed ${yes(d.closed)}","manifold ${yes(d.manifold)}",
+            "orientable ${yes(d.orientable)}","consistent ${yes(d.consistent)}","solid ${yes(d.solid)}",
+            "euler ${d.euler}",if(d.genus!=null)"genus ${d.genus}" else if(d.crosscaps!=null)"crosscaps ${d.crosscaps}" else "genus -",
+            "volume ${if(d.solid)Measure.fraction(d.volume,6) else "-"}","area ${Measure.real(d.area)}",
+            "normal_sum ${d.normal}","bbox ${d.bbox.joinToString(" ")}","inside ${listing(d.inside)}",
+            "centroid ${d.centroid}");
         for(key in listOf("convex","concave","flat"))out+="$key ${d.shapes.getOrDefault(key,0)}";
         for(key in listOf("acute","right","obtuse"))out+="$key ${d.angles.getOrDefault(key,0)}";
         out+="edge_len2 ${d.edgeMin} ${d.edgeMax}";
@@ -253,7 +268,9 @@ private fun groups(a: Analysis,out: MutableList<String>) {
         val ids=a.faces.indices.filter {
             a.faces[it].group==g
         };
-        out+=listOf("[group $g]","polygons ${p.size}","triangles ${a.triangles.count{it.group==g}}","nonplanar ${p.count{it.number in a.nonplanar}}","faces ${ids.size}","area ${Measure.real(Measure.area(ids.map{a.faces[it]},a.points))}","components ${listing(ids.map{a.mesh.faceComponent[it+1]}.toSortedSet())}")
+        out+=listOf("[group $g]","polygons ${p.size}","triangles ${a.triangles.count{it.group==g}}",
+            "nonplanar ${p.count{it.number in a.nonplanar}}","faces ${ids.size}","area ${Measure.real(Measure.area(ids.map{a.faces[it]},a.points))}",
+            "components ${listing(ids.map{a.mesh.faceComponent[it+1]}.toSortedSet())}")
     }
 }
 private fun contacts(a: Analysis,out: MutableList<String>) {
@@ -294,7 +311,9 @@ private fun edges(a: Analysis,out: MutableList<String>) {
             longest=e
         }
     };
-    out+=listOf("[edges]","edges ${a.mesh.edges.size}","boundary ${counts.getOrDefault("boundary",0)}","manifold ${counts.getOrDefault("manifold",0)}","nonmanifold ${counts.getOrDefault("nonmanifold",0)}","max_faces $maxFaces");
+    out+=listOf("[edges]","edges ${a.mesh.edges.size}","boundary ${counts.getOrDefault("boundary",0)}",
+        "manifold ${counts.getOrDefault("manifold",0)}","nonmanifold ${counts.getOrDefault("nonmanifold",0)}",
+        "max_faces $maxFaces");
     for(key in listOf("convex","concave","flat","inconsistent"))out+="$key ${counts.getOrDefault(key,0)}";
     out+="shortest $shortest len2 $min";
     out+="longest $longest len2 $max"
@@ -306,7 +325,8 @@ private fun valence(a: Analysis,out: MutableList<String>) {
     val histogram=degrees.groupingBy {
         it
     }.eachCount().toSortedMap();
-    out+=listOf("[valence]","used ${degrees.size}","isolated ${a.points.size-1-degrees.size}","min ${degrees.min()}","max ${degrees.max()}","mean ${Measure.fraction(degrees.sumOf{it.toLong()},degrees.size.toLong())}");
+    out+=listOf("[valence]","used ${degrees.size}","isolated ${a.points.size-1-degrees.size}",
+        "min ${degrees.min()}","max ${degrees.max()}","mean ${Measure.fraction(degrees.sumOf{it.toLong()},degrees.size.toLong())}");
     for((d,n) in histogram)out+="degree $d $n"
 }
 private fun query(w: List<String>,a: Analysis): String {

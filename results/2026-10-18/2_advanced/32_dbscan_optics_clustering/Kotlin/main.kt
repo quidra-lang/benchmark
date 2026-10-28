@@ -86,7 +86,8 @@ private class GridSummary(points: List<Point>, val eps: Int) {
     }
     fun lines(): List<String> {
         val cell = grid.busiest();
-        return listOf("eps $eps cells ${grid.cells.size} busiest ${cell.x} ${cell.y} ${grid.cells.getValue(cell).size} candidates $candidates pairs $pairs brute_pairs $brutePairs ${test(consistent)}", "  occupancy " + occupancy.entries.joinToString(" ") {
+        return listOf("eps $eps cells ${grid.cells.size} busiest ${cell.x} ${cell.y} ${grid.cells.getValue(cell).size} candidates $candidates pairs $pairs brute_pairs $brutePairs ${test(consistent)}",
+             "  occupancy " + occupancy.entries.joinToString(" ") {
             "${it.key}:${it.value}"
         })
     }
@@ -455,7 +456,9 @@ private class Analysis(val data: Dataset) {
             for (point in hull) diameter = maxOf(diameter, GridIndex.distance(a, point))
         }
         doubled = abs(doubled)
-        return listOf("cluster $label ${character(label)} size $size core $core border ${size - core} centroid ${Report.fraction(sumX, size.toLong())} ${Report.fraction(sumY, size.toLong())} medoid $medoid", "  bbox $minX $minY $maxX $maxY area $area density ${Report.fraction(size, area)}", "  hull ${hull.size} hull_area ${doubled / 2}.${if (doubled % 2 == 0L) 0 else 5} diameter_sq $diameter diameter ${Report.root(diameter)}")
+        return listOf("cluster $label ${character(label)} size $size core $core border ${size - core} centroid ${Report.fraction(sumX, size.toLong())} ${Report.fraction(sumY, size.toLong())} medoid $medoid",
+             "  bbox $minX $minY $maxX $maxY area $area density ${Report.fraction(size, area)}",
+             "  hull ${hull.size} hull_area ${doubled / 2}.${if (doubled % 2 == 0L) 0 else 5} diameter_sq $diameter diameter ${Report.root(diameter)}")
     }
     fun checkLines(setting: Setting): List<String> {
         var a = true;

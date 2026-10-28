@@ -8,7 +8,8 @@ object PageBuilder {
             val start = lines.size;
             val count = block.lines.size;
             lines.addAll(block.lines);
-            if (block.kind == "flow") for (kept in 1 until count) if (kept >= orphan && count - kept >= widow) boundaries.add(Boundary(start + kept,start + kept,false));
+            if (block.kind == "flow") for (kept in 1 until count) if (kept >= orphan && count - kept >= widow) boundaries.add(Boundary(start + kept,
+                start + kept,false));
             if (i + 1 == blocks.size) {
                 boundaries.add(Boundary(lines.size,lines.size,true));
                 continue

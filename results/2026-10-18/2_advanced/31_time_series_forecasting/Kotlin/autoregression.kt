@@ -66,7 +66,8 @@ object Autoregression {
         for (j in 1..coefficients.size) total += coefficients[j - 1] * (values[i - j] - mean);
         values[i] - mean - total
     }
-    fun forecast(values: DoubleArray, differenced: DoubleArray, kind: String, mean: Double, coefficients: DoubleArray, origin: Int, steps: Int, season: Int): DoubleArray {
+    fun forecast(values: DoubleArray, differenced: DoubleArray, kind: String, mean: Double,
+         coefficients: DoubleArray, origin: Int, steps: Int, season: Int): DoubleArray {
         val count = origin - offset(kind, season);
         val transformed = differenced.copyOf(count + steps);
         val extended = values.copyOf(origin + steps);

@@ -67,7 +67,9 @@ private class Model(val name: String, val values: DoubleArray, val season: Int) 
         val suffix = " rmse ${real(rmse(errors))} residuals ${errors.size}"
         if (name == "naive" || name == "snaive") return listOf(name + suffix)
         if (name == "drift") return listOf("$name slope ${real(slope)}$suffix")
-        if (name == "ar") return listOf("ar variance none ${real(variances[0])} first ${real(variances[1])} seasonal ${real(variances[2])} both ${real(variances[3])}", "ar difference $kind n ${differenced.size} mean ${real(mean)} order ${coefficients.size} sigma2 ${real(sigma2)}$suffix", "ar aic ${reals(aic)}", "ar coefficients ${if (coefficients.isEmpty()) "none" else reals(coefficients)}")
+        if (name == "ar") return listOf("ar variance none ${real(variances[0])} first ${real(variances[1])} seasonal ${real(variances[2])} both ${real(variances[3])}",
+             "ar difference $kind n ${differenced.size} mean ${real(mean)} order ${coefficients.size} sigma2 ${real(sigma2)}$suffix",
+             "ar aic ${reals(aic)}", "ar coefficients ${if (coefficients.isEmpty()) "none" else reals(coefficients)}")
         if (name.startsWith("decomp_")) return listOf("$name intercept ${real(intercept)} slope ${real(slope)}$suffix", "$name seasonal ${reals(seasonal)}")
         val state = smooth!!.states.last();
         var line = "$name alpha ${real(alpha)}"
@@ -185,7 +187,8 @@ private fun cv(model: Model, settings: SeriesIo): CrossValidation {
     }
     return CrossValidation(counts, sigma, mae, sqrt(total / count))
 }
-private fun intervals(predicted: DoubleArray, sigma: DoubleArray, coefficients: DoubleArray, multipliers: DoubleArray? = null): Array<DoubleArray> = Array(predicted.size) {
+private fun intervals(predicted: DoubleArray, sigma: DoubleArray, coefficients: DoubleArray,
+     multipliers: DoubleArray? = null): Array<DoubleArray> = Array(predicted.size) {
     k ->
     val value = predicted[k];
     val low = coefficients[0] * sigma[k];
@@ -338,7 +341,9 @@ private class Analysis(val data: SeriesData, val settings: SeriesIo) {
                 winkler80 += Evaluation.winkler(actual[t], rows[t][1], rows[t][2], 10.0);
                 winkler95 += Evaluation.winkler(actual[t], rows[t][3], rows[t][4], 40.0)
             }
-            val values = doubleArrayOf(metric.me, metric.mae, metric.rmse, metric.mape, metric.smape, metric.mase, 100 * (metrics.first().mae - metric.mae) / metrics.first().mae, validations[i].rmse)
+            val values = doubleArrayOf(metric.me, metric.mae, metric.rmse, metric.mape, metric.smape,
+                 metric.mase, 100 * (metrics.first().mae - metric.mae) / metrics.first().mae,
+                 validations[i].rmse)
             lines.add("${data.name},${models[i].name},${csv(values)},$cover80,$cover95,${real(winkler80 / holdout)},${real(winkler95 / holdout)},${ranks[i]}")
         }
         return lines
@@ -357,7 +362,8 @@ private class Analysis(val data: SeriesData, val settings: SeriesIo) {
         val lines = mutableListOf("series ${data.name} difference ${ar.kind} n ${ar.differenced.size} band ${real(band)}")
         for (label in listOf("acf", "pacf")) {
             val correlations = if (label == "acf") ar.acf else ar.partial;
-            for (k in 1 until correlations.size) lines.add(String.format(Locale.ROOT, "%s %2d %7s [%s]%s", label, k, real(correlations[k]), correlationBar(correlations[k], band), if (abs(correlations[k]) > band) " *" else ""))
+            for (k in 1 until correlations.size) lines.add(String.format(Locale.ROOT, "%s %2d %7s [%s]%s",
+                 label, k, real(correlations[k]), correlationBar(correlations[k], band), if (abs(correlations[k]) > band) " *" else ""))
         }
         for (method in methods.indices) {
             val model = models[method];

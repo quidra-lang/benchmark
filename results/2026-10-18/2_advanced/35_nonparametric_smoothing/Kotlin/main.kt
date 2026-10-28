@@ -154,7 +154,8 @@ class Fit(val data: Dataset.Series, val name: String, val parameter: String, rob
 }
 fun cv(data: Dataset.Series, name: String, parameter: String, folds: Int): Double {
     val predicted = DoubleArray(data.n);
-    if (folds == 0) for (i in 0 until data.n) predicted[i] = Fit(data.subset(i,0),name,parameter,0,false).estimate(data.positions[i]).value else for (group in 0 until folds) {
+    if (folds == 0) for (i in 0 until data.n) predicted[i] = Fit(data.subset(i,0),name,parameter,
+        0,false).estimate(data.positions[i]).value else for (group in 0 until folds) {
         val fit = Fit(data.subset(group,folds),name,parameter,0,false);
         for (i in group until data.n step folds) predicted[i] = fit.estimate(data.positions[i]).value
     };
@@ -509,7 +510,8 @@ fun bandLines(a: Analysis, settings: Dataset, rng: Rng): List<String> {
 }
 fun isotonicLines(a: Analysis): List<String> {
     val m = a.named.getValue("isotonic");
-    val output = mutableListOf("series ${a.data.name} direction ${a.direction} mode ${a.mode}" + if (a.mode == "auto") " rss_increasing ${real(a.increasing)} rss_decreasing ${real(a.decreasing)}" else "","blocks ${m.fit.blocks.size} rss ${real(m.rss)} loo ${real(m.loo)}");
+    val output = mutableListOf("series ${a.data.name} direction ${a.direction} mode ${a.mode}" + if (a.mode == "auto") " rss_increasing ${real(a.increasing)} rss_decreasing ${real(a.decreasing)}" else "",
+        "blocks ${m.fit.blocks.size} rss ${real(m.rss)} loo ${real(m.loo)}");
     for (i in m.fit.blocks.indices) {
         val b = m.fit.blocks[i];
         output.add("block ${i + 1} x ${decimal(a.data.positions[b.start])} ${decimal(a.data.positions[b.end])} count ${b.count} value ${real(b.value())}")

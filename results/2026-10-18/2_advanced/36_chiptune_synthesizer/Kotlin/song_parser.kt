@@ -20,7 +20,9 @@ object SongParser {
         val noteText = text.substring(0,3);
         val instrument = text.substring(4,6);
         val volume = text.substring(7,8);
-        return Cell(if (noteText == "...") -2 else if (noteText == "OFF") -1 else note(noteText),if (instrument == "..") 0 else hex(instrument),if (volume == ".") -1 else hex(volume),effect(text.substring(9)))
+        return Cell(if (noteText == "...") -2 else if (noteText == "OFF") -1 else note(noteText),
+            if (instrument == "..") 0 else hex(instrument),if (volume == ".") -1 else hex(volume),
+            effect(text.substring(9)))
     }
     class Instrument {
         var number = 0;

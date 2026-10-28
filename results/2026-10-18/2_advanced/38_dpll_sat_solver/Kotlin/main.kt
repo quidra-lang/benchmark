@@ -3,7 +3,9 @@ import java.nio.file.Path
 import java.nio.charset.StandardCharsets
 import kotlin.math.abs
 val commands = listOf("SOLVE","ENUM","CORE","QUEENS","PIGEON","COLOR","CHROMATIC")
-val argumentTypes = mapOf("SOLVE" to listOf("file"),"ENUM" to listOf("file","limit"),"CORE" to listOf("file"),"QUEENS" to listOf("small","limit"),"PIGEON" to listOf("small","small","limit"),"COLOR" to listOf("graph","color","limit"),"CHROMATIC" to listOf("graph","color"))
+val argumentTypes = mapOf("SOLVE" to listOf("file"),"ENUM" to listOf("file","limit"),"CORE" to listOf("file"),
+    "QUEENS" to listOf("small","limit"),"PIGEON" to listOf("small","small","limit"),"COLOR" to listOf("graph",
+    "color","limit"),"CHROMATIC" to listOf("graph","color"))
 class Graph(val name: String, val vertices: Int) {
     var invalid: String? = null;
     var maximumDegree = 0;
@@ -342,7 +344,9 @@ fun queenSymmetry(positions: IntArray): Symmetry {
     for (i in 0 until n) {
         val r = i + 1;
         val c = positions[i];
-        val mapped = arrayOf(intArrayOf(r,c),intArrayOf(c,n + 1 - r),intArrayOf(n + 1 - r,n + 1 - c),intArrayOf(n + 1 - c,r),intArrayOf(r,n + 1 - c),intArrayOf(n + 1 - r,c),intArrayOf(c,r),intArrayOf(n + 1 - c,n + 1 - r));
+        val mapped = arrayOf(intArrayOf(r,c),intArrayOf(c,n + 1 - r),intArrayOf(n + 1 - r,n + 1 - c),
+            intArrayOf(n + 1 - c,r),intArrayOf(r,n + 1 - c),intArrayOf(n + 1 - r,c),intArrayOf(c,
+            r),intArrayOf(n + 1 - c,n + 1 - r));
         for (j in 0..7) boards[j][mapped[j][0] - 1] = mapped[j][1]
     };
     var canonical = boards[0];
@@ -471,7 +475,8 @@ fun summary(jobs: List<Job>): List<String> {
         if (deepest == null || job.stats.maxDepth > deepest.stats.maxDepth) deepest = job;
         if (busiest == null || job.stats.propagations > busiest.stats.propagations) busiest = job
     }
-    val lines = mutableListOf("SUMMARY jobs=${jobs.size} sat=$sat unsat=$unsat error=$errors","totals models=${totals[0]} rounds=${totals[1]} decisions=${totals[2]} propagations=${totals[3]} conflicts=${totals[4]} removed_clauses=${totals[5]}")
+    val lines = mutableListOf("SUMMARY jobs=${jobs.size} sat=$sat unsat=$unsat error=$errors",
+        "totals models=${totals[0]} rounds=${totals[1]} decisions=${totals[2]} propagations=${totals[3]} conflicts=${totals[4]} removed_clauses=${totals[5]}")
     for (command in commands) {
         val count = commandCounts[command] ?: continue;
         lines.add("command $command jobs=${count[0]} sat=${count[1]} unsat=${count[2]} decisions=${count[3]} propagations=${count[4]} conflicts=${count[5]}")
