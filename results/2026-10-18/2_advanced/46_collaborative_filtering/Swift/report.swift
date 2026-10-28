@@ -9,5 +9,7 @@ func real(_ value: Double?) -> String {
 func optional(_ value: Int?) -> String { value.map(String.init) ?? "-" }
 
 func writeLines(_ name: String, _ lines: [String]) throws {
+    try FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
+
     try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + name, atomically: false, encoding: .ascii)
 }

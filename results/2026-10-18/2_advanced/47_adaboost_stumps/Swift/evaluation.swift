@@ -26,4 +26,6 @@ func confusion(_ rows: [Row], _ predictions: [Int], _ classes: Int) -> [[Int]] {
 }
 
 func countAtMost(_ margins: [Double], _ threshold: Double) -> Int { margins.filter { $0 <= threshold }.count }
-func writeLines(_ filename: String, _ lines: [String]) throws { try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + filename, atomically: false, encoding: .ascii) }
+func writeLines(_ filename: String, _ lines: [String]) throws {
+    try FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
+    try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + filename, atomically: false, encoding: .ascii) }

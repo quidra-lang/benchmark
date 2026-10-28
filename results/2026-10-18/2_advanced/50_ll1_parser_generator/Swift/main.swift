@@ -423,7 +423,9 @@ func parseReport(_ inputs: [ParsedInput], _ grammar: Grammar, _ sets: GrammarSet
     return lines
 }
 
-func save(_ filename: String, _ lines: [String]) throws { try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + filename, atomically: false, encoding: .ascii) }
+func save(_ filename: String, _ lines: [String]) throws {
+    try FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
+    try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + filename, atomically: false, encoding: .ascii) }
 
 let source = parseGrammar(try linesAt("input/grammar.bnf"))
 let cleaned = cleanGrammar(source.grammar)

@@ -9,4 +9,6 @@ func fraction(_ numerator: Int, _ denominator: Int) -> String {
 func ids<S: Sequence>(_ values: S) -> String where S.Element == Int { let text = values.map(String.init).joined(separator: " "); return text.isEmpty ? "-" : text }
 struct ObjectDistance: Equatable { let id: Int; let distance: Int }
 func distances(_ values: [ObjectDistance]) -> String { let text = values.map { "\($0.id):\($0.distance)" }.joined(separator: " "); return text.isEmpty ? "-" : text }
-func writeLines(_ name: String, _ lines: [String]) throws { try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + name, atomically: false, encoding: .ascii) }
+func writeLines(_ name: String, _ lines: [String]) throws {
+    try FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
+    try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + name, atomically: false, encoding: .ascii) }

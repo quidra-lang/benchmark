@@ -12,7 +12,9 @@ func decimal(_ value: Double?, _ places: Int) -> String {
     return (integer < 0 ? "-" : "") + String(absolute / scale) + "." + String(repeating: "0", count: places - remainder.count) + remainder
 }
 func timeNotation(_ sample: Int) -> String { "\(sample / 100)." + (sample % 100 < 10 ? "0" : "") + String(sample % 100) }
-func writeLines(_ filename: String, _ lines: [String]) throws { try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + filename, atomically: false, encoding: .ascii) }
+func writeLines(_ filename: String, _ lines: [String]) throws {
+    try FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
+    try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + filename, atomically: false, encoding: .ascii) }
 func stationOrdered(_ picks: [Pick]) -> [Pick] { picks.sorted { $0.station.order < $1.station.order } }
 func observations(_ picks: [Pick], corrections: [Double]? = nil) -> [Observation] {
     stationOrdered(picks).map { Observation(station: $0.station, time: $0.time - (corrections?[$0.station.order] ?? 0)) }

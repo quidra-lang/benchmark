@@ -558,6 +558,7 @@ let data = try readTable("input/data.csv")
 let supplementary = try readTable("input/supplementary.csv")
 let settings = try readSettings("input/params.txt")
 let report = PCAReport(data, supplementary, settings)
+try FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
 for (name, lines) in [("eigen.txt", report.eigenFile()), ("loadings.csv", report.loadingsFile()),
                       ("scores.csv", report.scoresFile()), ("outliers.txt", report.outliersFile()), ("plots.txt", report.plotsFile())] {
     try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + name, atomically: false, encoding: .ascii)

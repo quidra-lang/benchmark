@@ -551,6 +551,7 @@ final class Report {
     }
 
     func write() throws {
+        try FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
         let owners = Dictionary(uniqueKeysWithValues: outputSections.flatMap { filename, sections in sections.map { ($0, filename) } })
         var contents: [String: [String]] = Dictionary(uniqueKeysWithValues: outputSections.map { ($0.0, []) })
         for name in params.sections { contents[owners[name]!]! += ["[\(name)]"] + section(name) }

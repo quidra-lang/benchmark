@@ -542,6 +542,8 @@ func residualPlot(_ report: ModelReport, _ params: Parameters) -> [String] {
 }
 
 func writeReport(_ filename: String, _ lines: [String]) throws {
+    try FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
+
     try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + filename, atomically: false, encoding: .ascii)
 }
 
