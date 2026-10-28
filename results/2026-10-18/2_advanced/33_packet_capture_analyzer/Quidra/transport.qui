@@ -1,0 +1,120 @@
+import network = "./link_network.qui"
+
+int[] pseudo(int source, int destination, int protocol, int size)
+    return network.bytes(source, 4).concat(network.bytes(destination, 4)).concat([0, protocol]).concat(network.bytes(size, 2))
+
+network.Layer | error icmp(int[] data)
+    if len(data) < 8
+        return error("icmp: truncated")
+    network.Layer layer = network.Layer()
+    int kind = data[0]
+    .layer.fields.put_number("icmp.type", kind)
+    .layer.fields.put_number("icmp.code", data[1])
+    .layer.fields.put_number("icmp.checksum", network.integer(data, 2, 2))
+    .layer.fields.put_text("icmp.checksum.status", network.checksum(data))
+    if kind == 0 or kind == 8
+        .layer.fields.put_number("icmp.id", network.integer(data, 4, 2))
+        .layer.fields.put_number("icmp.seq", network.integer(data, 6, 2))
+    layer.remaining = data[8:]
+    return layer
+
+network.Layer | error udp(int[] data, int source, int destination)
+    if len(data) < 8
+        return error("udp: truncated")
+    int size = network.integer(data, 4, 2)
+    if size < 8 or size > int(len(data))
+        return error("udp: bad length {size}")
+    network.Layer layer = network.Layer()
+    int first = network.integer(data, 0, 2)
+    int second = network.integer(data, 2, 2)
+    int checksum = network.integer(data, 6, 2)
+    .layer.fields.put_number("udp.srcport", first)
+    .layer.fields.put_number("udp.dstport", second)
+    .layer.fields.put_number("udp.length", size)
+    .layer.fields.put_number("udp.checksum", checksum)
+    string status = if checksum == 0 then "none" else network.checksum(pseudo(source, destination, 17, size).concat(data[0:<size]))
+    .layer.fields.put_text("udp.checksum.status", status)
+    if first == 53 or second == 53
+        layer.next_layer = "dns"
+        layer.payload = data[8:<size]
+    else
+        layer.remaining = data[8:<size]
+    return layer
+
+bool valid_length(int kind, int size)
+    if kind == 2
+        return size == 4
+    if kind == 3
+        return size == 3
+    if kind == 4
+        return size == 2
+    if kind == 5
+        return size == 10 or size == 18 or size == 26 or size == 34
+    if kind == 8
+        return size == 10
+    return true
+
+void parse_options(int[] data, network.Layer &layer)
+    int index = 0
+    while index < int(len(data))
+        int kind = data[index]
+        if kind == 0
+            .layer.fields.add_text("tcp.option", "EOL")
+            return
+        if kind == 1
+            .layer.fields.add_text("tcp.option", "NOP")
+            index += 1
+            continue
+        int size = if index + 1 < int(len(data)) then data[index + 1] else 0
+        if size < 2 or index + size > int(len(data)) or not valid_length(kind, size)
+            .layer.fields.put_presence("tcp.options.malformed")
+            return
+        int[] body = data[index + 2:<index + size]
+        string text = "kind {kind} len {size}"
+        if kind == 2
+            int value = network.integer(body, 0, 2)
+            .layer.fields.put_number("tcp.options.mss", value)
+            text = "MSS {value}"
+        elif kind == 3
+            .layer.fields.put_number("tcp.options.wscale", body[0])
+            text = "WS {body[0]}"
+        elif kind == 4
+            text = "SACK_PERM"
+        elif kind == 5
+            text = "SACK"
+            for int offset < int(len(body)) step 8
+                text += " {network.integer(body, offset, 4)}-{network.integer(body, offset + 4, 4)}"
+        elif kind == 8
+            text = "TS {network.integer(body, 0, 4)} {network.integer(body, 4, 4)}"
+        .layer.fields.add_text("tcp.option", text)
+        index += size
+
+network.Layer | error tcp(int[] data, int source, int destination)
+    if len(data) < 20
+        return error("tcp: truncated header")
+    int header = data[12] / 16 * 4
+    if header < 20
+        return error("tcp: bad header length {header}")
+    if header > int(len(data))
+        return error("tcp: truncated header")
+    network.Layer layer = network.Layer()
+    int flags = data[13]
+    .layer.fields.put_number("tcp.srcport", network.integer(data, 0, 2))
+    .layer.fields.put_number("tcp.dstport", network.integer(data, 2, 2))
+    .layer.fields.put_number("tcp.seq_raw", network.integer(data, 4, 4))
+    .layer.fields.put_number("tcp.hdr_len", header)
+    .layer.fields.put_number("tcp.flags", flags)
+    int bit = 1
+    for string name = ["fin", "syn", "rst", "psh", "ack", "urg"][]
+        .layer.fields.put_number("tcp.flags." + name, flags / bit % 2)
+        bit *= 2
+    .layer.fields.put_number("tcp.window", network.integer(data, 14, 2))
+    .layer.fields.put_number("tcp.checksum", network.integer(data, 16, 2))
+    .layer.fields.put_text("tcp.checksum.status", network.checksum(pseudo(source, destination, 6, int(len(data))).concat(data)))
+    .layer.fields.put_number("tcp.urgent", network.integer(data, 18, 2))
+    .layer.fields.put_number("tcp.len", int(len(data)) - header)
+    if flags / 16 % 2 == 1
+        .layer.fields.put_number("tcp.ack_raw", network.integer(data, 8, 4))
+    parse_options(data[20:<header], &layer)
+    layer.remaining = data[header:]
+    return layer

@@ -111,7 +111,7 @@ final class Node {
     }
     var ranked: [Entry] {
         mempool.sorted {
-            let a = $0.fee*$1.tx.size, b = $1.fee*$0.tx.size;
+            let a = $0.fee * $1.tx.size, b = $1.fee * $0.tx.size;
             return a != b ? a>b : $0.tx.txid<$1.tx.txid
         }
     }
@@ -145,7 +145,7 @@ final class Node {
             $0+$1.fee
         }
         || conflicts.contains(where: {
-            fee*$0.tx.size <= $0.fee*tx.size
+            fee * $0.tx.size <= $0.fee * tx.size
         })) {
             return Acceptance("conflict")
         }

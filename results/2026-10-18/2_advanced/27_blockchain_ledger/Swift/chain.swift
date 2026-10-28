@@ -47,7 +47,7 @@ func chainTo(_ record: BlockRecord) -> [BlockRecord] {
 func forkPoint(_ first: BlockRecord, _ second: BlockRecord) -> BlockRecord {
     let h = min(first.block.height, second.block.height);
     var a = ancestor(first, h), b = ancestor(second, h);
-    while a != = b {
+    while a !== b {
         a = a.parent!;
         b = b.parent!
     };
