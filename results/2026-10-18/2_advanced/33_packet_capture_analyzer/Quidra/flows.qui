@@ -1,6 +1,9 @@
-import dump = "./hexdump.qui"
 
-const int sequence_modulus = 4294967296
+public import dns = "./dns_app.qui"
+
+
+int sequence_limit()
+    return 4294967296
 
 int power2(int exponent)
     int result = 1
@@ -16,7 +19,8 @@ string endpoint_key(Endpoint value)
 string pair_key(Endpoint first, Endpoint second)
     string a = endpoint_key(first)
     string b = endpoint_key(second)
-    return if a < b then a + "|" + b else b + "|" + a
+    string[] values = [a, b].sorted()
+    return values[0] + "|" + values[1]
 
 int index_value(map.Map<string, int> indices, string key)
     match indices.get(key)
@@ -58,7 +62,7 @@ class Stream(int number, Endpoint client, Endpoint server, string state, int sta
     Side client_side = Side("client")
     Side server_side = Side("server")
 
-    void .record_syn(dump.Packet packet, bool from_client)
+    void .record_syn(dns.transport.network.dump.Packet packet, bool from_client)
         if from_client
             client_side.isn = packet.fields.number("tcp.seq_raw")
             client_side.mss = packet.fields.number("tcp.options.mss")
@@ -72,10 +76,10 @@ class Stream(int number, Endpoint client, Endpoint server, string state, int sta
 
 class Tracker()
     Stream[] streams = []
-    map.Map<string, int> latest
-    map.Map<int, DuplicateAck> duplicates
+    map.Map<string, int> latest = map.Map<string, int>()
+    map.Map<int, DuplicateAck> duplicates = map.Map<int, DuplicateAck>()
 
-    void .track(dump.Packet &packet)
+    void .track(dns.transport.network.dump.Packet &packet)
         Endpoint source = Endpoint(packet.fields.number("ip.src"), packet.fields.number("tcp.srcport"))
         Endpoint destination = Endpoint(packet.fields.number("ip.dst"), packet.fields.number("tcp.dstport"))
         int seq = packet.fields.number("tcp.seq_raw")
@@ -93,29 +97,24 @@ class Tracker()
             Endpoint client = if syn and has_ack then destination else source
             Endpoint server = if syn and has_ack then source else destination
             number = int(len(streams))
-            Stream created = Stream(number, client, server, state, packet.time, packet.number)
+            Stream created = Stream(number, client, server, state, packet.moment, packet.number)
             if syn
                 .created.record_syn(packet, not has_ack)
             streams = streams.append(created)
             .latest.set(key, number)
-        Stream &stream = &streams[number]
-        Side &sender
-        Side &other
-        if source == stream.client
-            &sender = &stream.client_side
-            &other = &stream.server_side
-        else
-            &sender = &stream.server_side
-            &other = &stream.client_side
+        Stream stream = streams[number]
+        bool from_client = source == stream.client
+        Side sender = if from_client then stream.client_side else stream.server_side
+        Side other = if from_client then stream.server_side else stream.client_side
         .packet.fields.put_number("tcp.stream", number)
         if sender.base < 0
             sender.base = seq
         if has_ack and other.base < 0
             other.base = ack
-        int relative = (seq - sender.base + sequence_modulus) % sequence_modulus
+        int relative = (seq - sender.base + sequence_limit()) % sequence_limit()
         .packet.fields.put_number("tcp.seq", relative)
         if has_ack
-            .packet.fields.put_number("tcp.ack", (ack - other.base + sequence_modulus) % sequence_modulus)
+            .packet.fields.put_number("tcp.ack", (ack - other.base + sequence_limit()) % sequence_limit())
         int span = size + (if syn then 1 else 0) + (if fin then 1 else 0)
         string mark = ""
         if span > 0
@@ -127,11 +126,11 @@ class Tracker()
                     for Interval interval = sender.intervals[]
                         if interval.start == relative and interval.length == span
                             repeated = true
-                    mark = if repeated then "retransmission" elif packet.time - sender.advanced_at < 3000 then "out_of_order" else "retransmission"
+                    mark = if repeated then "retransmission" elif packet.moment - sender.advanced_at < 3000 then "out_of_order" else "retransmission"
             sender.intervals = sender.intervals.append(Interval(relative, span))
             if sender.expected < 0 or relative + span > sender.expected
                 sender.expected = relative + span
-                sender.advanced_at = packet.time
+                sender.advanced_at = packet.moment
         elif has_ack and not rst
             if sender.previous.ack >= 0 and sender.previous.ack == ack and sender.previous.window == window
                 mark = "duplicate_ack"
@@ -154,10 +153,13 @@ class Tracker()
         if rst
             if old != "CLOSED" and old != "RESET"
                 stream.state = "RESET"
-        elif old == "SYN_SENT" and sender.name == "server" and syn and has_ack and ack == (stream.client_side.isn + 1) % sequence_modulus
+        elif old == "SYN_SENT" and sender.name == "server" and syn and has_ack and ack == (stream.client_side.isn + 1) % sequence_limit()
             stream.state = "SYN_RECEIVED"
-            .stream.record_syn(packet, false)
-        elif old == "SYN_RECEIVED" and sender.name == "client" and has_ack and not syn and ack == (stream.server_side.isn + 1) % sequence_modulus
+            sender.isn = seq
+            sender.mss = packet.fields.number("tcp.options.mss")
+            sender.wscale = packet.fields.number("tcp.options.wscale")
+            stream.syn_ack = packet.number
+        elif old == "SYN_RECEIVED" and sender.name == "client" and has_ack and not syn and ack == (stream.server_side.isn + 1) % sequence_limit()
             stream.state = "ESTABLISHED"
             stream.handshake_ack = packet.number
         elif old == "ESTABLISHED" and fin
@@ -165,7 +167,7 @@ class Tracker()
             stream.closer = sender.name
         elif old == "FIN_WAIT" and fin and sender.name != stream.closer
             stream.state = "CLOSING"
-            stream.final_ack = (seq + size + 1) % sequence_modulus
+            stream.final_ack = (seq + size + 1) % sequence_limit()
         elif old == "CLOSING" and sender.name == stream.closer and has_ack and ack == stream.final_ack
             stream.state = "CLOSED"
         if stream.state != old
@@ -174,7 +176,14 @@ class Tracker()
         sender.payload += size
         stream.packets += 1
         stream.bytes += packet.length
-        stream.finish = packet.time
+        stream.finish = packet.moment
+        if from_client
+            stream.client_side = sender
+            stream.server_side = other
+        else
+            stream.client_side = other
+            stream.server_side = sender
+        streams[number] = stream
 
 class Conversation(string kind, Endpoint source, Endpoint destination, int first, int start)
     int finish = start
@@ -202,10 +211,10 @@ bool conversation_before(Conversation first, Conversation second)
         return a < b
     return first.first < second.first
 
-Conversation[] conversations(dump.Packet[] packets)
+Conversation[] conversations(dns.transport.network.dump.Packet[] packets)
     Conversation[] result = []
-    map.Map<string, int> by_key
-    for dump.Packet packet = packets[]
+    map.Map<string, int> by_key = map.Map<string, int>()
+    for dns.transport.network.dump.Packet packet = packets[]
         if not packet.fields.exists("ip.src")
             continue
         int a = packet.fields.number("ip.src")
@@ -224,7 +233,7 @@ Conversation[] conversations(dump.Packet[] packets)
             int index = index_value(by_key, key)
             if index < 0
                 index = int(len(result))
-                result = result.append(Conversation(view.kind, view.source, view.destination, packet.number, packet.time))
+                result = result.append(Conversation(view.kind, view.source, view.destination, packet.number, packet.moment))
                 .by_key.set(key, index)
             if view.source == result[index].source
                 result[index].packets_a_to_b += 1
@@ -232,7 +241,7 @@ Conversation[] conversations(dump.Packet[] packets)
             else
                 result[index].packets_b_to_a += 1
                 result[index].bytes_b_to_a += packet.length
-            result[index].finish = packet.time
+            result[index].finish = packet.moment
     Conversation[] ordered = []
     for Conversation value = result[]
         int position = int(len(ordered))
@@ -262,10 +271,10 @@ bool endpoint_before(EndpointTotals first, EndpointTotals second)
         return first.packets() > second.packets()
     return first.address < second.address
 
-EndpointTotals[] endpoints(dump.Packet[] packets)
+EndpointTotals[] endpoints(dns.transport.network.dump.Packet[] packets)
     EndpointTotals[] result = []
-    map.Map<string, int> positions
-    for dump.Packet packet = packets[]
+    map.Map<string, int> positions = map.Map<string, int>()
+    for dns.transport.network.dump.Packet packet = packets[]
         if not packet.fields.exists("ip.src")
             continue
         int[] addresses = [packet.fields.number("ip.src"), packet.fields.number("ip.dst")]

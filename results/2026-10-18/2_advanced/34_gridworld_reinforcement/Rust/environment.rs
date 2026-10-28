@@ -66,7 +66,7 @@ impl World {
     pub fn transitions(&self, cell: usize, action: usize) -> Vec<(usize, i64)> {
         let p = self.slip(cell);
         [(action, self.q - 2 * p), ((action + 1) % 4, p), ((action + 3) % 4, p)]
-            .into_iter().filter(|&(_, weight)| weight > 0).map(|(d, weight)| (self.moves[cell][d], weight)).collect()
+            .iter().copied().filter(|&(_, weight)| weight > 0).map(|(d, weight)| (self.moves[cell][d], weight)).collect()
     }
 
     pub fn step(&self, random: &mut Random, cell: usize, action: usize) -> (usize, i64) {

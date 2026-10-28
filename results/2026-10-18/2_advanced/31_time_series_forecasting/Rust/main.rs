@@ -71,7 +71,7 @@ struct Interval {
 impl Interval {
     fn csv(&self) -> String {
         [self.forecast, self.lo80, self.hi80, self.lo95, self.hi95]
-            .into_iter().map(real).collect::<Vec<_>>().join(",")
+            .iter().copied().map(real).collect::<Vec<_>>().join(",")
     }
 }
 
@@ -595,7 +595,7 @@ fn analyze(record: &Series, settings: &Settings, reports: &mut Reports) {
         let m = &metrics[i];
         let a = &m.accuracy;
         let fva = 100.0 * (metrics[0].accuracy.mae - a.mae) / metrics[0].accuracy.mae;
-        let reals = [a.me, a.mae, a.rmse, a.mape, a.smape, a.mase, fva, cvs[i].rmse].into_iter().map(real).collect::<Vec<_>>().join(",");
+        let reals = [a.me, a.mae, a.rmse, a.mape, a.smape, a.mase, fva, cvs[i].rmse].iter().copied().map(real).collect::<Vec<_>>().join(",");
         let rank = ranking.iter().position(|&j| i == j).unwrap() + 1;
         reports.accuracy.push(format!("{name},{},{reals},{},{},{},{},{rank}", MODELS[i], m.cover80, m.cover95, real(m.winkler80), real(m.winkler95)));
         for k in 0..settings.horizon {
