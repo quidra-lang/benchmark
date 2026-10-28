@@ -88,8 +88,8 @@ func parseAlternatives(_ tokens: [Token], _ start: Int) -> (alternatives: [[Stri
         if first.kind == .directive && first.value == "%empty" {
             cursor += 1
             if cursor < tokens.count && tokens[cursor].kind != .separator { return ([], errorColumn(tokens, cursor)) }
-        } else if [.nonterminal, .terminal, .word].contains(first.kind) {
-            while cursor < tokens.count && [.nonterminal, .terminal, .word].contains(tokens[cursor].kind) { alternative.append(tokens[cursor].value); cursor += 1 }
+        } else if [TokenKind.nonterminal, .terminal, .word].contains(first.kind) {
+            while cursor < tokens.count && [TokenKind.nonterminal, .terminal, .word].contains(tokens[cursor].kind) { alternative.append(tokens[cursor].value); cursor += 1 }
         } else { return ([], errorColumn(tokens, cursor)) }
         alternatives.append(alternative)
         if cursor >= tokens.count { return (alternatives, nil) }
