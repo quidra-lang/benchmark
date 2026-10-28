@@ -67,8 +67,8 @@ public sealed class Transport {
         p["tcp.urgent"] = LinkNetwork.Word(b, 18);
         p["tcp.len"] = b.Length - h;
         string[] names = { "fin", "syn", "rst", "psh", "ack", "urg" };
-        for (int i = 0; i < names.Length; i++)
-            p["tcp.flags." + names[i]] = (b[13] >> i) & 1;
+        for (int flagIndex = 0; flagIndex < names.Length; flagIndex++)
+            p["tcp.flags." + names[flagIndex]] = (b[13] >> flagIndex) & 1;
         if ((b[13] & 16) != 0)
             p["tcp.ack_raw"] = LinkNetwork.Integer(b, 8, 4);
         int i = 20;

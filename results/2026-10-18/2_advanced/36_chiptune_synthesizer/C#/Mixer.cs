@@ -43,10 +43,10 @@ public sealed class Mixer {
                 if (mute[c] == 0)
                     total += value;
             }
-            long value = 128 + Instruments.Floor((long)gain * total, 4096);
-            if (value < 0 || value > 255)
+            long mixedValue = 128 + Instruments.Floor((long)gain * total, 4096);
+            if (mixedValue < 0 || mixedValue > 255)
                 clipped++;
-            samples[size++] = (int)Instruments.Clamp(value, 0, 255);
+            samples[size++] = (int)Instruments.Clamp(mixedValue, 0, 255);
         }
     }
     public void Fade(int length) {

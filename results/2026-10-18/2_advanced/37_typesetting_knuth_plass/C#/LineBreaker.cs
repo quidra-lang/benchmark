@@ -82,12 +82,12 @@ public static class LineBreaker {
                         }
                     }
             }
-        int position = end, c = 1;
+        int position = end, fitnessClass = 1;
         while (position > 0) {
             breaking.Add(position);
-            int previous = classes[position][c];
-            position = parents[position][c];
-            c = previous;
+            int previous = classes[position][fitnessClass];
+            position = parents[position][fitnessClass];
+            fitnessClass = previous;
         }
         breaking.Reverse();
         return new Result(breaking, costs[end][1]);

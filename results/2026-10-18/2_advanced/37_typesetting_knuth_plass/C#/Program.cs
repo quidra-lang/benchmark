@@ -660,9 +660,10 @@ public static class Program {
                                                parameters["orphan_lines"], parameters["widow_lines"]);
             List<Page> pages = new();
             foreach (Page page in raw) {
-                bool chapter = page.content.Count != 0 && page.content[0].first &&
-                               page.content[0].origin != null && page.content[0].origin.kind.Equals("h1");
-                if (chapter && (pages.Count + 1) % 2 == 0) {
+                bool chapterStart = page.content.Count != 0 && page.content[0].first &&
+                                    page.content[0].origin != null &&
+                                    page.content[0].origin.kind.Equals("h1");
+                if (chapterStart && (pages.Count + 1) % 2 == 0) {
                     Page blank = new Page();
                     blank.blank = true;
                     pages.Add(blank);

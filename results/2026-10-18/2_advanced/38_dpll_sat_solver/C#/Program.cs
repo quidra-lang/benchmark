@@ -68,8 +68,8 @@ public static class Program {
             if (current == null) {
                 if (line.Length == 0 || line.StartsWith("#"))
                     continue;
-                string[] parts = line.Split(" ");
-                current = new Graph(parts[1], int.Parse(parts[2]));
+                string[] headerParts = line.Split(" ");
+                current = new Graph(headerParts[1], int.Parse(headerParts[2]));
                 continue;
             }
             if (line.Equals("END")) {

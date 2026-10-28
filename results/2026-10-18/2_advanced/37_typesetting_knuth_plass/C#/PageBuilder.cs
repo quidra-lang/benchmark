@@ -14,12 +14,12 @@ public static class PageBuilder {
         List<Boundary> boundaries = new();
         for (int i = 0; i < blocks.Count; i++) {
             Program.LayoutBlock block = blocks[i];
-            int start = lines.Count, count = block.lines.Count;
+            int blockStart = lines.Count, count = block.lines.Count;
             lines.AddRange(block.lines);
             if (block.kind.Equals("flow"))
                 for (int kept = 1; kept < count; kept++)
                     if (kept >= orphan && count - kept >= widow)
-                        boundaries.Add(new Boundary(start + kept, start + kept, false));
+                        boundaries.Add(new Boundary(blockStart + kept, blockStart + kept, false));
             if (i + 1 == blocks.Count) {
                 boundaries.Add(new Boundary(lines.Count, lines.Count, true));
                 continue;
@@ -38,20 +38,20 @@ public static class PageBuilder {
             int noteHeight = 0, scanned = start, chosen = -1, chosenHeight = 0;
             List<int> chosenNotes = new();
             for (int i = firstBoundary; i < boundaries.Count; i++) {
-                Boundary boundary = boundaries[i];
-                while (scanned < boundary.end) {
+                Boundary candidateBoundary = boundaries[i];
+                while (scanned < candidateBoundary.end) {
                     foreach (int note in lines[scanned].footnotes)
                         if (notes.Add(note))
                             noteHeight += footnotes[note].Count;
                     scanned++;
                 }
-                int used = boundary.end - start + noteHeight + (notes.Count == 0 ? 0 : 1);
+                int used = candidateBoundary.end - start + noteHeight + (notes.Count == 0 ? 0 : 1);
                 if (used > height)
                     break;
                 chosen = i;
                 chosenHeight = used;
                 chosenNotes = new(notes);
-                if (boundary.forced)
+                if (candidateBoundary.forced)
                     break;
             }
             Boundary boundary = boundaries[chosen];

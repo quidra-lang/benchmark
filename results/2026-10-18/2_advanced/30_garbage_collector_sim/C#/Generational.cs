@@ -90,21 +90,21 @@ sealed class Generational : Collector {
         CollectionRecord record = new CollectionRecord(records.Count + 1, line, request, kind, FreeList());
         if (kind.Equals("major") || kind.Equals("full")) {
             Marking.Mark(this, roots, record);
-            List<HeapObject> survivors = new();
+            List<HeapObject> oldSurvivors = new();
             foreach (HeapObject item in objects) {
                 if (Young(item))
-                    survivors.Add(item);
+                    oldSurvivors.Add(item);
                 else {
                     record.work++;
                     if (item.marked)
-                        survivors.Add(item);
+                        oldSurvivors.Add(item);
                     else {
                         record.freed.Add(item);
                         remembered.Remove(item);
                     }
                 }
             }
-            objects = survivors;
+            objects = oldSurvivors;
         }
         HashSet<int> pending = new();
         foreach (HeapObject item in objects)

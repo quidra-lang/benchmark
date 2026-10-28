@@ -306,10 +306,10 @@ public static class Program {
                 line += Report.Pad(Convert.ToString(confusion[i][j]), 6);
             output.Add(line + Report.Pad(Convert.ToString(miss[i]), 6));
         }
-        string line = "extra";
+        string extraLine = "extra";
         foreach (int i in extra)
-            line += Report.Pad(Convert.ToString(i), 6);
-        output.Add(line);
+            extraLine += Report.Pad(Convert.ToString(i), 6);
+        output.Add(extraLine);
         output.AddRange(["veb_sensitivity " + Report.Ratio(confusion[1][1], rc[1]),
                          "veb_positive_predictivity " + Report.Ratio(confusion[1][1], bc[1]),
                          "sveb_sensitivity " + Report.Ratio(confusion[2][2], rc[2]),
@@ -536,14 +536,15 @@ public static class Program {
             output.Add("TACHOGRAM intervals=" + rr.Count + " min_ms=" + lo + " max_ms=" + hi +
                        " rows=" + rows);
             for (int r = 0; r < rows; r++) {
-                StringBuilder line = new StringBuilder(Report.Pad(r == 0          ? Convert.ToString(hi)
-                                                                  : r == rows - 1 ? Convert.ToString(lo)
-                                                                                  : "",
-                                                                  6) +
-                                                       " |");
+                StringBuilder tachogramLine =
+                    new StringBuilder(Report.Pad(r == 0          ? Convert.ToString(hi)
+                                                 : r == rows - 1 ? Convert.ToString(lo)
+                                                                 : "",
+                                                 6) +
+                                      " |");
                 foreach (long value in rr)
-                    line.Append(Scale(value, hi, lo, rows) == r ? '*' : ' ');
-                output.Add(line + "|");
+                    tachogramLine.Append(Scale(value, hi, lo, rows) == r ? '*' : ' ');
+                output.Add(tachogramLine + "|");
             }
             output.Add(Axis(rr.Count, 10, 2));
             SortedDictionary<int, string> labels = new();

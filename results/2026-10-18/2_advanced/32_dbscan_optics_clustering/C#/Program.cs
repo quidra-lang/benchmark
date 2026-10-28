@@ -512,15 +512,15 @@ static class Program {
                 lines.Add("eps " + setting.radius + " core " + core + " non_core " + (n - core) +
                           " grid_core " + gridCore + " " + Test(core == gridCore));
             }
-            int core = 0;
+            int opticsCoreCount = 0;
             bool consistent = true;
             for (int i = 0; i < n; i++)
                 if (optics.core[i] != Optics.INF) {
-                    core++;
+                    opticsCoreCount++;
                     if (optics.core[i] != kdist[i])
                         consistent = false;
                 }
-            lines.Add("optics max_eps " + data.Value("OPTICS_MAX_EPS") + " core " + core + " " +
+            lines.Add("optics max_eps " + data.Value("OPTICS_MAX_EPS") + " core " + opticsCoreCount + " " +
                       Test(consistent));
             return lines;
         }

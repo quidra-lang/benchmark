@@ -673,10 +673,10 @@ static class Program {
                     line += " " + (i == 4 ? "GA" : RULES[i]) + " " + distances[i][machine.number - 1];
                 lines.Add(line);
             }
-            string line = "DISTANCE total pairs " + pairsTotal;
+            string distanceSummary = "DISTANCE total pairs " + pairsTotal;
             for (int i = 0; i < 5; i++)
-                line += " " + (i == 4 ? "GA" : RULES[i]) + " " + Sum(distances[i]);
-            lines.Add(line);
+                distanceSummary += " " + (i == 4 ? "GA" : RULES[i]) + " " + Sum(distances[i]);
+            lines.Add(distanceSummary);
             return lines;
         }
         public List<string> PathLines() {

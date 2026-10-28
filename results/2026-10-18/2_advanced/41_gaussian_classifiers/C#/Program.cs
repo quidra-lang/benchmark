@@ -453,10 +453,10 @@ public static class Program {
                     bestStep = step;
                 }
             }
-            int[] chosen = new int[bestStep];
+            int[] selectedFeatures = new int[bestStep];
             for (int j = 0; j < bestStep; j++)
-                chosen[j] = selected[j];
-            section.Add("best_step " + bestStep + " features " + Features(chosen));
+                selectedFeatures[j] = selected[j];
+            section.Add("best_step " + bestStep + " features " + Features(selectedFeatures));
             Plot.Section(output, section);
         }
         foreach (int kind in new int[] { 0, 2 }) {
