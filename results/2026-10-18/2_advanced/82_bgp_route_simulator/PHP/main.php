@@ -89,7 +89,7 @@ final class Simulation
         $this->logs[] = $this->time . ' ' . $content;
     }
 
-    private function importRoute(object $session, string $prefix, Attribute $attribute): array
+    private function importRoute(object $session, string $prefix, RouteAttributes $attribute): array
     {
         $r = $this->policies->applied(
             'IMPORT',
@@ -152,7 +152,7 @@ final class Simulation
         $med = $r?->value('MED', 0) ?? 0;
         $communities = $r === null ? $route->communities : editCommunities($route->communities, $r);
         return [
-            new Attribute(
+            new RouteAttributes(
                 [...array_fill(0, 1 + $prepend, $owner), ...$route->path],
                 $route->origin,
                 $med,

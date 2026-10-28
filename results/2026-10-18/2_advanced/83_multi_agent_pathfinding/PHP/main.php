@@ -737,7 +737,8 @@ final class Planner
             array_push($validation, ...$this->validationLines($r['name'], $r['validation'] ?? null));
             if ($index)
                 $trace[] = '';
-            array_push($trace, 'run ' . $r['name'], ...$r['trace'], $r['end']);
+            array_push($trace, 'run ' . $r['name'], ...$r['trace']);
+            $trace[] = $r['end'];
         }
         $solutions[] = '';
         $solutions[] = 'summary ok ' . count($successful) . ' failed ' . (count($runs) - count($successful));

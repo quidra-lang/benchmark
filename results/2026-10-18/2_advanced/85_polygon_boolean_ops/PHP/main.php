@@ -143,7 +143,7 @@ function checkRing(array $ring, int $number): ?string
             $b = $ring[($i + 1) % $n];
             $c = $ring[$j];
             $d = $ring[($j + 1) % $n];
-            if (touch($a, $b, $c, $d))
+            if (segmentsTouch($a, $b, $c, $d))
                 return "self_intersection ring $number " . segmentText($a, $b) . ' ' . segmentText($c, $d);
         }
     return null;
@@ -162,7 +162,7 @@ function checkPolygon(array $rings): ?string
                 foreach ($bRing as $bIndex => $c) {
                     $b = $aRing[($aIndex + 1) % count($aRing)];
                     $d = $bRing[($bIndex + 1) % count($bRing)];
-                    if (touch($a, $b, $c, $d))
+                    if (segmentsTouch($a, $b, $c, $d))
                         return (
                             'rings_touch rings '
                             . ($i + 1)

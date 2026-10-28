@@ -1,6 +1,6 @@
 <?php
 
-final readonly class Attribute
+final readonly class RouteAttributes
 {
     public function __construct(
         public array $path,

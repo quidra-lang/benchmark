@@ -5,7 +5,7 @@ function pathText(array $path): string
     return implode(',', $path);
 }
 
-function attributeText(Attribute $a): string
+function attributeText(RouteAttributes $a): string
 {
     return (
         'path '

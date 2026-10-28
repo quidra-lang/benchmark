@@ -16,7 +16,7 @@ function onSegment(Point $p, Point $a, Point $b, ?Line $line = null): bool
     return true;
 }
 
-function touch(Point $a, Point $b, Point $c, Point $d): bool
+function segmentsTouch(Point $a, Point $b, Point $c, Point $d): bool
 {
     $ab = Line::through($a, $b);
     $cd = Line::through($c, $d);

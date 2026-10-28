@@ -8,7 +8,7 @@ final readonly class Message
         public int $receiver,
         public Link $link,
         public string $prefix,
-        public ?Attribute $content,
+        public ?RouteAttributes $content,
         public int $arrival,
     ) {}
 
@@ -35,7 +35,7 @@ final class MessageQueue
         int $receiver,
         Link $link,
         string $prefix,
-        ?Attribute $content,
+        ?RouteAttributes $content,
     ): Message {
         $m = new Message(++$this->serial, $sender, $receiver, $link, $prefix, $content, $time + $link->delay);
         $this->heap->insert($m, $m->priority());

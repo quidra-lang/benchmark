@@ -1,0 +1,638 @@
+import math
+import io = "./series_io.qui"
+import decomposition = "./decomposition.qui"
+import smoothing = "./smoothing.qui"
+import ar = "./autoregression.qui"
+import evaluation = "./evaluation.qui"
+
+real64 rmse(real64[] errors)
+    return math.sqrt(decomposition.total([for real64 value = errors[] then value * value]) / real64(len(errors)))
+
+string reals(real64[] values)
+    return [for real64 value = values[] then io.real_text(value)].join(" ")
+
+string pad_left(string text, int width)
+    return string.repeat(" ", nat(math.max(0, width - int(len(text))))) + text
+
+real64[] interpolate(int[] raw)
+    real64[] values = [for int value = raw[] then real64(value)]
+    int left = 0
+    while left < int(len(raw)) - 1
+        int right = left + 1
+        while raw[right] < 0
+            right += 1
+        for left + 1 <= int time < right
+            values[time] = real64(raw[left]) + real64(raw[right] - raw[left]) * real64(time - left) / real64(right - left)
+        left = right
+    return values
+
+string[] future_periods(string last, int horizon)
+    string[] result = []
+    string period = last
+    for _ < horizon
+        period = io.next_month(period)
+        result = result.append(period)
+    return result
+
+class Lift(string kind, int occurrences, real64 value)
+
+class Prepared(io.Series record, io.Event[] events, io.Settings settings)
+    real64[] values = interpolate(record.raw)
+    bool[] missing = [for int value = record.raw[] then value < 0]
+    decomposition.Components components = decomposition.decompose(values, settings.season)
+    string[] past = array(len(values), fill = "")
+    string[] kinds = []
+    Lift[] lifts = []
+    for int time < int(len(values))
+        for io.Event event = events[]
+            if event.period == record.periods[time]
+                past[time] = event.kind
+                local bool known = false
+                for string kind = kinds[]
+                    if kind == event.kind
+                        known = true
+                if not known
+                    kinds = kinds.append(event.kind)
+    for string kind = kinds[]
+        local int[] times = [for int time = (0:<int(len(values)))[] if past[time] == kind then time]
+        local real64 mean = decomposition.mean([for int time = times[] then values[time] / (components.trend[time] + components.additive[time % settings.season])])
+        lifts = lifts.append(Lift(kind, int(len(times)), mean))
+    local real64[] residuals = [for int time = components.defined[] then components.residual_add[time]]
+    local real64 average = decomposition.mean(residuals)
+    local real64 deviation = math.sqrt(decomposition.sample_variance(residuals))
+    bool[] outliers = array(len(values), fill = false)
+    real64[] scores = array(len(values), fill = 0.0)
+    for int time = components.defined[]
+        if not missing[time] and past[time] == "" and math.abs(components.residual_add[time] - average) > settings.outlier * deviation
+            outliers[time] = true
+            scores[time] = (components.residual_add[time] - average) / deviation
+    real64[] corrected = [for int time = (0:<int(len(values)))[] then if past[time] != "" or outliers[time] then components.trend[time] + components.additive[time % settings.season] else values[time]]
+    string[] future = future_periods(record.periods[len(record.periods) - 1], settings.horizon)
+    local real64 variance_r = decomposition.sample_variance(residuals)
+    local real64 variance_t = decomposition.sample_variance([for int time = components.defined[] then components.trend[time] + components.residual_add[time]])
+    local real64 variance_s = decomposition.sample_variance([for int time = components.defined[] then components.additive[time % settings.season] + components.residual_add[time]])
+    real64 strength_trend = math.max(0.0, 1.0 - variance_r / variance_t)
+    real64 strength_seasonal = math.max(0.0, 1.0 - variance_r / variance_s)
+
+real64 event_multiplier(Prepared data, string period)
+    for io.Event event = data.events[]
+        if event.period == period
+            for Lift lift = data.lifts[]
+                if lift.kind == event.kind
+                    return lift.value
+    return 1.0
+
+bool smoothing_method(string name)
+    return name == "ses" or name == "holt" or name == "damped" or name == "hw_add" or name == "hw_mult"
+
+class Model(string name, real64[] series, int season)
+    real64 intercept = 0.0
+    real64 slope = 0.0
+    real64[] residuals = []
+    real64[] seasonal = []
+    smoothing.Parameters parameters = smoothing.Parameters(0.0)
+    smoothing.State[] states = []
+    string kind = "none"
+    real64[] differenced = []
+    int offset = 0
+    real64 average = 0.0
+    int order = 0
+    real64[] variances = []
+    real64 sigma2 = 0.0
+    real64[] aic = []
+    real64[] coefficients = []
+    real64[] correlations = []
+    real64[] partial = []
+
+real64 decomposition_prediction(Model model, int time)
+    real64 base = model.intercept + model.slope * real64(time + 1)
+    real64 seasonal = model.seasonal[time % model.season]
+    return if model.name == "decomp_add" then base + seasonal else base * seasonal
+
+void fit_ar(Model &model, io.Settings settings)
+    ar.Difference[] candidates = []
+    real64[] spreads = []
+    int selected = 0
+    for string kind = ["none", "first", "seasonal", "both"][]
+        ar.Difference candidate = ar.difference(model.series, settings.season, kind)
+        ar.Correlation correlation = ar.autocorrelation(candidate.values, 0)
+        candidates = candidates.append(candidate)
+        spreads = spreads.append(correlation.variance)
+        int index = int(len(spreads)) - 1
+        if spreads[index] < spreads[selected]
+            selected = index
+    ar.Difference chosen = candidates[selected]
+    ar.Correlation correlation = ar.autocorrelation(chosen.values, settings.max_lag)
+    ar.Levinson levinson = ar.durbin_levinson(correlation.values)
+    real64[] aic = [for int order = (0:settings.max_ar)[] then real64(len(chosen.values)) * math.log(correlation.variance * levinson.variances[order]) + 2.0 * real64(order)]
+    int order = 0
+    for int index < int(len(aic))
+        if aic[index] < aic[order]
+            order = index
+    model.kind = chosen.kind
+    model.differenced = chosen.values
+    model.offset = chosen.offset
+    model.average = correlation.mean
+    model.order = order
+    model.variances = spreads
+    model.sigma2 = correlation.variance * levinson.variances[order]
+    model.aic = aic
+    model.coefficients = levinson.coefficients[order]
+    model.correlations = correlation.values
+    model.partial = levinson.partial
+    model.residuals = ar.residuals(chosen.values, correlation.mean, model.coefficients)
+
+Model fit(string name, real64[] values, io.Settings settings)
+    Model model = Model(name, values, settings.season)
+    int count = int(len(values))
+    if name == "naive" or name == "snaive" or name == "drift"
+        int offset = if name == "snaive" then settings.season else 1
+        if name == "drift"
+            model.slope = (values[count - 1] - values[0]) / real64(count - 1)
+        model.residuals = [for int time = (offset:<count)[] then values[time] - values[time - offset] - model.slope]
+    elif smoothing_method(name)
+        real64[] betas = if name == "ses" then [0.0] else settings.beta
+        real64[] thirds = if name == "damped" then settings.phi elif name == "hw_add" or name == "hw_mult" then settings.gamma else [0.0]
+        bool found = false
+        real64 best = 0.0
+        for real64 alpha = settings.alpha[]
+            for real64 beta = betas[]
+                for real64 third = thirds[]
+                    real64 gamma = if name == "hw_add" or name == "hw_mult" then third else 0.0
+                    real64 phi = if name == "damped" then third else 1.0
+                    smoothing.Parameters parameters = smoothing.Parameters(alpha, beta, gamma, phi)
+                    smoothing.Recursion recursion = smoothing.recurse(name, values, settings.season, parameters)
+                    real64 score = decomposition.total([for real64 value = recursion.residuals[] then value * value])
+                    if not found or score < best
+                        found = true
+                        best = score
+                        model.parameters = parameters
+                        model.residuals = recursion.residuals
+                        model.states = recursion.states
+    elif name == "decomp_add" or name == "decomp_mult"
+        decomposition.Components components = decomposition.decompose(values, settings.season)
+        model.seasonal = if name == "decomp_add" then components.additive else components.multiplicative
+        real64[] adjusted = [for int time = (0:<count)[] then if name == "decomp_add" then values[time] - model.seasonal[time % settings.season] else values[time] / model.seasonal[time % settings.season]]
+        decomposition.Regression regression = decomposition.least_squares_line(adjusted)
+        model.intercept = regression.intercept
+        model.slope = regression.slope
+        model.residuals = [for int time = (0:<count)[] then values[time] - decomposition_prediction(model, time)]
+    else
+        fit_ar(&model, settings)
+    return model
+
+real64[] forecast_one(Model model, int origin, int steps)
+    if model.name == "naive"
+        return array(nat(steps), fill = model.series[origin - 1])
+    if model.name == "snaive"
+        return [for int step = (0:<steps)[] then model.series[origin - model.season + step % model.season]]
+    if model.name == "drift"
+        real64 slope = (model.series[origin - 1] - model.series[0]) / real64(origin - 1)
+        return [for int step = (1:steps)[] then model.series[origin - 1] + real64(step) * slope]
+    if smoothing_method(model.name)
+        return smoothing.forecast(model.name, model.states[origin], model.parameters, origin, steps, model.season)
+    if model.name == "decomp_add" or model.name == "decomp_mult"
+        return [for int step = (0:<steps)[] then decomposition_prediction(model, origin + step)]
+    return ar.forecast(model.series, model.differenced, model.offset, model.kind, model.average, model.coefficients, origin, steps, model.season)
+
+real64[] forecast_members(Model[] members, int origin, int steps)
+    real64[][] predictions = [for Model model = members[] then forecast_one(model, origin, steps)]
+    real64[] result = []
+    for int step < steps
+        result = result.append(decomposition.total([for real64[] row = predictions[] then row[step]]) / real64(len(members)))
+    return result
+
+class CV(int[] counts, real64[] sigma, real64[] mae, real64 cv_rmse)
+
+CV cross_validate(Model[] members, io.Settings settings)
+    real64[] values = members[0].series
+    int[] counts = array(nat(settings.horizon), fill = 0)
+    real64[] squared = array(nat(settings.horizon), fill = 0.0)
+    real64[] absolute = array(nat(settings.horizon), fill = 0.0)
+    for settings.cv_start <= int origin < int(len(values))
+        real64[] predictions = forecast_members(members, origin, math.min(settings.horizon, int(len(values)) - origin))
+        for int step < int(len(predictions))
+            real64 residual = values[origin + step] - predictions[step]
+            counts[step] += 1
+            squared[step] += residual * residual
+            absolute[step] += math.abs(residual)
+    real64[] sigma = [for int step = (0:<settings.horizon)[] then math.sqrt(squared[step] / real64(counts[step]))]
+    real64[] mae = [for int step = (0:<settings.horizon)[] then absolute[step] / real64(counts[step])]
+    real64 overall = math.sqrt(decomposition.total(squared[0:<settings.holdout]) / real64(math.sum(counts[0:<settings.holdout])))
+    return CV(counts, sigma, mae, overall)
+
+class Forecast(real64 value, real64 lo80, real64 hi80, real64 lo95, real64 hi95)
+
+Forecast[] interval_rows(real64[] predictions, real64[] sigma, real64[] coefficients, real64[] multipliers)
+    Forecast[] rows = []
+    for int step < int(len(predictions))
+        real64 value = predictions[step]
+        real64 error_size = sigma[step]
+        real64 multiplier = multipliers[step]
+        rows = rows.append(Forecast(value * multiplier, (value - coefficients[0] * error_size) * multiplier, (value + coefficients[0] * error_size) * multiplier, (value - coefficients[1] * error_size) * multiplier, (value + coefficients[1] * error_size) * multiplier))
+    return rows
+
+class Review(real64 position, real64 target, int order)
+class PlanRow(int step, int receipt, real64 demand, real64 on_hand, string status, Review | none review)
+class Plan(real64 safety, PlanRow[] rows, int orders, int ordered, int short_periods, real64 lowest, real64 average)
+
+Plan inventory_plan(Model[] models, real64[] demands, io.Inventory policy, io.Settings settings)
+    int protection = policy.lead_time + policy.review
+    real64[] values = models[0].series
+    real64[] errors = []
+    for settings.cv_start <= int origin <= int(len(values)) - protection
+        real64[] predictions = forecast_members(models, origin, protection)
+        errors = errors.append(decomposition.total([for int step = (0:<protection)[] then values[origin + step] - predictions[step]]))
+    real64 safety = policy.service * rmse(errors)
+    int[] reviews = 1:settings.horizon - protection + 1:policy.review
+    int end = reviews[len(reviews) - 1] - 1 + protection
+    real64 on_hand = real64(policy.on_hand)
+    int outstanding = 0
+    int[] receipts = array(nat(end + policy.lead_time + 1), fill = 0)
+    PlanRow[] rows = []
+    int orders = 0
+    int ordered = 0
+    int short_periods = 0
+    for 1 <= int step <= end
+        int receipt = receipts[step]
+        on_hand += real64(receipt)
+        outstanding -= receipt
+        Review | none review = none
+        if (step - 1) % policy.review == 0 and step <= reviews[len(reviews) - 1]
+            real64 position = on_hand + real64(outstanding)
+            real64 target = decomposition.total(demands[step - 1:<step - 1 + protection]) + safety
+            int quantity = math.max(0, math.ceil(target - position))
+            review = Review(position, target, quantity)
+            if quantity > 0
+                orders += 1
+                ordered += quantity
+                outstanding += quantity
+                receipts[step + policy.lead_time] = quantity
+        on_hand -= demands[step - 1]
+        string status = if on_hand < 0.0 then "short" elif on_hand < safety then "low" else "ok"
+        if status == "short"
+            short_periods += 1
+        rows = rows.append(PlanRow(step, receipt, demands[step - 1], on_hand, status, review))
+    real64[] stocks = [for PlanRow row = rows[] then row.on_hand]
+    return Plan(safety, rows, orders, ordered, short_periods, math.min_all(stocks), decomposition.mean(stocks))
+
+class Year(string year)
+    int actual_months = 0
+    real64 actual = 0.0
+    int forecast_months = 0
+    real64 forecast = 0.0
+    real64 total = 0.0
+    real64 | none growth = none
+
+Year[] yearly_totals(string[] periods, real64[] actual, string[] future, real64[] demands)
+    Year[] years = []
+    for int index < int(len(periods)) + int(len(future))
+        bool observed = index < int(len(periods))
+        int position = if observed then index else index - int(len(periods))
+        string period = if observed then periods[position] else future[position]
+        real64 value = if observed then actual[position] else demands[position]
+        string year = period[0:<4]
+        int last = int(len(years)) - 1
+        if last < 0 or years[last].year != year
+            years = years.append(Year(year))
+            last += 1
+        if observed
+            years[last].actual_months += 1
+            years[last].actual += value
+        else
+            years[last].forecast_months += 1
+            years[last].forecast += value
+    for int index < int(len(years))
+        years[index].total = years[index].actual + years[index].forecast
+        if index > 0 and years[index].actual_months + years[index].forecast_months == 12 and years[index - 1].actual_months + years[index - 1].forecast_months == 12
+            years[index].growth = 100.0 * (years[index].total - years[index - 1].total) / years[index - 1].total
+    return years
+
+class Diagnostics(int count, real64 mean, real64 sd, real64 dw, real64 skewness, real64 kurtosis, real64 jb, ar.LjungBox[] ljung_box)
+
+Diagnostics residual_diagnostics(real64[] errors, int[] lags)
+    int count = int(len(errors))
+    real64 average = decomposition.mean(errors)
+    real64[] centered = [for real64 value = errors[] then value - average]
+    real64 squares = decomposition.total([for real64 value = centered[] then value * value])
+    real64 m2 = squares / real64(count)
+    real64 m3 = decomposition.total([for real64 value = centered[] then value * value * value]) / real64(count)
+    real64 m4 = decomposition.total([for real64 value = centered[] then value * value * value * value]) / real64(count)
+    real64 dw = decomposition.total([for int index = (1:<count)[] then (errors[index] - errors[index - 1]) * (errors[index] - errors[index - 1])]) / decomposition.total([for real64 value = errors[] then value * value])
+    real64 skewness = m3 / (m2 * math.sqrt(m2))
+    real64 kurtosis = m4 / (m2 * m2) - 3.0
+    real64 jb = real64(count) / 6.0 * (skewness * skewness + kurtosis * kurtosis / 4.0)
+    return Diagnostics(count, average, math.sqrt(squares / real64(count - 1)), dw, skewness, kurtosis, jb, ar.ljung_box(errors, lags))
+
+string[] model_lines(Model model)
+    string name = model.name
+    string common = "rmse " + io.real_text(rmse(model.residuals)) + " residuals {len(model.residuals)}"
+    if name == "naive" or name == "snaive"
+        return [name + " " + common]
+    if name == "drift"
+        return ["drift slope " + io.real_text(model.slope) + " " + common]
+    if smoothing_method(name)
+        string parameters = "alpha " + io.real_text(model.parameters.alpha)
+        if name != "ses"
+            parameters += " beta " + io.real_text(model.parameters.beta)
+        if name == "damped"
+            parameters += " phi " + io.real_text(model.parameters.phi)
+        elif name == "hw_add" or name == "hw_mult"
+            parameters += " gamma " + io.real_text(model.parameters.gamma)
+        smoothing.State state = model.states[len(model.states) - 1]
+        string first = name + " " + parameters + " " + common + " level " + io.real_text(state.level)
+        if name != "ses"
+            first += " slope " + io.real_text(state.slope)
+        string[] lines = [first]
+        if name == "hw_add" or name == "hw_mult"
+            real64[] components = [for int index = (0:<model.season)[] then state.components[(int(len(model.series)) + index) % model.season]]
+            lines = lines.append(name + " seasonal " + reals(components))
+        return lines
+    if name == "decomp_add" or name == "decomp_mult"
+        return [name + " intercept " + io.real_text(model.intercept) + " slope " + io.real_text(model.slope) + " " + common, name + " seasonal " + reals(model.seasonal)]
+    string[] kinds = ["none", "first", "seasonal", "both"]
+    string variances = [for int index = (0:<4)[] then kinds[index] + " " + io.real_text(model.variances[index])].join(" ")
+    string coefficients = if len(model.coefficients) == 0 then "none" else reals(model.coefficients)
+    return ["ar variance " + variances, "ar difference {model.kind} n {len(model.differenced)} mean " + io.real_text(model.average) + " order {model.order} sigma2 " + io.real_text(model.sigma2) + " " + common, "ar aic " + reals(model.aic), "ar coefficients " + coefficients]
+
+string correlation_bar(real64 value, real64 band)
+    int width = math.floor(math.abs(value) * 20.0 + 0.5)
+    int threshold = math.floor(band * 20.0 + 0.5)
+    string[] cells = array(41, fill = " ")
+    cells[20 - threshold] = ":"
+    cells[20 + threshold] = ":"
+    cells[20] = "|"
+    if value > 0.0
+        for 21 <= int position < 21 + width
+            cells[position] = "#"
+    elif value < 0.0
+        for 20 - width <= int position < 20
+            cells[position] = "#"
+    return cells.join("")
+
+int chart_column(real64 value, real64 low, real64 high)
+    return math.floor((value - low) / (high - low) * 60.0 + 0.5)
+
+string[] review_lines(Review | none value, string period)
+    match value
+        Review review
+            return ["review {period} position " + io.real_text(review.position) + " target " + io.real_text(review.target) + " order {review.order}"]
+        none
+            return []
+
+class ChartRow(string period, Forecast interval, real64 | none actual)
+
+string forecast_chart(ChartRow row, real64 low, real64 high)
+    string[] cells = array(61, fill = " ")
+    for chart_column(row.interval.lo95, low, high) <= int position <= chart_column(row.interval.hi95, low, high)
+        cells[position] = "-"
+    for chart_column(row.interval.lo80, low, high) <= int position <= chart_column(row.interval.hi80, low, high)
+        cells[position] = "="
+    cells[chart_column(row.interval.value, low, high)] = "o"
+    match row.actual
+        real64 value
+            cells[chart_column(value, low, high)] = "*"
+        none
+            return cells.join("")
+    return cells.join("")
+
+string seasonal_profile(real64 value, real64 peak)
+    int width = math.floor(math.abs(value - 1.0) / peak * 30.0 + 0.5)
+    string[] cells = array(61, fill = " ")
+    cells[30] = "|"
+    if value > 1.0
+        for 31 <= int position < 31 + width
+            cells[position] = "#"
+    elif value < 1.0
+        for 30 - width <= int position < 30
+            cells[position] = "#"
+    return cells.join("")
+
+class Study(Prepared data, io.Inventory policy)
+    io.Settings settings = data.settings
+    string[] method_names = ["naive", "snaive", "drift", "ses", "holt", "damped", "hw_add", "hw_mult", "decomp_add", "decomp_mult", "ar"]
+    string[] model_names = method_names.append("combo")
+    int training_count = int(len(data.values)) - settings.holdout
+    real64[] training = data.corrected[0:<training_count]
+    real64[] actual = data.values[training_count:]
+    Model[] models = [for string name = method_names[] then fit(name, training, settings)]
+    Model[][] ensembles = [for Model model = models[] then [model]]
+    CV[] cvs = [for Model[] members = ensembles[] then cross_validate(members, settings)]
+    local int[] cv_order = []
+    for int index < 11
+        local int position = int(len(cv_order))
+        cv_order = cv_order.append(index)
+        while position > 0 and cvs[index].cv_rmse < cvs[cv_order[position - 1]].cv_rmse
+            cv_order[position] = cv_order[position - 1]
+            position -= 1
+        cv_order[position] = index
+    local bool[] selected = array(11, fill = false)
+    for int index = cv_order[0:<settings.combo][]
+        selected[index] = true
+    int[] member_indices = [for int index = (0:<11)[] if selected[index] then index]
+    ensembles = ensembles.append([for int index = member_indices[] then models[index]])
+    cvs = cvs.append(cross_validate(ensembles[11], settings))
+    evaluation.Accuracy[] measures = []
+    Forecast[][] holdout_rows = []
+    local real64 scale = evaluation.seasonal_scale(training, settings.season)
+    for int index < 12
+        local real64[] predictions = forecast_members(ensembles[index], training_count, settings.holdout)
+        local Forecast[] rows = interval_rows(predictions, cvs[index].sigma, settings.interval, array(nat(settings.holdout), fill = 1.0))
+        local evaluation.Accuracy measure = evaluation.accuracy(actual, predictions, scale)
+        measure.cv_rmse = cvs[index].cv_rmse
+        local real64 winkler80 = 0.0
+        local real64 winkler95 = 0.0
+        for int step < settings.holdout
+            if rows[step].lo80 <= actual[step] <= rows[step].hi80
+                measure.cover80 += 1
+            if rows[step].lo95 <= actual[step] <= rows[step].hi95
+                measure.cover95 += 1
+            winkler80 += evaluation.winkler(actual[step], rows[step].lo80, rows[step].hi80, 10.0)
+            winkler95 += evaluation.winkler(actual[step], rows[step].lo95, rows[step].hi95, 40.0)
+        measure.winkler80 = winkler80 / real64(settings.holdout)
+        measure.winkler95 = winkler95 / real64(settings.holdout)
+        measures = measures.append(measure)
+        holdout_rows = holdout_rows.append(rows)
+    for int index < 12
+        measures[index].fva = 100.0 * (measures[0].mae - measures[index].mae) / measures[0].mae
+    local int[] ranks = evaluation.ranking(measures)
+    for int rank < 12
+        measures[ranks[rank]].rank = rank + 1
+    int best_index = ranks[0]
+    string best_name = model_names[best_index]
+    int[] final_indices = if best_index == 11 then member_indices else [best_index]
+    Model[] final_fits = [for int index = final_indices[] then fit(method_names[index], data.corrected, settings)]
+    CV final_cv = cross_validate(final_fits, settings)
+    real64[] future_values = forecast_members(final_fits, int(len(data.values)), settings.horizon)
+    real64[] multipliers = [for string period = data.future[] then event_multiplier(data, period)]
+    Forecast[] future_rows = interval_rows(future_values, final_cv.sigma, settings.interval, multipliers)
+    real64[] demands = [for Forecast row = future_rows[] then row.value]
+    Plan plan = inventory_plan(final_fits, demands, policy, settings)
+    Year[] years = yearly_totals(data.record.periods, data.values, data.future, demands)
+
+    string[] decomposition_lines()
+        string[] lines = []
+        for int time < int(len(data.values))
+            int position = time % settings.season
+            bool defined = time >= settings.season / 2 and time < int(len(data.values)) - settings.season / 2
+            string flag = if data.past[time] != "" then data.past[time] elif data.missing[time] then "missing" elif data.outliers[time] then "outlier" else "ok"
+            string[] fields = [data.record.name, data.record.periods[time], io.real_text(data.values[time]), io.real_text(data.corrected[time]), io.maybe_real(data.components.trend[time], defined), io.real_text(data.components.additive[position]), io.maybe_real(data.components.residual_add[time], defined), io.real_text(data.components.multiplicative[position]), io.maybe_real(data.components.residual_mult[time], defined), flag]
+            lines = lines.append(fields.join(","))
+        return lines
+
+    string[] fitted_lines()
+        int missing = 0
+        int outliers = 0
+        int events = 0
+        for int time < int(len(data.values))
+            if data.missing[time]
+                missing += 1
+            if data.outliers[time]
+                outliers += 1
+            if data.past[time] != ""
+                events += 1
+        string[] lines = ["series {data.record.name}", "data observations {len(data.values)} train {training_count} holdout {settings.holdout} missing {missing} outliers {outliers} events {events}"]
+        for Lift lift = data.lifts[]
+            lines = lines.append("event {lift.kind} occurrences {lift.occurrences} lift " + io.real_text(lift.value))
+        for int time < int(len(data.values))
+            if data.outliers[time]
+                lines = lines.append("outlier {data.record.periods[time]} value " + io.real_text(data.values[time]) + " expected " + io.real_text(data.corrected[time]) + " score " + io.real_text(data.scores[time]))
+        lines = lines.append("strength trend " + io.real_text(data.strength_trend) + " seasonal " + io.real_text(data.strength_seasonal))
+        for Model model = models[]
+            lines = lines.concat(model_lines(model))
+        string members = [for int index = member_indices[] then method_names[index]].join(" ")
+        lines = lines.concat(["combo members " + members, "best {best_name} rmse " + io.real_text(measures[best_index].rmse)])
+        for Model model = final_fits[]
+            lines = lines.concat([for string line = model_lines(model)[] then "final " + line])
+        return lines
+
+    string[] forecast_lines()
+        string[] lines = []
+        for int index < 12
+            for int step < settings.holdout
+                Forecast row = holdout_rows[index][step]
+                string[] fields = [data.record.name, "holdout", model_names[index], data.record.periods[training_count + step], "{data.record.raw[training_count + step]}", io.real_text(row.value), io.real_text(row.lo80), io.real_text(row.hi80), io.real_text(row.lo95), io.real_text(row.hi95)]
+                lines = lines.append(fields.join(","))
+        for int step < settings.horizon
+            Forecast row = future_rows[step]
+            string[] fields = [data.record.name, "future", best_name, data.future[step], "NA", io.real_text(row.value), io.real_text(row.lo80), io.real_text(row.hi80), io.real_text(row.lo95), io.real_text(row.hi95)]
+            lines = lines.append(fields.join(","))
+        return lines
+
+    string[] accuracy_lines()
+        string[] lines = []
+        for int index < 12
+            evaluation.Accuracy measure = measures[index]
+            string[] fields = [data.record.name, model_names[index], io.real_text(measure.me), io.real_text(measure.mae), io.real_text(measure.rmse), io.real_text(measure.mape), io.real_text(measure.smape), io.real_text(measure.mase), io.real_text(measure.fva), io.real_text(measure.cv_rmse), "{measure.cover80}", "{measure.cover95}", io.real_text(measure.winkler80), io.real_text(measure.winkler95), "{measure.rank}"]
+            lines = lines.append(fields.join(","))
+        return lines
+
+    string[] cv_lines()
+        string[] lines = []
+        for int index < 12
+            CV cv = cvs[index]
+            for int step < settings.horizon
+                lines = lines.append("{data.record.name},{model_names[index]},{step + 1},{cv.counts[step]}," + io.real_text(cv.mae[step]) + "," + io.real_text(cv.sigma[step]))
+        return lines
+
+    string[] correlogram()
+        Model model = models[10]
+        real64 band = 2.0 / math.sqrt(real64(len(model.differenced)))
+        string[] lines = ["series {data.record.name} difference {model.kind} n {len(model.differenced)} band " + io.real_text(band)]
+        for int group < 2
+            string label = if group == 0 then "acf" else "pacf"
+            real64[] sequence = if group == 0 then model.correlations else model.partial
+            for 1 <= int lag < int(len(sequence))
+                real64 value = sequence[lag]
+                string suffix = if math.abs(value) > band then " *" else ""
+                lines = lines.append(label + " " + pad_left("{lag}", 2) + " " + pad_left(io.real_text(value), 7) + " [" + correlation_bar(value, band) + "]" + suffix)
+        for Model fitted = models[]
+            Diagnostics stats = residual_diagnostics(fitted.residuals, settings.ljung_box)
+            lines = lines.append("residuals {fitted.name} n {stats.count} mean " + io.real_text(stats.mean) + " sd " + io.real_text(stats.sd) + " dw " + io.real_text(stats.dw) + " skewness " + io.real_text(stats.skewness) + " kurtosis " + io.real_text(stats.kurtosis) + " jb " + io.real_text(stats.jb))
+            string[] parts = [for ar.LjungBox test = stats.ljung_box[] then "lag {test.lag} q " + io.real_text(test.q) + " p " + io.real_text(test.probability)]
+            lines = lines.append("ljung_box {fitted.name} " + parts.join(" "))
+        return lines
+
+    string[] chart_lines()
+        ChartRow[] rows = []
+        for int step < settings.holdout
+            rows = rows.append(ChartRow(data.record.periods[training_count + step], holdout_rows[best_index][step], actual[step]))
+        for int step < settings.horizon
+            rows = rows.append(ChartRow(data.future[step], future_rows[step], none))
+        real64 low = rows[0].interval.lo95
+        real64 high = rows[0].interval.hi95
+        for ChartRow row = rows[]
+            low = math.min(low, row.interval.lo95)
+            high = math.max(high, row.interval.hi95)
+            match row.actual
+                real64 value
+                    low = math.min(low, value)
+                    high = math.max(high, value)
+                none
+                    continue
+        string[] lines = ["chart {data.record.name} method {best_name}", "scale low " + io.real_text(low) + " high " + io.real_text(high)]
+        for ChartRow row = rows[]
+            lines = lines.append(row.period + " |" + forecast_chart(row, low, high) + "|")
+        real64 peak = 0.0
+        for real64 value = data.components.multiplicative[]
+            peak = math.max(peak, math.abs(value - 1.0))
+        lines = lines.append("profile peak " + io.real_text(peak))
+        for int position < settings.season
+            real64 value = data.components.multiplicative[position]
+            lines = lines.append("season " + pad_left("{position + 1}", 2) + " " + io.real_text(value) + " [" + seasonal_profile(value, peak) + "]")
+        return lines
+
+    string[] plan_lines()
+        string[] lines = ["series {data.record.name} method {best_name}", "policy on_hand {policy.on_hand} lead_time {policy.lead_time} review {policy.review} service " + io.real_text(policy.service) + " safety_stock " + io.real_text(plan.safety)]
+        for PlanRow row = plan.rows[]
+            string period = data.future[row.step - 1]
+            lines = lines.concat(review_lines(row.review, period))
+            lines = lines.append("period {period} demand " + io.real_text(row.demand) + " receipt {row.receipt} on_hand " + io.real_text(row.on_hand) + " status {row.status}")
+        lines = lines.append("summary orders {plan.orders} ordered {plan.ordered} short_periods {plan.short_periods} lowest " + io.real_text(plan.lowest) + " average " + io.real_text(plan.average))
+        for Year year = years[]
+            string growth = "NA"
+            match year.growth
+                real64 value
+                    growth = io.real_text(value)
+                none
+                    growth = "NA"
+            lines = lines.append("year {year.year} actual_months {year.actual_months} actual " + io.real_text(year.actual) + " forecast_months {year.forecast_months} forecast " + io.real_text(year.forecast) + " total " + io.real_text(year.total) + " growth " + growth)
+        return lines
+
+io.Inventory | error inventory_for(io.Inventory[] policies, string name)
+    for io.Inventory policy = policies[]
+        if policy.series == name
+            return policy
+    return error("missing inventory: " + name)
+
+io.Inputs inputs = io.read_inputs()
+string[] decomposition_output = ["series,period,value,cleaned,trend,seasonal_add,residual_add,seasonal_mult,residual_mult,flag"]
+string[] models_output = []
+string[] forecasts_output = ["series,stage,method,period,actual,forecast,lo80,hi80,lo95,hi95"]
+string[] accuracy_output = ["series,method,me,mae,rmse,mape,smape,mase,fva,cv_rmse,cover80,cover95,winkler80,winkler95,rank"]
+string[] cv_output = ["series,method,step,origins,mae,rmse"]
+string[] correlogram_output = []
+string[] chart_output = []
+string[] plan_output = []
+for io.Series record = inputs.series[]
+    io.Event[] events = [for io.Event event = inputs.events[] if event.series == record.name then event]
+    io.Inventory policy = inventory_for(inputs.inventory, record.name)
+    Study study = Study(Prepared(record, events, inputs.settings), policy)
+    decomposition_output = decomposition_output.concat(study.decomposition_lines())
+    models_output = models_output.concat(study.fitted_lines())
+    forecasts_output = forecasts_output.concat(study.forecast_lines())
+    accuracy_output = accuracy_output.concat(study.accuracy_lines())
+    cv_output = cv_output.concat(study.cv_lines())
+    correlogram_output = correlogram_output.concat(study.correlogram())
+    chart_output = chart_output.concat(study.chart_lines())
+    plan_output = plan_output.concat(study.plan_lines())
+if not file.is_directory("output")
+    file.mkdir("output")
+io.write_lines("decomposition.csv", decomposition_output)
+io.write_lines("models.txt", models_output)
+io.write_lines("forecasts.csv", forecasts_output)
+io.write_lines("accuracy.csv", accuracy_output)
+io.write_lines("cv.csv", cv_output)
+io.write_lines("correlogram.txt", correlogram_output)
+io.write_lines("chart.txt", chart_output)
+io.write_lines("plan.txt", plan_output)
