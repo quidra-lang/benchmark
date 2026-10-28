@@ -1,4 +1,7 @@
-const LEFT,RIGHT,TOP,BOTTOM = 1,2,3,4
+const LEFT = 1
+const RIGHT = 2
+const TOP = 3
+const BOTTOM = 4
 const EDGE_FACES = Dict("left"=>LEFT,"right"=>RIGHT,"top"=>TOP,"bottom"=>BOTTOM)
 struct Mesh
     width::Int
