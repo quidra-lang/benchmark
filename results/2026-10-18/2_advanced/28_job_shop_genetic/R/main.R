@@ -95,7 +95,10 @@ path_blocks <- function(s, path = critical_path(s)) {
     blocks <- list()
     for (id in path) {
         last <- length(blocks)
-        if (last && s$instance$operations[[tail(blocks[[last]], 1L)]]$machine == s$instance$operations[[id]]$machine) blocks[[last]] <- c(
+        if (last && s$instance$operations[[tail(
+            blocks[[last]],
+            1L
+        )]]$machine == s$instance$operations[[id]]$machine) blocks[[last]] <- c(
             blocks[[last]],
             id
         ) else blocks <- c(blocks, list(id))
@@ -721,7 +724,7 @@ schedule_lines <- function(solver) {
     pairs_total <- 0L
     for (m in instance$machines) {
         q <- length(m$operations)
-        pairs <- q * (q - 1L) %/% 2L
+        pairs <- (q * (q - 1L)) %/% 2L
         pairs_total <- pairs_total + pairs
         text <- unlist(
             lapply(seq_along(labels), function(i) c(labels[i], distances[[i]][m$number])),

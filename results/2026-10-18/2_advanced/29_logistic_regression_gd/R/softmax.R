@@ -17,7 +17,12 @@ softmax_average_loss <- function(w, x, labels) ordered_sum(vapply(
     function(i) softmax_loss(w, x[[i]], labels[i]),
     0
 )) / length(x)
-softmax_objective <- function(w, x, labels, lambda) softmax_average_loss(w, x, labels) + lambda * ordered_sum(unlist(
+softmax_objective <- function(
+    w,
+    x,
+    labels,
+    lambda
+) softmax_average_loss(w, x, labels) + lambda * ordered_sum(unlist(
     lapply(w, function(row) row[-1L] * row[-1L]),
     use.names = FALSE
 )) / 2

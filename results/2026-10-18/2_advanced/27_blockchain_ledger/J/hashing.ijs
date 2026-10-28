@@ -16,7 +16,9 @@ digest =: 3 : 0
 merkle_root =: 3 : 0
     level =. y
     while. 1<#level do.
-        if. 2|#level do. level =. level,{:level end.
+        if. 2|#level do.
+            level =. level,{:level
+        end.
         next =. 0$a:
         for_i. 2*i.(#level)intdiv 2 do.
             next =. next,<digest (i{::level),(i+1){::level

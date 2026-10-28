@@ -26,17 +26,29 @@ mine_block =: 3 : 0
     nonce =. 0
     while. 1 do.
         block =. make_block (<height),(<previous),(<merkle),(<timestamp),(<difficulty),(<nonce),<transactions
-        if. (b_hash block)meets_difficulty difficulty do. block return. end.
+        if. (b_hash block)meets_difficulty difficulty do.
+            block return.
+        end.
         nonce =. nonce+1
     end.
 )
 context_free_error =: 4 : 0
-    if. -.(b_hash y)meets_difficulty b_difficulty y do. 'bad-pow' return. end.
-    if. -.(merkle_root b_txids y)-:b_merkle y do. 'bad-merkle' return. end.
+    if. -.(b_hash y)meets_difficulty b_difficulty y do.
+        'bad-pow' return.
+    end.
+    if. -.(merkle_root b_txids y)-:b_merkle y do.
+        'bad-merkle' return.
+    end.
     transactions =. b_transactions y
     first =. 0{::transactions
-    if. (-.is_coinbase first)+.(tx_coinbase_height first)~:b_height y do. 'bad-structure' return. end.
-    if. +./is_coinbase&>}.transactions do. 'bad-structure' return. end.
-    if. (b_size y)>x do. 'too-large' return. end.
+    if. (-.is_coinbase first)+.(tx_coinbase_height first)~:b_height y do.
+        'bad-structure' return.
+    end.
+    if. +./is_coinbase&>}.transactions do.
+        'bad-structure' return.
+    end.
+    if. (b_size y)>x do.
+        'too-large' return.
+    end.
     ''
 )

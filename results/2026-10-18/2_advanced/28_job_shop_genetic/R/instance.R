@@ -13,7 +13,10 @@ load_instance <- function(path) {
             pair <- as.integer(strsplit(tokens[index], ":", fixed = TRUE)[[1L]])
             machine <- pair[1L]
             duration <- pair[2L]
-            reason <- if (machine < 1L || machine > machine_count) paste("unknown machine", machine) else if (duration < 1L || duration > 99L) paste("bad duration", duration) else if (any(vapply(
+            reason <- if (machine < 1L || machine > machine_count) paste(
+                "unknown machine",
+                machine
+            ) else if (duration < 1L || duration > 99L) paste("bad duration", duration) else if (any(vapply(
                 steps,
                 function(step) step[1L] == machine,
                 FALSE

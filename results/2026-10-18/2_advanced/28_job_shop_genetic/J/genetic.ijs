@@ -26,8 +26,11 @@ tournament =: 4 : 0
     best =. _1
     for_i. i.y do.
         index =. below #x
-        if. best<0 do. best =. index
-        elseif. ((index{x)<best{x)+.(((index{x)=best{x)*.index<best) do. best =. index end.
+        if. best<0 do.
+            best =. index
+        elseif. ((index{x)<best{x)+.(((index{x)=best{x)*.index<best) do.
+            best =. index
+        end.
     end.
     best
 )
@@ -40,7 +43,11 @@ preserve_order =: 3 : 0
 )
 crossover =: 4 : 0
     kept =. i.0
-    for_job. JobNumbers do. if. 0=below 2 do. kept =. kept,job end. end.
+    for_job. JobNumbers do.
+        if. 0=below 2 do.
+            kept =. kept,job
+        end.
+    end.
     first =. preserve_order (<x),(<y),<kept
     second =. preserve_order (<y),(<x),<kept
     (<first),<second

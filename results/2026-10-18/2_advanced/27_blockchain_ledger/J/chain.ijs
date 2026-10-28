@@ -9,12 +9,16 @@ r_height =: b_height@r_block
 r_hash =: b_hash@r_block
 reward =: 3 : 0
     'height amount interval' =. y
-    for_i. i.height intdiv interval do. amount =. amount intdiv 2 end.
+    for_i. i.height intdiv interval do.
+        amount =. amount intdiv 2
+    end.
     amount
 )
 ancestor =: 4 : 0
     'cursor height' =. y
-    while. height<r_height cursor{::x do. cursor =. r_parent cursor{::x end.
+    while. height<r_height cursor{::x do.
+        cursor =. r_parent cursor{::x
+    end.
     cursor
 )
 chain_to =: 4 : 0
@@ -51,12 +55,20 @@ required_difficulty =: 4 : 0
     record =. parent{::x
     height =. >:r_height record
     difficulty =. b_difficulty r_block record
-    if. height=1 do. initial return. end.
-    if. interval|height do. difficulty return. end.
+    if. height=1 do.
+        initial return.
+    end.
+    if. interval|height do.
+        difficulty return.
+    end.
     first =. x ancestor parent,height-interval
     span =. (b_time r_block record)-b_time r_block first{::x
     expected =. target*<:interval
-    if. (2*span)<expected do. 2<.>:difficulty return. end.
-    if. span>2*expected do. 0>.difficulty-1 return. end.
+    if. (2*span)<expected do.
+        2<.>:difficulty return.
+    end.
+    if. span>2*expected do.
+        0>.difficulty-1 return.
+    end.
     difficulty
 )

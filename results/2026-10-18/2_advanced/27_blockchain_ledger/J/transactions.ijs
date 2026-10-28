@@ -50,7 +50,9 @@ create_transaction =: 3 : 0
     'inputs addresses amounts secret' =. y
     body =. 'in=',(','join inputs),';out=',outputs_text (<addresses),<amounts
     signatures =. 0$a:
-    for_i. i.#inputs do. signatures =. signatures,<sign (<secret),(<i),<body end.
+    for_i. i.#inputs do.
+        signatures =. signatures,<sign (<secret),(<i),<body
+    end.
     text =. body,';sig=',','join signatures
     make_transaction (<text),(<inputs),(<addresses),(<amounts),(<signatures),<_1
 )
@@ -72,7 +74,9 @@ check_transaction =: 3 : 0
     addresses =. tx_addresses transaction
     amounts =. tx_amounts transaction
     known =. wallet_address&.>owners
-    if. (0 e.amounts)+.-.*./addresses e.known do. 'bad-output';0 return. end.
+    if. (0 e.amounts)+.-.*./addresses e.known do.
+        'bad-output';0 return.
+    end.
     'references coins' =. utxo
     seen =. 0$a:
     total =. 0
@@ -80,18 +84,28 @@ check_transaction =: 3 : 0
     signatures =. tx_signatures transaction
     for_i. i.#inputs do.
         reference =. i{inputs
-        if. (reference e.spent)+.reference e.seen do. 'double-spend';0 return. end.
-        if. -.reference e.references do. 'missing-input';0 return. end.
+        if. (reference e.spent)+.reference e.seen do.
+            'double-spend';0 return.
+        end.
+        if. -.reference e.references do.
+            'missing-input';0 return.
+        end.
         coin =. (references i.reference){::coins
-        if. -.coin is_mature height,maturity do. 'immature';0 return. end.
+        if. -.coin is_mature height,maturity do.
+            'immature';0 return.
+        end.
         owner =. (known i.<coin_address coin){::owners
         expected =. sign (<wallet_secret owner),(<i),<tx_body transaction
-        if. -.expected-:i{::signatures do. 'bad-sig';0 return. end.
+        if. -.expected-:i{::signatures do.
+            'bad-sig';0 return.
+        end.
         seen =. seen,reference
         total =. total+coin_amount coin
     end.
     amount =. tx_total transaction
-    if. total<amount do. 'overspend';0 return. end.
+    if. total<amount do.
+        'overspend';0 return.
+    end.
     '';total-amount
 )
 apply_transaction =: 4 : 0

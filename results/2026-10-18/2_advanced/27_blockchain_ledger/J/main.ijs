@@ -2,14 +2,18 @@ split =: 4 : '<;._1 x,y'
 join =: 4 : 0
     result =. ''
     for_i. i.#y do.
-        if. i do. result =. result,x end.
+        if. i do.
+            result =. result,x
+        end.
         result =. result,i{::y
     end.
     result
 )
 num =: 3 : 'x: 0".y'
 text =: 3 : 0
-    if. 2=3!:0 y do. y return. end.
+    if. 2=3!:0 y do.
+        y return.
+    end.
     value =. ":y
     '-'(I.value='_')}value
 )
@@ -60,7 +64,9 @@ penalize =: 3 : 0
     before =. (<peer,6){PeerStats
     increment_peer peer,6,amount
     after =. (<peer,6){PeerStats
-    if. (before<BanScore)*.after>:BanScore do. log line 'BAN';(peer{::PeerNames);'score';after end.
+    if. (before<BanScore)*.after>:BanScore do.
+        log line 'BAN';(peer{::PeerNames);'score';after
+    end.
 )
 refresh_main =: 3 : 0
     Main =: Records chain_to Tip
@@ -77,7 +83,9 @@ refresh_main =: 3 : 0
 append_record =: 3 : 0
     'block parent utxo fees source' =. y
     work =. 1
-    if. parent>:0 do. work =. (r_work parent{::Records)+16^b_difficulty block end.
+    if. parent>:0 do.
+        work =. (r_work parent{::Records)+16^b_difficulty block
+    end.
     record =. (<block),(<parent),(<utxo),(<fees),(<source),<work
     index =. #Records
     Records =: Records,<record
@@ -86,7 +94,9 @@ append_record =: 3 : 0
 )
 locked_references =: 3 : 0
     references =. 0$a:
-    for_entry. Mempool do. references =. references,tx_inputs m_transaction >entry end.
+    for_entry. Mempool do.
+        references =. references,tx_inputs m_transaction >entry
+    end.
     ~.references
 )
 priority_before =: 4 : 0
@@ -96,11 +106,15 @@ priority_before =: 4 : 0
     b =. m_transaction second
     left =. (m_fee first)*tx_size b
     right =. (m_fee second)*tx_size a
-    if. left~:right do. left>right return. end.
+    if. left~:right do.
+        left>right return.
+    end.
     (tx_id a)before tx_id b
 )
 before =: 4 : 0
-    if. x-:y do. 0 return. end.
+    if. x-:y do.
+        0 return.
+    end.
     x-:0{::/:~x;y
 )
 priority_order =: 3 : 0
@@ -109,7 +123,9 @@ priority_order =: 3 : 0
         position =. #ranked
         ranked =. ranked,index
         while. position>0 do.
-            if. -.index priority_before (position-1){ranked do. break. end.
+            if. -.index priority_before (position-1){ranked do.
+                break.
+            end.
             ranked =. ((position-1){ranked)position}ranked
             position =. position-1
         end.
@@ -120,13 +136,19 @@ priority_order =: 3 : 0
 find_entry =: 3 : '(tx_id@m_transaction&.>Mempool)i.<y'
 acceptance =: 3 : 0
     transaction =. y
-    if. is_coinbase transaction do. ('coinbase';0),<0$a: return. end.
+    if. is_coinbase transaction do.
+        ('coinbase';0),<0$a: return.
+    end.
     if. ((<tx_id transaction)e.Confirmed)+.(find_entry tx_id transaction)<#Mempool do.
         ('duplicate';0),<0$a: return.
     end.
     'reason fee' =. check_transaction (<transaction),(<current_utxo 0),(<0$a:),(<next_height 0),(<Wallets),<Maturity
-    if. #reason do. (reason;0),<0$a: return. end.
-    if. (fee*1000)<MinFeeRate*tx_size transaction do. ('low-fee';0),<0$a: return. end.
+    if. #reason do.
+        (reason;0),<0$a: return.
+    end.
+    if. (fee*1000)<MinFeeRate*tx_size transaction do.
+        ('low-fee';0),<0$a: return.
+    end.
     conflicts =. 0$a:
     total =. 0
     higher =. 1
@@ -140,7 +162,9 @@ acceptance =: 3 : 0
             higher =. higher*.(fee*tx_size other)>(m_fee pending)*tx_size transaction
         end.
     end.
-    if. (#conflicts)*.((fee<:total)+.-.higher) do. ('conflict';0),<0$a: return. end.
+    if. (#conflicts)*.((fee<:total)+.-.higher) do.
+        ('conflict';0),<0$a: return.
+    end.
     ('';fee),<conflicts
 )
 record_drop =: 4 : 0
@@ -160,7 +184,9 @@ drop =: 4 : 0
 )
 register =: 3 : 0
     'transaction fee conflicts arrival' =. y
-    for_id. conflicts do. 'replaced'drop >id end.
+    for_id. conflicts do.
+        'replaced'drop >id
+    end.
     Mempool =: Mempool,<(<transaction),(<fee),<arrival
     if. (#Mempool)>MempoolLimit do.
         lowest =. ({:priority_order 0){::Mempool
@@ -181,12 +207,16 @@ rebuild_mempool =: 3 : 0
     end.
     for_candidate. candidates do.
         'transaction arrival returned' =. >candidate
-        if. (<tx_id transaction)e.Confirmed do. continue. end.
+        if. (<tx_id transaction)e.Confirmed do.
+            continue.
+        end.
         'reason fee conflicts' =. acceptance transaction
         if. #reason do.
             reason record_drop tx_id transaction
         else.
-            if. returned do. log line 'RETURN';short tx_id transaction end.
+            if. returned do.
+                log line 'RETURN';short tx_id transaction
+            end.
             register (<transaction),(<fee),(<conflicts),<arrival
         end.
     end.
@@ -245,7 +275,9 @@ pay =: 3 : 0
     gathered =. 0
     inputs =. 0$a:
     for_i. selected do.
-        if. gathered>:total+fee do. break. end.
+        if. gathered>:total+fee do.
+            break.
+        end.
         inputs =. inputs,i{references
         gathered =. gathered+coin_amount i{::coins
     end.
@@ -316,7 +348,9 @@ receive_transaction =: 3 : 0
         increment_peer peer,4,1
         'tx'tally reason
         log prefix,' rejected ',reason
-        if. (<reason)e.'coinbase';'bad-output';'bad-sig';'overspend' do. penalize peer,TxPenalty end.
+        if. (<reason)e.'coinbase';'bad-output';'bad-sig';'overspend' do.
+            penalize peer,TxPenalty
+        end.
     else.
         increment_peer peer,3,1
         log prefix,' ',line 'accepted';'fee';fee;'size';tx_size transaction
@@ -344,7 +378,9 @@ mine =: 3 : 0
     timestamp =. Now>.1+Records median_time Tip
     block =. mine_block (<height),(<r_hash current_record 0),(<transactions),(<timestamp),<difficulty Tip
     utxo =. current_utxo 0
-    for_transaction. transactions do. utxo =. utxo apply_transaction transaction,<height end.
+    for_transaction. transactions do.
+        utxo =. utxo apply_transaction transaction,<height
+    end.
     index =. append_record (<block),(<Tip),(<utxo),(<fees),<'local'
     record =. index{::Records
     log line 'MINE';(wallet_name wallet);height;(short b_hash block);'bits';(b_difficulty block);'nonce';(b_nonce block);'txs';(#transactions);'size';size;'fees';(+/fees);'work';r_work record
@@ -356,7 +392,9 @@ reject_block =: 3 : 0
     increment_peer peer,1,1
     'block'tally 0{::' 'split reason
     log line kind;(peer{::PeerNames);(b_height block);(short b_hash block);'rejected';reason
-    if. -.reason-:'time-too-new' do. penalize peer,BlockPenalty end.
+    if. -.reason-:'time-too-new' do.
+        penalize peer,BlockPenalty
+    end.
     i.0
 )
 validate_block =: 3 : 0
@@ -364,23 +402,37 @@ validate_block =: 3 : 0
     record =. parent{::Records
     utxo =. r_utxo record
     fees =. i.0
-    if. (b_height block)~:1+r_height record do. (<'bad-height'),(<utxo),<fees return. end.
-    if. (b_difficulty block)~:difficulty parent do. (<'bad-difficulty'),(<utxo),<fees return. end.
-    if. (b_time block)<:Records median_time parent do. (<'time-too-old'),(<utxo),<fees return. end.
-    if. (b_time block)>Now+Drift do. (<'time-too-new'),(<utxo),<fees return. end.
+    if. (b_height block)~:1+r_height record do.
+        (<'bad-height'),(<utxo),<fees return.
+    end.
+    if. (b_difficulty block)~:difficulty parent do.
+        (<'bad-difficulty'),(<utxo),<fees return.
+    end.
+    if. (b_time block)<:Records median_time parent do.
+        (<'time-too-old'),(<utxo),<fees return.
+    end.
+    if. (b_time block)>Now+Drift do.
+        (<'time-too-new'),(<utxo),<fees return.
+    end.
     spent =. 0$a:
     transactions =. b_transactions block
     for_i. 1+i.<:#transactions do.
         transaction =. i{::transactions
         'reason fee' =. check_transaction (<transaction),(<utxo),(<spent),(<b_height block),(<Wallets),<Maturity
-        if. #reason do. ((<reason,' tx ',":i+1),<utxo),<fees return. end.
+        if. #reason do.
+            ((<reason,' tx ',":i+1),<utxo),<fees return.
+        end.
         spent =. ~.spent,tx_inputs transaction
         utxo =. utxo apply_transaction (<transaction),<b_height block
         fees =. fees,fee
     end.
     coinbase =. 0{::transactions
-    if. (0 e.tx_amounts coinbase)+.-.*./(tx_addresses coinbase)e.WalletAddresses do. (<'bad-output tx 1'),(<utxo),<fees return. end.
-    if. (tx_total coinbase)>(block_reward b_height block)++/fees do. (<'bad-coinbase'),(<utxo),<fees return. end.
+    if. (0 e.tx_amounts coinbase)+.-.*./(tx_addresses coinbase)e.WalletAddresses do.
+        (<'bad-output tx 1'),(<utxo),<fees return.
+    end.
+    if. (tx_total coinbase)>(block_reward b_height block)++/fees do.
+        (<'bad-coinbase'),(<utxo),<fees return.
+    end.
     utxo =. utxo apply_transaction (<coinbase),<b_height block
     (<''),(<utxo),<fees
 )
@@ -388,12 +440,16 @@ connect_block =: 3 : 0
     'kind block peer' =. y
     parent =. RecordHashes i.<b_previous block
     'reason utxo fees' =. validate_block (<block),<parent
-    if. #reason do. reject_block (<kind),(<block),(<peer),<reason return. end.
+    if. #reason do.
+        reject_block (<kind),(<block),(<peer),<reason return.
+    end.
     index =. append_record (<block),(<parent),(<utxo),(<fees),peer{PeerNames
     record =. index{::Records
     increment_peer peer,0,1
     log line kind;(peer{::PeerNames);(b_height block);(short b_hash block);'accepted';'work';r_work record
-    if. (r_work record)>r_work current_record 0 do. switch_tip index end.
+    if. (r_work record)>r_work current_record 0 do.
+        switch_tip index
+    end.
     i.0
 )
 resolve_orphans =: 3 : 0
@@ -428,7 +484,9 @@ receive_block =: 3 : 0
         i.0 return.
     end.
     reason =. MaxBlock context_free_error block
-    if. (0=#reason)*.(<b_previous block)e.Rejected do. reason =. 'bad-parent' end.
+    if. (0=#reason)*.(<b_previous block)e.Rejected do.
+        reason =. 'bad-parent'
+    end.
     if. #reason do.
         reject_block (<'BLOCK'),(<block),(<peer),<reason
         resolve_orphans hash
@@ -464,9 +522,13 @@ status =: 3 : 0
         end.
     end.
     position =. DroppedIds i.<y
-    if. position<#DroppedIds do. log prefix,' dropped ',position{::DroppedReasons return. end.
+    if. position<#DroppedIds do.
+        log prefix,' dropped ',position{::DroppedReasons return.
+    end.
     for_record. Records do.
-        if. (<y)e.b_txids r_block >record do. log prefix,' stale' return. end.
+        if. (<y)e.b_txids r_block >record do.
+            log prefix,' stale' return.
+        end.
     end.
     log prefix,' unknown'
 )
@@ -491,15 +553,22 @@ process_event =: 3 : 0
     previous =. Mempool
     for_entry. previous do.
         value =. >entry
-        if. (Now-m_arrival value)>:Expiry do. 'expired'drop tx_id m_transaction value end.
+        if. (Now-m_arrival value)>:Expiry do.
+            'expired'drop tx_id m_transaction value
+        end.
     end.
     kind =. 1{::fields
     select. kind
-    case. 'PAY' do. pay fields
-    case. 'BUMP' do. bump (2{fields),<num 3{::fields
-    case. 'MINE' do. mine named_wallet 2{::fields
-    case. 'STATUS' do. status 2{::fields
-    case. 'PRINT' do. print_state 0
+    case. 'PAY' do.
+        pay fields
+    case. 'BUMP' do.
+        bump (2{fields),<num 3{::fields
+    case. 'MINE' do.
+        mine named_wallet 2{::fields
+    case. 'STATUS' do.
+        status 2{::fields
+    case. 'PRINT' do.
+        print_state 0
     case. do.
         sender =. peer 2{::fields
         if. ((<sender,6){PeerStats)>:BanScore do.
@@ -534,7 +603,9 @@ chain_lines =: 3 : 0
             transaction =. i{::transactions
             if. is_coinbase transaction do.
                 category =. 'coinbase'
-                if. 0=b_height block do. category =. 'genesis' end.
+                if. 0=b_height block do.
+                    category =. 'genesis'
+                end.
                 lines =. lines,<line 'TX';(i+1);(tx_id transaction);category;'out';(#tx_addresses transaction);'amount';tx_total transaction
             else.
                 fee =. (i-1){r_txfees record
@@ -569,14 +640,18 @@ chain_lines =: 3 : 0
                 paid =. paid+r_fees record
             end.
         end.
-        if. count do. lines =. lines,<line 'MINER';(wallet_name wallet);'blocks';count;'coinbase';coinbase;'fees';paid end.
+        if. count do.
+            lines =. lines,<line 'MINER';(wallet_name wallet);'blocks';count;'coinbase';coinbase;'fees';paid
+        end.
     end.
     first =. 1
     while. first<#Main do.
         last =. first
         bits =. b_difficulty r_block (first{Main){::Records
         while. (last+1)<#Main do.
-            if. bits~:b_difficulty r_block ((last+1){Main){::Records do. break. end.
+            if. bits~:b_difficulty r_block ((last+1){Main){::Records do.
+                break.
+            end.
             last =. last+1
         end.
         heights =. (":first),'-',":last
@@ -586,7 +661,9 @@ chain_lines =: 3 : 0
     for_sender. /:PeerNames do.
         stats =. sender{PeerStats
         state =. 'ok'
-        if. (6{stats)>:BanScore do. state =. 'banned' end.
+        if. (6{stats)>:BanScore do.
+            state =. 'banned'
+        end.
         lines =. lines,<line 'PEER';(sender{::PeerNames);'blocks';(0{stats);'rejected';(1{stats);'orphans';(2{stats);'txs';(3{stats);'rejected';(4{stats);'ignored';(5{stats);'score';(6{stats);state
     end.
     ranked =. priority_order 0
@@ -613,11 +690,17 @@ balance_lines =: 3 : 0
         total =. immature =. locked =. count =. incoming =. 0
         for_i. i.#references do.
             coin =. i{::coins
-            if. -.address-:coin_address coin do. continue. end.
+            if. -.address-:coin_address coin do.
+                continue.
+            end.
             total =. total+coin_amount coin
             count =. count+1
-            if. -.coin_mature coin do. immature =. immature+coin_amount coin end.
-            if. (i{references)e.held do. locked =. locked+coin_amount coin end.
+            if. -.coin_mature coin do.
+                immature =. immature+coin_amount coin
+            end.
+            if. (i{references)e.held do.
+                locked =. locked+coin_amount coin
+            end.
         end.
         for_pending. Mempool do.
             transaction =. m_transaction >pending
@@ -637,11 +720,17 @@ utxo_lines =: 3 : 0
         reference =. i{::references
         coin =. i{::coins
         category =. 'payment'
-        if. 0=coin_height coin do. category =. 'genesis'
-        elseif. coin_coinbase coin do. category =. 'coinbase' end.
+        if. 0=coin_height coin do.
+            category =. 'genesis'
+        elseif. coin_coinbase coin do.
+            category =. 'coinbase'
+        end.
         state =. 'free'
-        if. -.coin_mature coin do. state =. 'immature'
-        elseif. (<reference)e.held do. state =. 'locked' end.
+        if. -.coin_mature coin do.
+            state =. 'immature'
+        elseif. (<reference)e.held do.
+            state =. 'locked'
+        end.
         value =. line reference;(wallet_name owner coin_address coin);(coin_amount coin);'height';(coin_height coin);category;state
         lines =. lines,<value
         hashes =. hashes,<digest value
@@ -650,7 +739,11 @@ utxo_lines =: 3 : 0
     lines,(<line 'TOTAL';(#references);total),<line 'ROOT';merkle_root hashes
 )
 signed =: 3 : 0
-    if. y<0 do. text y else. '+',text y end.
+    if. y<0 do.
+        text y
+    else.
+        '+',text y
+    end.
 )
 history_lines =: 3 : 0
     ids =. confirmed_transactions =. 0$a:
@@ -684,7 +777,9 @@ history_lines =: 3 : 0
                 own =. (tx_addresses transaction)e.<address
                 received =. +/own#tx_amounts transaction
                 involved =. involved+.+./own
-                if. -.involved do. continue. end.
+                if. -.involved do.
+                    continue.
+                end.
                 count =. count+1
                 spent_total =. spent_total+spent
                 received_total =. received_total+received
@@ -692,7 +787,9 @@ history_lines =: 3 : 0
                 category =. 'payment'
                 if. is_coinbase transaction do.
                     category =. 'coinbase'
-                    if. height=0 do. category =. 'genesis' end.
+                    if. height=0 do.
+                        category =. 'genesis'
+                    end.
                 end.
                 lines =. lines,<line height;(short tx_id transaction);category;'spent';spent;'received';received;'net';(signed received-spent);'balance';running
             end.
@@ -704,7 +801,9 @@ history_lines =: 3 : 0
             spent =. 0
             for_reference. tx_inputs transaction do.
                 coin =. utxo coin_at >reference
-                if. address-:coin_address coin do. spent =. spent+coin_amount coin end.
+                if. address-:coin_address coin do.
+                    spent =. spent+coin_amount coin
+                end.
             end.
             received =. +/(tx_amounts transaction)#~(tx_addresses transaction)e.<address
             if. (spent~:0)+.received~:0 do.
@@ -718,7 +817,9 @@ history_lines =: 3 : 0
 )
 write_lines =: 4 : 0
     result =. ''
-    for_value. y do. result =. result,(>value),LF end.
+    for_value. y do.
+        result =. result,(>value),LF
+    end.
     result 1!:2 <'output/',x
 )
 initialize =: 3 : 0
@@ -760,7 +861,9 @@ run =: 3 : 0
     while. position<#events do.
         fields =. ' 'split position{::events
         count =. 0
-        if. 'BLOCK'-:1{::fields do. count =. num 9{::fields end.
+        if. 'BLOCK'-:1{::fields do.
+            count =. num 9{::fields
+        end.
         texts =. count{.(position+1)}.events
         process_event (<fields),<texts
         position =: position+count+1

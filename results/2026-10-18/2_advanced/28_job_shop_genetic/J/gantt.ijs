@@ -4,7 +4,9 @@ chart_scale =: 4 : 0
         for_step. 1 2 5 do.
             quantum =. step*magnitude
             columns =. (x+quantum-1)intdiv quantum
-            if. columns<:y do. quantum,columns return. end.
+            if. columns<:y do.
+                quantum,columns return.
+            end.
         end.
         magnitude =. magnitude*10
     end.
@@ -47,7 +49,9 @@ busy_row =: 3 : 0
         for_intervals. machines do.
             for_interval. >intervals do.
                 'start finish symbol' =. >interval
-                if. (start<:time)*.time<finish do. busy =. busy+1 break. end.
+                if. (start<:time)*.time<finish do.
+                    busy =. busy+1 break.
+                end.
             end.
         end.
         marks =. marks,busy{'0123456789X'

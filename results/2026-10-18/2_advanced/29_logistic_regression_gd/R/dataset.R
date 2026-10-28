@@ -23,24 +23,36 @@ read_inputs <- function() {
     integer <- function(key, i = 1L) as.integer(entries[[key]][i])
     real <- function(key, i = 1L) as.numeric(entries[[key]][i])
     settings <- list(positive = integer("POSITIVE"), degree = integer("DEGREE"), threshold = real("THRESHOLD"), lambdas = as.numeric(entries$LAMBDAS),
-        gd_rate = real("GD"), gd_iterations = integer("GD", 2L), sgd_rate = real("SGD"), batch_size = integer("SGD", 2L), epochs = integer("SGD", 3L), sgd_seed = integer(
+        gd_rate = real("GD"), gd_iterations = integer("GD", 2L), sgd_rate = real("SGD"), batch_size = integer("SGD", 2L), epochs = integer(
+            "SGD",
+            3L
+        ), sgd_seed = integer(
             "SGD",
             4L
         ),
-        softmax_rate = real("SOFTMAX"), softmax_iterations = integer("SOFTMAX", 2L), softmax_lambda = real("SOFTMAX", 3L), bootstrap_count = integer("BOOTSTRAP"), bootstrap_seed = integer(
+        softmax_rate = real("SOFTMAX"), softmax_iterations = integer("SOFTMAX", 2L), softmax_lambda = real(
+            "SOFTMAX",
+            3L
+        ), bootstrap_count = integer("BOOTSTRAP"), bootstrap_seed = integer(
             "BOOTSTRAP",
             2L
         ),
         permutation_count = integer("PERMUTATION"), permutation_seed = integer(
             "PERMUTATION",
             2L
-        ), map_width = integer("MAP"), map_height = integer("MAP", 2L), cost_fp = integer("COST"), cost_fn = integer("COST", 2L))
+        ), map_width = integer("MAP"), map_height = integer("MAP", 2L), cost_fp = integer("COST"), cost_fn = integer(
+            "COST",
+            2L
+        ))
     list(names = train$names, train = train$rows, test = test$rows, settings = settings)
 }
 expansion_tuples <- function(base_count, degree) {
     tuples <- list()
     append_tuples <- function(prefix, remaining, first) {
-        if (remaining == 0L) tuples[[length(tuples) + 1L]] <<- prefix else for (index in seq.int(first, base_count)) append_tuples(
+        if (remaining == 0L) tuples[[length(tuples) + 1L]] <<- prefix else for (index in seq.int(
+            first,
+            base_count
+        )) append_tuples(
             c(prefix, index),
             remaining - 1L,
             index

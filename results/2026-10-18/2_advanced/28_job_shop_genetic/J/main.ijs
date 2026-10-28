@@ -2,7 +2,9 @@ split =: 4 : '<;._1 x,y'
 join =: 4 : 0
     result =. ''
     for_i. i.#y do.
-        if. i do. result =. result,x end.
+        if. i do.
+            result =. result,x
+        end.
         result =. result,i{::y
     end.
     result
@@ -10,7 +12,9 @@ join =: 4 : 0
 num =: 3 : 'x: 0".y'
 intdiv =: 4 : '<.(x: x)%x: y'
 text =: 3 : 0
-    if. 2=3!:0 y do. y return. end.
+    if. 2=3!:0 y do.
+        y return.
+    end.
     value =. ":y
     '-'(I.value='_')}value
 )
@@ -47,11 +51,17 @@ order_starts =: 4 : 0
                 ident =. position{sequence
                 previous =. (<ident,7){Operations
                 if. previous>:0 do.
-                    if. (previous{starts)<0 do. break. end.
+                    if. (previous{starts)<0 do.
+                        break.
+                    end.
                 end.
                 ready =. free =. 0
-                if. previous>:0 do. ready =. previous{completions end.
-                if. position>0 do. free =. ((position-1){sequence){completions end.
+                if. previous>:0 do.
+                    ready =. previous{completions
+                end.
+                if. position>0 do.
+                    free =. ((position-1){sequence){completions
+                end.
                 start =. ready>.free
                 starts =. start ident}starts
                 completions =. (start+ident{x)ident}completions
@@ -91,10 +101,14 @@ critical_path =: 3 : 0
     reverse =. i.0
     while. 1 do.
         reverse =. reverse,current
-        if. 0=current{starts do. break. end.
+        if. 0=current{starts do.
+            break.
+        end.
         before =. current{previous
         if. before>:0 do.
-            if. (before{completions)=current{starts do. current =. before continue. end.
+            if. (before{completions)=current{starts do.
+                current =. before continue.
+            end.
         end.
         current =. (<current,7){Operations
     end.
@@ -121,7 +135,9 @@ moves =: 3 : 0
     result =. 0 2$0
     for_block. path_blocks critical_path y do.
         block =. >block
-        for_i. i.<:#block do. result =. result,(i,i+1){block end.
+        for_i. i.<:#block do.
+            result =. result,(i,i+1){block
+        end.
     end.
     result
 )
@@ -138,7 +154,9 @@ path_count =: 3 : 0
             sources =. ((<ident,7){Operations),ident{previous
             for_source. sources do.
                 if. source>:0 do.
-                    if. (source{completions)=ident{starts do. value =. value+source{ways end.
+                    if. (source{completions)=ident{starts do.
+                        value =. value+source{ways
+                    end.
                 end.
             end.
         end.
@@ -153,21 +171,31 @@ left_shift =: 4 : 0
     machine =. _1+(<ident,3){Operations
     sequence =. machine{::s_order x
     position =. sequence i.ident
-    if. position=0 do. _1 _1 return. end.
+    if. position=0 do.
+        _1 _1 return.
+    end.
     previous =. (<ident,7){Operations
     ready =. 0
-    if. previous>:0 do. ready =. previous{completions end.
+    if. previous>:0 do.
+        ready =. previous{completions
+    end.
     for_insertion. i.position do.
         begin =. 0
-        if. insertion>0 do. begin =. ((insertion-1){sequence){completions end.
+        if. insertion>0 do.
+            begin =. ((insertion-1){sequence){completions
+        end.
         start =. begin>.ready
-        if. (start+ident{Durations)<:(insertion{sequence){starts do. start,insertion return. end.
+        if. (start+ident{Durations)<:(insertion{sequence){starts do.
+            start,insertion return.
+        end.
     end.
     _1 _1
 )
 shiftable_count =: 3 : 0
     count =. 0
-    for_ident. i.Count do. count =. count+0<:{.y left_shift ident end.
+    for_ident. i.Count do.
+        count =. count+0<:{.y left_shift ident
+    end.
     count
 )
 slacks =: 3 : 0
@@ -238,14 +266,20 @@ jackson_bound =: 3 : 0
         for_position. }.released do.
             row =. (position{ids){Operations
             old =. (chosen{ids){Operations
-            if. ((6{row)>6{old)+.(((6{row)=6{old)*.(1{row)<1{old) do. chosen =. position end.
+            if. ((6{row)>6{old)+.(((6{row)=6{old)*.(1{row)<1{old) do.
+                chosen =. position
+            end.
         end.
         step =. chosen{remaining
         later =. (5{"1 ids{Operations)#~time<5{"1 ids{Operations
-        if. #later do. step =. step<.(<./later)-time end.
+        if. #later do.
+            step =. step<.(<./later)-time
+        end.
         time =. time+step
         remaining =. ((chosen{remaining)-step)chosen}remaining
-        if. 0=chosen{remaining do. bound =. bound>.time+(<(chosen{ids),6){Operations end.
+        if. 0=chosen{remaining do.
+            bound =. bound>.time+(<(chosen{ids),6){Operations
+        end.
     end.
     bound
 )
@@ -259,7 +293,9 @@ tabu_search =: 3 : 0
     expiries =. i.0
     for_iteration. 1+i.TabuIterations do.
         candidates =. moves schedule_order current
-        if. 0=#candidates do. reason =. 'no_moves' break. end.
+        if. 0=#candidates do.
+            reason =. 'no_moves' break.
+        end.
         values =. i.0
         blocked =. i.0
         chosen =. _1
@@ -270,15 +306,22 @@ tabu_search =: 3 : 0
             values =. values,value
             index =. expiry_keys i.move
             forbidden =. 0
-            if. index<#expiries do. forbidden =. (index{expiries)>:iteration end.
+            if. index<#expiries do.
+                forbidden =. (index{expiries)>:iteration
+            end.
             blocked =. blocked,forbidden
             tabu_count =. tabu_count+forbidden
             if. (-.forbidden)+.value<best do.
-                if. chosen<0 do. chosen =. position
-                elseif. value<chosen{values do. chosen =. position end.
+                if. chosen<0 do.
+                    chosen =. position
+                elseif. value<chosen{values do.
+                    chosen =. position
+                end.
             end.
         end.
-        if. chosen<0 do. reason =. 'all_tabu' break. end.
+        if. chosen<0 do.
+            reason =. 'all_tabu' break.
+        end.
         selected =. chosen{candidates
         current =. current apply_move selected
         reversed =. |.selected
@@ -291,7 +334,8 @@ tabu_search =: 3 : 0
             expiries =. expiry index}expiries
         end.
         value =. chosen{values
-        if. value<best do. best_order =. current
+        if. value<best do.
+            best_order =. current
             best =. value
             found =. iteration end.
         records =. records,<(<iteration),(<#candidates),(<tabu_count),(<selected),(<chosen{blocked),(<value),<best
@@ -306,9 +350,13 @@ activate =: 3 : 0
         selected =. _1
         for_ident. by_start schedule do.
             'start insertion' =. schedule left_shift ident
-            if. start>:0 do. selected =. ident break. end.
+            if. start>:0 do.
+                selected =. ident break.
+            end.
         end.
-        if. selected<0 do. (<current),<shifts return. end.
+        if. selected<0 do.
+            (<current),<shifts return.
+        end.
         machine =. _1+(<selected,3){Operations
         remaining =. machine{::current
         remaining =. remaining-.selected
@@ -319,9 +367,11 @@ activate =: 3 : 0
 )
 mutate =: 3 : 0
     child =. y
-    if. chance SwapProbability do. Swaps =: Swaps+1
+    if. chance SwapProbability do.
+        Swaps =: Swaps+1
         child =. swap_mutation child end.
-    if. chance InsertProbability do. Inserts =: Inserts+1
+    if. chance InsertProbability do.
+        Inserts =: Inserts+1
         child =. insert_mutation child end.
     child
 )
@@ -329,8 +379,12 @@ run_ga =: 3 : 0
     RngState =: Seed
     Population =: chromosome&.>Baselines
     basic =. i.0
-    for_job. JobNumbers do. basic =. basic,(#job{::JobOps)#job end.
-    while. (#Population)<PopulationSize do. Population =: Population,<shuffle basic end.
+    for_job. JobNumbers do.
+        basic =. basic,(#job{::JobOps)#job
+    end.
+    while. (#Population)<PopulationSize do.
+        Population =: Population,<shuffle basic
+    end.
     Crossovers =: Swaps =: Inserts =: 0
     GARecords =: 0 3$0
     Progress =: ,<'generation,best,mean,worst,distinct'
@@ -340,7 +394,9 @@ run_ga =: 3 : 0
         Ranked =: /:Values
         best =. {.Ranked
         value =. best{Values
-        if. value<previous_best do. GARecords =: GARecords,generation,value,best+1 end.
+        if. value<previous_best do.
+            GARecords =: GARecords,generation,value,best+1
+        end.
         previous_best =. value
         if. generation e.Checkpoints do.
             total =. +/Values
@@ -349,7 +405,9 @@ run_ga =: 3 : 0
             fields =. generation;value;mean;(>./Values);#~.Population
             Progress =: Progress,<','join text&.>fields
         end.
-        if. generation=Generations do. break. end.
+        if. generation=Generations do.
+            break.
+        end.
         offspring =. (Elitism{.Ranked){Population
         for_pair. i.(PopulationSize-Elitism)intdiv 2 do.
             first =. (Values tournament TournamentSize){::Population
@@ -368,7 +426,9 @@ run_ga =: 3 : 0
 )
 load_parameters =: 3 : 0
     rows =. 0$a:
-    for_row. <;._2 (1!:1 <y) do. rows =. rows,<' 'split >row end.
+    for_row. <;._2 (1!:1 <y) do.
+        rows =. rows,<' 'split >row
+    end.
     Seed =: num 1{::0{::rows
     PopulationSize =: num 1{::1{::rows
     Generations =: num 1{::2{::rows
@@ -385,7 +445,9 @@ load_parameters =: 3 : 0
 )
 write_lines =: 4 : 0
     result =. ''
-    for_value. y do. result =. result,(>value),LF end.
+    for_value. y do.
+        result =. result,(>value),LF
+    end.
     result 1!:2 <'output/',x
 )
 build_reports =: 3 : 0
@@ -421,7 +483,9 @@ build_reports =: 3 : 0
         baseline_lines =. baseline_lines,<line 'RULE';rule;'makespan';(s_makespan schedule);'gap';gap;'flow';(flow_time schedule);'idle';(total_idle schedule);'decisions';decisions;'ties';ties
         baseline_lines =. baseline_lines,<line 'PATH';rule;'operations';(#baseline_path);'blocks';(#path_blocks baseline_path);'critical_paths';(path_count schedule);'bottleneck';'M',":1+bottleneck baseline_path
         baseline_lines =. baseline_lines,<line 'TABU';rule;'makespan';(s_makespan schedule);'->';best;'found';found;'iterations';(#records);'stop';reason
-        if. (s_makespan schedule)<s_makespan best_baseline{::Baselines do. best_baseline =. index end.
+        if. (s_makespan schedule)<s_makespan best_baseline{::Baselines do.
+            best_baseline =. index
+        end.
     end.
     baseline_lines =. baseline_lines,<line 'BEST';(best_baseline{::Rules);'makespan';s_makespan best_baseline{::Baselines
     for_machine. i.MachineCount do.
@@ -440,12 +504,16 @@ build_reports =: 3 : 0
     top =. 0
     for_index. Ranked do.
         individual =. index{Population
-        if. individual e.seen do. continue. end.
+        if. individual e.seen do.
+            continue.
+        end.
         seen =. seen,individual
         top =. top+1
         other =. make_schedule decode >individual
         schedule_lines =. schedule_lines,<line 'TOP';top;'individual';(index+1);'makespan';(index{Values);'distance';+/other distances ga
-        if. top=5 do. break. end.
+        if. top=5 do.
+            break.
+        end.
     end.
     schedule_lines =. schedule_lines,<'GA_CHROMOSOME ',integers BestChromosome
     schedule_lines =. schedule_lines,<line 'ACTIVE_DECODE';'makespan';ActiveValue;'decisions';ActiveDecisions
@@ -458,7 +526,9 @@ build_reports =: 3 : 0
     schedule_lines =. schedule_lines,<line 'SCHEDULE';'makespan';value;'lower_bound';Lower;'gap';((value-Lower)percentage Lower);'improvement';((s_makespan ga)-value);'shiftable';shiftable_count final
     schedule_lines =. schedule_lines,<'CHROMOSOME ',integers chromosome final
     legend =. 0$a:
-    for_job. JobNumbers do. legend =. legend,<(job_letter job),'=J',":job end.
+    for_job. JobNumbers do.
+        legend =. legend,<(job_letter job),'=J',":job
+    end.
     schedule_lines =. schedule_lines,<'LEGEND ',' 'join legend
     'quantum columns' =. value chart_scale GanttWidth
     schedule_lines =. schedule_lines,(<line 'GANTT';'scale';quantum;'columns';columns),(<quantum time_row columns),<rule_row columns
@@ -466,7 +536,9 @@ build_reports =: 3 : 0
     for_ident. i.Count do.
         machine =. _1+(<ident,3){Operations
         mark =. job_letter (<ident,1){Operations
-        if. ident e.path do. mark =. (32+a.i.mark){a. end.
+        if. ident e.path do.
+            mark =. (32+a.i.mark){a.
+        end.
         interval =. (<ident{starts),(<ident{completions),<mark
         machine_intervals =. (<(machine{::machine_intervals),<interval)machine}machine_intervals
     end.
@@ -484,7 +556,9 @@ build_reports =: 3 : 0
     end.
     for_machine. i.MachineCount do.
         parts =. ,<('ORDER M',(":machine+1),' FINAL ',machine letters final)
-        for_index. i.4 do. parts =. parts,<(index{::Rules),' ',machine letters index{::Baselines end.
+        for_index. i.4 do.
+            parts =. parts,<(index{::Rules),' ',machine letters index{::Baselines
+        end.
         schedule_lines =. schedule_lines,<' 'join parts
     end.
     for_machine. i.MachineCount do.
@@ -497,16 +571,21 @@ build_reports =: 3 : 0
             completion =. ident{completions
             if. start>previous do.
                 intervals =. intervals,<(":previous),'-',":start
-                if. position>0 do. gaps =. gaps+1
+                if. position>0 do.
+                    gaps =. gaps+1
                     longest =. longest>.start-previous end.
             end.
             description =. description,<('J',(": (<ident,1){Operations)),':',(":start),'-',":completion
             previous =. completion
         end.
-        if. previous<value do. intervals =. intervals,<(":previous),'-',":value end.
+        if. previous<value do.
+            intervals =. intervals,<(":previous),'-',":value
+        end.
         schedule_lines =. schedule_lines,<line ('MACHINE M',":machine+1);'load';(machine{Loads);'idle';(value-machine{Loads);'utilization';((machine{Loads)percentage value);'gaps';gaps;'longest_gap';longest;'sequence';' 'join description
         idle =. 'none'
-        if. #intervals do. idle =. ' 'join intervals end.
+        if. #intervals do.
+            idle =. ' 'join intervals
+        end.
         schedule_lines =. schedule_lines,<line ('IDLE M',":machine+1);idle
     end.
     total_waiting =. 0
@@ -522,7 +601,9 @@ build_reports =: 3 : 0
     others =. Baselines,<ga
     labels =. Rules,<'GA'
     all_distances =. 0$a:
-    for_other. others do. all_distances =. all_distances,<final distances >other end.
+    for_other. others do.
+        all_distances =. all_distances,<final distances >other
+    end.
     totals =. 5$0
     total_pairs =. 0
     for_machine. i.MachineCount do.
@@ -538,7 +619,9 @@ build_reports =: 3 : 0
         schedule_lines =. schedule_lines,<' 'join parts
     end.
     parts =. ,<line 'DISTANCE';'total';'pairs';total_pairs
-    for_index. i.5 do. parts =. parts,<(index{::labels),' ',":index{totals end.
+    for_index. i.5 do.
+        parts =. parts,<(index{::labels),' ',":index{totals
+    end.
     schedule_lines =. schedule_lines,<' 'join parts
     'search_start search_order search_best search_found search_records search_reason' =. Search
     critical_lines =. ,<line 'SEARCH';'start';search_start;'iterations';TabuIterations;'tenure';TabuTenure
@@ -546,7 +629,9 @@ build_reports =: 3 : 0
         'iteration move_count tabu_count move aspiration evaluation best' =. >record
         'first second' =. move
         kind =. 'free'
-        if. aspiration do. kind =. 'aspiration' end.
+        if. aspiration do.
+            kind =. 'aspiration'
+        end.
         critical_lines =. critical_lines,<line 'ITER';iteration;'moves';move_count;'tabu';tabu_count;'swap';('M',":(<first,3){Operations);(operation_code first);(operation_code second);kind;'makespan';evaluation;'best';best
     end.
     critical_lines =. critical_lines,<line 'STOP';'iterations';(#search_records);'reason';search_reason;'best';search_best;'found';search_found
@@ -556,7 +641,9 @@ build_reports =: 3 : 0
         link =. 'start'
         if. position do.
             link =. 'job'
-            if. (ident{s_prev final)=(position-1){path do. link =. 'machine' end.
+            if. (ident{s_prev final)=(position-1){path do.
+                link =. 'machine'
+            end.
         end.
         interval =. (":ident{starts),'-',":ident{completions
         critical_lines =. critical_lines,<line 'NODE';(position+1);(operation_code ident);('M',":(<ident,3){Operations);interval;link

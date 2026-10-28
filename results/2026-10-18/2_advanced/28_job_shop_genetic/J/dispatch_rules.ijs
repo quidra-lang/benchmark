@@ -11,7 +11,9 @@ giffler_thompson =: 4 : 0
         for_job. JobNumbers do.
             operations =. job{::JobOps
             position =. job{next_index
-            if. position>:#operations do. continue. end.
+            if. position>:#operations do.
+                continue.
+            end.
             ident =. position{operations
             machine =. (<ident,3){Operations
             start =. (job{ready)>.(machine-1){free
@@ -29,20 +31,29 @@ giffler_thompson =: 4 : 0
         for_position. i.#candidates do.
             ident =. position{candidates
             row =. ident{Operations
-            if. ((3{row)~:chosen_machine)+.(position{earliest)>:cutoff do. continue. end.
+            if. ((3{row)~:chosen_machine)+.(position{earliest)>:cutoff do.
+                continue.
+            end.
             conflict_count =. conflict_count+1
             select. rule
-            case. 'SPT' do. value =. ident{Durations
-            case. 'LPT' do. value =. -ident{Durations
-            case. 'MWKR' do. value =. -(4{row)+6{row
-            case. 'FIFO' do. value =. (1{row){ready
-            case. do. value =. ident{gene_positions
+            case. 'SPT' do.
+                value =. ident{Durations
+            case. 'LPT' do.
+                value =. -ident{Durations
+            case. 'MWKR' do.
+                value =. -(4{row)+6{row
+            case. 'FIFO' do.
+                value =. (1{row){ready
+            case. do.
+                value =. ident{gene_positions
             end.
             if. value<minimum do.
                 minimum =. value
                 chosen =. position
                 minimum_count =. 1
-            elseif. value=minimum do. minimum_count =. minimum_count+1 end.
+            elseif. value=minimum do.
+                minimum_count =. minimum_count+1
+            end.
         end.
         decisions =. decisions+conflict_count>1
         ties =. ties+minimum_count>1

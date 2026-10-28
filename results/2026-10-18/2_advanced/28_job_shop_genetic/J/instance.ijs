@@ -11,9 +11,13 @@ read_instance =: 3 : 0
         problem =. ''
         for_index. i.#tokens do.
             'machine duration' =. num&>':'split index{::tokens
-            if. (machine<1)+.machine>MachineCount do. problem =. 'unknown machine ',":machine
-            elseif. (duration<1)+.duration>99 do. problem =. 'bad duration ',":duration
-            elseif. machine e.route do. problem =. 'repeated machine ',":machine end.
+            if. (machine<1)+.machine>MachineCount do.
+                problem =. 'unknown machine ',":machine
+            elseif. (duration<1)+.duration>99 do.
+                problem =. 'bad duration ',":duration
+            elseif. machine e.route do.
+                problem =. 'repeated machine ',":machine
+            end.
             if. #problem do.
                 Errors =: Errors,<('job ',(":number),' operation ',(":index+1),': ',problem)
                 break.
@@ -21,7 +25,9 @@ read_instance =: 3 : 0
             route =. route,machine
             durations =. durations,duration
         end.
-        if. #problem do. continue. end.
+        if. #problem do.
+            continue.
+        end.
         work =. +/durations
         head =. 0
         identifiers =. i.0
@@ -29,8 +35,12 @@ read_instance =: 3 : 0
             ident =. #Operations
             previous =. _1
             following =. _1
-            if. index>0 do. previous =. ident-1 end.
-            if. index< <:#route do. following =. ident+1 end.
+            if. index>0 do.
+                previous =. ident-1
+            end.
+            if. index< <:#route do.
+                following =. ident+1
+            end.
             row =. ident,number,(index+1),(index{route),(index{durations),head,(work-(head+index{durations)),previous,following
             Operations =: Operations,row
             identifiers =. identifiers,ident

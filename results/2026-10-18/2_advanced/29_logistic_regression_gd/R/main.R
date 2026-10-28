@@ -211,7 +211,7 @@ gains_lines <- function(probabilities, targets) {
     order <- order(-probabilities, seq_along(probabilities))
     lines <- "gains"
     for (decile in seq_len(10L)) {
-        rows <- decile * n %/% 10L
+        rows <- (decile * n) %/% 10L
         hits <- sum(targets[order[seq_len(rows)]])
         lines <- c(
             lines,
@@ -527,7 +527,7 @@ degree_part <- function(data, lambda) {
 learning_part <- function(data, lambda) {
     lines <- line_text("learning_curve", "lambda", fixed(lambda))
     for (k in seq_len(4L)) {
-        n <- k * length(data$train) %/% 4L
+        n <- (k * length(data$train)) %/% 4L
         statistics <- compute_statistics(data$train_expanded[seq_len(n)], data$feature_count)
         x <- lapply(
             data$train_expanded[seq_len(n)],
@@ -716,7 +716,7 @@ diagnostics_part <- function(data, model, inf, lambda) {
     statistic <- 0
     groups <- character()
     for (group in seq_len(10L)) {
-        members <- order[seq.int((group - 1L) * n %/% 10L + 1L, group * n %/% 10L)]
+        members <- order[seq.int(((group - 1L) * n) %/% 10L + 1L, (group * n) %/% 10L)]
         observed <- sum(data$train_targets[members])
         expected <- ordered_sum(inf$probabilities[members])
         statistic <- statistic + (observed - expected) * (observed - expected) / (expected * (1 - expected / length(members)))
