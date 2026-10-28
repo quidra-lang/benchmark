@@ -1,0 +1,766 @@
+import dataset = "./dataset.qui"
+import selection = "./selection.qui"
+import kernels = "./kernels.qui"
+import loess = "./loess.qui"
+import spline = "./spline.qui"
+import math
+
+real64 as_real(int value)
+    return selection.as_real(value)
+
+real64 total(real64[] values)
+    return selection.total(values)
+
+real64 square_root(real64 value)
+    real64 result = math.sqrt(value)
+    return result
+
+int floor_value(real64 value)
+    int result = math.floor(value)
+    return result
+
+real64 absolute_real(real64 value)
+    return if value < 0.0 then -value else value
+
+int absolute(int value)
+    return if value < 0 then -value else value
+
+real64 squared_sum(real64[] values)
+    real64 result = 0.0
+    for real64 value = values[]
+        result += value * value
+    return result
+
+int first_max(real64[] values)
+    int best = 0
+    for 1 <= int index < int(len(values))
+        if values[index] > values[best]
+            best = index
+    return best
+
+real64 residual_square(real64[] observed, real64[] fitted)
+    real64 sum = 0.0
+    for int index < int(len(observed))
+        real64 residual = observed[index] - fitted[index]
+        sum += residual * residual
+    return sum
+
+class Block(int first, int last, int sum, int count)
+class Pava(real64[] fitted, Block[] blocks)
+
+Pava pava(int[] numbers, string direction)
+    Block[] blocks = []
+    for int index < int(len(numbers))
+        blocks = blocks.append(Block(index, index, numbers[index], 1))
+        while len(blocks) >= 2
+            Block left = blocks[len(blocks) - 2]
+            Block right = blocks[len(blocks) - 1]
+            int a = left.sum * right.count
+            int b = right.sum * left.count
+            bool violates = if direction == "increasing" then a > b else a < b
+            if not violates
+                break
+            blocks = blocks[0:<int(len(blocks)) - 2].append(Block(left.first, right.last, left.sum + right.sum, left.count + right.count))
+    real64[] fitted = array(len(numbers), fill = 0.0)
+    for Block block = blocks[]
+        real64 value = as_real(block.sum) / as_real(100 * block.count)
+        for block.first <= int index <= block.last
+            fitted[index] = value
+    return Pava(fitted, blocks)
+
+class Estimate(bool defined, real64 value = 0.0, real64[] weights = [])
+
+class Model(string method, int[] positions, int[] numbers)
+    real64[] values = [for int number = numbers[] then as_real(number) / 100.0]
+    real64[] fitted = []
+    real64[] leverage = []
+    bool has_edf = true
+    bool has_leverage = true
+    real64 edf = 0.0
+    string mode = ""
+    string direction = ""
+    Block[] blocks = []
+    real64 rss_increasing = 0.0
+    real64 rss_decreasing = 0.0
+    int[][] windows = []
+    real64 xbar = 0.0
+    real64 sxx = 0.0
+    real64 slope = 0.0
+    real64 intercept = 0.0
+    kernels.Fit[] kernel_models = []
+    loess.Fit[] loess_models = []
+    spline.Fit[] spline_models = []
+
+    void .initialize(string parameter, dataset.Settings settings, string isotonic_mode, bool robust, bool diagnostics)
+        int count = int(len(positions))
+        if method == "linear"
+            real64[] x = [for int position = positions[] then as_real(position) / 100.0]
+            xbar = total(x) / as_real(count)
+            real64 ybar = total(values) / as_real(count)
+            real64 sxy = 0.0
+            for int index < count
+                sxx += (x[index] - xbar) * (x[index] - xbar)
+                sxy += (x[index] - xbar) * (values[index] - ybar)
+            slope = sxy / sxx
+            intercept = ybar - slope * xbar
+            for int index < count
+                fitted = fitted.append(intercept + slope * x[index])
+                leverage = leverage.append(1.0 / as_real(count) + (x[index] - xbar) * (x[index] - xbar) / sxx)
+            edf = 2.0
+        elif method == "running_mean" or method == "running_median"
+            int width = int.parse(parameter)
+            int half = (width - 1) / 2
+            for int index < count
+                int radius = half
+                if index < radius
+                    radius = index
+                if count - 1 - index < radius
+                    radius = count - 1 - index
+                int[] selected = numbers[index - radius:<index + radius + 1]
+                windows = windows.append([index - radius, index + radius])
+                int sum = 0
+                for int number = selected[]
+                    sum += number
+                real64 value = as_real(sum) / as_real(100 * int(len(selected)))
+                if method == "running_median"
+                    int[] ordered = selected.sorted()
+                    value = as_real(ordered[radius]) / 100.0
+                fitted = fitted.append(value)
+                leverage = leverage.append(1.0 / as_real(int(len(selected))))
+            has_edf = method == "running_mean"
+            has_leverage = has_edf
+            edf = total(leverage)
+        elif method == "isotonic"
+            mode = isotonic_mode
+            direction = mode
+            Pava fit = pava(numbers, if mode == "auto" then "increasing" else mode)
+            if mode == "auto"
+                Pava decreasing = pava(numbers, "decreasing")
+                rss_increasing = residual_square(values, fit.fitted)
+                rss_decreasing = residual_square(values, decreasing.fitted)
+                direction = "increasing"
+                if rss_decreasing < rss_increasing
+                    direction = "decreasing"
+                    fit = decreasing
+            fitted = fit.fitted
+            blocks = fit.blocks
+            has_leverage = false
+            edf = as_real(int(len(blocks)))
+        elif method.starts_with("nw_") or method.starts_with("ll_")
+            kernels.Fit fit = kernels.Fit(positions, values, dataset.hundredths(parameter), method[3:], method.starts_with("ll_"), diagnostics)
+            kernel_models = [fit]
+            fitted = fit.fitted
+            leverage = fit.leverage
+            has_edf = fit.defined
+            has_leverage = fit.defined
+            edf = fit.edf
+        elif method.starts_with("loess")
+            int degree = int.parse(method[5:])
+            loess.Fit fit = loess.Fit(positions, values, dataset.hundredths(parameter), degree, if robust then settings.robust_iterations else 0, diagnostics)
+            loess_models = [fit]
+            fitted = fit.fitted
+            leverage = fit.leverage
+            edf = fit.edf
+        else
+            real64 penalty = real64.parse(parameter)
+            spline.Fit fit = spline.Fit(positions, values, penalty, diagnostics)
+            spline_models = [fit]
+            fitted = fit.fitted
+            leverage = fit.leverage
+            edf = fit.edf
+
+    Estimate evaluate(int position, bool need_weights = false)
+        int count = int(len(positions))
+        if method == "linear"
+            real64 value = intercept + slope * (as_real(position) / 100.0)
+            real64[] weights = []
+            if need_weights
+                for int point = positions[]
+                    weights = weights.append(1.0 / as_real(count) + (as_real(position) / 100.0 - xbar) * (as_real(point) / 100.0 - xbar) / sxx)
+            return Estimate(true, value, weights)
+        if method == "running_mean" or method == "running_median"
+            int nearest = 0
+            for 1 <= int index < count
+                if absolute(positions[index] - position) < absolute(positions[nearest] - position)
+                    nearest = index
+            real64[] weights = []
+            if need_weights
+                int[] window = windows[nearest]
+                for int index < count
+                    weights = weights.append(if index >= window[0] and index <= window[1] then 1.0 / as_real(window[1] - window[0] + 1) else 0.0)
+            return Estimate(true, fitted[nearest], weights)
+        if method == "isotonic"
+            int selected = 0
+            for int index < count
+                if positions[index] <= position
+                    selected = index
+            return Estimate(true, fitted[selected])
+        if method.starts_with("nw_") or method.starts_with("ll_")
+            kernels.Estimate result = kernel_models[0].evaluate(position)
+            return Estimate(result.defined, result.value, result.weights)
+        if method.starts_with("loess")
+            loess.LocalFit result = loess_models[0].local_fit(position)
+            return Estimate(true, result.value, result.weights)
+        real64 value = spline_models[0].estimate(position)
+        real64[] weights = []
+        if need_weights
+            weights = spline_models[0].weights(position)
+        return Estimate(true, value, weights)
+
+Model fit_model(string method, string parameter, dataset.Point[] points, dataset.Settings settings, string direction, bool robust = true, bool diagnostics = true)
+    int[] positions = [for dataset.Point point = points[] then point.position]
+    int[] numbers = [for dataset.Point point = points[] then point.value]
+    Model model = Model(method, positions, numbers)
+    .model.initialize(parameter, settings, direction, robust, diagnostics)
+    return model
+
+class Score(bool defined, real64 value)
+
+Score validation(string method, string parameter, dataset.Point[] points, dataset.Settings settings, string direction, int folds)
+    real64[] predictions = array(len(points), fill = 0.0)
+    for int group < folds
+        dataset.Point[] training = []
+        for int index < int(len(points))
+            if index % folds != group
+                training = training.append(points[index])
+        Model model = fit_model(method, parameter, training, settings, direction, false, false)
+        for group <= int index < int(len(points)) step folds
+            Estimate prediction = model.evaluate(points[index].position)
+            if not prediction.defined
+                return Score(false, 0.0)
+            predictions[index] = prediction.value
+    real64[] observed = [for dataset.Point point = points[] then as_real(point.value) / 100.0]
+    return Score(true, selection.cv(observed, predictions))
+
+string[] methods_in_order(dataset.Settings settings)
+    string[] methods = ["linear", "running_mean", "running_median"]
+    for string prefix = ["nw_", "ll_"][]
+        for string kernel = settings.kernels[]
+            methods = methods.append(prefix + kernel)
+    for string degree = settings.degrees[]
+        methods = methods.append("loess" + degree)
+    return methods.concat(["spline", "isotonic"])
+
+string[] parameters(string method, dataset.Settings settings)
+    return if method.starts_with("running_") then settings.windows elif method.starts_with("nw_") or method.starts_with("ll_") then settings.bandwidths elif method.starts_with("loess") then settings.spans elif method == "spline" then settings.lambdas else []
+
+class Candidate(string parameter, Score score, bool has_edf, real64 edf, bool selected = false)
+class Entry(string method, string parameter, Model model, real64 loo, Score kfold, Candidate[] candidates, real64 gcv)
+    Estimate[] grid_values = []
+
+Entry[] select_models(dataset.Point[] points, dataset.Settings settings, string[] methods, string mode)
+    Entry[] entries = []
+    real64[] observed = [for dataset.Point point = points[] then as_real(point.value) / 100.0]
+    for string method = methods[]
+        Candidate[] candidates = []
+        for string parameter = parameters(method, settings)[]
+            Model candidate = fit_model(method, parameter, points, settings, mode, false)
+            Score score = Score(true, 0.0)
+            if method == "spline"
+                score.value = selection.gcv(observed, candidate.fitted, candidate.edf)
+            else
+                score = validation(method, parameter, points, settings, mode, int(len(points)))
+            candidates = candidates.append(Candidate(parameter, score, candidate.has_edf, candidate.edf))
+        int best = -1
+        string parameter = if method == "linear" then "-" else mode
+        if len(candidates) > 0
+            best = selection.choose([for Candidate candidate = candidates[] then candidate.score.value], [for Candidate candidate = candidates[] then candidate.score.defined])
+            candidates[best].selected = true
+            parameter = candidates[best].parameter
+        Model model = fit_model(method, parameter, points, settings, mode)
+        string direction = if method == "isotonic" then model.direction else mode
+        if method == "isotonic"
+            parameter = direction
+        real64 loo = 0.0
+        if best >= 0 and method != "spline"
+            loo = candidates[best].score.value
+        else
+            Score score = validation(method, parameter, points, settings, direction, int(len(points)))
+            loo = score.value
+        Score kfold = validation(method, parameter, points, settings, direction, settings.folds)
+        real64 gcv = if method == "spline" then candidates[best].score.value else 0.0
+        entries = entries.append(Entry(method, parameter, model, loo, kfold, candidates, gcv))
+    return entries
+
+class Statistics(real64[] residuals, real64 rss, bool has_edf, real64 edf, real64 df, real64 rse, real64 r2, bool has_nonlinear, real64 nonlinear, real64[] acf, real64 dw, int runs, int positive, int negative, real64 runs_z, int largest, real64[] quantiles, int turning)
+
+real64[] residual_quantiles(real64[] residuals)
+    real64[] ordered = residuals.sorted()
+    real64[] result = []
+    for int k <= 4
+        int index = (int(len(ordered)) - 1) * k / 4
+        int remainder = (int(len(ordered)) - 1) * k % 4
+        real64 value = ordered[index]
+        if remainder != 0
+            value += as_real(remainder) / 4.0 * (ordered[index + 1] - ordered[index])
+        result = result.append(value)
+    return result
+
+Statistics fit_statistics(Entry entry, real64[] observed, real64 linear_rss)
+    int count = int(len(observed))
+    real64[] residuals = []
+    real64 mean = total(observed) / as_real(count)
+    real64 tss = 0.0
+    for int index < count
+        residuals = residuals.append(observed[index] - entry.model.fitted[index])
+        tss += (observed[index] - mean) * (observed[index] - mean)
+    real64 rss = squared_sum(residuals)
+    real64 edf = entry.model.edf
+    real64 df = if entry.model.has_edf then as_real(count) - edf else 0.0
+    real64 rse = if entry.model.has_edf then square_root(rss / df) else 0.0
+    bool has_nonlinear = entry.method != "linear" and entry.model.has_edf and edf > 2.0
+    real64 nonlinear = if has_nonlinear then ((linear_rss - rss) / (edf - 2.0)) / (rss / df) else 0.0
+    real64 residual_mean = total(residuals) / as_real(count)
+    real64[] centered = [for real64 value = residuals[] then value - residual_mean]
+    real64 denominator = squared_sum(centered)
+    real64[] acf = []
+    for 1 <= int lag <= 5
+        real64 sum = 0.0
+        for int index < count - lag
+            sum += centered[index] * centered[index + lag]
+        acf = acf.append(sum / denominator)
+    real64 dw = 0.0
+    int largest = 0
+    int runs = 0
+    int positive = 0
+    int negative = 0
+    int previous_sign = 0
+    for int index < count
+        real64 value = residuals[index]
+        if index > 0
+            dw += (value - residuals[index - 1]) * (value - residuals[index - 1])
+        if absolute_real(value) > absolute_real(residuals[largest])
+            largest = index
+        if value != 0.0
+            int sign = if value > 0.0 then 1 else -1
+            if sign > 0
+                positive += 1
+            else
+                negative += 1
+            if previous_sign != sign
+                runs += 1
+            previous_sign = sign
+    int nonzero = positive + negative
+    int product = 2 * positive * negative
+    real64 runs_mean = 1.0 + as_real(product) / as_real(nonzero)
+    real64 variance = as_real(product * (product - nonzero)) / as_real(nonzero * nonzero * (nonzero - 1))
+    int turning = 0
+    bool has_previous = false
+    real64 previous_value = 0.0
+    int previous_difference = 0
+    for Estimate estimate = entry.grid_values[]
+        if estimate.defined
+            if has_previous and estimate.value != previous_value
+                int sign = if estimate.value > previous_value then 1 else -1
+                if previous_difference != 0 and sign != previous_difference
+                    turning += 1
+                previous_difference = sign
+            has_previous = true
+            previous_value = estimate.value
+    return Statistics(residuals, rss, entry.model.has_edf, edf, df, rse, 1.0 - rss / tss, has_nonlinear, nonlinear, acf, dw / rss, runs, positive, negative, (as_real(runs) - runs_mean) / square_root(variance), largest, residual_quantiles(residuals), turning)
+
+class Agreement(int count, real64 rms, real64 maximum, int position)
+class Outliers(int method, real64[] standardized, bool[] defined, real64[] cooks, int[] outliers, int[] influential)
+class Band(bool defined = false, real64 value = 0.0, real64 se = 0.0, real64 lower = 0.0, real64 upper = 0.0)
+class BandSummary(real64 mean_se, int covered)
+class Generator(int state)
+    int .draw()
+        state = 48271 * state % 2147483647
+        return state
+
+class Analysis(dataset.Point[] points, int[] grid, Entry[] entries, Statistics[] statistics, int[] ranking, Agreement[] agreements, real64[] slope, Outliers outlier, Band[][] bands, BandSummary[] summaries)
+
+int method_index(string[] methods, string name)
+    for int index < int(len(methods))
+        if methods[index] == name
+            return index
+    return -1
+
+Analysis analyze(dataset.Point[] points, dataset.Settings settings, string[] methods, string mode, Generator &generator)
+    int count = int(len(points))
+    int[] positions = [for dataset.Point point = points[] then point.position]
+    real64[] observed = [for dataset.Point point = points[] then as_real(point.value) / 100.0]
+    int[] grid = []
+    for int k < settings.grid_points
+        grid = grid.append(positions[0] + k * (positions[count - 1] - positions[0]) / (settings.grid_points - 1))
+    Entry[] entries = select_models(points, settings, methods, mode)
+    real64 linear_rss = residual_square(observed, entries[0].model.fitted)
+    Statistics[] statistics = []
+    int[] ranking = []
+    for int index < int(len(entries))
+        Entry entry = entries[index]
+        entry.grid_values = [for int position = grid[] then entry.model.evaluate(position)]
+        entries[index] = entry
+        statistics = statistics.append(fit_statistics(entry, observed, linear_rss))
+        int place = int(len(ranking))
+        ranking = ranking.append(index)
+        while place > 0 and entries[index].loo < entries[ranking[place - 1]].loo
+            ranking[place] = ranking[place - 1]
+            place -= 1
+        ranking[place] = index
+    Agreement[] agreements = []
+    for int index < int(len(entries))
+        int used = 0
+        real64 sum = 0.0
+        real64 maximum = -1.0
+        int at = 0
+        for int k < int(len(grid))
+            Estimate own = entries[index].grid_values[k]
+            Estimate best = entries[ranking[0]].grid_values[k]
+            if own.defined and best.defined
+                real64 delta = absolute_real(own.value - best.value)
+                used += 1
+                sum += delta * delta
+                if delta > maximum
+                    maximum = delta
+                    at = k
+        agreements = agreements.append(Agreement(used, square_root(sum / as_real(used)), maximum, grid[at]))
+    int spline_index = method_index(methods, "spline")
+    real64 maximum_slope = 0.0
+    real64 minimum_slope = 0.0
+    int at_maximum = 1
+    int at_minimum = 1
+    for 1 <= int index < int(len(grid)) - 1
+        real64 value = (entries[spline_index].grid_values[index + 1].value - entries[spline_index].grid_values[index - 1].value) / (as_real(grid[index + 1] - grid[index - 1]) / 100.0)
+        if index == 1 or value > maximum_slope
+            maximum_slope = value
+            at_maximum = index
+        if index == 1 or value < minimum_slope
+            minimum_slope = value
+            at_minimum = index
+    real64[] slope = [maximum_slope, as_real(grid[at_maximum]), minimum_slope, as_real(grid[at_minimum])]
+    int outlier_method = -1
+    for int index = ranking[]
+        if entries[index].model.has_leverage
+            outlier_method = index
+            break
+    Entry outlier_entry = entries[outlier_method]
+    Statistics outlier_stats = statistics[outlier_method]
+    real64[] standardized = array(nat(count), fill = 0.0)
+    real64[] cooks = array(nat(count), fill = 0.0)
+    bool[] defined = array(nat(count), fill = false)
+    int[] outliers = []
+    int[] influential = []
+    for int index < count
+        real64 leverage = outlier_entry.model.leverage[index]
+        if leverage < 1.0
+            real64 value = outlier_stats.residuals[index] / (outlier_stats.rse * square_root(1.0 - leverage))
+            standardized[index] = value
+            defined[index] = true
+            cooks[index] = value * value * leverage / ((1.0 - leverage) * outlier_entry.model.edf)
+            influential = influential.append(index)
+            if absolute_real(value) > settings.threshold
+                outliers = outliers.append(index)
+    for int pass < int(len(outliers))
+        for int index < int(len(outliers)) - 1 - pass
+            if absolute_real(standardized[outliers[index + 1]]) > absolute_real(standardized[outliers[index]])
+                int saved = outliers[index]
+                outliers[index] = outliers[index + 1]
+                outliers[index + 1] = saved
+    for int pass < int(len(influential))
+        for int index < int(len(influential)) - 1 - pass
+            if cooks[influential[index + 1]] > cooks[influential[index]]
+                int saved = influential[index]
+                influential[index] = influential[index + 1]
+                influential[index + 1] = saved
+    if len(influential) > 3
+        influential = influential[0:<3]
+    Outliers outlier = Outliers(outlier_method, standardized, defined, cooks, outliers, influential)
+    Band[][] bands = []
+    BandSummary[] summaries = []
+    for string method = settings.band_methods[]
+        int selected = method_index(methods, method)
+        Entry entry = entries[selected]
+        Statistics stats = statistics[selected]
+        Band[] rows = []
+        real64 se_sum = 0.0
+        int used = 0
+        int covered = 0
+        for int position = grid[]
+            Estimate estimate = entry.model.evaluate(position, true)
+            if estimate.defined
+                real64 se = stats.rse * square_root(squared_sum(estimate.weights))
+                rows = rows.append(Band(true, estimate.value, se, estimate.value - settings.band_z * se, estimate.value + settings.band_z * se))
+                se_sum += se
+                used += 1
+            else
+                rows = rows.append(Band())
+        for int index < count
+            Estimate estimate = entry.model.evaluate(positions[index], true)
+            real64 se = stats.rse * square_root(squared_sum(estimate.weights))
+            if absolute_real(stats.residuals[index]) <= settings.band_z * square_root(stats.rse * stats.rse + se * se)
+                covered += 1
+        bands = bands.append(rows)
+        summaries = summaries.append(BandSummary(se_sum / as_real(used), covered))
+    spline.Fit spline_model = entries[spline_index].model.spline_models[0]
+    real64[] residuals = statistics[spline_index].residuals
+    real64 residual_mean = total(residuals) / as_real(count)
+    real64[] centered = [for real64 value = residuals[] then value - residual_mean]
+    real64[][] estimates = array(len(grid), fill = [])
+    for int repetition < settings.bootstrap
+        real64[] response = []
+        for int index < count
+            int draw = .generator.draw()
+            response = response.append(spline_model.fitted[index] + centered[draw % count])
+        spline.Values fit = spline_model.fit_values(response)
+        for int index < int(len(grid))
+            estimates[index] = estimates[index].append(spline_model.evaluate_fit(fit.fitted, fit.gamma, grid[index]))
+    Band[] bootstrap_bands = []
+    for int index < int(len(grid))
+        real64 mean = total(estimates[index]) / as_real(settings.bootstrap)
+        real64 sum = 0.0
+        for real64 value = estimates[index][]
+            sum += (value - mean) * (value - mean)
+        real64[] ordered = estimates[index].sorted()
+        bootstrap_bands = bootstrap_bands.append(Band(true, entries[spline_index].grid_values[index].value, square_root(sum / as_real(settings.bootstrap - 1)), ordered[settings.trim], ordered[settings.bootstrap - settings.trim - 1]))
+    bands = bands.append(bootstrap_bands)
+    return Analysis(points, grid, entries, statistics, ranking, agreements, slope, outlier, bands, summaries)
+
+string real_text(real64 value, int places = 4)
+    string text = if places == 2 then "{value:frac=2}" else "{value:frac=4}"
+    return if text == "-0.0000" then "0.0000" elif text == "-0.00" then "0.00" else text
+
+string maybe_real(real64 value, bool defined)
+    return if defined then real_text(value) else "NA"
+
+string position_text(int value)
+    int magnitude = absolute(value)
+    return (if value < 0 then "-" else "") + "{magnitude / 100}.{magnitude % 100:int=2,zero}"
+
+string reals(real64[] values)
+    return [for real64 value = values[] then real_text(value)].join(" ")
+
+int[] bounds(dataset.Point[] points)
+    int low = points[0].value
+    int high = low
+    for dataset.Point point = points[]
+        if point.value < low
+            low = point.value
+        if point.value > high
+            high = point.value
+    return [low, high]
+
+string[] diagnostic_block(string name, Analysis analysis, string[] methods, dataset.Settings settings)
+    dataset.Point[] points = analysis.points
+    int[] limits = bounds(points)
+    string[] lines = ["series {name} n {len(points)} x " + position_text(points[0].position) + " " + position_text(points[len(points) - 1].position) + " y " + position_text(limits[0]) + " " + position_text(limits[1])]
+    for int index < int(len(methods))
+        Entry entry = analysis.entries[index]
+        Statistics stats = analysis.statistics[index]
+        string first = "method {entry.method} parameter {entry.parameter} loo " + real_text(entry.loo)
+        if entry.method == "spline"
+            first += " gcv " + real_text(entry.gcv)
+        lines = lines.concat([first,
+            "  rss " + real_text(stats.rss) + " edf " + maybe_real(stats.edf, stats.has_edf) + " df " + maybe_real(stats.df, stats.has_edf) + " rse " + maybe_real(stats.rse, stats.has_edf) + " r2 " + real_text(stats.r2) + " f_nonlinear " + maybe_real(stats.nonlinear, stats.has_nonlinear),
+            "  acf " + reals(stats.acf) + " dw " + real_text(stats.dw),
+            "  runs {stats.runs} positive {stats.positive} negative {stats.negative} z " + real_text(stats.runs_z),
+            "  max_residual " + real_text(stats.residuals[stats.largest]) + " at " + position_text(points[stats.largest].position) + " turning {stats.turning}",
+            "  quantiles " + reals(stats.quantiles)])
+        if entry.method.starts_with("loess")
+            loess.Fit model = entry.model.loess_models[0]
+            for loess.Robust record = model.records[]
+                lines = lines.append("  robust {record.iteration} scale " + real_text(record.scale) + " zero_weight {record.zeros} max_change " + real_text(record.change))
+            string[] zeros = []
+            for int point < int(len(points))
+                if model.rho[point] == 0.0
+                    zeros = zeros.append(position_text(points[point].position))
+            lines = lines.append("  zero_weight_points " + (if len(zeros) > 0 then zeros.join(" ") else "none"))
+    lines = lines.append("ranking")
+    for int rank < int(len(methods))
+        Entry entry = analysis.entries[analysis.ranking[rank]]
+        lines = lines.append("  {rank + 1} {entry.method} " + real_text(entry.loo) + " kfold " + maybe_real(entry.kfold.value, entry.kfold.defined))
+    lines = lines.append("agreement with " + methods[analysis.ranking[0]])
+    for int index < int(len(methods))
+        if index != analysis.ranking[0]
+            Agreement agreement = analysis.agreements[index]
+            lines = lines.append("  {methods[index]} points {agreement.count} rms " + real_text(agreement.rms) + " max " + real_text(agreement.maximum) + " at " + position_text(agreement.position))
+    lines = lines.append("slope spline max " + real_text(analysis.slope[0]) + " at " + position_text(floor_value(analysis.slope[1])) + " min " + real_text(analysis.slope[2]) + " at " + position_text(floor_value(analysis.slope[3])))
+    Outliers outlier = analysis.outlier
+    Entry outlier_entry = analysis.entries[outlier.method]
+    Statistics outlier_stats = analysis.statistics[outlier.method]
+    lines = lines.append("outliers method {outlier_entry.method} threshold " + real_text(settings.threshold, 2))
+    for int index = outlier.outliers[]
+        lines = lines.append("  x " + position_text(points[index].position) + " y " + position_text(points[index].value) + " fit " + real_text(outlier_entry.model.fitted[index]) + " residual " + real_text(outlier_stats.residuals[index]) + " standardized " + real_text(outlier.standardized[index]))
+    if len(outlier.outliers) == 0
+        lines = lines.append("  none")
+    lines = lines.append("influence method " + outlier_entry.method)
+    for int index = outlier.influential[]
+        lines = lines.append("  x " + position_text(points[index].position) + " lev " + real_text(outlier_entry.model.leverage[index]) + " cook " + real_text(outlier.cooks[index]))
+    lines = lines.append("bands")
+    for int index < int(len(settings.band_methods))
+        BandSummary summary = analysis.summaries[index]
+        lines = lines.append("  {settings.band_methods[index]} mean_se " + real_text(summary.mean_se) + " coverage {summary.covered} of {len(points)}")
+    return lines
+
+string[] isotonic_block(string name, Analysis analysis, string[] methods)
+    int selected = method_index(methods, "isotonic")
+    Entry entry = analysis.entries[selected]
+    Model model = entry.model
+    string first = "series {name} direction {model.direction} mode {model.mode}"
+    if model.mode == "auto"
+        first += " rss_increasing " + real_text(model.rss_increasing) + " rss_decreasing " + real_text(model.rss_decreasing)
+    string[] lines = [first, "blocks {len(model.blocks)} rss " + real_text(analysis.statistics[selected].rss) + " loo " + real_text(entry.loo)]
+    for int index < int(len(model.blocks))
+        Block block = model.blocks[index]
+        lines = lines.append("block {index + 1} x " + position_text(model.positions[block.first]) + " " + position_text(model.positions[block.last]) + " count {block.count} value " + real_text(as_real(block.sum) / as_real(100 * block.count)))
+    return lines
+
+string[] framed(string[][] grid)
+    string border = "+" + array(len(grid[0]), fill = "-").join("") + "+"
+    string[] lines = [border]
+    for string[] row = grid[]
+        lines = lines.append("|" + row.join("") + "|")
+    return lines.append(border)
+
+string[] plot_block(string name, Analysis analysis, string[] methods, dataset.Settings settings)
+    dataset.Point[] points = analysis.points
+    int width = settings.width
+    int height = settings.height
+    int xa = points[0].position
+    int xb = points[len(points) - 1].position
+    int[] limits = bounds(points)
+    int ya = limits[0]
+    int yb = limits[1]
+    int[] columns = []
+    string[][] grid = array(nat(height), fill = array(nat(width), fill = " "))
+    for dataset.Point point = points[]
+        int column = width * (point.position - xa) / (xb - xa)
+        int row = height * (yb - point.value) / (yb - ya)
+        if column == width
+            column -= 1
+        if row == height
+            row -= 1
+        columns = columns.append(column)
+        grid[row][column] = "."
+    string[] legend = ["legend . data"]
+    for int index < int(len(settings.plot_methods))
+        string method = settings.plot_methods[index]
+        legend = legend.append("{index + 1} {method}")
+        Entry entry = analysis.entries[method_index(methods, method)]
+        string digit = "{index + 1}"
+        for int column < width
+            int position = xa + (2 * column + 1) * (xb - xa) / (2 * width)
+            Estimate estimate = entry.model.evaluate(position)
+            if not estimate.defined
+                continue
+            real64 pi = as_real(height) * (as_real(yb) / 100.0 - estimate.value) / (as_real(yb) / 100.0 - as_real(ya) / 100.0)
+            int row = floor_value(pi)
+            if row < 0
+                row = 0
+            if row >= height
+                row = height - 1
+            string old = grid[row][column]
+            grid[row][column] = if old == " " or old == "." or old == digit then digit else "*"
+    string[] lines = ["plot {name} size {width}x{height} x " + position_text(xa) + " " + position_text(xb) + " y " + position_text(ya) + " " + position_text(yb), legend.join(" ")].concat(framed(grid))
+    int data_cells = 0
+    int curve_cells = 0
+    int overlaps = 0
+    for string[] row = grid[]
+        for string value = row[]
+            if value == "."
+                data_cells += 1
+            elif value == "*"
+                overlaps += 1
+            elif value != " "
+                curve_cells += 1
+    lines = lines.append("cells data {data_cells} curve {curve_cells} overlap {overlaps}")
+    int best = analysis.ranking[0]
+    real64[] residuals = analysis.statistics[best].residuals
+    real64 limit = 0.0
+    for real64 value = residuals[]
+        if absolute_real(value) > limit
+            limit = absolute_real(value)
+    grid = array(nat(height), fill = array(nat(width), fill = " "))
+    grid[height / 2] = array(nat(width), fill = "-")
+    for int index < int(len(points))
+        int row = floor_value(as_real(height) * ((limit - residuals[index]) / (2.0 * limit)))
+        if row < 0
+            row = 0
+        if row >= height
+            row = height - 1
+        grid[row][columns[index]] = "o"
+    lines = lines.concat(["", "residuals {name} method {methods[best]} limit " + real_text(limit)]).concat(framed(grid))
+    lines = lines.concat(["", "histogram {name} method {methods[analysis.outlier.method]}"])
+    int[] counts = array(14, fill = 0)
+    for int index < int(len(points))
+        if analysis.outlier.defined[index]
+            real64 value = analysis.outlier.standardized[index]
+            int bucket = if value < -3.0 then 0 elif value >= 3.0 then 13 else 1 + floor_value((value + 3.0) / 0.5)
+            counts[bucket] += 1
+    for int index < 14
+        string lower = if index == 0 then "-inf" else real_text(-3.0 + 0.5 * as_real(index - 1), 2)
+        string upper = if index == 13 then "inf" else real_text(-3.0 + 0.5 * as_real(index), 2)
+        lines = lines.append(lower + " " + upper + " {counts[index]} |" + array(nat(counts[index]), fill = "#").join(""))
+    return lines
+
+string[] join_blocks(string[][] blocks)
+    string[] lines = []
+    for int index < int(len(blocks))
+        if index > 0
+            lines = lines.append("")
+        lines = lines.concat(blocks[index])
+    return lines
+
+void write_lines(string name, string[] lines)
+    file.write("output/" + name, lines.join(NL) + NL)
+
+dataset.Dataset data = dataset.read()
+dataset.Settings settings = data.settings
+string[] methods = methods_in_order(settings)
+Generator generator = Generator(settings.seed)
+Analysis[] analyses = []
+for int index < int(len(data.series))
+    analyses = analyses.append(analyze(data.series[index].points, settings, methods, settings.isotonic[index], &generator))
+string[] selection_output = ["series,method,parameter,score,edf,selected"]
+string[] fit_output = ["series,x," + methods.join(",")]
+string[] prediction_output = fit_output
+string[] band_output = ["series,method,x,fit,se,lower,upper"]
+string[][] diagnostic_blocks = []
+string[][] isotonic_blocks = []
+for int index < int(len(analyses))
+    string name = data.series[index].name
+    Analysis analysis = analyses[index]
+    for Entry entry = analysis.entries[]
+        for Candidate candidate = entry.candidates[]
+            string[] fields = [name, entry.method, candidate.parameter, maybe_real(candidate.score.value, candidate.score.defined), maybe_real(candidate.edf, candidate.has_edf), if candidate.selected then "1" else "0"]
+            selection_output = selection_output.append(fields.join(","))
+    for int point < int(len(analysis.grid))
+        string[] fields = [name, position_text(analysis.grid[point])]
+        for Entry entry = analysis.entries[]
+            fields = fields.append(maybe_real(entry.grid_values[point].value, entry.grid_values[point].defined))
+        fit_output = fit_output.append(fields.join(","))
+    string[] band_methods = settings.band_methods.append("spline_bootstrap")
+    for int method < int(len(band_methods))
+        for int point < int(len(analysis.grid))
+            Band band = analysis.bands[method][point]
+            string[] fields = [name, band_methods[method], position_text(analysis.grid[point]), maybe_real(band.value, band.defined), maybe_real(band.se, band.defined), maybe_real(band.lower, band.defined), maybe_real(band.upper, band.defined)]
+            band_output = band_output.append(fields.join(","))
+    diagnostic_blocks = diagnostic_blocks.append(diagnostic_block(name, analysis, methods, settings))
+    isotonic_blocks = isotonic_blocks.append(isotonic_block(name, analysis, methods))
+for dataset.Request request = data.requests[]
+    int selected = -1
+    for int index < int(len(data.series))
+        if data.series[index].name == request.name
+            selected = index
+    string[] fields = [request.name, position_text(request.position)]
+    for Entry entry = analyses[selected].entries[]
+        Estimate estimate = entry.model.evaluate(request.position)
+        fields = fields.append(maybe_real(estimate.value, estimate.defined))
+    prediction_output = prediction_output.append(fields.join(","))
+string[][] plot_blocks = []
+for string name = settings.plot_series[]
+    int selected = -1
+    for int index < int(len(data.series))
+        if data.series[index].name == name
+            selected = index
+    plot_blocks = plot_blocks.append(plot_block(name, analyses[selected], methods, settings))
+bool output_exists = file.is_directory("output")
+if not output_exists
+    file.mkdir("output")
+write_lines("selection.csv", selection_output)
+write_lines("fits.csv", fit_output)
+write_lines("predictions.csv", prediction_output)
+write_lines("bands.csv", band_output)
+write_lines("diagnostics.txt", join_blocks(diagnostic_blocks))
+write_lines("isotonic.txt", join_blocks(isotonic_blocks))
+write_lines("plots.txt", join_blocks(plot_blocks))

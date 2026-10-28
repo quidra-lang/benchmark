@@ -75,6 +75,7 @@ pub fn readLines(io: std.Io, name: []const u8) ![]const []const u8 {
 pub fn writeLines(io: std.Io, name: []const u8, lines: Lines) !void {
     var text: Text = .{};
     for (lines.data.items) |line| text.add("{s}\n", .{line});
+    try std.Io.Dir.cwd().createDirPath(io, "output");
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = fmt("output/{s}", .{name}), .data = text.value() });
 }
 pub const Row = struct { id: []const u8, values: []f64, label: usize };

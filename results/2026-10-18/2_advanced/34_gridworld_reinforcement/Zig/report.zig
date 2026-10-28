@@ -75,5 +75,6 @@ pub fn parts(parts_: []const Lines) Lines {
 pub fn write(io: std.Io, name: []const u8, lines: Lines) !void {
     var text: Text = .{};
     for (lines.data.items) |line| text.add("{s}\n", .{line});
+    try std.Io.Dir.cwd().createDirPath(io, "output");
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = e.fmt("output/{s}", .{name}), .data = text.value() });
 }

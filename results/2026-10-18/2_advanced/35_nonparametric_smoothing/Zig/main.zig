@@ -677,6 +677,7 @@ fn plotLines(s: Study, p: d.Params, methods_: []const d.Method) Lines {
 fn write(io: std.Io, name: []const u8, lines: Lines) !void {
     var text: Text = .{};
     for (lines.data.items) |line| text.add("{s}\n", .{line});
+    try std.Io.Dir.cwd().createDirPath(io, "output");
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = d.fmt("output/{s}", .{name}), .data = text.value() });
 }
 pub fn main(init: std.process.Init) !void {
