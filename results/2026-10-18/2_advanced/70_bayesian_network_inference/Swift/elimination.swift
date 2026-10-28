@@ -1,0 +1,15 @@
+import Foundation
+
+struct Step { let variable: Int; let fill: Int; let scope: [Int]; let size: Int }
+struct Plan { let steps: [Step]; let maximum: Int; let total: Int }
+func interactionGraph(_ factors: [Factor]) -> [Int: Set<Int>] { var graph: [Int: Set<Int>] = [:]; for factor in factors { for variable in factor.variables { graph[variable, default: []].formUnion(factor.variables.filter { $0 != variable }) } }; return graph }
+func makePlan(_ factors: [Factor], _ eliminate: [Int], _ method: EliminationMethod, _ givenOrder: [Int], _ sizes: [Int]) -> Plan {
+    var graph = interactionGraph(factors), remaining = Set(eliminate), steps: [Step] = []
+    let ranks = Dictionary(uniqueKeysWithValues: givenOrder.enumerated().map { ($0.element, $0.offset) })
+    while !remaining.isEmpty { var fills: [Int: Int] = [:]; for variable in remaining { let neighbors = graph[variable]!.sorted(); var fill = 0; for (index, first) in neighbors.enumerated() { for second in neighbors.dropFirst(index + 1) where !graph[first]!.contains(second) { fill += 1 } }; fills[variable] = fill }; let variable = remaining.min { first, second in if method == .given { return ranks[first]! < ranks[second]! }; if fills[first] != fills[second] { return fills[first]! < fills[second]! }; if graph[first]!.count != graph[second]!.count { return graph[first]!.count < graph[second]!.count }; return first < second }!, neighbors = graph[variable]!, scope = neighbors.union([variable]).sorted(); steps.append(Step(variable: variable, fill: fills[variable]!, scope: scope, size: entryCount(scope, sizes))); for neighbor in neighbors { graph[neighbor]!.formUnion(neighbors.subtracting([neighbor])); graph[neighbor]!.remove(variable) }; graph.removeValue(forKey: variable); remaining.remove(variable) }
+    return Plan(steps: steps, maximum: steps.map { $0.size }.max() ?? 0, total: steps.map { $0.size }.reduce(0, +))
+}
+struct StepProduct { let variable: Int; let factor: Factor }
+struct EliminationResult { let factor: Factor; let products: [StepProduct] }
+func execute(_ initial: [Factor], _ plan: Plan, _ sizes: [Int], maximize: Bool = false) -> EliminationResult { var factors = initial, products: [StepProduct] = []; for step in plan.steps { let selected = factors.filter { $0.variables.contains(step.variable) }; factors.removeAll { $0.variables.contains(step.variable) }; let product = multiply(selected, sizes); factors.append(product.eliminating(step.variable, maximize: maximize)); if maximize { products.append(StepProduct(variable: step.variable, factor: product)) } }; return EliminationResult(factor: multiply(factors, sizes), products: products) }
+func traceback(_ products: [StepProduct], _ sizes: [Int]) -> [Int] { var assignment = Array(repeating: 0, count: sizes.count); for product in products.reversed() { var best = -Double.infinity, chosen = 0; for state in 0..<sizes[product.variable] { assignment[product.variable] = state; let value = product.factor.value(assignment); if value > best { best = value; chosen = state } }; assignment[product.variable] = chosen }; return assignment }

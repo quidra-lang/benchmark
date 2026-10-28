@@ -21,7 +21,7 @@ public static class Program {
     public static Track[] matched;
     public static TargetResult[] results;
     public static double[] overallPosition, overallVelocity;
-    public static class Target {
+    public sealed class Target {
         public int number, first, last;
         public double[][] positions;
         public Target(int number) {
@@ -30,7 +30,7 @@ public static class Program {
             positions = new double [scans + 1][];
         }
     }
-    public static class Track {
+    public sealed class Track {
         public int number, birth, lastHit, confirmed, deleted, hits = 1, misses, longest, target = -1;
         public string status = "tentative";
         public Kalman kalman;
