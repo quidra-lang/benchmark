@@ -1,0 +1,601 @@
+import math
+import heap = "./heap.qui"
+import mutator = "./mutator.qui"
+import marking = "./mark_sweep.qui"
+import copying = "./copying.qui"
+import generational = "./generational.qui"
+
+bool contains(string[] values, string target)
+    for string value = values[]
+        if value == target
+            return true
+    return false
+
+int used_words(heap.HeapObject[] objects)
+    int words = 0
+    for heap.HeapObject object = objects[]
+        words += object.size
+    return words
+
+heap.Pair pair_of(heap.HeapObject[] objects)
+    heap.Pair result = heap.Pair()
+    for heap.HeapObject object = objects[]
+        heap.add(&result, object)
+    return result
+
+bool[] reachable(int[] roots, heap.HeapObject[] objects)
+    bool[] result = array(len(objects), fill = false)
+    int[] stack = [for int root = roots[] if root != 0 then root]
+    while len(stack) > 0
+        int number = stack[len(stack) - 1]
+        stack = stack[0:<len(stack) - 1]
+        if result[number - 1]
+            continue
+        result[number - 1] = true
+        for int child = objects[number - 1].fields[]
+            if child != 0
+                stack = stack.append(child)
+    return result
+
+string fragmentation(heap.Block[] blocks)
+    int total = heap.total_free(blocks)
+    return heap.pct(total - heap.largest_free(blocks), total)
+
+class Fault(int line, string reason)
+class Checkpoint(string label, int line, int stack, heap.Pair live, heap.Pair allocated, heap.Pair phase, heap.Pair survivors, bool[] reachable)
+
+class Script()
+    int line_count = 0
+    mutator.Command[] commands = []
+    Fault[] faults = []
+    string[] names = ["ALLOC", "PUSH", "LOAD", "POP", "SET", "OVERWRITE", "CHECKPOINT"]
+    int[] counts = array(7, fill = 0)
+    int[] roots = []
+    heap.HeapObject[] objects = []
+    int[] births = []
+    int[] deaths = []
+    int[] lifetimes = []
+    int clock = 0
+    bool[] alive = []
+    heap.Pair live = heap.Pair()
+    heap.Pair peak = heap.Pair()
+    int peak_line = -1
+    Checkpoint[] checkpoints = []
+    string[] labels = []
+    int phase_start = 0
+
+    int value(int source)
+        return if source < 0 then 0 else roots[source]
+
+    string check(mutator.Command command)
+        string name = command.name
+        int depth = int(len(roots))
+        if (name == "ALLOC" or name == "PUSH" or name == "LOAD") and depth == 64
+            return "stack"
+        if (name == "LOAD" or name == "SET" or name == "OVERWRITE") and command.slot >= depth
+            return "stack"
+        if (name == "PUSH" or name == "SET" or name == "OVERWRITE") and command.source >= depth
+            return "stack"
+        if name == "POP" and command.count > depth
+            return "stack"
+        if name == "LOAD" or name == "SET"
+            int target = roots[command.slot]
+            if target == 0
+                return "null"
+            if command.field >= int(len(objects[target - 1].fields))
+                return "field"
+        if name == "CHECKPOINT" and contains(labels, command.label)
+            return "duplicate"
+        return ""
+
+    void .execute(mutator.Command command)
+        string name = command.name
+        if name == "ALLOC"
+            heap.HeapObject object = heap.HeapObject(int(len(objects)) + 1, command.pointers, command.data)
+            objects = objects.append(object)
+            births = births.append(clock)
+            deaths = deaths.append(-1)
+            lifetimes = lifetimes.append(-1)
+            clock += object.size
+            roots = roots.append(object.number)
+        elif name == "PUSH"
+            roots = roots.append(value(command.source))
+        elif name == "LOAD"
+            roots = roots.append(objects[roots[command.slot] - 1].fields[command.field])
+        elif name == "POP"
+            roots = roots[0:<int(len(roots)) - command.count]
+        elif name == "SET"
+            objects[roots[command.slot] - 1].fields[command.field] = value(command.source)
+        elif name == "OVERWRITE"
+            roots[command.slot] = value(command.source)
+
+    void .analyze(string[] lines)
+        line_count = int(len(lines))
+        for int index < line_count
+            mutator.Parsed parsed = mutator.parse_line(index + 1, lines[index])
+            string reason = parsed.reason
+            mutator.Command command = parsed.command
+            if reason == ""
+                reason = check(command)
+            if reason != ""
+                faults = faults.append(Fault(index + 1, reason))
+                continue
+            commands = commands.append(command)
+            for int kind < 7
+                if names[kind] == command.name
+                    counts[kind] += 1
+            .execute(command)
+            bool[] reached = reachable(roots, objects)
+            for int number < int(len(alive))
+                if alive[number] and not reached[number]
+                    deaths[number] = command.line
+                    lifetimes[number] = clock - births[number] - objects[number].size
+            alive = reached
+            live = heap.Pair()
+            for int number < int(len(objects))
+                if reached[number]
+                    heap.add(&live, objects[number])
+            if peak_line < 0 or live.words > peak.words
+                peak = live
+                peak_line = command.line
+            if command.name == "CHECKPOINT"
+                labels = labels.append(command.label)
+                heap.Pair phase = heap.Pair()
+                heap.Pair survivors = heap.Pair()
+                for phase_start <= int number < int(len(objects))
+                    heap.add(&phase, objects[number])
+                    if reached[number]
+                        heap.add(&survivors, objects[number])
+                phase_start = int(len(objects))
+                checkpoints = checkpoints.append(Checkpoint(command.label, command.line, int(len(roots)), live, pair_of(objects), phase, survivors, reached))
+
+    string[] report()
+        string[] lines = ["script lines {line_count} valid {len(commands)} errors {len(faults)}"]
+        for Fault fault = faults[]
+            lines = lines.append("error line {fault.line} {fault.reason}")
+        lines = lines.append("commands " + [for int index < 7 then names[index] + " {counts[index]}"].join(" "))
+        int[] sizes = [for heap.HeapObject object = objects[] then object.size]
+        lines = lines.concat(["allocated objects {len(objects)} words {used_words(objects)} sizes " + heap.class_table(sizes), "peak_live objects {peak.count} words {peak.words} line {peak_line}", "end_live objects {live.count} words {live.words} stack {len(roots)}"])
+        int[] life_counts = array(6, fill = 0)
+        for int lifetime = lifetimes[]
+            int group = if lifetime < 0 then 5 elif lifetime <= 63 then 0 elif lifetime <= 255 then 1 elif lifetime <= 1023 then 2 elif lifetime <= 4095 then 3 else 4
+            life_counts[group] += 1
+        lines = lines.append("lifetimes 0-63 {life_counts[0]} 64-255 {life_counts[1]} 256-1023 {life_counts[2]} 1024-4095 {life_counts[3]} 4096+ {life_counts[4]} live {life_counts[5]}")
+        for Checkpoint checkpoint = checkpoints[]
+            lines = lines.append("checkpoint {checkpoint.label} line {checkpoint.line} stack {checkpoint.stack} live " + checkpoint.live.text() + " allocated " + checkpoint.allocated.text() + " phase " + checkpoint.phase.text() + " survivors " + checkpoint.survivors.text() + " survival " + heap.pct(checkpoint.survivors.words, checkpoint.phase.words))
+        return lines
+
+bool on_cycle(int number, bool[] members, heap.HeapObject[] objects)
+    bool[] visited = array(len(objects), fill = false)
+    int[] stack = [for int child = objects[number - 1].fields[] if child != 0 and members[child - 1] then child]
+    while len(stack) > 0
+        int current = stack[len(stack) - 1]
+        stack = stack[0:<len(stack) - 1]
+        if current == number
+            return true
+        if visited[current - 1]
+            continue
+        visited[current - 1] = true
+        for int child = objects[current - 1].fields[]
+            if child != 0 and members[child - 1]
+                stack = stack.append(child)
+    return false
+
+string[] leak_report(string title, heap.HeapObject[] garbage, int[] deaths, heap.HeapObject[] objects)
+    bool[] members = array(len(objects), fill = false)
+    int[][] neighbors = array(len(objects), fill = [])
+    for heap.HeapObject object = garbage[]
+        members[object.number - 1] = true
+    for heap.HeapObject object = garbage[]
+        for int child = object.fields[]
+            if child != 0 and members[child - 1]
+                neighbors[object.number - 1] = neighbors[object.number - 1].append(child)
+                neighbors[child - 1] = neighbors[child - 1].append(object.number)
+    bool[] grouped = array(len(objects), fill = false)
+    int[][] groups = []
+    for int index < int(len(objects))
+        if not members[index] or grouped[index]
+            continue
+        grouped[index] = true
+        int[] stack = [index + 1]
+        int[] group = []
+        while len(stack) > 0
+            int current = stack[len(stack) - 1]
+            stack = stack[0:<len(stack) - 1]
+            group = group.append(current)
+            for int other = neighbors[current - 1][]
+                if not grouped[other - 1]
+                    grouped[other - 1] = true
+                    stack = stack.append(other)
+        groups = groups.append(group.sorted())
+    string[] lines = ["{title} groups {len(groups)} objects {len(garbage)} words {used_words(garbage)}"]
+    for int index < int(len(groups))
+        int[] group = groups[index]
+        string[] ids = []
+        int cycles = 0
+        int died = 0
+        int words = 0
+        for int number = group[]
+            bool cyclic = on_cycle(number, members, objects)
+            ids = ids.append("{number}" + (if cyclic then "*" else ""))
+            if cyclic
+                cycles += 1
+            died = math.max(died, deaths[number - 1])
+            words += objects[number - 1].size
+        lines = lines.append("group {index + 1} objects {len(group)} words {words} cycle {cycles} died {died} ids " + ids.join(" "))
+    return lines
+
+class Pause(int line, int work, int freed, bool collection)
+class Cascade(int line, heap.Pair freed, int work)
+class PauseStats(local Pause[] pauses)
+    int count = int(len(pauses))
+    int collections = 0
+    int work = 0
+    int freed = 0
+    int maximum = 0
+    local int[] works = []
+    for Pause pause = pauses[]
+        if pause.collection
+            collections += 1
+        work += pause.work
+        freed += pause.freed
+        maximum = math.max(maximum, pause.work)
+        works = works.append(pause.work)
+    works = works.sorted()
+    string p50 = if count == 0 then "-" else "{works[(50 * count + 99) / 100 - 1]}"
+    string p90 = if count == 0 then "-" else "{works[(90 * count + 99) / 100 - 1]}"
+
+class Segment(int start, int length, bool mutator, int before)
+class Timeline()
+    Segment[] segments = []
+    int length = 0
+    int mutator_units = 0
+
+    void .add(bool flag, int units)
+        if units == 0
+            return
+        int last = int(len(segments)) - 1
+        if last >= 0 and segments[last].mutator == flag
+            segments[last].length += units
+        else
+            segments = segments.append(Segment(length, units, flag, mutator_units))
+        length += units
+        if flag
+            mutator_units += units
+
+    int until_position(int position)
+        int low = 0
+        int high = int(len(segments)) - 1
+        while low < high
+            int middle = (low + high + 1) / 2
+            if segments[middle].start <= position
+                low = middle
+            else
+                high = middle - 1
+        Segment segment = segments[low]
+        return segment.before + (if segment.mutator then position - segment.start else 0)
+
+    string mmu(int width)
+        if width > length
+            return "-"
+        int lowest = width
+        for Segment segment = segments[]
+            for int begin = [segment.start, segment.start + segment.length - width][]
+                if begin >= 0 and begin <= length - width
+                    lowest = math.min(lowest, until_position(begin + width) - until_position(begin))
+        return heap.pct(lowest, width)
+
+class Run(mutator.CollectorEntry entry, mutator.Config config, Script script)
+    heap.State collector = heap.State(config.heap_size, entry.algorithm, entry.young, entry.age)
+    int[] roots = []
+    Cascade[] cascades = []
+    string[][] reports = []
+    string[][] observations = []
+    Timeline timeline = Timeline()
+    int peak_used = 0
+    int failed_line = -1
+    int failed_size = 0
+    int increments = 0
+    int decrements = 0
+    heap.HeapObject[] released = []
+
+    int value(int source)
+        return if source < 0 then 0 else roots[source]
+
+    void .retain(int number)
+        if entry.algorithm == "REFCOUNT" and number != 0
+            collector.objects[number - 1].count += 1
+            increments += 1
+
+    void .release(int number)
+        if entry.algorithm != "REFCOUNT" or number == 0
+            return
+        collector.objects[number - 1].count -= 1
+        decrements += 1
+        if collector.objects[number - 1].count > 0
+            return
+        int[] pending = [number]
+        while len(pending) > 0
+            int current = pending[len(pending) - 1]
+            pending = pending[0:<len(pending) - 1]
+            heap.HeapObject object = collector.objects[current - 1]
+            collector.objects[current - 1].present = false
+            released = released.append(object)
+            for int child = object.fields[]
+                if child == 0
+                    continue
+                decrements += 1
+                collector.objects[child - 1].count -= 1
+                if collector.objects[child - 1].count == 0
+                    pending = pending.append(child)
+
+    void .push(int number)
+        .retain(number)
+        roots = roots.append(number)
+
+    void .backup(int line, int request)
+        heap.CollectionRecord record = heap.new_record(collector, line, request, "backup")
+        marking.mark(&collector, roots, &record)
+        heap.HeapObject[] garbage = [for heap.HeapObject object = heap.active(collector)[] if not object.marked then object]
+        reports = reports.append(leak_report("backup {record.number} line {line}", garbage, script.deaths, collector.objects))
+        marking.sweep(&collector, &record)
+        for heap.HeapObject object = garbage[]
+            for int child = object.fields[]
+                if child != 0 and collector.objects[child - 1].marked
+                    collector.objects[child - 1].count -= 1
+                    decrements += 1
+        heap.finish(&collector, &record)
+
+    bool .allocate(heap.HeapObject object, int line)
+        if entry.algorithm == "GENERATIONAL"
+            return generational.allocate(&collector, roots, object, line)
+        int address = -1
+        if entry.algorithm == "MARK_COMPACT" or entry.algorithm == "COPYING"
+            int finish = if entry.algorithm == "MARK_COMPACT" then collector.size else collector.base + collector.half
+            if collector.top + object.size > finish
+                if entry.algorithm == "COPYING"
+                    copying.collect(&collector, roots, line, object.size)
+                else
+                    marking.collect(&collector, roots, line, object.size)
+                finish = if entry.algorithm == "MARK_COMPACT" then collector.size else collector.base + collector.half
+            if collector.top + object.size > finish
+                return false
+            address = collector.top
+            collector.top += object.size
+        else
+            address = heap.first_fit(heap.free_list(collector), object.size)
+            if address < 0
+                if entry.algorithm == "REFCOUNT"
+                    .backup(line, object.size)
+                else
+                    marking.collect(&collector, roots, line, object.size)
+                address = heap.first_fit(heap.free_list(collector), object.size)
+            if address < 0
+                return false
+        heap.place(&collector, object, address)
+        return true
+
+    string[] observe(Checkpoint checkpoint)
+        heap.HeapObject[] objects = heap.active(collector)
+        heap.Pair live = heap.Pair()
+        heap.Pair garbage = heap.Pair()
+        int pointers = 0
+        int forward = 0
+        int backward = 0
+        int distance = 0
+        for heap.HeapObject object = objects[]
+            if not checkpoint.reachable[object.number - 1]
+                heap.add(&garbage, object)
+                continue
+            heap.add(&live, object)
+            for int child = object.fields[]
+                if child == 0
+                    continue
+                int address = collector.objects[child - 1].address
+                pointers += 1
+                distance += math.abs(address - object.address)
+                if address > object.address
+                    forward += 1
+                elif address < object.address
+                    backward += 1
+        heap.Block[] blocks = heap.free_list(collector)
+        string mean = if pointers == 0 then "-" else heap.dec2(distance, pointers)
+        string[] lines = ["heap objects " + pair_of(objects).text() + " reachable " + live.text() + " garbage " + garbage.text(), "free total {heap.total_free(blocks)} largest {heap.largest_free(blocks)} blocks {len(blocks)} sizes " + heap.class_table([for heap.Block block = blocks[] then block.length]) + " fragmentation " + fragmentation(blocks), "locality pointers {pointers} forward {forward} backward {backward} mean_distance {mean}"]
+        if entry.algorithm == "GENERATIONAL"
+            heap.Pair young = heap.Pair()
+            heap.Pair old = heap.Pair()
+            int[] ages = array(4, fill = 0)
+            for heap.HeapObject object = objects[]
+                if object.address < collector.young
+                    heap.add(&young, object)
+                    ages[math.min(3, object.age)] += 1
+                else
+                    heap.add(&old, object)
+            int remembered = 0
+            for bool member = collector.remembered[]
+                if member
+                    remembered += 1
+            lines = lines.append("generations young " + young.text() + " old " + old.text() + " remembered {remembered} ages 0:{ages[0]} 1:{ages[1]} 2:{ages[2]} 3+:{ages[3]}")
+        if contains(config.maps, checkpoint.label)
+            string text = heap.heap_map(collector, checkpoint.reachable)
+            for 0 <= int start < int(len(text)) step config.width
+                lines = lines.append("{start:int=4,zero} " + text[start:<start + config.width])
+        return lines
+
+    void .execute(mutator.Command command)
+        string name = command.name
+        if name == "PUSH"
+            .push(value(command.source))
+        elif name == "LOAD"
+            .push(collector.objects[roots[command.slot] - 1].fields[command.field])
+        elif name == "POP"
+            for int _ < command.count
+                int previous = roots[len(roots) - 1]
+                roots = roots[0:<len(roots) - 1]
+                .release(previous)
+        elif name == "SET"
+            int target = roots[command.slot]
+            int next_value = value(command.source)
+            if entry.algorithm == "GENERATIONAL"
+                generational.write_barrier(&collector, target, next_value)
+            .retain(next_value)
+            int previous = collector.objects[target - 1].fields[command.field]
+            collector.objects[target - 1].fields[command.field] = next_value
+            .release(previous)
+        elif name == "OVERWRITE"
+            int next_value = value(command.source)
+            .retain(next_value)
+            int previous = roots[command.slot]
+            roots[command.slot] = next_value
+            .release(previous)
+        elif name == "CHECKPOINT"
+            observations = observations.append(observe(script.checkpoints[len(observations)]))
+
+    void .simulate()
+        for mutator.Command command = script.commands[]
+            int previous = int(len(collector.records))
+            bool placed = true
+            int units = 1
+            if command.name == "ALLOC"
+                heap.HeapObject object = heap.HeapObject(int(len(collector.objects)) + 1, command.pointers, command.data)
+                placed = .allocate(object, command.line)
+                units = object.size
+                if placed
+                    .push(object.number)
+                    peak_used = math.max(peak_used, used_words(heap.active(collector)))
+            else
+                .execute(command)
+            for int index = (previous:<int(len(collector.records)))[]
+                .timeline.add(false, collector.records[index].work)
+            if not placed
+                failed_line = command.line
+                failed_size = units
+                return
+            .timeline.add(true, units)
+            if len(released) > 0
+                int work = 0
+                for heap.HeapObject object = released[]
+                    work += 1 + int(len(object.fields))
+                cascades = cascades.append(Cascade(command.line, pair_of(released), work))
+                .timeline.add(false, work)
+                released = []
+        if entry.algorithm == "REFCOUNT"
+            heap.HeapObject[] garbage = [for heap.HeapObject object = heap.active(collector)[] if not script.alive[object.number - 1] then object]
+            reports = reports.append(leak_report("end", garbage, script.deaths, collector.objects))
+
+    Pause[] pauses()
+        Pause[] result = [for heap.CollectionRecord record = collector.records[] then Pause(record.line, record.work, record.freed.words, true)]
+        return result.concat([for Cascade cascade = cascades[] then Pause(cascade.line, cascade.work, cascade.freed.words, false)])
+
+    string[] collection_lines()
+        string[] lines = ["collector {entry.name} {entry.algorithm}"]
+        for heap.CollectionRecord record = collector.records[]
+            lines = lines.append("{record.number} line {record.line} size {record.request} kind {record.kind} live " + record.live.text() + " freed " + record.freed.text() + " moved " + record.moved.text() + " promoted " + record.promoted.text() + " stack {record.stack} work {record.work} before {record.before.total} {record.before.largest} after {record.after.total} {record.after.largest}")
+        Pause[] all_pauses = pauses()
+        PauseStats stats = PauseStats(all_pauses)
+        lines = lines.append("totals collections {stats.collections} pauses {stats.count} work {stats.work} freed {stats.freed} pause p50 {stats.p50} p90 {stats.p90} max {stats.maximum}")
+        string[] windows = [for int width = config.windows[] then "{width}:" + timeline.mmu(width)]
+        lines = lines.append("utilization " + heap.pct(timeline.mutator_units, timeline.length) + " mmu " + windows.join(" "))
+        if entry.algorithm == "GENERATIONAL"
+            string[] parts = ["generational"]
+            heap.Pair promoted = heap.Pair()
+            for string kind = ["minor", "major", "tenure", "full"][]
+                int count = 0
+                int work = 0
+                for heap.CollectionRecord record = collector.records[]
+                    if record.kind == kind
+                        count += 1
+                        work += record.work
+                parts = parts.append("{kind} {count} {work}")
+            for heap.CollectionRecord record = collector.records[]
+                heap.add_pair(&promoted, record.promoted)
+            parts = parts.append("promoted " + promoted.text() + " barrier {collector.barriers} remembered {collector.remembers}")
+            lines = lines.append(parts.join(" "))
+        elif entry.algorithm == "REFCOUNT"
+            heap.Pair freed = heap.Pair()
+            int largest = -1
+            for int index < int(len(cascades))
+                heap.add_pair(&freed, cascades[index].freed)
+                if largest < 0 or cascades[index].work > cascades[largest].work
+                    largest = index
+            string maximum = "max_cascade 0 0 line -"
+            if largest >= 0
+                Cascade cascade = cascades[largest]
+                maximum = "max_cascade {cascade.freed.count} {cascade.work} line {cascade.line}"
+            lines = lines.append("refcount increments {increments} decrements {decrements} cascades {len(cascades)} freed " + freed.text() + " " + maximum)
+        int previous = 0
+        for Checkpoint checkpoint = script.checkpoints[]
+            if failed_line >= 0 and failed_line < checkpoint.line
+                lines = lines.append("phase {checkpoint.label} out_of_memory")
+            else
+                PauseStats phase = PauseStats([for Pause pause = all_pauses[] if previous < pause.line <= checkpoint.line then pause])
+                lines = lines.append("phase {checkpoint.label} collections {phase.collections} pauses {phase.count} work {phase.work} freed {phase.freed} max_pause {phase.maximum}")
+            previous = checkpoint.line
+        return lines.append(if failed_line < 0 then "status completed" else "status out_of_memory line {failed_line} size {failed_size}")
+
+    string summary()
+        PauseStats stats = PauseStats(pauses())
+        int live = 0
+        int moved = 0
+        int moved_objects = 0
+        int max_moves = 0
+        for heap.CollectionRecord record = collector.records[]
+            live += record.live.count
+            moved += record.moved.count
+        for heap.HeapObject object = collector.objects[]
+            if object.moves > 0
+                moved_objects += 1
+                max_moves = math.max(max_moves, object.moves)
+        string status = if failed_line < 0 then "completed" else "out_of_memory"
+        string[] values = [entry.name, entry.algorithm, status, "{len(collector.records)}", "{stats.count}", "{live}", "{moved}", "{moved_objects}", "{max_moves}", "{stats.freed}", "{stats.work}", stats.p50, stats.p90, "{stats.maximum}", "{peak_used}"]
+        if failed_line >= 0
+            values = values.concat(["-", "-", "-", "-"])
+        else
+            heap.Block[] blocks = heap.free_list(collector)
+            values = values.concat(["{used_words(heap.active(collector))}", "{heap.total_free(blocks)}", "{heap.largest_free(blocks)}", fragmentation(blocks)])
+        return values.join(",")
+
+string[] join_blocks(string[][] blocks)
+    string[] lines = []
+    for string[] block = blocks[]
+        if len(lines) > 0
+            lines = lines.append("")
+        lines = lines.concat(block)
+    return lines
+
+void write_lines(string name, string[] lines)
+    file.write("output/" + name, if len(lines) == 0 then "" else lines.join(NL) + NL)
+
+mutator.Config config = mutator.read_config("input/config.txt")
+Script script = Script()
+.script.analyze(mutator.read_lines("input/mutator.txt"))
+Run[] runs = []
+for mutator.CollectorEntry entry = config.collectors[]
+    Run simulation = Run(entry, config, script)
+    .simulation.simulate()
+    runs = runs.append(simulation)
+string[][] map_blocks = []
+for int index < int(len(script.checkpoints))
+    Checkpoint checkpoint = script.checkpoints[index]
+    for Run simulation = runs[]
+        string[] lines = ["checkpoint {checkpoint.label} line {checkpoint.line} collector {simulation.entry.name}"]
+        lines = lines.concat(if index < int(len(simulation.observations)) then simulation.observations[index] else ["out_of_memory"])
+        map_blocks = map_blocks.append(lines)
+string[][] collection_blocks = [for Run simulation = runs[] then simulation.collection_lines()]
+string[] summary = ["collector,type,status,collections,pauses,live,moved,moved_objects,max_moves,freed,total_work,p50_pause,p90_pause,max_pause,peak_used,end_used,end_free,largest_free,fragmentation"].concat([for Run simulation = runs[] then simulation.summary()])
+string[][] leak_blocks = []
+for Run simulation = runs[]
+    if simulation.entry.algorithm == "REFCOUNT"
+        string[] lines = ["collector {simulation.entry.name}"]
+        for string[] report = simulation.reports[]
+            lines = lines.concat(report)
+        if simulation.failed_line >= 0
+            lines = lines.append("status out_of_memory")
+        leak_blocks = leak_blocks.append(lines)
+if not file.is_directory("output")
+    file.mkdir("output")
+write_lines("mutator.txt", script.report())
+write_lines("heap_maps.txt", join_blocks(map_blocks))
+write_lines("collections.txt", join_blocks(collection_blocks))
+write_lines("summary.csv", summary)
+write_lines("leaks.txt", if len(leak_blocks) == 0 then ["none"] else join_blocks(leak_blocks))

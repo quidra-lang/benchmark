@@ -155,10 +155,10 @@ static class Program {
             for (int i = 0; i < 4; i++) {
                 string kind = Autoregression.KINDS[i];
                 double[] differenced = Autoregression.Difference(values, season, kind);
-                Correlations correlations = Autoregression.Correlations(differenced, 0);
-                model.variances[i] = correlations.variance;
-                if (correlations.variance < smallest) {
-                    smallest = correlations.variance;
+                Correlations candidateCorrelations = Autoregression.Correlations(differenced, 0);
+                model.variances[i] = candidateCorrelations.variance;
+                if (candidateCorrelations.variance < smallest) {
+                    smallest = candidateCorrelations.variance;
                     model.kind = kind;
                     model.differenced = differenced;
                 }

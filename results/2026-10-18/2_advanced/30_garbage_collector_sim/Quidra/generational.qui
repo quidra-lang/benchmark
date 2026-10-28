@@ -1,0 +1,110 @@
+import heap = "./heap.qui"
+import marking = "./mark_sweep.qui"
+
+heap.Block[] old_blocks(const heap.State state)
+    return heap.free_blocks(heap.active(state), state.young, state.size)
+
+void write_barrier(heap.State &state, int target, int value)
+    if state.objects[target - 1].address < state.young
+        return
+    state.barriers += 1
+    if value != 0 and state.objects[value - 1].address < state.young and not state.remembered[target - 1]
+        state.remembered[target - 1] = true
+        state.remembers += 1
+
+bool evacuate(heap.State &state, int number, heap.CollectionRecord &record, bool[] &pending, int[] &queue)
+    if number == 0 or not pending[number - 1]
+        return true
+    int index = number - 1
+    pending[index] = false
+    state.objects[index].age += 1
+    state.objects[index].moves += 1
+    heap.HeapObject object = state.objects[index]
+    if record.kind == "tenure" or record.kind == "full" or object.age >= state.promotion_age
+        int address = heap.first_fit(old_blocks(state), object.size)
+        if address < 0
+            return false
+        state.objects[index].address = address
+        heap.add(&record.promoted, object)
+    else
+        state.objects[index].address = state.target
+        state.target += object.size
+    heap.add(&record.moved, object)
+    if record.kind == "minor" or record.kind == "tenure"
+        heap.add(&record.live, object)
+    queue = queue.append(number)
+    return true
+
+bool evacuate_fields(heap.State &state, int[] fields, heap.CollectionRecord &record, bool[] &pending, int[] &queue)
+    for int child = fields[]
+        if not evacuate(&state, child, &record, &pending, &queue)
+            return false
+    return true
+
+bool collect(heap.State &state, int[] roots, int line, int request, string kind)
+    heap.CollectionRecord record = heap.new_record(state, line, request, kind)
+    if kind == "major" or kind == "full"
+        marking.mark(&state, roots, &record)
+        for int index < int(len(state.objects))
+            heap.HeapObject object = state.objects[index]
+            if not object.present or object.address < state.young
+                continue
+            record.work += 1
+            if not object.marked
+                state.objects[index].present = false
+                state.remembered[index] = false
+                heap.add(&record.freed, object)
+    bool[] pending = [for heap.HeapObject object = state.objects[] then object.present and object.address < state.young]
+    int destination = state.half - state.base
+    state.target = destination
+    int[] queue = []
+    record.work += int(len(roots))
+    for int root = roots[]
+        if not evacuate(&state, root, &record, &pending, &queue)
+            return false
+    heap.HeapObject[] remembered = []
+    for int index < int(len(state.objects))
+        if state.remembered[index]
+            remembered = remembered.append(state.objects[index])
+    for heap.HeapObject object = heap.by_address(remembered)[]
+        record.work += 1 + int(len(object.fields))
+        if not evacuate_fields(&state, object.fields, &record, &pending, &queue)
+            return false
+    int position = 0
+    while position < int(len(queue))
+        heap.HeapObject object = state.objects[queue[position] - 1]
+        position += 1
+        record.work += object.size + int(len(object.fields))
+        if not evacuate_fields(&state, object.fields, &record, &pending, &queue)
+            return false
+    for int index < int(len(state.objects))
+        if pending[index]
+            heap.add(&record.freed, state.objects[index])
+            state.objects[index].present = false
+    state.base = destination
+    state.top = state.target
+    state.remembered = array(len(state.objects), fill = false)
+    for int index < int(len(state.objects))
+        heap.HeapObject object = state.objects[index]
+        if not object.present or object.address < state.young
+            continue
+        for int child = object.fields[]
+            if child != 0 and state.objects[child - 1].address < state.young
+                state.remembered[index] = true
+                break
+    heap.finish(&state, &record)
+    return true
+
+bool allocate(heap.State &state, int[] roots, heap.HeapObject object, int line)
+    for int attempt < 3
+        if state.top + object.size <= state.base + state.half
+            heap.place(&state, object, state.top)
+            state.top += object.size
+            return true
+        if attempt == 2
+            return false
+        bool scarce = heap.largest_free(old_blocks(state)) < state.top - state.base
+        string kind = if attempt == 0 then (if scarce then "major" else "minor") else (if scarce then "full" else "tenure")
+        if not collect(&state, roots, line, object.size, kind)
+            return false
+    return false
