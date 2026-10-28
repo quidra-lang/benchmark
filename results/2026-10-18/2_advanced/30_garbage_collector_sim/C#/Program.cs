@@ -682,6 +682,7 @@ static class Program {
                           lines.Count == 0 ? "" : string.Join("\n", lines) + "\n", Encoding.ASCII);
     }
     public static void Main(string[] args) {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         Config config = Mutator.ReadConfig();
         Script script = new Script(Mutator.Lines("mutator.txt"));
         List<Run> runs = new();

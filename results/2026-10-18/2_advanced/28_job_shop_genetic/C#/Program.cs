@@ -759,6 +759,7 @@ static class Program {
         File.WriteAllText(Path.Combine("output", name), string.Join("\n", lines) + "\n", Encoding.ASCII);
     }
     public static void Main(string[] args) {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         Solver solver = new Solver(new Instance(), new Params());
         solver.Solve();
         Directory.CreateDirectory(Path.Combine("output"));

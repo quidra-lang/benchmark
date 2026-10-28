@@ -6,12 +6,7 @@ using System.Linq;
 using System.Text;
 
 public static class Program {
-    public static int CompareInt(int first, int second) => first.CompareTo(second);
-    public static T RemoveFirst<T>(List<T> values) {
-        T value = values[0];
-        values.RemoveAt(0);
-        return value;
-    }
+
     public static readonly string[] EFFECT_ORDER = { "0",  "1",  "2", "3",  "4",  "5",  "6",  "7",  "A",
                                                      "B",  "C",  "D", "E1", "E2", "E9", "EA", "EB", "EC",
                                                      "ED", "EE", "F", "P",  "Q",  "R",  "V" };
@@ -689,6 +684,7 @@ public static class Program {
                           lines.Count == 0 ? "" : string.Join("\n", lines) + "\n", Encoding.ASCII);
     }
     public static void Main(string[] args) {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         SongParser.Song song = SongParser.ReadSong();
         SongParser.Settings settings = SongParser.ReadSettings();
         Player player = new Player(song, settings);

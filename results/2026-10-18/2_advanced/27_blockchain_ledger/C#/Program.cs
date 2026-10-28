@@ -556,8 +556,8 @@ static class Program {
                 lines.Add("BLOCK " + block.height + " " + block.hash + " prev " +
                           Hashing.ShortId(block.previous) + " time " + block.timestamp + " bits " +
                           block.difficulty + " nonce " + block.nonce + " txs " + block.transactions.Count +
-                          " size " + block.Size() + " fees " + record.fees + " miner " + miner +
-                          " source " + record.source + " work " + record.work);
+                          " size " + block.Size() + " fees " + record.fees + " miner " + miner + " source " +
+                          record.source + " work " + record.work);
                 for (int i = 0; i < block.transactions.Count; i++) {
                     Transaction transaction = block.transactions[i];
                     string prefix = "TX " + (i + 1) + " " + transaction.txid;
@@ -754,6 +754,7 @@ static class Program {
                           lines.Count == 0 ? "" : string.Join("\n", lines) + "\n", Encoding.ASCII);
     }
     public static void Main(string[] args) {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         Node node = new Node(new Params(), Wallets.Read());
         List<string> lines = File.ReadAllLines(Path.Combine("input/events.txt"), Encoding.ASCII).ToList();
         for (int position = 0; position < lines.Count;) {

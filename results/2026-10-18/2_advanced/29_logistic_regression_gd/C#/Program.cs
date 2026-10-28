@@ -393,8 +393,7 @@ static class Program {
             foreach (Model model in models)
                 for (int i = 0; i < m; i++)
                     lines.Add(data.test[i].id + "," + model.name + "," + Six(model.testProbabilities[i]) +
-                              "," + (model.testProbabilities[i] >= threshold ? 1 : 0) + "," +
-                              testTargets[i]);
+                              "," + (model.testProbabilities[i] >= threshold ? 1 : 0) + "," + testTargets[i]);
             for (int i = 0; i < m; i++)
                 lines.Add(data.test[i].id + ",softmax," + Six(softProbabilities[i][softPredictions[i]]) +
                           "," + softPredictions[i] + "," + testLabels[i]);
@@ -435,8 +434,8 @@ static class Program {
                       Six(standardError) + " lambda_1se " + F(oneSe));
             Confusion confusion = Metrics.Confusion(selected.probabilities, trainTargets, threshold);
             lines.Add("out_of_fold tp " + confusion.tp + " fp " + confusion.fp + " tn " + confusion.tn +
-                      " fn " + confusion.fn + " accuracy " + Metrics.Ratio(confusion.Correct(), n) +
-                      " auc " + Metrics.Auc(selected.probabilities, trainTargets));
+                      " fn " + confusion.fn + " accuracy " + Metrics.Ratio(confusion.Correct(), n) + " auc " +
+                      Metrics.Auc(selected.probabilities, trainTargets));
             return lines;
         }
         public List<string> LambdaPart() {
@@ -701,8 +700,8 @@ static class Program {
                 squares += (value - mean) * (value - mean);
             aucs.Sort((a, b) => (a.numerator * b.denominator).CompareTo(b.numerator * a.denominator));
             lines.Add("bootstrap resamples " + count + " seed " + data.Integer("BOOTSTRAP", 1) +
-                      " auc_mean " + F(mean) + " auc_sd " + F(Math.Sqrt(squares / (count - 1))) +
-                      " lower " + aucs[count / 40] + " upper " + aucs[count - count / 40 - 1]);
+                      " auc_mean " + F(mean) + " auc_sd " + F(Math.Sqrt(squares / (count - 1))) + " lower " +
+                      aucs[count / 40] + " upper " + aucs[count - count / 40 - 1]);
             int large = 0;
             foreach (double residual in influence.residuals)
                 if (Math.Abs(residual) > 2)
@@ -933,6 +932,7 @@ static class Program {
         File.WriteAllText(Path.Combine("output", name), string.Join("\n", lines) + "\n", Encoding.ASCII);
     }
     public static void Main(string[] args) {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         Study study = new Study(new Dataset());
         Directory.CreateDirectory(Path.Combine("output"));
         Write("weights.txt", study.WeightLines());

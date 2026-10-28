@@ -690,6 +690,7 @@ static class Program {
         return new string(cells);
     }
     public static void Main(string[] args) {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         SeriesIo settings = new SeriesIo();
         List<string>
             decomposition = new([

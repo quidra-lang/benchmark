@@ -7,11 +7,7 @@ using System.Text;
 
 public static class Program {
     public static int CompareInt(int first, int second) => first.CompareTo(second);
-    public static T RemoveFirst<T>(List<T> values) {
-        T value = values[0];
-        values.RemoveAt(0);
-        return value;
-    }
+
     public record Block(int start, int end, int sum, int count) {
         public double BlockValue() {
             return (double)sum / (100 * count);
@@ -682,6 +678,7 @@ public static class Program {
         File.WriteAllText(Path.Combine("output", name), string.Join("\n", lines) + "\n", Encoding.ASCII);
     }
     public static void Main(string[] args) {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         Dataset dataset = new Dataset();
         List<string> names = Methods(dataset);
         string header = "series,x," + string.Join(",", names);

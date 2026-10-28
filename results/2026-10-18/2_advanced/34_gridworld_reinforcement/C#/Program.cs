@@ -687,6 +687,7 @@ public static class Program {
         return output;
     }
     public static void Main(string[] args) {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         Settings settings = new Settings();
         Environment world = new Environment(settings.Option("STEP_REWARD"));
         long[] slip = settings.Values("SLIP");

@@ -997,6 +997,7 @@ static class Program {
         }
     }
     public static void Main(string[] args) {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         Analysis analysis = new Analysis(new Dataset());
         Directory.CreateDirectory(Path.Combine("output"));
         Report.Write("labels.csv", analysis.LabelLines());
