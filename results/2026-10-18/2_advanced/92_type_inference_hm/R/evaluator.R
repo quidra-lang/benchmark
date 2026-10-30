@@ -4,7 +4,7 @@ copy_value_environment <- function(environment) list2env(as.list.environment(env
 runtime_failure <- function(position, message) stop(structure(list(position = position, message = message), class = c("runtime_failure", "error", "condition")))
 checked_integer <- function(value, position) {
   if (value < -2147483648 || value > 2147483647) runtime_failure(position, "integer overflow")
-  value
+  if (value == 0) 0 else value
 }
 compare_strings <- function(first, second) {
   left <- utf8ToInt(first)

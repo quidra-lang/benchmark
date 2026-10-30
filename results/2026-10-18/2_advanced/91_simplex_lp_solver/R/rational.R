@@ -1,4 +1,5 @@
 fraction <- function(numerator = 0, denominator = 1) {
+  if (numerator == 0) return(structure(c(0, 1), class = "fraction"))
   if (denominator < 0) {
     numerator <- -numerator
     denominator <- -denominator

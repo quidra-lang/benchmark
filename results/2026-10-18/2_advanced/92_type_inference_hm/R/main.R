@@ -6,7 +6,7 @@ source("evaluator.R")
 options(expressions = 500000L)
 print_value <- function(value) {
   if (is.logical(value)) return(if (value) "true" else "false")
-  if (is.numeric(value)) return(sprintf("%.0f", value))
+  if (is.numeric(value)) return(if (value == 0) "0" else sprintf("%.0f", value))
   if (is.character(value)) {
     characters <- strsplit(value, "", fixed = TRUE)[[1L]]
     escaped <- vapply(characters, function(character) {
@@ -175,7 +175,7 @@ built_in_environments <- function() {
   values <- list(fst = new_builtin(function(value, position) value[[1L]]),
                  snd = new_builtin(function(value, position) value[[2L]]),
                  not = new_builtin(function(value, position) !value),
-                 string_of_int = new_builtin(function(value, position) sprintf("%.0f", value)),
+                 string_of_int = new_builtin(function(value, position) if (value == 0) "0" else sprintf("%.0f", value)),
                  failwith = new_builtin(function(value, position) runtime_failure(position, paste("failure", print_value(value)))))
   list(types = types, values = list2env(values, parent = emptyenv()))
 }
