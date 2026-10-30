@@ -51,9 +51,16 @@ var commandNames = func() map[string]bool {
 	return m
 }()
 
-func isLetter(c byte) bool                  { return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' }
-func isDigit(c byte) bool                   { return c >= '0' && c <= '9' }
-func containsWord(words, value string) bool { return strings.Contains(" "+words+" ", " "+value+" ") }
+func isLetter(c byte) bool { return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' }
+func isDigit(c byte) bool  { return c >= '0' && c <= '9' }
+func containsWord(words, value string) bool {
+	for _, word := range strings.Fields(words) {
+		if word == value {
+			return true
+		}
+	}
+	return false
+}
 func tokenize(line string) ([]Token, *Issue) {
 	tokens := []Token{}
 	for i := 0; i < len(line); {

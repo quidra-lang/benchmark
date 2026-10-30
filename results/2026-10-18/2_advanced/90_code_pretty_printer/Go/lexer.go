@@ -31,9 +31,16 @@ func (l Lexeme) line() int {
 	}
 	return l.Comment.Line
 }
-func wordIn(words, value string) bool { return strings.Contains(" "+words+" ", " "+value+" ") }
-func letter(c byte) bool              { return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_' }
-func digit(c byte) bool               { return c >= '0' && c <= '9' }
+func wordIn(words, value string) bool {
+	for _, word := range strings.Fields(words) {
+		if word == value {
+			return true
+		}
+	}
+	return false
+}
+func letter(c byte) bool { return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_' }
+func digit(c byte) bool  { return c >= '0' && c <= '9' }
 func lex(source []string) ([]*Token, []Lexeme, *FileError) {
 	tokens := []*Token{}
 	items := []Lexeme{}

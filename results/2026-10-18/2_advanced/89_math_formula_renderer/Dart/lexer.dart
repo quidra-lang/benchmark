@@ -61,7 +61,7 @@ bool isLetter(String c) =>
     c.compareTo('a') >= 0 && c.compareTo('z') <= 0;
 bool isDigit(String c) => c.compareTo('0') >= 0 && c.compareTo('9') <= 0;
 bool containsWord(String words, String value) =>
-    ' $words '.contains(' $value ');
+    words.split(' ').contains(value);
 (List<Token>, Issue?) tokenize(String line) {
   final tokens = <Token>[];
   for (var i = 0; i < line.length;) {
