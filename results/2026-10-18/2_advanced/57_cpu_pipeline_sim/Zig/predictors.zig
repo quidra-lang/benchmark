@@ -54,7 +54,8 @@ pub const Direction = struct {
         var out: Direction = .{ .definition = definition };
         const s = definition.scheme;
         const p = definition.parameters;
-        if (c.eq(s, "ONEBIT") or c.eq(s, "TWOBIT") or c.eq(s, "GSHARE")) out.values = table(p[0], if (c.eq(s, "ONEBIT")) 0 else 1);
+        if (c.eq(s, "ONEBIT") or c.eq(s, "TWOBIT") or c.eq(s, "GSHARE")) out.values = table(p[0],
+             if (c.eq(s, "ONEBIT")) 0 else 1);
         if (c.eq(s, "TOURNAMENT")) {
             out.local = table(p[0], 1);
             out.global_values = table(p[1], 1);
@@ -81,7 +82,8 @@ pub const Direction = struct {
             const l = index % self.local.len;
             const g = (index ^ self.history) % self.global_values.len;
             const ch = index % self.chooser.len;
-            if ((self.local[l] >= 2) != (self.global_values[g] >= 2)) self.chooser[ch] = updated(self.chooser[ch], (self.global_values[g] >= 2) == taken);
+            if ((self.local[l] >= 2) != (self.global_values[g] >= 2)) self.chooser[ch] = updated(self.chooser[ch],
+                 (self.global_values[g] >= 2) == taken);
             self.local[l] = updated(self.local[l], taken);
             self.global_values[g] = updated(self.global_values[g], taken);
             self.history = (2 * self.history + @intFromBool(taken)) % (@as(usize, 1) << @intCast(p[2]));

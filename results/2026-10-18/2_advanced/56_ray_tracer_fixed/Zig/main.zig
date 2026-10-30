@@ -9,10 +9,12 @@ const Ray = c.Ray;
 const zero: Vec = .{ 0, 0, 0 };
 const ray_names = [_][]const u8{ "primary", "reflection", "refraction", "shadow" };
 const Settings = struct { width: usize, height: usize, contrast: i64, depth: usize, far: i64, epsilon: i64, pad: i64 };
-const Node = struct { box: c.Bounds, objects: []const usize = &.{}, left: ?*Node = null, right: ?*Node = null, depth: usize, visits: i64 = 0 };
+const Node = struct { box: c.Bounds, objects: []const usize = &.{}, left: ?*Node = null, right: ?*Node = null,
+     depth: usize, visits: i64 = 0 };
 const Tests = struct { nodes: i64 = 0, objects: i64 = 0 };
 const ObjectCounts = struct { primary: i64 = 0, secondary: i64 = 0, shadow: i64 = 0 };
-const LightCounts = struct { shadow: i64 = 0, blocked: i64 = 0, attenuated: i64 = 0, backfacing: i64 = 0, outside: i64 = 0 };
+const LightCounts = struct { shadow: i64 = 0, blocked: i64 = 0, attenuated: i64 = 0, backfacing: i64 = 0,
+     outside: i64 = 0 };
 const Statistics = struct {
     rays: [4]i64 = .{ 0, 0, 0, 0 },
     misses: [3]i64 = .{ 0, 0, 0 },
@@ -26,8 +28,10 @@ const Statistics = struct {
 const Hit = struct { object: usize, candidate: inter.Candidate };
 const Info = struct { hit: Hit, point: Vec, normal: Vec, base: Vec, front: bool };
 const LightResult = struct { lit: i64 = 0, diffuse: i64 = 0, specular: i64 = 0 };
-const Result = struct { color: Vec = zero, info: ?Info = null, lights: [9]LightResult = [_]LightResult{.{}} ** 9, illumination: i64 = 0 };
-const Pixel = struct { center: Vec = zero, color: Vec = zero, info: ?Info = null, lit: [9]bool = [_]bool{false} ** 9, rays: i64 = 0, depth: usize = 0, subsampled: bool = false };
+const Result = struct { color: Vec = zero, info: ?Info = null, lights: [9]LightResult = [_]LightResult{.{}} ** 9,
+     illumination: i64 = 0 };
+const Pixel = struct { center: Vec = zero, color: Vec = zero, info: ?Info = null, lit: [9]bool = [_]bool{false} ** 9,
+     rays: i64 = 0, depth: usize = 0, subsampled: bool = false };
 const Sample = struct { direction: Vec, distance: i64, intensity: i64 };
 const Samples = struct { data: [16]Sample = undefined, count: usize = 0 };
 const Ids = struct { data: [26]usize = undefined, count: usize = 0 };
@@ -37,7 +41,9 @@ fn triple(value: Vec) []const u8 {
 fn settings(io: std.Io) !Settings {
     const rows = try c.readLines(io, "input/render.txt");
     const size = c.words(rows[0]);
-    return .{ .width = c.u(c.number(size[1])), .height = c.u(c.number(size[2])), .contrast = c.number(c.words(rows[1])[1]), .depth = c.u(c.number(c.words(rows[2])[1])), .far = c.number(c.words(rows[3])[1]), .epsilon = c.number(c.words(rows[4])[1]), .pad = c.number(c.words(rows[5])[1]) };
+    return .{ .width = c.u(c.number(size[1])), .height = c.u(c.number(size[2])), .contrast = c.number(c.words(rows[1])[1]),
+         .depth = c.u(c.number(c.words(rows[2])[1])), .far = c.number(c.words(rows[3])[1]),
+         .epsilon = c.number(c.words(rows[4])[1]), .pad = c.number(c.words(rows[5])[1]) };
 }
 const Tracer = struct {
     scene: c.Scene,
@@ -108,7 +114,8 @@ const Tracer = struct {
     fn camera(self: *const Tracer, qx: i64, qy: i64) Ray {
         const u = f.div((qx - 2 * c.n(self.render.width)) * self.scene.half_width, 2 * c.n(self.render.width));
         const y = f.div((2 * c.n(self.render.height) - qy) * self.scene.half_height, 2 * c.n(self.render.height));
-        return .{ .origin = self.scene.eye, .direction = v.norm(v.add(v.add(self.scene.forward, v.sc(self.scene.right, u)), v.sc(self.scene.up, y))) };
+        return .{ .origin = self.scene.eye, .direction = v.norm(v.add(v.add(self.scene.forward,
+             v.sc(self.scene.right, u)), v.sc(self.scene.up, y))) };
     }
     fn nearestObject(self: *Tracer, id: usize, ray: Ray, kind: usize, counted: bool, found: *?Hit) void {
         if (counted) self.stats.tests[kind].objects += 1;
@@ -136,7 +143,8 @@ const Tracer = struct {
     }
     fn nearest(self: *Tracer, ray: Ray, kind: usize, counted: bool) ?Hit {
         var found: ?Hit = null;
-        for (self.scene.objects.items, 0..) |object, id| if (object.kind == .plane) self.nearestObject(id, ray, kind, counted, &found);
+        for (self.scene.objects.items, 0..) |object, id| if (object.kind == .plane) self.nearestObject(id,
+             ray, kind, counted, &found);
         if (self.root) |root| self.nearestNode(root, ray, kind, counted, &found);
         return found;
     }
@@ -164,7 +172,8 @@ const Tracer = struct {
     }
     fn occluders(self: *Tracer, ray: Ray, distance: i64, counted: bool) Ids {
         var found: Ids = .{};
-        for (self.scene.objects.items, 0..) |object, id| if (object.kind == .plane) self.occludeObject(id, ray, distance, counted, &found);
+        for (self.scene.objects.items, 0..) |object, id| if (object.kind == .plane) self.occludeObject(id,
+             ray, distance, counted, &found);
         if (self.root) |root| self.occludeNode(root, ray, distance, counted, &found);
         std.mem.sort(usize, found.data[0..found.count], {}, std.sort.asc(usize));
         if (counted) for (found.data[0..found.count]) |id| {
@@ -183,10 +192,12 @@ const Tracer = struct {
         for (0..count) |j| for (0..count) |i| {
             var position = light.position;
             if (light.kind == .area) for (0..3) |axis| {
-                position[axis] += f.div(c.n(2 * i + 1) * light.u[axis], c.n(2 * count)) + f.div(c.n(2 * j + 1) * light.v[axis], c.n(2 * count));
+                position[axis] += f.div(c.n(2 * i + 1) * light.u[axis], c.n(2 * count)) + f.div(c.n(2 * j + 1) * light.v[axis],
+                     c.n(2 * count));
             };
             const rel = v.sub(position, point);
-            out.data[out.count] = .{ .direction = v.norm(rel), .distance = v.len(rel), .intensity = f.div(light.intensity, c.n(count * count)) };
+            out.data[out.count] = .{ .direction = v.norm(rel), .distance = v.len(rel), .intensity = f.div(light.intensity,
+                 c.n(count * count)) };
             out.count += 1;
         };
         return out;
@@ -198,14 +209,16 @@ const Tracer = struct {
         if (cosine >= light.inner) return f.scale;
         return f.div((cosine - light.outer) * f.scale, light.inner - light.outer);
     }
-    fn trace(self: *Tracer, ray: Ray, kind: usize, depth: usize, counted: bool, pixel: ?*Pixel, record: ?*c.Lines) Result {
+    fn trace(self: *Tracer, ray: Ray, kind: usize, depth: usize, counted: bool, pixel: ?*Pixel,
+         record: ?*c.Lines) Result {
         if (counted) {
             self.stats.rays[kind] += 1;
             self.stats.depths[depth] += 1;
             pixel.?.rays += 1;
             pixel.?.depth = @max(pixel.?.depth, depth);
         }
-        if (record) |lines| lines.add("ray {s} {d} origin {s} direction {s}", .{ ray_names[kind], depth, triple(ray.origin), triple(ray.direction) });
+        if (record) |lines| lines.add("ray {s} {d} origin {s} direction {s}", .{ ray_names[kind],
+             depth, triple(ray.origin), triple(ray.direction) });
         var out: Result = .{};
         const hit = self.nearest(ray, kind, counted) orelse {
             out.color = self.scene.background;
@@ -227,7 +240,8 @@ const Tracer = struct {
         if (counted) {
             if (kind == 0) self.stats.objects[hit.object].primary += 1 else self.stats.objects[hit.object].secondary += 1;
         }
-        if (record) |lines| lines.add("hit {c} t {d} point {s} normal {s} base {s}", .{ object.label, hit.candidate.distance, triple(point), triple(normal), triple(base) });
+        if (record) |lines| lines.add("hit {c} t {d} point {s} normal {s} base {s}", .{ object.label,
+             hit.candidate.distance, triple(point), triple(normal), triple(base) });
         var diffuse: i64 = 0;
         var specular: i64 = 0;
         for (self.scene.lights.items, 0..) |light, index| {
@@ -248,7 +262,8 @@ const Tracer = struct {
                     self.stats.lights[index].shadow += 1;
                     pixel.?.rays += 1;
                 }
-                const blockers = self.occluders(.{ .origin = point, .direction = sample.direction }, sample.distance, counted);
+                const blockers = self.occluders(.{ .origin = point, .direction = sample.direction },
+                     sample.distance, counted);
                 for (blockers.data[0..blockers.count]) |id| factor = f.mul(factor, self.scene.materials.items[self.scene.objects.items[id].material].kt);
                 if (factor == 0) {
                     if (counted) self.stats.lights[index].blocked += 1;
@@ -256,14 +271,16 @@ const Tracer = struct {
                 }
                 if (counted and blockers.count > 0) self.stats.lights[index].attenuated += 1;
                 result.lit += 1;
-                const terms = shade.phong(material, normal, sample.direction, v.neg(ray.direction), f.mul(sample.intensity, factor));
+                const terms = shade.phong(material, normal, sample.direction, v.neg(ray.direction),
+                     f.mul(sample.intensity, factor));
                 result.diffuse += terms[0];
                 result.specular += terms[1];
             }
             diffuse += result.diffuse;
             specular += result.specular;
             if (result.lit > 0) out.illumination += 1;
-            if (record) |lines| lines.add("light {d} lit {d} of {d} diffuse {d} specular {d}", .{ index + 1, result.lit, light_samples.count, result.diffuse, result.specular });
+            if (record) |lines| lines.add("light {d} lit {d} of {d} diffuse {d} specular {d}",
+                 .{ index + 1, result.lit, light_samples.count, result.diffuse, result.specular });
         }
         var local: Vec = undefined;
         for (0..3) |axis| {
@@ -279,16 +296,21 @@ const Tracer = struct {
                 if (counted) self.stats.total_internal += 1;
                 if (record) |lines| lines.add("total_internal_reflection", .{});
             }
-            if (record) |lines| lines.add("weights {d} {d} {d}", .{ f.scale - material.kr - material.kt, weights.reflection, weights.refraction });
+            if (record) |lines| lines.add("weights {d} {d} {d}", .{ f.scale - material.kr - material.kt,
+                 weights.reflection, weights.refraction });
             var reflected = zero;
             var refracted = zero;
-            if (weights.reflection > 0) reflected = self.trace(.{ .origin = point, .direction = shade.reflected(ray.direction, normal) }, 1, depth + 1, counted, pixel, record).color;
-            if (weights.refraction > 0) refracted = self.trace(.{ .origin = point, .direction = weights.direction.? }, 2, depth + 1, counted, pixel, record).color;
-            color = shade.mix(local, f.scale - material.kr - material.kt, reflected, weights.reflection, refracted, weights.refraction);
+            if (weights.reflection > 0) reflected = self.trace(.{ .origin = point, .direction = shade.reflected(ray.direction,
+                 normal) }, 1, depth + 1, counted, pixel, record).color;
+            if (weights.refraction > 0) refracted = self.trace(.{ .origin = point, .direction = weights.direction.? },
+                 2, depth + 1, counted, pixel, record).color;
+            color = shade.mix(local, f.scale - material.kr - material.kt, reflected, weights.reflection,
+                 refracted, weights.refraction);
         }
         if (self.scene.fog) {
             const distance = hit.candidate.distance;
-            const factor = if (distance <= self.scene.fog_start) 0 else if (distance >= self.scene.fog_end) f.scale else f.div((distance - self.scene.fog_start) * f.scale, self.scene.fog_end - self.scene.fog_start);
+            const factor = if (distance <= self.scene.fog_start) 0 else if (distance >= self.scene.fog_end) f.scale else f.div((distance - self.scene.fog_start) * f.scale,
+                 self.scene.fog_end - self.scene.fog_start);
             color = shade.mix(color, f.scale - factor, self.scene.fog_color, factor, zero, 0);
         }
         out.color = color;
@@ -311,9 +333,11 @@ fn reportNode(tracer: *const Tracer, node: *const Node, lines: *c.Lines) void {
     if (node.objects.len > 0) {
         var labels: c.Text = .{};
         for (node.objects) |id| labels.add("{c}", .{tracer.scene.objects.items[id].label});
-        lines.add("node {d} leaf {s} box {s} {s} visits {d}", .{ node.depth, labels.value(), triple(node.box.lo), triple(node.box.hi), node.visits });
+        lines.add("node {d} leaf {s} box {s} {s} visits {d}", .{ node.depth, labels.value(),
+             triple(node.box.lo), triple(node.box.hi), node.visits });
     } else {
-        lines.add("node {d} inner box {s} {s} visits {d}", .{ node.depth, triple(node.box.lo), triple(node.box.hi), node.visits });
+        lines.add("node {d} inner box {s} {s} visits {d}", .{ node.depth, triple(node.box.lo),
+             triple(node.box.hi), node.visits });
         reportNode(tracer, node.left.?, lines);
         reportNode(tracer, node.right.?, lines);
     }
@@ -332,7 +356,8 @@ fn image(io: std.Io, name: []const u8, comptime T: type, values: []const T, widt
         var row: c.Text = .{};
         for (0..width) |x| {
             if (x > 0) row.add(" ", .{});
-            if (T == Vec) row.add("{s}", .{triple(values[y * width + x])}) else row.add("{d}", .{values[y * width + x]});
+            if (T == Vec) row.add("{s}", .{triple(values[y * width + x])}) else row.add("{d}",
+                 .{values[y * width + x]});
         }
         lines.add("{s}", .{row.value()});
     }
@@ -377,7 +402,8 @@ pub fn main(init: std.process.Init) !void {
             supersampled += 1;
             var sum = zero;
             for (offsets) |offset| {
-                const color = tracer.trace(tracer.camera(4 * c.n(x) + offset[0], 4 * c.n(y) + offset[1]), 0, 0, true, pixel, null).color;
+                const color = tracer.trace(tracer.camera(4 * c.n(x) + offset[0], 4 * c.n(y) + offset[1]),
+                     0, 0, true, pixel, null).color;
                 sum = v.add(sum, color);
             }
             for (0..3) |axis| pixel.color[axis] = f.div(sum[axis], 4);
@@ -416,13 +442,15 @@ pub fn main(init: std.process.Init) !void {
             depths.add("{d}", .{pixel.depth});
             cost_max = @max(cost_max, pixel.rays);
             total_color = v.add(total_color, pixel.color);
-            histogram[c.u(f.div(f.div(299 * pixel.color[0] + 587 * pixel.color[1] + 114 * pixel.color[2], 1000), 32))] += 1;
+            histogram[c.u(f.div(f.div(299 * pixel.color[0] + 587 * pixel.color[1] + 114 * pixel.color[2],
+                 1000), 32))] += 1;
             if (pixel.info) |info| {
                 const distance = info.hit.candidate.distance;
                 minimum = if (minimum) |old| @min(old, distance) else distance;
                 maximum = @max(maximum, distance);
                 albedo[index] = info.base;
-                for (0..3) |axis| normal[index][axis] = @max(0, @min(255, f.div((info.normal[axis] + f.scale) * 255, 2 * f.scale)));
+                for (0..3) |axis| normal[index][axis] = @max(0, @min(255, f.div((info.normal[axis] + f.scale) * 255,
+                     2 * f.scale)));
             }
         }
         object_map.add("{s}", .{objects.value()});
@@ -431,7 +459,8 @@ pub fn main(init: std.process.Init) !void {
     }
     for (pixels, 0..) |pixel, index| {
         cost[index] = f.div(255 * pixel.rays, cost_max);
-        if (pixel.info) |info| depth[index] = if (maximum == minimum.?) 255 else 255 - f.div(235 * (info.hit.candidate.distance - minimum.?), maximum - minimum.?);
+        if (pixel.info) |info| depth[index] = if (maximum == minimum.?) 255 else 255 - f.div(235 * (info.hit.candidate.distance - minimum.?),
+             maximum - minimum.?);
     }
     try image(io, "image.ppm", Vec, colors, width, height);
     try image(io, "depth.pgm", i64, depth, width, height);
@@ -445,13 +474,16 @@ pub fn main(init: std.process.Init) !void {
     const counts = tracer.stats;
     stats.add("image {d} {d}", .{ width, height });
     stats.add("supersampled {d}", .{supersampled});
-    stats.add("rays primary {d} reflection {d} refraction {d} shadow {d} total {d}", .{ counts.rays[0], counts.rays[1], counts.rays[2], counts.rays[3], counts.rays[0] + counts.rays[1] + counts.rays[2] + counts.rays[3] });
-    stats.add("misses primary {d} reflection {d} refraction {d}", .{ counts.misses[0], counts.misses[1], counts.misses[2] });
+    stats.add("rays primary {d} reflection {d} refraction {d} shadow {d} total {d}", .{ counts.rays[0],
+         counts.rays[1], counts.rays[2], counts.rays[3], counts.rays[0] + counts.rays[1] + counts.rays[2] + counts.rays[3] });
+    stats.add("misses primary {d} reflection {d} refraction {d}", .{ counts.misses[0], counts.misses[1],
+         counts.misses[2] });
     var depth_counts: c.Text = .{};
     depth_counts.add("depth", .{});
     for (counts.depths[0 .. render.depth + 1]) |value| depth_counts.add(" {d}", .{value});
     stats.add("{s}", .{depth_counts.value()});
-    for (ray_names, 0..) |name, kind| stats.add("tests {s} nodes {d} objects {d}", .{ name, counts.tests[kind].nodes, counts.tests[kind].objects });
+    for (ray_names, 0..) |name, kind| stats.add("tests {s} nodes {d} objects {d}", .{ name,
+         counts.tests[kind].nodes, counts.tests[kind].objects });
     stats.add("total_internal_reflection {d}", .{counts.total_internal});
     stats.add("clamped {d}", .{counts.saturated});
     if (minimum) |value| stats.add("distance {d} {d}", .{ value, maximum }) else stats.add("distance none", .{});
@@ -487,7 +519,9 @@ pub fn main(init: std.process.Init) !void {
             for (&sum) |*value| value.* = f.div(value.*, pixel_count);
             tail = c.fmt("{d} {d} {d} {d} color {s}", .{ x0, y0, x1, y1, triple(sum) });
         }
-        stats.add("object {c} {s} primary {d} secondary {d} shadow {d} pixels {d} box {s}", .{ object.label, @tagName(object.kind), counts.objects[id].primary, counts.objects[id].secondary, counts.objects[id].shadow, pixel_count, tail });
+        stats.add("object {c} {s} primary {d} secondary {d} shadow {d} pixels {d} box {s}",
+             .{ object.label, @tagName(object.kind), counts.objects[id].primary, counts.objects[id].secondary,
+             counts.objects[id].shadow, pixel_count, tail });
     }
     for (tracer.scene.lights.items, 0..) |light, id| {
         var lit: i64 = 0;
@@ -496,7 +530,9 @@ pub fn main(init: std.process.Init) !void {
         }
         const value = counts.lights[id];
         const samples = if (light.kind == .area) light.divisions * light.divisions else 1;
-        stats.add("light {d} {s} samples {d} pixels {d} shadow_rays {d} blocked {d} attenuated {d} backfacing {d} outside {d}", .{ id + 1, @tagName(light.kind), samples, lit, value.shadow, value.blocked, value.attenuated, value.backfacing, value.outside });
+        stats.add("light {d} {s} samples {d} pixels {d} shadow_rays {d} blocked {d} attenuated {d} backfacing {d} outside {d}",
+             .{ id + 1, @tagName(light.kind), samples, lit, value.shadow, value.blocked, value.attenuated,
+             value.backfacing, value.outside });
     }
     try save(io, "stats.txt", stats);
     var answers: c.Lines = .{};
@@ -507,24 +543,32 @@ pub fn main(init: std.process.Init) !void {
         if (c.eq(kind, "pixel")) {
             const pixel = pixels[c.u(c.number(row[2])) * width + c.u(c.number(row[1]))];
             const distance = if (pixel.info) |info| c.fmt("{d}", .{info.hit.candidate.distance}) else "none";
-            answers.add("label {c} distance {s} color {s} samples {d} rays {d}", .{ tracer.label(pixel), distance, triple(pixel.color), @as(usize, if (pixel.subsampled) 4 else 1), pixel.rays });
+            answers.add("label {c} distance {s} color {s} samples {d} rays {d}", .{ tracer.label(pixel),
+                 distance, triple(pixel.color), @as(usize, if (pixel.subsampled) 4 else 1),
+                 pixel.rays });
         } else if (c.eq(kind, "trace")) {
-            _ = tracer.trace(tracer.camera(4 * c.number(row[1]) + 2, 4 * c.number(row[2]) + 2), 0, 0, false, null, &answers);
+            _ = tracer.trace(tracer.camera(4 * c.number(row[1]) + 2, 4 * c.number(row[2]) + 2),
+                 0, 0, false, null, &answers);
         } else if (c.eq(kind, "ray")) {
-            _ = tracer.trace(.{ .origin = c.vector(row, 1), .direction = v.norm(c.vector(row, 4)) }, 0, 0, false, null, &answers);
+            _ = tracer.trace(.{ .origin = c.vector(row, 1), .direction = v.norm(c.vector(row,
+                 4)) }, 0, 0, false, null, &answers);
         } else if (c.eq(kind, "object")) {
             var id: usize = 0;
             while (tracer.scene.objects.items[id].label != row[1][0]) : (id += 1) {}
             const object = tracer.scene.objects.items[id];
             const material = tracer.scene.materials.items[object.material];
-            if (object.kind == .plane) answers.add("plane material {s} bounds none leaf none", .{material.name}) else answers.add("{s} material {s} bounds {s} {s} leaf {d}", .{ @tagName(object.kind), material.name, triple(tracer.boxes[id].lo), triple(tracer.boxes[id].hi), leafDepth(tracer.root.?, id).? });
+            if (object.kind == .plane) answers.add("plane material {s} bounds none leaf none",
+                 .{material.name}) else answers.add("{s} material {s} bounds {s} {s} leaf {d}",
+                 .{ @tagName(object.kind), material.name, triple(tracer.boxes[id].lo), triple(tracer.boxes[id].hi),
+                 leafDepth(tracer.root.?, id).? });
         } else if (c.eq(kind, "visible")) {
             const rel = v.sub(c.vector(row, 1), tracer.scene.eye);
             const ray: Ray = .{ .origin = tracer.scene.eye, .direction = v.norm(rel) };
             const blockers = tracer.occluders(ray, v.len(rel) - render.epsilon, false);
             const first = tracer.nearest(ray, 0, false);
             const visible = if (blockers.count == 0) "yes" else "no";
-            if (first) |hit| answers.add("{s} first {c} t {d}", .{ visible, tracer.scene.objects.items[hit.object].label, hit.candidate.distance }) else answers.add("{s} first none", .{visible});
+            if (first) |hit| answers.add("{s} first {c} t {d}", .{ visible, tracer.scene.objects.items[hit.object].label,
+                 hit.candidate.distance }) else answers.add("{s} first none", .{visible});
         } else if (c.eq(kind, "shadow")) {
             const point = c.vector(row, 1);
             for (tracer.scene.lights.items, 0..) |light, id| {
@@ -533,7 +577,8 @@ pub fn main(init: std.process.Init) !void {
                 const samples = tracer.samples(light, point);
                 for (samples.data[0..samples.count]) |sample| {
                     var factor = Tracer.cone(light, sample.direction);
-                    const blockers = tracer.occluders(.{ .origin = point, .direction = sample.direction }, sample.distance, false);
+                    const blockers = tracer.occluders(.{ .origin = point, .direction = sample.direction },
+                         sample.distance, false);
                     for (blockers.data[0..blockers.count]) |object| {
                         seen[object] = true;
                         factor = f.mul(factor, tracer.scene.materials.items[tracer.scene.objects.items[object].material].kt);
@@ -542,7 +587,8 @@ pub fn main(init: std.process.Init) !void {
                 }
                 var labels: c.Text = .{};
                 for (tracer.scene.objects.items, 0..) |object, j| if (seen[j]) labels.add("{c}", .{object.label});
-                answers.add("light {d} factor {d} occluders {s}", .{ id + 1, transmittance, if (labels.value().len == 0) "none" else labels.value() });
+                answers.add("light {d} factor {d} occluders {s}", .{ id + 1, transmittance,
+                     if (labels.value().len == 0) "none" else labels.value() });
             }
         } else {
             const x0 = c.u(c.number(row[1]));
@@ -559,7 +605,9 @@ pub fn main(init: std.process.Init) !void {
             };
             for (&total) |*value| value.* = f.div(value.*, region_count);
             answers.add("pixels {d} mean {s}", .{ region_count, triple(total) });
-            for (labels[0 .. tracer.scene.objects.items.len + 1], 0..) |amount, object| if (amount > 0) answers.add("label {c} {d}", .{ if (object < tracer.scene.objects.items.len) tracer.scene.objects.items[object].label else @as(u8, '.'), amount });
+            for (labels[0 .. tracer.scene.objects.items.len + 1], 0..) |amount, object| if (amount > 0) answers.add("label {c} {d}",
+                 .{ if (object < tracer.scene.objects.items.len) tracer.scene.objects.items[object].label else @as(u8,
+                 '.'), amount });
         }
     }
     try save(io, "queries.txt", answers);

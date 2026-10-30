@@ -3,7 +3,8 @@ const c = @import("scene.zig");
 const f = @import("fixed_point.zig");
 const v = @import("vector3.zig");
 pub const Candidate = struct { distance: i64, entering: bool = false, axis: usize = 0 };
-pub const Slab = struct { near: i64 = std.math.minInt(i64), far: i64 = std.math.maxInt(i64), near_axis: usize = 0, far_axis: usize = 0 };
+pub const Slab = struct { near: i64 = std.math.minInt(i64), far: i64 = std.math.maxInt(i64),
+     near_axis: usize = 0, far_axis: usize = 0 };
 pub fn slab(box: c.Bounds, ray: c.Ray) ?Slab {
     var out: Slab = .{};
     for (0..3) |axis| {

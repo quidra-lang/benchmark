@@ -3,7 +3,8 @@ const f = @import("fixed_point.zig");
 const v = @import("vector3.zig");
 pub fn base(material: c.Material, point: c.Vec) c.Vec {
     if (material.checker_size == 0) return material.color;
-    const cell = f.div(point[0], material.checker_size) + f.div(point[1], material.checker_size) + f.div(point[2], material.checker_size);
+    const cell = f.div(point[0], material.checker_size) + f.div(point[1], material.checker_size) + f.div(point[2],
+         material.checker_size);
     return if (@mod(cell, 2) != 0) material.second else material.color;
 }
 pub fn phong(material: c.Material, normal: c.Vec, light: c.Vec, view: c.Vec, effective: i64) [2]i64 {
@@ -48,6 +49,7 @@ pub fn refracted(material: c.Material, direction: c.Vec, normal: c.Vec, front: b
 }
 pub fn mix(local: c.Vec, lw: i64, reflection: c.Vec, rw: i64, refraction: c.Vec, tw: i64) c.Vec {
     var out: c.Vec = undefined;
-    for (0..3) |axis| out[axis] = f.div(local[axis] * lw, f.scale) + f.div(reflection[axis] * rw, f.scale) + f.div(refraction[axis] * tw, f.scale);
+    for (0..3) |axis| out[axis] = f.div(local[axis] * lw, f.scale) + f.div(reflection[axis] * rw,
+         f.scale) + f.div(refraction[axis] * tw, f.scale);
     return out;
 }

@@ -6,7 +6,8 @@ const predictors = @import("predictors.zig");
 const r = @import("report.zig");
 const Rejection = struct { line: usize, reason: []const u8 };
 const Gap = struct { line: usize, expected: i64, found: i64 };
-const Static = struct { first: usize, indices: std.ArrayList(usize) = .empty, taken: i64 = 0, stalls: [4]i64 = .{ 0, 0, 0, 0 } };
+const Static = struct { first: usize, indices: std.ArrayList(usize) = .empty, taken: i64 = 0,
+     stalls: [4]i64 = .{ 0, 0, 0, 0 } };
 const Trace = struct {
     instructions: std.ArrayList(c.Instruction) = .empty,
     statics: std.ArrayList(Static) = .empty,
@@ -28,10 +29,13 @@ fn check(text: []const u8, trace: *const Trace) Checked {
     if (kind == null) return .{ .invalid = "class" };
     const registers = [_]i64{ c.parseRegister(fields[2]), c.parseRegister(fields[3]), c.parseRegister(fields[4]) };
     for (registers) |value| if (value == -2) return .{ .invalid = "register" };
-    const usage = [_][3]i8{ .{ 1, 1, 0 }, .{ 1, 1, 1 }, .{ 1, 1, -1 }, .{ -1, 1, 1 }, .{ -1, 1, 0 }, .{ 0, 0, -1 }, .{ -1, -1, -1 } };
+    const usage = [_][3]i8{ .{ 1, 1, 0 }, .{ 1, 1, 1 }, .{ 1, 1, -1 }, .{ -1, 1, 1 }, .{ -1,
+         1, 0 }, .{ 0, 0, -1 }, .{ -1, -1, -1 } };
     for (usage[@intFromEnum(kind.?)], registers) |need, value| if ((need == 1 and value < 0) or (need == -1 and value >= 0)) return .{ .invalid = "operands" };
-    var out: c.Instruction = .{ .pc = pc, .kind = kind.?, .rd = registers[0], .rs1 = registers[1], .rs2 = registers[2] };
-    if (if (out.kind == .branch) !c.eq(fields[5], "T") and !c.eq(fields[5], "N") else !c.eq(fields[5], if (out.kind == .jump) "T" else "-")) return .{ .invalid = "taken" };
+    var out: c.Instruction = .{ .pc = pc, .kind = kind.?, .rd = registers[0], .rs1 = registers[1],
+         .rs2 = registers[2] };
+    if (if (out.kind == .branch) !c.eq(fields[5], "T") and !c.eq(fields[5], "N") else !c.eq(fields[5],
+         if (out.kind == .jump) "T" else "-")) return .{ .invalid = "taken" };
     out.taken = c.eq(fields[5], "T");
     if (out.control()) {
         out.target = c.parseHex(fields[6]) orelse return .{ .invalid = "target" };
@@ -57,7 +61,8 @@ fn validate(lines: []const []const u8) Trace {
             instruction.line = index + 1;
             if (out.instructions.items.len > 0) {
                 const previous = out.instructions.items[out.instructions.items.len - 1];
-                if (previous.next != instruction.pc) c.append(Gap, &out.gaps, .{ .line = index + 1, .expected = previous.next, .found = instruction.pc });
+                if (previous.next != instruction.pc) c.append(Gap, &out.gaps, .{ .line = index + 1,
+                     .expected = previous.next, .found = instruction.pc });
             }
             const entry = out.first.getOrPut(c.allocator, instruction.pc) catch @panic("allocation failed");
             if (!entry.found_existing) {
@@ -93,7 +98,8 @@ fn predict(instructions: []const c.Instruction, definition: c.Predictor, config:
     var btb = predictors.BTB.init(config.btb);
     var ras: predictors.RAS = .{ .depth = config.ras };
     var direction = predictors.Direction.init(definition);
-    var out: Prediction = .{ .details = c.alloc(Detail, instructions.len), .flags = c.alloc(bool, instructions.len), .bits = direction.bits() };
+    var out: Prediction = .{ .details = c.alloc(Detail, instructions.len), .flags = c.alloc(bool,
+         instructions.len), .bits = direction.bits() };
     @memset(out.details, .{});
     @memset(out.flags, false);
     for (instructions, 0..) |instruction, index| {
@@ -111,7 +117,8 @@ fn predict(instructions: []const c.Instruction, definition: c.Predictor, config:
             out.ras_correct += @intFromBool(address == instruction.target);
         };
         if (call) ras.push(instruction.pc + 4);
-        const taken = if (instruction.kind == .branch) direction.prediction(instruction.pc, instruction.target) else true;
+        const taken = if (instruction.kind == .branch) direction.prediction(instruction.pc,
+             instruction.target) else true;
         const next = if (c.eq(definition.scheme, "PERFECT")) instruction.next else if ((instruction.kind == .jump or taken) and candidate != null) candidate.? else instruction.pc + 4;
         out.details[index].predicted = next;
         if (next != instruction.next) {
@@ -139,7 +146,8 @@ const Diagram = struct {
     flushed_cells: i64 = 0,
     completed: i64 = 0,
     contents: [][5][]const u8,
-    fn add(self: *Diagram, config: c.Config, number: ?usize, pc: i64, kind: []const u8, segments: []const CellSegment, annotation: []const u8) void {
+    fn add(self: *Diagram, config: c.Config, number: ?usize, pc: i64, kind: []const u8, segments: []const CellSegment,
+         annotation: []const u8) void {
         const cells = c.alloc(u8, c.u(config.end - config.start + 1));
         @memset(cells, '.');
         var present = false;
@@ -152,7 +160,8 @@ const Diagram = struct {
                 present = true;
                 self.stall_cells += @intFromBool(segment.mark == '*');
                 self.flushed_cells += @intFromBool(segment.mark == 'x');
-                if (segment.stage) |stage| self.contents[c.u(cycle - config.start)][stage] = if (number) |value| c.fmt("{d}", .{value}) else "w";
+                if (segment.stage) |stage| self.contents[c.u(cycle - config.start)][stage] = if (number) |value| c.fmt("{d}",
+                     .{value}) else "w";
             }
         }
         if (present) {
@@ -161,20 +170,26 @@ const Diagram = struct {
         }
     }
 };
-fn diagram(instructions: []const c.Instruction, run: pipeline.Run, variant: c.Variant, prediction: Prediction, config: c.Config) Diagram {
+fn diagram(instructions: []const c.Instruction, run: pipeline.Run, variant: c.Variant, prediction: Prediction,
+     config: c.Config) Diagram {
     var out: Diagram = .{ .contents = c.alloc([5][]const u8, c.u(config.end - config.start + 1)) };
     for (out.contents) |*row| row.* = .{ ".", ".", ".", ".", "." };
-    out.lines.add("pipeline variant={s} predictor={s} cycles {d}-{d}", .{ variant.name, config.primary_predictor, config.start, config.end });
+    out.lines.add("pipeline variant={s} predictor={s} cycles {d}-{d}", .{ variant.name, config.primary_predictor,
+         config.start, config.end });
     out.lines.add("{s}", .{r.cycleHeading(config.start, config.end)});
     const annotations = c.alloc(c.Text, instructions.len);
     @memset(annotations, .{});
-    for (run.records) |record| if (record.waiting) |waiting| annotations[waiting].add(" {s} {d}", .{ c.causes[record.cause], record.cycles });
+    for (run.records) |record| if (record.waiting) |waiting| annotations[waiting].add(" {s} {d}",
+         .{ c.causes[record.cause], record.cycles });
     for (instructions, run.timings, 0..) |instruction, t, i| {
         if (prediction.flags[i]) annotations[i].add(" mispredict {s}", .{c.miss_names[prediction.details[i].miss.?]});
         out.add(config, i + 1, instruction.pc, c.classes[@intFromEnum(instruction.kind)], &.{
-            .{ .first = t.f, .last = t.f, .mark = 'F', .stage = 0 },     .{ .first = t.f + 1, .last = t.d - 1, .mark = '*', .stage = 0 },
-            .{ .first = t.d, .last = t.d, .mark = 'D', .stage = 1 },     .{ .first = t.d + 1, .last = t.x - 1, .mark = '*', .stage = 1 },
-            .{ .first = t.x, .last = t.m - 1, .mark = 'X', .stage = 2 }, .{ .first = t.m, .last = t.m, .mark = 'M', .stage = 3 },
+            .{ .first = t.f, .last = t.f, .mark = 'F', .stage = 0 },     .{ .first = t.f + 1,
+                 .last = t.d - 1, .mark = '*', .stage = 0 },
+            .{ .first = t.d, .last = t.d, .mark = 'D', .stage = 1 },     .{ .first = t.d + 1,
+                 .last = t.x - 1, .mark = '*', .stage = 1 },
+            .{ .first = t.x, .last = t.m - 1, .mark = 'X', .stage = 2 }, .{ .first = t.m, .last = t.m,
+                 .mark = 'M', .stage = 3 },
             .{ .first = t.w, .last = t.w, .mark = 'W', .stage = 4 },
         }, annotations[i].value());
         out.completed += @intFromBool(t.w >= config.start and t.w <= config.end);
@@ -182,26 +197,33 @@ fn diagram(instructions: []const c.Instruction, run: pipeline.Run, variant: c.Va
         const early = h.idResolved(instruction, variant);
         const pc = prediction.details[i].predicted;
         const first = [_]CellSegment{
-            .{ .first = t.d, .last = t.d, .mark = 'F', .stage = 0 },                                          .{ .first = t.d + 1, .last = t.x - 1, .mark = '*', .stage = 0 },
-            .{ .first = t.x, .last = t.x, .mark = if (early) 'x' else 'D', .stage = if (early) null else 1 }, .{ .first = t.x + 1, .last = t.x + 1, .mark = 'x', .stage = null },
+            .{ .first = t.d, .last = t.d, .mark = 'F', .stage = 0 },                                          .{ .first = t.d + 1,
+                 .last = t.x - 1, .mark = '*', .stage = 0 },
+            .{ .first = t.x, .last = t.x, .mark = if (early) 'x' else 'D', .stage = if (early) null else 1 },
+                 .{ .first = t.x + 1, .last = t.x + 1, .mark = 'x', .stage = null },
         };
         out.add(config, null, pc, "FLUSH", first[0..if (early) @as(usize, 3) else 4], "");
         out.flushed += 1;
         if (!early) {
-            out.add(config, null, pc + 4, "FLUSH", &.{ .{ .first = t.x, .last = t.x, .mark = 'F', .stage = 0 }, .{ .first = t.x + 1, .last = t.x + 1, .mark = 'x', .stage = null } }, "");
+            out.add(config, null, pc + 4, "FLUSH", &.{ .{ .first = t.x, .last = t.x, .mark = 'F',
+                 .stage = 0 }, .{ .first = t.x + 1, .last = t.x + 1, .mark = 'x', .stage = null } },
+                 "");
             out.flushed += 1;
         }
     }
-    out.lines.add("rows {d} completed {d} stall_cells {d} flushed {d}", .{ out.rows, out.completed, out.stall_cells, out.flushed_cells });
+    out.lines.add("rows {d} completed {d} stall_cells {d} flushed {d}", .{ out.rows, out.completed,
+         out.stall_cells, out.flushed_cells });
     out.lines.add("", .{});
     out.lines.add("stages", .{});
     out.lines.add("cycle IF ID EX MEM WB", .{});
-    for (out.contents, 0..) |row, i| out.lines.add("{d} {s} {s} {s} {s} {s}", .{ config.start + c.n(i), row[0], row[1], row[2], row[3], row[4] });
+    for (out.contents, 0..) |row, i| out.lines.add("{d} {s} {s} {s} {s} {s}", .{ config.start + c.n(i),
+         row[0], row[1], row[2], row[3], row[4] });
     return out;
 }
 const Combination = struct { variant: usize, predictor: usize, cycles: i64, stalls: [4]i64 };
 const Summary = struct { cycles: i64, stalls: [4]i64 };
-fn scratchSummary(backing: std.mem.Allocator, instructions: []const c.Instruction, sources: []const h.Sources, variant: c.Variant, flags: []const bool) Summary {
+fn scratchSummary(backing: std.mem.Allocator, instructions: []const c.Instruction, sources: []const h.Sources,
+     variant: c.Variant, flags: []const bool) Summary {
     var scratch = std.heap.ArenaAllocator.init(backing);
     defer scratch.deinit();
     const previous = c.allocator;
@@ -297,7 +319,8 @@ pub fn main(init: std.process.Init) !void {
             summary = .{ .cycles = primary.cycles, .stalls = primary.stalls };
         } else summary = scratchSummary(init.gpa, instructions, sources, variant, prediction.flags);
         table[v][p] = summary.cycles;
-        c.append(Combination, &combinations, .{ .variant = v, .predictor = p, .cycles = summary.cycles, .stalls = summary.stalls });
+        c.append(Combination, &combinations, .{ .variant = v, .predictor = p, .cycles = summary.cycles,
+             .stalls = summary.stalls });
     };
     const variant = config.variants.items[primary_variant];
     const prediction = predictions[primary_predictor];
@@ -328,7 +351,8 @@ pub fn main(init: std.process.Init) !void {
             indirect += @intFromBool(instruction.rs1 >= 0);
             link += @intFromBool(instruction.rd >= 0);
         }
-        if (instruction.kind == .load or instruction.kind == .store) addresses.put(c.allocator, instruction.address, {}) catch @panic("allocation failed");
+        if (instruction.kind == .load or instruction.kind == .store) addresses.put(c.allocator,
+             instruction.address, {}) catch @panic("allocation failed");
         const registers = [_]i64{ instruction.rs1, instruction.rs2 };
         var start: i64 = 0;
         for (registers, 0..) |register, j| if (register > 0) {
@@ -339,7 +363,8 @@ pub fn main(init: std.process.Init) !void {
                 distances[@min(5, i - producer) - 1] += 1;
                 start = @max(start, finish[producer]);
             }
-            paths[h.forwardingPath(instruction, if (p) |producer| primary.timings[producer] else null, primary.timings[i], variant)] += 1;
+            paths[h.forwardingPath(instruction, if (p) |producer| primary.timings[producer] else null,
+                 primary.timings[i], variant)] += 1;
         };
         finish[i] = start + (if (instruction.kind == .load) @as(i64, 2) else if (instruction.kind == .multiply) variant.latency else 1);
         height = @max(height, finish[i]);
@@ -356,7 +381,9 @@ pub fn main(init: std.process.Init) !void {
         if (record.cause >= 2) {
             const producer = instructions[record.producer.?];
             const waiting = instructions[record.waiting.?];
-            c.append(Dependency, &dependencies_rank, .{ .producer = producer.pc, .waiting = waiting.pc, .cause = record.cause, .cycles = record.cycles, .events = 1, .producer_kind = producer.kind, .waiting_kind = waiting.kind });
+            c.append(Dependency, &dependencies_rank, .{ .producer = producer.pc, .waiting = waiting.pc,
+                 .cause = record.cause, .cycles = record.cycles, .events = 1, .producer_kind = producer.kind,
+                 .waiting_kind = waiting.kind });
         }
     }
     std.mem.sort(Dependency, dependencies_rank.items, {}, Dependency.keyLess);
@@ -382,14 +409,17 @@ pub fn main(init: std.process.Init) !void {
         statics[id] = .{ .pc = instruction.pc, .id = id };
         static_branches += @intFromBool(instruction.kind == .branch);
         static_jumps += @intFromBool(instruction.kind == .jump);
-        if (sum4(group.stalls) > 0) c.append(Hotspot, &hotspots, .{ .pc = instruction.pc, .total = sum4(group.stalls), .stalls = group.stalls, .kind = instruction.kind });
+        if (sum4(group.stalls) > 0) c.append(Hotspot, &hotspots, .{ .pc = instruction.pc, .total = sum4(group.stalls),
+             .stalls = group.stalls, .kind = instruction.kind });
     }
     std.mem.sort(StaticRef, statics, {}, StaticRef.less);
     std.mem.sort(Hotspot, hotspots.items, {}, Hotspot.less);
     var stats: c.Lines = .{};
-    stats.add("input lines {d} accepted {d} rejected {d} gaps {d}", .{ input.trace.len, n, trace.rejected.items.len, trace.gaps.items.len });
+    stats.add("input lines {d} accepted {d} rejected {d} gaps {d}", .{ input.trace.len, n,
+         trace.rejected.items.len, trace.gaps.items.len });
     for (trace.rejected.items) |value| stats.add("reject line {d} {s}", .{ value.line, value.reason });
-    for (trace.gaps.items) |value| stats.add("gap line {d} expected {s} found {s}", .{ value.line, r.hexadecimal(value.expected), r.hexadecimal(value.found) });
+    for (trace.gaps.items) |value| stats.add("gap line {d} expected {s} found {s}", .{ value.line,
+         r.hexadecimal(value.expected), r.hexadecimal(value.found) });
     stats.add("", .{});
     stats.add("trace", .{});
     stats.add("instructions {d}", .{n});
@@ -402,25 +432,38 @@ pub fn main(init: std.process.Init) !void {
     stats.add("jumps {d} indirect {d} link {d}", .{ mix[5], indirect, link });
     stats.add("static_control branches {d} jumps {d}", .{ static_branches, static_jumps });
     stats.add("memory loads {d} stores {d} distinct_addresses {d}", .{ mix[2], mix[3], addresses.count() });
-    stats.add("operands {d} with_producer {d} distance 1 {d} 2 {d} 3 {d} 4 {d} 5+ {d}", .{ operands, produced, distances[0], distances[1], distances[2], distances[3], distances[4] });
+    stats.add("operands {d} with_producer {d} distance 1 {d} 2 {d} 3 {d} 4 {d} 5+ {d}", .{ operands,
+         produced, distances[0], distances[1], distances[2], distances[3], distances[4] });
     stats.add("", .{});
     stats.add("prediction", .{});
-    for (predictions, config.predictors.items) |value, definition| stats.add("{s} {s} bits {d} control {d} mispredicted {d} accuracy {s} branches {s} jumps {s} direction {d} btb_miss {d} wrong_target {d}", .{ definition.name, definition.scheme, value.bits, value.control, value.total_misses, r.percentage(value.control - value.total_misses, value.control), r.percentage(value.count[0] - value.wrong[0], value.count[0]), r.percentage(value.count[1] - value.wrong[1], value.count[1]), value.kinds[0], value.kinds[1], value.kinds[2] });
-    stats.add("btb entries {d} lookups {d} hits {d} misses {d}", .{ config.btb, prediction.control, prediction.hits, prediction.control - prediction.hits });
-    stats.add("ras depth {d} calls {d} returns {d} predicted {d} correct {d}", .{ config.ras, prediction.calls, prediction.returns, prediction.ras_predictions, prediction.ras_correct });
+    for (predictions, config.predictors.items) |value, definition| stats.add("{s} {s} bits {d} control {d} mispredicted {d} accuracy {s} branches {s} jumps {s} direction {d} btb_miss {d} wrong_target {d}",
+         .{ definition.name, definition.scheme, value.bits, value.control, value.total_misses,
+         r.percentage(value.control - value.total_misses, value.control), r.percentage(value.count[0] - value.wrong[0],
+         value.count[0]), r.percentage(value.count[1] - value.wrong[1], value.count[1]), value.kinds[0],
+         value.kinds[1], value.kinds[2] });
+    stats.add("btb entries {d} lookups {d} hits {d} misses {d}", .{ config.btb, prediction.control,
+         prediction.hits, prediction.control - prediction.hits });
+    stats.add("ras depth {d} calls {d} returns {d} predicted {d} correct {d}", .{ config.ras,
+         prediction.calls, prediction.returns, prediction.ras_predictions, prediction.ras_correct });
     stats.add("", .{});
     stats.add("timing variant={s} predictor={s}", .{ variant.name, config.primary_predictor });
-    stats.add("forwarding {s} branch_stage {s} mul_latency {d}", .{ if (variant.forwarding) "on" else "off", if (variant.id) "ID" else "EX", variant.latency });
+    stats.add("forwarding {s} branch_stage {s} mul_latency {d}", .{ if (variant.forwarding) "on" else "off",
+         if (variant.id) "ID" else "EX", variant.latency });
     stats.add("cycles {d}", .{cycles});
     stats.add("cpi {s} {s}", .{ r.fraction(cycles, c.n(n)), r.decimal(cycles, c.n(n)) });
     stats.add("ipc {s}", .{r.decimal(c.n(n), cycles)});
     const total_stalls = sum4(primary.stalls);
-    stats.add("stall_cycles total {d} control {d} structural {d} load_use {d} raw {d}", .{ total_stalls, primary.stalls[0], primary.stalls[1], primary.stalls[2], primary.stalls[3] });
-    stats.add("stall_events control {d} structural {d} load_use {d} raw {d}", .{ primary.events[0], primary.events[1], primary.events[2], primary.events[3] });
+    stats.add("stall_cycles total {d} control {d} structural {d} load_use {d} raw {d}", .{ total_stalls,
+         primary.stalls[0], primary.stalls[1], primary.stalls[2], primary.stalls[3] });
+    stats.add("stall_events control {d} structural {d} load_use {d} raw {d}", .{ primary.events[0],
+         primary.events[1], primary.events[2], primary.events[3] });
     stats.add("flushed {d}", .{picture.flushed});
     stats.add("cycle_check {d} + 4 + {d} = {d}", .{ n, total_stalls, c.n(n) + 4 + total_stalls });
-    stats.add("cpi_stack base 1.0000 fill {s} control {s} structural {s} load_use {s} raw {s}", .{ r.decimal(4, c.n(n)), r.decimal(primary.stalls[0], c.n(n)), r.decimal(primary.stalls[1], c.n(n)), r.decimal(primary.stalls[2], c.n(n)), r.decimal(primary.stalls[3], c.n(n)) });
-    stats.add("stall_lengths 1 {d} 2 {d} 3 {d} 4 {d} 5+ {d}", .{ lengths[0], lengths[1], lengths[2], lengths[3], lengths[4] });
+    stats.add("cpi_stack base 1.0000 fill {s} control {s} structural {s} load_use {s} raw {s}",
+         .{ r.decimal(4, c.n(n)), r.decimal(primary.stalls[0], c.n(n)), r.decimal(primary.stalls[1],
+         c.n(n)), r.decimal(primary.stalls[2], c.n(n)), r.decimal(primary.stalls[3], c.n(n)) });
+    stats.add("stall_lengths 1 {d} 2 {d} 3 {d} 4 {d} 5+ {d}", .{ lengths[0], lengths[1], lengths[2],
+         lengths[3], lengths[4] });
     stats.add("dataflow height {d} ilp {s}", .{ height, r.decimal(c.n(n), height) });
     stats.add("", .{});
     stats.add("whatif", .{});
@@ -444,22 +487,31 @@ pub fn main(init: std.process.Init) !void {
             modified.id = !variant.id;
         }
         const summary = scratchSummary(init.gpa, instructions, sources, modified, flags);
-        stats.add("{s} cycles {d} saved {d} speedup {s}", .{ name, summary.cycles, cycles - summary.cycles, r.decimal(cycles, summary.cycles) });
+        stats.add("{s} cycles {d} saved {d} speedup {s}", .{ name, summary.cycles, cycles - summary.cycles,
+             r.decimal(cycles, summary.cycles) });
     }
     stats.add("", .{});
     stats.add("classes", .{});
-    for (c.classes, 0..) |name, i| stats.add("{s} count {d} stall_cycles {d} per_instruction {s}", .{ name, mix[i], class_stalls[i], if (mix[i] > 0) r.decimal(class_stalls[i], mix[i]) else "-" });
+    for (c.classes, 0..) |name, i| stats.add("{s} count {d} stall_cycles {d} per_instruction {s}",
+         .{ name, mix[i], class_stalls[i], if (mix[i] > 0) r.decimal(class_stalls[i], mix[i]) else "-" });
     stats.add("", .{});
     stats.add("forwarding regfile {d} ex_mem {d} mem_wb {d}", .{ paths[0], paths[1], paths[2] });
     stats.add("", .{});
     stats.add("occupancy cycles {d}", .{cycles});
-    for (c.stages, picture.occupancy) |name, value| stats.add("{s} correct {d} wrong {d} idle {d} busy {s}", .{ name, value[0], value[1], cycles - value[0] - value[1], r.percentage(value[0] + value[1], cycles) });
+    for (c.stages, picture.occupancy) |name, value| stats.add("{s} correct {d} wrong {d} idle {d} busy {s}",
+         .{ name, value[0], value[1], cycles - value[0] - value[1], r.percentage(value[0] + value[1],
+         cycles) });
     stats.add("", .{});
     stats.add("hotspots", .{});
-    for (hotspots.items[0..@min(config.top, hotspots.items.len)], 0..) |value, i| stats.add("{d} {s} {s} stall_cycles {d} control {d} structural {d} load_use {d} raw {d}", .{ i + 1, r.hexadecimal(value.pc), c.classes[@intFromEnum(value.kind)], value.total, value.stalls[0], value.stalls[1], value.stalls[2], value.stalls[3] });
+    for (hotspots.items[0..@min(config.top, hotspots.items.len)], 0..) |value, i| stats.add("{d} {s} {s} stall_cycles {d} control {d} structural {d} load_use {d} raw {d}",
+         .{ i + 1, r.hexadecimal(value.pc), c.classes[@intFromEnum(value.kind)], value.total,
+         value.stalls[0], value.stalls[1], value.stalls[2], value.stalls[3] });
     stats.add("", .{});
     stats.add("dependencies total {d}", .{dependencies_rank.items.len});
-    for (dependencies_rank.items[0..@min(config.top, dependencies_rank.items.len)], 0..) |value, i| stats.add("{d} {s} {s} -> {s} {s} {s} stall_cycles {d} events {d}", .{ i + 1, r.hexadecimal(value.producer), c.classes[@intFromEnum(value.producer_kind)], r.hexadecimal(value.waiting), c.classes[@intFromEnum(value.waiting_kind)], c.causes[value.cause], value.cycles, value.events });
+    for (dependencies_rank.items[0..@min(config.top, dependencies_rank.items.len)], 0..) |value,
+         i| stats.add("{d} {s} {s} -> {s} {s} {s} stall_cycles {d} events {d}", .{ i + 1, r.hexadecimal(value.producer),
+         c.classes[@intFromEnum(value.producer_kind)], r.hexadecimal(value.waiting), c.classes[@intFromEnum(value.waiting_kind)],
+         c.causes[value.cause], value.cycles, value.events });
     stats.add("", .{});
     stats.add("intervals size {d}", .{config.interval});
     var a: usize = 0;
@@ -490,22 +542,30 @@ pub fn main(init: std.process.Init) !void {
         for (group.indices.items) |i| {
             wrong += @intFromBool(value.flags[i]);
         }
-        branches.add("{s},{s},{s},{d},{d},{d},{s}", .{ definition.name, r.hexadecimal(instruction.pc), c.classes[@intFromEnum(instruction.kind)], group.indices.items.len, group.taken, wrong, r.percentage(c.n(group.indices.items.len) - wrong, c.n(group.indices.items.len)) });
+        branches.add("{s},{s},{s},{d},{d},{d},{s}", .{ definition.name, r.hexadecimal(instruction.pc),
+             c.classes[@intFromEnum(instruction.kind)], group.indices.items.len, group.taken,
+             wrong, r.percentage(c.n(group.indices.items.len) - wrong, c.n(group.indices.items.len)) });
     };
     try r.save(io, "branches.csv", branches);
     const Compare = struct {
         fn less(ctx: c.Config, x: Combination, y: Combination) bool {
             if (x.cycles != y.cycles) return x.cycles < y.cycles;
             const order = std.mem.order(u8, ctx.variants.items[x.variant].name, ctx.variants.items[y.variant].name);
-            return if (order != .eq) order == .lt else std.mem.lessThan(u8, ctx.predictors.items[x.predictor].name, ctx.predictors.items[y.predictor].name);
+            return if (order != .eq) order == .lt else std.mem.lessThan(u8, ctx.predictors.items[x.predictor].name,
+                 ctx.predictors.items[y.predictor].name);
         }
     };
     std.mem.sort(Combination, combinations.items, config, Compare.less);
     var comparison: c.Lines = .{};
-    comparison.add("rank,variant,predictor,cycles,cpi,speedup,accuracy,mispredictions,control,structural,load_use,raw", .{});
+    comparison.add("rank,variant,predictor,cycles,cpi,speedup,accuracy,mispredictions,control,structural,load_use,raw",
+         .{});
     for (combinations.items, 0..) |value, i| {
         const p = predictions[value.predictor];
-        comparison.add("{d},{s},{s},{d},{s},{s},{s},{d},{d},{d},{d},{d}", .{ i + 1, config.variants.items[value.variant].name, config.predictors.items[value.predictor].name, value.cycles, r.decimal(value.cycles, c.n(n)), r.decimal(cycles, value.cycles), r.percentage(p.control - p.total_misses, p.control), p.total_misses, value.stalls[0], value.stalls[1], value.stalls[2], value.stalls[3] });
+        comparison.add("{d},{s},{s},{d},{s},{s},{s},{d},{d},{d},{d},{d}", .{ i + 1, config.variants.items[value.variant].name,
+             config.predictors.items[value.predictor].name, value.cycles, r.decimal(value.cycles,
+             c.n(n)), r.decimal(cycles, value.cycles), r.percentage(p.control - p.total_misses,
+             p.control), p.total_misses, value.stalls[0], value.stalls[1], value.stalls[2],
+             value.stalls[3] });
     }
     try r.save(io, "comparison.csv", comparison);
     var profile: c.Lines = .{};
@@ -530,7 +590,8 @@ pub fn main(init: std.process.Init) !void {
         }
         var best_misses = c.n(group.indices.items.len) + 1;
         var best: usize = 0;
-        for (predictions, config.predictors.items, 0..) |value, definition, p| if (!c.eq(definition.scheme, "PERFECT")) {
+        for (predictions, config.predictors.items, 0..) |value, definition, p| if (!c.eq(definition.scheme,
+             "PERFECT")) {
             var wrong: i64 = 0;
             for (group.indices.items) |i| {
                 wrong += @intFromBool(value.flags[i]);
@@ -540,7 +601,10 @@ pub fn main(init: std.process.Init) !void {
                 best = p;
             }
         };
-        profile.add("{s} {s} executions {d} taken {d} transitions {d} longest_taken {d} longest_not_taken {d} best {s} {d}", .{ r.hexadecimal(instruction.pc), if (instruction.target < instruction.pc) "backward" else "forward", group.indices.items.len, group.taken, transitions, longest[1], longest[0], config.predictors.items[best].name, best_misses });
+        profile.add("{s} {s} executions {d} taken {d} transitions {d} longest_taken {d} longest_not_taken {d} best {s} {d}",
+             .{ r.hexadecimal(instruction.pc), if (instruction.target < instruction.pc) "backward" else "forward",
+             group.indices.items.len, group.taken, transitions, longest[1], longest[0], config.predictors.items[best].name,
+             best_misses });
     }
     profile.add("", .{});
     profile.add("loops", .{});
@@ -563,7 +627,10 @@ pub fn main(init: std.process.Init) !void {
             entries += 1;
             longest = @max(longest, length);
         }
-        profile.add("{s}-{s} body {d} entries {d} iterations {d} avg_trip {s} max_trip {d}", .{ r.hexadecimal(instruction.target), r.hexadecimal(instruction.pc), @divTrunc(instruction.pc - instruction.target, 4) + 1, entries, group.indices.items.len, r.decimal(c.n(group.indices.items.len), entries), longest });
+        profile.add("{s}-{s} body {d} entries {d} iterations {d} avg_trip {s} max_trip {d}",
+             .{ r.hexadecimal(instruction.target), r.hexadecimal(instruction.pc), @divTrunc(instruction.pc - instruction.target,
+             4) + 1, entries, group.indices.items.len, r.decimal(c.n(group.indices.items.len),
+             entries), longest });
     }
     const segment_groups = c.alloc(ProfileSegment, statics.len);
     @memset(segment_groups, .{});
@@ -583,7 +650,9 @@ pub fn main(init: std.process.Init) !void {
     std.mem.sort(ProfileSegment, segments_rank.items, {}, ProfileSegment.less);
     profile.add("", .{});
     profile.add("segments total {d}", .{segments_rank.items.len});
-    for (segments_rank.items[0..@min(config.top, segments_rank.items.len)], 0..) |value, i| profile.add("{d} {s} instances {d} instructions {d} cycles {d} cpi {s}", .{ i + 1, r.hexadecimal(value.pc), value.instances, value.instructions, value.cycles, r.decimal(value.cycles, value.instructions) });
+    for (segments_rank.items[0..@min(config.top, segments_rank.items.len)], 0..) |value, i| profile.add("{d} {s} instances {d} instructions {d} cycles {d} cpi {s}",
+         .{ i + 1, r.hexadecimal(value.pc), value.instances, value.instructions, value.cycles,
+         r.decimal(value.cycles, value.instructions) });
     profile.add("", .{});
     profile.add("indirect", .{});
     for (statics) |reference| {
@@ -595,19 +664,23 @@ pub fn main(init: std.process.Init) !void {
         std.mem.sort(i64, values, {}, std.sort.asc(i64));
         var targets: std.ArrayList(Target) = .empty;
         for (values, 0..) |value, i| {
-            if (i == 0 or value != values[i - 1]) c.append(Target, &targets, .{ .target = value, .count = 1 }) else targets.items[targets.items.len - 1].count += 1;
+            if (i == 0 or value != values[i - 1]) c.append(Target, &targets, .{ .target = value,
+                 .count = 1 }) else targets.items[targets.items.len - 1].count += 1;
         }
         std.mem.sort(Target, targets.items, {}, Target.less);
         var tail: c.Text = .{};
         for (targets.items) |value| tail.add(" {s}:{d}", .{ r.hexadecimal(value.target), value.count });
-        profile.add("{s} executions {d} distinct {d} targets{s}", .{ r.hexadecimal(instruction.pc), group.indices.items.len, targets.items.len, tail.value() });
+        profile.add("{s} executions {d} distinct {d} targets{s}", .{ r.hexadecimal(instruction.pc),
+             group.indices.items.len, targets.items.len, tail.value() });
     }
     profile.add("", .{});
     profile.add("instructions", .{});
     for (statics) |reference| {
         const group = trace.statics.items[reference.id];
         const instruction = instructions[group.first];
-        profile.add("{s} {s} {s} {s} {s} executions {d} stall_cycles {d}", .{ r.hexadecimal(instruction.pc), c.classes[@intFromEnum(instruction.kind)], r.register(instruction.rd), r.register(instruction.rs1), r.register(instruction.rs2), group.indices.items.len, sum4(group.stalls) });
+        profile.add("{s} {s} {s} {s} {s} executions {d} stall_cycles {d}", .{ r.hexadecimal(instruction.pc),
+             c.classes[@intFromEnum(instruction.kind)], r.register(instruction.rd), r.register(instruction.rs1),
+             r.register(instruction.rs2), group.indices.items.len, sum4(group.stalls) });
     }
     try r.save(io, "profile.txt", profile);
 }

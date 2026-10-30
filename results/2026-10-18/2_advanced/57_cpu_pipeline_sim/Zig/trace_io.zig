@@ -86,7 +86,9 @@ pub const Instruction = struct {
 };
 pub const Predictor = struct { name: []const u8, scheme: []const u8, parameters: [4]usize = .{ 0, 0, 0, 0 } };
 pub const Variant = struct { name: []const u8, forwarding: bool, id: bool, latency: i64 };
-pub const Config = struct { btb: usize = 0, ras: usize = 0, start: i64 = 0, end: i64 = 0, top: usize = 0, interval: usize = 0, predictors: std.ArrayList(Predictor) = .empty, variants: std.ArrayList(Variant) = .empty, primary_variant: []const u8 = "", primary_predictor: []const u8 = "" };
+pub const Config = struct { btb: usize = 0, ras: usize = 0, start: i64 = 0, end: i64 = 0, top: usize = 0,
+     interval: usize = 0, predictors: std.ArrayList(Predictor) = .empty, variants: std.ArrayList(Variant) = .empty,
+     primary_variant: []const u8 = "", primary_predictor: []const u8 = "" };
 pub const Input = struct { trace: []const []const u8, config: Config };
 pub fn parseHex(value: []const u8) ?i64 {
     if (value.len != 8) return null;
@@ -112,11 +114,14 @@ pub fn load(io: std.Io) !Input {
     for (try readLines(io, "input/config.txt")) |line| {
         const row = words(line);
         const key = row[0];
-        if (eq(key, "BTB")) config.btb = u(number(row[1])) else if (eq(key, "RAS")) config.ras = u(number(row[1])) else if (eq(key, "PREDICTOR")) {
+        if (eq(key, "BTB")) config.btb = u(number(row[1])) else if (eq(key, "RAS")) config.ras = u(number(row[1])) else if (eq(key,
+             "PREDICTOR")) {
             var p: Predictor = .{ .name = row[1], .scheme = row[2] };
             for (row[3..], 0..) |field, i| p.parameters[i] = u(number(field));
             append(Predictor, &config.predictors, p);
-        } else if (eq(key, "VARIANT")) append(Variant, &config.variants, .{ .name = row[1], .forwarding = eq(row[2], "ON"), .id = eq(row[3], "ID"), .latency = number(row[4]) }) else if (eq(key, "PRIMARY")) {
+        } else if (eq(key, "VARIANT")) append(Variant, &config.variants, .{ .name = row[1],
+             .forwarding = eq(row[2], "ON"), .id = eq(row[3], "ID"), .latency = number(row[4]) }) else if (eq(key,
+             "PRIMARY")) {
             config.primary_variant = row[1];
             config.primary_predictor = row[2];
         } else if (eq(key, "WINDOW")) {

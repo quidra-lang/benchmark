@@ -74,7 +74,9 @@ pub const Random = struct {
         return self.state;
     }
 };
-pub const Channel = struct { source: usize = 0, destination: usize = 0, minimum: i64 = 0, maximum: i64 = 0, sequence: i64 = 0, last_arrival: i64 = 0, messages: i64 = 0, markers: i64 = 0, buffered: i64 = 0, max_delay: i64 = 0, entries: i64 = 0, fifo: bool = false, previous: Vec = zero };
+pub const Channel = struct { source: usize = 0, destination: usize = 0, minimum: i64 = 0, maximum: i64 = 0,
+     sequence: i64 = 0, last_arrival: i64 = 0, messages: i64 = 0, markers: i64 = 0, buffered: i64 = 0,
+     max_delay: i64 = 0, entries: i64 = 0, fifo: bool = false, previous: Vec = zero };
 pub const Topology = struct {
     names: []const []const u8,
     channels: []Channel,
@@ -94,14 +96,17 @@ pub fn load(io: std.Io) !Topology {
         const row = words(line);
         const source = out.index(row[1]);
         const destination = out.index(row[2]);
-        channels[source * names.len + destination] = .{ .source = source, .destination = destination, .minimum = number(row[4]), .maximum = number(row[row.len - 1]), .fifo = eq(row[3], "FIFO") };
+        channels[source * names.len + destination] = .{ .source = source, .destination = destination,
+             .minimum = number(row[4]), .maximum = number(row[row.len - 1]), .fifo = eq(row[3],
+             "FIFO") };
     }
     return out;
 }
 pub const Arrival = struct { sequence: i64, time: i64 };
 pub fn dispatch(channel: *Channel, time: i64, marker: bool, clock: Vec, count: usize, random: *Random) Arrival {
     channel.sequence += 1;
-    const delay = channel.minimum + (if (channel.minimum == channel.maximum) @as(i64, 0) else @mod(random.draw(), channel.maximum - channel.minimum + 1));
+    const delay = channel.minimum + (if (channel.minimum == channel.maximum) @as(i64, 0) else @mod(random.draw(),
+         channel.maximum - channel.minimum + 1));
     var arrival = time + delay;
     if (channel.fifo) arrival = @max(arrival, channel.last_arrival);
     channel.last_arrival = @max(channel.last_arrival, arrival);
@@ -114,5 +119,6 @@ pub fn dispatch(channel: *Channel, time: i64, marker: bool, clock: Vec, count: u
     return .{ .sequence = channel.sequence, .time = arrival };
 }
 pub fn delayText(channel: Channel) []const u8 {
-    return if (channel.minimum == channel.maximum) fmt("{d}", .{channel.minimum}) else fmt("{d}-{d}", .{ channel.minimum, channel.maximum });
+    return if (channel.minimum == channel.maximum) fmt("{d}", .{channel.minimum}) else fmt("{d}-{d}",
+         .{ channel.minimum, channel.maximum });
 }

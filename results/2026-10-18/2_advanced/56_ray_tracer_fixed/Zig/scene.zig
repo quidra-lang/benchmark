@@ -67,11 +67,15 @@ const v = @import("vector3.zig");
 pub const Vec = v.Vec;
 pub const Bounds = struct { lo: Vec, hi: Vec };
 pub const Ray = struct { origin: Vec, direction: Vec };
-pub const Material = struct { name: []const u8, color: Vec, second: Vec = .{ 0, 0, 0 }, kd: i64, ks: i64, exponent: i64, kr: i64, kt: i64, ior: i64, checker_size: i64 = 0 };
+pub const Material = struct { name: []const u8, color: Vec, second: Vec = .{ 0, 0, 0 }, kd: i64,
+     ks: i64, exponent: i64, kr: i64, kt: i64, ior: i64, checker_size: i64 = 0 };
 pub const ObjectKind = enum { sphere, plane, box };
 pub const LightKind = enum { point, spot, sun, area };
-pub const Object = struct { kind: ObjectKind, label: u8, material: usize, first: Vec, second: Vec = .{ 0, 0, 0 }, radius: i64 = 0 };
-pub const Light = struct { kind: LightKind, position: Vec = .{ 0, 0, 0 }, direction: Vec = .{ 0, 0, 0 }, u: Vec = .{ 0, 0, 0 }, v: Vec = .{ 0, 0, 0 }, outer: i64 = 0, inner: i64 = 0, intensity: i64, divisions: usize = 1 };
+pub const Object = struct { kind: ObjectKind, label: u8, material: usize, first: Vec, second: Vec = .{ 0,
+     0, 0 }, radius: i64 = 0 };
+pub const Light = struct { kind: LightKind, position: Vec = .{ 0, 0, 0 }, direction: Vec = .{ 0,
+     0, 0 }, u: Vec = .{ 0, 0, 0 }, v: Vec = .{ 0, 0, 0 }, outer: i64 = 0, inner: i64 = 0,
+     intensity: i64, divisions: usize = 1 };
 pub const Scene = struct {
     eye: Vec = .{ 0, 0, 0 },
     forward: Vec = .{ 0, 0, 0 },
@@ -123,7 +127,9 @@ pub fn load(io: std.Io) !Scene {
             out.fog_start = number(row[4]);
             out.fog_end = number(row[5]);
         } else if (eq(key, "material")) {
-            append(Material, &out.materials, .{ .name = row[1], .color = vector(row, 2), .kd = number(row[5]), .ks = number(row[6]), .exponent = number(row[7]), .kr = number(row[8]), .kt = number(row[9]), .ior = number(row[10]) });
+            append(Material, &out.materials, .{ .name = row[1], .color = vector(row, 2), .kd = number(row[5]),
+                 .ks = number(row[6]), .exponent = number(row[7]), .kr = number(row[8]), .kt = number(row[9]),
+                 .ior = number(row[10]) });
         } else if (eq(key, "checker")) {
             const m = &out.materials.items[out.material(row[1])];
             m.second = vector(row, 2);
@@ -144,7 +150,8 @@ pub fn load(io: std.Io) !Scene {
             }
             append(Light, &out.lights, light);
         } else {
-            var object: Object = .{ .kind = std.meta.stringToEnum(ObjectKind, key).?, .label = row[1][0], .material = out.material(row[2]), .first = vector(row, 3) };
+            var object: Object = .{ .kind = std.meta.stringToEnum(ObjectKind, key).?, .label = row[1][0],
+                 .material = out.material(row[2]), .first = vector(row, 3) };
             if (object.kind == .sphere) object.radius = number(row[6]) else {
                 object.second = vector(row, 6);
                 if (object.kind == .plane) object.second = v.norm(object.second);

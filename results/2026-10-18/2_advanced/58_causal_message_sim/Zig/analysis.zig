@@ -2,7 +2,8 @@ const std = @import("std");
 const c = @import("network.zig");
 const p = @import("processes.zig");
 const clock = @import("clocks.zig");
-pub fn graphEdges(events: []const p.Event, copies: []const p.Copy, messages: []const p.Message, processes: []const p.Process) []std.ArrayList(usize) {
+pub fn graphEdges(events: []const p.Event, copies: []const p.Copy, messages: []const p.Message,
+     processes: []const p.Process) []std.ArrayList(usize) {
     const out = c.alloc(std.ArrayList(usize), events.len);
     @memset(out, .empty);
     for (events, 0..) |event, i| {
@@ -36,7 +37,8 @@ pub fn graphPath(source: usize, target: usize, graph: []const std.ArrayList(usiz
     std.mem.reverse(usize, out.items);
     return out.items;
 }
-pub const Concurrency = struct { ordered: i64 = 0, concurrent: i64 = 0, same: i64 = 0, inversions: i64 = 0, pairs: [6][6]i64 = [_][6]i64{c.zero} ** 6 };
+pub const Concurrency = struct { ordered: i64 = 0, concurrent: i64 = 0, same: i64 = 0, inversions: i64 = 0,
+     pairs: [6][6]i64 = [_][6]i64{c.zero} ** 6 };
 pub fn concurrency(events: []const p.Event, count: usize) Concurrency {
     var out: Concurrency = .{};
     for (events, 0..) |a, i| for (events[i + 1 ..]) |b| {
@@ -50,15 +52,20 @@ pub fn concurrency(events: []const p.Event, count: usize) Concurrency {
     return out;
 }
 pub const Violation = struct { process: usize, first: usize, second: usize };
-pub const Orders = struct { races: std.ArrayList(Violation) = .empty, violations: std.ArrayList(Violation) = .empty, fifo: i64 = 0 };
-pub fn orders(processes: []const p.Process, copies: []const p.Copy, messages: []const p.Message, events: []const p.Event) Orders {
+pub const Orders = struct { races: std.ArrayList(Violation) = .empty, violations: std.ArrayList(Violation) = .empty,
+     fifo: i64 = 0 };
+pub fn orders(processes: []const p.Process, copies: []const p.Copy, messages: []const p.Message,
+     events: []const p.Event) Orders {
     var out: Orders = .{};
     for (processes, 0..) |process, own| {
         const delivered = process.delivered.items;
         if (delivered.len > 0) for (delivered[0 .. delivered.len - 1], delivered[1..]) |a, b| {
-            if (clock.relation(events[messages[copies[a].message].send].clock, events[messages[copies[b].message].send].clock, processes.len) == 0) c.append(Violation, &out.races, .{ .process = own, .first = a, .second = b });
+            if (clock.relation(events[messages[copies[a].message].send].clock, events[messages[copies[b].message].send].clock,
+                 processes.len) == 0) c.append(Violation, &out.races, .{ .process = own, .first = a,
+                 .second = b });
         };
-        for (delivered, 0..) |a, i| for (delivered[i + 1 ..]) |b| if (clock.relation(events[messages[copies[b].message].send].clock, events[messages[copies[a].message].send].clock, processes.len) == 1) {
+        for (delivered, 0..) |a, i| for (delivered[i + 1 ..]) |b| if (clock.relation(events[messages[copies[b].message].send].clock,
+             events[messages[copies[a].message].send].clock, processes.len) == 1) {
             c.append(Violation, &out.violations, .{ .process = own, .first = a, .second = b });
             out.fifo += @intFromBool(copies[a].source == copies[b].source);
         };
@@ -66,7 +73,8 @@ pub fn orders(processes: []const p.Process, copies: []const p.Copy, messages: []
     return out;
 }
 pub const Predicate = struct { cuts: i64 = 0, definite: bool = false };
-pub const Enumeration = struct { limits: c.Vec = c.zero, levels: []i64, product: usize = 1, consistent: i64 = 0, predicates: []Predicate };
+pub const Enumeration = struct { limits: c.Vec = c.zero, levels: []i64, product: usize = 1,
+     consistent: i64 = 0, predicates: []Predicate };
 pub fn enumerate(processes: []const p.Process, events: []const p.Event, time: i64, thresholds: []const i64) Enumeration {
     const n = processes.len;
     var out: Enumeration = .{ .levels = undefined, .predicates = c.alloc(Predicate, thresholds.len) };
@@ -99,7 +107,8 @@ pub fn enumerate(processes: []const p.Process, events: []const p.Event, time: i6
             balance += p.balanceAtCut(processes[own], events, cut[own]);
         }
         var good = true;
-        for (0..n) |own| if (cut[own] > 0 and !clock.lessEqual(events[processes[own].events.items[c.u(cut[own] - 1)]].clock, cut, n)) {
+        for (0..n) |own| if (cut[own] > 0 and !clock.lessEqual(events[processes[own].events.items[c.u(cut[own] - 1)]].clock,
+             cut, n)) {
             good = false;
         };
         if (!good) continue;
