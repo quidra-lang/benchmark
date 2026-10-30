@@ -13,13 +13,27 @@ static class Render
             for (int i = 0; i < cols; i++)
             {
                 Point point = new(2 * x + (2 * i + 1) * cw, 2 * y + (2 * (rows - 1 - j) + 1) * ch, 2);
-                bool a = operands is { } left && RingOps.Interior(point, left.A);
-                bool b = operands is { } right && RingOps.Interior(point, right.B);
+                bool a = operands is {
+                } left && RingOps.Interior(point, left.A);
+                bool b = operands is {
+                } right && RingOps.Interior(point, right.B);
                 char c;
-                if (RingOps.Interior(point, all)) { counts[0]++; c = '#'; }
-                else if (a && b) { counts[3]++; c = '+'; }
-                else if (a) { counts[1]++; c = 'a'; }
-                else if (b) { counts[2]++; c = 'b'; }
+                if (RingOps.Interior(point, all)) {
+                    counts[0]++;
+                    c = '#';
+                }
+                else if (a && b) {
+                    counts[3]++;
+                    c = '+';
+                }
+                else if (a) {
+                    counts[1]++;
+                    c = 'a';
+                }
+                else if (b) {
+                    counts[2]++;
+                    c = 'b';
+                }
                 else c = '.';
                 line.Append(c);
             }

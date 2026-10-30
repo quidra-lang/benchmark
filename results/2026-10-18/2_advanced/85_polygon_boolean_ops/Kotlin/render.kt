@@ -10,13 +10,25 @@ object Render {
             val line = StringBuilder()
             for (i in 0 until cols) {
                 val point = Point(bi(2 * x + (2 * i + 1) * cw), bi(2 * y + (2 * (rows - 1 - j) + 1) * ch), bi(2))
-                val a = operands?.let { RingOps.interior(point, it.first) } ?: false
-                val b = operands?.let { RingOps.interior(point, it.second) } ?: false
-                val c = if (RingOps.interior(point, all)) { counts[0]++; '#' }
-                    else if (a && b) { counts[3]++; '+' }
-                    else if (a) { counts[1]++; 'a' }
-                    else if (b) { counts[2]++; 'b' }
-                    else '.'
+                val a = operands?.let {
+                    RingOps.interior(point, it.first)
+                } ?: false
+                val b = operands?.let {
+                    RingOps.interior(point, it.second)
+                } ?: false
+                val c = if (RingOps.interior(point, all)) {
+                    counts[0]++; '#'
+                }
+                else if (a && b) {
+                    counts[3]++; '+'
+                }
+                else if (a) {
+                    counts[1]++; 'a'
+                }
+                else if (b) {
+                    counts[2]++; 'b'
+                }
+                else '.'
                 line.append(c)
             }
             lines.add(line.toString())

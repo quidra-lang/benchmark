@@ -1,10 +1,10 @@
 object Intersections {
     fun on(a: Point, b: Point, p: Point): Boolean = cross(a, b, p) == ZERO &&
-        xCompare(p, if (xCompare(a, b) < 0) a else b) >= 0 && xCompare(p, if (xCompare(a, b) < 0) b else a) <= 0 &&
-        yCompare(p, if (yCompare(a, b) < 0) a else b) >= 0 && yCompare(p, if (yCompare(a, b) < 0) b else a) <= 0
+    xCompare(p, if (xCompare(a, b) < 0) a else b) >= 0 && xCompare(p, if (xCompare(a, b) < 0) b else a) <= 0 &&
+    yCompare(p, if (yCompare(a, b) < 0) a else b) >= 0 && yCompare(p, if (yCompare(a, b) < 0) b else a) <= 0
     fun touch(a: Point, b: Point, c: Point, d: Point): Boolean =
-        cross(a, b, c).signum() * cross(a, b, d).signum() < 0 && cross(c, d, a).signum() * cross(c, d, b).signum() < 0 ||
-        on(a, b, c) || on(a, b, d) || on(c, d, a) || on(c, d, b)
+    cross(a, b, c).signum() * cross(a, b, d).signum() < 0 && cross(c, d, a).signum() * cross(c, d, b).signum() < 0 ||
+    on(a, b, c) || on(a, b, d) || on(c, d, a) || on(c, d, b)
     fun overlap(a: Point, b: Point, c: Point, d: Point): Boolean {
         if (cross(a, b, c) != ZERO || cross(a, b, d) != ZERO) return false
         val compare: (Point, Point) -> Int = if (xCompare(a, b) != 0) ::xCompare else ::yCompare
@@ -37,7 +37,9 @@ object Intersections {
         val gy = c.y - a.y
         var t = gx * sy - gy * sx
         var u = gx * ry - gy * rx
-        if (den < ZERO) { den = -den; t = -t; u = -u }
+        if (den < ZERO) {
+            den = -den; t = -t; u = -u
+        }
         if (t <= ZERO || t >= den || u <= ZERO || u >= den) return null
         return Triple(Point(a.x * den + t * rx, a.y * den + t * ry, den), Fraction(t, den), Fraction(u, den))
     }

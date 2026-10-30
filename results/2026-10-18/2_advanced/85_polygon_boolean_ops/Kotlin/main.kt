@@ -1,20 +1,23 @@
 import java.io.File
-
 data class Polygon(val input: Rings, val rings: Rings)
 data class Target(val region: Region, val operands: Pair<Rings, Rings>? = null)
 class Rejection(val reason: String) : Exception(reason)
-
 fun integer(text: String): Long? {
     val digits = text.removePrefix("-")
-    return if (digits.length in 1..9 && digits.all { it in '0'..'9' }) text.toLongOrNull() else null
+    return if (digits.length in 1..9 && digits.all {
+        it in '0'..'9'
+    }) text.toLongOrNull() else null
 }
-fun validName(text: String): Boolean = text.length in 1..16 && text.all { it in 'a'..'z' || it in '0'..'9' || it == '_' }
-
+fun validName(text: String): Boolean = text.length in 1..16 && text.all {
+    it in 'a'..'z' || it in '0'..'9' || it == '_'
+}
 fun validate(rings: Rings): String? {
     for ((k, r) in rings.withIndex()) {
         val n = r.size
         if (n < 3) return "too_few_vertices ring ${k + 1}"
-        val outside = r.firstOrNull { it.x < ZERO || it.y < ZERO || it.x > bi(1000) * it.d || it.y > bi(1000) * it.d }
+        val outside = r.firstOrNull {
+            it.x < ZERO || it.y < ZERO || it.x > bi(1000) * it.d || it.y > bi(1000) * it.d
+        }
         if (outside != null) return "out_of_range ring ${k + 1} $outside"
         val seen = mutableSetOf<Point>()
         for (p in r) if (!seen.add(p)) return "duplicate_vertex ring ${k + 1} $p"
@@ -39,7 +42,6 @@ fun validate(rings: Rings): String? {
     }
     return null
 }
-
 fun parseBlock(content: List<Pair<Int, String>>, end: Int): Rings {
     val rings = mutableListOf<Ring>()
     var i = 0
@@ -47,7 +49,9 @@ fun parseBlock(content: List<Pair<Int, String>>, end: Int): Rings {
         val (line, text) = content[i]
         val a = text.split(' ')
         if (a.size != 2 || !(a[0] == "OUTER" && rings.isEmpty() || a[0] == "HOLE" && rings.isNotEmpty()) ||
-            a[1].length !in 1..9 || !a[1].all { it in '0'..'9' } || a[1].toInt() == 0) throw Rejection("format line $line")
+        a[1].length !in 1..9 || !a[1].all {
+            it in '0'..'9'
+        } || a[1].toInt() == 0) throw Rejection("format line $line")
         val n = a[1].toInt()
         i++
         val ring = mutableListOf<Point>()
@@ -66,7 +70,6 @@ fun parseBlock(content: List<Pair<Int, String>>, end: Int): Rings {
     if (rings.isEmpty()) throw Rejection("format line $end")
     return rings
 }
-
 class Polygons {
     val used = mutableSetOf<String>()
     val valid = mutableMapOf<String, Polygon>()
@@ -77,7 +80,9 @@ class Polygons {
         val lines = File("input/polygons.txt").readLines()
         var i = 0
         while (i < lines.size) {
-            if (lines[i].isEmpty() || lines[i].startsWith('#')) { i++; continue }
+            if (lines[i].isEmpty() || lines[i].startsWith('#')) {
+                i++; continue
+            }
             val name = lines[i].split(' ')[1]
             val start = i + 1
             i++
@@ -89,13 +94,19 @@ class Polygons {
             val end = i + 1
             i++
             blocks++
-            if (!used.add(name)) { rejected.add("polygon $name duplicate_name line $start"); continue }
+            if (!used.add(name)) {
+                rejected.add("polygon $name duplicate_name line $start"); continue
+            }
             try {
                 val input = parseBlock(content, end)
-                validate(input)?.let { throw Rejection(it) }
+                validate(input)?.let {
+                    throw Rejection(it)
+                }
                 valid[name] = Polygon(input, RingOps.canonical(input))
                 validBlocks++
-            } catch (e: Rejection) { rejected.add("polygon $name ${e.reason}") }
+            } catch (e: Rejection) {
+                rejected.add("polygon $name ${e.reason}")
+            }
         }
     }
     fun get(name: String): Polygon {
@@ -103,18 +114,20 @@ class Polygons {
         return valid[name] ?: throw Rejection("invalid_polygon $name")
     }
 }
-
 fun target(text: String, polygons: Polygons, results: Map<Int, Target>): Target {
     if (text.startsWith('@')) {
         val n = text.drop(1)
-        if (n.length !in 1..9 || !n.all { it in '0'..'9' }) throw Rejection("bad_target $text")
+        if (n.length !in 1..9 || !n.all {
+            it in '0'..'9'
+        }) throw Rejection("bad_target $text")
         return results[n.toInt()] ?: throw Rejection("bad_target $text")
     }
     return Target(listOf(polygons.get(text).rings))
 }
-
 fun general(a: Rings, b: Rings, an: String, bn: String): String? {
-    for (r in a) for (p in r) if (b.any { p in it }) return "shared_vertex $p"
+    for (r in a) for (p in r) if (b.any {
+        p in it
+    }) return "shared_vertex $p"
     for (r in a) for (i in r.indices) for (s in b) for (j in s.indices) {
         val u = r[i]
         val v = r[(i + 1) % r.size]
@@ -135,12 +148,10 @@ fun general(a: Rings, b: Rings, an: String, bn: String): String? {
     }
     return null
 }
-
 fun convex(rings: Rings): Boolean = rings.size == 1 && rings[0].indices.all {
     val r = rings[0]
     cross(r[(it + r.size - 1) % r.size], r[it], r[(it + 1) % r.size]) > ZERO
 }
-
 fun clip(a: Rings, window: Ring): Rings {
     val result = mutableListOf<Ring>()
     for (ring in a) {
@@ -159,22 +170,38 @@ fun clip(a: Rings, window: Ring): Rings {
             }
             list = next
         }
-        val clean = list.indices.filter { list[it] != list[(it + list.size - 1) % list.size] }.map { list[it] }
+        val clean = list.indices.filter {
+            list[it] != list[(it + list.size - 1) % list.size]
+        }.map {
+            list[it]
+        }
         if (clean.size >= 3) result.add(clean)
     }
     return result
 }
-fun cyclic(a: Ring, b: Ring): Boolean = a.size == b.size && b.indices.any { k -> a.indices.all { a[it] == b[(it + k) % b.size] } }
+fun cyclic(a: Ring, b: Ring): Boolean = a.size == b.size && b.indices.any {
+    k -> a.indices.all {
+        a[it] == b[(it + k) % b.size]
+    }
+}
 fun locate(region: Region, p: Point): String {
     for ((k, polygon) in region.withIndex()) for ((j, ring) in polygon.withIndex()) if (RingOps.boundary(p, ring)) {
         return if (j == 0) "boundary outer ${k + 1}" else "boundary hole ${k + 1} $j"
     }
-    for ((k, polygon) in region.withIndex()) if (RingOps.inside(p, polygon[0]) && polygon.drop(1).none { RingOps.inside(p, it) }) return "inside polygon ${k + 1}"
+    for ((k, polygon) in region.withIndex()) if (RingOps.inside(p, polygon[0]) && polygon.drop(1).none {
+        RingOps.inside(p, it)
+    }) return "inside polygon ${k + 1}"
     return "outside"
 }
-fun operandLocation(p: Point, rings: Rings): String = if (rings.any { RingOps.boundary(p, it) }) "boundary" else if (RingOps.interior(p, rings)) "inside" else "outside"
+fun operandLocation(p: Point, rings: Rings): String = if (rings.any {
+    RingOps.boundary(p, it)
+}) "boundary" else if (RingOps.interior(p, rings)) "inside" else "outside"
 fun convexHull(ring: Ring): Ring {
-    val sorted = ring.sortedWith(Comparator { a, b -> xCompare(a, b).let { if (it != 0) it else yCompare(a, b) } })
+    val sorted = ring.sortedWith(Comparator {
+        a, b -> xCompare(a, b).let {
+            if (it != 0) it else yCompare(a, b)
+        }
+    })
     fun half(points: Ring): Ring {
         val result = mutableListOf<Point>()
         for (p in points) {
@@ -185,13 +212,18 @@ fun convexHull(ring: Ring): Ring {
     }
     return half(sorted) + half(sorted.reversed())
 }
-fun twiceArea(ring: Ring): BI = ring.indices.fold(ZERO) { sum, i -> sum + ring[i].x * ring[(i + 1) % ring.size].y - ring[(i + 1) % ring.size].x * ring[i].y }
-
+fun twiceArea(ring: Ring): BI = ring.indices.fold(ZERO) {
+    sum, i -> sum + ring[i].x * ring[(i + 1) % ring.size].y - ring[(i + 1) % ring.size].x * ring[i].y
+}
 data class Values(val lines: List<String>, val rings: Int, val holes: Int, val vertices: Int, val area: Double)
 fun resultValues(region: Region, a: Rings, b: Rings?): Values {
-    val rings = region.sumOf { it.size }
+    val rings = region.sumOf {
+        it.size
+    }
     val holes = rings - region.size
-    val vertices = region.flatten().sumOf { it.size }
+    val vertices = region.flatten().sumOf {
+        it.size
+    }
     val area = RingOps.totalArea(region)
     val lines = mutableListOf("polygons ${region.size} rings $rings holes $holes vertices $vertices area ${realText(area)}")
     var sx = 0.0
@@ -210,11 +242,17 @@ fun resultValues(region: Region, a: Rings, b: Rings?): Values {
             sx += (x1 + x2) * c
             sy += (y1 + y2) * c
             val v = ring[i]
-            origins[if (a.any { v in it }) 0 else if (b?.any { v in it } == true) 1 else 2]++
+            origins[if (a.any {
+                v in it
+            }) 0 else if (b?.any {
+                v in it
+            } == true) 1 else 2]++
             points.add(v)
         }
     }
-    if (points.isEmpty()) { lines.add("bbox none"); lines.add("centroid none") }
+    if (points.isEmpty()) {
+        lines.add("bbox none"); lines.add("centroid none")
+    }
     else {
         val minX = points.minWithOrNull(Comparator(::xCompare))!!
         val maxX = points.maxWithOrNull(Comparator(::xCompare))!!
@@ -230,13 +268,18 @@ fun resultValues(region: Region, a: Rings, b: Rings?): Values {
     return Values(lines, rings, holes, vertices, area)
 }
 fun properties(polygon: Polygon, area: Double): List<String> {
-    val orientations = polygon.input.joinToString(" ") { if (twiceArea(it) > ZERO) "ccw" else "cw" }
-    val reflex = polygon.rings.sumOf { r -> r.indices.count { cross(r[(it + r.size - 1) % r.size], r[it], r[(it + 1) % r.size]) < ZERO } }
+    val orientations = polygon.input.joinToString(" ") {
+        if (twiceArea(it) > ZERO) "ccw" else "cw"
+    }
+    val reflex = polygon.rings.sumOf {
+        r -> r.indices.count {
+            cross(r[(it + r.size - 1) % r.size], r[it], r[(it + 1) % r.size]) < ZERO
+        }
+    }
     val hull = convexHull(polygon.rings[0])
     val hullArea = twiceArea(hull).toDouble() / 2
     return listOf("input $orientations", "reflex $reflex", "hull ${hull.size} ${realText(hullArea)} solidity ${realText(area / hullArea, 6)}")
 }
-
 val kinds = listOf("UNION", "INTERSECTION", "DIFFERENCE", "XOR", "CLIP", "AREA", "MOVE", "ROTATE", "MIRROR", "SNAP", "LOCATE", "RENDER")
 fun arguments(a: List<String>): Boolean {
     val expected = when (a[0]) {
@@ -249,12 +292,18 @@ fun arguments(a: List<String>): Boolean {
         else -> return false
     }
     if (a.size != expected) return false
-    fun valid(i: Int, low: Long, high: Long): Boolean = integer(a[i])?.let { it in low..high } ?: false
+    fun valid(i: Int, low: Long, high: Long): Boolean = integer(a[i])?.let {
+        it in low..high
+    } ?: false
     return when (a[0]) {
         "LOCATE" -> valid(2, 0, 1000) && valid(3, 0, 1000)
         "RENDER" -> {
             if (!(valid(2, 0, 1000) && valid(3, 0, 1000) && valid(4, 1, 100) && valid(5, 1, 100) && valid(6, 1, 100) && valid(7, 1, 60))) false
-            else { val v = a.drop(2).map { integer(it)!! }; v[0] + v[2] * v[4] <= 1000 && v[1] + v[3] * v[5] <= 1000 }
+            else {
+                val v = a.drop(2).map {
+                    integer(it)!!
+                }; v[0] + v[2] * v[4] <= 1000 && v[1] + v[3] * v[5] <= 1000
+            }
         }
         "MOVE" -> valid(2, -1000, 1000) && valid(3, -1000, 1000) && validName(a[4])
         "ROTATE" -> valid(2, 0, 1000) && valid(3, 0, 1000) && valid(4, 1, 3) && validName(a[5])
@@ -263,9 +312,8 @@ fun arguments(a: List<String>): Boolean {
         else -> true
     }
 }
-
 data class Operation(val lines: MutableList<String> = mutableListOf(), var area: String? = null,
-    var drawing: List<String> = emptyList(), var target: Target? = null, var definition: Pair<String, Polygon>? = null, var crossings: Int = 0)
+var drawing: List<String> = emptyList(), var target: Target? = null, var definition: Pair<String, Polygon>? = null, var crossings: Int = 0)
 fun operation(number: Int, text: String, polygons: Polygons, results: Map<Int, Target>): Operation {
     val a = text.split(' ')
     val kind = a[0]
@@ -280,16 +328,22 @@ fun operation(number: Int, text: String, polygons: Polygons, results: Map<Int, T
     if (newName in polygons.used) throw Rejection("duplicate_name $newName")
     if (kind == "SNAP" && resolved!!.region.size != 1) throw Rejection("not_single ${a[1]}")
     if (kind == "CLIP" && !convex(b!!.rings)) throw Rejection("not_convex ${a[2]}")
-    if (binary) general(input!!.rings, b!!.rings, a[1], a[2])?.let { throw Rejection(it) }
+    if (binary) general(input!!.rings, b!!.rings, a[1], a[2])?.let {
+        throw Rejection(it)
+    }
     val op = Operation(mutableListOf("op $number $text"))
     if (kind == "LOCATE") {
         val p = Point(integer(a[2])!!, integer(a[3])!!)
         op.lines.add("location ${locate(resolved!!.region, p)}")
-        resolved.operands?.let { op.lines.add("operands a ${operandLocation(p, it.first)} b ${operandLocation(p, it.second)}") }
+        resolved.operands?.let {
+            op.lines.add("operands a ${operandLocation(p, it.first)} b ${operandLocation(p, it.second)}")
+        }
         return op
     }
     if (kind == "RENDER") {
-        val v = a.drop(2).map { integer(it)!! }
+        val v = a.drop(2).map {
+            integer(it)!!
+        }
         val (drawing, counts) = Render.draw(resolved!!.region, resolved.operands, v)
         op.drawing = listOf("render $number ${a[1]} cols ${v[4]} rows ${v[5]} result ${counts[0]} a ${counts[1]} b ${counts[2]} both ${counts[3]}") + drawing
         op.lines.clear()
@@ -297,23 +351,40 @@ fun operation(number: Int, text: String, polygons: Polygons, results: Map<Int, T
     }
     var polygon = input
     if (defining) {
-        val inputRings = if (kind == "SNAP") resolved!!.region[0].map { r -> r.map { it.snapped() } }
-        else input!!.input.map { r -> r.map { p ->
-            var x = p.x
-            var y = p.y
-            when (kind) {
-                "MOVE" -> { x += bi(integer(a[2])!!); y += bi(integer(a[3])!!) }
-                "ROTATE" -> {
-                    val cx = bi(integer(a[2])!!)
-                    val cy = bi(integer(a[3])!!)
-                    repeat(integer(a[4])!!.toInt()) { val nx = cx - (y - cy); val ny = cy + (x - cx); x = nx; y = ny }
-                }
-                else -> { val c = bi(integer(a[3])!!); if (a[2] == "x") x = bi(2) * c - x else y = bi(2) * c - y }
+        val inputRings = if (kind == "SNAP") resolved!!.region[0].map {
+            r -> r.map {
+                it.snapped()
             }
-            Point(x, y)
-        } }
-        if (kind == "SNAP") validate(inputRings)?.let { throw Rejection("invalid_result $it") }
-        else if (inputRings.flatten().any { it.x < ZERO || it.y < ZERO || it.x > bi(1000) || it.y > bi(1000) }) throw Rejection("out_of_range $newName")
+        }
+        else input!!.input.map {
+            r -> r.map {
+                p ->
+                var x = p.x
+                var y = p.y
+                when (kind) {
+                    "MOVE" -> {
+                        x += bi(integer(a[2])!!); y += bi(integer(a[3])!!)
+                    }
+                    "ROTATE" -> {
+                        val cx = bi(integer(a[2])!!)
+                        val cy = bi(integer(a[3])!!)
+                        repeat(integer(a[4])!!.toInt()) {
+                            val nx = cx - (y - cy); val ny = cy + (x - cx); x = nx; y = ny
+                        }
+                    }
+                    else -> {
+                        val c = bi(integer(a[3])!!); if (a[2] == "x") x = bi(2) * c - x else y = bi(2) * c - y
+                    }
+                }
+                Point(x, y)
+            }
+        }
+        if (kind == "SNAP") validate(inputRings)?.let {
+            throw Rejection("invalid_result $it")
+        }
+        else if (inputRings.flatten().any {
+            it.x < ZERO || it.y < ZERO || it.x > bi(1000) || it.y > bi(1000)
+        }) throw Rejection("out_of_range $newName")
         polygon = Polygon(inputRings, RingOps.canonical(inputRings))
         op.definition = Pair(newName!!, polygon)
     }
@@ -323,7 +394,7 @@ fun operation(number: Int, text: String, polygons: Polygons, results: Map<Int, T
         val br = b!!.rings
         val graph = Graph(ar, br)
         val relation = if (graph.ordered.isNotEmpty()) "overlap" else if (graph.na == ar.size && graph.nb == 0) "within"
-            else if (graph.nb == br.size && graph.na == 0) "contains" else if (graph.na == 0 && graph.nb == 0) "disjoint" else "overlap"
+        else if (graph.nb == br.size && graph.na == 0) "contains" else if (graph.na == 0 && graph.nb == 0) "disjoint" else "overlap"
         val union = graph.result("UNION")
         val intersection = graph.result("INTERSECTION")
         val iou = RingOps.totalArea(intersection) / RingOps.totalArea(union)
@@ -335,10 +406,14 @@ fun operation(number: Int, text: String, polygons: Polygons, results: Map<Int, T
             "UNION" -> union
             "INTERSECTION", "CLIP" -> intersection
             "DIFFERENCE" -> graph.result("DIFFERENCE")
-            else -> (graph.result("DIFFERENCE") + Graph(br, ar).result("DIFFERENCE")).sortedBy { it[0][0] }
+            else -> (graph.result("DIFFERENCE") + Graph(br, ar).result("DIFFERENCE")).sortedBy {
+                it[0][0]
+            }
         }
         op.target = Target(region, Pair(ar, br))
-    } else { region = listOf(polygon!!.rings); op.target = Target(region) }
+    } else {
+        region = listOf(polygon!!.rings); op.target = Target(region)
+    }
     val operandA = if (binary) input!!.rings else polygon!!.rings
     val values = resultValues(region, operandA, b?.rings)
     op.lines.addAll(values.lines)
@@ -347,12 +422,15 @@ fun operation(number: Int, text: String, polygons: Polygons, results: Map<Int, T
     if (kind == "CLIP") {
         val clipped = clip(operandA, b!!.rings[0])
         val resultRings = region.flatten()
-        val match = resultRings.size == clipped.size && resultRings.all { r -> clipped.any { cyclic(r, it) } }
+        val match = resultRings.size == clipped.size && resultRings.all {
+            r -> clipped.any {
+                cyclic(r, it)
+            }
+        }
         op.lines.add("crosscheck ${if (match) "match" else "mismatch"} rings ${clipped.size} vertices ${clipped.sumOf { it.size }}")
     }
     return op
 }
-
 fun write(name: String, lines: List<String>) {
     File("output").mkdirs()
     File("output/$name").writeText(if (lines.isEmpty()) "" else lines.joinToString("\n") + "\n")
@@ -369,7 +447,9 @@ fun main() {
     var succeeded = 0
     var defined = 0
     var crossings = 0
-    val counts = Array(kinds.size) { IntArray(2) }
+    val counts = Array(kinds.size) {
+        IntArray(2)
+    }
     for (line in File("input/operations.txt").readLines()) if (line.isNotEmpty() && !line.startsWith('#')) {
         total++
         val kind = line.split(' ')[0]
@@ -381,11 +461,19 @@ fun main() {
             counts[index][1]++
             crossings += op.crossings
             result.addAll(op.lines)
-            op.area?.let { areas.add(it) }
+            op.area?.let {
+                areas.add(it)
+            }
             drawing.addAll(op.drawing)
-            op.target?.let { targets[total] = it }
-            op.definition?.let { (name, polygon) -> polygons.used.add(name); polygons.valid[name] = polygon; defined++ }
-        } catch (e: Rejection) { rejections.add("op $total ${e.reason}") }
+            op.target?.let {
+                targets[total] = it
+            }
+            op.definition?.let {
+                (name, polygon) -> polygons.used.add(name); polygons.valid[name] = polygon; defined++
+            }
+        } catch (e: Rejection) {
+            rejections.add("op $total ${e.reason}")
+        }
     }
     result.add("summary polygons ${polygons.blocks} valid ${polygons.validBlocks} invalid ${polygons.blocks - polygons.validBlocks} defined $defined")
     result.add("summary operations $total succeeded $succeeded rejected ${total - succeeded}")

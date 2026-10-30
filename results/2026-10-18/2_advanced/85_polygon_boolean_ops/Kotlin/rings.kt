@@ -1,9 +1,7 @@
 import kotlin.math.sqrt
-
 typealias Ring = List<Point>
 typealias Rings = List<Ring>
 typealias Region = List<Rings>
-
 object RingOps {
     fun inside(p: Point, ring: Ring): Boolean {
         var odd = false
@@ -18,8 +16,12 @@ object RingOps {
         }
         return odd
     }
-    fun interior(p: Point, rings: Rings): Boolean = rings.count { inside(p, it) } % 2 == 1
-    fun boundary(p: Point, ring: Ring): Boolean = ring.indices.any { Intersections.on(ring[it], ring[(it + 1) % ring.size], p) }
+    fun interior(p: Point, rings: Rings): Boolean = rings.count {
+        inside(p, it)
+    } % 2 == 1
+    fun boundary(p: Point, ring: Ring): Boolean = ring.indices.any {
+        Intersections.on(ring[it], ring[(it + 1) % ring.size], p)
+    }
     fun rotate(ring: Ring): Ring {
         val i = ring.indexOf(ring.minOrNull()!!)
         return ring.drop(i) + ring.take(i)
@@ -27,16 +29,37 @@ object RingOps {
     fun ccw(ring: Ring): Boolean = cross(ring.last(), ring[0], ring[1]) > ZERO
     fun reverse(ring: Ring): Ring = listOf(ring[0]) + ring.drop(1).reversed()
     fun canonical(input: Rings): Rings {
-        val rings = input.mapIndexed { i, r -> rotate(r).let { if (ccw(it) == (i == 0)) it else reverse(it) } }
-        return listOf(rings[0]) + rings.drop(1).sortedBy { it[0] }
+        val rings = input.mapIndexed {
+            i, r -> rotate(r).let {
+                if (ccw(it) == (i == 0)) it else reverse(it)
+            }
+        }
+        return listOf(rings[0]) + rings.drop(1).sortedBy {
+            it[0]
+        }
     }
     fun assemble(input: Rings): Region {
         val rings = input.map(::rotate).toMutableList()
-        val depths = rings.indices.map { i -> rings.indices.count { it != i && inside(rings[i][0], rings[it]) } }
+        val depths = rings.indices.map {
+            i -> rings.indices.count {
+                it != i && inside(rings[i][0], rings[it])
+            }
+        }
         for (i in rings.indices) if (ccw(rings[i]) != (depths[i] % 2 == 0)) rings[i] = reverse(rings[i])
-        return rings.indices.filter { depths[it] % 2 == 0 }.sortedBy { rings[it][0] }.map { i ->
-            listOf(rings[i]) + rings.indices.filter { depths[it] == depths[i] + 1 && inside(rings[it][0], rings[i]) }
-                .sortedBy { rings[it][0] }.map { rings[it] }
+        return rings.indices.filter {
+            depths[it] % 2 == 0
+        }.sortedBy {
+            rings[it][0]
+        }.map {
+            i ->
+            listOf(rings[i]) + rings.indices.filter {
+                depths[it] == depths[i] + 1 && inside(rings[it][0], rings[i])
+            }
+            .sortedBy {
+                rings[it][0]
+            }.map {
+                rings[it]
+            }
         }
     }
     fun area(ring: Ring): Double {

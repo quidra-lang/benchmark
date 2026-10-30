@@ -1,25 +1,31 @@
 sealed record Crossing(Point Point, int Ar, int Ae, int Br, int Be, Fraction T, Fraction U);
 sealed record Node(Point Point, int? Crossing = null, bool Enter = false);
-
 sealed class Graph
 {
     readonly List<List<Node>>[] nodes = [new(), new()];
     readonly (int Ring, int Index)[][] locations;
     readonly List<int> order = new();
-    public List<(Point Point, bool Enter)> Ordered { get; } = new();
-    public int Na { get; }
-    public int Nb { get; }
+    public List<(Point Point, bool Enter)> Ordered {
+        get;
+    } = new();
+    public int Na {
+        get;
+    }
+    public int Nb {
+        get;
+    }
     public Graph(Rings a, Rings b)
     {
         Na = a.Count(r => RingOps.Interior(r[0], b));
         Nb = b.Count(r => RingOps.Interior(r[0], a));
         List<Crossing> crossings = new();
         for (int ar = 0; ar < a.Count; ar++) for (int ae = 0; ae < a[ar].Count; ae++)
-            for (int br = 0; br < b.Count; br++) for (int be = 0; be < b[br].Count; be++)
-            {
-                var found = Intersections.Crossing(a[ar][ae], a[ar][(ae + 1) % a[ar].Count], b[br][be], b[br][(be + 1) % b[br].Count]);
-                if (found is { } c) crossings.Add(new Crossing(c.Point, ar, ae, br, be, c.T, c.U));
-            }
+        for (int br = 0; br < b.Count; br++) for (int be = 0; be < b[br].Count; be++)
+        {
+            var found = Intersections.Crossing(a[ar][ae], a[ar][(ae + 1) % a[ar].Count], b[br][be], b[br][(be + 1) % b[br].Count]);
+            if (found is {
+            } c) crossings.Add(new Crossing(c.Point, ar, ae, br, be, c.T, c.U));
+        }
         locations = Enumerable.Range(0, crossings.Count).Select(_ => new (int, int)[2]).ToArray();
         for (int side = 0; side < 2; side++)
         {
@@ -38,7 +44,10 @@ sealed class Graph
                     {
                         locations[id][side] = (ri, list.Count);
                         list.Add(new Node(crossings[id].Point, id, !inside));
-                        if (side == 0) { order.Add(id); Ordered.Add((crossings[id].Point, !inside)); }
+                        if (side == 0) {
+                            order.Add(id);
+                            Ordered.Add((crossings[id].Point, !inside));
+                        }
                         inside = !inside;
                     }
                 }

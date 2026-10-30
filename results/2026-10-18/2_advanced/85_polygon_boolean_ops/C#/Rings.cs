@@ -23,11 +23,18 @@ static class RingOps
         return ring.Skip(i).Concat(ring.Take(i)).ToList();
     }
     public static bool Ccw(Ring ring) => Cross(ring[^1], ring[0], ring[1]) > 0;
-    public static Ring Reverse(Ring ring) => new[] { ring[0] }.Concat(ring.Skip(1).Reverse()).ToList();
+    public static Ring Reverse(Ring ring) => new[] {
+        ring[0]
+    }.Concat(ring.Skip(1).Reverse()).ToList();
     public static Rings Canonical(Rings input)
     {
-        Rings rings = input.Select((r, i) => { Ring rotated = Rotate(r); return Ccw(rotated) == (i == 0) ? rotated : Reverse(rotated); }).ToList();
-        return new[] { rings[0] }.Concat(rings.Skip(1).OrderBy(r => r[0])).ToList();
+        Rings rings = input.Select((r, i) => {
+            Ring rotated = Rotate(r);
+            return Ccw(rotated) == (i == 0) ? rotated : Reverse(rotated);
+        }).ToList();
+        return new[] {
+            rings[0]
+        }.Concat(rings.Skip(1).OrderBy(r => r[0])).ToList();
     }
     public static Region Assemble(Rings input)
     {
@@ -35,7 +42,9 @@ static class RingOps
         int[] depth = Enumerable.Range(0, rings.Count).Select(i => Enumerable.Range(0, rings.Count).Count(j => i != j && Inside(rings[i][0], rings[j]))).ToArray();
         for (int i = 0; i < rings.Count; i++) if (Ccw(rings[i]) != (depth[i] % 2 == 0)) rings[i] = Reverse(rings[i]);
         return Enumerable.Range(0, rings.Count).Where(i => depth[i] % 2 == 0).OrderBy(i => rings[i][0]).Select(i =>
-            new[] { rings[i] }.Concat(Enumerable.Range(0, rings.Count).Where(j => depth[j] == depth[i] + 1 && Inside(rings[j][0], rings[i])).OrderBy(j => rings[j][0]).Select(j => rings[j])).ToList()).ToList();
+        new[] {
+            rings[i]
+        }.Concat(Enumerable.Range(0, rings.Count).Where(j => depth[j] == depth[i] + 1 && Inside(rings[j][0], rings[i])).OrderBy(j => rings[j][0]).Select(j => rings[j])).ToList()).ToList();
     }
     public static double Area(Ring ring)
     {

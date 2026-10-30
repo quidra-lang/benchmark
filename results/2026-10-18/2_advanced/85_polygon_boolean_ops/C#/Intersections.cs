@@ -1,11 +1,11 @@
 static class Intersections
 {
     public static bool On(Point a, Point b, Point p) => Cross(a, b, p).IsZero &&
-        XCompare(p, XCompare(a, b) < 0 ? a : b) >= 0 && XCompare(p, XCompare(a, b) < 0 ? b : a) <= 0 &&
-        YCompare(p, YCompare(a, b) < 0 ? a : b) >= 0 && YCompare(p, YCompare(a, b) < 0 ? b : a) <= 0;
+    XCompare(p, XCompare(a, b) < 0 ? a : b) >= 0 && XCompare(p, XCompare(a, b) < 0 ? b : a) <= 0 &&
+    YCompare(p, YCompare(a, b) < 0 ? a : b) >= 0 && YCompare(p, YCompare(a, b) < 0 ? b : a) <= 0;
     public static bool Touch(Point a, Point b, Point c, Point d) =>
-        Cross(a, b, c).Sign * Cross(a, b, d).Sign < 0 && Cross(c, d, a).Sign * Cross(c, d, b).Sign < 0 ||
-        On(a, b, c) || On(a, b, d) || On(c, d, a) || On(c, d, b);
+    Cross(a, b, c).Sign * Cross(a, b, d).Sign < 0 && Cross(c, d, a).Sign * Cross(c, d, b).Sign < 0 ||
+    On(a, b, c) || On(a, b, d) || On(c, d, a) || On(c, d, b);
     public static bool Overlap(Point a, Point b, Point c, Point d)
     {
         if (!Cross(a, b, c).IsZero || !Cross(a, b, d).IsZero) return false;
@@ -37,7 +37,11 @@ static class Intersections
         if (den.IsZero) return null;
         BigInteger gx = c.X - a.X, gy = c.Y - a.Y;
         BigInteger t = gx * sy - gy * sx, u = gx * ry - gy * rx;
-        if (den < 0) { den = -den; t = -t; u = -u; }
+        if (den < 0) {
+            den = -den;
+            t = -t;
+            u = -u;
+        }
         if (t <= 0 || t >= den || u <= 0 || u >= den) return null;
         return (new Point(a.X * den + t * rx, a.Y * den + t * ry, den), new Fraction(t, den), new Fraction(u, den));
     }

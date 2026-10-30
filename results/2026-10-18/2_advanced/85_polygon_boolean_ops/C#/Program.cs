@@ -2,22 +2,39 @@ sealed record Polygon(Rings Input, Rings Canonical);
 sealed record Target(Region Region, (Rings A, Rings B)? Operands = null);
 sealed class Rejection(string reason) : Exception(reason)
 {
-    public string Reason { get; } = reason;
+    public string Reason {
+        get;
+    } = reason;
 }
 sealed class Polygons
 {
-    public HashSet<string> Used { get; } = new(StringComparer.Ordinal);
-    public Dictionary<string, Polygon> Valid { get; } = new(StringComparer.Ordinal);
-    public List<string> Rejected { get; } = new();
-    public int Blocks { get; private set; }
-    public int ValidBlocks { get; private set; }
+    public HashSet<string> Used {
+        get;
+    } = new(StringComparer.Ordinal);
+    public Dictionary<string, Polygon> Valid {
+        get;
+    } = new(StringComparer.Ordinal);
+    public List<string> Rejected {
+        get;
+    } = new();
+    public int Blocks {
+        get;
+        private set;
+    }
+    public int ValidBlocks {
+        get;
+        private set;
+    }
     public void Read()
     {
         string[] lines = File.ReadAllLines("input/polygons.txt");
         int i = 0;
         while (i < lines.Length)
         {
-            if (lines[i].Length == 0 || lines[i].StartsWith('#')) { i++; continue; }
+            if (lines[i].Length == 0 || lines[i].StartsWith('#')) {
+                i++;
+                continue;
+            }
             string name = lines[i].Split(' ')[1];
             int start = i + 1;
             i++;
@@ -30,15 +47,21 @@ sealed class Polygons
             int end = i + 1;
             i++;
             Blocks++;
-            if (!Used.Add(name)) { Rejected.Add($"polygon {name} duplicate_name line {start}"); continue; }
+            if (!Used.Add(name)) {
+                Rejected.Add($"polygon {name} duplicate_name line {start}");
+                continue;
+            }
             try
             {
                 Rings input = Program.ParseBlock(content, end);
-                if (Program.Validate(input) is { } reason) throw new Rejection(reason);
+                if (Program.Validate(input) is {
+                } reason) throw new Rejection(reason);
                 Valid[name] = new Polygon(input, RingOps.Canonical(input));
                 ValidBlocks++;
             }
-            catch (Rejection e) { Rejected.Add($"polygon {name} {e.Reason}"); }
+            catch (Rejection e) {
+                Rejected.Add($"polygon {name} {e.Reason}");
+            }
         }
     }
     public Polygon Get(string name)
@@ -50,14 +73,30 @@ sealed class Polygons
 sealed record Values(List<string> Lines, int Rings, int Holes, int Vertices, double Area);
 sealed class Operation
 {
-    public List<string> Lines { get; } = new();
-    public string? Area { get; set; }
-    public List<string> Drawing { get; set; } = new();
-    public Target? Target { get; set; }
-    public (string Name, Polygon Polygon)? Definition { get; set; }
-    public int Crossings { get; set; }
+    public List<string> Lines {
+        get;
+    } = new();
+    public string? Area {
+        get;
+        set;
+    }
+    public List<string> Drawing {
+        get;
+        set;
+    } = new();
+    public Target? Target {
+        get;
+        set;
+    }
+    public (string Name, Polygon Polygon)? Definition {
+        get;
+        set;
+    }
+    public int Crossings {
+        get;
+        set;
+    }
 }
-
 static class Program
 {
     static readonly string[] Kinds = ["UNION", "INTERSECTION", "DIFFERENCE", "XOR", "CLIP", "AREA", "MOVE", "ROTATE", "MIRROR", "SNAP", "LOCATE", "RENDER"];
@@ -85,11 +124,11 @@ static class Program
             }
         }
         for (int i = 0; i < rings.Count; i++) for (int j = i + 1; j < rings.Count; j++)
-            for (int e = 0; e < rings[i].Count; e++) for (int f = 0; f < rings[j].Count; f++)
-            {
-                Point a = rings[i][e], b = rings[i][(e + 1) % rings[i].Count], c = rings[j][f], d = rings[j][(f + 1) % rings[j].Count];
-                if (Intersections.Touch(a, b, c, d)) return $"rings_touch rings {i + 1} {j + 1} {Intersections.Segment(a, b)} {Intersections.Segment(c, d)}";
-            }
+        for (int e = 0; e < rings[i].Count; e++) for (int f = 0; f < rings[j].Count; f++)
+        {
+            Point a = rings[i][e], b = rings[i][(e + 1) % rings[i].Count], c = rings[j][f], d = rings[j][(f + 1) % rings[j].Count];
+            if (Intersections.Touch(a, b, c, d)) return $"rings_touch rings {i + 1} {j + 1} {Intersections.Segment(a, b)} {Intersections.Segment(c, d)}";
+        }
         for (int k = 1; k < rings.Count; k++) if (!RingOps.Inside(rings[k][0], rings[0])) return $"hole_outside ring {k + 1} {rings[k][0]}";
         for (int i = 1; i < rings.Count; i++) for (int j = i + 1; j < rings.Count; j++)
         {
@@ -107,7 +146,7 @@ static class Program
             var (line, text) = content[i];
             string[] a = text.Split(' ');
             if (a.Length != 2 || !(a[0] == "OUTER" && rings.Count == 0 || a[0] == "HOLE" && rings.Count > 0) ||
-                a[1].Length is < 1 or > 9 || !a[1].All(c => c is >= '0' and <= '9') || int.Parse(a[1], CultureInfo.InvariantCulture) == 0) throw new Rejection($"format line {line}");
+            a[1].Length is < 1 or > 9 || !a[1].All(c => c is >= '0' and <= '9') || int.Parse(a[1], CultureInfo.InvariantCulture) == 0) throw new Rejection($"format line {line}");
             int n = int.Parse(a[1], CultureInfo.InvariantCulture);
             i++;
             Ring ring = new();
@@ -116,7 +155,9 @@ static class Program
                 if (i == content.Count) throw new Rejection($"format line {end}");
                 var (at, vertex) = content[i];
                 string[] words = vertex.Split(' ');
-                if (words.Length != 2 || Integer(words[0]) is not { } x || Integer(words[1]) is not { } y) throw new Rejection($"format line {at}");
+                if (words.Length != 2 || Integer(words[0]) is not {
+                } x || Integer(words[1]) is not {
+                } y) throw new Rejection($"format line {at}");
                 ring.Add(new Point(x, y));
                 i++;
             }
@@ -133,7 +174,9 @@ static class Program
             if (n.Length is < 1 or > 9 || !n.All(c => c is >= '0' and <= '9') || !results.TryGetValue(int.Parse(n, CultureInfo.InvariantCulture), out Target? value)) throw new Rejection($"bad_target {text}");
             return value;
         }
-        return new Target(new Region { polygons.Get(text).Canonical });
+        return new Target(new Region {
+            polygons.Get(text).Canonical
+        });
     }
     static string? General(Rings a, Rings b, string an, string bn)
     {
@@ -213,7 +256,9 @@ static class Program
     {
         int rings = region.Sum(p => p.Count), holes = rings - region.Count, vertices = region.SelectMany(p => p).Sum(r => r.Count);
         double area = RingOps.TotalArea(region);
-        List<string> lines = new() { $"polygons {region.Count} rings {rings} holes {holes} vertices {vertices} area {RealText(area)}" };
+        List<string> lines = new() {
+            $"polygons {region.Count} rings {rings} holes {holes} vertices {vertices} area {RealText(area)}"
+        };
         double sx = 0, sy = 0, perimeter = 0;
         int[] origins = new int[3];
         Ring points = new();
@@ -235,7 +280,10 @@ static class Program
                 points.Add(v);
             }
         }
-        if (points.Count == 0) { lines.Add("bbox none"); lines.Add("centroid none"); }
+        if (points.Count == 0) {
+            lines.Add("bbox none");
+            lines.Add("centroid none");
+        }
         else
         {
             Point minX = points.MinBy(p => p, Comparer<Point>.Create(XCompare))!, maxX = points.MaxBy(p => p, Comparer<Point>.Create(XCompare))!;
@@ -265,14 +313,15 @@ static class Program
             "AREA" => 2, "LOCATE" => 4, "MOVE" or "MIRROR" => 5, "ROTATE" => 6, "RENDER" => 8, _ => 0
         };
         if (a.Length != expected) return false;
-        bool Valid(int i, long low, long high) => Integer(a[i]) is { } n && n >= low && n <= high;
+        bool Valid(int i, long low, long high) => Integer(a[i]) is {
+        } n && n >= low && n <= high;
         switch (a[0])
         {
             case "LOCATE": return Valid(2, 0, 1000) && Valid(3, 0, 1000);
             case "RENDER":
-                if (!(Valid(2, 0, 1000) && Valid(3, 0, 1000) && Valid(4, 1, 100) && Valid(5, 1, 100) && Valid(6, 1, 100) && Valid(7, 1, 60))) return false;
-                long[] v = a.Skip(2).Select(s => Integer(s)!.Value).ToArray();
-                return v[0] + v[2] * v[4] <= 1000 && v[1] + v[3] * v[5] <= 1000;
+            if (!(Valid(2, 0, 1000) && Valid(3, 0, 1000) && Valid(4, 1, 100) && Valid(5, 1, 100) && Valid(6, 1, 100) && Valid(7, 1, 60))) return false;
+            long[] v = a.Skip(2).Select(s => Integer(s)!.Value).ToArray();
+            return v[0] + v[2] * v[4] <= 1000 && v[1] + v[3] * v[5] <= 1000;
             case "MOVE": return Valid(2, -1000, 1000) && Valid(3, -1000, 1000) && ValidName(a[4]);
             case "ROTATE": return Valid(2, 0, 1000) && Valid(3, 0, 1000) && Valid(4, 1, 3) && ValidName(a[5]);
             case "MIRROR": return a[2] is "x" or "y" && Valid(3, 0, 1000) && ValidName(a[4]);
@@ -294,14 +343,16 @@ static class Program
         if (newName is not null && polygons.Used.Contains(newName)) throw new Rejection($"duplicate_name {newName}");
         if (kind == "SNAP" && resolved!.Region.Count != 1) throw new Rejection($"not_single {a[1]}");
         if (kind == "CLIP" && !Convex(b!.Canonical)) throw new Rejection($"not_convex {a[2]}");
-        if (binary && General(input!.Canonical, b!.Canonical, a[1], a[2]) is { } reason) throw new Rejection(reason);
+        if (binary && General(input!.Canonical, b!.Canonical, a[1], a[2]) is {
+        } reason) throw new Rejection(reason);
         Operation op = new();
         op.Lines.Add($"op {number} {text}");
         if (kind == "LOCATE")
         {
             Point p = new(Integer(a[2])!.Value, Integer(a[3])!.Value);
             op.Lines.Add($"location {Locate(resolved!.Region, p)}");
-            if (resolved.Operands is { } operands) op.Lines.Add($"operands a {OperandLocation(p, operands.A)} b {OperandLocation(p, operands.B)}");
+            if (resolved.Operands is {
+            } operands) op.Lines.Add($"operands a {OperandLocation(p, operands.A)} b {OperandLocation(p, operands.B)}");
             return op;
         }
         if (kind == "RENDER")
@@ -321,16 +372,30 @@ static class Program
             else inputRings = input!.Input.Select(r => r.Select(p =>
             {
                 BigInteger x = p.X, y = p.Y;
-                if (kind == "MOVE") { x += Integer(a[2])!.Value; y += Integer(a[3])!.Value; }
+                if (kind == "MOVE") {
+                    x += Integer(a[2])!.Value;
+                    y += Integer(a[3])!.Value;
+                }
                 else if (kind == "ROTATE")
                 {
                     BigInteger cx = Integer(a[2])!.Value, cy = Integer(a[3])!.Value;
-                    for (int q = 0; q < Integer(a[4])!.Value; q++) { BigInteger nx = cx - (y - cy), ny = cy + (x - cx); x = nx; y = ny; }
+                    for (int q = 0; q < Integer(a[4])!.Value; q++) {
+                        BigInteger nx = cx - (y - cy), ny = cy + (x - cx);
+                        x = nx;
+                        y = ny;
+                    }
                 }
-                else { BigInteger c = Integer(a[3])!.Value; if (a[2] == "x") x = 2 * c - x; else y = 2 * c - y; }
+                else {
+                    BigInteger c = Integer(a[3])!.Value;
+                    if (a[2] == "x") x = 2 * c - x;
+                    else y = 2 * c - y;
+                }
                 return new Point(x, y);
             }).ToList()).ToList();
-            if (kind == "SNAP") { if (Validate(inputRings) is { } invalid) throw new Rejection($"invalid_result {invalid}"); }
+            if (kind == "SNAP") {
+                if (Validate(inputRings) is {
+                } invalid) throw new Rejection($"invalid_result {invalid}");
+            }
             else if (inputRings.SelectMany(r => r).Any(p => p.X < 0 || p.Y < 0 || p.X > 1000 || p.Y > 1000)) throw new Rejection($"out_of_range {newName}");
             polygon = new Polygon(inputRings, RingOps.Canonical(inputRings));
             op.Definition = (newName!, polygon);
@@ -354,7 +419,12 @@ static class Program
             };
             op.Target = new Target(region, (ar, br));
         }
-        else { region = new Region { polygon!.Canonical }; op.Target = new Target(region); }
+        else {
+            region = new Region {
+                polygon!.Canonical
+            };
+            op.Target = new Target(region);
+        }
         Rings operandA = binary ? input!.Canonical : polygon!.Canonical;
         Values values = ResultValues(region, operandA, b?.Canonical);
         op.Lines.AddRange(values.Lines);
@@ -376,10 +446,14 @@ static class Program
     }
     static void Main()
     {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
         Polygons polygons = new();
         polygons.Read();
         Dictionary<int, Target> targets = new();
-        List<string> rejections = new(polygons.Rejected), result = new(), areas = new() { "operation,rings,holes,vertices,area" }, drawing = new();
+        List<string> rejections = new(polygons.Rejected), result = new(), areas = new() {
+            "operation,rings,holes,vertices,area"
+        }, drawing = new();
         int total = 0, succeeded = 0, defined = 0, crossings = 0;
         int[][] counts = Kinds.Select(_ => new int[2]).ToArray();
         foreach (string line in File.ReadLines("input/operations.txt")) if (line.Length > 0 && !line.StartsWith('#'))
@@ -395,12 +469,21 @@ static class Program
                 counts[index][1]++;
                 crossings += op.Crossings;
                 result.AddRange(op.Lines);
-                if (op.Area is { } area) areas.Add(area);
+                if (op.Area is {
+                } area) areas.Add(area);
                 drawing.AddRange(op.Drawing);
-                if (op.Target is { } target) targets[total] = target;
-                if (op.Definition is { } definition) { polygons.Used.Add(definition.Name); polygons.Valid[definition.Name] = definition.Polygon; defined++; }
+                if (op.Target is {
+                } target) targets[total] = target;
+                if (op.Definition is {
+                } definition) {
+                    polygons.Used.Add(definition.Name);
+                    polygons.Valid[definition.Name] = definition.Polygon;
+                    defined++;
+                }
             }
-            catch (Rejection e) { rejections.Add($"op {total} {e.Reason}"); }
+            catch (Rejection e) {
+                rejections.Add($"op {total} {e.Reason}");
+            }
         }
         result.Add($"summary polygons {polygons.Blocks} valid {polygons.ValidBlocks} invalid {polygons.Blocks - polygons.ValidBlocks} defined {defined}");
         result.Add($"summary operations {total} succeeded {succeeded} rejected {total - succeeded}");
