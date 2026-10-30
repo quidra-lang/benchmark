@@ -311,7 +311,7 @@ command_join =: 4 : 0
     if. -.client require_parameters (<parameters),<1 do.
         i.0 return.
     end.
-    if. '0'-:0{::parameters do.
+    if. (,'0')-:,0{::parameters do.
         channels =. client{::Joined
         for_channel. channels do.
             line =. ':',(prefix client),' PART ',channel{::ChannelNames

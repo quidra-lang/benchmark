@@ -33,6 +33,9 @@ parse_cell =: 3 : 0
     if. -.'...'-:9}.y do.
         width =. 1+('E'=9{y)
         name =. width{.9}.y
+        if. width=1 do.
+            name =. {.name
+        end.
         effect =. 1+EffectNames i.<name
         argument =. hex_value (9+width)}.y
     end.

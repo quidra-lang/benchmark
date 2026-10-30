@@ -316,7 +316,7 @@ tokenize =: 3 : 0
             kind =. token_text =. pair
             index =. index+2
         elseif. character e.'()!<>' do.
-            kind =. token_text =. ,character
+            kind =. token_text =. character
             index =. index+1
         elseif. character='"' do.
             last =. index+1

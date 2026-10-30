@@ -4,13 +4,13 @@ load 'matrix.ijs'
 load 'masking.ijs'
 load 'render.ijs'
 
-Levels =: ;:'L M Q H'
+Levels =: ,&.>;:'L M Q H'
 Modes =: ;:'NUMERIC ALPHANUMERIC BYTE'
 Indicators =: 1 2 4
 ErrorKinds =: ;:'level mode version mask text charset capacity'
 intdiv =: 4 : '<.(x:x)%x:y'
 integer =: 3 : 0
-    text =. ":y
+    text =. ,":y
     '-'(I.text='_')}text
 )
 join =: 4 : 0
@@ -179,7 +179,7 @@ make_layout =: 3 : 0
     total =. data+degree*#lengths
     (<degree),(<lengths),(<placement),(<data),(<total),<8*data
 )
-layout =: 4 : '((4*x-1)+Levels i.<y){::Tables'
+layout =: 4 : '((4*x-1)+Levels i.<,y){::Tables'
 read_inputs =: 3 : 0
     Requests =: 0$a:
     for_line. read_lines 'input/requests.txt' do.
@@ -241,7 +241,7 @@ prepare_request =: 3 : 0
     if. -.(<version)e.versions do.
         'version ',version return.
     end.
-    if. -.(<mask)e.(<'AUTO'),<"0 '01234567' do.
+    if. -.(<mask)e.(<'AUTO'),,&.><"0 '01234567' do.
         'mask ',mask return.
     end.
     if. 0=#ReqText do.

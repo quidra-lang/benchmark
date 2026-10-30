@@ -42,7 +42,11 @@ expression_tokens =: 3 : 0
                 end.
             end.
         end.
-        tokens =. tokens,<(position-start){.start}.text
+        token =. (position-start){.start}.text
+        if. (1=#token)*.character e.'+-*<>()[],' do.
+            token =. {.token
+        end.
+        tokens =. tokens,<token
     end.
     tokens
 )

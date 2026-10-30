@@ -58,14 +58,14 @@ read_obj =: 3 : 0
         keyword =. 0{::tokens
         args =. }.tokens
         reason =. ''
-        if. keyword-:'v' do.
+        if. (,keyword)-:,'v' do.
             valid =. (3=#args)*.*./integer_word&>args
             if. valid do.
                 vertices =. vertices,num&>args
             else.
                 reason =. 'bad_vertex'
             end.
-        elseif. keyword-:'f' do.
+        elseif. (,keyword)-:,'f' do.
             if. 3>#args do.
                 reason =. 'short_face'
             else.
@@ -97,7 +97,7 @@ read_obj =: 3 : 0
                     polygon_groups =. polygon_groups,<group
                 end.
             end.
-        elseif. keyword-:'g' do.
+        elseif. (,keyword)-:,'g' do.
             group =. 'default'
             if. #args do.
                 group =. 0{::args

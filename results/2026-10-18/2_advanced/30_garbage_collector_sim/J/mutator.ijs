@@ -39,7 +39,7 @@ is_label =: 3 : 0
     (0<#y)*.(16>:#y)*.*./y e.'abcdefghijklmnopqrstuvwxyz0123456789_'
 )
 source_value =: 3 : 0
-    if. y-:'-' do.
+    if. (,y)-:,'-' do.
         _1
     else.
         num y
@@ -63,7 +63,7 @@ parse_line =: 4 : 0
         case. 'n' do.
             valid =. is_number token
         case. 's' do.
-            valid =. (token-:'-')+.is_number token
+            valid =. ((,token)-:,'-')+.is_number token
         case. do.
             valid =. is_label token
         end.

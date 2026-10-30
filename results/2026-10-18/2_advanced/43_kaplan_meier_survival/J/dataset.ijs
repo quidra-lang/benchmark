@@ -17,7 +17,7 @@ read_inputs =: 3 : 0
     subjects =. 0 7$0
     for_line. }.read_lines 'input/subjects.csv' do.
         fields =. <;._1 ',',>line
-        row =. (num 0{::fields),(Groups i.1{fields),(num 2{::fields),(num 3{::fields),(num 4{::fields),('M'-:5{::fields),num 6{::fields
+        row =. (num 0{::fields),(Groups i.1{fields),(num 2{::fields),(num 3{::fields),(num 4{::fields),((,'M')-:,5{::fields),num 6{::fields
         subjects =. subjects,row
     end.
     Subjects =: (/:0{"1 subjects){subjects

@@ -19,7 +19,7 @@ polynomial_remainder =: 4 : 0
     value
 )
 format_information =: 4 : 0
-    indicator =. (Levels i.<x){1 0 3 2
+    indicator =. (Levels i.<,x){1 0 3 2
     shifted =. 1024*(8*indicator)+y
     (shifted+1335 polynomial_remainder shifted)xor 21522
 )

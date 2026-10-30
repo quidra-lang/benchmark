@@ -169,6 +169,9 @@ boolean_result =: 4 : 0
 )
 operation =: 4 : 0
     name =. x
+    if. 1=#name do.
+        name =. {.name
+    end.
     values =. y
     error =. first_error values
     if. #error do.
@@ -619,9 +622,9 @@ activate_roles =: 3 : 0
     'user specification day' =. y
     authorized =. user authorized_roles day
     candidates =. 0$a:
-    if. specification-:'*' do.
+    if. (,specification)-:,'*' do.
         candidates =. (roles_by_name authorized){RoleNames
-    elseif. -.specification-:'-' do.
+    elseif. -.(,specification)-:,'-' do.
         candidates =. split_commas specification
     end.
     active =. i.0

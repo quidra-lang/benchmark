@@ -16,7 +16,7 @@ read_inputs =: 3 : 0
             continue.
         end.
         fields =. split_words >line
-        select. 0{::fields
+        select. {.0{::fields
         case. 'K' do.
             count =. ".1{::fields
         case. 'W' do.

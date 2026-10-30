@@ -33,7 +33,11 @@ query_tokens =: 3 : 0
         elseif. (<2{.start}.y)e.'<=';'>=';'<>' do.
             position =. position+1
         end.
-        tokens =. tokens,<(position-start){.start}.y
+        token =. (position-start){.start}.y
+        if. (1=#token)*.character e.'=<>(),*' do.
+            token =. {.token
+        end.
+        tokens =. tokens,<token
     end.
     tokens
 )

@@ -32,10 +32,10 @@ valid_number =: 3 : 0
     if. -.*./y e.'0123456789' do.
         0 return.
     end.
-    (y-:'0')+.'0'~:{.y
+    ((,y)-:,'0')+.'0'~:{.y
 )
 valid_literal =: 3 : 0
-    if. y-:'0' do.
+    if. (,y)-:,'0' do.
         1 return.
     end.
     digits =. y
@@ -44,7 +44,7 @@ valid_literal =: 3 : 0
             digits =. }.y
         end.
     end.
-    (valid_number digits)*.-.digits-:'0'
+    (valid_number digits)*.-.(,digits)-:,'0'
 )
 dimacs_error =: 3 : '(<0),(<0$a:),<y'
 read_dimacs =: 3 : 0
@@ -63,7 +63,7 @@ read_dimacs =: 3 : 0
         if. 'c'={.line do.
             continue.
         end.
-        if. 'p'-:0{::tokens do.
+        if. (,'p')-:,0{::tokens do.
             if. variables>:0 do.
                 dimacs_error 'duplicate header at line ',text number return.
             end.

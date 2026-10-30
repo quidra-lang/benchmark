@@ -46,7 +46,7 @@ trace_error =: 3 : 0
         'core' return.
     end.
     operation =. 2{::y
-    if. -.(<operation)e.;:'R W FENCE' do.
+    if. -.(<,operation)e.,&.>;:'R W FENCE' do.
         'op' return.
     end.
     if. (operation-:'FENCE')~:3=#y do.
@@ -80,7 +80,7 @@ validate_trace =: 3 : 0
         end.
         cycle =. ".0{::fields
         core =. ".1{::fields
-        operation =. (;:'R W FENCE')i.2{fields
+        operation =. (,&.>;:'R W FENCE')i.,&.>2{fields
         address =. 0
         block =. 0
         word =. 0
