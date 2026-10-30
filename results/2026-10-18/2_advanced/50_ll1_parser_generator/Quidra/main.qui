@@ -1,0 +1,682 @@
+import syntax = "./grammar_parser.qui"
+import transform = "./transform.qui"
+import analysis = "./first_follow.qui"
+import tables = "./ll_table.qui"
+import driver = "./driver.qui"
+
+string[] read_lines(string path)
+    string content = file.read(path)
+    string[] result = content.split(NL)
+    return result[0:<int(len(result)) - 1]
+
+string joined<T>(string heading, T[] values)
+    string[] fields = [for T value = values[] then "{value}"]
+    return if len(fields) == 0 then heading else heading + " " + fields.join(" ")
+
+string yes_no(bool value)
+    return if value then "yes" else "no"
+
+bool less(int[] first, int[] second)
+    for int i < int(len(first))
+        if first[i] != second[i]
+            return first[i] < second[i]
+    return false
+
+string[] check_declarations(syntax.Source source)
+    string[] result = []
+    if source.has_declarations
+        for string name = source.word_names.sorted()[]
+            if syntax.index_of(source.declared, name) < 0
+                int index = syntax.index_of(source.word_names, name)
+                result = result.append("undeclared terminal {name} at line {source.word_lines[index]}")
+    return result
+
+bool[] reachable(syntax.Grammar source)
+    int initial = syntax.index_of(source.order, source.start)
+    bool[] found = [for int i < int(len(source.order)) then i == initial]
+    int[] queue = [initial]
+    int cursor = 0
+    while cursor < int(len(queue))
+        int lhs = queue[cursor]
+        cursor += 1
+        for string[] rhs = source.rules[lhs][]
+            for string symbol = rhs[]
+                int index = syntax.index_of(source.order, symbol)
+                if index >= 0 and not found[index]
+                    found[index] = true
+                    queue = queue.append(index)
+    return found
+
+syntax.Grammar filtered(syntax.Grammar source, bool[] keep)
+    string[] order = []
+    string[][][] rules = []
+    for int lhs < int(len(source.order))
+        if keep[lhs]
+            order = order.append(source.order[lhs])
+            rules = rules.append(source.rules[lhs])
+    return syntax.Grammar(order, rules, source.start)
+
+void remove_alternatives(syntax.Grammar &model, string[] removed, string reason, string[] &diagnostics)
+    for int lhs < int(len(model.order))
+        string[][] retained = []
+        for string[] rhs = model.rules[lhs][]
+            string first = ""
+            for string symbol = rhs[]
+                if syntax.index_of(removed, symbol) >= 0
+                    first = symbol
+                    break
+            if first != ""
+                diagnostics = diagnostics.append("removed {syntax.production(model.order[lhs], rhs)} ({reason} {first})")
+            else
+                retained = retained.append(rhs)
+        model.rules[lhs] = retained
+
+class Cleaned(syntax.Grammar model, string[] diagnostics)
+
+Cleaned clean(syntax.Grammar source)
+    syntax.Grammar model = source
+    string[] diagnostics = []
+    string[] undefined_inner = []
+    for string[][] alternatives = model.rules[]
+        for string[] rhs = alternatives[]
+            for string symbol = rhs[]
+                if syntax.is_nonterminal(symbol) and syntax.index_of(model.order, symbol) < 0
+                    string name = symbol[1:<int(len(symbol)) - 1]
+                    if syntax.index_of(undefined_inner, name) < 0
+                        undefined_inner = undefined_inner.append(name)
+    string[] undefined = [for string name = undefined_inner.sorted()[] then "<{name}>"]
+    for string name = undefined[]
+        diagnostics = diagnostics.append("undefined nonterminal {name}")
+    remove_alternatives(&model, undefined, "undefined", &diagnostics)
+    bool[] productive = [for int i < int(len(model.order)) then false]
+    bool changed = true
+    while changed
+        changed = false
+        for int lhs < int(len(model.order))
+            if productive[lhs]
+                continue
+            for string[] rhs = model.rules[lhs][]
+                bool valid = true
+                for string symbol = rhs[]
+                    if syntax.is_nonterminal(symbol) and not productive[syntax.index_of(model.order, symbol)]
+                        valid = false
+                        break
+                if valid
+                    productive[lhs] = true
+                    changed = true
+                    break
+    string[] unproductive = []
+    for int lhs < int(len(model.order))
+        if not productive[lhs]
+            unproductive = unproductive.append(model.order[lhs])
+            diagnostics = diagnostics.append("unproductive nonterminal {model.order[lhs]}")
+    model = filtered(model, productive)
+    remove_alternatives(&model, unproductive, "unproductive", &diagnostics)
+    bool[] reached = reachable(model)
+    for int lhs < int(len(model.order))
+        if not reached[lhs]
+            diagnostics = diagnostics.append("unreachable nonterminal {model.order[lhs]}")
+    return Cleaned(filtered(model, reached), diagnostics)
+
+string[] left_recursion(syntax.Grammar source)
+    string[] diagnostics = []
+    for int initial < int(len(source.order))
+        int[] queue = [initial]
+        bool[] visited = [for int i < int(len(source.order)) then i == initial]
+        int[] parents = [for int i < int(len(source.order)) then -1]
+        int cursor = 0
+        int found = -1
+        while cursor < int(len(queue)) and found < 0
+            int lhs = queue[cursor]
+            cursor += 1
+            for string[] rhs = source.rules[lhs][]
+                if len(rhs) == 0
+                    continue
+                string symbol = rhs[0]
+                if symbol == source.order[initial]
+                    found = lhs
+                    break
+                int next = syntax.index_of(source.order, symbol)
+                if next >= 0 and not visited[next]
+                    visited[next] = true
+                    parents[next] = lhs
+                    queue = queue.append(next)
+        if found >= 0
+            string[] path = [source.order[initial]]
+            int current = found
+            while current != initial
+                path = [source.order[current]].concat(path)
+                current = parents[current]
+            path = [source.order[initial]].concat(path)
+            diagnostics = diagnostics.append("left recursion: {path.join(" -> ")}")
+    return diagnostics
+
+class Pruned(syntax.Grammar model, string[] log, string[] diagnostics)
+
+Pruned prune(syntax.Grammar source)
+    bool[] reached = reachable(source)
+    string[] log = []
+    string[] diagnostics = []
+    for int lhs < int(len(source.order))
+        if not reached[lhs]
+            log = log.append("remove unreachable {source.order[lhs]}")
+            diagnostics = diagnostics.append("unreachable after transformation {source.order[lhs]}")
+    return Pruned(filtered(source, reached), log, diagnostics)
+
+string[] unused_declarations(syntax.Source source, syntax.Grammar final)
+    string[] known = analysis.known_terminals(final.rules)
+    string[] result = []
+    if source.has_declarations
+        for string name = source.declared.sorted()[]
+            if syntax.index_of(known, name) < 0
+                result = result.append("unused token {name}")
+    return result
+
+string summary(syntax.Grammar source)
+    int productions = 0
+    int empty = 0
+    int unit = 0
+    for string[][] alternatives = source.rules[]
+        for string[] rhs = alternatives[]
+            productions += 1
+            if len(rhs) == 0
+                empty += 1
+            if len(rhs) == 1 and syntax.is_nonterminal(rhs[0])
+                unit += 1
+    return "start={source.start} nonterminals={len(source.order)} terminals={len(analysis.known_terminals(source.rules))} productions={productions} empty={empty} unit={unit}"
+
+string[] listing(syntax.Grammar source, bool numbered)
+    string[] result = []
+    int count = 0
+    int total = int(len(tables.number_productions(source.order, source.rules)))
+    int width = int(len("{total}"))
+    for int lhs < int(len(source.order))
+        for int index < int(len(source.rules[lhs]))
+            count += 1
+            string name = source.order[lhs]
+            string prefix = if index == 0 then "{name} -> " else string.repeat(" ", len(name)) + " | "
+            if numbered
+                prefix = string.repeat(" ", nat(width - int(len("{count}")))) + "{count}  " + prefix
+            result = result.append(prefix + syntax.alternative(source.rules[lhs][index]))
+    return result
+
+string[] grammar_report(syntax.Grammar cleaned, syntax.Grammar recursion, syntax.Grammar factored, syntax.Grammar final, string[] recursion_log, string[] factor_log, string[] final_log)
+    string[] result = ["== cleaned grammar ==", summary(cleaned)].concat(listing(cleaned, false))
+    string[] titles = ["left recursion elimination", "left factoring", "final grammar"]
+    syntax.Grammar[] stages = [recursion, factored, final]
+    string[][] logs = [recursion_log, factor_log, final_log]
+    for int stage < 3
+        result = result.append("").append("== {titles[stage]} ==")
+        result = result.concat(if len(logs[stage]) == 0 then ["none"] else logs[stage])
+        result = result.append(summary(stages[stage])).concat(listing(stages[stage], stage == 2))
+    result = result.append("").append("== cross reference ==")
+    string[] symbols = final.order.concat(analysis.known_terminals(final.rules))
+    tables.Production[] productions = tables.number_productions(final.order, final.rules)
+    for string symbol = symbols[]
+        int[] numbers = [for tables.Production production = productions[] if syntax.index_of(production.rhs, symbol) >= 0 then production.number]
+        string name = if syntax.is_nonterminal(symbol) then symbol else DQ + symbol + DQ
+        result = result.append(if len(numbers) == 0 then "{name} not used" else joined("{name} used in", numbers))
+    return result
+
+class Score(int length, int height, bool valid)
+
+Score sequence_score(string[] symbols, string[] order, int[][] scores)
+    int length = 0
+    int height = 0
+    for string symbol = symbols[]
+        if syntax.is_nonterminal(symbol)
+            int index = syntax.index_of(order, symbol)
+            if scores[index][0] < 0
+                return Score(0, 0, false)
+            length += scores[index][0]
+            if scores[index][1] > height
+                height = scores[index][1]
+        else
+            length += 1
+    return Score(length, height + 1, true)
+
+string[] expand_sentence(string symbol, string[] order, string[][] selected, string[][] &memo, bool[] &ready)
+    if not syntax.is_nonterminal(symbol)
+        return [symbol]
+    int index = syntax.index_of(order, symbol)
+    if not ready[index]
+        string[] value = []
+        for string child = selected[index][]
+            value = value.concat(expand_sentence(child, order, selected, &memo, &ready))
+        memo[index] = value
+        ready[index] = true
+    return memo[index]
+
+class Shortest(int[][] scores, string[][] sentences)
+
+Shortest shortest(syntax.Grammar source)
+    int[][] scores = [for int i < int(len(source.order)) then [-1, -1]]
+    bool changed = true
+    while changed
+        changed = false
+        for int lhs < int(len(source.order))
+            for string[] rhs = source.rules[lhs][]
+                Score score = sequence_score(rhs, source.order, scores)
+                int[] key = [score.length, score.height]
+                if score.valid and (scores[lhs][0] < 0 or less(key, scores[lhs]))
+                    scores[lhs] = key
+                    changed = true
+    string[][] selected = []
+    for int lhs < int(len(source.order))
+        string[] choice = []
+        for string[] rhs = source.rules[lhs][]
+            Score score = sequence_score(rhs, source.order, scores)
+            if score.valid and [score.length, score.height] == scores[lhs]
+                choice = rhs
+                break
+        selected = selected.append(choice)
+    string[][] sentences = [for int i < int(len(source.order)) then []]
+    bool[] ready = [for int i < int(len(source.order)) then false]
+    for string lhs = source.order[]
+        expand_sentence(lhs, source.order, selected, &sentences, &ready)
+    return Shortest(scores, sentences)
+
+string[] sentence(string[] symbols, string[] order, string[][] sentences)
+    string[] result = []
+    for string symbol = symbols[]
+        result = result.concat(if syntax.is_nonterminal(symbol) then sentences[syntax.index_of(order, symbol)] else [symbol])
+    return result
+
+void build_context(int index, string[] order, int[][] parents, string[][] bodies, string[][] sentences, string[][] &prefixes, string[][] &suffixes, bool[] &ready)
+    if ready[index]
+        return
+    int number = parents[index][0]
+    int position = parents[index][1]
+    int lhs = parents[index][2]
+    build_context(lhs, order, parents, bodies, sentences, &prefixes, &suffixes, &ready)
+    string[] rhs = bodies[number - 1]
+    prefixes[index] = prefixes[lhs].concat(sentence(rhs[0:<position], order, sentences))
+    suffixes[index] = sentence(rhs[position + 1:<int(len(rhs))], order, sentences).concat(suffixes[lhs])
+    ready[index] = true
+
+class Contexts(string[][] prefixes, string[][] suffixes)
+
+Contexts contexts(syntax.Grammar source, int[][] scores, string[][] sentences, tables.Production[] productions)
+    int[][] costs = [for int i < int(len(source.order)) then [-1, -1]]
+    int[][] parents = [for int i < int(len(source.order)) then [-1, -1, -1]]
+    int start = syntax.index_of(source.order, source.start)
+    costs[start] = [0, 0]
+    bool changed = true
+    while changed
+        changed = false
+        for tables.Production production = productions[]
+            int lhs = production.lhs
+            if costs[lhs][0] < 0
+                continue
+            for int position < int(len(production.rhs))
+                string symbol = production.rhs[position]
+                if not syntax.is_nonterminal(symbol) or symbol == source.start
+                    continue
+                int index = syntax.index_of(source.order, symbol)
+                string[] outside = production.rhs[0:<position].concat(production.rhs[position + 1:<int(len(production.rhs))])
+                Score score = sequence_score(outside, source.order, scores)
+                int[] cost = [costs[lhs][0] + score.length, costs[lhs][1] + 1]
+                int[] key = [production.number, position]
+                if costs[index][0] < 0 or less(cost, costs[index]) or (cost == costs[index] and less(key, parents[index][0:<2]))
+                    costs[index] = cost
+                    parents[index] = [production.number, position, lhs]
+                    changed = true
+    string[][] prefixes = [for int i < int(len(source.order)) then []]
+    string[][] suffixes = [for int i < int(len(source.order)) then []]
+    bool[] ready = [for int i < int(len(source.order)) then i == start]
+    string[][] bodies = [for tables.Production production = productions[] then production.rhs]
+    for int index < int(len(source.order))
+        build_context(index, source.order, parents, bodies, sentences, &prefixes, &suffixes, &ready)
+    return Contexts(prefixes, suffixes)
+string[] sets_report(syntax.Grammar source, analysis.Sets values, string[][] sentences)
+    string[] result = ["passes: nullable={values.passes[0]} first={values.passes[1]} follow={values.passes[2]}", ""]
+    for int lhs < int(len(source.order))
+        result = result.concat([
+            source.order[lhs],
+            "  nullable: {yes_no(values.nullable[lhs])}",
+            joined("  first:", analysis.terminal_order(values.first[lhs])),
+            joined("  follow:", analysis.terminal_order(values.follow[lhs])),
+            joined("  shortest:", sentences[lhs]),
+        ])
+    return result
+
+int[] first_path(int initial, string token, syntax.Grammar source, tables.Table parse_table, analysis.Sets values)
+    int count = int(len(parse_table.productions))
+    int[] queue = [initial]
+    bool[] visited = [for int i < count then i + 1 == initial]
+    int[] parents = [for int i < count then -1]
+    int cursor = 0
+    while cursor < int(len(queue))
+        int current = queue[cursor]
+        cursor += 1
+        for string symbol = parse_table.productions[current - 1].rhs[]
+            if symbol == token
+                int[] path = []
+                while current != initial
+                    path = [current].concat(path)
+                    current = parents[current - 1]
+                return path
+            if syntax.is_nonterminal(symbol)
+                int lhs = syntax.index_of(source.order, symbol)
+                for tables.Production production = parse_table.productions[]
+                    int number = production.number
+                    if production.lhs == lhs and not visited[number - 1]
+                        visited[number - 1] = true
+                        parents[number - 1] = current
+                        queue = queue.append(number)
+                if not values.nullable[lhs]
+                    break
+            else
+                break
+    return []
+
+int[] follow_path(int initial, string token, syntax.Grammar source, tables.Table parse_table, analysis.Sets values)
+    int[] queue = [initial]
+    bool[] visited = [for int i < int(len(source.order)) then i == initial]
+    int[][] paths = [for int i < int(len(source.order)) then []]
+    int cursor = 0
+    while cursor < int(len(queue))
+        int symbol = queue[cursor]
+        cursor += 1
+        if source.order[symbol] == source.start and token == "$"
+            return paths[symbol]
+        for tables.Production production = parse_table.productions[]
+            for int position < int(len(production.rhs))
+                if production.rhs[position] != source.order[symbol]
+                    continue
+                string[] suffix = production.rhs[position + 1:<int(len(production.rhs))]
+                analysis.Sequence more = analysis.sequence(suffix, source.order, values.nullable, values.first)
+                int[] path = paths[symbol].append(production.number)
+                if syntax.index_of(more.first, token) >= 0
+                    return path
+                if more.nullable and not visited[production.lhs]
+                    visited[production.lhs] = true
+                    paths[production.lhs] = path
+                    queue = queue.append(production.lhs)
+    return []
+
+string[] table_report(syntax.Grammar source, analysis.Sets values, tables.Table parse_table, int conflicts_before)
+    string[] result = ["== predict sets =="]
+    for int i < int(len(parse_table.productions))
+        tables.Production production = parse_table.productions[i]
+        result = result.append("{production.number}: {production.notation}").append(joined("  predict:", parse_table.predict[i]))
+    result = result.append("").append("== parse table ==")
+    string[] columns = values.terminals.append("$")
+    string[][] matrix = [[""].concat(columns)]
+    for int lhs < int(len(source.order))
+        string[] row = [source.order[lhs]]
+        for int column < int(len(columns))
+            int[] numbers = parse_table.cells[lhs][column]
+            string[] fields = [for int number = numbers[] then "{number}"]
+            row = row.append(if len(fields) == 0 then "." else fields.join("/"))
+        matrix = matrix.append(row)
+    int[] widths = [for int i < int(len(columns)) + 1 then 0]
+    for string[] row = matrix[]
+        for int i < int(len(row))
+            if int(len(row[i])) > widths[i]
+                widths[i] = int(len(row[i]))
+    for string[] row = matrix[]
+        string line = row[0] + string.repeat(" ", nat(widths[0] - int(len(row[0]))))
+        for 1 <= int i < int(len(row))
+            line += "  " + string.repeat(" ", nat(widths[i] - int(len(row[i])))) + row[i]
+        result = result.append(line)
+    result = result.append("").append("== conflicts ==")
+    if len(parse_table.conflicts) == 0
+        result = result.append("none")
+    for tables.Conflict conflict = parse_table.conflicts[]
+        string lhs = source.order[conflict.lhs]
+        string token = columns[conflict.token]
+        result = result.append("conflict {lhs} on {token}: {conflict.kind}, chosen {conflict.chosen}")
+        for int number = conflict.numbers[]
+            int index = syntax.index_of(parse_table.predict[number - 1], token)
+            string reason = parse_table.reasons[number - 1][index]
+            int[] path = if reason == "FIRST" then first_path(number, token, source, parse_table, values) else follow_path(conflict.lhs, token, source, parse_table, values)
+            if len(path) > 0
+                reason = joined(reason + " via", path)
+            result = result.append("  {number}: {parse_table.productions[number - 1].notation} ({reason})")
+    result = result.append("LL(1): {yes_no(len(parse_table.conflicts) == 0)}").append("conflicts before transformation: {conflicts_before}")
+    return result
+
+int compact_node(driver.Node[] tree, int index, driver.Node[] &result)
+    driver.Node original = tree[index]
+    int[] children = []
+    for int child_index = original.children[]
+        if tree[child_index].symbol == "%empty"
+            continue
+        int compacted = compact_node(tree, child_index, &result)
+        driver.Node child = result[compacted]
+        if syntax.is_nonterminal(child.symbol) and child.mark == "" and len(child.children) == 0
+            continue
+        if syntax.is_nonterminal(child.symbol) and child.symbol.contains("'") and child.mark == ""
+            children = children.concat(child.children)
+        else
+            children = children.append(compacted)
+    if len(children) == 1 and original.mark == ""
+        return children[0]
+    int compacted = int(len(result))
+    result = result.append(driver.Node(original.symbol, original.mark, children))
+    return compacted
+
+string tree_label(driver.Node node)
+    return if node.mark == "" then node.symbol else "{node.symbol} ({node.mark})"
+
+void visit_tree(driver.Node[] tree, int index, string prefix, bool last, string[] &result)
+    driver.Node node = tree[index]
+    string branch = if last then "`-- " else "|-- "
+    result = result.append(prefix + branch + tree_label(node))
+    string next_prefix = prefix + (if last then "    " else "|   ")
+    for int i < int(len(node.children))
+        visit_tree(tree, node.children[i], next_prefix, i + 1 == int(len(node.children)), &result)
+
+string[] tree_lines(driver.Node[] tree, int root)
+    string[] result = [tree_label(tree[root])]
+    int[] children = tree[root].children
+    for int i < int(len(children))
+        visit_tree(tree, children[i], "", i + 1 == int(len(children)), &result)
+    return result
+
+string[] trace_lines(driver.Trace[] trace)
+    string[][] rows = [["step", "stack", "input", "action"]]
+    for driver.Trace row = trace[]
+        rows = rows.append(["{row.step}", row.stack, row.input, row.action])
+    int[] widths = [0, 0, 0]
+    for string[] row = rows[]
+        for int i < 3
+            if int(len(row[i])) > widths[i]
+                widths[i] = int(len(row[i]))
+    string[] result = []
+    for string[] row = rows[]
+        string line = ""
+        for int i < 3
+            line += row[i] + string.repeat(" ", nat(widths[i] - int(len(row[i])))) + "  "
+        result = result.append(line + row[3])
+    return result
+
+string[] derivation(syntax.Grammar source, int[] numbers, tables.Production[] productions)
+    string[] symbols = [source.start]
+    string[] result = ["  {source.start}"]
+    for int number = numbers[]
+        int position = 0
+        while not syntax.is_nonterminal(symbols[position])
+            position += 1
+        symbols = symbols[0:<position].concat(productions[number - 1].rhs).concat(symbols[position + 1:<int(len(symbols))])
+        result = result.append("  => {syntax.alternative(symbols)}")
+    return result
+
+class State(int number, int dot, int origin)
+
+void add_state(State[][] &chart, set.Set<string>[] &seen, int position, State item)
+    string key = "{item.number}:{item.dot}:{item.origin}"
+    if not seen[position].has(key)
+        .seen[position].add(key)
+        chart[position] = chart[position].append(item)
+
+bool language(syntax.Grammar source, string[] tokens)
+    tables.Production[] productions = tables.number_productions(source.order, source.rules)
+    string[] lhs_names = [""].concat([for tables.Production production = productions[] then source.order[production.lhs]])
+    string[][] bodies = [[source.start]].concat([for tables.Production production = productions[] then production.rhs])
+    int[][] by_lhs = [for int lhs < int(len(source.order)) then [for tables.Production production = productions[] if production.lhs == lhs then production.number]]
+    State[][] chart = [for int i < int(len(tokens)) + 1 then []]
+    set.Set<string>[] seen = [for int i < int(len(tokens)) + 1 then set.Set<string>()]
+    add_state(&chart, &seen, 0, State(0, 0, 0))
+    for int position < int(len(tokens)) + 1
+        int cursor = 0
+        while cursor < int(len(chart[position]))
+            State item = chart[position][cursor]
+            cursor += 1
+            string[] rhs = bodies[item.number]
+            if item.dot == int(len(rhs))
+                State[] prior = chart[item.origin]
+                for State waiting = prior[]
+                    string[] body = bodies[waiting.number]
+                    if waiting.dot < int(len(body)) and body[waiting.dot] == lhs_names[item.number]
+                        add_state(&chart, &seen, position, State(waiting.number, waiting.dot + 1, waiting.origin))
+            else
+                string symbol = rhs[item.dot]
+                if syntax.is_nonterminal(symbol)
+                    int lhs = syntax.index_of(source.order, symbol)
+                    for int number = by_lhs[lhs][]
+                        add_state(&chart, &seen, position, State(number, 0, position))
+                    State[] completed = chart[position]
+                    for State candidate = completed[]
+                        if lhs_names[candidate.number] == symbol and candidate.dot == int(len(bodies[candidate.number])) and candidate.origin == position
+                            add_state(&chart, &seen, position, State(item.number, item.dot + 1, item.origin))
+                elif position < int(len(tokens)) and symbol == tokens[position]
+                    add_state(&chart, &seen, position + 1, State(item.number, item.dot + 1, item.origin))
+    return seen[int(len(tokens))].has("0:1:0")
+
+string event_error(driver.Event event, syntax.Grammar source, analysis.Sets values, tables.Table parse_table)
+    string token = event.token
+    string symbol = event.symbol
+    string unexpected = if token == "$" then "end of input" else "{DQ}{token}{DQ} at token {event.position}"
+    string expected = ""
+    if syntax.is_nonterminal(symbol)
+        int lhs = syntax.index_of(source.order, symbol)
+        string[] columns = values.terminals.append("$")
+        string[] names = []
+        for int column < int(len(columns))
+            if parse_table.choices[lhs][column] > 0
+                string name = columns[column]
+                names = names.append(if name == "$" then "$" else DQ + name + DQ)
+        expected = names.join(" ")
+    else
+        expected = if symbol == "$" then "$" else DQ + symbol + DQ
+    string recovery = if event.kind == "skip" then "skipped {DQ}{token}{DQ}" elif event.kind == "pop" then "popped {symbol}" else "inserted {DQ}{symbol}{DQ}"
+    return "step {event.step}: unexpected {unexpected}; expected {expected}; {recovery}"
+
+class InputResult(driver.Parsed parsed, string[] original, string[] errors, int unknown, bool accepted, bool in_language)
+
+InputResult parse_input(string[] tokens, syntax.Grammar source, syntax.Grammar cleaned, analysis.Sets values, tables.Table parse_table)
+    string[] kept = []
+    int[] positions = []
+    string[] errors = []
+    for int i < int(len(tokens))
+        if syntax.index_of(values.terminals, tokens[i]) >= 0
+            kept = kept.append(tokens[i])
+            positions = positions.append(i + 1)
+        else
+            errors = errors.append("unknown {DQ}{tokens[i]}{DQ} at token {i + 1}; removed")
+    int unknown = int(len(errors))
+    string[][] bodies = [for tables.Production production = parse_table.productions[] then production.rhs]
+    string[] notations = [for tables.Production production = parse_table.productions[] then production.notation]
+    driver.Parsed parsed = driver.parse(kept, positions, source.start, source.order, values.terminals, parse_table.choices, values.follow, bodies, notations)
+    for driver.Event event = parsed.events[]
+        errors = errors.append(event_error(event, source, values, parse_table))
+    return InputResult(parsed, tokens, errors, unknown, len(errors) == 0, language(cleaned, tokens))
+
+string[] one_parse(int number, InputResult input, syntax.Grammar source, tables.Table parse_table)
+    driver.Parsed parsed = input.parsed
+    string[] result = ["== input {number} ==", joined("tokens:", input.original)]
+    result = result.concat(trace_lines(parsed.trace)).append(joined("left parse:", parsed.left_parse))
+    result = result.append("stats: steps={len(parsed.trace)} predicts={parsed.counts[0]} matches={parsed.counts[1]} max_stack={parsed.counts[5]}")
+    if len(input.errors) > 0
+        result = result.append("errors:")
+        result = result.concat([for string message = input.errors[] then "  {message}"])
+    result = result.append(if input.accepted then "result: accepted" else "result: rejected (errors: {len(input.errors)})")
+    result = result.append("language: {yes_no(input.in_language)}")
+    if input.accepted
+        result = result.append("derivation:").concat(derivation(source, parsed.left_parse, parse_table.productions))
+    result = result.append("tree:").concat(tree_lines(parsed.tree, 0)).append("compact tree:")
+    driver.Node[] compacted = []
+    int root = compact_node(parsed.tree, 0, &compacted)
+    return result.concat(tree_lines(compacted, root))
+
+string[] parses_report(InputResult[] inputs, syntax.Grammar source, analysis.Sets values, tables.Table parse_table, string[][] sentences, Contexts context)
+    string[] result = []
+    int accepted = 0
+    int in_language = 0
+    int[] mismatches = []
+    bool[] used = [for int i < int(len(parse_table.productions)) then false]
+    int[] recovery = [0, 0, 0, 0]
+    for int i < int(len(inputs))
+        InputResult input = inputs[i]
+        result = result.concat(one_parse(i + 1, input, source, parse_table)).append("")
+        if input.accepted
+            accepted += 1
+        if input.in_language
+            in_language += 1
+        if input.accepted != input.in_language
+            mismatches = mismatches.append(i + 1)
+        recovery[0] += input.unknown
+        for int k < 3
+            recovery[k + 1] += input.parsed.counts[k + 2]
+        for int number = input.parsed.left_parse[]
+            used[number - 1] = true
+    int[] unused = [for int i < int(len(used)) if not used[i] then i + 1]
+    result = result.concat([
+        "== summary ==",
+        "inputs={len(inputs)} accepted={accepted} rejected={int(len(inputs)) - accepted} in_language={in_language}",
+        joined("mismatches:", mismatches),
+        "recovery: unknown={recovery[0]} skip={recovery[1]} pop={recovery[2]} missing={recovery[3]}",
+        "coverage: {int(len(used)) - int(len(unused))} of {len(used)} productions used",
+        joined("unused:", unused),
+    ])
+    string[][] bodies = [for tables.Production production = parse_table.productions[] then production.rhs]
+    string[] notations = [for tables.Production production = parse_table.productions[] then production.notation]
+    for int number = unused[]
+        tables.Production production = parse_table.productions[number - 1]
+        string[] example = context.prefixes[production.lhs].concat(sentence(production.rhs, source.order, sentences)).concat(context.suffixes[production.lhs])
+        int[] positions = [for int i < int(len(example)) then i + 1]
+        driver.Parsed parsed = driver.parse(example, positions, source.start, source.order, values.terminals, parse_table.choices, values.follow, bodies, notations)
+        string status = if len(parsed.events) == 0 then "    result: accepted" else "    result: rejected (errors: {len(parsed.events)})"
+        result = result.concat([
+            "  {number}: {production.notation}",
+            joined("    example:", example),
+            status,
+            "    used: {yes_no(syntax.index_of(parsed.left_parse, number) >= 0)}",
+        ])
+    return result
+
+void save(string name, string[] lines)
+    file.write("output/" + name, lines.join(NL) + NL)
+
+void run()
+    syntax.Source source = syntax.parse(read_lines("input/grammar.bnf"))
+    string[] declaration_diagnostics = check_declarations(source)
+    Cleaned cleaned = clean(source.grammar)
+    string[] recursion_diagnostics = left_recursion(cleaned.model)
+    transform.Result recursion_result = transform.eliminate(cleaned.model.order, cleaned.model.rules)
+    syntax.Grammar recursion = syntax.Grammar(recursion_result.order, recursion_result.rules, cleaned.model.start)
+    transform.Result factor_result = transform.factor(recursion.order, recursion.rules)
+    syntax.Grammar factored = syntax.Grammar(factor_result.order, factor_result.rules, recursion.start)
+    Pruned final_result = prune(factored)
+    syntax.Grammar final = final_result.model
+    analysis.Sets before_sets = analysis.analyze(cleaned.model.order, cleaned.model.rules, cleaned.model.start)
+    tables.Table before_table = tables.build(cleaned.model.order, cleaned.model.rules, before_sets.nullable, before_sets.first, before_sets.follow, before_sets.terminals)
+    analysis.Sets values = analysis.analyze(final.order, final.rules, final.start)
+    tables.Table parse_table = tables.build(final.order, final.rules, values.nullable, values.first, values.follow, values.terminals)
+    Shortest shortest_result = shortest(final)
+    Contexts context = contexts(final, shortest_result.scores, shortest_result.sentences, parse_table.productions)
+    InputResult[] inputs = []
+    for string line = read_lines("input/inputs.txt")[]
+        string[] tokens = if len(line) == 0 then [] else line.split(" ")
+        inputs = inputs.append(parse_input(tokens, final, cleaned.model, values, parse_table))
+    string[] diagnostics = source.diagnostics.concat(declaration_diagnostics).concat(cleaned.diagnostics).concat(recursion_diagnostics).concat(final_result.diagnostics).concat(unused_declarations(source, final))
+    diagnostics = diagnostics.append(if len(parse_table.conflicts) == 0 then "result: LL(1)" else "result: not LL(1) (conflicts: {len(parse_table.conflicts)})")
+    save("grammar.txt", grammar_report(cleaned.model, recursion, factored, final, recursion_result.log, factor_result.log, final_result.log))
+    save("sets.txt", sets_report(final, values, shortest_result.sentences))
+    save("table.txt", table_report(final, values, parse_table, int(len(before_table.conflicts))))
+    save("parses.txt", parses_report(inputs, final, values, parse_table, shortest_result.sentences, context))
+    save("diagnostics.txt", diagnostics)
+
+run()
