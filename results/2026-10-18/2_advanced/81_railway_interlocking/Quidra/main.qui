@@ -1,0 +1,637 @@
+import layout = "./layout.qui"
+import interlocking = "./interlocking.qui"
+import signals = "./signals.qui"
+import trains = "./trains.qui"
+import safety = "./safety.qui"
+
+class Event(int tick, string command, string[] arguments)
+class Request(int number, int route, int tick, string reason = "none")
+class Timing(string train_name, string location, int scheduled, int actual)
+class Parameters(int end, int throw_time, int overlap_time, int[] snapshots)
+
+Parameters read_parameters()
+    string[] rows = layout.read_lines("params.txt")
+    string[] snapshots = rows[3].split(" ")
+    int[] times = []
+    for 1 <= int i < int(len(snapshots))
+        times = times.append(int.parse(snapshots[i]))
+    return Parameters(int.parse(rows[0].split(" ")[1]), int.parse(rows[1].split(" ")[1]), int.parse(rows[2].split(" ")[1]), times)
+
+Event[] read_events()
+    Event[] result = []
+    for string row = layout.read_lines("events.txt")[]
+        string[] fields = row.split(" ")
+        result = result.append(Event(int.parse(fields[0]), fields[1], fields[2:]))
+    return result
+
+class Simulation(layout.Network network, interlocking.State locking, trains.Plans plans, Parameters params, Event[] events)
+    trains.Train[] items = plans.trains
+    int tick = 0
+    int request_count = 0
+    int dropped = 0
+    Request[] queue = []
+    string[] log_lines = []
+    string[] snapshots = []
+    safety.Record safety_record = safety.Record()
+
+void append_log(Simulation &sim, string content)
+    sim.log_lines = sim.log_lines.append("{sim.tick} {content}")
+
+void start_throw(Simulation &sim, int point_index, string target)
+    layout.Point &point = &sim.network.points[point_index]
+    point.moving = true
+    point.target = target
+    point.completion = sim.tick + sim.params.throw_time
+    append_log(&sim, "MOVE {point.name} {target} until {point.completion}")
+
+void complete_throws(Simulation &sim)
+    for int p < int(len(sim.network.points))
+        layout.Point &point = &sim.network.points[p]
+        if point.moving and point.completion == sim.tick
+            point.position = point.target
+            point.moving = false
+            point.completion = -1
+            point.throws += 1
+            append_log(&sim, "POINT {point.name} {point.position}")
+
+void release_approaches(Simulation &sim)
+    for int r < int(len(sim.locking.routes))
+        if sim.locking.routes[r].state == "APPROACH" and sim.locking.routes[r].release_time == sim.tick
+            interlocking.release_route(&sim.locking, sim.network, r)
+            append_log(&sim, "TIMEOUT " + sim.locking.routes[r].name)
+
+void add_request(Simulation &sim, int route_index, string requester)
+    sim.request_count += 1
+    sim.queue = sim.queue.append(Request(sim.request_count, route_index, sim.tick))
+    sim.locking.routes[route_index].requests += 1
+    append_log(&sim, "REQUEST q{sim.request_count} {sim.locking.routes[route_index].name} {requester}")
+
+void cancel_route(Simulation &sim, int route_index)
+    bool removed = false
+    Request[] retained = []
+    string name = sim.locking.routes[route_index].name
+    for Request request = sim.queue[]
+        if request.route == route_index
+            removed = true
+            sim.dropped += 1
+            append_log(&sim, "DROP q{request.number} {name}")
+        else
+            retained = retained.append(request)
+    if removed
+        sim.queue = retained
+        return
+    interlocking.Route &route = &sim.locking.routes[route_index]
+    if route.state == "LOCKED"
+        route.cancels += 1
+        layout.Signal signal = sim.network.signals[route.start]
+        if signal.aspect != "RED" and layout.track_occupied(sim.network, signal.section)
+            route.state = "APPROACH"
+            route.release_time = sim.tick + route.approach_time
+            append_log(&sim, "CANCEL {name} approach until {route.release_time}")
+        else
+            interlocking.release_route(&sim.locking, sim.network, route_index)
+            append_log(&sim, "CANCEL {name} released")
+    else
+        append_log(&sim, "CANCEL {name} " + (if route.state == "none" then "none" else "refused"))
+
+void individual_throw(Simulation &sim, int point_index, string target)
+    layout.Point point = sim.network.points[point_index]
+    string result
+    if len(sim.locking.point_locks[point_index]) > 0
+        result = "locked"
+    elif point.failed
+        result = "failed"
+    elif point.moving
+        result = "moving"
+    elif layout.track_occupied(sim.network, point.common)
+        result = "occupied"
+    elif point.position == target
+        result = "none"
+    else
+        result = "start"
+    append_log(&sim, "THROW {point.name} {target} {result}")
+    if result == "start"
+        start_throw(&sim, point_index, target)
+
+void execute_events(Simulation &sim)
+    for Event event = sim.events[]
+        if event.tick != sim.tick
+            continue
+        string command = event.command
+        string name = event.arguments[0]
+        if command == "REQUEST"
+            add_request(&sim, layout.lookup_index(sim.locking.route_ids, name), "OPERATOR")
+        elif command == "CANCEL"
+            cancel_route(&sim, layout.lookup_index(sim.locking.route_ids, name))
+        elif command == "THROW"
+            individual_throw(&sim, layout.lookup_index(sim.network.point_ids, name), event.arguments[1])
+        elif command == "TCFAIL" or command == "TCFIX"
+            int section = layout.lookup_index(sim.network.section_ids, name)
+            sim.network.sections[section].failed = command == "TCFAIL"
+            append_log(&sim, command + " " + name)
+        else
+            int p = layout.lookup_index(sim.network.point_ids, name)
+            layout.Point &point = &sim.network.points[p]
+            point.failed = command == "POINTFAIL"
+            if point.failed and point.moving
+                point.completion = -1
+            append_log(&sim, command + " " + name)
+            if not point.failed and point.moving
+                start_throw(&sim, p, point.target)
+
+bool has_opposite_lock(interlocking.State state, int[] owners, string direction)
+    for int owner = owners[]
+        if state.routes[owner].direction != direction
+            return true
+    return false
+
+string request_reason(Simulation sim, int route_index)
+    interlocking.Route route = sim.locking.routes[route_index]
+    if route.state != "none"
+        return "busy"
+    for int other = route.conflicts[]
+        string state = sim.locking.routes[other].state
+        if state == "LOCKED" or state == "APPROACH"
+            return "conflict " + sim.locking.routes[other].name
+    for int section = route.sections[]
+        string name = sim.network.sections[section].name
+        if layout.track_occupied(sim.network, section)
+            return "occupied " + name
+        if sim.locking.route_locks[section] >= 0 or has_opposite_lock(sim.locking, sim.locking.overlap_locks[section], route.direction)
+            return "locked " + name
+    for int section = route.overlap[]
+        string name = sim.network.sections[section].name
+        if layout.track_occupied(sim.network, section)
+            return "occupied " + name
+        int[] owners = sim.locking.overlap_locks[section]
+        if sim.locking.route_locks[section] >= 0
+            owners = owners.append(sim.locking.route_locks[section])
+        if has_opposite_lock(sim.locking, owners, route.direction)
+            return "locked " + name
+    for interlocking.Requirement requirement = route.requirements[]
+        layout.Point point = sim.network.points[requirement.point]
+        for interlocking.PointLock held = sim.locking.point_locks[requirement.point][]
+            if held.position != requirement.position
+                return "point {point.name} locked"
+        if (not point.moving and point.position == requirement.position) or (point.moving and point.target == requirement.position)
+            continue
+        if point.failed
+            return "point {point.name} failed"
+        if point.moving
+            return "point {point.name} moving"
+        if layout.track_occupied(sim.network, point.common)
+            return "point {point.name} occupied"
+    return ""
+
+void judge_requests(Simulation &sim)
+    Request[] retained = []
+    for Request original = sim.queue[]
+        Request request = original
+        int r = request.route
+        string name = sim.locking.routes[r].name
+        string reason = request_reason(sim, r)
+        if reason != ""
+            if reason != request.reason
+                append_log(&sim, "WAIT q{request.number} {name} {reason}")
+                request.reason = reason
+            retained = retained.append(request)
+            continue
+        interlocking.lock_route(&sim.locking, r)
+        int delay = sim.tick - request.tick
+        append_log(&sim, "GRANT q{request.number} {name} wait {delay}")
+        sim.locking.routes[r].grants += 1
+        sim.locking.routes[r].wait += delay
+        if delay > sim.locking.routes[r].maxwait
+            sim.locking.routes[r].maxwait = delay
+        for interlocking.Requirement requirement = sim.locking.routes[r].requirements[]
+            layout.Point point = sim.network.points[requirement.point]
+            if not point.moving and point.position != requirement.position
+                start_throw(&sim, requirement.point, requirement.position)
+    sim.queue = retained
+
+void decide_signals(Simulation &sim)
+    string[] decided = signals.decide_aspects(sim.network, sim.locking)
+    for int i < int(len(decided))
+        if sim.network.signals[i].aspect != decided[i]
+            sim.network.signals[i].aspect = decided[i]
+            append_log(&sim, "SIGNAL {sim.network.signals[i].name} {decided[i]}")
+
+trains.BodyPart[] occupied_parts(layout.Network network, trains.Train train)
+    trains.BodyPart[] result = []
+    if train.state != "RUNNING"
+        return result
+    int tail = train.head - train.length
+    for trains.PathSection part = train.path[]
+        int end = part.start + network.sections[part.section].length
+        if part.start < train.head and end > tail
+            int low = if tail > part.start then tail else part.start
+            int high = if train.head < end then train.head else end
+            result = result.append(trains.BodyPart(part.section, part.start, low, high))
+    return result
+
+trains.PathSection head_section(trains.Train train)
+    for int(len(train.path)) > int i >= 0
+        if train.path[i].start < train.head
+            return train.path[i]
+    return train.path[0]
+
+bool enter_train(Simulation &sim, int train_index, set.Set<int> &entered_boundaries)
+    trains.Train &train = &sim.items[train_index]
+    if train.state == "EXITED"
+        return false
+    if train.state == "RUNNING"
+        return true
+    layout.Endpoint boundary = sim.network.boundaries[train.entry]
+    if sim.tick < train.entry_time or layout.track_occupied(sim.network, boundary.section) or entered_boundaries.has(train.entry)
+        return false
+    train.state = "RUNNING"
+    train.direction = if boundary.end == "L" then "UP" else "DOWN"
+    train.path = [trains.PathSection(boundary.section, 0)]
+    train.head = 0
+    train.speed = train.entry_speed
+    train.entered = sim.tick
+    .entered_boundaries.add(train.entry)
+    append_log(&sim, "ENTER {train.name} {boundary.name}")
+    return true
+
+void reverse_train(Simulation &sim, int train_index, int stop_section)
+    trains.Train &train = &sim.items[train_index]
+    trains.PathSection head = head_section(train)
+    int end = head.start + sim.network.sections[head.section].length
+    trains.BodyPart[] parts = occupied_parts(sim.network, train)
+    trains.PathSection[] path = []
+    for int(len(parts)) > int i >= 0
+        trains.BodyPart part = parts[i]
+        int start = end - (part.start + sim.network.sections[part.section].length)
+        path = path.append(trains.PathSection(part.section, start))
+    train.path = path
+    train.head = end - (train.head - train.length)
+    train.direction = if train.direction == "UP" then "DOWN" else "UP"
+    append_log(&sim, "REVERSE {train.name} {sim.network.sections[stop_section].name}")
+
+bool finish_dwell(Simulation &sim, int train_index)
+    trains.Train &train = &sim.items[train_index]
+    if not train.dwelling
+        return true
+    trains.Stop stop = train.stops[train.stop_index]
+    if sim.tick < stop.arrival + stop.dwell or sim.tick < stop.scheduled_departure
+        return false
+    train.dwelling = false
+    train.awaiting_departure = train.stop_index
+    train.stop_index += 1
+    if stop.kind == "TURN"
+        reverse_train(&sim, train_index, stop.section)
+    return true
+
+int limit_distance(Simulation sim, trains.Train train)
+    if train.boundary >= 0
+        return -1
+    trains.PathSection head = head_section(train)
+    int section = head.section
+    int distance = head.start + sim.network.sections[section].length - train.head
+    while true
+        int signal_index = layout.signal_at(sim.network, section, train.direction)
+        if signal_index >= 0 and sim.network.signals[signal_index].aspect == "RED"
+            return distance
+        if train.stop_index < int(len(train.stops)) and train.stops[train.stop_index].section == section
+            return distance
+        layout.Connection connection = layout.beyond_end(sim.network, section, train.direction)
+        if connection.kind == "boundary"
+            return -1
+        if connection.kind == "buffer" or connection.kind == "impassable"
+            return distance
+        section = connection.index
+        distance += sim.network.sections[section].length
+    return -1
+
+void pass_signal(Simulation &sim, int train_index, int signal_index)
+    trains.Train &train = &sim.items[train_index]
+    layout.Signal &signal = &sim.network.signals[signal_index]
+    int route_index = -1
+    for int r < int(len(sim.locking.routes))
+        interlocking.Route route = sim.locking.routes[r]
+        if route.start == signal_index and (route.state == "LOCKED" or route.state == "APPROACH")
+            route_index = r
+            break
+    string route_name = if route_index < 0 then "-" else sim.locking.routes[route_index].name
+    append_log(&sim, "PASS {train.name} {signal.name} {signal.aspect} {route_name}")
+    signal.passes += 1
+    train.passes += 1
+    if route_index >= 0
+        sim.locking.routes[route_index].state = "USED"
+        sim.locking.routes[route_index].uses += 1
+    string details = ""
+    if signal.aspect == "RED"
+        append_log(&sim, "SPAD {train.name} {signal.name}")
+        details = train.name + " " + signal.name
+        train.emergency = true
+    safety.check_property(&sim.safety_record, sim.tick, 3, details)
+
+void move_train(Simulation &sim, int train_index, int distance)
+    trains.Train &train = &sim.items[train_index]
+    trains.PathSection current = head_section(train)
+    int remaining = distance
+    while remaining > 0
+        if train.boundary >= 0
+            train.head += remaining
+            break
+        int end = current.start + sim.network.sections[current.section].length
+        if train.head + remaining <= end
+            train.head += remaining
+            break
+        remaining -= end - train.head
+        train.head = end
+        int signal_index = layout.signal_at(sim.network, current.section, train.direction)
+        if signal_index >= 0
+            pass_signal(&sim, train_index, signal_index)
+        if train.awaiting_departure >= 0 and train.stops[train.awaiting_departure].section == current.section
+            append_log(&sim, "DEPART {train.name} {sim.network.sections[current.section].name}")
+            train.stops[train.awaiting_departure].departure = sim.tick
+            train.awaiting_departure = -1
+        layout.Connection connection = layout.beyond_end(sim.network, current.section, train.direction)
+        if connection.kind == "boundary"
+            train.boundary = connection.index
+            train.boundary_coordinate = end
+        else
+            current = trains.PathSection(connection.index, end)
+            train.path = train.path.append(current)
+
+void after_movement(Simulation &sim, int train_index, int speed, int previous_speed)
+    trains.Train &train = &sim.items[train_index]
+    train.speed = speed
+    train.distance += speed
+    if speed > train.maximum_speed
+        train.maximum_speed = speed
+    if speed == 0
+        train.emergency = false
+    trains.PathSection head = head_section(train)
+    bool arrived = false
+    if train.stop_index < int(len(train.stops)) and speed == 0
+        trains.Stop stop = train.stops[train.stop_index]
+        arrived = head.section == stop.section and train.head == head.start + sim.network.sections[head.section].length
+    if arrived
+        train.dwelling = true
+        train.stops[train.stop_index].arrival = sim.tick
+        append_log(&sim, "ARRIVE {train.name} {sim.network.sections[head.section].name}")
+    if speed == 0 and not arrived
+        train.standing += 1
+        if previous_speed > 0
+            append_log(&sim, "HOLD {train.name} {sim.network.sections[head.section].name}")
+    if train.boundary >= 0 and train.head - train.length >= train.boundary_coordinate
+        train.state = "EXITED"
+        train.exited = sim.tick
+        append_log(&sim, "EXIT {train.name} {sim.network.boundaries[train.boundary].name}")
+
+void run_trains(Simulation &sim)
+    set.Set<int> entered_boundaries = set.Set<int>()
+    for int i < int(len(sim.items))
+        if not enter_train(&sim, i, &entered_boundaries)
+            continue
+        if not finish_dwell(&sim, i)
+            continue
+        int distance = limit_distance(sim, sim.items[i])
+        int previous_speed = sim.items[i].speed
+        int speed = trains.select_speed(sim.items[i], distance)
+        move_train(&sim, i, speed)
+        after_movement(&sim, i, speed, previous_speed)
+
+void recompute_occupancy(Simulation &sim)
+    for int s < int(len(sim.network.sections))
+        sim.network.sections[s].occupants = []
+    for int i < int(len(sim.items))
+        for trains.BodyPart part = occupied_parts(sim.network, sim.items[i])[]
+            bool duplicate = false
+            for int occupant = sim.network.sections[part.section].occupants[]
+                duplicate = duplicate or occupant == i
+            if not duplicate
+                sim.network.sections[part.section].occupants = sim.network.sections[part.section].occupants.append(i)
+
+void sectional_release(Simulation &sim)
+    for int r < int(len(sim.locking.routes))
+        interlocking.Route &route = &sim.locking.routes[r]
+        if route.state != "USED"
+            continue
+        int[] remaining = []
+        for int section = route.sections[]
+            if sim.locking.route_locks[section] == r
+                remaining = remaining.append(section)
+                if layout.track_occupied(sim.network, section)
+                    .route.passed.add(section)
+        for int section = remaining[]
+            if not route.passed.has(section) or layout.track_occupied(sim.network, section)
+                break
+            interlocking.unlock_section(&sim.locking, sim.network, r, section)
+            append_log(&sim, "RELEASE {route.name} {sim.network.sections[section].name}")
+        bool all_unlocked = true
+        for int section = route.sections[]
+            if sim.locking.route_locks[section] == r
+                all_unlocked = false
+        if all_unlocked
+            interlocking.release_route(&sim.locking, sim.network, r)
+            append_log(&sim, "DONE " + route.name)
+        elif len(route.overlap) > 0 and route.overlap_locked
+            int last = route.sections[int(len(route.sections)) - 1]
+            route.overlap_counter = if layout.track_occupied(sim.network, last) then route.overlap_counter + 1 else 0
+            if route.overlap_counter >= sim.params.overlap_time
+                interlocking.unlock_overlap(&sim.locking, sim.network, r)
+                append_log(&sim, "OVERLAP " + route.name)
+
+void record_statistics(Simulation &sim)
+    for int r < int(len(sim.locking.routes))
+        if sim.locking.routes[r].state != "none"
+            sim.locking.routes[r].locked_seconds += 1
+    for int p < int(len(sim.network.points))
+        if len(sim.locking.point_locks[p]) > 0
+            sim.network.points[p].locked_seconds += 1
+        if sim.network.points[p].moving
+            sim.network.points[p].moving_seconds += 1
+    for int s < int(len(sim.network.sections))
+        if layout.track_occupied(sim.network, s)
+            sim.network.sections[s].occupied_seconds += 1
+        if sim.locking.route_locks[s] >= 0 or len(sim.locking.overlap_locks[s]) > 0
+            sim.network.sections[s].locked_seconds += 1
+        for int occupant = sim.network.sections[s].occupants[]
+            .sim.network.sections[s].trains.add(occupant)
+    for int g < int(len(sim.network.signals))
+        string aspect = sim.network.signals[g].aspect
+        int index = if aspect == "RED" then 0 elif aspect == "YELLOW" then 1 else 2
+        sim.network.signals[g].seconds[index] += 1
+
+string trim_right(string text)
+    int stop = int(len(text))
+    while stop > 0 and text[stop - 1] == " "
+        stop -= 1
+    return text[0:<stop]
+
+string[] build_diagram(Simulation sim)
+    int height = 0
+    int width = 0
+    for layout.Section section = sim.network.sections[]
+        if section.row + 1 > height
+            height = section.row + 1
+        if section.last + 1 > width
+            width = section.last + 1
+    int[][] positions = []
+    for layout.Point point = sim.network.points[]
+        positions = positions.append([point.row, point.column])
+    for layout.Signal signal = sim.network.signals[]
+        positions = positions.append([signal.row, signal.column])
+    for layout.Endpoint buffer = sim.network.buffers[]
+        positions = positions.append([buffer.row, buffer.column])
+    for layout.Label label = sim.network.labels[]
+        positions = positions.append([label.row, label.column + int(len(label.text)) - 1])
+    for int[] position = positions[]
+        if position[0] + 1 > height
+            height = position[0] + 1
+        if position[1] + 1 > width
+            width = position[1] + 1
+    string[][] grid = []
+    for int row < height
+        grid = grid.append(array(nat(width), fill = " "))
+    for layout.Label label = sim.network.labels[]
+        for int offset < int(len(label.text))
+            grid[label.row][label.column + offset] = label.text[offset]
+    for int s < int(len(sim.network.sections))
+        layout.Section section = sim.network.sections[s]
+        string character = if section.failed then "#" elif sim.locking.route_locks[s] >= 0 then "=" elif len(sim.locking.overlap_locks[s]) > 0 then "~" else "-"
+        for section.first <= int column <= section.last
+            grid[section.row][column] = character
+    for trains.Train train = sim.items[]
+        for trains.BodyPart part = occupied_parts(sim.network, train)[]
+            layout.Section section = sim.network.sections[part.section]
+            int length = section.length
+            int cells = section.last - section.first + 1
+            int left = if train.direction == "UP" then part.low - part.start else length - (part.high - part.start)
+            int right = if train.direction == "UP" then part.high - part.start else length - (part.low - part.start)
+            for int cell < cells
+                if left * cells < (cell + 1) * length and right * cells > cell * length
+                    int column = section.first + cell
+                    string previous = grid[section.row][column]
+                    int code = previous.codepoints()[0]
+                    grid[section.row][column] = if (code >= 97 and code <= 122) or previous == "*" then "*" else train.symbol
+    for layout.Endpoint buffer = sim.network.buffers[]
+        grid[buffer.row][buffer.column] = "|"
+    for layout.Point point = sim.network.points[]
+        grid[point.row][point.column] = if not point.moving and not point.failed then point.position else "?"
+    for layout.Signal signal = sim.network.signals[]
+        grid[signal.row][signal.column] = if signal.aspect == "RED" then "X" elif signal.aspect == "YELLOW" then "Y" else "G"
+    return [for string[] row = grid[] then trim_right(row.join(""))]
+
+string[] snapshot_lines(Simulation sim)
+    string[] lines = ["SNAPSHOT {sim.tick}"].concat(build_diagram(sim))
+    for trains.Train train = sim.items[]
+        if train.state == "RUNNING"
+            string[] sections = [for trains.BodyPart part = occupied_parts(sim.network, train)[] then sim.network.sections[part.section].name]
+            string text = "TRAIN {train.symbol} {train.name} {train.direction} {train.speed}"
+            if len(sections) > 0
+                text += " " + sections.join(",")
+            lines = lines.append(text)
+    string[] routes = []
+    for interlocking.Route route = sim.locking.routes[]
+        if route.state != "none"
+            routes = routes.append(route.name + "/" + route.state)
+    return lines.append("ROUTES " + (if len(routes) == 0 then "-" else routes.join(" ")))
+
+Timing[] timing_rows(Simulation sim)
+    Timing[] result = []
+    for trains.Train train = sim.items[]
+        result = result.append(Timing(train.name, "enter:" + sim.network.boundaries[train.entry].name, train.entry_time, train.entered))
+        for trains.Stop stop = train.stops[]
+            string name = sim.network.sections[stop.section].name
+            result = result.concat([Timing(train.name, "arr:" + name, stop.scheduled_arrival, stop.arrival), Timing(train.name, "dep:" + name, stop.scheduled_departure, stop.departure)])
+        result = result.append(Timing(train.name, "exit:" + sim.network.boundaries[train.exit].name, train.scheduled_exit, train.exited))
+    return result
+
+string[] train_log_lines(Timing[] rows)
+    string[] lines = ["train,location,scheduled,actual,delay"]
+    for Timing row = rows[]
+        string timing = if row.actual < 0 then "-,-" else "{row.actual},{row.actual - row.scheduled}"
+        lines = lines.append("{row.train_name},{row.location},{row.scheduled},{timing}")
+    return lines
+
+string punctuality_line(Timing[] rows)
+    int on_time = 0
+    int late = 0
+    int missing = 0
+    int total_delay = 0
+    int maximum = 0
+    for Timing row = rows[]
+        if row.actual < 0
+            missing += 1
+            continue
+        int delay = row.actual - row.scheduled
+        if delay <= 0
+            on_time += 1
+        else
+            late += 1
+            total_delay += delay
+            if delay > maximum
+                maximum = delay
+    return "PUNCTUALITY on_time {on_time} late {late} missing {missing} total_delay {total_delay} max_delay {maximum}"
+
+string[] summary_lines(Simulation sim, Timing[] rows)
+    string[] lines = []
+    int grants = 0
+    for interlocking.Route route = sim.locking.routes[]
+        string start = sim.network.signals[route.start].name
+        lines = lines.append("ROUTE {route.name} {start}-{route.finish_name} requests {route.requests} grants {route.grants} uses {route.uses} cancels {route.cancels} wait {route.wait} maxwait {route.maxwait} locked {route.locked_seconds}")
+        grants += route.grants
+    for layout.Point point = sim.network.points[]
+        string final = if not point.moving and not point.failed then point.position else "?"
+        lines = lines.append("POINT {point.name} throws {point.throws} locked {point.locked_seconds} moving {point.moving_seconds} final {final}")
+    for layout.Section section = sim.network.sections[]
+        lines = lines.append("SECTION {section.name} occupied {section.occupied_seconds} locked {section.locked_seconds} trains {section.trains.size()}")
+    for layout.Signal signal = sim.network.signals[]
+        lines = lines.append("SIGNAL {signal.name} red {signal.seconds[0]} yellow {signal.seconds[1]} green {signal.seconds[2]} passes {signal.passes}")
+    int waiting = 0
+    int running = 0
+    int exited = 0
+    for trains.Train train = sim.items[]
+        lines = lines.append("TRAIN {train.name} {train.symbol} {train.state} distance {train.distance} maxspeed {train.maximum_speed} standing {train.standing} passes {train.passes}")
+        if train.state == "WAITING"
+            waiting += 1
+        elif train.state == "RUNNING"
+            running += 1
+        else
+            exited += 1
+    lines = lines.concat(["TRAINS total {len(sim.items)} exited {exited} running {running} waiting {waiting}", punctuality_line(rows), "REQUESTS total {sim.request_count} granted {grants} dropped {sim.dropped} pending {len(sim.queue)}"])
+    return lines
+
+void write_lines(string name, string[] lines)
+    string content = if len(lines) == 0 then "" else lines.join(NL) + NL
+    file.write("output/" + name, content)
+
+void run_program()
+    layout.Network network = layout.read_layout()
+    interlocking.State locking = interlocking.read_routes(network)
+    trains.Plans plans = trains.read_plans(network, locking)
+    Simulation sim = Simulation(network, locking, plans, read_parameters(), read_events())
+    for int tick <= sim.params.end
+        sim.tick = tick
+        complete_throws(&sim)
+        release_approaches(&sim)
+        for trains.PlannedRequest request = sim.plans.requests[]
+            if request.tick == tick
+                add_request(&sim, request.route, sim.items[request.train].name)
+        execute_events(&sim)
+        judge_requests(&sim)
+        decide_signals(&sim)
+        run_trains(&sim)
+        recompute_occupancy(&sim)
+        sectional_release(&sim)
+        safety.inspect_state(&sim.safety_record, tick, sim.network, sim.locking, sim.items)
+        record_statistics(&sim)
+        for int snapshot_time = sim.params.snapshots[]
+            if snapshot_time == tick
+                sim.snapshots = sim.snapshots.concat(snapshot_lines(sim))
+    bool directory_exists = file.is_directory("output")
+    if not directory_exists
+        file.mkdir("output")
+    Timing[] rows = timing_rows(sim)
+    write_lines("events.txt", sim.log_lines)
+    write_lines("snapshots.txt", sim.snapshots)
+    write_lines("train_log.csv", train_log_lines(rows))
+    write_lines("safety.txt", safety.report_lines(sim.safety_record))
+    write_lines("summary.txt", summary_lines(sim, rows))
+
+run_program()

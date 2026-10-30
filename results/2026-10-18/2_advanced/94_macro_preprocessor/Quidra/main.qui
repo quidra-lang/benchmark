@@ -1,0 +1,637 @@
+import lexer = "./lexer.qui"
+import defs = "./definitions.qui"
+import expression = "./expression.qui"
+import expander = "./expander.qui"
+import includes = "./include_manager.qui"
+
+class Header(string name, string rendering, bool quoted, int end)
+class Block(string kind, defs.Position start, bool parent, bool chosen = false, bool active = false, bool else_seen = false, int | none skip_start = none)
+class Saved(int | none definition)
+class Inclusion(string path, int depth, int file_index)
+    string display_name = path
+    int offset = 0
+    Block[] blocks = []
+    lexer.Token[] segment = []
+
+    defs.Position position(int physical)
+        return defs.Position(display_name, physical + offset)
+
+    bool active()
+        return len(blocks) == 0 or blocks[int(len(blocks)) - 1].active
+
+class Context(expander.Context expansion = expander.Context(), includes.Manager manager = includes.Manager(), string[] history = [], string[] ever = [], string[] poisoned = [], map.Map<string, Saved[]> saves = map.Map<string, Saved[]>(), string[] output = [], string[] tree = ["main.c"], string[] records = [], string[] results = [], string[] regions = [], defs.Position previous = defs.Position("main.c", 0))
+class Test(bool taken, string text)
+
+void record_diagnostic(Context &context, const defs.Position position, string kind, string message)
+    expander.diagnostic(&context.expansion, position, kind, message)
+
+void event(Context &context, const defs.Position position, string text)
+    context.history = context.history.append("{position.text()}: {text}")
+
+void poison_check(Context &context, const lexer.Token[] tokens, const Inclusion state)
+    for lexer.Token token = tokens[]
+        if token.kind == "identifier" and lexer.has(context.poisoned, token.text)
+            record_diagnostic(&context, state.position(token.line), "error", "attempt to use poisoned {DQ}{token.text}{DQ}")
+
+void unused(Context &context, const defs.Macro definition)
+    if definition.main_file and definition.expanded == 0 and definition.tested == 0
+        record_diagnostic(&context, definition.position, "warning", "macro {DQ}{definition.name}{DQ} is not used")
+
+void define_macro(Context &context, const lexer.Token[] tokens, const defs.Position position, bool main_file)
+    defs.Macro definition = defs.Macro("", false, [], false, [], position, main_file)
+    match defs.parse(tokens, position, main_file)
+        defs.Macro found
+            definition = found
+        defs.Problem problem
+            record_diagnostic(&context, position, "error", problem.reason)
+            return
+    match context.expansion.table.get(definition.name)
+        int old_index
+            defs.Macro old = context.expansion.definitions[old_index]
+            if defs.identical(old, definition)
+                event(&context, position, "identical " + definition.signature())
+                return
+            unused(&context, old)
+            record_diagnostic(&context, position, "warning", "{DQ}{definition.name}{DQ} redefined (previous definition at {old.position.text()})")
+            event(&context, position, "redefine " + definition.signature())
+        none
+            event(&context, position, "define " + definition.signature())
+    int index = int(len(context.expansion.definitions))
+    context.expansion.definitions = context.expansion.definitions.append(definition)
+    .context.expansion.table.set(definition.name, index)
+    context.ever = lexer.unique(context.ever.append(definition.name))
+
+void undef_macro(Context &context, const lexer.Token[] tokens, const defs.Position position)
+    string name = ""
+    match defs.macro_name(tokens, "undef")
+        string found
+            name = found
+        defs.Problem problem
+            record_diagnostic(&context, position, "error", problem.reason)
+            return
+    if len(tokens) > 1
+        record_diagnostic(&context, position, "warning", "extra tokens at end of #undef directive")
+    match context.expansion.table.get(name)
+        int index
+            unused(&context, context.expansion.definitions[index])
+            .context.expansion.table.remove(name)
+            event(&context, position, "undef {name}")
+        none
+            event(&context, position, "undef {name} (not defined)")
+
+void marker(Context &context, string display_name, int line, string flag = "")
+    context.output = context.output.append("# {line} {DQ}{display_name}{DQ}{flag}")
+    context.previous = defs.Position(display_name, line - 1)
+
+void output_line(Context &context, string text, int physical, const Inclusion state)
+    defs.Position position = state.position(physical)
+    if context.previous.display_name == position.display_name and context.previous.line < position.line and position.line <= context.previous.line + 8
+        for int iteration < position.line - context.previous.line - 1
+            context.output = context.output.append("")
+    else
+        marker(&context, position.display_name, position.line)
+    context.output = context.output.append(text)
+    context.previous = position
+    context.manager.files[state.file_index].output_lines += 1
+
+void flush_segment(Context &context, Inclusion &state)
+    poison_check(&context, state.segment, state)
+    lexer.Token[] tokens = expander.expand(&context.expansion, state.segment, state.display_name, state.offset)
+    state.segment = []
+    int cursor = 0
+    while cursor < int(len(tokens))
+        int finish = cursor + 1
+        while finish < int(len(tokens)) and tokens[finish].line == tokens[cursor].line
+            finish += 1
+        output_line(&context, lexer.render(tokens[cursor:<finish], true), tokens[cursor].line, state)
+        cursor = finish
+
+bool is_defined(Context &context, string name)
+    match context.expansion.table.get(name)
+        int index
+            context.expansion.definitions[index].tested += 1
+            return true
+        none
+            return defs.builtin(name) or name == "__has_include"
+
+Header | none | defs.Problem read_header(const lexer.Token[] tokens, int index = 0)
+    if index >= int(len(tokens))
+        return none
+    lexer.Token token = tokens[index]
+    if token.kind == "string" or token.kind == "header"
+        return Header(token.text[1:<int(len(token.text)) - 1], token.text, token.kind == "string", index + 1)
+    if token.text == "<"
+        int finish = index + 1
+        while finish < int(len(tokens)) and tokens[finish].text != ">"
+            finish += 1
+        if finish == int(len(tokens))
+            return defs.Problem("missing terminating > character")
+        string name = lexer.render(tokens[index + 1:<finish])
+        return Header(name, "<{name}>", false, finish + 1)
+    return none
+
+lexer.Token[] | defs.Problem replace_operators(Context &context, const lexer.Token[] tokens)
+    lexer.Token[] result = []
+    int cursor = 0
+    while cursor < int(len(tokens))
+        lexer.Token token = tokens[cursor]
+        if token.kind == "identifier" and token.text == "defined"
+            cursor += 1
+            bool parenthesized = cursor < int(len(tokens)) and tokens[cursor].text == "("
+            if parenthesized
+                cursor += 1
+            if cursor == int(len(tokens)) or tokens[cursor].kind != "identifier"
+                return defs.Problem("operator {DQ}defined{DQ} requires an identifier")
+            string name = tokens[cursor].text
+            cursor += 1
+            if parenthesized
+                if cursor == int(len(tokens)) or tokens[cursor].text != ")"
+                    return defs.Problem("missing ')' after {DQ}defined{DQ}")
+                cursor += 1
+            bool present = is_defined(&context, name)
+            result = result.append(lexer.Token("number", if present then "1" else "0", token.line, token.space))
+        elif token.kind == "identifier" and token.text == "__has_include"
+            cursor += 1
+            if cursor == int(len(tokens)) or tokens[cursor].text != "("
+                return defs.Problem("missing '(' after {DQ}__has_include{DQ}")
+            cursor += 1
+            Header header = Header("", "", false, 0)
+            match read_header(tokens, cursor)
+                Header found
+                    header = found
+                none
+                    return defs.Problem("operator {DQ}__has_include{DQ} requires a header-name")
+                defs.Problem problem
+                    return problem
+            if header.name == ""
+                return defs.Problem("operator {DQ}__has_include{DQ} requires a header-name")
+            cursor = header.end
+            if cursor == int(len(tokens)) or tokens[cursor].text != ")"
+                return defs.Problem("missing ')' after {DQ}__has_include{DQ} operand")
+            cursor += 1
+            bool present = false
+            match includes.search(header.name, header.quoted)
+                string found
+                    present = true
+                none
+                    present = false
+            result = result.append(lexer.Token("number", if present then "1" else "0", token.line, token.space))
+        else
+            result = result.append(token)
+            cursor += 1
+    return result
+
+Test test_condition(Context &context, string directive, const lexer.Token[] tokens, const defs.Position position, const Inclusion state)
+    poison_check(&context, tokens, state)
+    if directive != "if" and directive != "elif"
+        if len(tokens) == 0
+            record_diagnostic(&context, position, "error", "no macro name given in #{directive} directive")
+            return Test(false, "not taken (error)")
+        if tokens[0].kind != "identifier"
+            record_diagnostic(&context, position, "error", "macro names must be identifiers")
+            return Test(false, "not taken (error)")
+        if len(tokens) > 1
+            record_diagnostic(&context, position, "warning", "extra tokens at end of #{directive} directive")
+        bool present = is_defined(&context, tokens[0].text)
+        bool taken = if directive == "ifndef" or directive == "elifndef" then not present else present
+        return Test(taken, if taken then "taken" else "not taken")
+    lexer.Token[] replaced = []
+    match replace_operators(&context, tokens)
+        lexer.Token[] found
+            replaced = found
+        defs.Problem problem
+            record_diagnostic(&context, position, "error", problem.reason)
+            return Test(false, "not taken (error)")
+    lexer.Token[] expanded = expander.expand(&context.expansion, replaced, state.display_name, state.offset)
+    expression.Result result = expression.test(expanded, directive)
+    for expression.Message message = result.messages[]
+        record_diagnostic(&context, position, message.kind, message.text)
+    string suffix = " [" + lexer.render(expanded, true) + "]"
+    match result.value
+        int value
+            bool taken = value != 0
+            return Test(taken, (if taken then "taken" else "not taken") + " (value {value})" + suffix)
+        none
+            return Test(false, "not taken (error)" + suffix)
+
+void close_region(Context &context, Block &block, int finish, const Inclusion state)
+    match block.skip_start
+        int start
+            if finish >= start
+                int count = finish - start + 1
+                context.regions = context.regions.append("{state.display_name}:{start + state.offset}-{finish + state.offset} lines={count}")
+                context.manager.files[state.file_index].skipped_lines += count
+        none
+            block.skip_start = none
+    block.skip_start = none
+
+void conditional(Context &context, Inclusion &state, string directive, const lexer.Token[] operands, const lexer.LogicalLine line)
+    defs.Position position = state.position(line.tokens[0].line)
+    bool opening = lexer.has(["if", "ifdef", "ifndef"], directive)
+    int indentation = int(len(state.blocks)) - (if opening then 0 else 1)
+    string outcome = ""
+    if opening
+        Block block = Block(directive, position, state.active())
+        if block.parent
+            Test result = test_condition(&context, directive, operands, position, state)
+            block.active = result.taken
+            block.chosen = result.taken
+            outcome = result.text
+            if not block.active
+                block.skip_start = line.end + 1
+        else
+            outcome = "skipped"
+        state.blocks = state.blocks.append(block)
+    else
+        if len(state.blocks) == 0
+            record_diagnostic(&context, position, "error", "#{directive} without #if")
+            return
+        int last = int(len(state.blocks)) - 1
+        Block block = state.blocks[last]
+        close_region(&context, &block, line.start - 1, state)
+        if directive == "endif"
+            state.blocks = state.blocks[0:<last]
+            if block.parent and len(operands) > 0
+                record_diagnostic(&context, position, "warning", "extra tokens at end of #endif directive")
+            outcome = "closes #{block.kind} at line {block.start.line}"
+        else
+            if block.else_seen
+                record_diagnostic(&context, position, "error", "#{directive} after #else")
+            if directive == "else"
+                if block.parent and len(operands) > 0
+                    record_diagnostic(&context, position, "warning", "extra tokens at end of #else directive")
+                block.else_seen = true
+                if block.parent
+                    block.active = not block.chosen
+                    block.chosen = true
+                    outcome = if block.active then "taken" else "not taken"
+                else
+                    outcome = "skipped"
+            elif not block.parent
+                block.active = false
+                outcome = "skipped"
+            elif block.chosen
+                block.active = false
+                outcome = "not evaluated"
+            else
+                Test result = test_condition(&context, directive, operands, position, state)
+                block.active = result.taken
+                block.chosen = block.chosen or result.taken
+                outcome = result.text
+            if block.parent and not block.active
+                block.skip_start = line.end + 1
+            state.blocks[last] = block
+    string rendering = "#{directive}" + (if len(operands) == 0 then "" else " " + lexer.render(operands))
+    context.records = context.records.append("{position.text()}: " + lexer.repeat(" ", 2 * indentation) + rendering + " => " + outcome)
+    context.results = context.results.append(outcome)
+
+void process_file(Context &context, string path, int depth);
+
+void include_file(Context &context, const Inclusion state, const lexer.Token[] operands, const lexer.LogicalLine line)
+    defs.Position position = state.position(line.tokens[0].line)
+    lexer.Token[] tokens = operands
+    Header | none specification = none
+    match read_header(tokens)
+        Header found
+            specification = found
+        defs.Problem problem
+            record_diagnostic(&context, position, "error", problem.reason)
+            return
+        none
+            if len(tokens) > 0
+                tokens = expander.expand(&context.expansion, tokens, state.display_name, state.offset)
+                match read_header(tokens)
+                    Header found
+                        specification = found
+                    defs.Problem problem
+                        record_diagnostic(&context, position, "error", problem.reason)
+                        return
+                    none
+                        specification = none
+    Header header = Header("", "", false, 0)
+    match specification
+        Header found
+            header = found
+        none
+            record_diagnostic(&context, position, "error", "#include expects {DQ}FILENAME{DQ} or <FILENAME>")
+            return
+    if header.end < int(len(tokens))
+        record_diagnostic(&context, position, "warning", "extra tokens at end of #include directive")
+    if header.name == ""
+        record_diagnostic(&context, position, "error", "empty filename in #include")
+        return
+    string prefix = lexer.repeat(" ", 2 * (state.depth + 1)) + "{line.tokens[0].line}: "
+    string path = ""
+    match includes.search(header.name, header.quoted)
+        string found
+            path = found
+        none
+            context.tree = context.tree.append(prefix + header.rendering + " [not found]")
+            record_diagnostic(&context, position, "error", "cannot find include file " + header.rendering)
+            return
+    match context.manager.lookup.get(path)
+        int index
+            includes.SourceFile cached = context.manager.files[index]
+            string reason = ""
+            if cached.once
+                reason = "pragma once"
+            else
+                match cached.guard
+                    string name
+                        if context.expansion.table.has(name)
+                            reason = "guard {name}"
+                    none
+                        reason = ""
+            if reason != ""
+                context.tree = context.tree.append(prefix + path + " [skipped: {reason}]")
+                context.manager.files[index].skipped += 1
+                return
+        none
+            path = path
+    if state.depth + 1 > 8
+        context.tree = context.tree.append(prefix + path + " [too deep]")
+        record_diagnostic(&context, position, "error", "#include nested too deeply")
+        return
+    context.tree = context.tree.append(prefix + path)
+    marker(&context, path, 1, " 1")
+    process_file(&context, path, state.depth + 1)
+    marker(&context, state.display_name, line.end + 1 + state.offset, " 2")
+
+bool decimal_token(const lexer.Token token)
+    if token.kind != "number" or len(token.text) == 0
+        return false
+    for int index < int(len(token.text))
+        if not lexer.digit(token.text[index])
+            return false
+    return true
+
+void line_directive(Context &context, Inclusion &state, const lexer.Token[] original, const lexer.LogicalLine line)
+    defs.Position position = state.position(line.tokens[0].line)
+    lexer.Token[] tokens = original
+    if len(tokens) == 0 or not decimal_token(tokens[0])
+        tokens = expander.expand(&context.expansion, tokens, state.display_name, state.offset)
+    if len(tokens) < 1 or len(tokens) > 2 or not decimal_token(tokens[0]) or (len(tokens) == 2 and tokens[1].kind != "string")
+        record_diagnostic(&context, position, "error", "invalid #line directive")
+        return
+    int number = int.parse(tokens[0].text)
+    if number < 1 or number > 2147483647
+        record_diagnostic(&context, position, "error", "line number out of range")
+        return
+    state.offset = number - line.end - 1
+    if len(tokens) == 2
+        state.display_name = tokens[1].text[1:<int(len(tokens[1].text)) - 1]
+
+void pragma(Context &context, const Inclusion state, const lexer.Token[] tokens, int physical)
+    defs.Position position = state.position(physical)
+    string first = if len(tokens) > 0 then tokens[0].text else ""
+    bool identifier = len(tokens) > 0 and tokens[0].kind == "identifier"
+    if identifier and first == "once"
+        if len(tokens) > 1
+            record_diagnostic(&context, position, "warning", "extra tokens at end of #pragma once directive")
+        if state.depth == 0
+            record_diagnostic(&context, position, "warning", "#pragma once in main file")
+        context.manager.files[state.file_index].once = true
+    elif len(tokens) >= 2 and first == "GCC" and tokens[1].text == "poison"
+        lexer.Token[] names = tokens[2:<int(len(tokens))]
+        for lexer.Token token = names[]
+            if token.kind != "identifier"
+                record_diagnostic(&context, position, "error", "invalid #pragma GCC poison directive")
+                return
+        for lexer.Token token = names[]
+            if context.expansion.table.has(token.text)
+                record_diagnostic(&context, position, "warning", "poisoning existing macro {DQ}{token.text}{DQ}")
+            context.poisoned = lexer.unique(context.poisoned.append(token.text))
+    elif identifier and (first == "push_macro" or first == "pop_macro")
+        if len(tokens) != 4 or tokens[1].text != "(" or tokens[2].kind != "string" or tokens[3].text != ")"
+            record_diagnostic(&context, position, "error", "invalid #pragma {first} directive")
+            return
+        string name = tokens[2].text[1:<int(len(tokens[2].text)) - 1]
+        Saved[] stack = []
+        match context.saves.get(name)
+            Saved[] found
+                stack = found
+            none
+                stack = []
+        if first == "push_macro"
+            stack = stack.append(Saved(context.expansion.table.get(name)))
+            .context.saves.set(name, stack)
+            event(&context, position, "push {name}")
+        elif len(stack) == 0
+            record_diagnostic(&context, position, "warning", "no matching push_macro for {DQ}{name}{DQ}")
+        else
+            Saved saved = stack[int(len(stack)) - 1]
+            stack = stack[0:<int(len(stack)) - 1]
+            .context.saves.set(name, stack)
+            match saved.definition
+                int index
+                    .context.expansion.table.set(name, index)
+                    event(&context, position, "pop {name}")
+                none
+                    .context.expansion.table.remove(name)
+                    event(&context, position, "pop {name} (undefined)")
+    else
+        output_line(&context, "#pragma" + (if len(tokens) == 0 then "" else " " + lexer.render(tokens)), physical, state)
+
+void process_file(Context &context, string path, int depth)
+    int index = includes.enter(&context.manager, path)
+    Inclusion state = Inclusion(path, depth, index)
+    lexer.LogicalLine[] lines = context.manager.files[index].lines
+    for lexer.LogicalLine line = lines[]
+        bool directive_line = len(line.tokens) > 0 and line.tokens[0].text == "#"
+        if directive_line
+            flush_segment(&context, &state)
+            if len(line.tokens) == 1
+                continue
+            string directive = line.tokens[1].text
+            lexer.Token[] operands = line.tokens[2:<int(len(line.tokens))]
+            if line.tokens[1].kind == "identifier" and lexer.has(["if", "ifdef", "ifndef", "elif", "elifdef", "elifndef", "else", "endif"], directive)
+                conditional(&context, &state, directive, operands, line)
+                continue
+            if not state.active()
+                continue
+            bool poisoning = directive == "pragma" and len(operands) >= 2 and operands[0].text == "GCC" and operands[1].text == "poison"
+            if not poisoning
+                poison_check(&context, operands, state)
+            defs.Position position = state.position(line.tokens[0].line)
+            if directive == "define"
+                define_macro(&context, operands, position, depth == 0)
+            elif directive == "undef"
+                undef_macro(&context, operands, position)
+            elif directive == "include"
+                include_file(&context, state, operands, line)
+            elif directive == "line"
+                line_directive(&context, &state, operands, line)
+            elif directive == "error" or directive == "warning"
+                record_diagnostic(&context, position, directive, "#{directive}" + (if len(operands) == 0 then "" else " " + lexer.render(operands)))
+            elif directive == "pragma"
+                pragma(&context, state, operands, line.tokens[0].line)
+            else
+                record_diagnostic(&context, position, "error", "invalid preprocessing directive #{directive}")
+        elif state.active()
+            state.segment = state.segment.concat(line.tokens)
+    flush_segment(&context, &state)
+    for int block_index < int(len(state.blocks))
+        Block block = state.blocks[block_index]
+        close_region(&context, &block, context.manager.files[index].physical_lines, state)
+        state.blocks[block_index] = block
+    for Block block = state.blocks[]
+        record_diagnostic(&context, block.start, "error", "unterminated #{block.kind}")
+
+string list_line(string heading, const string[] items)
+    return heading + (if len(items) == 0 then "" else " " + items.join(" "))
+
+string[] references(const Context context, const defs.Macro definition)
+    string[] result = []
+    for lexer.Token token = definition.replacement[]
+        if token.kind == "identifier" and context.expansion.table.has(token.text) and not lexer.has(definition.parameters, token.text)
+            result = result.append(token.text)
+    return lexer.unique(result).sorted()
+
+bool cycle_reaches(const map.Map<string, string[]> graph, string current, string target, string[] visited)
+    if lexer.has(visited, current)
+        return false
+    visited = visited.append(current)
+    string[] successors = []
+    match graph.get(current)
+        string[] found
+            successors = found
+        none
+            return false
+    for string successor = successors[]
+        if successor == target or cycle_reaches(graph, successor, target, visited)
+            return true
+    return false
+
+string[] include_lines(const Context context)
+    string[] result = context.tree.concat(["", "== files =="])
+    string[] paths = context.manager.lookup.keys()
+    for string path = paths.sorted()
+        int index = -1
+        match context.manager.lookup.get(path)
+            int found
+                index = found
+            none
+                continue
+        includes.SourceFile source = context.manager.files[index]
+        string guard = "-"
+        match source.guard
+            string found
+                guard = found
+            none
+                guard = "-"
+        string once = if source.once then "yes" else "no"
+        result = result.append("{path} entered={source.entered} skipped={source.skipped} lines={source.physical_lines} output_lines={source.output_lines} skipped_lines={source.skipped_lines} guard={guard} once={once}")
+    result = result.append("")
+    string dependency = "main.o:"
+    bool has_path = false
+    for string path = context.manager.order[]
+        if len(dependency) + 1 + len(path) > 76 and has_path
+            result = result.append(dependency + " \")
+            dependency = " "
+            has_path = false
+        dependency += " " + path
+        has_path = true
+    return result.append(dependency)
+
+string[] macro_lines(const Context context)
+    string[] names = context.expansion.table.keys()
+    names = names.sorted()
+    map.Map<string, string[]> graph = map.Map<string, string[]>()
+    for string name = names[]
+        match context.expansion.table.get(name)
+            int index
+                .graph.set(name, references(context, context.expansion.definitions[index]))
+            none
+                continue
+    string[] result = ["== history =="]
+    result = result.concat(context.history).concat(["", "== table =="])
+    int functions = 0
+    for string name = names[]
+        int index = -1
+        match context.expansion.table.get(name)
+            int found
+                index = found
+            none
+                continue
+        defs.Macro definition = context.expansion.definitions[index]
+        if definition.function_like
+            functions += 1
+        string recursive = if cycle_reaches(graph, name, name, []) then "yes" else "no"
+        result = result.append(definition.definition())
+        result = result.append("  at {definition.position.text()} expanded={definition.expanded} tested={definition.tested} recursive={recursive}")
+        result = result.append(list_line("  refs:", references(context, definition)))
+    string[] undefined_names = []
+    for string name = context.ever.sorted()
+        if not context.expansion.table.has(name)
+            undefined_names = undefined_names.append(name)
+    result = result.concat(["", "macros={len(names)} object_like={int(len(names)) - functions} function_like={functions}"])
+    result = result.append(list_line("undefined:", undefined_names))
+    return result.append("builtins: __COUNTER__={context.expansion.uses[2]} __FILE__={context.expansion.uses[1]} __LINE__={context.expansion.uses[0]}")
+
+string[] conditional_lines(const Context context)
+    string[] prefixes = ["taken", "not taken", "skipped", "not evaluated", "closes"]
+    int[] counts = [0, 0, 0, 0, 0]
+    for string outcome = context.results[]
+        for int index < int(len(prefixes))
+            if outcome.starts_with(prefixes[index])
+                counts[index] += 1
+    string[] result = context.records.concat(["", "== skipped regions =="]).concat(context.regions)
+    return result.concat(["", "directives={len(context.records)} taken={counts[0]} not_taken={counts[1]} skipped={counts[2]} not_evaluated={counts[3]} endif={counts[4]} regions={len(context.regions)}"])
+
+string[] diagnostic_lines(const Context context)
+    string[] result = []
+    int errors = 0
+    int warnings = 0
+    for defs.Diagnostic diagnostic = context.expansion.diagnostics[]
+        result = result.append("{diagnostic.position.text()}: {diagnostic.kind}: {diagnostic.message}")
+        if diagnostic.kind == "error"
+            errors += 1
+        else
+            warnings += 1
+    return result.append("errors={errors} warnings={warnings}")
+
+void write_lines(string name, const string[] lines)
+    string text = if len(lines) == 0 then "" else lines.join(NL) + NL
+    file.write("output/{name}", text)
+
+void run_program()
+    Context context = Context()
+    string presets = file.read("input/defines.txt")
+    string[] lines = presets.split(NL)
+    for int index < int(len(lines))
+        string line = lines[index]
+        if line == ""
+            continue
+        int equals = -1
+        for int character_index < int(len(line))
+            if line[character_index] == "="
+                equals = character_index
+                break
+        if equals >= 0
+            line = line[0:<equals] + " " + line[equals + 1:<int(len(line))]
+        else
+            line += " 1"
+        lexer.Token[] tokens = []
+        for lexer.LogicalLine logical_line = lexer.lex(line + NL)[]
+            tokens = tokens.concat(logical_line.tokens)
+        define_macro(&context, tokens, defs.Position("defines.txt", index + 1), false)
+    marker(&context, "main.c", 1)
+    process_file(&context, "main.c", 0)
+    string[] names = context.expansion.table.keys()
+    for string name = names.sorted()
+        match context.expansion.table.get(name)
+            int index
+                unused(&context, context.expansion.definitions[index])
+            none
+                continue
+    bool exists = file.exists("output")
+    if not exists
+        file.mkdir("output")
+    write_lines("preprocessed.txt", context.output)
+    write_lines("includes.txt", include_lines(context))
+    write_lines("macros.txt", macro_lines(context))
+    write_lines("conditionals.txt", conditional_lines(context))
+    write_lines("diagnostics.txt", diagnostic_lines(context))
+
+if main
+    run_program()
