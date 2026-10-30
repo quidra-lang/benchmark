@@ -36,9 +36,9 @@ static class RingsAromatic
             foreach (Bond bond in m.Bonds)
             {
                 if (parent[bond.A] == bond.B || parent[bond.B] == bond.A) continue;
-                List<int> a = Path(bond.A), b = Path(bond.B);
-                if (a.Any(x => x != root && b.Contains(x))) continue;
-                List<int> ring = a.AsEnumerable().Reverse().Concat(b.Take(b.Count - 1)).ToList();
+                List<int> firstPath = Path(bond.A), secondPath = Path(bond.B);
+                if (firstPath.Any(x => x != root && secondPath.Contains(x))) continue;
+                List<int> ring = firstPath.AsEnumerable().Reverse().Concat(secondPath.Take(secondPath.Count - 1)).ToList();
                 HashSet<int> edges = EdgeSet(m, ring);
                 if (seen.Add(string.Join(",", edges.Order()))) candidates.Add((ring, edges));
             }
