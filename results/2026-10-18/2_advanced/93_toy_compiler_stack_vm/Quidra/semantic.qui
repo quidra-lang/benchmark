@@ -1,0 +1,383 @@
+import lexer = "./lexer.qui"
+import parser = "./parser.qui"
+
+class Symbol(parser.Name name, string type, string kind, int index, bool parameter = false, lexer.Position[] references = [], int reads = 0)
+class Context(parser.Program program, Symbol[] symbols = [], map.Map<string, int> globals = map.Map<string, int>(), map.Map<string, int>[] scopes = [], int[][] calls = [], int current_function = -1, lexer.Problem | none problem = none)
+
+bool failed(const Context context)
+    match context.problem
+        lexer.Problem problem
+            return true
+        none
+            return false
+
+void fail(Context &context, const lexer.Position position, string reason)
+    if not failed(context)
+        context.problem = lexer.Problem("semantic", position, reason)
+
+bool can_complete(const parser.Store syntax, int index)
+    parser.Stmt statement = syntax.statements[index]
+    if lexer.has(["return", "break", "continue"], statement.kind)
+        return false
+    if statement.kind == "block"
+        for int child = statement.statements[]
+            if not can_complete(syntax, child)
+                return false
+        return true
+    if statement.kind == "if"
+        return len(statement.statements) == 1 or can_complete(syntax, statement.statements[0]) or can_complete(syntax, statement.statements[1])
+    return true
+
+int add_variable(Context &context, int index, bool parameter = false)
+    int id = int(len(context.symbols))
+    parser.Variable variable = context.program.syntax.variables[index]
+    context.program.syntax.variables[index].id = id
+    context.symbols = context.symbols.append(Symbol(variable.name, variable.type, "variable", index, parameter))
+    context.calls = context.calls.append([])
+    return id
+
+int add_function(Context &context, int index)
+    int id = int(len(context.symbols))
+    parser.Function function = context.program.syntax.functions[index]
+    context.program.syntax.functions[index].id = id
+    context.symbols = context.symbols.append(Symbol(function.name, function.type, "function", index))
+    context.calls = context.calls.append([])
+    return id
+
+lexer.Position[] forbidden(const parser.Store syntax, int index)
+    parser.Expr expression = syntax.expressions[index]
+    lexer.Position[] result = []
+    if lexer.has(["variable", "element", "call", "read"], expression.kind)
+        result = result.append(expression.position)
+    for int child = expression.children[]
+        result = result.concat(forbidden(syntax, child))
+    return result
+
+int lookup(Context &context, const parser.Name name, bool read_access, bool call = false)
+    int id = -1
+    int scope_index = int(len(context.scopes)) - 1
+    while scope_index >= 0
+        match context.scopes[scope_index].get(name.text)
+            int found
+                id = found
+            none
+                id = id
+        if id >= 0
+            break
+        scope_index -= 1
+    if id < 0
+        match context.globals.get(name.text)
+            int found
+                id = found
+            none
+                id = -1
+    if id < 0
+        string noun = if call then "function" else "identifier"
+        fail(&context, name.position, "undeclared {noun} '{name.text}'")
+        return -1
+    context.symbols[id].references = context.symbols[id].references.append(name.position)
+    if read_access
+        context.symbols[id].reads += 1
+    return id
+
+int find_variable(Context &context, const parser.Name name, bool array, bool read_access)
+    int id = lookup(&context, name, read_access)
+    if failed(context)
+        return -1
+    Symbol symbol = context.symbols[id]
+    if symbol.kind == "function"
+        fail(&context, name.position, "'{name.text}' is a function, not a variable")
+        return -1
+    parser.Variable variable = context.program.syntax.variables[symbol.index]
+    bool is_array = false
+    match variable.size
+        int size
+            is_array = true
+        none
+            is_array = false
+    if not array and is_array
+        fail(&context, name.position, "array '{name.text}' used without index")
+    elif array and not is_array
+        fail(&context, name.position, "'{name.text}' is not an array")
+    return if failed(context) then -1 else id
+
+string check_expression(Context &context, int index, bool call_statement = false)
+    if failed(context)
+        return ""
+    parser.Expr expression = context.program.syntax.expressions[index]
+    string type = ""
+    if expression.kind == "integer" or expression.kind == "read"
+        type = "int"
+    elif expression.kind == "bool"
+        type = "bool"
+    elif expression.kind == "variable" or expression.kind == "element"
+        int id = find_variable(&context, parser.Name(expression.value, expression.position), expression.kind == "element", true)
+        if failed(context)
+            return ""
+        context.program.syntax.expressions[index].reference = id
+        type = context.symbols[id].type
+        if expression.kind == "element"
+            string found = check_expression(&context, expression.children[0])
+            if not failed(context) and found != "int"
+                fail(&context, expression.position, "index of '{expression.value}' must be int")
+            type = "int"
+    elif expression.kind == "call"
+        int id = lookup(&context, parser.Name(expression.value, expression.position), true, true)
+        if failed(context)
+            return ""
+        context.program.syntax.expressions[index].reference = id
+        Symbol symbol = context.symbols[id]
+        if symbol.kind != "function"
+            fail(&context, expression.position, "'{expression.value}' is not a function")
+            return ""
+        parser.Function function = context.program.syntax.functions[symbol.index]
+        if len(expression.children) != len(function.parameters)
+            fail(&context, expression.position, "wrong number of arguments to '{expression.value}' (expected {len(function.parameters)}, found {len(expression.children)})")
+            return ""
+        for int position < int(len(expression.children))
+            string found = check_expression(&context, expression.children[position])
+            if failed(context)
+                return ""
+            string expected = context.program.syntax.variables[function.parameters[position]].type
+            if found != expected
+                fail(&context, expression.position, "argument {position + 1} of '{expression.value}' must be {expected}")
+                return ""
+        if not call_statement and function.type == "void"
+            fail(&context, expression.position, "void function '{expression.value}' used as a value")
+            return ""
+        if context.current_function >= 0
+            int caller = context.program.syntax.functions[context.current_function].id
+            if not lexer.has(context.calls[caller], id)
+                context.calls[caller] = context.calls[caller].append(id)
+        type = function.type
+    elif expression.kind == "unary"
+        string found = check_expression(&context, expression.children[0])
+        if failed(context)
+            return ""
+        string expected = if expression.value == "-" then "int" else "bool"
+        if found != expected
+            fail(&context, expression.position, "operator '{expression.value}' requires {expected} operand")
+        type = found
+    else
+        string first = check_expression(&context, expression.children[0])
+        if failed(context)
+            return ""
+        string second = check_expression(&context, expression.children[1])
+        if failed(context)
+            return ""
+        if lexer.has(["+", "-", "*", "/", "%", "<", "<=", ">", ">="], expression.value)
+            if first != "int" or second != "int"
+                fail(&context, expression.position, "operator '{expression.value}' requires int operands")
+            type = if lexer.has(["+", "-", "*", "/", "%"], expression.value) then "int" else "bool"
+        elif expression.value == "==" or expression.value == "!="
+            if first != second
+                fail(&context, expression.position, "operator '{expression.value}' requires operands of the same type")
+            type = "bool"
+        else
+            if first != "bool" or second != "bool"
+                fail(&context, expression.position, "operator '{expression.value}' requires bool operands")
+            type = "bool"
+    if not failed(context)
+        context.program.syntax.expressions[index].type = type
+    return type
+
+void check_statement(Context &context, int index, int loops)
+    if failed(context)
+        return
+    parser.Stmt statement = context.program.syntax.statements[index]
+    string kind = statement.kind
+    if kind == "declaration"
+        parser.Variable variable = context.program.syntax.variables[statement.variable]
+        if variable.type == "void"
+            fail(&context, variable.name.position, "variable '{variable.name.text}' cannot have type void")
+            return
+        int scope_index = int(len(context.scopes)) - 1
+        if context.scopes[scope_index].has(variable.name.text)
+            fail(&context, variable.name.position, "redeclaration of '{variable.name.text}'")
+            return
+        match variable.initializer
+            int initial
+                string found = check_expression(&context, initial)
+                if not failed(context) and found != variable.type
+                    fail(&context, variable.name.position, "type mismatch in initialization of '{variable.name.text}'")
+            none
+                context.problem = none
+        if failed(context)
+            return
+        int id = add_variable(&context, statement.variable)
+        .context.scopes[scope_index].set(variable.name.text, id)
+    elif kind == "assignment"
+        bool array = false
+        match statement.index
+            int expression_index
+                array = true
+            none
+                array = false
+        int id = find_variable(&context, statement.name, array, false)
+        if failed(context)
+            return
+        context.program.syntax.statements[index].reference = id
+        match statement.index
+            int expression_index
+                string found = check_expression(&context, expression_index)
+                if not failed(context) and found != "int"
+                    fail(&context, statement.position, "index of '{statement.name.text}' must be int")
+            none
+                context.problem = none
+        if failed(context)
+            return
+        string found = check_expression(&context, statement.expressions[0])
+        if not failed(context) and found != context.symbols[id].type
+            fail(&context, statement.position, "type mismatch in assignment to '{statement.name.text}'")
+    elif kind == "call"
+        string ignored = check_expression(&context, statement.expressions[0], true)
+    elif kind == "if" or kind == "while"
+        string found = check_expression(&context, statement.expressions[0])
+        if failed(context)
+            return
+        if found != "bool"
+            fail(&context, statement.position, "condition of '{kind}' must be bool")
+            return
+        for int child = statement.statements[]
+            check_statement(&context, child, loops + (if kind == "while" then 1 else 0))
+    elif kind == "for"
+        context.scopes = context.scopes.append(map.Map<string, int>())
+        if statement.statements[0] >= 0
+            check_statement(&context, statement.statements[0], loops)
+        if not failed(context) and statement.expressions[0] >= 0
+            string found = check_expression(&context, statement.expressions[0])
+            if not failed(context) and found != "bool"
+                fail(&context, statement.position, "condition of 'for' must be bool")
+        if not failed(context) and statement.statements[1] >= 0
+            check_statement(&context, statement.statements[1], loops)
+        check_statement(&context, statement.statements[2], loops + 1)
+        context.scopes = context.scopes[0:<int(len(context.scopes)) - 1]
+    elif kind == "break" or kind == "continue"
+        if loops == 0
+            fail(&context, statement.position, "'{kind}' outside loop")
+    elif kind == "return"
+        parser.Function function = context.program.syntax.functions[context.current_function]
+        if function.type == "void" and len(statement.expressions) > 0
+            fail(&context, statement.position, "function '{function.name.text}' must not return a value")
+        elif function.type != "void"
+            if len(statement.expressions) == 0
+                fail(&context, statement.position, "function '{function.name.text}' must return a value")
+            else
+                string found = check_expression(&context, statement.expressions[0])
+                if not failed(context) and found != function.type
+                    fail(&context, statement.position, "return value of '{function.name.text}' must be {function.type}")
+    elif kind == "print"
+        for int position < int(len(statement.expressions))
+            string found = check_expression(&context, statement.expressions[position])
+            if failed(context)
+                return
+            if found != "int"
+                fail(&context, statement.position, "argument {position + 1} of 'print' must be int")
+                return
+    elif kind == "block"
+        context.scopes = context.scopes.append(map.Map<string, int>())
+        for int child = statement.statements[]
+            check_statement(&context, child, loops)
+        context.scopes = context.scopes[0:<int(len(context.scopes)) - 1]
+
+int | error global_id(const Context context, string name)
+    match context.globals.get(name)
+        int found
+            return found
+        none
+            return error("missing global")
+
+Context analyze(const parser.Program program)
+    Context context = Context(program)
+    for parser.Top declaration = program.declarations[]
+        if declaration.kind == "variable"
+            parser.Variable variable = program.syntax.variables[declaration.index]
+            match variable.size
+                int size
+                    if variable.type != "int"
+                        fail(&context, variable.name.position, "array '{variable.name.text}' must have element type int")
+                    elif size == 0
+                        match variable.size_position
+                            lexer.Position position
+                                fail(&context, position, "array '{variable.name.text}' must have a positive size")
+                            none
+                                fail(&context, variable.name.position, "array '{variable.name.text}' must have a positive size")
+                none
+                    if variable.type == "void"
+                        fail(&context, variable.name.position, "variable '{variable.name.text}' cannot have type void")
+            if failed(context)
+                return context
+            if context.globals.has(variable.name.text)
+                fail(&context, variable.name.position, "redeclaration of '{variable.name.text}'")
+                return context
+            match variable.initializer
+                int initial
+                    lexer.Position[] invalid = forbidden(program.syntax, initial)
+                    if len(invalid) > 0
+                        lexer.Position earliest = invalid[0]
+                        for lexer.Position position = invalid[]
+                            if lexer.compare_position(position, earliest) < 0
+                                earliest = position
+                        fail(&context, earliest, "global initializer must be constant")
+                        return context
+                    string found = check_expression(&context, initial)
+                    if not failed(context) and found != variable.type
+                        fail(&context, variable.name.position, "type mismatch in initialization of '{variable.name.text}'")
+                none
+                    context.problem = none
+            if failed(context)
+                return context
+            int id = add_variable(&context, declaration.index)
+            .context.globals.set(variable.name.text, id)
+        else
+            parser.Function function = program.syntax.functions[declaration.index]
+            if context.globals.has(function.name.text)
+                fail(&context, function.name.position, "redeclaration of '{function.name.text}'")
+                return context
+            string[] names = []
+            for int parameter = function.parameters[]
+                parser.Variable variable = program.syntax.variables[parameter]
+                if variable.type == "void"
+                    fail(&context, variable.name.position, "parameter '{variable.name.text}' cannot have type void")
+                    return context
+                if lexer.has(names, variable.name.text)
+                    fail(&context, variable.name.position, "redeclaration of '{variable.name.text}'")
+                    return context
+                names = names.append(variable.name.text)
+            int id = add_function(&context, declaration.index)
+            .context.globals.set(function.name.text, id)
+    int entry = -1
+    match context.globals.get("main")
+        int found
+            if context.symbols[found].kind == "function"
+                entry = context.symbols[found].index
+        none
+            entry = -1
+    if entry < 0
+        fail(&context, program.end, "no main function")
+        return context
+    parser.Function entry_function = context.program.syntax.functions[entry]
+    if entry_function.type != "void" or len(entry_function.parameters) > 0
+        fail(&context, entry_function.name.position, "main must be declared as 'void main()'")
+        return context
+    for parser.Top declaration = program.declarations[]
+        if declaration.kind != "function"
+            continue
+        context.current_function = declaration.index
+        parser.Function function = context.program.syntax.functions[declaration.index]
+        context.scopes = [map.Map<string, int>()]
+        for int parameter = function.parameters[]
+            int id = add_variable(&context, parameter, true)
+            string name = context.program.syntax.variables[parameter].name.text
+            .context.scopes[0].set(name, id)
+        parser.Stmt body = context.program.syntax.statements[function.body]
+        for int child = body.statements[]
+            check_statement(&context, child, 0)
+        if failed(context)
+            return context
+        if function.type != "void" and can_complete(context.program.syntax, function.body)
+            fail(&context, function.name.position, "missing return in function '{function.name.text}'")
+            return context
+    context.current_function = -1
+    context.scopes = []
+    return context

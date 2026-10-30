@@ -155,7 +155,7 @@ reuse_analysis =: 3 : 0
         end.
         label =. 'c',integer core
         line =. 'reuse ',label,' accesses ',(integer #accesses),' lines ',integer #~.blocks
-        line =. line,' distance ',((;:'1 2-4 5-16 17-64 65-256 257+')range_counts histogram),' cold ',integer cold
+        line =. line,' distance ',((<;._1 ' 1 2-4 5-16 17-64 65-256 257+')range_counts histogram),' cold ',integer cold
         ReuseLines =: ReuseLines,<line
         line =. 'mrc ',label,' lru ',((integer&.>capacities)range_counts curve)
         line =. line,' opt ',(integer CacheCapacity),':',integer opt
@@ -562,7 +562,7 @@ scenario_report =: 3 : 0
         histogram =. ((bucket{histogram)+1)bucket}histogram
     end.
     line =. 'latencies reads ',(integer 8{TotalCounters),' writes ',integer 9{TotalCounters
-    lines,<line,' histogram ',(;:'1 2-9 10-29 30-99 100-299 300+')range_counts histogram
+    lines,<line,' histogram ',(<;._1 ' 1 2-9 10-29 30-99 100-299 300+')range_counts histogram
 )
 hot_lines =: 3 : 0
     counts =. (NumberBlocks,8)$0

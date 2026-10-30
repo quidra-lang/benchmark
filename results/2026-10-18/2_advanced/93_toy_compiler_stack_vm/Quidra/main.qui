@@ -1,0 +1,847 @@
+import lexer = "./lexer.qui"
+import parser = "./parser.qui"
+import semantic = "./semantic.qui"
+import codegen = "./codegen.qui"
+import vm = "./vm.qui"
+
+class Warning(lexer.Position position, string message)
+class Folder(semantic.Context model, int count = 0)
+class Peephole(codegen.Instruction[] code, int[] counts)
+class BasicBlock(int first, int last, int[] successors)
+class SourceProgram(string name, lexer.SourceLine[] lines = [])
+class Inputs(SourceProgram[] programs, string[] lines)
+class Count(string name, int value)
+class PairCount(int caller, int callee, int value)
+class LineCount(int line, int value)
+
+int[] reachable_from(int root, const int[][] calls)
+    int[] seen = []
+    int[] pending = [root]
+    while len(pending) > 0
+        int id = pending[int(len(pending)) - 1]
+        pending = pending[0:<int(len(pending)) - 1]
+        if not lexer.has(seen, id)
+            seen = seen.append(id)
+            pending = pending.concat(calls[id].sorted())
+    return seen
+
+void unreachable_warnings(const parser.Store syntax, int index, Warning[] &warnings)
+    parser.Stmt statement = syntax.statements[index]
+    if statement.kind == "block"
+        for int position < int(len(statement.statements))
+            if not semantic.can_complete(syntax, statement.statements[position])
+                if position + 1 < int(len(statement.statements))
+                    lexer.Position next = syntax.statements[statement.statements[position + 1]].position
+                    warnings = warnings.append(Warning(next, "unreachable statement"))
+                break
+    for int child = statement.statements[]
+        if child >= 0
+            unreachable_warnings(syntax, child, &warnings)
+
+string[] warning_lines(const semantic.Context model, const int[] reachable)
+    Warning[] warnings = []
+    for semantic.Symbol symbol = model.symbols[]
+        if symbol.kind == "variable" and symbol.reads == 0
+            string noun = if symbol.parameter then "parameter" else "variable"
+            warnings = warnings.append(Warning(symbol.name.position, "unused {noun} '{symbol.name.text}'"))
+        if symbol.kind == "function" and not lexer.has(reachable, model.program.syntax.functions[symbol.index].id)
+            warnings = warnings.append(Warning(symbol.name.position, "function '{symbol.name.text}' is never called"))
+    for parser.Top declaration = model.program.declarations[]
+        if declaration.kind == "function"
+            unreachable_warnings(model.program.syntax, model.program.syntax.functions[declaration.index].body, &warnings)
+    for int position < int(len(warnings))
+        int cursor = position
+        while cursor > 0 and lexer.compare_position(warnings[cursor].position, warnings[cursor - 1].position) < 0
+            Warning saved = warnings[cursor]
+            warnings[cursor] = warnings[cursor - 1]
+            warnings[cursor - 1] = saved
+            cursor -= 1
+    string[] result = []
+    for Warning warning = warnings[]
+        result = result.append("warning {warning.position.text()}: {warning.message}")
+    return result
+
+int | none literal(const Folder folder, int index)
+    parser.Expr expression = folder.model.program.syntax.expressions[index]
+    if expression.kind == "integer"
+        int value = int.parse(expression.value)
+        return value
+    if expression.kind == "bool"
+        return if expression.value == "true" then 1 else 0
+    return none
+
+bool is_boolean(const Folder folder, int index, bool value)
+    parser.Expr expression = folder.model.program.syntax.expressions[index]
+    return expression.kind == "bool" and (expression.value == "true") == value
+
+bool is_integer(const Folder folder, int index, int value)
+    parser.Expr expression = folder.model.program.syntax.expressions[index]
+    if expression.kind != "integer"
+        return false
+    int found = int.parse(expression.value)
+    return found == value
+
+int made(Folder &folder, int old, int value, string type)
+    parser.Expr previous = folder.model.program.syntax.expressions[old]
+    string kind = if type == "bool" then "bool" else "integer"
+    string text = if type == "bool" then (if value != 0 then "true" else "false") else value.string()
+    int index = int(len(folder.model.program.syntax.expressions))
+    folder.model.program.syntax.expressions = folder.model.program.syntax.expressions.append(parser.Expr(kind, previous.position, text, type = type))
+    folder.count += 1
+    return index
+
+int | none calculated(string operator, int first, int second)
+    if (operator == "/" or operator == "%") and second == 0
+        return none
+    int result = 0
+    if operator == "+"
+        result = first + second
+    elif operator == "-"
+        result = first - second
+    elif operator == "*"
+        result = first * second
+    elif operator == "/"
+        result = first / second
+    elif operator == "%"
+        result = first - second * (first / second)
+    else
+        bool value = if operator == "<" then first < second elif operator == "<=" then first <= second elif operator == ">" then first > second elif operator == ">=" then first >= second elif operator == "==" then first == second elif operator == "!=" then first != second elif operator == "&&" then first != 0 and second != 0 else first != 0 or second != 0
+        result = if value then 1 else 0
+    if result < -2147483648 or result > 2147483647
+        return none
+    return result
+
+int fold_expression(Folder &folder, int index)
+    parser.Expr expression = folder.model.program.syntax.expressions[index]
+    int[] children = []
+    for int child = expression.children[]
+        children = children.append(fold_expression(&folder, child))
+    folder.model.program.syntax.expressions[index].children = children
+    expression.children = children
+    if expression.kind == "unary"
+        match literal(folder, children[0])
+            int value
+                int result = if expression.value == "!" then (if value == 0 then 1 else 0) else -value
+                if result >= -2147483648 and result <= 2147483647
+                    return made(&folder, index, result, expression.type)
+            none
+                folder.count = folder.count
+    elif expression.kind == "binary"
+        int first = children[0]
+        int second = children[1]
+        match literal(folder, first)
+            int left
+                match literal(folder, second)
+                    int right
+                        match calculated(expression.value, left, right)
+                            int result
+                                return made(&folder, index, result, expression.type)
+                            none
+                                folder.count = folder.count
+                    none
+                        folder.count = folder.count
+            none
+                folder.count = folder.count
+        if expression.value == "&&" and is_boolean(folder, first, false)
+            return made(&folder, index, 0, "bool")
+        if expression.value == "||" and is_boolean(folder, first, true)
+            return made(&folder, index, 1, "bool")
+        if (expression.value == "&&" and is_boolean(folder, first, true)) or (expression.value == "||" and is_boolean(folder, first, false)) or (expression.value == "+" and is_integer(folder, first, 0)) or (expression.value == "*" and is_integer(folder, first, 1))
+            folder.count += 1
+            return second
+        if (lexer.has(["+", "-"], expression.value) and is_integer(folder, second, 0)) or (lexer.has(["*", "/"], expression.value) and is_integer(folder, second, 1)) or (expression.value == "&&" and is_boolean(folder, second, true)) or (expression.value == "||" and is_boolean(folder, second, false))
+            folder.count += 1
+            return first
+    return index
+
+int fold_statement(Folder &folder, int index)
+    parser.Stmt statement = folder.model.program.syntax.statements[index]
+    string kind = statement.kind
+    if kind == "declaration"
+        match folder.model.program.syntax.variables[statement.variable].initializer
+            int initial
+                int folded = fold_expression(&folder, initial)
+                folder.model.program.syntax.variables[statement.variable].initializer = folded
+            none
+                folder.count = folder.count
+        return index
+    if kind == "if" or kind == "while"
+        int condition = fold_expression(&folder, statement.expressions[0])
+        folder.model.program.syntax.statements[index].expressions = [condition]
+        if is_boolean(folder, condition, false)
+            folder.count += 1
+            if kind == "if" and len(statement.statements) > 1
+                return fold_statement(&folder, statement.statements[1])
+            folder.model.program.syntax.statements[index] = parser.Stmt("empty", statement.position)
+            return index
+        if kind == "if" and is_boolean(folder, condition, true)
+            folder.count += 1
+            return fold_statement(&folder, statement.statements[0])
+        int[] children = []
+        for int child = statement.statements[]
+            children = children.append(fold_statement(&folder, child))
+        folder.model.program.syntax.statements[index].statements = children
+        return index
+    if kind == "for"
+        int[] children = statement.statements
+        if children[0] >= 0
+            children[0] = fold_statement(&folder, children[0])
+        int condition = statement.expressions[0]
+        if condition >= 0
+            condition = fold_expression(&folder, condition)
+        if children[1] >= 0
+            children[1] = fold_statement(&folder, children[1])
+        children[2] = fold_statement(&folder, children[2])
+        folder.model.program.syntax.statements[index].statements = children
+        folder.model.program.syntax.statements[index].expressions = [condition]
+        return index
+    match statement.index
+        int expression_index
+            int folded = fold_expression(&folder, expression_index)
+            folder.model.program.syntax.statements[index].index = folded
+        none
+            folder.count = folder.count
+    int[] expressions = []
+    for int expression_index = statement.expressions[]
+        expressions = expressions.append(fold_expression(&folder, expression_index))
+    folder.model.program.syntax.statements[index].expressions = expressions
+    int[] children = []
+    for int child = statement.statements[]
+        if child >= 0
+            children = children.append(fold_statement(&folder, child))
+        else
+            children = children.append(-1)
+    folder.model.program.syntax.statements[index].statements = children
+    return index
+
+void fold_program(Folder &folder, const int[] reachable)
+    parser.Top[] declarations = folder.model.program.declarations
+    for parser.Top declaration = declarations[]
+        if declaration.kind == "variable"
+            match folder.model.program.syntax.variables[declaration.index].initializer
+                int initial
+                    int folded = fold_expression(&folder, initial)
+                    folder.model.program.syntax.variables[declaration.index].initializer = folded
+                none
+                    folder.count = folder.count
+        else
+            parser.Function function = folder.model.program.syntax.functions[declaration.index]
+            if lexer.has(reachable, function.id)
+                int folded = fold_statement(&folder, function.body)
+                folder.model.program.syntax.functions[declaration.index].body = folded
+
+string[] rule_names()
+    return ["const-jump", "not-compare", "not-jump", "invert-branch", "thread", "jump-next", "unreachable"]
+
+bool is_jump(string op)
+    return lexer.has(["JUMP", "JUMPF", "JUMPT"], op)
+
+bool conditional(string op)
+    return op == "JUMPF" or op == "JUMPT"
+
+bool transfer(string op)
+    return lexer.has(["JUMP", "RET", "RETV", "HALT"], op)
+
+bool jumps(string op, int value)
+    return if op == "JUMPF" then value == 0 else value != 0
+
+string inverse(string op)
+    return if op == "JUMPF" then "JUMPT" else "JUMPF"
+
+void delete_instruction(codegen.Instruction[] &code, int index)
+    codegen.Instruction[] result = []
+    for int position < int(len(code))
+        if position == index
+            continue
+        codegen.Instruction instruction = code[position]
+        if is_jump(instruction.op) and instruction.operands[0] > index
+            instruction.operands[0] -= 1
+        result = result.append(instruction)
+    code = result
+
+Peephole peephole(const codegen.Instruction[] original)
+    codegen.Instruction[] code = original
+    int[] counts = [0, 0, 0, 0, 0, 0, 0]
+    while true
+        int[] targets = []
+        for codegen.Instruction instruction = code[]
+            if is_jump(instruction.op) and not lexer.has(targets, instruction.operands[0])
+                targets = targets.append(instruction.operands[0])
+        bool changed = false
+        for int index < int(len(code))
+            codegen.Instruction first = code[index]
+            bool free = index + 1 < int(len(code)) and not lexer.has(targets, index + 1)
+            if free
+                codegen.Instruction second = code[index + 1]
+                if first.op == "PUSH" and conditional(second.op)
+                    if jumps(second.op, first.operands[0])
+                        code[index] = codegen.Instruction("JUMP", second.operands, second.position)
+                        delete_instruction(&code, index + 1)
+                    else
+                        delete_instruction(&code, index + 1)
+                        delete_instruction(&code, index)
+                    counts[0] += 1
+                    changed = true
+                elif second.op == "NOT" and lexer.has(["LT", "LE", "GT", "GE", "EQ", "NE"], first.op)
+                    string[] comparisons = ["LT", "LE", "GT", "GE", "EQ", "NE"]
+                    string[] negations = ["GE", "GT", "LE", "LT", "NE", "EQ"]
+                    for int position < 6
+                        if first.op == comparisons[position]
+                            code[index].op = negations[position]
+                            break
+                    delete_instruction(&code, index + 1)
+                    counts[1] += 1
+                    changed = true
+                elif first.op == "NOT" and conditional(second.op)
+                    code[index] = codegen.Instruction(inverse(second.op), second.operands, second.position)
+                    delete_instruction(&code, index + 1)
+                    counts[2] += 1
+                    changed = true
+                elif conditional(first.op) and first.operands[0] == index + 2 and second.op == "JUMP"
+                    code[index] = codegen.Instruction(inverse(first.op), second.operands, first.position)
+                    delete_instruction(&code, index + 1)
+                    counts[3] += 1
+                    changed = true
+            if changed
+                break
+            int | none new_target = none
+            if is_jump(first.op) and first.operands[0] < int(len(code))
+                int target = first.operands[0]
+                codegen.Instruction at = code[target]
+                if at.op == "JUMP"
+                    new_target = at.operands[0]
+                elif at.op == "PUSH" and target + 1 < int(len(code)) and conditional(code[target + 1].op)
+                    new_target = if jumps(code[target + 1].op, at.operands[0]) then code[target + 1].operands[0] else target + 2
+            match new_target
+                int target
+                    if target != first.operands[0]
+                        code[index].operands[0] = target
+                        counts[4] += 1
+                        changed = true
+                none
+                    changed = false
+            if changed
+                break
+            if is_jump(first.op) and first.operands[0] == index + 1
+                if first.op == "JUMP"
+                    delete_instruction(&code, index)
+                else
+                    code[index] = codegen.Instruction("POP", [], first.position)
+                counts[5] += 1
+                changed = true
+            elif free and transfer(first.op)
+                delete_instruction(&code, index + 1)
+                counts[6] += 1
+                changed = true
+            if changed
+                break
+        if not changed
+            return Peephole(code, counts)
+
+int[] successors(const codegen.Instruction[] code, int index)
+    codegen.Instruction instruction = code[index]
+    int[] result = []
+    if not transfer(instruction.op) and index + 1 < int(len(code))
+        result = result.append(index + 1)
+    if is_jump(instruction.op) and instruction.operands[0] < int(len(code)) and not lexer.has(result, instruction.operands[0])
+        result = result.append(instruction.operands[0])
+    return result
+
+BasicBlock[] basic_blocks(const codegen.Instruction[] code)
+    int[] leaders = [0]
+    for int index < int(len(code))
+        codegen.Instruction instruction = code[index]
+        if is_jump(instruction.op) and instruction.operands[0] < int(len(code)) and not lexer.has(leaders, instruction.operands[0])
+            leaders = leaders.append(instruction.operands[0])
+        if (is_jump(instruction.op) or transfer(instruction.op)) and index + 1 < int(len(code)) and not lexer.has(leaders, index + 1)
+            leaders = leaders.append(index + 1)
+    leaders = leaders.sorted()
+    int[] numbering = array(len(code), fill = -1)
+    for int block_index < int(len(leaders))
+        numbering[leaders[block_index]] = block_index
+    BasicBlock[] result = []
+    for int block_index < int(len(leaders))
+        int first = leaders[block_index]
+        int last = if block_index + 1 < int(len(leaders)) then leaders[block_index + 1] - 1 else int(len(code)) - 1
+        int[] next = successors(code, last)
+        int[] block_successors = []
+        for int target = next[]
+            block_successors = block_successors.append(numbering[target])
+        result = result.append(BasicBlock(first, last, block_successors))
+    return result
+
+int stack_effect(const codegen.Instruction instruction, const semantic.Context model)
+    string op = instruction.op
+    if lexer.has(["PUSH", "LOADG", "LOADL", "READ"], op)
+        return 1
+    if lexer.has(["POP", "STOREG", "STOREL", "JUMPF", "JUMPT", "RETV", "ADD", "SUB", "MUL", "DIV", "MOD", "LT", "LE", "GT", "GE", "EQ", "NE"], op)
+        return -1
+    if op == "STOREA"
+        return -2
+    if op == "CALL"
+        return -instruction.operands[1] + (if model.symbols[instruction.callee].type == "void" then 0 else 1)
+    if op == "PRINT"
+        return -instruction.operands[0]
+    return 0
+
+int stack_depth(const codegen.Instruction[] code, const semantic.Context model)
+    int[] depths = array(len(code), fill = -1)
+    depths[0] = 0
+    int[] pending = [0]
+    int maximum = 0
+    while len(pending) > 0
+        int index = pending[int(len(pending)) - 1]
+        pending = pending[0:<int(len(pending)) - 1]
+        int next_depth = depths[index] + stack_effect(code[index], model)
+        maximum = lexer.maximum(maximum, next_depth)
+        int[] next = successors(code, index)
+        for int target = next[]
+            if depths[target] < 0
+                depths[target] = next_depth
+                pending = pending.append(target)
+    return maximum
+
+codegen.Flat flatten(const codegen.Unit[] units, const semantic.Context model)
+    int[] starts = []
+    int[] function_starts = array(len(model.symbols), fill = -1)
+    int address = 0
+    for codegen.Unit unit = units[]
+        starts = starts.append(address)
+        if unit.function >= 0
+            function_starts[model.program.syntax.functions[unit.function].id] = address
+        address += int(len(unit.code))
+    codegen.Instruction[] instructions = []
+    int[] owners = []
+    for int unit_index < int(len(units))
+        codegen.Unit unit = units[unit_index]
+        for codegen.Instruction original = unit.code[]
+            codegen.Instruction instruction = original
+            if is_jump(instruction.op)
+                instruction.operands[0] += starts[unit_index]
+            if instruction.op == "CALL"
+                instruction.operands[0] = function_starts[instruction.callee]
+            instructions = instructions.append(instruction)
+            owners = owners.append(unit_index)
+    return codegen.Flat(instructions, owners, starts)
+
+string spelling(const codegen.Instruction instruction)
+    string result = instruction.op
+    for int operand = instruction.operands[]
+        result += " {operand}"
+    return result
+
+string pad(string text, int width, bool left = false)
+    string spaces = lexer.repeat(" ", width - int(len(text)))
+    return if left then text + spaces else spaces + text
+
+int[] unique_numbers(const int[] values)
+    int[] result = []
+    for int value = values[]
+        if not lexer.has(result, value)
+            result = result.append(value)
+    return result
+
+string numbers(const int[] values, string empty)
+    string[] words = []
+    for int value = values[]
+        words = words.append(value.string())
+    return if len(words) == 0 then empty else words.join(" ")
+
+string[] listing_lines(const semantic.Context model, const codegen.Unit[] before, const codegen.Unit[] after, const codegen.Flat old_code, const codegen.Flat new_code)
+    int[] globals = []
+    int[] functions = []
+    for parser.Top declaration = model.program.declarations[]
+        if declaration.kind == "variable"
+            globals = globals.append(declaration.index)
+        else
+            functions = functions.append(declaration.index)
+    string[] lines = [if len(globals) == 0 then "globals: none" else "globals:"]
+    for int index = globals[]
+        parser.Variable variable = model.program.syntax.variables[index]
+        string type = variable.type
+        match variable.size
+            int size
+                type = "int[{size}]"
+            none
+                type = type
+        lines = lines.append("  {variable.address} {variable.name.text} {type}")
+    lines = lines.append("functions:")
+    for int unit_index < int(len(after))
+        codegen.Unit unit = after[unit_index]
+        string signature = ""
+        string[] callees = ["main"]
+        bool recursive = false
+        if unit.function >= 0
+            parser.Function function = model.program.syntax.functions[unit.function]
+            string[] parameter_types = []
+            for int parameter = function.parameters[]
+                parameter_types = parameter_types.append(model.program.syntax.variables[parameter].type)
+            signature = " {function.type}({parameter_types.join(",")})"
+            callees = []
+            for int id = model.calls[function.id][]
+                callees = callees.append(model.symbols[id].name.text)
+                if lexer.has(reachable_from(id, model.calls), function.id)
+                    recursive = true
+            callees = callees.sorted()
+        string calls_text = if len(callees) == 0 then "-" else callees.join(",")
+        string recursive_text = if recursive then " recursive" else ""
+        BasicBlock[] blocks = basic_blocks(unit.code)
+        lines = lines.append("  {unit.name}{signature} address={old_code.starts[unit_index]}->{new_code.starts[unit_index]} size={len(before[unit_index].code)}->{len(unit.code)} slots={len(unit.slots)} stack={stack_depth(unit.code, model)} blocks={len(blocks)} calls={calls_text}{recursive_text}")
+        for int slot < int(len(unit.slots))
+            parser.Variable variable = model.program.syntax.variables[unit.slots[slot]]
+            lines = lines.append("    slot {slot} {variable.name.text} {variable.type}")
+    lines = lines.append("references:")
+    int[] referents = []
+    for int index = globals[]
+        referents = referents.append(model.program.syntax.variables[index].id)
+    for int index = functions[]
+        referents = referents.append(model.program.syntax.functions[index].id)
+    for int id = referents[]
+        semantic.Symbol symbol = model.symbols[id]
+        int[] used = []
+        for lexer.Position position = symbol.references[]
+            used = used.append(position.line)
+        used = unique_numbers(used).sorted()
+        lines = lines.append("  {symbol.name.text} defined {symbol.name.position.line} used {numbers(used, "-")}")
+    for int version < 2
+        string heading = if version == 0 then "before" else "after"
+        codegen.Unit[] units = if version == 0 then before else after
+        codegen.Flat flat = if version == 0 then old_code else new_code
+        lines = lines.append("{heading} peephole: {len(flat.instructions)} instructions")
+        for int unit_index < int(len(units))
+            lines = lines.append(units[unit_index].name + ":")
+            for int index < int(len(units[unit_index].code))
+                int pc = flat.starts[unit_index] + index
+                lines = lines.append(pad(pc.string(), 5) + "  " + spelling(flat.instructions[pc]))
+    lines = lines.append("control flow:")
+    for int unit_index < int(len(after))
+        codegen.Unit unit = after[unit_index]
+        lines = lines.append("  {unit.name}")
+        BasicBlock[] blocks = basic_blocks(unit.code)
+        for int index < int(len(blocks))
+            BasicBlock block = blocks[index]
+            string[] names = []
+            for int target = block.successors[]
+                names = names.append("B{target}")
+            string suffix = if len(names) == 0 then "" else " -> {names.join(" ")}"
+            lines = lines.append("    B{index} {new_code.starts[unit_index] + block.first}-{new_code.starts[unit_index] + block.last}{suffix}")
+    return lines
+
+int get_count<K>(const map.Map<K, int> table, K key)
+    match table.get(key)
+        int found
+            return found
+        none
+            return 0
+
+Count[] sorted_counts(const map.Map<string, int> values)
+    Count[] result = []
+    string[] keys = values.keys()
+    for string key = keys[]
+        int count = get_count(values, key)
+        if count > 0
+            result = result.append(Count(key, count))
+    for int index < int(len(result))
+        int cursor = index
+        while cursor > 0
+            Count first = result[cursor]
+            Count second = result[cursor - 1]
+            if first.value < second.value or (first.value == second.value and first.name >= second.name)
+                break
+            result[cursor] = second
+            result[cursor - 1] = first
+            cursor -= 1
+    return result
+
+bool same_message(const string | none first, const string | none second)
+    match first
+        string left
+            match second
+                string right
+                    return left == right
+                none
+                    return false
+        none
+            match second
+                string right
+                    return false
+                none
+                    return true
+
+string[] stats_lines(int before_count, const codegen.Unit[] after, const codegen.Flat code, const vm.Result main_run, const vm.Result comparison, int folds, const int[] rules)
+    int peephole_count = 0
+    for int count = rules[]
+        peephole_count += count
+    string[] lines = ["code: {before_count} -> {len(code.instructions)}", "folds: {folds}", "peephole: {peephole_count}"]
+    string[] names = rule_names()
+    for int index < int(len(names))
+        lines = lines.append("  {names[index]} {rules[index]}")
+    bool same = main_run.output == comparison.output and same_message(main_run.message, comparison.message)
+    string behavior = if same then "same" else "different"
+    lines = lines.concat(["executed: {main_run.executed}", "executed before peephole: {comparison.executed}", "behaviour: {behavior}", "max call depth: {main_run.max_depth}", "max stack: {main_run.max_stack}", "opcodes:"])
+    map.Map<string, int> opcodes = map.Map<string, int>()
+    int[] unit_counts = array(len(after), fill = 0)
+    map.Map<int, int> line_counts = map.Map<int, int>()
+    for int pc < int(len(code.instructions))
+        codegen.Instruction instruction = code.instructions[pc]
+        int count = main_run.counts[pc]
+        .opcodes.set(instruction.op, get_count(opcodes, instruction.op) + count)
+        unit_counts[code.owners[pc]] += count
+        .line_counts.set(instruction.position.line, get_count(line_counts, instruction.position.line) + count)
+    Count[] counts = sorted_counts(opcodes)
+    for Count count = counts[]
+        lines = lines.append("  {count.name} {count.value}")
+    lines = lines.append("functions:")
+    int[] unit_order = []
+    for 1 <= int index < int(len(after))
+        unit_order = unit_order.append(index)
+    for int index < int(len(unit_order))
+        int cursor = index
+        while cursor > 0
+            int first = unit_order[cursor]
+            int second = unit_order[cursor - 1]
+            if unit_counts[first] < unit_counts[second] or (unit_counts[first] == unit_counts[second] and after[first].name >= after[second].name)
+                break
+            unit_order[cursor] = second
+            unit_order[cursor - 1] = first
+            cursor -= 1
+    for int index = unit_order[]
+        lines = lines.append("  {after[index].name} calls={main_run.calls[index]} executed={unit_counts[index]}")
+    lines = lines.append("calls:")
+    PairCount[] pairs = []
+    for int caller < int(len(after))
+        for int callee < int(len(after))
+            if main_run.edges[caller][callee] > 0
+                pairs = pairs.append(PairCount(caller, callee, main_run.edges[caller][callee]))
+    for int index < int(len(pairs))
+        int cursor = index
+        while cursor > 0
+            PairCount first = pairs[cursor]
+            PairCount second = pairs[cursor - 1]
+            bool before = first.value > second.value or (first.value == second.value and (after[first.caller].name < after[second.caller].name or (after[first.caller].name == after[second.caller].name and after[first.callee].name < after[second.callee].name)))
+            if not before
+                break
+            pairs[cursor] = second
+            pairs[cursor - 1] = first
+            cursor -= 1
+    for PairCount pair = pairs[]
+        lines = lines.append("  {after[pair.caller].name} -> {after[pair.callee].name} {pair.value}")
+    lines = lines.append("hot lines:")
+    LineCount[] hot = []
+    int[] missing = []
+    int[] line_numbers = line_counts.keys()
+    for int line = line_numbers[]
+        int count = get_count(line_counts, line)
+        if count > 0
+            hot = hot.append(LineCount(line, count))
+        else
+            missing = missing.append(line)
+    for int index < int(len(hot))
+        int cursor = index
+        while cursor > 0
+            LineCount first = hot[cursor]
+            LineCount second = hot[cursor - 1]
+            if first.value < second.value or (first.value == second.value and first.line >= second.line)
+                break
+            hot[cursor] = second
+            hot[cursor - 1] = first
+            cursor -= 1
+    for int index < lexer.minimum(5, int(len(hot)))
+        lines = lines.append("  line {hot[index].line}: {hot[index].value}")
+    lines = lines.concat(["coverage: {len(hot)} of {line_counts.size()} lines", "not executed: {numbers(missing.sorted(), "none")}", "hot spots:"])
+    int[] addresses = []
+    for int pc < int(len(code.instructions))
+        if main_run.counts[pc] > 0
+            addresses = addresses.append(pc)
+    for int index < int(len(addresses))
+        int cursor = index
+        while cursor > 0
+            int first = addresses[cursor]
+            int second = addresses[cursor - 1]
+            if main_run.counts[first] < main_run.counts[second] or (main_run.counts[first] == main_run.counts[second] and first >= second)
+                break
+            addresses[cursor] = second
+            addresses[cursor - 1] = first
+            cursor -= 1
+    for int index < lexer.minimum(5, int(len(addresses)))
+        int pc = addresses[index]
+        lines = lines.append("  pc={pc} count={main_run.counts[pc]} {spelling(code.instructions[pc])}")
+    return lines
+
+Inputs read_programs()
+    string text = file.read("input/program.src")
+    string[] all_lines = text.split(NL)
+    string[] lines = all_lines[0:<int(len(all_lines)) - 1]
+    SourceProgram[] programs = []
+    for int position < int(len(lines))
+        string line = lines[position]
+        if line.starts_with("#program ")
+            programs = programs.append(SourceProgram(line[9:<int(len(line))]))
+        else
+            int last = int(len(programs)) - 1
+            programs[last].lines = programs[last].lines.append(lexer.SourceLine(position + 1, line))
+    return Inputs(programs, lines)
+
+int[] input_for(const map.Map<string, int[]> values, string name)
+    match values.get(name)
+        int[] found
+            return found
+        none
+            return []
+
+map.Map<string, int[]> read_input()
+    string text = file.read("input/input.txt")
+    string[] lines = text.split(NL)
+    map.Map<string, int[]> result = map.Map<string, int[]>()
+    string current = ""
+    for string line = lines[]
+        if line == ""
+            continue
+        if line.starts_with("#input ")
+            current = line[7:<int(len(line))]
+            .result.set(current, [])
+        else
+            int[] values = input_for(result, current)
+            string[] words = line.split(" ")
+            for string word = words[]
+                int value = int.parse(word)
+                values = values.append(value)
+            .result.set(current, values)
+    return result
+
+string[] position_display(const lexer.Position position, const string[] sources)
+    return ["  " + sources[position.line - 1], lexer.repeat(" ", position.column + 1) + "^"]
+
+semantic.Context | lexer.Problem compile_source(const SourceProgram source)
+    lexer.Token[] tokens
+    match lexer.lex(source.lines)
+        lexer.Token[] found
+            tokens = found
+        lexer.Problem problem
+            return problem
+    parser.Program program
+    match parser.parse(tokens)
+        parser.Program found
+            program = found
+        lexer.Problem problem
+            return problem
+    semantic.Context model = semantic.analyze(program)
+    match model.problem
+        lexer.Problem problem
+            return problem
+        none
+            return model
+
+void write_output(string name, const string[] lines)
+    bool exists = file.is_directory("output")
+    if not exists
+        file.mkdir("output")
+    string text = if len(lines) == 0 then "" else lines.join(NL) + NL
+    file.write("output/{name}", text)
+
+void run_program()
+    Inputs data = read_programs()
+    map.Map<string, int[]> inputs = read_input()
+    string[] listing = []
+    string[] output = []
+    string[] diagnostics = []
+    string[] stats = []
+    string[][] rows = [["program", "status", "code", "executed", "output"]]
+    int compiled = 0
+    int[] compile_errors = [0, 0, 0]
+    int runtime_errors = 0
+    int fold_total = 0
+    int[] rule_totals = [0, 0, 0, 0, 0, 0, 0]
+    int executed_total = 0
+    for SourceProgram source = data.programs[]
+        string heading = "== program {source.name} =="
+        listing = listing.append(heading)
+        output = output.append(heading)
+        diagnostics = diagnostics.append(heading)
+        stats = stats.append(heading)
+        match compile_source(source)
+            lexer.Problem problem
+                listing = listing.append("not compiled")
+                stats = stats.append("not compiled")
+                diagnostics = diagnostics.append("{problem.kind} error {problem.position.text()}: {problem.reason}")
+                diagnostics = diagnostics.concat(position_display(problem.position, data.lines)).append("status: compile error")
+                int index = if problem.kind == "lexical" then 0 elif problem.kind == "syntax" then 1 else 2
+                compile_errors[index] += 1
+                rows = rows.append([source.name, problem.kind + " error", "-", "-", "-"])
+            semantic.Context model
+                compiled += 1
+                int entry = semantic.global_id(model, "main")
+                int[] reachable = reachable_from(entry, model.calls)
+                diagnostics = diagnostics.concat(warning_lines(model, reachable))
+                Folder folder = Folder(model)
+                fold_program(&folder, reachable)
+                fold_total += folder.count
+                codegen.Generated generated = codegen.generate(folder.model, reachable)
+                codegen.Unit[] before = generated.units
+                codegen.Unit[] after = []
+                int[] rules = [0, 0, 0, 0, 0, 0, 0]
+                for codegen.Unit original = before[]
+                    Peephole result = peephole(original.code)
+                    codegen.Unit unit = original
+                    unit.code = result.code
+                    after = after.append(unit)
+                    for int index < 7
+                        rules[index] += result.counts[index]
+                for int index < 7
+                    rule_totals[index] += rules[index]
+                codegen.Flat old_code = flatten(before, generated.model)
+                codegen.Flat new_code = flatten(after, generated.model)
+                int[] input = input_for(inputs, source.name)
+                vm.Result main_run = vm.run(new_code, generated.area, input)
+                vm.Result comparison = vm.run(old_code, generated.area, input)
+                executed_total += main_run.executed
+                listing = listing.concat(listing_lines(generated.model, before, after, old_code, new_code))
+                output = output.concat(main_run.output)
+                string status = "ok"
+                match main_run.error_pc
+                    int pc
+                        runtime_errors += 1
+                        status = "runtime error"
+                        codegen.Instruction instruction = new_code.instructions[pc]
+                        string message = ""
+                        match main_run.message
+                            string found
+                                message = found
+                            none
+                                message = ""
+                        diagnostics = diagnostics.append("runtime error {instruction.position.text()}: {message} in {after[new_code.owners[pc]].name}")
+                        diagnostics = diagnostics.concat(position_display(instruction.position, data.lines))
+                        for int index < lexer.minimum(5, int(len(main_run.callers)))
+                            int caller = main_run.callers[index]
+                            diagnostics = diagnostics.append("  called from {after[new_code.owners[caller]].name} at {new_code.instructions[caller].position.text()}")
+                        if len(main_run.callers) > 5
+                            diagnostics = diagnostics.append("  ... {int(len(main_run.callers)) - 5} more")
+                    none
+                        status = "ok"
+                diagnostics = diagnostics.append("status: {status}")
+                stats = stats.concat(stats_lines(int(len(old_code.instructions)), after, new_code, main_run, comparison, folder.count, rules))
+                rows = rows.append([source.name, status, len(new_code.instructions).string(), main_run.executed.string(), len(main_run.output).string()])
+    int peephole_total = 0
+    for int count = rule_totals[]
+        peephole_total += count
+    stats = stats.concat(["== summary ==", "programs: {len(data.programs)}", "compiled: {compiled}", "compile errors: lexical {compile_errors[0]} syntax {compile_errors[1]} semantic {compile_errors[2]}", "runtime errors: {runtime_errors}", "folds: {fold_total}", "peephole: {peephole_total}"])
+    string[] names = rule_names()
+    for int index < 7
+        stats = stats.append("  {names[index]} {rule_totals[index]}")
+    stats = stats.append("executed: {executed_total}")
+    int[] widths = [0, 0, 0, 0, 0]
+    for string[] row = rows[]
+        for int column < 5
+            widths[column] = lexer.maximum(widths[column], int(len(row[column])))
+    for string[] row = rows[]
+        string[] columns = []
+        for int column < 5
+            columns = columns.append(pad(row[column], widths[column], column < 2))
+        stats = stats.append("  " + columns.join("  "))
+    write_output("listing.txt", listing)
+    write_output("output.txt", output)
+    write_output("diagnostics.txt", diagnostics)
+    write_output("stats.txt", stats)
+
+if main
+    run_program()
