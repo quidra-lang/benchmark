@@ -494,7 +494,7 @@ class Simulator {
           .map((part) => part.section.name)
           .join(',');
       snapshots.add(
-        'TRAIN ${train.symbol} ${train.name} ${train.direction} ${train.speed} $names',
+        'TRAIN ${train.symbol} ${train.name} ${train.direction} ${train.speed}${names.isEmpty ? '' : ' $names'}',
       );
     }
     final routes = [

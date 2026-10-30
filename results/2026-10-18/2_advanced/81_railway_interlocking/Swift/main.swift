@@ -259,7 +259,14 @@ final class Simulation {
 }
 func write(_ name: String, _ lines: [String]) {
     try! FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
-    try! (lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n").write(toFile: "output/" + name, atomically: false, encoding: .ascii)
+    let trimmed = lines.map { original in
+        var line = original
+        while line.last == " " {
+            line.removeLast()
+        }
+        return line
+    }
+    try! (trimmed.isEmpty ? "" : trimmed.joined(separator: "\n") + "\n").write(toFile: "output/" + name, atomically: false, encoding: .ascii)
 }
 let simulation = Simulation()
 simulation.run()

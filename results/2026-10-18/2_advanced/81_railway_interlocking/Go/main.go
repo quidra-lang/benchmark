@@ -33,7 +33,10 @@ type Simulator struct {
 	granted, dropped int
 }
 
-func number(s string) int { v, _ := strconv.Atoi(s); return v }
+func number(s string) int {
+	v, _ := strconv.Atoi(s)
+	return v
+}
 func readLines(path string) []string {
 	data, e := os.ReadFile(path)
 	if e != nil {
@@ -592,9 +595,11 @@ func (s *Simulator) snapshot() {
 		for _, part := range train.occupiedSections() {
 			names = append(names, part.section.name)
 		}
-		s.snapshots = append(s.snapshots,
-			fmt.Sprintf("TRAIN %c %s %s %d %s", train.symbol, train.name, train.direction, train.speed, strings.Join(names,
-				",")))
+		line := fmt.Sprintf("TRAIN %c %s %s %d", train.symbol, train.name, train.direction, train.speed)
+		if len(names) > 0 {
+			line += " " + strings.Join(names, ",")
+		}
+		s.snapshots = append(s.snapshots, line)
 	}
 	var routes []string
 	for _, route := range s.interlocking.routes {

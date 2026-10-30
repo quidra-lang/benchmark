@@ -485,8 +485,10 @@ function Simulation:snapshot()
         if train.state == "RUNNING" then
             local sections = {}
             for _, part in ipairs(self:occupied_parts(train)) do append(sections, part[1]) end
-            append(self.snapshots, string.format("TRAIN %s %s %s %d %s", train.symbol, train.name,
-                train.direction, train.speed, table.concat(sections, ",")))
+            local line = string.format("TRAIN %s %s %s %d", train.symbol, train.name,
+                train.direction, train.speed)
+            if #sections > 0 then line = line .. " " .. table.concat(sections, ",") end
+            append(self.snapshots, line)
         end
     end
     local routes = {}
