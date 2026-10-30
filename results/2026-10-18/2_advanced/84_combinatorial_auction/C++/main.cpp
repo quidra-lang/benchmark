@@ -389,10 +389,10 @@ class Laboratory {
     Input input = readInput();
     std::vector<std::string> wdp, vcg, core, ascendingLog, single,
         summary = {"mechanism,revenue,welfare,efficiency"};
-    int bidTotal = 0, validTotal = 0, eligibleTotal = 0, nodeTotal = 0, greedyOptimal = 0,
-        checked = 0, skipped = 0, coreCounts[4] = {0}, roundTotal = 0, capped = 0, exposed = 0,
-        lots = 0, slotGroups = 0, errors = 0, envyFree = 0, nash = 0, equilibria = 0;
-    Money revenueTotals[5] = {0}, exposure = 0;
+    int bidTotal = 0, validTotal = 0, eligibleTotal = 0, greedyOptimal = 0, checked = 0,
+        skipped = 0, coreCounts[4] = {0}, roundTotal = 0, capped = 0, exposed = 0, lots = 0,
+        slotGroups = 0, errors = 0, envyFree = 0, nash = 0, equilibria = 0;
+    Money revenueTotals[5] = {0}, exposure = 0, nodeTotal = 0;
     void summaryRow(const std::string &name, const std::string &format, Fraction revenue,
                     Fraction welfare, Fraction efficiency) {
         line(summary, name, "/", format, ",", revenue, ",", welfare, ",", efficiency);

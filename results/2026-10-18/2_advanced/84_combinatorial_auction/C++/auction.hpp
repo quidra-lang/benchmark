@@ -65,14 +65,13 @@ Input readInput();
 std::vector<std::string> readLines(const std::string &);
 std::vector<std::string> words(const std::string &);
 struct Improvement {
-    int node;
-    Money welfare;
+    Money node, welfare;
     Bids bids;
 };
 struct SearchResult {
     Money welfare = 0;
     Bids bids;
-    int nodes = 0, pruned = 0, leaves = 0, improvements = 0;
+    Money nodes = 0, pruned = 0, leaves = 0, improvements = 0;
     std::vector<Improvement> records;
     std::vector<Fraction> shares;
     std::vector<int> sources;
