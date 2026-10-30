@@ -69,7 +69,7 @@ public final class Main {
     static final class Decoded {
         Frame frame;
         int[][] quant = new int[4][];
-        Entropy.Table[][] tables = new Entropy.Table[2][4];
+        Entropy.Table[][] tables = new Entropy.Table[2][16];
         List<Segment> segments = new ArrayList<>();
         int scanStart, scanBytes;
         int[][] coefficients;
@@ -204,7 +204,7 @@ public final class Main {
         }
         result.tables = standard;
         if (mode.equals("optimized")) {
-            result.tables = new Entropy.Table[2][4];
+            result.tables = new Entropy.Table[2][16];
             for (int t = 0; t < 4; t++) {
                 int c = Entropy.CLASSES[t], id = Entropy.IDS[t];
                 result.tables[c][id] = Entropy.optimized(result.frequencies[c][id]);
@@ -688,7 +688,7 @@ public final class Main {
             if (d.quant[t] != null)
                 lines.add("stream_quant " + t + " " + integers(Dct.zigzag(d.quant[t])));
         for (int c = 0; c < 2; c++)
-            for (int id = 0; id < 4; id++)
+            for (int id = 0; id < 16; id++)
                 if (d.tables[c][id] != null) {
                     Entropy.Table table = d.tables[c][id];
                     int longest = 16;

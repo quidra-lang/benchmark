@@ -47,7 +47,7 @@ final class ImageIo {
             for (int t = 0; t < 2; t++)
                 System.arraycopy(parse(lines.get(10 + 9 * t + y)), 0, basic[t], 8 * y, 8);
         }
-        Entropy.Table[][] tables = new Entropy.Table[2][4];
+        Entropy.Table[][] tables = new Entropy.Table[2][16];
         for (int i = 27; i < 39; i += 3) {
             String[] key = lines.get(i).split(" ");
             tables[Integer.parseInt(key[1])][Integer.parseInt(key[2])] =
