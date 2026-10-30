@@ -1,0 +1,638 @@
+import math
+import matrix = "./matrix.qui"
+import kalman = "./kalman.qui"
+import association = "./association.qui"
+import imm = "./imm.qui"
+import evaluation = "./evaluation.qui"
+
+const string[] filter_names = ["cv", "ca", "abg", "imm", "rts"]
+const string characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+int integer(string text)
+    int value = int.parse(text)
+    return value
+
+real64 number(string text)
+    real64 value = real64.parse(text)
+    return value
+
+string[] read_lines(string path)
+    string text = file.read(path)
+    string[] rows = text.split(NL)
+    return rows[0:<int(len(rows)) - 1]
+
+void write_lines(string name, string[] rows)
+    file.write("output/" + name, rows.join(NL) + NL)
+
+string optional(int value)
+    return if value < 0 then "-" else value.string()
+
+string listed(string keyword, string[] values)
+    return keyword + " " + (if len(values) == 0 then "none" else values.join(" "))
+
+real64 path_length(real64[][] positions)
+    return matrix.total([for 1 <= int i < int(len(positions)) then evaluation.distance(positions[i - 1], positions[i])])
+
+real64 rmse(real64[] squared_errors)
+    real64 result = math.sqrt(matrix.total(squared_errors) / real64(len(squared_errors)))
+    return result
+
+string filter_scores(real64[] values)
+    int best = 0
+    string[] items = []
+    for int f < 5
+        items = items.append(filter_names[f] + " " + evaluation.fmt(values[f]))
+        if evaluation.rounded(values[f]) < evaluation.rounded(values[best])
+            best = f
+    return items.join(" ") + " best " + filter_names[best]
+
+int[][] segments(int[] labels, int start)
+    int[][] groups = []
+    for int i < int(len(labels))
+        int label = labels[i]
+        if label < 0
+            continue
+        int scan = start + i
+        int last = int(len(groups)) - 1
+        if last >= 0 and groups[last][1] + 1 == scan and groups[last][2] == label
+            groups[last][1] = scan
+        else
+            groups = groups.append([scan, scan, label])
+    return groups
+
+string[] framed(string[][] cells)
+    string border = "+" + string.repeat("-", len(cells[0])) + "+"
+    return [border].concat([for string[] row = cells[] then "|" + row.join("") + "|"]).concat([border])
+
+class Params(int dimension, real64 qcv, real64 qca, real64 sigma, real64 velocity_variance, real64 acceleration_variance, real64 gate, int confirm_hits, int confirm_window, int delete_misses, real64[] abg, real64[] imm_q, real64[][] transitions, real64[] probabilities, real64 match_distance, real64 cutoff, real64 bound, real64[] edges, real64[] xrange, real64[] yrange, int width, int height)
+class Target(int number, real64[][] positions)
+class Input(real64[][][] measurements, real64[] times, Target[] targets, Params params)
+
+Input read_inputs()
+    real64[][][] measurements = []
+    real64[] times = []
+    string[] rows = read_lines("input/measurements.csv")
+    for string row = rows[1:<int(len(rows))][]
+        string[] fields = row.split(",")
+        int scan = integer(fields[0]) - 1
+        while int(len(measurements)) <= scan
+            measurements = measurements.append([])
+            times = times.append(number(fields[1]))
+        measurements[scan] = measurements[scan].append([number(fields[2]), number(fields[3])])
+    int scans = int(len(measurements))
+    Target[] targets = []
+    rows = read_lines("input/truth.csv")
+    for string row = rows[1:<int(len(rows))][]
+        string[] fields = row.split(",")
+        int target = integer(fields[0])
+        if len(targets) == 0 or targets[int(len(targets)) - 1].number != target
+            targets = targets.append(Target(target, [for int k < scans then []]))
+        targets[int(len(targets)) - 1].positions[integer(fields[1]) - 1] = [number(fields[2]), number(fields[3])]
+    string[][] settings = [for string row = read_lines("input/params.txt")[] then row.split(" ")]
+    Params params = Params(if settings[0][1] == "CV" then 4 else 6,
+        number(settings[1][1]), number(settings[2][1]), number(settings[3][1]), number(settings[4][1]), number(settings[5][1]), number(settings[6][1]),
+        integer(settings[7][1]), integer(settings[7][2]), integer(settings[8][1]),
+        [for int j = [1, 2, 3][] then number(settings[9][j])],
+        [number(settings[10][1]), number(settings[10][2])],
+        [[number(settings[11][1]), number(settings[11][2])], [number(settings[11][3]), number(settings[11][4])]],
+        [number(settings[12][1]), number(settings[12][2])], number(settings[13][1]), number(settings[14][1]), number(settings[15][1]),
+        [for string value = settings[16][1:<int(len(settings[16]))][] then number(value)],
+        [number(settings[17][1]), number(settings[17][2])], [number(settings[18][1]), number(settings[18][2])], integer(settings[19][1]), integer(settings[19][2]))
+    return Input(measurements, times, targets, params)
+
+class Track(int number, int birth, real64[] first_measurement, kalman.Filter primary_filter, int scans)
+    int last_hit = birth
+    int confirmation = -1
+    int deletion = -1
+    int status = 0
+    int hits = 1
+    int consecutive_misses = 0
+    real64[][] observations = [for int k < scans then []]
+    observations[birth] = first_measurement
+    real64[] nis_by_scan = [for int k < scans then -1.0]
+    real64[] nis_values = []
+    real64[][][] estimates = []
+    real64[][][] primary_covariances = []
+    real64[] model_logs = []
+    real64[] high = []
+    int longest_gap = 0
+    real64 length = 0.0
+    int target_index = -1
+    int[] primary_matches = [for int k < scans then -1]
+    int[] common = []
+    real64 mean_distance = 0.0
+
+class Analysis(Input data)
+    int scans = int(len(data.measurements))
+    int target_count = int(len(data.targets))
+    int primary = if data.params.dimension == 4 then 0 else 1
+    Track[] tracks = []
+    int[] evaluated = []
+    string[] track_rows = ["track,scan,x,y,vx,vy,status"]
+    string[] association_log = []
+    int conflict_measurements = 0
+    int conflict_tracks = 0
+    int greedy_differences = 0
+    int[][][] labels = [for int f < 5 then [for int b < target_count then [for int k < scans then -1]]]
+    real64[][] ospa_values = [for int f < 5 then []]
+    int[][] scan_sizes = []
+    int[] matched_tracks = [for int b < target_count then -1]
+    int[][][] continuities = []
+    real64[][] position_rmse = [for int b < target_count then []]
+    real64[][] velocity_rmse = [for int b < target_count then []]
+    int[] velocity_count = [for int b < target_count then 0]
+    real64[][] nees = [for int b < target_count then []]
+    real64[] overall_position = []
+    real64[] overall_velocity = []
+
+    kalman.Filter make_filter(int dimension, real64[] measurement)
+        real64 density = if dimension == 4 then data.params.qcv else data.params.qca
+        return kalman.Filter(dimension, density, data.params.sigma, data.params.velocity_variance, data.params.acceleration_variance, measurement)
+
+    real64[] estimate(int track_index, int filter_index, int scan)
+        Track track = tracks[track_index]
+        return track.estimates[filter_index][scan - track.birth]
+
+    void .track_all_scans()
+        Params p = data.params
+        for int scan < scans
+            int[] live = [for int i < int(len(tracks)) if tracks[i].status != 2 then i]
+            real64[][] measurements = data.measurements[scan]
+            int rows = int(len(live))
+            int columns = int(len(measurements))
+            if scan > 0
+                real64 interval = data.times[scan] - data.times[scan - 1]
+                for int index = live[]
+                    .tracks[index].primary_filter.predict(interval)
+            real64[][] costs = matrix.zeros(rows, columns)
+            bool[][] usable = [for int i < rows then [for int j < columns then false]]
+            int[] row_gates = [for int i < rows then 0]
+            int[] column_gates = [for int j < columns then 0]
+            string[] gate_items = []
+            for int i < rows
+                for int j < columns
+                    kalman.Innovation value = tracks[live[i]].primary_filter.innovation(measurements[j])
+                    costs[i][j] = value.distance2
+                    if value.distance2 <= p.gate
+                        usable[i][j] = true
+                        row_gates[i] += 1
+                        column_gates[j] += 1
+                        gate_items = gate_items.append("{tracks[live[i]].number}:{j + 1}=" + evaluation.fmt(value.distance2))
+            int[][] assigned = association.optimal_assignment(costs, usable)
+            int[][] greedy = []
+            bool[] used_rows = [for int i < rows then false]
+            bool[] used_columns = [for int j < columns then false]
+            while true
+                int selected_row = -1
+                int selected_column = -1
+                real64 smallest = 0.0
+                for int i < rows
+                    for int j < columns
+                        if usable[i][j] and not used_rows[i] and not used_columns[j]
+                            if selected_row < 0 or costs[i][j] < smallest
+                                smallest = costs[i][j]
+                                selected_row = i
+                                selected_column = j
+                if selected_row < 0
+                    break
+                greedy = greedy.append([selected_row, selected_column])
+                used_rows[selected_row] = true
+                used_columns[selected_column] = true
+            greedy = association.ordered_pairs(greedy)
+            if assigned != greedy
+                greedy_differences += 1
+            int[] matches = [for int i < rows then -1]
+            used_columns = [for int j < columns then false]
+            for int[] pair = assigned[]
+                matches[pair[0]] = pair[1]
+                used_columns[pair[1]] = true
+            string[] missed = []
+            string[] confirmed = []
+            string[] deleted = []
+            for int i < rows
+                int index = live[i]
+                int j = matches[i]
+                if j >= 0
+                    kalman.Update update = .tracks[index].primary_filter.update(measurements[j])
+                    tracks[index].observations[scan] = measurements[j]
+                    tracks[index].nis_by_scan[scan] = costs[i][j]
+                    tracks[index].last_hit = scan
+                    tracks[index].hits += 1
+                    tracks[index].consecutive_misses = 0
+                else
+                    tracks[index].consecutive_misses += 1
+                    missed = missed.append(tracks[index].number.string())
+                if tracks[index].status == 1
+                    if tracks[index].consecutive_misses >= p.delete_misses
+                        tracks[index].status = 2
+                        tracks[index].deletion = scan + 1
+                        deleted = deleted.append(tracks[index].number.string())
+                elif tracks[index].hits >= p.confirm_hits
+                    tracks[index].status = 1
+                    tracks[index].confirmation = scan + 1
+                    confirmed = confirmed.append(tracks[index].number.string())
+                elif scan - tracks[index].birth + 1 >= p.confirm_window
+                    tracks[index].status = 2
+                    tracks[index].deletion = scan + 1
+                    deleted = deleted.append(tracks[index].number.string())
+            string[] new_items = []
+            int[] processed = live
+            for int j < columns
+                if not used_columns[j]
+                    int index = int(len(tracks))
+                    tracks = tracks.append(Track(index + 1, scan, measurements[j], make_filter(p.dimension, measurements[j]), scans))
+                    processed = processed.append(index)
+                    new_items = new_items.append("{index + 1}:{j + 1}")
+            int conflicts_m = int(len([for int count = column_gates[] if count >= 2 then count]))
+            int conflicts_t = int(len([for int count = row_gates[] if count >= 2 then count]))
+            conflict_measurements += conflicts_m
+            conflict_tracks += conflicts_t
+            int tentative_count = int(len([for Track track = tracks[] if track.status == 0 then 1]))
+            int confirmed_count = int(len([for Track track = tracks[] if track.status == 1 then 1]))
+            association_log = association_log.concat(["scan {scan + 1} tracks {rows} measurements {columns}", listed("gate", gate_items),
+                listed("assign", [for int[] pair = assigned[] then "{tracks[live[pair[0]]].number}:{pair[1] + 1}"]),
+                listed("greedy", [for int[] pair = greedy[] then "{tracks[live[pair[0]]].number}:{pair[1] + 1}"]),
+                listed("missed", missed), listed("new", new_items), listed("confirmed", confirmed), listed("deleted", deleted),
+                "status tentative {tentative_count} confirmed {confirmed_count}", "conflicts measurements {conflicts_m} tracks {conflicts_t}"])
+            string[] statuses = ["tentative", "confirmed", "deleted"]
+            for int index = processed[]
+                string[] values = [tracks[index].number.string(), (scan + 1).string()]
+                values = values.concat([for real64 value = tracks[index].primary_filter.state[0:<4][] then evaluation.fmt(value)])
+                track_rows = track_rows.append(values.append(statuses[tracks[index].status]).join(","))
+        evaluated = [for int i < int(len(tracks)) if tracks[i].confirmation >= 0 then i]
+
+    void .compare_filters()
+        Params p = data.params
+        for int index = evaluated[]
+            Track track = tracks[index]
+            track.estimates = [for int f < 5 then []]
+            kalman.Snapshot[] primary_history = []
+            for int f < 2
+                kalman.Filter model = make_filter(if f == 0 then 4 else 6, track.first_measurement)
+                kalman.Snapshot[] history = []
+                real64 likelihood = 0.0
+                for track.birth <= int scan <= track.last_hit
+                    if scan > track.birth
+                        .model.predict(data.times[scan] - data.times[scan - 1])
+                        if len(track.observations[scan]) != 0
+                            kalman.Update update = .model.update(track.observations[scan])
+                            likelihood += update.log_likelihood
+                    track.estimates[f] = track.estimates[f].append(model.state[0:<4])
+                    history = history.append(model.snapshot())
+                track.model_logs = track.model_logs.append(likelihood)
+                if f == primary
+                    primary_history = history
+            track.primary_covariances = [for kalman.Snapshot entry = primary_history[] then entry.covariance]
+            track.estimates[4] = [for real64[] state = kalman.smooth(primary_history)[] then state[0:<4]]
+            real64[] abg_state = track.first_measurement.concat([0.0, 0.0, 0.0, 0.0])
+            imm.Filter mixed = imm.Filter(p.imm_q, p.transitions, p.probabilities, p.sigma, p.velocity_variance, track.first_measurement)
+            int gap = 0
+            for track.birth <= int scan <= track.last_hit
+                real64[] observation = track.observations[scan]
+                if scan > track.birth
+                    real64 interval = data.times[scan] - data.times[scan - 1]
+                    for int axis < 2
+                        real64 position = abg_state[axis]
+                        real64 velocity = abg_state[axis + 2]
+                        real64 acceleration = abg_state[axis + 4]
+                        position = position + interval * velocity + interval * interval * acceleration / 2.0
+                        velocity = velocity + interval * acceleration
+                        if len(observation) != 0
+                            real64 residual = observation[axis] - position
+                            position += p.abg[0] * residual
+                            velocity += p.abg[1] * residual / interval
+                            acceleration += 2.0 * p.abg[2] * residual / (interval * interval)
+                        abg_state[axis] = position
+                        abg_state[axis + 2] = velocity
+                        abg_state[axis + 4] = acceleration
+                    .mixed.step(interval, observation)
+                track.estimates[2] = track.estimates[2].append(abg_state[0:<4])
+                track.estimates[3] = track.estimates[3].append(mixed.estimate())
+                track.high = track.high.append(mixed.probabilities[1])
+                gap = if len(observation) == 0 then gap + 1 else 0
+                if gap > track.longest_gap
+                    track.longest_gap = gap
+                if track.nis_by_scan[scan] >= 0.0
+                    track.nis_values = track.nis_values.append(track.nis_by_scan[scan])
+            track.length = path_length(track.estimates[4])
+            tracks[index] = track
+
+    void .evaluate_scans()
+        for int scan < scans
+            int[] active = [for int index = evaluated[] if tracks[index].birth <= scan and scan <= tracks[index].last_hit then index]
+            int[] present = [for int b < target_count if len(data.targets[b].positions[scan]) != 0 then b]
+            scan_sizes = scan_sizes.append([int(len(present)), int(len(active))])
+            real64[][] positions = [for int b = present[] then data.targets[b].positions[scan]]
+            for int f < 5
+                real64[][] estimates = [for int index = active[] then estimate(index, f, scan)]
+                real64[][] costs = [for real64[] state = estimates[] then [for real64[] point = positions[] then evaluation.distance(state, point)]]
+                bool[][] usable = [for real64[] row = costs[] then [for real64 value = row[] then value <= data.params.match_distance]]
+                int[][] pairs = association.optimal_assignment(costs, usable)
+                for int[] pair = pairs[]
+                    int index = active[pair[0]]
+                    int b = present[pair[1]]
+                    labels[f][b][scan] = index
+                    if f == primary
+                        tracks[index].primary_matches[scan] = b
+                ospa_values[f] = ospa_values[f].append(evaluation.ospa(estimates, positions, data.params.cutoff))
+        for int f < 5
+            int[][] values = []
+            for int b < target_count
+                int[] sequence = [for int scan < scans if len(data.targets[b].positions[scan]) != 0 then labels[f][b][scan]]
+                values = values.append(evaluation.continuity(sequence))
+            continuities = continuities.append(values)
+
+    void .match_tracks()
+        int rows = int(len(evaluated))
+        real64[][] costs = matrix.zeros(rows, target_count)
+        bool[][] usable = [for int i < rows then [for int b < target_count then false]]
+        for int row < rows
+            int index = evaluated[row]
+            Track track = tracks[index]
+            for int b < target_count
+                real64[] terms = []
+                bool nearby = false
+                for int scan < scans
+                    bool exists = len(data.targets[b].positions[scan]) != 0
+                    bool estimated = track.birth <= scan and scan <= track.last_hit
+                    if exists and estimated
+                        real64 separation = evaluation.distance(estimate(index, primary, scan), data.targets[b].positions[scan])
+                        if separation < data.params.cutoff
+                            nearby = true
+                        terms = terms.append(if separation < data.params.cutoff then separation else data.params.cutoff)
+                    elif exists or estimated
+                        terms = terms.append(data.params.cutoff)
+                if nearby
+                    usable[row][b] = true
+                    costs[row][b] = matrix.total(terms) / real64(len(terms))
+        int[][] pairs = association.optimal_assignment(costs, usable)
+        for int[] pair = pairs[]
+            int index = evaluated[pair[0]]
+            int b = pair[1]
+            matched_tracks[b] = index
+            tracks[index].target_index = b
+            tracks[index].mean_distance = costs[pair[0]][b]
+            tracks[index].common = [for tracks[index].birth <= int scan <= tracks[index].last_hit if len(data.targets[b].positions[scan]) != 0 then scan]
+
+    void .evaluate_errors()
+        real64[][] position_errors = [for int f < 5 then []]
+        real64[][] velocity_errors = [for int f < 5 then []]
+        for int b < target_count
+            int index = matched_tracks[b]
+            if index < 0
+                continue
+            Track track = tracks[index]
+            int[] velocity_scans = []
+            real64[][] velocities = []
+            for int scan = track.common[]
+                if scan > 0 and scan + 1 < scans and len(data.targets[b].positions[scan - 1]) != 0 and len(data.targets[b].positions[scan + 1]) != 0
+                    velocity_scans = velocity_scans.append(scan)
+                    real64 interval = data.times[scan + 1] - data.times[scan - 1]
+                    velocities = velocities.append([for int axis < 2 then (data.targets[b].positions[scan + 1][axis] - data.targets[b].positions[scan - 1][axis]) / interval])
+            velocity_count[b] = int(len(velocity_scans))
+            for int f < 5
+                real64[] pe = [for int scan = track.common[] then evaluation.squared_distance(estimate(index, f, scan), data.targets[b].positions[scan])]
+                real64[] ve = [for int i < int(len(velocity_scans)) then evaluation.squared_distance(estimate(index, f, velocity_scans[i])[2:<4], velocities[i])]
+                position_rmse[b] = position_rmse[b].append(rmse(pe))
+                velocity_rmse[b] = velocity_rmse[b].append(rmse(ve))
+                position_errors[f] = position_errors[f].concat(pe)
+                velocity_errors[f] = velocity_errors[f].concat(ve)
+            for int scan = track.common[]
+                real64[] state = estimate(index, primary, scan)
+                real64[] difference = [for int axis < 2 then state[axis] - data.targets[b].positions[scan][axis]]
+                real64[][] covariance = track.primary_covariances[scan - track.birth]
+                real64[][] position_covariance = [covariance[0][0:<2], covariance[1][0:<2]]
+                nees[b] = nees[b].append(matrix.quadratic2(difference, matrix.inverse(position_covariance)))
+        overall_position = [for real64[] values = position_errors[] then rmse(values)]
+        overall_velocity = [for real64[] values = velocity_errors[] then rmse(values)]
+
+    string[] summary_section()
+        int measurement_count = 0
+        for real64[][] values = data.measurements[]
+            measurement_count += int(len(values))
+        int false_count = 0
+        int used = 0
+        for int index = evaluated[]
+            bool matched = false
+            for int b = tracks[index].primary_matches[]
+                matched = matched or b >= 0
+            if not matched
+                false_count += 1
+            used += tracks[index].hits
+        int lost = int(len([for int index = matched_tracks[] if index < 0 then index]))
+        return ["summary", "scans {scans}", "measurements {measurement_count}", "targets {target_count}", "tracks_created {len(tracks)}", "tracks_confirmed {len(evaluated)}", "false_tracks {false_count}", "missed_targets {lost}", "measurements_used {used}", "conflict_measurements {conflict_measurements}", "conflict_tracks {conflict_tracks}", "greedy_differences {greedy_differences}"]
+
+    string[] targets_section()
+        string[] lines = ["targets"]
+        for Target target = data.targets[]
+            int[] present = [for int scan < scans if len(target.positions[scan]) != 0 then scan]
+            int first = present[0]
+            int last = present[int(len(present)) - 1]
+            real64 length = path_length([for int scan = present[] then target.positions[scan]])
+            real64 speed = length / (data.times[last] - data.times[first])
+            lines = lines.append("target {target.number} first {first + 1} last {last + 1} scans {len(present)} path " + evaluation.fmt(length) + " mean_speed " + evaluation.fmt(speed))
+        return lines
+
+    string[] tracks_section()
+        string[] lines = ["tracks"]
+        for int index = evaluated[]
+            Track track = tracks[index]
+            int count = int(len(track.nis_values))
+            int inside = int(len([for real64 value = track.nis_values[] if value <= data.params.bound then value]))
+            real64 average = matrix.total(track.nis_values) / real64(count)
+            lines = lines.append("track {track.number} birth {track.birth + 1} confirmed {track.confirmation} end {track.last_hit + 1} deleted " + optional(track.deletion) + " hits {track.hits} misses {track.last_hit - track.birth + 1 - track.hits} longest_gap {track.longest_gap} path " + evaluation.fmt(track.length) + " nis " + evaluation.fmt(average) + " nis_inside {inside}/{count}")
+        return lines
+
+    string[] matching_section()
+        string[] lines = ["matching"]
+        for int index = evaluated[]
+            Track track = tracks[index]
+            string target = if track.target_index < 0 then "-" else data.targets[track.target_index].number.string()
+            string line = "track {track.number} target {target}"
+            if track.target_index >= 0
+                line += " common {len(track.common)} mean_distance " + evaluation.fmt(track.mean_distance)
+            int count = int(len([for int b = track.primary_matches[] if b >= 0 then b]))
+            int[][] groups = segments(track.primary_matches, 1)
+            string[] values = [for int[] group = groups[] then "{group[0]}-{group[1]}:{data.targets[group[2]].number}"]
+            lines = lines.append(line + " matched_scans {count} " + listed("segments", values))
+        return lines
+
+    string[] rmse_section()
+        string[] lines = ["rmse"]
+        for int b < target_count
+            int target = data.targets[b].number
+            int index = matched_tracks[b]
+            if index < 0
+                lines = lines.append("target {target} track -")
+            else
+                lines = lines.concat(["target {target} track {tracks[index].number} common {len(tracks[index].common)} " + filter_scores(position_rmse[b]), "target {target} velocity {velocity_count[b]} " + filter_scores(velocity_rmse[b])])
+        return lines.concat(["overall position " + filter_scores(overall_position), "overall velocity " + filter_scores(overall_velocity)])
+
+    string[] consistency_section()
+        string[] lines = ["consistency"]
+        for int b < target_count
+            int target = data.targets[b].number
+            int index = matched_tracks[b]
+            if index < 0
+                lines = lines.append("target {target} track -")
+            else
+                int inside = int(len([for real64 value = nees[b][] if value <= data.params.bound then value]))
+                real64 average = matrix.total(nees[b]) / real64(len(nees[b]))
+                lines = lines.append("target {target} track {tracks[index].number} nees " + evaluation.fmt(average) + " inside {inside}/{len(nees[b])}")
+        real64[] values = []
+        for int index = evaluated[]
+            values = values.concat(tracks[index].nis_values)
+        real64[] edges = data.params.edges
+        int[] observed = [for int i <= int(len(edges)) then 0]
+        for real64 value = values[]
+            int bin = 0
+            while bin < int(len(edges)) and value >= edges[bin]
+                bin += 1
+            observed[bin] += 1
+        real64[] expected = []
+        real64 lower = 0.0
+        for int i <= int(len(edges))
+            real64 upper_probability = if i == int(len(edges)) then 0.0 else math.exp(-edges[i] / 2.0)
+            expected = expected.append(real64(len(values)) * (math.exp(-lower / 2.0) - upper_probability))
+            if i < int(len(edges))
+                lower = edges[i]
+        string counts = [for int value = observed[] then value.string()].join(" ")
+        string expectations = [for real64 value = expected[] then evaluation.fmt(value)].join(" ")
+        return lines.append("nis_histogram total {len(values)} observed {counts} expected {expectations}")
+
+    string[] models_section()
+        string[] lines = ["models"]
+        for int index = evaluated[]
+            Track track = tracks[index]
+            real64 cv = track.model_logs[0]
+            real64 ca = track.model_logs[1]
+            string better = if cv >= ca then "cv" else "ca"
+            lines = lines.append("track {track.number} updates {len(track.nis_values)} cv " + evaluation.fmt(cv) + " ca " + evaluation.fmt(ca) + " better {better}")
+        return lines
+
+    string[] ospa_section()
+        string[] lines = ["ospa cutoff " + evaluation.fmt(data.params.cutoff) + " order 2", "scan targets tracks cv ca abg imm rts"]
+        for int scan < scans
+            string values = [for int f < 5 then evaluation.fmt(ospa_values[f][scan])].join(" ")
+            lines = lines.append("{scan + 1} {scan_sizes[scan][0]} {scan_sizes[scan][1]} {values}")
+        string averages = [for real64[] values = ospa_values[] then evaluation.fmt(matrix.total(values) / real64(scans))].join(" ")
+        return lines.append("mean " + averages)
+
+    string[] continuity_section()
+        string[] lines = ["continuity"]
+        for int f < 5
+            int[] totals = [0, 0, 0]
+            for int[] values = continuities[f][]
+                for int j < 3
+                    totals[j] += values[j]
+            lines = lines.append("{filter_names[f]} covered {totals[0]} breaks {totals[1]} swaps {totals[2]}")
+            for int b < target_count
+                int count = int(len([for real64[] point = data.targets[b].positions[] if len(point) != 0 then point]))
+                int[] values = continuities[f][b]
+                lines = lines.append("  target {data.targets[b].number} scans {count} covered {values[0]} breaks {values[1]} swaps {values[2]} delay " + optional(values[3]))
+        return lines
+
+    string[] imm_section()
+        string[] lines = ["imm"]
+        for int index = evaluated[]
+            Track track = tracks[index]
+            int largest = 0
+            int count = 0
+            int[] high_labels = []
+            for int i < int(len(track.high))
+                if track.high[i] > track.high[largest]
+                    largest = i
+                bool high_noise = track.high[i] > 0.5
+                if high_noise
+                    count += 1
+                high_labels = high_labels.append(if high_noise then 0 else -1)
+            int[][] groups = segments(high_labels, track.birth + 1)
+            string[] values = [for int[] group = groups[] then "{group[0]}-{group[1]}"]
+            real64 average = matrix.total(track.high) / real64(len(track.high))
+            lines = lines.append("track {track.number} mean_high " + evaluation.fmt(average) + " max_high " + evaluation.fmt(track.high[largest]) + " at {track.birth + largest + 1} high_scans {count} " + listed("segments", values))
+        return lines
+
+    string[] evaluation_lines()
+        string[][] sections = [summary_section(), targets_section(), tracks_section(), matching_section(), rmse_section(), consistency_section(), models_section(), ospa_section(), continuity_section(), imm_section()]
+        string[] lines = []
+        for string[] section = sections[]
+            if len(lines) != 0
+                lines = lines.append("")
+            lines = lines.concat(section)
+        return lines
+
+    int[] plot_cell(real64[] point)
+        Params p = data.params
+        real64 dx = (p.xrange[1] - p.xrange[0]) / real64(p.width)
+        real64 dy = (p.yrange[1] - p.yrange[0]) / real64(p.height)
+        int column = math.floor((point[0] - p.xrange[0]) / dx)
+        int row = math.floor((p.yrange[1] - point[1]) / dy)
+        return if column >= 0 and column < p.width and row >= 0 and row < p.height then [row, column] else []
+
+    string[] plot_lines()
+        Params p = data.params
+        string[][] trajectory = [for int r < p.height then [for int c < p.width then " "]]
+        for Target target = data.targets[]
+            for real64[] point = target.positions[]
+                if len(point) != 0
+                    int[] cell = plot_cell(point)
+                    if len(cell) != 0
+                        trajectory[cell[0]][cell[1]] = "."
+        for int order < int(len(evaluated))
+            int index = evaluated[order]
+            for real64[] state = tracks[index].estimates[4][]
+                int[] cell = plot_cell(state)
+                if len(cell) != 0
+                    trajectory[cell[0]][cell[1]] = characters[order]
+        string[] lines = ["tracks x " + evaluation.fmt(p.xrange[0]) + " " + evaluation.fmt(p.xrange[1]) + " y " + evaluation.fmt(p.yrange[0]) + " " + evaluation.fmt(p.yrange[1]) + " size {p.width} {p.height}"]
+        lines = lines.concat(framed(trajectory))
+        int[] character_indices = [for int i < int(len(tracks)) then -1]
+        for int order < int(len(evaluated))
+            int index = evaluated[order]
+            character_indices[index] = order
+            int b = tracks[index].target_index
+            string target = if b < 0 then "-" else data.targets[b].number.string()
+            lines = lines.append("{characters[order]} track {tracks[index].number} target {target}")
+        int[][] counts = [for int r < p.height then [for int c < p.width then 0]]
+        for real64[][] measurements = data.measurements[]
+            for real64[] point = measurements[]
+                int[] cell = plot_cell(point)
+                if len(cell) != 0
+                    counts[cell[0]][cell[1]] += 1
+        string[][] density = [for int[] row = counts[] then [for int count = row[] then (if count == 0 then " " elif count < 10 then count.string() else "#")]]
+        lines = lines.concat(["", "measurements"]).concat(framed(density)).concat(["", "timeline"])
+        for int b < target_count
+            string[] timeline = []
+            for int scan < scans
+                int index = labels[primary][b][scan]
+                string character = if len(data.targets[b].positions[scan]) == 0 then " " elif index < 0 then "." else characters[character_indices[index]]
+                timeline = timeline.append(character)
+            lines = lines.append("{data.targets[b].number} |" + timeline.join("") + "|")
+        int[] heights = [for real64 value = ospa_values[primary][] then math.floor(10.0 * value / p.cutoff)]
+        string[][] bars = [for int r < 10 then [for int height = heights[] then (if height >= 10 - r then "#" else " ")]]
+        return lines.concat(["", "ospa " + filter_names[primary]]).concat(framed(bars))
+
+    string[] smoothed_rows()
+        string[] rows = ["track,scan,x,y,vx,vy"]
+        for int index = evaluated[]
+            Track track = tracks[index]
+            for track.birth <= int scan <= track.last_hit
+                string[] values = [track.number.string(), (scan + 1).string()]
+                values = values.concat([for real64 value = estimate(index, 4, scan)[] then evaluation.fmt(value)])
+                rows = rows.append(values.join(","))
+        return rows
+
+void run()
+    Analysis analysis = Analysis(read_inputs())
+    .analysis.track_all_scans()
+    .analysis.compare_filters()
+    .analysis.evaluate_scans()
+    .analysis.match_tracks()
+    .analysis.evaluate_errors()
+    write_lines("tracks.csv", analysis.track_rows)
+    write_lines("smoothed.csv", analysis.smoothed_rows())
+    write_lines("association_log.txt", analysis.association_log)
+    write_lines("evaluation.txt", analysis.evaluation_lines())
+    write_lines("track_plot.txt", analysis.plot_lines())
+
+run()
