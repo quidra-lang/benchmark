@@ -1,0 +1,738 @@
+import molecule = "./molecule.qui"
+import parser = "./smiles_parser.qui"
+import ring_ops = "./rings_aromatic.qui"
+import canonical = "./canonical.qui"
+import search = "./search.qui"
+
+bool valid_name(string text)
+    if len(text) == 0 or len(text) > 32
+        return false
+    for int position < int(len(text))
+        string character = text[position]
+        if not (("A" <= character <= "Z") or ("a" <= character <= "z") or ("0" <= character <= "9") or character == "_" or character == "-")
+            return false
+    return true
+
+int | none number(string text, int low, int high)
+    if len(text) == 0 or (len(text) > 1 and text[0] == "0")
+        return none
+    for int position < int(len(text))
+        if text[position] < "0" or text[position] > "9"
+            return none
+    int value = int.parse(text)
+    if low <= value <= high
+        return value
+    return none
+
+search.Ratio | none parse_threshold(string text)
+    string[] words = text.split("/")
+    if len(words) != 2
+        return none
+    int numerator
+    int denominator
+    match number(words[0], 0, 99)
+        int parsed
+            numerator = parsed
+        none
+            return none
+    match number(words[1], 1, 99)
+        int parsed
+            denominator = parsed
+        none
+            return none
+    if numerator > denominator
+        return none
+    return search.Ratio(numerator, denominator)
+
+int get_count<K>(const map.Map<K, int> table, K key)
+    match table.get(key)
+        int value
+            return value
+        none
+            return 0
+
+int[] members_for(const map.Map<string, int[]> groups, string key)
+    match groups.get(key)
+        int[] members
+            return members
+        none
+            return []
+
+molecule.Molecule | molecule.Problem finish_valences(molecule.Molecule graph, const map.Map<string, molecule.Element> elements)
+    for int atom_index < int(len(graph.atoms))
+        molecule.Atom atom = graph.atoms[atom_index]
+        if atom.bracket
+            molecule.Element info = molecule.lookup(elements, atom.element)
+            if graph.multiplicity(atom_index) + atom.hydrogens > info.valences[int(len(info.valences)) - 1] + molecule.absolute(atom.charge)
+                return molecule.Problem("bad valence", atom.column)
+        else
+            match graph.organic_hydrogens(atom_index, elements)
+                int hydrogens
+                    graph.atoms[atom_index].hydrogens = hydrogens
+                none
+                    return molecule.Problem("bad valence", atom.column)
+    return graph
+
+molecule.Molecule | molecule.Problem analyze(string text, const map.Map<string, molecule.Element> elements)
+    molecule.Molecule graph
+    match parser.parse(text, elements)
+        parser.Parsed parsed
+            graph = parsed.graph
+        molecule.Problem problem
+            return problem
+    ring_ops.detect(&graph)
+    for int edge < int(len(graph.bonds))
+        molecule.Bond bond = graph.bonds[edge]
+        if bond.kind == 0
+            graph.bonds[edge].kind = if graph.atoms[bond.first].aromatic and graph.atoms[bond.second].aromatic and bond.ring then 4 else 1
+    match ring_ops.kekulize(&graph, elements)
+        molecule.Problem problem
+            return problem
+        none
+            return finish_valences(graph, elements)
+
+string | none make_scaffold(const molecule.Molecule graph, const map.Map<string, molecule.Element> elements)
+    if len(graph.rings) == 0
+        return none
+    bool[] ring_atoms = array(len(graph.atoms), fill = false)
+    for int[] ring = graph.rings[]
+        for int member = ring[]
+            ring_atoms[member] = true
+    bool[] remaining = array(len(graph.atoms), fill = true)
+    while true
+        int removed = -1
+        for int atom_index < int(len(graph.atoms))
+            if not remaining[atom_index] or ring_atoms[atom_index]
+                continue
+            int neighbors = 0
+            for molecule.Neighbor neighbor = graph.neighbors[atom_index][]
+                if remaining[neighbor.atom]
+                    neighbors += 1
+            if neighbors == 1
+                removed = atom_index
+                break
+        if removed < 0
+            break
+        remaining[removed] = false
+    bool[] core = remaining
+    for molecule.Bond bond = graph.bonds[]
+        if bond.kind == 2
+            if core[bond.first]
+                remaining[bond.second] = true
+            if core[bond.second]
+                remaining[bond.first] = true
+    molecule.Molecule scaffold_graph = molecule.Molecule()
+    int[] indices = array(len(graph.atoms), fill = -1)
+    for int atom_index < int(len(graph.atoms))
+        if not remaining[atom_index]
+            continue
+        indices[atom_index] = int(len(scaffold_graph.atoms))
+        int extra = 0
+        for molecule.Neighbor neighbor = graph.neighbors[atom_index][]
+            if not remaining[neighbor.atom]
+                extra += graph.bonds[neighbor.edge].multiplicity
+        molecule.Atom copied = graph.atoms[atom_index]
+        copied.hydrogens += extra
+        scaffold_graph.atoms = scaffold_graph.atoms.append(copied)
+    for molecule.Bond bond = graph.bonds[]
+        if remaining[bond.first] and remaining[bond.second]
+            molecule.Bond copied = bond
+            copied.first = indices[bond.first]
+            copied.second = indices[bond.second]
+            scaffold_graph.bonds = scaffold_graph.bonds.append(copied)
+    molecule.rebuild(&scaffold_graph)
+    canonical.Canonical result = canonical.smiles(scaffold_graph, elements)
+    return result.text
+
+class Analysis(string name, molecule.Molecule graph, string smiles, int classes, string formula, int weight, int heavy, int rotatable, int donors, int acceptors, string lipinski, int charge, string | none scaffold_text, search.Fingerprint fingerprint)
+
+Analysis properties(string name, const molecule.Molecule graph, const map.Map<string, molecule.Element> elements)
+    map.Map<string, int> counts = map.Map<string, int>()
+    int weight = 0
+    int hydrogens = 0
+    int charge = 0
+    int heavy = 0
+    int donors = 0
+    int acceptors = 0
+    int[] heavy_degree = []
+    bool[] triple = []
+    for int atom_index < int(len(graph.atoms))
+        molecule.Atom atom = graph.atoms[atom_index]
+        .counts.set(atom.element, get_count(counts, atom.element) + 1)
+        hydrogens += atom.hydrogens
+        molecule.Element info = molecule.lookup(elements, atom.element)
+        weight += if atom.mass == 0 then info.mass else atom.mass * 1000
+        charge += atom.charge
+        if atom.element != "H"
+            heavy += 1
+        int heavy_neighbors = 0
+        bool triple_bond = false
+        bool attached_hydrogen = atom.hydrogens > 0
+        for molecule.Neighbor neighbor = graph.neighbors[atom_index][]
+            if graph.atoms[neighbor.atom].element != "H"
+                heavy_neighbors += 1
+            else
+                attached_hydrogen = true
+            triple_bond = triple_bond or graph.bonds[neighbor.edge].multiplicity == 3
+        heavy_degree = heavy_degree.append(heavy_neighbors)
+        triple = triple.append(triple_bond)
+        if atom.element == "N" or atom.element == "O"
+            acceptors += 1
+            if attached_hydrogen
+                donors += 1
+    .counts.set("H", get_count(counts, "H") + hydrogens)
+    molecule.Element hydrogen = molecule.lookup(elements, "H")
+    weight += hydrogens * hydrogen.mass
+    string[] order = []
+    if counts.has("C")
+        order = order.append("C")
+        if get_count(counts, "H") > 0
+            order = order.append("H")
+    string[] keys = counts.keys().sorted()
+    for string key = keys[]
+        if get_count(counts, key) > 0 and not molecule.has(order, key)
+            order = order.append(key)
+    string formula = ""
+    for string key = order[]
+        formula += key
+        int amount = get_count(counts, key)
+        if amount > 1
+            formula += amount.string()
+    int rotatable = 0
+    for molecule.Bond bond = graph.bonds[]
+        if bond.multiplicity == 1 and not bond.ring and heavy_degree[bond.first] >= 2 and heavy_degree[bond.second] >= 2 and not triple[bond.first] and not triple[bond.second]
+            rotatable += 1
+    int violations = (if weight > 500000 then 1 else 0) + (if donors > 5 then 1 else 0) + (if acceptors > 10 then 1 else 0)
+    canonical.Canonical encoded = canonical.smiles(graph, elements)
+    string lipinski = if violations <= 1 then "pass" else "fail"
+    string | none scaffold_text = make_scaffold(graph, elements)
+    search.Fingerprint fingerprint = search.fingerprint(graph, elements)
+    return Analysis(name, graph, encoded.text, encoded.classes, formula, weight, heavy, rotatable, donors, acceptors, lipinski, charge, scaffold_text, fingerprint)
+
+class RingSystem(int[] members, string kind, int atom_count)
+
+RingSystem[] ring_systems(const molecule.Molecule graph)
+    bool[] remaining = array(len(graph.rings), fill = true)
+    RingSystem[] result = []
+    for int start < int(len(graph.rings))
+        if not remaining[start]
+            continue
+        int[] pending = [start]
+        remaining[start] = false
+        int[] group = []
+        while len(pending) > 0
+            int last = int(len(pending)) - 1
+            int current = pending[last]
+            pending = pending[0:<last]
+            group = group.append(current)
+            for int candidate < int(len(graph.rings))
+                if not remaining[candidate]
+                    continue
+                bool connected = false
+                for int atom_index = graph.rings[current][]
+                    if molecule.has(graph.rings[candidate], atom_index)
+                        connected = true
+                        break
+                if connected
+                    remaining[candidate] = false
+                    pending = pending.append(candidate)
+        int[] ordered = group.sorted()
+        string kind = if len(ordered) == 1 then "isolated" else "spiro"
+        bool[] atoms = array(len(graph.atoms), fill = false)
+        for int member = ordered[]
+            for int atom_index = graph.rings[member][]
+                atoms[atom_index] = true
+        for int first < int(len(ordered))
+            for first + 1 <= int second < int(len(ordered))
+                int[] common = []
+                for int atom_index = graph.rings[ordered[first]][]
+                    if molecule.has(graph.rings[ordered[second]], atom_index)
+                        common = common.append(atom_index)
+                if len(common) >= 2
+                    if len(common) == 2 and molecule.has_bond(graph, common[0], common[1])
+                        if kind != "bridged"
+                            kind = "fused"
+                    else
+                        kind = "bridged"
+        int atom_count = 0
+        for bool included = atoms[]
+            if included
+                atom_count += 1
+        result = result.append(RingSystem(ordered, kind, atom_count))
+    return result
+
+void paragraph(string[] &output, const string[] lines)
+    if len(output) > 0
+        output = output.append("")
+    output = output.concat(lines)
+
+string atom_numbers(const int[] values, string separator = ",")
+    string[] words = []
+    for int value = values[]
+        words = words.append((value + 1).string())
+    return words.join(separator)
+
+string molecule_names(const Analysis[] molecules, const int[] indices)
+    string[] names = []
+    for int index = indices[]
+        names = names.append(molecules[index].name)
+    return names.join(",")
+
+string mapping_text(const int[] values)
+    string[] words = []
+    for int value = values[]
+        words = words.append(value.string())
+    return words.join(",")
+
+string[] canonical_report(const Analysis[] molecules)
+    map.Map<string, int[]> smiles_groups = map.Map<string, int[]>()
+    map.Map<string, int[]> formula_groups = map.Map<string, int[]>()
+    map.Map<string, int[]> scaffold_groups = map.Map<string, int[]>()
+    int acyclic = 0
+    string[] canonical_lines = []
+    for int index < int(len(molecules))
+        Analysis current = molecules[index]
+        .smiles_groups.set(current.smiles, members_for(smiles_groups, current.smiles).append(index))
+        .formula_groups.set(current.formula, members_for(formula_groups, current.formula).append(index))
+        match current.scaffold_text
+            string scaffold_key
+                .scaffold_groups.set(scaffold_key, members_for(scaffold_groups, scaffold_key).append(index))
+            none
+                acyclic += 1
+        string sign = if current.charge > 0 then "+" else ""
+        canonical_lines = canonical_lines.append("{current.name} {current.smiles} classes={current.classes} charge={sign}{current.charge}")
+    string[] result = []
+    paragraph(&result, ["CANONICAL molecules={len(molecules)} unique={smiles_groups.size()}"].concat(canonical_lines))
+    string[] smiles_keys = smiles_groups.keys()
+    string[] duplicate_lines = []
+    int duplicate_count = 0
+    int duplicate_molecules = 0
+    for string key = smiles_keys[]
+        int[] members = members_for(smiles_groups, key)
+        if len(members) >= 2
+            duplicate_count += 1
+            duplicate_molecules += int(len(members))
+            duplicate_lines = duplicate_lines.append("group {duplicate_count} {key} members={molecule_names(molecules, members)}")
+    paragraph(&result, ["DUPLICATES groups={duplicate_count} molecules={duplicate_molecules}"].concat(duplicate_lines))
+    string[] formula_keys = formula_groups.keys()
+    string[] isomer_lines = []
+    int isomer_count = 0
+    for string key = formula_keys[]
+        int[] members = members_for(formula_groups, key)
+        set.Set<string> forms = set.Set<string>()
+        for int index = members[]
+            .forms.add(molecules[index].smiles)
+        if forms.size() >= 2
+            isomer_count += 1
+            isomer_lines = isomer_lines.append("isomer {isomer_count} {key} forms={forms.size()} members={molecule_names(molecules, members)}")
+    paragraph(&result, ["ISOMERS groups={isomer_count}"].concat(isomer_lines))
+    string[] scaffold_keys = scaffold_groups.keys().sorted()
+    for int position < int(len(scaffold_keys))
+        int current_position = position
+        while current_position > 0
+            string first_key = scaffold_keys[current_position]
+            string previous_key = scaffold_keys[current_position - 1]
+            if len(members_for(scaffold_groups, first_key)) <= len(members_for(scaffold_groups, previous_key))
+                break
+            scaffold_keys[current_position] = previous_key
+            scaffold_keys[current_position - 1] = first_key
+            current_position -= 1
+    string[] scaffold_lines = ["SCAFFOLDS distinct={len(scaffold_keys)} acyclic={acyclic}"]
+    for int position < int(len(scaffold_keys))
+        string key = scaffold_keys[position]
+        int[] members = members_for(scaffold_groups, key)
+        scaffold_lines = scaffold_lines.append("scaffold {position + 1} {key} count={len(members)} members={molecule_names(molecules, members)}")
+    paragraph(&result, scaffold_lines)
+    return result
+
+string[] rings_report(const Analysis[] molecules)
+    string[] result = []
+    int total = 0
+    int aromatic = 0
+    int cyclic = 0
+    map.Map<int, int> sizes = map.Map<int, int>()
+    string[] kinds = ["isolated", "fused", "spiro", "bridged"]
+    int[] kind_counts = [0, 0, 0, 0]
+    for Analysis current = molecules[]
+        molecule.Molecule graph = current.graph
+        if len(graph.rings) == 0
+            continue
+        int aromatic_count = 0
+        bool[] ring_atoms = array(len(graph.atoms), fill = false)
+        for int[] ring = graph.rings[]
+            bool all_aromatic = true
+            for int atom_index = ring[]
+                all_aromatic = all_aromatic and graph.atoms[atom_index].aromatic
+                ring_atoms[atom_index] = true
+            if all_aromatic
+                aromatic_count += 1
+        RingSystem[] systems = ring_systems(graph)
+        cyclic += 1
+        total += int(len(graph.rings))
+        aromatic += aromatic_count
+        int ring_atom_count = 0
+        int ring_bond_count = 0
+        for bool included = ring_atoms[]
+            if included
+                ring_atom_count += 1
+        for molecule.Bond bond = graph.bonds[]
+            if bond.ring
+                ring_bond_count += 1
+        string[] lines = ["MOLECULE {current.name} atoms={len(graph.atoms)} bonds={len(graph.bonds)} rings={len(graph.rings)} aromatic={aromatic_count} systems={len(systems)} ring_atoms={ring_atom_count} ring_bonds={ring_bond_count}"]
+        for int index < int(len(graph.rings))
+            int[] ring = graph.rings[index]
+            int size = int(len(ring))
+            .sizes.set(size, get_count(sizes, size) + 1)
+            bool all_aromatic = true
+            int hetero = 0
+            for int atom_index = ring[]
+                all_aromatic = all_aromatic and graph.atoms[atom_index].aromatic
+                if graph.atoms[atom_index].element != "C"
+                    hetero += 1
+            string aromatic_text = if all_aromatic then "yes" else "no"
+            string atom_sequence = atom_numbers(ring, "-")
+            lines = lines.append("ring {index + 1} size={size} aromatic={aromatic_text} hetero={hetero} atoms={atom_sequence}")
+        for int index < int(len(systems))
+            RingSystem system = systems[index]
+            for int kind_index < int(len(kinds))
+                if kinds[kind_index] == system.kind
+                    kind_counts[kind_index] += 1
+                    break
+            lines = lines.append("system {index + 1} kind={system.kind} rings={atom_numbers(system.members)} atoms={system.atom_count}")
+        string[] doubles = []
+        for molecule.Bond bond = graph.bonds[]
+            if bond.kind == 4 and bond.multiplicity == 2
+                doubles = doubles.append("{bond.first + 1}={bond.second + 1}")
+        string double_text = if len(doubles) == 0 then "-" else doubles.join(" ")
+        lines = lines.append("kekule {double_text}")
+        paragraph(&result, lines)
+    int[] size_keys = sizes.keys().sorted()
+    string[] size_parts = []
+    for int size = size_keys[]
+        size_parts = size_parts.append("{size}={get_count(sizes, size)}")
+    string size_text = if len(size_parts) == 0 then "-" else size_parts.join(" ")
+    paragraph(&result, ["SUMMARY molecules={len(molecules)} cyclic={cyclic} rings={total} aromatic={aromatic}", "sizes {size_text}", "systems isolated={kind_counts[0]} fused={kind_counts[1]} spiro={kind_counts[2]} bridged={kind_counts[3]}"])
+    return result
+
+class Query(string kind, string identifier, string[] arguments)
+    int[] indices = []
+    search.Pattern | none pattern = none
+    int count = 0
+    search.Ratio threshold = search.Ratio(0, 1)
+
+int | error molecule_index(const map.Map<string, int> names, string name)
+    match names.get(name)
+        int found
+            return found
+        none
+            return error("unknown molecule {name}")
+
+Query | error query(const string[] words, const map.Map<string, int> names, const map.Map<string, molecule.Element> elements)
+    string kind = words[0]
+    string[] arguments = words[2:<int(len(words))]
+    int argument_count = int(len(arguments))
+    bool valid = if kind == "MATCH" or kind == "CLUSTER" then argument_count == 1 elif kind == "MATRIX" then 2 <= argument_count <= 12 else argument_count == 2
+    if not valid
+        return error("bad arguments")
+    Query result = Query(kind, words[1], arguments)
+    if kind == "MATCH"
+        match parser.parse(arguments[0], elements, true)
+            parser.Parsed parsed
+                result.pattern = search.Pattern(parsed.graph, parsed.matchers)
+            molecule.Problem problem
+                return error("bad pattern {problem.reason} at column {problem.column}")
+    elif kind == "CLUSTER"
+        match parse_threshold(arguments[0])
+            search.Ratio ratio
+                result.threshold = ratio
+            none
+                return error("bad threshold")
+    elif kind == "NEAREST" or kind == "WITHIN"
+        int found = try molecule_index(names, arguments[0])
+        result.indices = [found]
+        if kind == "NEAREST"
+            match number(arguments[1], 1, 99)
+                int count
+                    result.count = count
+                none
+                    return error("bad count")
+        else
+            match parse_threshold(arguments[1])
+                search.Ratio ratio
+                    result.threshold = ratio
+                none
+                    return error("bad threshold")
+    else
+        for string name = arguments[]
+            int found = try molecule_index(names, name)
+            result.indices = result.indices.append(found)
+        set.Set<int> distinct = set.Set<int>()
+        for int index = result.indices[]
+            .distinct.add(index)
+        if distinct.size() != len(result.indices)
+            return error("repeated molecule")
+    return result
+
+search.Ratio pair_similarity(const Analysis[] molecules, int first, int second)
+    return search.similarity(molecules[first].fingerprint, molecules[second].fingerprint)
+
+search.Pattern | error required_pattern(search.Pattern | none value)
+    match value
+        search.Pattern found
+            return found
+        none
+            return error("missing MATCH pattern")
+
+class Hit(int index, search.Matches matches)
+class Similar(int index, search.Ratio ratio)
+
+void process_query(const Query current_query, const Analysis[] molecules, string[] &substructure, string[] &similarity, int[] &counts)
+    string kind = current_query.kind
+    string identifier = current_query.identifier
+    string[] arguments = current_query.arguments
+    if kind == "MATCH"
+        counts[0] += 1
+        search.Pattern pattern = required_pattern(current_query.pattern)
+        Hit[] hits = []
+        int embeddings = 0
+        int top_index = -1
+        int top_count = -1
+        for int index < int(len(molecules))
+            search.Matches found = search.embeddings(pattern, molecules[index].graph)
+            if found.count > 0
+                hits = hits.append(Hit(index, found))
+                embeddings += found.count
+                if found.count > top_count
+                    top_index = index
+                    top_count = found.count
+        counts[1] += int(len(hits))
+        string[] lines = ["MATCH {identifier} {arguments[0]} atoms={len(pattern.graph.atoms)} bonds={len(pattern.graph.bonds)} hits={len(hits)} embeddings={embeddings}"]
+        for Hit hit = hits[]
+            lines = lines.append("{molecules[hit.index].name} count={hit.matches.count} unique={hit.matches.unique_count} map={mapping_text(hit.matches.first_mapping)}")
+        if top_index >= 0
+            lines = lines.append("top {molecules[top_index].name} count={top_count}")
+        paragraph(&substructure, lines)
+    elif kind == "CONTAINS"
+        counts[2] += 1
+        search.Pattern pattern = search.molecule_pattern(molecules[current_query.indices[0]].graph)
+        search.Matches found = search.embeddings(pattern, molecules[current_query.indices[1]].graph)
+        string verdict = "no"
+        if found.count > 0
+            counts[3] += 1
+            verdict = "yes count={found.count} unique={found.unique_count} map={mapping_text(found.first_mapping)}"
+        paragraph(&substructure, ["CONTAINS {identifier} {arguments[0]} {arguments[1]} result={verdict}"])
+    elif kind == "MATRIX"
+        int[] indices = current_query.indices
+        string[] lines = ["MATRIX {identifier} size={len(indices)}"]
+        for int index = indices[]
+            string[] entries = []
+            for int other = indices[]
+                search.Ratio ratio = pair_similarity(molecules, index, other)
+                entries = entries.append(ratio.text())
+            string joined_entries = entries.join(" ")
+            lines = lines.append("row {molecules[index].name} {joined_entries}")
+        int best_first = 0
+        int best_second = 1
+        search.Ratio best = pair_similarity(molecules, indices[0], indices[1])
+        for int first < int(len(indices))
+            for first + 1 <= int second < int(len(indices))
+                search.Ratio ratio = pair_similarity(molecules, indices[first], indices[second])
+                if ratio.compare(best) > 0
+                    best_first = first
+                    best_second = second
+                    best = ratio
+        lines = lines.append("best {arguments[best_first]} {arguments[best_second]} {best.text()}")
+        paragraph(&similarity, lines)
+    elif kind == "NEAREST" or kind == "WITHIN"
+        int selected = current_query.indices[0]
+        Similar[] ordered = []
+        for int index < int(len(molecules))
+            if index != selected
+                ordered = ordered.append(Similar(index, pair_similarity(molecules, selected, index)))
+        for int position < int(len(ordered))
+            int current_position = position
+            while current_position > 0 and ordered[current_position].ratio.compare(ordered[current_position - 1].ratio) > 0
+                Similar saved = ordered[current_position]
+                ordered[current_position] = ordered[current_position - 1]
+                ordered[current_position - 1] = saved
+                current_position -= 1
+        Similar[] chosen = []
+        for Similar candidate = ordered[]
+            if kind == "NEAREST"
+                if int(len(chosen)) == current_query.count
+                    break
+                chosen = chosen.append(candidate)
+            elif candidate.ratio.compare(current_query.threshold) >= 0
+                chosen = chosen.append(candidate)
+        string heading = if kind == "NEAREST" then "NEAREST {identifier} {arguments[0]} count={len(chosen)}" else "WITHIN {identifier} {arguments[0]} threshold={current_query.threshold.text()} count={len(chosen)}"
+        string[] lines = [heading]
+        for int position < int(len(chosen))
+            Similar candidate = chosen[position]
+            lines = lines.append("{position + 1} {molecules[candidate.index].name} {candidate.ratio.text()} common={candidate.ratio.numerator}")
+        paragraph(&similarity, lines)
+    elif kind == "COMPARE"
+        Analysis first = molecules[current_query.indices[0]]
+        Analysis second = molecules[current_query.indices[1]]
+        search.Ratio ratio = search.similarity(first.fingerprint, second.fingerprint)
+        string identical = if first.smiles == second.smiles then "yes" else "no"
+        paragraph(&similarity, ["COMPARE {identifier} {arguments[0]} {arguments[1]} bits={first.fingerprint.bits.size()},{second.fingerprint.bits.size()} common={ratio.numerator} union={ratio.denominator} tanimoto={ratio.text()} identical={identical}"])
+    else
+        int[][] neighbors = array(len(molecules), fill = [])
+        for int index < int(len(molecules))
+            for int other < int(len(molecules))
+                if index != other
+                    search.Ratio ratio = pair_similarity(molecules, index, other)
+                    if ratio.compare(current_query.threshold) >= 0
+                        neighbors[index] = neighbors[index].append(other)
+        int[] order = []
+        for int index < int(len(molecules))
+            order = order.append(index)
+        for int position < int(len(order))
+            int current_position = position
+            while current_position > 0 and len(neighbors[order[current_position]]) > len(neighbors[order[current_position - 1]])
+                int saved = order[current_position]
+                order[current_position] = order[current_position - 1]
+                order[current_position - 1] = saved
+                current_position -= 1
+        bool[] used = array(len(molecules), fill = false)
+        int[][] clusters = []
+        int singletons = 0
+        for int center = order[]
+            if used[center]
+                continue
+            used[center] = true
+            int[] members = [center]
+            for int neighbor = neighbors[center][]
+                if not used[neighbor]
+                    used[neighbor] = true
+                    members = members.append(neighbor)
+            clusters = clusters.append(members)
+            if len(members) == 1
+                singletons += 1
+        string[] lines = ["CLUSTER {identifier} threshold={current_query.threshold.text()} clusters={len(clusters)} singletons={singletons}"]
+        int serial = 0
+        for int[] members = clusters[]
+            if len(members) > 1
+                serial += 1
+                lines = lines.append("cluster {serial} centroid={molecules[members[0]].name} size={len(members)} members={molecule_names(molecules, members)}")
+        paragraph(&similarity, lines)
+
+void record_cause(map.Map<string, int> &causes, string reason)
+    .causes.set(reason, get_count(causes, reason) + 1)
+
+string weight_text(int weight)
+    int whole = weight / 1000
+    int remainder = weight % 1000
+    string tail = remainder.string()
+    if len(tail) < 3
+        tail = string.repeat("0", nat(3 - int(len(tail)))) + tail
+    return "{whole}.{tail}"
+
+void write(string name, const string[] lines)
+    bool present = file.is_directory("output")
+    if not present
+        file.mkdir("output")
+    string text = if len(lines) == 0 then "" else lines.join(NL) + NL
+    file.write("output/" + name, text)
+
+void run_program()
+    map.Map<string, molecule.Element> elements = molecule.read_elements()
+    Analysis[] molecules = []
+    set.Set<string> seen = set.Set<string>()
+    string[] molecule_errors = []
+    map.Map<string, int> causes = map.Map<string, int>()
+    int molecule_lines = 0
+    string molecule_text = file.read("input/molecules.smi")
+    string[] molecule_source = molecule_text.split(NL)
+    for int index < int(len(molecule_source))
+        string line = molecule_source[index]
+        if line == "" or line.starts_with("#")
+            continue
+        molecule_lines += 1
+        string[] words = line.split(" ")
+        if len(words) != 2 or words[0] == "" or not valid_name(words[1])
+            molecule_errors = molecule_errors.append("line {index + 1}: bad line")
+            record_cause(&causes, "bad line")
+        elif seen.has(words[1])
+            molecule_errors = molecule_errors.append("line {index + 1} {words[1]}: duplicate name")
+            record_cause(&causes, "duplicate name")
+        else
+            .seen.add(words[1])
+            match analyze(words[0], elements)
+                molecule.Molecule graph
+                    molecules = molecules.append(properties(words[1], graph, elements))
+                molecule.Problem problem
+                    molecule_errors = molecule_errors.append("line {index + 1} {words[1]}: {problem.reason} at column {problem.column}")
+                    record_cause(&causes, problem.reason)
+    map.Map<string, int> names = map.Map<string, int>()
+    string[] property_lines = ["name,formula,weight,heavy_atoms,rings,rotatable,donors,acceptors,lipinski"]
+    string[] similarity = ["FINGERPRINTS molecules={len(molecules)} size=1024 depth=5"]
+    for int index < int(len(molecules))
+        Analysis current = molecules[index]
+        .names.set(current.name, index)
+        property_lines = property_lines.append("{current.name},{current.formula},{weight_text(current.weight)},{current.heavy},{len(current.graph.rings)},{current.rotatable},{current.donors},{current.acceptors},{current.lipinski}")
+        similarity = similarity.append("{current.name} bits={current.fingerprint.bits.size()} paths={current.fingerprint.paths}")
+    string[] substructure = []
+    set.Set<string> identifiers = set.Set<string>()
+    string[] query_errors = []
+    int query_lines = 0
+    int query_valid = 0
+    int[] counts = [0, 0, 0, 0]
+    string query_text = file.read("input/queries.txt")
+    string[] query_source = query_text.split(NL)
+    string[] query_kinds = ["MATCH", "CONTAINS", "MATRIX", "NEAREST", "WITHIN", "COMPARE", "CLUSTER"]
+    for int index < int(len(query_source))
+        string line = query_source[index]
+        if line == "" or line.starts_with("#")
+            continue
+        query_lines += 1
+        string[] words = line.split(" ")
+        if not molecule.has(query_kinds, words[0])
+            query_errors = query_errors.append("line {index + 1}: unknown query")
+            record_cause(&causes, "unknown query")
+        elif len(words) == 1 or not valid_name(words[1])
+            query_errors = query_errors.append("line {index + 1} {words[0]}: bad id")
+            record_cause(&causes, "bad id")
+        elif identifiers.has(words[1])
+            query_errors = query_errors.append("line {index + 1} {words[0]} {words[1]}: duplicate id")
+            record_cause(&causes, "duplicate id")
+        else
+            .identifiers.add(words[1])
+            match query(words, names, elements)
+                Query accepted
+                    query_valid += 1
+                    process_query(accepted, molecules, &substructure, &similarity, &counts)
+                error rejected
+                    string reason = rejected.message
+                    query_errors = query_errors.append("line {index + 1} {words[0]} {words[1]}: {reason}")
+                    string cause = reason
+                    if reason.starts_with("bad pattern ")
+                        cause = "bad pattern"
+                    elif reason.starts_with("unknown molecule ")
+                        cause = "unknown molecule"
+                    record_cause(&causes, cause)
+    paragraph(&substructure, ["SUMMARY patterns={counts[0]} hits={counts[1]} contains={counts[2]} found={counts[3]}"])
+    string[] errors = []
+    paragraph(&errors, ["MOLECULES lines={molecule_lines} valid={len(molecules)} errors={len(molecule_errors)}"].concat(molecule_errors))
+    paragraph(&errors, ["QUERIES lines={query_lines} valid={query_valid} errors={len(query_errors)}"].concat(query_errors))
+    string[] cause_keys = causes.keys().sorted()
+    for int position < int(len(cause_keys))
+        int current_position = position
+        while current_position > 0 and get_count(causes, cause_keys[current_position]) > get_count(causes, cause_keys[current_position - 1])
+            string saved = cause_keys[current_position]
+            cause_keys[current_position] = cause_keys[current_position - 1]
+            cause_keys[current_position - 1] = saved
+            current_position -= 1
+    string[] cause_lines = ["CAUSES kinds={causes.size()}"]
+    for string key = cause_keys[]
+        cause_lines = cause_lines.append("{key}={get_count(causes, key)}")
+    paragraph(&errors, cause_lines)
+    write("properties.csv", property_lines)
+    write("canonical.txt", canonical_report(molecules))
+    write("rings.txt", rings_report(molecules))
+    write("substructure.txt", substructure)
+    write("similarity.txt", similarity)
+    write("errors.txt", errors)
+
+if main
+    run_program()
