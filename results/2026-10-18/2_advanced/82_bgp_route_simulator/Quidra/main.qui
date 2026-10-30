@@ -1,0 +1,724 @@
+import topology = "./topology.qui"
+import policy = "./policy.qui"
+import decision = "./decision.qui"
+import simulator = "./simulator.qui"
+import report = "./report.qui"
+
+class Session(int owner, int link)
+    map.Map<int, decision.Attribute> incoming = map.Map<int, decision.Attribute>()
+    map.Map<int, decision.Attribute> outgoing = map.Map<int, decision.Attribute>()
+    set.Set<int> pending = set.Set<int>()
+    int timer = -1
+    int sent = 0
+    int received = 0
+
+class RouterState(int owner)
+    map.Map<int, decision.Route> origination = map.Map<int, decision.Route>()
+    map.Map<int, decision.Route> rib = map.Map<int, decision.Route>()
+    int[] sessions = []
+    int changes = 0
+
+class Change(int tick, int owner, int prefix, decision.Route route)
+class Period(int number, simulator.Event event, map.Map<int, decision.Route>[] before)
+    int convergence_time = 0
+    int updates = 0
+    int withdrawals = 0
+    int drops = 0
+    int best_changes = 0
+    int routes_changed = 0
+    int max_exploration = 0
+    map.Map<string, int> exploration = map.Map<string, int>()
+    Change[] best_lines = []
+    int delivery_times = 0
+    map.Map<string, int> states = map.Map<string, int>()
+    int first = -1
+    int repeat = -1
+    Change[] cycle = []
+    string status = ""
+
+class Hop(int owner, int prefix, int link)
+class Forwarding(string result, int[] visits, Hop[] hops, int count, int arrival)
+class TraceRecord(int index, string result, int[] visits, int start)
+    int end = -1
+class RingRecord(int prefix, int[] path, int start)
+    int end = -1
+
+class Simulation(topology.Network network, policy.Policies policies, simulator.Parameters parameters)
+    RouterState[] routers = []
+    Session[] sessions = []
+    for int owner = network.ases[]
+        routers = routers.append(RouterState(owner))
+    for int owner_index < int(len(network.ases))
+        int owner = network.ases[owner_index]
+        for int link_index < int(len(network.links))
+            topology.Link link = network.links[link_index]
+            if owner == link.first or owner == link.second
+                routers[owner_index].sessions = routers[owner_index].sessions.append(int(len(sessions)))
+                sessions = sessions.append(Session(owner, link_index))
+    simulator.Queue messages = simulator.Queue()
+    int tick = 0
+    string[] logs = []
+    Period period = Period(0, simulator.Event(0, "INITIAL", "INITIAL", ["INITIAL"]), [])
+    Period[] periods = []
+    set.Set<int> changed_prefixes = set.Set<int>()
+    TraceRecord[] trace_records = []
+    int[] ongoing_traces = array(len(parameters.traces), fill = -1)
+    RingRecord[] ring_records = []
+
+class ImportResult(decision.Route route, int rule)
+class Advertisement(decision.Attribute content, int rule)
+
+void append_log(Simulation &sim, string content)
+    sim.logs = sim.logs.append("{sim.tick} {content}")
+
+int session_slot(Simulation sim, int owner, int link)
+    for int i < int(len(sim.sessions))
+        if sim.sessions[i].owner == owner and sim.sessions[i].link == link
+            return i
+    return -1
+
+ImportResult import_route(Simulation sim, int session_index, int prefix, decision.Attribute attribute)
+    Session session = sim.sessions[session_index]
+    topology.Link link = sim.network.links[session.link]
+    int selected = policy.applied_rule(sim.policies, "IMPORT", session.owner, link, prefix, attribute.path, attribute.communities)
+    string role = topology.neighbor_role(link, session.owner)
+    int default_index = if role == "customer" then 0 elif role == "peer" then 1 else 2
+    int preference = sim.parameters.defaults[default_index]
+    int med = attribute.med
+    int[] communities = attribute.communities
+    if selected >= 0
+        policy.Rule rule = sim.policies.rules[selected]
+        if policy.has_action(rule, "DENY")
+            return ImportResult(decision.absent_route(), selected)
+        preference = policy.action_value(rule, "LOCALPREF", preference)
+        med = policy.action_value(rule, "MED", med)
+        communities = policy.edit_communities(communities, rule)
+    decision.Attribute edited = decision.Attribute(true, attribute.path, attribute.origin, med, communities)
+    return ImportResult(decision.Route(true, false, edited, preference, session.link), selected)
+
+decision.Route[] candidate_routes(Simulation sim, int owner, int prefix)
+    decision.Route[] result = []
+    int index = topology.as_index(sim.network, owner)
+    for int session_index = sim.routers[index].sessions[]
+        decision.Attribute attribute = decision.table_attribute(sim.sessions[session_index].incoming, prefix)
+        if attribute.present
+            ImportResult imported = import_route(sim, session_index, prefix, attribute)
+            if imported.route.present
+                result = result.append(imported.route)
+    return result
+
+Advertisement advertised_content(Simulation sim, int session_index, int prefix)
+    Session session = sim.sessions[session_index]
+    topology.Link link = sim.network.links[session.link]
+    int index = topology.as_index(sim.network, session.owner)
+    decision.Route route = decision.table_route(sim.routers[index].rib, prefix)
+    decision.Attribute absent = decision.absent_attribute()
+    if not route.present
+        return Advertisement(absent, -1)
+    decision.Attribute attribute = route.attributes
+    if not route.local_route and attribute.path[0] == topology.other_end(link, session.owner)
+        return Advertisement(absent, -1)
+    if policy.contains_number(attribute.communities, policy.no_export)
+        return Advertisement(absent, -1)
+    int selected = policy.applied_rule(sim.policies, "EXPORT", session.owner, link, prefix, attribute.path, attribute.communities)
+    bool allowed = false
+    int prepend = 0
+    int med = 0
+    int[] communities = attribute.communities
+    if selected >= 0
+        policy.Rule rule = sim.policies.rules[selected]
+        if policy.has_action(rule, "DENY")
+            return Advertisement(absent, selected)
+        allowed = policy.has_action(rule, "ALLOW")
+        prepend = policy.action_value(rule, "PREPEND", 0)
+        med = policy.action_value(rule, "MED", 0)
+        communities = policy.edit_communities(communities, rule)
+    if not allowed and not route.local_route
+        string learned_role = topology.neighbor_role(sim.network.links[route.link], session.owner)
+        string target_role = topology.neighbor_role(link, session.owner)
+        if learned_role != "customer" and target_role != "customer"
+            return Advertisement(absent, selected)
+    int[] path = array(nat(1 + prepend), fill = session.owner)
+    path = path.concat(attribute.path)
+    return Advertisement(decision.Attribute(true, path, attribute.origin, med, communities), selected)
+
+string message_text(simulator.Message message, topology.Network network)
+    return "#{message.serial} {message.sender}->{message.receiver} {network.links[message.link].name} " + topology.prefix_text(message.prefix)
+
+void process_pending(Simulation &sim, int session_index)
+    Session &session = &sim.sessions[session_index]
+    topology.Link link = sim.network.links[session.link]
+    int sent = 0
+    for int prefix = session.pending.values().sorted()[]
+        Advertisement advertised = advertised_content(sim, session_index, prefix)
+        decision.Attribute previous = decision.table_attribute(session.outgoing, prefix)
+        if previous == advertised.content
+            continue
+        if advertised.content.present
+            .session.outgoing.set(prefix, advertised.content)
+        else
+            .session.outgoing.remove(prefix)
+        simulator.Message message = simulator.send_message(&sim.messages, sim.tick, session.owner, topology.other_end(link, session.owner), session.link, prefix, advertised.content, link.delay)
+        string suffix = if advertised.content.present then "ANNOUNCE " + report.attribute_text(advertised.content) else "WITHDRAW"
+        append_log(&sim, "SEND " + message_text(message, sim.network) + " " + suffix)
+        session.sent += 1
+        sent += 1
+        sim.period.updates += 1
+        if not advertised.content.present
+            sim.period.withdrawals += 1
+        if advertised.rule >= 0
+            sim.policies.rules[advertised.rule].hits += 1
+    session.pending = set.Set<int>()
+    session.timer = if sent > 0 and link.mrai >= 1 then sim.tick + link.mrai else -1
+
+void redecide_route(Simulation &sim, int owner, int prefix)
+    int index = topology.as_index(sim.network, owner)
+    RouterState &router = &sim.routers[index]
+    decision.Route route = decision.table_route(router.origination, prefix)
+    if not route.present
+        decision.Route[] candidates = candidate_routes(sim, owner, prefix)
+        if len(candidates) > 0
+            route = decision.best_route(candidates, sim.network).route
+    if decision.table_route(router.rib, prefix) == route
+        return
+    if route.present
+        .router.rib.set(prefix, route)
+    else
+        .router.rib.remove(prefix)
+    append_log(&sim, "BEST {owner} " + topology.prefix_text(prefix) + " " + report.route_text(route, sim.network))
+    router.changes += 1
+    sim.period.best_changes += 1
+    string key = "{owner}/{prefix}"
+    int count = 1
+    match sim.period.exploration.get(key)
+        int previous
+            count = previous + 1
+        none
+            void
+    .sim.period.exploration.set(key, count)
+    if count > sim.period.max_exploration
+        sim.period.max_exploration = count
+    sim.period.best_lines = sim.period.best_lines.append(Change(sim.tick, owner, prefix, route))
+    .sim.changed_prefixes.add(prefix)
+    for int session_index = router.sessions[]
+        int link_index = sim.sessions[session_index].link
+        if sim.network.links[link_index].up
+            .sim.sessions[session_index].pending.add(prefix)
+            if sim.sessions[session_index].timer < 0
+                process_pending(&sim, session_index)
+
+void receive_message(Simulation &sim, simulator.Message message)
+    int session_index = session_slot(sim, message.receiver, message.link)
+    Session &session = &sim.sessions[session_index]
+    session.received += 1
+    sim.period.convergence_time = sim.tick - sim.period.event.tick
+    string result
+    if not message.content.present
+        .session.incoming.remove(message.prefix)
+        result = "WITHDRAW"
+    elif policy.contains_number(message.content.path, message.receiver)
+        .session.incoming.remove(message.prefix)
+        result = "ANNOUNCE loop"
+    else
+        .session.incoming.set(message.prefix, message.content)
+        ImportResult imported = import_route(sim, session_index, message.prefix, message.content)
+        if imported.rule >= 0
+            sim.policies.rules[imported.rule].hits += 1
+        if not imported.route.present
+            result = "ANNOUNCE deny " + sim.policies.rules[imported.rule].name
+        elif imported.rule >= 0
+            result = "ANNOUNCE accept " + sim.policies.rules[imported.rule].name
+        else
+            result = "ANNOUNCE accept"
+    append_log(&sim, "RECV " + message_text(message, sim.network) + " " + result)
+    redecide_route(&sim, message.receiver, message.prefix)
+
+void originate_prefix(Simulation &sim, int owner, int prefix, string origin, string[] communities)
+    int index = topology.as_index(sim.network, owner)
+    decision.Route route = decision.originated_route(origin, policy.parse_communities(communities))
+    .sim.routers[index].origination.set(prefix, route)
+    redecide_route(&sim, owner, prefix)
+
+void link_down(Simulation &sim, int link_index)
+    topology.Link &link = &sim.network.links[link_index]
+    link.up = false
+    link.down_count += 1
+    for simulator.Message message = simulator.remove_link(&sim.messages, link_index)[]
+        append_log(&sim, "DROP " + message_text(message, sim.network))
+        sim.period.drops += 1
+    int[] endpoints = [link.first, link.second].sorted()
+    int[][] remembered = []
+    for int owner = endpoints[]
+        int session_index = session_slot(sim, owner, link_index)
+        Session &session = &sim.sessions[session_index]
+        remembered = remembered.append(session.incoming.keys().sorted())
+        session.incoming = map.Map<int, decision.Attribute>()
+        session.outgoing = map.Map<int, decision.Attribute>()
+        session.pending = set.Set<int>()
+        session.timer = -1
+    for int i < 2
+        for int prefix = remembered[i][]
+            redecide_route(&sim, endpoints[i], prefix)
+
+void link_up(Simulation &sim, int link_index)
+    sim.network.links[link_index].up = true
+    topology.Link link = sim.network.links[link_index]
+    int[] endpoints = [link.first, link.second].sorted()
+    for int owner = endpoints[]
+        int index = topology.as_index(sim.network, owner)
+        int session_index = session_slot(sim, owner, link_index)
+        sim.sessions[session_index].pending = set.Set<int>()
+        for int prefix = sim.routers[index].rib.keys()[]
+            .sim.sessions[session_index].pending.add(prefix)
+        process_pending(&sim, session_index)
+
+void change_policy(Simulation &sim, int rule_number, bool active)
+    sim.policies.rules[rule_number].active = active
+    policy.Rule rule = sim.policies.rules[rule_number]
+    int index = topology.as_index(sim.network, rule.owner)
+    if rule.direction == "IMPORT"
+        set.Set<int> prefixes = set.Set<int>()
+        for int session_index = sim.routers[index].sessions[]
+            for int prefix = sim.sessions[session_index].incoming.keys()[]
+                .prefixes.add(prefix)
+        for int prefix = prefixes.values().sorted()[]
+            redecide_route(&sim, rule.owner, prefix)
+    else
+        for int session_index = sim.routers[index].sessions[]
+            int link_index = sim.sessions[session_index].link
+            if not sim.network.links[link_index].up
+                continue
+            int[] prefixes = sim.routers[index].rib.keys().concat(sim.sessions[session_index].outgoing.keys())
+            for int prefix = prefixes[]
+                .sim.sessions[session_index].pending.add(prefix)
+            if sim.sessions[session_index].timer < 0
+                process_pending(&sim, session_index)
+
+void execute_event(Simulation &sim, simulator.Event event)
+    append_log(&sim, "EVENT {sim.period.number} {event.text}")
+    string[] fields = event.fields
+    if event.kind == "INITIAL"
+        for topology.Initial initial = sim.network.initial[]
+            originate_prefix(&sim, initial.owner, initial.prefix, initial.origin, initial.communities)
+    elif event.kind == "ANNOUNCE"
+        originate_prefix(&sim, int.parse(fields[1]), topology.prefix_key(fields[2]), fields[3], fields[4:])
+    elif event.kind == "WITHDRAW"
+        int owner = int.parse(fields[1])
+        int prefix = topology.prefix_key(fields[2])
+        int index = topology.as_index(sim.network, owner)
+        .sim.routers[index].origination.remove(prefix)
+        redecide_route(&sim, owner, prefix)
+    elif event.kind == "LINK_DOWN"
+        link_down(&sim, topology.link_index(sim.network, fields[2]))
+    elif event.kind == "LINK_UP"
+        link_up(&sim, topology.link_index(sim.network, fields[2]))
+    else
+        change_policy(&sim, policy.rule_index(sim.policies, fields[2]), event.kind == "POLICY_ON")
+
+string attributes_state(map.Map<int, decision.Attribute> table)
+    string[] parts = []
+    for int prefix = table.keys().sorted()[]
+        parts = parts.append("{prefix}:" + report.attribute_text(decision.table_attribute(table, prefix)))
+    return "<" + parts.join(";") + ">"
+
+string global_state(Simulation sim)
+    string[] parts = []
+    for Session session = sim.sessions[]
+        int remaining = if session.timer < 0 then -1 else session.timer - sim.tick
+        string pending = report.path_text(session.pending.values().sorted())
+        parts = parts.append(attributes_state(session.incoming) + attributes_state(session.outgoing) + "<{pending}><{remaining}>")
+    string[] messages = []
+    for simulator.Message message = simulator.ordered_messages(sim.messages)[]
+        string content = if message.content.present then report.attribute_text(message.content) else "WITHDRAW"
+        messages = messages.append("{message.arrival - sim.tick}/{message.receiver}/{message.sender}/{message.link}/{message.prefix}/{content}")
+    return parts.join("|") + "#" + messages.join(";")
+
+void detect_divergence(Simulation &sim)
+    if sim.period.first >= 0 or sim.period.delivery_times > sim.parameters.stepcap
+        return
+    string state = global_state(sim)
+    match sim.period.states.get(state)
+        int first
+            sim.period.first = first
+            sim.period.repeat = sim.tick
+            for Change change = sim.period.best_lines[]
+                if change.tick > first and change.tick <= sim.tick
+                    sim.period.cycle = sim.period.cycle.append(change)
+        none
+            .sim.period.states.set(state, sim.tick)
+
+bool is_quiet(Simulation sim)
+    if len(sim.messages.heap) > 0
+        return false
+    for Session session = sim.sessions[]
+        if session.pending.size() > 0
+            return false
+    return true
+
+Forwarding trace_path(Simulation sim, int source, int address)
+    int[] visits = [source]
+    Hop[] hops = []
+    int owner = source
+    int count = 0
+    while true
+        int index = topology.as_index(sim.network, owner)
+        int chosen = -1
+        for int prefix = sim.routers[index].rib.keys()[]
+            if topology.contains_address(prefix, address) and (chosen < 0 or prefix % 33 > chosen % 33)
+                chosen = prefix
+        if chosen < 0
+            return Forwarding(if len(hops) == 0 then "UNREACHABLE" else "BLACKHOLE", visits, hops, count, -1)
+        decision.Route route = decision.table_route(sim.routers[index].rib, chosen)
+        if route.local_route
+            hops = hops.append(Hop(owner, chosen, -1))
+            return Forwarding("DELIVERED", visits, hops, count, owner)
+        hops = hops.append(Hop(owner, chosen, route.link))
+        count += 1
+        int following = topology.other_end(sim.network.links[route.link], owner)
+        bool revisited = policy.contains_number(visits, following)
+        visits = visits.append(following)
+        if revisited
+            return Forwarding("LOOP", visits, hops, count, -1)
+        owner = following
+    return Forwarding("UNREACHABLE", visits, hops, count, -1)
+
+int[][] prefix_loops(Simulation sim, int prefix)
+    map.Map<int, int> arrows = map.Map<int, int>()
+    for RouterState router = sim.routers[]
+        decision.Route route = decision.table_route(router.rib, prefix)
+        if route.present and not route.local_route
+            .arrows.set(router.owner, topology.other_end(sim.network.links[route.link], router.owner))
+    set.Set<int> finished = set.Set<int>()
+    map.Map<int, int[]> cycles = map.Map<int, int[]>()
+    for int start = sim.network.ases[]
+        if finished.has(start)
+            continue
+        int[] path = []
+        map.Map<int, int> positions = map.Map<int, int>()
+        int current = start
+        while arrows.has(current) and not finished.has(current) and not positions.has(current)
+            .positions.set(current, int(len(path)))
+            path = path.append(current)
+            match arrows.get(current)
+                int following
+                    current = following
+                none
+                    void
+        match positions.get(current)
+            int position
+                int[] cycle = path[position:]
+                int minimum_index = 0
+                for int i < int(len(cycle))
+                    if cycle[i] < cycle[minimum_index]
+                        minimum_index = i
+                int[] ordered = cycle[minimum_index:].concat(cycle[0:<minimum_index])
+                .cycles.set(ordered[0], ordered)
+            none
+                void
+        for int item = path[]
+            .finished.add(item)
+    int[][] result = []
+    for int first = cycles.keys().sorted()[]
+        match cycles.get(first)
+            int[] cycle
+                result = result.append(cycle)
+            none
+                void
+    return result
+
+void forwarding_checks(Simulation &sim)
+    for int prefix = sim.changed_prefixes.values().sorted()[]
+        int[][] loops = prefix_loops(sim, prefix)
+        for int i < int(len(sim.ring_records))
+            RingRecord record = sim.ring_records[i]
+            if record.prefix != prefix or record.end >= 0
+                continue
+            bool remains = false
+            for int[] loop = loops[]
+                remains = remains or loop == record.path
+            if not remains
+                sim.ring_records[i].end = sim.tick
+        for int[] loop = loops[]
+            bool ongoing = false
+            for RingRecord record = sim.ring_records[]
+                if record.end < 0 and record.prefix == prefix and record.path == loop
+                    ongoing = true
+            if not ongoing
+                sim.ring_records = sim.ring_records.append(RingRecord(prefix, loop, sim.tick))
+    for int i < int(len(sim.parameters.traces))
+        simulator.Trace requested = sim.parameters.traces[i]
+        Forwarding path = trace_path(sim, requested.source, requested.value)
+        bool bad = path.result == "LOOP" or path.result == "BLACKHOLE"
+        int ongoing = sim.ongoing_traces[i]
+        if ongoing >= 0
+            TraceRecord record = sim.trace_records[ongoing]
+            if not bad or record.result != path.result or record.visits != path.visits
+                sim.trace_records[ongoing].end = sim.tick
+                sim.ongoing_traces[i] = -1
+        if bad and sim.ongoing_traces[i] < 0
+            sim.ongoing_traces[i] = int(len(sim.trace_records))
+            sim.trace_records = sim.trace_records.append(TraceRecord(i, path.result, path.visits, sim.tick))
+
+int next_moment(Simulation sim, int boundary)
+    int result = boundary
+    if len(sim.messages.heap) > 0
+        int candidate = sim.messages.heap[0].arrival
+        if result < 0 or candidate < result
+            result = candidate
+    for Session session = sim.sessions[]
+        if session.timer >= 0 and (result < 0 or session.timer < result)
+            result = session.timer
+    return if result < 0 then sim.tick + 1 else result
+
+void finish_period(Simulation &sim)
+    for int i < int(len(sim.routers))
+        set.Set<int> prefixes = set.Set<int>()
+        for int prefix = sim.period.before[i].keys().concat(sim.routers[i].rib.keys())[]
+            .prefixes.add(prefix)
+        for int prefix = prefixes.values()[]
+            decision.Route previous = decision.table_route(sim.period.before[i], prefix)
+            decision.Route current = decision.table_route(sim.routers[i].rib, prefix)
+            if previous != current
+                sim.period.routes_changed += 1
+    sim.period.states = map.Map<string, int>()
+    sim.periods = sim.periods.append(sim.period)
+
+void run_period(Simulation &sim, int number, simulator.Event event, int boundary)
+    map.Map<int, decision.Route>[] before = []
+    for RouterState router = sim.routers[]
+        before = before.append(router.rib)
+    sim.period = Period(number, event, before)
+    sim.tick = event.tick
+    sim.changed_prefixes = set.Set<int>()
+    execute_event(&sim, event)
+    while true
+        bool delivered = false
+        while len(sim.messages.heap) > 0 and sim.messages.heap[0].arrival == sim.tick
+            simulator.Message message = simulator.take_message(&sim.messages)
+            receive_message(&sim, message)
+            delivered = true
+        for int i < int(len(sim.sessions))
+            if sim.sessions[i].timer == sim.tick
+                sim.sessions[i].timer = -1
+                if sim.sessions[i].pending.size() > 0
+                    process_pending(&sim, i)
+        if sim.changed_prefixes.size() > 0
+            forwarding_checks(&sim)
+        if delivered
+            sim.period.delivery_times += 1
+            detect_divergence(&sim)
+        bool quiet = is_quiet(sim)
+        if boundary < 0
+            if quiet or sim.period.first >= 0 or sim.period.delivery_times >= sim.parameters.stepcap
+                break
+        elif sim.tick == boundary
+            break
+        sim.tick = next_moment(sim, boundary)
+        sim.changed_prefixes = set.Set<int>()
+    if sim.period.first >= 0
+        sim.period.status = "DIVERGENT"
+    elif is_quiet(sim)
+        sim.period.status = "CONVERGED"
+    else
+        sim.period.status = if boundary < 0 then "CAPPED" else "UNSETTLED"
+    finish_period(&sim)
+
+int[] collapse_runs(int[] path)
+    int[] result = []
+    for int owner = path[]
+        if len(result) == 0 or result[int(len(result)) - 1] != owner
+            result = result.append(owner)
+    return result
+
+int valley_position(string pattern)
+    int position = 0
+    int size = int(len(pattern))
+    while position < size and pattern[position] == "U"
+        position += 1
+    if position < size and pattern[position] == "P"
+        position += 1
+    while position < size and pattern[position] == "D"
+        position += 1
+    return position
+
+string[] rib_lines(Simulation sim)
+    string[] lines = []
+    for RouterState router = sim.routers[]
+        int originated = 0
+        for decision.Route route = router.rib.values()[]
+            if route.local_route
+                originated += 1
+        int sent = 0
+        int received = 0
+        for int index = router.sessions[]
+            sent += sim.sessions[index].sent
+            received += sim.sessions[index].received
+        lines = lines.append("AS {router.owner} routes {router.rib.size()} local {originated} sent {sent} received {received} changes {router.changes}")
+        for int index = router.sessions[]
+            Session session = sim.sessions[index]
+            topology.Link link = sim.network.links[session.link]
+            int accepted = 0
+            for int prefix = session.incoming.keys()[]
+                decision.Attribute attribute = decision.table_attribute(session.incoming, prefix)
+                if import_route(sim, index, prefix, attribute).route.present
+                    accepted += 1
+            string state = if link.up then "UP" else "DOWN"
+            string role = topology.neighbor_role(link, session.owner)
+            int neighbor = topology.other_end(link, session.owner)
+            lines = lines.append("SESSION {link.name} {neighbor} {role} {state} in {session.incoming.size()} accepted {accepted} out {session.outgoing.size()} sent {session.sent} received {session.received} flaps {link.down_count}")
+        for int prefix = router.rib.keys().sorted()[]
+            decision.Route route = decision.table_route(router.rib, prefix)
+            decision.Route[] candidates = candidate_routes(sim, router.owner, prefix)
+            string line = topology.prefix_text(prefix) + " " + report.route_text(route, sim.network) + " candidates {len(candidates)}"
+            if not route.local_route
+                line += " reason " + decision.best_route(candidates, sim.network).reason
+            lines = lines.append(line)
+            decision.Route[] remaining = [for decision.Route candidate = candidates[] if candidate != route then candidate]
+            while len(remaining) > 0
+                decision.Choice choice = decision.best_route(remaining, sim.network)
+                lines = lines.append("ALT " + report.route_text(choice.route, sim.network))
+                remaining = [for decision.Route candidate = remaining[] if candidate != choice.route then candidate]
+    return lines
+
+string[] trace_lines(Simulation sim, simulator.Trace requested)
+    Forwarding path = trace_path(sim, requested.source, requested.value)
+    string[] lines = ["TRACE {requested.source} {requested.address} {path.result} hops {path.count}"]
+    string pattern = ""
+    for Hop hop = path.hops[]
+        string beginning = "HOP {hop.owner} " + topology.prefix_text(hop.prefix)
+        if hop.link < 0
+            lines = lines.append(beginning + " LOCAL")
+        else
+            topology.Link link = sim.network.links[hop.link]
+            lines = lines.append(beginning + " next {topology.other_end(link, hop.owner)} link {link.name}")
+            pattern += topology.direction_symbol(link, hop.owner)
+    int last = path.visits[int(len(path.visits)) - 1]
+    if path.result == "LOOP"
+        lines = lines.append("HOP {last} REVISIT")
+    elif path.result == "BLACKHOLE" or path.result == "UNREACHABLE"
+        lines = lines.append("HOP {last} NOROUTE")
+    if len(path.hops) == 0
+        lines = lines.append("CONTROL NONE")
+    else
+        int index = topology.as_index(sim.network, requested.source)
+        decision.Route route = decision.table_route(sim.routers[index].rib, path.hops[0].prefix)
+        string notation = if route.local_route then "LOCAL" else report.path_text(route.attributes.path)
+        bool same = path.result == "DELIVERED" and collapse_runs(route.attributes.path) == path.visits[1:]
+        lines = lines.append("CONTROL {notation} " + (if same then "MATCH" else "MISMATCH"))
+    if path.count > 0
+        lines = lines.append("PATTERN {pattern} " + (if valley_position(pattern) == int(len(pattern)) then "VALLEYFREE" else "VALLEY"))
+    return lines
+
+string[] path_lines(Simulation sim)
+    string[] lines = []
+    for simulator.Trace requested = sim.parameters.traces[]
+        lines = lines.concat(trace_lines(sim, requested))
+    set.Set<int> originated = set.Set<int>()
+    for RouterState router = sim.routers[]
+        for int prefix = router.origination.keys()[]
+            .originated.add(prefix)
+    int[] prefixes = originated.values().sorted()
+    string names = [for int prefix = prefixes[] then topology.prefix_text(prefix)].join(",")
+    lines = lines.append("PREFIXES" + (if names == "" then "" else " " + names))
+    for int source = sim.network.ases[]
+        string symbols = ""
+        for int prefix = prefixes[]
+            Forwarding path = trace_path(sim, source, prefix / 33)
+            if path.result == "DELIVERED"
+                int arrival_index = topology.as_index(sim.network, path.arrival)
+                symbols += if path.count == 0 then "*" elif sim.routers[arrival_index].origination.has(prefix) then "+" else "X"
+            else
+                symbols += if path.result == "LOOP" then "L" elif path.result == "BLACKHOLE" then "B" else "U"
+        lines = lines.append("REACH {source}" + (if symbols == "" then "" else " " + symbols))
+    return lines
+
+string[] audit_lines(Simulation sim)
+    string[] lines = []
+    int loop_count = 0
+    int blackholes = 0
+    for TraceRecord record = sim.trace_records[]
+        simulator.Trace requested = sim.parameters.traces[record.index]
+        string end = if record.end < 0 then "END" else record.end.string()
+        string line = "{record.result} {requested.source} {requested.address} from {record.start} to {end}"
+        if record.result == "BLACKHOLE"
+            blackholes += 1
+            line += " at {record.visits[int(len(record.visits)) - 1]}"
+        else
+            loop_count += 1
+        lines = lines.append(line + " path " + report.path_text(record.visits))
+    for RingRecord record = sim.ring_records[]
+        string end = if record.end < 0 then "END" else record.end.string()
+        lines = lines.append("RING " + topology.prefix_text(record.prefix) + " from {record.start} to {end} path " + report.path_text(record.path))
+    int routes = 0
+    int valleys = 0
+    for RouterState router = sim.routers[]
+        for int prefix = router.rib.keys().sorted()[]
+            decision.Route route = decision.table_route(router.rib, prefix)
+            if route.local_route
+                continue
+            routes += 1
+            int[] path = collapse_runs([router.owner].concat(route.attributes.path))
+            string pattern = ""
+            for int i < int(len(path)) - 1
+                int index = topology.connecting_link(sim.network, path[i], path[i + 1])
+                pattern += topology.direction_symbol(sim.network.links[index], path[i])
+            int violation = valley_position(pattern)
+            if violation != int(len(pattern))
+                valleys += 1
+                lines = lines.append("VALLEY {router.owner} " + topology.prefix_text(prefix) + " path " + report.path_text(route.attributes.path) + " pattern {pattern} leaker {path[violation]}")
+    for policy.Rule rule = sim.policies.rules[]
+        string state = if rule.active then "ON" else "OFF"
+        lines = lines.append("RULE {rule.name} {rule.direction} {state} hits {rule.hits}")
+    int divergent = 0
+    for Period period = sim.periods[]
+        if period.first < 0
+            continue
+        divergent += 1
+        lines = lines.append("DIVERGENT event {period.number} first {period.first} repeat {period.repeat} period {period.repeat - period.first}")
+        map.Map<int, int>[] oscillations = []
+        for int owner = sim.network.ases[]
+            oscillations = oscillations.append(map.Map<int, int>())
+        for Change change = period.cycle[]
+            lines = lines.append("CYCLE {change.tick} {change.owner} " + topology.prefix_text(change.prefix) + " " + report.route_text(change.route, sim.network))
+            int index = topology.as_index(sim.network, change.owner)
+            int count = 1
+            match oscillations[index].get(change.prefix)
+                int previous
+                    count = previous + 1
+                none
+                    void
+            .oscillations[index].set(change.prefix, count)
+        for int i < int(len(sim.network.ases))
+            for int prefix = oscillations[i].keys().sorted()[]
+                match oscillations[i].get(prefix)
+                    int count
+                        lines = lines.append("OSCILLATE {sim.network.ases[i]} " + topology.prefix_text(prefix) + " changes {count}")
+                    none
+                        void
+    return lines.append("SUMMARY loops {loop_count} blackholes {blackholes} rings {len(sim.ring_records)} routes {routes} valleys {valleys} divergent {divergent} end {sim.tick}")
+
+string[] convergence_lines(Simulation sim)
+    string[] lines = ["event,time,kind,status,convergence_time,updates,withdrawals,drops,best_changes,routes_changed,max_exploration"]
+    for Period period = sim.periods[]
+        lines = lines.append("{period.number},{period.event.tick},{period.event.kind},{period.status},{period.convergence_time},{period.updates},{period.withdrawals},{period.drops},{period.best_changes},{period.routes_changed},{period.max_exploration}")
+    return lines
+
+void run_program()
+    topology.Network network = topology.read_topology()
+    policy.Policies policies = policy.read_policies()
+    simulator.Parameters parameters = simulator.read_parameters()
+    simulator.Event[] events = simulator.read_events()
+    Simulation sim = Simulation(network, policies, parameters)
+    for int number < int(len(events))
+        int boundary = if number + 1 < int(len(events)) then events[number + 1].tick - 1 else -1
+        run_period(&sim, number, events[number], boundary)
+    bool directory_exists = file.is_directory("output")
+    if not directory_exists
+        file.mkdir("output")
+    report.write_lines("updates.txt", sim.logs)
+    report.write_lines("convergence.csv", convergence_lines(sim))
+    report.write_lines("ribs.txt", rib_lines(sim))
+    report.write_lines("paths.txt", path_lines(sim))
+    report.write_lines("audit.txt", audit_lines(sim))
+
+run_program()

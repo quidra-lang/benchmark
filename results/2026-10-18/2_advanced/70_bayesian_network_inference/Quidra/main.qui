@@ -1,0 +1,667 @@
+import math
+import network_io = "./network_io.qui"
+import learning = "./learning.qui"
+import factors = "./factors.qui"
+import elimination = "./elimination.qui"
+import sampling = "./sampling.qui"
+
+real64 absolute(real64 value)
+    return if value < 0.0 then -value else value
+
+string format_real(real64 value)
+    real64 magnitude = if value < 0.0 then -value else value
+    int units = math.floor(magnitude * 10000.0 + 0.5)
+    string tail = (units % 10000).string()
+    string sign = if value < 0.0 and units != 0 then "-" else ""
+    return sign + (units / 10000).string() + "." + string.repeat("0", nat(4 - int(len(tail)))) + tail
+
+string real_values(real64[] values)
+    return [for real64 value = values[] then format_real(value)].join(" ")
+
+string yes_no(bool value)
+    return if value then "yes" else "no"
+
+int[] canonical(int[] variables)
+    int[] result = []
+    for int variable = variables.sorted()[]
+        if len(result) == 0 or result[int(len(result)) - 1] != variable
+            result = result.append(variable)
+    return result
+
+int[] closure(int[] seeds, int[][] adjacent)
+    int size = int(len(adjacent))
+    bool[] visited = [for int i < size then false]
+    int[] queue = canonical(seeds)
+    for int variable = queue[]
+        visited[variable] = true
+    int cursor = 0
+    while cursor < int(len(queue))
+        int variable = queue[cursor]
+        cursor += 1
+        for int other = adjacent[variable][]
+            if not visited[other]
+                visited[other] = true
+                queue = queue.append(other)
+    return [for int variable < size if visited[variable] then variable]
+
+int[] topological_order(int[][] parents)
+    int size = int(len(parents))
+    bool[] chosen = [for int i < size then false]
+    int[] result = []
+    while int(len(result)) < size
+        for int variable < size
+            if chosen[variable]
+                continue
+            bool ready = true
+            for int parent = parents[variable][]
+                ready = ready and chosen[parent]
+            if ready
+                chosen[variable] = true
+                result = result.append(variable)
+                break
+    return result
+
+int[][] children_of(int[][] parents)
+    int size = int(len(parents))
+    int[][] result = [for int variable < size then []]
+    for int variable < size
+        for int parent = parents[variable][]
+            result[parent] = result[parent].append(variable)
+    return result
+
+int[] spouses_of(int variable, int[][] parents, int[][] children)
+    int[] spouses = []
+    for int child = children[variable][]
+        for int parent = parents[child][]
+            if parent != variable and not factors.includes(parents[variable], parent) and not factors.includes(children[variable], parent)
+                spouses = spouses.append(parent)
+    return canonical(spouses)
+
+int[] blanket_of(int variable, int[][] parents, int[][] children)
+    return canonical(parents[variable].concat(children[variable]).concat(spouses_of(variable, parents, children)))
+
+int assignment_index(int[] variables, int[] assignment, int[] sizes)
+    int index = 0
+    for int variable = variables[]
+        index = index * sizes[variable] + assignment[variable]
+    return index
+
+int[] decode_assignment(int[] variables, int[] sizes, int index)
+    int[] assignment = [for int i < int(len(sizes)) then -1]
+    int remaining = index
+    int position = int(len(variables)) - 1
+    while position >= 0
+        int variable = variables[position]
+        assignment[variable] = remaining % sizes[variable]
+        remaining /= sizes[variable]
+        position -= 1
+    return assignment
+
+int[] observed_variables(int[] evidence)
+    return [for int v < int(len(evidence)) if evidence[v] >= 0 then v]
+
+real64 logarithm(real64 value)
+    real64 result = math.log(value)
+    return result
+
+factors.Factor normalized(factors.Factor factor)
+    real64 sum = learning.ordered_sum(factor.values)
+    return factors.Factor(factor.variables, [for real64 value = factor.values[] then value / sum], factor.sizes)
+
+real64[][] marginal_values(factors.Factor distribution, int[] variables, int[] sizes)
+    real64[][] result = [for int v < int(len(sizes)) then [for int state < sizes[v] then 0.0]]
+    int[][] assignments = factors.assignments(distribution.variables, sizes)
+    for int i < int(len(assignments))
+        for int variable = variables[]
+            result[variable][assignments[i][variable]] += distribution.values[i]
+    return result
+
+bool distributions_agree(factors.Factor first, factors.Factor second)
+    if first.variables != second.variables or len(first.values) != len(second.values)
+        return false
+    for int i < int(len(first.values))
+        if absolute(first.values[i] - second.values[i]) > 0.000000001
+            return false
+    return true
+
+class Posterior(int[] relevant, int[] eliminate, factors.Factor[] initial, elimination.Plan minfill, elimination.Plan given, factors.Factor distribution, real64 evidence_probability)
+
+class Engine(network_io.Network network, int[] sizes, real64[][][] cpts, factors.Factor[] cpt_factors, network_io.Params params)
+    Posterior posterior(int[] query_variables, int[] evidence)
+        int[] relevant = closure(query_variables.concat(observed_variables(evidence)), network.parents)
+        factors.Factor[] initial = [for int variable = relevant[] then cpt_factors[variable].reduced(evidence)]
+        int[] eliminate = [for int variable = relevant[] if evidence[variable] < 0 and not factors.includes(query_variables, variable) then variable]
+        elimination.Plan minfill = elimination.make_plan(initial, eliminate, true, params.order, sizes)
+        elimination.Plan given = elimination.make_plan(initial, eliminate, false, params.order, sizes)
+        elimination.Plan used = if params.minfill then minfill else given
+        factors.Factor final_factor = elimination.execute(initial, used, sizes, false).final_factor
+        real64 evidence_probability = learning.ordered_sum(final_factor.values)
+        return Posterior(relevant, eliminate, initial, minfill, given, normalized(final_factor), evidence_probability)
+
+    real64 joint(int[] assignment, int[] variables)
+        if len(variables) == 0
+            return 1.0
+        int first = variables[0]
+        real64 result = cpts[first][learning.parent_row(network.parents[first], assignment, sizes)][assignment[first]]
+        for 1 <= int i < int(len(variables))
+            int variable = variables[i]
+            result *= cpts[variable][learning.parent_row(network.parents[variable], assignment, sizes)][assignment[variable]]
+        return result
+
+    string enumeration_check(Posterior posterior_result, int[] query_variables, int[] evidence)
+        int[] unobserved = [for int variable = posterior_result.relevant[] if evidence[variable] < 0 then variable]
+        int count = factors.entry_count(unobserved, sizes)
+        if count > params.enumeration_limit
+            return "skipped"
+        int[] scope = canonical(query_variables)
+        real64[] values = [for int i < factors.entry_count(scope, sizes) then 0.0]
+        for int[] assignment = factors.assignments(unobserved, sizes)[]
+            for int variable = observed_variables(evidence)[]
+                assignment[variable] = evidence[variable]
+            values[assignment_index(scope, assignment, sizes)] += joint(assignment, posterior_result.relevant)
+        real64 probability = learning.ordered_sum(values)
+        factors.Factor distribution = normalized(factors.Factor(scope, values, sizes))
+        bool agree = distributions_agree(distribution, posterior_result.distribution) and absolute(logarithm(probability) - logarithm(posterior_result.evidence_probability)) <= 0.000000001
+        return if agree then "agree" else "disagree"
+
+class Query(string kind, int[] variables, int[] evidence, int[] evidence_order, int[] counts, int[][] sets, string operation, int first, int second)
+
+Query parse_query(string line, network_io.Network network)
+    string[] fields = line.split(" ")
+    string kind = fields[0]
+    int size = int(len(network.names))
+    int[] variables = []
+    int[] evidence = [for int v < size then -1]
+    int[] evidence_order = []
+    int[] counts = []
+    int[][] sets = []
+    string operation = ""
+    int first = -1
+    int second = -1
+    if kind == "DSEP"
+        sets = [[]]
+        for string field = fields[1:<int(len(fields))][]
+            if field == "|"
+                sets = sets.append([])
+            else
+                int index = int(len(sets)) - 1
+                sets[index] = sets[index].append(network_io.name_index(network.names, field))
+        if len(sets) == 2
+            sets = sets.append([])
+        sets = [for int[] group = sets[] then canonical(group)]
+    elif kind == "EDGE"
+        operation = fields[1]
+        first = network_io.name_index(network.names, fields[2])
+        second = network_io.name_index(network.names, fields[3])
+    elif kind == "PREDICT" or kind == "BLANKET"
+        variables = [network_io.name_index(network.names, fields[1])]
+    else
+        bool observing = kind == "MPE"
+        bool counting = false
+        for string field = fields[1:<int(len(fields))][]
+            if field == "COUNTS"
+                counting = true
+            elif counting
+                counts = counts.append(network_io.integer(field))
+            elif field == "|"
+                observing = true
+            elif observing
+                string[] pair = field.split("=")
+                int variable = network_io.name_index(network.names, pair[0])
+                evidence[variable] = network_io.name_index(network.states[variable], pair[1])
+                evidence_order = evidence_order.append(variable)
+            else
+                variables = variables.append(network_io.name_index(network.names, field))
+    return Query(kind, variables, evidence, evidence_order, counts, sets, operation, first, second)
+
+class Separation(bool separated, int[] reachable)
+
+Separation bayes_ball(int[] xs, int[] ys, int[] zs, int[][] parents, int[][] children)
+    int size = int(len(parents))
+    int[] ancestors = closure(zs, parents)
+    bool[][] visited = [for int v < size then [false, false]]
+    int[][] queue = [for int x = xs[] then [x, 0]]
+    int cursor = 0
+    while cursor < int(len(queue))
+        int variable = queue[cursor][0]
+        int direction = queue[cursor][1]
+        cursor += 1
+        if visited[variable][direction]
+            continue
+        visited[variable][direction] = true
+        bool observed = factors.includes(zs, variable)
+        if direction == 0 and not observed
+            for int parent = parents[variable][]
+                queue = queue.append([parent, 0])
+            for int child = children[variable][]
+                queue = queue.append([child, 1])
+        elif direction == 1
+            if not observed
+                for int child = children[variable][]
+                    queue = queue.append([child, 1])
+            if factors.includes(ancestors, variable)
+                for int parent = parents[variable][]
+                    queue = queue.append([parent, 0])
+    int[] reachable = [for int v < size if (visited[v][0] or visited[v][1]) and not factors.includes(zs, v) and not factors.includes(xs, v) then v]
+    bool separated = true
+    for int y = ys[]
+        if factors.includes(reachable, y)
+            separated = false
+    return Separation(separated, reachable)
+
+int map_count(map.Map<int, int> values, int key)
+    match values.get(key)
+        int count
+            return count
+        none
+            return 0
+
+class Information(real64 cmi, real64 g2, int df)
+
+Information conditional_information(int[][] sets, int[][] samples, int[] sizes)
+    int[] xs = sets[0]
+    int[] ys = sets[1]
+    int[] zs = sets[2]
+    int[] scope = canonical(xs.concat(ys).concat(zs))
+    int[] xz = canonical(xs.concat(zs))
+    int[] yz = canonical(ys.concat(zs))
+    map.Map<int, int> counts = map.Map<int, int>()
+    map.Map<int, int> counts_xz = map.Map<int, int>()
+    map.Map<int, int> counts_yz = map.Map<int, int>()
+    map.Map<int, int> counts_z = map.Map<int, int>()
+    for int[] sample = samples[]
+        int key = assignment_index(scope, sample, sizes)
+        .counts.set(key, map_count(counts, key) + 1)
+        key = assignment_index(xz, sample, sizes)
+        .counts_xz.set(key, map_count(counts_xz, key) + 1)
+        key = assignment_index(yz, sample, sizes)
+        .counts_yz.set(key, map_count(counts_yz, key) + 1)
+        key = assignment_index(zs, sample, sizes)
+        .counts_z.set(key, map_count(counts_z, key) + 1)
+    real64[] terms = []
+    int n = int(len(samples))
+    for int key = counts.keys().sorted()[]
+        int[] assignment = decode_assignment(scope, sizes, key)
+        int count = map_count(counts, key)
+        int nz = map_count(counts_z, assignment_index(zs, assignment, sizes))
+        int nxz = map_count(counts_xz, assignment_index(xz, assignment, sizes))
+        int nyz = map_count(counts_yz, assignment_index(yz, assignment, sizes))
+        terms = terms.append((real64(count) / real64(n)) * logarithm(real64(count * nz) / real64(nxz * nyz)))
+    real64 cmi = learning.ordered_sum(terms)
+    int df = (factors.entry_count(xs, sizes) - 1) * (factors.entry_count(ys, sizes) - 1) * factors.entry_count(zs, sizes)
+    return Information(cmi, 2.0 * real64(n) * cmi, df)
+
+int[] path_search(int[][] children, int first, int last, int ignored_first, int ignored_last)
+    int size = int(len(children))
+    int[] predecessors = [for int v < size then -1]
+    predecessors[first] = first
+    int[] queue = [first]
+    int cursor = 0
+    bool found = false
+    while cursor < int(len(queue)) and not found
+        int variable = queue[cursor]
+        cursor += 1
+        for int child = children[variable][]
+            if (variable == ignored_first and child == ignored_last) or predecessors[child] >= 0
+                continue
+            predecessors[child] = variable
+            if child == last
+                found = true
+                break
+            queue = queue.append(child)
+    if not found
+        return []
+    int[] path = [last]
+    int current = last
+    while current != first
+        current = predecessors[current]
+        path = path.append(current)
+    return path[::-1]
+
+class Study(network_io.Input data)
+    network_io.Network network = data.network
+    network_io.Params params = data.params
+    int size = int(len(network.names))
+    int sample_count = int(len(data.samples))
+    int[] sizes = [for string[] states = network.states[] then int(len(states))]
+    int[] variables = [for int v < size then v]
+    int[] no_evidence = [for int v < size then -1]
+    int[][] children = children_of(network.parents)
+    int[] topological = topological_order(network.parents)
+    int[] depths = [for int v < size then 0]
+    for int v = topological[]
+        for int parent = network.parents[v][]
+            if depths[parent] + 1 > depths[v]
+                depths[v] = depths[parent] + 1
+    int[][] ancestors = [for int v < size then closure(network.parents[v], network.parents)]
+    int[][] descendants = [for int v < size then closure(children[v], children)]
+    int[][] blankets = [for int v < size then blanket_of(v, network.parents, children)]
+    int[][][] counts = [for int v < size then learning.count_samples(v, network.parents[v], data.samples, sizes)]
+    real64[][][] learned = [for int[][] table = counts[] then learning.learn(table, params.alpha)]
+    real64[][][] cpts = [for int v < size then (if params.learned[v] then learned[v] else network.expert[v])]
+    real64[] loglik = [for int v < size then learning.log_likelihood(counts[v], cpts[v])]
+    int[] parameters = [for int[][] table = counts[] then learning.parameter_count(table)]
+    real64 log_samples = logarithm(real64(sample_count))
+    real64[] bic = [for int v < size then loglik[v] - real64(parameters[v]) * log_samples / 2.0]
+    factors.Factor[] cpt_factors = [for int v < size then factors.cpt_factor(v, network.parents[v], cpts[v], sizes)]
+    Engine engine = Engine(network, sizes, cpts, cpt_factors, params)
+    sampling.Generator generator = sampling.Generator(params.seed)
+    string[][] answers = []
+    string[][] elimination_blocks = []
+    string[][] structure_blocks = []
+    string[] sampling_rows = ["query,samples,variable,state,estimate,exact,abs_error"]
+
+    string variable_names(int[] items)
+        return if len(items) == 0 then "-" else [for int variable = items[] then network.names[variable]].join(" ")
+
+    string assignment_text(int[] items, int[] assignment)
+        return if len(items) == 0 then "-" else [for int variable = items[] then network.names[variable] + "=" + network.states[variable][assignment[variable]]].join(" ")
+
+    string marginal_text(string prefix, int variable, real64[] values)
+        string[] parts = [for int state < sizes[variable] then network.states[variable][state] + " " + format_real(values[state])]
+        return prefix + " " + network.names[variable] + " " + parts.join(" ")
+
+    string[] plan_lines(elimination.Plan plan)
+        string[] lines = []
+        for elimination.Step step = plan.steps[]
+            lines = lines.append("step {network.names[step.variable]} fill {step.fill} scope " + variable_names(step.scope) + " entries {step.size}")
+        return lines.append("cost max {plan.maximum} total {plan.total}")
+
+    void .store_elimination(int number, string line, int[] relevant, int[] eliminate, elimination.Plan minfill, elimination.Plan given, bool agree, int enumeration_count, string enumeration_verdict)
+        int[] pruned = [for int v < size if not factors.includes(relevant, v) then v]
+        string used = if params.minfill then "minfill" else "given"
+        string[] lines = ["query {number} {line}", "relevant " + variable_names(relevant), "pruned " + variable_names(pruned), "eliminate " + variable_names(eliminate), "order minfill"]
+        lines = lines.concat(plan_lines(minfill)).append("order given").concat(plan_lines(given))
+        elimination_blocks = elimination_blocks.append(lines.concat(["used {used}", "orders_agree " + yes_no(agree), "enumeration {enumeration_count} {enumeration_verdict}"]))
+
+    void .handle_query(int number, string line, Query query)
+        Posterior result = engine.posterior(query.variables, query.evidence)
+        real64[][] marginals = marginal_values(result.distribution, query.variables, sizes)
+        real64 log_evidence = logarithm(result.evidence_probability)
+        string[] lines = ["query {number} {line}", "log_evidence " + format_real(log_evidence)]
+        if len(query.evidence_order) != 0
+            real64[] terms = []
+            for int variable = query.evidence_order[]
+                int[] single = no_evidence
+                single[variable] = query.evidence[variable]
+                terms = terms.append(logarithm(engine.posterior([], single).evidence_probability))
+            lines = lines.append("conflict " + format_real(learning.ordered_sum(terms) - log_evidence))
+        if len(query.variables) >= 2
+            int[][] assignments = factors.assignments(result.distribution.variables, sizes)
+            for int i < int(len(assignments))
+                lines = lines.append("joint " + assignment_text(result.distribution.variables, assignments[i]) + " " + format_real(result.distribution.values[i]))
+        for int variable = query.variables[]
+            lines = lines.append(marginal_text("marginal", variable, marginals[variable]))
+        for int variable = query.evidence_order[]
+            int[] evidence = query.evidence
+            evidence[variable] = -1
+            Posterior dropped = engine.posterior(query.variables, evidence)
+            real64[][] other = marginal_values(dropped.distribution, query.variables, sizes)
+            real64 shift = 0.0
+            for int q = query.variables[]
+                for int state < sizes[q]
+                    real64 difference = absolute(marginals[q][state] - other[q][state])
+                    if difference > shift
+                        shift = difference
+            lines = lines.append("drop {network.names[variable]}={network.states[variable][query.evidence[variable]]} shift " + format_real(shift))
+        answers = answers.append(lines)
+        factors.Factor first = elimination.execute(result.initial, result.minfill, sizes, false).final_factor
+        factors.Factor second = elimination.execute(result.initial, result.given, sizes, false).final_factor
+        bool agree = distributions_agree(normalized(first), normalized(second)) and absolute(logarithm(learning.ordered_sum(first.values)) - logarithm(learning.ordered_sum(second.values))) <= 0.000000001
+        int[] unobserved = [for int v = result.relevant[] if query.evidence[v] < 0 then v]
+        .store_elimination(number, line, result.relevant, result.eliminate, result.minfill, result.given, agree, factors.entry_count(unobserved, sizes), engine.enumeration_check(result, query.variables, query.evidence))
+
+    void .handle_mpe(int number, string line, Query query)
+        int[] unobserved = [for int v < size if query.evidence[v] < 0 then v]
+        factors.Factor[] initial = [for factors.Factor factor = cpt_factors[] then factor.reduced(query.evidence)]
+        elimination.Plan minfill = elimination.make_plan(initial, unobserved, true, params.order, sizes)
+        elimination.Plan given = elimination.make_plan(initial, unobserved, false, params.order, sizes)
+        elimination.Executed first = elimination.execute(initial, minfill, sizes, true)
+        elimination.Executed second = elimination.execute(initial, given, sizes, true)
+        int[] first_assignment = elimination.traceback(first, sizes)
+        int[] second_assignment = elimination.traceback(second, sizes)
+        for int v = observed_variables(query.evidence)[]
+            first_assignment[v] = query.evidence[v]
+            second_assignment[v] = query.evidence[v]
+        elimination.Executed selected = if params.minfill then first else second
+        int[] assignment = if params.minfill then first_assignment else second_assignment
+        real64 joint_probability = selected.final_factor.values[0]
+        real64 log_joint = logarithm(joint_probability)
+        real64 evidence_probability = if len(query.evidence_order) == 0 then 1.0 else engine.posterior([], query.evidence).evidence_probability
+        string[] lines = ["query {number} {line}", "assignment " + assignment_text(variables, assignment), "log_joint " + format_real(log_joint), "log_evidence " + format_real(logarithm(evidence_probability)), "posterior " + format_real(joint_probability / evidence_probability)]
+        for int variable = unobserved[]
+            int[] eliminate = [for int v = unobserved[] if v != variable then v]
+            elimination.Plan plan = elimination.make_plan(initial, eliminate, params.minfill, params.order, sizes)
+            factors.Factor margin_factor = elimination.execute(initial, plan, sizes, true).final_factor
+            int best = -1
+            for int state < sizes[variable]
+                if state == assignment[variable]
+                    continue
+                if best < 0 or margin_factor.values[state] > margin_factor.values[best]
+                    best = state
+            real64 margin = log_joint - logarithm(margin_factor.values[best])
+            lines = lines.append("margin {network.names[variable]} {network.states[variable][best]} " + format_real(margin))
+        answers = answers.append(lines)
+        bool agree = first_assignment == second_assignment and absolute(logarithm(first.final_factor.values[0]) - logarithm(second.final_factor.values[0])) <= 0.000000001
+        int enumeration_count = factors.entry_count(unobserved, sizes)
+        string verdict = "skipped"
+        if enumeration_count <= params.enumeration_limit
+            real64 best_probability = -1.0
+            int[] best_assignment = []
+            for int[] candidate = factors.assignments(unobserved, sizes)[]
+                for int v = observed_variables(query.evidence)[]
+                    candidate[v] = query.evidence[v]
+                real64 probability = engine.joint(candidate, variables)
+                if probability > best_probability
+                    best_probability = probability
+                    best_assignment = candidate
+            bool enumeration_agrees = assignment == best_assignment and absolute(logarithm(best_probability) - log_joint) <= 0.000000001
+            verdict = if enumeration_agrees then "agree" else "disagree"
+        .store_elimination(number, line, variables, unobserved, minfill, given, agree, enumeration_count, verdict)
+
+    void .handle_sample(int number, string line, Query query)
+        Posterior result = engine.posterior(query.variables, query.evidence)
+        real64[][] exact = marginal_values(result.distribution, query.variables, sizes)
+        string[] lines = ["query {number} {line}"]
+        for int variable = query.variables[]
+            lines = lines.append(marginal_text("exact", variable, exact[variable]))
+        real64 weight = 0.0
+        real64 squared_weight = 0.0
+        real64[][] totals = [for int v < size then [for int state < sizes[v] then 0.0]]
+        int maximum_samples = query.counts[int(len(query.counts)) - 1]
+        for 1 <= int count <= maximum_samples
+            sampling.Sample sample = sampling.weighted_sample(topological, network.parents, cpts, sizes, query.evidence, &generator)
+            weight += sample.weight
+            squared_weight += sample.weight * sample.weight
+            for int variable = query.variables[]
+                totals[variable][sample.states[variable]] += sample.weight
+            if not factors.includes(query.counts, count)
+                continue
+            real64 max_error = 0.0
+            for int variable = query.variables[]
+                for int state < sizes[variable]
+                    real64 estimate = totals[variable][state] / weight
+                    real64 difference = absolute(estimate - exact[variable][state])
+                    if difference > max_error
+                        max_error = difference
+                    sampling_rows = sampling_rows.append("{number},{count},{network.names[variable]},{network.states[variable][state]}," + format_real(estimate) + "," + format_real(exact[variable][state]) + "," + format_real(difference))
+            real64 ess = weight * weight / squared_weight
+            lines = lines.append("after {count} weight " + format_real(weight) + " ess " + format_real(ess) + " max_error " + format_real(max_error))
+        answers = answers.append(lines)
+
+    void .handle_predict(int number, string line, int variable)
+        int states = sizes[variable]
+        int[][] confusion = [for int a < states then [for int b < states then 0]]
+        real64[] log_terms = []
+        for int[] original = data.samples[]
+            int actual = original[variable]
+            real64[] values = []
+            for int state < states
+                int[] assignment = original
+                assignment[variable] = state
+                real64 value = cpts[variable][learning.parent_row(network.parents[variable], assignment, sizes)][state]
+                for int child = children[variable][]
+                    value *= cpts[child][learning.parent_row(network.parents[child], assignment, sizes)][assignment[child]]
+                values = values.append(value)
+            real64 denominator = learning.ordered_sum(values)
+            real64[] probabilities = [for real64 value = values[] then value / denominator]
+            int predicted = 0
+            for 1 <= int state < states
+                if probabilities[state] > probabilities[predicted]
+                    predicted = state
+            confusion[actual][predicted] += 1
+            log_terms = log_terms.append(logarithm(probabilities[actual]))
+        int correct = 0
+        for int state < states
+            correct += confusion[state][state]
+        real64 loss = -learning.ordered_sum(log_terms) / real64(sample_count)
+        string[] lines = ["query {number} {line}", "blanket " + variable_names(blankets[variable]), "accuracy {correct}/{sample_count} " + format_real(real64(correct) / real64(sample_count)), "log_loss " + format_real(loss), "predicted " + network.states[variable].join(" ")]
+        for int state < states
+            lines = lines.append("actual {network.states[variable][state]} " + [for int count = confusion[state][] then count.string()].join(" "))
+        answers = answers.append(lines)
+
+    void .handle_structure(int number, string line, Query query)
+        string[] lines = ["query {number} {line}"]
+        if query.kind == "DSEP"
+            Separation separation = bayes_ball(query.sets[0], query.sets[1], query.sets[2], network.parents, children)
+            Information information = conditional_information(query.sets, data.samples, sizes)
+            lines = lines.concat(["result " + (if separation.separated then "separated" else "connected"), "reachable " + variable_names(separation.reachable), "data cmi " + format_real(information.cmi) + " g2 " + format_real(information.g2) + " df {information.df}"])
+        elif query.kind == "BLANKET"
+            int variable = query.variables[0]
+            int[] rest = [for int v < size if v != variable and not factors.includes(blankets[variable], v) then v]
+            bool separated = bayes_ball([variable], rest, blankets[variable], network.parents, children).separated
+            lines = lines.concat(["parents " + variable_names(network.parents[variable]), "children " + variable_names(children[variable]), "spouses " + variable_names(spouses_of(variable, network.parents, children)), "blanket " + variable_names(blankets[variable]), "rest " + variable_names(rest), "rest_separated " + yes_no(separated)])
+        else
+            int x = query.first
+            int y = query.second
+            bool exists = factors.includes(network.parents[y], x)
+            if query.operation == "ADD" and exists
+                lines = lines.append("result exists")
+            elif query.operation != "ADD" and not exists
+                lines = lines.append("result missing")
+            else
+                int[] path = []
+                if query.operation == "ADD"
+                    path = path_search(children, y, x, -1, -1)
+                elif query.operation == "REVERSE"
+                    path = path_search(children, x, y, x, y)
+                if len(path) != 0
+                    int[] cycle = [if query.operation == "ADD" then x else y].concat(path)
+                    lines = lines.append("result cycle " + [for int v = cycle[] then network.names[v]].join(" -> "))
+                else
+                    int[] after_parents = if query.operation == "ADD" then canonical(network.parents[y].append(x)) else [for int parent = network.parents[y][] if parent != x then parent]
+                    real64 before_y = learning.family_score(y, network.parents[y], data.samples, sizes, params.alpha)
+                    real64 after_y = learning.family_score(y, after_parents, data.samples, sizes, params.alpha)
+                    real64 change = after_y - before_y
+                    lines = lines.concat(["result ok", "family {network.names[y]} before " + format_real(before_y) + " after " + format_real(after_y)])
+                    if query.operation == "REVERSE"
+                        real64 before_x = learning.family_score(x, network.parents[x], data.samples, sizes, params.alpha)
+                        real64 after_x = learning.family_score(x, canonical(network.parents[x].append(y)), data.samples, sizes, params.alpha)
+                        change += after_x - before_x
+                        lines = lines.append("family {network.names[x]} before " + format_real(before_x) + " after " + format_real(after_x))
+                    lines = lines.append("delta " + format_real(change) + " " + (if change > 0.0 then "improves" else "worsens"))
+        structure_blocks = structure_blocks.append(lines)
+
+    void .process_queries()
+        for int i < int(len(data.queries))
+            string line = data.queries[i]
+            Query query = parse_query(line, network)
+            if query.kind == "QUERY"
+                .handle_query(i + 1, line, query)
+            elif query.kind == "MPE"
+                .handle_mpe(i + 1, line, query)
+            elif query.kind == "SAMPLE"
+                .handle_sample(i + 1, line, query)
+            elif query.kind == "PREDICT"
+                .handle_predict(i + 1, line, query.variables[0])
+            else
+                .handle_structure(i + 1, line, query)
+
+    string[] cpt_lines()
+        string[] lines = []
+        int parameter_total = 0
+        for int v < size
+            string source = if params.learned[v] then "LEARNED" else "GIVEN"
+            string[] block = ["variable {network.names[v]} source {source}", "states " + network.states[v].join(" "), "parents " + variable_names(network.parents[v])]
+            int[][] combinations = factors.assignments(network.parents[v], sizes)
+            for int row < int(len(counts[v]))
+                string count_text = [for int count = counts[v][row][] then count.string()].join(" ")
+                block = block.append("row " + assignment_text(network.parents[v], combinations[row]) + " counts {count_text} probs " + real_values(cpts[v][row]))
+            block = block.append("loglik " + format_real(loglik[v]) + " parameters {parameters[v]} bic " + format_real(bic[v]))
+            Posterior marginal = engine.posterior([v], no_evidence)
+            real64[] frequencies = []
+            for int state < sizes[v]
+                int count = int(len([for int[] sample = data.samples[] if sample[v] == state then sample]))
+                frequencies = frequencies.append(real64(count) / real64(sample_count))
+            block = block.append("marginal model " + real_values(marginal.distribution.values) + " data " + real_values(frequencies))
+            if params.learned[v]
+                string difference = "-"
+                if len(network.expert[v]) != 0
+                    real64 maximum_difference = 0.0
+                    for int row < int(len(learned[v]))
+                        for int state < sizes[v]
+                            real64 value = absolute(learned[v][row][state] - network.expert[v][row][state])
+                            if value > maximum_difference
+                                maximum_difference = value
+                    difference = format_real(maximum_difference)
+                block = block.append("given_difference " + difference)
+            lines = lines.concat(block).append("")
+            parameter_total += parameters[v]
+        real64 ll = learning.ordered_sum(loglik)
+        real64 network_bic = ll - real64(parameter_total) * log_samples / 2.0
+        return lines.append("network samples {sample_count} pseudocount " + format_real(params.alpha) + " loglik " + format_real(ll) + " parameters {parameter_total} bic " + format_real(network_bic))
+
+    int plan_width(elimination.Plan plan)
+        int largest = 0
+        for elimination.Step step = plan.steps[]
+            if int(len(step.scope)) > largest
+                largest = int(len(step.scope))
+        return largest - 1
+
+    string[] structure_lines()
+        int edge_count = 0
+        bool[][] moral = [for int v < size then [for int u < size then false]]
+        for int v < size
+            edge_count += int(len(network.parents[v]))
+            int[] family = network.parents[v].append(v)
+            for int a = family[]
+                for int b = family[]
+                    if a != b
+                        moral[a][b] = true
+        int moral_edges = 0
+        for int a < size
+            for a + 1 <= int b < size
+                if moral[a][b]
+                    moral_edges += 1
+        elimination.Plan minfill = elimination.make_plan(cpt_factors, variables, true, params.order, sizes)
+        elimination.Plan given = elimination.make_plan(cpt_factors, variables, false, params.order, sizes)
+        int[] roots = [for int v < size if len(network.parents[v]) == 0 then v]
+        int[] leaves = [for int v < size if len(children[v]) == 0 then v]
+        string[] lines = ["variables {size} edges {edge_count}", "topological_order " + variable_names(topological), "roots " + variable_names(roots), "leaves " + variable_names(leaves), "moral_edges {moral_edges} width minfill {plan_width(minfill)} given {plan_width(given)}"]
+        for int v < size
+            lines = lines.append("variable {network.names[v]} states {sizes[v]} parents {len(network.parents[v])} children {len(children[v])} depth {depths[v]} ancestors {len(ancestors[v])} descendants {len(descendants[v])} blanket {len(blankets[v])}")
+        for string[] block = structure_blocks[]
+            lines = lines.append("").concat(block)
+        return lines
+
+string[] joined_blocks(string[][] blocks)
+    string[] lines = []
+    for string[] block = blocks[]
+        if len(lines) != 0
+            lines = lines.append("")
+        lines = lines.concat(block)
+    return lines
+
+void write_lines(string name, string[] lines)
+    file.write("output/" + name, lines.join(NL) + (if len(lines) == 0 then "" else NL))
+
+void run_program()
+    Study study = Study(network_io.read_inputs())
+    .study.process_queries()
+    write_lines("cpts.txt", study.cpt_lines())
+    write_lines("structure.txt", study.structure_lines())
+    write_lines("answers.txt", joined_blocks(study.answers))
+    write_lines("elimination.txt", joined_blocks(study.elimination_blocks))
+    write_lines("sampling.csv", study.sampling_rows)
+
+run_program()

@@ -1,0 +1,677 @@
+import chars = "./charset.qui"
+import format = "./formatter.qui"
+import backtrack = "./backtrack_vm.qui"
+import pike = "./pike_vm.qui"
+
+class Problem(string message, int column)
+class Node(string kind, int argument = 0, string mode = "", int[] children = [], bool[] members = [], bool negated = false, int lower = 0, int upper = 0)
+class GroupName(string name, int number)
+class Reference(int node, int column)
+class Parser(string text, int cursor = 0, int groups = 0, GroupName[] names = [], Node[] nodes = [Node("concat")], Reference[] references = [], Problem | none problem = none, bool failed = false)
+class Bounds(int lower, int upper)
+class ClassItem(int code, bool[] members, bool is_set)
+class Pattern(string name, string flags, string text, int groups, GroupName[] names, Node[] nodes, int root, format.Instruction[] code, Problem | none problem, bool compatible)
+class Properties(int lower, int upper, bool[] first, bool nullable)
+class Part(int code = -1, int group = -1)
+class Execution(int[][] matches, int backtrack_steps, int pike_steps, bool aborted, bool mismatch)
+
+bool one_of(string text, int code)
+    for int candidate = text.codepoints()[]
+        if candidate == code
+            return true
+    return false
+
+int peek(const Parser parser)
+    return if parser.cursor < int(len(parser.text)) then parser.text[parser.cursor].codepoints()[0] else -1
+
+void fail(Parser &parser, string message, int position)
+    if not parser.failed
+        parser.failed = true
+        parser.problem = Problem(message, position + 1)
+
+int add_node(Parser &parser, Node node)
+    parser.nodes = parser.nodes.append(node)
+    return int(len(parser.nodes)) - 1
+
+int group_number(const GroupName[] names, string name)
+    for GroupName entry = names[]
+        if entry.name == name
+            return entry.number
+    return -1
+
+int digits(Parser &parser)
+    int start = parser.cursor
+    while chars.digit(peek(parser))
+        parser.cursor += 1
+    return if parser.cursor == start then -1 else int.parse(parser.text[start:<parser.cursor])
+
+string read_name(Parser &parser)
+    int start = parser.cursor
+    if chars.letter(peek(parser)) or peek(parser) == 95
+        parser.cursor += 1
+        while chars.word(peek(parser))
+            parser.cursor += 1
+    if parser.cursor == start or peek(parser) != 62
+        fail(&parser, "invalid group name", parser.cursor)
+        return ""
+    string name = parser.text[start:<parser.cursor]
+    parser.cursor += 1
+    return name
+
+Bounds read_bounds(Parser &parser)
+    int start = parser.cursor
+    parser.cursor += 1
+    int lower = digits(&parser)
+    if lower == -1
+        fail(&parser, "invalid quantifier", start)
+        return Bounds(0, 0)
+    int upper = lower
+    if peek(parser) == 44
+        parser.cursor += 1
+        upper = if peek(parser) == 125 then -1 else digits(&parser)
+        if upper == -1 and peek(parser) != 125
+            fail(&parser, "invalid quantifier", start)
+    elif peek(parser) != 125
+        fail(&parser, "invalid quantifier", start)
+    if parser.failed or peek(parser) != 125
+        fail(&parser, "invalid quantifier", start)
+        return Bounds(0, 0)
+    parser.cursor += 1
+    if lower > 100 or upper > 100
+        fail(&parser, "quantifier too large", start)
+    elif upper >= 0 and lower > upper
+        fail(&parser, "quantifier range out of order", start)
+    return Bounds(lower, upper)
+
+ClassItem class_item(Parser &parser)
+    int start = parser.cursor
+    int code = peek(parser)
+    parser.cursor += 1
+    bool[] members = chars.empty()
+    if code != 92
+        members[code] = true
+        return ClassItem(code, members, false)
+    code = peek(parser)
+    if code == -1
+        fail(&parser, "trailing backslash", start)
+        return ClassItem(0, members, false)
+    parser.cursor += 1
+    if one_of("dDwWsS", code)
+        return ClassItem(0, chars.base(code), true)
+    if code == 110
+        code = 10
+    elif code == 116
+        code = 9
+    elif chars.letter(code) or chars.digit(code)
+        fail(&parser, "invalid escape", start)
+        return ClassItem(0, members, false)
+    members[code] = true
+    return ClassItem(code, members, false)
+
+int character_class(Parser &parser)
+    int start = parser.cursor
+    parser.cursor += 1
+    bool negated = peek(parser) == 94
+    if negated
+        parser.cursor += 1
+    if peek(parser) == 93
+        fail(&parser, "empty class", parser.cursor)
+        return 0
+    bool[] members = chars.empty()
+    while not parser.failed
+        if peek(parser) == -1
+            fail(&parser, "missing ]", start)
+            break
+        if peek(parser) == 93
+            parser.cursor += 1
+            break
+        ClassItem left = class_item(&parser)
+        if parser.failed
+            break
+        if peek(parser) == 45 and parser.cursor + 1 < int(len(parser.text)) and parser.text[parser.cursor + 1] != "]"
+            int hyphen = parser.cursor
+            parser.cursor += 1
+            if left.is_set
+                fail(&parser, "invalid range", hyphen)
+                break
+            ClassItem right = class_item(&parser)
+            if parser.failed
+                break
+            if right.is_set or left.code > right.code
+                fail(&parser, "invalid range", hyphen)
+                break
+            for left.code <= int code <= right.code
+                members[code] = true
+        else
+            for int code < 128
+                members[code] = members[code] or left.members[code]
+    return add_node(&parser, Node("class", members = members, negated = negated))
+
+int escaped(Parser &parser)
+    int start = parser.cursor
+    parser.cursor += 1
+    int code = peek(parser)
+    if code == -1
+        fail(&parser, "trailing backslash", start)
+        return 0
+    parser.cursor += 1
+    if one_of("dDwWsS", code)
+        bool negated = 65 <= code <= 90
+        return add_node(&parser, Node("class", members = chars.base(if negated then code + 32 else code), negated = negated))
+    if code == 98 or code == 66
+        return add_node(&parser, Node("assert", mode = if code == 98 then "WORD" else "NOTWORD"))
+    if code == 110 or code == 116
+        return add_node(&parser, Node("literal", if code == 110 then 10 else 9))
+    if 49 <= code <= 57
+        parser.cursor -= 1
+        int number = digits(&parser)
+        int index = add_node(&parser, Node("backref", number))
+        parser.references = parser.references.append(Reference(index, start))
+        return index
+    if code == 107
+        if peek(parser) != 60
+            fail(&parser, "invalid escape", start)
+            return 0
+        parser.cursor += 1
+        string name = read_name(&parser)
+        int index = add_node(&parser, Node("named", mode = name))
+        parser.references = parser.references.append(Reference(index, start))
+        return index
+    if chars.letter(code) or chars.digit(code)
+        fail(&parser, "invalid escape", start)
+        return 0
+    return add_node(&parser, Node("literal", code))
+
+int alternation(Parser &parser);
+
+int group(Parser &parser)
+    int start = parser.cursor
+    parser.cursor += 1
+    string mode = "capture"
+    string named = ""
+    if peek(parser) == 63
+        parser.cursor += 1
+        int code = peek(parser)
+        if code == 58
+            mode = "plain"
+        elif code == 61
+            mode = "ahead"
+        elif code == 33
+            mode = "negative"
+        elif code != 60
+            fail(&parser, "invalid group", start)
+            return 0
+        parser.cursor += 1
+        if code == 60
+            int name_start = parser.cursor
+            named = read_name(&parser)
+            if parser.failed
+                return 0
+            if group_number(parser.names, named) >= 0
+                fail(&parser, "duplicate group name", name_start)
+                return 0
+    int number = -1
+    if mode == "capture"
+        parser.groups += 1
+        number = parser.groups
+        if named != ""
+            parser.names = parser.names.append(GroupName(named, number))
+    int content = alternation(&parser)
+    if parser.failed
+        return 0
+    if peek(parser) != 41
+        fail(&parser, "missing )", start)
+        return 0
+    parser.cursor += 1
+    if number >= 0
+        return add_node(&parser, Node("group", number, children = [content]))
+    if mode == "plain"
+        return content
+    return add_node(&parser, Node("look", mode = if mode == "ahead" then "AHEAD" else "NOT", children = [content]))
+
+int element(Parser &parser)
+    int code = peek(parser)
+    if code == 40
+        return group(&parser)
+    if code == 91
+        return character_class(&parser)
+    if code == 92
+        return escaped(&parser)
+    parser.cursor += 1
+    if code == 46
+        return add_node(&parser, Node("any"))
+    if code == 94 or code == 36
+        return add_node(&parser, Node("assert", mode = if code == 94 then "BOL" else "EOL"))
+    return add_node(&parser, Node("literal", code))
+
+int quantified(Parser &parser)
+    if one_of("*+?{{", peek(parser))
+        fail(&parser, "nothing to repeat", parser.cursor)
+        return 0
+    int index = element(&parser)
+    if parser.failed or not one_of("*+?{{", peek(parser))
+        return index
+    if parser.nodes[index].kind == "assert" or parser.nodes[index].kind == "look"
+        fail(&parser, "nothing to repeat", parser.cursor)
+        return 0
+    Bounds bounds = Bounds(0, -1)
+    if peek(parser) == 123
+        bounds = read_bounds(&parser)
+    else
+        int code = peek(parser)
+        parser.cursor += 1
+        bounds = Bounds(if code == 43 then 1 else 0, if code == 63 then 1 else -1)
+    if parser.failed
+        return 0
+    string mode = "greedy"
+    if peek(parser) == 63 or peek(parser) == 43
+        mode = if peek(parser) == 63 then "lazy" else "possessive"
+        parser.cursor += 1
+    if one_of("*+?{{", peek(parser))
+        fail(&parser, "nested quantifier", parser.cursor)
+        return 0
+    return add_node(&parser, Node("repeat", mode = mode, children = [index], lower = bounds.lower, upper = bounds.upper))
+
+int concatenation(Parser &parser)
+    int[] children = []
+    while not parser.failed and peek(parser) != -1 and not one_of("|)", peek(parser))
+        children = children.append(quantified(&parser))
+    return if len(children) == 1 then children[0] else add_node(&parser, Node("concat", children = children))
+
+int alternation(Parser &parser)
+    int[] children = [concatenation(&parser)]
+    while not parser.failed and peek(parser) == 124
+        parser.cursor += 1
+        children = children.append(concatenation(&parser))
+    return if len(children) == 1 then children[0] else add_node(&parser, Node("alternate", children = children))
+
+void compile_node(const Node[] nodes, Node node, format.Instruction[] &code)
+    if node.kind == "literal"
+        code = code.append(format.Instruction("CHAR", node.argument))
+    elif node.kind == "any"
+        code = code.append(format.Instruction("ANY"))
+    elif node.kind == "class"
+        code = code.append(format.Instruction("CLASS", members = node.members, negated = node.negated))
+    elif node.kind == "assert"
+        code = code.append(format.Instruction("ASSERT", mode = node.mode))
+    elif node.kind == "backref"
+        code = code.append(format.Instruction("BACKREF", node.argument))
+    elif node.kind == "group"
+        code = code.append(format.Instruction("SAVE", 2 * node.argument))
+        compile_node(nodes, nodes[node.children[0]], &code)
+        code = code.append(format.Instruction("SAVE", 2 * node.argument + 1))
+    elif node.kind == "look"
+        int start = int(len(code))
+        code = code.append(format.Instruction("LOOK", mode = node.mode))
+        compile_node(nodes, nodes[node.children[0]], &code)
+        code = code.append(format.Instruction("MATCH"))
+        code[start].argument = int(len(code))
+    elif node.kind == "concat"
+        for int child = node.children[]
+            compile_node(nodes, nodes[child], &code)
+    elif node.kind == "alternate"
+        int[] jumps = []
+        for int index < int(len(node.children)) - 1
+            int split = int(len(code))
+            code = code.append(format.Instruction("SPLIT", split + 1))
+            compile_node(nodes, nodes[node.children[index]], &code)
+            jumps = jumps.append(int(len(code)))
+            code = code.append(format.Instruction("JMP"))
+            code[split].second = int(len(code))
+        compile_node(nodes, nodes[node.children[int(len(node.children)) - 1]], &code)
+        for int jump = jumps[]
+            code[jump].argument = int(len(code))
+    elif node.mode == "possessive"
+        int start = int(len(code))
+        code = code.append(format.Instruction("LOOK", mode = "ATOMIC"))
+        node.mode = "greedy"
+        compile_node(nodes, node, &code)
+        code = code.append(format.Instruction("MATCH"))
+        code[start].argument = int(len(code))
+    else
+        bool greedy = node.mode == "greedy"
+        Node content = nodes[node.children[0]]
+        if node.upper >= 0
+            for int iteration < node.lower
+                compile_node(nodes, content, &code)
+            int[] splits = []
+            for int iteration < node.upper - node.lower
+                splits = splits.append(int(len(code)))
+                code = code.append(format.Instruction("SPLIT"))
+                compile_node(nodes, content, &code)
+            int finish = int(len(code))
+            for int split = splits[]
+                code[split] = format.Instruction("SPLIT", if greedy then split + 1 else finish, if greedy then finish else split + 1)
+        elif node.lower == 0
+            int split = int(len(code))
+            code = code.append(format.Instruction("SPLIT"))
+            compile_node(nodes, content, &code)
+            code = code.append(format.Instruction("JMP", split))
+            int finish = int(len(code))
+            code[split] = format.Instruction("SPLIT", if greedy then split + 1 else finish, if greedy then finish else split + 1)
+        else
+            for int iteration < node.lower - 1
+                compile_node(nodes, content, &code)
+            int start = int(len(code))
+            compile_node(nodes, content, &code)
+            int finish = int(len(code)) + 1
+            code = code.append(format.Instruction("SPLIT", if greedy then start else finish, if greedy then finish else start))
+
+Properties properties(const Node[] nodes, int index, string flags)
+    Node node = nodes[index]
+    bool[] first_set = chars.empty()
+    if node.kind == "literal" or node.kind == "any" or node.kind == "class"
+        for int character < 128
+            if node.kind == "literal"
+                first_set[character] = chars.equal(character, node.argument, flags)
+            elif node.kind == "any"
+                first_set[character] = flags.contains("s") or character != 10
+            else
+                first_set[character] = chars.class_matches(character, node.members, node.negated, flags)
+        return Properties(1, 1, first_set, false)
+    if node.kind == "assert" or node.kind == "look"
+        return Properties(0, 0, first_set, true)
+    if node.kind == "backref"
+        return Properties(0, -1, array(128, fill = true), true)
+    if node.kind == "group"
+        return properties(nodes, node.children[0], flags)
+    if node.kind == "repeat"
+        Properties child = properties(nodes, node.children[0], flags)
+        int upper = if child.upper == 0 then 0 elif child.upper == -1 or node.upper == -1 then -1 else node.upper * child.upper
+        return Properties(child.lower * node.lower, upper, if node.upper == 0 then first_set else child.first, node.upper == 0 or child.nullable or node.lower == 0)
+    bool alternating = node.kind == "alternate"
+    int lower = 0
+    int upper = 0
+    bool nullable = not alternating
+    bool first_child = true
+    for int child_index = node.children[]
+        Properties child = properties(nodes, child_index, flags)
+        if alternating
+            if first_child or child.lower < lower
+                lower = child.lower
+            upper = if upper == -1 or child.upper == -1 then -1 elif child.upper > upper then child.upper else upper
+            nullable = nullable or child.nullable
+        else
+            lower += child.lower
+            upper = if upper == -1 or child.upper == -1 then -1 else upper + child.upper
+        if alternating or nullable
+            for int character < 128
+                first_set[character] = first_set[character] or child.first[character]
+        if not alternating
+            nullable = nullable and child.nullable
+        first_child = false
+    return Properties(lower, upper, first_set, nullable)
+
+Pattern read_pattern(string line)
+    string[] fields = line.split(" ")
+    string text = fields[2:<int(len(fields))].join(" ")
+    Parser parser = Parser(text)
+    int root = alternation(&parser)
+    if not parser.failed and parser.cursor < int(len(text))
+        fail(&parser, "unmatched )", parser.cursor)
+    if not parser.failed
+        for Reference reference = parser.references[]
+            Node node = parser.nodes[reference.node]
+            if node.kind == "backref"
+                if node.argument > parser.groups
+                    fail(&parser, "invalid group reference", reference.column)
+                    break
+            else
+                int number = group_number(parser.names, node.mode)
+                if number < 0
+                    fail(&parser, "unknown group name", reference.column)
+                    break
+                parser.nodes[reference.node].kind = "backref"
+                parser.nodes[reference.node].argument = number
+    format.Instruction[] code = []
+    bool compatible = true
+    if not parser.failed
+        code = code.append(format.Instruction("SAVE", 0))
+        compile_node(parser.nodes, parser.nodes[root], &code)
+        code = code.append(format.Instruction("SAVE", 1)).append(format.Instruction("MATCH"))
+        for format.Instruction entry = code[]
+            if entry.kind == "BACKREF" or entry.kind == "LOOK"
+                compatible = false
+    return Pattern(fields[0], fields[1], text, parser.groups, parser.names, parser.nodes, root, code, parser.problem, compatible)
+
+int[] decode(string quoted)
+    int[] result = []
+    int cursor = 1
+    while cursor + 1 < int(len(quoted))
+        int code = quoted[cursor].codepoints()[0]
+        if code == 92
+            cursor += 1
+            code = quoted[cursor].codepoints()[0]
+            code = if code == 110 then 10 elif code == 116 then 9 else code
+        result = result.append(code)
+        cursor += 1
+    return result
+
+Part[] | none read_template(const int[] codes, const Pattern pattern)
+    Part[] parts = []
+    int cursor = 0
+    while cursor < int(len(codes))
+        int code = codes[cursor]
+        cursor += 1
+        if code != 36
+            parts = parts.append(Part(code))
+            continue
+        if cursor == int(len(codes))
+            return none
+        if codes[cursor] == 36
+            parts = parts.append(Part(36))
+            cursor += 1
+            continue
+        int number = -1
+        if chars.digit(codes[cursor])
+            number = codes[cursor] - 48
+            cursor += 1
+        elif codes[cursor] == 123
+            cursor += 1
+            int start = cursor
+            string text = ""
+            bool all_digits = true
+            while cursor < int(len(codes)) and codes[cursor] != 125
+                text += format.text_character(codes[cursor])
+                all_digits = all_digits and chars.digit(codes[cursor])
+                cursor += 1
+            if cursor == int(len(codes)) or cursor == start
+                return none
+            cursor += 1
+            number = if all_digits then int.parse(text) else group_number(pattern.names, text)
+        if number < 0 or number > pattern.groups
+            return none
+        parts = parts.append(Part(group = number))
+    return parts
+
+bool group_set(const int[] capture, int number)
+    return capture[2 * number] >= 0 and capture[2 * number + 1] >= 0
+
+int[] expand_template(const Part[] parts, const int[] capture, const int[] subject)
+    int[] result = []
+    for Part part = parts[]
+        if part.group < 0
+            result = result.append(part.code)
+        elif group_set(capture, part.group)
+            result = result.concat(subject[capture[2 * part.group]:<capture[2 * part.group + 1]])
+    return result
+
+Execution execute_command(const Pattern pattern, const int[] subject, string kind, bool first_only)
+    bool full = kind == "MATCH"
+    bool scanning = kind == "FINDALL" or kind == "SPLIT" or (kind == "REPLACE" and not first_only)
+    backtrack.Engine backtrack_engine = backtrack.Engine(pattern.code, subject, pattern.flags, pattern.groups, full)
+    int[][] backtrack_matches = []
+    int start = 0
+    while start <= int(len(subject))
+        match backtrack.search(&backtrack_engine, start)
+            int[] capture
+                backtrack_matches = backtrack_matches.append(capture)
+                start = if capture[1] > capture[0] then capture[1] else capture[1] + 1
+            none
+                break
+        if not scanning or backtrack_engine.aborted
+            break
+    pike.Engine pike_engine = pike.Engine(pattern.code, subject, pattern.flags, pattern.groups, full)
+    int[][] pike_matches = []
+    if pattern.compatible
+        start = 0
+        while start <= int(len(subject))
+            match pike.search(&pike_engine, start)
+                int[] capture
+                    pike_matches = pike_matches.append(capture)
+                    start = if capture[1] > capture[0] then capture[1] else capture[1] + 1
+                none
+                    break
+            if not scanning
+                break
+    bool mismatch = pattern.compatible and not backtrack_engine.aborted and backtrack_matches != pike_matches
+    return Execution(if pattern.compatible then pike_matches else backtrack_matches, backtrack_engine.steps, pike_engine.steps, backtrack_engine.aborted, mismatch)
+
+string[] read_lines(string name)
+    string text = file.read("input/{name}")
+    string[] lines = text.split(NL)
+    return lines[0:<int(len(lines)) - 1]
+
+string span(const int[] capture, int number, const int[] subject)
+    int start = capture[2 * number]
+    int finish = capture[2 * number + 1]
+    return "{start}-{finish} " + format.quote(subject[start:<finish])
+
+string[] match_lines(const int[] capture, const int[] subject, int groups)
+    string[] lines = ["match " + span(capture, 0, subject)]
+    for 1 <= int number <= groups
+        lines = lines.append("group {number} " + (if group_set(capture, number) then span(capture, number, subject) else "-"))
+    return lines
+
+string[] program_lines(const Pattern pattern)
+    Properties information = properties(pattern.nodes, pattern.root, pattern.flags)
+    string[] names = []
+    for GroupName entry = pattern.names[]
+        names = names.append("{entry.name}:{entry.number}")
+    string name_list = if len(names) == 0 then "-" else names.join(",")
+    string maximum = if information.upper < 0 then "inf" else "{information.upper}"
+    bool has_first = false
+    for bool member = information.first[]
+        has_first = has_first or member
+    string first_set = if has_first then format.set_text(information.first) else "-"
+    string compatible = if pattern.compatible then "yes" else "no"
+    string[] lines = ["=== {pattern.name}", "flags={pattern.flags} groups={pattern.groups} names={name_list} length={information.lower}..{maximum} first={first_set} pike={compatible} size={len(pattern.code)}"]
+    for int index < int(len(pattern.code))
+        lines = lines.append("{index} " + format.instruction_text(pattern.code[index]))
+    return lines
+
+string[] result_lines(const Pattern pattern, const int[] subject, string kind, const int[][] matches, const Part[] parts)
+    string[] lines = []
+    if kind == "MATCH" or kind == "SEARCH"
+        return if len(matches) == 0 then ["no match"] else match_lines(matches[0], subject, pattern.groups)
+    if kind == "FINDALL"
+        lines = ["matches {len(matches)}"]
+        for int[] capture = matches[]
+            lines = lines.concat(match_lines(capture, subject, pattern.groups))
+        return lines
+    int cursor = 0
+    if kind == "REPLACE"
+        int[] text = []
+        for int[] capture = matches[]
+            text = text.concat(subject[cursor:<capture[0]]).concat(expand_template(parts, capture, subject))
+            cursor = capture[1]
+        text = text.concat(subject[cursor:<int(len(subject))])
+        return ["replacements {len(matches)}", "result " + format.quote(text)]
+    lines = ["pieces {int(len(matches)) + 1}"]
+    for int[] capture = matches[]
+        lines = lines.append("piece " + format.quote(subject[cursor:<capture[0]]))
+        for 1 <= int number <= pattern.groups
+            string text = if group_set(capture, number) then format.quote(subject[capture[2 * number]:<capture[2 * number + 1]]) else "-"
+            lines = lines.append("group {number} {text}")
+        cursor = capture[1]
+    return lines.append("piece " + format.quote(subject[cursor:<int(len(subject))]))
+
+void write_lines(string name, const string[] lines)
+    file.write("output/{name}", if len(lines) == 0 then "" else lines.join(NL) + NL)
+
+void run_program()
+    map.Map<string, Pattern> patterns = map.Map<string, Pattern>()
+    map.Map<string, int[]> subjects = map.Map<string, int[]>()
+    string[] errors = []
+    for string line = read_lines("patterns.txt")[]
+        Pattern pattern = read_pattern(line)
+        .patterns.set(pattern.name, pattern)
+        match pattern.problem
+            Problem problem
+                errors = errors.append("{pattern.name}: {problem.message} at column {problem.column}")
+                errors = errors.append("  " + pattern.text)
+                errors = errors.append(string.repeat(" ", nat(problem.column + 1)) + "^")
+            none
+                continue
+    for string line = read_lines("subjects.txt")[]
+        string[] fields = line.split(" ")
+        .subjects.set(fields[0], decode(fields[1:<int(len(fields))].join(" ")))
+    string[] results = []
+    string[] programs = []
+    string[] steps = ["command,engine,steps"]
+    string[] commands = read_lines("commands.txt")
+    for int command_index < int(len(commands))
+        string line = commands[command_index]
+        string[] fields = line.split(" ")
+        string kind = fields[0]
+        bool replacing = kind == "REPLACE"
+        string pattern_name = fields[if replacing then 2 else 1]
+        Pattern pattern = Pattern("", "", "", 0, [], [], 0, [], none, true)
+        match patterns.get(pattern_name)
+            Pattern found
+                pattern = found
+            none
+                continue
+        results = results.append("#{command_index + 1} {line}")
+        bool invalid = false
+        match pattern.problem
+            Problem problem
+                invalid = true
+            none
+                invalid = false
+        if invalid
+            results = results.append("invalid pattern")
+            continue
+        if kind == "LIST"
+            results = results.append("instructions {len(pattern.code)}")
+            programs = programs.concat(program_lines(pattern))
+            continue
+        int[] subject = []
+        string subject_name = fields[if replacing then 3 else 2]
+        match subjects.get(subject_name)
+            int[] found
+                subject = found
+            none
+                continue
+        Part[] parts = []
+        if replacing
+            int[] template_codes = decode(fields[4:<int(len(fields))].join(" "))
+            match read_template(template_codes, pattern)
+                Part[] found
+                    parts = found
+                none
+                    results = results.append("invalid template")
+                    continue
+        bool first_only = replacing and fields[1] == "FIRST"
+        Execution execution = execute_command(pattern, subject, kind, first_only)
+        steps = steps.append("{command_index + 1},backtrack,{execution.backtrack_steps}")
+        if pattern.compatible
+            steps = steps.append("{command_index + 1},pike,{execution.pike_steps}")
+        if execution.mismatch
+            results = results.append("MISMATCH")
+        elif execution.aborted and not pattern.compatible
+            results = results.append("TOO_MANY_STEPS")
+        else
+            string engine = if pattern.compatible then (if execution.aborted then "pike (backtrack: TOO_MANY_STEPS)" else "both") else "backtrack"
+            results = results.append("engine {engine}")
+            results = results.concat(result_lines(pattern, subject, kind, execution.matches, parts))
+    bool exists = file.exists("output")
+    if not exists
+        file.mkdir("output")
+    write_lines("results.txt", results)
+    write_lines("programs.txt", if len(programs) == 0 then ["no programs"] else programs)
+    write_lines("steps.csv", steps)
+    write_lines("errors.txt", if len(errors) == 0 then ["no errors"] else errors)
+
+if main
+    run_program()
