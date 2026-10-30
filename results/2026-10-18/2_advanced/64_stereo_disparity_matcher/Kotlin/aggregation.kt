@@ -1,6 +1,7 @@
 import kotlin.math.abs
 object Aggregation {
-    val directions=arrayOf(intArrayOf(1,0),intArrayOf(-1,0),intArrayOf(0,1),intArrayOf(0,-1),intArrayOf(1,1),intArrayOf(-1,-1),intArrayOf(-1,1),intArrayOf(1,-1))
+    val directions=arrayOf(intArrayOf(1,0),intArrayOf(-1,0),intArrayOf(0,1),intArrayOf(0,-1),
+        intArrayOf(1,1),intArrayOf(-1,-1),intArrayOf(-1,1),intArrayOf(1,-1))
     fun path(base: Array<LongArray>,left: IntArray,w: Int,h: Int,direction: Int,p1: Long,p2: Long,gamma: Long): Array<LongArray> {
         val rx=directions[direction][0];
         val ry=directions[direction][1];

@@ -84,7 +84,8 @@ object Stereo {
             for(d in min..max)if(abs(d-d1)>=2)second=minOf(second,row[d-min]);
             if(d1==min||d1==max)result.bounds++;
             var reason=0
-            if(strengths[pixel]<p("texture_threshold"))reason=50 else if(100*second<=(100L+p("uniqueness"))*first)reason=100 else if(pixel%w<d1)reason=150 else if(!consistent(pixel,d1,rightDisparity)) {
+            if(strengths[pixel]<p("texture_threshold"))reason=50 else if(100*second<=(100L+p("uniqueness"))*first)reason=100 else if(pixel%w<d1)reason=150 else if(!consistent(pixel,
+                d1,rightDisparity)) {
                 var found=false;
                 for(d in min..max)if(consistent(pixel,d,rightDisparity))found=true;
                 reason=if(found)200 else 255
