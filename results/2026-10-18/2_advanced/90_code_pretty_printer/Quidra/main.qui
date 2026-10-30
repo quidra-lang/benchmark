@@ -1,0 +1,739 @@
+import lexer = "./lexer.qui"
+import parser = "./parser.qui"
+import doc = "./doc_builder.qui"
+import printer = "./printer.qui"
+import report = "./report.qui"
+
+class Profile(map.Map<string, string> values = map.Map<string, string>())
+    string value(string key)
+        match values.get(key)
+            string found
+                return found
+            none
+                return ""
+
+    bool yes(string key)
+        return value(key) == "yes"
+
+    int number(string key)
+        int parsed = int.parse(value(key))
+        return parsed
+
+    bool kr()
+        return value("brace_style") == "kr"
+
+class Construction(lexer.Token[] tokens, parser.Node[] nodes, Profile style, bool[] original_trailing, doc.Store documents = doc.Store())
+class Closing(lexer.Comment[] own, lexer.Comment[] inline)
+class Entry(int operator_token, int right)
+class FirstFunction(string name, int document)
+class Formatted(string[] lines, doc.Store documents, FirstFunction | none first_function, map.Map<int, string> modes, int comments, int groups)
+class Source(string header, string name, string profile, string[] lines = [])
+class Inputs(map.Map<string, Profile> profiles, Source[] sources)
+
+lexer.Token[] attach(const lexer.Lexed lexed)
+    lexer.Token[] tokens = lexed.tokens
+    for int position < int(len(lexed.order))
+        lexer.Occurrence entry = lexed.order[position]
+        if entry.token
+            continue
+        lexer.Comment comment = lexed.comments[entry.index]
+        int previous = -1
+        int following = -1
+        int cursor = position - 1
+        while cursor >= 0
+            if lexed.order[cursor].token
+                previous = lexed.order[cursor].index
+                break
+            cursor -= 1
+        cursor = position + 1
+        while cursor < int(len(lexed.order))
+            if lexed.order[cursor].token
+                following = lexed.order[cursor].index
+                break
+            cursor += 1
+        int next_line = -1
+        if position + 1 < int(len(lexed.order))
+            lexer.Occurrence next = lexed.order[position + 1]
+            next_line = if next.token then tokens[next.index].line else lexed.comments[next.index].line
+        comment.own = comment.line_comment or next_line < 0 or next_line > comment.line
+        bool trailing = previous >= 0 and tokens[previous].line == comment.line and (following < 0 or tokens[following].line > comment.line)
+        if trailing
+            tokens[previous].trailing = tokens[previous].trailing.append(comment)
+        else
+            int target = if following < 0 then int(len(tokens)) - 1 else following
+            tokens[target].leading = tokens[target].leading.append(comment)
+    return tokens
+
+void allow_comments(const parser.Node[] nodes, int index, bool[] &allowed, bool[] &tails)
+    parser.Node node = nodes[index]
+    if node.kind == "block"
+        allowed[node.tokens[1]] = true
+        for int child = node.children[]
+            allowed[nodes[child].start] = true
+    elif node.kind == "switch"
+        allowed[node.tokens[4]] = true
+        for 1 <= int position < int(len(node.children))
+            parser.Node clause = nodes[node.children[position]]
+            allowed[clause.tokens[0]] = true
+            int first = if clause.kind == "case" then 1 else 0
+            for first <= int child_index < int(len(clause.children))
+                allowed[nodes[clause.children[child_index]].start] = true
+    elif node.kind == "if" or node.kind == "while"
+        parser.Node body = nodes[node.children[1]]
+        if body.kind != "block"
+            allowed[body.start] = true
+        if node.kind == "if" and len(node.children) == 3
+            parser.Node alternative = nodes[node.children[2]]
+            if alternative.kind != "block" and alternative.kind != "if"
+                allowed[alternative.start] = true
+    elif node.kind == "for"
+        parser.Node body = nodes[node.children[3]]
+        if body.kind != "block"
+            allowed[body.start] = true
+    elif lexer.has(["params", "args", "initlist"], node.kind)
+        for int child = node.children[]
+            allowed[nodes[child].start] = true
+        match node.trailing
+            int token
+                tails[token] = true
+            none
+                tails = tails
+    for int child = node.children[]
+        allow_comments(nodes, child, &allowed, &tails)
+
+lexer.Problem | none check_comments(const parser.Program program, const lexer.Token[] tokens)
+    bool[] allowed = array(len(tokens), fill = false)
+    bool[] tails = allowed
+    allowed[int(len(tokens)) - 1] = true
+    for int item = program.items[]
+        allowed[program.nodes[item].start] = true
+        allow_comments(program.nodes, item, &allowed, &tails)
+    for int position < int(len(tokens))
+        for lexer.Comment comment = tokens[position].leading[]
+            if (comment.own and not allowed[position]) or tails[position]
+                return lexer.Problem(comment.line, comment.column, "comment not allowed here")
+    return none
+
+int text_document(Construction &context, string value)
+    return doc.text(&context.documents, value)
+
+int combine(Construction &context, const int[] parts)
+    return doc.concat(&context.documents, parts)
+
+int line_document(Construction &context, string kind)
+    return doc.add(&context.documents, doc.Document(kind))
+
+int nest_document(Construction &context, int amount, int child)
+    return doc.nest(&context.documents, amount, child)
+
+int group_document(Construction &context, int child)
+    return doc.group(&context.documents, child)
+
+int space_document(Construction &context)
+    return text_document(&context, if context.style.yes("space_around_operators") then " " else "")
+
+int keyword_space(Construction &context)
+    return text_document(&context, if context.style.yes("space_after_keyword") then " " else "")
+
+int operator_line(Construction &context)
+    return line_document(&context, if context.style.yes("space_around_operators") then "line" else "softline")
+
+int separator(Construction &context, int blank)
+    int[] parts = []
+    for int iteration < 1 + lexer.minimum(blank, context.style.number("max_blank_lines"))
+        parts = parts.append(line_document(&context, "hardline"))
+    return combine(&context, parts)
+
+int preblank(const Construction context, int token)
+    return if len(context.tokens[token].leading) > 0 then context.tokens[token].leading[0].blank else context.tokens[token].blank
+
+int comment_document(Construction &context, const lexer.Comment[] comments, const int | none next_blank)
+    int[] parts = []
+    for int position < int(len(comments))
+        lexer.Comment comment = comments[position]
+        parts = parts.append(text_document(&context, comment.text))
+        int | none blank = next_blank
+        if position + 1 < int(len(comments))
+            blank = comments[position + 1].blank
+        match blank
+            int found
+                parts = parts.append(if comment.own then separator(&context, found) else text_document(&context, " "))
+            none
+                parts = parts
+    return combine(&context, parts)
+
+int trailing_document(Construction &context, int token)
+    string[] comments = []
+    for lexer.Comment comment = context.tokens[token].trailing[]
+        comments = comments.append(comment.text)
+    if len(comments) == 0
+        return text_document(&context, "")
+    return doc.suffix(&context.documents, comments.join(" "))
+
+int token_with(Construction &context, int token, const lexer.Comment[] leading)
+    int before = comment_document(&context, leading, context.tokens[token].blank)
+    int value = text_document(&context, context.tokens[token].text)
+    int after = trailing_document(&context, token)
+    return combine(&context, [before, value, after])
+
+int token_document(Construction &context, int token)
+    lexer.Comment[] leading = context.tokens[token].leading
+    return token_with(&context, token, leading)
+
+int level(const Construction context, int index)
+    parser.Node node = context.nodes[index]
+    return if node.kind == "conditional" then 0 elif node.kind == "binary" then parser.precedence(context.tokens[node.tokens[0]].text) elif node.kind == "unary" then 7 else 8
+
+int open_expression(Construction &context, int original, int required)
+    int current = original
+    while context.style.yes("remove_parens")
+        parser.Node node = context.nodes[current]
+        if node.kind != "paren" or level(context, node.children[0]) < required or len(context.tokens[node.tokens[0]].leading) > 0 or len(context.tokens[node.tokens[1]].leading) > 0
+            break
+        int child = node.children[0]
+        parser.Node inner = context.nodes[child]
+        lexer.Comment[] first = context.tokens[node.tokens[0]].trailing
+        lexer.Comment[] last = context.tokens[node.tokens[1]].trailing
+        context.tokens[node.tokens[0]].trailing = []
+        context.tokens[node.tokens[1]].trailing = []
+        context.tokens[inner.start].trailing = first.concat(context.tokens[inner.start].trailing)
+        context.tokens[inner.finish].trailing = context.tokens[inner.finish].trailing.concat(last)
+        current = child
+    return current
+
+int expression_document(Construction &context, int original, int required);
+int statement_document(Construction &context, int index);
+int list_document(Construction &context, int index);
+
+int parameter_document(Construction &context, int index)
+    parser.Node node = context.nodes[index]
+    int first = token_document(&context, node.tokens[0])
+    int space = text_document(&context, " ")
+    int second = token_document(&context, node.tokens[1])
+    int[] parts = [first, space, second]
+    for int child = node.children[]
+        parser.Node dimension = context.nodes[child]
+        parts = parts.append(token_document(&context, dimension.tokens[0]))
+        parts = parts.append(token_document(&context, dimension.tokens[1]))
+    return combine(&context, parts)
+
+int initializer_document(Construction &context, int index)
+    return if context.nodes[index].kind == "initlist" then list_document(&context, index) else expression_document(&context, index, 0)
+
+int list_document(Construction &context, int index)
+    parser.Node node = context.nodes[index]
+    int left = node.tokens[0]
+    int right = node.tokens[int(len(node.tokens)) - 1]
+    if len(node.children) == 0
+        int opening = token_document(&context, left)
+        int closing = token_document(&context, right)
+        return combine(&context, [opening, closing])
+    bool forced = false
+    for node.start <= int token < node.finish
+        if context.original_trailing[token]
+            forced = true
+    int[] inside = [line_document(&context, "softline")]
+    for int position < int(len(node.children))
+        if position > 0
+            inside = inside.append(token_document(&context, node.tokens[position]))
+            inside = inside.append(line_document(&context, "line"))
+        int child = node.children[position]
+        int built = if node.kind == "params" then parameter_document(&context, child) elif node.kind == "initlist" then initializer_document(&context, child) else expression_document(&context, child, 0)
+        inside = inside.append(built)
+    if node.kind == "initlist"
+        inside = inside.append(doc.if_break(&context.documents, ",", ""))
+        match node.trailing
+            int token
+                inside = inside.append(trailing_document(&context, token))
+            none
+                inside = inside
+    int marker = if forced then line_document(&context, "break_parent") else text_document(&context, "")
+    int opening = token_document(&context, left)
+    int nested_contents = combine(&context, inside)
+    int nested = nest_document(&context, context.style.number("indent"), nested_contents)
+    int soft = line_document(&context, "softline")
+    int closing = token_document(&context, right)
+    int contents = combine(&context, [marker, opening, nested, soft, closing])
+    return group_document(&context, contents)
+
+int declaration_document(Construction &context, int index)
+    parser.Node node = context.nodes[index]
+    int first = token_document(&context, node.tokens[0])
+    int space = text_document(&context, " ")
+    int second = token_document(&context, node.tokens[1])
+    int[] parts = [first, space, second]
+    int initial = -1
+    for int child = node.children[]
+        parser.Node child_node = context.nodes[child]
+        if child_node.kind == "dimension"
+            parts = parts.append(token_document(&context, child_node.tokens[0]))
+            if len(child_node.children) > 0
+                parts = parts.append(expression_document(&context, child_node.children[0], 0))
+            parts = parts.append(token_document(&context, child_node.tokens[1]))
+        else
+            initial = child
+    for 2 <= int position < int(len(node.tokens))
+        int token = node.tokens[position]
+        if context.tokens[token].text == "="
+            parts = parts.append(space_document(&context))
+            parts = parts.append(token_document(&context, token))
+            parts = parts.append(space_document(&context))
+            parts = parts.append(initializer_document(&context, initial))
+        else
+            parts = parts.append(token_document(&context, token))
+    return combine(&context, parts)
+
+Closing closing_comments(const Construction context, int token)
+    lexer.Comment[] comments = context.tokens[token].leading
+    int split = 0
+    for int position < int(len(comments))
+        if comments[position].own
+            split = position + 1
+    return Closing(comments[0:<split], comments[split:<int(len(comments))])
+
+int block_document(Construction &context, int index)
+    parser.Node node = context.nodes[index]
+    int close = node.tokens[1]
+    Closing comments = closing_comments(context, close)
+    int opening = token_document(&context, node.tokens[0])
+    if len(node.children) == 0 and len(comments.own) == 0
+        int closing = token_with(&context, close, comments.inline)
+        return combine(&context, [opening, closing])
+    int[] inside = [line_document(&context, "hardline")]
+    for int position < int(len(node.children))
+        int child = node.children[position]
+        if position > 0
+            inside = inside.append(separator(&context, preblank(context, context.nodes[child].start)))
+        inside = inside.append(statement_document(&context, child))
+    if len(comments.own) > 0
+        if len(node.children) > 0
+            inside = inside.append(separator(&context, comments.own[0].blank))
+        inside = inside.append(comment_document(&context, comments.own, none))
+    int contents = combine(&context, inside)
+    int nested = nest_document(&context, context.style.number("indent"), contents)
+    int hard = line_document(&context, "hardline")
+    int closing = token_with(&context, close, comments.inline)
+    return combine(&context, [opening, nested, hard, closing])
+
+int body_document(Construction &context, int index)
+    int boundary = if context.style.kr() then text_document(&context, " ") else line_document(&context, "hardline")
+    if context.nodes[index].kind == "block"
+        int body = block_document(&context, index)
+        return combine(&context, [boundary, body])
+    int body = statement_document(&context, index)
+    int hard = line_document(&context, "hardline")
+    int contents = combine(&context, [hard, body])
+    int nested = nest_document(&context, context.style.number("indent"), contents)
+    if context.style.yes("add_braces")
+        int opening = text_document(&context, "{{")
+        int closing_line = line_document(&context, "hardline")
+        int closing = text_document(&context, "}}")
+        return combine(&context, [boundary, opening, nested, closing_line, closing])
+    return nested
+
+int simple_document(Construction &context, int index)
+    parser.Node node = context.nodes[index]
+    int first = expression_document(&context, node.children[0], 0)
+    if node.kind != "assign"
+        return first
+    int left_space = space_document(&context)
+    int operator_token = token_document(&context, node.tokens[0])
+    int right_space = space_document(&context)
+    int second = expression_document(&context, node.children[1], 0)
+    return combine(&context, [first, left_space, operator_token, right_space, second])
+
+int clause_document(Construction &context, int index)
+    parser.Node node = context.nodes[index]
+    int[] parts = [token_document(&context, node.tokens[0])]
+    int first = if node.kind == "case" then 1 else 0
+    if first == 1
+        parts = parts.append(text_document(&context, " "))
+        parts = parts.append(expression_document(&context, node.children[0], 0))
+    parts = parts.append(token_document(&context, node.tokens[1]))
+    if int(len(node.children)) > first
+        int[] statements = [line_document(&context, "hardline")]
+        for first <= int position < int(len(node.children))
+            int child = node.children[position]
+            if position > first
+                statements = statements.append(separator(&context, preblank(context, context.nodes[child].start)))
+            statements = statements.append(statement_document(&context, child))
+        int contents = combine(&context, statements)
+        parts = parts.append(nest_document(&context, context.style.number("indent"), contents))
+    return combine(&context, parts)
+
+int statement_document(Construction &context, int index)
+    parser.Node node = context.nodes[index]
+    if node.kind == "block"
+        return block_document(&context, index)
+    if node.kind == "decl"
+        return declaration_document(&context, index)
+    if node.kind == "statement"
+        int value = simple_document(&context, node.children[0])
+        int ending = token_document(&context, node.tokens[0])
+        return combine(&context, [value, ending])
+    if node.kind == "break" or node.kind == "continue"
+        int first = token_document(&context, node.tokens[0])
+        int second = token_document(&context, node.tokens[1])
+        return combine(&context, [first, second])
+    if node.kind == "return"
+        int[] parts = [token_document(&context, node.tokens[0])]
+        if len(node.children) > 0
+            parts = parts.append(text_document(&context, " "))
+            parts = parts.append(expression_document(&context, node.children[0], 0))
+        parts = parts.append(token_document(&context, node.tokens[1]))
+        return combine(&context, parts)
+    if node.kind == "while" or node.kind == "if"
+        int keyword = token_document(&context, node.tokens[0])
+        int space = keyword_space(&context)
+        int opening = token_document(&context, node.tokens[1])
+        int condition = expression_document(&context, node.children[0], 0)
+        int closing = token_document(&context, node.tokens[2])
+        int body = body_document(&context, node.children[1])
+        int[] parts = [keyword, space, opening, condition, closing, body]
+        if node.kind == "if" and len(node.children) == 3
+            bool same_line = context.style.kr() and (context.nodes[node.children[1]].kind == "block" or context.style.yes("add_braces"))
+            parts = parts.append(if same_line then text_document(&context, " ") else line_document(&context, "hardline"))
+            parts = parts.append(token_document(&context, node.tokens[3]))
+            if context.nodes[node.children[2]].kind == "if"
+                parts = parts.append(text_document(&context, " "))
+                parts = parts.append(statement_document(&context, node.children[2]))
+            else
+                parts = parts.append(body_document(&context, node.children[2]))
+        return combine(&context, parts)
+    if node.kind == "for"
+        int keyword = token_document(&context, node.tokens[0])
+        int space = keyword_space(&context)
+        int opening = token_document(&context, node.tokens[1])
+        int[] inside = []
+        int initial = node.children[0]
+        string initial_kind = context.nodes[initial].kind
+        if initial_kind != "empty"
+            inside = inside.append(if initial_kind == "decl" then declaration_document(&context, initial) else simple_document(&context, initial))
+        inside = inside.append(token_document(&context, node.tokens[2]))
+        if context.nodes[node.children[1]].kind != "empty"
+            inside = inside.append(line_document(&context, "line"))
+            inside = inside.append(expression_document(&context, node.children[1], 0))
+        inside = inside.append(token_document(&context, node.tokens[3]))
+        if context.nodes[node.children[2]].kind != "empty"
+            inside = inside.append(line_document(&context, "line"))
+            inside = inside.append(simple_document(&context, node.children[2]))
+        int contents = combine(&context, inside)
+        int aligned = doc.align(&context.documents, contents)
+        int grouped = group_document(&context, aligned)
+        int closing = token_document(&context, node.tokens[4])
+        int body = body_document(&context, node.children[3])
+        return combine(&context, [keyword, space, opening, grouped, closing, body])
+    int close = node.tokens[4]
+    Closing comments = closing_comments(context, close)
+    int keyword = token_document(&context, node.tokens[0])
+    int space = keyword_space(&context)
+    int opening = token_document(&context, node.tokens[1])
+    int condition = expression_document(&context, node.children[0], 0)
+    int closing_parenthesis = token_document(&context, node.tokens[2])
+    int boundary = if context.style.kr() then text_document(&context, " ") else line_document(&context, "hardline")
+    int opening_brace = token_document(&context, node.tokens[3])
+    int[] parts = [keyword, space, opening, condition, closing_parenthesis, boundary, opening_brace]
+    if len(node.children) > 1 or len(comments.own) > 0
+        int[] inside = [line_document(&context, "hardline")]
+        for 1 <= int position < int(len(node.children))
+            int child = node.children[position]
+            if position > 1
+                inside = inside.append(separator(&context, preblank(context, context.nodes[child].start)))
+            inside = inside.append(clause_document(&context, child))
+        if len(comments.own) > 0
+            if len(node.children) > 1
+                inside = inside.append(separator(&context, comments.own[0].blank))
+            inside = inside.append(comment_document(&context, comments.own, none))
+        int contents = combine(&context, inside)
+        int amount = if context.style.yes("indent_case_labels") then context.style.number("indent") else 0
+        parts = parts.append(nest_document(&context, amount, contents))
+        parts = parts.append(line_document(&context, "hardline"))
+    parts = parts.append(token_with(&context, close, comments.inline))
+    return combine(&context, parts)
+
+int function_document(Construction &context, int index)
+    parser.Node node = context.nodes[index]
+    int first = token_document(&context, node.tokens[0])
+    int space = text_document(&context, " ")
+    int second = token_document(&context, node.tokens[1])
+    int parameters = list_document(&context, node.children[0])
+    int hard = line_document(&context, "hardline")
+    int body = block_document(&context, node.children[1])
+    return combine(&context, [first, space, second, parameters, hard, body])
+
+int postfix_document(Construction &context, int index)
+    parser.Node node = context.nodes[index]
+    if node.kind == "call"
+        return list_document(&context, node.children[1])
+    int first = token_document(&context, node.tokens[0])
+    if node.kind == "index"
+        int value = expression_document(&context, node.children[1], 0)
+        int second = token_document(&context, node.tokens[1])
+        return combine(&context, [first, value, second])
+    int second = token_document(&context, node.tokens[1])
+    return combine(&context, [first, second])
+
+int expression_document(Construction &context, int original, int required)
+    int index = open_expression(&context, original, required)
+    parser.Node node = context.nodes[index]
+    if node.kind == "atom"
+        return token_document(&context, node.tokens[0])
+    if node.kind == "paren"
+        int first = token_document(&context, node.tokens[0])
+        int value = expression_document(&context, node.children[0], 0)
+        int second = token_document(&context, node.tokens[1])
+        return combine(&context, [first, value, second])
+    if node.kind == "unary"
+        int operator_token = token_document(&context, node.tokens[0])
+        int operand = expression_document(&context, node.children[0], 8)
+        return combine(&context, [operator_token, operand])
+    if node.kind == "binary"
+        int priority = level(context, index)
+        int current = index
+        Entry[] entries = []
+        while context.nodes[current].kind == "binary" and level(context, current) == priority
+            parser.Node current_node = context.nodes[current]
+            entries = entries.append(Entry(current_node.tokens[0], current_node.children[1]))
+            current = open_expression(&context, current_node.children[0], priority)
+        int head = expression_document(&context, current, priority)
+        int[] rest = []
+        Entry[] backwards = entries[::-1]
+        for Entry entry = backwards[]
+            rest = rest.append(operator_line(&context))
+            rest = rest.append(token_document(&context, entry.operator_token))
+            rest = rest.append(space_document(&context))
+            rest = rest.append(expression_document(&context, entry.right, priority + 1))
+        int contents = combine(&context, rest)
+        int nested = nest_document(&context, context.style.number("indent"), contents)
+        int full = combine(&context, [head, nested])
+        return group_document(&context, full)
+    if node.kind == "conditional"
+        int head = expression_document(&context, node.children[0], 1)
+        int current = index
+        int[] rest = []
+        while true
+            parser.Node current_node = context.nodes[current]
+            rest = rest.append(operator_line(&context))
+            rest = rest.append(token_document(&context, current_node.tokens[0]))
+            rest = rest.append(space_document(&context))
+            rest = rest.append(expression_document(&context, current_node.children[1], 0))
+            rest = rest.append(operator_line(&context))
+            rest = rest.append(token_document(&context, current_node.tokens[1]))
+            rest = rest.append(space_document(&context))
+            int next = open_expression(&context, current_node.children[2], 0)
+            if context.nodes[next].kind == "conditional"
+                rest = rest.append(expression_document(&context, context.nodes[next].children[0], 1))
+                current = next
+            else
+                rest = rest.append(expression_document(&context, next, 0))
+                break
+        int contents = combine(&context, rest)
+        int nested = nest_document(&context, context.style.number("indent"), contents)
+        int full = combine(&context, [head, nested])
+        return group_document(&context, full)
+    int current = index
+    int[] operations = []
+    while lexer.has(["call", "index", "member"], context.nodes[current].kind)
+        operations = operations.append(current)
+        current = open_expression(&context, context.nodes[current].children[0], 8)
+    int[][] segments = [[]]
+    int[] backwards = operations[::-1]
+    for int operation = backwards[]
+        if context.nodes[operation].kind == "member"
+            segments = segments.append([])
+        int last = int(len(segments)) - 1
+        segments[last] = segments[last].append(operation)
+    int[] calls = []
+    for 1 <= int position < int(len(segments))
+        bool contains_call = false
+        for int operation = segments[position][]
+            if context.nodes[operation].kind == "call"
+                contains_call = true
+        if contains_call
+            calls = calls.append(position)
+    int[] parts = [expression_document(&context, current, 8)]
+    if len(calls) < 2
+        for int[] segment = segments[]
+            for int operation = segment[]
+                parts = parts.append(postfix_document(&context, operation))
+        return combine(&context, parts)
+    int first = calls[0]
+    for int position < first
+        for int operation = segments[position][]
+            parts = parts.append(postfix_document(&context, operation))
+    int[] rest = []
+    for first <= int position < int(len(segments))
+        rest = rest.append(line_document(&context, "softline"))
+        for int operation = segments[position][]
+            rest = rest.append(postfix_document(&context, operation))
+    int contents = combine(&context, rest)
+    parts = parts.append(nest_document(&context, context.style.number("indent"), contents))
+    int full = combine(&context, parts)
+    return group_document(&context, full)
+
+Formatted | lexer.Problem format_source(const string[] lines, const Profile style)
+    lexer.Lexed lexed
+    match lexer.lex(lines)
+        lexer.Lexed found
+            lexed = found
+        lexer.Problem problem
+            return problem
+    lexer.Token[] tokens = attach(lexed)
+    parser.Program program
+    match parser.parse(tokens)
+        parser.Program found
+            program = found
+        lexer.Problem problem
+            return problem
+    match check_comments(program, tokens)
+        lexer.Problem problem
+            return problem
+        none
+            tokens = tokens
+    bool[] original_trailing = []
+    for lexer.Token token = tokens[]
+        original_trailing = original_trailing.append(len(token.trailing) > 0)
+    Construction context = Construction(tokens, program.nodes, style, original_trailing)
+    int[] parts = []
+    FirstFunction | none first_function = none
+    for int position < int(len(program.items))
+        int index = program.items[position]
+        parser.Node item = program.nodes[index]
+        if position > 0
+            parts = parts.append(separator(&context, preblank(context, item.start)))
+        int document = if item.kind == "function" then function_document(&context, index) else declaration_document(&context, index)
+        if item.kind == "function"
+            match first_function
+                FirstFunction previous
+                    first_function = previous
+                none
+                    first_function = FirstFunction(context.tokens[item.tokens[1]].text, document)
+        parts = parts.append(document)
+    lexer.Comment[] closing = context.tokens[int(len(context.tokens)) - 1].leading
+    if len(closing) > 0
+        if len(program.items) > 0
+            parts = parts.append(separator(&context, closing[0].blank))
+        parts = parts.append(comment_document(&context, closing, none))
+    if len(program.items) == 0 and len(closing) == 0
+        return Formatted([], context.documents, first_function, map.Map<int, string>(), int(len(lexed.comments)), 0)
+    int whole = combine(&context, parts)
+    printer.Printed printed = printer.render(context.documents, whole, style.number("width"), style.number("comment_column"))
+    return Formatted(printed.lines, context.documents, first_function, printed.modes, int(len(lexed.comments)), doc.group_count(context.documents, whole))
+
+Inputs inputs()
+    map.Map<string, Profile> profiles = map.Map<string, Profile>()
+    string current = ""
+    Profile current_profile = Profile()
+    string settings_text = file.read("input/style.txt")
+    string[] style_lines = settings_text.split(NL)
+    for string line = style_lines[]
+        if line == ""
+            continue
+        if line.starts_with("[")
+            if current != ""
+                .profiles.set(current, current_profile)
+            current = line[1:<int(len(line)) - 1]
+            current_profile = Profile()
+        else
+            string[] pair = line.split("=")
+            .current_profile.values.set(pair[0], pair[1])
+    if current != ""
+        .profiles.set(current, current_profile)
+    Source[] sources = []
+    string source_text = file.read("input/sources.txt")
+    string[] source_lines = source_text.split(NL)
+    for int position < int(len(source_lines)) - 1
+        string line = source_lines[position]
+        if line.starts_with("=== ")
+            string[] parts = line.split(" ")
+            sources = sources.append(Source(line, parts[1], parts[2]))
+        else
+            int last = int(len(sources)) - 1
+            sources[last].lines = sources[last].lines.append(line)
+    return Inputs(profiles, sources)
+
+Profile | error required_profile(const map.Map<string, Profile> profiles, string name)
+    match profiles.get(name)
+        Profile found
+            return found
+        none
+            return error("missing profile")
+
+void write_output(string name, const string[] lines)
+    bool exists = file.is_directory("output")
+    if not exists
+        file.mkdir("output")
+    string text = if len(lines) == 0 then "" else lines.join(NL) + NL
+    file.write("output/{name}", text)
+
+void run_program()
+    Inputs data = inputs()
+    string[] formatted = []
+    string[] idempotency = []
+    string[] diagnostics = []
+    string[] document_tree = []
+    string[] changes = []
+    for Source source = data.sources[]
+        Profile style = required_profile(data.profiles, source.profile)
+        string[] original = []
+        for string line = source.lines[]
+            original = original.append(lexer.trim_end(line))
+        formatted = formatted.append(source.header)
+        document_tree = document_tree.append("=== {source.name}")
+        changes = changes.append("=== {source.name}")
+        match format_source(source.lines, style)
+            lexer.Problem problem
+                formatted = formatted.concat(original)
+                idempotency = idempotency.append("{source.name}: skipped (syntax error)")
+                diagnostics = diagnostics.append("{source.name}:{problem.line}:{problem.column}: error: {problem.reason}")
+                document_tree = document_tree.append("syntax error")
+                changes = changes.append("skipped (syntax error)")
+            Formatted first
+                formatted = formatted.concat(first.lines)
+                match format_source(first.lines, style)
+                    lexer.Problem problem
+                        idempotency = idempotency.append("{source.name}: unstable (second pass: {problem.line}:{problem.column}: {problem.reason})")
+                    Formatted second
+                        if first.lines == second.lines
+                            idempotency = idempotency.append("{source.name}: stable")
+                        else
+                            int count = lexer.minimum(int(len(first.lines)), int(len(second.lines)))
+                            int differing = count
+                            for int position < count
+                                if first.lines[position] != second.lines[position]
+                                    differing = position
+                                    break
+                            idempotency = idempotency.append("{source.name}: unstable at line {differing + 1}")
+                int width = style.number("width")
+                int longest = 0
+                for int position < int(len(first.lines))
+                    int length = int(len(first.lines[position]))
+                    longest = lexer.maximum(longest, length)
+                    if length > width
+                        diagnostics = diagnostics.append("{source.name}:{position + 1}: warning: line too long ({length} > {width})")
+                int broken = 0
+                int forced = 0
+                string[] modes = first.modes.values()
+                for string mode = modes[]
+                    if mode != "flat"
+                        broken += 1
+                    if mode == "forced"
+                        forced += 1
+                document_tree = document_tree.append("metrics lines={len(first.lines)} longest={longest} comments={first.comments} groups={first.groups} broken={broken} forced={forced}")
+                match first.first_function
+                    FirstFunction function
+                        document_tree = document_tree.append("function {function.name}")
+                        report.tree(first.documents, function.document, 0, first.modes, &document_tree)
+                    none
+                        document_tree = document_tree.append("no function")
+                changes = changes.concat(report.diff(original, first.lines))
+    if len(diagnostics) == 0
+        diagnostics = ["no diagnostics"]
+    write_output("formatted.txt", formatted)
+    write_output("idempotency.txt", idempotency)
+    write_output("diagnostics.txt", diagnostics)
+    write_output("doc_tree.txt", document_tree)
+    write_output("changes.txt", changes)
+
+if main
+    run_program()
