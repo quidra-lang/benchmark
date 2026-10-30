@@ -596,7 +596,11 @@ impl Linker {
                 let mut symbol = self.symbol_value(o, relocation.symbol);
                 let mut status = "ok";
                 let output = self.objects[o].sections[s].output.unwrap();
-                if relocation.kind == "CALL24" && far.contains(&(output, name.clone())) && self.objects[o].symbols[relocation.symbol].binding != "local" {
+                if relocation.kind == "CALL24"
+                    && far.contains(&(output, name.clone()))
+                    && self.objects[o].symbols[relocation.symbol].binding != "local"
+                    && symbol.map_or(false, |address| !relocator::fits("CALL24", address + relocation.addend - position))
+                {
                     symbol = Some(veneers[&(output, name.clone())]);
                     status = "veneer";
                 }
