@@ -1,0 +1,251 @@
+import lexer = "./lexer.qui"
+import parser = "./parser.qui"
+import un = "./unifier.qui"
+
+class Issue(lexer.Position position, string kind, string message = "", int expected = -1, int found = -1, un.Failure | none failure = none, string[] names = [])
+class Local(string name, lexer.Position position, un.Scheme scheme)
+class MatchRecord(int expression, int type)
+class Context(un.Store types, parser.Store syntax, Local[] locals = [], MatchRecord[] matches = [], Issue | none issue = none)
+class GroupResult(map.Map<string, un.Scheme> environment, un.Scheme[] schemes)
+
+bool failed(const Context context)
+    match context.issue
+        Issue found
+            return true
+        none
+            return false
+
+void fail(Context &context, const Issue issue)
+    if not failed(context)
+        context.issue = issue
+
+void check(Context &context, int expected, int found, const lexer.Position position)
+    if failed(context)
+        return
+    match un.unify(&context.types, expected, found)
+        un.Failure failure
+            fail(&context, Issue(position, "check", expected = expected, found = found, failure = failure))
+        none
+            context.issue = none
+
+int infer_expression(Context &context, int index, const map.Map<string, un.Scheme> environment);
+
+int infer_pattern(Context &context, int index, map.Map<string, int> &bindings)
+    if failed(context)
+        return -1
+    parser.Pattern pattern = context.syntax.patterns[index]
+    if pattern.kind == "wild"
+        return un.fresh(&context.types)
+    if pattern.kind == "name"
+        if bindings.has(pattern.value)
+            fail(&context, Issue(pattern.position, "message", "variable '{pattern.value}' is bound twice in this pattern"))
+            return -1
+        int type = un.fresh(&context.types)
+        .bindings.set(pattern.value, type)
+        return type
+    if lexer.has(["integer", "bool", "string"], pattern.kind)
+        return un.add(&context.types, if pattern.kind == "integer" then "int" else pattern.kind)
+    if pattern.kind == "cons"
+        int type = un.fresh(&context.types)
+        int head = infer_pattern(&context, pattern.children[0], &bindings)
+        check(&context, type, head, context.syntax.patterns[pattern.children[0]].position)
+        if failed(context)
+            return -1
+        int tail = infer_pattern(&context, pattern.children[1], &bindings)
+        int list = un.add(&context.types, "list", type)
+        check(&context, list, tail, context.syntax.patterns[pattern.children[1]].position)
+        return if failed(context) then -1 else list
+    if pattern.kind == "list"
+        int type = un.fresh(&context.types)
+        for int child = pattern.children[]
+            int found = infer_pattern(&context, child, &bindings)
+            check(&context, type, found, context.syntax.patterns[child].position)
+            if failed(context)
+                return -1
+        return un.add(&context.types, "list", type)
+    int first = infer_pattern(&context, pattern.children[0], &bindings)
+    if failed(context)
+        return -1
+    int second = infer_pattern(&context, pattern.children[1], &bindings)
+    return if failed(context) then -1 else un.add(&context.types, "pair", first, second)
+
+GroupResult infer_group(Context &context, int index, const map.Map<string, un.Scheme> environment, bool local_bindings)
+    parser.Group group = context.syntax.groups[index]
+    string[] names = []
+    bool recursive = false
+    match group.recursive
+        lexer.Position position
+            recursive = true
+        none
+            recursive = false
+    for parser.Binding binding = group.bindings[]
+        if lexer.has(names, binding.name)
+            fail(&context, Issue(binding.position, "message", "variable '{binding.name}' is bound twice in this let"))
+            return GroupResult(environment, [])
+        names = names.append(binding.name)
+        if recursive and context.syntax.expressions[binding.expression].kind != "lambda"
+            fail(&context, Issue(binding.position, "message", "'{binding.name}' in let rec must be a function"))
+            return GroupResult(environment, [])
+    map.Map<string, un.Scheme> recursive_environment = environment
+    int[] inferred = []
+    if recursive
+        for parser.Binding binding = group.bindings[]
+            int type = un.fresh(&context.types)
+            inferred = inferred.append(type)
+            .recursive_environment.set(binding.name, un.Scheme(type))
+        for int position < int(len(group.bindings))
+            parser.Binding binding = group.bindings[position]
+            int found = infer_expression(&context, binding.expression, recursive_environment)
+            check(&context, inferred[position], found, binding.position)
+            if failed(context)
+                return GroupResult(environment, [])
+    else
+        for parser.Binding binding = group.bindings[]
+            int found = infer_expression(&context, binding.expression, environment)
+            if failed(context)
+                return GroupResult(environment, [])
+            inferred = inferred.append(found)
+    un.Scheme[] schemes = []
+    map.Map<string, un.Scheme> result = environment
+    for int position < int(len(group.bindings))
+        parser.Binding binding = group.bindings[position]
+        un.Scheme scheme = un.generalize(context.types, inferred[position], environment)
+        schemes = schemes.append(scheme)
+        .result.set(binding.name, scheme)
+        if local_bindings
+            context.locals = context.locals.append(Local(binding.name, binding.position, scheme))
+    return GroupResult(result, schemes)
+
+int infer_expression(Context &context, int index, const map.Map<string, un.Scheme> environment)
+    if failed(context)
+        return -1
+    parser.Expr expression = context.syntax.expressions[index]
+    if lexer.has(["integer", "bool", "string"], expression.kind)
+        return un.add(&context.types, if expression.kind == "integer" then "int" else expression.kind)
+    if expression.kind == "name"
+        match environment.get(expression.value)
+            un.Scheme scheme
+                return un.instantiate(&context.types, scheme)
+            none
+                fail(&context, Issue(expression.position, "unbound", expression.value, names = environment.keys()))
+                return -1
+    if expression.kind == "lambda"
+        int argument = un.fresh(&context.types)
+        map.Map<string, un.Scheme> inner = environment
+        if expression.parameter.name != "_"
+            .inner.set(expression.parameter.name, un.Scheme(argument))
+        int result = infer_expression(&context, expression.children[0], inner)
+        return if failed(context) then -1 else un.add(&context.types, "function", argument, result)
+    if expression.kind == "apply"
+        int initial = infer_expression(&context, expression.children[0], environment)
+        if failed(context)
+            return -1
+        int function_index = un.resolve(context.types, initial)
+        un.Type function_type = context.types.nodes[function_index]
+        int expected = -1
+        int result = -1
+        if function_type.kind == "variable"
+            expected = un.fresh(&context.types)
+            result = un.fresh(&context.types)
+            int function = un.add(&context.types, "function", expected, result)
+            context.types.nodes[function_index].binding = function
+        elif function_type.kind == "function"
+            expected = function_type.first
+            result = function_type.second
+        else
+            fail(&context, Issue(context.syntax.expressions[expression.children[0]].position, "function", found = function_index))
+            return -1
+        int found = infer_expression(&context, expression.children[1], environment)
+        check(&context, expected, found, context.syntax.expressions[expression.children[1]].position)
+        return if failed(context) then -1 else result
+    if expression.kind == "binary"
+        int first_type = -1
+        int second_type = -1
+        int result = -1
+        if lexer.has(["+", "-", "*", "/", "mod"], expression.value)
+            first_type = un.add(&context.types, "int")
+            second_type = first_type
+            result = first_type
+        elif expression.value == "^"
+            first_type = un.add(&context.types, "string")
+            second_type = first_type
+            result = first_type
+        elif expression.value == "&&" or expression.value == "||"
+            first_type = un.add(&context.types, "bool")
+            second_type = first_type
+            result = first_type
+        elif expression.value == "::"
+            first_type = un.fresh(&context.types)
+            second_type = un.add(&context.types, "list", first_type)
+            result = second_type
+        else
+            first_type = un.fresh(&context.types)
+            second_type = first_type
+            result = un.add(&context.types, "bool")
+        int first = infer_expression(&context, expression.children[0], environment)
+        check(&context, first_type, first, context.syntax.expressions[expression.children[0]].position)
+        if failed(context)
+            return -1
+        int second = infer_expression(&context, expression.children[1], environment)
+        check(&context, second_type, second, context.syntax.expressions[expression.children[1]].position)
+        return if failed(context) then -1 else result
+    if expression.kind == "negate"
+        int found = infer_expression(&context, expression.children[0], environment)
+        int expected = un.add(&context.types, "int")
+        check(&context, expected, found, context.syntax.expressions[expression.children[0]].position)
+        return if failed(context) then -1 else expected
+    if expression.kind == "if"
+        int condition = infer_expression(&context, expression.children[0], environment)
+        int expected = un.add(&context.types, "bool")
+        check(&context, expected, condition, context.syntax.expressions[expression.children[0]].position)
+        if failed(context)
+            return -1
+        int first = infer_expression(&context, expression.children[1], environment)
+        if failed(context)
+            return -1
+        int second = infer_expression(&context, expression.children[2], environment)
+        check(&context, first, second, context.syntax.expressions[expression.children[2]].position)
+        return if failed(context) then -1 else first
+    if expression.kind == "pair"
+        int first = infer_expression(&context, expression.children[0], environment)
+        if failed(context)
+            return -1
+        int second = infer_expression(&context, expression.children[1], environment)
+        return if failed(context) then -1 else un.add(&context.types, "pair", first, second)
+    if expression.kind == "list"
+        int type = un.fresh(&context.types)
+        for int child = expression.children[]
+            int found = infer_expression(&context, child, environment)
+            check(&context, type, found, context.syntax.expressions[child].position)
+            if failed(context)
+                return -1
+        return un.add(&context.types, "list", type)
+    if expression.kind == "match"
+        int type = infer_expression(&context, expression.children[0], environment)
+        if failed(context)
+            return -1
+        int result = un.fresh(&context.types)
+        for parser.Arm arm = expression.arms[]
+            map.Map<string, int> bindings = map.Map<string, int>()
+            int found = infer_pattern(&context, arm.pattern, &bindings)
+            check(&context, type, found, context.syntax.patterns[arm.pattern].position)
+            if failed(context)
+                return -1
+            map.Map<string, un.Scheme> inner = environment
+            string[] keys = bindings.keys()
+            for string key = keys[]
+                match bindings.get(key)
+                    int value
+                        .inner.set(key, un.Scheme(value))
+                    none
+                        inner = inner
+            int body_type = infer_expression(&context, arm.body, inner)
+            check(&context, result, body_type, context.syntax.expressions[arm.body].position)
+            if failed(context)
+                return -1
+        context.matches = context.matches.append(MatchRecord(index, type))
+        return result
+    GroupResult group_result = infer_group(&context, expression.group, environment, true)
+    if failed(context)
+        return -1
+    return infer_expression(&context, expression.children[0], group_result.environment)
