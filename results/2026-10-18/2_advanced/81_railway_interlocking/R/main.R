@@ -558,10 +558,9 @@ snapshot <- function(simulation) {
                 vapply(occupied_parts(simulation, train), function(part) part$name, ""),
                 collapse = ","
             )
-            lines <- c(
-                lines,
-                paste("TRAIN", train$symbol, train$name, train$direction, train$speed, sections)
-            )
+            line <- paste("TRAIN", train$symbol, train$name, train$direction, train$speed)
+            if (nzchar(sections)) line <- paste(line, sections)
+            lines <- c(lines, line)
         }
     }
     routes <- vapply(

@@ -555,7 +555,9 @@ function snapshot(simulation)
         train = simulation.trains[name]
         if train.state == "RUNNING"
             sections = join((section for (section, _, _, _) in occupied_parts(simulation, train)), ",")
-            push!(lines, "TRAIN $(train.symbol) $name $(train.direction) $(train.speed) $sections")
+            line = "TRAIN $(train.symbol) $name $(train.direction) $(train.speed)"
+            isempty(sections) || (line *= " " * sections)
+            push!(lines, line)
         end
     end
     routes = ["$name/$(simulation.routes[name].state)" for name in simulation.route_order if !isempty(simulation.routes[name].state)]
