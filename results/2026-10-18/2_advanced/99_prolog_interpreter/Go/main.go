@@ -812,7 +812,11 @@ func main() {
 	answers, stats := []string{}, []string{}
 	var writes strings.Builder
 	totals := [4]int{}
-	lines := strings.Split(strings.TrimSuffix(readText("input/queries.txt"), "\n"), "\n")
+	querySource := readText("input/queries.txt")
+	lines := []string{}
+	if querySource != "" {
+		lines = strings.Split(strings.TrimSuffix(querySource, "\n"), "\n")
+	}
 	for i, line := range lines {
 		number := i + 1
 		answers = append(answers, line)
