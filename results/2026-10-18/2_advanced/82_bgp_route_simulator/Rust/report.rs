@@ -22,7 +22,7 @@ pub fn write(name:&str,lines:&[String]){
     let text=if lines.is_empty(){
         String::new()
     }else{
-        lines.join("\n")+"\n"
+        lines.iter().map(|line| line.trim_end_matches(' ')).collect::<Vec<_>>().join("\n")+"\n"
     };
     fs::write(format!("output/{}",name),text).unwrap();
 }
