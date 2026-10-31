@@ -38,7 +38,7 @@ Under `results/YYYY-MM-DD`, each programming language has three difficulty level
 `taskA.txt` describes a program to create. The corresponding source code is stored within that language's directory.
 
 The source code must follow these rules:
-- Use idiomatic, widely accepted conventions for the language. For example, do not add Python type annotations when they would not normally be used for that kind of program.
+- Follow idiomatic best practices appropriate to the language and the task, including the choice of language features, standard-library APIs, and data structures. For example, do not add Python type annotations when they would not normally be used for that kind of program.
 - When several implementations are reasonable, prefer one that is concise and conveys the required meaning clearly. Do not shorten code at the expense of important type information or clarity. For example, do not use C++ `auto` indiscriminately when an explicit type would better communicate the program's meaning.
 - Preserve the intended behavior of the task.
 - Do not write comments in the source code.
