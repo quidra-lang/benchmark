@@ -1,0 +1,34 @@
+fun main() {
+    val commands = listOf("undo", "type hello world", "delete 5", "type there", "undo", "undo", "redo",
+        "type friend", "redo", "delete 20", "undo", "redo", "redo", "type see you")
+    val undo = ArrayDeque<String>()
+    val redo = ArrayDeque<String>()
+    var buffer = ""
+    for (command in commands) {
+        var special: String? = null
+        when (command) {
+            "undo" -> if (undo.isEmpty()) {
+                special = "nothing to undo"
+            } else {
+                redo.add(buffer)
+                buffer = undo.removeLast()
+            }
+            "redo" -> if (redo.isEmpty()) {
+                special = "nothing to redo"
+            } else {
+                undo.add(buffer)
+                buffer = redo.removeLast()
+            }
+            else -> {
+                undo.add(buffer)
+                redo.clear()
+                buffer = if (command.startsWith("type ")) {
+                    buffer + command.substring(5)
+                } else {
+                    buffer.take(maxOf(0, buffer.length - command.substring(7).toInt()))
+                }
+            }
+        }
+        println(command + " => " + (special ?: "\"$buffer\""))
+    }
+}

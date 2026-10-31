@@ -1,0 +1,945 @@
+import baskets = "./baskets.qui"
+import apriori = "./apriori.qui"
+import fpgrowth = "./fpgrowth.qui"
+import rules = "./rules.qui"
+import report = "./report.qui"
+
+rules.Ratio parse_fraction(string text)
+    string[] parts = text.split("/")
+    return rules.Ratio(int.parse(parts[0]), int.parse(parts[1]))
+
+class Params(local string[] fields)
+    int min_support = int.parse(fields[0])
+    rules.Ratio min_confidence = parse_fraction(fields[1])
+    rules.Ratio min_lift = parse_fraction(fields[2])
+    int max_size = int.parse(fields[3])
+    int category_min_support = int.parse(fields[4])
+    int sequence_min_support = int.parse(fields[5])
+    int split_day = int.parse(fields[6])
+    int train_min_support = int.parse(fields[7])
+    int test_min_support = int.parse(fields[8])
+    int recommend_top = int.parse(fields[9])
+    int matrix_size = int.parse(fields[10])
+    rules.Ratio group_min_lift = parse_fraction(fields[11])
+    rules.Ratio negative_max_lift = parse_fraction(fields[12])
+    int negative_min_expected = int.parse(fields[13])
+    rules.Ratio trend_threshold = parse_fraction(fields[14])
+
+Params read_params()
+    string[] fields = []
+    string text = file.read("input/params.txt")
+    for string line = text.split(NL)[]
+        if line != ""
+            string[] parts = line.split(" ")
+            fields = fields.append(parts[1])
+    return Params(fields)
+
+int sum_values(int[] values)
+    int result = 0
+    for int value = values[]
+        result += value
+    return result
+
+int[] unique_numbers(int[] values)
+    int[] result = []
+    for int value = values.sorted()[]
+        if len(result) == 0 or result[len(result) - 1] != value
+            result = result.append(value)
+    return result
+
+rules.Ratio median(int[] values)
+    int[] ordered = values.sorted()
+    nat middle = len(ordered) / 2
+    if len(ordered) % 2 == 1
+        return rules.Ratio(ordered[middle])
+    return rules.Ratio(ordered[middle - 1] + ordered[middle], 2)
+
+string[] ranked_names(string[] names, map.Map<string, int> counts)
+    string[] result = names.sorted()
+    for 1 <= int index < int(len(result))
+        string item = result[index]
+        int count = baskets.count_value(counts, item)
+        int position = index
+        while position > 0 and baskets.count_value(counts, result[position - 1]) < count
+            result[position] = result[position - 1]
+            position -= 1
+        result[position] = item
+    return result
+
+class Dataset()
+    string[] errors = []
+    map.Map<string, baskets.Product> products
+    int item_rows = 0
+    int transaction_lines = 0
+    int adopted = 0
+    int rejected = 0
+    int duplicates = 0
+    baskets.Transaction[] transactions = []
+
+    void .load()
+        string[][] item_records = baskets.read_records("items.csv")
+        item_rows = int(len(item_records))
+        for nat index < len(item_records)
+            string[] row = item_records[index]
+            int price = int.parse(row[2])
+            string problem = ""
+            if products.has(row[0])
+                problem = "duplicate item {row[0]}"
+            elif price == 0
+                problem = "bad price {price}"
+            if problem != ""
+                errors = errors.append("items.csv line {index + 2}: {problem}")
+            else
+                .products.set(row[0], baskets.Product(row[0], row[1], price))
+        string[][] transaction_records = baskets.read_records("transactions.csv")
+        transaction_lines = int(len(transaction_records))
+        map.Map<string, int> known
+        for nat index < len(transaction_records)
+            string[] row = transaction_records[index]
+            string tid = row[0]
+            string customer = row[1]
+            int day = int.parse(row[2])
+            string item = row[3]
+            string problem = ""
+            int last = int(len(transactions)) - 1
+            if known.has(tid) and tid != transactions[last].tid
+                problem = "tid {tid} not contiguous"
+            else
+                if not known.has(tid)
+                    .known.set(tid, 1)
+                    transactions = transactions.append(baskets.Transaction(tid, customer, day))
+                    last += 1
+                baskets.Transaction current = transactions[last]
+                if customer != current.customer
+                    problem = "tid {tid} customer {customer} differs from {current.customer}"
+                elif day != current.day
+                    problem = "tid {tid} day {day} differs from {current.day}"
+                elif not products.has(item)
+                    problem = "unknown item {item}"
+            if problem != ""
+                errors = errors.append("transactions.csv line {index + 2}: {problem}")
+                rejected += 1
+            else
+                adopted += 1
+                if baskets.add_product(&transactions[last], item)
+                    duplicates += 1
+
+class Level(int number, int candidates, int excluded, int pruned, int counted, string[][] itemsets)
+
+class AprioriResult()
+    Level[] levels = []
+    apriori.Itemset[] entries = []
+    map.Map<string, int> supports
+    map.Map<string, int> single_counts
+
+string[][] add_level(AprioriResult &result, apriori.Counter counter, int number, apriori.Candidates generation, int minimum)
+    map.Map<string, int> counted = apriori.count_supports(counter, generation.itemsets)
+    string[][] frequent = []
+    for string[] items = generation.itemsets[]
+        int count = baskets.count_value(counted, items.join("+"))
+        if number == 1
+            .result.single_counts.set(items[0], count)
+        if count >= minimum
+            frequent = frequent.append(items)
+            result.entries = result.entries.append(apriori.Itemset(items, count))
+            .result.supports.set(items.join("+"), count)
+    result.levels = result.levels.append(Level(number, generation.joined, generation.excluded, generation.pruned, int(len(generation.itemsets)), frequent))
+    return frequent
+
+AprioriResult run_apriori(apriori.Counter counter, string[] universe, int minimum, int max_size, map.Map<string, string> taxonomy, bool exclude_categories = false)
+    AprioriResult result = AprioriResult()
+    apriori.Candidates generation = apriori.Candidates()
+    for string item = universe.sorted()[]
+        generation.itemsets = generation.itemsets.append([item])
+    generation.joined = int(len(universe))
+    string[][] frequent = add_level(&result, counter, 1, generation, minimum)
+    int size = 2
+    while size <= max_size and len(frequent) > 0
+        generation = apriori.generate_candidates(frequent, size, taxonomy, exclude_categories)
+        frequent = add_level(&result, counter, size, generation, minimum)
+        size += 1
+    return result
+
+int support_in(AprioriResult result, int total, string[] items)
+    return if len(items) == 0 then total else baskets.count_value(result.supports, items.join("+"))
+
+int subset_count(string[] items)
+    int result = 1
+    for nat index < len(items)
+        result *= 2
+    return result
+
+string[][] split_items(string[] items, int mask)
+    string[] chosen = []
+    string[] rest = []
+    int divisor = 1
+    for string item = items[]
+        if (mask / divisor) % 2 == 1
+            chosen = chosen.append(item)
+        else
+            rest = rest.append(item)
+        divisor *= 2
+    return [chosen, rest]
+
+rules.RuleSet make_rules(AprioriResult frequent, int total, Params params, string[] categories = [])
+    int generated = 0
+    rules.Rule[] kept = []
+    for apriori.Itemset entry = frequent.entries[]
+        if len(entry.items) < 2
+            continue
+        if len(categories) > 0
+            bool allowed = false
+            for string item = entry.items[]
+                allowed = allowed or baskets.has_item(categories, item)
+            if not allowed
+                continue
+        for 1 <= int mask < subset_count(entry.items) - 1
+            string[][] parts = split_items(entry.items, mask)
+            string[] antecedent = parts[0]
+            string[] consequent = parts[1]
+            generated += 1
+            rules.Rule rule = rules.Rule(entry.items, antecedent, consequent, entry.count, total, support_in(frequent, total, antecedent), support_in(frequent, total, consequent))
+            if not rules.meets_thresholds(rule.confidence, rule.lift, params.min_confidence, params.min_lift)
+                continue
+            rules.Ratio reference = rules.Ratio(0)
+            for int smaller < subset_count(antecedent) - 1
+                string[][] division = split_items(antecedent, smaller)
+                string[] joined = division[0].concat(consequent).sorted()
+                rules.Ratio confidence = rules.Ratio(support_in(frequent, total, joined), support_in(frequent, total, division[0]))
+                if confidence.compare(reference) > 0
+                    reference = confidence
+            rule.improvement = rule.confidence.subtract(reference)
+            kept = kept.append(rule)
+    kept = rules.sorted_rules(kept)
+    for nat index < len(kept)
+        kept[index].rank = int(index) + 1
+    return rules.RuleSet(generated, kept)
+
+string[] recommend(string[] held, string[] candidates, int limit)
+    string[] result = []
+    for string item = candidates[]
+        if int(len(result)) == limit
+            break
+        if not baskets.has_item(held, item) and not baskets.has_item(result, item)
+            result = result.append(item)
+    return result
+
+string[] rule_candidates(rules.Rule[] entries, string[] held)
+    string[] result = []
+    for rules.Rule rule = entries[]
+        if len(rule.consequent) == 1 and baskets.contains(held, rule.antecedent)
+            result = result.append(rule.consequent[0])
+    return result
+
+class Customer(string id, baskets.Transaction[] transactions, local map.Map<string, baskets.Product> products, local int last_day)
+    map.Map<string, int[]> history
+    local int[] dates = []
+    int units = 0
+    int revenue = 0
+    local map.Map<string, int> category_units
+    for baskets.Transaction transaction = transactions[]
+        dates = dates.append(transaction.day)
+        for string item = transaction.products()[]
+            int count = baskets.count_value(transaction.counts, item)
+            baskets.Product product = baskets.product_value(products, item)
+            units += count
+            revenue += count * product.price
+            .category_units.set(product.category, baskets.count_value(category_units, product.category) + count)
+            int[] found = baskets.number_values(history, item)
+            .history.set(item, found.append(transaction.day))
+    for string item = history.keys()[]
+        .history.set(item, unique_numbers(baskets.number_values(history, item)))
+    dates = unique_numbers(dates)
+    int days = int(len(dates))
+    int first = dates[0]
+    int last = dates[len(dates) - 1]
+    string[] purchased = history.keys().sorted()
+    int average = revenue / int(len(transactions))
+    string favorite = ranked_names(category_units.keys(), category_units)[0]
+    string segment = if first > last_day - 28 then "NEW" elif len(transactions) >= 4 and last_day - last <= 14 then "LOYAL" elif last_day - last > 28 then "AT_RISK" else "REGULAR"
+    string[] offer = []
+
+int shortest_gap(int[] first_days, int[] second_days)
+    int best = 113
+    int index = -1
+    for int later = second_days[]
+        while index + 1 < int(len(first_days)) and first_days[index + 1] < later
+            index += 1
+        if index >= 0 and later - first_days[index] < best
+            best = later - first_days[index]
+    return best
+
+class Sequence(string first, string second, int customers, int base, rules.Ratio confidence, rules.Ratio lift, rules.Ratio gap)
+
+bool sequence_before(Sequence first, Sequence second)
+    if first.customers != second.customers
+        return first.customers > second.customers
+    int order = first.confidence.compare(second.confidence)
+    if order != 0
+        return order > 0
+    if first.first != second.first
+        return first.first < second.first
+    return first.second < second.second
+
+class Repeat(string product, int customers, int count, int minimum, int maximum, rules.Ratio mean, rules.Ratio middle)
+
+class RuleCheck(rules.Rule rule, int together, int base, string verdict, rules.Ratio confidence, rules.Ratio lift)
+
+class Tally()
+    int cases = 0
+    int covered = 0
+    int top_hits = 0
+    int hits = 0
+    int baseline_hits = 0
+
+    string describe()
+        return "cases {cases} covered {covered} hit1 {top_hits} hit {hits} rate {report.fraction_text(rules.Ratio(hits, cases))} baseline {baseline_hits} rate {report.fraction_text(rules.Ratio(baseline_hits, cases))}"
+
+void add_tally(Tally &tally, string item, string[] suggestion, string[] baseline)
+    tally.cases += 1
+    if len(suggestion) > 0
+        tally.covered += 1
+        if suggestion[0] == item
+            tally.top_hits += 1
+    if baskets.has_item(suggestion, item)
+        tally.hits += 1
+    if baskets.has_item(baseline, item)
+        tally.baseline_hits += 1
+
+class CategorySummary(string name, int products, int units, int revenue, int basket_count)
+
+class Group(string[] members, int edges, string core, int revenue)
+
+class Substitute(string first, string second, int together, rules.Ratio expected, rules.Ratio lift)
+
+bool substitute_before(Substitute first, Substitute second)
+    int order = first.lift.compare(second.lift)
+    if order != 0
+        return order < 0
+    order = first.expected.compare(second.expected)
+    if order != 0
+        return order > 0
+    if first.first != second.first
+        return first.first < second.first
+    return first.second < second.second
+
+class Trend(string name, int[] series, local rules.Ratio threshold)
+    int units = sum_values(series)
+    local int weeks = int(len(series))
+    local int week_sum = 0
+    local int square_sum = 0
+    local int weighted_sum = 0
+    for 1 <= int week <= weeks
+        week_sum += week
+        square_sum += week * week
+        weighted_sum += week * series[week - 1]
+    rules.Ratio slope = rules.Ratio(weeks * weighted_sum - week_sum * units, weeks * square_sum - week_sum * week_sum)
+    rules.Ratio relative = rules.Ratio(0)
+    string verdict = "NONE"
+    if units > 0
+        relative = slope.scaled(weeks, units)
+        verdict = if relative.compare(threshold) >= 0 then "RISING" elif relative.compare(threshold.scaled(-1)) <= 0 then "FALLING" else "FLAT"
+
+string pad_left(string text, int width)
+    string result = text
+    while int(len(result)) < width
+        result = " " + result
+    return result
+
+string table_row(string label, int[] values)
+    string result = label
+    while len(result) < 17
+        result += " "
+    for int value = values[]
+        result += "{value:int=6}"
+    return result
+
+class MarketAnalysis(Params params, Dataset data)
+    map.Map<string, baskets.Product> products = data.products
+    string[] product_names = products.keys().sorted()
+    map.Map<string, string> taxonomy
+    string[] categories = []
+    for string name = product_names[]
+        baskets.Product product = baskets.product_value(products, name)
+        .taxonomy.set(name, product.category)
+        categories = categories.append(product.category)
+    categories = baskets.unique_sorted(categories)
+    baskets.Transaction[] basket_list = []
+    string[][] item_sets = []
+    string[] customer_ids = []
+    int first_day = 113
+    int last_day = 0
+    for baskets.Transaction transaction = data.transactions[]
+        if transaction.counts.size() > 0
+            basket_list = basket_list.append(transaction)
+            item_sets = item_sets.append(transaction.products())
+            customer_ids = customer_ids.append(transaction.customer)
+            if transaction.day < first_day
+                first_day = transaction.day
+            if transaction.day > last_day
+                last_day = transaction.day
+    customer_ids = baskets.unique_sorted(customer_ids)
+    int total = int(len(basket_list))
+    Customer[] customers = []
+    for string id = customer_ids[]
+        baskets.Transaction[] chosen = []
+        for baskets.Transaction transaction = basket_list[]
+            if transaction.customer == id
+                chosen = chosen.append(transaction)
+        customers = customers.append(Customer(id, chosen, products, last_day))
+    apriori.Counter counter = apriori.Counter(item_sets)
+    AprioriResult frequent_run = AprioriResult()
+    fpgrowth.GrowthResult growth = fpgrowth.GrowthResult(0, 0)
+    string[] closed = []
+    string[] maximal = []
+    string[] generators = []
+    rules.RuleSet main_rules = rules.RuleSet(0, [])
+    string[][] extended_sets = []
+    apriori.Counter category_counter = apriori.Counter([])
+    AprioriResult category_run = AprioriResult()
+    rules.RuleSet category_rules = rules.RuleSet(0, [])
+    map.Map<string, int> buyers
+    int sequence_pairs = 0
+    Sequence[] sequences = []
+    Repeat[] repeats = []
+    AprioriResult train_run = AprioriResult()
+    rules.Rule[] train_rules = []
+    int train_total = 0
+    int test_total = 0
+    RuleCheck[] checks = []
+    rules.Rule[] emerging = []
+    Tally[] tallies = array(61, fill = Tally())
+    Tally overall = Tally()
+    map.Map<string, int> held_out
+    map.Map<string, int> held_hits
+    map.Map<string, int> units
+    map.Map<string, int> revenue
+    int total_revenue = 0
+    CategorySummary[] category_summaries = []
+    Group[] groups = []
+    Substitute[] substitutes = []
+    int week_count = (last_day - 1) / 7 + 1
+    int[] week_baskets = array(nat(week_count), fill = 0)
+    int[] week_units = array(nat(week_count), fill = 0)
+    int[] week_customers = array(nat(week_count), fill = 0)
+    map.Map<string, int[]> weekly_series
+    Trend[] trends = []
+
+    void .analyze_frequent()
+        frequent_run = run_apriori(counter, product_names, params.min_support, params.max_size, taxonomy)
+        fpgrowth.Pattern[] patterns = []
+        for string[] items = item_sets[]
+            patterns = patterns.append(fpgrowth.Pattern(items, 1))
+        growth = fpgrowth.fp_growth(patterns, params.min_support, params.max_size)
+        map.Map<string, int> not_closed
+        map.Map<string, int> not_maximal
+        for apriori.Itemset entry = frequent_run.entries[]
+            bool generator = true
+            for string[] subset = apriori.one_smaller_subsets(entry.items)[]
+                int count = support_in(frequent_run, total, subset)
+                if count <= entry.count
+                    generator = false
+                if len(subset) > 0
+                    string key = subset.join("+")
+                    .not_maximal.set(key, 1)
+                    if count == entry.count
+                        .not_closed.set(key, 1)
+            if generator
+                generators = generators.append(entry.items.join("+"))
+        for apriori.Itemset entry = frequent_run.entries[]
+            string key = entry.items.join("+")
+            if not not_closed.has(key)
+                closed = closed.append(key)
+            if not not_maximal.has(key)
+                maximal = maximal.append(key)
+        main_rules = make_rules(frequent_run, total, params)
+        for string[] items = item_sets[]
+            extended_sets = extended_sets.append(baskets.extended_basket(items, taxonomy))
+        category_counter = apriori.Counter(extended_sets)
+        category_run = run_apriori(category_counter, product_names.concat(categories), params.category_min_support, params.max_size, taxonomy, true)
+        category_rules = make_rules(category_run, total, params, categories)
+
+    void .analyze_sequences()
+        map.Map<string, int[]> gaps
+        map.Map<string, int[]> intervals
+        map.Map<string, int> repeaters
+        for Customer customer = customers[]
+            for string first = customer.purchased[]
+                .buyers.set(first, baskets.count_value(buyers, first) + 1)
+                int[] first_days = baskets.number_values(customer.history, first)
+                if len(first_days) >= 2
+                    .repeaters.set(first, baskets.count_value(repeaters, first) + 1)
+                    int[] found = baskets.number_values(intervals, first)
+                    for 1 <= int index < int(len(first_days))
+                        found = found.append(first_days[index] - first_days[index - 1])
+                    .intervals.set(first, found)
+                for string second = customer.purchased[]
+                    int[] second_days = baskets.number_values(customer.history, second)
+                    if first_days[0] < second_days[len(second_days) - 1]
+                        string key = first + "+" + second
+                        int[] found = baskets.number_values(gaps, key)
+                        .gaps.set(key, found.append(shortest_gap(first_days, second_days)))
+        sequence_pairs = int(gaps.size())
+        for string key = gaps.keys().sorted()[]
+            int[] found = baskets.number_values(gaps, key)
+            int count = int(len(found))
+            if count >= params.sequence_min_support
+                string[] names = key.split("+")
+                int base = baskets.count_value(buyers, names[0])
+                sequences = sequences.append(Sequence(names[0], names[1], count, base, rules.Ratio(count, base), rules.lift_of(int(len(customers)), count, base, baskets.count_value(buyers, names[1])), median(found)))
+        for 1 <= int index < int(len(sequences))
+            Sequence entry = sequences[index]
+            int position = index
+            while position > 0 and sequence_before(entry, sequences[position - 1])
+                sequences[position] = sequences[position - 1]
+                position -= 1
+            sequences[position] = entry
+        for string item = intervals.keys().sorted()[]
+            int[] found = baskets.number_values(intervals, item).sorted()
+            repeats = repeats.append(Repeat(item, baskets.count_value(repeaters, item), int(len(found)), found[0], found[len(found) - 1], rules.Ratio(sum_values(found), int(len(found))), median(found)))
+        for 1 <= int index < int(len(repeats))
+            Repeat entry = repeats[index]
+            int position = index
+            while position > 0
+                Repeat previous = repeats[position - 1]
+                int order = entry.mean.compare(previous.mean)
+                if order > 0 or (order == 0 and entry.product >= previous.product)
+                    break
+                repeats[position] = previous
+                position -= 1
+            repeats[position] = entry
+
+    void .analyze_validation()
+        string[][] training = []
+        string[][] testing = []
+        for baskets.Transaction transaction = basket_list[]
+            if transaction.day <= params.split_day
+                training = training.append(transaction.products())
+            else
+                testing = testing.append(transaction.products())
+        train_total = int(len(training))
+        test_total = int(len(testing))
+        apriori.Counter training_counter = apriori.Counter(training)
+        apriori.Counter testing_counter = apriori.Counter(testing)
+        train_run = run_apriori(training_counter, product_names, params.train_min_support, params.max_size, taxonomy)
+        rules.RuleSet trained = make_rules(train_run, train_total, params)
+        train_rules = trained.entries
+        map.Map<string, int> known
+        for rules.Rule rule = train_rules[]
+            string key = rule.antecedent.join("+") + "->" + rule.consequent.join("+")
+            .known.set(key, 1)
+            int first = testing_counter.support(rule.antecedent)
+            int second = testing_counter.support(rule.consequent)
+            int together = testing_counter.support(rule.itemset)
+            string verdict = "UNSEEN"
+            rules.Ratio confidence = rules.Ratio(0)
+            rules.Ratio lift = rules.Ratio(0)
+            if first > 0 and second > 0
+                confidence = rules.Ratio(together, first)
+                lift = rules.lift_of(test_total, together, first, second)
+                verdict = if rules.meets_thresholds(confidence, lift, params.min_confidence, params.min_lift) then "HOLD" else "FAIL"
+            checks = checks.append(RuleCheck(rule, together, first, verdict, confidence, lift))
+        AprioriResult tested = run_apriori(testing_counter, product_names, params.test_min_support, params.max_size, taxonomy)
+        rules.RuleSet testing_rules = make_rules(tested, test_total, params)
+        for rules.Rule rule = testing_rules.entries[]
+            string key = rule.antecedent.join("+") + "->" + rule.consequent.join("+")
+            if not known.has(key)
+                emerging = emerging.append(rule)
+        string[] popularity = ranked_names(product_names, train_run.single_counts)
+        for string[] items = testing[]
+            if len(items) < 2
+                continue
+            for nat index < len(items)
+                string item = items[index]
+                string[] held = items[0:<index].concat(items[index + 1:<len(items)])
+                string[] suggestion = recommend(held, rule_candidates(train_rules, held), params.recommend_top)
+                string[] baseline = recommend(held, popularity, params.recommend_top)
+                add_tally(&tallies[len(items)], item, suggestion, baseline)
+                add_tally(&overall, item, suggestion, baseline)
+                .held_out.set(item, baskets.count_value(held_out, item) + 1)
+                if baskets.has_item(suggestion, item)
+                    .held_hits.set(item, baskets.count_value(held_hits, item) + 1)
+
+    rules.Ratio pair_lift(apriori.Itemset pair)
+        return rules.lift_of(total, pair.count, baskets.count_value(frequent_run.single_counts, pair.items[0]), baskets.count_value(frequent_run.single_counts, pair.items[1]))
+
+    void .analyze_products()
+        for baskets.Transaction transaction = basket_list[]
+            for string item = transaction.products()[]
+                .units.set(item, baskets.count_value(units, item) + baskets.count_value(transaction.counts, item))
+        for string item = product_names[]
+            baskets.Product product = baskets.product_value(products, item)
+            int amount = baskets.count_value(units, item) * product.price
+            .revenue.set(item, amount)
+            total_revenue += amount
+        for string category = categories[]
+            int members = 0
+            int quantity = 0
+            int amount = 0
+            for string item = product_names[]
+                baskets.Product product = baskets.product_value(products, item)
+                if product.category == category
+                    members += 1
+                    quantity += baskets.count_value(units, item)
+                    amount += baskets.count_value(revenue, item)
+            category_summaries = category_summaries.append(CategorySummary(category, members, quantity, amount, baskets.count_value(category_run.single_counts, category)))
+        for 1 <= int index < int(len(category_summaries))
+            CategorySummary entry = category_summaries[index]
+            int position = index
+            while position > 0 and category_summaries[position - 1].revenue < entry.revenue
+                category_summaries[position] = category_summaries[position - 1]
+                position -= 1
+            category_summaries[position] = entry
+
+    void .analyze_groups()
+        string[][] edges = []
+        map.Map<string, int> degrees
+        for apriori.Itemset entry = frequent_run.entries[]
+            if len(entry.items) == 2 and pair_lift(entry).compare(params.group_min_lift) >= 0
+                edges = edges.append(entry.items)
+                for string item = entry.items[]
+                    .degrees.set(item, baskets.count_value(degrees, item) + 1)
+        map.Map<string, int> visited
+        for string item = product_names[]
+            if visited.has(item) or baskets.count_value(degrees, item) == 0
+                continue
+            string[] members = []
+            string[] stack = [item]
+            .visited.set(item, 1)
+            while len(stack) > 0
+                string current = stack[len(stack) - 1]
+                stack = stack[0:<len(stack) - 1]
+                members = members.append(current)
+                for string[] edge = edges[]
+                    if baskets.has_item(edge, current)
+                        string neighbor = if edge[0] == current then edge[1] else edge[0]
+                        if not visited.has(neighbor)
+                            .visited.set(neighbor, 1)
+                            stack = stack.append(neighbor)
+            members = members.sorted()
+            int edge_count = 0
+            for string[] edge = edges[]
+                if baskets.has_item(members, edge[0])
+                    edge_count += 1
+            string core = members[0]
+            int amount = 0
+            for string member = members[]
+                amount += baskets.count_value(revenue, member)
+                int degree = baskets.count_value(degrees, member)
+                int core_degree = baskets.count_value(degrees, core)
+                int count = baskets.count_value(frequent_run.single_counts, member)
+                int core_count = baskets.count_value(frequent_run.single_counts, core)
+                if degree > core_degree or (degree == core_degree and count > core_count)
+                    core = member
+            groups = groups.append(Group(members, edge_count, core, amount))
+        for 1 <= int index < int(len(groups))
+            Group entry = groups[index]
+            int position = index
+            while position > 0
+                Group previous = groups[position - 1]
+                if len(previous.members) > len(entry.members) or (len(previous.members) == len(entry.members) and previous.members[0] <= entry.members[0])
+                    break
+                groups[position] = previous
+                position -= 1
+            groups[position] = entry
+
+    void .analyze_substitutes()
+        string[][] singles = frequent_run.levels[0].itemsets
+        for nat first < len(singles)
+            string left = singles[first][0]
+            for first + 1 <= nat second < len(singles)
+                string right = singles[second][0]
+                int first_count = baskets.count_value(frequent_run.single_counts, left)
+                int second_count = baskets.count_value(frequent_run.single_counts, right)
+                if first_count * second_count >= params.negative_min_expected * total
+                    int together = counter.support([left, right])
+                    rules.Ratio lift = rules.lift_of(total, together, first_count, second_count)
+                    if lift.compare(params.negative_max_lift) <= 0
+                        substitutes = substitutes.append(Substitute(left, right, together, rules.Ratio(first_count * second_count, total), lift))
+        for 1 <= int index < int(len(substitutes))
+            Substitute entry = substitutes[index]
+            int position = index
+            while position > 0 and substitute_before(entry, substitutes[position - 1])
+                substitutes[position] = substitutes[position - 1]
+                position -= 1
+            substitutes[position] = entry
+
+    void .analyze_trends()
+        string[][] weekly_customers = []
+        for int week < week_count
+            weekly_customers = weekly_customers.append([])
+        for string name = categories.concat(product_names)[]
+            int[] series = array(nat(week_count), fill = 0)
+            .weekly_series.set(name, series)
+        for baskets.Transaction transaction = basket_list[]
+            int week = (transaction.day - 1) / 7
+            week_baskets[week] += 1
+            week_units[week] += transaction.units()
+            weekly_customers[week] = weekly_customers[week].append(transaction.customer)
+            for string item = transaction.products()[]
+                baskets.Product product = baskets.product_value(products, item)
+                int count = baskets.count_value(transaction.counts, item)
+                int[] series = baskets.number_values(weekly_series, item)
+                series[week] += count
+                .weekly_series.set(item, series)
+                int[] category_series = baskets.number_values(weekly_series, product.category)
+                category_series[week] += count
+                .weekly_series.set(product.category, category_series)
+        for int week < week_count
+            week_customers[week] = int(len(baskets.unique_sorted(weekly_customers[week])))
+        for string name = categories.concat(product_names)[]
+            trends = trends.append(Trend(name, baskets.number_values(weekly_series, name), params.trend_threshold))
+        for 1 <= int index < int(len(trends))
+            Trend entry = trends[index]
+            int position = index
+            while position > 0
+                Trend previous = trends[position - 1]
+                bool earlier = false
+                if entry.units > 0 and previous.units == 0
+                    earlier = true
+                elif entry.units > 0 and previous.units > 0
+                    int order = entry.relative.compare(previous.relative)
+                    earlier = order > 0 or (order == 0 and entry.name < previous.name)
+                elif entry.units == 0 and previous.units == 0
+                    earlier = entry.name < previous.name
+                if not earlier
+                    break
+                trends[position] = previous
+                position -= 1
+            trends[position] = entry
+
+    void .run()
+        .analyze_frequent()
+        .analyze_sequences()
+        .analyze_validation()
+        .analyze_products()
+        .analyze_groups()
+        .analyze_substitutes()
+        .analyze_trends()
+        for nat index < len(customers)
+            string[] held = customers[index].purchased
+            customers[index].offer = recommend(held, rule_candidates(main_rules.entries, held), params.recommend_top)
+
+    string[] growth_lines()
+        map.Map<string, int> found
+        for apriori.Itemset entry = growth.itemsets[]
+            .found.set(entry.items.join("+"), entry.count)
+        string[] missing = []
+        string[] extra = []
+        for apriori.Itemset entry = frequent_run.entries[]
+            string key = entry.items.join("+")
+            if not found.has(key) or baskets.count_value(found, key) != entry.count
+                missing = missing.append("ONLY_APRIORI {key} {entry.count}")
+        for 1 <= int size <= params.max_size
+            for string key = found.keys().sorted()[]
+                string[] items = key.split("+")
+                if int(len(items)) == size
+                    int count = baskets.count_value(found, key)
+                    if not frequent_run.supports.has(key) or baskets.count_value(frequent_run.supports, key) != count
+                        extra = extra.append("ONLY_FPGROWTH {key} {count}")
+        string status = if len(missing) == 0 and len(extra) == 0 then "MATCH" else "MISMATCH"
+        string[] lines = ["FPGROWTH header {growth.header_count} nodes {growth.node_count} conditional_trees {growth.conditional_trees} conditional_nodes {growth.conditional_nodes} itemsets {len(growth.itemsets)} {status}"]
+        return lines.concat(missing).concat(extra)
+
+    string[] summary_lines()
+        string[] lines = []
+        for string problem = data.errors[]
+            lines = lines.append("ERROR {problem}")
+        int largest = 0
+        int size_total = 0
+        for string[] items = item_sets[]
+            int count = int(len(items))
+            size_total += count
+            if count > largest
+                largest = count
+        int multi_day = 0
+        for Customer customer = customers[]
+            if customer.days >= 2
+                multi_day += 1
+        lines = lines.append("ITEMS rows {data.item_rows} adopted {products.size()} categories {len(categories)}")
+        lines = lines.append("TRANSACTIONS lines {data.transaction_lines} adopted {data.adopted} rejected {data.rejected} duplicates {data.duplicates} transactions {len(data.transactions)} empty {int(len(data.transactions)) - total}")
+        lines = lines.append("BASKETS count {total} customers {len(customers)} first_day {first_day} last_day {last_day} average_size {report.fraction_text(rules.Ratio(size_total, total))} largest {largest}")
+        for 1 <= int size <= largest
+            int count = 0
+            for string[] items = item_sets[]
+                if int(len(items)) == size
+                    count += 1
+            lines = lines.append("SIZE {size} baskets {count} share {report.percent_text(count, total)}")
+        lines = lines.append("FREQUENT itemsets {len(frequent_run.entries)} closed {len(closed)} maximal {len(maximal)} generators {len(generators)} levels {len(frequent_run.levels)}")
+        lines = lines.concat(growth_lines())
+        lines = lines.append("RULES generated {main_rules.generated} passed {len(main_rules.entries)} productive {main_rules.productive}")
+        for Level level = category_run.levels[]
+            lines = lines.append("CATEGORY_LEVEL {level.number} candidates {level.candidates} taxonomy {level.excluded} pruned {level.pruned} counted {level.counted} frequent {len(level.itemsets)}")
+        lines = lines.append("CATEGORY_RULES itemsets {len(category_run.entries)} generated {category_rules.generated} passed {len(category_rules.entries)} productive {category_rules.productive}")
+        lines = lines.append("SEQUENCES customers {len(customers)} multi_day {multi_day} pairs {sequence_pairs} frequent {len(sequences)}")
+        return lines
+
+    string[] itemset_lines()
+        string[] lines = []
+        for Level level = frequent_run.levels[]
+            lines = lines.append("LEVEL {level.number} candidates {level.candidates} pruned {level.pruned} counted {level.counted} frequent {len(level.itemsets)}")
+            for string[] items = level.itemsets[]
+                string key = items.join("+")
+                lines = lines.append("{key} {baskets.count_value(frequent_run.supports, key)}")
+        return lines
+
+    string[] closed_maximal_lines()
+        string[] lines = []
+        string[] labels = ["CLOSED", "MAXIMAL", "GENERATOR"]
+        string[][] sections = [closed, maximal, generators]
+        for nat index < len(labels)
+            for string key = sections[index][]
+                lines = lines.append("{labels[index]} {key} {baskets.count_value(frequent_run.supports, key)}")
+        return lines
+
+    string[] sequence_lines()
+        string[] lines = []
+        for nat index < len(sequences)
+            Sequence entry = sequences[index]
+            lines = lines.append("SEQ {index + 1} {entry.first} -> {entry.second} customers {entry.customers} base {entry.base} confidence {report.fraction_text(entry.confidence)} lift {report.fraction_text(entry.lift)} gap {report.fraction_text(entry.gap)}")
+        for Repeat entry = repeats[]
+            lines = lines.append("REPEAT {entry.product} customers {entry.customers} intervals {entry.count} min {entry.minimum} max {entry.maximum} mean {report.fraction_text(entry.mean)} median {report.fraction_text(entry.middle)}")
+        return lines
+
+    string[] validation_lines()
+        string[] lines = []
+        int hold = 0
+        int fail = 0
+        int unseen = 0
+        for RuleCheck check = checks[]
+            rules.Rule rule = check.rule
+            string measured = "confidence - lift -"
+            if check.verdict == "UNSEEN"
+                unseen += 1
+            else
+                measured = "confidence {report.fraction_text(check.confidence)} lift {report.fraction_text(check.lift)}"
+                if check.verdict == "HOLD"
+                    hold += 1
+                else
+                    fail += 1
+            lines = lines.append("RULE {rule.rank} {report.rule_arrow(rule)} train {rule.count} confidence {report.fraction_text(rule.confidence)} lift {report.fraction_text(rule.lift)} test {check.together} of {check.base} {measured} {check.verdict}")
+        for rules.Rule rule = emerging[]
+            lines = lines.append("EMERGING {rule.rank} {report.rule_arrow(rule)} test {rule.count} confidence {report.fraction_text(rule.confidence)} lift {report.fraction_text(rule.lift)}")
+        lines = lines.append("VALIDATION train {train_total} test {test_total} itemsets {len(train_run.entries)} rules {len(train_rules)} hold {hold} fail {fail} unseen {unseen} emerging {len(emerging)}")
+        for nat size < len(tallies)
+            if tallies[size].cases > 0
+                lines = lines.append("RECOMMEND size {size} {tallies[size].describe()}")
+        lines = lines.append("RECOMMEND total {overall.describe()}")
+        return lines
+
+    string partner_text(string name)
+        string best = ""
+        rules.Ratio best_lift = rules.Ratio(0)
+        int best_count = 0
+        for apriori.Itemset entry = frequent_run.entries[]
+            if len(entry.items) == 2 and baskets.has_item(entry.items, name)
+                string other = if entry.items[0] == name then entry.items[1] else entry.items[0]
+                rules.Ratio lift = pair_lift(entry)
+                int order = lift.compare(best_lift)
+                if best == "" or order > 0 or (order == 0 and (entry.count > best_count or (entry.count == best_count and other < best)))
+                    best = other
+                    best_lift = lift
+                    best_count = entry.count
+        return if best == "" then "none" else best + " " + report.fraction_text(best_lift)
+
+    string strongest_text(string name)
+        for rules.Rule rule = main_rules.entries[]
+            if baskets.has_item(rule.itemset, name)
+                return "{rule.rank} {report.rule_arrow(rule)}"
+        return "none"
+
+    string[] matrix_lines(string label, string[] names, map.Map<string, int> counts, apriori.Counter source)
+        string[] lines = []
+        string heading = "    "
+        for nat index < len(names)
+            string name = names[index]
+            lines = lines.append("{label} {index + 1} {name} baskets {baskets.count_value(counts, name)}")
+            heading += pad_left((index + 1).string(), 7)
+        lines = lines.append(heading)
+        for nat row < len(names)
+            string line = pad_left((row + 1).string(), 4)
+            for nat column < len(names)
+                string cell = "-"
+                if row != column
+                    int numerator = 100 * source.total * source.support([names[row], names[column]])
+                    int denominator = baskets.count_value(counts, names[row]) * baskets.count_value(counts, names[column])
+                    cell = (numerator / denominator).string()
+                line += pad_left(cell, 7)
+            lines = lines.append(line)
+        return lines
+
+    string[] item_lines()
+        string[] lines = []
+        string[] ranked = ranked_names(product_names, revenue)
+        for nat index < len(ranked)
+            string name = ranked[index]
+            baskets.Product product = baskets.product_value(products, name)
+            int amount = baskets.count_value(revenue, name)
+            int count = baskets.count_value(frequent_run.single_counts, name)
+            int containing = 0
+            for apriori.Itemset entry = frequent_run.entries[]
+                if baskets.has_item(entry.items, name)
+                    containing += 1
+            lines = lines.append("ITEM {index + 1} {name} {product.category} price {report.money_text(product.price)} units {baskets.count_value(units, name)} revenue {report.money_text(amount)} share {report.percent_text(amount, total_revenue)} baskets {count} support {report.fraction_text(rules.Ratio(count, total))} customers {baskets.count_value(buyers, name)} itemsets {containing} heldout {baskets.count_value(held_out, name)} hits {baskets.count_value(held_hits, name)} partner {partner_text(name)} best {strongest_text(name)}")
+        for CategorySummary entry = category_summaries[]
+            lines = lines.append("CATEGORY {entry.name} items {entry.products} units {entry.units} revenue {report.money_text(entry.revenue)} share {report.percent_text(entry.revenue, total_revenue)} baskets {entry.basket_count} support {report.fraction_text(rules.Ratio(entry.basket_count, total))}")
+        int quantity = 0
+        for string name = product_names[]
+            quantity += baskets.count_value(units, name)
+        lines = lines.append("TOTAL items {len(product_names)} units {quantity} revenue {report.money_text(total_revenue)} baskets {total} customers {len(customers)}")
+        for nat index < len(groups)
+            Group entry = groups[index]
+            lines = lines.append("GROUP {index + 1} items {len(entry.members)} edges {entry.edges} core {entry.core} revenue {report.money_text(entry.revenue)} share {report.percent_text(entry.revenue, total_revenue)} members {report.itemset_text(entry.members)}")
+        for Substitute entry = substitutes[]
+            lines = lines.append("SUBSTITUTE {entry.first} {entry.second} count {entry.together} expected {report.fraction_text(entry.expected)} lift {report.fraction_text(entry.lift)}")
+        string[] top = ranked_names(product_names, frequent_run.single_counts)
+        lines = lines.concat(matrix_lines("MATRIX", top[0:<params.matrix_size], frequent_run.single_counts, counter))
+        string[] category_order = ranked_names(categories, category_run.single_counts)
+        return lines.concat(matrix_lines("CATEGORY_MATRIX", category_order, category_run.single_counts, category_counter))
+
+    string[] trend_lines()
+        int[] weeks = []
+        for 1 <= int week <= week_count
+            weeks = weeks.append(week)
+        string[] lines = [table_row("WEEK", weeks), table_row("BASKETS", week_baskets), table_row("UNITS", week_units), table_row("CUSTOMERS", week_customers)]
+        for string name = categories.concat(product_names)[]
+            lines = lines.append(table_row(name, baskets.number_values(weekly_series, name)))
+        for Trend entry = trends[]
+            string relative = if entry.units == 0 then "-" else report.fraction_text(entry.relative)
+            lines = lines.append("TREND {entry.name} units {entry.units} slope {report.fraction_text(entry.slope)} relative {relative} {entry.verdict}")
+        return lines
+
+    string[] customer_lines()
+        string[] lines = []
+        for Customer customer = customers[]
+            string offer = if len(customer.offer) == 0 then "none" else report.itemset_text(customer.offer)
+            lines = lines.append("CUSTOMER {customer.id} baskets {len(customer.transactions)} days {customer.days} first {customer.first} last {customer.last} items {len(customer.purchased)} units {customer.units} revenue {report.money_text(customer.revenue)} average {report.money_text(customer.average)} favorite {customer.favorite} segment {customer.segment} offer {offer}")
+        for string segment = ["NEW", "LOYAL", "AT_RISK", "REGULAR"][]
+            int count = 0
+            int amount = 0
+            for Customer customer = customers[]
+                if customer.segment == segment
+                    count += 1
+                    amount += customer.revenue
+            lines = lines.append("SEGMENT {segment} customers {count} revenue {report.money_text(amount)} share {report.percent_text(amount, total_revenue)}")
+        return lines
+
+    void write_reports()
+        report.write_report("summary.txt", summary_lines())
+        report.write_report("itemsets.txt", itemset_lines())
+        report.write_report("closed_maximal.txt", closed_maximal_lines())
+        report.write_report("rules.csv", report.rules_csv(main_rules.entries))
+        report.write_report("category_rules.csv", report.rules_csv(category_rules.entries))
+        report.write_report("sequences.txt", sequence_lines())
+        report.write_report("validation.txt", validation_lines())
+        report.write_report("items_report.txt", item_lines())
+        report.write_report("trends.txt", trend_lines())
+        report.write_report("customers.txt", customer_lines())
+
+if main
+    Params params = read_params()
+    Dataset data = Dataset()
+    .data.load()
+    MarketAnalysis analysis = MarketAnalysis(params, data)
+    .analysis.run()
+    analysis.write_reports()

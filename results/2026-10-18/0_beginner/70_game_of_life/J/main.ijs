@@ -1,0 +1,28 @@
+main =: 3 : 0
+  board =. >'.#......';'..#.....';'###.....';'........';'........';'........';'.....###';'........'
+  for_generation. i.5 do.
+    smoutput 'generation ',":generation
+    smoutput board
+    if. generation=4 do. break. end.
+    next =. 8 8$'.'
+    for_r. i.8 do.
+      for_c. i.8 do.
+        neighbors =. 0
+        for_dr. _1 0 1 do.
+          for_dc. _1 0 1 do.
+            nr =. r+dr
+            nc =. c+dc
+            if. ((dr~:0)+.dc~:0)*.(nr>:0)*.(nr<8)*.(nc>:0)*.nc<8 do.
+              neighbors =. neighbors+'#'=(<nr,nc){board
+            end.
+          end.
+        end.
+        live =. (neighbors=3)+.(neighbors=2)*.'#'=(<r,c){board
+        next =. (live{'.#') (<r,c)}next
+      end.
+    end.
+    board =. next
+  end.
+  smoutput 'alive: ',":+/,board='#'
+)
+main ''

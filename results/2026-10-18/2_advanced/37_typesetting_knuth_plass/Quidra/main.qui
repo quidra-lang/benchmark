@@ -1,0 +1,790 @@
+import parser = "./document_parser.qui"
+import hyphenation = "./hyphenation.qui"
+import breaker = "./line_breaker.qui"
+import renderer = "./renderer.qui"
+
+string[] read_lines(string path)
+    string content = file.read(path)
+    string[] lines = content.split(NL)
+    return lines[0:<int(len(lines)) - 1]
+
+string[] words_in(string text)
+    return [for string word = text.split(" ")[] if word != "" then word]
+
+int find_name(string[] names, string name)
+    for int index < int(len(names))
+        if names[index] == name
+            return index
+    return -1
+
+bool string_less(string first, string second)
+    if first == second
+        return false
+    string[] ordered = [first, second].sorted()
+    return ordered[0] == first
+
+bool tuple_less(string[] first, string[] second)
+    for int index < int(len(first))
+        if first[index] != second[index]
+            return string_less(first[index], second[index])
+    return false
+
+parser.Parts split_label(string text)
+    int selected = -1
+    for int index <= int(len(text)) - 3
+        if text[index:<index + 3] == " {{#"
+            selected = index
+    if selected >= 0 and text.ends_with("}}")
+        return parser.Parts(text[0:<selected], text[selected + 3:<int(len(text)) - 1], true)
+    return parser.Parts(text, "", false)
+
+string pad_right(string text, int width)
+    return text + string.repeat(" ", nat(if int(len(text)) < width then width - int(len(text)) else 0))
+
+class BreakPosition(int start_word, int start_position, int end_word, int end_position, bool midword, bool append_hyphen)
+class Span(int word, int first, int last)
+class Measured(string[] pieces, Span[] ranges, int slack, bool last, bool midword)
+
+class Metrics(string[] words, int first_capacity, int later_capacity, hyphenation.Dictionary dictionary)
+    int[] offsets = []
+    BreakPosition[] breaks = [BreakPosition(0, 0, 0, 0, false, false)]
+    local int offset = 0
+    for int index < int(len(words))
+        offsets = offsets.append(offset)
+        offset += int(len(words[index])) + 1
+        for hyphenation.Point point = dictionary.split_points(words[index])[]
+            breaks = breaks.append(BreakPosition(index, point.position, index, point.position, true, point.append_hyphen))
+        breaks = breaks.append(BreakPosition(index + 1, 0, index, int(len(words[index])), false, false))
+    offsets = offsets.append(offset)
+    int finish = int(len(breaks)) - 1
+
+    int capacity(int start)
+        return if start == 0 then first_capacity else later_capacity
+
+    int length(int start, int end)
+        BreakPosition first = breaks[start]
+        BreakPosition last = breaks[end]
+        return offsets[last.end_word] + last.end_position - offsets[first.start_word] - first.start_position + (if last.append_hyphen then 1 else 0)
+
+    Measured measure(int start, int end)
+        BreakPosition first = breaks[start]
+        BreakPosition last = breaks[end]
+        string[] pieces = []
+        Span[] ranges = []
+        for first.start_word <= int word <= last.end_word
+            int left = if word == first.start_word then first.start_position else 0
+            int right = if word == last.end_word then last.end_position else int(len(words[word]))
+            pieces = pieces.append(words[word][left:<right])
+            ranges = ranges.append(Span(word, left, right))
+        if last.append_hyphen
+            pieces[len(pieces) - 1] += "-"
+        return Measured(pieces, ranges, capacity(start) - length(start, end), end == finish, last.midword)
+
+    breaker.Input input()
+        int[] starts = []
+        int[] ends = []
+        bool[] midword = []
+        for BreakPosition point = breaks[]
+            starts = starts.append(offsets[point.start_word] + point.start_position)
+            ends = ends.append(offsets[point.end_word] + point.end_position + (if point.append_hyphen then 1 else 0))
+            midword = midword.append(point.midword)
+        return breaker.Input(starts, ends, midword, first_capacity, later_capacity)
+
+Metrics make_metrics(string[] words, int[] capacities, string[] dictionary_words, int[][] dictionary_points, int left_min, int right_min)
+    hyphenation.Dictionary dictionary = hyphenation.Dictionary(left_min, right_min)
+    dictionary.words = dictionary_words
+    dictionary.points = dictionary_points
+    return Metrics(words, capacities[0], capacities[1], dictionary)
+
+class Token(string kind, string text = "", int number = -1)
+class Mark(int offset, string kind, int number)
+class WordMark(int word, int position, string kind, int number)
+class Expanded(string[] words, WordMark[] marks)
+class TextResult(renderer.page.Line[] lines, Measured[] broken, int cost)
+class IndexEntry(string name, int parent = -1)
+    int[] marks = []
+    string[] references = []
+class WarningText(string name, TextResult text, bool justify)
+
+class Result(string method, TextResult[] footnotes, local int blocks, local int indexes, local int labels)
+    TextResult[] bodies = array(nat(blocks), fill = TextResult([], [], 0))
+    WarningText[] warning_texts = []
+    int[] generated = []
+    renderer.page.Page[] pages = []
+    int front_matter = 0
+    int[] block_pages = array(nat(blocks), fill = -1)
+    int[] mark_pages = array(nat(indexes), fill = -1)
+    string[] label_values = array(nat(labels), fill = "??")
+
+class Typesetter(parser.Document document, breaker.Costs costs, int orphan_lines, int widow_lines, int underfull_slack, int underfull_page, hyphenation.Dictionary dictionary)
+    parser.Block[] blocks = document.blocks
+    parser.Warning[] warnings = document.warnings
+    string[] labels = []
+    int[] label_blocks = []
+    parser.Bibliography[] bibliography = []
+    int[] cited_entries = []
+    int[] body_blocks = []
+    int[] headings = []
+    int[] numbered_tables = []
+    string[] footnotes = []
+    string[] index_marks = []
+    IndexEntry[] index_entries = []
+    Token[][] tokens = array(len(blocks), fill = [])
+
+    void .warn(int line, string message)
+        warnings = warnings.append(parser.Warning(line, message))
+
+    int bibliography_index(string key)
+        for int index < int(len(bibliography))
+            if bibliography[index].key == key
+                return index
+        return -1
+
+    void .register_document()
+        int chapter = 0
+        int section = 0
+        int table_number = 0
+        for int index < int(len(blocks))
+            parser.Block block = blocks[index]
+            string kind = block.kind
+            if kind == "h1" or kind == "h2"
+                parser.Parts parts = split_label(block.argument)
+                block.text = parts.first
+                block.label = parts.second
+                if kind == "h1"
+                    chapter += 1
+                    section = 0
+                    block.number = "{chapter}"
+                    if index > 0
+                        block.page_break = true
+                else
+                    section += 1
+                    block.number = "{chapter}.{section}"
+                headings = headings.append(index)
+            elif kind == "enum"
+                block.item_number = if index > 0 and blocks[index - 1].kind == "enum" then blocks[index - 1].item_number + 1 else 1
+                block.number = "{block.item_number}"
+            elif kind == "table"
+                parser.Parts parts = split_label(block.caption)
+                block.caption = parts.first
+                block.label = parts.second
+                if block.caption != ""
+                    table_number += 1
+                    block.number = "{table_number}"
+                    numbered_tables = numbered_tables.append(index)
+            if block.label != ""
+                if find_name(labels, block.label) >= 0
+                    .warn(block.line, "duplicate label {block.label}")
+                    block.label = ""
+                else
+                    labels = labels.append(block.label)
+                    label_blocks = label_blocks.append(index)
+            if kind == "paragraph" and index > 0 and (blocks[index - 1].kind == "h1" or blocks[index - 1].kind == "h2")
+                block.indent = 0
+            if parser.body_kind(kind)
+                body_blocks = body_blocks.append(index)
+                block.paragraph_number = int(len(body_blocks))
+            blocks[index] = block
+        for parser.Bibliography entry = document.bibliography[]
+            if bibliography_index(entry.key) >= 0
+                .warn(entry.line, "duplicate bibliography key {entry.key}")
+            else
+                bibliography = bibliography.append(entry)
+
+    Token .accept_command(string name, string argument, int line)
+        int number = -1
+        if name == "ref" or name == "page"
+            if find_name(labels, argument) < 0
+                .warn(line, "undefined label {argument}")
+        elif name == "cite"
+            for string key = argument.split(",")[]
+                int selected = bibliography_index(key)
+                if selected < 0
+                    .warn(line, "undefined citation {key}")
+                else
+                    bibliography[selected].cited = true
+        elif name == "fn"
+            number = int(len(footnotes))
+            footnotes = footnotes.append(argument)
+        elif name == "idx"
+            number = int(len(index_marks))
+            index_marks = index_marks.append(argument)
+        return Token(name, argument, number)
+
+    Token[] .parse_body_line(string text, int line)
+        Token[] result = []
+        int position = 0
+        while position < int(len(text))
+            int opening = position
+            while opening < int(len(text)) and text[opening] != "{{"
+                opening += 1
+            if opening == int(len(text))
+                result = result.append(Token("", text[position:]))
+                break
+            if opening > position
+                result = result.append(Token("", text[position:<opening]))
+            int closing = opening + 1
+            while closing < int(len(text)) and text[closing] != "}}"
+                closing += 1
+            if closing == int(len(text))
+                .warn(line, "unclosed brace")
+                result = result.append(Token("", text[opening:]))
+                break
+            string content = text[opening + 1:<closing]
+            parser.Parts parts = parser.partition(content, ":")
+            if parser.contains(["ref", "page", "fn", "idx", "cite"], parts.first) and parts.separated and parts.second != ""
+                result = result.append(.accept_command(parts.first, parts.second, line))
+            else
+                .warn(line, "bad command {{" + content + "}}")
+            position = closing + 1
+        return result
+
+    void .check_document()
+        for int index < int(len(blocks))
+            parser.Block block = blocks[index]
+            if block.kind == "table"
+                int count = int(len(block.columns))
+                for parser.SourceLine line = block.inner_lines[]
+                    string[] cells = [for string cell = line.text.split("|")[] then cell.trim()]
+                    if int(len(cells)) != count
+                        .warn(line.line, "table row has {len(cells)} cells, expected {count}")
+                    while int(len(cells)) < count
+                        cells = cells.append("")
+                    cells = cells[0:<count]
+                    block.rows = block.rows.append(cells)
+                block.table_lines = renderer.format_table(block.rows, block.columns, block.caption, block.number)
+                int longest = 0
+                for string line = block.table_lines[]
+                    if int(len(line)) > longest
+                        longest = int(len(line))
+                if longest > block.width
+                    .warn(block.line, "table too wide by {longest - block.width}")
+            elif block.kind == "verbatim"
+                for parser.SourceLine line = block.inner_lines[]
+                    if int(len(line.text)) > block.width
+                        .warn(line.line, "verbatim line too long by {int(len(line.text)) - block.width}")
+            elif parser.body_kind(block.kind)
+                Token[] body_tokens = []
+                for int line_index < int(len(block.body_lines))
+                    if line_index > 0
+                        body_tokens = body_tokens.append(Token("", " "))
+                    parser.SourceLine line = block.body_lines[line_index]
+                    body_tokens = body_tokens.concat(.parse_body_line(line.text, line.line))
+                tokens[index] = body_tokens
+            blocks[index] = block
+        for parser.Bibliography entry = bibliography[]
+            if not entry.cited
+                .warn(entry.line, "unused bibliography entry {entry.key}")
+
+    void .assign_bibliography_labels()
+        for int index < int(len(bibliography))
+            parser.Bibliography entry = bibliography[index]
+            if not entry.cited
+                continue
+            string[] surnames = entry.author.split(" and ")
+            string base = ""
+            if len(surnames) == 1
+                int count = if len(surnames[0]) < 3 then int(len(surnames[0])) else 3
+                base = surnames[0][0:<count]
+            else
+                int count = if len(surnames) >= 5 then 3 else int(len(surnames))
+                for int surname < count
+                    base += surnames[surname][0]
+                if len(surnames) >= 5
+                    base += "+"
+            entry.base = base + entry.year[2:]
+            bibliography[index] = entry
+            int place = int(len(cited_entries))
+            cited_entries = cited_entries.append(index)
+            while place > 0
+                parser.Bibliography before = bibliography[cited_entries[place - 1]]
+                if not tuple_less([entry.base, entry.author, entry.title, entry.key], [before.base, before.author, before.title, before.key])
+                    break
+                cited_entries[place] = cited_entries[place - 1]
+                place -= 1
+            cited_entries[place] = index
+        int index = 0
+        string suffixes = "abcdefghijklmnopqrstuvwxyz"
+        while index < int(len(cited_entries))
+            int end = index
+            while end + 1 < int(len(cited_entries)) and bibliography[cited_entries[end + 1]].base == bibliography[cited_entries[index]].base
+                end += 1
+            for index <= int current <= end
+                int selected = cited_entries[current]
+                bibliography[selected].label = bibliography[selected].base + (if end > index then suffixes[current - index] else "")
+            index = end + 1
+
+    void .prepare_index()
+        for int number < int(len(index_marks))
+            parser.Parts parts = parser.partition(index_marks[number], "|")
+            parser.Parts names = parser.partition(parts.first, "!")
+            int parent = -1
+            for int index < int(len(index_entries))
+                if index_entries[index].parent < 0 and index_entries[index].name == names.first
+                    parent = index
+            if parent < 0
+                parent = int(len(index_entries))
+                index_entries = index_entries.append(IndexEntry(names.first))
+            int selected = parent
+            if names.separated
+                selected = -1
+                for int index < int(len(index_entries))
+                    if index_entries[index].parent == parent and index_entries[index].name == names.second
+                        selected = index
+                if selected < 0
+                    selected = int(len(index_entries))
+                    index_entries = index_entries.append(IndexEntry(names.second, parent))
+            if parts.separated
+                if find_name(index_entries[selected].references, parts.second) < 0
+                    index_entries[selected].references = index_entries[selected].references.append(parts.second)
+            else
+                index_entries[selected].marks = index_entries[selected].marks.append(number)
+
+    void .initialize()
+        .register_document()
+        .check_document()
+        .assign_bibliography_labels()
+        .prepare_index()
+        parser.Warning[] ordered = []
+        for parser.Warning warning = warnings[]
+            int place = int(len(ordered))
+            ordered = ordered.append(warning)
+            while place > 0 and warning.line < ordered[place - 1].line
+                ordered[place] = ordered[place - 1]
+                place -= 1
+            ordered[place] = warning
+        warnings = ordered
+
+    string citation_text(string argument)
+        string[] cited_labels = []
+        bool undefined = false
+        for string key = argument.split(",")[]
+            int selected = bibliography_index(key)
+            if selected < 0
+                undefined = true
+            elif find_name(cited_labels, bibliography[selected].label) < 0
+                cited_labels = cited_labels.append(bibliography[selected].label)
+        cited_labels = cited_labels.sorted()
+        if undefined
+            cited_labels = cited_labels.append("?")
+        return "[" + cited_labels.join(", ") + "]"
+
+    Expanded expand_body(int block, string[] page_values)
+        string expanded = ""
+        Mark[] marks = []
+        for Token token = tokens[block][]
+            string text = ""
+            if token.kind == ""
+                text = token.text
+            elif token.kind == "idx"
+                marks = marks.append(Mark(int(len(expanded)) - 1, "idx", token.number))
+            elif token.kind == "fn"
+                marks = marks.append(Mark(int(len(expanded)), "fn", token.number))
+                text = "[{token.number + 1}]"
+            elif token.kind == "ref"
+                int selected = find_name(labels, token.text)
+                text = if selected < 0 then "??" else blocks[label_blocks[selected]].number
+            elif token.kind == "page"
+                int selected = find_name(labels, token.text)
+                text = if selected < 0 then "??" else page_values[selected]
+            else
+                text = citation_text(token.text)
+            expanded += text
+        string[] words = []
+        int[] starts = []
+        int position = 0
+        while position < int(len(expanded))
+            if expanded[position] == " "
+                position += 1
+                continue
+            int start = position
+            while position < int(len(expanded)) and expanded[position] != " "
+                position += 1
+            words = words.append(expanded[start:<position])
+            starts = starts.append(start)
+        WordMark[] word_marks = []
+        for Mark mark = marks[]
+            int word = int(len(starts)) - 1
+            while starts[word] > mark.offset
+                word -= 1
+            word_marks = word_marks.append(WordMark(word, mark.offset - starts[word], mark.kind, mark.number))
+        return Expanded(words, word_marks)
+
+    TextResult lay_out_text(string[] words, int[] capacities, string alignment, string[] prefixes, string method, WordMark[] marks = [])
+        Metrics metrics = make_metrics(words, capacities, dictionary.words, dictionary.points, dictionary.left_min, dictionary.right_min)
+        breaker.Costs configuration = breaker.Costs(costs.line_penalty, costs.hyphen_penalty, costs.double_hyphen_demerit, costs.final_hyphen_demerit, costs.fitness_demerit, costs.overfull_penalty)
+        breaker.Breaking breaking = breaker.break_text(metrics.input(), method, configuration)
+        renderer.page.Line[] lines = []
+        Measured[] measured_lines = []
+        int start = 0
+        for int index < int(len(breaking.positions))
+            int end = breaking.positions[index]
+            Measured measured = metrics.measure(start, end)
+            string text = renderer.display_line(measured.pieces, measured.slack, alignment, measured.last)
+            renderer.page.Line line = renderer.page.Line(prefixes[if index == 0 then 0 else 1] + text)
+            for Span span = measured.ranges[]
+                for WordMark mark = marks[]
+                    if mark.word == span.word and mark.position >= span.first and mark.position < span.last
+                        if mark.kind == "fn"
+                            line.footnotes = line.footnotes.append(mark.number)
+                        else
+                            line.indexes = line.indexes.append(mark.number)
+            lines = lines.append(line)
+            measured_lines = measured_lines.append(measured)
+            start = end
+        return TextResult(lines, measured_lines, breaking.cost)
+
+    TextResult lay_out_body(int index, string[] page_values, string method)
+        parser.Block block = blocks[index]
+        Expanded expanded = expand_body(index, page_values)
+        int width = block.width
+        int first_capacity = width
+        int later_capacity = width
+        string first_prefix = ""
+        string later_prefix = ""
+        if block.kind == "paragraph"
+            first_capacity -= block.indent
+            first_prefix = string.repeat(" ", nat(block.indent))
+        elif block.kind == "item"
+            first_capacity -= 2
+            later_capacity -= 2
+            first_prefix = "- "
+            later_prefix = "  "
+        elif block.kind == "enum"
+            first_capacity -= 4
+            later_capacity -= 4
+            first_prefix = "{block.item_number:int=2}. "
+            later_prefix = "    "
+        elif block.kind == "quote"
+            first_capacity -= 8
+            later_capacity -= 8
+            first_prefix = "    "
+            later_prefix = "    "
+        else
+            first_capacity -= 12
+            later_capacity -= 12
+            first_prefix = if len(block.term) <= 10 then pad_right(block.term, 12) else string.repeat(" ", 12)
+            later_prefix = string.repeat(" ", 12)
+        TextResult result = lay_out_text(expanded.words, [first_capacity, later_capacity], block.align, [first_prefix, later_prefix], method, expanded.marks)
+        if block.kind == "term" and len(block.term) >= 11
+            renderer.page.Line[] term_line = [renderer.page.Line(block.term)]
+            result.lines = term_line.concat(result.lines)
+        return result
+
+    TextResult[] lay_out_footnotes(string method)
+        TextResult[] results = []
+        for int number < int(len(footnotes))
+            string prefix = "[{number + 1}] "
+            int capacity = document.page_width - int(len(prefix))
+            results = results.append(lay_out_text(words_in(footnotes[number]), [capacity, capacity], "left", [prefix, string.repeat(" ", len(prefix))], method))
+        return results
+
+    TextResult lay_out_reference(int index, int width, string method)
+        int margin = 0
+        for int selected = cited_entries[]
+            if int(len(bibliography[selected].label)) + 3 > margin
+                margin = int(len(bibliography[selected].label)) + 3
+        parser.Bibliography entry = bibliography[index]
+        string prefix = pad_right("[{entry.label}]", margin)
+        string text = "{entry.author}. {entry.year}. {entry.title}"
+        return lay_out_text(words_in(text), [width - margin, width - margin], "left", [prefix, string.repeat(" ", nat(margin))], method)
+
+    string page_list(int[] values)
+        int[] ordered = values.sorted()
+        int[] numbers = []
+        for int value = ordered[]
+            if len(numbers) == 0 or numbers[len(numbers) - 1] != value
+                numbers = numbers.append(value)
+        string[] parts = []
+        int index = 0
+        while index < int(len(numbers))
+            int end = index
+            while end + 1 < int(len(numbers)) and numbers[end + 1] == numbers[end] + 1
+                end += 1
+            if end - index >= 2
+                parts = parts.append("{numbers[index]}-{numbers[end]}")
+            else
+                for index <= int current <= end
+                    parts = parts.append("{numbers[current]}")
+            index = end + 1
+        return parts.join(", ")
+
+    string index_entry_line(int selected, int[] mark_pages)
+        IndexEntry entry = index_entries[selected]
+        string text = (if entry.parent >= 0 then "  " else "") + entry.name
+        int[] numbers = []
+        for int number = entry.marks[]
+            if number < int(len(mark_pages)) and mark_pages[number] >= 0
+                numbers = numbers.append(mark_pages[number])
+        if len(numbers) > 0
+            text += ", " + page_list(numbers)
+        if len(entry.references) > 0
+            text += ", see " + entry.references.sorted().join(", ")
+        return text
+
+    int[] index_order(int parent)
+        int[] order = []
+        for int index < int(len(index_entries))
+            if index_entries[index].parent != parent
+                continue
+            string name = index_entries[index].name
+            int place = int(len(order))
+            order = order.append(index)
+            while place > 0
+                string before = index_entries[order[place - 1]].name
+                if not tuple_less([hyphenation.lower(name), name], [hyphenation.lower(before), before])
+                    break
+                order[place] = order[place - 1]
+                place -= 1
+            order[place] = index
+        return order
+
+    string[] index_lines(int[] mark_pages)
+        string[] lines = []
+        string previous_group = ""
+        for int parent = index_order(-1)[]
+            string name = index_entries[parent].name
+            string group = if hyphenation.is_letter(name[0]) then hyphenation.upper(name[0]) else "Symbols"
+            if group != previous_group
+                lines = lines.append(group)
+                previous_group = group
+            lines = lines.append(index_entry_line(parent, mark_pages))
+            for int child = index_order(parent)[]
+                lines = lines.append(index_entry_line(child, mark_pages))
+        return lines
+
+    string[] contents_lines(int index, renderer.page.Page[] pages, int[] block_pages)
+        parser.Block block = blocks[index]
+        int[] entries = if block.kind == "toc" then headings else numbered_tables
+        string[] lines = []
+        for int selected = entries[]
+            parser.Block entry = blocks[selected]
+            string left = ""
+            if block.kind == "toc"
+                left = (if entry.kind == "h2" then "  " else "") + "{entry.number} {entry.text}"
+            else
+                left = "Table {entry.number}. {entry.caption}"
+            string number = if selected < int(len(block_pages)) and block_pages[selected] >= 0 then pages[block_pages[selected]].display else "??"
+            int dots = block.width - int(len(left)) - int(len(number)) - 2
+            lines = lines.append(left + " " + string.repeat(".", nat(dots)) + " " + number)
+        return lines
+
+    renderer.page.Line[] text_lines(string[] texts)
+        return [for string text = texts[] then renderer.page.Line(text)]
+
+    void add_layout(renderer.page.LayoutBlock[] &layout_blocks, int source, string kind, renderer.page.Line[] lines, bool list_mark = false, bool first = true)
+        if first
+            lines[0].anchor = source
+            lines[0].chapter_start = blocks[source].kind == "h1"
+        layout_blocks = layout_blocks.append(renderer.page.LayoutBlock(kind, lines, list_mark, first and blocks[source].page_break))
+
+    renderer.page.LayoutBlock[] build_layout_blocks(string[] page_values, string method, Result &result)
+        renderer.page.LayoutBlock[] layout_blocks = []
+        for int index < int(len(blocks))
+            parser.Block block = blocks[index]
+            string kind = block.kind
+            if parser.body_kind(kind)
+                TextResult body = lay_out_body(index, page_values, method)
+                result.bodies[index] = body
+                result.warning_texts = result.warning_texts.append(WarningText("paragraph {block.paragraph_number}", body, block.align == "justify"))
+                add_layout(&layout_blocks, index, "flow", body.lines, kind == "item" or kind == "enum" or kind == "term")
+            elif kind == "title" or kind == "author"
+                string text = if kind == "title" then hyphenation.upper(block.argument) else block.argument
+                text = string.repeat(" ", nat((block.width - int(len(text))) / 2)) + text
+                add_layout(&layout_blocks, index, "heading", [renderer.page.Line(text)])
+            elif kind == "h1" or kind == "h2"
+                string text = block.number + " " + (if kind == "h1" then hyphenation.upper(block.text) else block.text)
+                string rule = string.repeat(if kind == "h1" then "=" else "-", len(text))
+                add_layout(&layout_blocks, index, "heading", text_lines([text, rule]))
+            elif kind == "table"
+                add_layout(&layout_blocks, index, "solid", text_lines(block.table_lines))
+            elif kind == "verbatim"
+                add_layout(&layout_blocks, index, "flow", text_lines([for parser.SourceLine line = block.inner_lines[] then line.text]))
+            elif kind == "toc" or kind == "lot" or kind == "index"
+                string title = if kind == "toc" then "CONTENTS" elif kind == "lot" then "TABLES" else "INDEX"
+                add_layout(&layout_blocks, index, "heading", text_lines([title, string.repeat("=", len(title))]))
+                string[] entries = if kind == "index" then index_lines([]) else contents_lines(index, [], [])
+                renderer.page.Line[] lines = text_lines(entries)
+                for int line_index < int(len(lines))
+                    lines[line_index].generated_block = index
+                    lines[line_index].generated_line = line_index
+                add_layout(&layout_blocks, index, "flow", lines, false, false)
+                result.generated = result.generated.append(index)
+            else
+                add_layout(&layout_blocks, index, "heading", text_lines(["REFERENCES", "=========="]))
+                for int selected = cited_entries[]
+                    TextResult reference = lay_out_reference(selected, block.width, method)
+                    result.warning_texts = result.warning_texts.append(WarningText("reference " + bibliography[selected].label, reference, false))
+                    add_layout(&layout_blocks, index, "flow", reference.lines, true, false)
+        return layout_blocks
+
+    string roman(int number)
+        string[] units = ["", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix"]
+        return string.repeat("x", nat(number / 10)) + units[number % 10]
+
+    void number_pages(renderer.page.Page[] pages, Result &result)
+        renderer.page.Page[] numbered = []
+        for renderer.page.Page sheet = pages[]
+            bool chapter_start = sheet.content[0].chapter_start
+            int serial = int(len(numbered)) + 1
+            if chapter_start and serial % 2 == 0
+                renderer.page.Page blank = renderer.page.Page([], [], 0, true)
+                blank.blank = true
+                blank.serial = serial
+                numbered = numbered.append(blank)
+                serial += 1
+            sheet.serial = serial
+            sheet.chapter_start = chapter_start
+            numbered = numbered.append(sheet)
+        int[] block_pages = array(len(blocks), fill = -1)
+        for int index < int(len(numbered))
+            for renderer.page.Line line = numbered[index].content[]
+                if line.anchor >= 0
+                    block_pages[line.anchor] = index
+        int front_matter = if len(headings) == 0 then 0 else numbered[block_pages[headings[0]]].serial - 1
+        int[] mark_pages = array(len(index_marks), fill = -1)
+        for int index < int(len(numbered))
+            numbered[index].body_number = numbered[index].serial - front_matter
+            numbered[index].display = if numbered[index].serial <= front_matter then roman(numbered[index].serial) else "{numbered[index].body_number}"
+            for renderer.page.Line line = numbered[index].content[]
+                for int mark = line.indexes[]
+                    mark_pages[mark] = numbered[index].body_number
+        result.pages = numbered
+        result.front_matter = front_matter
+        result.block_pages = block_pages
+        result.mark_pages = mark_pages
+        string[] label_values = []
+        for int block = label_blocks[]
+            label_values = label_values.append(numbered[block_pages[block]].display)
+        result.label_values = label_values
+
+    Result layout_once(string[] page_values, string method)
+        TextResult[] notes = lay_out_footnotes(method)
+        Result result = Result(method, notes, int(len(blocks)), int(len(index_marks)), int(len(labels)))
+        renderer.page.LayoutBlock[] layout_blocks = build_layout_blocks(page_values, method, &result)
+        int[] heights = [for TextResult note = notes[] then int(len(note.lines))]
+        renderer.page.Page[] pages = renderer.page.choose_pages(layout_blocks, heights, document.height, orphan_lines, widow_lines)
+        number_pages(pages, &result)
+        for int number < int(len(notes))
+            result.warning_texts = result.warning_texts.append(WarningText("footnote {number + 1}", notes[number], false))
+        return result
+
+    void assemble_pages(Result &result)
+        string[][] generated_texts = array(len(blocks), fill = [])
+        for int index = result.generated[]
+            generated_texts[index] = if blocks[index].kind == "index" then index_lines(result.mark_pages) else contents_lines(index, result.pages, result.block_pages)
+        string chapter = ""
+        string section = ""
+        int height = document.height
+        int total = int(len(result.pages)) - result.front_matter
+        for int index < int(len(result.pages))
+            renderer.page.Page sheet = result.pages[index]
+            if sheet.blank
+                sheet.header = ""
+                sheet.footer = ""
+                sheet.body = array(nat(height), fill = "")
+                result.pages[index] = sheet
+                continue
+            for int line_index < int(len(sheet.content))
+                renderer.page.Line line = sheet.content[line_index]
+                if line.generated_block >= 0
+                    line.text = generated_texts[line.generated_block][line.generated_line]
+                    sheet.content[line_index] = line
+                if line.anchor >= 0
+                    parser.Block block = blocks[line.anchor]
+                    if block.kind == "h1"
+                        chapter = "{block.number} {block.text}"
+                        section = ""
+                    elif block.kind == "h2"
+                        section = "{block.number} {block.text}"
+            string[] values = [sheet.display, "{total}", chapter, section]
+            sheet.header = if sheet.chapter_start then "" else renderer.running_head(document.header, values, document.page_width, sheet.serial)
+            sheet.footer = renderer.running_head(document.footer, values, document.page_width, sheet.serial)
+            string[] content = [for renderer.page.Line line = sheet.content[] then line.text]
+            string[] notes = []
+            for int number = sheet.footnotes[]
+                notes = notes.concat([for renderer.page.Line line = result.footnotes[number].lines[] then line.text])
+            int padding = height - int(len(content)) - int(len(notes)) - (if len(notes) > 0 then 1 else 0)
+            content = content.concat(array(nat(padding), fill = ""))
+            if len(notes) > 0
+                content = content.append("----------").concat(notes)
+            sheet.body = content
+            result.pages[index] = sheet
+
+    Result layout(string method)
+        string[] page_values = array(len(labels), fill = "??")
+        Result result = layout_once(page_values, method)
+        bool changed = true
+        while changed
+            changed = false
+            for int index < int(len(labels))
+                if result.label_values[index] != page_values[index]
+                    changed = true
+            if changed
+                page_values = result.label_values
+                result = layout_once(page_values, method)
+        assemble_pages(&result)
+        return result
+
+    string[] layout_warnings(Result result)
+        string[] messages = []
+        for WarningText entry = result.warning_texts[]
+            for int index < int(len(entry.text.broken))
+                Measured line = entry.text.broken[index]
+                if line.slack < 0
+                    messages = messages.append("{entry.name} line {index + 1}: overfull by {-line.slack}")
+                elif entry.justify and not line.last and line.slack >= underfull_slack
+                    messages = messages.append("{entry.name} line {index + 1}: underfull, slack {line.slack}")
+        for renderer.page.Page sheet = result.pages[]
+            int empty = document.height - sheet.height
+            if not sheet.blank and not sheet.ends_by_force and empty >= underfull_page
+                messages = messages.append("page {sheet.serial}: underfull, {empty} empty lines")
+        int hyphenated = 0
+        for int index = body_blocks[]
+            for Measured line = result.bodies[index].broken[]
+                if line.midword
+                    hyphenated += 1
+        messages = messages.append("{len(result.pages)} pages, {hyphenated} hyphenated lines")
+        return [for string message = messages[] then result.method + ": " + message]
+
+    string[] statistics(Result optimal, Result greedy)
+        string[] lines = ["paragraph,lines_kp,cost_kp,lines_greedy,cost_greedy"]
+        int[] totals = [0, 0, 0, 0]
+        for int index = body_blocks[]
+            TextResult first = optimal.bodies[index]
+            TextResult second = greedy.bodies[index]
+            int[] values = [int(len(first.broken)), first.cost, int(len(second.broken)), second.cost]
+            string[] fields = ["{blocks[index].paragraph_number}"]
+            for int column < 4
+                totals[column] += values[column]
+                fields = fields.append("{values[column]}")
+            lines = lines.append(fields.join(","))
+        return lines.append("total," + [for int value = totals[] then "{value}"].join(","))
+
+void write_lines(string name, string[] lines)
+    file.write("output/" + name, if len(lines) == 0 then "" else lines.join(NL) + NL)
+
+string[] parameter_names = ["line_penalty", "hyphen_penalty", "double_hyphen_demerit", "final_hyphen_demerit", "fitness_demerit", "overfull_penalty", "left_min", "right_min", "orphan_lines", "widow_lines", "underfull_slack", "underfull_page"]
+int[] parameters = array(12, fill = 0)
+for string line = read_lines("input/params.txt")[]
+    parser.Parts parts = parser.partition(line, " ")
+    int index = find_name(parameter_names, parts.first)
+    parameters[index] = int.parse(parts.second)
+parser.Document document = parser.parse(read_lines("input/document.txt"))
+hyphenation.Dictionary dictionary = hyphenation.Dictionary(parameters[6], parameters[7])
+for string spelling = read_lines("input/hyphenation.txt").concat(document.hyphenation_words)[]
+    .dictionary.register(spelling)
+breaker.Costs costs = breaker.Costs(parameters[0], parameters[1], parameters[2], parameters[3], parameters[4], parameters[5])
+Typesetter typesetter = Typesetter(document, costs, parameters[8], parameters[9], parameters[10], parameters[11], dictionary)
+.typesetter.initialize()
+Result optimal = typesetter.layout("kp")
+Result greedy = typesetter.layout("greedy")
+string[] warnings = [for parser.Warning warning = typesetter.warnings[] then "line {warning.line}: {warning.message}"]
+warnings = warnings.concat(typesetter.layout_warnings(optimal)).concat(typesetter.layout_warnings(greedy))
+bool output_exists = file.is_directory("output")
+if not output_exists
+    file.mkdir("output")
+write_lines("pages.txt", renderer.pages_lines(optimal.pages))
+write_lines("greedy_pages.txt", renderer.pages_lines(greedy.pages))
+write_lines("stats.csv", typesetter.statistics(optimal, greedy))
+write_lines("log.txt", warnings)

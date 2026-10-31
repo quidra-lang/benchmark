@@ -1,0 +1,817 @@
+import dates = "./dates_calendar.qui"
+import dc = "./daycount.qui"
+import sched = "./schedule.qui"
+import pricing = "./pricing.qui"
+import curve = "./curve.qui"
+
+bool has_word(string[] words, string target)
+    for string word = words[]
+        if word == target
+            return true
+    return false
+
+bool has_day(int[] days, int target)
+    for int day = days[]
+        if day == target
+            return true
+    return false
+
+bool valid_frequency(int frequency)
+    return frequency == 1 or frequency == 2 or frequency == 4 or frequency == 12
+
+int round_half_up(int numerator, int denominator)
+    return (2 * numerator + denominator) / (2 * denominator)
+
+string format_hundredths(int value)
+    if value < 0
+        return "-" + format_hundredths(-value)
+    return "{value / 100}.{dates.pad(value % 100, 2)}"
+
+string format_decimal(real64 value, int digits)
+    real64 magnitude = if value < 0.0 then -value else value
+    real64 threshold = if digits == 2 then 0.005 elif digits == 4 then 0.00005 else 0.0000005
+    if magnitude < threshold
+        value = 0.0
+    if digits == 2
+        return "{value:frac=2}"
+    if digits == 4
+        return "{value:frac=4}"
+    return "{value:frac=6}"
+
+string format_percent(real64 value)
+    return format_decimal(value * 100.0, 4)
+
+string format_amount(real64 cents)
+    return format_decimal(cents / 100.0, 2)
+
+int thousandths(string text)
+    string[] pieces = text.split(".")
+    return 1000 * int.parse(pieces[0]) + int.parse(pieces[1])
+
+string[] read_lines(string name)
+    string source = file.read("input/" + name)
+    string[] lines = source.split(NL)
+    return lines[0:<len(lines) - 1]
+
+class Row(int number, string[] fields)
+
+Row[] read_rows(string name)
+    string[] lines = read_lines(name)
+    Row[] result = []
+    for 1 <= int index < int(len(lines))
+        result = result.append(Row(index + 1, lines[index].split(",")))
+    return result
+
+class ScenarioInput(int line, string name, int[] shifts)
+
+class Scenario(string name, real64[] deltas)
+
+class Params()
+    int valuation = 0
+    int settlement_days = 0
+    ScenarioInput[] scenarios = []
+    string[][] limits = []
+
+Params read_params()
+    Params result = Params()
+    string[] lines = read_lines("params.txt")
+    for nat index < len(lines)
+        string[] words = lines[index].split(" ")
+        if words[0] == "valuation_date"
+            result.valuation = dates.parse(words[1])
+        elif words[0] == "settlement_days"
+            result.settlement_days = int.parse(words[1])
+        elif words[0] == "scenario"
+            int[] shifts = []
+            for 2 <= int offset < int(len(words))
+                shifts = shifts.append(int.parse(words[offset]))
+            result.scenarios = result.scenarios.append(ScenarioInput(int(index) + 1, words[1], shifts))
+        else
+            result.limits = result.limits.append(words[1:<len(words)])
+    return result
+
+class Fixings(int[] days, int[] rates)
+    int latest(int day)
+        int result = -1
+        for nat index < len(days)
+            if days[index] > day
+                break
+            result = rates[index]
+        return result
+
+Fixings read_fixings()
+    int[] days = []
+    int[] rates = []
+    for Row row = read_rows("fixings.csv")[]
+        days = days.append(dates.parse(row.fields[0]))
+        rates = rates.append(int.parse(row.fields[1]))
+    return Fixings(days, rates)
+
+curve.Pillar[] validate_pillars(int settlement, string[] &errors)
+    string[] seen = []
+    curve.Pillar[] result = []
+    for Row row = read_rows("curve_quotes.csv")[]
+        string key = row.fields[0]
+        string failure = ""
+        int maturity = 0
+        int frequency = int.parse(row.fields[2])
+        if has_word(seen, key)
+            failure = "duplicate pillar"
+        elif not dates.valid(key)
+            failure = "invalid date"
+        else
+            maturity = dates.parse(key)
+            if maturity <= settlement
+                failure = "pillar not after settlement"
+            elif not valid_frequency(frequency)
+                failure = "invalid frequency"
+        seen = seen.append(key)
+        if failure != ""
+            errors = errors.append("curve_quotes.csv:{row.number}: {key}: {failure}")
+        else
+            result = result.append(curve.Pillar(maturity, int.parse(row.fields[1]), frequency))
+    for 1 <= int offset < int(len(result))
+        curve.Pillar current = result[offset]
+        int cursor = offset
+        while cursor > 0 and result[cursor - 1].maturity > current.maturity
+            result[cursor] = result[cursor - 1]
+            cursor -= 1
+        result[cursor] = current
+    return result
+
+Scenario[] validate_scenarios(ScenarioInput[] scenarios, int count, string[] &errors)
+    string[] seen = []
+    Scenario[] result = []
+    for ScenarioInput scenario = scenarios[]
+        string failure = ""
+        if has_word(seen, scenario.name)
+            failure = "duplicate scenario"
+        elif int(len(scenario.shifts)) != count
+            failure = "wrong number of shifts"
+        seen = seen.append(scenario.name)
+        if failure != ""
+            errors = errors.append("params.txt:{scenario.line}: {scenario.name}: {failure}")
+        else
+            real64[] deltas = []
+            for int shift = scenario.shifts[]
+                deltas = deltas.append(real64(shift) * 0.0001)
+            result = result.append(Scenario(scenario.name, deltas))
+    return result
+
+class OptionDate(string text, int amount)
+
+class Special(int day, int amount)
+
+class Options()
+    bool end_of_month = false
+    bool long_stub = false
+    int lag = 0
+    int cap = 1200
+    int floor = 0
+    OptionDate[] sinks = []
+    OptionDate[] calls = []
+
+Options | error parse_options(string kind, string text)
+    Options result = Options()
+    string[] allowed = ["EOM", "LONG"]
+    if kind == "FIXED"
+        allowed = allowed.append("CALL")
+    elif kind == "AMORT"
+        allowed = allowed.append("SINK")
+    elif kind == "FRN"
+        allowed = allowed.concat(["LAG", "CAP", "FLOOR"])
+    string[] seen = []
+    if text != "-"
+        for string item = text.split(";")[]
+            string[] pieces = item.split("=")
+            string key = pieces[0]
+            if not has_word(allowed, key) or (has_word(seen, key) and key != "SINK" and key != "CALL")
+                return error("invalid option")
+            seen = seen.append(key)
+            if key == "EOM"
+                result.end_of_month = true
+            elif key == "LONG"
+                result.long_stub = true
+            elif key == "LAG"
+                result.lag = int.parse(pieces[1])
+            elif key == "CAP"
+                result.cap = int.parse(pieces[1])
+            elif key == "FLOOR"
+                result.floor = int.parse(pieces[1])
+            else
+                string[] value = pieces[1].split(":")
+                if key == "SINK"
+                    result.sinks = result.sinks.append(OptionDate(value[0], int.parse(value[1])))
+                else
+                    result.calls = result.calls.append(OptionDate(value[0], thousandths(value[1])))
+    if kind == "FRN" and (result.lag < 1 or result.lag > 5 or result.cap > 1200 or result.floor > result.cap)
+        return error("invalid option")
+    return result
+
+Special[] | error validate_schedule(OptionDate[] items, int[] schedule, bool calls)
+    Special[] result = []
+    int previous = -1
+    string failure = if calls then "invalid call schedule" else "invalid sinking fund"
+    for OptionDate item = items[]
+        if not dates.valid(item.text)
+            return error(failure)
+        int day = dates.parse(item.text)
+        if not has_day(schedule[1:<len(schedule) - 1], day) or day <= previous
+            return error(failure)
+        if (calls and (item.amount < 100000 or item.amount > 110000)) or (not calls and item.amount == 0)
+            return error(failure)
+        result = result.append(Special(day, item.amount))
+        previous = day
+    return result
+
+class Period(int number, int start, int finish, int payment, int numerator, int denominator, int rate, int opening, int principal)
+    int coupon = round_half_up(opening * rate * numerator, 10000 * denominator)
+    int cash_flow = coupon + principal
+
+class Bond(string code, string kind, int issue, int maturity, int coupon, int frequency, string daycount, string bdc, int face, Options options)
+    int[] schedule = []
+    Special[] sinks = []
+    Special[] calls = []
+    Period[] periods = []
+
+Bond | error parse_bond(string[] fields, bool duplicate, dates.Calendar calendar, Fixings fixings)
+    if duplicate
+        return error("duplicate id")
+    string kind = fields[1]
+    if not has_word(["FIXED", "ZERO", "AMORT", "FRN"], kind)
+        return error("unknown type")
+    if not dates.valid(fields[2]) or not dates.valid(fields[3])
+        return error("invalid date")
+    int issue = dates.parse(fields[2])
+    int maturity = dates.parse(fields[3])
+    if maturity <= issue
+        return error("maturity not after issue")
+    int frequency = int.parse(fields[5])
+    if not valid_frequency(frequency)
+        return error("invalid frequency")
+    if not has_word(["30/360", "30E/360", "ACT/360", "ACT/365F", "ACT/ACT"], fields[6])
+        return error("unknown day count")
+    if not has_word(["FOLLOWING", "MODIFIED_FOLLOWING", "PRECEDING", "UNADJUSTED"], fields[7])
+        return error("unknown business day rule")
+    int face = int.parse(fields[8])
+    if face % 100000 != 0 or face > 10000000
+        return error("invalid face")
+    int coupon = int.parse(fields[4])
+    if coupon > 1200 or (kind == "ZERO" and coupon != 0)
+        return error("invalid coupon")
+    Options options = try parse_options(kind, fields[9])
+    Bond result = Bond(fields[0], kind, issue, maturity, coupon, frequency, fields[6], fields[7], face, options)
+    result.schedule = sched.coupon_schedule(issue, maturity, frequency, options.end_of_month, options.long_stub)
+    result.sinks = try validate_schedule(options.sinks, result.schedule, false)
+    int sink_total = 0
+    for Special sink = result.sinks[]
+        sink_total += sink.amount
+    if kind == "AMORT" and (sink_total == 0 or sink_total >= face)
+        return error("invalid sinking fund")
+    result.calls = try validate_schedule(options.calls, result.schedule, true)
+    int opening = face
+    for 1 <= int number < int(len(result.schedule))
+        int start = result.schedule[number - 1]
+        int finish = result.schedule[number]
+        int rate = coupon
+        if kind == "ZERO"
+            rate = 0
+        elif kind == "FRN"
+            int reset = calendar.business_days(calendar.adjust(start, result.bdc), options.lag, -1)
+            int index_rate = fixings.latest(reset)
+            if index_rate < 0
+                return error("missing fixing")
+            rate += index_rate
+            if rate < options.floor
+                rate = options.floor
+            if rate > options.cap
+                rate = options.cap
+        int principal = 0
+        if number == int(len(result.schedule)) - 1
+            principal = opening
+        else
+            for Special sink = result.sinks[]
+                if sink.day == finish
+                    principal = sink.amount
+        dc.Fraction fraction = dc.year_fraction(result.daycount, start, finish)
+        result.periods = result.periods.append(Period(number, start, finish, calendar.adjust(finish, result.bdc), fraction.numerator, fraction.denominator, rate, opening, principal))
+        opening -= principal
+    return result
+
+Bond[] validate_bonds(dates.Calendar calendar, Fixings fixings, string[] &errors)
+    string[] seen = []
+    Bond[] result = []
+    for Row row = read_rows("bonds.csv")[]
+        bool duplicate = has_word(seen, row.fields[0])
+        seen = seen.append(row.fields[0])
+        match parse_bond(row.fields, duplicate, calendar, fixings)
+            Bond bond
+                result = result.append(bond)
+            error problem
+                errors = errors.append("bonds.csv:{row.number}: {row.fields[0]}: {problem.message}")
+    return result
+
+int bond_index(Bond[] bonds, string code)
+    for nat index < len(bonds)
+        if bonds[index].code == code
+            return int(index)
+    return -1
+
+class Valuation(Bond bond, int clean, local int settlement)
+    local int current = 0
+    while bond.periods[current].finish <= settlement
+        current += 1
+    local Period first = bond.periods[current]
+    Period[] remaining = bond.periods[current:<len(bond.periods)]
+    int outstanding = first.opening
+    local dc.Fraction accrued_fraction = dc.year_fraction(bond.daycount, first.start, settlement)
+    real64 accrued = real64(first.rate * accrued_fraction.numerator) / real64(100 * accrued_fraction.denominator)
+    int accrued_amount = round_half_up(outstanding * first.rate * accrued_fraction.numerator, 10000 * accrued_fraction.denominator)
+    int clean_amount = round_half_up(outstanding * clean, 100000)
+    int unit_value = clean_amount + accrued_amount
+    real64 target = real64(clean) / 1000.0 + accrued
+    local dc.Fraction remaining_fraction = dc.year_fraction(bond.daycount, settlement, first.finish)
+    real64 fraction = real64(bond.frequency * remaining_fraction.numerator) / real64(remaining_fraction.denominator)
+    Period[] cash_flows = []
+    curve.Flow[] flows = []
+    local int[] amounts = []
+    for Period period = remaining[]
+        amounts = amounts.append(period.cash_flow)
+        if period.cash_flow > 0
+            cash_flows = cash_flows.append(period)
+            flows = flows.append(curve.Flow(period.payment - settlement, real64(period.cash_flow)))
+    pricing.YieldPricer pricer = pricing.YieldPricer(amounts, fraction, bond.frequency, outstanding)
+    real64 ytm = 0.0
+    pricing.RiskMeasures risk = pricing.RiskMeasures(0.0, 0.0, 0.0, 0.0)
+    real64 ytw = 0.0
+    int workout = bond.maturity
+    real64 wal = 0.0
+    int next_payment = cash_flows[0].payment
+    real64 curve_clean = 0.0
+    real64 zspread = 0.0
+
+    real64 yield_to_call(Special call)
+        int[] values = []
+        for Period period = remaining[]
+            int amount = period.coupon
+            if period.finish == call.day
+                amount += round_half_up(period.opening * call.amount, 100000)
+            values = values.append(amount)
+            if period.finish == call.day
+                break
+        pricing.YieldPricer callable = pricing.YieldPricer(values, fraction, bond.frequency, outstanding)
+        return callable.solve(target)
+
+    void .analyze(curve.ZeroCurve zero, int evaluation_day)
+        ytm = pricer.solve(target)
+        risk = pricer.risk(ytm)
+        ytw = ytm
+        for Special call = bond.calls[]
+            if call.day > evaluation_day
+                real64 yield_value = yield_to_call(call)
+                if yield_value < ytw
+                    ytw = yield_value
+                    workout = call.day
+        int principal_days = 0
+        for nat index < len(cash_flows)
+            principal_days += cash_flows[index].principal * flows[index].days
+        wal = real64(principal_days) / real64(365 * outstanding)
+        curve_clean = zero.present_value(flows) * 100.0 / real64(outstanding) - accrued
+        zspread = zero.z_spread(flows, real64(unit_value))
+
+int valuation_index(Valuation[] valuations, string code)
+    for nat index < len(valuations)
+        if valuations[index].bond.code == code
+            return int(index)
+    return -1
+
+Valuation[] validate_prices(Bond[] bonds, int settlement, string[] &errors)
+    string[] seen = []
+    Valuation[] result = []
+    for Row row = read_rows("prices.csv")[]
+        string code = row.fields[0]
+        int index = bond_index(bonds, code)
+        string failure = ""
+        if index < 0
+            failure = "unknown bond"
+        elif has_word(seen, code)
+            failure = "duplicate price"
+        elif not (bonds[index].issue <= settlement < bonds[index].maturity)
+            failure = "not outstanding"
+        else
+            Valuation value = Valuation(bonds[index], thousandths(row.fields[1]), settlement)
+            if not value.pricer.in_range(value.target)
+                failure = "yield out of range"
+            else
+                result = result.append(value)
+        seen = seen.append(code)
+        if failure != ""
+            errors = errors.append("prices.csv:{row.number}: {code}: {failure}")
+    return result
+
+class Position(string portfolio, Valuation valuation)
+    int units = 0
+    int book = 0
+
+    int market_value()
+        return units * valuation.unit_value
+
+    int face()
+        return units * valuation.bond.face
+
+    int outstanding()
+        return units * valuation.outstanding
+
+    int gain()
+        return units * valuation.clean_amount - book
+
+    real64 dv01()
+        return valuation.risk.dv01 * real64(units) * real64(valuation.outstanding) / 10000.0
+
+    real64 present_value(curve.ZeroCurve zero)
+        return real64(units) * zero.present_value(valuation.flows, valuation.zspread)
+
+Position[] validate_holdings(Bond[] bonds, Valuation[] valuations, string[] &errors)
+    Position[] result = []
+    for Row row = read_rows("holdings.csv")[]
+        string name = row.fields[0]
+        string code = row.fields[1]
+        int bond_id = bond_index(bonds, code)
+        int valuation_id = valuation_index(valuations, code)
+        int face = int.parse(row.fields[2])
+        string failure = ""
+        if bond_id < 0
+            failure = "unknown bond"
+        elif valuation_id < 0
+            failure = "no price"
+        elif face % bonds[bond_id].face != 0
+            failure = "invalid face"
+        if failure != ""
+            errors = errors.append("holdings.csv:{row.number}: {code}: {failure}")
+            continue
+        int index = -1
+        for nat offset < len(result)
+            if result[offset].portfolio == name and result[offset].valuation.bond.code == code
+                index = int(offset)
+                break
+        if index < 0
+            index = int(len(result))
+            result = result.append(Position(name, valuations[valuation_id]))
+        int units = face / bonds[bond_id].face
+        result[index].units += units
+        result[index].book += round_half_up(units * valuations[valuation_id].outstanding * thousandths(row.fields[3]), 100000)
+    return result
+
+int type_index(string kind)
+    string[] kinds = ["FIXED", "ZERO", "AMORT", "FRN"]
+    for nat index < len(kinds)
+        if kinds[index] == kind
+            return int(index)
+    return -1
+
+int bucket_index(int days)
+    int[] boundaries = [365, 1095, 1825, 3650]
+    for nat index < len(boundaries)
+        if days < boundaries[index]
+            return int(index)
+    return 4
+
+class Group(string label)
+    int count = 0
+    int value = 0
+    real64 duration = 0.0
+    real64 dv01 = 0.0
+
+    void .add(Position position)
+        int market = position.market_value()
+        count += 1
+        value += market
+        duration += real64(market) * position.valuation.risk.modified
+        dv01 += position.dv01()
+
+class Ladder(int year, int coupon = 0, int principal = 0)
+
+class ScenarioResult(string name, real64[] values, real64[] pnls, real64 total, real64 pnl)
+
+class Portfolio(string name, Position[] positions)
+    int total_value = 0
+    for Position member = positions[]
+        total_value += member.market_value()
+    real64 ytm = 0.0
+    real64 modified = 0.0
+    real64 convexity = 0.0
+    real64 zspread = 0.0
+    real64 dv01 = 0.0
+    real64 cash_yield = 0.0
+    real64[] base_values = []
+    real64 base_value = 0.0
+    real64 effective = 0.0
+    real64[] key_rates = []
+    Group[] types = [Group("FIXED"), Group("ZERO"), Group("AMORT"), Group("FRN")]
+    Group[] buckets = [Group("0-1Y"), Group("1-3Y"), Group("3-5Y"), Group("5-10Y"), Group("10Y+")]
+    Ladder[] ladder = []
+    ScenarioResult[] results = []
+
+    real64 weight(int value)
+        return real64(value) * 100.0 / real64(total_value)
+
+    int income()
+        int result = 0
+        for Position position = positions[]
+            for nat index < len(position.valuation.cash_flows)
+                if position.valuation.flows[index].days <= 365
+                    result += position.units * position.valuation.cash_flows[index].coupon
+        return result
+
+    real64 present_value(curve.ZeroCurve zero)
+        real64 result = 0.0
+        for Position position = positions[]
+            result += position.present_value(zero)
+        return result
+
+    real64 rate_duration(curve.ZeroCurve zero, int pillar)
+        real64[] down = array(len(zero.rates), fill = 0.0)
+        real64[] up = array(len(zero.rates), fill = 0.0)
+        for nat index < len(zero.rates)
+            if pillar < 0 or int(index) == pillar
+                down[index] = -0.0001
+                up[index] = 0.0001
+        return (present_value(zero.shifted(down)) - present_value(zero.shifted(up))) / (2.0 * 0.0001 * base_value)
+
+    void .analyze(curve.ZeroCurve zero, Scenario[] scenarios, int settlement)
+        curve.Flow[] aggregate = []
+        for Position position = positions[]
+            int market = position.market_value()
+            ytm += real64(market) * position.valuation.ytm
+            modified += real64(market) * position.valuation.risk.modified
+            convexity += real64(market) * position.valuation.risk.convexity
+            zspread += real64(market) * position.valuation.zspread
+            dv01 += position.dv01()
+            for curve.Flow flow = position.valuation.flows[]
+                aggregate = aggregate.append(curve.Flow(flow.days, real64(position.units) * flow.amount))
+            real64 base = position.present_value(zero)
+            base_values = base_values.append(base)
+            base_value += base
+            .types[type_index(position.valuation.bond.kind)].add(position)
+            .buckets[bucket_index(position.valuation.bond.maturity - settlement)].add(position)
+            for Period period = position.valuation.cash_flows[]
+                int year = dates.civil_date(period.payment).year
+                int slot = -1
+                for nat index < len(ladder)
+                    if ladder[index].year == year
+                        slot = int(index)
+                        break
+                if slot < 0
+                    slot = int(len(ladder))
+                    ladder = ladder.append(Ladder(year))
+                ladder[slot].coupon += position.units * period.coupon
+                ladder[slot].principal += position.units * period.principal
+        ytm /= real64(total_value)
+        modified /= real64(total_value)
+        convexity /= real64(total_value)
+        zspread /= real64(total_value)
+        real64 low = 0.0
+        real64 high = 1.0
+        for int iteration < 80
+            real64 middle = (low + high) / 2.0
+            curve.ZeroCurve flat = curve.flat_curve(middle)
+            if flat.present_value(aggregate) > real64(total_value)
+                low = middle
+            else
+                high = middle
+        cash_yield = (low + high) / 2.0
+        effective = rate_duration(zero, -1)
+        for nat index < len(zero.rates)
+            key_rates = key_rates.append(rate_duration(zero, int(index)))
+        for 1 <= int offset < int(len(ladder))
+            Ladder current = ladder[offset]
+            int cursor = offset
+            while cursor > 0 and ladder[cursor - 1].year > current.year
+                ladder[cursor] = ladder[cursor - 1]
+                cursor -= 1
+            ladder[cursor] = current
+        Scenario[] all = [Scenario("BASE", array(len(zero.rates), fill = 0.0))].concat(scenarios)
+        for Scenario scenario = all[]
+            curve.ZeroCurve shifted = zero.shifted(scenario.deltas)
+            real64[] values = []
+            real64[] pnls = []
+            real64 total = 0.0
+            for nat index < len(positions)
+                real64 value = positions[index].present_value(shifted)
+                values = values.append(value)
+                pnls = pnls.append(value - base_values[index])
+                total += value
+            results = results.append(ScenarioResult(scenario.name, values, pnls, total, total - base_value))
+
+    int worst_scenario()
+        int result = -1
+        for 1 <= int index < int(len(results))
+            if result < 0 or results[index].pnl < results[result].pnl
+                result = index
+        return result
+
+    string group_line(string category, Group group)
+        return "{category} {group.label} positions {group.count} value {format_hundredths(group.value)} weight {format_decimal(weight(group.value), 4)} duration {format_decimal(group.duration / real64(total_value), 4)} dv01 {format_decimal(group.dv01, 2)}"
+
+    string[] report_lines()
+        string[] lines = ["portfolio {name}"]
+        int total_face = 0
+        int total_outstanding = 0
+        int total_book = 0
+        int total_gain = 0
+        for Position position = positions[]
+            Valuation value = position.valuation
+            string code = value.bond.code
+            lines = lines.append("position {code} face {format_hundredths(position.face())} outstanding {format_hundredths(position.outstanding())} clean {format_decimal(real64(value.clean) / 1000.0, 6)} value {format_hundredths(position.market_value())} weight {format_decimal(weight(position.market_value()), 4)} book {format_hundredths(position.book)} gain {format_hundredths(position.gain())} ytm {format_percent(value.ytm)} modified {format_decimal(value.risk.modified, 4)} dv01 {format_decimal(position.dv01(), 2)}")
+            total_face += position.face()
+            total_outstanding += position.outstanding()
+            total_book += position.book
+            total_gain += position.gain()
+        lines = lines.append("total positions {len(positions)} face {format_hundredths(total_face)} outstanding {format_hundredths(total_outstanding)} value {format_hundredths(total_value)} book {format_hundredths(total_book)} gain {format_hundredths(total_gain)} income {format_hundredths(income())}")
+        lines = lines.append("risk ytm {format_percent(ytm)} yield {format_percent(cash_yield)} modified {format_decimal(modified, 4)} convexity {format_decimal(convexity, 4)} zspread {format_percent(zspread)} dv01 {format_decimal(dv01, 2)}")
+        string[] durations = []
+        for real64 value = key_rates[]
+            durations = durations.append(format_decimal(value, 4))
+        lines = lines.append("curve effective {format_decimal(effective, 4)} krd {durations.join(" ")}")
+        for Group group = types[]
+            lines = lines.append(group_line("type", group))
+        for Group group = buckets[]
+            lines = lines.append(group_line("bucket", group))
+        int total_coupon = 0
+        int total_principal = 0
+        for Ladder entry = ladder[]
+            lines = lines.append("ladder {entry.year} coupon {format_hundredths(entry.coupon)} principal {format_hundredths(entry.principal)} total {format_hundredths(entry.coupon + entry.principal)}")
+            total_coupon += entry.coupon
+            total_principal += entry.principal
+        lines = lines.append("ladder total coupon {format_hundredths(total_coupon)} principal {format_hundredths(total_principal)} total {format_hundredths(total_coupon + total_principal)}")
+        int worst = worst_scenario()
+        if worst >= 0
+            ScenarioResult scenario = results[worst]
+            int[] order = []
+            for nat index < len(positions)
+                order = order.append(int(index))
+            for 1 <= int offset < int(len(order))
+                int current = order[offset]
+                int cursor = offset
+                while cursor > 0 and scenario.pnls[order[cursor - 1]] > scenario.pnls[current]
+                    order[cursor] = order[cursor - 1]
+                    cursor -= 1
+                order[cursor] = current
+            string[] losers = []
+            for nat index < len(order)
+                if index == 3
+                    break
+                losers = losers.concat([positions[order[index]].valuation.bond.code, format_amount(scenario.pnls[order[index]])])
+            lines = lines.append("stress worst {scenario.name} pnl {format_amount(scenario.pnl)} losers {losers.join(" ")}")
+        return lines
+
+    string[] scenario_lines()
+        string[] lines = []
+        for ScenarioResult scenario = results[]
+            for nat index < len(positions)
+                lines = lines.append("{name},{scenario.name},{positions[index].valuation.bond.code},{format_amount(scenario.values[index])},{format_amount(scenario.pnls[index])}")
+            lines = lines.append("{name},{scenario.name},*,{format_amount(scenario.total)},{format_amount(scenario.pnl)}")
+        return lines
+
+    string[] compliance_lines(string[][] limits, int settlement)
+        string[] lines = []
+        int breaches = 0
+        for string[] words = limits[]
+            string kind = words[0]
+            string details = ""
+            bool breach = false
+            if kind == "position_weight"
+                Position largest = positions[0]
+                for Position position = positions[]
+                    if position.market_value() > largest.market_value()
+                        largest = position
+                int limit = int.parse(words[1])
+                int value = largest.market_value()
+                details = "{largest.valuation.bond.code} {format_decimal(weight(value), 4)} limit {format_hundredths(limit)}"
+                breach = value * 10000 > limit * total_value
+            elif kind == "type_weight"
+                int limit = int.parse(words[2])
+                int value = types[type_index(words[1])].value
+                details = "{words[1]} {format_decimal(weight(value), 4)} limit {format_hundredths(limit)}"
+                breach = value * 10000 > limit * total_value
+            elif kind == "max_maturity"
+                int years = int.parse(words[1])
+                int count = 0
+                for Position position = positions[]
+                    if position.valuation.bond.maturity - settlement > 365 * years
+                        count += 1
+                details = "{years}Y positions {count}"
+                breach = count >= 1
+            elif kind == "min_yield"
+                int limit = int.parse(words[1])
+                details = "{format_percent(ytm)} limit {format_hundredths(limit)}"
+                breach = ytm * 10000.0 < real64(limit)
+            elif kind == "duration"
+                int low = int.parse(words[1])
+                int high = int.parse(words[2])
+                details = "{format_decimal(modified, 4)} range {format_hundredths(low)} {format_hundredths(high)}"
+                breach = modified < real64(low) / 100.0 or modified > real64(high) / 100.0
+            else
+                int limit = int.parse(words[1])
+                details = "{format_decimal(dv01, 2)} limit {format_hundredths(limit)}"
+                breach = dv01 * 100.0 > real64(limit)
+            if breach
+                breaches += 1
+            lines = lines.append("{name} {kind} {details} {if breach then "BREACH" else "PASS"}")
+        return lines.append("{name} breaches {breaches}")
+
+Portfolio[] build_portfolios(Position[] positions)
+    string[] names = []
+    for Position position = positions[]
+        if not has_word(names, position.portfolio)
+            names = names.append(position.portfolio)
+    Portfolio[] result = []
+    for string name = names.sorted()[]
+        string[] codes = []
+        for Position position = positions[]
+            if position.portfolio == name
+                codes = codes.append(position.valuation.bond.code)
+        Position[] members = []
+        for string code = codes.sorted()[]
+            for Position position = positions[]
+                if position.portfolio == name and position.valuation.bond.code == code
+                    members = members.append(position)
+                    break
+        result = result.append(Portfolio(name, members))
+    return result
+
+string[] cashflow_lines(Bond[] bonds)
+    string[] lines = ["bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal"]
+    string[] codes = []
+    for Bond bond = bonds[]
+        codes = codes.append(bond.code)
+    for string code = codes.sorted()[]
+        Bond bond = bonds[bond_index(bonds, code)]
+        for Period period = bond.periods[]
+            if period.cash_flow > 0
+                real64 fraction = real64(period.numerator) / real64(period.denominator)
+                lines = lines.append("{code},{period.number},{dates.format_date(period.start)},{dates.format_date(period.finish)},{dates.format_date(period.payment)},{format_decimal(fraction, 6)},{period.rate},{period.opening},{period.coupon},{period.principal}")
+    return lines
+
+string[] analytics_lines(Valuation[] valuations)
+    string[] lines = ["bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread"]
+    string[] codes = []
+    for Valuation value = valuations[]
+        codes = codes.append(value.bond.code)
+    for string code = codes.sorted()[]
+        Valuation value = valuations[valuation_index(valuations, code)]
+        lines = lines.append("{code},{format_decimal(real64(value.clean) / 1000.0, 6)},{format_decimal(value.accrued, 6)},{format_decimal(value.target, 6)},{format_percent(value.ytm)},{format_percent(value.ytw)},{dates.format_date(value.workout)},{dates.format_date(value.next_payment)},{format_decimal(value.wal, 4)},{format_decimal(value.risk.macaulay, 4)},{format_decimal(value.risk.modified, 4)},{format_decimal(value.risk.convexity, 4)},{format_decimal(value.risk.dv01, 6)},{format_decimal(value.curve_clean, 6)},{format_percent(value.zspread)}")
+    return lines
+
+string[] curve_lines(int valuation, int settlement, curve.Pillar[] pillars, curve.ZeroCurve zero)
+    string[] lines = ["valuation {dates.format_date(valuation)} settlement {dates.format_date(settlement)}"]
+    int previous = 0
+    for nat index < len(pillars)
+        curve.Pillar pillar = pillars[index]
+        int days = zero.days[index]
+        lines = lines.append("pillar {dates.format_date(pillar.maturity)} days {days} frequency {pillar.frequency} par {format_hundredths(pillar.coupon)} zero {format_percent(zero.rates[index])} df {format_decimal(zero.discount(days), 6)} forward {format_percent(zero.forward(previous, days))}")
+        previous = days
+    for 1 <= int year <= zero.days[len(zero.days) - 1] / 365
+        int days = year * 365
+        lines = lines.append("grid {year}Y days {days} zero {format_percent(zero.zero_rate(days))} df {format_decimal(zero.discount(days), 6)} forward {format_percent(zero.forward(days - 365, days))}")
+    return lines
+
+void write_lines(string name, string[] lines)
+    file.write("output/" + name, if len(lines) == 0 then "" else lines.join(NL) + NL)
+
+if main
+    Params params = read_params()
+    int[] holidays = []
+    for string line = read_lines("calendar.txt")[]
+        holidays = holidays.append(dates.parse(line))
+    dates.Calendar calendar = dates.Calendar(holidays)
+    Fixings fixings = read_fixings()
+    int settlement = calendar.business_days(params.valuation, params.settlement_days, 1)
+    string[] errors = []
+    curve.Pillar[] pillars = validate_pillars(settlement, &errors)
+    Scenario[] scenarios = validate_scenarios(params.scenarios, int(len(pillars)), &errors)
+    Bond[] bonds = validate_bonds(calendar, fixings, &errors)
+    Valuation[] valuations = validate_prices(bonds, settlement, &errors)
+    curve.ZeroCurve zero = curve.bootstrap(settlement, pillars)
+    for nat index < len(valuations)
+        .valuations[index].analyze(zero, settlement)
+    Position[] positions = validate_holdings(bonds, valuations, &errors)
+    Portfolio[] portfolios = build_portfolios(positions)
+    for nat index < len(portfolios)
+        .portfolios[index].analyze(zero, scenarios, settlement)
+    string[] report = []
+    string[] scenario_rows = ["portfolio,scenario,bond,value,pnl"]
+    string[] compliance = []
+    for Portfolio portfolio = portfolios[]
+        report = report.concat(portfolio.report_lines())
+        scenario_rows = scenario_rows.concat(portfolio.scenario_lines())
+        compliance = compliance.concat(portfolio.compliance_lines(params.limits, settlement))
+    if not file.is_directory("output")
+        file.mkdir("output")
+    write_lines("errors.txt", errors)
+    write_lines("cashflows.csv", cashflow_lines(bonds))
+    write_lines("analytics.csv", analytics_lines(valuations))
+    write_lines("curve.txt", curve_lines(params.valuation, settlement, pillars, zero))
+    write_lines("portfolio.txt", report)
+    write_lines("scenarios.csv", scenario_rows)
+    write_lines("compliance.txt", compliance)

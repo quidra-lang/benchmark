@@ -1,0 +1,5 @@
+local value = 1
+for n = 0, 12 do
+    if n > 0 then value = value * n end
+    io.write(string.format("%d! = %d\n", n, value))
+end

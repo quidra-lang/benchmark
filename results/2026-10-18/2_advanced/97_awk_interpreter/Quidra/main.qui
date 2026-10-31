@@ -1,0 +1,733 @@
+import lexer = "./lexer.qui"
+import parser = "./parser.qui"
+import values = "./values_fields.qui"
+import builtins = "./builtins.qui"
+import streams = "./streams.qui"
+
+class StaticError(lexer.Position position, int priority, string message)
+class NameUse(string key, string name, lexer.Position position)
+class Link(string first, string second)
+class Preparation(string[] globals = ["FILENAME", "FNR", "FS", "NF", "NR", "OFS", "ORS", "SUBSEP"], string[] arrays = [], NameUse[] uses = [], map.Map<string, int> functions = map.Map<string, int>(), map.Map<int, int> lines = map.Map<int, int>(), StaticError | none problem = none)
+class Binding(values.Value value = values.Value(), int array_index = -1)
+class Location(string kind, string name = "", int frame = -1, int array_index = -1, string key = "", int field = 0)
+class Context(parser.Program program, Preparation preparation, streams.Arguments arguments, values.Fields fields = values.Fields(), streams.State io = streams.State(), map.Map<string, Binding> globals = map.Map<string, Binding>(), map.Map<string, Binding>[] frames = [], map.Map<string, values.Value>[] arrays = [], int operand = 0, int current_file = -1, string[] current_lines = [], int current_position = 0, string phase = "BEGIN", int status = 0, string flow = "", values.Value returned = values.Value(), builtins.RuntimeError | none problem = none, int[] rule_counts = [], bool[] ranges = [], int[] calls = [], int[] active = [], int[] depths = [])
+
+string[] add_name(string[] names, string name)
+    return if lexer.has(names, name) then names else names.append(name)
+
+string scoped_key(const parser.Program program, int scope, string name)
+    if scope >= 0
+        for parser.Parameter parameter = program.functions[scope].parameters[]
+            if parameter.name == name
+                return "{scope}:{name}"
+    return "global:{name}"
+
+void use_name(Preparation &preparation, const parser.Program program, int scope, string name, const lexer.Position position, bool array_name)
+    string key = scoped_key(program, scope, name)
+    if key.starts_with("global:")
+        preparation.globals = add_name(preparation.globals, name)
+    if array_name
+        preparation.arrays = add_name(preparation.arrays, key)
+    preparation.uses = preparation.uses.append(NameUse(key, name, position))
+
+bool earlier(const StaticError first, const StaticError second)
+    return first.position.line < second.position.line or (first.position.line == second.position.line and (first.position.column < second.position.column or (first.position.column == second.position.column and first.priority < second.priority)))
+
+void static_error(Preparation &preparation, StaticError candidate)
+    match preparation.problem
+        StaticError previous
+            if earlier(candidate, previous)
+                preparation.problem = candidate
+        none
+            preparation.problem = candidate
+
+Preparation prepare(const parser.Program program)
+    Preparation result = Preparation()
+    for int index < int(len(program.functions))
+        parser.Function definition = program.functions[index]
+        if result.functions.has(definition.name)
+            static_error(&result, StaticError(definition.position, 0, "function {definition.name} redefined"))
+        else
+            .result.functions.set(definition.name, index)
+        string[] seen = []
+        for parser.Parameter parameter = definition.parameters[]
+            if lexer.has(seen, parameter.name)
+                static_error(&result, StaticError(parameter.position, 1, "duplicate parameter {parameter.name}"))
+            seen = seen.append(parameter.name)
+            result.uses = result.uses.append(NameUse("{index}:{parameter.name}", parameter.name, parameter.position))
+    for parser.Expr node = program.expressions[]
+        if node.kind == "name" or node.kind == "index"
+            use_name(&result, program, node.scope, node.text, node.position, node.kind == "index")
+        elif node.kind == "member"
+            use_name(&result, program, node.scope, node.text, node.name_position, true)
+        elif node.kind == "call" and node.flag and node.text == "split"
+            parser.Expr argument = program.expressions[node.children[1]]
+            result.arrays = add_name(result.arrays, scoped_key(program, node.scope, argument.text))
+    for parser.Stmt node = program.statements[]
+        if node.kind != "block" and node.kind != "empty"
+            .result.lines.set(node.position.line, 0)
+        if node.kind == "delete"
+            use_name(&result, program, node.scope, node.name, node.name_position, true)
+        elif node.kind == "forin"
+            use_name(&result, program, node.scope, node.name, node.name_position, false)
+            use_name(&result, program, node.scope, node.array_name, node.array_position, true)
+    for NameUse use = result.uses[]
+        if result.functions.has(use.name)
+            static_error(&result, StaticError(use.position, 2, "function {use.name} used as variable"))
+    Link[] links = []
+    for parser.Expr node = program.expressions[]
+        if node.kind != "call" or node.flag
+            continue
+        int function_index = -1
+        match result.functions.get(node.text)
+            int found
+                function_index = found
+            none
+                static_error(&result, StaticError(node.position, 3, "undefined function {node.text}"))
+                continue
+        parser.Function definition = program.functions[function_index]
+        if len(node.children) > len(definition.parameters)
+            static_error(&result, StaticError(node.position, 4, "too many arguments to {node.text}"))
+        int count = if len(node.children) < len(definition.parameters) then int(len(node.children)) else int(len(definition.parameters))
+        for int index < count
+            parser.Expr argument = program.expressions[node.children[index]]
+            if argument.kind == "name"
+                links = links.append(Link(scoped_key(program, node.scope, argument.text), "{function_index}:{definition.parameters[index].name}"))
+    while true
+        bool changed = false
+        for Link link = links[]
+            if lexer.has(result.arrays, link.first) or lexer.has(result.arrays, link.second)
+                if not lexer.has(result.arrays, link.first)
+                    result.arrays = result.arrays.append(link.first)
+                    changed = true
+                if not lexer.has(result.arrays, link.second)
+                    result.arrays = result.arrays.append(link.second)
+                    changed = true
+        if not changed
+            break
+    return result
+
+int new_array(Context &context)
+    context.arrays = context.arrays.append(map.Map<string, values.Value>())
+    return int(len(context.arrays)) - 1
+
+int frame_for(const Context context, string name)
+    int index = int(len(context.frames)) - 1
+    return if index >= 0 and context.frames[index].has(name) then index else -1
+
+Binding binding(const Context context, int frame, string name)
+    map.Map<string, Binding> cells = if frame < 0 then context.globals else context.frames[frame]
+    match cells.get(name)
+        Binding found
+            return found
+        none
+            return Binding()
+
+values.Value variable_value(const Context context, int frame, string name)
+    if frame < 0 and name == "NF"
+        return values.Value("number", amount = int(len(context.fields.values)))
+    return binding(context, frame, name).value
+
+values.Value global_value(const Context context, string name)
+    return variable_value(context, -1, name)
+
+int array_for(const Context context, string name)
+    return binding(context, frame_for(context, name), name).array_index
+
+void put_global(Context &context, string name, values.Value value)
+    .context.globals.set(name, Binding(value))
+    context.preparation.globals = add_name(context.preparation.globals, name)
+
+void runtime_error(Context &context, const lexer.Position position, string message)
+    if context.flow == ""
+        context.problem = builtins.RuntimeError(position, message)
+        context.flow = "error"
+
+values.Value evaluate(Context &context, int index);
+void execute_statement(Context &context, int index);
+
+string subscript(Context &context, const int[] expressions)
+    string[] parts = []
+    for int index = expressions[]
+        values.Value value = evaluate(&context, index)
+        if context.flow != ""
+            return ""
+        parts = parts.append(value.string_value())
+    return parts.join(global_value(context, "SUBSEP").string_value())
+
+Location locate(Context &context, int index)
+    parser.Expr node = context.program.expressions[index]
+    if node.kind == "name"
+        return Location("variable", node.text, frame_for(context, node.text))
+    if node.kind == "index"
+        string key = subscript(&context, node.children)
+        return Location("element", array_index = array_for(context, node.text), key = key)
+    values.Value value = evaluate(&context, node.children[0])
+    int field_index = value.number()
+    if context.flow == "" and field_index < 0
+        runtime_error(&context, node.position, "negative field index")
+    return Location("field", field = field_index)
+
+values.Value read_location(Context &context, const Location location)
+    if context.flow != ""
+        return values.Value()
+    if location.kind == "variable"
+        return variable_value(context, location.frame, location.name)
+    if location.kind == "field"
+        return values.get_field(context.fields, location.field)
+    match context.arrays[location.array_index].get(location.key)
+        values.Value found
+            return found
+        none
+            values.Value value = values.Value()
+            .context.arrays[location.array_index].set(location.key, value)
+            return value
+
+values.Value store(Context &context, const Location location, const values.Value value, const lexer.Position position)
+    if context.flow != ""
+        return values.Value()
+    if location.kind == "field"
+        string fs = global_value(context, "FS").string_value()
+        string ofs = global_value(context, "OFS").string_value()
+        values.assign_field(&context.fields, location.field, value, fs, ofs)
+    elif location.kind == "element"
+        .context.arrays[location.array_index].set(location.key, value)
+    elif location.frame < 0 and location.name == "NF"
+        int count = value.number()
+        if count < 0
+            runtime_error(&context, position, "negative NF")
+            return values.Value()
+        string ofs = global_value(context, "OFS").string_value()
+        values.change_nf(&context.fields, count, ofs)
+    elif location.frame >= 0
+        .context.frames[location.frame].set(location.name, Binding(value))
+    else
+        put_global(&context, location.name, value)
+    return read_location(&context, location)
+
+values.Value arithmetic(Context &context, string operation, int first, int second, const lexer.Position position)
+    if context.flow != ""
+        return values.Value()
+    if (operation == "/" or operation == "%") and second == 0
+        runtime_error(&context, position, "division by zero")
+        return values.Value()
+    if operation == "^" and second < 0
+        runtime_error(&context, position, "negative exponent")
+        return values.Value()
+    int amount = 0
+    if operation == "+"
+        amount = first + second
+    elif operation == "-"
+        amount = first - second
+    elif operation == "*"
+        amount = first * second
+    elif operation == "/"
+        amount = first / second
+    elif operation == "%"
+        amount = first % second
+    else
+        amount = 1
+        int base = first
+        int exponent = second
+        while exponent > 0
+            if exponent % 2 == 1
+                amount *= base
+            exponent /= 2
+            if exponent > 0
+                base *= base
+    return values.Value("number", amount = amount)
+
+string | none next_record(Context &context)
+    if context.phase == "END" or context.flow != ""
+        return none
+    while true
+        if context.current_file >= 0 and context.current_position < int(len(context.current_lines))
+            string line = context.current_lines[context.current_position]
+            context.current_position += 1
+            context.arguments.files[context.current_file].records += 1
+            int nr = global_value(context, "NR").number() + 1
+            int fnr = global_value(context, "FNR").number() + 1
+            put_global(&context, "NR", values.Value("number", amount = nr))
+            put_global(&context, "FNR", values.Value("number", amount = fnr))
+            return line
+        if context.operand == int(len(context.arguments.operands))
+            return none
+        streams.Operand operand = context.arguments.operands[context.operand]
+        context.operand += 1
+        if operand.kind == "assignment"
+            put_global(&context, operand.name, values.input_value(operand.value))
+        else
+            put_global(&context, "FILENAME", values.Value("string", operand.name))
+            put_global(&context, "FNR", values.Value("number"))
+            context.current_file = operand.file_index
+            context.current_position = 0
+            match streams.read_data(operand.name)
+                string[] lines
+                    context.current_lines = lines
+                none
+                    context.current_lines = []
+
+values.Value call_builtin(Context &context, const parser.Expr node)
+    if node.text == "length"
+        if len(node.children) == 0
+            return values.Value("number", amount = int(len(context.fields.record.string_value())))
+        parser.Expr argument = context.program.expressions[node.children[0]]
+        if argument.kind == "name"
+            int array_index = array_for(context, argument.text)
+            if array_index >= 0
+                return values.Value("number", amount = int(context.arrays[array_index].size()))
+        values.Value value = evaluate(&context, node.children[0])
+        return values.Value("number", amount = int(len(value.string_value())))
+    if node.text == "split"
+        values.Value first = evaluate(&context, node.children[0])
+        string separator = global_value(context, "FS").string_value()
+        if len(node.children) == 3
+            values.Value third = evaluate(&context, node.children[2])
+            separator = third.string_value()
+        if context.flow != ""
+            return values.Value()
+        string name = context.program.expressions[node.children[1]].text
+        int array_index = array_for(context, name)
+        string[] pieces = values.split_text(first.string_value(), separator)
+        context.arrays[array_index] = map.Map<string, values.Value>()
+        for int index < int(len(pieces))
+            .context.arrays[array_index].set("{index + 1}", values.input_value(pieces[index]))
+        return values.Value("number", amount = int(len(pieces)))
+    values.Value[] arguments = []
+    for int index = node.children[]
+        arguments = arguments.append(evaluate(&context, index))
+        if context.flow != ""
+            return values.Value()
+    if node.text == "close"
+        int result = streams.close(&context.io, arguments[0].string_value())
+        return values.Value("number", amount = result)
+    match builtins.scalar(node.text, arguments, node.position)
+        values.Value value
+            return value
+        builtins.RuntimeError problem
+            runtime_error(&context, problem.position, problem.message)
+            return values.Value()
+
+values.Value call_function(Context &context, const parser.Expr node)
+    int index = -1
+    match context.preparation.functions.get(node.text)
+        int found
+            index = found
+        none
+            return values.Value()
+    parser.Function definition = context.program.functions[index]
+    map.Map<string, Binding> frame = map.Map<string, Binding>()
+    for int parameter_index < int(len(definition.parameters))
+        string name = definition.parameters[parameter_index].name
+        Binding cell = Binding()
+        if lexer.has(context.preparation.arrays, "{index}:{name}")
+            if parameter_index < int(len(node.children))
+                string actual_name = context.program.expressions[node.children[parameter_index]].text
+                cell.array_index = array_for(context, actual_name)
+            else
+                cell.array_index = new_array(&context)
+        elif parameter_index < int(len(node.children))
+            cell.value = evaluate(&context, node.children[parameter_index])
+        if context.flow != ""
+            return values.Value()
+        .frame.set(name, cell)
+    context.calls[index] += 1
+    context.active[index] += 1
+    if context.active[index] > context.depths[index]
+        context.depths[index] = context.active[index]
+    context.frames = context.frames.append(frame)
+    execute_statement(&context, definition.body)
+    context.frames = context.frames[0:<int(len(context.frames)) - 1]
+    context.active[index] -= 1
+    if context.flow == "return"
+        values.Value result = context.returned
+        context.flow = ""
+        context.returned = values.Value()
+        return result
+    return values.Value()
+
+values.Value evaluate(Context &context, int index)
+    if context.flow != "" or index < 0
+        return values.Value()
+    parser.Expr node = context.program.expressions[index]
+    if node.kind == "number"
+        return values.Value("number", amount = node.amount)
+    if node.kind == "string"
+        return values.Value("string", node.text)
+    if node.kind == "name" or node.kind == "index" or node.kind == "field"
+        Location location = locate(&context, index)
+        return read_location(&context, location)
+    if node.kind == "parentheses"
+        return evaluate(&context, node.children[0])
+    if node.kind == "unary"
+        values.Value value = evaluate(&context, node.children[0])
+        int amount = if node.text == "-" then -value.number() elif node.text == "+" then value.number() elif value.truth() then 0 else 1
+        return values.Value("number", amount = amount)
+    if node.kind == "binary"
+        values.Value first = evaluate(&context, node.children[0])
+        if context.flow != ""
+            return values.Value()
+        if node.text == "||" and first.truth()
+            return values.Value("number", amount = 1)
+        if node.text == "&&" and not first.truth()
+            return values.Value("number", amount = 0)
+        values.Value second = evaluate(&context, node.children[1])
+        if context.flow != ""
+            return values.Value()
+        if node.text == "||" or node.text == "&&"
+            return values.Value("number", amount = if second.truth() then 1 else 0)
+        if node.text == "concat"
+            return values.Value("string", first.string_value() + second.string_value())
+        if lexer.has(["<", "<=", "==", "!=", ">=", ">"], node.text)
+            int order = values.compare(first, second)
+            bool result = if node.text == "<" then order < 0 elif node.text == "<=" then order <= 0 elif node.text == "==" then order == 0 elif node.text == "!=" then order != 0 elif node.text == ">=" then order >= 0 else order > 0
+            return values.Value("number", amount = if result then 1 else 0)
+        return arithmetic(&context, node.text, first.number(), second.number(), node.position)
+    if node.kind == "assignment"
+        Location location = locate(&context, node.children[0])
+        values.Value right = evaluate(&context, node.children[1])
+        values.Value value = right
+        if node.text != "="
+            values.Value left = read_location(&context, location)
+            value = arithmetic(&context, node.text[0], left.number(), right.number(), node.position)
+        return store(&context, location, value, node.position)
+    if node.kind == "increment"
+        Location location = locate(&context, node.children[0])
+        values.Value previous = read_location(&context, location)
+        int amount = previous.number()
+        values.Value ignored = store(&context, location, values.Value("number", amount = amount + node.amount), node.position)
+        return values.Value("number", amount = if node.flag then amount + node.amount else amount)
+    if node.kind == "conditional"
+        values.Value condition = evaluate(&context, node.children[0])
+        return evaluate(&context, node.children[if condition.truth() then 1 else 2])
+    if node.kind == "member"
+        string key = subscript(&context, node.children)
+        if context.flow != ""
+            return values.Value()
+        int array_index = array_for(context, node.text)
+        return values.Value("number", amount = if context.arrays[array_index].has(key) then 1 else 0)
+    if node.kind == "call"
+        return if node.flag then call_builtin(&context, node) else call_function(&context, node)
+    streams.Line line = streams.Line(0)
+    if node.children[1] >= 0
+        values.Value name = evaluate(&context, node.children[1])
+        if context.flow != ""
+            return values.Value()
+        line = streams.getline(&context.io, name.string_value())
+    else
+        match next_record(&context)
+            string found
+                line = streams.Line(1, found)
+            none
+                line = streams.Line(0)
+    if line.status == 1
+        if node.children[0] >= 0
+            Location location = locate(&context, node.children[0])
+            values.Value ignored = store(&context, location, values.input_value(line.text), node.position)
+        else
+            string fs = global_value(context, "FS").string_value()
+            values.set_record(&context.fields, line.text, fs)
+    return values.Value("number", amount = line.status)
+
+void output_statement(Context &context, const parser.Stmt node)
+    values.Value[] arguments = []
+    for int index = node.expressions[]
+        arguments = arguments.append(evaluate(&context, index))
+        if context.flow != ""
+            return
+    string text = ""
+    if node.formatted
+        match builtins.format(arguments, node.position)
+            string found
+                text = found
+            builtins.RuntimeError problem
+                runtime_error(&context, problem.position, problem.message)
+                return
+    else
+        if len(arguments) == 0
+            arguments = [context.fields.record]
+        string[] pieces = []
+        for values.Value argument = arguments[]
+            pieces = pieces.append(argument.string_value())
+        text = pieces.join(global_value(context, "OFS").string_value()) + global_value(context, "ORS").string_value()
+    string | none name = none
+    if node.destination >= 0
+        values.Value destination = evaluate(&context, node.destination)
+        if context.flow != ""
+            return
+        string target = destination.string_value()
+        if not streams.valid_file(target) or target == "stdout.txt" or target == "stats.txt"
+            runtime_error(&context, node.redirect_position, "invalid output file name")
+            return
+        name = target
+    streams.output(&context.io, name, node.redirect == ">>", text)
+
+bool execute_loop_body(Context &context, int body)
+    execute_statement(&context, body)
+    if context.flow == "break"
+        context.flow = ""
+        return false
+    if context.flow == "continue"
+        context.flow = ""
+    return context.flow == ""
+
+void execute_statement(Context &context, int index)
+    if context.flow != "" or index < 0
+        return
+    parser.Stmt node = context.program.statements[index]
+    if node.kind != "block" and node.kind != "empty"
+        int count = 0
+        match context.preparation.lines.get(node.position.line)
+            int found
+                count = found
+            none
+                count = 0
+        .context.preparation.lines.set(node.position.line, count + 1)
+    if node.kind == "block"
+        for int child = node.children[]
+            execute_statement(&context, child)
+            if context.flow != ""
+                break
+    elif node.kind == "expression"
+        values.Value ignored = evaluate(&context, node.expressions[0])
+    elif node.kind == "if"
+        values.Value condition = evaluate(&context, node.expressions[0])
+        execute_statement(&context, node.children[if condition.truth() then 0 else 1])
+    elif node.kind == "while" or node.kind == "do" or node.kind == "for"
+        if node.kind == "for"
+            values.Value ignored = evaluate(&context, node.expressions[0])
+        bool first_iteration = true
+        while context.flow == ""
+            bool repeat = true
+            if node.kind == "while" or (node.kind == "do" and not first_iteration) or (node.kind == "for" and node.expressions[1] >= 0)
+                int condition_index = node.expressions[if node.kind == "for" then 1 else 0]
+                values.Value condition = evaluate(&context, condition_index)
+                repeat = condition.truth()
+            if not repeat or context.flow != ""
+                break
+            first_iteration = false
+            if not execute_loop_body(&context, node.children[0])
+                break
+            if node.kind == "for"
+                values.Value ignored = evaluate(&context, node.expressions[2])
+    elif node.kind == "forin"
+        int array_index = array_for(context, node.array_name)
+        string[] keys = context.arrays[array_index].keys()
+        for string key = values.key_order(keys)[]
+            Location location = Location("variable", node.name, frame_for(context, node.name))
+            values.Value ignored = store(&context, location, values.input_value(key), node.name_position)
+            if not execute_loop_body(&context, node.children[0])
+                break
+    elif node.kind == "output"
+        output_statement(&context, node)
+    elif node.kind == "delete"
+        string key = if node.formatted then subscript(&context, node.expressions) else ""
+        if context.flow != ""
+            return
+        int array_index = array_for(context, node.name)
+        if node.formatted
+            .context.arrays[array_index].remove(key)
+        else
+            context.arrays[array_index] = map.Map<string, values.Value>()
+    elif node.kind == "next"
+        if context.phase == "BEGIN" or context.phase == "END"
+            runtime_error(&context, node.position, "next used in BEGIN or END")
+        else
+            context.flow = "next"
+    elif node.kind == "break" or node.kind == "continue"
+        context.flow = node.kind
+    elif node.kind == "return" or node.kind == "exit"
+        values.Value value = evaluate(&context, node.expressions[0])
+        if context.flow != ""
+            return
+        if node.kind == "exit" and node.expressions[0] >= 0
+            context.status = value.number()
+        context.returned = value
+        context.flow = node.kind
+
+bool test_rule(Context &context, const parser.Rule rule, int index)
+    if rule.kind == "all"
+        return true
+    if rule.kind == "range"
+        if not context.ranges[index]
+            values.Value start = evaluate(&context, rule.start)
+            if context.flow != ""
+                return false
+            if start.truth()
+                context.ranges[index] = true
+        bool matched = context.ranges[index]
+        if matched
+            values.Value finish = evaluate(&context, rule.finish)
+            if context.flow == "" and finish.truth()
+                context.ranges[index] = false
+        return matched
+    values.Value result = evaluate(&context, rule.start)
+    return result.truth()
+
+void execute_program(Context &context)
+    for streams.Assignment option = context.arguments.options[]
+        put_global(&context, option.name, values.input_value(option.value))
+    for int index < int(len(context.program.rules))
+        parser.Rule rule = context.program.rules[index]
+        if rule.kind == "BEGIN"
+            context.rule_counts[index] += 1
+            execute_statement(&context, rule.action)
+            if context.flow != ""
+                break
+    if context.flow == "error"
+        return
+    bool exiting = context.flow == "exit"
+    context.flow = ""
+    context.phase = "rules"
+    bool read_input = false
+    for parser.Rule rule = context.program.rules[]
+        read_input = read_input or rule.kind != "BEGIN"
+    if not exiting and read_input
+        while true
+            string | none next_line = next_record(&context)
+            string record = ""
+            bool obtained = false
+            match next_line
+                string line
+                    record = line
+                    obtained = true
+                none
+                    obtained = false
+            if not obtained
+                break
+            string fs = global_value(context, "FS").string_value()
+            values.set_record(&context.fields, record, fs)
+            for int index < int(len(context.program.rules))
+                parser.Rule rule = context.program.rules[index]
+                if rule.kind == "BEGIN" or rule.kind == "END"
+                    continue
+                bool matched = test_rule(&context, rule, index)
+                if context.flow == "" and matched
+                    context.rule_counts[index] += 1
+                    if rule.action >= 0
+                        execute_statement(&context, rule.action)
+                    else
+                        string text = context.fields.record.string_value() + global_value(context, "ORS").string_value()
+                        streams.output(&context.io, none, false, text)
+                if context.flow != ""
+                    break
+            if context.flow == "next"
+                context.flow = ""
+                continue
+            if context.flow != ""
+                break
+    if context.flow == "error"
+        return
+    context.flow = ""
+    context.phase = "END"
+    for int index < int(len(context.program.rules))
+        parser.Rule rule = context.program.rules[index]
+        if rule.kind == "END"
+            context.rule_counts[index] += 1
+            execute_statement(&context, rule.action)
+            if context.flow != ""
+                break
+
+Context initialize(const parser.Program program, const Preparation preparation, const streams.Arguments arguments)
+    Context context = Context(program, preparation, arguments)
+    for string name = preparation.globals[]
+        Binding cell = Binding()
+        if lexer.has(preparation.arrays, "global:{name}")
+            cell.array_index = new_array(&context)
+        .context.globals.set(name, cell)
+    bin separator_bits = bin.parse("00011100")
+    string separator = string.from_utf8(separator_bits)
+    put_global(&context, "FS", values.Value("string", " "))
+    put_global(&context, "OFS", values.Value("string", " "))
+    put_global(&context, "ORS", values.Value("string", NL))
+    put_global(&context, "SUBSEP", values.Value("string", separator))
+    put_global(&context, "NR", values.Value("number"))
+    put_global(&context, "FNR", values.Value("number"))
+    put_global(&context, "FILENAME", values.Value("string"))
+    context.rule_counts = array(len(program.rules), fill = 0)
+    context.ranges = array(len(program.rules), fill = false)
+    context.calls = array(len(program.functions), fill = 0)
+    context.active = array(len(program.functions), fill = 0)
+    context.depths = array(len(program.functions), fill = 0)
+    return context
+
+void save_stats(const string[] lines)
+    bool exists = file.exists("output")
+    if not exists
+        file.mkdir("output")
+    file.write("output/stats.txt", lines.join(NL) + NL)
+
+void failure(string status)
+    save_stats([status])
+    file.write("output/stdout.txt", "")
+
+void report(const Context context)
+    streams.save(context.io)
+    string status = "status: exit {context.status}"
+    match context.problem
+        builtins.RuntimeError problem
+            status = "status: runtime error at {problem.position.text()}: {problem.message}"
+        none
+            status = status
+    string[] lines = [status, "[inputs]"]
+    for streams.FileCount input_file = context.arguments.files[]
+        lines = lines.append("{input_file.name} records={input_file.records}")
+    lines = lines.append("[getline]")
+    for streams.Input input_file = context.io.inputs[]
+        lines = lines.append(if input_file.opened then "{input_file.name} reads={input_file.reads}" else "{input_file.name} missing")
+    lines = lines.append("[rules]")
+    for int index < int(len(context.program.rules))
+        parser.Rule rule = context.program.rules[index]
+        lines = lines.append("{rule.position.text()} {rule.kind} count={context.rule_counts[index]}")
+    lines = lines.append("[functions]")
+    for int index < int(len(context.program.functions))
+        parser.Function definition = context.program.functions[index]
+        lines = lines.append("{definition.name} calls={context.calls[index]} depth={context.depths[index]}")
+    lines = lines.concat(["[outputs]", "stdout.txt writes={context.io.writes} bytes={len(context.io.stdout)}"])
+    for streams.Output output_file = context.io.outputs[]
+        lines = lines.append("{output_file.name} writes={output_file.writes} bytes={len(output_file.text)}")
+    lines = lines.append("[lines]")
+    int[] line_numbers = context.preparation.lines.keys()
+    for int line_number = line_numbers.sorted()
+        match context.preparation.lines.get(line_number)
+            int count
+                lines = lines.append("{line_number} count={count}")
+            none
+                continue
+    lines = lines.append("[globals]")
+    for string name = context.preparation.globals.sorted()
+        Binding cell = binding(context, -1, name)
+        string display = if cell.array_index >= 0 then "array ({context.arrays[cell.array_index].size()})" else global_value(context, name).display()
+        lines = lines.append("{name} = {display}")
+    save_stats(lines)
+
+void run_program()
+    string source = file.read("input/program.awk")
+    lexer.Result tokens = lexer.lex(source)
+    match tokens.problem
+        lexer.Position position
+            failure("status: syntax error at {position.text()}")
+            return
+        none
+            source = source
+    parser.Program program = parser.parse(tokens.tokens)
+    match program.problem
+        lexer.Position position
+            failure("status: syntax error at {position.text()}")
+            return
+        none
+            source = source
+    Preparation preparation = prepare(program)
+    match preparation.problem
+        StaticError problem
+            failure("status: error at {problem.position.text()}: {problem.message}")
+            return
+        none
+            source = source
+    string arguments_text = file.read("input/args.txt")
+    Context context = initialize(program, preparation, streams.arguments(arguments_text))
+    execute_program(&context)
+    report(context)
+
+if main
+    run_program()

@@ -1,0 +1,9 @@
+for _, start in ipairs({1, 6, 27, 97, 871}) do
+    local n, steps, peak = start, 0, start
+    while n ~= 1 do
+        n = n % 2 == 0 and n // 2 or 3 * n + 1
+        steps = steps + 1
+        peak = math.max(peak, n)
+    end
+    io.write(string.format("%d: steps=%d max=%d\n", start, steps, peak))
+end

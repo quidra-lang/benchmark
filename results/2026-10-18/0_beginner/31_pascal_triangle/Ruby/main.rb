@@ -1,0 +1,5 @@
+row = [1]
+12.times do
+  puts row.join(' ')
+  row = [1] + row.each_cons(2).map(&:sum) + [1]
+end

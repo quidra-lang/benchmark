@@ -1,0 +1,672 @@
+import pddl = "./pddl_parser.qui"
+import grounding = "./grounding.qui"
+import heuristics = "./heuristics.qui"
+import search = "./search.qui"
+import graphplan = "./graphplan.qui"
+
+string | none arguments(const pddl.Domain domain, const string[] args, const string[] expected, const map.Map<string, string> table, string noun)
+    if len(args) != len(expected)
+        return "expected {len(expected)} arguments, got {len(args)}"
+    for int position < int(len(args))
+        match table.get(args[position])
+            string actual
+                if not grounding.subtype(domain, actual, expected[position])
+                    return "argument {position + 1} ({args[position]}) is not of type {expected[position]}"
+            none
+                return "unknown {noun} {args[position]}"
+    return none
+
+string | none atom_error(const pddl.Domain domain, const pddl.Atom item, const map.Map<string, string> table, string noun, bool equality)
+    if equality and item.predicate == "="
+        return arguments(domain, item.terms, ["object", "object"], table, noun)
+    for pddl.Predicate declaration = domain.predicates[]
+        if declaration.name == item.predicate
+            return arguments(domain, item.terms, declaration.types, table, noun)
+    return "unknown predicate {item.predicate}"
+
+map.Map<string, string> type_table(const pddl.Typed[] entries)
+    map.Map<string, string> result = map.Map<string, string>()
+    for pddl.Typed entry = entries[]
+        .result.set(entry.name, entry.type)
+    return result
+
+void validate_domain(pddl.Domain &domain)
+    pddl.Schema[] actions = []
+    for pddl.Schema schema = domain.actions[]
+        string | none reason = none
+        for pddl.Typed parameter = schema.parameters[]
+            if not pddl.has(domain.type_order, parameter.type)
+                reason = "unknown type {parameter.type}"
+                break
+        match reason
+            string message
+                domain.diagnostics = domain.diagnostics.append("error: action {schema.name}: {message}")
+                continue
+            none
+                map.Map<string, string> table = type_table(schema.parameters)
+                pddl.Literal[] literals = schema.pre.concat(schema.effects)
+                for pddl.Literal entry = literals[]
+                    match atom_error(domain, entry.atom, table, "variable", true)
+                        string message
+                            reason = "{entry.atom.text()}: {message}"
+                            break
+                        none
+                            continue
+        match reason
+            string message
+                domain.diagnostics = domain.diagnostics.append("error: action {schema.name}: {message}")
+            none
+                actions = actions.append(schema)
+    domain.actions = actions
+    for pddl.Predicate declaration = domain.predicates[]
+        bool used = false
+        for pddl.Schema schema = domain.actions[]
+            pddl.Literal[] literals = schema.pre.concat(schema.effects)
+            for pddl.Literal entry = literals[]
+                if entry.atom.predicate == declaration.name
+                    used = true
+        if not used
+            domain.diagnostics = domain.diagnostics.append("warning: predicate {declaration.name} is not used by any action")
+
+void validate_problem(const pddl.Domain domain, pddl.Problem &problem)
+    map.Map<string, string> table = type_table(problem.objects)
+    for int side < 2
+        pddl.Atom[] original = if side == 0 then problem.initial else problem.goals
+        pddl.Atom[] kept = []
+        string side_name = if side == 0 then "init" else "goal"
+        for pddl.Atom item = original[]
+            string | none reason = atom_error(domain, item, table, "object", false)
+            match reason
+                string message
+                    problem.diagnostics = problem.diagnostics.append("warning: {side_name} {item.text()}: {message}")
+                none
+                    if pddl.has(kept, item)
+                        problem.diagnostics = problem.diagnostics.append("warning: {side_name} {item.text()}: duplicate")
+                    else
+                        kept = kept.append(item)
+        if side == 0
+            problem.initial = kept
+        else
+            problem.goals = kept
+
+string listed(string heading, const string[] items)
+    return heading + " " + (if len(items) == 0 then "-" else items.join(" "))
+
+string number_list(const int[] items)
+    if len(items) == 0
+        return "-"
+    int[] ordered = items.sorted()
+    string[] words = []
+    for int item = ordered[]
+        words = words.append(item.string())
+    return words.join(",")
+
+string h_text(int value)
+    return if value >= heuristics.INFINITY then "inf" else value.string()
+
+string h_values(const int[] items)
+    string[] names = ["goalcount", "hmax", "hadd", "ff", "lmcount"]
+    string[] words = []
+    for int position < 5
+        words = words.append("{names[position]}={h_text(items[position])}")
+    return words.join(" ")
+
+int cost(const grounding.Grounding graph, const int[] plan)
+    int total = 0
+    for int action = plan[]
+        total += graph.actions[action].cost
+    return total
+
+string[] action_texts(const grounding.Grounding graph, const int[] plan)
+    string[] result = []
+    for int action = plan[]
+        result = result.append(graph.actions[action].text())
+    return result
+
+string[] domain_report(const pddl.Domain domain)
+    string[] lines = ["== domain {domain.name} =="]
+    lines = lines.concat(domain.diagnostics)
+    for string type_name = domain.type_order[]
+        string[] chain = [type_name]
+        string current = type_name
+        while current != "object"
+            current = pddl.required(domain.parents, current)
+            chain = chain.append(current)
+        lines = lines.append("type {chain.join(" < ")}")
+    string[] fluent = grounding.fluents(domain)
+    for pddl.Predicate declaration = domain.predicates[]
+        string kind = if pddl.has(fluent, declaration.name) then "fluent" else "static"
+        lines = lines.append("predicate {declaration.name}/{len(declaration.types)} {kind}")
+    for pddl.Schema schema = domain.actions[]
+        int adds = 0
+        int deletes = 0
+        for pddl.Literal effect = schema.effects[]
+            if effect.negative
+                deletes += 1
+            else
+                adds += 1
+        lines = lines.append("action {schema.name}/{len(schema.parameters)} cost={schema.cost} pre={len(schema.pre)} add={adds} del={deletes}")
+    return lines
+
+string[] grounding_report(const pddl.Domain domain, const pddl.Problem problem, const grounding.Grounding graph)
+    string[] lines = ["", "== problem {problem.name} =="]
+    lines = lines.concat(problem.diagnostics).append("objects: {len(problem.objects)}")
+    for string type_name = domain.type_order[]
+        string[] names = []
+        for pddl.Typed entry = problem.objects[]
+            if grounding.subtype(domain, entry.type, type_name)
+                names = names.append(entry.name)
+        lines = lines.append(listed("  {type_name}:", names))
+    lines = lines.append("static facts: {graph.static_count}")
+    int candidates = 0
+    for int position < int(len(domain.actions))
+        pddl.Schema schema = domain.actions[position]
+        int[] stats = graph.stats[position]
+        candidates += stats[1]
+        lines = lines.append("schema {schema.name}: assignments={stats[0]} candidates={stats[1]} reachable={stats[2]}")
+    lines = lines.append("candidates: {candidates} reachable: {len(graph.actions)}")
+    lines = lines.append("facts: {len(graph.facts)} init: {len(graph.initial)} goals: {len(graph.goals)}")
+    for pddl.Atom item = graph.unreachable[]
+        lines = lines.append("unreachable goal: {item.text()}")
+    string[] predicate_counts = []
+    for pddl.Predicate declaration = domain.predicates[]
+        if pddl.has(graph.fluent, declaration.name)
+            int count = 0
+            for pddl.Atom item = graph.facts[]
+                if item.predicate == declaration.name
+                    count += 1
+            predicate_counts = predicate_counts.append("{declaration.name}={count}")
+    lines = lines.append(listed("facts by predicate:", predicate_counts)).append("facts:")
+    for int position < int(len(graph.facts))
+        lines = lines.append("  {position} {graph.facts[position].text()}")
+    lines = lines.append("actions:")
+    for int position < int(len(graph.actions))
+        grounding.Action action = graph.actions[position]
+        lines = lines.append("  {position} {action.text()} cost={action.cost} pre={number_list(action.pre)} neg={number_list(action.neg)} add={number_list(action.add)} del={number_list(action.del)}")
+    return lines
+
+class Validation(string status, string[] messages, int correct)
+    string verdict()
+        return if status == "valid" then "valid {messages[0]}" else "{status}: {messages[0]}"
+
+Validation validate_steps(const pddl.Domain domain, const pddl.Problem problem, const pddl.Atom[] steps)
+    pddl.Atom[] world = problem.initial
+    int total = 0
+    map.Map<string, string> table = type_table(problem.objects)
+    for int position < int(len(steps))
+        pddl.Atom step = steps[position]
+        pddl.Schema | none selected = none
+        for pddl.Schema schema = domain.actions[]
+            if schema.name == step.predicate
+                selected = schema
+                break
+        match selected
+            pddl.Schema schema
+                string[] expected = []
+                for pddl.Typed parameter = schema.parameters[]
+                    expected = expected.append(parameter.type)
+                match arguments(domain, step.terms, expected, table, "object")
+                    string message
+                        return Validation("invalid", ["step {position + 1} {step.text()}: {message}"], position)
+                    none
+                        map.Map<string, string> bindings = map.Map<string, string>()
+                        for int index < int(len(schema.parameters))
+                            .bindings.set(schema.parameters[index].name, step.terms[index])
+                        for pddl.Literal original = schema.pre[]
+                            pddl.Literal entry = pddl.substitute(original, bindings)
+                            bool truth = if entry.atom.predicate == "=" then entry.atom.terms[0] == entry.atom.terms[1] else pddl.has(world, entry.atom)
+                            if truth == entry.negative
+                                return Validation("invalid", ["step {position + 1} {step.text()}: precondition {entry.text()} is false"], position)
+                        pddl.Atom[] adds = []
+                        pddl.Atom[] deletes = []
+                        for pddl.Literal effect = schema.effects[]
+                            pddl.Atom item = pddl.replace(effect.atom, bindings)
+                            if effect.negative
+                                deletes = deletes.append(item)
+                            else
+                                adds = adds.append(item)
+                        world = pddl.unique(pddl.subtract(world, deletes).concat(adds))
+                        total += schema.cost
+            none
+                return Validation("invalid", ["step {position + 1} {step.text()}: unknown action {step.predicate}"], position)
+    string[] missing = []
+    for pddl.Atom item = problem.goals[]
+        if not pddl.has(world, item)
+            missing = missing.append("unsatisfied goal {item.text()}")
+    if len(missing) > 0
+        return Validation("goal not reached", missing, int(len(steps)))
+    return Validation("valid", ["length={len(steps)} cost={total}"], int(len(steps)))
+
+pddl.Atom[] plan_steps(const grounding.Grounding graph, const int[] plan)
+    pddl.Atom[] result = []
+    for int index = plan[]
+        result = result.append(pddl.Atom(graph.actions[index].name, graph.actions[index].args))
+    return result
+
+int[] map_steps(const grounding.Grounding graph, const pddl.Atom[] steps)
+    int[] result = []
+    for pddl.Atom step = steps[]
+        for int position < int(len(graph.actions))
+            grounding.Action action = graph.actions[position]
+            if action.name == step.predicate and action.args == step.terms
+                result = result.append(position)
+                break
+    return result
+
+bool interfere(const grounding.Action first, const grounding.Action second)
+    return pddl.overlaps(first.del, second.pre.concat(second.add)) or pddl.overlaps(second.del, first.pre.concat(first.add)) or pddl.overlaps(first.add, second.neg) or pddl.overlaps(second.add, first.neg)
+
+int[][] parallel_layers(const grounding.Grounding graph, const int[] plan)
+    int[] levels = []
+    int count = 0
+    for int position < int(len(plan))
+        grounding.Action current = graph.actions[plan[position]]
+        int level = 0
+        for int previous < position
+            grounding.Action earlier = graph.actions[plan[previous]]
+            if pddl.overlaps(earlier.add, current.pre) or pddl.overlaps(earlier.del, current.neg) or interfere(earlier, current)
+                if levels[previous] > level
+                    level = levels[previous]
+        levels = levels.append(level + 1)
+        if level + 1 > count
+            count = level + 1
+    int[][] layers = array(nat(count), fill = [])
+    for int position < int(len(plan))
+        int index = levels[position] - 1
+        layers[index] = layers[index].append(plan[position])
+    return layers
+
+string parallel_verdict(const grounding.Grounding graph, const int[][] layers)
+    int[] state = graph.initial
+    for int position < int(len(layers))
+        int[] layer = layers[position]
+        for int first < int(len(layer))
+            if not search.applicable(graph.actions[layer[first]], state)
+                return "invalid at layer {position + 1}"
+            for first + 1 <= int second < int(len(layer))
+                if interfere(graph.actions[layer[first]], graph.actions[layer[second]])
+                    return "invalid at layer {position + 1}"
+        int[] deletes = []
+        int[] adds = []
+        for int action = layer[]
+            deletes = deletes.concat(graph.actions[action].del)
+            adds = adds.concat(graph.actions[action].add)
+        state = pddl.unique(pddl.subtract(state, deletes).concat(adds)).sorted()
+    return if pddl.contains_all(state, graph.goals) then "valid" else "goal not reached"
+
+int[] improve(const grounding.Grounding graph, const int[] input_plan)
+    int[] plan = input_plan
+    int position = 0
+    while position < int(len(plan))
+        int[] state = graph.initial
+        int[] next = []
+        for int prefix < position
+            state = search.apply(graph.actions[plan[prefix]], state)
+            next = next.append(plan[prefix])
+        for position + 1 <= int suffix < int(len(plan))
+            int action = plan[suffix]
+            if search.applicable(graph.actions[action], state)
+                state = search.apply(graph.actions[action], state)
+                next = next.append(action)
+        if pddl.contains_all(state, graph.goals)
+            plan = next
+        else
+            position += 1
+    return plan
+
+class Transformed(grounding.Action[] actions, int[] initial, int complements)
+
+Transformed transformed(const grounding.Grounding graph)
+    int[] negatives = []
+    for grounding.Action action = graph.actions[]
+        negatives = pddl.unique(negatives.concat(action.neg))
+    negatives = negatives.sorted()
+    int[] mapping = array(len(graph.facts), fill = -1)
+    int[] initial = graph.initial
+    for int position < int(len(negatives))
+        int fact = negatives[position]
+        mapping[fact] = int(len(graph.facts)) + position
+        if not pddl.has(initial, fact)
+            initial = initial.append(mapping[fact])
+    grounding.Action[] actions = []
+    for grounding.Action original = graph.actions[]
+        grounding.Action action = original
+        for int fact = original.neg[]
+            action.pre = pddl.unique(action.pre.append(mapping[fact]))
+        for int fact = original.del[]
+            if mapping[fact] >= 0
+                action.add = pddl.unique(action.add.append(mapping[fact]))
+        for int fact = original.add[]
+            if mapping[fact] >= 0
+                action.del = pddl.unique(action.del.append(mapping[fact]))
+        actions = actions.append(action)
+    return Transformed(actions, initial.sorted(), int(len(negatives)))
+
+class Run(string algorithm, string heuristic)
+    string tag()
+        return "{algorithm} {heuristic}"
+
+class Params(int budget = 0, int weight = 0, int limit = 0, Run[] runs = [], Run repair = Run("", ""))
+class Candidate(string problem, string label, pddl.Atom[] steps = [])
+
+Params read_params()
+    Params result = Params()
+    string text = file.read("input/params.txt")
+    string[] lines = text.split(NL)
+    for string line = lines[]
+        if line == "" or line.starts_with("#")
+            continue
+        string[] words = line.split(" ")
+        if words[0] == "budget"
+            result.budget = int.parse(words[1])
+        elif words[0] == "weight"
+            result.weight = int.parse(words[1])
+        elif words[0] == "graphplan"
+            result.limit = int.parse(words[1])
+        elif words[0] == "run"
+            result.runs = result.runs.append(Run(words[1], words[2]))
+        else
+            result.repair = Run(words[1], words[2])
+    return result
+
+Candidate[] read_candidates()
+    Candidate[] result = []
+    string text = file.read("input/candidates.txt")
+    string[] lines = text.split(NL)
+    for string line = lines[]
+        if line == "" or line.starts_with("#")
+            continue
+        if line.starts_with("plan ")
+            string[] words = line.split(" ")
+            result = result.append(Candidate(words[1], words[2]))
+        elif line != "end"
+            string[] words = line[1:<int(len(line)) - 1].split(" ")
+            int index = int(len(result)) - 1
+            result[index].steps = result[index].steps.append(pddl.Atom(words[0], words[1:<int(len(words))]))
+    return result
+
+class Seen(int[] plan, string tag)
+class PlanBlock(string[] lines, string[] validation, bool valid)
+
+PlanBlock plan_block(const pddl.Domain domain, const pddl.Problem problem, const grounding.Grounding graph, const int[] plan, string tag, const int[] landmarks, Seen[] &seen)
+    string same = ""
+    for Seen entry = seen[]
+        if entry.plan == plan
+            same = " (same as {entry.tag})"
+            break
+    if same == ""
+        seen = seen.append(Seen(plan, tag))
+    string[] lines = ["plan: length={len(plan)} cost={cost(graph, plan)}{same}"]
+    for int position < int(len(plan))
+        lines = lines.append("  {position + 1} {graph.actions[plan[position]].text()}")
+    string[] schemas = []
+    for int source < int(len(domain.actions))
+        int count = 0
+        for int action = plan[]
+            if graph.actions[action].source == source
+                count += 1
+        if count > 0
+            schemas = schemas.append("{domain.actions[source].name}={count}")
+    lines = lines.append(listed("schemas:", schemas))
+    int[][] layers = parallel_layers(graph, plan)
+    lines = lines.append("parallel: layers={len(layers)}")
+    for int position < int(len(layers))
+        lines = lines.append(listed("  {position + 1}:", action_texts(graph, layers[position])))
+    int[] improved = improve(graph, plan)
+    lines = lines.append("improved: length={len(improved)} cost={cost(graph, improved)} removed={len(plan) - len(improved)}")
+    if len(improved) < len(plan)
+        for int position < int(len(improved))
+            lines = lines.append("  {position + 1} {graph.actions[improved[position]].text()}")
+    int[] state = graph.initial
+    int[] reached = []
+    for int action = plan[]
+        state = search.apply(graph.actions[action], state)
+        reached = pddl.unique(reached.concat(pddl.intersect(state, landmarks)))
+    lines = lines.append("landmarks reached: {len(reached)}/{len(landmarks)}")
+    int[] missed = pddl.subtract(landmarks, reached).sorted()
+    for int fact = missed[]
+        lines = lines.append("  missed {graph.facts[fact].text()}")
+    Validation original = validate_steps(domain, problem, plan_steps(graph, plan))
+    Validation checked = validate_steps(domain, problem, plan_steps(graph, improved))
+    string[] validation = ["{tag}: {original.verdict()}", "  parallel: {parallel_verdict(graph, layers)}", "  improved: {checked.verdict()}"]
+    return PlanBlock(lines, validation, original.status == "valid")
+
+string[] profile(const grounding.Grounding graph, const int[] plan, string tag)
+    string[] lines = ["-- profile ({tag}) --"]
+    int[] state = graph.initial
+    int remaining = cost(graph, plan)
+    int[] over = [0, 0, 0, 0, 0]
+    for int position < int(len(plan)) + 1
+        int[] values = heuristics.values(graph, state)
+        for int index < 5
+            if values[index] > remaining
+                over[index] += 1
+        lines = lines.append("  {position}: h*={remaining} {h_values(values)}")
+        if position < int(len(plan))
+            state = search.apply(graph.actions[plan[position]], state)
+            remaining -= graph.actions[plan[position]].cost
+    lines = lines.append("overestimates: {h_values(over)}").append("-- causal links ({tag}) --")
+    int[] suppliers = array(len(graph.facts), fill = 0)
+    for int position < int(len(plan))
+        grounding.Action action = graph.actions[plan[position]]
+        string[] links = []
+        int[] ordered = action.pre.sorted()
+        for int fact = ordered[]
+            links = links.append("{graph.facts[fact].text()}<-{suppliers[fact]}")
+        lines = lines.append(listed("  {position + 1} {action.text()}:", links))
+        for int fact = action.add[]
+            suppliers[fact] = position + 1
+    string[] links = []
+    int[] ordered = graph.goals.sorted()
+    for int fact = ordered[]
+        links = links.append("{graph.facts[fact].text()}<-{suppliers[fact]}")
+    return lines.append(listed("  goal:", links))
+
+string result_line(const search.Result result, bool unreachable)
+    if unreachable
+        return "result: FAIL (unreachable goal)"
+    if result.status == "solved"
+        return "result: solved expanded={result.expanded} generated={result.generated}"
+    return "result: FAIL ({result.status}) expanded={result.expanded} generated={result.generated}"
+
+void write_output(string name, const string[] lines)
+    bool exists = file.is_directory("output")
+    if not exists
+        file.mkdir("output")
+    string text = if len(lines) == 0 then "" else lines.join(NL) + NL
+    file.write("output/{name}", text)
+
+class Best(int | none value)
+
+void run_program()
+    pddl.Domain domain = pddl.read_domain()
+    validate_domain(&domain)
+    pddl.Problem[] problems = pddl.read_problems()
+    for int position < int(len(problems))
+        validate_problem(domain, &problems[position])
+    Params params = read_params()
+    grounding.Grounding[] grounds = []
+    for pddl.Problem problem = problems[]
+        grounds = grounds.append(grounding.ground(domain, problem))
+    string[] tags = []
+    for Run setting = params.runs[]
+        tags = tags.append(setting.tag())
+    tags = tags.append("graphplan")
+    string[] grounding_lines = domain_report(domain)
+    string[] plans = []
+    string[] graph_lines = []
+    string[] validation = []
+    string[] comparison = ["problem,algorithm,heuristic,length,cost,expanded,generated"]
+    string[] problem_summary = []
+    int[][] tag_stats = array(len(tags), fill = [0, 0, 0, 0])
+    Best[] bests = []
+    int analyzed = 0
+    int valid_plans = 0
+    for int problem_index < int(len(problems))
+        pddl.Problem problem = problems[problem_index]
+        grounding.Grounding graph = grounds[problem_index]
+        bool unreachable = len(graph.unreachable) > 0
+        grounding_lines = grounding_lines.concat(grounding_report(domain, problem, graph))
+        string heading = "== problem {problem.name} =="
+        plans = plans.append(heading)
+        validation = validation.append(heading)
+        graph_lines = graph_lines.append(heading)
+        int[] landmarks = []
+        if unreachable
+            plans = plans.append("initial h: unreachable goal")
+        else
+            plans = plans.append("initial h: {h_values(heuristics.values(graph, graph.initial))}")
+            match heuristics.landmarks(graph, graph.initial)
+                int[] found
+                    landmarks = found
+                none
+                    landmarks = []
+            plans = plans.append("landmarks: {len(landmarks)}")
+            for int fact = landmarks[]
+                plans = plans.append("  {graph.facts[fact].text()}")
+            heuristics.Relaxed relaxed_plan = heuristics.relaxed(graph, graph.initial)
+            plans = plans.append("relaxed plan: length={len(relaxed_plan.plan)} cost={h_text(relaxed_plan.value)}")
+            for int action = relaxed_plan.plan[]
+                plans = plans.append("  {graph.actions[action].text()}")
+            plans = plans.append(listed("helpful:", action_texts(graph, relaxed_plan.helpful)))
+        search.Result[] results = []
+        for Run setting = params.runs[]
+            search.Result result = if unreachable then search.Result("unreachable goal") else search.run(graph, graph.initial, setting.algorithm, setting.heuristic, params.budget, params.weight)
+            results = results.append(result)
+        if unreachable
+            graph_lines = graph_lines.append("result: FAIL (unreachable goal)")
+            results = results.append(search.Result("unreachable goal"))
+        else
+            Transformed changed = transformed(graph)
+            graphplan.GraphResult graph_result = graphplan.run(changed.actions, changed.initial, graph.goals, params.limit)
+            graph_lines = graph_lines.append("complementary facts: {changed.complements}").concat(graph_result.records)
+            search.Result result = graph_result.result
+            if result.status == "solved"
+                graph_lines = graph_lines.append("result: solved levels={len(graph_result.layers)} length={len(result.plan)} cost={cost(graph, result.plan)} searched={result.expanded} memo_hits={graph_result.hits} tried={result.generated}")
+                for int position < int(len(graph_result.layers))
+                    graph_lines = graph_lines.append(listed("layer {position + 1}:", action_texts(graph, graph_result.layers[position])))
+            else
+                graph_lines = graph_lines.append("result: FAIL ({result.status}) searched={result.expanded} memo_hits={graph_result.hits} tried={result.generated}")
+            results = results.append(result)
+        graph_lines = graph_lines.append("")
+        int | none best = none
+        int solved = 0
+        for search.Result result = results[]
+            if result.status == "solved"
+                solved += 1
+                int value = cost(graph, result.plan)
+                match best
+                    int old
+                        if value < old
+                            best = value
+                    none
+                        best = value
+        string best_text = "-"
+        match best
+            int value
+                best_text = value.string()
+            none
+                best_text = "-"
+        bests = bests.append(Best(best))
+        int | none proof = none
+        for int position < int(len(params.runs))
+            Run setting = params.runs[position]
+            if ((setting.algorithm == "ucs" and setting.heuristic == "none") or (setting.algorithm == "astar" and setting.heuristic == "hmax")) and results[position].status == "solved"
+                proof = position
+                break
+        string optimal = "unknown"
+        for search.Result result = results[]
+            if pddl.has(["unreachable goal", "dead end", "exhausted", "unreachable"], result.status)
+                optimal = "none"
+        match proof
+            int position
+                optimal = cost(graph, results[position].plan).string()
+            none
+                optimal = optimal
+        problem_summary = problem_summary.append("{problem.name}: solved={solved}/{len(results)} best={best_text} optimal={optimal}")
+        Seen[] seen = []
+        for int position < int(len(results))
+            search.Result result = results[position]
+            plans = plans.append("-- {tags[position]} --").append(result_line(result, unreachable))
+            tag_stats[position][2] += result.expanded
+            tag_stats[position][3] += result.generated
+            Run setting = if position < int(len(params.runs)) then params.runs[position] else Run("graphplan", "none")
+            string length_text = "-"
+            string cost_text = "-"
+            if result.status == "solved"
+                tag_stats[position][0] += 1
+                cost_text = cost(graph, result.plan).string()
+                if cost_text == best_text
+                    tag_stats[position][1] += 1
+                PlanBlock block = plan_block(domain, problem, graph, result.plan, tags[position], landmarks, &seen)
+                plans = plans.concat(block.lines)
+                validation = validation.concat(block.validation)
+                analyzed += 1
+                if block.valid
+                    valid_plans += 1
+                length_text = len(result.plan).string()
+            comparison = comparison.append("{problem.name},{setting.algorithm},{setting.heuristic},{length_text},{cost_text},{result.expanded},{result.generated}")
+        match proof
+            int position
+                plans = plans.concat(profile(graph, results[position].plan, tags[position]))
+            none
+                plans = plans
+        plans = plans.append("")
+        validation = validation.append("")
+    plans = plans.append("== summary ==").concat(problem_summary)
+    for int position < int(len(tags))
+        int[] stats = tag_stats[position]
+        plans = plans.append("{tags[position]}: solved={stats[0]} best={stats[1]} expanded={stats[2]} generated={stats[3]}")
+    validation = validation.append("== candidates ==")
+    Candidate[] candidates = read_candidates()
+    int valid_candidates = 0
+    for int candidate_index < int(len(candidates))
+        Candidate candidate = candidates[candidate_index]
+        int problem_index = 0
+        while problems[problem_index].name != candidate.problem
+            problem_index += 1
+        pddl.Problem problem = problems[problem_index]
+        grounding.Grounding graph = grounds[problem_index]
+        Validation checked = validate_steps(domain, problem, candidate.steps)
+        string prefix = "candidate {candidate_index + 1} {problem.name} {candidate.label}:"
+        if checked.status == "valid"
+            valid_candidates += 1
+            validation = validation.append("{prefix} {checked.verdict()}")
+            int[] mapped = map_steps(graph, candidate.steps)
+            int[] improved = improve(graph, mapped)
+            string best_text = "-"
+            match bests[problem_index].value
+                int value
+                    best_text = value.string()
+                none
+                    best_text = "-"
+            validation = validation.append("  improved: length={len(improved)} cost={cost(graph, improved)} removed={len(mapped) - len(improved)} best known={best_text}")
+        else
+            validation = validation.append("{prefix} {checked.status}")
+            for string message = checked.messages[]
+                validation = validation.append("  {message}")
+            if len(graph.unreachable) > 0
+                validation = validation.append("  repair: FAIL (unreachable goal)")
+                continue
+            int[] mapped = map_steps(graph, candidate.steps[0:<checked.correct])
+            int[] state = graph.initial
+            for int action = mapped[]
+                state = search.apply(graph.actions[action], state)
+            search.Result repair = search.run(graph, state, params.repair.algorithm, params.repair.heuristic, params.budget, params.weight)
+            if repair.status != "solved"
+                validation = validation.append("  repair: FAIL ({repair.status})")
+            else
+                int[] repaired_plan = mapped.concat(repair.plan)
+                Validation repaired = validate_steps(domain, problem, plan_steps(graph, repaired_plan))
+                validation = validation.append("  repair: kept={len(mapped)} added={len(repair.plan)} {repaired.verdict()}")
+                for int position < int(len(repaired_plan))
+                    validation = validation.append("    {position + 1} {graph.actions[repaired_plan[position]].text()}")
+    validation = validation.concat(["", "== summary ==", "plans: {analyzed} valid: {valid_plans}", "candidates: {len(candidates)} valid: {valid_candidates}"])
+    write_output("grounding.txt", grounding_lines)
+    write_output("plans.txt", plans)
+    write_output("graphplan.txt", graph_lines)
+    write_output("validation.txt", validation)
+    write_output("comparison.csv", comparison)
+
+if main
+    run_program()

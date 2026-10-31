@@ -1,0 +1,16 @@
+#include <iostream>
+#include <iomanip>
+#include <string>
+#include <array>
+
+int main() {
+    std::array<std::string, 5> names = {"Aiko", "Kenji", "Mika", "Ryo", "Yuki"};
+    std::array<int, 5> heights = {158, 172, 165, 180, 150}, weights = {45, 68, 70, 101, 52};
+    std::cout << std::fixed << std::setprecision(1);
+    for (int i = 0; i < 5; i++) {
+        int numerator = weights[i] * 10000, denominator = heights[i] * heights[i];
+        double bmi = static_cast<double>(numerator) / denominator;
+        const char *category = bmi < 18.5 ? "underweight" : bmi < 25 ? "normal" : bmi < 30 ? "overweight" : "obese";
+        std::cout << names[i] << ": BMI " << bmi << " (" << category << ")\n";
+    }
+}

@@ -1,0 +1,748 @@
+import network = "./network.qui"
+import clocks = "./clocks.qui"
+import processes = "./processes.qui"
+import snapshots = "./snapshot.qui"
+import analysis = "./analysis.qui"
+
+const string[] event_types = ["LOCAL", "NOFUNDS", "SEND", "BCAST", "RECV"]
+
+int minimum(int a, int b)
+    return if a < b then a else b
+
+int maximum(int a, int b)
+    return if a > b then a else b
+
+string yes(bool value)
+    return if value then "yes" else "no"
+
+string message_name(int id)
+    return "m{id + 1}"
+
+string words(int[] values)
+    return [for int value = values[] then value.string()].join(" ")
+
+int sum(int[] values)
+    int result = 0
+    for int value = values[]
+        result += value
+    return result
+
+class Params(int seed, int end_at, int cutcount, string[][] comparisons, int[][] cuts, int[] predicates)
+
+Params load_params()
+    string content = file.read("input/params.txt")
+    string[] rows = content.split(NL)
+    int seed = 0
+    int end_at = 0
+    int cutcount = 0
+    string[][] comparisons = []
+    int[][] cuts = []
+    int[] predicates = []
+    for string row = rows[0:<int(len(rows)) - 1][]
+        string[] fields = row.split(" ")
+        string key = fields[0]
+        if key == "SEED"
+            seed = network.integer(fields[1])
+        elif key == "END"
+            end_at = network.integer(fields[1])
+        elif key == "CUTCOUNT"
+            cutcount = network.integer(fields[1])
+        elif key == "COMPARE"
+            comparisons = comparisons.append(fields[1:<3])
+        elif key == "CUT"
+            cuts = cuts.append([for string field = fields[1:<int(len(fields))][] then network.integer(field)])
+        else
+            predicates = predicates.append(network.integer(fields[1]))
+    return Params(seed, end_at, cutcount, comparisons, cuts, predicates)
+
+class Event(int process_index, int local_number, int kind, int occurred_at, int lamport, int[] vector, int balance, int message, int packet, int destination, int amount, string label)
+class Message(bool broadcast, int source, string tag, int amount, int[] stamp, int sent_at, int send_event)
+    int[] copies = []
+
+class Packet(bool marker, int snapshot_index, int source, int destination, int message, int send_event)
+    int sequence = 0
+    int dispatched_at = 0
+    int arrives_at = 0
+    int delivered_at = -1
+    int recv_event = -1
+    bool fifo_wait = false
+    bool causal_wait = false
+    int[] missing = []
+
+class Item(int occurs_at, int process_index, int creation, int packet, processes.Action action)
+
+bool item_less(Item first, Item second)
+    if first.occurs_at != second.occurs_at
+        return first.occurs_at < second.occurs_at
+    if first.process_index != second.process_index
+        return first.process_index < second.process_index
+    return first.creation < second.creation
+
+class Simulation(network.Topology topology, processes.Script[] scripts, Params params, bool raw)
+    int size = int(len(topology.names))
+    processes.State[] states = [for processes.Script script = scripts[] then processes.State(script, size)]
+    network.Channel[] channels = topology.channels
+    network.Generator generator = network.Generator(params.seed)
+    Item[] queue = []
+    int creation = 0
+    int now = 0
+    Message[] messages = []
+    Packet[] packets = []
+    int[] copies = []
+    Event[] events = []
+    snapshots.Snapshot[] shots = []
+    int[][] timeline = []
+
+    void .enqueue(int at, int process_index, int packet, processes.Action action)
+        creation += 1
+        Item item = Item(at, process_index, creation, packet, action)
+        int index = int(len(queue))
+        queue = queue.append(item)
+        while index > 0
+            int parent = (index - 1) / 2
+            if not item_less(item, queue[parent])
+                break
+            queue[index] = queue[parent]
+            index = parent
+        queue[index] = item
+
+    Item .pop()
+        Item result = queue[0]
+        Item last = queue[int(len(queue)) - 1]
+        queue = queue[0:<int(len(queue)) - 1]
+        if len(queue) > 0
+            int index = 0
+            while 2 * index + 1 < int(len(queue))
+                int child = 2 * index + 1
+                if child + 1 < int(len(queue)) and item_less(queue[child + 1], queue[child])
+                    child += 1
+                if not item_less(queue[child], last)
+                    break
+                queue[index] = queue[child]
+                index = child
+            queue[index] = last
+        return result
+
+    void .schedule()
+        for int[] entry = processes.expand(states, params.end_at)[]
+            .enqueue(entry[0], entry[1], -1, states[entry[1]].script.at[entry[2]].action)
+
+    void .dispatch(int packet_index)
+        Packet packet = packets[packet_index]
+        int channel = packet.source * size + packet.destination
+        int[] vector = if packet.marker then [] else events[packet.send_event].vector
+        int[] result = network.dispatch(&channels[channel], now, packet.marker, vector, &generator)
+        packets[packet_index].sequence = result[0]
+        packets[packet_index].dispatched_at = now
+        packets[packet_index].arrives_at = result[1]
+        .enqueue(result[1], packet.destination, packet_index, processes.Action("LOCAL", -1, "", 0))
+
+    int .record_event(int process_index, int kind, int message, int packet, int destination, int amount, string label, int sending)
+        if kind == 4
+            clocks.receive_event(&states[process_index].lamport, &states[process_index].vector, process_index, events[sending].lamport, events[sending].vector)
+        else
+            clocks.local_event(&states[process_index].lamport, &states[process_index].vector, process_index)
+        int index = int(len(events))
+        processes.State state = states[process_index]
+        events = events.append(Event(process_index, int(len(state.events)) + 1, kind, now, state.lamport, state.vector, state.balance, message, packet, destination, amount, label))
+        states[process_index].events = states[process_index].events.append(index)
+        states[process_index].counts[kind] += 1
+        if state.balance < state.minimum
+            states[process_index].minimum = state.balance
+        timeline = timeline.append([0, index, process_index, now])
+        return index
+
+    void .record_snapshot(int shot, int process_index, string reason)
+        processes.State state = states[process_index]
+        snapshots.capture(&shots[shot], process_index, now, reason, state.balance, state.lamport, state.vector, state.holdback)
+        timeline = timeline.append([1, shot, process_index, now])
+        for int destination < size
+            if destination != process_index
+                int channel = process_index * size + destination
+                shots[shot].marker_sent[channel] = now
+                packets = packets.append(Packet(true, shot, process_index, destination, -1, -1))
+                .dispatch(int(len(packets)) - 1)
+
+    void .initiate(int process_index, string name)
+        int shot = -1
+        for int i < int(len(shots))
+            if shots[i].name == name
+                shot = i
+        if shot < 0
+            shot = int(len(shots))
+            shots = shots.append(snapshots.Snapshot(name, now, size))
+        if shots[shot].records[process_index].valid
+            shots[shot].ignored = shots[shot].ignored.append([process_index, now])
+        else
+            .record_snapshot(shot, process_index, "initiate")
+
+    void .send(int process_index, processes.Action action, int sender)
+        int destination = if action.destination < 0 then sender else action.destination
+        int amount = action.amount
+        string tag = action.text
+        bool broadcast = action.kind == "BROADCAST"
+        if action.kind == "TRANSFER"
+            if amount > states[process_index].balance
+                states[process_index].refused += 1
+                .record_event(process_index, 1, -1, -1, destination, amount, "", -1)
+                return
+            states[process_index].balance -= amount
+            states[process_index].sent += amount
+        if broadcast
+            states[process_index].broadcast[process_index] += 1
+        int message_index = int(len(messages))
+        int sending = .record_event(process_index, (if broadcast then 3 else 2), message_index, -1, destination, amount, "", -1)
+        int[] stamp = if broadcast then states[process_index].broadcast else []
+        messages = messages.append(Message(broadcast, process_index, tag, amount, stamp, now, sending))
+        for int target < size
+            if (broadcast and target != process_index) or (not broadcast and target == destination)
+                int packet_index = int(len(packets))
+                packets = packets.append(Packet(false, -1, process_index, target, message_index, sending))
+                copies = copies.append(packet_index)
+                messages[message_index].copies = messages[message_index].copies.append(packet_index)
+                .dispatch(packet_index)
+
+    void .action(int process_index, processes.Action command, int sender)
+        if command.kind == "LOCAL"
+            .record_event(process_index, 0, -1, -1, -1, 0, command.text, -1)
+        elif command.kind == "SNAPSHOT"
+            .initiate(process_index, command.text)
+        else
+            .send(process_index, command, sender)
+
+    void .accept_marker(int process_index, int packet_index)
+        Packet packet = packets[packet_index]
+        int shot = packet.snapshot_index
+        if not shots[shot].records[process_index].valid
+            .record_snapshot(shot, process_index, "marker " + topology.names[packet.source])
+        snapshots.accept(&shots[shot], packet.source * size + process_index, now)
+
+    void .deliver(int process_index, int packet_index)
+        Packet packet = packets[packet_index]
+        Message message = messages[packet.message]
+        if message.broadcast
+            states[process_index].broadcast[packet.source] += 1
+        states[process_index].balance += message.amount
+        states[process_index].received += message.amount
+        int event_index = .record_event(process_index, 4, packet.message, packet_index, -1, message.amount, "", packet.send_event)
+        packets[packet_index].recv_event = event_index
+        packets[packet_index].delivered_at = now
+        states[process_index].delivered = states[process_index].delivered.append(packet_index)
+        for processes.Rule rule = states[process_index].script.on[]
+            if rule.tag == message.tag
+                .action(process_index, rule.action, packet.source)
+
+    bool can_deliver(int process_index, int packet_index)
+        Packet packet = packets[packet_index]
+        return clocks.deliverable(messages[packet.message].stamp, states[process_index].broadcast, packet.source)
+
+    void .release(int process_index)
+        while true
+            int found = -1
+            for int i < int(len(states[process_index].holdback))
+                if can_deliver(process_index, states[process_index].holdback[i])
+                    found = i
+                    break
+            if found < 0
+                break
+            int packet_index = states[process_index].holdback[found]
+            int[] held = states[process_index].holdback
+            states[process_index].holdback = held[0:<found].concat(held[found + 1:<int(len(held))])
+            .deliver(process_index, packet_index)
+
+    void .accept(int process_index, int packet_index)
+        Packet packet = packets[packet_index]
+        int source = packet.source
+        states[process_index].next_sequence[source] += 1
+        if packet.marker
+            .accept_marker(process_index, packet_index)
+            return
+        int channel = source * size + process_index
+        for int shot < int(len(shots))
+            if shots[shot].records[process_index].valid and shots[shot].marker_accepted[channel] < 0
+                shots[shot].states[channel] = shots[shot].states[channel].append(packet_index)
+        if not messages[packet.message].broadcast or raw
+            .deliver(process_index, packet_index)
+        elif can_deliver(process_index, packet_index)
+            .deliver(process_index, packet_index)
+            .release(process_index)
+        else
+            packets[packet_index].causal_wait = true
+            packets[packet_index].missing = clocks.missing(messages[packet.message].stamp, states[process_index].broadcast, source)
+            states[process_index].holdback = states[process_index].holdback.append(packet_index)
+
+    void .receive(int process_index, int packet_index)
+        Packet packet = packets[packet_index]
+        int source = packet.source
+        if raw
+            .accept(process_index, packet_index)
+        elif packet.sequence != states[process_index].next_sequence[source]
+            packets[packet_index].fifo_wait = true
+            states[process_index].reorder[source] = states[process_index].reorder[source].append(packet_index)
+            channels[source * size + process_index].buffered += 1
+        else
+            .accept(process_index, packet_index)
+            while true
+                int found = -1
+                for int i < int(len(states[process_index].reorder[source]))
+                    int buffered = states[process_index].reorder[source][i]
+                    if packets[buffered].sequence == states[process_index].next_sequence[source]
+                        found = i
+                        break
+                if found < 0
+                    break
+                int[] buffer = states[process_index].reorder[source]
+                int following = buffer[found]
+                states[process_index].reorder[source] = buffer[0:<found].concat(buffer[found + 1:<int(len(buffer))])
+                .accept(process_index, following)
+        int held = processes.held_count(states[process_index])
+        if held > states[process_index].max_held
+            states[process_index].max_held = held
+
+    void .run()
+        while len(queue) > 0 and queue[0].occurs_at <= params.end_at
+            Item item = .pop()
+            now = item.occurs_at
+            if item.packet >= 0
+                .receive(item.process_index, item.packet)
+            else
+                .action(item.process_index, item.action, -1)
+
+int initial_total(Simulation sim)
+    return sum([for processes.State state = sim.states[] then state.initial])
+
+string event_name(Event event, string[] names)
+    return names[event.process_index] + ".{event.local_number}"
+
+int[][] metadata(Simulation sim)
+    return [for Event event = sim.events[] then [event.process_index, event.local_number, event.occurred_at, event.lamport, event.balance]]
+
+int[][] vectors(Simulation sim)
+    return [for Event event = sim.events[] then event.vector]
+
+int[][] process_events(Simulation sim)
+    return [for processes.State state = sim.states[] then state.events]
+
+int[][] balances(Simulation sim)
+    return [for processes.State state = sim.states[] then [for int index = state.events[] then sim.events[index].balance]]
+
+int[][] copy_details(Simulation sim)
+    int[][] result = []
+    for int index = sim.copies[]
+        Packet packet = sim.packets[index]
+        result = result.append([packet.source, packet.destination, sim.events[packet.send_event].local_number, (if packet.recv_event < 0 then 0 else sim.events[packet.recv_event].local_number), sim.messages[packet.message].amount])
+    return result
+
+snapshots.Details cut_details(Simulation sim, int[] cut)
+    return snapshots.details(cut, copy_details(sim), balances(sim), [for processes.State state = sim.states[] then state.initial])
+
+int delivered_count(Simulation sim)
+    int result = 0
+    for int index = sim.copies[]
+        if sim.packets[index].recv_event >= 0
+            result += 1
+    return result
+
+string names_text(string[] names, int[] indices)
+    return [for int index = indices[] then names[index]].join(",")
+
+string event_line(Event event, string[] names, Simulation sim)
+    string information = ""
+    if event.kind == 0
+        information = event.label
+    elif event.kind == 1
+        information = "to {names[event.destination]} amount {event.amount} balance {event.balance}"
+    elif event.kind == 2 or event.kind == 3
+        Message message = sim.messages[event.message]
+        information = message_name(event.message)
+        if event.kind == 2
+            information += " to {names[event.destination]}"
+        information += " tag {message.tag}"
+        if message.amount > 0
+            information += " amount {message.amount} balance {event.balance}"
+    else
+        Packet packet = sim.packets[event.packet]
+        Message message = sim.messages[packet.message]
+        information = message_name(packet.message) + " from {names[packet.source]} tag {message.tag}"
+        if message.amount > 0
+            information += " amount {message.amount} balance {event.balance}"
+    return "t={event.occurred_at} " + event_name(event, names) + " {event_types[event.kind]} {information} L={event.lamport} V=" + clocks.text(event.vector)
+
+string[] trace_lines(Simulation sim)
+    string[] lines = [for int i < int(len(sim.events)) then "{i + 1} " + event_line(sim.events[i], sim.topology.names, sim)]
+    int delivered = delivered_count(sim)
+    lines = lines.append("SUMMARY events {len(sim.events)} messages {len(sim.messages)} copies {len(sim.copies)} delivered {delivered} undelivered {int(len(sim.copies)) - delivered} draws {sim.generator.draws}")
+    for int p < sim.size
+        processes.State state = sim.states[p]
+        lines = lines.append("FINAL {sim.topology.names[p]} events {len(state.events)} L={state.lamport} V=" + clocks.text(state.vector) + " B=" + clocks.text(state.broadcast) + " balance {state.balance} in {state.received} out {state.sent} refused {state.refused} min {state.minimum}")
+    for int p < sim.size
+        int[] counts = sim.states[p].counts
+        lines = lines.append("COUNTS {sim.topology.names[p]} local {counts[0]} nofunds {counts[1]} send {counts[2]} bcast {counts[3]} recv {counts[4]}")
+    return lines
+
+string wait_mode(Packet packet, string[] names)
+    if not packet.causal_wait
+        return if packet.fifo_wait then "fifo" else "direct"
+    return (if packet.fifo_wait then "fifo+causal " else "causal ") + names_text(names, packet.missing)
+
+int[] broadcast_history(Simulation sim, int process_index)
+    int[] result = []
+    for int index = sim.states[process_index].events[]
+        Event event = sim.events[index]
+        if event.kind == 3 or (event.kind == 4 and sim.messages[event.message].broadcast)
+            result = result.append(event.message)
+    return result
+
+int index_of(int[] values, int key)
+    for int i < int(len(values))
+        if values[i] == key
+            return i
+    return -1
+
+string[] deliveries_lines(Simulation sim)
+    string[] lines = []
+    int[][] histories = []
+    for int p < sim.size
+        processes.State state = sim.states[p]
+        lines = lines.append("PROCESS {sim.topology.names[p]}")
+        int[] modes = [0, 0, 0, 0]
+        int total_wait = 0
+        int max_wait = 0
+        for int number < int(len(state.delivered))
+            Packet packet = sim.packets[state.delivered[number]]
+            Message message = sim.messages[packet.message]
+            int wait = packet.delivered_at - packet.arrives_at
+            total_wait += wait
+            max_wait = maximum(max_wait, wait)
+            modes[(if packet.fifo_wait then 1 else 0) + (if packet.causal_wait then 2 else 0)] += 1
+            string kind = if message.broadcast then "BCAST" else "P2P"
+            lines = lines.append("{number + 1} " + message_name(packet.message) + " from {sim.topology.names[packet.source]} {kind} tag {message.tag} sent {message.sent_at} arrived {packet.arrives_at} delivered {packet.delivered_at} wait {wait} " + wait_mode(packet, sim.topology.names))
+        for int packet_index = sim.copies[]
+            Packet packet = sim.packets[packet_index]
+            Message message = sim.messages[packet.message]
+            if packet.destination == p and packet.arrives_at <= sim.params.end_at and packet.recv_event < 0
+                string place = if index_of(state.reorder[packet.source], packet_index) >= 0 then "fifo" else "causal " + names_text(sim.topology.names, packet.missing)
+                string kind = if message.broadcast then "BCAST" else "P2P"
+                lines = lines.append("HELD " + message_name(packet.message) + " from {sim.topology.names[packet.source]} {kind} tag {message.tag} sent {message.sent_at} arrived {packet.arrives_at} {place}")
+        for int packet_index = sim.copies[]
+            Packet packet = sim.packets[packet_index]
+            if packet.destination == p and packet.arrives_at > sim.params.end_at
+                Message message = sim.messages[packet.message]
+                string kind = if message.broadcast then "BCAST" else "P2P"
+                lines = lines.append("TRANSIT " + message_name(packet.message) + " from {sim.topology.names[packet.source]} {kind} tag {message.tag} sent {message.sent_at} arrival {packet.arrives_at}")
+        lines = lines.append("TOTAL delivered {len(state.delivered)} direct {modes[0]} fifo {modes[1]} causal {modes[2]} both {modes[3]} wait {total_wait} max_wait {max_wait} max_held {state.max_held}")
+        int[] history = broadcast_history(sim, p)
+        histories = histories.append(history)
+        lines = lines.append("BCASTS " + (if len(history) == 0 then "none" else [for int id = history[] then message_name(id)].join(" ")))
+    for int channel_index = sim.topology.order[]
+        network.Channel channel = sim.channels[channel_index]
+        string kind = if channel.fifo then "FIFO" else "NONFIFO"
+        lines = lines.append("CHANNEL {sim.topology.names[channel.source]}->{sim.topology.names[channel.destination]} {kind} " + network.delay_text(channel) + " messages {channel.messages} markers {channel.markers} buffered {channel.buffered} max_delay {channel.max_delay} entries {channel.entries}")
+    set.Set<string> tags = set.Set<string>()
+    for int packet_index = sim.copies[]
+        .tags.add(sim.messages[sim.packets[packet_index].message].tag)
+    for string tag = tags.values().sorted()[]
+        int copies = 0
+        int delivered = 0
+        int latency = 0
+        int longest = 0
+        for int packet_index = sim.copies[]
+            Packet packet = sim.packets[packet_index]
+            Message message = sim.messages[packet.message]
+            if message.tag == tag
+                copies += 1
+                if packet.recv_event >= 0
+                    delivered += 1
+                    int elapsed = packet.delivered_at - message.sent_at
+                    latency += elapsed
+                    longest = maximum(longest, elapsed)
+        lines = lines.append("TAG {tag} copies {copies} delivered {delivered} latency {latency} max {longest}")
+    int[] broadcasts = []
+    for int i < int(len(sim.messages))
+        Message message = sim.messages[i]
+        if message.broadcast
+            broadcasts = broadcasts.append(i)
+            bool complete = true
+            int latest = 0
+            for int packet_index = message.copies[]
+                if sim.packets[packet_index].recv_event < 0
+                    complete = false
+                else
+                    latest = maximum(latest, sim.packets[packet_index].delivered_at)
+            string stable = if complete then latest.string() else "none"
+            lines = lines.append("STABLE " + message_name(i) + " {sim.topology.names[message.source]} tag {message.tag} sent {message.sent_at} stable {stable}")
+    int disagreements = 0
+    for int i < int(len(broadcasts))
+        for i + 1 <= int j < int(len(broadcasts))
+            int first = broadcasts[i]
+            int second = broadcasts[j]
+            int[] earlier = []
+            int[] later = []
+            for int p < sim.size
+                int a = index_of(histories[p], first)
+                int b = index_of(histories[p], second)
+                if a >= 0 and b >= 0
+                    if a < b
+                        earlier = earlier.append(p)
+                    else
+                        later = later.append(p)
+            if len(earlier) > 0 and len(later) > 0
+                disagreements += 1
+                lines = lines.append("DISAGREE " + message_name(first) + " " + message_name(second) + " " + names_text(sim.topology.names, earlier) + " " + names_text(sim.topology.names, later))
+    return lines.append("DISAGREEMENTS {disagreements}")
+
+string copy_label(Simulation sim, int copy_index)
+    Packet packet = sim.packets[sim.copies[copy_index]]
+    return message_name(packet.message) + "->" + sim.topology.names[packet.destination]
+
+string verdict(snapshots.Details details, Simulation sim)
+    if len(details.orphans) == 0
+        return "yes"
+    return "no " + [for int index = details.orphans[] then copy_label(sim, index)].join(" ")
+
+string[] snapshots_lines(Simulation normal, Simulation raw)
+    string[] lines = []
+    for int run_index < 2
+        Simulation sim = if run_index == 0 then normal else raw
+        int initial = initial_total(sim)
+        for snapshots.Snapshot shot = sim.shots[]
+            int[] cut = snapshots.snapshot_cut(shot)
+            snapshots.Details details = cut_details(sim, cut)
+            int[][] recorded = snapshots.recorded(shot, sim.topology.order)
+            int[] entries = recorded[0]
+            int[] pending = recorded[1]
+            int channels_total = 0
+            int balance_total = 0
+            for int packet_index = entries[]
+                channels_total += sim.messages[sim.packets[packet_index].message].amount
+            for snapshots.Record record = shot.records[]
+                balance_total += record.balance
+            int money = balance_total + channels_total
+            if run_index == 1
+                lines = lines.append("RAW {shot.name} completed {shot.complete} cut " + clocks.text(cut) + " consistent " + verdict(details, sim) + " money {money} conserved " + yes(money == initial))
+            else
+                lines = lines.append("SNAPSHOT {shot.name} started {shot.start} completed {shot.complete}")
+                for int p < sim.size
+                    snapshots.Record record = shot.records[p]
+                    string pending_text = if len(record.pending) == 0 then "none" else [for int index = record.pending[] then message_name(sim.packets[index].message)].join(" ")
+                    lines = lines.append("RECORD {sim.topology.names[p]} t={record.recorded_at} {record.reason} balance {record.balance} L={record.lamport} V=" + clocks.text(record.vector) + " pending {pending_text}")
+                for int channel = sim.topology.order[]
+                    string[] values = []
+                    for int packet_index = shot.states[channel][]
+                        Packet packet = sim.packets[packet_index]
+                        int amount = sim.messages[packet.message].amount
+                        values = values.append(message_name(packet.message) + (if amount == 0 then "" else ":{amount}"))
+                    string state = if len(values) == 0 then "empty" else values.join(" ")
+                    int source = channel / sim.size
+                    int destination = channel % sim.size
+                    lines = lines.append("CHANNEL {sim.topology.names[source]}->{sim.topology.names[destination]} marker {shot.marker_sent[channel]} {shot.marker_accepted[channel]} state {state}")
+                for int[] ignored = shot.ignored[]
+                    lines = lines.append("IGNORED {sim.topology.names[ignored[0]]} t={ignored[1]}")
+                int[] transit = [for int index = details.transit[] then sim.copies[index]]
+                lines = lines.concat(["CUT " + clocks.text(cut) + " consistent " + verdict(details, sim) + " vector " + yes(snapshots.vector_consistent(shot, cut)),
+                    "TRANSIT channels {len(entries)} pending {len(pending)} cut {len(transit)} match " + yes(snapshots.transit_match(entries, pending, transit)),
+                    "MONEY balances {balance_total} channels {channels_total} total {money} initial {initial} conserved " + yes(money == initial)])
+    return lines
+
+string range_notation(int[] path, Simulation sim)
+    if len(path) == 0
+        return "-"
+    string[] result = []
+    int first = path[0]
+    int last = first
+    for 1 <= int i < int(len(path))
+        Event event = sim.events[path[i]]
+        Event previous = sim.events[last]
+        if event.process_index == previous.process_index and event.local_number == previous.local_number + 1
+            last = path[i]
+        else
+            result = result.append(event_name(sim.events[first], sim.topology.names) + (if first == last then "" else "-{sim.events[last].local_number}"))
+            first = path[i]
+            last = first
+    result = result.append(event_name(sim.events[first], sim.topology.names) + (if first == last then "" else "-{sim.events[last].local_number}"))
+    return result.join(" ")
+
+int[] longest_chain(Simulation sim)
+    int current = 0
+    for int i < int(len(sim.events))
+        if sim.events[i].lamport > sim.events[current].lamport
+            current = i
+    int[] result = [current]
+    while sim.events[current].lamport > 1
+        Event event = sim.events[current]
+        int previous = -1
+        if event.kind == 4
+            int sending = sim.packets[event.packet].send_event
+            if sim.events[sending].lamport == event.lamport - 1
+                previous = sending
+        if previous < 0
+            previous = sim.states[event.process_index].events[event.local_number - 2]
+        result = [previous].concat(result)
+        current = previous
+    return result
+
+int[][] graph_copies(Simulation sim)
+    return [for int index = sim.copies[] then [sim.packets[index].send_event, sim.packets[index].recv_event]]
+
+int[][] race_copies(Simulation sim)
+    return [for Packet packet = sim.packets[] then [packet.send_event, packet.source]]
+
+analysis.Races race_summary(Simulation sim)
+    return analysis.races([for processes.State state = sim.states[] then state.delivered], race_copies(sim), vectors(sim))
+
+int find_event(Simulation sim, string name)
+    for int i < int(len(sim.events))
+        if event_name(sim.events[i], sim.topology.names) == name
+            return i
+    return -1
+
+string[] compare_lines(Simulation sim)
+    int[][] edges = analysis.graph(metadata(sim), process_events(sim), graph_copies(sim))
+    string[] lines = []
+    for string[] pair = sim.params.comparisons[]
+        int first = find_event(sim, pair[0])
+        int second = find_event(sim, pair[1])
+        string relation = clocks.relation(sim.events[first].vector, sim.events[second].vector)
+        int[] path = analysis.path(first, second, edges)
+        string graph_relation = "->"
+        if len(path) == 0
+            path = analysis.path(second, first, edges)
+            graph_relation = if len(path) == 0 then "||" else "<-"
+        lines = lines.append("COMPARE {pair[0]} {relation} {pair[1]} L={sim.events[first].lamport},{sim.events[second].lamport} graph {graph_relation} agree " + yes(relation == graph_relation))
+        if len(path) > 0
+            int messages = 0
+            for 1 <= int i < int(len(path))
+                if sim.events[path[i - 1]].process_index != sim.events[path[i]].process_index
+                    messages += 1
+            lines = lines.append("PATH length {len(path)} messages {messages} " + range_notation(path, sim))
+        for int event_index = [first, second][]
+            Event event = sim.events[event_index]
+            int[] future = []
+            for processes.State state = sim.states[]
+                int count = 0
+                for int candidate = state.events[]
+                    if sim.events[candidate].vector[event.process_index] < event.local_number
+                        count += 1
+                future = future.append(count)
+            lines = lines.append("WINDOW " + event_name(event, sim.topology.names) + " past " + clocks.text(event.vector) + " future " + clocks.text(future))
+    return lines
+
+string[] analysis_lines(Simulation sim, Simulation raw)
+    string[] lines = compare_lines(sim)
+    analysis.Concurrency concurrency = analysis.concurrency(metadata(sim), vectors(sim), sim.size)
+    lines = lines.append("CONCURRENCY events {len(sim.events)} pairs {concurrency.pairs} ordered {concurrency.ordered} concurrent {concurrency.concurrent} same_lamport {concurrency.same_lamport} inversions {concurrency.inversions}")
+    for int p < sim.size
+        for p + 1 <= int q < sim.size
+            lines = lines.append("PAIR {sim.topology.names[p]} {sim.topology.names[q]} {concurrency.by_pair[p][q]}")
+    int[] chain = longest_chain(sim)
+    lines = lines.append("CHAIN length {len(chain)} " + range_notation(chain, sim))
+    analysis.Races races = race_summary(sim)
+    for int[] race = races.races[]
+        Packet first = sim.packets[race[1]]
+        Packet second = sim.packets[race[2]]
+        lines = lines.append("RACE {sim.topology.names[race[0]]} " + message_name(first.message) + " {sim.topology.names[first.source]} " + message_name(second.message) + " {sim.topology.names[second.source]}")
+    lines = lines.append("RACES {len(races.races)}")
+    for int[] violation = races.violations[]
+        Packet first = sim.packets[violation[1]]
+        Packet second = sim.packets[violation[2]]
+        lines = lines.append("VIOLATION {sim.topology.names[violation[0]]} " + message_name(first.message) + " {sim.topology.names[first.source]} overtook " + message_name(second.message) + " {sim.topology.names[second.source]}")
+    lines = lines.append("VIOLATIONS causal {len(races.violations)} fifo {races.fifo}")
+    analysis.Races raw_races = race_summary(raw)
+    lines = lines.append("RAW events {len(raw.events)} delivered {delivered_count(raw)} causal {len(raw_races.violations)} fifo {raw_races.fifo}")
+    for int[] cut = sim.params.cuts[]
+        snapshots.Details details = cut_details(sim, cut)
+        string text = "CUT " + clocks.text(cut)
+        if len(details.orphans) == 0
+            text += " consistent"
+        else
+            text += " inconsistent orphans " + [for int index = details.orphans[] then copy_label(sim, index)].join(" ")
+        lines = lines.append(text + " transit {len(details.transit)} money {details.money} initial {initial_total(sim)}")
+    analysis.Enumeration enumeration = analysis.enumerate(process_events(sim), metadata(sim), vectors(sim), [for processes.State state = sim.states[] then state.initial], sim.params.cutcount, sim.params.predicates)
+    lines = lines.append("CUTCOUNT t={sim.params.cutcount} events " + clocks.text(enumeration.limits) + " product {enumeration.product} consistent {enumeration.consistent_count}")
+    lines = lines.append("LEVELS " + words(enumeration.levels))
+    for int i < int(len(sim.params.predicates))
+        int[] predicate = enumeration.predicates[i]
+        lines = lines.append("PREDICATE transit>={sim.params.predicates[i]} cuts {predicate[0]} possibly " + yes(predicate[1] == 1) + " definitely " + yes(predicate[2] == 1))
+    return lines
+
+void put(string[] &line, int position, string text)
+    for int i < int(len(text))
+        while int(len(line)) <= position + i
+            line = line.append(" ")
+        line[position + i] = text[i]
+
+string trimmed(string[] line)
+    while len(line) > 0 and line[int(len(line)) - 1] == " "
+        line = line[0:<int(len(line)) - 1]
+    return line.join("")
+
+string diagram_header(string letter, string[] names)
+    string[] line = []
+    put(&line, 0, "    {letter} ")
+    for int p < int(len(names))
+        put(&line, 8 * p + 6, names[p])
+    return trimmed(line)
+
+string diagram_entry(int value, int process_index, int kind, int message, int source, string shot_name, Simulation sim)
+    string[] line = []
+    string number = value.string()
+    put(&line, 0, string.repeat(" ", nat(5 - int(len(number)))) + number + " ")
+    for int p < sim.size
+        put(&line, 8 * p + 6, "|")
+    int own = 8 * process_index + 6
+    string[] symbols = ["*", "x", "S", "B", "R", "#"]
+    put(&line, own, symbols[kind])
+    if kind == 5
+        put(&line, own + 1, shot_name)
+    elif kind == 2 or kind == 3
+        put(&line, own + 1, message_name(message))
+    elif kind == 4
+        int other = 8 * source + 6
+        int low = minimum(other, own)
+        int high = maximum(other, own)
+        for low + 1 <= int position < high
+            put(&line, position, (if (position - 6) % 8 == 0 then "+" else "-"))
+        put(&line, (if other < own then high - 1 else low + 1), (if other < own then ">" else "<"))
+        put(&line, low + 2, message_name(message))
+    return trimmed(line)
+
+string event_diagram(Event event, int value, Simulation sim)
+    int source = if event.kind == 4 then sim.packets[event.packet].source else -1
+    return diagram_entry(value, event.process_index, event.kind, event.message, source, "", sim)
+
+string[] diagram_lines(Simulation sim)
+    string[] lines = [diagram_header("t", sim.topology.names)]
+    for int[] entry = sim.timeline[]
+        if entry[0] == 0
+            Event event = sim.events[entry[1]]
+            lines = lines.append(event_diagram(event, event.occurred_at, sim))
+        else
+            lines = lines.append(diagram_entry(entry[3], entry[2], 5, -1, -1, sim.shots[entry[1]].name, sim))
+    lines = lines.append(diagram_header("L", sim.topology.names))
+    int count = int(len(sim.events))
+    int[] keys = [for int i < count then (sim.events[i].lamport * sim.size + sim.events[i].process_index) * (count + 1) + i]
+    for int key = keys.sorted()[]
+        Event event = sim.events[key % (count + 1)]
+        lines = lines.append(event_diagram(event, event.lamport, sim))
+    return lines
+
+void save(string name, string[] lines)
+    file.write("output/" + name, lines.join(NL) + NL)
+
+void run()
+    network.Topology topology = network.read_topology()
+    processes.Script[] scripts = processes.read_scripts(topology.names)
+    Params params = load_params()
+    Simulation normal = Simulation(topology, scripts, params, false)
+    .normal.schedule()
+    .normal.run()
+    Simulation raw = Simulation(topology, scripts, params, true)
+    .raw.schedule()
+    .raw.run()
+    save("trace.txt", trace_lines(normal))
+    save("deliveries.txt", deliveries_lines(normal))
+    save("snapshots.txt", snapshots_lines(normal, raw))
+    save("analysis.txt", analysis_lines(normal, raw))
+    save("diagram.txt", diagram_lines(normal))
+
+run()

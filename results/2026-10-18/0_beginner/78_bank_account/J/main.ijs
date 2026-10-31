@@ -1,0 +1,28 @@
+main =: 3 : 0
+  names =. ;:'Nina Leo Emma'
+  balances =. 12000 3500 800
+  commands =. 'deposit Emma 1200';'withdraw Leo 4000';'transfer Nina Leo 5000';'withdraw Leo 4000';'transfer Emma Nina 2500';'transfer Emma Nina 2000';'withdraw Emma 300';'deposit Nina 750';'transfer Leo Emma 3200';'withdraw Nina 9800'
+  for_i. i.10 do.
+    command =. >i{commands
+    fields =. ;:command
+    source =. names i.1{fields
+    amount =. 0".>{:fields
+    operation =. >{.fields
+    success =. 1
+    if. operation-:'deposit' do.
+      balances =. ((source{balances)+amount) source}balances
+    elseif. amount>source{balances do. success =. 0
+    else.
+      balances =. ((source{balances)-amount) source}balances
+      if. operation-:'transfer' do.
+        target =. names i.2{fields
+        balances =. ((target{balances)+amount) target}balances
+      end.
+    end.
+    status =. 'ok'
+    if. -.success do. status =. 'failed (insufficient funds)' end.
+    smoutput 'op ',(":>:i),': ',command,' ',status
+  end.
+  for_i. /:names do. smoutput (>i{names),': ',":i{balances end.
+)
+main ''

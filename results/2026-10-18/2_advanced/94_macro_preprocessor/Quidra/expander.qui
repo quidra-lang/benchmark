@@ -1,0 +1,228 @@
+import lexer = "./lexer.qui"
+import defs = "./definitions.qui"
+
+class Context(defs.Macro[] definitions = [], map.Map<string, int> table = map.Map<string, int>(), defs.Diagnostic[] diagnostics = [], int[] uses = [0, 0, 0], int counter = 0)
+class Pending(lexer.Token token, int next)
+class Collected(lexer.Token[][] arguments, int remaining, lexer.Token closing)
+class Item(bool is_paste, lexer.Token[] sequence)
+
+void diagnostic(Context &context, const defs.Position position, string kind, string message)
+    context.diagnostics = context.diagnostics.append(defs.Diagnostic(position, kind, message))
+
+void expansion_error(Context &context, const lexer.Token invocation, string display_name, int offset, string message)
+    diagnostic(&context, defs.Position(display_name, invocation.line + offset), "error", message)
+
+lexer.Token[] expand(Context &context, const lexer.Token[] tokens, string display_name, int offset);
+
+Collected | none collect(Context &context, const defs.Macro definition, const Pending[] pending, int head, const lexer.Token invocation, string display_name, int offset)
+    lexer.Token[][] arguments = [[]]
+    lexer.Token[] separators = []
+    int depth = 0
+    int cursor = pending[head].next
+    int closing_index = -1
+    while cursor != -1
+        lexer.Token current = pending[cursor].token
+        if current.text == ")" and depth == 0
+            closing_index = cursor
+            break
+        if current.text == "," and depth == 0
+            separators = separators.append(current)
+            arguments = arguments.append([])
+        else
+            if current.text == "("
+                depth += 1
+            elif current.text == ")"
+                depth -= 1
+            int last = int(len(arguments)) - 1
+            arguments[last] = arguments[last].append(current)
+        cursor = pending[cursor].next
+    if closing_index == -1
+        expansion_error(&context, invocation, display_name, offset, "unterminated argument list invoking macro {DQ}{definition.name}{DQ}")
+        return none
+    int count = int(len(arguments))
+    int required = int(len(definition.parameters)) - (if definition.variadic then 1 else 0)
+    bool empty_zero = not definition.variadic and required == 0 and count == 1 and len(arguments[0]) == 0
+    string message = ""
+    if not definition.variadic and required == 0 and not empty_zero
+        message = "macro {DQ}{definition.name}{DQ} passed {count} arguments, but takes just 0"
+    elif count < required
+        message = "macro {DQ}{definition.name}{DQ} requires {required} arguments, but only {count} given"
+    elif count > required and not definition.variadic
+        message = "macro {DQ}{definition.name}{DQ} passed {count} arguments, but takes just {required}"
+    if message != ""
+        expansion_error(&context, invocation, display_name, offset, message)
+        return none
+    if definition.variadic
+        lexer.Token[] variable = []
+        for required <= int index < count
+            if index > required
+                variable = variable.append(separators[index - 1])
+            variable = variable.concat(arguments[index])
+        arguments = arguments[0:<required].append(variable)
+    elif empty_zero
+        arguments = []
+    return Collected(arguments, pending[closing_index].next, pending[closing_index].token)
+
+int parameter_index(const string[] names, string sought)
+    for int index < int(len(names))
+        if names[index] == sought
+            return index
+    return -1
+
+lexer.Token stringize(const lexer.Token[] tokens, const lexer.Token template)
+    string text = ""
+    for int index < int(len(tokens))
+        lexer.Token token = tokens[index]
+        if index > 0 and token.space
+            text += " "
+        if token.kind == "string" or token.kind == "character"
+            for int character_index < int(len(token.text))
+                string character = token.text[character_index]
+                if character == "\" or character == DQ
+                    text += "\"
+                text += character
+        else
+            text += token.text
+    return lexer.Token("string", DQ + text + DQ, template.line, template.space)
+
+lexer.Token[] paste(Context &context, const lexer.Token first, const lexer.Token second, const lexer.Token invocation, string display_name, int offset)
+    lexer.Token right = second
+    if first.kind == "placemarker"
+        right.space = first.space
+        return [right]
+    if right.kind == "placemarker"
+        return [first]
+    string text = first.text + right.text
+    match lexer.single(text)
+        string kind
+            return [lexer.Token(kind, text, first.line, first.space, lexer.intersection(first.hide, right.hide))]
+        none
+            expansion_error(&context, invocation, display_name, offset, "pasting {DQ}{first.text}{DQ} and {DQ}{right.text}{DQ} does not give a valid preprocessing token")
+            right.space = false
+            return [first, right]
+
+lexer.Token[] substitute(Context &context, const defs.Macro definition, const lexer.Token[][] arguments, const lexer.Token invocation, const string[] hide, string display_name, int offset)
+    map.Map<int, lexer.Token[]> cache = map.Map<int, lexer.Token[]>()
+    Item[] items = []
+    int cursor = 0
+    while cursor < int(len(definition.replacement))
+        lexer.Token token = definition.replacement[cursor]
+        if token.text == "#" and definition.function_like
+            int parameter = parameter_index(definition.parameters, definition.replacement[cursor + 1].text)
+            items = items.append(Item(false, [stringize(arguments[parameter], token)]))
+            cursor += 2
+            continue
+        if token.text == "##"
+            items = items.append(Item(true, [token]))
+        else
+            int parameter = if token.kind == "identifier" then parameter_index(definition.parameters, token.text) else -1
+            if parameter >= 0
+                bool raw = (cursor > 0 and definition.replacement[cursor - 1].text == "##") or (cursor + 1 < int(len(definition.replacement)) and definition.replacement[cursor + 1].text == "##")
+                lexer.Token[] sequence = []
+                if raw
+                    sequence = arguments[parameter]
+                else
+                    match cache.get(parameter)
+                        lexer.Token[] found
+                            sequence = found
+                        none
+                            sequence = expand(&context, arguments[parameter], display_name, offset)
+                            .cache.set(parameter, sequence)
+                if len(sequence) == 0
+                    sequence = [lexer.Token("placemarker", "", token.line, token.space)]
+                else
+                    sequence[0].space = token.space
+                items = items.append(Item(false, sequence))
+            else
+                items = items.append(Item(false, [token]))
+        cursor += 1
+    lexer.Token[] output = []
+    cursor = 0
+    while cursor < int(len(items))
+        Item entry = items[cursor]
+        if not entry.is_paste
+            output = output.concat(entry.sequence)
+        else
+            int last = int(len(output)) - 1
+            lexer.Token left = output[last]
+            output = output[0:<last]
+            lexer.Token[] right = items[cursor + 1].sequence
+            output = output.concat(paste(&context, left, right[0], invocation, display_name, offset))
+            output = output.concat(right[1:<int(len(right))])
+            cursor += 1
+        cursor += 1
+    lexer.Token[] result = []
+    bool inherited_space = false
+    for lexer.Token token = output[]
+        if token.kind == "placemarker"
+            inherited_space = inherited_space or token.space
+            continue
+        token.line = invocation.line
+        token.space = token.space or inherited_space
+        token.hide = lexer.unique(token.hide.concat(hide))
+        result = result.append(token)
+        inherited_space = false
+    if len(result) > 0
+        result[0].space = invocation.space
+    return result
+
+lexer.Token[] expand(Context &context, const lexer.Token[] tokens, string display_name, int offset)
+    Pending[] pending = []
+    int head = -1
+    for lexer.Token token = tokens[::-1][]
+        pending = pending.append(Pending(token, head))
+        head = int(len(pending)) - 1
+    lexer.Token[] result = []
+    while head != -1
+        lexer.Token invocation = pending[head].token
+        head = pending[head].next
+        if invocation.kind != "identifier" or lexer.has(invocation.hide, invocation.text)
+            result = result.append(invocation)
+            continue
+        if defs.builtin(invocation.text)
+            string kind = "number"
+            string text = ""
+            if invocation.text == "__LINE__"
+                context.uses[0] += 1
+                text = "{invocation.line + offset}"
+            elif invocation.text == "__FILE__"
+                context.uses[1] += 1
+                kind = "string"
+                text = DQ + display_name + DQ
+            else
+                context.uses[2] += 1
+                text = "{context.counter}"
+                context.counter += 1
+            result = result.append(lexer.Token(kind, text, invocation.line, invocation.space))
+            continue
+        int definition_index = -1
+        match context.table.get(invocation.text)
+            int found
+                definition_index = found
+            none
+                result = result.append(invocation)
+                continue
+        defs.Macro definition = context.definitions[definition_index]
+        lexer.Token[][] arguments = []
+        string[] hide = invocation.hide
+        if definition.function_like
+            if head == -1 or pending[head].token.text != "("
+                result = result.append(invocation)
+                continue
+            match collect(&context, definition, pending, head, invocation, display_name, offset)
+                Collected found
+                    arguments = found.arguments
+                    head = found.remaining
+                    hide = lexer.intersection(hide, found.closing.hide)
+                none
+                    result = result.append(invocation)
+                    continue
+        hide = lexer.unique(hide.append(definition.name))
+        lexer.Token[] replacement = substitute(&context, definition, arguments, invocation, hide, display_name, offset)
+        context.definitions[definition_index].expanded += 1
+        if len(replacement) == 0 and invocation.space and head != -1
+            pending[head].token.space = true
+        for lexer.Token token = replacement[::-1][]
+            pending = pending.append(Pending(token, head))
+            head = int(len(pending)) - 1
+    return result

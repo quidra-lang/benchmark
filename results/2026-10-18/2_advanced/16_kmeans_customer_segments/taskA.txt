@@ -1,0 +1,692 @@
+[Overview]
+Write a program that builds per-customer features from the transaction data of an online shop and divides the customers into several segments (groups of similar customers) with the k-means method. For each candidate number of segments k, the program runs Lloyd's algorithm with three kinds of initialization (the Forgy method, the maximin method and the k-means++ method) and several runs each, improves the solutions by moving one point at a time, and selects the best solution. Next, it chooses k by a majority vote of five criteria (elbow, silhouette, the Calinski-Harabasz index, the Davies-Bouldin index and Hartigan's rule), names each segment according to the naming rules, and summarizes the segments (centers, representative values, RFM scores, tendencies in item categories, outliers and so on). In addition, it examines the stability under subsampling, the change when each feature is left out in turn, a re-split of the largest segment, the per-period trends, the migration from a past point in time, and the purchase outcome after the reference day.
+The input is three files in the input/ folder (transaction data, settings, naming rules), and the results are written to eight files in the output/ folder. Nothing is written to standard output. The only random numbers used are those of MINSTD as defined in this statement. The only operations used in real-number computations are the four arithmetic operations and the square root, and every rule is fully specified, so the result is uniquely determined.
+
+[Input files]
+There are three input files: input/transactions.csv, input/params.txt and input/segment_rules.txt. Every file consists of ASCII characters only, and every line (including the last one) ends with a newline (LF). There are no spaces at the start or end of a line, and there are no blank lines.
+Integers are written in decimal without extra leading zeros; a negative number has a leading "-" (0 is written as 0). A decimal number is written in decimal as "-" (only when it is negative), a sequence of one or more digits, ".", and a sequence of one or more digits, in this order (examples: 2.5, -0.75).
+
+* input/transactions.csv (transaction data)
+The first line is a header line, the string customer,day,order_id,category,amount_cents. Each line from the second line on is one "transaction row": the customer ID, the day, the order ID, the category and the amount, in this order, separated by single commas.
+- The customer ID is a string of 1 to 8 characters consisting of uppercase English letters and digits.
+- The day is an integer from 1 to 9999 and represents the day of the transaction (a larger value is a more recent day).
+- The order ID is a string of 1 to 12 characters consisting of uppercase English letters and digits. All transaction rows with the same order ID have the same customer ID.
+- The category is a string of 1 to 16 characters consisting of lowercase English letters and represents the category of the item.
+- The amount is an integer in cents (100 cents is 1 dollar). A positive value is a purchase, a negative value is a refund for a return, and 0 is a free item.
+One order consists of one or more transaction rows with the same order ID. The transaction rows are not necessarily sorted by day.
+
+* input/params.txt (settings)
+It consists of the following 17 lines, in this order. Each line is a keyword followed by one or more values, separated by single spaces.
+- REFERENCE_DAY R: the reference day of the analysis (integer).
+- SNAPSHOT_DAY S: the past day used for comparison (integer; S < R).
+- OUTCOME_DAYS H: the number of days after the reference day over which the purchase outcome is examined (positive integer).
+- K_RANGE k_min k_max: the range of the number of segments k (integers). Every integer k with k_min <= k <= k_max is examined in increasing order. This order is called the "k order".
+- METHODS m_1 m_2 ...: the list of initialization methods (1 to 3 distinct values out of forgy, maximin and kmeanspp, in any order). The order of this list is called the "method order".
+- RESTARTS T: the number of runs per method (positive integer).
+- MAX_ITERATIONS M: the upper limit on the number of iterations of Lloyd's algorithm and on the number of passes of the transfer improvement (positive integer).
+- SEED x0: the random seed (integer from 1 to 2147483646).
+- SUBSAMPLES B: the number of subsamples (positive integer).
+- SUBSAMPLE_PERCENT p: the size of a subsample as a ratio (integer from 50 to 99; the unit is %).
+- OUTLIER_SD lambda: the multiple of the standard deviation used to detect outliers (positive decimal number).
+- OVERDUE_FACTOR phi: the multiple used to detect overdue purchases (positive integer).
+- ORDER_BINS b_1 b_2 ...: the boundaries of the order amount bins (positive integers in dollars; one or more, in increasing order). Let L be the number of boundaries.
+- TOP_CATEGORIES c: the number of categories listed in a segment profile (positive integer).
+- TOP_CUSTOMERS u: the number of customers listed in a segment profile (positive integer).
+- PERIOD_DAYS D: the number of days in one period of the per-period trends (positive integer).
+- PERIODS P: the number of periods examined in the per-period trends (positive integer).
+
+* input/segment_rules.txt (naming rules)
+Each line is one "rule". The order of the lines in the file is called the "rule order", and the rules are numbered rule 1, rule 2, ... from the top. Each line is a name followed by zero or more conditions, separated by single spaces.
+- The name is a string of 1 to 20 characters consisting of uppercase English letters and "_", and the names of different rules are distinct.
+- A condition consists of the three words "feature-name comparison threshold". The feature name is one of recency, frequency, monetary, basket, categories and tenure (Processing, section 3 (1)), the comparison is ">" or "<", and the threshold is a decimal number.
+- Only the last line is a rule without conditions; every other line has one or more conditions.
+
+[Processing]
+* 1. Notation and computation rules
+- String order (used when comparing customer IDs, categories and RFM codes) is lexicographic order by ASCII character code (compare one character at a time from the start; the string whose first differing character has the smaller code comes first; if one string is a prefix of the other, the shorter one comes first). For example, C12 comes before C7.
+- sqrt is the square root, |t| is the absolute value of t, floor(t) is the largest integer not greater than t, and max and min are the maximum and the minimum. t^2 means t * t.
+- SUM denotes a sum that adds the terms one at a time from the first, in the order of the indicated sequence, starting from an initial value of 0.
+- The "4-decimal value" of a real number v is v rounded to 4 decimal places (the same value as the one written to the output files). Some comparisons are made on 4-decimal values; whenever this is the case, it is stated explicitly.
+- Evaluate formulas in exactly the order written. For example, (a / b) * c computes a / b first and then multiplies by c.
+- Division "/" is real division, even between integers, except inside floor(...) (for example, n_p / (n_p - 1) in section 7 is 1.5 when n_p = 3). A division inside floor(...) is always between non-negative integers, and the result of floor is the same as the quotient of integer division.
+- Every rule that selects a maximum or a minimum and every sorting rule always states how to handle equal values.
+- For points a = (a_1, a_2, ...) and b = (b_1, b_2, ...) (6-dimensional; 5-dimensional in section 16), the "squared distance" is d(a, b) = SUM (a_f - b_f)^2 (added in component order), and the "distance" is sqrt(d(a, b)). The "mean" of a sequence of points is the point obtained by adding, for each component, in the order of the sequence, and dividing by the number of points.
+- For a sequence of values x_1, ..., x_N (N >= 2), the "mean" is a = (SUM x_i) / N, and the "sample standard deviation" is sqrt((SUM (x_i - a)^2) / (N - 1)) (the sums are in the order of the sequence; compute the mean first, then the second sum).
+
+* 2. Transaction rows and orders
+(1) Classifying transaction rows: examine the transaction rows in file order and classify them as follows.
+- If the entire string of the line is identical to the entire string of some earlier transaction row (of any classification), the row is a "duplicate row" and is not used.
+- Otherwise, if the amount is 0, the row is a "free row" and is not used.
+- Every other row is a "valid row".
+The customers whose customer IDs appear in the transaction rows (including duplicate rows and free rows) are called the "file customers".
+(2) Grouping orders: for a day range [a, b], the valid rows whose day is at least a and at most b, grouped by order ID, are called the "orders" of that range. The customer of an order is the customer with the customer ID of those rows, the "order day" is the minimum day of those rows, and the "net amount" is the sum of the amounts of those rows (an integer). An order whose net amount is positive is called a "valid order", and an order whose net amount is 0 or less is called a "cancelled order". Rows outside the range are not included, even if they have the same order ID.
+The following three ranges are used.
+- Reference orders: [1, R] (valid rows whose day is at most R)
+- Snapshot orders: [1, S]
+- Outcome orders: [R + 1, R + H]
+Valid rows whose day is greater than R + H are not included in any of the ranges.
+
+* 3. Customer features
+(1) Features: for a day T and the orders of that day (the reference orders if T = R, the snapshot orders if T = S), the customers who have one or more valid orders are the "eligible customers" of day T. For each eligible customer, compute the following six features from that customer's valid orders only. This order is called the "feature order".
+1. recency (days since the last purchase): T - (maximum order day). An integer.
+2. frequency (number of purchases): the number of valid orders. An integer.
+3. monetary (purchase amount): the sum of the net amounts, computed as an integer in cents (this is called the "spend"), divided by 100, as a real number (in dollars).
+4. basket (average purchase amount): monetary / frequency (real).
+5. categories (number of categories): the number of categories whose "category spend" is positive. An integer. A customer's category spend for category g is the sum of the amounts of the rows with category g among the valid rows contained in that customer's valid orders (negative rows included).
+6. tenure (days as a customer): T - (minimum order day). An integer.
+The eligible customers of the reference day R are called the "analysis customers", and their number is n. The analysis customers sorted by customer ID (in string order) are called the "customer sequence", and they are given the "customer numbers" 0, 1, ..., n - 1 from the first.
+(2) Transformation: take the square root of frequency, monetary and basket (sqrt(frequency) and so on), and use recency, categories and tenure as they are, as real numbers. These are called the "transformed values".
+(3) Standardization: for each feature f, compute the mean mu_f and the sample standard deviation sigma_f of the transformed values of the analysis customers (in customer sequence). A customer's "standardized value" is z_f = (transformed value - mu_f) / sigma_f (if sigma_f = 0, then z_f = 0). The point formed by the six standardized values in feature order is called the customer's "point". In addition, the mean and the sample standard deviation of the feature values themselves (treated as real numbers; monetary and basket in dollars) are called the "raw mean" and the "raw standard deviation".
+(4) Correlation: the correlation of features a and b is r_ab = (SUM z_a * z_b) / (n - 1) (the sum is in customer sequence).
+(5) Snapshot points: the point of an eligible customer of the snapshot day S is obtained by standardizing the transformed feature values computed with T = S using mu_f and sigma_f of (3) (mu_f and sigma_f are not recomputed).
+
+* 4. Random numbers
+Random numbers are generated with MINSTD. The initial value of the state x is x0 of SEED. "Drawing a random number" means replacing x with (48271 * x) mod 2147483647 and returning the new x (48271 * x is less than 2^47). There is only one random sequence: forgy and kmeanspp draw from it in the runs defined in section 8 (in k order, method order and run-number order), and after all the runs, the subsamples of section 15 (in order of b) continue to draw from it. maximin draws no random numbers.
+
+* 5. Choosing initial centers
+From a sequence of points P_0, P_1, ..., P_(N-1) (indices 0 to N-1), choose k indices, and use their points, in the order chosen, as the initial values of center 1, center 2, ..., center k.
+(1) forgy: draw a random number x, let i = x mod N, and choose index i if it has not been chosen yet (if it has been chosen, do nothing). Repeat until k indices have been chosen.
+(2) maximin (uses the run number t): compute the mean g of the sequence of points, sort the indices by d(P_i, g) in increasing order (ties: smaller index first), and choose the t-th index (counting from 1) first. After that, until k indices have been chosen, compute for each index i D_i = (the minimum of d(P_i, P_c) over the chosen indices c), and choose the index with the largest D_i (ties: the smaller index).
+(3) kmeanspp: draw a random number x and choose index x mod N first. After that, until k indices have been chosen, compute for each index i the same D_i as in (2), let W = SUM D_i (in index order), draw a random number x, and let u = (x / 2147483647) * W. Add up the D_i in index order and choose the first index at which the sum becomes greater than u (if the sum does not become greater than u at any index, choose the largest index with D_i > 0).
+
+* 6. Lloyd's algorithm
+From a sequence of points P_0, ..., P_(N-1) and initial values of centers 1 to k, compute the assignment of each point (the number of the center the point belongs to).
+(1) Assignment: assign each point P_i to the center j with the smallest d(P_i, center j) (ties: the smaller j), and let e_i be that d(P_i, center j).
+(2) Refilling empty clusters: for j = 1, 2, ..., k in this order, if no point is assigned to center j, move to center j the point with the largest e_i (ties: the smaller index) among the points belonging to centers that have two or more points assigned at that moment, and set the e_i of that point to 0. This is called a "reseed".
+(3) Center update: replace each center j with the mean of the points assigned to j (in index order).
+The procedure is as follows.
+1. Perform (1) with the initial values of the centers. Set the iteration count to 0.
+2. While the iteration count is less than M, repeat the following "iteration".
+a. Perform (2) on the current assignment.
+b. Update the centers with (3) and increase the iteration count by 1.
+c. Perform (1) with the new centers. If the new assignment is identical, for every point, to the assignment after a, the algorithm has "converged" and the repetition ends.
+3. Perform (2) on the last assignment and compute the centers with (3). This assignment and these centers are the result of Lloyd's algorithm.
+If the iteration count reaches M without convergence, the algorithm "did not converge". The number of reseeds is counted over both 2 and 3. If the algorithm converged, (2) in step 3 does nothing, and the centers of step 3 are the same as the centers of the last b.
+The "SSE" (within-cluster sum of squares) of an assignment and centers is SUM d(P_i, center of point i) (in index order).
+
+* 7. Improvement by transfers
+A sequence of points and its assignment (with k centers) are improved by the following procedure. n_j is the number of points assigned to center j, and C_j is the mean of those points (in index order).
+A "pass" means doing the following for each point P_i in index order. Let p be the center of point i. If n_p = 1, do nothing. Otherwise, compute r = (n_p / (n_p - 1)) * d(P_i, C_p) and, for each center q other than p, s_q = (n_q / (n_q + 1)) * d(P_i, C_q), and let q* be the q with the smallest s_q (ties: the smaller q). If s_q* < r, move point i to q* (this is called a "transfer"), and recompute n_p, n_q* and C_p, C_q* (C_j is computed as defined above, by adding up again, in index order, the points assigned at that moment). The new values are used in the computations for the subsequent points.
+Passes are repeated, and the procedure ends after a pass in which no transfer occurred, or after the number of passes reaches M. Count the number of passes (including the last pass) and the number of transfers. The SSE computed for the improved assignment with C_j recomputed is called the "refined SSE".
+
+* 8. Runs and the solution for each k
+Here the sequence of points is the points of the analysis customers in customer sequence (the point index is the customer number). For each k in k order, for each method m in method order, and for the run numbers t = 1, 2, ..., T in this order, perform the following "run".
+1. Choose the initial centers with method m (section 5).
+2. Run Lloyd's algorithm (section 6).
+3. Improve the assignment resulting from Lloyd's algorithm by transfers (section 7).
+For each method, the run with the smallest 4-decimal value of the refined SSE (ties: the smaller run number) is the "best of the method". Among the bests of the methods, the one with the smallest 4-decimal value of the refined SSE (ties: the one earlier in method order) is the "best of k".
+The groups of customers assigned to the same center in the refined assignment of the best of k are sorted by number of customers in decreasing order (ties: by the smallest customer number in the group, in increasing order) and become segment 1, segment 2, ..., segment k. The order of these numbers is called the "segment order". The "center" of each segment is the mean of the points of the customers of that segment (in customer sequence). These segments and centers are called the "solution for k", and its SSE is called W_k.
+
+* 9. Indices and choosing k
+For the solution for each k, compute the following indices. dist(i, j) is the distance between the points of customer i and customer j, and |A| is the number of customers in segment A.
+(1) Silhouette: let A be the segment of customer i. If |A| = 1, then s_i = 0. Otherwise, let a_i = (the sum of dist(i, j) over each customer j of A other than i) / (|A| - 1), compute (the sum of dist(i, j) over each customer j of B) / |B| for each segment B other than A, and let b_i be the minimum of these values (every sum is in customer sequence). s_i = (b_i - a_i) / max(a_i, b_i) (if max(a_i, b_i) = 0, then s_i = 0). The "mean silhouette" is (SUM s_i) / n (in customer sequence).
+(2) Calinski-Harabasz index: let g be the mean of the points of all customers (in customer sequence); B = SUM |A| * d(center of A, g) (in segment order), and CH = (B / (k - 1)) / (W_k / (n - k)).
+(3) Davies-Bouldin index: for each segment A, let Q_A = (the sum of the distances between the point of each customer of A and the center of A) / |A| (in customer sequence). For each segment E different from A, compute (Q_A + Q_E) / (the distance between the center of A and the center of E), and let D_A be the maximum of these values. DB = (SUM D_A) / k (in segment order).
+(4) Elbow: let x_k = (k - k_min) / (k_max - k_min) and y_k = (W_k - W_kmax) / (W_kmin - W_kmax); then e_k = ((1 - x_k) - y_k) / sqrt(2) (the signed distance between the point (x_k, y_k) and the line through the two points (0, 1) and (1, 0)). It is 0 at k_min and at k_max.
+(5) Hartigan's rule: for k < k_max, H_k = (W_k / W_(k+1) - 1) * (n - k - 1).
+Each of the five criteria casts a "vote" for one k.
+- elbow: among the k with k_min < k < k_max, the k with the largest 4-decimal value of e_k (ties: the smaller k)
+- silhouette: the k with the largest 4-decimal value of the mean silhouette (ties: the smaller k)
+- calinski_harabasz: the k with the largest 4-decimal value of CH (ties: the smaller k)
+- davies_bouldin: the k with the smallest 4-decimal value of DB (ties: the smaller k)
+- hartigan: the smallest k with H_k <= 10 (compared on the real value of H_k). If there is no such k, k_max
+The k with the most votes (ties: the one with the larger 4-decimal value of the mean silhouette; if that is also equal, the smaller k) is the "chosen k", written K. The solution for K is called the "final solution". From here on, unless stated otherwise, "segments" means the segments of the final solution.
+
+* 10. Segment names
+For each segment A of the solution for k, find the first rule in rule order that holds. A rule holds when all of its conditions hold (the last rule, which has no conditions, always holds). The condition "f > v" holds when the component (standardized value) of feature f of the center of A is greater than v, and "f < v" holds when it is less than v. The number of the rule found is the "rule number" of A. Let w be the number of segments before A (in segment order) with the same rule number; the name of A is the name of the rule if w = 0, and if w >= 1 it is the concatenation, in this order, of the name of the rule, "_" and w + 1 (example: LAPSED_2).
+
+* 11. ARI (adjusted Rand index)
+For two partitions X and Y of the same N customers, let C(t) = t * (t - 1) / 2 and compute the following integers.
+- Z = C(N)
+- S_XY: the sum of C(t) over all pairs of a group of X and a group of Y, where t is the number of customers belonging to both
+- S_X: the sum of C(t) over the groups of X, where t is the number of customers in the group. S_Y is defined in the same way.
+With numerator = 2 * (Z * S_XY - S_X * S_Y) and denominator = Z * (S_X + S_Y) - 2 * S_X * S_Y, ARI = numerator / denominator (real). If the denominator is 0, ARI = 1. ARI does not depend on how the groups are numbered.
+
+* 12. Per-customer results
+For each analysis customer i, compute the following in the final solution.
+- Distance: the distance between the point of i and the center of the segment of i.
+- Nearest other: the segment, other than the segment of i, with the smallest squared distance to the point of i (ties: the smaller number), and the distance to its center. Because of the transfer improvement, this distance may be smaller than the distance to the center of the segment of i.
+- Silhouette: s_i of section 9 (1) (the one for the solution for K).
+- Recommended category: going through the "category ranking" (section 14 (15)) of the segment of i from the top, the first category for which the category spend of i is 0 or less (including the case where i has no row of that category). If there is no such category, "-".
+
+* 13. RFM scores
+For each analysis customer i, compute the following three scores. Each of them is an integer from 1 to 5.
+- R score: 1 + floor(5 * w / n), where w is the number of analysis customers whose recency is greater than that of i.
+- F score: 1 + floor(5 * w / n), where w is the number of analysis customers whose frequency is less than that of i.
+- M score: 1 + floor(5 * w / n), where w is the number of analysis customers whose spend is less than that of i.
+The three characters formed by concatenating the digits of the R score, the F score and the M score in this order are called the "RFM code" (example: 534).
+
+* 14. Segment profiles
+For each segment A, the customers of A are called the "members" (arranged in customer sequence), and their number is m. The sum of the spends of all analysis customers is called the "total spend", and the sum of the spends of the members is called the "spend of A".
+(1) Share: m / n. Spend share: (spend of A) / (total spend).
+(2) Center: the six components (standardized values) of the center of A.
+(3) Center on the original scale: for each feature f, let v = mu_f + sigma_f * (the component f of the center of A); the value is v * v for frequency, monetary and basket, and v for the other features.
+(4) Traits: sort the features by the absolute value of the component of the center of A in decreasing order (ties: feature order), and for the first two features take high_<feature name> if the component is positive and low_<feature name> otherwise.
+(5) Medians: for each feature, sort the values of the members in increasing order and take the value at position floor((m - 1) / 2) from the start (counting from 0) (the lower median). For monetary, sort by spend (integer in cents) and take that.
+(6) Correspondence with the neighbouring k: for each of K - 1 and K + 1, if the value is at least k_min and at most k_max, find the segment of the solution for that k that contains the most members of A (ties: the smaller number), and the number of members of A it contains.
+(7) Top customers: the first u members when the members are sorted by spend in decreasing order (ties: customer sequence) (all of them if m < u).
+(8) Purchase cadence: for the members whose frequency is 2 or more, let gap = (tenure - recency) / (frequency - 1) (real), and compute the number of these members and the mean gap (added in customer sequence and divided by that number). Also count as "overdue customers" the members whose frequency is 2 or more and for whom recency * (frequency - 1) > phi * (tenure - recency) (compared as integers).
+(9) Order amounts: count each valid reference order of the members in bin i (0 to L), where i is the number of ORDER_BINS boundaries b for which the net amount is b * 100 or more.
+(10) SSE: SUM d(point of a member, center of A) (in customer sequence), and its ratio to W_K.
+(11) Gini coefficient: let x_1, ..., x_m be the spends of the members sorted in increasing order, X = SUM x_j and Y = SUM j * x_j (j counted from 1); the coefficient is (2 * Y - (m + 1) * X) / (m * X) (compute the numerator and the denominator as integers, then divide). Compute it in the same way for all analysis customers as well.
+(12) Returns: over the rows of all reference orders of the members (including cancelled orders), the sum of the positive amounts is called the "gross purchases" and the sum of the negative amounts with its sign changed is called the "returned amount"; compute the return rate = returned amount / gross purchases, and the number of cancelled orders.
+(13) Silhouette: the mean of s_i over the members (added in customer sequence and divided by m), and the number of members with s_i < 0.
+(14) RFM: the means of the R scores, the F scores and the M scores of the members (each added in customer sequence and divided by m), and the most frequent RFM code among the members (ties: the one earlier in string order) together with its count.
+(15) Categories: the category spend of A is the sum of the category spends of the members. The categories for which this is positive, sorted by amount in decreasing order (ties: string order), are called the "category ranking" of A. For the first c categories g of the category ranking (all of them if there are fewer), compute share = (amount of A for g) / (spend of A) and lift = (share) / ((overall amount for g) / (total spend)). The overall amount for g is the sum of the category spends of all analysis customers.
+(16) Outliers: if m >= 2, compute the mean a and the sample standard deviation sd of the distances (section 12) of the members (in customer sequence), and the members whose distance is greater than a + lambda * sd are outliers. If m = 1, there are no outliers.
+In addition, compute the following over all segments.
+- Category mix: for every category that appears in the rows of the valid orders of all analysis customers, (amount of A for g) / (spend of A) for each segment A (0 if g is not in the category spend of A).
+- R score table: for each of the R scores 5, 4, 3, 2, 1, the number of members of each segment with that R score.
+- The ARI between the partition by RFM code and the partition by the segments of the final solution.
+- The distances between centers.
+
+* 15. Stability under subsampling
+Let the subsample size be m' = floor(n * p / 100). For b = 1, 2, ..., B in this order, do the following.
+1. Create the sequence q = (0, 1, ..., n - 1). For t = 0, 1, ..., m' - 1 in this order, draw a random number x, let j = t + (x mod (n - t)), and swap the t-th and the j-th elements of q (counting from 0).
+2. The first m' customer numbers of q, sorted in increasing order, form the subsample.
+3. Run Lloyd's algorithm with the points of the customers of the subsample (in this order) as the sequence of points and the centers of the final solution (in segment order) as the initial values of the centers (no transfer improvement is done). Let G_j be the set of customers assigned to center j.
+4. For each segment A, let E be the set of the customers of the subsample who are members of A, and compute J = (the maximum over j of |E and G_j| / |E or G_j|), where |E and G_j| is the number of customers in both E and G_j, and |E or G_j| is the number of customers in E or G_j (or both) (for a j with |E or G_j| = 0, the value is taken as 0).
+For each segment, compute the mean of J (added in order of b and divided by B) and the minimum of J.
+
+* 16. Clustering with one feature left out
+For each feature f in feature order, take as the sequence of points the 5-dimensional points (in customer sequence) obtained by removing the component f from the points of the analysis customers, choose the initial values of K centers with maximin (run number 1), and run Lloyd's algorithm and the transfer improvement. Compute the refined SSE (computed on the 5-dimensional points) and the ARI between the refined assignment and the segments of the final solution.
+
+* 17. Re-splitting the largest segment
+Take the points of the members of segment 1 (in customer sequence) as the sequence of points, choose the initial values of 2 centers with maximin (run number 1), and run Lloyd's algorithm and the transfer improvement. The two groups after the improvement become part 1 and part 2 by the same rule as in section 8 (more customers first; ties: smaller minimum customer number in the group first), and compute the number of customers and the center (mean of the points) of each. The SSE before splitting is SUM d(point of a member, center of segment 1) (the same value as in section 14 (10)), the SSE after splitting is the refined SSE, and the reduction is (SSE before splitting) - (SSE after splitting).
+
+* 18. Per-period trends
+For q = 1, 2, ..., P, period q runs from day R - q * D + 1 to day R - (q - 1) * D (both inclusive). For each period and each segment, compute the sum of the net amounts of those valid reference orders of the members whose order day falls in the period (spend), the number of members who have one or more such orders (active count), and the number of members whose first purchase day (R - tenure) falls in the period (acquired count).
+
+* 19. Migration from the snapshot
+The eligible customers of the snapshot day S are called the "snapshot customers". For each snapshot customer, compute the squared distance between its point of section 3 (5) and the center of each segment of the final solution; the segment with the smallest value (ties: the smaller number) is its "snapshot segment".
+The counts of analysis customers for each pair of a snapshot segment ("none" if the customer is not a snapshot customer) and a segment of the final solution form the "migration table". Among the analysis customers who are snapshot customers, the number whose snapshot segment is the same as their segment of the final solution is called "stayed" and the number whose segments differ is called "moved"; the number of analysis customers who are not snapshot customers is called "new", and the number of snapshot customers who are not analysis customers is called "lost".
+
+* 20. Outcome after the reference day
+The valid orders among the outcome orders are called the "outcome purchases". For each segment, compute the number of members who have one or more outcome purchases (buyers), buyers / m (purchase rate; m is the number of customers of the segment), the sum of the net amounts of the outcome purchases of the members (outcome spend; an integer in cents), and (outcome spend / 100) / m (amount per customer). Also compute the number of file customers who are not analysis customers and have an outcome purchase, and the sum of the net amounts of their outcome purchases.
+
+[Output files]
+Write the eight files output/features.csv, output/runs.txt, output/selection.txt, output/segments.csv, output/profiles.txt, output/robustness.txt, output/tracking.txt and output/summary.txt.
+
+* Common rules
+- The output consists of ASCII characters only, and every line (including the last one) ends with a newline (LF). Do not put extra spaces at the start or end of a line, and do not insert blank lines unless specified. Where blank lines are specified, insert exactly one blank line between consecutive blocks (none before the first block and none after the last block).
+- In the formats below, each part enclosed in < > is replaced by a value, and all other characters are written as they are. Values are separated by a single space (a single comma in .csv files). A notation such as "<...> ..." means values of the same kind listed with one separator between consecutive values. A line that begins with "  " starts with two spaces.
+- Integers are written in decimal without extra leading zeros.
+- Real numbers are rounded to 4 decimal places and written in fixed-point notation with exactly 4 digits after the decimal point (examples: 12.5 is written as 12.5000, 0.91153 as 0.9115). Exponent notation is not used, and when the integer part is 0, 0 is written. Negative numbers have a leading -, but a value whose rounded result is 0 is written without - (example: -0.00004 is written as 0.0000). The data contain no values close to a rounding boundary.
+- <amount> is an integer v in cents written as follows: "-" if v < 0, then floor(|v| / 100) in decimal, ".", and the remainder of |v| divided by 100 as 2 digits (padded with a leading 0 if it has 1 digit), in this order (examples: 1999 is 19.99, 5 is 0.05, -2044 is -20.44, 0 is 0.00).
+- <z6> is the six standardized values (or center components) in feature order (<real> ...).
+- <yes/no> is yes if the algorithm converged and no if it did not converge.
+
+* output/features.csv
+The first line is customer,recency,frequency,monetary,basket,categories,tenure,z_recency,z_frequency,z_monetary,z_basket,z_categories,z_tenure . Then, for each analysis customer (in customer sequence), one line
+<customer ID>,<recency>,<frequency>,<spend as amount>,<basket as real>,<categories>,<tenure>,<z_recency>,<z_frequency>,<z_monetary>,<z_basket>,<z_categories>,<z_tenure>
+is written. recency, frequency, categories and tenure are integers, and the values beginning with z_ are standardized values (real).
+
+* output/runs.txt
+Make one block for each k in k order, with one blank line between blocks. Each block consists of the following lines.
+k <k>
+followed by, for each run (in method order, then in run-number order),
+run <method> <run number> seeds <customer IDs of the customers chosen as initial centers (k of them, in the order chosen)> iterations <iteration count> converged <yes/no> reseeds <number of reseeds> sse <SSE of the result of Lloyd's algorithm> passes <number of passes> transfers <number of transfers> refined <refined SSE>
+then, for each method in method order,
+best <method> restart <run number of the best of the method> sse <its refined SSE>
+and finally
+chosen <method of the best of k> restart <its run number> sse <its refined SSE>
+sizes <number of customers of each segment (k values, in segment order)> ...
+are written.
+
+* output/selection.txt
+Write the following four blocks in this order, with one blank line between blocks.
+(1) Indices
+indices
+followed by, for each k in k order,
+k=<k> sse <W_k> elbow <e_k> silhouette <mean silhouette> calinski_harabasz <CH> davies_bouldin <DB> hartigan <H_k>
+is written. On the line for k = k_max, <H_k> is written as -.
+(2) Votes
+votes
+elbow k=<k of the elbow vote>
+silhouette k=<k of the silhouette vote>
+calinski_harabasz k=<k of the calinski_harabasz vote>
+davies_bouldin k=<k of the davies_bouldin vote>
+hartigan k=<k of the hartigan vote>
+chosen k=<K> votes <number of votes for K>
+(3) Names
+segments
+followed by, for each k in k order,
+k=<k> <name>:<size> ...
+is written. <name>:<size> is the name (section 10) and the number of customers of a segment of the solution for k joined by ":", and k of them are listed in segment order.
+(4) Stability
+stability
+followed by, for each k in k order, a line with the following values in this order, with a separator between consecutive values.
+- k=<k>
+- for every pair of the i-th method a and the j-th method b in method order (i < j), in increasing order of i (for the same i, in increasing order of j): <a>:<b> <ARI between the refined assignment of the best of method a and that of the best of method b> (this item is absent if there is only one method)
+- final
+- for each method a in method order: <a> <ARI between the refined assignment of the best of method a and the solution for k>
+- next <ARI between the solution for k and the solution for k + 1> (next - when k = k_max)
+
+* output/segments.csv
+The first line is customer,segment,name,distance,other,other_distance,silhouette,recommend . Then, for each analysis customer (in customer sequence), one line
+<customer ID>,<segment number>,<segment name>,<distance>,<number of the nearest other segment>,<distance to its center>,<silhouette>,<recommended category>
+is written (the results of section 12).
+
+* output/profiles.txt
+First,
+segments k=<K> customers <n> revenue <total spend as amount> gini <Gini coefficient of all analysis customers>
+is written. Then, for each segment A (in segment order), one blank line followed by the following lines is written (the results of section 14).
+segment <number> <name> rule <rule number> size <m> share <share> revenue <spend of A as amount> revenue_share <spend share>
+  center <z6>
+  value recency <v> frequency <v> monetary <v> basket <v> categories <v> tenure <v>
+  traits <first trait> <second trait>
+  median recency <integer> frequency <integer> monetary <amount> basket <real> categories <integer> tenure <integer>
+  related <item for K - 1> <item for K + 1>
+  top_customers <customer ID> <spend as amount> ...
+  cadence customers <number of members with a gap> mean_gap <mean gap> overdue <number of overdue customers>
+  order_sizes <count of bin 0> <count of bin 1> ... <count of bin L>
+  sse <SSE> share <ratio to W_K>
+  gini <Gini coefficient>
+  returns rate <return rate> returned <returned amount as amount> cancelled <number of cancelled orders>
+  silhouette <mean silhouette of the members> negative <number of members with negative s_i>
+  rfm r <mean R score> f <mean F score> m <mean M score> mode <most frequent RFM code> <its count>
+  categories <category> <share> <lift> ...
+  outliers <number of outliers> <customer ID of an outlier> ...
+The values of value are the center on the original scale (real). Each item of related is k=<k> segment <number of the corresponding segment> shared <count> if that k is in the range, and k=<k> - otherwise. top_customers lists the pairs of customer ID and spend of the top customers. If the number of members for the purchase cadence is 0, <mean gap> is written as -. categories lists the triples of category, share and lift for the first c categories of the category ranking. outliers lists the customer IDs of the outliers in customer sequence (if there are no outliers, only outliers 0 is written).
+After the last segment, write the following three blocks in this order, after a blank line (with one blank line between blocks as well).
+(1) Category mix
+category_mix <1> <2> ... <K>
+followed by, for each category g in string order,
+<g> <share of each segment (K values, in segment order)> ...
+(2) R score table
+rfm_recency <1> <2> ... <K>
+r=5 <number of members of each segment (K values, in segment order)> ...
+r=4 ...
+r=3 ...
+r=2 ...
+r=1 ...
+ari rfm_codes <ARI between the partition by RFM code and the partition by segment>
+(3) Distances between centers
+center_distances
+followed by, for each segment A (in segment order),
+<number of A> <distance between the center of A and the center of each segment (K values, in segment order)> ...
+
+* output/robustness.txt
+Write the following three blocks in this order, with one blank line between blocks.
+(1) Subsamples
+subsamples <B> size <subsample size m'>
+followed by, for each segment (in segment order),
+segment <number> <name> mean_jaccard <mean of J> min_jaccard <minimum of J>
+(2) Clustering with one feature left out
+ablation
+followed by, for each feature f in feature order,
+without <feature name> seeds <customer IDs of the customers chosen as initial centers (K of them, in the order chosen)> iterations <iteration count> converged <yes/no> transfers <number of transfers> sse <refined SSE> ari <ARI>
+(3) Re-split
+drilldown segment 1 <name of segment 1> size <number of customers of segment 1> seeds <customer IDs of the customers chosen as initial centers (2 of them, in the order chosen)> iterations <iteration count> converged <yes/no> transfers <number of transfers>
+sse before <SSE before splitting> after <SSE after splitting> gain <reduction>
+part 1 size <number of customers of part 1> center <z6>
+part 2 size <number of customers of part 2> center <z6>
+
+* output/tracking.txt
+Write the following three blocks in this order, with one blank line between blocks.
+(1) Per-period trends
+periods <P> days <D>
+followed by, for q = 1, 2, ..., P in this order,
+period <q> days <first day of the period> <last day of the period> revenue <spend as amount (K values, in segment order)> ... active <active count (K values, in segment order)> ... acquired <acquired count (K values, in segment order)> ...
+(2) Migration from the snapshot
+migration day <S> customers <number of snapshot customers>
+from\to <1> <2> ... <K>
+followed by, for each of the snapshot segments 1, 2, ..., K and "none" (in this order),
+<number of the snapshot segment, or none for "none"> <counts of the migration table (K values, in the segment order of the final solution)> ...
+is written. "\" is a single backslash character (ASCII code 92). Then
+moved_customers
+followed by, for each analysis customer whose snapshot segment differs from their segment of the final solution (in customer sequence),
+<customer ID> <number of the snapshot segment> <number of the segment of the final solution>
+and finally
+stayed <stayed> moved <moved> new <new> lost <lost>
+are written.
+(3) Outcome
+outcome days <R + 1> <R + H>
+followed by, for each segment (in segment order),
+segment <number> <name> size <m> buyers <buyers> rate <purchase rate> revenue <outcome spend as amount> per_customer <amount per customer>
+and finally
+unsegmented buyers <number of buyers who are not analysis customers> revenue <sum of their net amounts as amount>
+are written.
+
+* output/summary.txt
+Write the following four blocks in this order, with one blank line between blocks.
+(1) Data
+rows <number of transaction rows> duplicates <number of duplicate rows> zero <number of free rows> used <number of valid rows whose day is at most R> returns <number of those rows whose amount is negative> later <number of valid rows whose day is greater than R>
+orders <number of reference orders> valid <number of valid orders among them> cancelled <number of cancelled orders>
+customers <number of file customers> clustered <n> excluded <number of file customers who are not analysis customers>
+excluded_ids <customer IDs of the file customers who are not analysis customers (in string order)> ...
+If there is no such customer, the excluded_ids line is excluded_ids -.
+(2) Categories
+for each category g of the same categories as in the category mix (section 14), in string order,
+category <g> revenue <overall amount for g as amount> share <(overall amount for g) / (total spend)> customers <number of analysis customers whose category spend for g is positive>
+(3) Features
+for each feature in feature order,
+feature <feature name> transform <sqrt or none> raw_mean <raw mean> raw_sd <raw standard deviation> mean <mu_f> sd <sigma_f>
+transform is sqrt for the features whose square root is taken (frequency, monetary, basket) and none for the other features.
+(4) Correlation
+correlation recency frequency monetary basket categories tenure
+followed by, for each feature a in feature order,
+<feature name of a> <r_ab (6 values, b in feature order)> ...
+
+[Source files]
+Split the program into the following seven source files (the file names follow the conventions of each language).
+- main: holds the overall flow and most of the processing: calling the input reading, the random numbers, the three ways of choosing initial centers, the transfer improvement, the runs for each k and the selection of the best, the sorting into segment order, the choice of k by the five criteria, the application of the naming rules (including numbering such as _2), the per-customer results, the RFM scores, every item of the segment profiles, the stability under subsampling, the clustering with one feature left out, the re-split of the largest segment, the per-period trends, the migration from the snapshot, the outcome after the reference day, and the assembly of the contents of the eight output files.
+- transactions: reading the settings file, reading the transaction data and classifying the transaction rows (duplicate rows and free rows), and grouping orders for a given day range.
+- features: computing the six features on day T (including the category spends), the transformation, the standardization (mean and sample standard deviation), the standardization with given mu_f and sigma_f, and the correlation.
+- kmeans: squared distance, assignment, mean of points, refilling empty clusters, the iterations of Lloyd's algorithm, and SSE.
+- validation: the table of distances between customers, silhouette, the Calinski-Harabasz index, the Davies-Bouldin index, elbow, Hartigan's rule, and ARI.
+- profiles: reading the naming rules and evaluating the rules, and converting centers to the original scale.
+- report: formatting real numbers (rounding, handling of -0), formatting amounts, and writing a sequence of lines to a file.
+
+[Constraints]
+- There are at least 1 and at most 6000 transaction rows, at most 400 file customers, and |amount| <= 1000000.
+- 10 <= n, 2 <= k_min, k_min + 2 <= k_max <= 10, k_max < n, RESTARTS <= 10, RESTARTS < n, B <= 50, 2 * k_max <= m' (section 15), 1 <= L <= 10, and P * D < R. Segment 1 has 3 or more members.
+- For each of the six features, the transformed values are not all the same among the analysis customers (sigma_f > 0). W_kmin and W_kmax differ, and every W_k is positive. There is at least one snapshot customer.
+- The numerator and the denominator of ARI, the numerator and the denominator of the Gini coefficient, and 48271 * x of MINSTD may exceed 2^31 but are less than 2^53 (they can be computed exactly with 64-bit integers). All other integers are less than 2^31.
+- The input files strictly follow the formats above. There is no need to check the input for errors.
+- The given data are online-shop transactions over a period of a little more than two years, with 4359 transaction rows, 300 file customers and 295 analysis customers. k is 2 to 8, there are 3 methods and 5 runs per method, 105 runs in total. There are runs in which reseeds occur and runs that do not converge.
+- In the given data, every real number that is output is sufficiently far from a rounding boundary. Also, the assignments, the choice of initial centers, the choice of the point to reseed, the transfers, the comparisons on 4-decimal values, the conditions of the naming rules, the traits, the outlier and overdue decisions, the threshold of Hartigan's rule and the snapshot segment decisions have enough margin that they do not change with differences in the order of additions, fused multiply-add, or differences in the last digit (about 1 ulp) of the results of square roots and divisions. However, there are 7 customers whose transactions (days, categories, amounts) are exactly the same, and the points of these 7 customers are exactly identical. Comparisons of distances between these 7 customers are exactly equal and are decided by the rules for equal values (the smaller number, etc.). If the values of every customer are computed with the same formulas in the same order, every language gives the same result. Compute with the formulas and in the order defined in this statement.
+
+[Example]
+A small example that differs from the actual input (53 transaction rows, 11 analysis customers, k from 2 to 4).
+
+input/transactions.csv:
+customer,day,order_id,category,amount_cents
+C305,3,A001,tool,4122
+C7,3,A002,book,4116
+C9,7,A003,food,1224
+C12,12,A004,food,4088
+C12,12,A004,tool,0
+C305,14,A005,book,5263
+C12,15,A004,food,-2044
+C2,18,A006,game,1730
+C7,18,A007,book,6488
+C12,15,A004,food,-2044
+C150,20,A900,game,1999
+C41,22,A008,book,593
+C41,22,A008,tool,1064
+C41,24,A008,book,-593
+C150,24,A900,game,-1999
+C150,26,A009,game,1522
+C41,28,A010,book,2378
+C7,35,A011,book,5090
+C12,40,A012,food,4761
+C12,41,A013,food,4495
+C2,44,A014,game,1003
+C305,50,A015,food,3325
+C305,50,A015,tool,2348
+C12,56,A016,food,6955
+C305,59,A017,food,4929
+C7,60,A018,tool,2650
+C7,60,A018,book,2062
+C7,66,A019,tool,6660
+C12,68,A020,food,6079
+C5,73,A021,book,1399
+C12,75,A022,food,5242
+C12,82,A023,food,6069
+C230,83,A024,food,1089
+C66,85,A025,game,2115
+C18,86,A026,food,1267
+C305,89,A027,book,6210
+C305,92,A028,book,3052
+C305,92,A028,tool,2704
+C18,93,A029,food,2383
+C7,96,A030,tool,3405
+C7,96,A030,book,2443
+C230,97,A031,food,2020
+C305,97,A032,tool,2551
+C305,97,A032,food,3350
+C305,98,A033,food,2785
+C305,98,A033,book,3049
+C12,100,A034,food,5967
+C5,103,A035,book,1836
+C88,105,A036,food,1250
+C12,107,A037,food,4722
+C305,109,A038,food,2841
+C18,113,A039,game,1329
+C7,118,A040,book,3100
+input/params.txt:
+REFERENCE_DAY 100
+SNAPSHOT_DAY 70
+OUTCOME_DAYS 15
+K_RANGE 2 4
+METHODS kmeanspp maximin
+RESTARTS 2
+MAX_ITERATIONS 10
+SEED 12345
+SUBSAMPLES 3
+SUBSAMPLE_PERCENT 75
+OUTLIER_SD 1.5
+OVERDUE_FACTOR 2
+ORDER_BINS 20 50
+TOP_CATEGORIES 2
+TOP_CUSTOMERS 2
+PERIOD_DAYS 30
+PERIODS 3
+input/segment_rules.txt:
+VIP frequency > 0.5 monetary > 0.5
+DORMANT recency > 0.5
+REGULAR
+output/features.csv:
+customer,recency,frequency,monetary,basket,categories,tenure,z_recency,z_frequency,z_monetary,z_basket,z_categories,z_tenure
+C12,0,8,416.12,52.0150,1,88,-0.9207,1.6646,1.6216,1.4518,-0.5394,0.7310
+C150,74,1,15.22,15.2200,1,74,1.2024,-0.8433,-0.7048,-0.6196,-0.5394,0.3374
+C18,7,2,36.50,18.2500,1,14,-0.7199,-0.2752,-0.4030,-0.3876,-0.5394,-1.3496
+C2,56,2,27.33,13.6650,1,82,0.6860,-0.2752,-0.5178,-0.7476,-0.5394,0.5623
+C230,3,2,31.09,15.5450,1,17,-0.8346,-0.2752,-0.4687,-0.5936,-0.5394,-1.2652
+C305,2,8,436.88,54.6100,3,97,-0.8633,1.6646,1.6925,1.5630,2.4271,0.9841
+C41,72,2,34.42,17.2100,2,78,1.1450,-0.2752,-0.4276,-0.4649,0.9439,0.4499
+C5,27,1,13.99,13.9900,1,27,-0.1461,-0.8433,-0.7275,-0.7203,-0.5394,-0.9841
+C66,15,1,21.15,21.1500,1,15,-0.4903,-0.8433,-0.6064,-0.1831,-0.5394,-1.3215
+C7,4,6,329.14,54.8567,2,97,-0.8059,1.1448,1.3034,1.5734,0.9439,0.9841
+C9,93,1,12.24,12.2400,1,93,1.7475,-0.8433,-0.7616,-0.8715,-0.5394,0.8716
+output/runs.txt:
+k 2
+run kmeanspp 1 seeds C7 C66 iterations 1 converged yes reseeds 0 sse 21.3159 passes 1 transfers 0 refined 21.3159
+run kmeanspp 2 seeds C305 C9 iterations 1 converged yes reseeds 0 sse 21.3159 passes 1 transfers 0 refined 21.3159
+run maximin 1 seeds C2 C305 iterations 1 converged yes reseeds 0 sse 21.3159 passes 1 transfers 0 refined 21.3159
+run maximin 2 seeds C41 C305 iterations 1 converged yes reseeds 0 sse 21.3159 passes 1 transfers 0 refined 21.3159
+best kmeanspp restart 1 sse 21.3159
+best maximin restart 1 sse 21.3159
+chosen kmeanspp restart 1 sse 21.3159
+sizes 8 3
+
+k 3
+run kmeanspp 1 seeds C18 C7 C2 iterations 1 converged yes reseeds 0 sse 8.5011 passes 1 transfers 0 refined 8.5011
+run kmeanspp 2 seeds C66 C305 C41 iterations 1 converged yes reseeds 0 sse 8.5011 passes 1 transfers 0 refined 8.5011
+run maximin 1 seeds C2 C305 C12 iterations 1 converged yes reseeds 0 sse 17.9040 passes 1 transfers 0 refined 17.9040
+run maximin 2 seeds C41 C305 C230 iterations 1 converged yes reseeds 0 sse 8.5011 passes 1 transfers 0 refined 8.5011
+best kmeanspp restart 1 sse 8.5011
+best maximin restart 2 sse 8.5011
+chosen kmeanspp restart 1 sse 8.5011
+sizes 4 4 3
+
+k 4
+run kmeanspp 1 seeds C66 C12 C41 C150 iterations 1 converged yes reseeds 0 sse 6.6250 passes 1 transfers 0 refined 6.6250
+run kmeanspp 2 seeds C41 C12 C150 C230 iterations 1 converged yes reseeds 0 sse 6.6250 passes 1 transfers 0 refined 6.6250
+run maximin 1 seeds C2 C305 C12 C18 iterations 1 converged yes reseeds 0 sse 5.0892 passes 1 transfers 0 refined 5.0892
+run maximin 2 seeds C41 C305 C230 C12 iterations 1 converged yes reseeds 0 sse 5.0892 passes 1 transfers 0 refined 5.0892
+best kmeanspp restart 1 sse 6.6250
+best maximin restart 1 sse 5.0892
+chosen maximin restart 1 sse 5.0892
+sizes 4 4 2 1
+output/selection.txt:
+indices
+k=2 sse 21.3159 elbow 0.0000 silhouette 0.5622 calinski_harabasz 16.3332 davies_bouldin 0.6056 hartigan 12.0594
+k=3 sse 8.5011 elbow 0.2049 silhouette 0.5895 calinski_harabasz 24.2317 davies_bouldin 0.4858 hartigan 4.6929
+k=4 sse 5.0892 elbow 0.0000 silhouette 0.4847 calinski_harabasz 25.1759 davies_bouldin 0.4318 hartigan -
+
+votes
+elbow k=3
+silhouette k=3
+calinski_harabasz k=4
+davies_bouldin k=4
+hartigan k=3
+chosen k=3 votes 3
+
+segments
+k=2 REGULAR:8 VIP:3
+k=3 DORMANT:4 REGULAR:4 VIP:3
+k=4 DORMANT:4 REGULAR:4 VIP:2 VIP_2:1
+
+stability
+k=2 kmeanspp:maximin 1.0000 final kmeanspp 1.0000 maximin 1.0000 next 0.4500
+k=3 kmeanspp:maximin 1.0000 final kmeanspp 1.0000 maximin 1.0000 next 0.9043
+k=4 kmeanspp:maximin 0.7413 final kmeanspp 0.7413 maximin 1.0000 next -
+output/segments.csv:
+customer,segment,name,distance,other,other_distance,silhouette,recommend
+C12,3,VIP,1.5082,2,4.1654,0.4492,book
+C150,1,DORMANT,0.5285,2,2.3761,0.5476,book
+C18,2,REGULAR,0.3919,1,2.7636,0.7746,game
+C2,1,DORMANT,0.7000,2,2.2120,0.4538,book
+C230,2,REGULAR,0.4314,1,2.7708,0.7639,game
+C305,3,VIP,1.5039,1,5.1367,0.5556,-
+C41,1,DORMANT,1.1862,2,2.8255,0.4127,game
+C5,2,REGULAR,0.6290,1,2.0986,0.5953,food
+C66,2,REGULAR,0.4223,1,2.6123,0.7301,food
+C7,3,VIP,0.4336,1,4.1259,0.6118,food
+C9,1,DORMANT,0.8287,2,3.1576,0.5903,game
+output/profiles.txt:
+segments k=3 customers 11 revenue 1374.08 gini 0.6234
+
+segment 1 DORMANT rule 2 size 4 share 0.3636 revenue 89.21 revenue_share 0.0649
+  center 1.1952 -0.5593 -0.6030 -0.6759 -0.1685 0.5553
+  value recency 73.7500 frequency 1.4571 monetary 21.3780 basket 14.5256 categories 1.2500 tenure 81.7500
+  traits high_recency low_basket
+  median recency 72 frequency 1 monetary 15.22 basket 13.6650 categories 1 tenure 78
+  related k=2 segment 1 shared 4 k=4 segment 1 shared 4
+  top_customers C41 34.42 C2 27.33
+  cadence customers 2 mean_gap 16.0000 overdue 2
+  order_sizes 5 1 0
+  sse 2.8630 share 0.3368
+  gini 0.2204
+  returns rate 0.2251 returned 25.92 cancelled 1
+  silhouette 0.5011 negative 0
+  rfm r 1.2500 f 1.5000 m 1.7500 mode 111 2
+  categories game 0.4770 10.2887 book 0.2666 0.8815
+  outliers 0
+
+segment 2 REGULAR rule 3 size 4 share 0.3636 revenue 102.73 revenue_share 0.0748
+  center -0.5477 -0.5593 -0.5514 -0.4712 -0.5394 -1.2301
+  value recency 13.0000 frequency 1.4571 monetary 24.8916 basket 17.1271 categories 1.0000 tenure 18.2500
+  traits low_tenure low_frequency
+  median recency 7 frequency 1 monetary 21.15 basket 15.5450 categories 1 tenure 15
+  related k=2 segment 1 shared 4 k=4 segment 2 shared 4
+  top_customers C18 36.50 C230 31.09
+  cadence customers 2 mean_gap 10.5000 overdue 0
+  order_sizes 3 3 0
+  sse 0.9137 share 0.1075
+  gini 0.1885
+  returns rate 0.0000 returned 0.00 cancelled 0
+  silhouette 0.7160 negative 0
+  rfm r 3.0000 f 1.5000 m 2.5000 mode 211 1
+  categories food 0.6579 1.4129 game 0.2059 4.4411
+  outliers 0
+
+segment 3 VIP rule 1 size 3 share 0.2727 revenue 1182.14 revenue_share 0.8603
+  center -0.8633 1.4913 1.5392 1.5294 0.9439 0.8997
+  value recency 2.0000 frequency 7.3014 monetary 392.6066 basket 53.8195 categories 2.0000 tenure 94.0000
+  traits high_monetary high_basket
+  median recency 2 frequency 8 monetary 416.12 basket 54.6100 categories 2 tenure 97
+  related k=2 segment 2 shared 3 k=4 segment 3 shared 2
+  top_customers C305 436.88 C12 416.12
+  cadence customers 3 mean_gap 14.9143 overdue 0
+  order_sizes 0 7 15
+  sse 4.7244 share 0.5557
+  gini 0.0608
+  returns rate 0.0170 returned 20.44 cancelled 0
+  silhouette 0.5389 negative 0
+  rfm r 4.6667 f 4.6667 m 4.6667 mode 555 2
+  categories food 0.4737 1.0173 book 0.3195 1.0567
+  outliers 0
+
+category_mix 1 2 3
+book 0.2666 0.1362 0.3195
+food 0.1372 0.6579 0.4737
+game 0.4770 0.2059 0.0000
+tool 0.1193 0.0000 0.2067
+
+rfm_recency 1 2 3
+r=5 0 0 2
+r=4 0 1 1
+r=3 0 2 0
+r=2 1 1 0
+r=1 3 0 0
+ari rfm_codes 0.1829
+
+center_distances
+1 0.0000 2.5313 4.3876
+2 2.5313 0.0000 4.4061
+3 4.3876 4.4061 0.0000
+output/robustness.txt:
+subsamples 3 size 8
+segment 1 DORMANT mean_jaccard 1.0000 min_jaccard 1.0000
+segment 2 REGULAR mean_jaccard 1.0000 min_jaccard 1.0000
+segment 3 VIP mean_jaccard 1.0000 min_jaccard 1.0000
+
+ablation
+without recency seeds C2 C305 C12 iterations 1 converged yes transfers 0 sse 10.9833 ari 0.3613
+without frequency seeds C2 C305 C12 iterations 1 converged yes transfers 0 sse 17.1233 ari 0.3613
+without monetary seeds C2 C305 C12 iterations 1 converged yes transfers 0 sse 17.6865 ari 0.3613
+without basket seeds C2 C305 C12 iterations 1 converged yes transfers 0 sse 17.5620 ari 0.3613
+without categories seeds C2 C305 C18 iterations 1 converged yes transfers 0 sse 2.4511 ari 1.0000
+without tenure seeds C18 C305 C12 iterations 1 converged yes transfers 0 sse 11.2730 ari 0.3613
+
+drilldown segment 1 DORMANT size 4 seeds C150 C41 iterations 1 converged yes transfers 0
+sse before 2.8630 after 0.9869 gain 1.8761
+part 1 size 3 center 1.2119 -0.6539 -0.6614 -0.7462 -0.5394 0.5904
+part 2 size 1 center 1.1450 -0.2752 -0.4276 -0.4649 0.9439 0.4499
+output/tracking.txt:
+periods 3 days 30
+period 1 days 71 100 revenue 0.00 102.73 468.27 active 0 4 3 acquired 0 4 0
+period 2 days 41 70 revenue 10.03 0.00 395.03 active 1 0 3 acquired 0 0 0
+period 3 days 11 40 revenue 66.94 0.00 236.46 active 3 0 3 acquired 3 0 1
+
+migration day 70 customers 7
+from\to 1 2 3
+1 2 0 0
+2 2 0 0
+3 0 0 3
+none 0 4 0
+moved_customers
+C150 2 1
+C2 2 1
+stayed 5 moved 2 new 4 lost 0
+
+outcome days 101 115
+segment 1 DORMANT size 4 buyers 0 rate 0.0000 revenue 0.00 per_customer 0.0000
+segment 2 REGULAR size 4 buyers 2 rate 0.5000 revenue 31.65 per_customer 7.9125
+segment 3 VIP size 3 buyers 2 rate 0.6667 revenue 75.63 per_customer 25.2100
+unsegmented buyers 1 revenue 12.50
+output/summary.txt:
+rows 53 duplicates 1 zero 1 used 45 returns 3 later 6
+orders 35 valid 34 cancelled 1
+customers 12 clustered 11 excluded 1
+excluded_ids C88
+
+category book revenue 415.50 share 0.3024 customers 4
+category food revenue 639.84 share 0.4656 customers 5
+category game revenue 63.70 share 0.0464 customers 3
+category tool revenue 255.04 share 0.1856 customers 3
+
+feature recency transform none raw_mean 32.0909 raw_sd 34.8553 mean 32.0909 sd 34.8553
+feature frequency transform sqrt raw_mean 3.0909 raw_sd 2.8091 mean 1.6148 sd 0.7291
+feature monetary transform sqrt raw_mean 124.9164 raw_sd 174.9180 mean 8.8995 sd 7.0914
+feature basket transform sqrt raw_mean 26.2502 raw_sd 17.8869 mean 4.8916 sd 1.5984
+feature categories transform none raw_mean 1.3636 raw_sd 0.6742 mean 1.3636 sd 0.6742
+feature tenure transform none raw_mean 62.0000 raw_sd 35.5668 mean 62.0000 sd 35.5668
+
+correlation recency frequency monetary basket categories tenure
+recency 1.0000 -0.5919 -0.5943 -0.6298 -0.2058 0.3333
+frequency -0.5919 1.0000 0.9870 0.9443 0.6228 0.5347
+monetary -0.5943 0.9870 1.0000 0.9806 0.6320 0.5403
+basket -0.6298 0.9443 0.9806 1.0000 0.6281 0.4775
+categories -0.2058 0.6228 0.6320 0.6281 1.0000 0.5046
+tenure 0.3333 0.5347 0.5403 0.4775 0.5046 1.0000
+Some points of this example are explained below.
+- The 10th transaction row is exactly the same string as the 7th transaction row, so it is a duplicate row, and the 5th transaction row has an amount of 0, so it is a free row. The net amount of order A004 is 4088 - 2044 = 2044, so it is a valid order. Order A900 has a net amount of 0, so it is a cancelled order. In order A008 the book rows sum to 0, but C41 also buys book in order A010, so the number of categories of C41 is 2.
+- The transactions of C88 are only on day 105, so C88 is not an analysis customer (excluded_ids). They are included in the outcome orders, so C88 is counted in unsegmented buyers. The row of C7 on day 118 is later than R + H = 115, so it is not used anywhere.
+- The customer sequence is in string order, so it is C12, C150, C18, C2, ... in this order.
+- In the solution for k = 4, segments 3 and 4 both match rule 1, so their names are VIP and VIP_2.
+- The elbow vote is chosen only from k = 3, the only k with k_min < k < k_max. In Hartigan's rule, H_2 = 12.0594 > 10 and H_3 = 4.6929 <= 10, so the vote goes to k = 3. k = 3 is chosen with 3 votes.
+- C305 has bought every category in the category ranking of VIP (food, book, tool), so its recommended category is -.

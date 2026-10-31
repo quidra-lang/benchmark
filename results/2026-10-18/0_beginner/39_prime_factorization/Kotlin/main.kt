@@ -1,0 +1,18 @@
+fun main() {
+    for (n in intArrayOf(84, 9973, 15625, 1001, 123456, 48000, 999958, 999999)) {
+        var remaining = n
+        var d = 2
+        val factors = mutableListOf<String>()
+        while (d * d <= remaining) {
+            var exponent = 0
+            while (remaining % d == 0) {
+                remaining /= d
+                exponent++
+            }
+            if (exponent > 0) factors.add("$d" + if (exponent > 1) "^$exponent" else "")
+            d++
+        }
+        if (remaining > 1) factors.add(remaining.toString())
+        println("$n = ${factors.joinToString(" * ")}")
+    }
+}

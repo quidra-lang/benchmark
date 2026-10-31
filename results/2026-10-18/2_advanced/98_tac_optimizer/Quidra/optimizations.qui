@@ -1,0 +1,162 @@
+import tac = "./tac_parser.qui"
+import cfg = "./cfg.qui"
+
+class Fold(string kind, tac.Instruction instruction)
+
+Fold fold(tac.Instruction entry)
+    if entry.kind != "bin" and entry.kind != "if"
+        return Fold("unchanged", entry)
+    bool first_constant = not tac.variable(entry.first)
+    bool second_constant = not tac.variable(entry.second)
+    if first_constant and second_constant
+        int first = int.parse(entry.first)
+        int second = int.parse(entry.second)
+        if (entry.operation == "/" or entry.operation == "%") and second == 0
+            return Fold("unchanged", entry)
+        int amount = tac.operation(entry.operation, first, second)
+        if entry.kind == "if"
+            return if amount == 0 then Fold("deleted", entry) else Fold("replacement", tac.Instruction("goto", target = entry.target))
+        if -2147483648 <= amount <= 2147483647
+            return Fold("replacement", tac.Instruction("copy", entry.destination, "{amount}"))
+        return Fold("unchanged", entry)
+    if entry.kind != "bin"
+        return Fold("unchanged", entry)
+    string replacement = ""
+    if entry.operation == "+" and entry.first == "0"
+        replacement = entry.second
+    elif (entry.operation == "+" or entry.operation == "-") and entry.second == "0"
+        replacement = entry.first
+    elif entry.operation == "*" and entry.first == "1"
+        replacement = entry.second
+    elif (entry.operation == "*" or entry.operation == "/") and entry.second == "1"
+        replacement = entry.first
+    elif entry.operation == "*" and (entry.first == "0" or entry.second == "0")
+        replacement = "0"
+    if replacement != ""
+        return Fold("replacement", tac.Instruction("copy", entry.destination, replacement))
+    return Fold("unchanged", entry)
+
+void rewrite(tac.Function &definition, const map.Map<int, tac.Instruction[]> replacements)
+    tac.Line[] code = []
+    int index = 0
+    for tac.Line line = definition.code[]
+        if line.label != ""
+            code = code.append(line)
+            continue
+        match replacements.get(index)
+            tac.Instruction[] entries
+                for tac.Instruction entry = entries[]
+                    code = code.append(tac.Line(instruction = entry))
+            none
+                code = code.append(line)
+        index += 1
+    definition.code = code
+
+string temporary(tac.Function &definition)
+    definition.temporary += 1
+    return "_t{definition.temporary}"
+
+tac.Instruction[] cse_rewrite(tac.Instruction entry, string name, bool source)
+    tac.Instruction copy = tac.Instruction("copy", entry.destination, name)
+    if not source
+        return [copy]
+    entry.destination = name
+    return [entry, copy]
+
+string hoist(tac.Function &definition, const cfg.Graph graph, const cfg.Loop loop, const int[] moved)
+    int header = loop.header
+    int[] outside = []
+    for int predecessor = graph.blocks[header].predecessors[]
+        if not cfg.has(loop.blocks, predecessor)
+            outside = outside.append(predecessor)
+    int preheader = -1
+    if header != 0 and len(outside) == 1 and graph.blocks[outside[0]].successors == [header]
+        preheader = outside[0]
+    tac.Line[] insertion = []
+    tac.Line[] original_code = definition.code
+    int position = 0
+    string target = ""
+    if preheader >= 0
+        int last = graph.blocks[preheader].finish
+        position = graph.line_indices[last] + (if cfg.has(["goto", "if"], graph.instructions[last].kind) then 0 else 1)
+        target = "B{preheader + 1}"
+    else
+        definition.preheader += 1
+        string label = "_p{definition.preheader}"
+        target = "new {label}"
+        insertion = insertion.append(tac.Line(label))
+        position = graph.line_indices[graph.blocks[header].start]
+        while position > 0 and original_code[position - 1].label != ""
+            position -= 1
+        for int predecessor = outside[]
+            int index = graph.blocks[predecessor].finish
+            tac.Instruction entry = graph.instructions[index]
+            if cfg.has(["goto", "if"], entry.kind) and cfg.has(graph.blocks[header].labels, entry.target)
+                entry.target = label
+                original_code[graph.line_indices[index]] = tac.Line(instruction = entry)
+    for int index = moved[]
+        insertion = insertion.append(tac.Line(instruction = graph.instructions[index]))
+    tac.Line[] code = []
+    int number = 0
+    for int index < int(len(original_code))
+        if index == position
+            code = code.concat(insertion)
+        tac.Line line = original_code[index]
+        if line.label != ""
+            code = code.append(line)
+        else
+            if not cfg.has(moved, number)
+                code = code.append(line)
+            number += 1
+    if position == int(len(original_code))
+        code = code.concat(insertion)
+    definition.code = code
+    return target
+
+string[] unreachable(tac.Function &definition, const cfg.Graph graph)
+    string[] records = []
+    for int block < int(len(graph.blocks))
+        if not graph.reachable[block]
+            records = records.append("remove block B{block + 1}")
+    tac.Line[] code = []
+    tac.Line[] pending = []
+    int number = 0
+    for tac.Line line = definition.code[]
+        if line.label != ""
+            pending = pending.append(line)
+        else
+            if graph.reachable[graph.owner[number]]
+                code = code.concat(pending).append(line)
+            pending = []
+            number += 1
+    int[] deleted = []
+    number = 0
+    for int index < int(len(code))
+        tac.Line line = code[index]
+        if line.label != ""
+            continue
+        number += 1
+        if cfg.has(["goto", "if"], line.instruction.kind)
+            int following = index + 1
+            while following < int(len(code)) and code[following].label != ""
+                if code[following].label == line.instruction.target
+                    deleted = deleted.append(index)
+                    records = records.append("remove jump #{number}")
+                    break
+                following += 1
+    tac.Line[] remaining = []
+    string[] targets = []
+    for int index < int(len(code))
+        if cfg.has(deleted, index)
+            continue
+        remaining = remaining.append(code[index])
+        if code[index].label == "" and cfg.has(["goto", "if"], code[index].instruction.kind)
+            targets = cfg.add(targets, code[index].instruction.target)
+    code = []
+    for tac.Line line = remaining[]
+        if line.label != "" and not cfg.has(targets, line.label)
+            records = records.append("remove label " + line.label)
+        else
+            code = code.append(line)
+    definition.code = code
+    return records

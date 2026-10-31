@@ -1,0 +1,574 @@
+import math
+import model_io = "./model_io.qui"
+import assembly = "./assembly.qui"
+import solver = "./solver.qui"
+import postprocess = "./postprocess.qui"
+import design = "./design.qui"
+
+real64 absolute(real64 value)
+    return if value < 0.0 then -value else value
+
+real64 total(real64[] values)
+    if len(values) == 0
+        return 0.0
+    real64 result = values[0]
+    for 1 <= int i < int(len(values))
+        result += values[i]
+    return result
+
+int rounded_units(real64 value, int digits)
+    int scale = 10 ^ digits
+    int units = math.floor(absolute(value) * real64(scale) + 0.5)
+    return if value < 0.0 then -units else units
+
+string fixed(real64 value, int digits)
+    int units = rounded_units(value, digits)
+    string sign = if units < 0 then "-" else ""
+    if units < 0
+        units = -units
+    int scale = 10 ^ digits
+    string tail = (units % scale).string()
+    return sign + (units / scale).string() + "." + string.repeat("0", nat(digits - int(len(tail)))) + tail
+
+string format_real(real64 value)
+    return fixed(value, 4)
+
+int extreme(real64[] values, bool minimum)
+    int chosen = 0
+    for 1 <= int i < int(len(values))
+        int candidate = rounded_units(values[i], 4)
+        int current = rounded_units(values[chosen], 4)
+        if (minimum and candidate < current) or (not minimum and candidate > current)
+            chosen = i
+    return chosen
+
+bool contains(int[] values, int wanted)
+    return model_io.index_of(values, wanted) >= 0
+
+int[][] adjacency(model_io.Node[] nodes, model_io.Member[] members)
+    int[][] neighbours = [for int i < int(len(nodes)) then []]
+    for model_io.Member member = members[]
+        neighbours[member.start] = neighbours[member.start].append(member.end)
+        neighbours[member.end] = neighbours[member.end].append(member.start)
+    return neighbours
+
+int[] degree_order(int[] nodes, int[][] neighbours, model_io.Node[] descriptions)
+    int[] keys = [for int node = nodes[] then int(len(neighbours[node])) * 1000 + descriptions[node].identifier]
+    int[] result = []
+    for int key = keys.sorted()[]
+        result = result.append(nodes[model_io.index_of(keys, key)])
+    return result
+
+int[] renumber(int[][] neighbours, model_io.Node[] nodes)
+    int[] all_nodes = [for int i < int(len(nodes)) then i]
+    int[] queue = [degree_order(all_nodes, neighbours, nodes)[0]]
+    int cursor = 0
+    while cursor < int(len(queue))
+        int[] following = [for int node = neighbours[queue[cursor]][] if not contains(queue, node) then node]
+        queue = queue.concat(degree_order(following, neighbours, nodes))
+        cursor += 1
+    return queue[::-1]
+
+int[] numbering_metrics(int[] numbers, int[][] neighbours, model_io.Member[] members)
+    int bandwidth = 0
+    for model_io.Member member = members[]
+        int difference = numbers[member.start] - numbers[member.end]
+        if difference < 0
+            difference = -difference
+        if difference > bandwidth
+            bandwidth = difference
+    int profile = 0
+    for int node < int(len(numbers))
+        int smallest = numbers[node]
+        for int neighbour = neighbours[node][]
+            if numbers[neighbour] < smallest
+                smallest = numbers[neighbour]
+        profile += numbers[node] - smallest
+    return [bandwidth, profile]
+
+class Canvas(model_io.Node[] nodes, int horizontal, int vertical)
+    int x0 = nodes[0].x
+    int x1 = nodes[0].x
+    int y0 = nodes[0].y
+    int y1 = nodes[0].y
+    for model_io.Node node = nodes[]
+        if node.x < x0
+            x0 = node.x
+        if node.x > x1
+            x1 = node.x
+        if node.y < y0
+            y0 = node.y
+        if node.y > y1
+            y1 = node.y
+    int width = math.floor(real64(x1 - x0) / real64(horizontal) + 0.5) + 5
+    int height = math.floor(real64(y1 - y0) / real64(vertical) + 0.5) + 5
+    string[][] grid = [for int row < height then [for int column < width then " "]]
+
+    int[] position(real64 x, real64 y)
+        int column = math.floor((x - real64(x0)) / real64(horizontal) + 0.5) + 2
+        int row = math.floor((real64(y1) - y) / real64(vertical) + 0.5) + 2
+        return [column, row]
+
+    void .put(int column, int row, string character)
+        if 0 <= column and column < width and 0 <= row and row < height
+            grid[row][column] = character
+
+    void .line(int[] first, int[] last, string character)
+        int column = first[0]
+        int row = first[1]
+        int dc = last[0] - column
+        if dc < 0
+            dc = -dc
+        int dr = last[1] - row
+        if dr > 0
+            dr = -dr
+        int sc = if column < last[0] then 1 else -1
+        int sr = if row < last[1] then 1 else -1
+        int residual = dc + dr
+        while true
+            .put(column, row, character)
+            if column == last[0] and row == last[1]
+                break
+            int twice = 2 * residual
+            if twice >= dr
+                residual += dr
+                column += sc
+            if twice <= dc
+                residual += dc
+                row += sr
+
+    string[] framed()
+        string border = "+" + string.repeat("-", nat(width)) + "+"
+        return [border].concat([for string[] row = grid[] then "|" + row.join("") + "|"]).append(border)
+
+class System(assembly.Properties[] properties, real64[][] matrix, real64[][] free_matrix, real64[][] lower, int unstable, int removed)
+
+class Truss(model_io.Model model)
+    model_io.Node[] nodes = model.nodes
+    model_io.Member[] members = model.members
+    model_io.Settings settings = model.settings
+    int node_count = int(len(nodes))
+    int member_count = int(len(members))
+    int[][] neighbours = adjacency(nodes, members)
+    int[] order = renumber(neighbours, nodes)
+    int[] numbers = [for int node < node_count then model_io.index_of(order, node)]
+    int[][] node_dofs = [for int number = numbers[] then [2 * number, 2 * number + 1]]
+    int degrees = 2 * node_count
+    int[][] owners = [for int d < degrees then [order[d / 2], d % 2]]
+    real64[] prescribed = [for int d < degrees then 0.0]
+    int[][] support_directions = []
+    for model_io.Support support = model.supports[]
+        for int axis < 2
+            if support.fixed[axis]
+                int degree = node_dofs[support.node][axis]
+                prescribed[degree] = support.prescribed[axis]
+                support_directions = support_directions.append([support.node, axis, degree])
+    int[] restrained = [for int[] direction = support_directions[] then direction[2]].sorted()
+    int[] free = [for int d < degrees if not contains(restrained, d) then d]
+    assembly.Geometry[] geometry = assembly.member_geometry(nodes, members, node_dofs)
+    int[][] groups = [for int g < int(len(model.groups)) then [for int m < member_count if members[m].group == g then m]]
+    int[] choices = [for model_io.Member member = members[] then member.section]
+    System final_system = System([], [], [], [], -1, -1)
+    postprocess.Result[] results = []
+    postprocess.Result[] combinations = []
+    real64[] limits = []
+    real64[][] utilizations = []
+    real64 weight = 0.0
+    int[] governing_cases = []
+    real64[] governing = []
+    string[] history = []
+    int[] deck_x = [for int node = settings.deck[] then nodes[node].x]
+
+    System make_system(int[] selected, int removed)
+        assembly.Properties[] properties = assembly.member_properties(model, selected, geometry)
+        real64[][] matrix = assembly.assemble(geometry, properties, degrees, removed)
+        real64[][] free_matrix = [for int row = free[] then [for int column = free[] then matrix[row][column]]]
+        solver.Factorization factorization = solver.cholesky(free_matrix, free)
+        return System(properties, matrix, free_matrix, factorization.lower, factorization.unstable, removed)
+
+    real64[] displacement(System state, real64[] force, bool settlement)
+        real64[] vector = [for int d < degrees then 0.0]
+        for int degree = restrained[]
+            vector[degree] = if settlement then prescribed[degree] else 0.0
+        real64[] right = []
+        for int degree = free[]
+            real64 value = force[degree]
+            for int fixed_degree = restrained[]
+                value -= state.matrix[degree][fixed_degree] * vector[fixed_degree]
+            right = right.append(value)
+        real64[] solution = solver.solve(state.lower, right)
+        for int i < int(len(free))
+            vector[free[i]] = solution[i]
+        return vector
+
+    postprocess.Result case_result(System state, model_io.LoadCase load_case)
+        assembly.Loading loading = assembly.load_vectors(load_case, geometry, state.properties, node_dofs, degrees, state.removed)
+        real64[] vector = displacement(state, loading.total, loading.settlement)
+        real64[] forces = postprocess.axial_forces(geometry, state.properties, vector, loading.temperature, state.removed)
+        real64[] reaction = postprocess.reactions(state.matrix, vector, loading.total, restrained)
+        return postprocess.Result(load_case.name, vector, forces, reaction, loading.external)
+
+    postprocess.Result[] analyze(System state)
+        postprocess.Result[] analyzed = [for model_io.LoadCase load_case = model.cases[] then case_result(state, load_case)]
+        for model_io.Combination combination = model.combinations[]
+            analyzed = analyzed.append(postprocess.superpose(combination, analyzed))
+        return analyzed
+
+    int result_index(string name)
+        return model_io.name_index([for postprocess.Result result = results[] then result.name], name)
+
+    postprocess.Result unit_result(int node)
+        real64[] force = [for int d < degrees then 0.0]
+        force[node_dofs[node][1]] = -1000.0
+        real64[] vector = displacement(final_system, force, false)
+        real64[] temperature = [for int m < member_count then 0.0]
+        real64[] forces = postprocess.axial_forces(geometry, final_system.properties, vector, temperature, -1)
+        real64[] reaction = postprocess.reactions(final_system.matrix, vector, force, restrained)
+        return postprocess.Result("unit", vector, forces, reaction, force)
+
+    void .design_sections()
+        for 1 <= int round_number <= 10
+            final_system = make_system(choices, -1)
+            results = analyze(final_system)
+            combinations = results[int(len(model.cases)):<int(len(results))]
+            limits = [for int m < member_count then design.slenderness_limit(m, combinations, settings.slenderness)]
+            utilizations = [for int m < member_count then [for postprocess.Result result = combinations[] then design.utilization(result.forces[m], final_system.properties[m], geometry[m], final_system.properties[m].area, final_system.properties[m].inertia)]]
+            real64[] flattened = [for real64[] row = utilizations[] for real64 value = row[] then value]
+            int largest = extreme(flattened, false)
+            int combination_count = int(len(combinations))
+            int maximum_member = largest / combination_count
+            int maximum_case = largest % combination_count
+            weight = total([for int m < member_count then assembly.member_weight(final_system.properties[m], geometry[m])])
+            int[][] changes = []
+            real64[] change_values = []
+            for int g < int(len(groups))
+                int selected = design.select_section(groups[g], model.sections, final_system.properties, geometry, combinations, limits)
+                int current = choices[groups[g][0]]
+                if selected != current
+                    real64[] values = [for int m = groups[g][] for real64 value = utilizations[m][] then value]
+                    changes = changes.append([g, current, selected])
+                    change_values = change_values.append(values[extreme(values, false)])
+            history = history.append("round {round_number} weight " + format_real(weight / 1000.0) + " max_utilization " + format_real(flattened[largest]) + " at {members[maximum_member].identifier} {combinations[maximum_case].name} changes {len(changes)}")
+            for int i < int(len(changes))
+                int[] change = changes[i]
+                history = history.append("change {model.groups[change[0]]} {model.sections[change[1]].name} {model.sections[change[2]].name} utilization " + format_real(change_values[i]))
+            bool converged = len(changes) == 0
+            if converged or round_number == 10
+                string status = if converged then "converged" else "not_converged"
+                history = history.append("result {status} rounds {round_number}")
+                break
+            for int[] change = changes[]
+                for int m = groups[change[0]][]
+                    choices[m] = change[2]
+        governing_cases = [for real64[] row = utilizations[] then extreme(row, false)]
+        governing = [for int m < member_count then utilizations[m][governing_cases[m]]]
+
+    string[] design_report()
+        string[] lines = history
+        for int g < int(len(groups))
+            real64[] values = [for int m = groups[g][] then governing[m]]
+            int member = groups[g][extreme(values, false)]
+            string section = model.sections[choices[groups[g][0]]].name
+            lines = lines.append("group {model.groups[g]} section {section} members {len(groups[g])} utilization " + format_real(governing[member]) + " at {members[member].identifier}")
+        for int m < member_count
+            assembly.Properties properties = final_system.properties[m]
+            real64 slender = design.slenderness(geometry[m], properties.area, properties.inertia)
+            string verdict = if governing[m] <= 1.0 and slender <= limits[m] then "ok" else "over"
+            lines = lines.append("member {members[m].identifier} group {model.groups[members[m].group]} section {model.sections[choices[m]].name} utilization " + format_real(governing[m]) + " governing {combinations[governing_cases[m]].name} slenderness " + format_real(slender) + " limit " + format_real(limits[m]) + " {verdict}")
+        int[] ranked = []
+        int rank_count = if member_count < 5 then member_count else 5
+        for 1 <= int rank <= rank_count
+            int[] remaining = [for int m < member_count if not contains(ranked, m) then m]
+            int member = remaining[extreme([for int m = remaining[] then governing[m]], false)]
+            ranked = ranked.append(member)
+            lines = lines.append("rank {rank} member {members[member].identifier} utilization " + format_real(governing[member]))
+        for int m < member_count
+            real64[] values = [for postprocess.Result result = combinations[] then result.forces[m] / 1000.0]
+            int largest = extreme(values, false)
+            int smallest = extreme(values, true)
+            lines = lines.append("envelope {members[m].identifier} max " + format_real(values[largest]) + " {combinations[largest].name} min " + format_real(values[smallest]) + " {combinations[smallest].name}")
+        for int s < int(len(model.sections))
+            int[] selected = [for int m < member_count if choices[m] == s then m]
+            if len(selected) != 0
+                real64 length = total([for int m = selected[] then geometry[m].length])
+                lines = lines.append("section {model.sections[s].name} members {len(selected)} length " + format_real(length))
+        return lines.append("weight " + format_real(weight / 1000.0))
+
+    real64[] magnitudes(postprocess.Result result)
+        return [for int[] dofs = node_dofs[] then assembly.square_root(result.displacement[dofs[0]] * result.displacement[dofs[0]] + result.displacement[dofs[1]] * result.displacement[dofs[1]])]
+
+    string result_summary(string kind, postprocess.Result result)
+        real64[] values = magnitudes(result)
+        int node = extreme(values, false)
+        real64 energy = total([for int m < member_count then result.forces[m] * result.forces[m] * geometry[m].length / (2.0 * final_system.properties[m].young * final_system.properties[m].area)]) / 1000.0
+        real64[] reaction_totals = [for int axis < 2 then total([for int[] dofs = node_dofs[] then result.reactions[dofs[axis]]]) / 1000.0]
+        real64[] force_totals = [for int axis < 2 then total([for int[] dofs = node_dofs[] then result.external[dofs[axis]]]) / 1000.0]
+        real64 scale = 1.0
+        for real64 value = result.external.concat(result.reactions)[]
+            if absolute(value) > scale
+                scale = absolute(value)
+        string verdict = if postprocess.equilibrium_residual(result, geometry) <= 0.000001 * scale then "ok" else "failed"
+        return "{kind} {result.name} equilibrium {verdict} max_displacement " + format_real(values[node]) + " at {nodes[node].identifier} energy " + format_real(energy) + " reactions " + format_real(reaction_totals[0]) + " " + format_real(reaction_totals[1]) + " loads " + format_real(force_totals[0]) + " " + format_real(force_totals[1])
+
+    string[] deflection_report()
+        postprocess.Result result = results[result_index(settings.deflection)]
+        int[] fixed_nodes = [for int[] direction = support_directions[] if direction[1] == 1 then direction[0]]
+        int[] anchors = [for int k < int(len(settings.deck)) if contains(fixed_nodes, settings.deck[k]) then k]
+        string[] lines = []
+        for 1 <= int span < int(len(anchors))
+            int first = anchors[span - 1]
+            int last = anchors[span]
+            int left = settings.deck[first]
+            int right = settings.deck[last]
+            int xa = deck_x[first]
+            int xb = deck_x[last]
+            real64 va = result.displacement[node_dofs[left][1]]
+            real64 vb = result.displacement[node_dofs[right][1]]
+            int[] interior = [for first + 1 <= int k < last then k]
+            real64[] values = [for int k = interior[] then absolute(result.displacement[node_dofs[settings.deck[k]][1]] - (va + (vb - va) * real64(deck_x[k] - xa) / real64(xb - xa)))]
+            int selected = extreme(values, false)
+            int node = settings.deck[interior[selected]]
+            real64 limit = real64(xb - xa) / real64(settings.deflection_ratio)
+            string verdict = if values[selected] <= limit then "ok" else "exceeded"
+            lines = lines.append("deflection {settings.deflection} span {nodes[left].identifier} {nodes[right].identifier} max " + format_real(values[selected]) + " at {nodes[node].identifier} limit " + format_real(limit) + " {verdict}")
+            postprocess.Result unit = unit_result(node)
+            real64 virtual = total([for int m < member_count then result.forces[m] * (unit.forces[m] / 1000.0) * geometry[m].length / (final_system.properties[m].young * final_system.properties[m].area)])
+            real64 stiffness = -result.displacement[node_dofs[node][1]]
+            real64 scale = if absolute(stiffness) > 1.0 then absolute(stiffness) else 1.0
+            string verified = if absolute(virtual - stiffness) <= 0.000001 * scale then "ok" else "failed"
+            lines = lines.append("virtual_work {settings.deflection} node {nodes[node].identifier} stiffness " + format_real(stiffness) + " virtual " + format_real(virtual) + " {verified}")
+        return lines
+
+    string[] removal_report()
+        int selected = result_index(settings.removal)
+        string[] lines = []
+        for int removed < member_count
+            System state = make_system(choices, removed)
+            if state.unstable >= 0
+                int[] owner = owners[state.unstable]
+                string axis = if owner[1] == 0 then "x" else "y"
+                lines = lines.append("removal {members[removed].identifier} unstable at {nodes[owner[0]].identifier} {axis}")
+                continue
+            postprocess.Result result = analyze(state)[selected]
+            int[] remaining = [for int m < member_count if m != removed then m]
+            real64[] values = [for int m = remaining[] then design.utilization(result.forces[m], state.properties[m], geometry[m], state.properties[m].area, state.properties[m].inertia)]
+            int largest = extreme(values, false)
+            real64[] movement = magnitudes(result)
+            int node = extreme(movement, false)
+            lines = lines.append("removal {members[removed].identifier} stable max_utilization " + format_real(values[largest]) + " at {members[remaining[largest]].identifier} max_displacement " + format_real(movement[node]) + " at {nodes[node].identifier}")
+        return lines
+
+    string[] analysis_report()
+        int indeterminacy = member_count + int(len(restrained)) - 2 * node_count
+        int[] before = numbering_metrics([for int n < node_count then n], neighbours, members)
+        int[] after = numbering_metrics(numbers, neighbours, members)
+        string sequence = [for int node = order[] then nodes[node].identifier.string()].join(" ")
+        string[] lines = ["model nodes {node_count} members {member_count} supports {len(model.supports)} free_dofs {len(free)} restrained_dofs {len(restrained)} indeterminacy {indeterminacy}", "renumbering " + sequence, "bandwidth before {before[0]} after {after[0]}", "profile before {before[1]} after {after[1]}"]
+        for int m < member_count
+            lines = lines.append("member {members[m].identifier} nodes {nodes[members[m].start].identifier} {nodes[members[m].end].identifier} length " + format_real(geometry[m].length) + " cos " + fixed(geometry[m].cosine, 6) + " sin " + fixed(geometry[m].sine, 6))
+        for int i < int(len(results))
+            lines = lines.append(result_summary(if i < int(len(model.cases)) then "case" else "combination", results[i]))
+        for int[] direction = support_directions[]
+            real64[] values = [for postprocess.Result result = combinations[] then result.reactions[direction[2]] / 1000.0]
+            int largest = extreme(values, false)
+            int smallest = extreme(values, true)
+            string axis = if direction[1] == 0 then "x" else "y"
+            string line = "reaction_envelope {nodes[direction[0]].identifier} {axis} max " + format_real(values[largest]) + " {combinations[largest].name} min " + format_real(values[smallest]) + " {combinations[smallest].name}"
+            if direction[1] == 1
+                bool uplift = len([for real64 value = values[] if value < 0.0 then value]) != 0
+                line += " uplift " + (if uplift then "yes" else "no")
+            lines = lines.append(line)
+        real64[][] movements = [for postprocess.Result result = combinations[] then magnitudes(result)]
+        for int node < node_count
+            real64[] values = [for real64[] movement = movements[] then movement[node]]
+            int largest = extreme(values, false)
+            lines = lines.append("displacement_envelope {nodes[node].identifier} max " + format_real(values[largest]) + " {combinations[largest].name}")
+        return lines.concat(deflection_report()).concat(removal_report())
+
+    real64 ordinate(real64[] values, int position)
+        int last = int(len(deck_x)) - 1
+        if position < deck_x[0] or position > deck_x[last]
+            return 0.0
+        if position == deck_x[last]
+            return values[last]
+        int k = 0
+        while position >= deck_x[k + 1]
+            k += 1
+        return values[k] + (values[k + 1] - values[k]) * real64(position - deck_x[k]) / real64(deck_x[k + 1] - deck_x[k])
+
+    real64[] vehicle_effects(real64[] values, int[] positions)
+        real64[] effects = []
+        for int position = positions[]
+            real64[] terms = [for int k < int(len(settings.offsets)) then settings.axle_loads[k] * ordinate(values, position - settings.offsets[k])]
+            effects = effects.append(total(terms))
+        return effects
+
+    string[] influence_report()
+        real64[][] member_ordinates = [for int m < member_count then []]
+        real64[][] reaction_ordinates = [for int d < degrees then []]
+        for int node = settings.deck[]
+            postprocess.Result unit = unit_result(node)
+            for int m < member_count
+                member_ordinates[m] = member_ordinates[m].append(unit.forces[m] / 1000.0)
+            for int[] direction = support_directions[]
+                int degree = direction[2]
+                reaction_ordinates[degree] = reaction_ordinates[degree].append(unit.reactions[degree] / 1000.0)
+        string[] lines = []
+        for int m = settings.influence[]
+            real64[] values = member_ordinates[m]
+            lines = lines.append("influence {members[m].identifier}")
+            for int k < int(len(settings.deck))
+                lines = lines.append("node {nodes[settings.deck[k]].identifier} " + format_real(values[k]))
+            int largest = extreme(values, false)
+            int smallest = extreme(values, true)
+            real64 positive = total([for real64 value = values[] if value > 0.0 then value])
+            real64 negative = total([for real64 value = values[] if value < 0.0 then value])
+            lines = lines.append("max " + format_real(values[largest]) + " at {nodes[settings.deck[largest]].identifier} min " + format_real(values[smallest]) + " at {nodes[settings.deck[smallest]].identifier} positive " + format_real(positive) + " negative " + format_real(negative))
+            real64[] crossings = []
+            for int k < int(len(values)) - 1
+                if (values[k] > 0.0 and values[k + 1] < 0.0) or (values[k] < 0.0 and values[k + 1] > 0.0)
+                    real64 position = real64(deck_x[k]) + real64(deck_x[k + 1] - deck_x[k]) * values[k] / (values[k] - values[k + 1])
+                    crossings = crossings.append(position)
+            string text = "crossings {len(crossings)}"
+            if len(crossings) != 0
+                text += " " + [for real64 value = crossings[] then fixed(value, 1)].join(" ")
+            lines = lines.append(text)
+        int end_position = deck_x[int(len(deck_x)) - 1] + settings.offsets[int(len(settings.offsets)) - 1]
+        int[] positions = [for deck_x[0] <= int position <= end_position step settings.increment then position]
+        lines = lines.append("vehicle axles {len(settings.offsets)} positions {len(positions)}")
+        real64[][] member_ranges = []
+        for int m < member_count
+            real64[] values = vehicle_effects(member_ordinates[m], positions)
+            int largest = extreme(values, false)
+            int smallest = extreme(values, true)
+            member_ranges = member_ranges.append([values[largest], values[smallest]])
+            lines = lines.append("vehicle_member {members[m].identifier} max " + format_real(values[largest]) + " at {positions[largest]} min " + format_real(values[smallest]) + " at {positions[smallest]}")
+        for int[] direction = support_directions[]
+            real64[] values = vehicle_effects(reaction_ordinates[direction[2]], positions)
+            int largest = extreme(values, false)
+            int smallest = extreme(values, true)
+            string axis = if direction[1] == 0 then "x" else "y"
+            lines = lines.append("vehicle_reaction {nodes[direction[0]].identifier} {axis} max " + format_real(values[largest]) + " at {positions[largest]} min " + format_real(values[smallest]) + " at {positions[smallest]}")
+        postprocess.Result dead = results[result_index(settings.rating)]
+        real64[] rating_values = []
+        int[] rating_members = []
+        string[] rating_kinds = []
+        for int m < member_count
+            assembly.Properties properties = final_system.properties[m]
+            real64 nd = dead.forces[m] / 1000.0
+            real64 capacity = properties.area * properties.yield_stress
+            real64 euler = design.buckling(properties, geometry[m], properties.inertia)
+            real64 compression_capacity = (if capacity < euler then capacity else euler) / 1000.0
+            string tension = "none"
+            string compression = "none"
+            if rounded_units(member_ranges[m][0], 4) > 0
+                real64 factor = (capacity / 1000.0 - settings.gamma_dead * nd) / (settings.gamma_live * member_ranges[m][0])
+                tension = format_real(factor)
+                rating_values = rating_values.append(factor)
+                rating_members = rating_members.append(m)
+                rating_kinds = rating_kinds.append("tension")
+            if rounded_units(member_ranges[m][1], 4) < 0
+                real64 factor = (compression_capacity + settings.gamma_dead * nd) / (settings.gamma_live * (-member_ranges[m][1]))
+                compression = format_real(factor)
+                rating_values = rating_values.append(factor)
+                rating_members = rating_members.append(m)
+                rating_kinds = rating_kinds.append("compression")
+            lines = lines.append("rating {members[m].identifier} tension {tension} compression {compression}")
+        int selected = extreme(rating_values, true)
+        return lines.append("rating_min " + format_real(rating_values[selected]) + " at {members[rating_members[selected]].identifier} {rating_kinds[selected]}")
+
+    string[] vibration_report()
+        postprocess.Result result = results[result_index(settings.vibration)]
+        real64[] masses = [for int[] dofs = node_dofs[] then -result.external[dofs[1]] / 9.81]
+        real64[] free_masses = [for int degree = free[] then masses[owners[degree][0]]]
+        int size = int(len(free))
+        real64[][] modes = []
+        string[] lines = ["vibration {settings.vibration} mass " + format_real(total(masses)) + " iterations {settings.iterations}"]
+        for 1 <= int mode <= settings.modes
+            real64[] vector = [for int i < size then 1.0]
+            for int iteration < settings.iterations
+                for real64[] previous = modes[]
+                    real64 beta = total([for int i < size then previous[i] * free_masses[i] * vector[i]])
+                    vector = [for int i < size then vector[i] - beta * previous[i]]
+                real64[] right = [for int i < size then free_masses[i] * vector[i]]
+                real64[] solution = solver.solve(final_system.lower, right)
+                real64 norm = assembly.square_root(total([for int i < size then free_masses[i] * solution[i] * solution[i]]))
+                vector = [for real64 value = solution[] then value / norm]
+            modes = modes.append(vector)
+            real64[] product = [for int i < size then total([for int j < size then final_system.free_matrix[i][j] * vector[j]])]
+            real64 numerator = total([for int i < size then vector[i] * product[i]])
+            real64 denominator = total([for int i < size then free_masses[i] * vector[i] * vector[i]])
+            real64 eigenvalue = numerator / denominator
+            real64 frequency = assembly.square_root(1000.0 * eigenvalue) / (2.0 * 3.141592653589793)
+            lines = lines.append("mode {mode} frequency " + format_real(frequency) + " period " + format_real(1.0 / frequency))
+            int peak = 0
+            for 1 <= int i < size
+                if absolute(vector[i]) > absolute(vector[peak])
+                    peak = i
+            real64[] normalized = [for int d < degrees then 0.0]
+            for int i < size
+                normalized[free[i]] = vector[i] / vector[peak]
+            for int node < node_count
+                lines = lines.append("node {nodes[node].identifier} " + format_real(normalized[node_dofs[node][0]]) + " " + format_real(normalized[node_dofs[node][1]]))
+        return lines
+
+    string[] drawing_report()
+        string[] lines = []
+        for model_io.Drawing drawing = settings.drawings[]
+            postprocess.Result result = results[result_index(drawing.name)]
+            Canvas canvas = Canvas(nodes, drawing.horizontal, drawing.vertical)
+            int[][] original = [for model_io.Node node = nodes[] then canvas.position(real64(node.x), real64(node.y))]
+            int[][] deformed = [for int n < node_count then canvas.position(real64(nodes[n].x) + real64(drawing.magnification) * result.displacement[node_dofs[n][0]], real64(nodes[n].y) + real64(drawing.magnification) * result.displacement[node_dofs[n][1]])]
+            for model_io.Member member = members[]
+                .canvas.line(original[member.start], original[member.end], ".")
+            for int[] point = original[]
+                .canvas.put(point[0], point[1], "+")
+            for model_io.Member member = members[]
+                .canvas.line(deformed[member.start], deformed[member.end], "*")
+            for int[] point = deformed[]
+                .canvas.put(point[0], point[1], "o")
+            lines = lines.append("drawing {drawing.name} magnification {drawing.magnification} columns {canvas.width} rows {canvas.height}").concat(canvas.framed())
+        Canvas canvas = Canvas(nodes, settings.map_horizontal, settings.map_vertical)
+        int[][] positions = [for model_io.Node node = nodes[] then canvas.position(real64(node.x), real64(node.y))]
+        for int m < member_count
+            int digit = math.floor(10.0 * governing[m])
+            string character = if governing[m] >= 1.0 then "#" else digit.string()
+            .canvas.line(positions[members[m].start], positions[members[m].end], character)
+        for int[] point = positions[]
+            .canvas.put(point[0], point[1], "o")
+        return lines.append("utilization_map columns {canvas.width} rows {canvas.height}").concat(canvas.framed())
+
+    string[][] csv_reports()
+        string[] displacement_lines = ["case,node,dx,dy"]
+        string[] force_lines = ["case,member,force,stress,utilization"]
+        string[] reaction_lines = ["case,node,rx,ry"]
+        for postprocess.Result result = results[]
+            for int node < node_count
+                int[] dofs = node_dofs[node]
+                displacement_lines = displacement_lines.append("{result.name},{nodes[node].identifier}," + format_real(result.displacement[dofs[0]]) + "," + format_real(result.displacement[dofs[1]]))
+            for int m < member_count
+                assembly.Properties properties = final_system.properties[m]
+                real64 value = design.utilization(result.forces[m], properties, geometry[m], properties.area, properties.inertia)
+                force_lines = force_lines.append("{result.name},{members[m].identifier}," + format_real(result.forces[m] / 1000.0) + "," + format_real(result.forces[m] / properties.area) + "," + format_real(value))
+            for model_io.Support support = model.supports[]
+                int[] dofs = node_dofs[support.node]
+                reaction_lines = reaction_lines.append("{result.name},{nodes[support.node].identifier}," + format_real(result.reactions[dofs[0]] / 1000.0) + "," + format_real(result.reactions[dofs[1]] / 1000.0))
+        return [displacement_lines, force_lines, reaction_lines]
+
+void write_lines(string name, string[] lines)
+    file.write("output/" + name, lines.join(NL) + NL)
+
+void run_program()
+    Truss truss = Truss(model_io.read_model())
+    .truss.design_sections()
+    string[][] csv = truss.csv_reports()
+    write_lines("analysis.txt", truss.analysis_report())
+    write_lines("displacements.csv", csv[0])
+    write_lines("member_forces.csv", csv[1])
+    write_lines("reactions.csv", csv[2])
+    write_lines("design.txt", truss.design_report())
+    write_lines("influence.txt", truss.influence_report())
+    write_lines("drawing.txt", truss.drawing_report())
+    write_lines("vibration.txt", truss.vibration_report())
+
+run_program()

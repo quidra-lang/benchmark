@@ -1,0 +1,661 @@
+import math
+import dataset = "./dataset.qui"
+import network = "./network.qui"
+import optimizers = "./optimizers.qui"
+import evaluation = "./evaluation.qui"
+
+int minimum(int first, int second)
+    return if first < second then first else second
+
+int integer_maximum(int first, int second)
+    return if first > second then first else second
+
+real64 maximum(real64 first, real64 second)
+    return if first > second then first else second
+
+real64 absolute(real64 value)
+    return if value < 0.0 then -value else value
+
+string words(int[] values)
+    return [for int value = values[] then value.string()].join(" ")
+
+string real_words(real64[] values, int places = 4)
+    return [for real64 value = values[] then evaluation.real_text(value, places)].join(" ")
+
+string yes(bool value)
+    return if value then "yes" else "no"
+
+real64 norm(real64[] values)
+    real64 total = 0.0
+    for real64 value = values[]
+        total += value * value
+    real64 result = math.sqrt(total)
+    return result
+
+real64 mean(real64[] values)
+    real64 total = 0.0
+    for real64 value = values[]
+        total += value
+    return total / real64(len(values))
+
+real64[][] image_vectors(dataset.Image[] images)
+    return [for dataset.Image image = images[] then image.vector]
+
+int[] image_labels(dataset.Image[] images)
+    return [for dataset.Image image = images[] then image.label]
+
+class Net(string name, network.Layout layout, real64[] initial)
+
+Net[] build_catalog(dataset.Input data)
+    return [for dataset.Architecture architecture = data.architectures[] then Net(architecture.name, network.layout_for(data.width * data.height, architecture.units, architecture.activations), architecture.initial)]
+
+class Outcome(int label, int predicted, real64 confidence, real64[] scores, real64 loss, real64[][] hidden)
+class Evaluated(real64 loss, int correct, Outcome[] outcomes)
+
+Evaluated evaluate(Net net, real64[] theta, dataset.Image[] images)
+    real64 total = 0.0
+    int correct = 0
+    Outcome[] outcomes = []
+    for dataset.Image image = images[]
+        network.Cache cache = network.forward(net.layout, theta, image.vector, image.label)
+        int prediction = evaluation.best_two(cache.scores)[0]
+        if prediction == image.label
+            correct += 1
+        total += cache.loss
+        outcomes = outcomes.append(Outcome(image.label, prediction, cache.scores[prediction], cache.scores, cache.loss, cache.a[1:<int(len(cache.a)) - 1]))
+    return Evaluated(total / real64(len(images)), correct, outcomes)
+
+string[] check_network(Net net, dataset.Image[] training, dataset.Params params)
+    dataset.Generator generator = dataset.Generator(params.seed)
+    int[] sequence = [for int i < int(len(training)) then i]
+    .generator.shuffle(&sequence)
+    dataset.Image[] batch = [for int i = sequence[0:<minimum(params.batch_size, int(len(training)))][] then training[i]]
+    real64[] theta = net.initial
+    network.Mean analytic = network.average_gradient(net.layout, theta, image_vectors(batch), image_labels(batch))
+    int checked = 0
+    bool passed = true
+    real64 h = 0.00001
+    for 0 <= int index < net.layout.parameters step params.gradient_stride
+        real64 original = theta[index]
+        theta[index] = original + h
+        Evaluated higher = evaluate(net, theta, batch)
+        theta[index] = original - h
+        Evaluated lower = evaluate(net, theta, batch)
+        theta[index] = original
+        real64 derivative = (higher.loss - lower.loss) / (2.0 * h)
+        real64 relative_error = absolute(analytic.values[index] - derivative) / maximum(1.0, absolute(analytic.values[index]) + absolute(derivative))
+        if relative_error >= 0.000001
+            passed = false
+        checked += 1
+    string[] lines = ["network {net.name}", "parameters {net.layout.parameters}", "batch " + [for dataset.Image image = batch[] then image.id].join(" ")]
+    for int l < int(len(net.layout.levels))
+        network.Layer level = net.layout.levels[l]
+        int weights = 0
+        int biases = 0
+        for level.weight_start <= int p < level.weight_end
+            if p % params.gradient_stride == 0
+                weights += 1
+        for level.bias_start <= int p < level.bias_end
+            if p % params.gradient_stride == 0
+                biases += 1
+        lines = lines.append("layer {l + 1} weights {weights} biases {biases}")
+    return lines.concat(["checked {checked}", "result " + (if passed then "PASS" else "FAIL")])
+
+class Epoch(int number, real64 rate, real64 gradient_norm, real64 train_loss, int train_correct, real64 val_loss, int val_correct, bool improved)
+class Bin(int count, int correct, real64 confidence)
+class Hidden(real64[][] means, int[] preferred, int[] zero_counts)
+class Pruning(int percent, int removed, int correct, real64 loss)
+class Noise(int percent, int flipped, int correct)
+class Trained(dataset.Run definition, Net net)
+    real64[] best_theta = []
+    int best_epoch = 0
+    real64 best_loss = 0.0
+    int best_correct = 0
+    Epoch[] epochs = []
+    int updates = 0
+    string stop = "max_epochs"
+    bool[][] correctness = []
+    Evaluated testing = Evaluated(0.0, 0, [])
+    int[][] confusion = []
+    int top2 = 0
+    string confidence_correct = "-"
+    string confidence_wrong = "-"
+    int[] forgetting = [0, 0, 0]
+    real64[] weight_norms = []
+    real64[] weight_changes = []
+    Bin[] calibration = []
+    real64 ece = 0.0
+    Hidden[] hidden_summary = []
+    Pruning[] pruning = []
+    Noise[] noise_results = []
+    int[] misclassified = []
+
+Trained train_run(dataset.Run definition, Net net, dataset.Image[] training, dataset.Image[] validation, dataset.Params params)
+    Trained result = Trained(definition, net)
+    real64[] theta = net.initial
+    optimizers.State optimizer_state = optimizers.State(definition.optimizer, definition.extra, net.layout.parameters)
+    dataset.Generator generator = dataset.Generator(params.seed)
+    int[] order = [for int i < int(len(training)) then i]
+    int wait = 0
+    for 1 <= int epoch <= params.max_epochs
+        real64 rate = optimizers.epoch_rate(definition.rate, epoch, params.lr_step, params.lr_gamma)
+        .generator.shuffle(&order)
+        real64[] gradient_norms = []
+        for 0 <= int first < int(len(order)) step params.batch_size
+            int last = minimum(int(len(order)), first + params.batch_size)
+            dataset.Image[] batch = [for int i = order[first:<last][] then training[i]]
+            network.Mean average = network.average_gradient(net.layout, theta, image_vectors(batch), image_labels(batch))
+            real64[] gradient = average.values
+            for int p < net.layout.parameters
+                if net.layout.is_weight[p]
+                    gradient[p] += definition.decay * theta[p]
+            gradient_norms = gradient_norms.append(norm(gradient))
+            optimizers.update(&theta, gradient, &optimizer_state, rate)
+            result.updates += 1
+        Evaluated train_result = evaluate(net, theta, training)
+        Evaluated validation_result = evaluate(net, theta, validation)
+        result.correctness = result.correctness.append([for Outcome outcome = train_result.outcomes[] then outcome.predicted == outcome.label])
+        bool improved = epoch == 1 or validation_result.loss < result.best_loss
+        if improved
+            result.best_epoch = epoch
+            result.best_loss = validation_result.loss
+            result.best_correct = validation_result.correct
+            result.best_theta = theta
+            wait = 0
+        else
+            wait += 1
+        result.epochs = result.epochs.append(Epoch(epoch, rate, mean(gradient_norms), train_result.loss, train_result.correct, validation_result.loss, validation_result.correct, improved))
+        if wait >= params.patience
+            result.stop = "early"
+            break
+    return result
+
+class Noisy(dataset.Image[] images, int flipped)
+
+Noisy noisy_images(dataset.Image[] images, int percent, int seed)
+    dataset.Generator generator = dataset.Generator(seed)
+    dataset.Image[] altered = []
+    int flipped = 0
+    for dataset.Image image = images[]
+        real64[] vector = image.vector
+        string[] pixels = []
+        for int p < int(len(vector))
+            if .generator.draw() % 100 < percent
+                vector[p] = 1.0 - vector[p]
+                flipped += 1
+            pixels = pixels.append(if vector[p] == 1.0 then "1" else "0")
+        altered = altered.append(dataset.Image(image.id, image.label, pixels.join(""), vector))
+    return Noisy(altered, flipped)
+
+int[] ordered_weights(real64[] theta, bool[] is_weight)
+    int[] result = []
+    for int p < int(len(theta))
+        if is_weight[p]
+            int position = int(len(result))
+            for int i < int(len(result))
+                if absolute(theta[p]) < absolute(theta[result[i]])
+                    position = i
+                    break
+            result = result[0:<position].concat([p]).concat(result[position:<int(len(result))])
+    return result
+
+void prepare_evaluation(Trained &result, dataset.Image[] training, dataset.Image[] testing, dataset.Params params)
+    Net net = result.net
+    real64[] theta = result.best_theta
+    int classes = net.layout.levels[int(len(net.layout.levels)) - 1].outputs
+    result.testing = evaluate(net, theta, testing)
+    Outcome[] outcomes = result.testing.outcomes
+    result.confusion = evaluation.confusion(image_labels(testing), [for Outcome outcome = outcomes[] then outcome.predicted], classes)
+    real64[] correct_confidence = []
+    real64[] wrong_confidence = []
+    for int i < int(len(outcomes))
+        Outcome outcome = outcomes[i]
+        int[] best = evaluation.best_two(outcome.scores)
+        if outcome.label == best[0] or outcome.label == best[1]
+            result.top2 += 1
+        if outcome.predicted == outcome.label
+            correct_confidence = correct_confidence.append(outcome.confidence)
+        else
+            wrong_confidence = wrong_confidence.append(outcome.confidence)
+            result.misclassified = result.misclassified.append(i)
+    if len(correct_confidence) > 0
+        result.confidence_correct = evaluation.real_text(mean(correct_confidence), 4)
+    if len(wrong_confidence) > 0
+        result.confidence_wrong = evaluation.real_text(mean(wrong_confidence), 4)
+    for int i < int(len(training))
+        int events = 0
+        bool learned = false
+        for int epoch < int(len(result.correctness))
+            if result.correctness[epoch][i]
+                learned = true
+            if epoch > 0 and result.correctness[epoch - 1][i] and not result.correctness[epoch][i]
+                events += 1
+        result.forgetting[0] += events
+        if events > 0
+            result.forgetting[1] += 1
+        if not learned
+            result.forgetting[2] += 1
+    for network.Layer level = net.layout.levels[]
+        real64[] final_weights = theta[level.weight_start:<level.weight_end]
+        real64[] initial = net.initial[level.weight_start:<level.weight_end]
+        result.weight_norms = result.weight_norms.append(norm(final_weights))
+        result.weight_changes = result.weight_changes.append(norm(final_weights - initial))
+    int bins = params.calibration_bins
+    int[] bin_counts = [for int i < bins then 0]
+    int[] bin_correct = [for int i < bins then 0]
+    real64[] bin_totals = [for int i < bins then 0.0]
+    for Outcome outcome = outcomes[]
+        int bin = math.floor(outcome.confidence * real64(bins))
+        bin = minimum(bin, bins - 1)
+        bin_counts[bin] += 1
+        bin_totals[bin] += outcome.confidence
+        if outcome.predicted == outcome.label
+            bin_correct[bin] += 1
+    for int bin < bins
+        int count = bin_counts[bin]
+        real64 confidence = if count > 0 then bin_totals[bin] / real64(count) else 0.0
+        result.calibration = result.calibration.append(Bin(count, bin_correct[bin], confidence))
+        if count > 0
+            result.ece += real64(count) / real64(len(testing)) * absolute(real64(bin_correct[bin]) / real64(count) - confidence)
+    for int l < int(len(net.layout.levels)) - 1
+        network.Layer level = net.layout.levels[l]
+        real64[][] means = []
+        bool[] present = []
+        for int klass < classes
+            real64[] values = [for int j < level.outputs then 0.0]
+            int count = 0
+            for Outcome outcome = outcomes[]
+                if outcome.label == klass
+                    count += 1
+                    for int j < level.outputs
+                        values[j] += outcome.hidden[l][j]
+            present = present.append(count > 0)
+            means = means.append(if count > 0 then [for real64 value = values[] then value / real64(count)] else [])
+        int[] preferred = []
+        int[] zero_counts = []
+        for int j < level.outputs
+            int chosen = -1
+            for int klass < classes
+                if present[klass] and (chosen < 0 or means[klass][j] > means[chosen][j])
+                    chosen = klass
+            preferred = preferred.append(chosen)
+            int zeros = 0
+            for Outcome outcome = outcomes[]
+                if outcome.hidden[l][j] == 0.0
+                    zeros += 1
+            zero_counts = zero_counts.append(zeros)
+        result.hidden_summary = result.hidden_summary.append(Hidden(means, preferred, zero_counts))
+    int[] order = ordered_weights(theta, net.layout.is_weight)
+    for int percent = params.prune[]
+        int count = percent * net.layout.weight_count / 100
+        real64[] pruned = theta
+        for int p = order[0:<count][]
+            pruned[p] = 0.0
+        Evaluated evaluated = evaluate(net, pruned, testing)
+        result.pruning = result.pruning.append(Pruning(percent, count, evaluated.correct, evaluated.loss))
+    for int percent = params.noise[]
+        Noisy altered = noisy_images(testing, percent, params.seed)
+        Evaluated evaluated = evaluate(net, theta, altered.images)
+        result.noise_results = result.noise_results.append(Noise(percent, altered.flipped, evaluated.correct))
+
+string[] gradient_check_lines(Net[] catalog, dataset.Image[] training, dataset.Params params)
+    string[] lines = []
+    for int i < int(len(catalog))
+        if i > 0
+            lines = lines.append("")
+        lines = lines.concat(check_network(catalog[i], training, params))
+    return lines
+
+string[] training_log_lines(Trained[] runs, int training_count, int validation_count)
+    string[] lines = ["run,epoch,lr,grad_norm,train_loss,train_acc,val_loss,val_acc,improved"]
+    for Trained trained = runs[]
+        for Epoch epoch = trained.epochs[]
+            string[] values = [trained.definition.name, epoch.number.string(), evaluation.real_text(epoch.rate, 6), evaluation.real_text(epoch.gradient_norm, 4), evaluation.real_text(epoch.train_loss, 6), evaluation.ratio(epoch.train_correct, training_count), evaluation.real_text(epoch.val_loss, 6), evaluation.ratio(epoch.val_correct, validation_count), (if epoch.improved then "1" else "0")]
+            lines = lines.append(values.join(","))
+    return lines
+
+string[] final_weight_lines(Trained[] runs)
+    string[] lines = []
+    for int i < int(len(runs))
+        Trained trained = runs[i]
+        if i > 0
+            lines = lines.append("")
+        lines = lines.append("RUN {trained.definition.name} NETWORK {trained.net.name} EPOCH {trained.best_epoch}")
+        for int l < int(len(trained.net.layout.levels))
+            network.Layer level = trained.net.layout.levels[l]
+            lines = lines.append("LAYER {l + 1} {level.outputs} {level.inputs}")
+            for int j < level.outputs
+                int first = level.weight_start + j * level.inputs
+                lines = lines.append("W " + real_words(trained.best_theta[first:<first + level.inputs]))
+            lines = lines.append("B " + real_words(trained.best_theta[level.bias_start:<level.bias_end]))
+    return lines
+
+string[] prediction_lines(Trained[] runs, dataset.Image[] testing)
+    string[] lines = ["run,id,label,predicted,confidence"]
+    for Trained trained = runs[]
+        for int i < int(len(testing))
+            Outcome outcome = trained.testing.outcomes[i]
+            lines = lines.append("{trained.definition.name},{testing[i].id},{testing[i].label},{outcome.predicted}," + evaluation.real_text(outcome.confidence, 4))
+    return lines
+
+string[] data_summary_lines(dataset.Image[] training, dataset.Image[] validation, dataset.Image[] testing, int width, int height, int classes)
+    int pixels = width * height
+    string[] lines = ["data", "train {len(training)} validation {len(validation)} test {len(testing)} pixels {pixels}"]
+    int[][] maps = []
+    for int klass < classes
+        int training_count = 0
+        int validation_count = 0
+        int test_count = 0
+        int ink = 0
+        int[] frequencies = [for int p < pixels then 0]
+        for dataset.Image image = training[]
+            if image.label == klass
+                training_count += 1
+                for int p < pixels
+                    if image.pixels[p] == "1"
+                        ink += 1
+                        frequencies[p] += 1
+        for dataset.Image image = validation[]
+            if image.label == klass
+                validation_count += 1
+        for dataset.Image image = testing[]
+            if image.label == klass
+                test_count += 1
+        lines = lines.append("class {klass} train {training_count} validation {validation_count} test {test_count} ink " + evaluation.ratio(ink, training_count))
+        maps = maps.append([for int count = frequencies[] then (if training_count == 0 then 0 else minimum(9, 10 * count / training_count))])
+    lines = lines.append("mean_images " + words([for int klass < classes then klass]))
+    return lines.concat(evaluation.level_maps(maps, width, height))
+
+string[] curve_lines(Trained trained)
+    real64 largest = 0.0
+    for Epoch epoch = trained.epochs[]
+        largest = maximum(largest, maximum(epoch.train_loss, epoch.val_loss))
+    string[] lines = ["curve"]
+    for Epoch epoch = trained.epochs[]
+        string[] canvas = [for int i < 40 then " "]
+        int train_column = math.floor(39.0 * epoch.train_loss / largest + 0.5)
+        int validation_column = math.floor(39.0 * epoch.val_loss / largest + 0.5)
+        canvas[train_column] = "t"
+        canvas[validation_column] = if validation_column == train_column then "*" else "v"
+        string number = (if epoch.number < 10 then " " else "") + epoch.number.string()
+        lines = lines.append(number + " |" + canvas.join("") + "|" + (if epoch.number == trained.best_epoch then " best" else ""))
+    return lines
+
+string[] confusion_lines(Trained trained)
+    int[][] table = trained.confusion
+    string[] lines = ["confusion"]
+    for int klass < int(len(table))
+        lines = lines.append("{klass}: " + words(table[klass]))
+    for int klass < int(len(table))
+        evaluation.Measures stats = evaluation.class_measures(table, klass)
+        lines = lines.append("class {klass} support {stats.support} predicted {stats.predicted} precision {stats.precision} recall {stats.recall} f1 {stats.f1}")
+    return lines
+
+string[] calibration_lines(Trained trained)
+    int bins = int(len(trained.calibration))
+    string[] lines = ["calibration"]
+    for int i < bins
+        Bin bin = trained.calibration[i]
+        string accuracy = if bin.count > 0 then evaluation.ratio(bin.correct, bin.count) else "-"
+        string confidence = if bin.count > 0 then evaluation.real_text(bin.confidence, 4) else "-"
+        lines = lines.append("bin {i + 1} " + evaluation.real_text(real64(i) / real64(bins), 2) + " " + evaluation.real_text(real64(i + 1) / real64(bins), 2) + " count {bin.count} accuracy {accuracy} confidence {confidence}")
+    return lines.append("ece " + evaluation.real_text(trained.ece, 4))
+
+string[] hidden_lines(Trained trained)
+    string[] lines = []
+    for int l < int(len(trained.hidden_summary))
+        network.Layer level = trained.net.layout.levels[l]
+        Hidden hidden = trained.hidden_summary[l]
+        lines = lines.append("hidden {l + 1} {level.activation} units {level.outputs}")
+        for int klass < int(len(hidden.means))
+            string text = if len(hidden.means[klass]) == 0 then "-" else real_words(hidden.means[klass])
+            lines = lines.append("class {klass} mean {text}")
+        lines = lines.append("preferred " + words(hidden.preferred))
+        if level.activation == "RELU"
+            lines = lines.append("zero_counts " + words(hidden.zero_counts))
+    return lines
+
+string[] run_evaluation_lines(Trained trained, dataset.Image[] testing, int validation_count)
+    int count = int(len(testing))
+    int correct = trained.testing.correct
+    string[] lines = ["run {trained.definition.name} network {trained.net.name} optimizer {trained.definition.optimizer}",
+        "epochs {len(trained.epochs)} best_epoch {trained.best_epoch} stop {trained.stop} updates {trained.updates}",
+        "best_val_loss " + evaluation.real_text(trained.best_loss, 6) + " best_val_acc " + evaluation.ratio(trained.best_correct, validation_count) + " correct {trained.best_correct}/{validation_count}",
+        "test_loss " + evaluation.real_text(trained.testing.loss, 6) + " test_acc " + evaluation.ratio(correct, count) + " correct {correct}/{count}",
+        "top2_acc " + evaluation.ratio(trained.top2, count) + " correct {trained.top2}/{count}",
+        "confidence correct {trained.confidence_correct} wrong {trained.confidence_wrong}",
+        "forgetting events {trained.forgetting[0]} rows {trained.forgetting[1]} never_learned {trained.forgetting[2]}",
+        "weight_norms " + real_words(trained.weight_norms), "weight_changes " + real_words(trained.weight_changes)]
+    lines = lines.concat(curve_lines(trained)).concat(confusion_lines(trained)).concat(calibration_lines(trained)).concat(hidden_lines(trained)).append("pruning")
+    for Pruning item = trained.pruning[]
+        lines = lines.append("prune {item.percent} removed {item.removed} correct {item.correct} test_acc " + evaluation.ratio(item.correct, count) + " test_loss " + evaluation.real_text(item.loss, 6))
+    lines = lines.append("noise")
+    for Noise item = trained.noise_results[]
+        lines = lines.append("noise {item.percent} correct {item.correct} test_acc " + evaluation.ratio(item.correct, count))
+    string[] ids = [for int i = trained.misclassified[] then testing[i].id]
+    return lines.append("misclassified {len(ids)}" + (if len(ids) > 0 then " " + ids.join(" ") else ""))
+
+int[] ranked_runs(Trained[] runs)
+    int[] order = []
+    for int index < int(len(runs))
+        int position = int(len(order))
+        for int i < int(len(order))
+            int previous = order[i]
+            if runs[index].testing.correct > runs[previous].testing.correct or (runs[index].testing.correct == runs[previous].testing.correct and runs[index].best_loss < runs[previous].best_loss)
+                position = i
+                break
+        order = order[0:<position].concat([index]).concat(order[position:<int(len(order))])
+    return order
+
+class Ensembles(int[] majority, int[] soft, int soft_count)
+
+Ensembles ensembles(Trained[] runs, int[] rank, int classes, int test_count)
+    int[] soft_runs = []
+    for int i < int(len(runs))
+        int last = int(len(runs[i].net.layout.levels)) - 1
+        if runs[i].net.layout.levels[last].activation == "SOFTMAX"
+            soft_runs = soft_runs.append(i)
+    int[] majority = []
+    int[] soft = []
+    for int i < test_count
+        int[] votes = [for int k < classes then 0]
+        for Trained trained = runs[]
+            votes[trained.testing.outcomes[i].predicted] += 1
+        int most = 0
+        for int vote = votes[]
+            most = integer_maximum(most, vote)
+        for int index = rank[]
+            int prediction = runs[index].testing.outcomes[i].predicted
+            if votes[prediction] == most
+                majority = majority.append(prediction)
+                break
+        if len(soft_runs) > 0
+            real64[] means = []
+            for int klass < classes
+                real64 total = 0.0
+                for int index = soft_runs[]
+                    total += runs[index].testing.outcomes[i].scores[klass]
+                means = means.append(total / real64(len(soft_runs)))
+            soft = soft.append(evaluation.best_two(means)[0])
+    return Ensembles(majority, soft, int(len(soft_runs)))
+
+string[] saliency_lines(Trained top, dataset.Image[] testing, int width, int height, int classes)
+    int size = width * height
+    int[][] maps = []
+    for int klass < classes
+        real64[] values = [for int p < size then 0.0]
+        int count = 0
+        for dataset.Image image = testing[]
+            if image.label == klass
+                count += 1
+                network.Gradient gradient = network.gradient(top.net.layout, top.best_theta, image.vector, image.label, true)
+                for int p < size
+                    values[p] += absolute(gradient.input_gradient[p])
+        real64 largest = 0.0
+        if count > 0
+            for int p < size
+                values[p] /= real64(count)
+                largest = maximum(largest, values[p])
+        int[] levels = [for int p < size then 0]
+        if largest > 0.0
+            for int p < size
+                int level = math.floor(10.0 * values[p] / largest)
+                levels[p] = minimum(9, level)
+        maps = maps.append(levels)
+    string[] lines = ["saliency {top.definition.name}", "classes " + words([for int k < classes then k])]
+    return lines.concat(evaluation.level_maps(maps, width, height))
+
+string[] hardest_examples_lines(Trained top, dataset.Image[] training)
+    Evaluated evaluated = evaluate(top.net, top.best_theta, training)
+    int[] order = []
+    for int index < int(len(training))
+        int position = int(len(order))
+        for int i < int(len(order))
+            if evaluated.outcomes[index].loss > evaluated.outcomes[order[i]].loss
+                position = i
+                break
+        order = order[0:<position].concat([index]).concat(order[position:<int(len(order))])
+    string[] lines = ["hardest_training_examples {top.definition.name}"]
+    for int rank < minimum(5, int(len(order)))
+        int index = order[rank]
+        Outcome outcome = evaluated.outcomes[index]
+        lines = lines.append("{training[index].id} label {training[index].label} predicted {outcome.predicted} loss " + evaluation.real_text(outcome.loss, 6))
+    return lines
+
+string[] misclassified_examples_lines(Trained top, Trained[] runs, dataset.Image[] testing, dataset.Image[] all_training, int[] majority, int width)
+    string[] lines = ["misclassified_examples {top.definition.name}"]
+    for int index = top.misclassified[]
+        dataset.Image image = testing[index]
+        Outcome outcome = top.testing.outcomes[index]
+        int[] predictions = [for Trained trained = runs[] then trained.testing.outcomes[index].predicted]
+        int nearest = -1
+        int distance = 0
+        for int i < int(len(all_training))
+            int current = 0
+            for int p < int(len(image.pixels))
+                if image.pixels[p] != all_training[i].pixels[p]
+                    current += 1
+            if nearest < 0 or current < distance
+                nearest = i
+                distance = current
+        lines = lines.append("{image.id} label {image.label} predicted {outcome.predicted} confidence " + evaluation.real_text(outcome.confidence, 4) + " true_score " + evaluation.real_text(outcome.scores[image.label], 4) + " runs " + words(predictions) + " ensemble {majority[index]}")
+        lines = lines.append("nearest {all_training[nearest].id} label {all_training[nearest].label} distance {distance}")
+        lines = lines.concat(evaluation.ascii_image(image.pixels, width))
+    return lines
+
+string[] comparison_lines(Trained[] runs, dataset.Image[] training, dataset.Image[] all_training, dataset.Image[] testing, dataset.Params params, int width, int height, int classes)
+    int[] rank = ranked_runs(runs)
+    Trained top = runs[rank[0]]
+    int count = int(len(testing))
+    Ensembles ensemble = ensembles(runs, rank, classes, count)
+    string[] lines = ["comparison"]
+    for int i < int(len(rank))
+        Trained trained = runs[rank[i]]
+        lines = lines.append("rank {i + 1} {trained.definition.name} correct {trained.testing.correct} test_acc " + evaluation.ratio(trained.testing.correct, count) + " best_val_loss " + evaluation.real_text(trained.best_loss, 6) + " test_loss " + evaluation.real_text(trained.testing.loss, 6) + " best_epoch {trained.best_epoch} epochs {len(trained.epochs)} updates {trained.updates}")
+    lines = lines.append("agreement")
+    for Trained first = runs[]
+        int[] agreements = []
+        for Trained second = runs[]
+            int agreement = 0
+            for int i < count
+                if first.testing.outcomes[i].predicted == second.testing.outcomes[i].predicted
+                    agreement += 1
+            agreements = agreements.append(agreement)
+        lines = lines.append(first.definition.name + " " + words(agreements))
+    lines = lines.append("mcnemar {top.definition.name}")
+    for 1 <= int r < int(len(rank))
+        Trained alternate = runs[rank[r]]
+        int b = 0
+        int c = 0
+        for int i < count
+            bool first_correct = top.testing.outcomes[i].predicted == testing[i].label
+            bool second_correct = alternate.testing.outcomes[i].predicted == testing[i].label
+            if first_correct and not second_correct
+                b += 1
+            elif second_correct and not first_correct
+                c += 1
+        int difference = integer_maximum((if b >= c then b - c else c - b) - 1, 0)
+        int numerator = difference * difference
+        int denominator = b + c
+        string chi2 = if denominator > 0 then evaluation.ratio(numerator, denominator) else "0.0000"
+        lines = lines.append("vs {alternate.definition.name} b {b} c {c} chi2 {chi2} significant " + yes(numerator * 1000 > 3841 * denominator))
+    int majority_correct = 0
+    int fixed = 0
+    int broken = 0
+    int soft_correct = 0
+    for int i < count
+        bool majority_good = ensemble.majority[i] == testing[i].label
+        bool top_good = top.testing.outcomes[i].predicted == testing[i].label
+        if majority_good
+            majority_correct += 1
+            if not top_good
+                fixed += 1
+        elif top_good
+            broken += 1
+        if ensemble.soft_count > 0 and ensemble.soft[i] == testing[i].label
+            soft_correct += 1
+    lines = lines.append("ensemble correct {majority_correct}/{count} test_acc " + evaluation.ratio(majority_correct, count) + " fixed {fixed} broken {broken}")
+    if ensemble.soft_count > 0
+        lines = lines.append("soft_ensemble runs {ensemble.soft_count} correct {soft_correct}/{count} test_acc " + evaluation.ratio(soft_correct, count))
+    else
+        lines = lines.append("soft_ensemble none")
+    for int i < int(len(params.noise))
+        lines = lines.append("noise {params.noise[i]} flipped {runs[0].noise_results[i].flipped}")
+    int[][] confusion_total = [for int i < classes then [for int j < classes then 0]]
+    for Trained trained = runs[]
+        for int y < classes
+            for int p < classes
+                confusion_total[y][p] += trained.confusion[y][p]
+    int base = classes * classes
+    int largest_count = int(len(runs)) * count
+    int[] pair_keys = []
+    for int y < classes
+        for int p < classes
+            if y != p and confusion_total[y][p] > 0
+                pair_keys = pair_keys.append((largest_count - confusion_total[y][p]) * base + y * classes + p)
+    pair_keys = pair_keys.sorted()
+    lines = lines.append("confused_pairs")
+    for int i < minimum(5, int(len(pair_keys)))
+        int key = pair_keys[i] % base
+        int y = key / classes
+        int p = key % classes
+        lines = lines.append("{y} as {p} count {confusion_total[y][p]}")
+    lines = lines.append("").concat(saliency_lines(top, testing, width, height, classes))
+    lines = lines.append("").concat(hardest_examples_lines(top, training))
+    return lines.append("").concat(misclassified_examples_lines(top, runs, testing, all_training, ensemble.majority, width))
+
+string[] evaluation_lines(Trained[] runs, dataset.Image[] training, dataset.Image[] validation, dataset.Input data, int classes)
+    string[] lines = data_summary_lines(training, validation, data.testing, data.width, data.height, classes).append("")
+    for Trained trained = runs[]
+        lines = lines.concat(run_evaluation_lines(trained, data.testing, int(len(validation)))).append("")
+    return lines.concat(comparison_lines(runs, training, data.training, data.testing, data.params, data.width, data.height, classes))
+
+void write(string name, string[] lines)
+    file.write("output/" + name, lines.join(NL) + NL)
+
+void run()
+    dataset.Input data = dataset.read_inputs()
+    int validation_count = int(len(data.training)) / 5
+    int split = int(len(data.training)) - validation_count
+    dataset.Image[] training = data.training[0:<split]
+    dataset.Image[] validation = data.training[split:<int(len(data.training))]
+    Net[] catalog = build_catalog(data)
+    string[] checks = gradient_check_lines(catalog, training, data.params)
+    Trained[] runs = []
+    for dataset.Run definition = data.params.runs[]
+        int chosen = -1
+        for int i < int(len(catalog))
+            if catalog[i].name == definition.network_name
+                chosen = i
+        Trained trained = train_run(definition, catalog[chosen], training, validation, data.params)
+        prepare_evaluation(&trained, training, data.testing, data.params)
+        runs = runs.append(trained)
+    int last = int(len(catalog[0].layout.levels)) - 1
+    int classes = catalog[0].layout.levels[last].outputs
+    write("gradient_check.txt", checks)
+    write("training_log.csv", training_log_lines(runs, int(len(training)), validation_count))
+    write("final_weights.txt", final_weight_lines(runs))
+    write("predictions.csv", prediction_lines(runs, data.testing))
+    write("evaluation.txt", evaluation_lines(runs, training, validation, data, classes))
+
+run()

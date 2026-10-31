@@ -1,0 +1,3 @@
+for n = 0:12
+    println(n, "! = ", factorial(n))
+end

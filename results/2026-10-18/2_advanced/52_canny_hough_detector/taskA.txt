@@ -1,0 +1,440 @@
+[Overview]
+Write a program that detects shapes in a grayscale image. First it finds the edge (contour) pixels with the Canny method, and detects circles and straight lines with the Hough transform. The lines are split into segments, and segments whose ends meet are combined to find triangles and quadrilaterals (hereafter, polygons), whose kinds are then determined. In addition, it detects corners (corner points) with the Harris method and matches them with the vertices of the polygons.
+The results are written to an edge image, a vote image of the line Hough transform and an image with the detection results drawn over it (all in PGM format), and to lists of the lines, circles, polygons, corners and connected edge components and a report summarizing the pixel counts at each stage and other figures (all in text format).
+All computation is done with integers; floating-point numbers are not used. The values of the trigonometric functions are given in an input file as a table of values multiplied by 16384 and rounded to integers. The program reads the files in the input/ folder and writes files to the output/ folder. It prints nothing to standard output.
+
+[Input files]
+All input files consist of ASCII characters only, and every line ends with a newline (LF). Values within a line are separated by single spaces, and there is no whitespace at the beginning or end of a line. Integers are written in decimal, and negative numbers have a leading "-".
+
+(1) input/image.pgm: the input image
+A grayscale image in P2 format (ASCII PGM). Line 1 is P2, line 2 holds the width W and the height H, and line 3 is the maximum value, which is always 255. Of the following H lines, the (y + 1)-th line (y = 0, 1, ..., H - 1) holds the pixel values I(0, y), I(1, y), ..., I(W - 1, y) in this order. Pixel values are integers from 0 to 255 inclusive. There are no comment lines.
+
+(2) input/trig.txt: the trigonometric table
+It consists of 180 lines; line t + 1 (t = 0, 1, ..., 179) holds three integers t, c_t, s_t in this order. c_t and s_t are the cosine (cos) and the sine (sin) of t degrees, respectively, multiplied by 16384 and rounded to an integer (for example, the line for t = 60 is "60 8192 14189"). The program uses the values of this table as they are and must not compute trigonometric functions.
+
+(3) input/params.txt: parameters
+It consists of 25 lines; each line is a parameter name followed by one or more integer values. The lines appear in the following order. The symbol after the parameter name in each item is the symbol that denotes its value in the description below.
+- gauss_size ks: the size of the smoothing kernel (odd).
+- gauss_kernel g_1 g_2 ... g_(ks*ks): the smoothing kernel (ks * ks integers).
+- gauss_divisor D: the smoothing divisor.
+- canny_low T_low: the lower threshold of hysteresis thresholding.
+- canny_high T_high: the upper threshold of hysteresis thresholding.
+- circle_min_radius R_min: the minimum radius of the circles to detect.
+- circle_max_radius R_max: the maximum radius of the circles to detect.
+- circle_min_percent P_c: the lower bound (in percent) of the score of a circle candidate.
+- circle_max_count N_c: the maximum number of circles to detect.
+- hough_rho_step Q: the distance step of the line Hough transform.
+- hough_threshold T_v: the lower bound of the number of votes of a line candidate.
+- hough_max_lines N_l: the maximum number of lines to detect.
+- segment_tolerance B: the difference in distance steps allowed in segment extraction.
+- segment_max_gap L_gap: the length of a gap allowed within one segment.
+- segment_min_length L_min: the lower bound of the segment length.
+- junction_distance J: the upper bound of the distance between a junction and a segment end.
+- junction_min_angle A_j: the lower bound (in degrees) of the angle difference of the two segments forming a junction.
+- angle_tolerance A_t: the angle tolerance (in degrees) used in polygon classification.
+- square_tolerance P_s: the side-length tolerance (in percent) used in the square test.
+- contrast_margin C: the width of the surrounding pixels collected in shape measurement.
+- harris_window w: the window size of corner detection (odd).
+- harris_threshold T_h: the lower bound of the response of a corner candidate.
+- harris_max_count N_h: the maximum number of corners to detect.
+- corner_match_distance D_m: the upper bound of the distance for matching corners with vertices and other points.
+- overlay_divisor Z: the divisor that darkens the original image in the overlay image.
+For example, line 1 is a line like "gauss_size 5", and line 2 is gauss_kernel followed by ks * ks integers.
+
+[Processing]
+Processing follows sections 1 to 17 below.
+
+== Notation ==
+- A pixel is denoted by its coordinates (x, y). x runs from 0 to W - 1 from left to right, and y runs from 0 to H - 1 from top to bottom. The value of pixel (x, y) of the input image is written I(x, y). "Inside the image" means 0 <= x <= W - 1 and 0 <= y <= H - 1.
+- Raster order: the order of pixels by increasing y, and for equal y by increasing x.
+- floor(a / b) (b a positive integer) is the largest integer not greater than a / b (for negative numbers it rounds toward negative infinity; for example floor(-7 / 2) = -4). |a| is the absolute value of a.
+- Clamped reference: in a formula that uses the value at coordinates (x, y) outside the image, the value of the pixel at coordinates (min(max(x, 0), W - 1), min(max(y, 0), H - 1)) is used instead (this amounts to using the value of the nearest border pixel).
+- The Chebyshev distance of two points p = (px, py) and q = (qx, qy) is written d(p, q) = max(|px - qx|, |py - qy|). Also, p - q = (px - qx, py - qy) and p + q = (px + qx, py + qy).
+- cross((ax, ay), (bx, by)) = ax * by - ay * bx and dot((ax, ay), (bx, by)) = ax * bx + ay * by.
+- The 8-neighbourhood of pixel (x, y) consists of those of the 8 positions (x + dx, y + dy) with |dx| <= 1, |dy| <= 1, (dx, dy) != (0, 0) that are inside the image.
+- Angle difference: for integers t1, t2 from 0 to 179 inclusive, ang(t1, t2) = min(|t1 - t2|, 180 - |t1 - t2|) (from 0 to 90 inclusive).
+- round(n / d) (n, d integers, d != 0): if d < 0, first negate both n and d; then round(n / d) = floor((2 * n + d) / (2 * d)) (this is n / d rounded to the nearest integer, with exact halves rounded to the larger value).
+- The mean of a sequence of integers is floor((sum of the sequence) / (number of elements of the sequence)) if the sequence is not empty, and 0 if it is empty.
+- The point sequence connecting two points (x0, y0) and (x1, y1) (hereafter, the Bresenham sequence) is the sequence of points obtained by the following procedure. Let dx = |x1 - x0| and dy = -|y1 - y0|; sx is 1 if x0 < x1 and -1 otherwise, and sy is 1 if y0 < y1 and -1 otherwise. Starting from e = dx + dy and (x, y) = (x0, y0), repeat the following (i) to (v).
+  (i) Append the point (x, y) to the end of the sequence.
+  (ii) If x = x1 and y = y1, stop.
+  (iii) Let e2 = 2 * e.
+  (iv) If e2 >= dy, add dy to e and add sx to x.
+  (v) If e2 <= dx, add dx to e and add sy to y (e2 here is the value computed in (iii)).
+  The sequence starts with (x0, y0), ends with (x1, y1), and never contains the same point twice.
+
+== 1. Smoothing ==
+Let h = (ks - 1) / 2, and for 0 <= i <= ks - 1, 0 <= j <= ks - 1, let the kernel value K(i, j) be the (j * ks + i + 1)-th value g_(j*ks+i+1) of the gauss_kernel values (the kernel is listed row by row starting from the top row, and from left to right within each row). The value of pixel (x, y) of the smoothed image G is computed by the following formula. Sum denotes the sum over all ks * ks pairs (i, j) with 0 <= i <= ks - 1, 0 <= j <= ks - 1, and I is referenced with clamping.
+  G(x, y) = floor((Sum K(i, j) * I(x + i - h, y + j - h)) / D)
+
+== 2. Gradient ==
+For each pixel (x, y), let q1, q2, ..., q9 be the values G(x + dx, y + dy) (referenced with clamping) for (dx, dy) taken in the order (-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1), and compute the following three values. gx(x, y), gy(x, y) and M(x, y) are called the horizontal gradient, the vertical gradient and the gradient magnitude of pixel (x, y), respectively.
+  gx(x, y) = (q3 + 2 * q6 + q9) - (q1 + 2 * q4 + q7)
+  gy(x, y) = (q7 + 2 * q8 + q9) - (q1 + 2 * q2 + q3)
+  M(x, y) = |gx(x, y)| + |gy(x, y)|
+
+== 3. Gradient direction ==
+For each pixel let ax = |gx(x, y)| and ay = |gy(x, y)|, and set the direction dir(x, y) of the pixel to one of 0, 45, 90, 135 as follows (12/29 and 70/29 are approximations of tan(22.5 degrees) and tan(67.5 degrees), respectively).
+- If 29 * ay <= 12 * ax, it is 0.
+- Otherwise, if 29 * ay >= 70 * ax, it is 90.
+- If neither holds, gx(x, y) and gy(x, y) are both nonzero, and it is 45 if gx(x, y) * gy(x, y) < 0 and 135 if gx(x, y) * gy(x, y) > 0.
+For each direction, the "previous neighbour" a and the "next neighbour" b of pixel (x, y) are defined as follows (a is a position before (x, y) in raster order, and b is a position after it).
+- 0: a = (x - 1, y), b = (x + 1, y)
+- 45: a = (x + 1, y - 1), b = (x - 1, y + 1)
+- 90: a = (x, y - 1), b = (x, y + 1)
+- 135: a = (x - 1, y - 1), b = (x + 1, y + 1)
+
+== 4. Non-maximum suppression ==
+Pixels on the image border (pixels satisfying any of x = 0, y = 0, x = W - 1, y = H - 1) get N(x, y) = 0. For every other pixel, with the previous neighbour a and the next neighbour b for the direction of that pixel, N(x, y) = M(x, y) if M(x, y) > M(a) and M(x, y) >= M(b), and N(x, y) = 0 otherwise.
+
+== 5. Hysteresis thresholding ==
+Pixels with N(x, y) >= T_high are called strong pixels, and pixels with T_low <= N(x, y) < T_high are called weak pixels. Let E be the set of all pixels that can be reached by starting from a strong pixel and repeatedly moving to a strong or weak pixel in the 8-neighbourhood (including the starting strong pixel itself); the pixels of E are called edge pixels. All strong pixels are contained in E. E is the same set regardless of the order of traversal.
+
+== 6. Connected edge components ==
+Divide the pixels of E into groups of pixels connected through the 8-neighbourhood relation (connected components). Compare the first pixel in raster order of each connected component, and number the connected components 1, 2, ... starting from the one whose first pixel comes earliest in raster order. For each connected component, compute the following values.
+- Pixel count: the number of pixels contained in the connected component.
+- Bounding box: the minimum x, the minimum y, the maximum x and the maximum y of the pixels of the connected component.
+- End count: the number of pixels of the connected component that have exactly one edge pixel in their 8-neighbourhood.
+- Strength: the mean of the gradient magnitudes M of the pixels of the connected component.
+- Main direction: the value that occurs most often among the directions dir of the pixels of the connected component (if several values occur equally often, the smallest of them).
+- Matching shape and explained pixel count: computed in section 16.
+
+== 7. Circle detection ==
+(1) The set of circle points
+For a positive integer r, the set O_r of the points on the circle of radius r is the set of points (dx, dy) obtained by the following procedure (identical points are counted once). Starting from a = r, b = 0, e = 1 - r, repeat the following (i) to (iii) while a >= b.
+  (i) Add the 8 points (a, b), (b, a), (-b, a), (-a, b), (-a, -b), (-b, -a), (b, -a), (a, -b) to the set.
+  (ii) Add 1 to b.
+  (iii) If e < 0, add 2 * b + 1 to e. Otherwise, subtract 1 from a, and then add 2 * (b - a) + 1 to e (a and b here are the updated values).
+Let n_r be the number of points of O_r (for example n_4 = 24, n_8 = 44, n_12 = 68). If O_r contains the point (dx, dy), it also contains the point (-dx, -dy).
+(2) Voting
+A triple (r, x, y) of an integer r with R_min <= r <= R_max and a pixel (x, y) inside the image is called a cell. The vote count A(r, x, y) of a cell is the number of points (dx, dy) of O_r such that the position (x + dx, y + dy) is an edge pixel. This equals the result of incrementing the vote at position p + o by 1 for each edge pixel p and each point o of O_r whenever p + o is inside the image. The score of cell (r, x, y) is the fraction A(r, x, y) / n_r. The scores of two cells (r, x, y) and (r', x', y') are compared exactly by comparing the integers A(r, x, y) * n_r' and A(r', x', y') * n_r obtained by clearing the denominators.
+(3) Candidates and peaks
+A cell with 100 * A(r, x, y) >= P_c * n_r is called a circle candidate. A circle candidate cell (r, x, y) is a peak if the following holds: for every cell (r', x', y') other than (r, x, y) with |r' - r| <= 2, |x' - x| <= 2, |y' - y| <= 2 (with R_min <= r' <= R_max and (x', y') inside the image), if (r', y', x') comes before (r, y, x) in lexicographic order (r' < r, or r' = r and y' < y, or r' = r and y' = y and x' < x), the score of (r, x, y) is greater than the score of (r', x', y'), and if it comes after, the score of (r, x, y) is greater than or equal to the score of (r', x', y').
+(4) Determining the circles
+Sort the peaks by score in descending order, ties by r ascending, then by y ascending, then by x ascending; the first at most N_c of them (all of them if there are fewer than N_c peaks) are the detected circles, numbered 1, 2, ... in this order. A circle has the center (x, y), the radius r and the vote count A(r, x, y). Below, the center of a circle is written (cx, cy) and its radius r.
+(5) Gaps in the circumference
+For each circle, form the sequence o_1, o_2, ..., o_n (n = n_r) of the points of O_r arranged in the following order. The half-plane number of a point (dx, dy) is 0 if dy > 0 or (dy = 0 and dx > 0), and 1 otherwise. Of two points o and o', the one with the smaller half-plane number comes first; if the half-plane numbers are equal, o comes first when cross(o, o') > 0 (this order starts at (r, 0) and goes once around through (0, r), (-r, 0) and (0, -r)). When the position (cx, cy) + o_i is an edge pixel, o_i is called a hit. Regarding the sequence as circular (o_1 follows o_n), compute the following two values.
+- Gap: the maximum number of consecutive points that are not hits. It is 0 if all points are hits, and n if there are no hits at all.
+- Arc count: the number of i such that o_i is a hit and the point just before it (o_n when i = 1) is not a hit. However, it is 1 if all points are hits.
+(6) Circle edge pixels
+When an edge pixel p = (px, py) satisfies (r - 1)^2 <= (px - cx)^2 + (py - cy)^2 <= (r + 1)^2 for some detected circle, p is said to lie on the circumference of that circle, and p is called a circle edge pixel. Let L be the set E with the circle edge pixels removed. Only L is used for line detection.
+
+== 8. Line detection ==
+(1) Voting
+For t = 0, 1, ..., 179 and a pixel p = (x, y), let rho_t(p) = floor((x * c_t + y * s_t) / (16384 * Q)). A pair (t, r) of t and an integer r is called a cell, and its vote count v(t, r) is the number of pixels p of L with rho_t(p) = r.
+(2) Candidates and peaks
+A cell with v(t, r) >= T_v is called a line candidate. A line candidate cell (t, r) is a peak if, for every cell (t', r') other than (t, r) with |t' - t| <= 2, |r' - r| <= 2, v(t, r) > v(t', r') holds when (t', r') comes before (t, r) in lexicographic order (t' < t, or t' = t and r' < r), and v(t, r) >= v(t', r') holds when it comes after. Here, cells whose t' is not in the range from 0 to 179 and cells that received no votes have vote count 0 (t = 0 and t = 179 are not connected).
+(3) Peak order
+Sort the peaks by vote count in descending order, ties by t ascending, then by r ascending. This order is used in section 9.
+(4) Vote image
+Let r_lo and r_hi be the minimum and the maximum of rho_t over all combinations of the 4 points (0, 0), (W - 1, 0), (0, H - 1), (W - 1, H - 1) and t = 0, 1, ..., 179 (for every pixel p inside the image, r_lo <= rho_t(p) <= r_hi). Also, let v_max be the maximum of the vote counts of all cells (v_max = 0 if L is empty). The vote image is an image of width 180 and height r_hi - r_lo + 1, and the value of its pixel (t, r - r_lo) is floor(255 * v(t, r) / v_max) if v_max > 0, and 0 if v_max = 0.
+
+== 9. Segment extraction ==
+Pixels of L may be marked "used". Initially no pixel is marked. Take the peaks (t, r) one at a time in the order of section 8 (3), and perform the following (1) to (4) for each. Once the number of detected lines reaches N_l, the remaining peaks are not processed.
+(1) Collect all pixels p = (x, y) of L that are not used and satisfy |rho_t(p) - r| <= B, and compute the position u = y * c_t - x * s_t of each. Sort the collected pixels by u ascending, ties by x ascending, then by y ascending.
+(2) Scan the sorted sequence from the beginning; if the difference in u between two adjacent pixels is at most L_gap * 16384, put them in the same group, and if it is greater than L_gap * 16384, split the groups between them.
+(3) For each group, the first pixel in the sequence is the start point and the last pixel is the end point, and the length is d(start point, end point) + 1. The groups whose length is L_min or more are the segments of this peak.
+(4) If there is at least one segment, this peak becomes a detected line, and the lines are numbered 1, 2, ... in order. The segments of the line are given serial numbers 1, 2, ..., counted through all lines, in group order, and all pixels contained in the groups that became segments are marked used. If there are no segments, this peak does not become a line and no pixel is marked.
+A segment has a start point, an end point, a length and a pixel count (the number of pixels contained in its group). The t of the peak of the line a segment belongs to is called the angle of that segment.
+
+== 10. Junctions ==
+For every pair of two segments S_a and S_b with numbers a < b whose angles t_a and t_b satisfy ang(t_a, t_b) >= A_j, examine them as follows.
+Let the start point of segment S_a be (xa, ya) and its end point minus its start point be (dxa, dya), and likewise (xb, yb) and (dxb, dyb) for S_b. If den = cross((dxa, dya), (dxb, dyb)) is 0, S_a and S_b do not join. Otherwise, let lambda = cross((xb - xa, yb - ya), (dxb, dyb)), and compute the point obtained by rounding the intersection of the lines that extend the two segments:
+  X = (round((xa * den + lambda * dxa) / den), round((ya * den + lambda * dya) / den))
+Of the start point and the end point of a segment, the one with the smaller Chebyshev distance to X (the start point if they are equal) is called the junction end of that segment. If the distances to X of the junction end of S_a and of the junction end of S_b are both at most J, S_a and S_b are said to join at the point X, and X is called the junction of S_a and S_b. Otherwise they do not join.
+(By [Constraints], the start point and the end point of one segment are never both within distance J of X.)
+
+== 11. Polygon detection ==
+For each of k = 3 and k = 4, find all sequences (S_1, S_2, ..., S_k) of k mutually distinct segments that satisfy all of the following conditions. Below, S_0 denotes S_k and S_(k+1) denotes S_1.
+- For each i = 1, 2, ..., k, S_i and S_(i+1) join.
+- For each i = 1, 2, ..., k, the junction end of S_i in the junction of S_(i-1) and S_i differs from the junction end of S_i in the junction of S_i and S_(i+1) (one is the start point and the other is the end point).
+- The number of S_1 is the smallest of the numbers of the k segments, and the number of S_2 is smaller than the number of S_k (these conditions make each polygon counted only once).
+For such a sequence, let the vertex V_i (i = 1, 2, ..., k) be the junction of S_(i-1) and S_i. Below, V_0 denotes V_k, V_(k+1) denotes V_1, and V_(k+2) denotes V_2. For i = 1, 2, ..., k compute z_i = cross(V_(i+1) - V_i, V_(i+2) - V_(i+1)); a sequence whose k values z_i are all positive or all negative (a sequence forming a convex polygon) is a polygon.
+The polygons with k = 3 (triangles) come first and those with k = 4 (quadrilaterals) after them; within the same k they are sorted in the lexicographic order of their sequences of segment numbers (the number of S_1, the number of S_2, ...), and numbered 1, 2, ... in this order. Side i of a polygon is the side that runs along segment S_i from vertex V_i to vertex V_(i+1).
+
+== 12. Polygon attributes and classification ==
+For each polygon compute the following values. theta_i is the angle of segment S_i (theta_0 denotes theta_k).
+- Interior angle: the interior angle alpha_i at vertex V_i is, with phi = ang(theta_(i-1), theta_i), 180 - phi if dot(V_(i-1) - V_i, V_(i+1) - V_i) < 0, and phi otherwise.
+- Squared side length: with V_(i+1) - V_i = (ex, ey), l_i = ex^2 + ey^2.
+- Area: with sigma = cross(V_1, V_2) + cross(V_2, V_3) + ... + cross(V_k, V_1) (each vertex regarded as a position vector), the area is |sigma| / 2.
+- Side support: let n be the number of points of the Bresenham sequence of side i from V_i to V_(i+1), and let m be the number of those points such that an edge pixel exists at some position within Chebyshev distance 1 (including the point itself); the support is floor(100 * m / n).
+- Kind: determined as follows.
+  When k = 3: equilateral_triangle if |alpha_i - 60| <= A_t for all i; otherwise right_triangle if some i satisfies |alpha_i - 90| <= A_t; triangle if neither holds.
+  When k = 4: sides 1 and 3 are parallel if ang(theta_1, theta_3) <= A_t, and sides 2 and 4 are parallel if ang(theta_2, theta_4) <= A_t. If neither pair is parallel, quadrilateral; if only one pair is parallel, trapezoid. If both pairs are parallel and some i satisfies |alpha_i - 90| > A_t, parallelogram. If both pairs are parallel and |alpha_i - 90| <= A_t for all i, let l_max be the maximum and l_min the minimum of l_1, ..., l_4; then square if 100 * (l_max - l_min) <= P_s * l_max, and rectangle otherwise.
+
+== 13. Shape measurement and containment ==
+Polygons and circles together are called shapes. The shape order is the polygons in number order followed by the circles in number order.
+- Interior: a point (x, y) is inside a polygon if, for all i = 1, 2, ..., k, cross(V_(i+1) - V_i, (x, y) - V_i) is 0 or has the same sign as sigma (section 12) (points on the sides count as inside). A point (x, y) is inside a circle if (x - cx)^2 + (y - cy)^2 <= r^2.
+- Representative points: the representative points of a polygon are its k vertices; those of a circle are the 4 points (cx + r, cy), (cx, cy + r), (cx - r, cy), (cx, cy - r).
+- Measurement: let x0 be the minimum x coordinate of the representative points of the shape minus C, x1 the maximum x coordinate plus C, y0 the minimum y coordinate minus C, and y1 the maximum y coordinate plus C. However, x0 is set to 0 if it is less than 0, y0 is set to 0 if it is less than 0, x1 is set to W - 1 if it is greater than W - 1, and y1 is set to H - 1 if it is greater than H - 1. Among the pixels with x0 <= x <= x1 and y0 <= y <= y1, those inside the shape are the inner pixels and those not inside the shape are the outer pixels (every pixel inside the image that is inside the shape lies within this range). The pixel count of the shape is the number of inner pixels, the mean is the mean of the I values of the inner pixels, and the contrast is (the mean of the I values of the inner pixels) - (the mean of the I values of the outer pixels).
+- Containment: a shape containing a shape F is a shape F' other than F whose pixel count is greater than the pixel count of F and whose interior contains all representative points of F. Among the shapes containing F, the one with the smallest pixel count (if tied, the one earlier in the shape order) is the enclosing shape of F. If no shape contains F, F has no enclosing shape.
+
+== 14. Corner detection ==
+Use gx and gy of section 2. Let hw = (w - 1) / 2, and for each pixel (x, y) compute the sums over all pairs (i, j) with -hw <= i <= hw, -hw <= j <= hw
+  Sxx = Sum gx(x + i, y + j)^2, Syy = Sum gy(x + i, y + j)^2, Sxy = Sum gx(x + i, y + j) * gy(x + i, y + j)
+(gx and gy are referenced with clamping), and let the response be
+  R(x, y) = Sxx * Syy - Sxy^2 - floor((Sxx + Syy)^2 / 25)
+A pixel is a corner candidate if R(x, y) >= T_h and, for every pixel (x', y') in its 8-neighbourhood, R(x, y) > R(x', y') when (x', y') comes before (x, y) in raster order and R(x, y) >= R(x', y') when it comes after. Sort the corner candidates by R descending, ties by y ascending, then by x ascending; the first at most N_h of them are the corners, numbered 1, 2, ... in this order.
+
+== 15. Corner matching ==
+- Match of a corner: for a corner c, if there are polygon vertices V with d(c, V) <= D_m, the match is the one among them with the smallest d(c, V) (if tied, the one with the smaller polygon number; if still tied, the one with the smaller vertex number i). If there is no such vertex, the match is, among the segment end points P (start points or end points) with d(c, P) <= D_m, the one with the smallest d(c, P) (if tied, the one with the smaller segment number; if still tied, the start point). If there is none either, c has no match.
+- Corner of a vertex: for a polygon vertex V, if there are corners c with d(V, c) <= D_m, the one among them with the smallest d(V, c) (if tied, the one with the smaller number) is the corner of that vertex. Otherwise, the vertex has no corner.
+
+== 16. Matching connected components with shapes ==
+A polygon explains an edge pixel p if, for some side i of the polygon, the Bresenham sequence from V_i to V_(i+1) contains a point within Chebyshev distance 1 of p. A circle explains an edge pixel p if p lies on the circumference of that circle (section 7 (6)).
+For each connected component, count, for each shape, the number of pixels of that connected component the shape explains. The shape with the largest count (if tied, the one earlier in the shape order) is the matching shape of the connected component, and that count is its explained pixel count. However, when the maximum count is 0 (including when there are no shapes at all), there is no matching shape and the explained pixel count is 0.
+
+== 17. Overlay image ==
+Create an image of width W and height H, and initially set the value of each pixel (x, y) to floor(I(x, y) / Z). Then set to 255 the value of the pixel of every point listed below that is inside the image (points outside the image are ignored).
+- For each segment, each point of the Bresenham sequence from its start point to its end point.
+- For each circle, (cx, cy) + o for each point o of O_r.
+- For each corner (x, y), (x + e, y) and (x, y + e) for each integer e with -2 <= e <= 2.
+
+[Output files]
+Write the following 9 files to the output/ folder. Every file consists of ASCII characters only, and every line ends with a newline (LF). Words within a line are separated by single spaces, there is no whitespace at the beginning or end of a line, and no empty lines are written. Integers are written in decimal without extra leading zeros, and negative numbers get a leading "-" (for example -6). In the formats below, the parts enclosed in < > are replaced by values, and everything else is written as is.
+
+== PGM images (edges.pgm, hough.pgm, overlay.pgm) ==
+Line 1 is P2, line 2 is <width> <height>, and line 3 is 255. Of the following <height> lines, the (y + 1)-th line (y = 0, 1, ...) holds the values of the pixels (0, y), (1, y), ... on one line in increasing order of x. No comments are written.
+(1) output/edges.pgm: an image of width W and height H in which edge pixels have the value 255 and all other pixels have the value 0.
+(2) output/hough.pgm: the vote image of section 8 (4) (width 180, height r_hi - r_lo + 1).
+(3) output/overlay.pgm: the overlay image of section 17.
+
+== Text files ==
+(4) output/lines.txt: the list of lines and segments. The first line is lines <number of lines>. Then, for each detected line in number order, write the following line, followed by the segments of that detected line in number order, one segment per line.
+  line <number> theta <t> rho <r> votes <v(t, r)> segments <number of segments of the line>
+  segment <segment number> start <x of the start point> <y of the start point> end <x of the end point> <y of the end point> length <length> pixels <pixel count>
+(5) output/circles.txt: the list of circles. The first line is circles <number of circles>, followed by the following line for each circle in number order.
+  circle <number> center <cx> <cy> radius <r> votes <vote count> points <n_r> gap <gap> arcs <arc count> pixels <pixel count> mean <mean> contrast <contrast> inside <enclosing shape>
+(6) output/polygons.txt: the list of polygons. The first line is polygons <number of polygons>. Then, for each polygon in number order, write the following line, the k lines for the vertices i = 1, ..., k, and the k lines for the sides i = 1, ..., k.
+  polygon <number> <kind> segments <number of S_1> ... <number of S_k> area <area> pixels <pixel count> mean <mean> contrast <contrast> inside <enclosing shape>
+  vertex <i> <x of V_i> <y of V_i> angle <alpha_i> corner <corner of the vertex>
+  side <i> segment <number of S_i> length2 <l_i> support <support of side i>
+  <kind> is the name of the kind from section 12. <area> is |sigma| / 2 written with one decimal place: the string formed by floor(|sigma| / 2), ".", and 0 if |sigma| is even or 5 if it is odd, in this order (for example 187.0, 389.5). <corner of the vertex> is the number of that corner, or none if the vertex has no corner.
+(7) output/corners.txt: the list of corners. The first line is corners <number of corners>, followed by the following line for each corner in number order.
+  corner <number> <x> <y> response <R(x, y)> match <match>
+  <match> is polygon <polygon number> vertex <i> for a polygon vertex, segment <segment number> start or segment <segment number> end for a segment end point, and none if there is no match.
+(8) output/components.txt: the list of connected edge components. The first line is components <number of connected components>, followed by the following line for each connected component in number order.
+  component <number> pixels <pixel count> box <minimum x> <minimum y> <maximum x> <maximum y> ends <end count> strength <strength> direction <main direction> shape <matching shape> explained <explained pixel count>
+(9) output/report.txt: the counts of each stage. Write the following 40 lines in this order, one per line, in the form <name> <value> (only the image line has two values).
+  image: W and H.
+  gradient_nonzero: the number of pixels with M(x, y) > 0.
+  gradient_max: the maximum of M(x, y).
+  nms_kept: the number of pixels with N(x, y) > 0.
+  strong: the number of strong pixels.
+  weak: the number of weak pixels.
+  edges: the number of edge pixels.
+  weak_kept: the number of weak pixels that are edge pixels.
+  weak_dropped: the number of weak pixels that are not edge pixels.
+  edge_components: the number of connected edge components.
+  direction_0, direction_45, direction_90, direction_135 (4 lines in this order): the number of edge pixels whose direction dir is 0, 45, 90 and 135, respectively.
+  circle_candidates: the number of circle candidate cells.
+  circle_peaks: the number of circle peaks.
+  circles: the number of detected circles.
+  circle_edge_pixels: the number of circle edge pixels.
+  line_edge_pixels: the number of pixels of L.
+  hough_max_votes: v_max.
+  hough_peaks: the number of line peaks.
+  lines: the number of detected lines.
+  segments: the number of segments.
+  claimed_pixels: the number of pixels marked used at the end of processing.
+  junctions: the number of pairs of segments that join.
+  polygons: the number of polygons.
+  equilateral_triangle, right_triangle, triangle, square, rectangle, parallelogram, trapezoid, quadrilateral (8 lines in this order): the number of polygons of that kind.
+  corner_candidates: the number of corner candidates.
+  corners: the number of corners.
+  corners_on_vertices: the number of corners whose match is a polygon vertex.
+  corners_on_segments: the number of corners whose match is a segment end point.
+  corners_unmatched: the number of corners that have no match.
+  vertices_with_corner: the number of vertices that have a corner of the vertex (counted over the vertices of all polygons).
+<enclosing shape> and <matching shape> are polygon <polygon number> if the shape is a polygon, circle <circle number> if it is a circle, and none if there is no such shape.
+
+[Source files]
+There are the following 6 source files. The names are language-neutral role names; the extensions and the use of upper and lower case follow the conventions of each language.
+- main: holds the overall flow and contains most of the processing: reading the input and calling each module, determining the circles and the gaps in their circumferences, removing the circle edge pixels (section 7 (4) to (6)), segment extraction (section 9), junctions (section 10), polygon detection, attributes and classification (sections 11 and 12), shape measurement and containment (section 13), corner matching (section 15), the attributes of the connected components and their matching with shapes (sections 6 and 16), the overlay image (section 17), creating the vote image, and writing the text files and the report.
+- pgm_io: reading and writing PGM images, and reading the trigonometric table and the parameters.
+- filters: clamped reference, smoothing (section 1), gradient (section 2).
+- canny: gradient direction (section 3), non-maximum suppression (section 4), hysteresis thresholding (section 5), division into connected components by the 8-neighbourhood (section 6).
+- hough: computing rho_t and line voting (section 8 (1)), the circle point set O_r and circle voting (section 7 (1), (2)), peak tests (section 7 (3), section 8 (2)).
+- corners: the Harris response and corner candidates (section 14).
+
+[Constraints]
+- 8 <= W <= 128 and 8 <= H <= 128.
+- -16384 <= c_t <= 16384 and 0 <= s_t <= 16384.
+- ks is one of 1, 3, 5, 7, and g_1, ..., g_(ks*ks) are all integers >= 0. 1 <= D <= 10000 and g_1 + g_2 + ... + g_(ks*ks) <= D (hence 0 <= G(x, y) <= 255).
+- 1 <= T_low <= T_high <= 2040.
+- 3 <= R_min <= R_max <= 40, 1 <= P_c <= 100, 1 <= N_c <= 20.
+- 1 <= Q <= 8, 1 <= T_v <= 16384, 1 <= N_l <= 100.
+- 0 <= B <= 5, 1 <= L_gap <= 100, 0 <= J <= 10, 2 * J + 2 <= L_min <= 128 (hence the start point and the end point of a segment are different).
+- 1 <= A_j <= 90, 0 <= A_t <= 20, 0 <= P_s <= 100, 1 <= C <= 10.
+- w is one of 1, 3, 5; 1 <= T_h < 2^53, 1 <= N_h <= 100, 0 <= D_m <= 10, 1 <= Z <= 255.
+- Sxx, Syy, Sxy and R(x, y) of section 14 and the intermediate values of their computation have absolute values less than 2^53, but they may be 2^31 or more (compute them with a type that represents integers less than 2^53 exactly). All other values, including the intermediate values of computations, have absolute values less than 2^31.
+
+[Example]
+The following example shows the format and differs from the actual input files.
+Input (input/image.pgm):
+P2
+40 24
+255
+40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+40 40 40 80 120 120 120 120 120 120 120 120 120 120 120 120 120 120 120 120 80 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 40 40 40 40 96 130 130 96 40 40 40 40 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 40 40 85 198 220 220 220 220 198 85 40 40 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 40 85 220 220 220 220 220 220 220 220 85 40 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 40 198 220 220 220 220 220 220 220 220 198 40 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 96 220 220 220 220 220 220 220 220 220 220 96 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 130 220 220 220 220 220 220 220 220 220 220 130 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 130 220 220 220 220 220 220 220 220 220 220 130 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 96 220 220 220 220 220 220 220 220 220 220 96 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 40 198 220 220 220 220 220 220 220 220 198 40 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 40 85 220 220 220 220 220 220 220 220 85 40 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 40 40 85 198 220 220 220 220 198 85 40 40 40 40 40
+40 40 40 120 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 200 120 40 40 40 40 40 40 40 40 96 130 130 96 40 40 40 40 40 40 40
+40 40 40 80 120 120 120 120 120 120 120 120 120 120 120 120 120 120 120 120 80 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
+Input (input/trig.txt): the same content as the actual input file (180 lines).
+Input (input/params.txt):
+gauss_size 3
+gauss_kernel 1 2 1 2 4 2 1 2 1
+gauss_divisor 16
+canny_low 40
+canny_high 100
+circle_min_radius 4
+circle_max_radius 7
+circle_min_percent 60
+circle_max_count 2
+hough_rho_step 1
+hough_threshold 8
+hough_max_lines 8
+segment_tolerance 1
+segment_max_gap 2
+segment_min_length 6
+junction_distance 2
+junction_min_angle 20
+angle_tolerance 6
+square_tolerance 15
+contrast_margin 2
+harris_window 3
+harris_threshold 100000000
+harris_max_count 8
+corner_match_distance 2
+overlay_divisor 2
+Output (output/edges.pgm):
+P2
+40 24
+255
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 255 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 0 0 0 0 0 255 255 255 255 255 255 0 0 0 0 0 0
+0 0 0 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 0 0 0 0 255 255 0 0 0 0 255 255 0 0 0 0 0
+0 0 0 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 0 0 0 255 255 0 0 0 0 0 0 255 255 0 0 0 0
+0 0 0 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 0 0 255 255 0 0 0 0 0 0 0 0 255 255 0 0 0
+0 0 0 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 0 0 255 0 0 0 0 0 0 0 0 0 0 255 0 0 0
+0 0 0 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 0 0 255 0 0 0 0 0 0 0 0 0 0 255 0 0 0
+0 0 0 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 0 0 255 0 0 0 0 0 0 0 0 0 0 255 0 0 0
+0 0 0 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 0 0 255 0 0 0 0 0 0 0 0 0 0 255 0 0 0
+0 0 0 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 0 0 255 255 0 0 0 0 0 0 0 0 255 255 0 0 0
+0 0 0 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 0 0 0 255 255 0 0 0 0 0 0 255 255 0 0 0 0
+0 0 0 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 0 0 0 0 255 255 0 0 0 0 255 255 0 0 0 0 0
+0 0 0 255 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 255 0 0 0 0 0 0 0 255 255 255 255 255 255 0 0 0 0 0 0
+0 0 0 0 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+Output (output/hough.pgm): the first 3 lines are as follows (the remaining 85 lines, from line 4 on, are omitted).
+P2
+180 85
+255
+Output (output/overlay.pgm): the first 3 lines are as follows (the remaining 24 lines, from line 4 on, are omitted).
+P2
+40 24
+255
+Output (output/lines.txt):
+lines 4
+line 1 theta 87 rho 18 votes 22 segments 2
+segment 1 start 34 16 end 28 17 length 7 pixels 6
+segment 2 start 20 16 end 3 17 length 18 pixels 21
+line 2 theta 93 rho 3 votes 18 segments 1
+segment 3 start 20 6 end 3 5 length 18 pixels 21
+line 3 theta 0 rho 3 votes 13 segments 1
+segment 4 start 3 6 end 3 16 length 11 pixels 11
+line 4 theta 0 rho 20 votes 13 segments 1
+segment 5 start 20 7 end 20 15 length 9 pixels 9
+Output (output/circles.txt):
+circles 1
+circle 1 center 30 11 radius 5 votes 18 points 28 gap 10 arcs 1 pixels 81 mean 213 contrast 152 inside none
+Output (output/polygons.txt):
+polygons 1
+polygon 1 rectangle segments 2 4 3 5 area 187.0 pixels 200 mean 190 contrast 105 inside none
+vertex 1 20 16 angle 93 corner 4
+vertex 2 3 17 angle 87 corner 3
+vertex 3 3 5 angle 87 corner 1
+vertex 4 20 6 angle 93 corner 2
+side 1 segment 2 length2 290 support 66
+side 2 segment 4 length2 144 support 100
+side 3 segment 3 length2 290 support 66
+side 4 segment 5 length2 100 support 100
+Output (output/corners.txt):
+corners 4
+corner 1 4 5 response 218278125166 match polygon 1 vertex 3
+corner 2 19 5 response 218278125166 match polygon 1 vertex 4
+corner 3 4 17 response 218278125166 match polygon 1 vertex 2
+corner 4 19 17 response 218278125166 match polygon 1 vertex 1
+Output (output/components.txt):
+components 2
+component 1 pixels 62 box 3 4 20 18 ends 0 strength 494 direction 90 shape polygon 1 explained 48
+component 2 pixels 44 box 25 6 36 17 ends 0 strength 676 direction 45 shape circle 1 explained 32
+Output (output/report.txt):
+image 40 24
+gradient_nonzero 518
+gradient_max 754
+nms_kept 106
+strong 106
+weak 0
+edges 106
+weak_kept 0
+weak_dropped 0
+edge_components 2
+direction_0 34
+direction_45 16
+direction_90 40
+direction_135 16
+circle_candidates 4
+circle_peaks 1
+circles 1
+circle_edge_pixels 32
+line_edge_pixels 74
+hough_max_votes 22
+hough_peaks 13
+lines 4
+segments 5
+claimed_pixels 68
+junctions 4
+polygons 1
+equilateral_triangle 0
+right_triangle 0
+triangle 0
+square 0
+rectangle 1
+parallelogram 0
+trapezoid 0
+quadrilateral 0
+corner_candidates 4
+corners 4
+corners_on_vertices 4
+corners_on_segments 0
+corners_unmatched 0
+vertices_with_corner 4

@@ -1,0 +1,617 @@
+import math
+import lexical = "./tokenizer.qui"
+import vocab = "./vocabulary.qui"
+import bayes = "./naive_bayes.qui"
+import centers = "./rocchio.qui"
+import metrics = "./evaluation.qui"
+
+string[] model_names()
+    return ["multinomial", "bernoulli", "complement", "rocchio", "vote"]
+
+int[][] model_pairs()
+    return [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]]
+
+string[] read_lines(string path)
+    string[] rows = file.read(path).split(NL)
+    return rows[0:<len(rows) - 1]
+
+string[] parameter_values(string line)
+    string[] fields = line.split(" ")
+    return fields[1:<len(fields)]
+
+int hundredths(string text)
+    string[] parts = text.split(".")
+    return 100 * int.parse(parts[0]) + int.parse(parts[1])
+
+string hundredths_text(int value)
+    int remainder = value % 100
+    string padding = if remainder < 10 then "0" else ""
+    return "{value / 100}.{padding}{remainder}"
+
+int class_position(string[] names, string wanted)
+    for int position < int(len(names))
+        if names[position] == wanted
+            return position
+    return -1
+
+string class_counts_text(string[] names, int[] counts)
+    return [for int position = (0:<int(len(names)))[] then "{names[position]} {counts[position]}"].join(" ")
+
+int bucket_number(int value, int[] limits)
+    return math.sum<int>([for int boundary = limits[] if value >= boundary then 1])
+
+string[] evaluation_fields(metrics.Evaluation result)
+    return ["{result.correct}", metrics.real_text(result.micro_f1), metrics.real_text(result.macro_f1)]
+
+string[] join_blocks(string[][] parts)
+    string[] lines = []
+    for string[] block = parts[]
+        if len(lines) > 0
+            lines = lines.append("")
+        lines = lines.concat(block)
+    return lines
+
+void write_output(string name, string[] lines)
+    file.write("output/" + name, if len(lines) == 0 then "" else lines.join(NL) + NL)
+
+class Settings(local string[] rows)
+    int[] alphas = [for string value = parameter_values(rows[0])[] then hundredths(value)]
+    int minimum = int.parse(parameter_values(rows[1])[0])
+    int features = int.parse(parameter_values(rows[2])[0])
+    bool include_bigrams = parameter_values(rows[3])[0] == "yes"
+    int top = int.parse(parameter_values(rows[4])[0])
+    int[] curve = [for string value = parameter_values(rows[5])[] then int.parse(value)]
+    int[] sizes = [for string value = parameter_values(rows[6])[] then int.parse(value)]
+    int[] thresholds = [for string value = parameter_values(rows[7])[] then hundredths(value)]
+    int[] lengths = [for string value = parameter_values(rows[8])[] then int.parse(value)]
+    int iterations = int.parse(parameter_values(rows[9])[0])
+    int weight = hundredths(parameter_values(rows[10])[0])
+    int resamples = int.parse(parameter_values(rows[11])[0])
+    int seed = int.parse(parameter_values(rows[11])[1])
+
+class Document(string name, int label, lexical.Tokens parts)
+class Input(Settings settings, string[] classes, Document[] training, Document[] tests, Document[] unlabelled)
+    int class_count = int(len(classes))
+    int[] labelled = [for int position = (0:<int(len(tests)))[] if tests[position].label >= 0 then position]
+    int[] truths = [for int position = labelled[] then tests[position].label]
+
+Input read_input()
+    auto settings = Settings(read_lines("input/params.txt"))
+    set.Set<string> stops
+    for string word = read_lines("input/stopwords.txt")[]
+        .stops.add(word)
+    string[][] rows = [for string line = read_lines("input/train.txt")[] then line.split(HT)]
+    set.Set<string> names
+    for string[] fields = rows[]
+        .names.add(fields[0])
+    string[] classes = names.values().sorted()
+    Document[] training = []
+    for int position < int(len(rows))
+        training = training.append(Document("{position + 1}", class_position(classes, rows[position][0]), lexical.Tokens(rows[position][1], stops)))
+    Document[] tests = []
+    for string line = read_lines("input/test.txt")[]
+        string[] fields = line.split(HT)
+        tests = tests.append(Document(fields[0], class_position(classes, fields[1]), lexical.Tokens(fields[2], stops)))
+    Document[] unlabelled = []
+    for string line = read_lines("input/unlabelled.txt")[]
+        unlabelled = unlabelled.append(Document("{len(unlabelled) + 1}", -1, lexical.Tokens(line, stops)))
+    return Input(settings, classes, training, tests, unlabelled)
+
+class Training(local Document[] documents, bool include_bigrams, local int class_count, local int minimum, local int features, local int[] alphas = [])
+    local string[][] sequences = [for Document document = documents[] then document.parts.terms(include_bigrams)]
+    local int[] labels = [for Document document = documents[] then document.label]
+    vocab.Vocabulary wordset = vocab.Vocabulary(sequences, labels, class_count, minimum, features)
+    local int[][] encoded = [for string[] sequence = sequences[] then wordset.encode(sequence)]
+    bayes.Counts tallies = bayes.Counts(encoded, labels, class_count, wordset.vocabulary_size())
+    centers.Centroids centroid = centers.Centroids(encoded, labels, class_count, wordset.frequencies)
+    bayes.Model[] fitted = []
+    if len(alphas) > 0
+        for int model < 3
+            fitted = fitted.append(bayes.train(model_names()[model], tallies, alphas[model]))
+
+    int[] encode(Document document)
+        return wordset.encode(document.parts.terms(include_bigrams))
+
+    bayes.Prediction classify(int model, int[] sequence)
+        return if model == 3 then centroid.predict(sequence) else fitted[model].predict(sequence)
+
+class Fold(int train_count, int validate_count, int candidates, int vocabulary_size)
+class Run(int[] predictions, metrics.Evaluation evaluation, int[] fold_correct)
+class CrossValidation(Run[][] candidates, Fold[] folds)
+    int[] selected = array(3, fill = 0)
+    Run[] chosen = []
+    for int model < 3
+        int best = 0
+        for 1 <= int position < int(len(candidates[model]))
+            if metrics.rounded_key(candidates[model][position].evaluation.macro_f1) > metrics.rounded_key(candidates[model][best].evaluation.macro_f1)
+                best = position
+        selected[model] = best
+        chosen = chosen.append(candidates[model][best])
+    chosen = chosen.append(candidates[3][0])
+
+Run validation_run(Input data, int[] predictions)
+    int[] truths = [for Document document = data.training[] then document.label]
+    int[] fold_correct = array(5, fill = 0)
+    for int position < int(len(truths))
+        if truths[position] == predictions[position]
+            fold_correct[position % 5] += 1
+    return Run(predictions, metrics.Evaluation(data.class_count, truths, predictions), fold_correct)
+
+CrossValidation cross_validate(Input data)
+    int count = int(len(data.training))
+    int[][][] guesses = array(3, fill = array(len(data.settings.alphas), fill = array(nat(count), fill = 0)))
+    int[] centroid_guesses = array(nat(count), fill = 0)
+    Fold[] folds = []
+    for int fold < 5
+        Document[] members = [for int position = (0:<count)[] if position % 5 != fold then data.training[position]]
+        int[] held = [for int position = (0:<count)[] if position % 5 == fold then position]
+        auto training = Training(members, data.settings.include_bigrams, data.class_count, data.settings.minimum, data.settings.features)
+        folds = folds.append(Fold(int(len(members)), int(len(held)), training.wordset.candidate_count, training.wordset.vocabulary_size()))
+        int[][] sequences = [for int position = held[] then training.encode(data.training[position])]
+        for int model < 3
+            for int candidate < int(len(data.settings.alphas))
+                bayes.Model fitted = bayes.train(model_names()[model], training.tallies, data.settings.alphas[candidate])
+                for int position < int(len(held))
+                    guesses[model][candidate][held[position]] = fitted.predict(sequences[position]).label
+        for int position < int(len(held))
+            centroid_guesses[held[position]] = training.centroid.predict(sequences[position]).label
+    Run[][] candidates = []
+    for int model < 3
+        candidates = candidates.append([for int[] predictions = guesses[model][] then validation_run(data, predictions)])
+    candidates = candidates.append([validation_run(data, centroid_guesses)])
+    return CrossValidation(candidates, folds)
+
+bayes.Prediction majority_vote(int[] labels, int class_count)
+    int[] votes = array(nat(class_count), fill = 0)
+    for int category = labels[]
+        votes[category] += 1
+    int winner = labels[0]
+    for int category = labels[]
+        if votes[category] > votes[winner]
+            winner = category
+    return bayes.Prediction(winner, real64(votes[winner]) / real64(len(labels)), [], [], [], 0.0, 0.0, 0)
+
+metrics.Evaluation[] test_evaluations(Input data, Training training)
+    int[][] sequences = [for int position = data.labelled[] then training.encode(data.tests[position])]
+    metrics.Evaluation[] results = []
+    for int model < 4
+        int[] predicted = [for int[] sequence = sequences[] then training.classify(model, sequence).label]
+        results = results.append(metrics.Evaluation(data.class_count, data.truths, predicted))
+    return results
+
+class Ratio(int numerator, int denominator, int term)
+
+Ratio[] ratio_ranking(Ratio[] entries)
+    Ratio[] order = []
+    for Ratio entry = entries[]
+        int place = int(len(order))
+        order = order.append(entry)
+        while place > 0
+            Ratio prior = order[place - 1]
+            int left = entry.numerator * prior.denominator
+            int right = prior.numerator * entry.denominator
+            if left < right or left == right and entry.term > prior.term
+                break
+            order[place] = prior
+            place -= 1
+        order[place] = entry
+    return order
+
+class Experiment(Input data, CrossValidation validation, Training final_training)
+    Settings settings = data.settings
+    string[] names = model_names()
+    int[] alphas = [for int model = (0:<3)[] then settings.alphas[validation.selected[model]]]
+    int[][] test_sequences = [for Document document = data.tests[] then final_training.encode(document)]
+    bayes.Prediction[][] predictions = []
+    for int model < 4
+        predictions = predictions.append([for int[] sequence = test_sequences[] then final_training.classify(model, sequence)])
+    local bayes.Prediction[] voted = []
+    for int position < int(len(data.tests))
+        int[] labels = [for int model = (0:<4)[] then predictions[model][position].label]
+        voted = voted.append(majority_vote(labels, data.class_count))
+    predictions = predictions.append(voted)
+    bool[][] correct = [for int model = (0:<5)[] then [for int position = data.labelled[] then predictions[model][position].label == data.tests[position].label]]
+
+    string alpha_text(int model)
+        return if model < 3 then hundredths_text(alphas[model]) else "-"
+
+    string[] vocabulary_lines()
+        vocab.Vocabulary wordset = final_training.wordset
+        string[] lines = ["documents {len(data.training)} terms {wordset.term_count} candidates {wordset.candidate_count} vocabulary {wordset.vocabulary_size()}"]
+        for int position < int(len(wordset.ranked))
+            vocab.RankedTerm entry = wordset.ranked[position]
+            lines = lines.append("{position + 1} {entry.name} {entry.frequency} {metrics.real_text(entry.chi2)} {data.classes[entry.best_class]}")
+        return lines
+
+    string[] cv_lines()
+        string[] lines = ["model,alpha,correct,accuracy,macro_f1,selected"]
+        for int model < 4
+            for int position < int(len(validation.candidates[model]))
+                string alpha = if model < 3 then hundredths_text(settings.alphas[position]) else "-"
+                bool selected = if model < 3 then position == validation.selected[model] else true
+                string[] fields = [names[model], alpha].concat(evaluation_fields(validation.candidates[model][position].evaluation))
+                lines = lines.append(fields.append(if selected then "yes" else "no").join(","))
+        return lines
+
+    string[] prediction_lines()
+        string[] lines = ["id,model,label,score"]
+        for int position < int(len(data.tests))
+            for int model < 5
+                bayes.Prediction result = predictions[model][position]
+                lines = lines.append("{data.tests[position].name},{names[model]},{data.classes[result.label]},{metrics.real_text(result.score)}")
+        return lines
+
+    string[] curve_lines()
+        string[] lines = ["size,vocabulary,model,correct,accuracy,macro_f1"]
+        for int size = settings.curve[]
+            auto training = Training(data.training[0:<size], settings.include_bigrams, data.class_count, settings.minimum, settings.features, alphas)
+            metrics.Evaluation[] results = test_evaluations(data, training)
+            for int model < 4
+                string[] fields = ["{size}", "{training.wordset.vocabulary_size()}", names[model]].concat(evaluation_fields(results[model]))
+                lines = lines.append(fields.join(","))
+        return lines
+
+    string[] feature_lines()
+        string[] lines = ["terms,features,vocabulary,model,correct,accuracy,macro_f1"]
+        for bool pairs = [false, true][]
+            string kind = if pairs then "bigrams" else "unigrams"
+            for int size = settings.sizes[]
+                auto training = Training(data.training, pairs, data.class_count, settings.minimum, size, alphas)
+                metrics.Evaluation[] results = test_evaluations(data, training)
+                for int model < 4
+                    string[] fields = [kind, "{size}", "{training.wordset.vocabulary_size()}", names[model]].concat(evaluation_fields(results[model]))
+                    lines = lines.append(fields.join(","))
+        return lines
+
+    string[] data_part()
+        vocab.Vocabulary wordset = final_training.wordset
+        string[] lines = ["documents train {len(data.training)} test {len(data.tests)} labelled {len(data.labelled)} unlabelled {len(data.unlabelled)} classes {data.class_count}"]
+        for int category < data.class_count
+            int train_count = math.sum<int>([for Document document = data.training[] if document.label == category then 1])
+            int test_count = math.sum<int>([for int truth = data.truths[] if truth == category then 1])
+            lines = lines.append("class {data.classes[category]} train {train_count} test {test_count}")
+        int raw = 0
+        int stopped = 0
+        int short_words = 0
+        int kept = 0
+        int pairs = 0
+        set.Set<string> distinct
+        for Document document = data.training[]
+            raw += document.parts.raw_count
+            stopped += document.parts.stopword_count
+            short_words += document.parts.short_count
+            kept += int(len(document.parts.words))
+            if settings.include_bigrams
+                pairs += int(len(document.parts.bigrams))
+            for string term = document.parts.terms(settings.include_bigrams)[]
+                .distinct.add(term)
+        int distinct_pairs = math.sum<int>([for string term = distinct.values()[] if lexical.is_bigram(term) then 1])
+        lines = lines.concat(["train_tokens raw {raw} stopwords {stopped} short {short_words} unigrams {kept} bigrams {pairs}", "train_terms unigrams {int(distinct.size()) - distinct_pairs} bigrams {distinct_pairs} candidates {wordset.candidate_count} vocabulary {wordset.vocabulary_size()}"])
+        int total = math.sum([for Document document = data.tests[] then int(len(document.parts.terms(settings.include_bigrams)))])
+        int encoded = math.sum([for int[] sequence = test_sequences[] then int(len(sequence))])
+        lines = lines.append("test_terms total {total} in_vocabulary {encoded}")
+        map.Map<string, int> oov
+        for Document document = data.tests[]
+            for string word = document.parts.words[]
+                if not wordset.index.has(word)
+                    int count = 0
+                    match oov.get(word)
+                        int present
+                            count = present
+                        none
+                            count = 0
+                    .oov.set(word, count + 1)
+        string[] words = oov.keys().sorted()
+        int[] counts = []
+        for string word = words[]
+            match oov.get(word)
+                int present
+                    counts = counts.append(present)
+                none
+                    counts = counts.append(0)
+        int[] order = bayes.score_order([for int count = counts[] then real64(count)])
+        string[] entries = ["test_oov"]
+        for int rank < math.min(settings.top, int(len(order)))
+            int position = order[rank]
+            entries = entries.append("{words[position]} {counts[position]}")
+        return lines.append(entries.join(" "))
+
+    string[] folds_part()
+        string[] lines = ["folds 5"]
+        for int position < int(len(validation.folds))
+            Fold item = validation.folds[position]
+            lines = lines.append("fold {position + 1} train {item.train_count} validate {item.validate_count} candidates {item.candidates} vocabulary {item.vocabulary_size}")
+        return lines
+
+    string[] selection_part()
+        string[] lines = ["selection"]
+        for int model < 4
+            Run chosen = validation.chosen[model]
+            string fold_counts = [for int count = chosen.fold_correct[] then "{count}"].join(" ")
+            lines = lines.append("{names[model]} alpha {alpha_text(model)} correct {metrics.proportion_text(chosen.evaluation.correct, chosen.evaluation.total)} macro_f1 {metrics.real_text(chosen.evaluation.macro_f1)} folds {fold_counts}")
+        return lines
+
+    string[] cross_part(int model)
+        return ["cross_validation {names[model]} alpha {alpha_text(model)}"].concat(validation.chosen[model].evaluation.lines(data.classes))
+
+    string[] test_part(int model)
+        bayes.Prediction[] selected = predictions[model][data.labelled]
+        metrics.Evaluation result = metrics.Evaluation(data.class_count, data.truths, [for bayes.Prediction guess = selected[] then guess.label])
+        string[] lines = ["test {names[model]} alpha {alpha_text(model)}", "labelled {len(selected)} correct {metrics.proportion_text(result.correct, int(len(selected)))}"]
+        if model < 4
+            int top_two = math.sum<int>([for int position = (0:<int(len(selected)))[] if data.truths[position] == selected[position].ranking[0] or data.truths[position] == selected[position].ranking[1] then 1])
+            lines = lines.append("top2 {metrics.proportion_text(top_two, int(len(selected)))}")
+        return lines.concat(result.lines(data.classes))
+
+    string[] probability_part(int model)
+        real64[] limits = [for int threshold = settings.thresholds[] then real64(threshold) / 100.0]
+        int count = int(len(data.labelled))
+        int[] rows = array(len(limits) + 1, fill = 0)
+        int[] hits = array(len(limits) + 1, fill = 0)
+        real64[] sums = array(len(limits) + 1, fill = 0.0)
+        int[] accepted = array(len(limits), fill = 0)
+        int[] accepted_hits = array(len(limits), fill = 0)
+        real64 loss = 0.0
+        real64 brier = 0.0
+        for int position < count
+            int index = data.labelled[position]
+            bayes.Prediction prediction = predictions[model][index]
+            int truth = data.truths[position]
+            real64 gap = prediction.scores[truth] - prediction.scores[prediction.label]
+            loss += math.log(prediction.normalizer) - gap
+            real64[] differences = [for int category = (0:<data.class_count)[] then prediction.probabilities[category] - (if category == truth then 1.0 else 0.0)]
+            brier += math.sum(differences * differences)
+            int bucket = math.sum<int>([for real64 limit = limits[] if prediction.score >= limit then 1])
+            rows[bucket] += 1
+            sums[bucket] += prediction.score
+            if correct[model][position]
+                hits[bucket] += 1
+            for int threshold < int(len(limits))
+                if prediction.score >= limits[threshold]
+                    accepted[threshold] += 1
+                    if correct[model][position]
+                        accepted_hits[threshold] += 1
+        string[] lines = ["probability {names[model]} alpha {alpha_text(model)}", "log_loss {metrics.real_text(loss / real64(count))} brier {metrics.real_text(brier / real64(count))}"]
+        int[] bounds = [0]
+        bounds = bounds.concat(settings.thresholds)
+        for int bucket < int(len(bounds))
+            string text = "bin {hundredths_text(bounds[bucket])} rows {rows[bucket]}"
+            if rows[bucket] > 0
+                text += " correct {metrics.proportion_text(hits[bucket], rows[bucket])} mean {metrics.real_text(sums[bucket] / real64(rows[bucket]))}"
+            lines = lines.append(text)
+        for int threshold < int(len(limits))
+            string precise = if accepted[threshold] > 0 then metrics.proportion_text(accepted_hits[threshold], accepted[threshold]) else "-"
+            lines = lines.append("threshold {hundredths_text(settings.thresholds[threshold])} covered {metrics.proportion_text(accepted[threshold], count)} correct {precise}")
+        return lines
+
+    string[] lengths_part()
+        int[] rows = array(len(settings.lengths) + 1, fill = 0)
+        int[][] hits = array(5, fill = array(len(settings.lengths) + 1, fill = 0))
+        for int position < int(len(data.labelled))
+            int index = data.labelled[position]
+            int bucket = bucket_number(int(len(test_sequences[index])), settings.lengths)
+            rows[bucket] += 1
+            for int model < 5
+                if correct[model][position]
+                    hits[model][bucket] += 1
+        string[] lines = ["lengths"]
+        int[] bounds = [0]
+        bounds = bounds.concat(settings.lengths)
+        for int bucket < int(len(bounds))
+            string[] parts = ["length {bounds[bucket]} rows {rows[bucket]}"]
+            if rows[bucket] > 0
+                for int model < 5
+                    parts = parts.append("{names[model]} {metrics.proportion_text(hits[model][bucket], rows[bucket])}")
+            lines = lines.append(parts.join(" "))
+        return lines
+
+    string[] comparison_part()
+        string[] lines = ["comparison"]
+        for int[] pair = model_pairs()[]
+            int first = pair[0]
+            int second = pair[1]
+            int agree = math.sum<int>([for int position = (0:<int(len(data.tests)))[] if predictions[first][position].label == predictions[second][position].label then 1])
+            int b = math.sum<int>([for int position = (0:<int(len(data.labelled)))[] if correct[first][position] and not correct[second][position] then 1])
+            int c = math.sum<int>([for int position = (0:<int(len(data.labelled)))[] if correct[second][position] and not correct[first][position] then 1])
+            int difference = math.max(0, math.abs(b - c) - 1)
+            string statistic = if b + c > 0 then metrics.fraction_text(difference * difference, b + c) else metrics.fraction_text(0, 1)
+            lines = lines.append("{names[first]} {names[second]} agree {metrics.proportion_text(agree, int(len(data.tests)))} b {b} c {c} statistic {statistic}")
+        int[] errors = array(5, fill = 0)
+        for int position < int(len(data.labelled))
+            int wrong = math.sum<int>([for int model = (0:<4)[] if not correct[model][position] then 1])
+            errors[wrong] += 1
+        string[] totals = [for int wrong = (0:<5)[] then "{wrong} {errors[wrong]}"]
+        return lines.append("errors " + totals.join(" "))
+
+    string[] bootstrap_part()
+        int state = settings.seed
+        int count = int(len(data.labelled))
+        int[][] totals = array(5, fill = array(nat(settings.resamples), fill = 0))
+        for int repetition < settings.resamples
+            int[] chosen = []
+            for int draw < count
+                state = 48271 * state % 2147483647
+                chosen = chosen.append(state % count)
+            for int model < 5
+                totals[model][repetition] = math.sum<int>([for int position = chosen[] if correct[model][position] then 1])
+        int tail = settings.resamples / 40
+        string[] lines = ["bootstrap resamples {settings.resamples} seed {settings.seed}"]
+        for int model < 5
+            int[] ordered = totals[model].sorted()
+            real64 average = real64(math.sum(ordered)) / real64(settings.resamples * count)
+            lines = lines.append("{names[model]} mean {metrics.real_text(average)} low {metrics.proportion_text(ordered[tail], count)} high {metrics.proportion_text(ordered[int(len(ordered)) - 1 - tail], count)}")
+        for int[] pair = model_pairs()[]
+            int first = pair[0]
+            int second = pair[1]
+            int wins = math.sum<int>([for int position = (0:<settings.resamples)[] if totals[first][position] > totals[second][position] then 1])
+            int ties = math.sum<int>([for int position = (0:<settings.resamples)[] if totals[first][position] == totals[second][position] then 1])
+            int losses = settings.resamples - wins - ties
+            lines = lines.append("pair {names[first]} {names[second]} wins {wins} ties {ties} losses {losses}")
+        return lines
+
+    string[] hard_part()
+        int[] hard = []
+        int[] counts = array(nat(data.class_count), fill = 0)
+        for int position < int(len(data.training))
+            bool all_wrong = true
+            for int model < 4
+                if validation.chosen[model].predictions[position] == data.training[position].label
+                    all_wrong = false
+            if all_wrong
+                hard = hard.append(position)
+                counts[data.training[position].label] += 1
+        string[] lines = ["hard_documents {len(hard)} {class_counts_text(data.classes, counts)}"]
+        for int rank < math.min(settings.top, int(len(hard)))
+            int position = hard[rank]
+            string[] labels = [for int model = (0:<4)[] then data.classes[validation.chosen[model].predictions[position]]]
+            lines = lines.append("{data.training[position].name} true {data.classes[data.training[position].label]} predicted " + labels.join(" "))
+        return lines
+
+    string[] uncertain_part()
+        int[] order = []
+        for int position < int(len(data.tests))
+            int place = int(len(order))
+            order = order.append(position)
+            while place > 0 and metrics.rounded_key(predictions[0][position].margin) < metrics.rounded_key(predictions[0][order[place - 1]].margin)
+                order[place] = order[place - 1]
+                place -= 1
+            order[place] = position
+        int shown = math.min(settings.top, int(len(order)))
+        string[] lines = ["uncertain multinomial {shown}"]
+        for int rank < shown
+            int position = order[rank]
+            Document document = data.tests[position]
+            bayes.Prediction guess = predictions[0][position]
+            string truth = if document.label < 0 then "?" else data.classes[document.label]
+            lines = lines.append("{document.name} predicted {data.classes[guess.label]} runner_up {data.classes[guess.runner_up]} margin {metrics.real_text(guess.margin)} posterior {metrics.real_text(guess.score)} true {truth}")
+        return lines
+
+    string[] evidence_lines(int[] sequence, int predicted, int truth)
+        int[][] occurrences = final_training.tallies.occurrences
+        real64[][] weights = final_training.fitted[0].weights
+        Ratio[] entries = [for int term = vocab.first_occurrences(sequence)[] then Ratio(100 * occurrences[predicted][term] + alphas[0], 100 * occurrences[truth][term] + alphas[0], term)]
+        Ratio[] order = ratio_ranking(entries)
+        string[] lines = []
+        for int rank < math.min(3, int(len(order)))
+            int term = order[rank].term
+            int count = math.sum<int>([for int value = sequence[] if value == term then 1])
+            real64 evidence = weights[predicted][term] - weights[truth][term]
+            lines = lines.append("  {final_training.wordset.terms[term]} count {count} evidence {metrics.real_text(evidence)}")
+        return lines
+
+    string[] misclassified_part()
+        int[] wrong = [for int position = data.labelled[] if predictions[0][position].label != data.tests[position].label then position]
+        string[] lines = ["misclassified multinomial {len(wrong)}"]
+        for int position = wrong[]
+            Document document = data.tests[position]
+            bayes.Prediction guess = predictions[0][position]
+            lines = lines.append("{document.name} true {data.classes[document.label]} predicted {data.classes[guess.label]} posterior {metrics.real_text(guess.score)}")
+            lines = lines.concat(evidence_lines(test_sequences[position], guess.label, document.label))
+        return lines
+
+    bayes.Model maximization(bayes.Prediction[] posteriors, int[][] sequences)
+        bayes.Counts tallies = final_training.tallies
+        real64[][] occurrences = [for int[] row = tallies.occurrences[] then [for int count = row[] then real64(count)]]
+        real64[] documents = [for int count = tallies.documents[] then real64(count)]
+        real64 weight = real64(settings.weight) / 100.0
+        for int position < int(len(sequences))
+            int[] sequence = sequences[position]
+            int[] first = vocab.first_occurrences(sequence)
+            int[] frequencies = array(nat(final_training.wordset.vocabulary_size()), fill = 0)
+            for int term = sequence[]
+                frequencies[term] += 1
+            for int category < data.class_count
+                real64 share = weight * posteriors[position].probabilities[category]
+                documents[category] += share
+                for int term = first[]
+                    occurrences[category][term] += share * real64(frequencies[term])
+        int size = final_training.wordset.vocabulary_size()
+        real64[][] weights = []
+        for real64[] row = occurrences[]
+            real64 total = math.sum(row)
+            weights = weights.append([for real64 count = row[] then bayes.smoothed_real_log(count, total, alphas[0], size)])
+        real64 scale = real64(len(data.training)) + real64(settings.weight * int(len(data.unlabelled))) / 100.0
+        real64[] priors = [for real64 count = documents[] then math.log(count / scale)]
+        return bayes.Model("multinomial", priors, array(nat(data.class_count), fill = 0.0), weights)
+
+    string[] semi_supervised_part()
+        int[][] sequences = [for Document document = data.unlabelled[] then final_training.encode(document)]
+        bayes.Model fitted = final_training.fitted[0]
+        int[] previous = []
+        string[] lines = ["semi_supervised multinomial alpha {alpha_text(0)} weight {hundredths_text(settings.weight)} unlabelled {len(data.unlabelled)}"]
+        for int iteration <= settings.iterations
+            bayes.Prediction[] posteriors = [for int[] sequence = sequences[] then fitted.predict(sequence)]
+            int[] assignments = [for bayes.Prediction guess = posteriors[] then guess.label]
+            int[] labels = [for int position = data.labelled[] then fitted.predict(test_sequences[position]).label]
+            metrics.Evaluation result = metrics.Evaluation(data.class_count, data.truths, labels)
+            string changed = "-"
+            if iteration > 0
+                int count = math.sum<int>([for int position = (0:<int(len(assignments)))[] if previous[position] != assignments[position] then 1])
+                changed = "{count}"
+            int[] assigned = array(nat(data.class_count), fill = 0)
+            for int category = assignments[]
+                assigned[category] += 1
+            lines = lines.append("iteration {iteration} correct {metrics.proportion_text(result.correct, result.total)} macro_f1 {metrics.real_text(result.macro_f1)} changed {changed} assigned {class_counts_text(data.classes, assigned)}")
+            if iteration < settings.iterations
+                fitted = maximization(posteriors, sequences)
+            previous = assignments
+        return lines
+
+    string[] metrics_lines()
+        string[][] parts = [data_part(), folds_part(), selection_part()]
+        for int model < 4
+            parts = parts.append(cross_part(model))
+        for int model < 5
+            parts = parts.append(test_part(model))
+        for int model < 3
+            parts = parts.append(probability_part(model))
+        parts = parts.concat([lengths_part(), comparison_part(), bootstrap_part(), hard_part(), uncertain_part(), misclassified_part(), semi_supervised_part()])
+        return join_blocks(parts)
+
+    string[][] characteristic_parts(int model)
+        bayes.Counts tallies = final_training.tallies
+        int size = final_training.wordset.vocabulary_size()
+        int alpha = alphas[model]
+        int[][] table = if model == 0 then tallies.occurrences else tallies.containing
+        int[] totals = if model == 0 then tallies.totals else tallies.documents
+        int overall = if model == 0 then tallies.total else tallies.document_total
+        int outcomes = if model == 0 then size else 2
+        int[] term_totals = [for int term = (0:<size)[] then math.sum([for int[] row = table[] then row[term]])]
+        string[][] parts = [["model {names[model]} alpha {alpha_text(model)} vocabulary {size} top {settings.top}"]]
+        for int category < data.class_count
+            int total = totals[category]
+            int other = overall - total
+            string[] lines = ["class {data.classes[category]} total {total} other {other}"]
+            Ratio[] entries = [for int term = (0:<size)[] then Ratio(100 * table[category][term] + alpha, 100 * (term_totals[term] - table[category][term]) + alpha, term)]
+            Ratio[] order = ratio_ranking(entries)
+            for int rank < math.min(settings.top, size)
+                int term = order[rank].term
+                int count = table[category][term]
+                int other_count = term_totals[term] - count
+                real64 odds = bayes.smoothed_integer_log(count, total, alpha, outcomes) - bayes.smoothed_integer_log(other_count, other, alpha, outcomes)
+                lines = lines.append("{rank + 1} {final_training.wordset.terms[term]} {count} {other_count} {metrics.real_text(odds)}")
+            parts = parts.append(lines)
+        return parts
+
+    string[] top_feature_lines()
+        return join_blocks(characteristic_parts(0).concat(characteristic_parts(1)))
+
+void run_experiment()
+    Input data = read_input()
+    CrossValidation validation = cross_validate(data)
+    int[] alphas = [for int model = (0:<3)[] then data.settings.alphas[validation.selected[model]]]
+    auto final_training = Training(data.training, data.settings.include_bigrams, data.class_count, data.settings.minimum, data.settings.features, alphas)
+    auto experiment = Experiment(data, validation, final_training)
+    bool directory_exists = file.is_directory("output")
+    if not directory_exists
+        file.mkdir("output")
+    write_output("vocabulary.txt", experiment.vocabulary_lines())
+    write_output("cv_results.csv", experiment.cv_lines())
+    write_output("predictions.csv", experiment.prediction_lines())
+    write_output("learning_curve.csv", experiment.curve_lines())
+    write_output("feature_study.csv", experiment.feature_lines())
+    write_output("metrics.txt", experiment.metrics_lines())
+    write_output("top_features.txt", experiment.top_feature_lines())
+
+if main
+    run_experiment()

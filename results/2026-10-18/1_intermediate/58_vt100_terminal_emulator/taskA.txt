@@ -1,0 +1,338 @@
+[Overview]
+Write an emulator that reproduces the screen of a VT100-compatible character terminal (a terminal that interprets ANSI escape sequences). It reads from standard input the output stream sent to the terminal (a sequence of characters, control codes and escape sequences), parses it with a state machine, and updates the state: the character and attributes of each cell of the screen, the cursor, the modes, the tab stops, the scroll region, the alternate screen, the scrollback, and so on. At the points specified in the input it prints the screen, and it prints the strings the terminal sends to the host in response to key presses and pastes. It also prints the replies the terminal returns to the host at the moment they occur. Finally, it prints the screen and a list of the state.
+
+[Input format]
+The first line contains two integers W and H, the size of the screen, separated by a single space. W is the number of columns (characters across) and H is the number of rows.
+Each line from the 2nd line on is either one of the following four kinds of "directive lines" or, otherwise, a "stream line".
+  %%DUMP
+  %%KEY name
+  %%PASTE text
+  %%END
+%%DUMP and %%END are lines consisting of exactly that string; %%KEY and %%PASTE are lines consisting of that string followed by a single space and name or text. The last line is %%END, and %%END appears exactly once. No stream line starts with %%.
+
+Each stream line represents a sequence of bytes in the caret notation below. Concatenating all of them in input order gives the sequence of bytes sent to the terminal (hereafter, the stream). Line breaks carry no meaning: a sequence or string that spans lines is treated the same as if it were written continuously on one line. Directive lines are not part of the stream; each directive is executed at that position in the stream, keeping the state of any parse in progress.
+
+Within a stream line, a ^ (caret) forms a pair with the character immediately after it and represents one byte (caret notation). Pairs are taken from the start of the line in order, without overlapping. There are the following 14 pairs; a character that is not in a pair represents the one byte of its ASCII code.
+  ^@ is NUL (0x00)
+  ^G is BEL (0x07)
+  ^H is BS (0x08)
+  ^I is HT (0x09, tab)
+  ^J is LF (0x0A)
+  ^K is VT (0x0B)
+  ^L is FF (0x0C)
+  ^M is CR (0x0D)
+  ^N is SO (0x0E)
+  ^O is SI (0x0F)
+  ^X is CAN (0x18)
+  ^Z is SUB (0x1A)
+  ^[ is ESC (0x1B)
+  ^^ is the character ^ itself (0x5E)
+For example, ^[[2J is the 4 bytes ESC, [, 2, J, and ^^[ is the 2 bytes ^ and [.
+
+The name of %%KEY is the name of a key ([Processing] 14.). The text of %%PASTE is the string to paste; caret notation is not used, and the characters written are exactly the characters pasted.
+In this document, a sequence of bytes is sometimes written separated by spaces, as in ESC [ 2 J (the actual stream has no separating spaces). Hexadecimal values are prefixed with 0x.
+
+[Processing]
+1. Screen and cells
+- The screen consists of cells in H rows and W columns. Rows are numbered 1 to H from the top and columns 1 to W from the left, and a position is written as "row,column".
+- Each cell has one character (one of 0x20 to 0x7E) and attributes. The attributes consist of 8 flags bold, dim, italic, underline, blink, reverse, hidden, strike (each on or off), a foreground color fg and a background color bg. Each of fg and bg is either "default" or a color of one of the following two kinds.
+  - The color with palette number m (0 to 255): its name is, for m from 0 to 7, black, red, green, yellow, blue, magenta, cyan, white in this order; for m from 8 to 15, bright- followed by the name of color m-8 (e.g. 9 is bright-red); for m from 16 to 255, the decimal representation of m.
+  - An RGB color: it has the three components red, green, blue (each 0 to 255), and its name is # followed by the three components in this order, each as two lowercase hexadecimal digits (e.g. #ff8000).
+  Two colors are equal exactly when their names are the same. For example, the color specified by SGR 31 (described later) and the color specified by 38;5;1 are equal, and they differ from the color specified by 38;2;128;0;0 (#800000).
+- The attributes in which all flags are off and fg and bg are default are called the "default attributes". A cell whose character is a space (0x20) and whose attributes are the default attributes is called a "blank cell", and to "erase" a cell means to make it a blank cell. A row consisting of W blank cells is called a "blank row".
+- The terminal has two screens, the "main screen" and the "alternate screen", and displays one of them. Below, "the screen" alone means the displayed screen.
+- The "row string" of a row is the string obtained by concatenating the characters of the cells of that row in order from column 1 and removing all trailing spaces.
+
+2. Terminal state and initial values
+The terminal has the following state. Initial values are in parentheses.
+- All cells of the main screen and the alternate screen (both screens entirely blank cells), and the displayed screen (the main screen).
+- The cursor position (1,1). The cursor is always within the screen. Below, "the row" and "the column", unless stated otherwise, mean the row and the column of the cursor.
+- The pending-wrap flag (off). Explained in 5. and 13.
+- The current attributes (the default attributes). These are the attributes given to printed characters.
+- The character sets G0 and G1 (both ASCII), and GL (G0). A character set is either ASCII or "line drawing", and GL indicates which of G0 and G1 is used for printing.
+- The following 9 modes (initial value and meaning in parentheses).
+  IRM (off, insert mode), LNM (off, new line mode), DECCKM (off, application cursor keys mode), DECSCNM (off, reverse video screen), DECOM (off, origin mode), DECAWM (on, autowrap), DECTCEM (on, cursor visible), DECKPAM (off, application keypad mode), BRACKETED (off, bracketed paste mode).
+- The cursor shape (1). An integer from 1 to 6.
+- The top margin top and the bottom margin bottom of the scroll region (top = 1, bottom = H). Always 1 <= top < bottom <= H. Rows top to bottom are called the "region".
+- The tab stops (all numbers that are at least 9 and at most W and leave remainder 1 when divided by 8, i.e. 9, 17, 25, ...). A set of column numbers.
+- The save slots (both empty). There are two, one for the main screen and one for the alternate screen; a non-empty slot holds a record of the cursor position, attributes, DECOM, G0, G1 and GL.
+- The scrollback (empty). A list of strings.
+- The title (none). Either none or a string.
+- The last printed character (none). Either none or one character.
+- The parser state (the ground state) and the contents collected for the sequence being parsed (3.).
+Separately from these, the terminal has the following counters. All of them start at 0 and are not reset to 0 even by RIS.
+- The stream byte count, the print count, the number of executed sequences, the BEL count, the reply count and the %%DUMP count.
+- The number of ignored sequences, counted separately for each of the reasons unsupported, malformed, canceled and invalid.
+
+3. Parsing the stream
+The bytes of the stream are passed to the parser one at a time from the beginning. The total number of bytes passed is the "stream byte count".
+Bytes are classified as follows.
+- Control codes: the 13 kinds among the pairs of [Input format] other than ^^ (NUL, BEL, BS, HT, LF, VT, FF, CR, SO, SI, CAN, SUB, ESC).
+- Printable bytes: 0x20 to 0x7E. These are further divided as follows.
+  Intermediate bytes: 0x20 to 0x2F (space ! " # $ % & ' ( ) * + , - . /)
+  Digits: 0x30 to 0x39 (0 to 9)
+  Colon: 0x3A (:)
+  Semicolon: 0x3B (;)
+  Private markers: 0x3C to 0x3F (< = > ?)
+  Final bytes: 0x40 to 0x7E
+An escape sequence (hereafter, a sequence) is a sequence of bytes that starts with ESC. For the sequence being parsed, the parser collects a private marker (none or one character), a parameter string, an intermediate string and an OSC string.
+The parser has 8 states: ground, escape, escape intermediate, CSI entry, CSI param, CSI intermediate, CSI ignore and OSC string. Being in any state other than the ground state is called being "in the middle of a sequence". To "discard" a sequence means to increase canceled by 1 without executing the sequence.
+
+Control codes are handled as follows in every state.
+- ESC: in the OSC string state, execute the OSC (8.). In any other state, if in the middle of a sequence, discard that sequence. Then set the private marker to none, make the parameter string, the intermediate string and the OSC string empty, and move to the escape state.
+- CAN and SUB: if in the middle of a sequence, discard that sequence and move to the ground state. In the ground state, do nothing.
+- Any other control code: in the OSC string state, if it is BEL, execute the OSC and move to the ground state (the BEL count is not increased); if it is not BEL, do nothing. In any state other than the OSC string state, execute the control code without changing the state (4.). For example, in ESC [ 2 CR C, CR is executed and then ESC [ 2 C is executed.
+
+Printable bytes are handled per state as follows.
+- Ground: print the character (5.).
+- Escape: if it is an intermediate byte, append it to the end of the intermediate string and move to the escape intermediate state. If it is [, move to the CSI entry state; if it is ], move to the OSC string state. Otherwise (0x30 to 0x7E except [ and ]), execute an ESC sequence with that byte as the final byte (7.) and move to the ground state.
+- Escape intermediate: if it is an intermediate byte, append it to the end of the intermediate string. Otherwise (0x30 to 0x7E), execute an ESC sequence with that byte as the final byte and move to the ground state.
+- CSI entry: if it is a private marker, take it as the private marker and move to the CSI param state. Any other byte is handled the same as in the CSI param state.
+- CSI param: if it is a digit or a semicolon, append it to the end of the parameter string and set the state to CSI param. If it is an intermediate byte, append it to the end of the intermediate string and move to the CSI intermediate state. If it is a colon or a private marker, move to the CSI ignore state. If it is a final byte, execute a CSI sequence with that byte as the final byte (9.) and move to the ground state.
+- CSI intermediate: if it is an intermediate byte, append it to the end of the intermediate string. If it is a digit, a colon, a semicolon or a private marker, move to the CSI ignore state. If it is a final byte, execute a CSI sequence with that byte as the final byte and move to the ground state.
+- CSI ignore: if it is a final byte, increase malformed by 1 and move to the ground state. For any other byte, do nothing.
+- OSC string: append the byte to the end of the OSC string.
+If %%END is reached in the middle of a sequence, discard that sequence (even in the OSC string state, the OSC is not executed).
+
+The result of executing an ESC sequence, a CSI sequence or an OSC is either "executed" or "ignored". When it is executed, increase the number of executed sequences by 1. When it is ignored, change no terminal state at all, and increase by 1 the counter of the reason (unsupported or invalid) given in the descriptions below.
+
+4. Executing control codes
+- NUL: do nothing.
+- BEL: increase the BEL count by 1.
+- BS: if the column is 2 or more, decrease the column by 1.
+- HT: perform a tab move (6.).
+- LF, VT, FF: perform the line-feed operation (6.). Then, if LNM is on, set the column to 1.
+- CR: set the column to 1.
+- SO: set GL to G1. SI: set GL to G0.
+- CAN, SUB and ESC are handled as described in 3.
+
+5. Printing characters
+To print a character c, first, if the character set indicated by GL is line drawing, replace c according to the following table (characters not in the table stay as they are). Then write c.
+  ` becomes *, a becomes #, j k l m n t u v w become +, q becomes -, x becomes |, ~ becomes o
+To "write" a character c means to do the following (1) to (5) in this order.
+(1) Increase the print count by 1 and set the last printed character to c.
+(2) If the pending-wrap flag is on, turn the flag off, set the column to 1, and then perform the line-feed operation.
+(3) If IRM is on, shift the cells of the cursor row from the cursor column through column W one column to the right (the cell that was in column W is lost).
+(4) Make the cell at the cursor position a cell consisting of the character c and the current attributes.
+(5) If the column is less than W, increase the column by 1. If the column is W, turn the pending-wrap flag on if DECAWM is on, and do nothing if it is off.
+In other words, right after a write to column W the cursor stays at column W, and it moves to the start of the next row only when the next character is written (deferred wrap). When DECAWM is off, writes to column W repeatedly overwrite it. The other operations that turn the pending-wrap flag off are collected in 13.
+
+6. Common operations
+- Scrolling the region up by one row: remove row top, shift rows top+1 to bottom up by one row each, and make row bottom a blank row. In addition, if the displayed screen is the main screen and top is 1, append the row string of the removed row to the end of the scrollback, and if the scrollback then has more than 100 entries, remove its first (oldest) entry.
+- Scrolling the region down by one row: remove row bottom, shift rows top to bottom-1 down by one row each, and make row top a blank row. The scrollback does not change.
+- Scrolling the region up (or down) by k rows means repeating the one-row scroll k times.
+- Line-feed operation: if the row is bottom, scroll the region up by one row (the cursor does not move). Otherwise, if the row is less than H, increase the row by 1.
+- Reverse line-feed operation: if the row is top, scroll the region down by one row. Otherwise, if the row is 2 or more, decrease the row by 1.
+- Tab move: if there are tab stops greater than the column, move the column to the smallest of them; otherwise set the column to W.
+- Reverse tab move: if there are tab stops less than the column, move the column to the largest of them; otherwise set the column to 1.
+- Row addressing: the row specified by a value v >= 1 is min(v, H) if DECOM is off, and min(top + v - 1, bottom) if DECOM is on.
+- Home position: the position at column 1 of the row given by row addressing with v = 1.
+- Save: record the cursor position, the current attributes, DECOM, G0, G1 and GL in the save slot for the displayed screen (overwriting any previous record).
+- Restore: if the save slot for the displayed screen is not empty, restore its record into the cursor position, the current attributes, DECOM, G0, G1 and GL (the slot keeps its record). If it is empty, set the cursor position to 1,1, the current attributes to the default attributes, DECOM to off, G0 and G1 to ASCII, and GL to G0. In either case, turn the pending-wrap flag off.
+
+7. ESC sequences
+An ESC sequence is determined by the string formed by the intermediate string followed by the final byte (hereafter, the key). If the key is none of the following, ignore the sequence as unsupported.
+  7: save (DECSC).
+  8: restore (DECRC).
+  D: perform the line-feed operation (IND).
+  E: set the column to 1, then perform the line-feed operation (NEL).
+  M: perform the reverse line-feed operation (RI).
+  H: add the column to the tab stops (HTS). If it is already there, do nothing.
+  c: full reset (RIS). Return all state other than the counters to the initial values of 2. (this includes erasing both screens and emptying the scrollback, the title and the save slots).
+  =: turn DECKPAM on.
+  >: turn DECKPAM off.
+  \: do nothing (ST).
+  (0: set G0 to line drawing. (B: set G0 to ASCII.
+  )0: set G1 to line drawing. )B: set G1 to ASCII.
+  #8: make every cell of the screen a cell consisting of the character E and the default attributes. Then set top = 1 and bottom = H, turn DECOM off, and set the cursor position to 1,1 (DECALN).
+
+8. OSC
+If the OSC string starts with 0; or 2;, set the title to the part after those two characters (it may be empty) (executed). Otherwise, ignore it as unsupported.
+
+9. CSI sequences
+Splitting the parameter string at ; gives the list of fields. If the parameter string is empty, there are 0 fields (for example, 5 has 1 field, and ;5 and 1; both have 2). The value of each field is 0 if the field is empty, and otherwise the decimal value of its digits (leading zeros are ignored); a value exceeding 9999 is taken as 9999. The field values in order are called the "parameters", and p1 and p2 denote the 1st and the 2nd parameter (0 if absent). Also, let n = max(p1, 1) (so an omitted value and 0 are both treated as 1). Parameters that an entry does not use are ignored.
+A CSI sequence is processed in the following order.
+(1) If there are 17 or more fields, ignore it as invalid.
+(2) If the string formed by concatenating the private marker (the empty string if none), the intermediate string and the final byte in this order (hereafter, the key) is not in the list below, ignore it as unsupported.
+(3) If the list entry states a condition and the condition is not satisfied, ignore it as unsupported.
+(4) Execute the action of the entry.
+The list is written in the form "key: name. condition. action".
+Cursor movement
+  A: CUU. Decrease the row by n. However, if the row before the move is top or more, the row does not go above top; if it is less than top, the row does not go above 1.
+  B and e: CUD and VPR. Increase the row by n. However, if the row before the move is bottom or less, the row does not go below bottom; if it is greater than bottom, the row does not go below H.
+  C and a: CUF and HPR. Set the column to min(column + n, W).
+  D: CUB. Set the column to max(column - n, 1).
+  E: CNL. Move the row in the same way as CUD, and set the column to 1.
+  F: CPL. Move the row in the same way as CUU, and set the column to 1.
+  G and `: CHA and HPA. Set the column to min(n, W).
+  H and f: CUP and HVP. Set the row to the row given by row addressing with v = n, and set the column to min(max(p2, 1), W).
+  d: VPA. Set the row to the row given by row addressing with v = n. The column does not change.
+  I: CHT. Perform a tab move n times.
+  Z: CBT. Perform a reverse tab move n times.
+Erasing and editing (none of these except IL and DL moves the cursor)
+  J: ED. Condition: p1 <= 3. If p1 = 0, erase the cursor row from the cursor column through column W, and all rows below the cursor row. If p1 = 1, erase all rows above the cursor row, and the cursor row from column 1 through the cursor column. If p1 = 2, erase all cells of the screen. If p1 = 3, empty the scrollback (the screen does not change).
+  K: EL. Condition: p1 <= 2. In the cursor row, erase from the cursor column through column W if p1 = 0, from column 1 through the cursor column if p1 = 1, and all cells if p1 = 2.
+  X: ECH. In the cursor row, erase from the cursor column through column min(column + n - 1, W).
+  @: ICH. With k = min(n, W - column + 1), shift the cells of the cursor row from the cursor column through column W right by k columns (cells shifted past column W are lost), and make the k cells starting at the cursor column and going right blank cells.
+  P: DCH. With k = min(n, W - column + 1), remove the k cells of the cursor row starting at the cursor column and going right, shift the cells that were to their right left by k columns, and make the rightmost k cells blank cells.
+  L: IL. Do the following only when the row is at least top and at most bottom; otherwise do nothing. With k = min(n, bottom - row + 1), shift each of the rows from the cursor row through bottom down by k rows (rows shifted past bottom are lost), make the k rows starting at the cursor row and going down blank rows, and set the column to 1.
+  M: DL. Do the following only when the row is at least top and at most bottom; otherwise do nothing. With k = min(n, bottom - row + 1), remove the k rows starting at the cursor row and going down, shift the rows that were below them through bottom up by k rows, make the k rows starting at bottom and going up blank rows, and set the column to 1.
+  S: SU. Scroll the region up by min(n, bottom - top + 1) rows.
+  T: SD. Scroll the region down by min(n, bottom - top + 1) rows.
+  b: REP. If the last printed character is none, do nothing. Otherwise, repeat the write of the last printed character ((1) to (5) of 5.; no line-drawing replacement is done) n times.
+Tab stops
+  g: TBC. Condition: p1 is 0 or 3. If p1 = 0, remove the column from the tab stops (if it is not there, do nothing); if p1 = 3, remove all tab stops.
+Attributes and modes
+  m: SGR. As described in 10.
+  h and l: SM and RM. As described in 11.
+  ?h and ?l: DECSET and DECRST. As described in 11.
+  The two characters space and q: DECSCUSR. Condition: p1 <= 6. Set the cursor shape to n.
+Scroll region
+  r: DECSTBM. Let t = p1 (but t = 1 if p1 = 0) and b = p2 (but b = H if p2 = 0), and if b is greater than H, set b = H. If t >= b, ignore it as invalid. Otherwise set top = t and bottom = b, and move the cursor to the home position (computed with the new top).
+Save and reset
+  s: save (SCOSC).
+  u: restore (SCORC).
+  !p: DECSTR (soft reset). Return IRM, DECCKM, DECOM, DECAWM, DECTCEM and DECKPAM to their initial values, set top = 1 and bottom = H, set the current attributes to the default attributes, G0 and G1 to ASCII and GL to G0, and empty the save slot for the displayed screen. The cursor position, the screen contents and all other state do not change.
+Replies (12.)
+  n: DSR. Condition: p1 is 5 or 6.
+  ?n: DECXCPR. Condition: p1 = 6.
+  c: DA. Condition: p1 = 0.
+  >c: DA2. Condition: p1 = 0.
+  t: window report. Condition: p1 = 18.
+  $p: DECRQM (ANSI mode).
+  ?$p: DECRQM (DEC mode).
+
+10. SGR (key m)
+If there are 0 parameters, treat it as if there were one parameter 0. Make a copy of the current attributes, read the parameters in order from the first, and change the copy as follows. If a value that does not meet the conditions appears along the way, ignore the whole sequence as unsupported (the current attributes do not change). If all parameters are read to the end, make the copy the current attributes.
+  0: set the default attributes.
+  1, 2, 3, 4, 5, 7, 8, 9: turn on bold, dim, italic, underline, blink, reverse, hidden, strike, respectively.
+  22: turn bold and dim off.
+  23, 24, 25, 27, 28, 29: turn off italic, underline, blink, reverse, hidden, strike, respectively.
+  30 to 37: set fg to the color with palette number (value - 30).
+  90 to 97: set fg to the color with palette number (value - 82).
+  40 to 47: set bg to the color with palette number (value - 40).
+  100 to 107: set bg to the color with palette number (value - 92).
+  39: set fg to default. 49: set bg to default.
+  38 and 48: extended color. 38 changes fg and 48 changes bg. If the next parameter is 5 and the parameter after it, m, is 255 or less, set the color with palette number m, and count the 3 parameters up to this point as read. If the next parameter is 2 and the 3 parameters after it, r, g, b, are all 255 or less, set the RGB color with red r, green g, blue b, and count the 5 parameters up to this point as read. Anything else (not enough parameters, a value exceeding 255, or the next parameter being neither 5 nor 2) does not meet the conditions.
+  Any value other than these does not meet the conditions.
+For example, ESC [ 1 ; m turns bold on and then sets the default attributes (the value of an empty field is 0).
+
+11. Setting and resetting modes (keys h, l, ?h, ?l)
+h and ?h set, l and ?l reset. If there are 0 parameters, treat it as if there were one parameter 0. If the parameters contain even one value other than 4 and 20 (for h and l) or other than 1, 5, 6, 7, 25, 47, 1047, 1048, 1049, 2004 (for ?h and ?l), ignore the whole sequence as unsupported (no mode changes). Otherwise, process the parameters in order from the first, as follows.
+  4, 20, ?1, ?5, ?7, ?25, ?2004: turn IRM, LNM, DECCKM, DECSCNM, DECAWM, DECTCEM, BRACKETED, respectively, on when setting and off when resetting.
+  ?6: turn DECOM on when setting and off when resetting, then move the cursor to the home position.
+  ?47: when setting, if the main screen is displayed, switch to displaying the alternate screen. When resetting, if the alternate screen is displayed, switch to displaying the main screen.
+  ?1047: the same as ?47, except that when switching on a reset, erase all cells of the alternate screen before switching.
+  ?1048: save when setting, restore when resetting.
+  ?1049: when setting, if the main screen is displayed, save, then switch to displaying the alternate screen, and erase all cells of the alternate screen. When resetting, if the alternate screen is displayed, switch to displaying the main screen and then restore.
+  For ?47, ?1047 and ?1049, if the screen to switch to is already displayed, do nothing (only the change of the pending-wrap flag described in 13. is made).
+Switching screens does not change the cursor position, the modes, the scroll region, the tab stops or other such state, and the cells of each screen are kept as they are.
+
+12. Replies
+A reply is a string that the terminal returns to the host. When a reply occurs, increase the reply count by 1 and immediately print a REPLY line ([Output format]). In a reply string, ESC is written as ^[, and numbers are written in decimal without extra leading zeros. Below, each part enclosed in < > is replaced by a value; <r> is the reported row, which is the row if DECOM is off, and max(row - top + 1, 1) if DECOM is on.
+  DSR: ^[[0n if p1 = 5, ^[[<r>;<column>R if p1 = 6.
+  DECXCPR: ^[[?<r>;<column>;1R.
+  DA: ^[[?1;2c.
+  DA2: ^[[>0;95;0c.
+  Window report: ^[[8;<H>;<W>t.
+  DECRQM (ANSI mode): ^[[<p1>;<s>$y. If p1 is 4 or 20, s is 1 when the mode that <p1> denotes in 11. (IRM or LNM) is on and 2 when it is off; for any other p1, s is 0.
+  DECRQM (DEC mode): ^[[?<p1>;<s>$y. If p1 is 1, 5, 6, 7, 25 or 2004, s is 1 when the mode that ?<p1> denotes in 11. is on and 2 when it is off; if p1 is 47, 1047 or 1049, s is 1 when the alternate screen is displayed and 2 when the main screen is displayed; for any other p1 (including 1048), s is 0.
+For example, if the cursor is at 3,15 and DECOM is off, the reply to DSR (p1 = 6) is ^[[3;15R.
+
+13. Operations that turn the pending-wrap flag off
+Apart from (2) of 5., the pending-wrap flag is turned off only by the following operations. The flag is turned off first, and then the action of the operation is performed.
+- Executing the control codes BS, HT, LF, VT, FF, CR.
+- Executing the ESC sequences D, E, M, c, #8.
+- Executing the CSI sequences A, B, C, D, E, F, G, H, I, J, K, L, M, P, S, T, X, Z, `, a, d, e, f, @ (including when L or M does nothing).
+- Executing DECSTBM and DECSTR.
+- Restore (as performed by the ESC sequence 8, the CSI sequence u, resetting ?1048 and resetting ?1049).
+- Setting and resetting ?6, resetting ?7, and setting and resetting ?47, ?1047, ?1049 (including when the screen is not switched).
+No other operation changes the flag. For example, NUL, BEL, SO, SI, HTS, ST, = and >, designating G0 and G1, save, OSC, SGR, TBC, DECSCUSR, REP (when the last printed character is none), the reply sequences, ignored sequences, setting and resetting 4, 20, ?1, ?5, ?25, ?2004, and setting ?7 do not change the flag.
+
+14. Directive lines
+- %%DUMP: increase the %%DUMP count by 1, let k be its new value, and produce the screen output with the label DUMP <k> ([Output format]).
+- %%KEY name: determine the string the terminal sends to the host when the key name is pressed, and print a KEY line. The strings sent are as follows (ESC is written as ^[).
+  UP, DOWN, RIGHT, LEFT, HOME, END: ^[[ if DECCKM is off, or ^[O if it is on, followed by A, B, C, D, H, F, respectively.
+  INSERT is ^[[2~, DELETE is ^[[3~, PAGEUP is ^[[5~, PAGEDOWN is ^[[6~.
+  F1 is ^[OP, F2 is ^[OQ, F3 is ^[OR, F4 is ^[OS, F5 is ^[[15~, F6 is ^[[17~, F7 is ^[[18~, F8 is ^[[19~, F9 is ^[[20~, F10 is ^[[21~, F11 is ^[[23~, F12 is ^[[24~.
+  TAB is ^I, BACKSPACE is ^?, ESCAPE is ^[.
+  ENTER: ^M if LNM is off, ^M^J if it is on.
+  KP0 to KP9 (written KPd, with d a digit from 0 to 9): if DECKPAM is off, the single character of the digit d; if it is on, ^[O followed by the character whose ASCII code is 0x70 + d (p for KP0, y for KP9).
+  KPENTER: the same as ENTER if DECKPAM is off, ^[OM if it is on.
+- %%PASTE text: let u be the string obtained by replacing every ^ in text with ^^. The string sent is u if BRACKETED is off, and the concatenation of ^[[200~, u, ^[[201~ in this order if it is on; print a PASTE line with it.
+%%KEY and %%PASTE change neither the terminal state nor the counters.
+
+[Output format]
+No line has trailing spaces, and every line ends with a newline. Numbers are written in decimal without extra leading zeros. Below, each part enclosed in < > is replaced by a value (< and > themselves are not printed). Words are separated by a single space.
+
+During processing, the following lines are printed at the moment they arise.
+- When a reply occurs: REPLY <reply string>
+- %%KEY: KEY <name> <string sent>
+- %%PASTE: PASTE <string sent>
+- %%DUMP: the screen output with the label DUMP <k>.
+
+The "screen output" is the following 1 + H lines.
+  <label> <screen> cursor <row>,<column> scrollback <number of scrollback entries>
+  |<row string of row 1>
+  ...
+  |<row string of row H>
+<screen> is main if the displayed screen is the main screen, and alt if it is the alternate screen. If the pending-wrap flag is on, a space and pending are appended to the end of the first line. The 2nd and following lines represent the rows of the displayed screen from top to bottom; each is | followed by the row string of that row (attributes are not printed).
+
+When %%END is reached, after the discarding of a sequence described in 3., print the following (1) to (11) in this order.
+(1) The screen output with the label FINAL.
+(2) TITLE "<title>" if the title is a string (the title as it is, enclosed in double quotes), and TITLE none if it is none.
+(3) A line of MODES followed by those of the following items that differ from their initial values, in this order, separated by spaces. If there are none, MODES default.
+  IRM, LNM, DECCKM, DECSCNM, DECOM, DECAWM, DECTCEM, DECKPAM, BRACKETED: <name>=on if on, <name>=off if off.
+  G0=graphics if G0 is line drawing, G1=graphics if G1 is line drawing, GL=G1 if GL is G1, and CURSOR=<cursor shape> if the cursor shape is not 1.
+(4) REGION <top>-<bottom>
+(5) TABS followed by a space and the tab stops in increasing order, separated by , (e.g. TABS 5,9,17). If there are no tab stops, TABS none.
+(6) SCROLLBACK <number of scrollback entries>. Then the last 5 entries of the scrollback (all of them if there are fewer than 5), oldest first, one per line, each written as | followed by the string.
+(7) ATTRS <number of runs>. Then, for each run, row <row> col <first column>-<last column> <attributes>. A run is a sequence of consecutive cells in the same row of the displayed screen whose attributes are all equal and are not the default attributes, and which cannot be extended any further to the left or right (the characters in the cells do not matter). Runs are printed in increasing order of row, and within the same row in increasing order of column; a run of one cell is also written in the form 5-5. <attributes> consists of the names of the flags that are on, in the order bold, dim, italic, underline, blink, reverse, hidden, strike, followed by fg=<color name> if fg is not default and then bg=<color name> if bg is not default, separated by spaces.
+(8) BELL <BEL count>
+(9) REPLIES <reply count>
+(10) STATS bytes=<stream byte count> printed=<print count> sequences=<number of executed sequences>
+(11) IGNORED <total number of ignored sequences> unsupported=<count> malformed=<count> canceled=<count> invalid=<count>
+
+[Constraints]
+- 2 <= W <= 80 and 2 <= H <= 30.
+- The number of lines from the 2nd line on (including directive lines) is at least 1 and at most 2000.
+- A stream line has at least 1 and at most 200 characters, consists only of characters from 0x20 to 0x7E, and its last character is not a space. When a stream line is split into pairs in order from the start of the line, the character immediately after a ^ that is the first character of a pair is always one of @ G H I J K L M N O X Z [ ^, and a ^ that is the first character of a pair never comes at the end of the line.
+- The name of %%KEY is one of the key names listed in [Processing] 14. The text of %%PASTE has at least 1 and at most 100 characters, consists only of characters from 0x20 to 0x7E, and its last character is not a space.
+- The sum of n over all REPs (key b) in the stream is at most 50000.
+- The digit string of a field of a CSI sequence may be long and may not fit in an integer type as it is (a value exceeding 9999 is taken as 9999). All other integers appearing in the computation fit in signed 32-bit integers. Floating-point numbers are not needed.
+
+[Example]
+Input:
+12 3
+abcdefghijkl^[[6nm
+^[[1;4mX^[[m^Jline3^Jline4
+%%DUMP
+^[[?7l^[[2;1H0123456789ABCD^[[?25l^[[5x
+%%KEY UP
+%%END
+
+Output:
+REPLY ^[[1;12R
+DUMP 1 main cursor 3,12 scrollback 1 pending
+|mX
+|  line3
+|       line4
+KEY UP ^[[A
+FINAL main cursor 2,12 scrollback 1
+|mX
+|0123456789AD
+|       line4
+TITLE none
+MODES DECAWM=off DECTCEM=off
+REGION 1-3
+TABS 9
+SCROLLBACK 1
+|abcdefghijkl
+ATTRS 1
+row 1 col 2-2 bold underline
+BELL 0
+REPLIES 1
+STATS bytes=74 printed=38 sequences=6
+IGNORED 1 unsupported=1 malformed=0 canceled=0 invalid=0
+
+After the 12 characters of row 1 are written, the cursor stays at column 12, so the reply to DSR is ^[[1;12R. The following m moves to the start of row 2. X is written with the bold and underline attributes. Since LF does not change the column, line3 and line4 are laid out like a staircase, and the second LF scrolls the screen up by one row, so abcdefghijkl goes into the scrollback. After DECAWM is turned off, the writes to column 12 are repeated and the last D remains. ESC [ 5 x is not in the list, so it is ignored as unsupported.

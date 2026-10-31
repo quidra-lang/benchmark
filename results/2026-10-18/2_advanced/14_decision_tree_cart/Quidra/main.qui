@@ -1,0 +1,588 @@
+import math
+import dataset = "./dataset.qui"
+import impurity = "./impurity.qui"
+import tree_builder = "./tree_builder.qui"
+import pruning = "./pruning.qui"
+import evaluation = "./evaluation.qui"
+
+class Minstd(int state)
+    int .draw()
+        state = 48271 * state % 2147483647
+        return state
+
+class Condition(dataset.Attribute attribute)
+    bool has_lower = false
+    bool has_upper = false
+    int lower = 0
+    int upper = 0
+    int equal = -1
+    bool[] excluded = array(len(attribute.values), fill = false)
+
+    void .add(tree_builder.Split split, bool left)
+        if attribute.is_integer
+            if left
+                upper = if has_upper then math.min(upper, split.point) else split.point
+                has_upper = true
+            else
+                lower = if has_lower then math.max(lower, split.point) else split.point
+                has_lower = true
+        elif left
+            equal = split.point
+        else
+            excluded[split.point] = true
+
+    string text()
+        string name = attribute.name
+        if attribute.is_integer
+            if has_lower and has_upper
+                return "{tree_builder.half_text(lower)} < {name} <= {tree_builder.half_text(upper)}"
+            if has_lower
+                return "{name} > {tree_builder.half_text(lower)}"
+            return "{name} <= {tree_builder.half_text(upper)}"
+        if equal >= 0
+            return "{name} = {attribute.values[equal]}"
+        string[] names = [for nat i = excluded.indices()[] if excluded[i] then attribute.values[i]]
+        if len(names) == 1
+            return "{name} != {names[0]}"
+        return name + " not in {{" + names.join(",") + "}}"
+
+    bool holds(dataset.Row row)
+        int value = row.values[attribute.index]
+        if value < 0
+            return false
+        if attribute.is_integer
+            return (not has_lower or 2 * value > lower) and (not has_upper or 2 * value <= upper)
+        if equal >= 0
+            return value == equal
+        return not excluded[value]
+
+class Rule(int number, int leaf, int label, Condition[] conditions)
+    Condition[] general = conditions
+    string[] removed = []
+
+class Coverage(int hits, int count)
+class Generalization(Condition[] conditions, string[] removed)
+class DepthResult(int depth, evaluation.View tree, int cv_correct)
+class Bag(evaluation.View tree, int distinct, int out_of_bag, int correct)
+class Permutation(int attribute, int[] counts, int drop)
+
+string[] join_sections(string[][] sections)
+    string[] lines = []
+    for string[] section = sections[]
+        if len(lines) > 0
+            lines = lines.append("")
+        lines = lines.concat(section)
+    return lines
+
+Condition[] simplify(tree_builder.Split[] steps, bool[] directions, dataset.Attribute[] attributes)
+    Condition[] conditions = []
+    for dataset.Attribute attribute = attributes[]
+        auto condition = Condition(attribute)
+        bool present = false
+        for int i < int(len(steps))
+            if steps[i].attribute.index == attribute.index
+                .condition.add(steps[i], directions[i])
+                present = true
+        if present
+            conditions = conditions.append(condition)
+    return conditions
+
+string conditions_text(Condition[] conditions)
+    if len(conditions) == 0
+        return "true"
+    return [for Condition condition = conditions[] then condition.text()].join(" and ")
+
+Coverage coverage(Condition[] conditions, dataset.Row[] rows, int label)
+    int hits = 0
+    int count = 0
+    for dataset.Row row = rows[]
+        bool covered = true
+        for Condition condition = conditions[]
+            if not condition.holds(row)
+                covered = false
+                break
+        if covered
+            count += 1
+            if row.label == label
+                hits += 1
+    return Coverage(hits, count)
+
+impurity.Fraction laplace(Condition[] conditions, dataset.Row[] rows, int label, int classes)
+    Coverage result = coverage(conditions, rows, label)
+    return impurity.Fraction(result.hits + 1, result.count + classes)
+
+Generalization generalize(Condition[] conditions, dataset.Row[] rows, int label, int classes)
+    Condition[] current = conditions
+    string[] removed = []
+    while len(current) > 0
+        impurity.Fraction estimate = laplace(current, rows, label, classes)
+        int best_index = -1
+        impurity.Fraction best = impurity.Fraction(0, 1)
+        for int i < int(len(current))
+            Condition[] trial = current[0:<i].concat(current[i + 1:<len(current)])
+            impurity.Fraction value = laplace(trial, rows, label, classes)
+            if best_index < 0 or value.compare(best) > 0
+                best_index = i
+                best = value
+        if estimate.compare(best) > 0
+            break
+        removed = removed.append(current[best_index].attribute.name)
+        current = current[0:<best_index].concat(current[best_index + 1:<len(current)])
+    return Generalization(current, removed)
+
+void collect_rules(evaluation.View tree, int index, tree_builder.Split[] steps, bool[] directions, dataset.Attribute[] attributes, Rule[] &rules)
+    tree_builder.Node node = tree.tree.nodes[index]
+    if tree.is_leaf(index)
+        rules = rules.append(Rule(int(len(rules)) + 1, index, node.prediction, simplify(steps, directions, attributes)))
+        return
+    collect_rules(tree, node.left, steps.append(node.split), directions.append(true), attributes, &rules)
+    collect_rules(tree, node.right, steps.append(node.split), directions.append(false), attributes, &rules)
+
+Rule[] make_rules(evaluation.View tree, dataset.Attribute[] attributes, dataset.Row[] validation, int classes)
+    Rule[] rules = []
+    collect_rules(tree, 0, [], [], attributes, &rules)
+    for int i < int(len(rules))
+        Generalization result = generalize(rules[i].conditions, validation, rules[i].label, classes)
+        rules[i].general = result.conditions
+        rules[i].removed = result.removed
+    return rules
+
+evaluation.View limited(evaluation.View tree, int depth)
+    return evaluation.View(tree.tree, tree.cut, depth)
+
+class Analysis(dataset.Dataset data)
+    dataset.Attribute[] attributes = data.attributes
+    string[] classes = data.classes
+    dataset.Settings settings = data.settings
+    dataset.Row[] train = data.train
+    dataset.Row[] validation = data.validation
+    dataset.Row[] test = data.test
+    int class_count = int(len(classes))
+    evaluation.View grown = evaluation.full_tree(tree_builder.grow(train, attributes, class_count, settings))
+    local pruning.Reduced reduced = pruning.reduced_error(grown.tree, validation)
+    evaluation.View pruned = reduced.tree
+    pruning.Decision[] decisions = reduced.decisions
+    Rule[] rules = make_rules(pruned, attributes, validation, class_count)
+    int[] bounds = []
+    for int fold <= settings.folds
+        bounds = bounds.append(fold * int(len(train)) / settings.folds)
+    evaluation.View[] fold_trees = []
+    for 1 <= int fold <= settings.folds
+        dataset.Row[] training = train[0:<bounds[fold - 1]].concat(train[bounds[fold]:<len(train)])
+        fold_trees = fold_trees.append(evaluation.full_tree(tree_builder.grow(training, attributes, class_count, settings)))
+    DepthResult[] depth_results = []
+    int selected_depth = 0
+    for int depth <= settings.max_depth
+        int correct = 0
+        for 1 <= int fold <= settings.folds
+            correct += limited(fold_trees[fold - 1], depth).correct_count(train[bounds[fold - 1]:<bounds[fold]])
+        depth_results = depth_results.append(DepthResult(depth, limited(grown, depth), correct))
+        if correct > depth_results[selected_depth].cv_correct
+            selected_depth = depth
+    pruning.SequenceTree[] sequence = pruning.cost_complexity(grown.tree)
+    int selected_index = 0
+    for int i < int(len(sequence))
+        if sequence[i].tree.correct_count(validation) >= sequence[selected_index].tree.correct_count(validation)
+            selected_index = i
+    Bag[] bags = []
+    int[][] oob_votes = array(len(train), fill = array(nat(class_count), fill = 0))
+    local Minstd generator = Minstd(settings.bag_seed)
+    for int b < settings.bag_trees
+        int[] indices = []
+        bool[] sampled = array(len(train), fill = false)
+        for int j < int(len(train))
+            int index = .generator.draw() % int(len(train))
+            indices = indices.append(index)
+            sampled[index] = true
+        dataset.Row[] sample = [for int index = indices[] then train[index]]
+        evaluation.View tree = evaluation.full_tree(tree_builder.grow(sample, attributes, class_count, settings))
+        int count = 0
+        int hits = 0
+        int distinct = 0
+        for int i < int(len(train))
+            if sampled[i]
+                distinct += 1
+            else
+                count += 1
+                int prediction = tree.predict(train[i])
+                oob_votes[i][prediction] += 1
+                if prediction == train[i].label
+                    hits += 1
+        bags = bags.append(Bag(tree, distinct, count, hits))
+    int[][] test_votes = array(len(test), fill = array(nat(class_count), fill = 0))
+    for Bag bag = bags[]
+        for int i < int(len(test))
+            test_votes[i][bag.tree.predict(test[i])] += 1
+    evaluation.View[] models = [grown, pruned, depth_results[selected_depth].tree, sequence[selected_index].tree]
+    string[] model_labels = ["grown", "pruned", "depth", "cost_complexity", "bagging"]
+    int[][] predictions = []
+    for evaluation.View model = models[]
+        predictions = predictions.append([for dataset.Row row = test[] then model.predict(row)])
+    predictions = predictions.append([for int[] votes = test_votes[] then impurity.majority(votes)])
+
+    string accuracy(evaluation.View tree, dataset.Row[] rows)
+        return evaluation.ratio_text(tree.correct_count(rows), int(len(rows)))
+
+    void node_lines(evaluation.View tree, int index, string condition, string[] &lines)
+        tree_builder.Node node = tree.tree.nodes[index]
+        string text = string.repeat(" ", nat(2 * node.depth)) + "{node.number} {condition} n {node.size} counts {evaluation.counts_text(node.counts)}"
+        if tree.is_leaf(index)
+            lines = lines.append(text + " leaf {classes[node.prediction]}")
+            return
+        lines = lines.append(text)
+        node_lines(tree, node.left, node.split.condition(true), &lines)
+        node_lines(tree, node.right, node.split.condition(false), &lines)
+
+    string[] tree_lines(evaluation.View tree)
+        string[] lines = []
+        node_lines(tree, 0, "root", &lines)
+        lines = lines.append("")
+        int[] nodes = tree.preorder()
+        int[] leaves = tree.leaves()
+        int depth = tree.tree_depth()
+        lines = lines.append("nodes {len(nodes)} leaves {len(leaves)} depth {depth} errors {evaluation.ratio_text(tree.training_errors(), int(len(train)))}")
+        for int level <= depth
+            int[] level_nodes = [for int index = nodes[] if tree.tree.nodes[index].depth == level then index]
+            int[] level_leaves = [for int index = leaves[] if tree.tree.nodes[index].depth == level then index]
+            int rows = math.sum([for int index = level_leaves[] then tree.tree.nodes[index].size])
+            int errors = math.sum([for int index = level_leaves[] then tree.tree.nodes[index].errors])
+            lines = lines.append("level {level} nodes {len(level_nodes)} leaves {len(level_leaves)} rows {rows} errors {errors}")
+        return lines
+
+    string[] root_candidate_lines()
+        tree_builder.Candidate[] candidates = []
+        for dataset.Attribute attribute = attributes[]
+            match tree_builder.best_split(train, [attribute], class_count, settings.min_leaf)
+                tree_builder.Candidate candidate
+                    int position = int(len(candidates))
+                    candidates = candidates.append(candidate)
+                    while position > 0 and candidate.quality().compare(candidates[position - 1].quality()) > 0
+                        candidates[position] = candidates[position - 1]
+                        position -= 1
+                    candidates[position] = candidate
+                none
+                    continue
+        int size = int(len(train))
+        int[] counts = grown.tree.nodes[0].counts
+        string[] lines = ["root candidates n {size} counts {evaluation.counts_text(counts)}"]
+        for int i < int(len(candidates))
+            tree_builder.Candidate candidate = candidates[i]
+            impurity.Fraction value = candidate.quality()
+            real64 gain = real64(value.numerator) / real64(value.denominator) / real64(size) - real64(impurity.square_sum(counts)) / real64(size * size)
+            lines = lines.append("{i + 1} {candidate.split.condition(true)} left {candidate.left_size} right {candidate.right_size} gain {evaluation.real_text(gain, 6)}")
+        return lines
+
+    string[] surrogate_lines()
+        string[] lines = ["surrogates"]
+        for int index = grown.internal_nodes()[]
+            tree_builder.Node node = grown.tree.nodes[index]
+            string[] listed = []
+            for tree_builder.Surrogate surrogate = node.surrogates[]
+                string direction = if surrogate.left then "left" else "right"
+                listed = listed.append("{surrogate.split.condition(true)} {direction} {surrogate.score}/{node.size}")
+            string text = if len(listed) == 0 then "none" else listed.join(" ; ")
+            string direction = if node.default_left then "left" else "right"
+            lines = lines.append("node {node.number} split {node.split.condition(true)} default {direction} surrogates {text}")
+        return lines
+
+    string[] tree_file()
+        return join_sections([root_candidate_lines(), tree_lines(grown), surrogate_lines()])
+
+    string[] pruned_tree_file()
+        string[] lines = ["reduced_error_pruning validation {len(validation)}"]
+        int pruned_count = 0
+        for pruning.Decision decision = decisions[]
+            tree_builder.Node node = grown.tree.nodes[decision.node]
+            string verdict = if decision.pruned then "pruned" else "kept"
+            if decision.pruned
+                pruned_count += 1
+            lines = lines.append("node {node.number} depth {node.depth} rows {decision.rows} leaf {decision.leaf_error} subtree {decision.subtree_error} {verdict}")
+        lines = lines.append("examined {len(decisions)} pruned {pruned_count} kept {int(len(decisions)) - pruned_count}")
+        return lines.append("").concat(tree_lines(pruned))
+
+    string[] predictions_file()
+        string[] lines = ["id,predicted,actual,grown,leaf,path,missing"]
+        for dataset.Row row = test[]
+            evaluation.Route route = pruned.route(row)
+            tree_builder.Node leaf = pruned.tree.nodes[route.path[len(route.path) - 1]]
+            string path = [for int index = route.path[] then "{pruned.tree.nodes[index].number}"].join("-")
+            int missing = math.sum<int>([for int method = route.methods[] if method != 0 then 1])
+            lines = lines.append("{row.id},{classes[leaf.prediction]},{classes[row.label]},{classes[grown.predict(row)]},{leaf.number},{path},{missing}")
+        return lines
+
+    string[] rule_lines()
+        string[] lines = ["rules {len(rules)}"]
+        for Rule rule = rules[]
+            tree_builder.Node leaf = pruned.tree.nodes[rule.leaf]
+            dataset.Row[] rows = [for dataset.Row row = test[] if pruned.leaf_of(row).number == leaf.number then row]
+            int hits = math.sum<int>([for dataset.Row row = rows[] if row.label == rule.label then 1])
+            string train_ratio = evaluation.ratio_text(math.max_all(leaf.counts), leaf.size)
+            lines = lines.append("rule {rule.number} node {leaf.number} if {conditions_text(rule.conditions)} then {classes[rule.label]} train {train_ratio} test {evaluation.ratio_text(hits, int(len(rows)))}")
+        return lines
+
+    string[] generalized_lines()
+        string[] lines = ["generalized {len(rules)}"]
+        for Rule rule = rules[]
+            Coverage valid = coverage(rule.general, validation, rule.label)
+            Coverage testing = coverage(rule.general, test, rule.label)
+            string removed = if len(rule.removed) == 0 then "none" else rule.removed.join(",")
+            string estimate = evaluation.fraction_text(valid.hits + 1, valid.count + class_count)
+            lines = lines.append("general {rule.number} if {conditions_text(rule.general)} then {classes[rule.label]} removed {removed} laplace {estimate} validation {valid.hits}/{valid.count} test {testing.hits}/{testing.count}")
+        return lines
+
+    string explanation(dataset.Row row)
+        evaluation.Route route = pruned.route(row)
+        string[] parts = []
+        string[] marks = ["", " [surrogate]", " [default]"]
+        for int i < int(len(route.methods))
+            tree_builder.Node node = pruned.tree.nodes[route.path[i]]
+            bool left = route.path[i + 1] == node.left
+            parts = parts.append(node.split.condition(left) + marks[route.methods[i]])
+        return if len(parts) == 0 then "root" else parts.join("; ")
+
+    string[] misclassified_lines()
+        dataset.Row[] wrong = [for dataset.Row row = test[] if pruned.predict(row) != row.label then row]
+        string[] lines = ["misclassified {len(wrong)}"]
+        for dataset.Row row = wrong[]
+            tree_builder.Node leaf = pruned.leaf_of(row)
+            int number = 0
+            for Rule rule = rules[]
+                if pruned.tree.nodes[rule.leaf].number == leaf.number
+                    number = rule.number
+            lines = lines.append("{row.id} actual {classes[row.label]} predicted {classes[leaf.prediction]} rule {number} path {explanation(row)}")
+        return lines
+
+    string[] rules_file()
+        return join_sections([rule_lines(), generalized_lines(), misclassified_lines()])
+
+    string[] data_lines()
+        string[] lines = ["data train {len(train)} validation {len(validation)} test {len(test)} attributes {len(attributes)} classes {class_count} target {data.target}"]
+        int[] train_counts = impurity.class_counts(train, class_count)
+        int[] validation_counts = impurity.class_counts(validation, class_count)
+        int[] test_counts = impurity.class_counts(test, class_count)
+        for int k < class_count
+            lines = lines.append("class {classes[k]} train {train_counts[k]} validation {validation_counts[k]} test {test_counts[k]}")
+        int validation_missing = math.sum([for dataset.Row row = validation[] then row.missing_count()])
+        int test_missing = math.sum([for dataset.Row row = test[] then row.missing_count()])
+        lines = lines.append("missing validation {validation_missing} test {test_missing}")
+        for dataset.Attribute attribute = attributes[]
+            int missing_validation = math.sum<int>([for dataset.Row row = validation[] if row.values[attribute.index] < 0 then 1])
+            int missing_test = math.sum<int>([for dataset.Row row = test[] if row.values[attribute.index] < 0 then 1])
+            lines = lines.append("missing {attribute.name} validation {missing_validation} test {missing_test}")
+        return lines
+
+    string summary_line(string name, evaluation.View tree)
+        return "{name} nodes {len(tree.preorder())} leaves {len(tree.leaves())} depth {tree.tree_depth()} train {accuracy(tree, train)} validation {accuracy(tree, validation)} test {accuracy(tree, test)}"
+
+    string[] model_evaluation(int model)
+        int[] labels = [for dataset.Row row = test[] then row.label]
+        return evaluation.classification_lines(model_labels[model] + " test", classes, labels, predictions[model])
+
+    string[] routing_lines()
+        int[][] tallies = array(len(pruned.tree.nodes), fill = [0, 0, 0])
+        for dataset.Row row = test[]
+            evaluation.Route route = pruned.route(row)
+            for int i < int(len(route.methods))
+                tallies[route.path[i]][route.methods[i]] += 1
+        string[] lines = ["routing pruned test"]
+        for int index = pruned.internal_nodes()[]
+            int[] tally = tallies[index]
+            lines = lines.append("node {pruned.tree.nodes[index].number} rows {math.sum(tally)} primary {tally[0]} surrogate {tally[1]} default {tally[2]}")
+        dataset.Row[] complete = [for dataset.Row row = test[] if row.missing_count() == 0 then row]
+        dataset.Row[] incomplete = [for dataset.Row row = test[] if row.missing_count() > 0 then row]
+        lines = lines.append("complete rows {len(complete)} correct {accuracy(pruned, complete)}")
+        return lines.append("incomplete rows {len(incomplete)} correct {accuracy(pruned, incomplete)}")
+
+    string[] cross_validation_lines()
+        string[] lines = ["cross_validation folds {settings.folds}"]
+        int total = 0
+        for 1 <= int fold <= settings.folds
+            evaluation.View tree = fold_trees[fold - 1]
+            dataset.Row[] rows = train[bounds[fold - 1]:<bounds[fold]]
+            int correct = tree.correct_count(rows)
+            total += correct
+            lines = lines.append("fold {fold} rows {bounds[fold - 1] + 1}-{bounds[fold]} leaves {len(tree.leaves())} correct {evaluation.ratio_text(correct, int(len(rows)))}")
+        return lines.append("cv accuracy {evaluation.ratio_text(total, int(len(train)))}")
+
+    string[] depth_lines()
+        string[] lines = ["depth_selection"]
+        for DepthResult result = depth_results[]
+            evaluation.View tree = result.tree
+            lines = lines.append("depth {result.depth} leaves {len(tree.leaves())} cv {evaluation.ratio_text(result.cv_correct, int(len(train)))} train {accuracy(tree, train)} validation {accuracy(tree, validation)} test {accuracy(tree, test)}")
+        DepthResult chosen = depth_results[selected_depth]
+        return lines.append("selected depth {chosen.depth} leaves {len(chosen.tree.leaves())} test {accuracy(chosen.tree, test)}")
+
+    string[] cost_complexity_lines()
+        string[] lines = ["cost_complexity"]
+        for int i < int(len(sequence))
+            pruning.SequenceTree step = sequence[i]
+            string alpha = evaluation.fraction_text(step.alpha.numerator, step.alpha.denominator * int(len(train)), 6)
+            int errors = int(len(validation)) - step.tree.correct_count(validation)
+            lines = lines.append("subtree {i} alpha {alpha} leaves {len(step.tree.leaves())} train_errors {step.tree.training_errors()} validation_errors {errors}")
+        evaluation.View chosen = sequence[selected_index].tree
+        return lines.append("selected subtree {selected_index} leaves {len(chosen.leaves())} test {accuracy(chosen, test)}")
+
+    string[] bagging_lines()
+        string[] lines = ["bagging trees {settings.bag_trees} seed {settings.bag_seed}"]
+        for int i < int(len(bags))
+            Bag bag = bags[i]
+            lines = lines.append("bag {i + 1} distinct {bag.distinct} leaves {len(bag.tree.leaves())} oob {evaluation.ratio_text(bag.correct, bag.out_of_bag)}")
+        int voted = 0
+        int hits = 0
+        for int i < int(len(train))
+            if math.sum(oob_votes[i]) > 0
+                voted += 1
+                if impurity.majority(oob_votes[i]) == train[i].label
+                    hits += 1
+        lines = lines.append("oob accuracy {evaluation.ratio_text(hits, voted)} unvoted {int(len(train)) - voted}")
+        return lines.concat(model_evaluation(4))
+
+    string[] mcnemar_lines()
+        string[] lines = ["mcnemar pruned test"]
+        for int model = [0, 2, 3, 4][]
+            int b = 0
+            int c = 0
+            for int i < int(len(test))
+                bool first = predictions[1][i] == test[i].label
+                bool second = predictions[model][i] == test[i].label
+                if first and not second
+                    b += 1
+                elif second and not first
+                    c += 1
+            int disagreements = b + c
+            int corrected = math.max(0, math.abs(b - c) - 1)
+            int squared = corrected * corrected
+            string statistic = if disagreements == 0 then "0/1 0.0000" else evaluation.fraction_text(squared, disagreements)
+            string significant = if 1000 * squared > 3841 * disagreements then "yes" else "no"
+            lines = lines.append("versus {model_labels[model]} b {b} c {c} statistic {statistic} significant {significant}")
+        return lines
+
+    impurity.Fraction[][] scores(int model)
+        impurity.Fraction[][] result = []
+        if model == 4
+            for int[] votes = test_votes[]
+                result = result.append([for int count = votes[] then impurity.Fraction(count, settings.bag_trees)])
+            return result
+        evaluation.View tree = if model == 0 then grown else pruned
+        for dataset.Row row = test[]
+            tree_builder.Node leaf = tree.leaf_of(row)
+            result = result.append([for int count = leaf.counts[] then impurity.Fraction(count, leaf.size)])
+        return result
+
+    string[] auc_lines()
+        string[] lines = []
+        for int model = [0, 1, 4][]
+            impurity.Fraction[][] values = scores(model)
+            string[] parts = ["auc", model_labels[model]]
+            real64[] averages = []
+            for int label < class_count
+                int positives = 0
+                int wins = 0
+                for int i < int(len(test))
+                    if test[i].label != label
+                        continue
+                    positives += 1
+                    for int j < int(len(test))
+                        if test[j].label == label
+                            continue
+                        int comparison = values[i][label].compare(values[j][label])
+                        if comparison > 0
+                            wins += 2
+                        elif comparison == 0
+                            wins += 1
+                int pairs = 2 * positives * (int(len(test)) - positives)
+                parts = parts.append(classes[label]).append(evaluation.fraction_text(wins, pairs))
+                if pairs > 0
+                    averages = averages.append(real64(wins) / real64(pairs))
+            string macro = if len(averages) == 0 then "-" else evaluation.real_text(evaluation.average(averages))
+            lines = lines.append(parts.append("macro").append(macro).join(" "))
+        return lines
+
+    string[] learning_curve_lines()
+        string[] lines = ["learning_curve"]
+        for int size = settings.curve[]
+            evaluation.View initial = evaluation.full_tree(tree_builder.grow(train[0:<size], attributes, class_count, settings))
+            pruning.Reduced result = pruning.reduced_error(initial.tree, validation)
+            lines = lines.append("size {size} grown leaves {len(initial.leaves())} test {accuracy(initial, test)} pruned leaves {len(result.tree.leaves())} test {accuracy(result.tree, test)}")
+        return lines
+
+    string[] evaluation_file()
+        return join_sections([data_lines(), [summary_line("grown", grown), summary_line("pruned", pruned)], model_evaluation(0), model_evaluation(1), routing_lines(), cross_validation_lines(), depth_lines(), cost_complexity_lines(), bagging_lines(), mcnemar_lines(), auc_lines(), learning_curve_lines()])
+
+    string[] impurity_lines(string title, evaluation.View tree)
+        real64[] importance = array(len(attributes), fill = 0.0)
+        int[] splits = array(len(attributes), fill = 0)
+        for int index = tree.internal_nodes()[]
+            tree_builder.Node node = tree.tree.nodes[index]
+            int a = node.split.attribute.index
+            importance[a] += impurity.decrease(node.counts, tree.tree.nodes[node.left].counts, tree.tree.nodes[node.right].counts)
+            splits[a] += 1
+        real64 total = math.sum(importance)
+        real64[] shares = [for real64 value = importance[] then if total == 0.0 then 0.0 else value / total]
+        int[] rounded_shares = []
+        for real64 value = shares[]
+            int rounded = math.round(value * 10000.0)
+            rounded_shares = rounded_shares.append(rounded)
+        int[] order = []
+        for int a < int(len(attributes))
+            int position = int(len(order))
+            order = order.append(a)
+            while position > 0 and rounded_shares[order[position - 1]] < rounded_shares[a]
+                order[position] = order[position - 1]
+                position -= 1
+            order[position] = a
+        string[] lines = ["impurity {title}"]
+        for int i < int(len(order))
+            int a = order[i]
+            real64 decrease = importance[a] / real64(len(train))
+            lines = lines.append("{i + 1} {attributes[a].name} decrease {evaluation.real_text(decrease)} share {evaluation.real_text(shares[a])} splits {splits[a]}")
+        return lines
+
+    string[] permutation_lines()
+        auto permutation_generator = Minstd(settings.permutation_seed)
+        int repeats = settings.permutation_repeats
+        int size = int(len(test))
+        int base = pruned.correct_count(test)
+        Permutation[] results = []
+        for dataset.Attribute attribute = attributes[]
+            int[] counts = []
+            for int repetition < repeats
+                int[] values = [for dataset.Row row = test[] then row.values[attribute.index]]
+                for size >= int position >= 2
+                    int other = .permutation_generator.draw() % position
+                    int saved = values[position - 1]
+                    values[position - 1] = values[other]
+                    values[other] = saved
+                dataset.Row[] rows = test
+                for int i < size
+                    rows[i].values[attribute.index] = values[i]
+                counts = counts.append(pruned.correct_count(rows))
+            Permutation result = Permutation(attribute.index, counts, repeats * base - math.sum(counts))
+            int position = int(len(results))
+            results = results.append(result)
+            while position > 0 and results[position - 1].drop < result.drop
+                results[position] = results[position - 1]
+                position -= 1
+            results[position] = result
+        string[] lines = ["permutation pruned test repeats {repeats} seed {settings.permutation_seed} base {evaluation.ratio_text(base, size)}"]
+        for int i < int(len(results))
+            Permutation result = results[i]
+            lines = lines.append("{i + 1} {attributes[result.attribute].name} correct {evaluation.counts_text(result.counts)} drop {evaluation.fraction_text(result.drop, repeats * size)}")
+        return lines
+
+    string[] importance_file()
+        return join_sections([impurity_lines("grown", grown), impurity_lines("pruned", pruned), permutation_lines()])
+
+void write_lines(string name, string[] lines)
+    file.write("output/" + name, lines.join(NL) + NL)
+
+if main
+    auto analysis = Analysis(dataset.load())
+    if not file.exists("output")
+        file.mkdir("output")
+    write_lines("tree.txt", analysis.tree_file())
+    write_lines("pruned_tree.txt", analysis.pruned_tree_file())
+    write_lines("predictions.csv", analysis.predictions_file())
+    write_lines("rules.txt", analysis.rules_file())
+    write_lines("evaluation.txt", analysis.evaluation_file())
+    write_lines("importance.txt", analysis.importance_file())

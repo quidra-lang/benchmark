@@ -1,0 +1,779 @@
+import bitio = "./bitio.qui"
+import lzw = "./lzw.qui"
+import lz77 = "./lz77.qui"
+import huffman = "./huffman.qui"
+import arithmetic = "./arith_coder.qui"
+
+string[] method_names()
+    return ["STORE", "LZW", "LZ77", "LZH", "ARITH"]
+
+string[] status_names()
+    return ["ok", "repaired", "checksum", "error", "unsupported", "truncated", "bad_header"]
+
+string integers(int[] values)
+    string[] fields = [for int value = values[] then "{value}"]
+    return fields.join(" ")
+
+string ratio(int compressed, int original)
+    return if original > 0 then "{1000 * compressed / original}" else "-"
+
+string method_name(int number)
+    string[] names = method_names()
+    return if number < 5 then names[number] else "#{number}"
+
+string byte_text(int[] values)
+    nat8[] bytes = nat8(values)
+    bin packed = bin(bytes)
+    string result = string.from_utf8(packed)
+    return result
+
+int[] read_bytes(string path)
+    string contents = file.read(path)
+    return contents.codepoints()
+
+string[] read_lines(string path)
+    string content = file.read(path)
+    string[] lines = content.split(NL)
+    return lines[0:<int(len(lines)) - 1]
+
+int decimal(string text)
+    int value = int.parse(text)
+    return value
+
+int adler(int[] data)
+    int first = 1
+    int second = 0
+    for int value = data[]
+        first = (first + value) % 65521
+        second = (second + first) % 65521
+    return second * 65536 + first
+
+int modular_power(int base, int exponent)
+    int result = 1
+    while exponent > 0
+        if exponent % 2 == 1
+            result = result * base % 65521
+        base = base * base % 65521
+        exponent /= 2
+    return result
+
+int modulo(int value, int divisor)
+    int result = value % divisor
+    return if result < 0 then result + divisor else result
+
+class Repaired(int[] data, int[] record)
+
+Repaired[] repair_byte(int[] data, int stored, int computed)
+    int difference_a = modulo(stored % 65536 - computed % 65536, 65521)
+    int difference_b = modulo(stored / 65536 - computed / 65536, 65521)
+    int delta = 0
+    if difference_a >= 1 and difference_a <= 255
+        delta = difference_a
+    elif difference_a >= 65266 and difference_a <= 65520
+        delta = difference_a - 65521
+    else
+        return []
+    int inverse = modular_power(modulo(delta, 65521), 65519)
+    int distance = difference_b * inverse % 65521
+    if distance < 1 or distance > int(len(data))
+        return []
+    int position = int(len(data)) - distance
+    int before = data[position]
+    int after = before + delta
+    if after < 0 or after > 255
+        return []
+    int[] repaired = data
+    repaired[position] = after
+    if adler(repaired) != stored
+        return []
+    return [Repaired(repaired, [position, before, after])]
+
+class DecodeResult(int[] data, string kind = "", int position = 0)
+
+int[] fixed_lengths(int count)
+    int width = bitio.bits(count - 1)
+    int shorter = bitio.power_two(width) - count
+    int[] result = []
+    for int symbol < count
+        result = result.append(if symbol < shorter then width - 1 else width)
+    return result
+
+void write_table(bitio.Writer &writer, int[] lengths)
+    int symbol = 0
+    while symbol < int(len(lengths))
+        if lengths[symbol] > 0
+            .writer.write(lengths[symbol], 4)
+            symbol += 1
+        else
+            int run = 1
+            while run < 256 and symbol + run < int(len(lengths)) and lengths[symbol + run] == 0
+                run += 1
+            .writer.write(0, 4)
+            .writer.write(run - 1, 8)
+            symbol += run
+
+int[] read_table(bitio.Reader &reader, int count)
+    int[] lengths = []
+    while int(len(lengths)) < count
+        int length = .reader.read(4)
+        if reader.failed()
+            return []
+        if length > 0
+            lengths = lengths.append(length)
+        else
+            int run = .reader.read(8)
+            if reader.failed()
+                return []
+            run += 1
+            if int(len(lengths)) + run > count
+                reader.problems = [bitio.DecodeError("bad_table", 0)]
+                return []
+            for _ < run
+                lengths = lengths.append(0)
+    int used = 0
+    int only = 0
+    int kraft = 0
+    for int length = lengths[]
+        if length > 0
+            used += 1
+            only = length
+            kraft += bitio.power_two(15 - length)
+    if (used == 1 and only != 1) or (used >= 2 and kraft != 32768)
+        reader.problems = [bitio.DecodeError("bad_table", 0)]
+    return lengths
+
+class SymbolReader(int[] lengths)
+    int[] codes = huffman.canonical(lengths)
+    int maximum = 0
+    for int length = lengths[]
+        if length > maximum
+            maximum = length
+
+    int read_symbol(bitio.Reader &reader, int position)
+        if maximum == 0
+            reader.problems = [bitio.DecodeError("bad_code", position)]
+            return -1
+        int code = 0
+        for 1 <= int width <= maximum
+            int next_bit = .reader.read(1, position)
+            if reader.failed()
+                return -1
+            code = code * 2 + next_bit
+            for int symbol < int(len(lengths))
+                if lengths[symbol] == width and codes[symbol] == code
+                    return symbol
+        reader.problems = [bitio.DecodeError("bad_code", position)]
+        return -1
+
+int[] encode_lz(lz77.Token[] tokens, int offset_bits, int length_bits)
+    bitio.Writer writer = bitio.Writer()
+    for lz77.Token token = tokens[]
+        if token.literal >= 0
+            .writer.write(0, 1)
+            .writer.write(token.literal, 8)
+        else
+            .writer.write(1, 1)
+            .writer.write(token.distance - 1, offset_bits)
+            .writer.write(token.length - 3, length_bits)
+    return writer.finish()
+
+DecodeResult copy_match(int[] output, int distance, int length, int original)
+    lz77.bitio.Decoded result = lz77.copy_match(output, distance, length, original)
+    if len(result.problems) > 0
+        return DecodeResult([], result.problems[0].kind, result.problems[0].position)
+    return DecodeResult(result.data)
+
+DecodeResult decode_lz(int[] payload, int original, int offset_bits, int length_bits)
+    bitio.Reader reader = bitio.Reader(payload)
+    int[] output = []
+    while int(len(output)) < original
+        int flag = .reader.read(1, int(len(output)))
+        if reader.failed()
+            return DecodeResult([], reader.problems[0].kind, reader.problems[0].position)
+        if flag == 0
+            int value = .reader.read(8, int(len(output)))
+            if reader.failed()
+                return DecodeResult([], reader.problems[0].kind, reader.problems[0].position)
+            output = output.append(value)
+        else
+            int distance = .reader.read(offset_bits, int(len(output)))
+            int length = .reader.read(length_bits, int(len(output)))
+            if reader.failed()
+                return DecodeResult([], reader.problems[0].kind, reader.problems[0].position)
+            DecodeResult copied = copy_match(output, distance + 1, length + 3, original)
+            if copied.kind != ""
+                return copied
+            output = copied.data
+    return DecodeResult(output)
+
+void write_tokens(bitio.Writer &writer, lz77.Token[] tokens, int[] literal_lengths, int[] distance_lengths)
+    int[] literal_codes = huffman.canonical(literal_lengths)
+    int[] distance_codes = huffman.canonical(distance_lengths)
+    for lz77.Token token = tokens[]
+        if token.literal >= 0
+            .writer.write(literal_codes[token.literal], literal_lengths[token.literal])
+        else
+            int symbol = 256 + token.length - 3
+            .writer.write(literal_codes[symbol], literal_lengths[symbol])
+            int offset = token.distance - 1
+            int slot = bitio.bits(offset)
+            .writer.write(distance_codes[slot], distance_lengths[slot])
+            if slot >= 2
+                .writer.write(offset - bitio.power_two(slot - 1), slot - 1)
+
+class Params(int offset_bits, int length_bits, int max_code_length)
+class LzhEncoded(int[] data, int[] stats, int[] slots)
+
+LzhEncoded encode_lzh(lz77.Token[] tokens, Params params)
+    int literal_count = 256 + bitio.power_two(params.length_bits)
+    int distance_count = params.offset_bits + 1
+    int[] literal_frequencies = array(nat(literal_count), fill = 0)
+    int[] distance_frequencies = array(nat(distance_count), fill = 0)
+    for lz77.Token token = tokens[]
+        int symbol = if token.literal >= 0 then token.literal else 256 + token.length - 3
+        literal_frequencies[symbol] += 1
+        if token.distance > 0
+            distance_frequencies[bitio.bits(token.distance - 1)] += 1
+    huffman.Lengths literal_limited = huffman.limited_lengths(literal_frequencies, params.max_code_length)
+    huffman.Lengths distance_limited = huffman.limited_lengths(distance_frequencies, params.max_code_length)
+    int[] literal_lengths = literal_limited.values
+    int[] distance_lengths = distance_limited.values
+    bitio.Writer fixed = bitio.Writer()
+    .fixed.write(0, 1)
+    write_tokens(&fixed, tokens, fixed_lengths(literal_count), fixed_lengths(distance_count))
+    int fixed_bits = fixed.bit_count - 1
+    bitio.Writer dynamic = bitio.Writer()
+    .dynamic.write(1, 1)
+    write_table(&dynamic, literal_lengths)
+    write_table(&dynamic, distance_lengths)
+    int table_bits = dynamic.bit_count - 1
+    write_tokens(&dynamic, tokens, literal_lengths, distance_lengths)
+    int code_bits = dynamic.bit_count - 1 - table_bits
+    bool use_fixed = fixed_bits <= table_bits + code_bits
+    int litlen_used = 0
+    int litlen_max = 0
+    int offset_used = 0
+    int offset_max = 0
+    for int length = literal_lengths[]
+        if length > 0
+            litlen_used += 1
+        if length > litlen_max
+            litlen_max = length
+    for int length = distance_lengths[]
+        if length > 0
+            offset_used += 1
+        if length > offset_max
+            offset_max = length
+    int[] stats = [fixed_bits, table_bits, code_bits, literal_limited.halvings + distance_limited.halvings, litlen_used, litlen_max, offset_used, offset_max, if use_fixed then 0 else 1]
+    return LzhEncoded(if use_fixed then fixed.finish() else dynamic.finish(), stats, distance_frequencies)
+
+DecodeResult decode_lzh(int[] payload, int original, int offset_bits, int length_bits)
+    bitio.Reader reader = bitio.Reader(payload)
+    int literal_count = 256 + bitio.power_two(length_bits)
+    int distance_count = offset_bits + 1
+    int mode = .reader.read(1)
+    if reader.failed()
+        return DecodeResult([], reader.problems[0].kind, reader.problems[0].position)
+    int[] literal_lengths = []
+    int[] distance_lengths = []
+    if mode == 1
+        literal_lengths = read_table(&reader, literal_count)
+        if reader.failed()
+            return DecodeResult([], reader.problems[0].kind, reader.problems[0].position)
+        distance_lengths = read_table(&reader, distance_count)
+        if reader.failed()
+            return DecodeResult([], reader.problems[0].kind, reader.problems[0].position)
+    else
+        literal_lengths = fixed_lengths(literal_count)
+        distance_lengths = fixed_lengths(distance_count)
+    SymbolReader literal_reader = SymbolReader(literal_lengths)
+    SymbolReader distance_reader = SymbolReader(distance_lengths)
+    int[] output = []
+    while int(len(output)) < original
+        int symbol = literal_reader.read_symbol(&reader, int(len(output)))
+        if reader.failed()
+            return DecodeResult([], reader.problems[0].kind, reader.problems[0].position)
+        if symbol < 256
+            output = output.append(symbol)
+        else
+            int slot = distance_reader.read_symbol(&reader, int(len(output)))
+            if reader.failed()
+                return DecodeResult([], reader.problems[0].kind, reader.problems[0].position)
+            int offset = slot
+            if slot >= 2
+                int extra = .reader.read(slot - 1, int(len(output)))
+                if reader.failed()
+                    return DecodeResult([], reader.problems[0].kind, reader.problems[0].position)
+                offset = bitio.power_two(slot - 1) + extra
+            DecodeResult copied = copy_match(output, offset + 1, symbol - 253, original)
+            if copied.kind != ""
+                return copied
+            output = copied.data
+    return DecodeResult(output)
+
+DecodeResult decode(int method, int[] payload, int original, int offset_bits, int length_bits)
+    if method == 0
+        if int(len(payload)) < original
+            return DecodeResult([], "end_of_data", int(len(payload)))
+        return DecodeResult(payload[0:<original])
+    if method == 1
+        lzw.bitio.Decoded result = lzw.decode(payload, original)
+        if len(result.problems) > 0
+            return DecodeResult([], result.problems[0].kind, result.problems[0].position)
+        return DecodeResult(result.data)
+    if method == 2
+        return decode_lz(payload, original, offset_bits, length_bits)
+    if method == 3
+        return decode_lzh(payload, original, offset_bits, length_bits)
+    arithmetic.bitio.Decoded result = arithmetic.decode(payload, original)
+    if len(result.problems) > 0
+        return DecodeResult([], result.problems[0].kind, result.problems[0].position)
+    return DecodeResult(result.data)
+
+class Encoding(string name, int[] data, int[][] payloads, int best, int[] lzw_stats, int[] lz_stats, int[] lzh_stats, int[] slots, int[] arith_stats)
+    int[] payload = payloads[best]
+
+Encoding encode_file(string name, int[] data, Params params)
+    lz77.Token[] tokens = lz77.tokenize(data, params.offset_bits, params.length_bits)
+    lzw.Encoded zw = lzw.encode(data)
+    int[] lz_payload = encode_lz(tokens, params.offset_bits, params.length_bits)
+    LzhEncoded zh = encode_lzh(tokens, params)
+    arithmetic.Encoded arith = arithmetic.encode(data)
+    int[][] payloads = [data, zw.data, lz_payload, zh.data, arith.data]
+    int best = 0
+    for 1 <= int method < 5
+        if len(payloads[method]) < len(payloads[best])
+            best = method
+    int[] stats = [int(len(tokens)), 0, 0, 0, 0, 0]
+    for lz77.Token token = tokens[]
+        if token.literal >= 0
+            stats[1] += 1
+        else
+            stats[2] += 1
+            stats[3] += token.length
+            if token.length > stats[4]
+                stats[4] = token.length
+            if token.distance > stats[5]
+                stats[5] = token.distance
+    return Encoding(name, data, payloads, best, zw.stats, stats, zh.stats, zh.slots, arith.stats)
+
+int[] uint_bytes(int value, int count)
+    int[] result = array(nat(count), fill = 0)
+    for count - 1 >= int index >= 0
+        result[index] = value % 256
+        value /= 256
+    return result
+
+int read_uint(int[] data, int position, int count)
+    int result = 0
+    for int index < count
+        result = result * 256 + data[position + index]
+    return result
+
+int[] build_archive(Encoding[] encodings, Params params)
+    int[] result = [84, 88, 65, 82, params.offset_bits, params.length_bits]
+    result = result.concat(uint_bytes(int(len(encodings)), 2))
+    for Encoding encoded = encodings[]
+        int[] header = [int(len(encoded.name))]
+        header = header.concat(encoded.name.codepoints()).append(encoded.best)
+        header = header.concat(uint_bytes(int(len(encoded.data)), 4))
+        header = header.concat(uint_bytes(int(len(encoded.payload)), 4)).concat(uint_bytes(adler(encoded.data), 4))
+        int check = 0
+        for int value = header[]
+            check = (check + value) % 256
+        result = result.concat(header).append(check).concat(encoded.payload)
+    return result
+
+bool valid_name(int[] name)
+    if len(name) < 1 or len(name) > 32
+        return false
+    int[] allowed = "abcdefghijklmnopqrstuvwxyz0123456789._-".codepoints()
+    for int value = name[]
+        bool found = false
+        for int candidate = allowed[]
+            if candidate == value
+                found = true
+        if not found
+            return false
+    return true
+
+class Entry(int number, int offset)
+    string status = ""
+    bool valid_header = false
+    string name = ""
+    int method = 0
+    int original = 0
+    int compressed = 0
+    int checksum = 0
+    int start = 0
+    int finish = 0
+    int[] data = []
+    int computed = 0
+    string failure_kind = ""
+    int failure_position = 0
+    int[] repair = []
+
+class Parsed(int size)
+    int offset_bits = 0
+    int length_bits = 0
+    int declared = 0
+    Entry[] entries = []
+    Entry[] intact = []
+    string reason = ""
+    bool stopped = false
+    int trailing = 0
+
+Parsed parse_archive(int[] archive)
+    Parsed parsed = Parsed(int(len(archive)))
+    int[] magic = [84, 88, 65, 82]
+    if len(archive) < 8 or archive[0:<4] != magic
+        parsed.reason = "bad_magic"
+        return parsed
+    parsed.offset_bits = archive[4]
+    parsed.length_bits = archive[5]
+    if parsed.offset_bits < 6 or parsed.offset_bits > 12 or parsed.length_bits < 2 or parsed.length_bits > 5
+        parsed.reason = "bad_params"
+        return parsed
+    parsed.declared = read_uint(archive, 6, 2)
+    int position = 8
+    for 1 <= int number <= parsed.declared
+        Entry entry = Entry(number, position)
+        if position >= int(len(archive)) or position + 15 + archive[position] > int(len(archive))
+            entry.status = "truncated"
+            parsed.entries = parsed.entries.append(entry)
+            parsed.stopped = true
+            break
+        int length = archive[position]
+        int[] name = archive[position + 1:<position + 1 + length]
+        int cursor = position + 1 + length
+        int start = position + 15 + length
+        entry.method = archive[cursor]
+        entry.original = read_uint(archive, cursor + 1, 4)
+        entry.compressed = read_uint(archive, cursor + 5, 4)
+        entry.checksum = read_uint(archive, cursor + 9, 4)
+        entry.start = start
+        entry.finish = start + entry.compressed
+        int check = 0
+        for position <= int index < start - 1
+            check = (check + archive[index]) % 256
+        entry.valid_header = valid_name(name) and check == archive[start - 1]
+        if not entry.valid_header
+            entry.status = "bad_header"
+            parsed.entries = parsed.entries.append(entry)
+            position = entry.finish
+            if position > int(len(archive))
+                parsed.stopped = true
+                break
+            continue
+        entry.name = byte_text(name)
+        if entry.finish > int(len(archive))
+            entry.status = "truncated"
+            parsed.entries = parsed.entries.append(entry)
+            parsed.stopped = true
+            break
+        if entry.method >= 5
+            entry.status = "unsupported"
+        else
+            DecodeResult decoded = decode(entry.method, archive[start:<entry.finish], entry.original, parsed.offset_bits, parsed.length_bits)
+            if decoded.kind != ""
+                entry.status = "error"
+                entry.failure_kind = decoded.kind
+                entry.failure_position = decoded.position
+            else
+                entry.data = decoded.data
+                entry.computed = adler(decoded.data)
+                if entry.computed == entry.checksum
+                    entry.status = "ok"
+                else
+                    Repaired[] repairs = repair_byte(decoded.data, entry.checksum, entry.computed)
+                    if len(repairs) > 0
+                        Repaired repaired = repairs[0]
+                        entry.status = "repaired"
+                        entry.data = repaired.data
+                        entry.repair = repaired.record
+                    else
+                        entry.status = "checksum"
+        parsed.entries = parsed.entries.append(entry)
+        if entry.status == "ok" or entry.status == "repaired"
+            parsed.intact = parsed.intact.append(entry)
+        position = entry.finish
+    if not parsed.stopped
+        parsed.trailing = int(len(archive)) - position
+    return parsed
+
+int[] verify(int[] archive, Encoding[] encodings)
+    Parsed parsed = parse_archive(archive)
+    int verified = 0
+    for int index < int(len(parsed.entries))
+        Entry entry = parsed.entries[index]
+        if index < int(len(encodings)) and entry.status == "ok" and entry.data == encodings[index].data
+            verified += 1
+    return [int(len(parsed.entries)), verified]
+
+string hex_value(int value, int width)
+    string digits = "0123456789abcdef"
+    string result = ""
+    for _ < width
+        result = digits[value % 16] + result
+        value /= 16
+    return result
+
+string[] sizes_report(Encoding[] encodings, Params params, int[] archive, int[] verified)
+    string[] lines = ["params offset_bits {params.offset_bits} length_bits {params.length_bits} window {bitio.power_two(params.offset_bits)} lookahead {bitio.power_two(params.length_bits) + 2} max_code_length {params.max_code_length}"]
+    int[] totals = [0, 0, 0, 0, 0]
+    int[] chosen = [0, 0, 0, 0, 0]
+    int original_total = 0
+    int best_total = 0
+    string[] names = method_names()
+    for Encoding encoded = encodings[]
+        int original = int(len(encoded.data))
+        original_total += original
+        best_total += int(len(encoded.payload))
+        chosen[encoded.best] += 1
+        string line = "file {encoded.name} original {original}"
+        for int method < 5
+            int compressed = int(len(encoded.payloads[method]))
+            totals[method] += compressed
+            line += " " + names[method] + " {compressed} " + ratio(compressed, original)
+        lines = lines.append(line + " best " + method_name(encoded.best))
+    string total_line = "total original {original_total}"
+    string chosen_line = "chosen"
+    for int method < 5
+        total_line += " " + names[method] + " {totals[method]} " + ratio(totals[method], original_total)
+        chosen_line += " " + names[method] + " {chosen[method]}"
+    total_line += " best {best_total} " + ratio(best_total, original_total)
+    return lines.concat([total_line, chosen_line, "archive bytes {len(archive)} entries {len(encodings)} ratio " + ratio(int(len(archive)), original_total), "verify entries {verified[0]} ok {verified[1]}"])
+
+string[] analysis_report(Encoding[] encodings)
+    string[] lines = []
+    for Encoding encoded = encodings[]
+        int[] zw = encoded.lzw_stats
+        int[] z = encoded.lz_stats
+        int[] zh = encoded.lzh_stats
+        int[] arith = encoded.arith_stats
+        string mode = if zh[8] == 0 then "fixed" else "dynamic"
+        lines = lines.append("lzw {encoded.name} codes {zw[0]} clears {zw[1]} widths " + integers(zw[2:<6]) + " longest {zw[6]}")
+        lines = lines.append("lz77 {encoded.name} tokens {z[0]} literals {z[1]} matches {z[2]} matched {z[3]} longest {z[4]} farthest {z[5]}")
+        lines = lines.append("lzh {encoded.name} mode {mode} fixed_bits {zh[0]} table_bits {zh[1]} code_bits {zh[2]} halvings {zh[3]} litlen_used {zh[4]} litlen_max {zh[5]} offset_used {zh[6]} offset_max {zh[7]}")
+        lines = lines.append("slots {encoded.name} " + integers(encoded.slots))
+        lines = lines.append("arith {encoded.name} bits {arith[0]} contexts {arith[1]} rescales {arith[2]}")
+    return lines
+
+string[] listing_report(Parsed parsed)
+    if parsed.reason != ""
+        return ["archive bytes {parsed.size} error {parsed.reason}"]
+    string[] lines = ["archive bytes {parsed.size} offset_bits {parsed.offset_bits} length_bits {parsed.length_bits} entries {parsed.declared}"]
+    int[][] totals = array(5, fill = array(3, fill = 0))
+    int listed = 0
+    for Entry entry = parsed.entries[]
+        string prefix = "entry {entry.number} offset {entry.offset}"
+        if not entry.valid_header
+            lines = lines.append(prefix + (if entry.status == "bad_header" then " bad_header" else " truncated header"))
+            continue
+        listed += 1
+        lines = lines.append(prefix + " method " + method_name(entry.method) + " original {entry.original} compressed {entry.compressed} ratio " + ratio(entry.compressed, entry.original) + " adler " + hex_value(entry.checksum, 8) + " name {entry.name}")
+        if entry.method < 5
+            totals[entry.method][0] += 1
+            totals[entry.method][1] += entry.original
+            totals[entry.method][2] += entry.compressed
+    string[] names = method_names()
+    for int method < 5
+        int[] total = totals[method]
+        lines = lines.append("method " + names[method] + " entries {total[0]} original {total[1]} compressed {total[2]} ratio " + ratio(total[2], total[1]))
+    string state = if parsed.stopped then "truncated" else "complete"
+    return lines.append("end listed {listed} of {parsed.declared} stop {state} trailing {parsed.trailing}")
+
+string entry_test_line(Entry entry, int archive_size)
+    string prefix = "entry {entry.number} offset {entry.offset}"
+    if not entry.valid_header
+        return prefix + " status " + (if entry.status == "bad_header" then "bad_header" else "truncated header")
+    string line = prefix + " name {entry.name} method " + method_name(entry.method) + " status {entry.status}"
+    if entry.status == "repaired"
+        line += " byte {entry.repair[0]} from {entry.repair[1]} to {entry.repair[2]}"
+    elif entry.status == "checksum"
+        line += " stored " + hex_value(entry.checksum, 8) + " computed " + hex_value(entry.computed, 8)
+    elif entry.status == "error"
+        line += " {entry.failure_kind} at {entry.failure_position}"
+    elif entry.status == "truncated"
+        line += " payload have {archive_size - entry.start} need {entry.compressed}"
+    return line
+
+string[] test_report(Parsed parsed, Encoding[] encodings, int[] salvaged, int verified)
+    string[] lines = []
+    if parsed.reason != ""
+        lines = ["archive error {parsed.reason}"]
+    else
+        string[] names = status_names()
+        int[] counts = array(7, fill = 0)
+        for Entry entry = parsed.entries[]
+            lines = lines.append(entry_test_line(entry, parsed.size))
+            for int status < 7
+                if entry.status == names[status]
+                    counts[status] += 1
+        string line = "summary entries {parsed.declared} checked {len(parsed.entries)}"
+        for int status < 7
+            line += " " + names[status] + " {counts[status]}"
+        lines = lines.append(line + " missing {parsed.declared - int(len(parsed.entries))} trailing {parsed.trailing}")
+    int original = 0
+    for int index < int(len(encodings))
+        Encoding encoded = encodings[index]
+        Entry entry = parsed.intact[index]
+        original += int(len(encoded.data))
+        lines = lines.append("salvage {entry.name} method " + method_name(encoded.best) + " compressed {len(encoded.payload)} was " + method_name(entry.method) + " {entry.compressed}")
+    return lines.append("salvaged entries {len(encodings)} bytes {len(salvaged)} original {original} verified {verified}")
+
+string[] text_lines(int[] data)
+    string text = byte_text(data)
+    string[] lines = text.split(NL)
+    return lines[0:<int(len(lines)) - 1]
+
+string[] extraction_report(Entry[] entries)
+    string[] lines = []
+    for Entry entry = entries[]
+        string[] contents = text_lines(entry.data)
+        int words = 0
+        int longest = 0
+        for string line = contents[]
+            if int(len(line)) > longest
+                longest = int(len(line))
+            for string word = line.split(" ")[]
+                if word != ""
+                    words += 1
+        lines = lines.append("file {entry.name} bytes {len(entry.data)} lines {len(contents)} words {words} longest {longest}")
+        lines = lines.concat(contents)
+    return lines
+
+class Edits(string[] lines, int removed, int added)
+
+Edits edit_list(string[] old, string[] fresh)
+    int old_count = int(len(old))
+    int new_count = int(len(fresh))
+    int[] below = array(nat(new_count + 1), fill = 0)
+    int[] current = below
+    bin[] decisions = array(nat(old_count), fill = bin.fill(nat(new_count), 0))
+    for old_count - 1 >= int first >= 0
+        bin deleted = bin.fill(nat(new_count), 0)
+        int right = 0
+        for new_count - 1 >= int second >= 0
+            int length = 0
+            if old[first] == fresh[second]
+                length = below[second + 1] + 1
+            elif below[second] >= right
+                length = below[second]
+                deleted[second] = bin(true)
+            else
+                length = right
+            current[second] = length
+            right = length
+        decisions[first] = deleted
+        int[] saved = below
+        below = current
+        current = saved
+    int first = 0
+    int second = 0
+    string[] edits = []
+    int removed = 0
+    int added = 0
+    while first < old_count or second < new_count
+        if first < old_count and second < new_count and old[first] == fresh[second]
+            first += 1
+            second += 1
+            continue
+        bool deletion = second == new_count
+        if not deletion and first < old_count
+            bool recorded = bool(decisions[first][second])
+            deletion = recorded
+        if deletion
+            edits = edits.append("-{first + 1}:" + old[first])
+            first += 1
+            removed += 1
+        else
+            edits = edits.append("+{second + 1}:" + fresh[second])
+            second += 1
+            added += 1
+    return Edits(edits, removed, added)
+
+class InputFile(string name, int[] data)
+
+string[] comparison_report(Entry[] entries, InputFile[] files)
+    bool[] seen = array(len(files), fill = false)
+    string[] lines = []
+    for Entry entry = entries[]
+        int chosen = -1
+        for int index < int(len(files))
+            if files[index].name == entry.name
+                chosen = index
+                break
+        if chosen < 0
+            lines = lines.append("archive_only {entry.name}")
+            continue
+        seen[chosen] = true
+        string[] old = text_lines(entry.data)
+        string[] fresh = text_lines(files[chosen].data)
+        if entry.data == files[chosen].data
+            lines = lines.append("same {entry.name} lines {len(old)}")
+            continue
+        int first = 0
+        while first < int(len(old)) and first < int(len(fresh)) and old[first] == fresh[first]
+            first += 1
+        Edits edits = edit_list(old, fresh)
+        lines = lines.append("differs {entry.name} first_line {first + 1} archive_lines {len(old)} manifest_lines {len(fresh)} removed {edits.removed} added {edits.added}")
+        lines = lines.concat(edits.lines)
+    for int index < int(len(files))
+        if not seen[index]
+            lines = lines.append("new " + files[index].name)
+    return lines
+
+void save(string name, string[] lines)
+    string content = if len(lines) == 0 then "" else lines.join(NL) + NL
+    file.write("output/" + name, content)
+
+string[] hex_lines(int[] data)
+    string[] lines = []
+    for int start < int(len(data)) step 32
+        int end = if start + 32 < int(len(data)) then start + 32 else int(len(data))
+        string line = ""
+        for start <= int index < end
+            line += hex_value(data[index], 2)
+        lines = lines.append(line)
+    return lines
+
+int[] parse_hex(string text)
+    int[] digits = text.codepoints()
+    int[] values = []
+    for int index < int(len(digits)) step 2
+        int first = if digits[index] <= 57 then digits[index] - 48 else digits[index] - 87
+        int second = if digits[index + 1] <= 57 then digits[index + 1] - 48 else digits[index + 1] - 87
+        values = values.append(16 * first + second)
+    return values
+
+string[] manifest = read_lines("input/manifest.txt")
+Params params = Params(decimal(manifest[0].split(" ")[1]), decimal(manifest[1].split(" ")[1]), decimal(manifest[2].split(" ")[1]))
+InputFile[] files = []
+Encoding[] encodings = []
+for 3 <= int index < int(len(manifest))
+    string name = manifest[index].split(" ")[1]
+    int[] data = read_bytes("input/files/" + name)
+    files = files.append(InputFile(name, data))
+    encodings = encodings.append(encode_file(name, data, params))
+int[] created = build_archive(encodings, params)
+int[] verified = verify(created, encodings)
+string hexadecimal = read_lines("input/archive.hex").join("")
+Parsed parsed = parse_archive(parse_hex(hexadecimal))
+Params salvage_params = if parsed.reason != "" then params else Params(parsed.offset_bits, parsed.length_bits, params.max_code_length)
+Encoding[] salvage_encodings = []
+for Entry entry = parsed.intact[]
+    salvage_encodings = salvage_encodings.append(encode_file(entry.name, entry.data, salvage_params))
+int[] salvaged = build_archive(salvage_encodings, salvage_params)
+int[] salvage_verified = verify(salvaged, salvage_encodings)
+bool output_exists = file.is_directory("output")
+if not output_exists
+    file.mkdir("output")
+save("sizes.txt", sizes_report(encodings, params, created, verified))
+save("analysis.txt", analysis_report(encodings))
+save("archive.hex", hex_lines(created))
+save("listing.txt", listing_report(parsed))
+save("test_report.txt", test_report(parsed, salvage_encodings, salvaged, salvage_verified[1]))
+save("extracted.txt", extraction_report(parsed.intact))
+save("compare.txt", comparison_report(parsed.intact, files))
+save("salvaged.hex", hex_lines(salvaged))

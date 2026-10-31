@@ -1,0 +1,231 @@
+import lexer = "./lexer.qui"
+import parser = "./parser.qui"
+
+class Value(string kind, int number = 0, bool flag = false, string text = "", int[] children = [], parser.Parameter parameter = parser.Parameter("_", lexer.Position(0, 0, 0)), int body = -1, int environment = -1)
+class Issue(lexer.Position position, string reason)
+class BuiltinResult(Value | none value = none, int | none existing = none, Issue | none issue = none)
+class Context(parser.Store syntax, func<BuiltinResult>(string, Value, lexer.Position) builtin, Value[] values = [], map.Map<string, int>[] environments = [], int calls = 0, Issue | none issue = none)
+class GroupResult(map.Map<string, int> environment, int[] values)
+
+bool failed(const Context context)
+    match context.issue
+        Issue found
+            return true
+        none
+            return false
+
+int fail(Context &context, const lexer.Position position, string reason)
+    if not failed(context)
+        context.issue = Issue(position, reason)
+    return -1
+
+int add(Context &context, const Value value)
+    int index = int(len(context.values))
+    context.values = context.values.append(value)
+    return index
+
+int checked_integer(Context &context, int value, const lexer.Position position)
+    if value < -2147483648 or value > 2147483647
+        return fail(&context, position, "integer overflow")
+    return add(&context, Value("integer", number = value))
+
+int compare_values(Context &context, int first, int second, const lexer.Position position)
+    Value left = context.values[first]
+    Value right = context.values[second]
+    if left.kind == "integer"
+        return if left.number < right.number then -1 elif left.number > right.number then 1 else 0
+    if left.kind == "bool"
+        return if left.flag == right.flag then 0 elif left.flag then 1 else -1
+    if left.kind == "string"
+        return if left.text < right.text then -1 elif left.text > right.text then 1 else 0
+    if left.kind == "pair" or left.kind == "list"
+        int count = lexer.minimum(int(len(left.children)), int(len(right.children)))
+        for int index < count
+            int order = compare_values(&context, left.children[index], right.children[index], position)
+            if failed(context) or order != 0
+                return order
+        return if len(left.children) < len(right.children) then -1 elif len(left.children) > len(right.children) then 1 else 0
+    int ignored = fail(&context, position, "functional value compared")
+    return 0
+
+bool match_pattern(Context &context, int pattern_index, int value_index, map.Map<string, int> &bindings)
+    parser.Pattern pattern = context.syntax.patterns[pattern_index]
+    Value value = context.values[value_index]
+    if pattern.kind == "wild"
+        return true
+    if pattern.kind == "name"
+        .bindings.set(pattern.value, value_index)
+        return true
+    if pattern.kind == "integer"
+        int number = int.parse(pattern.value)
+        return value.kind == "integer" and value.number == number
+    if pattern.kind == "bool"
+        return value.kind == "bool" and value.flag == (pattern.value == "true")
+    if pattern.kind == "string"
+        return value.kind == "string" and value.text == pattern.value
+    if pattern.kind == "cons"
+        if value.kind != "list" or len(value.children) == 0
+            return false
+        if not match_pattern(&context, pattern.children[0], value.children[0], &bindings)
+            return false
+        int tail = add(&context, Value("list", children = value.children[1:<int(len(value.children))]))
+        return match_pattern(&context, pattern.children[1], tail, &bindings)
+    if (pattern.kind == "list" and value.kind != "list") or (pattern.kind == "pair" and value.kind != "pair") or len(pattern.children) != len(value.children)
+        return false
+    for int index < int(len(pattern.children))
+        if not match_pattern(&context, pattern.children[index], value.children[index], &bindings)
+            return false
+    return true
+
+int evaluate(Context &context, int index, const map.Map<string, int> environment);
+
+GroupResult evaluate_group(Context &context, int index, const map.Map<string, int> environment)
+    parser.Group group = context.syntax.groups[index]
+    bool recursive = false
+    match group.recursive
+        lexer.Position position
+            recursive = true
+        none
+            recursive = false
+    int[] values = []
+    map.Map<string, int> result = environment
+    if recursive
+        int shared = int(len(context.environments))
+        context.environments = context.environments.append(environment)
+        for parser.Binding binding = group.bindings[]
+            parser.Expr function = context.syntax.expressions[binding.expression]
+            int closure = add(&context, Value("closure", parameter = function.parameter, body = function.children[0], environment = shared))
+            values = values.append(closure)
+            .result.set(binding.name, closure)
+        context.environments[shared] = result
+    else
+        for parser.Binding binding = group.bindings[]
+            int value = evaluate(&context, binding.expression, environment)
+            if failed(context)
+                return GroupResult(environment, [])
+            values = values.append(value)
+        for int position < int(len(group.bindings))
+            .result.set(group.bindings[position].name, values[position])
+    return GroupResult(result, values)
+
+int apply(Context &context, int function_index, int argument, const lexer.Position position)
+    context.calls += 1
+    Value function = context.values[function_index]
+    if function.kind == "closure"
+        map.Map<string, int> inner = context.environments[function.environment]
+        if function.parameter.name != "_"
+            .inner.set(function.parameter.name, argument)
+        return evaluate(&context, function.body, inner)
+    func<BuiltinResult>(string, Value, lexer.Position) operation = context.builtin
+    BuiltinResult result = operation(function.text, context.values[argument], position)
+    match result.issue
+        Issue issue
+            context.issue = issue
+            return -1
+        none
+            match result.existing
+                int found
+                    return found
+                none
+                    match result.value
+                        Value value
+                            return add(&context, value)
+                        none
+                            return fail(&context, position, "invalid builtin result")
+
+int | error required_value(const map.Map<string, int> environment, string name)
+    match environment.get(name)
+        int found
+            return found
+        none
+            return error("missing evaluated binding")
+
+int evaluate(Context &context, int index, const map.Map<string, int> environment)
+    if failed(context)
+        return -1
+    parser.Expr expression = context.syntax.expressions[index]
+    if expression.kind == "integer"
+        int number = int.parse(expression.value)
+        return add(&context, Value("integer", number = number))
+    if expression.kind == "bool"
+        return add(&context, Value("bool", flag = expression.value == "true"))
+    if expression.kind == "string"
+        return add(&context, Value("string", text = expression.value))
+    if expression.kind == "name"
+        int found = required_value(environment, expression.value)
+        return found
+    if expression.kind == "lambda"
+        int snapshot = int(len(context.environments))
+        context.environments = context.environments.append(environment)
+        return add(&context, Value("closure", parameter = expression.parameter, body = expression.children[0], environment = snapshot))
+    if expression.kind == "apply"
+        int function = evaluate(&context, expression.children[0], environment)
+        if failed(context)
+            return -1
+        int argument = evaluate(&context, expression.children[1], environment)
+        if failed(context)
+            return -1
+        return apply(&context, function, argument, expression.position)
+    if expression.kind == "negate"
+        int value = evaluate(&context, expression.children[0], environment)
+        if failed(context)
+            return -1
+        return checked_integer(&context, -context.values[value].number, expression.operator_position)
+    if expression.kind == "binary"
+        int first = evaluate(&context, expression.children[0], environment)
+        if failed(context)
+            return -1
+        Value left = context.values[first]
+        if expression.value == "&&"
+            return if left.flag then evaluate(&context, expression.children[1], environment) else add(&context, Value("bool", flag = false))
+        if expression.value == "||"
+            return if left.flag then add(&context, Value("bool", flag = true)) else evaluate(&context, expression.children[1], environment)
+        int second = evaluate(&context, expression.children[1], environment)
+        if failed(context)
+            return -1
+        Value right = context.values[second]
+        if lexer.has(["+", "-", "*", "/", "mod"], expression.value)
+            if (expression.value == "/" or expression.value == "mod") and right.number == 0
+                return fail(&context, expression.operator_position, "division by zero")
+            int value = if expression.value == "+" then left.number + right.number elif expression.value == "-" then left.number - right.number elif expression.value == "*" then left.number * right.number elif expression.value == "/" then left.number / right.number else left.number - right.number * (left.number / right.number)
+            return checked_integer(&context, value, expression.operator_position)
+        if expression.value == "^"
+            return add(&context, Value("string", text = left.text + right.text))
+        if expression.value == "::"
+            return add(&context, Value("list", children = [first].concat(right.children)))
+        int order = compare_values(&context, first, second, expression.operator_position)
+        if failed(context)
+            return -1
+        bool result = if expression.value == "=" then order == 0 elif expression.value == "<>" then order != 0 elif expression.value == "<" then order < 0 elif expression.value == ">" then order > 0 elif expression.value == "<=" then order <= 0 else order >= 0
+        return add(&context, Value("bool", flag = result))
+    if expression.kind == "if"
+        int condition = evaluate(&context, expression.children[0], environment)
+        if failed(context)
+            return -1
+        return evaluate(&context, if context.values[condition].flag then expression.children[1] else expression.children[2], environment)
+    if expression.kind == "pair" or expression.kind == "list"
+        int[] values = []
+        for int child = expression.children[]
+            int value = evaluate(&context, child, environment)
+            if failed(context)
+                return -1
+            values = values.append(value)
+        return add(&context, Value(expression.kind, children = values))
+    if expression.kind == "match"
+        int matched = evaluate(&context, expression.children[0], environment)
+        if failed(context)
+            return -1
+        for parser.Arm arm = expression.arms[]
+            map.Map<string, int> bindings = map.Map<string, int>()
+            if match_pattern(&context, arm.pattern, matched, &bindings)
+                map.Map<string, int> inner = environment
+                string[] keys = bindings.keys()
+                for string key = keys[]
+                    int value = required_value(bindings, key)
+                    .inner.set(key, value)
+                return evaluate(&context, arm.body, inner)
+        return fail(&context, expression.position, "match failure")
+    GroupResult result = evaluate_group(&context, expression.group, environment)
+    if failed(context)
+        return -1
+    return evaluate(&context, expression.children[0], result.environment)

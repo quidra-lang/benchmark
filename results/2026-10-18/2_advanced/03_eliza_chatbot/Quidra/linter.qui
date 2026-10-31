@@ -1,0 +1,142 @@
+import loader = "./script_loader.qui"
+import matcher = "./matcher.qui"
+
+int code_order(string code)
+    string[] codes = ["SYNTAX", "ORPHAN", "DUPLICATE", "KEY_NO_DECOMP", "KEY_UNREACHABLE", "SYNON_UNUSED", "PRE_CHAIN", "SYNON_UNKNOWN", "RULE_NO_REASM", "RULE_SHADOWED", "REF_UNBOUND", "TARGET_UNDEFINED", "TARGET_CYCLE"]
+    for nat index < len(codes)
+        if codes[index] == code
+            return int(index)
+    return -1
+
+bool is_error(string code)
+    return loader.has_word(["SYNTAX", "ORPHAN", "DUPLICATE", "SYNON_UNKNOWN", "REF_UNBOUND", "TARGET_UNDEFINED", "TARGET_CYCLE"], code)
+
+bool moves(loader.Item item)
+    return item.kind == "GOTO" or item.kind == "RESTATE"
+
+string[] unknown_groups(string[] pattern, loader.Script script)
+    string[] result = []
+    for string element = pattern[]
+        if element.starts_with("@") and script.group_index(element[1:<len(element)]) < 0
+            result = result.append(element[1:<len(element)])
+    return result
+
+int[] references(loader.Item item)
+    int[] result = []
+    if item.kind == "REASM"
+        for 0 <= int index < int(len(item.text)) - 2
+            if loader.is_reference(item.text[index:<index + 3])
+                result = result.append(int.parse(item.text[index + 1]))
+    elif item.kind == "RESTATE"
+        for 1 <= int index < int(len(item.arguments))
+            if loader.is_reference(item.arguments[index])
+                result = result.append(int.parse(item.arguments[index][1]))
+    return result
+
+bool reaches(int[][] graph, int start, int goal)
+    int[] pending = [start]
+    bool[] seen = array(len(graph), fill = false)
+    while len(pending) > 0
+        int current = pending[len(pending) - 1]
+        pending = pending[0:<len(pending) - 1]
+        if current == goal
+            return true
+        if seen[current]
+            continue
+        seen[current] = true
+        pending = pending.concat(graph[current])
+    return false
+
+loader.Diagnostic[] lint(loader.Script script)
+    loader.Diagnostic[] found = script.diagnostics
+    string[] replacements = []
+    string[] pre_sources = []
+    for loader.Substitution entry = script.pres[]
+        pre_sources = pre_sources.append(entry.source)
+        replacements = replacements.concat(entry.replacement)
+    string[] targets = []
+    for loader.Item item = script.items[]
+        if moves(item)
+            targets = targets.append(item.arguments[0])
+    string[] used_groups = []
+    for loader.Rule rule = script.rules[]
+        for string element = rule.pattern[]
+            if element.starts_with("@")
+                used_groups = used_groups.append(element[1:<len(element)])
+    int[][] graph = []
+    for loader.Keyword keyword = script.keywords[]
+        int[] edges = []
+        for int rule_id = keyword.decomps[]
+            for int item_id = script.rules[rule_id].items[]
+                loader.Item item = script.items[item_id]
+                if moves(item)
+                    int target = script.keyword_index(item.arguments[0])
+                    if target >= 0
+                        edges = edges.append(target)
+        graph = graph.append(edges)
+    for nat keyword_id < len(script.keywords)
+        loader.Keyword keyword = script.keywords[keyword_id]
+        if len(keyword.decomps) == 0
+            found = found.append(loader.Diagnostic(keyword.line, "KEY_NO_DECOMP", "keyword {keyword.word} has no DECOMP"))
+        if loader.has_word(pre_sources, keyword.word) and not loader.has_word(replacements, keyword.word) and not loader.has_word(targets, keyword.word)
+            found = found.append(loader.Diagnostic(keyword.line, "KEY_UNREACHABLE", "keyword {keyword.word} is replaced by PRE"))
+        int[][] kinds = [keyword.memories, keyword.decomps]
+        for int[] rules = kinds[]
+            for nat position < len(rules)
+                loader.Rule rule = script.rules[rules[position]]
+                string[] unknown = unknown_groups(rule.pattern, script)
+                for string name = unknown[]
+                    found = found.append(loader.Diagnostic(rule.line, "SYNON_UNKNOWN", "unknown group {name}"))
+                if len(rule.items) == 0
+                    found = found.append(loader.Diagnostic(rule.line, "RULE_NO_REASM", "rule has no reassembly"))
+                if len(unknown) == 0
+                    for nat earlier < position
+                        loader.Rule previous = script.rules[rules[earlier]]
+                        if len(unknown_groups(previous.pattern, script)) == 0 and matcher.pattern_covers(previous.pattern, rule.pattern, script)
+                            found = found.append(loader.Diagnostic(rule.line, "RULE_SHADOWED", "pattern is shadowed by line {previous.line}"))
+                            break
+                int wildcards = 0
+                for string element = rule.pattern[]
+                    if matcher.is_wildcard(element)
+                        wildcards += 1
+                for int item_id = rule.items[]
+                    loader.Item item = script.items[item_id]
+                    for int number = references(item)[]
+                        if number == 0 or number > wildcards
+                            found = found.append(loader.Diagnostic(item.line, "REF_UNBOUND", "reference ({number}) is not bound"))
+                    if moves(item)
+                        string word = item.arguments[0]
+                        int target = script.keyword_index(word)
+                        if target < 0
+                            found = found.append(loader.Diagnostic(item.line, "TARGET_UNDEFINED", "target {word} is not a keyword"))
+                        elif reaches(graph, target, int(keyword_id))
+                            found = found.append(loader.Diagnostic(item.line, "TARGET_CYCLE", "edge {keyword.word} -> {word} is on a cycle"))
+    for loader.Group group = script.groups[]
+        if not loader.has_word(used_groups, group.name)
+            found = found.append(loader.Diagnostic(group.line, "SYNON_UNUSED", "group {group.name} is never used"))
+    for loader.Substitution entry = script.pres[]
+        for string word = entry.replacement[]
+            if loader.has_word(pre_sources, word)
+                found = found.append(loader.Diagnostic(entry.line, "PRE_CHAIN", "replacement {word} is itself replaced by PRE"))
+    for 1 <= int index < int(len(found))
+        loader.Diagnostic current = found[index]
+        int cursor = index
+        while cursor > 0
+            loader.Diagnostic previous = found[cursor - 1]
+            if previous.line < current.line or (previous.line == current.line and code_order(previous.code) <= code_order(current.code))
+                break
+            found[cursor] = previous
+            cursor -= 1
+        found[cursor] = current
+    return found
+
+string[] lint_lines(loader.Diagnostic[] diagnostics)
+    if len(diagnostics) == 0
+        return ["OK"]
+    string[] result = []
+    int errors = 0
+    for loader.Diagnostic diagnostic = diagnostics[]
+        result = result.append("{diagnostic.line} {diagnostic.code} {diagnostic.message}")
+        if is_error(diagnostic.code)
+            errors += 1
+    return result.append("TOTAL {len(diagnostics)} errors={errors} warnings={int(len(diagnostics)) - errors}")

@@ -1,0 +1,49 @@
+function main()
+    text = [
+        "#############",
+        "#S..#.......#",
+        "#.#.#.###.#.#",
+        "#.#...#...#.#",
+        "#.###.#.###.#",
+        "#...#...#...#",
+        "###.#####.#.#",
+        "#.......#..G#",
+        "#############",
+    ]
+    maze = [collect(row) for row in text]
+    start = goal = (0, 0)
+    for row = 1:9, column = 1:13
+        maze[row][column] == 'S' && (start = (row, column))
+        maze[row][column] == 'G' && (goal = (row, column))
+    end
+    queue = [start]
+    parents = Dict(start=>start)
+    head = 1
+    while head <= length(queue)
+        row, column = queue[head]
+        head += 1
+        (row, column) == goal && break
+        for (dr, dc) in [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            next = (row+dr, column+dc)
+            r, c = next
+            if 1 <= r <= 9 && 1 <= c <= 13 && maze[r][c] != '#' && !haskey(parents, next)
+                parents[next] = (row, column)
+                push!(queue, next)
+            end
+        end
+    end
+    cell = goal
+    steps = 0
+    while cell != start
+        row, column = cell
+        maze[row][column] == '.' && (maze[row][column] = '*')
+        cell = parents[cell]
+        steps += 1
+    end
+    println("steps: ", steps)
+    for row in maze
+        println(join(row))
+    end
+end
+
+main()

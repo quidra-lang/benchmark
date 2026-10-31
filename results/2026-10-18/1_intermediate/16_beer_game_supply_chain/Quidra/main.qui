@@ -1,0 +1,639 @@
+import math
+
+int number(string text)
+    return int.parse(text)
+
+int floor_div(int numerator, int denominator)
+    return if numerator >= 0 then numerator / denominator else -((-numerator + denominator - 1) / denominator)
+
+string decimal(int numerator, int denominator, int places)
+    int scale = 10 ^ places
+    int scaled = numerator * scale / denominator
+    string fraction = (scaled % scale).string()
+    return (scaled / scale).string() + "." + string.repeat("0", nat(places - int(len(fraction)))) + fraction
+
+string money(int amount)
+    return decimal(amount, 100, 2)
+
+string ratio(int numerator, int denominator)
+    return if denominator == 0 then "n/a" else decimal(numerator, denominator, 4)
+
+string aligned(string text, int width)
+    return string.repeat(" ", nat(math.max(0, width - int(len(text))))) + text
+
+string listed(const int[] values, string separator)
+    string[] pieces = [for int value = values[] then value.string()]
+    return pieces.join(separator)
+
+void emit(string text)
+    print(text + NL)
+
+string[] stage_names()
+    return ["RETAILER", "WHOLESALER", "DISTRIBUTOR", "FACTORY"]
+
+int | error stage_index(string name)
+    string[] names = stage_names()
+    for 0 <= int index < 4
+        if names[index] == name
+            return index
+    return error("unknown stage " + name)
+
+class Policy(string name, int[] parameters, string notation)
+
+Policy | error parse_policy(const string[] words)
+    string name = words[0]
+    int count
+    if name == "PASS"
+        count = 0
+    elif name == "FIXED" or name == "BASESTOCK"
+        count = 1
+    elif name == "MINMAX" or name == "MOVAVG" or name == "SMOOTH"
+        count = 2
+    elif name == "STERMAN"
+        count = 4
+    else
+        return error("unknown policy " + name)
+    if int(len(words)) != count + 1
+        return error("{name} needs {count} parameters")
+    int[] parameters = []
+    for 0 <= int index < count
+        string text = words[index + 1]
+        if name == "STERMAN" and index < 3
+            string[] parts = text.split(".")
+            parameters = parameters.append(100 * number(parts[0]) + number(parts[1]))
+        else
+            parameters = parameters.append(number(text))
+    bool valid = true
+    if name == "FIXED"
+        valid = parameters[0] <= 1000
+    elif name == "BASESTOCK"
+        valid = parameters[0] <= 10000
+    elif name == "MINMAX"
+        valid = parameters[0] < parameters[1] and parameters[1] <= 10000
+    elif name == "MOVAVG" or name == "SMOOTH"
+        valid = 1 <= parameters[0] <= (if name == "MOVAVG" then 52 else 10) and parameters[1] <= 10000
+    elif name == "STERMAN"
+        valid = parameters[0] <= 100 and parameters[1] <= 100 and parameters[2] <= 100 and parameters[3] <= 10000
+    if not valid
+        return error("invalid parameter for " + name)
+    return Policy(name, parameters, words.join(" "))
+
+class Settings(int inventory, int quantity, int shipping_delay, int order_delay, int holding_rate, int backlog_rate, Policy policy)
+class Record(int received, int incoming, int shipped, int previous_backlog, int ontime, int inventory, int backlog, int order, int holding, int owing, int cost)
+class PlantRecord(int incoming, int made, int backlog)
+class Stage(Settings initial)
+    int inventory = initial.inventory
+    int backlog = 0
+    int[] shipping = array(nat(initial.shipping_delay), fill = initial.quantity)
+    int[] pending = array(nat(initial.order_delay), fill = initial.quantity)
+    Policy policy = initial.policy
+    int expected = 100 * initial.quantity
+    int holding_rate = initial.holding_rate
+    int backlog_rate = initial.backlog_rate
+    int lot = 1
+    int capacity = -1
+    Record[] records = []
+
+class Simulation(Stage[] stages, int[] demand)
+    int week = 0
+    int plant_backlog = 0
+    int plant_capacity = -1
+    bool visible = false
+    PlantRecord[] plant_records = []
+
+class Game(Settings[] initial, int[] base, Simulation current)
+    map.Map<string, Simulation> snapshots = map.Map<string, Simulation>()
+
+Simulation fresh(const Settings[] initial, const int[] demand)
+    Stage[] stages = [for Settings settings = initial[] then Stage(settings)]
+    return Simulation(stages, demand)
+
+int supply_line(const Simulation simulation, int index)
+    Stage stage = simulation.stages[index]
+    int upstream = if index == 3 then simulation.plant_backlog else simulation.stages[index + 1].backlog
+    return math.sum(stage.pending) + upstream + math.sum(stage.shipping)
+
+int signal(const Simulation simulation, int index, int week)
+    return if simulation.visible then simulation.demand[week - 1] else simulation.stages[index].records[week - 1].incoming
+
+void assign_policy(Simulation &simulation, int index, const Policy policy)
+    simulation.stages[index].policy = policy
+    simulation.stages[index].expected = 100 * (if simulation.week == 0 then simulation.stages[index].initial.quantity else signal(simulation, index, simulation.week))
+
+int policy_order(Simulation &simulation, int index, int supply, int position)
+    Stage &stage = &simulation.stages[index]
+    Policy policy = stage.policy
+    int[] parameters = policy.parameters
+    int week = simulation.week + 1
+    int incoming = stage.records[week - 1].incoming
+    int demand_signal = signal(simulation, index, week)
+    if policy.name == "FIXED"
+        return parameters[0]
+    if policy.name == "PASS"
+        return incoming
+    if policy.name == "BASESTOCK"
+        return math.max(0, parameters[0] - position)
+    if policy.name == "MINMAX"
+        return if position <= parameters[0] then parameters[1] - position else 0
+    if policy.name == "MOVAVG"
+        int count = math.min(parameters[0], week)
+        int[] signals = []
+        for week - count + 1 <= int previous <= week
+            signals = signals.append(signal(simulation, index, previous))
+        int forecast = math.sum(signals) / count
+        return math.max(0, parameters[1] + forecast * (stage.initial.shipping_delay + stage.initial.order_delay) - position)
+    if policy.name == "SMOOTH"
+        return math.max(0, demand_signal + floor_div(parameters[1] - position, parameters[0]))
+    stage.expected = floor_div(100 * parameters[0] * demand_signal + (100 - parameters[0]) * stage.expected, 100)
+    int net = stage.inventory - stage.backlog
+    return math.max(0, floor_div(100 * stage.expected + parameters[1] * (100 * (parameters[3] - net) - parameters[2] * supply), 10000))
+
+void advance_week(Simulation &simulation)
+    int[] received = []
+    for auto &stage = &simulation.stages[]
+        received = received.append(stage.shipping[0])
+        stage.inventory += stage.shipping[0]
+        stage.shipping = stage.shipping[1:]
+    int[] incoming = [simulation.demand[simulation.week]]
+    for auto &stage = &simulation.stages[]
+        incoming = incoming.append(stage.pending[0])
+        stage.pending = stage.pending[1:]
+    for 0 <= int index < 4
+        Stage &stage = &simulation.stages[index]
+        int before = stage.backlog
+        int requested = before + incoming[index]
+        int shipped = math.min(stage.inventory, requested)
+        if stage.capacity >= 0
+            shipped = math.min(shipped, stage.capacity)
+        stage.inventory -= shipped
+        stage.backlog = requested - shipped
+        int ontime = math.min(incoming[index], math.max(0, shipped - before))
+        stage.records = stage.records.append(Record(received[index], incoming[index], shipped, before, ontime, stage.inventory, stage.backlog, 0, 0, 0, 0))
+        if index > 0
+            simulation.stages[index - 1].shipping = simulation.stages[index - 1].shipping.append(shipped)
+    int requested = simulation.plant_backlog + incoming[4]
+    int produced = if simulation.plant_capacity < 0 then requested else math.min(requested, simulation.plant_capacity)
+    simulation.plant_backlog = requested - produced
+    simulation.stages[3].shipping = simulation.stages[3].shipping.append(produced)
+    simulation.plant_records = simulation.plant_records.append(PlantRecord(incoming[4], produced, simulation.plant_backlog))
+    int[] supplies = []
+    int[] positions = []
+    for 0 <= int index < 4
+        int supply = supply_line(simulation, index)
+        supplies = supplies.append(supply)
+        positions = positions.append(simulation.stages[index].inventory + supply - simulation.stages[index].backlog)
+    for 0 <= int index < 4
+        int quantity = policy_order(&simulation, index, supplies[index], positions[index])
+        Stage &stage = &simulation.stages[index]
+        quantity = (quantity + stage.lot - 1) / stage.lot * stage.lot
+        stage.pending = stage.pending.append(quantity)
+        Record &record = &stage.records[simulation.week]
+        record.order = quantity
+        record.holding = stage.inventory * stage.holding_rate
+        record.owing = stage.backlog * stage.backlog_rate
+        record.cost = record.holding + record.owing
+    simulation.week += 1
+
+int stage_cost(const Stage stage)
+    int[] costs = [for Record record = stage.records[] then record.cost]
+    return math.sum(costs)
+
+int chain_cost(const Simulation simulation)
+    int[] costs = [for Stage stage = simulation.stages[] then stage_cost(stage)]
+    return math.sum(costs)
+
+int[] values_for(const Stage stage, string kind)
+    return [for Record record = stage.records[] then (if kind == "ORDERS" then record.order elif kind == "INV" then record.inventory elif kind == "BACK" then record.backlog else record.inventory - record.backlog)]
+
+int variation(const int[] values)
+    return int(len(values)) * math.sum(values * values) - math.sum(values) ^ 2
+
+string fill_rate(const Stage stage)
+    int[] incoming = [for Record record = stage.records[] then record.incoming]
+    int[] ontime = [for Record record = stage.records[] then record.ontime]
+    return if math.sum(incoming) == 0 then "n/a" else decimal(math.sum(ontime) * 100, math.sum(incoming), 2) + "%"
+
+Simulation trial(const Game game, const Policy[] policies)
+    Simulation result = fresh(game.initial, game.current.demand)
+    result.visible = game.current.visible
+    result.plant_capacity = game.current.plant_capacity
+    for 0 <= int index < 4
+        Stage &stage = &result.stages[index]
+        Stage current = game.current.stages[index]
+        stage.lot = current.lot
+        stage.capacity = current.capacity
+        stage.holding_rate = current.holding_rate
+        stage.backlog_rate = current.backlog_rate
+        assign_policy(&result, index, policies[index])
+    while result.week < int(len(result.demand))
+        advance_week(&result)
+    return result
+
+class Interval(int first, int last)
+
+Interval | error command_range(const string[] words, int offset, int limit)
+    int first = if int(len(words)) > offset then number(words[offset]) else 1
+    int last = if int(len(words)) > offset then number(words[offset + 1]) else limit
+    if not (1 <= first <= last) or last > limit
+        return error("bad range {first} {last}")
+    return Interval(first, last)
+
+void demand_notice(const int[] demand)
+    emit("DEMAND weeks {len(demand)} total {math.sum(demand)} min {math.min_all(demand)} max {math.max_all(demand)}")
+
+void show_costs(const Simulation simulation)
+    emit("COSTS week {simulation.week}")
+    int[] holding_totals = []
+    int[] backlog_totals = []
+    string[] names = stage_names()
+    for 0 <= int index < 4
+        int[] holding = [for Record record = simulation.stages[index].records[] then record.holding]
+        int[] owing = [for Record record = simulation.stages[index].records[] then record.owing]
+        int held = math.sum(holding)
+        int owed = math.sum(owing)
+        holding_totals = holding_totals.append(held)
+        backlog_totals = backlog_totals.append(owed)
+        emit("{names[index]} holding {money(held)} backlog {money(owed)} total {money(held + owed)}")
+    emit("TOTAL holding {money(math.sum(holding_totals))} backlog {money(math.sum(backlog_totals))} total {money(math.sum(holding_totals) + math.sum(backlog_totals))}")
+
+string peak_week(const int[] values, int peak)
+    if peak == 0
+        return "-"
+    for 0 <= int index < int(len(values))
+        if values[index] == peak
+            return (index + 1).string()
+    return "-"
+
+void show_peaks(const Simulation simulation)
+    emit("PEAKS weeks 1-{simulation.week}")
+    string[] names = stage_names()
+    for 0 <= int index < 4
+        int[] inventory = values_for(simulation.stages[index], "INV")
+        int[] backlog = values_for(simulation.stages[index], "BACK")
+        int highest_inventory = math.max_all(inventory)
+        int highest_backlog = math.max_all(backlog)
+        int current_run = 0
+        int longest = 0
+        int ending = 0
+        for 0 <= int offset < simulation.week
+            current_run = if backlog[offset] > 0 then current_run + 1 else 0
+            if current_run > longest
+                longest = current_run
+                ending = offset + 1
+        string stretch = if longest == 0 then "0" else "{longest} weeks {ending - longest + 1}-{ending}"
+        emit("{names[index]} max_inv {highest_inventory} week {peak_week(inventory, highest_inventory)} max_back {highest_backlog} week {peak_week(backlog, highest_backlog)} longest_stockout {stretch}")
+
+void show_leadtime(const Simulation simulation, int index)
+    Stage stage = simulation.stages[index]
+    int nominal = stage.initial.shipping_delay + stage.initial.order_delay
+    int received = -nominal * stage.initial.quantity
+    int[] cumulative = []
+    for Record record = stage.records[]
+        received += record.received
+        cumulative = cumulative.append(received)
+    int orders = 0
+    int ordered = 0
+    int[] leads = []
+    for 0 <= int offset < simulation.week
+        int quantity = stage.records[offset].order
+        ordered += quantity
+        if quantity > 0
+            orders += 1
+            for offset + 1 <= int arrival < simulation.week
+                if cumulative[arrival] >= ordered
+                    leads = leads.append(arrival - offset)
+                    break
+    string measures = "min - avg - max -"
+    if len(leads) > 0
+        measures = "min {math.min_all(leads)} avg {decimal(math.sum(leads), int(len(leads)), 2)} max {math.max_all(leads)}"
+    string[] names = stage_names()
+    emit("LEADTIME {names[index]} nominal {nominal} orders {orders} completed {len(leads)} open {orders - int(len(leads))} {measures}")
+
+class Comparison(Policy policy, int cost, string fill, string bullwhip)
+
+void | error command(Game &game, const string[] words)
+    string verb = words[0]
+    Simulation &simulation = &game.current
+    string[] names = stage_names()
+    int horizon = int(len(simulation.demand))
+    if verb == "DEMAND" or verb == "GENERATE"
+        int[] demand = []
+        if verb == "DEMAND"
+            demand = [for string word = words[1:][] then number(word)]
+        else
+            int weeks = number(words[1])
+            for 5 <= int offset < int(len(words)) step 3
+                int week = number(words[offset + 1])
+                if not (1 <= week <= weeks)
+                    return error("week {week} outside horizon")
+            int seed = number(words[4])
+            for 1 <= int week <= weeks
+                int level = number(words[2])
+                for 5 <= int offset < int(len(words)) step 3
+                    int start = number(words[offset + 1])
+                    int amount = number(words[offset + 2])
+                    if words[offset] == "STEP" and week >= start
+                        level += amount
+                    elif words[offset] == "PULSE" and week == start
+                        level += amount
+                    elif words[offset] == "RAMP" and week >= start
+                        level += amount * (week - start + 1)
+                if level < 0
+                    return error("negative level at week {week}")
+                seed = seed * 48271 % 2147483647
+                demand = demand.append(level + seed % number(words[3]))
+        game.base = demand
+        simulation = fresh(game.initial, demand)
+        demand_notice(demand)
+    elif verb == "RESET"
+        simulation = fresh(game.initial, game.base)
+        emit("RESET week 0")
+    elif verb == "SAVE"
+        .game.snapshots.set(words[1], simulation)
+        emit("SAVE {words[1]} week {simulation.week}")
+    elif verb == "LOAD"
+        match game.snapshots.get(words[1])
+            Simulation saved
+                simulation = saved
+            none
+                return error("no snapshot " + words[1])
+        emit("LOAD {words[1]} week {simulation.week}")
+    elif verb == "RUN"
+        if simulation.week == horizon
+            return error("horizon reached at week {horizon}")
+        int first = simulation.week + 1
+        int last = math.min(horizon, simulation.week + number(words[1]))
+        int before = chain_cost(simulation)
+        while simulation.week < last
+            advance_week(&simulation)
+            for 0 <= int index < 4
+                Record record = simulation.stages[index].records[simulation.week - 1]
+                if record.previous_backlog == 0 and record.backlog > 0
+                    emit("STOCKOUT {names[index]} week {simulation.week} backlog {record.backlog}")
+                elif record.previous_backlog > 0 and record.backlog == 0
+                    emit("RECOVER {names[index]} week {simulation.week}")
+        emit("RUN {first}-{last} demand {math.sum(simulation.demand[first - 1:<last])} cost {money(chain_cost(simulation) - before)}")
+        if simulation.week == horizon
+            emit("HORIZON {horizon}")
+    elif verb == "SET"
+        int target = -1
+        if words[1] != "ALL"
+            target = try stage_index(words[1])
+        Policy policy = try parse_policy(words[2:])
+        for 0 <= int index < 4
+            if target < 0 or target == index
+                assign_policy(&simulation, index, policy)
+        emit("SET {words[1]} {policy.notation}")
+    elif verb == "BATCH" or verb == "COST" or verb == "CAPACITY"
+        int target = -1
+        if verb != "CAPACITY" or words[1] != "PLANT"
+            target = try stage_index(words[1])
+        if verb == "BATCH"
+            int lot = number(words[2])
+            if not (1 <= lot <= 100)
+                return error("invalid batch size " + words[2])
+            simulation.stages[target].lot = lot
+            emit("BATCH {words[1]} {words[2]}")
+        elif verb == "COST"
+            int holding = number(words[2])
+            int owing = number(words[3])
+            if holding > 1000 or owing > 1000
+                return error("invalid cost")
+            simulation.stages[target].holding_rate = holding
+            simulation.stages[target].backlog_rate = owing
+            emit("COST {words[1]} holding {holding} backlog {owing}")
+        else
+            int capacity = if words[2] == "OFF" then -1 else number(words[2])
+            if capacity > 10000
+                return error("invalid capacity " + words[2])
+            if target < 0
+                simulation.plant_capacity = capacity
+            else
+                simulation.stages[target].capacity = capacity
+            emit("CAPACITY {words[1]} {words[2]}")
+    elif verb == "VISIBILITY"
+        if words[1] != "ON" and words[1] != "OFF"
+            return error("unknown visibility " + words[1])
+        simulation.visible = words[1] == "ON"
+        emit("VISIBILITY " + words[1])
+    elif verb == "SHOCK"
+        int week = number(words[1])
+        if not (1 <= week <= horizon)
+            return error("week {week} outside horizon")
+        if week <= simulation.week
+            return error("week {week} already simulated")
+        int before = simulation.demand[week - 1]
+        simulation.demand[week - 1] = number(words[2])
+        emit("SHOCK week {week} {before} -> {words[2]}")
+    elif verb == "STATUS"
+        emit("STATUS week {simulation.week} of {horizon}")
+        for 0 <= int index < 4
+            Stage stage = simulation.stages[index]
+            int supply = supply_line(simulation, index)
+            string expectation = if stage.policy.name == "STERMAN" then " expect " + money(stage.expected) else ""
+            emit("{names[index]} inv {stage.inventory} back {stage.backlog} transit {listed(stage.shipping, ",")} pending {listed(stage.pending, ",")} supply {supply} position {stage.inventory + supply - stage.backlog} policy {stage.policy.notation}{expectation}")
+        emit("PLANT back {simulation.plant_backlog}")
+    elif verb == "SETTINGS"
+        emit("SETTINGS")
+        for 0 <= int index < 4
+            Stage stage = simulation.stages[index]
+            string capacity = if stage.capacity < 0 then "OFF" else stage.capacity.string()
+            emit("{names[index]} holding {stage.holding_rate} backlog {stage.backlog_rate} batch {stage.lot} capacity {capacity} delays {stage.initial.shipping_delay} {stage.initial.order_delay}")
+        emit("PLANT capacity " + (if simulation.plant_capacity < 0 then "OFF" else simulation.plant_capacity.string()))
+        emit("VISIBILITY " + (if simulation.visible then "ON" else "OFF"))
+    elif verb == "COSTS"
+        show_costs(simulation)
+    elif verb == "BALANCE"
+        emit("BALANCE week {simulation.week}")
+        for 0 <= int index < 4
+            Stage stage = simulation.stages[index]
+            int[] received = [for Record record = stage.records[] then record.received]
+            int[] shipped = [for Record record = stage.records[] then record.shipped]
+            emit("{names[index]} start {stage.initial.inventory} received {math.sum(received)} shipped {math.sum(shipped)} end {stage.inventory} owed {stage.backlog}")
+        int[] initial_goods = [for Settings settings = game.initial[] then settings.inventory + settings.quantity * settings.shipping_delay]
+        int[] production = [for PlantRecord record = simulation.plant_records[] then record.made]
+        int[] delivered = [for Record record = simulation.stages[0].records[] then record.shipped]
+        int[] stocks = [for Stage stage = simulation.stages[] then stage.inventory]
+        int[] transit = [for Stage stage = simulation.stages[] then math.sum(stage.shipping)]
+        emit("SYSTEM initial {math.sum(initial_goods)} produced {math.sum(production)} delivered {math.sum(delivered)} stock {math.sum(stocks)} transit {math.sum(transit)}")
+    elif verb == "DEMANDS"
+        Interval interval = try command_range(words, 1, horizon)
+        int[] demand = simulation.demand[interval.first - 1:<interval.last]
+        emit("DEMANDS {interval.first}-{interval.last} total {math.sum(demand)} min {math.min_all(demand)} max {math.max_all(demand)}")
+        emit(listed(demand, " "))
+    elif verb == "COMPARE"
+        Policy[] policies = []
+        int start = 1
+        for 1 <= int offset <= int(len(words))
+            if offset == int(len(words)) or words[offset] == "/"
+                Policy policy = try parse_policy(words[start:<offset])
+                policies = policies.append(policy)
+                start = offset + 1
+        Comparison[] results = []
+        int demand_variation = variation(simulation.demand)
+        for Policy policy = policies[]
+            Simulation result = trial(game, array(4, fill = policy))
+            Comparison row = Comparison(policy, chain_cost(result), fill_rate(result.stages[0]), ratio(variation(values_for(result.stages[3], "ORDERS")), demand_variation))
+            results = results.append(row)
+            int index = int(len(results)) - 1
+            while index > 0 and results[index - 1].cost > row.cost
+                results[index] = results[index - 1]
+                index -= 1
+            results[index] = row
+        emit("COMPARE {len(policies)} weeks {horizon}")
+        for 0 <= int index < int(len(results))
+            Comparison row = results[index]
+            emit("{index + 1} {row.policy.notation} total {money(row.cost)} fill {row.fill} bullwhip {row.bullwhip}")
+    elif verb == "OPTIMIZE"
+        int target = -1
+        if words[1] != "ALL"
+            target = try stage_index(words[1])
+        int low = number(words[2])
+        int high = number(words[3])
+        if low > high
+            return error("bad range {low} {high}")
+        if high - low > 200
+            return error("range too large")
+        int best_level = low
+        int best_cost = -1
+        int best_total = 0
+        for low <= int level <= high
+            Policy[] policies = [for Stage stage = simulation.stages[] then stage.policy]
+            for 0 <= int index < 4
+                if target < 0 or target == index
+                    policies[index] = Policy("BASESTOCK", [level], "BASESTOCK {level}")
+            Simulation result = trial(game, policies)
+            int total = chain_cost(result)
+            int objective = if target < 0 then total else stage_cost(result.stages[target])
+            if best_cost < 0 or objective < best_cost
+                best_level = level
+                best_cost = objective
+                best_total = total
+        emit("OPTIMIZE {words[1]} BASESTOCK {best_level} cost {money(best_cost)} total {money(best_total)}")
+    elif verb == "WEEK" or verb == "TABLE" or verb == "CHAIN" or verb == "SUMMARY" or verb == "FILLRATE" or verb == "BULLWHIP" or verb == "PEAKS" or verb == "LEADTIME" or verb == "PLOT" or verb == "HISTOGRAM"
+        int target = -1
+        if verb == "TABLE" or verb == "LEADTIME" or verb == "PLOT" or verb == "HISTOGRAM"
+            target = try stage_index(words[1])
+        if verb == "PLOT" or verb == "HISTOGRAM"
+            if words[2] != "ORDERS" and words[2] != "INV" and words[2] != "BACK" and words[2] != "NET"
+                return error("unknown mode " + words[2])
+        if verb == "HISTOGRAM" and not (1 <= number(words[3]) <= 100)
+            return error("invalid width " + words[3])
+        if simulation.week == 0
+            return error("no weeks simulated")
+        if verb == "WEEK"
+            int week = number(words[1])
+            if not (1 <= week <= simulation.week)
+                return error("bad week {week}")
+            emit("WEEK {week} demand {simulation.demand[week - 1]}")
+            for 0 <= int index < 4
+                Record record = simulation.stages[index].records[week - 1]
+                emit("{names[index]} recv {record.received} in {record.incoming} ship {record.shipped} inv {record.inventory} back {record.backlog} order {record.order} cost {money(record.cost)}")
+            PlantRecord record = simulation.plant_records[week - 1]
+            emit("PLANT in {record.incoming} made {record.made} back {record.backlog}")
+        elif verb == "TABLE" or verb == "CHAIN"
+            Interval interval = try command_range(words, if verb == "TABLE" then 2 else 1, simulation.week)
+            if verb == "TABLE"
+                emit("TABLE {words[1]} {interval.first}-{interval.last}")
+                emit("week     in   ship   recv    inv   back  order      cost")
+            else
+                emit("CHAIN {interval.first}-{interval.last}")
+                string[] headings = [for string name = names[] then aligned(name, 11)]
+                emit("week demand " + headings.join(" "))
+            for interval.first <= int week <= interval.last
+                string line = aligned(week.string(), 4)
+                if verb == "TABLE"
+                    Record record = simulation.stages[target].records[week - 1]
+                    int[] columns = [record.incoming, record.shipped, record.received, record.inventory, record.backlog, record.order]
+                    for int column = columns[]
+                        line += " " + aligned(column.string(), 6)
+                    line += " " + aligned(money(record.cost), 9)
+                else
+                    line += " " + aligned(simulation.demand[week - 1].string(), 6)
+                    for Stage stage = simulation.stages[]
+                        line += " " + aligned(stage.records[week - 1].order.string(), 11)
+                emit(line)
+        elif verb == "SUMMARY"
+            emit("SUMMARY weeks 1-{simulation.week}")
+            for 0 <= int index < 4
+                Stage stage = simulation.stages[index]
+                int[] inventory = values_for(stage, "INV")
+                int[] backlog = values_for(stage, "BACK")
+                int[] orders = values_for(stage, "ORDERS")
+                int[] zeroes = [for int quantity = orders[] if quantity == 0 then quantity]
+                emit("{names[index]} avg_inv {decimal(math.sum(inventory), simulation.week, 2)} avg_back {decimal(math.sum(backlog), simulation.week, 2)} orders {math.sum(orders)} min {math.min_all(orders)} max {math.max_all(orders)} zero_weeks {len(zeroes)}")
+        elif verb == "FILLRATE"
+            emit("FILLRATE weeks 1-{simulation.week}")
+            for 0 <= int index < 4
+                Stage stage = simulation.stages[index]
+                int[] incoming = [for Record record = stage.records[] then record.incoming]
+                int[] ontime = [for Record record = stage.records[] then record.ontime]
+                Record[] stockouts = [for Record record = stage.records[] if record.backlog > 0 then record]
+                int count = int(len(stockouts))
+                emit("{names[index]} fill {fill_rate(stage)} ontime {math.sum(ontime)} ordered {math.sum(incoming)} stockout_weeks {count} service {decimal((simulation.week - count) * 100, simulation.week, 2)}%")
+        elif verb == "BULLWHIP"
+            int weeks = simulation.week
+            int[] demand = simulation.demand[0:<weeks]
+            int demand_variation = variation(demand)
+            int previous = demand_variation
+            emit("BULLWHIP weeks 1-{weeks} demand mean {decimal(math.sum(demand), weeks, 4)} var {decimal(demand_variation, weeks * weeks, 4)}")
+            for 0 <= int index < 4
+                int[] orders = values_for(simulation.stages[index], "ORDERS")
+                int spread = variation(orders)
+                emit("{names[index]} mean {decimal(math.sum(orders), weeks, 4)} var {decimal(spread, weeks * weeks, 4)} ratio {ratio(spread, demand_variation)} step {ratio(spread, previous)}")
+                previous = spread
+        elif verb == "PEAKS"
+            show_peaks(simulation)
+        elif verb == "LEADTIME"
+            show_leadtime(simulation, target)
+        elif verb == "PLOT"
+            Interval interval = try command_range(words, 3, simulation.week)
+            int[] values = values_for(simulation.stages[target], words[2])[interval.first - 1:<interval.last]
+            int highest = math.max_all(values)
+            int lowest = math.min_all(values)
+            bool net = words[2] == "NET"
+            emit("PLOT {words[1]} {words[2]} {interval.first}-{interval.last} " + (if net then "min {lowest} max {highest}" else "max {highest}"))
+            int extent = if net then math.max(math.abs(lowest), math.abs(highest)) else highest
+            for 0 <= int index < int(len(values))
+                int value = values[index]
+                int length = if extent == 0 then 0 else math.abs(value) * (if net then 25 else 50) / extent
+                string line = aligned((interval.first + index).string(), 3) + " "
+                if net
+                    line += string.repeat(" ", nat(if value < 0 then 25 - length else 25))
+                    line += (if value < 0 then string.repeat("-", nat(length)) else "") + "|"
+                    line += if value > 0 then string.repeat("+", nat(length)) else ""
+                else
+                    line += "|" + string.repeat("#", nat(length))
+                emit(line + " " + value.string())
+        else
+            int width = number(words[3])
+            int[] values = values_for(simulation.stages[target], words[2])
+            int[] bins = [for int value = values[] then floor_div(value, width)]
+            emit("HISTOGRAM {words[1]} {words[2]} width {width} weeks 1-{simulation.week}")
+            for math.min_all(bins) <= int bin_number <= math.max_all(bins)
+                int[] matches = [for int value = bins[] if value == bin_number then value]
+                string bar = if len(matches) == 0 then "" else " " + string.repeat("*", len(matches))
+                emit("{bin_number * width}..{bin_number * width + width - 1} {len(matches)}{bar}")
+    else
+        return error("unknown command " + verb)
+    return void
+
+Settings[] settings = []
+for 0 <= int index < 4
+    string line
+    scan(&line)
+    string[] words = line.split(" ")
+    Policy policy = parse_policy(words[7:])
+    settings = settings.append(Settings(number(words[1]), number(words[2]), number(words[3]), number(words[4]), number(words[5]), number(words[6]), policy))
+Game game = Game(settings, [], fresh(settings, []))
+while true
+    string line
+    scan(&line)
+    string[] words = line.split(" ")
+    if words[0] == "END"
+        break
+    match command(&game, words)
+        void
+            continue
+        error problem
+            emit("ERROR " + problem.message)

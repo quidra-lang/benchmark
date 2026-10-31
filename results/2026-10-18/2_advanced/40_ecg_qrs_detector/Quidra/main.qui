@@ -1,0 +1,665 @@
+import io = "./signal_io.qui"
+import filters = "./filters.qui"
+import detector = "./detector.qui"
+import hrv = "./hrv.qui"
+import report = "./report.qui"
+
+int absolute(int value)
+    return if value < 0 then -value else value
+
+int minimum(int[] values)
+    int result = values[0]
+    for int value = values[]
+        if value < result
+            result = value
+    return result
+
+int maximum(int[] values)
+    int result = values[0]
+    for int value = values[]
+        if value > result
+            result = value
+    return result
+
+string pad(string value, int width)
+    return string.repeat(" ", nat(if int(len(value)) < width then width - int(len(value)) else 0)) + value
+
+string yes(bool value)
+    return if value then "yes" else "no"
+
+class Params(int[] values)
+    int refractory = values[0] / 5
+    int twave = values[1] / 5
+    int searchback_percent = values[2]
+    int premature_percent = values[3]
+    int qrs_width_ms = values[4]
+    int match_ms = values[5]
+    int pause_ms = values[6]
+    int brady_ms = values[7]
+    int tachy_ms = values[8]
+    int excerpt_ms = values[9]
+    int segment_ms = values[10]
+    int strip_start_ms = values[11]
+    int strip_ms = values[12]
+    int strip_rows = values[13]
+    int chart_rows = values[14]
+    int poincare_size = values[15]
+
+int[] thresholds(int[] levels)
+    int integrated = levels[1] + report.floor_div(levels[0] - levels[1], 4)
+    int band = levels[3] + report.floor_div(levels[2] - levels[3], 4)
+    return [integrated, band, report.floor_div(integrated, 2), report.floor_div(band, 2)]
+
+class Detection(detector.Peak[] peaks, int[] initial, int[] config)
+    int[] levels = initial
+    int[] registered = []
+    int[] intervals = []
+    int ra1 = 200
+    int ra2 = 200
+
+    void .register_peak(int index)
+        if len(registered) > 0
+            int elapsed = peaks[index].moment - peaks[registered[len(registered) - 1]].moment
+            intervals = intervals.append(elapsed)
+            if len(intervals) > 8
+                intervals = intervals[1:<int(len(intervals))]
+            ra1 = hrv.sum_values(intervals) / int(len(intervals))
+            if 92 * ra1 <= 100 * elapsed and 100 * elapsed <= 116 * ra1
+                ra2 = ra1
+        registered = registered.append(index)
+
+    void .update_levels(int index, string kind)
+        detector.Peak peak = peaks[index]
+        if kind == "noise"
+            levels[1] = (peak.peak_i + 7 * levels[1]) / 8
+            levels[3] = (peak.peak_f + 7 * levels[3]) / 8
+        else
+            int factor = if kind == "signal" then 7 else 3
+            int divisor = factor + 1
+            levels[0] = (peak.peak_i + factor * levels[0]) / divisor
+            levels[2] = (peak.peak_f + factor * levels[2]) / divisor
+
+    void .search_back(int moment)
+        while true
+            int last = if len(registered) > 0 then peaks[registered[len(registered) - 1]].moment else 0
+            if moment - last <= ra2 * config[2] / 100
+                break
+            int[] current = thresholds(levels)
+            int chosen = -1
+            for int index < int(len(peaks))
+                detector.Peak peak = peaks[index]
+                if peak.category == "noise" and peak.moment > last and peak.moment < moment and peak.peak_i > current[2] and peak.peak_f > current[3] and (chosen < 0 or peak.peak_i > peaks[chosen].peak_i)
+                    chosen = index
+            if chosen < 0
+                break
+            .update_levels(chosen, "searchback")
+            peaks[chosen].category = "searchback"
+            .register_peak(chosen)
+
+    void .run(int count)
+        for int index < int(len(peaks))
+            .search_back(peaks[index].moment)
+            int[] current = thresholds(levels)
+            detector.Peak peak = peaks[index]
+            peak.thr_i = current[0]
+            peak.thr_f = current[1]
+            int last = if len(registered) > 0 then registered[len(registered) - 1] else -1
+            string update = ""
+            bool register = false
+            if last >= 0 and peak.moment - peaks[last].moment < config[0] / 5
+                peak.category = "refractory"
+            elif peak.peak_i > peak.thr_i and peak.peak_f > peak.thr_f
+                if last >= 0 and peak.moment - peaks[last].moment < config[1] / 5 and 2 * peak.slope < peaks[last].slope
+                    peak.category = "twave"
+                    update = "noise"
+                else
+                    peak.category = "qrs"
+                    update = "signal"
+                    register = true
+            else
+                peak.category = "noise"
+                update = "noise"
+            peaks[index] = peak
+            if update != ""
+                .update_levels(index, update)
+            if register
+                .register_peak(index)
+        .search_back(count)
+
+class Beat(int number, int sample, int rr, int hr, int width, string label, string method)
+    int annotation = -1
+    int offset = 0
+
+Beat[] beat_list(int[] registered, detector.Peak[] peaks, int[] band, int premature_percent, int width_limit)
+    Beat[] beats = []
+    for int peak_index = registered[]
+        detector.Peak peak = peaks[peak_index]
+        int number = int(len(beats)) + 1
+        int sample = if peak.position < 21 then 0 else peak.position - 21
+        int rr = if number > 1 then 5 * (sample - beats[len(beats) - 1].sample) else -1
+        int heart_rate = if rr > 0 then report.rdiv(6000000, rr) else -1
+        int width = detector.width(band, peak.position)
+        string label = "N"
+        if number >= 10
+            int preceding = 0
+            for number - 8 <= int previous < number
+                preceding += beats[previous - 1].rr
+            if 800 * rr < premature_percent * preceding
+                label = if width > width_limit then "V" else "A"
+        beats = beats.append(Beat(number, sample, rr, heart_rate, width, label, if peak.category == "qrs" then "threshold" else "searchback"))
+    return beats
+
+void match_annotations(Beat[] &beats, io.Annotation[] &refs, int tolerance)
+    for int index < int(len(beats))
+        Beat beat = beats[index]
+        int chosen = -1
+        int distance = 0
+        for int reference < int(len(refs))
+            int delta = absolute(refs[reference].sample - beat.sample)
+            if refs[reference].beat < 0 and delta <= tolerance and (chosen < 0 or delta < distance)
+                chosen = reference
+                distance = delta
+        if chosen >= 0
+            beat.annotation = chosen
+            beat.offset = 5 * (beat.sample - refs[chosen].sample)
+            refs[chosen].beat = index
+            beats[index] = beat
+
+class Segment(int start, int stop)
+    int refs = 0
+    int tp = 0
+    int fp = 0
+    int false_negative = 0
+    int noise = 0
+    int beats = 0
+    int[] rr = []
+
+Segment[] segments(Beat[] beats, io.Annotation[] refs, detector.Peak[] peaks, int count, int segment_ms)
+    int width = segment_ms / 5
+    Segment[] result = []
+    for int start < count step width
+        int stop = if start + width < count then start + width else count
+        Segment segment = Segment(5 * start, 5 * stop)
+        for io.Annotation reference = refs[]
+            if reference.sample >= start and reference.sample < stop
+                segment.refs += 1
+                if reference.beat >= 0
+                    segment.tp += 1
+                else
+                    segment.false_negative += 1
+        for Beat beat = beats[]
+            if beat.sample >= start and beat.sample < stop
+                segment.beats += 1
+                if beat.annotation < 0
+                    segment.fp += 1
+                if beat.rr >= 0
+                    segment.rr = segment.rr.append(beat.rr)
+        for detector.Peak peak = peaks[]
+            if peak.moment >= start and peak.moment < stop and peak.category == "noise"
+                segment.noise += 1
+        result = result.append(segment)
+    return result
+
+string[] beat_csv(Beat[] beats, io.Annotation[] refs)
+    string[] result = ["beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label"]
+    for Beat beat = beats[]
+        string ref_sample = if beat.annotation < 0 then "-" else "{refs[beat.annotation].sample}"
+        string ref_label = if beat.annotation < 0 then "-" else refs[beat.annotation].label
+        string heart_rate = if beat.hr < 0 then "-" else report.two(beat.hr)
+        string[] fields = ["{beat.number}", "{beat.sample}", "{5 * beat.sample}", report.missing(beat.rr), heart_rate, "{beat.width}", beat.label, beat.method, ref_sample, ref_label]
+        result = result.append(fields.join(","))
+    return result
+
+string[] peak_csv(detector.Peak[] peaks)
+    string[] result = ["peak,sample,r_sample,peak_i,peak_f,slope,thr_i,thr_f,class"]
+    for int index < int(len(peaks))
+        detector.Peak peak = peaks[index]
+        result = result.append("{index + 1},{peak.moment},{peak.position},{peak.peak_i},{peak.peak_f},{peak.slope},{peak.thr_i},{peak.thr_f},{peak.category}")
+    return result
+
+class OrderedLine(int sample, int priority, string text)
+
+string[] ordered_lines(OrderedLine[] records)
+    OrderedLine[] ordered = []
+    for OrderedLine record = records[]
+        int position = int(len(ordered))
+        ordered = ordered.append(record)
+        while position > 0 and (record.sample < ordered[position - 1].sample or (record.sample == ordered[position - 1].sample and record.priority < ordered[position - 1].priority))
+            ordered[position] = ordered[position - 1]
+            position -= 1
+        ordered[position] = record
+    return [for OrderedLine record = ordered[] then record.text]
+
+string[] matching_csv(Beat[] beats, io.Annotation[] refs)
+    OrderedLine[] records = []
+    for io.Annotation reference = refs[]
+        string line = "{reference.sample},{reference.label},-,-,-,-,FN,-"
+        if reference.beat >= 0
+            Beat beat = beats[reference.beat]
+            line = "{reference.sample},{reference.label},{beat.number},{beat.sample},{beat.label},{beat.offset},TP," + yes(reference.label == beat.label)
+        records = records.append(OrderedLine(reference.sample, 0, line))
+    for Beat beat = beats[]
+        if beat.annotation < 0
+            records = records.append(OrderedLine(beat.sample, 1, "-,-,{beat.number},{beat.sample},{beat.label},-,FP,-"))
+    return ["ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree"].concat(ordered_lines(records))
+
+string[] excerpt(int[] samples, int[][] signals, int count)
+    string[] result = ["sample,ecg,lowpass,bandpass,derivative,squared,integrated"]
+    for int index < count
+        result = result.append("{index},{samples[index]},{signals[0][index]},{signals[1][index]},{signals[2][index]},{signals[3][index]},{signals[4][index]}")
+    return result
+
+string[] label_names()
+    return ["N", "V", "A"]
+
+int label_index(string label)
+    return if label == "N" then 0 elif label == "V" then 1 else 2
+
+string level_line(string prefix, int[] levels)
+    return "{prefix} spki={levels[0]} npki={levels[1]} spkf={levels[2]} npkf={levels[3]}"
+
+string[] performance(Beat[] beats, io.Annotation[] refs, detector.Peak[] peaks, Detection detection, Params params, Segment[] parts, int count)
+    string[] classes = ["qrs", "searchback", "twave", "refractory", "noise"]
+    int[] category_counts = [0, 0, 0, 0, 0]
+    int[] types = [0, 0, 0]
+    int[] detected = [0, 0, 0]
+    int[][] confusion = array(3, fill = array(4, fill = 0))
+    int[] extras = [0, 0, 0]
+    int[] method_total = [0, 0]
+    int[] method_tp = [0, 0]
+    int[] offsets = []
+    OrderedLine[] errors = []
+    int tp = 0
+    int fp = 0
+    for detector.Peak peak = peaks[]
+        for int index < 5
+            if classes[index] == peak.category
+                category_counts[index] += 1
+    for io.Annotation reference = refs[]
+        int category = label_index(reference.label)
+        types[category] += 1
+        if reference.beat >= 0
+            tp += 1
+            confusion[category][label_index(beats[reference.beat].label)] += 1
+        else
+            confusion[category][3] += 1
+            errors = errors.append(OrderedLine(reference.sample, 1, "false_negative sample={reference.sample} time_ms={5 * reference.sample} label={reference.label}"))
+    for Beat beat = beats[]
+        int category = label_index(beat.label)
+        int method = if beat.method == "threshold" then 0 else 1
+        detected[category] += 1
+        method_total[method] += 1
+        if beat.annotation >= 0
+            method_tp[method] += 1
+            offsets = offsets.append(beat.offset)
+        else
+            fp += 1
+            extras[category] += 1
+            errors = errors.append(OrderedLine(beat.sample, 0, "false_positive beat={beat.number} sample={beat.sample} time_ms={5 * beat.sample} label={beat.label}"))
+    int false_negative = int(len(refs)) - tp
+    string[] category_items = []
+    for int index < 5
+        category_items = category_items.append(classes[index] + "={category_counts[index]}")
+    int[] current = thresholds(detection.levels)
+    string[] result = [
+        "DETECTOR",
+        "samples {count}",
+        "duration_ms {5 * count}",
+        "peaks {len(peaks)} " + category_items.join(" "),
+        level_line("initial_levels", detection.initial),
+        level_line("final_levels", detection.levels),
+        "final_thresholds thr_i={current[0]} thr_f={current[1]}",
+        "final_rr_averages rravg1_ms={5 * detection.ra1} rravg2_ms={5 * detection.ra2}",
+        "MATCHING",
+        "tolerance_ms {params.match_ms}",
+        "references {len(refs)} N={types[0]} V={types[1]} A={types[2]}",
+        "detections {len(beats)} N={detected[0]} V={detected[1]} A={detected[2]}",
+        "true_positives {tp}",
+        "false_positives {fp}",
+        "false_negatives {false_negative}",
+        "sensitivity " + report.ratio(tp, int(len(refs))),
+        "positive_predictivity " + report.ratio(tp, int(len(beats))),
+        "detection_error_rate " + report.ratio(fp + false_negative, int(len(refs))),
+        "by_method threshold={method_tp[0]}/{method_total[0]} searchback={method_tp[1]}/{method_total[1]}",
+    ]
+    if len(offsets) == 0
+        result = result.append("offset_ms none")
+    else
+        int absolute_sum = 0
+        int absolute_max = 0
+        for int offset = offsets[]
+            absolute_sum += absolute(offset)
+            if absolute(offset) > absolute_max
+                absolute_max = absolute(offset)
+        result = result.append("offset_ms mean=" + report.two(report.rdiv(100 * hrv.sum_values(offsets), int(len(offsets)))) + " mean_abs=" + report.two(report.rdiv(100 * absolute_sum, int(len(offsets)))) + " max_abs={absolute_max}")
+    result = result.concat(["CONFUSION", "ref  " + pad("N", 6) + pad("V", 6) + pad("A", 6) + "  miss"])
+    string[] names = label_names()
+    for int category < 3
+        string line = names[category] + "    "
+        for int value = confusion[category][]
+            line += pad("{value}", 6)
+        result = result.append(line)
+    string line = "extra"
+    for int value = extras[]
+        line += pad("{value}", 6)
+    result = result.append(line)
+    for 1 <= int category < 3
+        string prefix = if category == 1 then "veb" else "sveb"
+        result = result.append(prefix + "_sensitivity " + report.ratio(confusion[category][category], types[category]))
+        result = result.append(prefix + "_positive_predictivity " + report.ratio(confusion[category][category], detected[category]))
+    result = result.append("SEGMENTS segment_ms={params.segment_ms} segments={len(parts)}")
+    for Segment part = parts[]
+        result = result.append(pad("{part.start}", 6) + "-" + pad("{part.stop}", 6) + " refs={part.refs} tp={part.tp} fp={part.fp} fn={part.false_negative} noise_peaks={part.noise}")
+    return result.append("ERRORS count={len(errors)}").concat(ordered_lines(errors))
+
+class Variability(int[] rr, int[] nn, int[][] pairs)
+
+Variability variability_inputs(Beat[] beats)
+    int[] rr = []
+    int[] nn = []
+    int[][] pairs = []
+    bool[] selected = array(len(beats), fill = false)
+    for 1 <= int index < int(len(beats))
+        rr = rr.append(beats[index].rr)
+        if index >= 2 and beats[index - 1].label == "N" and beats[index].label == "N" and 5 * absolute(beats[index].rr - beats[index - 1].rr) <= beats[index - 1].rr
+            nn = nn.append(beats[index].rr)
+            selected[index] = true
+            if selected[index - 1]
+                pairs = pairs.append([beats[index - 1].rr, beats[index].rr])
+    return Variability(rr, nn, pairs)
+
+string[] event_lines(Beat[] beats, int pause_ms, int brady_ms, int tachy_ms)
+    string[] result = []
+    for 1 <= int index < int(len(beats))
+        Beat beat = beats[index]
+        if beat.rr > pause_ms
+            result = result.append("pause beats={index}-{index + 1} rr_ms={beat.rr} start_ms={5 * beats[index - 1].sample}")
+    string[] kinds = ["bradycardia", "tachycardia"]
+    for string kind = kinds[]
+        int[] indices = []
+        for 1 <= int index < int(len(beats))
+            if (kind == "bradycardia" and beats[index].rr > brady_ms) or (kind == "tachycardia" and beats[index].rr < tachy_ms)
+                indices = indices.append(index + 1)
+        for int[] span = hrv.ranges(indices)[]
+            int count = span[1] - span[0] + 1
+            if count < 3
+                continue
+            int total = 0
+            for span[0] <= int number <= span[1]
+                total += beats[number - 1].rr
+            string mean_hr = report.two(report.rdiv(6000000 * count, total))
+            result = result.append("{kind} beats={span[0] - 1}-{span[1]} intervals={count} mean_hr={mean_hr} start_ms={5 * beats[span[0] - 2].sample}")
+    int[] ventricular = []
+    for Beat beat = beats[]
+        if beat.label == "V"
+            ventricular = ventricular.append(beat.number)
+    for 2 <= int interval <= 3
+        int[][] chains = []
+        for int number = ventricular[]
+            int last = int(len(chains)) - 1
+            bool linked = last >= 0 and number == chains[last][len(chains[last]) - 1] + interval
+            if linked
+                for chains[last][len(chains[last]) - 1] + 1 <= int between < number
+                    linked = linked and beats[between - 1].label == "N"
+            if linked
+                chains[last] = chains[last].append(number)
+            else
+                chains = chains.append([number])
+        for int[] chain = chains[]
+            if len(chain) >= 3
+                string kind = if interval == 2 then "bigeminy" else "trigeminy"
+                result = result.append("{kind} beats={chain[0]}-{chain[len(chain) - 1]} cycles={len(chain)} start_ms={5 * beats[chain[0] - 1].sample}")
+    return result
+
+string[] variability(Beat[] beats, io.Annotation[] refs, Segment[] parts, Params params)
+    Variability values = variability_inputs(beats)
+    hrv.Statistics stats = hrv.statistics(values.rr, values.nn, values.pairs)
+    string[] result = ["RR", "beats {len(beats)}", "intervals {len(values.rr)}", "mean_rr_ms " + report.maybe_two(stats.mean_rr)]
+    if len(values.rr) == 0
+        result = result.concat(["min_rr_ms none", "max_rr_ms none", "mean_hr_bpm none"])
+    else
+        result = result.concat(["min_rr_ms {values.rr[stats.shortest]} beat={stats.shortest + 2}", "max_rr_ms {values.rr[stats.longest]} beat={stats.longest + 2}", "mean_hr_bpm " + report.two(stats.mean_hr)])
+    result = result.concat([
+        "NN", "intervals {len(values.nn)}",
+        "mean_nn_ms " + report.maybe_two(stats.mean_nn),
+        "sdnn_ms " + report.maybe_two(stats.sdnn),
+        "differences {len(values.pairs)}",
+        "rmssd_ms " + report.maybe_two(stats.rmssd),
+        "sdsd_ms " + report.maybe_two(stats.sdsd),
+        "nn50 {stats.nn50}",
+        if stats.pnn50 >= 0 then "pnn50 " + report.two(stats.pnn50) + "%" else "pnn50 none",
+        "sd1_ms " + report.maybe_two(stats.sd1),
+        "sd2_ms " + report.maybe_two(stats.sd2),
+        "HISTOGRAM bin_ms=7.8125 bins={len(stats.histogram)} max={stats.histogram_max}",
+    ])
+    for int[] bucket = stats.histogram[]
+        string bar = string.repeat("#", nat(bucket[1]))
+        result = result.append(pad(report.four(78125 * bucket[0]), 10) + " " + pad(report.four(78125 * (bucket[0] + 1)), 10) + " " + pad("{bucket[1]}", 3) + " |" + bar)
+    result = result.append(if len(values.nn) == 0 then "triangular_index none" else "triangular_index " + report.fraction(int(len(values.nn)), stats.histogram_max) + " " + report.two(stats.triangular_index))
+    Beat[] premature = [for Beat beat = beats[] if beat.label != "N" then beat]
+    int ventricular = 0
+    int supraventricular = 0
+    for Beat beat = premature[]
+        if beat.label == "V"
+            ventricular += 1
+        else
+            supraventricular += 1
+    result = result.append("PREMATURE count={len(premature)} V={ventricular} A={supraventricular}")
+    for Beat beat = premature[]
+        int preceding = 0
+        for beat.number - 8 <= int number < beat.number
+            preceding += beats[number - 1].rr
+        int next_rr = if beat.number < int(len(beats)) then beats[beat.number].rr else -1
+        string compensation = "-"
+        if next_rr >= 0
+            int total = beat.rr + next_rr
+            compensation = if 10 * absolute(4 * total - preceding) <= preceding then "full" elif 4 * total < preceding then "partial" else "long"
+        string reference = if beat.annotation < 0 then "-" else refs[beat.annotation].label
+        string mean = report.two(report.rdiv(100 * preceding, 8))
+        string prematurity = report.two(report.rdiv(80000 * beat.rr, preceding))
+        result = result.append("beat={beat.number} sample={beat.sample} label={beat.label} rr_ms={beat.rr} next_rr_ms=" + report.missing(next_rr) + " mean_ms={mean} prematurity={prematurity}% compensation={compensation} width_ms={beat.width} ref={reference}")
+    OrderedLine[] runs = []
+    string[] premature_labels = ["V", "A"]
+    for string label = premature_labels[]
+        int[] indices = [for Beat beat = premature[] if beat.label == label then beat.number]
+        for int[] span = hrv.ranges(indices)[]
+            int count = span[1] - span[0] + 1
+            string kind = if count == 1 then "isolated" elif count == 2 then "couplet" else "run"
+            runs = runs.append(OrderedLine(span[0], 0, "{label} {kind} beats={span[0]}-{span[1]} length={count} start_ms={5 * beats[span[0] - 1].sample}"))
+    result = result.append("RUNS count={len(runs)}").concat(ordered_lines(runs))
+    string[] events = event_lines(beats, params.pause_ms, params.brady_ms, params.tachy_ms)
+    result = result.append("EVENTS count={len(events)}").concat(events)
+    result = result.append("TREND segment_ms={params.segment_ms} segments={len(parts)}")
+    for Segment part = parts[]
+        string prefix = pad("{part.start}", 6) + "-" + pad("{part.stop}", 6) + " beats={part.beats} "
+        if len(part.rr) == 0
+            result = result.append(prefix + "mean_hr=none min_hr=none max_hr=none |")
+        else
+            int mean_hr = report.rdiv(6000000 * int(len(part.rr)), hrv.sum_values(part.rr))
+            string mean = report.two(mean_hr)
+            string low = report.two(report.rdiv(6000000, maximum(part.rr)))
+            string high = report.two(report.rdiv(6000000, minimum(part.rr)))
+            string bar = string.repeat("#", nat(report.rdiv(mean_hr, 500)))
+            result = result.append(prefix + "mean_hr={mean} min_hr={low} max_hr={high} |" + bar)
+    return result
+
+int scale(int value, int top, int bottom, int rows)
+    return if top > bottom then report.rdiv((top - value) * (rows - 1), top - bottom) else 0
+
+string axis(int columns, int period, int offset)
+    string result = "       +"
+    for int column < columns
+        result += if period > 0 and (column + offset) % period == 0 then "+" else "-"
+    return result + "+"
+
+string chart_labels(string heading, int[] columns, string[] values)
+    string result = pad(heading, 6) + "  "
+    for int index < int(len(columns))
+        int gap = 8 + columns[index] - int(len(result))
+        if gap > 0
+            result += string.repeat(" ", nat(gap))
+        result += values[index]
+    while result.ends_with(" ")
+        result = result[0:<int(len(result)) - 1]
+    return result
+
+string[] waveform(int[] upper, int[] lower, int height)
+    int top = maximum(upper)
+    int bottom = minimum(lower)
+    int zero = if bottom <= 0 and top >= 0 then scale(0, top, bottom, height) else -1
+    string[] result = []
+    for int row < height
+        string label = if row == 0 then "{top}" elif row == height - 1 then "{bottom}" elif row == zero then "0" else ""
+        string cells = ""
+        for int column < int(len(upper))
+            cells += if scale(upper[column], top, bottom, height) <= row and row <= scale(lower[column], top, bottom, height) then "#" elif row == zero then "-" else " "
+        result = result.append(pad(label, 6) + " |" + cells + "|")
+    return result
+
+string[] charts(int[] samples, Beat[] beats, int height, int size)
+    int[] rr = [for Beat beat = beats[] if beat.rr >= 0 then beat.rr]
+    string[] result = []
+    if len(rr) == 0
+        result = ["TACHOGRAM intervals=0", "POINCARE points=0"]
+    else
+        int low = minimum(rr)
+        int high = maximum(rr)
+        result = result.append("TACHOGRAM intervals={len(rr)} min_ms={low} max_ms={high} rows={height}")
+        for int row < height
+            string label = if row == 0 then "{high}" elif row == height - 1 then "{low}" else ""
+            string cells = ""
+            for int value = rr[]
+                cells += if scale(value, high, low, height) == row then "*" else " "
+            result = result.append(pad(label, 6) + " |" + cells + "|")
+        result = result.append(axis(int(len(rr)), 10, 2))
+        int[] columns = []
+        string[] labels = []
+        string beat_labels = ""
+        for 1 <= int index < int(len(beats))
+            if (index + 1) % 10 == 0
+                columns = columns.append(index - 1)
+                labels = labels.append("{index + 1}")
+            beat_labels += beats[index].label
+        result = result.append(chart_labels("beat", columns, labels))
+        result = result.append(" label |" + beat_labels + "|")
+        int[][] grid = array(nat(size), fill = array(nat(size), fill = 0))
+        for int index < int(len(rr)) - 1
+            int column = if high > low then report.rdiv((rr[index] - low) * (size - 1), high - low) else 0
+            int row = scale(rr[index + 1], high, low, size)
+            grid[row][column] += 1
+        result = result.append("POINCARE points={len(rr) - 1} size={size} min_ms={low} max_ms={high}")
+        for int row < size
+            string label = if row == 0 then "{high}" elif row == size - 1 then "{low}" else ""
+            string cells = ""
+            for int count = grid[row][]
+                cells += if count == 0 then "." elif count < 10 then "{count}" else "#"
+            result = result.append(pad(label, 6) + " |" + cells + "|")
+        result = result.append(axis(size, 0, 0))
+        string text = "        {low}"
+        string high_text = "{high}"
+        int gap = 8 + size - int(len(high_text)) - int(len(text))
+        result = result.append(text + string.repeat(" ", nat(if gap > 0 then gap else 0)) + high_text)
+    for string label = label_names()[]
+        Beat[] chosen = [for Beat beat = beats[] if beat.label == label and beat.sample >= 60 and beat.sample <= int(len(samples)) - 100 then beat]
+        int[] baselines = []
+        for Beat beat = chosen[]
+            int baseline = 0
+            for -60 <= int offset <= -51
+                baseline += samples[beat.sample + offset]
+            baselines = baselines.append(baseline)
+        if len(chosen) == 0
+            result = result.append("TEMPLATE {label} beats=0")
+            continue
+        int[] averaged = []
+        for -60 <= int offset <= 99
+            int total = 0
+            for int index < int(len(chosen))
+                total += 10 * samples[chosen[index].sample + offset] - baselines[index]
+            averaged = averaged.append(report.rdiv(total, 10 * int(len(chosen))))
+        int low = minimum(averaged)
+        int high = maximum(averaged)
+        int minimum_offset = -61
+        int maximum_offset = -61
+        for int index < 160
+            if averaged[index] == high and maximum_offset < -60
+                maximum_offset = index - 60
+            if averaged[index] == low and minimum_offset < -60
+                minimum_offset = index - 60
+        result = result.append("TEMPLATE {label} beats={len(chosen)} max_uv={high} max_ms={5 * maximum_offset} min_uv={low} min_ms={5 * minimum_offset} rows={height}")
+        int[] upper = []
+        int[] lower = []
+        for int column < 80
+            int first = averaged[2 * column]
+            int second = averaged[2 * column + 1]
+            upper = upper.append(if first > second then first else second)
+            lower = lower.append(if first < second then first else second)
+        result = result.concat(waveform(upper, lower, height)).append(axis(80, 10, 0))
+        int[] columns = []
+        string[] values = []
+        for int column < 80 step 10
+            columns = columns.append(column)
+            values = values.append("{10 * column - 300}")
+        result = result.append(chart_labels("ms", columns, values))
+    return result
+
+string[] rhythm_strip(int[] samples, Beat[] beats, io.Annotation[] refs, Params params)
+    int start = params.strip_start_ms / 5
+    int count = params.strip_ms / 5
+    int columns = count / 10
+    int[] upper = []
+    int[] lower = []
+    for int column < columns
+        int low = samples[start + 10 * column]
+        int high = low
+        for 1 <= int offset < 10
+            int value = samples[start + 10 * column + offset]
+            if value < low
+                low = value
+            if value > high
+                high = value
+        upper = upper.append(high)
+        lower = lower.append(low)
+    int low = minimum(lower)
+    int high = maximum(upper)
+    string[] result = ["RHYTHM start_ms={params.strip_start_ms} end_ms={params.strip_start_ms + params.strip_ms} columns={columns} rows={params.strip_rows} max_uv={high} min_uv={low}"]
+    result = result.concat(waveform(upper, lower, params.strip_rows)).append(axis(columns, 20, 0))
+    int[] positions = []
+    string[] values = []
+    for int column < columns step 20
+        positions = positions.append(column)
+        values = values.append("{(params.strip_start_ms + 50 * column) / 1000}")
+    result = result.append(chart_labels("s", positions, values))
+    string[] beat_marks = array(nat(columns), fill = " ")
+    string[] ref_marks = beat_marks
+    for Beat beat = beats[]
+        if beat.sample >= start and beat.sample < start + count
+            beat_marks[(beat.sample - start) / 10] = beat.label
+    for io.Annotation reference = refs[]
+        if reference.sample >= start and reference.sample < start + count
+            ref_marks[(reference.sample - start) / 10] = reference.label
+    return result.concat([" beats |" + beat_marks.join("") + "|", "  refs |" + ref_marks.join("") + "|"])
+
+int[] samples = io.read_ecg()
+io.Annotation[] refs = io.read_annotations()
+int[] config = io.read_params()
+Params params = Params(config)
+int[][] signals = filters.run(samples)
+detector.Peak[] peaks = detector.find_peaks(signals)
+int[] initial = detector.initial_levels(signals)
+Detection detection = Detection(peaks, initial, config)
+.detection.run(int(len(samples)))
+peaks = detection.peaks
+Beat[] beats = beat_list(detection.registered, peaks, signals[1], params.premature_percent, params.qrs_width_ms)
+match_annotations(&beats, &refs, params.match_ms / 5)
+Segment[] parts = segments(beats, refs, peaks, int(len(samples)), params.segment_ms)
+bool output_exists = file.is_directory("output")
+if not output_exists
+    file.mkdir("output")
+io.write_lines("beats.csv", beat_csv(beats, refs))
+io.write_lines("peaks.csv", peak_csv(peaks))
+io.write_lines("matching.csv", matching_csv(beats, refs))
+io.write_lines("signals_excerpt.csv", excerpt(samples, signals, params.excerpt_ms / 5))
+io.write_lines("performance.txt", performance(beats, refs, peaks, detection, params, parts, int(len(samples))))
+io.write_lines("hrv.txt", variability(beats, refs, parts, params))
+io.write_lines("charts.txt", charts(samples, beats, params.chart_rows, params.poincare_size))
+io.write_lines("rhythm_strip.txt", rhythm_strip(samples, beats, refs, params))

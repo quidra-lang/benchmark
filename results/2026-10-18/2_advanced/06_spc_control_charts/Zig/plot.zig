@@ -1,0 +1,7 @@
+const v = @import("variable_charts.zig");
+fn place(band: *[61]u8, position: f64, symbol: u8) void { band[@intFromFloat(@min(60, @max(0, position)))] = symbol; }
+fn framed(center: f64) [61]u8 { var band: [61]u8 = @splat('.'); place(&band, 0, ':'); place(&band, 60, ':'); place(&band, center, '|'); return band; }
+pub fn limitsBand(l: v.Limits, value: f64, signalled: bool) [61]u8 { const span = l.ucl - l.lcl; var band = framed(@floor(60 * ((l.cl - l.lcl) / span) + 0.5)); place(&band, @floor(60 * ((value - l.lcl) / span) + 0.5), if (signalled) '*' else 'o'); return band; }
+pub fn cusumBand(upper: f64, lower: f64, threshold: f64, up: bool, down: bool) [61]u8 { var band = framed(30); if (lower > 0) place(&band, 30 - @min(30, @floor(30 * (lower / threshold) + 0.5)), if (down) '*' else '-'); if (upper > 0) place(&band, 30 + @min(30, @floor(30 * (upper / threshold) + 0.5)), if (up) '*' else '+'); return band; }
+pub fn widthBand(scale: f64, width: f64, value: f64, center: f64, signalled: bool) [61]u8 { var band: [61]u8 = @splat('.'); const edge = @min(30, @floor(30 * (width / scale) + 0.5)); place(&band, 30, '|'); place(&band, 30 - edge, ':'); place(&band, 30 + edge, ':'); place(&band, 30 + @floor(30 * ((value - center) / scale) + 0.5), if (signalled) '*' else 'o'); return band; }
+pub fn standardBand(z: f64, ok: bool) [61]u8 { var band = framed(30); place(&band, 30 + @floor(10 * z + 0.5), if (ok) 'o' else '*'); return band; }

@@ -1,0 +1,603 @@
+[Overview]
+Write a program that performs process mining on an event log recording an insurance claim handling process. It reads three files from the input/ folder: an event log, a reference model (a Petri net) and parameters. First it validates the log, builds the trace (sequence of activities) of each case (one claim), and computes log statistics, variants (groups of cases with the same trace), a directly-follows graph with waiting times, and a footprint (a table of the basic relations between activities). Next it discovers workflow nets with the alpha algorithm and the alpha+ algorithm from the log without the cases that contain rare transitions, and finds a dependency graph with the heuristic miner from the full log. Then, for the reference model and the two discovered nets, it determines soundness by state-space exploration, and computes footprint fitness, precision, and fitness and waiting times by timed token replay. Finally it analyzes the performers (resources), and writes the results to 8 files in the output/ folder. All ratios and averages are computed exactly as fractions of integers; floating-point numbers are not used. Nothing is printed to standard output.
+
+[Input files]
+The common format is as follows.
+- Every file consists of ASCII characters only, and every line ends with a newline (LF) (including the last line). There are no blank lines.
+- Line numbers of a file are counted with the first line as line 1.
+- Integers are non-negative decimal integers without extra leading zeros.
+- Activity names are strings of 1 to 20 characters consisting of lowercase letters and _, whose first and last characters are lowercase letters. Case IDs are strings of 1 to 8 characters consisting of uppercase letters and digits. Resource names are strings of 1 to 12 letters in which only the first character is an uppercase letter. Place names are strings of 1 to 20 characters consisting of lowercase letters, digits and _, whose first character is a lowercase letter.
+- In the descriptions below, <...> denotes a part where a value goes. The symbols < > themselves appear in neither the input nor the output.
+
+(1) input/eventlog.csv (event log)
+Line 1 is the header line "case_id,activity,timestamp,resource", and from line 2 on there is one data row per line. Each data row is a case ID, an activity name, a timestamp and a resource name separated by a single comma (,), with no quotes and no spaces around the fields. A row means that in that case, that activity was completed at that timestamp by that resource.
+A timestamp is a 16-character string of the form "2026-<month>-<day>T<hour>:<minute>", where <month>, <day>, <hour> and <minute> are each exactly 2 digits (a leading 0 is added when the value has one digit). The year is always 2026. The values of <month>, <day>, <hour> and <minute> may be out of range (this is checked in Section 2).
+Data rows are not necessarily in order of timestamp, and the rows of the same case are not necessarily consecutive.
+
+(2) input/model.txt (reference model)
+A Petri net that is the reference model of the business process. It consists of the following 5 kinds of lines, in the order PLACE lines, TRANSITION lines, ARC lines, INITIAL line, FINAL line. Each line is a keyword and values separated by a single space.
+PLACE <place name>: defines one place. The order of the PLACE lines is the place order of this net.
+TRANSITION <activity name>: defines one transition with that activity name.
+ARC <name1> <name2>: an arc from name1 to name2. One of them is a place name and the other is the activity name of a transition.
+INITIAL <place name>: the place that holds one token in the initial marking. There is exactly one such line.
+FINAL <place name>: the place that holds one token in the final marking. There is exactly one such line.
+
+(3) input/params.txt (parameters)
+It consists of the following 8 lines in this order. Each line is a keyword and a value separated by a single space. <integer> is a positive integer, and <fraction> is two positive integers joined with / (example: 4/5; not necessarily reduced), representing the value of that fraction. The value of each line is referred to by the symbol shown on the right.
+filter_min_follows <integer>: f (the lower bound of directly-follows counts used in filtering)
+sla_minutes <integer>: S (the target duration of a case, in minutes)
+positive_observations <integer>: sigma (the number of observations required by the heuristic miner)
+dependency_threshold <fraction>: theta_D (the dependency threshold)
+relative_to_best <fraction>: rho (the upper bound of the difference from the best dependency measure)
+loop1_threshold <fraction>: theta_1 (the threshold for length-one loops)
+loop2_threshold <fraction>: theta_2 (the threshold for length-two loops)
+and_threshold <fraction>: theta_A (the threshold for treating as AND)
+
+[Processing]
+Section 1. Common rules
+- String order: strings are compared in lexicographic order, comparing character codes (ASCII) from the first character (when one is a prefix of the other, the shorter one is smaller). "In ascending order of name" and "in ascending order of ID" always refer to this order.
+- Sequence order: sequences of activity names are compared element by element from the start using string order, and the first position where they differ decides. When one is a prefix of the other, the shorter one is smaller.
+- Name pair order: name pairs (name1, name2) are ordered by name1 ascending, then by name2 ascending if equal.
+- List notation: to output a collection of names, write the names arranged in the specified order and joined with "," (with no spaces). If the collection is empty, write "-". This is called list notation.
+- Fractions: all ratios and averages in this task are handled exactly as fractions of integers. Do addition, subtraction, multiplication, division and comparison of fractions exactly with integers after clearing denominators.
+- Fraction notation: a fraction v >= 0 is written as "<p>/<q>=<decimal>", i.e. the reduced fraction p/q (q >= 1; 0/1 if v is 0; denominator 1 if v is an integer) and the decimal obtained by truncating v to 4 decimal places, joined with =. With t = "the quotient of 10000 * p / q", the decimal is "<quotient of t / 10000>.<remainder of t / 10000 written with 4 digits (padded with leading zeros)>". For example, 2/3 is written 2/3=0.6666, 9/4 is written 9/4=2.2500, and 5 is written 5/1=5.0000. A negative fraction -v (v > 0) is written "-<p>/<q>=-<decimal>", i.e. the notation of v with a - placed before the numerator and before the decimal. However, when the truncated decimal is 0.0000, no - is placed before the decimal (example: -1/30000=0.0000). Only dependency measures (Section 8) can be negative.
+- Percentage notation: for an integer a >= 0 and a positive integer b, with t = "the quotient of 10000 * a / b", write "<quotient of t / 100>.<remainder of t / 100 written with 2 digits (a leading 0 if it has one digit)>%" (example: if a = 1 and b = 3, 33.33%).
+- Mean and median: the mean of a list of integers (of length 1 or more) is the fraction sum / count. For the median, sort the list in ascending order; if the length is odd, the median is the middle value; if it is even, it is the fraction (sum of the two middle values) / 2.
+- Division: every integer division in this task divides a non-negative integer by a positive integer. "The quotient of x / y" is the integer with the fractional part discarded.
+- Table format: for n items numbered 1 to n, writing an n-row, n-column table "with width w" means the following. The first line is 4 spaces followed by the numbers 1, 2, ..., n, each right-aligned in width w (padded with spaces on the left). Then, for i = 1, ..., n in this order, output a line consisting of the number i right-aligned in width 4, followed by the values of the cells in row i, column j for j = 1, ..., n in this order, each right-aligned in width w.
+- Logs: a list of pairs "(sequence of activity names (a trace), positive integer (a weight))" is called a log. For a log M and activities a and b, the directly-follows count |a>b|_M is the sum, over the pairs of M, of "(the number of positions i in the trace x_1, ..., x_k with x_i = a and x_(i+1) = b) * weight" (a = b is allowed). Also, for a != b, the triangle count tri_M(a, b) is likewise the sum of "(the number of positions i with x_i = a, x_(i+1) = b and x_(i+2) = a) * weight".
+- Basic relations: the basic relation between activities a and b (which may be the same) according to the directly-follows counts of a log M is defined as follows, and is denoted by the symbol shown on the right.
+  |a>b|_M >= 1 and |b>a|_M = 0: causality from a to b (written a -> b). Symbol ->
+  |a>b|_M = 0 and |b>a|_M >= 1: causality from b to a (b -> a). Symbol <-
+  |a>b|_M >= 1 and |b>a|_M >= 1: parallel (a || b). Symbol ||
+  |a>b|_M = 0 and |b>a|_M = 0: unrelated (a # b). Symbol #
+  When a = b, the relation is either || or #. Only the alpha+ algorithm of Section 7 uses a relation different from this.
+- Footprint: for a sequence of activities a_1, ..., a_n and a relation between activities, first output "ACTIVITY <i> <a_i>" one line each for i = 1, ..., n in this order, then output, with width 4, the table whose cell in row i, column j is the symbol of the relation between a_i and a_j. This is called the footprint of that sequence.
+
+Section 2. Input validation and cases
+Examine the data rows of eventlog.csv one at a time in ascending order of line number. For each row, check the conditions below in the listed order; if some condition applies, the row is rejected for the first condition that applies, and "line <line number>: <message>" is recorded as an error. A row to which no condition applies is adopted. Adopted rows are called events.
+1. The timestamp is invalid: bad timestamp <timestamp>
+  The timestamp is valid when all of the following hold: <month> is between 1 and 12, <day> is between 1 and (the number of days of that month), <hour> is between 0 and 23, and <minute> is between 0 and 59 (all bounds inclusive). The numbers of days of the months of 2026 are, from January, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31.
+2. A row with the same case ID, activity name and timestamp (as a string) as this row has already been adopted: duplicate event <case ID> <activity name> <timestamp>
+- The time value of an event is the number of minutes elapsed since 2026-01-01 00:00, "((sum of the numbers of days of the months from January to the month before that month + <day> - 1) * 24 + <hour>) * 60 + <minute>". From here on, all comparisons and differences of times are done with time values.
+- A group of events with the same case ID is called a case. The events of a case are ordered by time value ascending, then by line number ascending if equal (from here on, the events of a case are always handled in this order). The sequence of their activity names is called the trace of that case. Let C be the number of cases.
+- The duration of a case is (time value of the last event) - (time value of the first event).
+- The names that appear as activity names of events (without duplicates) are simply called "activities", and the names that appear as resource names (without duplicates) are simply called "resources".
+- The log made of the traces of all cases, each with weight 1, in ascending order of case ID, is called the full log L. From here on, unless stated otherwise, |a>b| and tri(a, b) are the values in the full log L.
+
+Section 3. Log statistics
+- For each activity a, compute the following values.
+  Event count: the number of events whose activity name is a
+  Case count: the number of cases whose trace contains a
+  Start count, end count: the number of cases whose trace starts with a, and ends with a, respectively
+  Rework count: the number of cases whose trace contains a two or more times
+  Waiting time: the mean, over each event whose activity name is a and which is not the first event of its case, of "its time value - the time value of the previous event in the case" (if there is no such event, there is no waiting time)
+  Resource count: the number of distinct resources among the events whose activity name is a
+  Model: yes if the reference model has a transition with activity name a, otherwise no
+- For the case length (number of events) and for the duration, compute the minimum, maximum, mean and median over all cases.
+- By day count: the quotient of (duration of the case) / 1440 is the day count of that case.
+- Over target: a case whose duration is greater than S is called a late case.
+- Weekdays: the weekday number of a time value t is the remainder of (the quotient of t / 1440 + 3) divided by 7, and the weekdays with weekday numbers 0, 1, 2, 3, 4, 5, 6 are Mon, Tue, Wed, Thu, Fri, Sat, Sun respectively (2026-01-01 is a Thursday). For each weekday, compute the number of events on that weekday, the number of cases whose first event is on that weekday (start count), and the number of cases whose last event is on that weekday (end count).
+
+Section 4. Variants and filtering
+- A group of cases with the same trace is called a variant, and its number of cases is the count of the variant. Variants are ordered by count descending, then by trace ascending in sequence order if equal, and are numbered from 1 in this order.
+- For each variant, compute its first case (the case with the smallest case ID), the mean duration, the number of late cases, and the fitness (the case fitness when replaying on the reference model in Section 11; all cases with the same trace have the same value).
+- Filtering: keep the cases in which every pair of adjacent activities (x_i, x_(i+1)) of the trace satisfies |x_i>x_(i+1)| >= f, and remove the cases that do not (a case with only one event is kept). Cases with the same trace get the same decision, so each variant is decided as either KEEP (kept) or DROP (removed). The log made of the traces of the KEEP variants, each with the variant's count as weight, in variant number order, is called the filtered log W.
+
+Section 5. Directly-follows graph
+- A pair of activities (a, b) with |a>b| >= 1 in the full log is called an edge (a = b is allowed). For each edge, compute the directly-follows count |a>b|, the case count (the number of cases in whose trace b immediately follows a somewhere), and the mean, minimum and maximum of the waiting times (over all cases, for every occurrence of two adjacent events whose activity names are a and b in this order, "time value of the later event - time value of the earlier event").
+- Start activities: for each activity that appears as the first activity of a trace, compute the number of such cases. End activities: for each activity that appears as the last activity of a trace, compute the number of such cases and the mean duration of those cases.
+
+Section 6. Alpha algorithm
+Find a workflow net from the filtered log W. The same procedure is also used in Section 7, so it is described here as a procedure for "a log M, a set of activities T, and a relation R between activities (one of causality ->, parallel ||, unrelated #)". In the alpha algorithm, M = W, T = T_W (the set of activities appearing in W), and R = the basic relation (Section 1) according to the directly-follows counts of W.
+(1) Let T_I be the set of the first activities of the traces of M, and T_O the set of the last activities.
+(2) Candidate pairs: a pair (A, B) of subsets of T is called a candidate pair when all of the following hold.
+  - Neither A nor B is empty.
+  - a -> b for every activity a in A and every activity b in B.
+  - a1 # a2 for all activities a1, a2 in A (including an activity paired with itself). The same holds for B.
+  Let X be the set of all candidate pairs.
+(3) Maximal pairs: a pair (A, B) in X for which there is no pair (A', B') in X such that A is a subset of A' (equality allowed), B is a subset of B' (equality allowed) and (A, B) != (A', B') is called a maximal pair, and let Y be the set of all maximal pairs.
+(4) Any method may be used to find X and Y. For example, they can be found as follows. For each pair of activities satisfying all of a -> b, a # a and b # b, put ({a}, {b}) into X; then, for each pair in X, add to X those pairs, obtained by adding one activity of T to A or to B, that are candidate pairs, and repeat this until no new pair is added. A pair obtained by replacing A and B of a candidate pair with non-empty subsets is again a candidate pair, so this finds all of X. Also, a candidate pair (A, B) is maximal if and only if no pair obtained by adding one activity to A or to B is a candidate pair.
+(5) Two maximal pairs are compared first by the sequences of the activities of A sorted in ascending order of name, in sequence order, and if those are equal, by the sequences of the activities of B sorted in ascending order of name, in sequence order; the smaller one comes first. Arrange the maximal pairs in this order and name them p1, p2, p3, ....
+(6) The resulting net is as follows. The places are start, p1, p2, ..., end, and this order is the place order of the net. The transitions are the activities of T. The arcs are: an arc from start to t for each activity t of T_I, an arc from t to end for each activity t of T_O, and, for each maximal pair pk = (A, B), arcs from each activity of A to pk and arcs from pk to each activity of B. The initial marking has one token in start, and the final marking has one token in end.
+(7) The causality count is the number of pairs (a, b) of activities of T (ordered pairs) with a -> b.
+The net found by the alpha algorithm is called the alpha net. Also, an activity a of T_W with |a>a|_W >= 1 is called a length-one loop activity (in the alpha algorithm, a length-one loop activity is not unrelated to itself, so it belongs to no maximal pair).
+
+Section 7. Alpha+ algorithm
+- Let V be the log obtained by removing all length-one loop activities from each trace of W (the weights are unchanged), and let T_V be T_W without the length-one loop activities.
+- For activities a != b, write a ~ b when tri_V(a, b) >= 1 and tri_V(b, a) >= 1. The alpha+ relation between activities a and b of T_V (which may be the same) is defined as follows, with all directly-follows counts taken as values in V.
+  a -> b: |a>b| >= 1 and (|b>a| = 0 or a ~ b)
+  a || b: |a>b| >= 1 and |b>a| >= 1 and not a ~ b
+  a # b: |a>b| = 0 and |b>a| = 0
+  When a ~ b, both a -> b and b -> a hold. The symbol of a footprint cell is -> if a -> b, otherwise <- if b -> a, otherwise || if a || b, and # in all other cases.
+- Perform (1) to (7) of Section 6 with M = V, T = T_V and R = the alpha+ relation.
+- Next, for each length-one loop activity t, let the predecessors pre(t) be "the set of activities a of T_V with |a>t|_W >= 1" and the successors post(t) be "the set of activities b of T_V with |t>b|_W >= 1" (W is the filtered log before the removal). If there is a maximal pair pk = (A, B) with A = pre(t) and B = post(t), add an arc from pk to t and an arc from t to pk (there is at most one such maximal pair). It is called the maximal pair corresponding to t.
+- The net obtained in this way, whose places are start, p1, ..., end (in this order) and whose transitions are the activities of T_W (including the length-one loop activities), is called the alpha+ net. Its initial marking and final marking are the same as those of the alpha net.
+
+Section 8. Heuristic miner
+Find a dependency graph from the full log L. All directly-follows counts and triangle counts below are values in L.
+- Length-one loops: for each activity a with |a>a| >= 1, the measure is |a>a| / (|a>a| + 1). If |a>a| >= sigma and measure >= theta_1, it is accepted (ACCEPT); otherwise it is rejected (REJECT). An accepted a is called an L1 loop activity.
+- Length-two loops: for each pair of activities a, b (name of a < name of b) such that neither a nor b is an L1 loop activity and n = tri(a, b) + tri(b, a) >= 1, the measure is n / (n + 1). If n >= sigma and measure >= theta_2, it is accepted; otherwise it is rejected.
+- Dependency measure: for activities a != b, the dependency measure D(a, b) is (|a>b| - |b>a|) / (|a>b| + |b>a| + 1). For an activity a, let Bout(a) be the maximum of D(a, c) over the activities c != a with |a>c| >= 1, and Bin(a) the maximum of D(c, a) over the activities c != a with |c>a| >= 1.
+- Verdict: for each pair of activities (a, b) (a != b) with |a>b| >= 1, check the following in order; the first one that applies is the verdict.
+  1. The pair of a and b is an accepted length-two loop: LOOP2
+  2. |a>b| < sigma: REJECT_COUNT
+  3. D(a, b) < theta_D: REJECT_MEASURE
+  4. Bout(a) - D(a, b) > rho and Bin(b) - D(a, b) > rho: REJECT_BEST
+  5. Otherwise: ACCEPT
+- The edges of the dependency graph are (a, a) for each L1 loop activity a, and the pairs (a, b) whose verdict is LOOP2 or ACCEPT. For an activity a, an activity x with an edge (x, a) is called an input of a, and an activity x with an edge (a, x) is called an output of a (for an L1 loop activity, this includes the activity itself).
+- Splits and joins: for each two activities b, c (name of b < name of c) chosen from the outputs of activity a other than a itself, the split measure is (|b>c| + |c>b|) / (|a>b| + |a>c| + 1). Likewise, for each two activities b, c (name of b < name of c) chosen from the inputs of a other than a itself, the join measure is (|b>c| + |c>b|) / (|b>a| + |c>a| + 1). If the measure is theta_A or more, it is AND; otherwise it is XOR.
+
+Section 9. Petri net behavior and state-space exploration
+For each of the three nets, the reference model, the alpha net and the alpha+ net, do the following.
+- A marking is the number of tokens in each place. The initial marking and the final marking are the markings with one token in the respective designated place and zero tokens in every other place. The input places of a transition t are the places with an arc to t, and its output places are the places with an arc from t. In a marking, a transition t is enabled when every input place of t has one or more tokens (a transition with no input place is always enabled). Firing an enabled t removes one token from each input place and then adds one token to each output place.
+- A marking in which every place has at most one token is called a safe marking. Mark the initial marking as explored; for each explored marking M and each transition t enabled in M, if the marking M' after firing is safe, create an edge from M to M' and add M' to the explored markings; if M' is not safe, count it as an unsafe firing (M' is not added to the explored markings). Repeat this until no new edge or explored marking is added. The explored markings and the edges do not depend on the order of exploration.
+- Compute the following values.
+  Marking count: the number of explored markings
+  Edge count: the number of edges (one per pair of M and t)
+  Unsafe firing count: the number of pairs of M and t that were unsafe firings
+  Deadlock count: the number of explored markings in which no transition is enabled and which are not the final marking
+  Stuck count: the number of explored markings from which the final marking cannot be reached by following edges (the final marking itself counts as able to reach it; if the final marking is not explored, all explored markings are counted)
+  Final: yes if the final marking is explored, otherwise no
+  Dead transitions: the transitions that are not enabled in any explored marking
+  Sound: yes if the unsafe firing count and the stuck count are both 0 and there is no dead transition, otherwise no
+- Net directly-follows: when a transition t is enabled in an explored marking M, the marking M' after firing it is safe, and a transition u is enabled in M', the pair (t, u) is a directly-follows pair of the net (t = u is allowed).
+
+Section 10. Footprint fitness and precision
+- Footprint fitness: for each of the three nets, let U be the union of the activities and the activity names of the transitions of that net. For each pair of activities a, b of U (which may be the same), the log-side relation is the basic relation according to the directly-follows counts of the full log, and the model-side relation is the basic relation "taking |a>b| = 1 if (a, b) is a directly-follows pair of the net and |a>b| = 0 otherwise". Let d be the number of pairs whose two symbols differ (counted as ordered pairs); the fitness is 1 - d / (number of elements of U * number of elements of U).
+- Precision: a leading part of a trace of the full log (including the empty sequence of length 0 and the whole trace) is called a prefix. For each distinct prefix pi, compute the weight w(pi) (the number of cases whose trace starts with pi) and the followers O(pi) (the set of activities that immediately follow pi in the cases whose trace starts with pi and is longer than pi). A prefix pi is said to fit the net when, firing the activities of pi in order as transitions starting from the initial marking of the net, every activity is a transition of the net and is enabled at that point. For a fitting prefix pi, let E(pi) be the set of transitions enabled in the marking after firing all of it; the transitions in E(pi) that are not in O(pi) are called the escapes of pi. The allowed count is the sum of w(pi) * (number of elements of E(pi)) over all fitting prefixes, the escaping count is the sum of w(pi) * (number of escapes), and the precision is 1 - escaping count / allowed count (if the allowed count is 0, the precision is 1). Also, for each transition, the sum of w(pi) over the fitting prefixes for which it is an escape is the escape weight of that transition.
+
+Section 11. Token replay
+For each of the three nets, replay each case of the full log as follows.
+- Each place holds tokens, each together with the time value at which it was produced. At the start of the replay, put one token with the time value of the first event of the case into the place of the initial marking, set the produced count p to 1, and set the consumed count c, the missing count m and the skipped count to 0.
+- Process the events of the case in order. If the net has no transition with the activity name of the event, add 1 to the skipped count and go on to the next event. If it has one, then for each input place q of that transition: add 1 to c; if q has a token, remove the earliest produced one among its tokens (any one among those with the same time value), record "time value of the event - time value of that token" as a waiting time of q, and also count this once as "a consumption from q by this transition". If q has no token, add 1 to m and count it once as a missing token of q. Then add one token with the time value of the event to each output place, and add that number of tokens to p.
+- After all events have been processed, for the place q of the final marking: add 1 to c; if q has a token, remove the earliest produced one (no waiting time is recorded); otherwise add 1 to m and count it once as a missing token of q. The number of tokens left in each place after that is the remaining of that place, and the sum of the remainings is the remaining count r.
+- The fitness of a case is 1/2 * (1 - m / c) + 1/2 * (1 - r / p). A case with m = 0 and r = 0 is called perfectly fitting.
+- For each net, compute the totals of m, r, c, p and the skipped count over all cases, the fitness computed from those totals with the same formula, and the number of perfectly fitting cases. For each place, compute the total missing, the total remaining, the deviating case count (the number of cases in which the missing or the remaining of that place is 1 or more), the number of recorded waiting times, and their mean and maximum. Furthermore, for each place with two or more output transitions (transitions that have that place as an input place), sum over all cases, for each output transition, the number of consumptions from that place by that transition.
+
+Section 12. Resource analysis
+- For each resource, compute the event count, the case count (the number of cases containing an event of that resource), and the event count per activity.
+- Handovers: for each two adjacent events (e_i, e_(i+1)) of each case, count the resource pair (resource of e_i, resource of e_(i+1)) as one handover (pairs with the same resource are also counted). For each resource pair, compute the number of handovers and the number of cases with one or more handovers of that pair.
+- Subcontracting: for each three consecutive events (e_i, e_(i+1), e_(i+2)) of each case such that e_i and e_(i+2) have the same resource and the resource of e_(i+1) differs from it, count the resource pair (resource of e_i, resource of e_(i+1)) once.
+- Working together: for each pair of resources a, b (name of a < name of b), compute the number of cases containing both an event of a and an event of b.
+
+[Output files]
+Write the following 8 files to the output/ folder. In every file, the separator within a line is a single space (a single comma in csv files; table lines follow the table format of Section 1), and no line has trailing spaces. Every line ends with a newline (LF), and no blank lines are output. Integers are written in decimal without extra leading zeros. Fractions and percentages are written in the fraction notation and the percentage notation of Section 1, respectively, and <list of ...> is written in the list notation of Section 1. Unless stated otherwise, the names in a list are sorted in ascending order of name.
+
+(1) output/log_summary.txt (validation result and log statistics)
+First, output the errors recorded in Section 2, in the order recorded, in the form "ERROR <recorded error>". Then output the following line.
+LOG rows <number of data rows> adopted <number of events> rejected <number of rejected rows> cases <C> activities <number of activities> resources <number of resources> first <first timestamp> last <last timestamp>
+<first timestamp> and <last timestamp> are the timestamps of the events with the smallest and the largest time value, written as the input strings.
+Then, for each activity in ascending order of name, output one line in the following form. When there is no waiting time, write - in place of <waiting time>.
+ACTIVITY <activity name> events <event count> cases <case count> start <start count> end <end count> rework <rework count> wait <waiting time> resources <resource count> model <model>
+Then output "LENGTH min <minimum> max <maximum> mean <mean> median <median>" for the case length and "DURATION min <minimum> max <maximum> mean <mean> median <median>" for the duration.
+Then, for d = 0, 1, ..., (maximum day count) in this order, output one line each "DAYS <d> cases <number of cases with day count d> share <percentage of that number / C>" (also for a d whose number is 0), and then output "SLA limit <S> late <number of late cases> share <percentage of that number / C>".
+Finally, output the 7 lines "WEEKDAY <weekday> events <number of events> starts <start count> ends <end count>" in order of weekday number.
+
+(2) output/variants.txt (variants)
+Output the variants in number order, one line each in the following form. <trace> is the activity names of the trace joined in order with ",".
+VARIANT <number> count <count> share <percentage of count / C> length <length of the trace> first <ID of the first case> duration <mean duration> late <number of late cases> fitness <fitness> <KEEP or DROP> <trace>
+Finally, output the following line.
+FILTER min_follows <f> variants <number of KEEP variants> of <number of variants> cases <number of kept cases> of <C> events <total number of events of the kept cases> of <number of events>
+
+(3) output/dfg.txt (directly-follows graph)
+First, output the start activities in descending order of case count, then in ascending order of name if equal, in the form "START <activity name> count <case count>", and then output the end activities in the same order in the form "END <activity name> count <case count> duration <mean duration>". Then output the edges in descending order of directly-follows count, then in name pair order of (a, b) if equal, in the following form.
+EDGE <a> <b> count <|a>b|> cases <case count> mean <mean waiting time> min <minimum waiting time> max <maximum waiting time>
+Finally, output the footprint by the basic relations of the full log, for all activities sorted in ascending order of name.
+
+(4) output/alpha_net.txt (alpha algorithm and alpha+ algorithm)
+First output the following 3 lines.
+LOG variants <number of KEEP variants> cases <number of kept cases> activities <list of T_W>
+LOOPS <list of length-one loop activities>
+MINER alpha
+Then output the following for the alpha algorithm, in this order.
+- The footprint by the basic relations of W, for the activities of T_W sorted in ascending order of name
+- PAIRS causal <causality count> candidates <number of elements of X> maximal <number of elements of Y>
+- PLACE start - <list of T_I>
+- For each maximal pair pk = (A, B) in ascending order of k: PLACE <pk> <list of A> <list of B>
+- PLACE end <list of T_O> -
+- For each transition in ascending order of name: TRANSITION <activity name> in <list of input places> out <list of output places> (these two lists are sorted in the place order of the net)
+- NET places <number of places> transitions <number of transitions> arcs <number of arcs>
+Then output "MINER alpha_plus", and then output the following for the alpha+ algorithm, in this order.
+- For each pair (a, b) with tri_V(a, b) >= 1, in name pair order: TRIANGLE <a> <b> count <tri_V(a, b)>
+- The footprint by the alpha+ relation, for the activities of T_V sorted in ascending order of name
+- A PAIRS line in the same form as for the alpha algorithm (with the values for the alpha+ relation)
+- For each length-one loop activity t in ascending order of name: LOOP <t> before <list of pre(t)> after <list of post(t)> place <name of the maximal pair corresponding to t; - if there is none>
+- For the alpha+ net, the PLACE lines, TRANSITION lines and NET line in the same form as for the alpha algorithm
+
+(5) output/heuristic_net.txt (heuristic miner)
+First, output the activities a with |a>a| >= 1 in ascending order of name in the form "L1 <a> count <|a>a|> measure <measure> <ACCEPT or REJECT>". Then output the pairs examined for length-two loops, in name pair order, in the form "L2 <a> <b> count <n> measure <measure> <ACCEPT or REJECT>". Then output the pairs (a, b) that received a verdict, in name pair order, in the following form.
+DEP <a> <b> count <|a>b|> reverse <|b>a|> measure <D(a, b)> <verdict>
+Then, for each activity in ascending order of name, output "NODE <activity name> in <list of inputs> out <list of outputs>". Then, for each activity a in ascending order of name, output first the split pairs (b, c) of a in name pair order in the form "SPLIT <a> <b> <c> measure <measure> <AND or XOR>", and then the join pairs (b, c) of a in name pair order in the form "JOIN <a> <b> <c> measure <measure> <AND or XOR>". Finally, output the following line.
+GRAPH activities <number of activities> edges <number of edges of the dependency graph> loops1 <number of L1 loop activities> loops2 <number of accepted length-two loop pairs>
+
+(6) output/conformance.csv (fitness per case)
+Line 1 is the header line "case_id,variant,events,skipped,missing,remaining,consumed,produced,fitness". Then, for each case in ascending order of ID, output one line with the values of the replay on the reference model, in the form "<case ID>,<variant number>,<number of events>,<skipped count>,<m>,<r>,<c>,<p>,<fitness>".
+
+(7) output/conformance.txt (model checks and conformance)
+Below, <net> is reference for the reference model, alpha for the alpha net, and alpha_plus for the alpha+ net. When lines of the same form are output for the three nets, they are output in the order reference, alpha, alpha_plus.
+First output "MODEL places <number of places of the reference model> transitions <number of transitions> arcs <number of arcs>", then output the results of Section 9 for the three nets in the following form.
+REACHABILITY <net> markings <marking count> edges <edge count> unsafe <unsafe firing count> deadlocks <deadlock count> stuck <stuck count> final <final> dead <list of dead transitions> sound <sound>
+Then, for the reference model, output "FOOTPRINT <net> activities <number of elements of U> cells <number of elements of U * number of elements of U> differing <d> fitness <fitness>", and then output the pairs (a, b) whose symbols differ for the reference model and for which name of a <= name of b, in name pair order, in the form "DIFF <a> <b> log <log-side symbol> model <model-side symbol>". Then output FOOTPRINT lines in the same form for the alpha net and the alpha+ net (no DIFF lines are output for these two nets).
+Then, for each of the three nets, first output "PRECISION <net> prefixes <number of fitting prefixes> allowed <allowed count> escaping <escaping count> precision <precision>", and then output the transitions whose escape weight is 1 or more, in descending order of escape weight, then in ascending order of name if equal, in the form "ESCAPE <net> <activity name> weight <escape weight>".
+Finally, for each of the three nets, first output the following line.
+REPLAY <net> cases <C> fitting <number of perfectly fitting cases> skipped <total skipped count> missing <total of m> remaining <total of r> consumed <total of c> produced <total of p> fitness <fitness computed from the totals>
+Then output the following line for every place of that net, in the place order of the net. When the number of recorded waiting times is 0, write - in place of both <mean> and <maximum>.
+PLACE <net> <place name> missing <total missing> remaining <total remaining> deviating <deviating case count> tokens <number of recorded waiting times> mean <mean> max <maximum>
+Then, for the places with two or more output transitions, output "ROUTE <net> <place name> <consumption list>" in the place order of the net. <consumption list> is the output transitions in ascending order of name, each written as "<activity name>=<total number of consumptions>", joined with "," (those whose total is 0 are also written).
+
+(8) output/resources.txt (resource analysis)
+Number the resources from 1 in ascending order of name, and output one line each, in that order, in the following form. <work list> is the activities for which that resource has events, in ascending order of name, each written as "<activity name>=<number of events of that activity>", joined with ",".
+RESOURCE <number> <resource name> events <event count> cases <case count> work <work list>
+Then output the handovers of pairs with different resources, in descending order of handover count, then in name pair order if equal, in the form "HANDOVER <earlier resource> <later resource> count <handover count> cases <number of cases>". Then output, with width 5, the table whose cell in row i, column j is "the number of handovers from the resource numbered i to the resource numbered j" (including i = j; 0 if there are none). Then output the pairs counted for subcontracting, in descending order of count, then in name pair order if equal, in the form "SUBCONTRACT <resource of e_i> <resource of e_(i+1)> count <count>", and then output the pairs whose working-together case count is 1 or more, in descending order of case count, then in name pair order if equal, in the form "TOGETHER <a> <b> cases <number of cases>". Finally output "TOTAL handovers <total number of handovers> self <number of handovers of pairs with the same resource> other <number of handovers of pairs with different resources>".
+
+[Source files]
+Organize the program into the following 7 source files (name the files following the conventions of each language).
+- main: holds the overall flow and the core of the processing. It extracts the parameters, validates the event log and builds the cases, computes the log statistics (per-activity values, by day count, over target, by weekday), the variants and the filtering, the edges and waiting times of the directly-follows graph, the extension of candidate pairs, the maximality test and the net construction of the alpha algorithm (shared by the alpha and alpha+ algorithms), the removal and reinsertion of loop activities in the alpha+ algorithm, the loop and dependency verdicts and the split and join verdicts of the heuristic miner, the state-space exploration and the soundness check, the footprint fitness, the precision computation, the timed token replay and its aggregation, and the resource analysis, and builds the lines of all output files.
+- eventlog: reads eventlog.csv and params.txt, validates timestamps and converts them to time values, records events, groups them into cases and sorts them, and computes medians.
+- dfg: counts the directly-follows counts of a log, determines basic relations, builds footprints, and handles the table format.
+- alpha_miner: tests whether a pair obtained by adding one activity to a candidate pair is a candidate pair, provides the comparison used to sort maximal pairs, counts triangle counts, and determines the alpha+ relation.
+- heuristic_miner: computes the dependency measures, the length-one and length-two loop measures, and the split and join measures.
+- conformance: reads model.txt, records the Petri net (place order, transitions, input places and output places, initial marking and final marking), tests enabledness and fires transitions, records the replay totals (m, r, c, p, skipped count and per-place values) and computes fitness.
+- report: handles the formatting of the fraction notation, percentage notation and list notation, and writing to files.
+
+[Constraints]
+- eventlog.csv has between 1 and 3000 data rows, and there is at least one event. There are at most 300 cases, at most 12 activities and at most 20 resources, and every case has at most 50 events.
+- No activity name is start or end.
+- model.txt has at most 20 places and at most 12 transitions, and the activity names of the transitions are all distinct. The place names are all distinct and differ from every activity name. Every name in an ARC line is defined by a PLACE line or a TRANSITION line, and the same arc never appears twice. The places of the INITIAL line and the FINAL line are defined by PLACE lines.
+- 1 <= f <= 3000, 1 <= S <= 525600, 1 <= sigma <= 3000. Each of theta_D, rho, theta_1, theta_2, theta_A, written as a/b, satisfies 1 <= a <= b <= 100.
+- At least one case remains in the filtered log, and no trace of V is empty.
+- In both the alpha algorithm and the alpha+ algorithm, X has at most 5000 elements. For each of the three nets, there are at most 1000 explored markings. There are at most 5000 distinct prefixes.
+- The absolute value of every integer appearing in the computation is less than 2^53. However, values such as the fitness with its denominators cleared, or the value multiplied by 10000 in the fraction notation, can exceed 2^31, so compute with 64-bit integers (or a type that represents integers below 2^53 exactly). Do all divisions and comparisons exactly with integers.
+
+[Example]
+The following is a small example (it differs from the actual data in input/).
+input/eventlog.csv:
+case_id,activity,timestamp,resource
+K1,register,2026-03-02T09:00,Ann
+K2,register,2026-03-02T09:10,Ann
+K1,check,2026-03-02T09:30,Bob
+K2,check,2026-03-02T10:10,Bob
+K2,notify,2026-03-02T09:40,Cat
+K1,notify,2026-03-02T10:00,Cat
+K1,archive,2026-03-02T11:00,Ann
+K1,notify,2026-03-02T10:00,Dan
+K2,archive,2026-03-02T12:00,Ann
+K3,register,2026-03-03T08:00,Bob
+K3,check,2026-03-03T08:20,Bob
+K3,fix,2026-03-03T09:00,Dan
+K3,check,2026-02-29T10:00,Bob
+K3,check,2026-03-03T09:45,Bob
+K3,notify,2026-03-03T10:00,Cat
+K4,register,2026-03-03T10:00,Ann
+K4,check,2026-03-03T10:20,Bob
+K4,notify,2026-03-03T10:30,Cat
+K3,archive,2026-03-03T13:00,Ann
+K5,register,2026-03-04T09:00,Ann
+K5,check,2026-03-04T09:15,Bob
+K5,fix,2026-03-04T09:50,Dan
+K5,check,2026-03-04T10:20,Bob
+K4,remind,2026-03-04T10:30,Cat
+K5,fix,2026-03-04T10:40,Dan
+K5,check,2026-03-04T11:00,Bob
+K5,notify,2026-03-04T11:00,Cat
+K5,archive,2026-03-04T14:00,Ann
+K6,register,2026-03-05T09:00,Bob
+K6,call,2026-03-05T09:30,Eve
+K6,check,2026-03-05T10:00,Bob
+K4,remind,2026-03-05T10:30,Cat
+K6,notify,2026-03-05T10:30,Cat
+K6,archive,2026-03-05T11:30,Ann
+K4,archive,2026-03-05T12:00,Ann
+K7,register,2026-03-06T08:30,Ann
+K7,check,2026-03-06T08:45,Bob
+K7,notify,2026-03-06T09:00,Cat
+K7,remind,2026-03-07T09:00,Cat
+K7,remind,2026-03-08T09:00,Cat
+K7,archive,2026-03-08T11:00,Ann
+K8,register,2026-03-09T09:00,Ann
+K8,check,2026-03-09T09:20,Bob
+K8,notify,2026-03-09T10:00,Cat
+K8,call,2026-03-09T10:30,Eve
+K9,register,2026-03-09T13:00,Bob
+K9,notify,2026-03-09T13:30,Cat
+K9,check,2026-03-09T14:00,Bob
+K9,archive,2026-03-09T15:00,Ann
+input/model.txt:
+PLACE m0
+PLACE m1
+PLACE m2
+PLACE m3
+PLACE m4
+PLACE m5
+TRANSITION register
+TRANSITION check
+TRANSITION fix
+TRANSITION notify
+TRANSITION remind
+TRANSITION archive
+ARC m0 register
+ARC register m1
+ARC register m2
+ARC m1 check
+ARC check m3
+ARC m3 fix
+ARC fix m1
+ARC m2 notify
+ARC notify m4
+ARC m4 remind
+ARC remind m4
+ARC m3 archive
+ARC m4 archive
+ARC archive m5
+INITIAL m0
+FINAL m5
+input/params.txt:
+filter_min_follows 2
+sla_minutes 1440
+positive_observations 2
+dependency_threshold 1/2
+relative_to_best 1/10
+loop1_threshold 1/2
+loop2_threshold 1/2
+and_threshold 1/10
+
+output/log_summary.txt:
+ERROR line 9: duplicate event K1 notify 2026-03-02T10:00
+ERROR line 14: bad timestamp 2026-02-29T10:00
+LOG rows 49 adopted 47 rejected 2 cases 9 activities 7 resources 5 first 2026-03-02T09:00 last 2026-03-09T15:00
+ACTIVITY archive events 8 cases 8 start 0 end 8 rework 0 wait 215/2=107.5000 resources 1 model yes
+ACTIVITY call events 2 cases 2 start 0 end 1 rework 0 wait 30/1=30.0000 resources 1 model no
+ACTIVITY check events 12 cases 9 start 0 end 0 rework 2 wait 305/12=25.4166 resources 1 model yes
+ACTIVITY fix events 3 cases 2 start 0 end 0 rework 1 wait 95/3=31.6666 resources 1 model yes
+ACTIVITY notify events 9 cases 9 start 0 end 0 rework 0 wait 200/9=22.2222 resources 1 model yes
+ACTIVITY register events 9 cases 9 start 9 end 0 rework 0 wait - resources 2 model yes
+ACTIVITY remind events 4 cases 2 start 0 end 0 rework 2 wait 1440/1=1440.0000 resources 1 model yes
+LENGTH min 4 max 8 mean 47/9=5.2222 median 5/1=5.0000
+DURATION min 90 max 3030 mean 7280/9=808.8888 median 170/1=170.0000
+DAYS 0 cases 7 share 77.77%
+DAYS 1 cases 0 share 0.00%
+DAYS 2 cases 2 share 22.22%
+SLA limit 1440 late 2 share 22.22%
+WEEKDAY Mon events 16 starts 4 ends 4
+WEEKDAY Tue events 9 starts 2 ends 1
+WEEKDAY Wed events 9 starts 1 ends 1
+WEEKDAY Thu events 7 starts 1 ends 2
+WEEKDAY Fri events 3 starts 1 ends 0
+WEEKDAY Sat events 1 starts 0 ends 0
+WEEKDAY Sun events 2 starts 0 ends 1
+output/variants.txt:
+VARIANT 1 count 2 share 22.22% length 6 first K4 duration 3015/1=3015.0000 late 2 fitness 1/1=1.0000 KEEP register,check,notify,remind,remind,archive
+VARIANT 2 count 2 share 22.22% length 4 first K2 duration 145/1=145.0000 late 0 fitness 1/1=1.0000 KEEP register,notify,check,archive
+VARIANT 3 count 1 share 11.11% length 5 first K6 duration 150/1=150.0000 late 0 fitness 1/1=1.0000 DROP register,call,check,notify,archive
+VARIANT 4 count 1 share 11.11% length 8 first K5 duration 300/1=300.0000 late 0 fitness 1/1=1.0000 KEEP register,check,fix,check,fix,check,notify,archive
+VARIANT 5 count 1 share 11.11% length 6 first K3 duration 300/1=300.0000 late 0 fitness 1/1=1.0000 KEEP register,check,fix,check,notify,archive
+VARIANT 6 count 1 share 11.11% length 4 first K1 duration 120/1=120.0000 late 0 fitness 1/1=1.0000 KEEP register,check,notify,archive
+VARIANT 7 count 1 share 11.11% length 4 first K8 duration 90/1=90.0000 late 0 fitness 27/40=0.6750 DROP register,check,notify,call
+FILTER min_follows 2 variants 5 of 7 cases 7 of 9 events 38 of 47
+output/dfg.txt:
+START register count 9
+END archive count 8 duration 3595/4=898.7500
+END call count 1 duration 90/1=90.0000
+EDGE check notify count 7 cases 7 mean 20/1=20.0000 min 0 max 40
+EDGE register check count 6 cases 6 mean 20/1=20.0000 min 15 max 30
+EDGE notify archive count 4 cases 4 mean 120/1=120.0000 min 60 max 180
+EDGE check fix count 3 cases 2 mean 95/3=31.6666 min 20 max 40
+EDGE fix check count 3 cases 2 mean 95/3=31.6666 min 20 max 45
+EDGE check archive count 2 cases 2 mean 85/1=85.0000 min 60 max 110
+EDGE notify check count 2 cases 2 mean 30/1=30.0000 min 30 max 30
+EDGE notify remind count 2 cases 2 mean 1440/1=1440.0000 min 1440 max 1440
+EDGE register notify count 2 cases 2 mean 30/1=30.0000 min 30 max 30
+EDGE remind archive count 2 cases 2 mean 105/1=105.0000 min 90 max 120
+EDGE remind remind count 2 cases 2 mean 1440/1=1440.0000 min 1440 max 1440
+EDGE call check count 1 cases 1 mean 30/1=30.0000 min 30 max 30
+EDGE notify call count 1 cases 1 mean 30/1=30.0000 min 30 max 30
+EDGE register call count 1 cases 1 mean 30/1=30.0000 min 30 max 30
+ACTIVITY 1 archive
+ACTIVITY 2 call
+ACTIVITY 3 check
+ACTIVITY 4 fix
+ACTIVITY 5 notify
+ACTIVITY 6 register
+ACTIVITY 7 remind
+       1   2   3   4   5   6   7
+   1   #   #  <-   #  <-   #  <-
+   2   #   #  ->   #  <-  <-   #
+   3  ->  <-   #  ||  ||  <-   #
+   4   #   #  ||   #   #   #   #
+   5  ->  ->  ||   #   #  <-  ->
+   6   #  ->  ->   #  ->   #   #
+   7  ->   #   #   #  <-   #  ||
+output/alpha_net.txt:
+LOG variants 5 cases 7 activities archive,check,fix,notify,register,remind
+LOOPS remind
+MINER alpha
+ACTIVITY 1 archive
+ACTIVITY 2 check
+ACTIVITY 3 fix
+ACTIVITY 4 notify
+ACTIVITY 5 register
+ACTIVITY 6 remind
+       1   2   3   4   5   6
+   1   #  <-   #  <-   #  <-
+   2  ->   #  ||  ||  <-   #
+   3   #  ||   #   #   #   #
+   4  ->  ||   #   #  <-  ->
+   5   #  ->   #  ->   #   #
+   6  ->   #   #  <-   #  ||
+PAIRS causal 6 candidates 4 maximal 4
+PLACE start - register
+PLACE p1 check archive
+PLACE p2 notify archive
+PLACE p3 register check
+PLACE p4 register notify
+PLACE end archive -
+TRANSITION archive in p1,p2 out end
+TRANSITION check in p3 out p1
+TRANSITION fix in - out -
+TRANSITION notify in p4 out p2
+TRANSITION register in start out p3,p4
+TRANSITION remind in - out -
+NET places 6 transitions 6 arcs 10
+MINER alpha_plus
+TRIANGLE check fix count 3
+TRIANGLE fix check count 1
+ACTIVITY 1 archive
+ACTIVITY 2 check
+ACTIVITY 3 fix
+ACTIVITY 4 notify
+ACTIVITY 5 register
+       1   2   3   4   5
+   1   #  <-   #  <-   #
+   2  ->   #  ->  ||  <-
+   3   #  ->   #   #   #
+   4  ->  ||   #   #  <-
+   5   #  ->   #  ->   #
+PAIRS causal 6 candidates 8 maximal 4
+LOOP remind before notify after archive place p3
+PLACE start - register
+PLACE p1 check archive,fix
+PLACE p2 fix,register check
+PLACE p3 notify archive
+PLACE p4 register notify
+PLACE end archive -
+TRANSITION archive in p1,p3 out end
+TRANSITION check in p2 out p1
+TRANSITION fix in p1 out p2
+TRANSITION notify in p4 out p3
+TRANSITION register in start out p2,p4
+TRANSITION remind in p3 out p3
+NET places 6 transitions 6 arcs 14
+output/heuristic_net.txt:
+L1 remind count 2 measure 2/3=0.6666 ACCEPT
+L2 check fix count 4 measure 4/5=0.8000 ACCEPT
+DEP call check count 1 reverse 0 measure 1/2=0.5000 REJECT_COUNT
+DEP check archive count 2 reverse 0 measure 2/3=0.6666 ACCEPT
+DEP check fix count 3 reverse 3 measure 0/1=0.0000 LOOP2
+DEP check notify count 7 reverse 2 measure 1/2=0.5000 REJECT_BEST
+DEP fix check count 3 reverse 3 measure 0/1=0.0000 LOOP2
+DEP notify archive count 4 reverse 0 measure 4/5=0.8000 ACCEPT
+DEP notify call count 1 reverse 0 measure 1/2=0.5000 REJECT_COUNT
+DEP notify check count 2 reverse 7 measure -1/2=-0.5000 REJECT_MEASURE
+DEP notify remind count 2 reverse 0 measure 2/3=0.6666 ACCEPT
+DEP register call count 1 reverse 0 measure 1/2=0.5000 REJECT_COUNT
+DEP register check count 6 reverse 0 measure 6/7=0.8571 ACCEPT
+DEP register notify count 2 reverse 0 measure 2/3=0.6666 ACCEPT
+DEP remind archive count 2 reverse 0 measure 2/3=0.6666 ACCEPT
+NODE archive in check,notify,remind out -
+NODE call in - out -
+NODE check in fix,register out archive,fix
+NODE fix in check out check
+NODE notify in register out archive,remind
+NODE register in - out check,notify
+NODE remind in notify,remind out archive,remind
+JOIN archive check notify measure 9/7=1.2857 AND
+JOIN archive check remind measure 0/1=0.0000 XOR
+JOIN archive notify remind measure 2/7=0.2857 AND
+SPLIT check archive fix measure 0/1=0.0000 XOR
+JOIN check fix register measure 0/1=0.0000 XOR
+SPLIT notify archive remind measure 2/7=0.2857 AND
+SPLIT register check notify measure 1/1=1.0000 AND
+GRAPH activities 7 edges 9 loops1 1 loops2 1
+output/conformance.csv:
+case_id,variant,events,skipped,missing,remaining,consumed,produced,fitness
+K1,6,4,0,0,0,6,6,1/1=1.0000
+K2,2,4,0,0,0,6,6,1/1=1.0000
+K3,5,6,0,0,0,8,8,1/1=1.0000
+K4,1,6,0,0,0,8,8,1/1=1.0000
+K5,4,8,0,0,0,10,10,1/1=1.0000
+K6,3,5,1,0,0,6,6,1/1=1.0000
+K7,1,6,0,0,0,8,8,1/1=1.0000
+K8,7,4,1,1,2,4,5,27/40=0.6750
+K9,2,4,0,0,0,6,6,1/1=1.0000
+output/conformance.txt:
+MODEL places 6 transitions 6 arcs 14
+REACHABILITY reference markings 6 edges 10 unsafe 0 deadlocks 0 stuck 0 final yes dead - sound yes
+REACHABILITY alpha markings 6 edges 18 unsafe 0 deadlocks 0 stuck 0 final yes dead - sound yes
+REACHABILITY alpha_plus markings 6 edges 10 unsafe 0 deadlocks 0 stuck 0 final yes dead - sound yes
+FOOTPRINT reference activities 7 cells 49 differing 12 fitness 37/49=0.7551
+DIFF call check log -> model #
+DIFF call notify log <- model #
+DIFF call register log <- model #
+DIFF check remind log # model ||
+DIFF fix notify log # model ||
+DIFF fix remind log # model ||
+FOOTPRINT alpha activities 7 cells 49 differing 23 fitness 26/49=0.5306
+FOOTPRINT alpha_plus activities 7 cells 49 differing 12 fitness 37/49=0.7551
+PRECISION reference prefixes 19 allowed 91 escaping 26 precision 5/7=0.7142
+ESCAPE reference fix weight 13
+ESCAPE reference remind weight 8
+ESCAPE reference notify weight 3
+ESCAPE reference archive weight 2
+PRECISION alpha prefixes 12 allowed 133 escaping 78 precision 55/133=0.4135
+ESCAPE alpha fix weight 37
+ESCAPE alpha remind weight 37
+ESCAPE alpha archive weight 2
+ESCAPE alpha notify weight 2
+PRECISION alpha_plus prefixes 19 allowed 91 escaping 26 precision 5/7=0.7142
+ESCAPE alpha_plus fix weight 13
+ESCAPE alpha_plus remind weight 8
+ESCAPE alpha_plus notify weight 3
+ESCAPE alpha_plus archive weight 2
+REPLAY reference cases 9 fitting 8 skipped 2 missing 1 remaining 2 consumed 62 produced 63 fitness 7625/7812=0.9760
+PLACE reference m0 missing 0 remaining 0 deviating 0 tokens 9 mean 0/1=0.0000 max 0
+PLACE reference m1 missing 0 remaining 0 deviating 0 tokens 12 mean 395/12=32.9166 max 60
+PLACE reference m2 missing 0 remaining 0 deviating 0 tokens 9 mean 190/3=63.3333 max 120
+PLACE reference m3 missing 0 remaining 1 deviating 1 tokens 11 mean 6815/11=619.5454 max 3015
+PLACE reference m4 missing 0 remaining 1 deviating 1 tokens 12 mean 1670/3=556.6666 max 1440
+PLACE reference m5 missing 1 remaining 0 deviating 1 tokens 0 mean - max -
+ROUTE reference m3 archive=8,fix=3
+ROUTE reference m4 archive=8,remind=4
+REPLAY alpha cases 9 fitting 6 skipped 2 missing 4 remaining 5 consumed 55 produced 56 fitness 5661/6160=0.9189
+PLACE alpha start missing 0 remaining 0 deviating 0 tokens 9 mean 0/1=0.0000 max 0
+PLACE alpha p1 missing 0 remaining 4 deviating 3 tokens 8 mean 3455/4=863.7500 max 3015
+PLACE alpha p2 missing 0 remaining 1 deviating 1 tokens 8 mean 835/1=835.0000 max 3000
+PLACE alpha p3 missing 3 remaining 0 deviating 2 tokens 9 mean 100/3=33.3333 max 60
+PLACE alpha p4 missing 0 remaining 0 deviating 0 tokens 9 mean 190/3=63.3333 max 120
+PLACE alpha end missing 1 remaining 0 deviating 1 tokens 0 mean - max -
+REPLAY alpha_plus cases 9 fitting 8 skipped 2 missing 1 remaining 2 consumed 62 produced 63 fitness 7625/7812=0.9760
+PLACE alpha_plus start missing 0 remaining 0 deviating 0 tokens 9 mean 0/1=0.0000 max 0
+PLACE alpha_plus p1 missing 0 remaining 1 deviating 1 tokens 11 mean 6815/11=619.5454 max 3015
+PLACE alpha_plus p2 missing 0 remaining 0 deviating 0 tokens 12 mean 395/12=32.9166 max 60
+PLACE alpha_plus p3 missing 0 remaining 1 deviating 1 tokens 12 mean 1670/3=556.6666 max 1440
+PLACE alpha_plus p4 missing 0 remaining 0 deviating 0 tokens 9 mean 190/3=63.3333 max 120
+PLACE alpha_plus end missing 1 remaining 0 deviating 1 tokens 0 mean - max -
+ROUTE alpha_plus p1 archive=8,fix=3
+ROUTE alpha_plus p3 archive=8,remind=4
+output/resources.txt:
+RESOURCE 1 Ann events 14 cases 9 work archive=8,register=6
+RESOURCE 2 Bob events 15 cases 9 work check=12,register=3
+RESOURCE 3 Cat events 13 cases 9 work notify=9,remind=4
+RESOURCE 4 Dan events 3 cases 2 work fix=3
+RESOURCE 5 Eve events 2 cases 2 work call=2
+HANDOVER Bob Cat count 8 cases 8
+HANDOVER Cat Ann count 6 cases 6
+HANDOVER Ann Bob count 5 cases 5
+HANDOVER Bob Dan count 3 cases 2
+HANDOVER Dan Bob count 3 cases 2
+HANDOVER Bob Ann count 2 cases 2
+HANDOVER Cat Bob count 2 cases 2
+HANDOVER Ann Cat count 1 cases 1
+HANDOVER Bob Eve count 1 cases 1
+HANDOVER Cat Eve count 1 cases 1
+HANDOVER Eve Bob count 1 cases 1
+        1    2    3    4    5
+   1    0    5    1    0    0
+   2    2    1    8    3    1
+   3    6    2    4    0    1
+   4    0    3    0    0    0
+   5    0    1    0    0    0
+SUBCONTRACT Bob Dan count 3
+SUBCONTRACT Bob Cat count 1
+SUBCONTRACT Bob Eve count 1
+SUBCONTRACT Dan Bob count 1
+TOGETHER Ann Bob cases 9
+TOGETHER Ann Cat cases 9
+TOGETHER Bob Cat cases 9
+TOGETHER Ann Dan cases 2
+TOGETHER Ann Eve cases 2
+TOGETHER Bob Dan cases 2
+TOGETHER Bob Eve cases 2
+TOGETHER Cat Dan cases 2
+TOGETHER Cat Eve cases 2
+TOTAL handovers 38 self 5 other 33

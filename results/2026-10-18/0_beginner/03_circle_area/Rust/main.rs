@@ -1,0 +1,12 @@
+fn main() {
+    let radii = [3, 7, 12, 25, 41];
+    for radius in radii {
+        let r = f64::from(radius);
+        println!(
+            "r={} area={:.3} circumference={:.3}",
+            radius,
+            std::f64::consts::PI * r * r,
+            2.0 * std::f64::consts::PI * r
+        );
+    }
+}

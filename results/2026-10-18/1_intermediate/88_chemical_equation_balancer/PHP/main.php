@@ -1,0 +1,565 @@
+<?php
+$symbols=explode(' ','H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe');
+$weights=[1008,4003,6941,9012,10811,12011,14007,15999,18998,20180,22990,24305,26982,28086,30974,32065,35453,39948,39098,40078,44956,47867,50942,51996,54938,55845,58933,58693,63546,65380,69723,72630,74922,78971,79904,83798,85468,87620,88906,91224,92906,95950,98000,101070,102906,106420,107868,112414,114818,118710,121760,127600,126904,131293];
+$W=array_combine($symbols,$weights);
+$valence=['H'=>1,'F'=>1,'Cl'=>1,'Br'=>1,'I'=>1,'O'=>2,'S'=>2,'Se'=>2,'B'=>3,'N'=>3,'P'=>3,'As'=>3,'C'=>4,'Si'=>4,'Ge'=>4];
+$metals=['Li'=>1,'Na'=>1,'K'=>1,'Rb'=>1,'Be'=>2,'Mg'=>2,'Ca'=>2,'Sr'=>2,'Al'=>3];
+function chemError(string $s): never {
+    throw new RuntimeException('error: '.$s);
+}
+function gcd(int $a,int $b): int {
+    $a=abs($a);
+    $b=abs($b);
+    while($b){
+        [$a,$b]=[$b,$a%$b];
+    }
+    return $a;
+}
+function dec(int $n,int $d): string {
+    $p=10**$d;
+    return intdiv($n,$p).'.'.str_pad((string)($n%$p),$d,'0',STR_PAD_LEFT);
+}
+function ent(int $n): string {
+    return ($n<0?'-':'').dec(abs($n),2);
+}
+function signedInt(int $n): string {
+    return ($n>0?'+':'').$n;
+}
+class Fraction {
+    public int $n;
+    public int $d;
+    function __construct(int $n=0,int $d=1){
+        $g=gcd($n,$d);
+        $this->n=intdiv($n,$g)*($d<0?-1:1);
+        $this->d=intdiv(abs($d),$g);
+    }
+    function sub(Fraction $b): Fraction {
+        return new Fraction($this->n*$b->d-$b->n*$this->d,$this->d*$b->d);
+    }
+    function mul(Fraction $b): Fraction {
+        return new Fraction($this->n*$b->n,$this->d*$b->d);
+    }
+    function div(Fraction $b): Fraction {
+        return new Fraction($this->n*$b->d,$this->d*$b->n);
+    }
+    function text(): string {
+        return signedInt($this->n).($this->d===1?'':'/'.$this->d);
+    }
+}
+function hillOrder(array $c): array {
+    $es=array_keys($c);
+    sort($es,SORT_STRING);
+    return isset($c['C'])?array_merge(['C'],isset($c['H'])?['H']:[],array_values(array_diff($es,['C','H']))):$es;
+}
+function addComposition(array &$a,array $b,int $k=1): void {
+    foreach($b as $e=>$n)$a[$e]=($a[$e]??0)+$n*$k;
+}
+function scaled(array $c,int $k): array {
+    return array_map(fn($n)=>$n*$k,$c);
+}
+function molarMass(array $c): int {
+    global $W;
+    $m=0;
+    foreach($c as $e=>$n)$m+=$n*$W[$e];
+    return $m;
+}
+function hill(array $c,int $q=0): string {
+    $s='';
+    foreach(hillOrder($c) as $e)$s.=$e.($c[$e]===1?'':$c[$e]);
+    if($q)$s.='^'.(abs($q)===1?'':abs($q)).($q>0?'+':'-');
+    return $s;
+}
+class FormulaParser {
+    public int $p=0;
+    public array $seen=[];
+    function __construct(public string $text){
+    }
+    function peek(): string {
+        return $this->text[$this->p]??'';
+    }
+    function number(): int {
+        $start=$this->p;
+        while(preg_match('/^[0-9]$/D',$this->peek()))$this->p++;
+        if($start===$this->p)return 1;
+        if($this->text[$start]==='0')throw new InvalidArgumentException();
+        return (int)substr($this->text,$start,$this->p-$start);
+    }
+    function sequence(): array {
+        $c=[];
+        $items=0;
+        while(true){
+            $ch=$this->peek();
+            if(preg_match('/^[A-Z]$/D',$ch)){
+                $e=$ch;
+                $this->p++;
+                if(preg_match('/^[a-z]$/D',$this->peek())){
+                    $e.=$this->peek();
+                    $this->p++;
+                }
+                $this->seen[]=$e;
+                $item=[$e=>1];
+            }
+            elseif($ch==='('||$ch==='['){
+                $this->p++;
+                $item=$this->sequence();
+                if($this->peek()!==($ch==='('?')':']'))throw new InvalidArgumentException();
+                $this->p++;
+            }else break;
+            $k=$this->number();
+            addComposition($c,$item,$k);
+            $items++;
+        }
+        if(!$items)throw new InvalidArgumentException();
+        return $c;
+    }
+    function parse(): array {
+        $c=$this->sequence();
+        while($this->peek()==='.'){
+            $this->p++;
+            $k=$this->number();
+            addComposition($c,$this->sequence(),$k);
+        }
+        $q=0;
+        if($this->peek()==='^'){
+            $this->p++;
+            $k=$this->number();
+            $ch=$this->peek();
+            if($ch!=='+'&&$ch!=='-')throw new InvalidArgumentException();
+            $this->p++;
+            $q=$ch==='+'?$k:-$k;
+        }
+        if($this->p!==strlen($this->text))throw new InvalidArgumentException();
+        return ['c'=>$c,'q'=>$q];
+    }
+}
+function formula(string $text,?string $word=null): array {
+    global $W;
+    $p=new FormulaParser($text);
+    try{
+        $f=$p->parse();
+    }catch(InvalidArgumentException){
+        chemError('invalid formula '.($word??$text));
+    }
+    foreach($p->seen as $e)if(!isset($W[$e]))chemError('unknown element '.$e);
+    $f['m']=molarMass($f['c']);
+    return $f;
+}
+function species(string $word,bool $check=false): array {
+    $state='';
+    $f=$word;
+    $k=1;
+    foreach(['(s)','(l)','(g)','(aq)'] as $s)if(str_ends_with($word,$s)){
+        $state=$s;
+        $f=substr($word,0,-strlen($s));
+        break;
+    }
+    if($check&&preg_match('/^[0-9]+/',$f,$m)){
+        if($f[0]==='0')chemError('invalid formula '.$word);
+        $k=(int)$m[0];
+        $f=substr($f,strlen($m[0]));
+    }
+    return array_merge(formula($f,$word),['f'=>$f,'state'=>$state,'name'=>$f.$state,'k'=>$k]);
+}
+function equation(array $a,bool $check=false): array {
+    $valid=count($a)%2===1;
+    $arrow=-1;
+    foreach($a as $i=>$s){
+        $op=in_array($s,['+','->'],true);
+        if($i%2){
+            if(!$op)$valid=false;
+            if($s==='->'){
+                if($arrow>=0)$valid=false;
+                $arrow=$i;
+            }
+        }
+        elseif($op)$valid=false;
+    }
+    if(!$valid||$arrow<0)chemError('malformed equation');
+    $list=[];
+    for($i=0;$i<count($a);$i+=2)$list[]=species($a[$i],$check);
+    $r=intdiv($arrow+1,2);
+    $sign=[];
+    foreach($list as $i=>$s)$sign[]=$i<$r?1:-1;
+    return ['list'=>$list,'r'=>$r,'sign'=>$sign];
+}
+function quantity(string $s): int {
+    if(!preg_match('/^(0|[1-9][0-9]{0,3})(?:\.([0-9]{1,3}))?$/D',$s,$m))chemError('invalid quantity '.$s);
+    $q=(int)$m[1]*1000+(int)str_pad($m[2]??'',3,'0');
+    if(!$q)chemError('invalid quantity '.$s);
+    return $q;
+}
+function enthalpy(string $s): int {
+    if(!preg_match('/^(-?)(0|[1-9][0-9]{0,4})(?:\.([0-9]{1,2}))?$/D',$s,$m))chemError('invalid enthalpy '.$s);
+    return ($m[1]==='-'?-1:1)*((int)$m[2]*100+(int)str_pad($m[3]??'',2,'0'));
+}
+function compositionMatrix(array $list,array $sign): array {
+    $all=[];
+    foreach($list as $s)addComposition($all,$s['c']);
+    $labels=hillOrder($all);
+    $labels[]='charge';
+    $rows=[];
+    foreach($labels as $e){
+        $row=[];
+        foreach($list as $i=>$s)$row[]=$sign[$i]*($e==='charge'?$s['q']:($s['c'][$e]??0));
+        $rows[]=$row;
+    }
+    return [$labels,$rows];
+}
+function nullspace(array $rows,int $n): array {
+    $a=array_map(fn($r)=>array_map(fn($x)=>new Fraction($x),$r),$rows);
+    $piv=[];
+    $free=[];
+    for($j=0;$j<$n;$j++){
+        $r=count($piv);
+        $i=$r;
+        while($i<count($a)&&!$a[$i][$j]->n)$i++;
+        if($i===count($a)){
+            $free[]=$j;
+            continue;
+        }
+        [$a[$r],$a[$i]]=[$a[$i],$a[$r]];
+        $t=$a[$r][$j];
+        $a[$r]=array_map(fn($x)=>$x->div($t),$a[$r]);
+        foreach($a as $k=>$row)if($k!==$r&&$row[$j]->n){
+            $t=$row[$j];
+            foreach($row as $z=>$x)$a[$k][$z]=$x->sub($t->mul($a[$r][$z]));
+        }
+        $piv[]=$j;
+    }
+    $basis=[];
+    foreach($free as $f){
+        $v=array_map(fn($_)=>new Fraction(),range(1,$n));
+        $v[$f]=new Fraction(1);
+        foreach($piv as $i=>$j)$v[$j]=new Fraction(-$a[$i][$f]->n,$a[$i][$f]->d);
+        $l=1;
+        foreach($v as $x)$l=intdiv($l,gcd($l,$x->d))*$x->d;
+        $b=array_map(fn($x)=>$x->n*intdiv($l,$x->d),$v);
+        $g=array_reduce($b,fn($g,$x)=>gcd($g,$x),0);
+        $basis[]=array_map(fn($x)=>intdiv($x,$g),$b);
+    }
+    return [count($piv),$basis];
+}
+function coefficients(array $list,array $sign,?int $k=null): array {
+    [, $rows]=compositionMatrix($list,$sign);
+    [, $basis]=nullspace($rows,count($list));
+    $d=count($basis);
+    if($d>=2)throw new RuntimeException("AMBIGUOUS (nullity $d)");
+    if(!$d)throw new RuntimeException('IMPOSSIBLE');
+    $v=$basis[0];
+    if($v[0]<0)$v=array_map(fn($x)=>-$x,$v);
+    foreach(array_slice($v,0,$k??count($list)) as $x)if($x<=0)throw new RuntimeException('IMPOSSIBLE');
+    return $v;
+}
+function term(string $s,int $k): string {
+    return ($k===1?'':$k).$s;
+}
+function notation(array $eq,array $v): string {
+    $t=[];
+    foreach($eq['list'] as $i=>$s)$t[]=term($s['name'],$v[$i]);
+    return implode(' + ',array_slice($t,0,$eq['r'])).' -> '.implode(' + ',array_slice($t,$eq['r']));
+}
+function gas(array $s,int $n,int $d): string {
+    return $s['state']==='(g)'?' '.dec(intdiv($n*22414,$d),3).' L':'';
+}
+function ratioReport(array $a): array {
+    global $W;
+    $es=hillOrder($a);
+    $f=$es[0];
+    foreach($es as $e)if($a[$e]*$W[$f]<$a[$f]*$W[$e])$f=$e;
+    $out=[];
+    foreach($es as $e)$out[]=$e.' '.dec(intdiv(1000*$a[$e]*$W[$f],$W[$e]*$a[$f]),3);
+    for($k=1;$k<=12;$k++){
+        $c=[];
+        $ok=true;
+        foreach($es as $e){
+            $n=$k*$a[$e]*$W[$f];
+            $d=$W[$e]*$a[$f];
+            $i=intdiv(2*$n+$d,2*$d);
+            $c[$e]=$i;
+            if(20*abs($n-$i*$d)>$d)$ok=false;
+        }
+        if($ok){
+            $out[]=hill($c)." (k = $k)";
+            return $out;
+        }
+    }
+    $out[]='no simple ratio';
+    return $out;
+}
+function groupNotation(string $f,int $k): string {
+    $c=explode('^',$f)[0];
+    if($k===1)return $c;
+    $depth=0;
+    $last=-1;
+    if($c[0]==='[')for($i=0;$i<strlen($c);$i++){
+        if($c[$i]==='[')$depth++;
+        if($c[$i]===']'&&--$depth===0){
+            $last=$i;
+            break;
+        }
+    }
+    return (preg_match('/^[A-Z][a-z]?$/D',$c)||$last===strlen($c)-1?$c:'('.$c.')').$k;
+}
+class Chemistry {
+    private array $heats=[];
+    function execute(string $line): array {
+        global $symbols,$W,$valence,$metals;
+        $a=explode(' ',$line);
+        $cmd=array_shift($a);
+        $n=count($a);
+        $counts=['ELEMENT'=>1,'PARSE'=>1,'MASS'=>1,'PERCENT'=>1,'EMPIRICAL'=>1,'DBE'=>1,'OXSTATE'=>1,'MOLES'=>2,'GRAMS'=>2,'MOLECULAR'=>2,'SALT'=>2,'HEAT'=>2,'COMBUST'=>3,'HEATS'=>0,'DERIVE'=>-2,'BALANCE'=>-1,'MATRIX'=>-1,'CHECK'=>-1,'DELTAH'=>-1,'REDOX'=>-3,'HALF'=>-3,'STOICH'=>-4,'LIMITING'=>-4,'YIELD'=>-4];
+        if(!isset($counts[$cmd]))chemError('unknown command '.$cmd);
+        $e=$counts[$cmd];
+        if(($e>=0&&$n!==$e)||($e===-1&&$n<1)||($e===-2&&($n<2||$n%2))||($e===-3&&$n<2))chemError('wrong argument count for '.$cmd);
+        if($cmd==='ELEMENT'){
+            if(!isset($W[$a[0]]))chemError('unknown element '.$a[0]);
+            return [$a[0].' (Z = '.(array_search($a[0],$symbols,true)+1).') '.dec($W[$a[0]],3).' u'];
+        }
+        if($cmd==='HEATS'){
+            $h=$this->heats;
+            ksort($h,SORT_STRING);
+            $out=[];
+            foreach($h as $s=>$v)$out[]="$s ".ent($v).' kJ/mol';
+            return $out?:['no enthalpies'];
+        }
+        if($cmd==='HEAT'){
+            species($a[0]);
+            $h=enthalpy($a[1]);
+            $out='dHf('.$a[0].') = '.ent($h).' kJ/mol';
+            if(isset($this->heats[$a[0]]))$out.=' (was '.ent($this->heats[$a[0]]).')';
+            $this->heats[$a[0]]=$h;
+            return [$out];
+        }
+        if($cmd==='DERIVE'){
+            $b=[];
+            for($i=0;$i<$n;$i+=2){
+                $s=$a[$i];
+                if(!isset($W[$s]))chemError('unknown element '.$s);
+                if(isset($b[$s]))chemError('duplicate element '.$s);
+                $q=quantity($a[$i+1]);
+                if($q>100000)chemError('invalid percentage '.$a[$i+1]);
+                $b[$s]=$q;
+            }
+            $t=array_sum($b);
+            if(abs($t-100000)>1000)chemError('percentages sum to '.dec($t,3));
+            return ratioReport($b);
+        }
+        if($cmd==='COMBUST'){
+            [$s,$p,$r]=array_map('quantity',$a);
+            $c=intdiv($p*12011,44009);
+            $h=intdiv($r*2016,18015);
+            $o=$s-$c-$h;
+            if(!$c||!$h||100*$o<-$s)chemError('inconsistent masses');
+            $b=['C'=>$c,'H'=>$h];
+            if(100*$o>$s)$b['O']=$o;
+            $out=[];
+            foreach($b as $e=>$x)$out[]="mass $e ".dec($x,3).' g';
+            return array_merge($out,ratioReport($b));
+        }
+        if(in_array($cmd,['PARSE','MASS','PERCENT','EMPIRICAL','DBE','OXSTATE','MOLES','GRAMS','MOLECULAR','SALT'],true)){
+            $f=formula($a[0]);
+            ['c'=>$c,'q'=>$q,'m'=>$m]=$f;
+            $es=hillOrder($c);
+            if($cmd==='PARSE'){
+                $t=[];
+                foreach($es as $e)$t[]="$e ".$c[$e];
+                return [hill($c,$q).' ('.implode(', ',$t).'; charge '.signedInt($q).')'];
+            }
+            if($cmd==='MASS')return ['M('.$a[0].') = '.dec($m,3).' g/mol'];
+            if($cmd==='PERCENT'){
+                $out=[];
+                foreach($es as $e)$out[]=$e.' '.dec(intdiv(10000*$c[$e]*$W[$e],$m),2).'%';
+                return $out;
+            }
+            if($cmd==='EMPIRICAL'){
+                $g=array_reduce($c,fn($g,$x)=>gcd($g,$x),0);
+                return [hill(array_map(fn($x)=>intdiv($x,$g),$c))." (n = $g)"];
+            }
+            if($cmd==='DBE'){
+                if($q)chemError('charged formula '.$a[0]);
+                $t=2;
+                foreach($es as $e){
+                    if(!isset($valence[$e]))chemError('no valence for '.$e);
+                    $t+=$c[$e]*($valence[$e]-2);
+                }
+                return ['DBE = '.($t<0?'-':'').intdiv(abs($t),2).'.'.($t%2?5:0)];
+            }
+            if($cmd==='OXSTATE'){
+                $st=[];
+                $last='';
+                if(count($es)===1)$st[$es[0]]=new Fraction($q,$c[$es[0]]);
+                else{
+                    $assign=function($e,$n)use(&$st,&$last){
+                        $st[$e]=new Fraction($n);
+                        $last=$e;
+                    };
+                    if(isset($c['F']))$assign('F',-1);
+                    foreach($es as $e)if(isset($metals[$e]))$assign($e,$metals[$e]);
+                    if(isset($c['H'])){
+                        $only=true;
+                        foreach($es as $e)if($e!=='H'&&!isset($metals[$e]))$only=false;
+                        $assign('H',$only?-1:1);
+                    }
+                    if(isset($c['O']))$assign('O',-2);
+                    elseif(!isset($c['F']))foreach(['Cl','Br','I'] as $e)if(isset($c[$e])){
+                        $assign($e,-1);
+                        break;
+                    }
+                    $u=array_values(array_diff($es,array_keys($st)));
+                    if(count($u)>1)return ['indeterminate: '.implode(' ',$u)];
+                    $sum=0;
+                    foreach($st as $e=>$x)$sum+=$c[$e]*$x->n;
+                    if($u)$st[$u[0]]=new Fraction($q-$sum,$c[$u[0]]);
+                    elseif($sum!==$q)$st[$last]=new Fraction($q-$sum+$c[$last]*$st[$last]->n,$c[$last]);
+                }
+                $parts=[];
+                foreach($es as $e)$parts[]=$e.' '.$st[$e]->text();
+                return [implode(', ',$parts)];
+            }
+            if($cmd==='SALT'){
+                $b=formula($a[1]);
+                if($q<=0)chemError('not a cation '.$a[0]);
+                if($b['q']>=0)chemError('not an anion '.$a[1]);
+                foreach($a as $s)if(str_contains($s,'.'))chemError('hydrate ion '.$s);
+                $g=gcd($q,$b['q']);
+                $x=intdiv(-$b['q'],$g);
+                $y=intdiv($q,$g);
+                $z=scaled($c,$x);
+                addComposition($z,$b['c'],$y);
+                return [groupNotation($a[0],$x).groupNotation($a[1],$y).' ('.hill($z).', '.dec(molarMass($z),3).' g/mol)'];
+            }
+            if($cmd==='MOLECULAR'&&$q)chemError('charged formula '.$a[0]);
+            $x=quantity($a[1]);
+            if($cmd==='MOLES')return [dec($x,3).' g '.$a[0].' = '.dec(intdiv($x*1000000,$m),6).' mol'];
+            if($cmd==='GRAMS')return [dec($x,3).' mol '.$a[0].' = '.dec(intdiv($x*$m,1000),3).' g'];
+            $k=intdiv(2*$x+$m,2*$m);
+            return !$k||10*abs($x-$k*$m)>$m?['no integer multiple (ratio '.dec(intdiv(1000*$x,$m),3).')']:[hill(scaled($c,$k))." (n = $k, ".dec($k*$m,3).' g/mol)'];
+        }
+        if($cmd==='REDOX'||$cmd==='HALF'){
+            if(!in_array($a[0],['acidic','basic'],true))chemError('invalid medium '.$a[0]);
+            $eq=equation(array_slice($a,1));
+            foreach($eq['list'] as $s)if(in_array($s['f'],['H^+','OH^-','H2O'],true))chemError('reserved species '.$s['name']);
+            $aux=[species($a[0]==='acidic'?'H^+':'OH^-'),species('H2O')];
+            if($cmd==='HALF')$aux[]=['f'=>'e^-','state'=>'','name'=>'e^-','k'=>1,'c'=>[],'q'=>-1,'m'=>0];
+            $list=array_merge($eq['list'],$aux);
+            $v=coefficients($list,array_merge($eq['sign'],array_fill(0,count($aux),1)),count($eq['list']));
+            $left=[];
+            $right=[];
+            foreach($eq['list'] as $i=>$s){
+                if($i<$eq['r'])$left[]=term($s['name'],$v[$i]);
+                else $right[]=term($s['name'],$v[$i]);
+            }
+            foreach($aux as $i=>$s){
+                $k=$v[count($eq['list'])+$i];
+                if($k>0)$left[]=term($s['name'],$k);
+                elseif($k<0)$right[]=term($s['name'],-$k);
+            }
+            $out=[implode(' + ',$left).' -> '.implode(' + ',$right)];
+            if($cmd==='HALF')$out[]=end($v)>0?'reduction':(end($v)<0?'oxidation':'no electron transfer');
+            return $out;
+        }
+        $words=$a;
+        $rest=[];
+        if(in_array($cmd,['STOICH','LIMITING','YIELD'],true)){
+            if(count(array_filter($a,fn($x)=>$x===':'))!==1)chemError('invalid separator');
+            $i=array_search(':',$a,true);
+            $words=array_slice($a,0,$i);
+            $rest=array_slice($a,$i+1);
+            if(($cmd==='STOICH'&&count($rest)!==2)||($cmd==='YIELD'&&count($rest)!==4))chemError('wrong argument count for '.$cmd);
+        }
+        $eq=equation($words,$cmd==='CHECK');
+        ['list'=>$list,'r'=>$r,'sign'=>$sign]=$eq;
+        if($cmd==='MATRIX'){
+            [$labels,$rows]=compositionMatrix($list,$sign);
+            [$rank,$basis]=nullspace($rows,count($list));
+            $out=['columns: '.implode(' ',array_column($list,'name'))];
+            foreach($rows as $i=>$row)$out[]=$labels[$i].': '.implode(' ',$row);
+            $out[]="rank $rank, nullity ".count($basis);
+            foreach($basis as $v)$out[]='null: '.implode(' ',$v);
+            return $out;
+        }
+        if($cmd==='CHECK'){
+            [$labels,$rows]=compositionMatrix($list,$sign);
+            $diff=[];
+            foreach($rows as $i=>$row){
+                $l=$rr=0;
+                foreach($row as $j=>$x){
+                    if($j<$r)$l+=$x*$list[$j]['k'];
+                    else $rr-=$x*$list[$j]['k'];
+                }
+                if($l!==$rr)$diff[]=$labels[$i].': '.($labels[$i]==='charge'?signedInt($l):$l).' != '.($labels[$i]==='charge'?signedInt($rr):$rr);
+            }
+            if($diff)return array_merge(['not balanced'],$diff);
+            $g=0;
+            foreach($list as $s)$g=gcd($g,$s['k']);
+            return [$g===1?'balanced':"balanced, not in lowest terms (gcd $g)"];
+        }
+        $target=$product=-1;
+        $qs=[];
+        if($cmd==='DELTAH')foreach($list as $s)if(!isset($this->heats[$s['name']]))chemError('no enthalpy for '.$s['name']);
+        if($cmd==='STOICH'){
+            foreach($list as $i=>$s)if($s['name']===$rest[0]){
+                $target=$i;
+                break;
+            }
+            if($target<0)chemError('species '.$rest[0].' not in equation');
+            $qs=[quantity($rest[1])];
+        }
+        if($cmd==='LIMITING'){
+            if(count($rest)!==$r)chemError("expected $r masses, got ".count($rest));
+            $qs=array_map('quantity',$rest);
+        }
+        if($cmd==='YIELD'){
+            foreach($list as $i=>$s)if($i<$r&&$s['name']===$rest[0]){
+                $target=$i;
+                break;
+            }
+            if($target<0)chemError($rest[0].' is not a reactant');
+            foreach($list as $i=>$s)if($i>=$r&&$s['name']===$rest[2]){
+                $product=$i;
+                break;
+            }
+            if($product<0)chemError($rest[2].' is not a product');
+            $qs=[quantity($rest[1]),quantity($rest[3])];
+        }
+        $v=coefficients($list,$sign);
+        $out=[notation($eq,$v)];
+        if($cmd==='BALANCE')return $out;
+        if($cmd==='DELTAH'){
+            $h=0;
+            foreach($list as $i=>$s)$h-=$sign[$i]*$v[$i]*$this->heats[$s['name']];
+            $out[]='dH = '.ent($h).' kJ ('.($h<0?'exothermic':($h>0?'endothermic':'thermoneutral')).')';
+            return $out;
+        }
+        if($cmd==='STOICH'){
+            $d=$v[$target]*$list[$target]['m'];
+            foreach($list as $i=>$s){
+                $x=$qs[0]*$v[$i];
+                $out[]=$s['name'].' '.dec(intdiv($x*1000000,$d),6).' mol '.dec(intdiv($x*$s['m'],$d),3).' g'.gas($s,$x,$d);
+            }
+            return $out;
+        }
+        if($cmd==='YIELD'){
+            $t=intdiv($qs[0]*$v[$product]*$list[$product]['m'],$v[$target]*$list[$target]['m']);
+            return array_merge($out,['theoretical '.dec($t,3).' g','actual '.dec($qs[1],3).' g',$t?'yield '.dec(intdiv($qs[1]*10000,$t),2).'%':'yield undefined']);
+        }
+        $l=0;
+        for($i=1;$i<$r;$i++)if($qs[$i]*$v[$l]*$list[$l]['m']<$qs[$l]*$v[$i]*$list[$i]['m'])$l=$i;
+        $d=$v[$l]*$list[$l]['m'];
+        $out[]='limiting '.$list[$l]['name'];
+        $out[]='extent '.dec(intdiv($qs[$l]*1000000,$d),6).' mol';
+        for($i=$r;$i<count($list);$i++)$out[]='product '.$list[$i]['name'].' '.dec(intdiv($qs[$l]*$v[$i]*$list[$i]['m'],$d),3).' g'.gas($list[$i],$qs[$l]*$v[$i],$d);
+        for($i=0;$i<$r;$i++)if($i!==$l)$out[]='remaining '.$list[$i]['name'].' '.dec(intdiv($qs[$i]*$d-$qs[$l]*$v[$i]*$list[$i]['m'],$d),3).' g';
+        return $out;
+    }
+}
+$engine=new Chemistry();
+$n=(int)trim(fgets(STDIN));
+for($i=0;$i<$n;$i++){
+    try{
+        $out=$engine->execute(rtrim(fgets(STDIN),"\r\n"));
+    }catch(RuntimeException $e){
+        $out=[$e->getMessage()];
+    }
+    foreach($out as $s)echo $s,"\n";
+}

@@ -1,0 +1,43 @@
+void main() {
+  const initial = [
+    '#############',
+    '#S..#.......#',
+    '#.#.#.###.#.#',
+    '#.#...#...#.#',
+    '#.###.#.###.#',
+    '#...#...#...#',
+    '###.#####.#.#',
+    '#.......#..G#',
+    '#############',
+  ];
+  final maze = initial.join().split('');
+  final start = maze.indexOf('S');
+  final goal = maze.indexOf('G');
+  final parent = List.filled(117, -1);
+  parent[start] = start;
+  final queue = [start];
+  const directions = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+  for (var head = 0; head < queue.length; head++) {
+    final v = queue[head];
+    if (v == goal) break;
+    for (final d in directions) {
+      final r = v ~/ 13 + d.$1, c = v % 13 + d.$2;
+      if (r < 0 || r >= 9 || c < 0 || c >= 13) continue;
+      final u = r * 13 + c;
+      if (maze[u] != '#' && parent[u] == -1) {
+        parent[u] = v;
+        queue.add(u);
+      }
+    }
+  }
+  var current = goal, steps = 0;
+  while (current != start) {
+    if (current != goal) maze[current] = '*';
+    current = parent[current];
+    steps++;
+  }
+  print('steps: $steps');
+  for (var r = 0; r < 9; r++) {
+    print(maze.sublist(r * 13, r * 13 + 13).join());
+  }
+}

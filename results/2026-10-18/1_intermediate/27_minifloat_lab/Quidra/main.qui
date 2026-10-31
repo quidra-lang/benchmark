@@ -1,0 +1,642 @@
+import math
+
+enum Mode
+    RNE
+    RNA
+    RTZ
+    RUP
+    RDN
+
+enum Special
+    PositiveInfinity
+    NegativeInfinity
+    NaN
+
+class Exact(int n, int exponent = 0, int d = 1, bool negative = false)
+
+class Ratio(int n, int d)
+
+class Bounds(int minimum, int maximum)
+
+class Fields(bool negative, int exponent, int fraction, int q)
+
+class Flags(bool invalid = false, bool divbyzero = false, bool overflow = false, bool underflow = false, bool inexact = false)
+
+class Result(int pattern, Flags flags = Flags())
+
+class Units(int value, bool inexact)
+
+class Format(string name, int e, int m)
+    int width = 1 + e + m
+    int bias = 2 ^ (e - 1) - 1
+    int emin = 1 - bias
+    int emax = bias
+    int hidden = 2 ^ m
+    int exponent_mask = 2 ^ e - 1
+    int sign_bit = 2 ^ (e + m)
+    int infinity = exponent_mask * hidden
+    int nan_pattern = infinity + hidden / 2
+    int maximum = infinity - 1
+
+void emit(string text)
+    print(text + NL)
+
+Flags combined(const Flags left, const Flags right)
+    return Flags(left.invalid or right.invalid, left.divbyzero or right.divbyzero, left.overflow or right.overflow, left.underflow or right.underflow, left.inexact or right.inexact)
+
+string flag_text(const Flags flags)
+    string[] names = []
+    if flags.invalid
+        names = names.append("invalid")
+    if flags.divbyzero
+        names = names.append("divbyzero")
+    if flags.overflow
+        names = names.append("overflow")
+    if flags.underflow
+        names = names.append("underflow")
+    if flags.inexact
+        names = names.append("inexact")
+    return "flags=" + (if len(names) == 0 then "none" else names.join(","))
+
+Mode | error parse_mode(string word)
+    if word == "RNE"
+        return Mode.RNE
+    if word == "RNA"
+        return Mode.RNA
+    if word == "RTZ"
+        return Mode.RTZ
+    if word == "RUP"
+        return Mode.RUP
+    if word == "RDN"
+        return Mode.RDN
+    return error("BAD MODE {word}")
+
+Mode | error optional_mode(const string[] words, int position)
+    if position < int(len(words))
+        return try parse_mode(words[position])
+    return Mode.RNE
+
+string mode_text(Mode mode)
+    return if mode == Mode.RNE then "RNE" elif mode == Mode.RNA then "RNA" elif mode == Mode.RTZ then "RTZ" elif mode == Mode.RUP then "RUP" else "RDN"
+
+string special_text(Special special)
+    return if special == Special.NaN then "nan" elif special == Special.NegativeInfinity then "-inf" else "inf"
+
+int gcd(int left, int right)
+    while right != 0
+        int remainder = left % right
+        left = right
+        right = remainder
+    return left
+
+Ratio scaled(const Exact exact, int unit_exponent)
+    int shift = exact.exponent - unit_exponent
+    if shift >= 0
+        return Ratio(exact.n * 2 ^ shift, exact.d)
+    return Ratio(exact.n, exact.d * 2 ^ (-shift))
+
+Exact negated(Exact exact)
+    exact.negative = not exact.negative
+    return exact
+
+Exact product(const Exact left, const Exact right)
+    return Exact(left.n * right.n, left.exponent + right.exponent, left.d * right.d, left.negative != right.negative)
+
+Exact exact_sum(const Exact[] terms, Mode mode)
+    Exact[] nonzero = [for Exact term = terms[] if term.n != 0 then term]
+    if len(nonzero) == 0
+        bool same = true
+        for Exact term = terms[]
+            if term.negative != terms[0].negative
+                same = false
+        return Exact(0, negative = if same then terms[0].negative else mode == Mode.RDN)
+    int exponent = math.min_all([for Exact term = nonzero[] then term.exponent])
+    int[] aligned = [for Exact term = nonzero[] then (if term.negative then -1 else 1) * term.n * 2 ^ (term.exponent - exponent)]
+    int total = math.sum(aligned)
+    return Exact(math.abs(total), exponent, negative = if total == 0 then mode == Mode.RDN else total < 0)
+
+string fraction_text(const Exact exact)
+    if exact.n == 0
+        return "0"
+    Ratio ratio = scaled(exact, 0)
+    int factor = gcd(ratio.n, ratio.d)
+    int numerator = ratio.n / factor
+    int denominator = ratio.d / factor
+    string sign = if exact.negative then "-" else ""
+    return sign + numerator.string() + (if denominator == 1 then "" else "/{denominator}")
+
+string decimal_text(const Exact exact, bool keep_zero_sign = false)
+    Ratio ratio = scaled(exact, 0)
+    string text = (ratio.n / ratio.d).string()
+    int remainder = ratio.n % ratio.d
+    if remainder != 0
+        text += "."
+        while remainder != 0
+            remainder *= 10
+            text += (remainder / ratio.d).string()
+            remainder %= ratio.d
+    if exact.negative and (exact.n != 0 or keep_zero_sign)
+        text = "-" + text
+    return text
+
+int binary_order(int value)
+    int order = -1
+    while value > 0
+        value /= 2
+        order += 1
+    return order
+
+int log_floor(const Exact exact)
+    int order = binary_order(exact.n) - binary_order(exact.d) + exact.exponent
+    Ratio ratio = scaled(exact, order)
+    return order - (if ratio.n < ratio.d then 1 else 0)
+
+int integer_sqrt(int value)
+    if value == 0
+        return 0
+    int root = 1
+    while root * root <= value
+        root *= 2
+    while true
+        int next = (root + value / root) / 2
+        if next >= root
+            return root
+        root = next
+
+bool increment(Mode mode, bool negative, int integer, bool inexact, int midpoint)
+    if not inexact
+        return false
+    if mode == Mode.RNE
+        return midpoint > 0 or midpoint == 0 and integer % 2 == 1
+    if mode == Mode.RNA
+        return midpoint >= 0
+    if mode == Mode.RUP
+        return not negative
+    return mode == Mode.RDN and negative
+
+Units round_units(const Exact exact, int unit_exponent, Mode mode, bool square_root = false)
+    Ratio ratio = scaled(exact, if square_root then 2 * unit_exponent else unit_exponent)
+    int integer
+    bool inexact
+    int midpoint
+    if square_root
+        integer = integer_sqrt(ratio.n / ratio.d)
+        inexact = integer * integer * ratio.d != ratio.n
+        midpoint = 4 * ratio.n - ratio.d * (2 * integer + 1) ^ 2
+    else
+        integer = ratio.n / ratio.d
+        int remainder = ratio.n % ratio.d
+        inexact = remainder != 0
+        midpoint = 2 * remainder - ratio.d
+    if increment(mode, exact.negative, integer, inexact, midpoint)
+        integer += 1
+    return Units(integer, inexact)
+
+Fields decode_fields(const Format fmt, int pattern)
+    int exponent = pattern / fmt.hidden % (fmt.exponent_mask + 1)
+    int fraction = pattern % fmt.hidden
+    int q = (if exponent == 0 then fmt.emin else exponent - fmt.bias) - fmt.m
+    return Fields(pattern >= fmt.sign_bit, exponent, fraction, q)
+
+bool is_nan(const Format fmt, int pattern)
+    Fields parts = decode_fields(fmt, pattern)
+    return parts.exponent == fmt.exponent_mask and parts.fraction != 0
+
+bool is_signaling(const Format fmt, int pattern)
+    return is_nan(fmt, pattern) and pattern % fmt.hidden < fmt.hidden / 2
+
+bool is_infinity(const Format fmt, int pattern)
+    return pattern % fmt.sign_bit == fmt.infinity
+
+bool is_zero(const Format fmt, int pattern)
+    return pattern % fmt.sign_bit == 0
+
+bool is_finite(const Format fmt, int pattern)
+    return decode_fields(fmt, pattern).exponent != fmt.exponent_mask
+
+int zero_pattern(const Format fmt, bool negative)
+    return if negative then fmt.sign_bit else 0
+
+int infinity_pattern(const Format fmt, bool negative)
+    return zero_pattern(fmt, negative) + fmt.infinity
+
+int flip(const Format fmt, int pattern)
+    return if pattern >= fmt.sign_bit then pattern - fmt.sign_bit else pattern + fmt.sign_bit
+
+Exact from_pattern(const Format fmt, int pattern)
+    Fields parts = decode_fields(fmt, pattern)
+    int significand = parts.fraction + (if parts.exponent == 0 then 0 else fmt.hidden)
+    return Exact(significand, parts.q, negative = parts.negative)
+
+Result overflow_result(const Format fmt, Mode mode, bool negative)
+    bool infinite = mode == Mode.RNE or mode == Mode.RNA or mode == Mode.RUP and not negative or mode == Mode.RDN and negative
+    int pattern = zero_pattern(fmt, negative) + (if infinite then fmt.infinity else fmt.maximum)
+    return Result(pattern, Flags(overflow = true, inexact = true))
+
+Result rounded(const Format fmt, const Exact exact, Mode mode, bool square_root = false)
+    if exact.n == 0
+        return Result(zero_pattern(fmt, exact.negative))
+    int order = log_floor(exact)
+    if square_root
+        order = if order >= 0 then order / 2 else -((-order + 1) / 2)
+    if order > fmt.emax
+        return overflow_result(fmt, mode, exact.negative)
+    int exponent = math.max(order, fmt.emin) - fmt.m
+    Units units = round_units(exact, exponent, mode, square_root)
+    int significand = units.value
+    if significand == 2 * fmt.hidden
+        significand = fmt.hidden
+        exponent += 1
+    if exponent > fmt.emax - fmt.m
+        return overflow_result(fmt, mode, exact.negative)
+    int magnitude = if significand >= fmt.hidden then (exponent + fmt.m + fmt.bias) * fmt.hidden + significand - fmt.hidden else significand
+    bool underflow = false
+    if units.inexact and order < fmt.emin
+        underflow = true
+        if order == fmt.emin - 1
+            Units unbounded = round_units(exact, order - fmt.m, mode, square_root)
+            underflow = unbounded.value < 2 * fmt.hidden
+    return Result(zero_pattern(fmt, exact.negative) + magnitude, Flags(underflow = underflow, inexact = units.inexact))
+
+int radix_value(string text, int base)
+    int value = 0
+    for int code = text.codepoints()[]
+        int digit = if code >= 65 then code - 55 else code - 48
+        value = value * base + digit
+    return value
+
+string radix_text(int value, int base, int width)
+    string digits = "0123456789ABCDEF"
+    string text = ""
+    for 0 <= int position < width
+        text = digits[value % base] + text
+        value /= base
+    return text
+
+string bit_text(const Format fmt, int pattern)
+    Fields parts = decode_fields(fmt, pattern)
+    string sign = if parts.negative then "1" else "0"
+    return sign + "|" + radix_text(parts.exponent, 2, fmt.e) + "|" + radix_text(parts.fraction, 2, fmt.m)
+
+string hex_text(const Format fmt, int pattern)
+    return "0x" + radix_text(pattern, 16, (fmt.width + 3) / 4)
+
+string value_text(const Format fmt, int pattern)
+    if is_nan(fmt, pattern)
+        return "nan"
+    if is_infinity(fmt, pattern)
+        return if pattern >= fmt.sign_bit then "-inf" else "inf"
+    return decimal_text(from_pattern(fmt, pattern), true)
+
+string pattern_text(const Format fmt, int pattern)
+    return bit_text(fmt, pattern) + " " + hex_text(fmt, pattern) + " " + value_text(fmt, pattern)
+
+string result_text(const Format fmt, const Result result)
+    return pattern_text(fmt, result.pattern) + " " + flag_text(result.flags)
+
+Exact | Special | error parse_real(string word)
+    if word == "nan"
+        return Special.NaN
+    if word == "inf"
+        return Special.PositiveInfinity
+    if word == "-inf"
+        return Special.NegativeInfinity
+    if word.starts_with("0b") or word.starts_with("0x")
+        return error("BAD OPERAND {word}")
+    bool negative = word.starts_with("-")
+    string body = if negative then word[1:] else word
+    string[] parts = body.split("/")
+    if len(parts) == 2
+        int numerator = int.parse(parts[0])
+        int denominator = int.parse(parts[1])
+        if denominator == 0
+            return error("BAD OPERAND {word}")
+        return Exact(numerator, d = denominator, negative = negative)
+    parts = body.split(".")
+    int numerator = int.parse(parts.join(""))
+    int denominator = if len(parts) == 2 then 10 ^ int(len(parts[1])) else 1
+    return Exact(numerator, d = denominator, negative = negative)
+
+Result encoded(const Format fmt, Exact | Special value, Mode mode)
+    match value
+        Exact exact
+            return rounded(fmt, exact, mode)
+        Special special
+            return Result(if special == Special.NaN then fmt.nan_pattern else infinity_pattern(fmt, special == Special.NegativeInfinity))
+
+int | error operand(const Format fmt, string word)
+    if word.starts_with("0b")
+        if int(len(word)) - 2 != fmt.width
+            return error("BAD OPERAND {word}")
+        return radix_value(word[2:], 2)
+    if word.starts_with("0x")
+        int pattern = radix_value(word[2:], 16)
+        if int(len(word)) - 2 != (fmt.width + 3) / 4 or pattern >= 2 * fmt.sign_bit
+            return error("BAD OPERAND {word}")
+        return pattern
+    Exact | Special value = try parse_real(word)
+    return encoded(fmt, value, Mode.RNE).pattern
+
+int[] | error operands(const Format fmt, const string[] words)
+    int[] patterns = []
+    for string word = words[]
+        int pattern = try operand(fmt, word)
+        patterns = patterns.append(pattern)
+    return patterns
+
+Result invalid_result(const Format fmt)
+    return Result(fmt.nan_pattern, Flags(invalid = true))
+
+Result operation(const Format fmt, string op, const int[] patterns, Mode mode)
+    int a = patterns[0]
+    if op == "SUB"
+        return operation(fmt, "ADD", [a, flip(fmt, patterns[1])], mode)
+    bool has_nan = false
+    bool signaling = false
+    for int pattern = patterns[]
+        has_nan = has_nan or is_nan(fmt, pattern)
+        signaling = signaling or is_signaling(fmt, pattern)
+    if has_nan
+        return Result(fmt.nan_pattern, Flags(invalid = signaling))
+    if op == "SQRT"
+        if is_zero(fmt, a)
+            return Result(a)
+        if a >= fmt.sign_bit
+            return invalid_result(fmt)
+        if is_infinity(fmt, a)
+            return Result(a)
+        return rounded(fmt, from_pattern(fmt, a), mode, true)
+    int b = patterns[1]
+    bool negative = (a >= fmt.sign_bit) != (b >= fmt.sign_bit)
+    if op == "ADD"
+        if is_infinity(fmt, a) and is_infinity(fmt, b) and negative
+            return invalid_result(fmt)
+        if is_infinity(fmt, a)
+            return Result(a)
+        if is_infinity(fmt, b)
+            return Result(b)
+        return rounded(fmt, exact_sum([from_pattern(fmt, a), from_pattern(fmt, b)], mode), mode)
+    if op == "MUL"
+        if is_infinity(fmt, a) or is_infinity(fmt, b)
+            return if is_zero(fmt, a) or is_zero(fmt, b) then invalid_result(fmt) else Result(infinity_pattern(fmt, negative))
+        if is_zero(fmt, a) or is_zero(fmt, b)
+            return Result(zero_pattern(fmt, negative))
+        return rounded(fmt, product(from_pattern(fmt, a), from_pattern(fmt, b)), mode)
+    if op == "DIV"
+        if is_infinity(fmt, a)
+            return if is_infinity(fmt, b) then invalid_result(fmt) else Result(infinity_pattern(fmt, negative))
+        if is_infinity(fmt, b)
+            return Result(zero_pattern(fmt, negative))
+        if is_zero(fmt, b)
+            return if is_zero(fmt, a) then invalid_result(fmt) else Result(infinity_pattern(fmt, negative), Flags(divbyzero = true))
+        if is_zero(fmt, a)
+            return Result(zero_pattern(fmt, negative))
+        Exact left = from_pattern(fmt, a)
+        Exact right = from_pattern(fmt, b)
+        return rounded(fmt, Exact(left.n, left.exponent - right.exponent, right.n, negative), mode)
+    int c = patterns[2]
+    if is_infinity(fmt, a) or is_infinity(fmt, b)
+        if is_zero(fmt, a) or is_zero(fmt, b) or is_infinity(fmt, c) and (c >= fmt.sign_bit) != negative
+            return invalid_result(fmt)
+        return Result(infinity_pattern(fmt, negative))
+    if is_infinity(fmt, c)
+        return Result(c)
+    Exact multiplied = product(from_pattern(fmt, a), from_pattern(fmt, b))
+    return rounded(fmt, exact_sum([multiplied, from_pattern(fmt, c)], mode), mode)
+
+int next_up(const Format fmt, int pattern)
+    if pattern == fmt.infinity
+        return pattern
+    if is_zero(fmt, pattern)
+        return 1
+    return pattern + (if pattern >= fmt.sign_bit then -1 else 1)
+
+int order_key(const Format fmt, int pattern)
+    return if pattern >= fmt.sign_bit then fmt.sign_bit - pattern - 1 else pattern
+
+string relation(int left, int right)
+    return if left < right then "LT" elif left > right then "GT" else "EQ"
+
+string difference(const Format fmt, int pattern, const Exact exact)
+    if not is_finite(fmt, pattern)
+        return value_text(fmt, pattern)
+    return fraction_text(exact_sum([from_pattern(fmt, pattern), negated(exact)], Mode.RNE))
+
+void summary(const Format fmt, Mode mode, const int[] patterns, const Result result)
+    Exact exact = exact_sum([for int pattern = patterns[] then from_pattern(fmt, pattern)], mode)
+    emit("RESULT " + result_text(fmt, result))
+    emit("EXACT " + decimal_text(exact))
+    emit("ROUNDED " + result_text(fmt, rounded(fmt, exact, mode)))
+    emit("DIFF " + difference(fmt, result.pattern, exact))
+
+void | error summation(string op, const Format fmt, Mode mode, const int[] patterns)
+    for int pattern = patterns[]
+        if not is_finite(fmt, pattern)
+            return error("NOT FINITE")
+    emit("{op} {fmt.name} {mode_text(mode)} count={len(patterns)}")
+    int total = patterns[0]
+    int compensation = 0
+    Flags flags = Flags()
+    for 1 <= int index < int(len(patterns))
+        if op == "SUM"
+            Result added = operation(fmt, "ADD", [total, patterns[index]], mode)
+            total = added.pattern
+            flags = combined(flags, added.flags)
+            emit("PARTIAL {index + 1} " + result_text(fmt, added))
+        else
+            Result y_value = operation(fmt, "SUB", [patterns[index], compensation], mode)
+            Result t_value = operation(fmt, "ADD", [total, y_value.pattern], mode)
+            Result d_value = operation(fmt, "SUB", [t_value.pattern, total], mode)
+            Result c_value = operation(fmt, "SUB", [d_value.pattern, y_value.pattern], mode)
+            total = t_value.pattern
+            compensation = c_value.pattern
+            Flags step_flags = combined(combined(y_value.flags, t_value.flags), combined(d_value.flags, c_value.flags))
+            flags = combined(flags, step_flags)
+            emit("KSTEP {index + 1} sum={value_text(fmt, total)} comp={value_text(fmt, compensation)} {flag_text(step_flags)}")
+    summary(fmt, mode, patterns, Result(total, flags))
+    return void
+
+void | error dot_product(const Format fmt, Mode mode, const int[] left, const int[] right)
+    if len(left) != len(right)
+        return error("LENGTH MISMATCH")
+    for int pattern = left.concat(right)[]
+        if not is_finite(fmt, pattern)
+            return error("NOT FINITE")
+    Result naive = operation(fmt, "MUL", [left[0], right[0]], mode)
+    Result chained = naive
+    for 1 <= int index < int(len(left))
+        Result multiplied = operation(fmt, "MUL", [left[index], right[index]], mode)
+        Result added = operation(fmt, "ADD", [naive.pattern, multiplied.pattern], mode)
+        naive = Result(added.pattern, combined(naive.flags, combined(multiplied.flags, added.flags)))
+        Result fused = operation(fmt, "FMA", [left[index], right[index], chained.pattern], mode)
+        chained = Result(fused.pattern, combined(chained.flags, fused.flags))
+    Exact[] terms = [for nat index = left.indices()[] then product(from_pattern(fmt, left[index]), from_pattern(fmt, right[index]))]
+    Exact exact = exact_sum(terms, mode)
+    emit("DOT {fmt.name} {mode_text(mode)} n={len(left)}")
+    emit("NAIVE " + result_text(fmt, naive))
+    emit("CHAINED " + result_text(fmt, chained))
+    emit("EXACT " + decimal_text(exact))
+    emit("FUSED " + result_text(fmt, rounded(fmt, exact, mode)))
+    emit("DIFF naive={difference(fmt, naive.pattern, exact)} chained={difference(fmt, chained.pattern, exact)}")
+    return void
+
+void | error table_output(const Format fmt)
+    if fmt.width > 8
+        return error("TABLE TOO LARGE")
+    emit("TABLE {fmt.name} count={fmt.infinity}")
+    for 0 <= int pattern < fmt.infinity
+        string gap = "-"
+        if pattern < fmt.maximum
+            gap = decimal_text(exact_sum([from_pattern(fmt, pattern + 1), negated(from_pattern(fmt, pattern))], Mode.RNE))
+        emit("ENTRY {pattern} {pattern_text(fmt, pattern)} gap={gap}")
+    emit("MAX " + pattern_text(fmt, fmt.maximum))
+    emit("MINNORMAL " + pattern_text(fmt, fmt.hidden))
+    emit("MINSUBNORMAL " + pattern_text(fmt, 1))
+    emit("EPSILON " + decimal_text(Exact(1, -fmt.m)))
+    emit("PATTERNS finite={2 * fmt.infinity} infinite=2 nan={2 * (fmt.hidden - 1)} total={2 * fmt.sign_bit}")
+    return void
+
+Format | error lookup_format(const map.Map<string, Format> formats, string name)
+    match formats.get(name)
+        Format found
+            return found
+        none
+            return error("UNKNOWN FORMAT {name}")
+
+Bounds | error integer_limits(string name)
+    if name == "I8"
+        return Bounds(-128, 127)
+    if name == "U8"
+        return Bounds(0, 255)
+    if name == "I16"
+        return Bounds(-32768, 32767)
+    if name == "U16"
+        return Bounds(0, 65535)
+    if name == "I32"
+        return Bounds(-2147483648, 2147483647)
+    if name == "U32"
+        return Bounds(0, 4294967295)
+    return error("BAD TYPE {name}")
+
+void | error command(map.Map<string, Format> &formats, const string[] words)
+    string op = words[0]
+    string name = words[1]
+    if op == "FORMAT"
+        if formats.has(name)
+            return error("FORMAT EXISTS {name}")
+        int e = int.parse(words[2])
+        int m = int.parse(words[3])
+        if e < 2 or e > 5 or m < 1 or m > 10
+            return error("BAD FORMAT")
+        Format added = Format(name, e, m)
+        formats.set(name, added)
+        emit("FORMAT {name} e={e} m={m} bits={added.width} bias={added.bias} emin={added.emin} emax={added.emax}")
+        return void
+    Format fmt = try lookup_format(formats, name)
+    if op == "ENCODE"
+        Exact | Special value = try parse_real(words[2])
+        Mode mode = try optional_mode(words, 3)
+        string text
+        match value
+            Exact exact
+                text = fraction_text(exact)
+            Special special
+                text = special_text(special)
+        emit("ENCODE {name} {mode_text(mode)} {text} " + result_text(fmt, encoded(fmt, value, mode)))
+    elif op == "CONVERT"
+        Format destination = try lookup_format(formats, words[2])
+        int pattern = try operand(fmt, words[3])
+        Mode mode = try optional_mode(words, 4)
+        Result converted
+        if is_nan(fmt, pattern)
+            converted = Result(destination.nan_pattern, Flags(invalid = is_signaling(fmt, pattern)))
+        elif is_infinity(fmt, pattern)
+            converted = Result(infinity_pattern(destination, pattern >= fmt.sign_bit))
+        else
+            converted = rounded(destination, from_pattern(fmt, pattern), mode)
+        emit("CONVERT {name} {destination.name} {mode_text(mode)} " + result_text(destination, converted))
+    elif op == "SUM" or op == "KAHAN" or op == "DOT"
+        Mode mode = try parse_mode(words[2])
+        if op == "DOT"
+            int separator = 3
+            while words[separator] != "|"
+                separator += 1
+            int[] left = try operands(fmt, words[3:<separator])
+            int[] right = try operands(fmt, words[separator + 1:])
+            try dot_product(fmt, mode, left, right)
+        else
+            int[] patterns = try operands(fmt, words[3:])
+            try summation(op, fmt, mode, patterns)
+    elif op == "TABLE"
+        try table_output(fmt)
+    elif op == "ADD" or op == "SUB" or op == "MUL" or op == "DIV" or op == "SQRT" or op == "FMA"
+        int count = if op == "SQRT" then 1 elif op == "FMA" then 3 else 2
+        int[] patterns = try operands(fmt, words[2:<2 + count])
+        Mode mode = try optional_mode(words, 2 + count)
+        emit("{op} {name} {mode_text(mode)} " + result_text(fmt, operation(fmt, op, patterns, mode)))
+    else
+        int pattern = try operand(fmt, words[2])
+        Fields parts = decode_fields(fmt, pattern)
+        if op == "DECODE"
+            string classification = if is_nan(fmt, pattern) then (if is_signaling(fmt, pattern) then "snan" else "qnan") elif is_infinity(fmt, pattern) then "infinity" elif is_zero(fmt, pattern) then "zero" elif parts.exponent == 0 then "subnormal" else "normal"
+            int sign = if parts.negative then 1 else 0
+            emit("DECODE {name} {bit_text(fmt, pattern)} {hex_text(fmt, pattern)} {classification} sign={sign}")
+            string text = "FIELDS exponent={parts.exponent} fraction={parts.fraction}"
+            if is_finite(fmt, pattern)
+                int leading = if parts.exponent == 0 then 0 else 1
+                emit(text + " unbiased={parts.q + fmt.m} significand={leading}." + radix_text(parts.fraction, 2, fmt.m))
+                emit("VALUE {fraction_text(from_pattern(fmt, pattern))} {value_text(fmt, pattern)}")
+            else
+                if is_nan(fmt, pattern)
+                    text += " payload={parts.fraction % (fmt.hidden / 2)}"
+                emit(text)
+        elif op == "COMPARE"
+            int other = try operand(fmt, words[3])
+            string total_order = relation(order_key(fmt, pattern), order_key(fmt, other))
+            string numeric = if is_nan(fmt, pattern) or is_nan(fmt, other) then "UN" elif is_zero(fmt, pattern) and is_zero(fmt, other) then "EQ" else total_order
+            Flags flags = Flags(invalid = is_signaling(fmt, pattern) or is_signaling(fmt, other))
+            emit("COMPARE {name} {hex_text(fmt, pattern)} {hex_text(fmt, other)} {numeric} total={total_order} {flag_text(flags)}")
+        elif op == "TOINT"
+            Bounds limits = try integer_limits(words[3])
+            Mode mode = try optional_mode(words, 4)
+            string prefix = "TOINT {name} {words[3]} {mode_text(mode)}"
+            if not is_finite(fmt, pattern)
+                emit(prefix + " invalid flags=invalid")
+            else
+                Units units = round_units(from_pattern(fmt, pattern), 0, mode)
+                int integer = if parts.negative then -units.value else units.value
+                if integer < limits.minimum or integer > limits.maximum
+                    emit(prefix + " invalid flags=invalid")
+                else
+                    emit(prefix + " {integer} " + flag_text(Flags(inexact = units.inexact)))
+        else
+            Result result
+            if is_nan(fmt, pattern)
+                result = Result(fmt.nan_pattern, Flags(invalid = is_signaling(fmt, pattern)))
+            elif op == "NEXTUP"
+                result = Result(next_up(fmt, pattern))
+            elif op == "NEXTDOWN"
+                result = Result(flip(fmt, next_up(fmt, flip(fmt, pattern))))
+            elif is_infinity(fmt, pattern)
+                result = Result(fmt.infinity)
+            else
+                result = Result(rounded(fmt, Exact(1, parts.q), Mode.RNE).pattern)
+            emit("{op} {name} " + result_text(fmt, result))
+    return void
+
+map.Map<string, Format> known_formats = map.Map<string, Format>()
+known_formats.set("HALF", Format("HALF", 5, 10))
+known_formats.set("E5M2", Format("E5M2", 5, 2))
+known_formats.set("E4M3", Format("E4M3", 4, 3))
+string count_line
+scan(&count_line)
+int command_count = int.parse(count_line)
+for 0 <= int command_number < command_count
+    string line
+    scan(&line)
+    void | error outcome = command(&known_formats, line.split(" "))
+    match outcome
+        void
+            continue
+        error problem
+            emit("ERROR " + problem.message)

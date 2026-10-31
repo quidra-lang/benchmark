@@ -1,0 +1,664 @@
+bool digits(string text)
+    if text == ""
+        return false
+    for nat i < len(text)
+        if not "0123456789".contains(text[i])
+            return false
+    return true
+
+int decimal(string text, nat max_digits)
+    if len(text) > max_digits or not digits(text) or (len(text) > 1 and text[0] == "0")
+        return -1
+    return int.parse(text)
+
+int parse_address(string text)
+    string[] fields = text.split(".")
+    if len(fields) != 4
+        return -1
+    int result = 0
+    for string field = fields[]
+        int value = decimal(field, 3)
+        if value < 0 or value > 255
+            return -1
+        result = result * 256 + value
+    return result
+
+class Prefix(int address, int length)
+
+Prefix parse_prefix(string text)
+    string[] fields = text.split("/")
+    if len(fields) != 2
+        return Prefix(-1, -1)
+    int value = parse_address(fields[0])
+    int length = decimal(fields[1], 2)
+    return if value < 0 or length < 0 or length > 32 then Prefix(-1, -1) else Prefix(value, length)
+
+int network(int value, int length)
+    int unit = 2 ^ (32 - length)
+    return value / unit * unit
+
+bool contains(Prefix range, int value)
+    return network(value, range.length) == network(range.address, range.length)
+
+string ip(int value)
+    return "{value / 16777216}.{value / 65536 % 256}.{value / 256 % 256}.{value % 256}"
+
+string cidr(Prefix range)
+    return "{ip(range.address)}/{range.length}"
+
+string endpoint(int value, int port)
+    return "{ip(value)}:{port}"
+
+int | error require_address(string text)
+    int value = parse_address(text)
+    return if value < 0 then error("bad address {text}") else value
+
+Prefix | error require_prefix(string text, bool acl = false)
+    if acl and text == "ANY"
+        return Prefix(0, 0)
+    Prefix result = parse_prefix(text)
+    if result.address < 0
+        return error("bad prefix {text}")
+    if network(result.address, result.length) != result.address
+        return error("host bits set in {text}")
+    return result
+
+int | error require_number(string text, int low, int high, string message)
+    int value = int.parse(text)
+    return if value < low or value > high then error(message) else value
+
+class Ports(int low, int high, string label)
+
+Ports | error port_range(string text)
+    if text == "ANY"
+        return Ports(0, 65535, "any")
+    string[] parts = text.split("-")
+    int low = int.parse(parts[0])
+    int high = int.parse(parts[len(parts) - 1])
+    if low > high or high > 65535
+        return error("bad port range {text}")
+    return Ports(low, high, if low == high then "{low}" else "{low}-{high}")
+
+string lower(string text)
+    string result = ""
+    for nat i < len(text)
+        match "ABCDEFGHIJKLMNOPQRSTUVWXYZ".find(text[i])
+            nat index
+                result += "abcdefghijklmnopqrstuvwxyz"[index]
+            none
+                result += text[i]
+    return result
+
+class Interface(string name, Prefix prefix)
+    bool up = true
+    bool outside = false
+    int pool = 0
+    string rpf = "off"
+    int rx = 0
+    int tx = 0
+    int drop = 0
+    int default_in = 0
+    int default_out = 0
+class Route(string kind, Prefix prefix, nat iface, int hop, int metric)
+    int hits = 0
+class Rule(nat iface, string direction, int sequence, string action, string protocol, Prefix source, Ports sports, Prefix destination, Ports dports, bool established)
+    int hits = 0
+class Static(int inside, int outside)
+class Forward(nat iface, string protocol, int port, int inside, int inport)
+class Pat(nat iface, string protocol, int inside, int inport, int port, int used)
+class Flow(string protocol, int source, int sport, int destination, int dport)
+class Connection(int number, Flow orig, Flow reply, nat inbound, nat outbound, string state)
+    int orig_packets = 0
+    int reply_packets = 0
+    int used = 0
+    bool orig_fin = false
+    bool reply_fin = false
+class Verdict(string reason, string text)
+
+string flow_text(Flow flow)
+    return "{endpoint(flow.source, flow.sport)} > {endpoint(flow.destination, flow.dport)}"
+
+class Router()
+    Interface[] interfaces = []
+    Route[] routes = []
+    Rule[] rules = []
+    Static[] statics = []
+    Forward[] forwards = []
+    Pat[] mappings = []
+    Connection[] connections = []
+    int tcp_timeout = 300
+    int udp_timeout = 60
+    int icmp_timeout = 30
+    int clock = 0
+    int packets = 0
+    int serial = 0
+    int errors = 0
+    string[] reasons = ["down", "martian", "rpf", "invalid", "acl_in", "ttl", "noroute", "acl_out", "exhausted", "forwarded", "local"]
+    int[] counts = array(11, fill = 0)
+
+    int interface_id(string name)
+        for Interface iface = interfaces[nat i]
+            if iface.name == name
+                return int(i)
+        return -1
+
+    nat | error require_interface(string name)
+        int id = interface_id(name)
+        return if id < 0 then error("no interface {name}") else nat(id)
+
+    int local_interface(int value)
+        for Interface iface = interfaces[nat i]
+            if iface.prefix.address == value
+                return int(i)
+        return -1
+
+    int lookup(int value)
+        int best = -1
+        for Route route = routes[nat i]
+            if not interfaces[route.iface].up or not contains(route.prefix, value)
+                continue
+            if best < 0 or route.prefix.length > routes[best].prefix.length or (route.prefix.length == routes[best].prefix.length and route.metric < routes[best].metric)
+                best = int(i)
+        return best
+
+    string route_text(Route route)
+        return "{route.kind} {cidr(route.prefix)}" + (if route.hop < 0 then "" else " via {ip(route.hop)}") + " dev {interfaces[route.iface].name} metric {route.metric}"
+
+    int timeout(string protocol)
+        return if protocol == "TCP" then tcp_timeout elif protocol == "UDP" then udp_timeout else icmp_timeout
+
+    nat[] interface_order()
+        nat[] result = []
+        string[] names = [for Interface iface = interfaces[] then iface.name].sorted()
+        for string name = names[]
+            result = result.append(nat(interface_id(name)))
+        return result
+
+    nat[] rule_order(nat iface, string direction)
+        nat[] result = []
+        for Rule rule = rules[nat i]
+            if rule.iface != iface or rule.direction != direction
+                continue
+            nat at = 0
+            while at < len(result) and rules[result[at]].sequence < rule.sequence
+                at += 1
+            result = result[:<at].append(i).concat(result[at:])
+        return result
+
+    string .acl(nat iface, string direction, Flow flow, bool established)
+        nat[] ordered = rule_order(iface, direction)
+        if len(ordered) == 0
+            return ""
+        string label = "acl {interfaces[iface].name} {direction}"
+        for nat id = ordered[]
+            Rule rule = rules[id]
+            if rule.protocol != "ANY" and rule.protocol != flow.protocol
+                continue
+            if not contains(rule.source, flow.source) or not contains(rule.destination, flow.destination)
+                continue
+            if (rule.protocol == "TCP" or rule.protocol == "UDP") and (flow.sport < rule.sports.low or flow.sport > rule.sports.high or flow.dport < rule.dports.low or flow.dport > rule.dports.high)
+                continue
+            if rule.established and not established
+                continue
+            rules[id].hits += 1
+            if rule.action == "PERMIT"
+                return ""
+            return if rule.action == "DENY" then "DROP {label} {rule.sequence}" else "REJECT {label} {rule.sequence} " + (if flow.protocol == "TCP" then "tcp-reset" else "icmp-prohibited")
+        if direction == "in"
+            interfaces[iface].default_in += 1
+        else
+            interfaces[iface].default_out += 1
+        return "DROP {label} default"
+
+    Verdict .process_packet(nat inbound, string flags, Flow flow, int ttl)
+        Interface incoming = interfaces[inbound]
+        if not incoming.up
+            return Verdict("down", "DROP down")
+        for Prefix range = [Prefix(0, 8), Prefix(2130706432, 8), Prefix(3758096384, 3)][]
+            if contains(range, flow.source) or contains(range, flow.destination)
+                return Verdict("martian", "DROP martian")
+        if local_interface(flow.source) >= 0
+            return Verdict("martian", "DROP martian")
+        if incoming.rpf != "off"
+            int selected = lookup(flow.source)
+            if selected < 0 or (incoming.rpf == "strict" and routes[selected].iface != inbound)
+                return Verdict("rpf", "DROP rpf")
+        int conn_id = -1
+        string direction = ""
+        bool pure = flow.protocol == "TCP" and flags == "S"
+        for Connection conn = connections[nat i]
+            string side = if conn.orig == flow then "orig" elif conn.reply == flow then "reply" else ""
+            if side == ""
+                continue
+            if conn.state == "CLOSED" and pure
+                connections = connections[:<i].concat(connections[i + 1:])
+            else
+                conn_id = int(i)
+                direction = side
+            break
+        if flow.protocol == "TCP" and conn_id < 0 and not pure
+            return Verdict("invalid", "DROP invalid")
+        string denied = .acl(inbound, "in", flow, conn_id >= 0)
+        if denied != ""
+            return Verdict("acl_in", denied)
+        int destination = flow.destination
+        int dport = flow.dport
+        int used_mapping = -1
+        bool translated = false
+        if incoming.outside
+            for Static mapping = statics[]
+                if mapping.outside == destination
+                    destination = mapping.inside
+                    translated = true
+                    break
+            if not translated and destination == incoming.prefix.address
+                for Forward rule = forwards[]
+                    if rule.iface == inbound and rule.protocol == flow.protocol and rule.port == dport
+                        destination = rule.inside
+                        dport = rule.inport
+                        translated = true
+                        break
+                if not translated
+                    for Pat mapping = mappings[nat i]
+                        if mapping.iface == inbound and mapping.protocol == flow.protocol and mapping.port == dport
+                            destination = mapping.inside
+                            dport = mapping.inport
+                            used_mapping = int(i)
+                            break
+        int local_id = local_interface(destination)
+        if local_id >= 0
+            return Verdict("local", "LOCAL {interfaces[local_id].name}")
+        if ttl == 1
+            return Verdict("ttl", "DROP ttl")
+        int route_id = lookup(destination)
+        if route_id < 0
+            return Verdict("noroute", "DROP noroute")
+        Route route = routes[route_id]
+        nat outbound = route.iface
+        Interface outgoing = interfaces[outbound]
+        denied = .acl(outbound, "out", Flow(flow.protocol, flow.source, flow.sport, destination, dport), conn_id >= 0)
+        if denied != ""
+            return Verdict("acl_out", denied)
+        int source = flow.source
+        int sport = flow.sport
+        if not incoming.outside and outgoing.outside
+            translated = false
+            for Static mapping = statics[]
+                if mapping.inside == source
+                    source = mapping.outside
+                    translated = true
+                    break
+            if not translated
+                for Forward rule = forwards[]
+                    if rule.iface == outbound and rule.protocol == flow.protocol and rule.inside == source and rule.inport == sport
+                        source = outgoing.prefix.address
+                        sport = rule.port
+                        translated = true
+                        break
+            if not translated and outgoing.pool > 0
+                used_mapping = -1
+                for Pat mapping = mappings[nat i]
+                    if mapping.iface == outbound and mapping.protocol == flow.protocol and mapping.inside == source and mapping.inport == sport
+                        used_mapping = int(i)
+                        break
+                if used_mapping < 0
+                    int chosen = -1
+                    for 20000 <= int port < 20000 + outgoing.pool
+                        bool occupied = false
+                        for Pat mapping = mappings[]
+                            if mapping.iface == outbound and mapping.port == port
+                                occupied = true
+                        for Forward rule = forwards[]
+                            if rule.iface == outbound and rule.port == port
+                                occupied = true
+                        if not occupied
+                            chosen = port
+                            break
+                    if chosen < 0
+                        return Verdict("exhausted", "DROP exhausted")
+                    mappings = mappings.append(Pat(outbound, flow.protocol, source, sport, chosen, clock))
+                    used_mapping = int(len(mappings) - 1)
+                source = outgoing.prefix.address
+                sport = mappings[used_mapping].port
+        if used_mapping >= 0
+            mappings[used_mapping].used = clock
+        if conn_id < 0
+            serial += 1
+            connections = connections.append(Connection(serial, flow, Flow(flow.protocol, destination, dport, source, sport), inbound, outbound, if flow.protocol == "TCP" then "SYN_SENT" else "UNREPLIED"))
+            conn_id = int(len(connections) - 1)
+            direction = "new"
+        Connection conn = connections[conn_id]
+        if direction == "reply"
+            conn.reply_packets += 1
+        else
+            conn.orig_packets += 1
+        conn.used = clock
+        if flow.protocol != "TCP"
+            if direction == "reply"
+                conn.state = "REPLIED"
+        elif flags.contains("R")
+            conn.state = "CLOSED"
+        else
+            if conn.state == "SYN_SENT" and direction == "reply" and flags.contains("S") and flags.contains("A")
+                conn.state = "ESTABLISHED"
+            if flags.contains("F") and (conn.state == "ESTABLISHED" or conn.state == "FIN_WAIT")
+                if direction == "reply"
+                    conn.reply_fin = true
+                else
+                    conn.orig_fin = true
+                conn.state = if conn.orig_fin and conn.reply_fin then "CLOSED" else "FIN_WAIT"
+        connections[conn_id] = conn
+        interfaces[outbound].tx += 1
+        routes[route_id].hits += 1
+        string result = "FORWARD {outgoing.name} " + (if route.hop < 0 then "direct" else "via {ip(route.hop)}") + " ttl={ttl - 1}"
+        if destination != flow.destination or dport != flow.dport
+            result += " dnat={endpoint(destination, dport)}"
+        if source != flow.source or sport != flow.sport
+            result += " snat={endpoint(source, sport)}"
+        return Verdict("forwarded", result + " conn={conn.number} {direction}")
+
+    string show(string what)
+        string result = ""
+        nat[] ordered = interface_order()
+        if what == "IFACES"
+            result = "show ifaces count={len(interfaces)}{NL}"
+            for nat id = ordered[]
+                Interface iface = interfaces[id]
+                nat used = 0
+                for Pat mapping = mappings[]
+                    if mapping.iface == id
+                        used += 1
+                result += "{iface.name} {cidr(iface.prefix)} " + (if iface.up then "up" else "down") + " " + (if iface.outside then "outside" else "inside") + " rpf={iface.rpf}" + (if iface.pool > 0 then " pat={used}/{iface.pool}" else "") + NL
+        elif what == "ROUTES"
+            result = "show routes count={len(routes)}{NL}"
+            nat[] order = []
+            for Route route = routes[nat i]
+                nat at = 0
+                while at < len(order)
+                    Route other = routes[order[at]]
+                    if route.prefix.address < other.prefix.address or (route.prefix.address == other.prefix.address and (route.prefix.length < other.prefix.length or (route.prefix.length == other.prefix.length and route.metric < other.metric)))
+                        break
+                    at += 1
+                order = order[:<at].append(i).concat(order[at:])
+            for nat id = order[]
+                Route route = routes[id]
+                result += route_text(route) + " hits={route.hits}" + (if interfaces[route.iface].up then "" else " inactive") + NL
+        elif what == "ACL"
+            result = "show acl count={len(rules)}{NL}"
+            for nat id = ordered[]
+                for string direction = ["in", "out"][]
+                    nat[] order = rule_order(id, direction)
+                    if len(order) == 0
+                        continue
+                    string label = "acl {interfaces[id].name} {direction}"
+                    for nat index = order[]
+                        Rule rule = rules[index]
+                        string src = if rule.source.length == 0 then "any" else cidr(rule.source)
+                        string dst = if rule.destination.length == 0 then "any" else cidr(rule.destination)
+                        result += "{label} {rule.sequence} {rule.action} {rule.protocol} {src} {rule.sports.label} {dst} {rule.dports.label}" + (if rule.established then " established" else "") + " hits={rule.hits}{NL}"
+                    result += "{label} default DENY hits=" + (if direction == "in" then interfaces[id].default_in.string() else interfaces[id].default_out.string()) + NL
+        elif what == "NAT"
+            result = "show nat static={len(statics)} forward={len(forwards)} pat={len(mappings)}{NL}"
+            int[] insides = [for Static mapping = statics[] then mapping.inside].sorted()
+            for int inside = insides[]
+                for Static mapping = statics[]
+                    if mapping.inside == inside
+                        result += "static {ip(mapping.inside)} {ip(mapping.outside)}{NL}"
+            for nat id = ordered[]
+                int[] ports = [for Forward rule = forwards[] if rule.iface == id then rule.port].sorted()
+                int previous = -1
+                for int port = ports[]
+                    if port == previous
+                        continue
+                    previous = port
+                    for string protocol = ["TCP", "UDP"][]
+                        for Forward rule = forwards[]
+                            if rule.iface == id and rule.port == port and rule.protocol == protocol
+                                result += "forward {interfaces[id].name} {protocol} {port} {endpoint(rule.inside, rule.inport)}{NL}"
+            for nat id = ordered[]
+                int[] ports = [for Pat mapping = mappings[] if mapping.iface == id then mapping.port].sorted()
+                for int port = ports[]
+                    for Pat mapping = mappings[]
+                        if mapping.iface == id and mapping.port == port
+                            result += "pat {interfaces[id].name} {port} {mapping.protocol} {endpoint(mapping.inside, mapping.inport)} idle={clock - mapping.used}{NL}"
+        elif what == "CONNS"
+            result = "show conns count={len(connections)}{NL}"
+            for Connection conn = connections[]
+                result += "conn {conn.number} {conn.orig.protocol} {flow_text(conn.orig)} reply {flow_text(conn.reply)} in={interfaces[conn.inbound].name} out={interfaces[conn.outbound].name} state={conn.state} pkts={conn.orig_packets}/{conn.reply_packets} idle={clock - conn.used}{NL}"
+        else
+            int dropped = 0
+            for nat i < 9
+                dropped += counts[i]
+            result = "show counters packets={dropped + counts[9] + counts[10]} forwarded={counts[9]} local={counts[10]} dropped={dropped} errors={errors}{NL}drops"
+            for nat i < 9
+                result += " {reasons[i]}={counts[i]}"
+            result += NL
+            for nat id = ordered[]
+                Interface iface = interfaces[id]
+                result += "iface {iface.name} rx={iface.rx} tx={iface.tx} drop={iface.drop}{NL}"
+        return result
+
+    string | error .execute(string line)
+        string[] words = line.split(" ")
+        string command = words[0]
+        string[] args = words[1:]
+        if command == "IFACE"
+            string name = args[0]
+            string word = args[1]
+            if interface_id(name) >= 0
+                return error("duplicate interface {name}")
+            Prefix range = parse_prefix(word)
+            if range.address < 0 or range.length < 8 or range.length > 30
+                return error("bad prefix {word}")
+            int base = network(range.address, range.length)
+            int host = range.address - base
+            if host == 0 or host == 2 ^ (32 - range.length) - 1
+                return error("bad host address {word}")
+            for Interface iface = interfaces[]
+                int size = if range.length < iface.prefix.length then range.length else iface.prefix.length
+                if contains(Prefix(iface.prefix.address, size), range.address)
+                    return error("subnet overlaps {iface.name}")
+            routes = routes.append(Route("C", Prefix(base, range.length), len(interfaces), -1, 0))
+            interfaces = interfaces.append(Interface(name, range))
+            return "ok iface {name} {word} network {cidr(Prefix(base, range.length))}{NL}"
+        if command == "UP" or command == "DOWN"
+            nat id = try require_interface(args[0])
+            bool up = command == "UP"
+            string word = lower(command)
+            if interfaces[id].up == up
+                return error("interface {args[0]} already {word}")
+            interfaces[id].up = up
+            return "ok {word} {args[0]}{NL}"
+        if command == "ROUTE"
+            Prefix range = try require_prefix(args[0])
+            int hop = -1
+            nat id = 0
+            if args[1] == "VIA"
+                hop = try require_address(args[2])
+            else
+                id = try require_interface(args[2])
+            int metric = try require_number(args[3], 1, 255, "bad metric {args[3]}")
+            if args[1] == "VIA"
+                if local_interface(hop) >= 0
+                    return error("nexthop {args[2]} is local")
+                bool found = false
+                for Interface iface = interfaces[nat i]
+                    if contains(iface.prefix, hop)
+                        id = i
+                        found = true
+                        break
+                if not found
+                    return error("nexthop {args[2]} unreachable")
+            for Route route = routes[]
+                if route.kind == "S" and route.prefix == range and route.iface == id and route.hop == hop
+                    return error("duplicate route {args[0]}")
+            auto route = Route("S", range, id, hop, metric)
+            routes = routes.append(route)
+            return "ok route {route_text(route)}{NL}"
+        if command == "NOROUTE"
+            Prefix range = try require_prefix(args[0])
+            Route[] kept = [for Route route = routes[] if route.kind != "S" or route.prefix != range then route]
+            nat removed = len(routes) - len(kept)
+            if removed == 0
+                return error("no static route {args[0]}")
+            routes = kept
+            return "ok noroute {args[0]} removed={removed}{NL}"
+        if command == "LOOKUP"
+            int value = try require_address(args[0])
+            int selected = lookup(value)
+            return "lookup {args[0]} " + (if selected < 0 then "none" else route_text(routes[selected])) + NL
+        if command == "ACL"
+            nat id = try require_interface(args[0])
+            int sequence = try require_number(args[2], 1, 9999, "bad sequence {args[2]}")
+            Prefix src = try require_prefix(args[5], true)
+            Ports sports = try port_range(args[6])
+            Prefix dst = try require_prefix(args[7], true)
+            Ports dports = try port_range(args[8])
+            if (args[4] == "ICMP" or args[4] == "ANY") and (args[6] != "ANY" or args[8] != "ANY")
+                return error("ports not allowed for {args[4]}")
+            string direction = lower(args[1])
+            for Rule rule = rules[]
+                if rule.iface == id and rule.direction == direction and rule.sequence == sequence
+                    return error("duplicate sequence {args[2]}")
+            rules = rules.append(Rule(id, direction, sequence, args[3], args[4], src, sports, dst, dports, len(args) == 10))
+            return "ok acl {args[0]} {direction} {args[2]}{NL}"
+        if command == "NOACL"
+            nat id = try require_interface(args[0])
+            string direction = lower(args[1])
+            int sequence = int.parse(args[2])
+            for Rule rule = rules[nat i]
+                if rule.iface == id and rule.direction == direction and rule.sequence == sequence
+                    rules = rules[:<i].concat(rules[i + 1:])
+                    return "ok noacl {args[0]} {direction} {args[2]} hits={rule.hits}{NL}"
+            return error("no rule {args[2]} on {args[0]} {direction}")
+        if command == "NAT"
+            string kind = args[0]
+            args = args[1:]
+            if kind == "STATIC"
+                int inside = try require_address(args[0])
+                int outside = try require_address(args[1])
+                if local_interface(inside) >= 0
+                    return error("address {args[0]} is local")
+                if local_interface(outside) >= 0
+                    return error("address {args[1]} is local")
+                for Static mapping = statics[]
+                    if mapping.inside == inside
+                        return error("duplicate static {args[0]}")
+                for Static mapping = statics[]
+                    if mapping.outside == outside
+                        return error("duplicate static {args[1]}")
+                statics = statics.append(Static(inside, outside))
+                return "ok nat static {args[0]} {args[1]}{NL}"
+            nat id = try require_interface(args[0])
+            if kind == "OUTSIDE"
+                if interfaces[id].outside
+                    return error("interface {args[0]} already outside")
+                interfaces[id].outside = true
+                return "ok nat outside {args[0]}{NL}"
+            if kind == "PAT"
+                int count = try require_number(args[1], 1, 1000, "bad pool size {args[1]}")
+                if interfaces[id].pool > 0
+                    return error("pat already on {args[0]}")
+                interfaces[id].pool = count
+                interfaces[id].outside = true
+                return "ok nat pat {args[0]} {ip(interfaces[id].prefix.address)} 20000-{19999 + count}{NL}"
+            int port = try require_number(args[2], 1, 65535, "bad port {args[2]}")
+            int inside = try require_address(args[3])
+            int inport = try require_number(args[4], 1, 65535, "bad port {args[4]}")
+            if not interfaces[id].outside
+                return error("interface {args[0]} not outside")
+            if local_interface(inside) >= 0
+                return error("address {args[3]} is local")
+            for Forward rule = forwards[]
+                if rule.iface == id and rule.protocol == args[1] and rule.port == port
+                    return error("duplicate forward {args[0]} {args[1]} {args[2]}")
+            forwards = forwards.append(Forward(id, args[1], port, inside, inport))
+            return "ok nat forward {args[0]} {args[1]} {args[2]} {args[3]}:{args[4]}{NL}"
+        if command == "RPF"
+            nat id = try require_interface(args[0])
+            interfaces[id].rpf = lower(args[1])
+            return "ok rpf {args[0]} {interfaces[id].rpf}{NL}"
+        if command == "TIMEOUT"
+            int seconds = try require_number(args[1], 1, 86400, "bad timeout {args[1]}")
+            if args[0] == "TCP"
+                tcp_timeout = seconds
+            elif args[0] == "UDP"
+                udp_timeout = seconds
+            else
+                icmp_timeout = seconds
+            return "ok timeout {args[0]} {args[1]}{NL}"
+        if command == "TICK"
+            int seconds = try require_number(args[0], 1, 86400, "bad tick {args[0]}")
+            clock += seconds
+            Connection[] kept = []
+            for Connection conn = connections[]
+                int duration = if conn.orig.protocol != "TCP" or conn.state == "ESTABLISHED" then timeout(conn.orig.protocol) elif conn.state == "CLOSED" then 10 else 60
+                if clock - conn.used < duration
+                    kept = kept.append(conn)
+            nat removed = len(connections) - len(kept)
+            connections = kept
+            Pat[] live = [for Pat mapping = mappings[] if clock - mapping.used < timeout(mapping.protocol) then mapping]
+            nat expired = len(mappings) - len(live)
+            mappings = live
+            return "ok tick time={clock} expired conns={removed} nat={expired}{NL}"
+        if command == "PACKET"
+            nat id = try require_interface(args[0])
+            string protocol = args[1]
+            string flags = args[2]
+            if protocol != "TCP" and flags != "-"
+                return error("flags not allowed for {protocol}")
+            if protocol == "TCP" and flags != "-"
+                string seen = ""
+                for nat i < len(flags)
+                    if not "SAFR".contains(flags[i]) or seen.contains(flags[i])
+                        return error("bad flags {flags}")
+                    seen += flags[i]
+            int source = try require_address(args[3])
+            int sport = try require_number(args[4], 0, 65535, "bad port {args[4]}")
+            int destination = try require_address(args[5])
+            int dport = try require_number(args[6], 0, 65535, "bad port {args[6]}")
+            int ttl = try require_number(args[7], 1, 255, "bad ttl {args[7]}")
+            packets += 1
+            interfaces[id].rx += 1
+            Verdict verdict = .process_packet(id, if flags == "-" then "" else flags, Flow(protocol, source, sport, destination, dport), ttl)
+            for string reason = reasons[nat i]
+                if reason == verdict.reason
+                    counts[i] += 1
+                    if i < 9
+                        interfaces[id].drop += 1
+                    break
+            return "#{packets} {protocol} {flags} {args[3]}:{args[4]} > {args[5]}:{args[6]} {verdict.text}{NL}"
+        if command == "SHOW"
+            return show(args[0])
+        if args[0] == "COUNTERS"
+            counts = array(11, fill = 0)
+            errors = 0
+            for nat i < len(interfaces)
+                interfaces[i].rx = 0
+                interfaces[i].tx = 0
+                interfaces[i].drop = 0
+                interfaces[i].default_in = 0
+                interfaces[i].default_out = 0
+            for nat i < len(routes)
+                routes[i].hits = 0
+            for nat i < len(rules)
+                rules[i].hits = 0
+            return "ok clear counters{NL}"
+        nat removed = len(connections)
+        nat expired = len(mappings)
+        connections = []
+        mappings = []
+        return "ok clear conns={removed} nat={expired}{NL}"
+
+auto router = Router()
+nat commands
+scan(&commands)
+for nat i < commands
+    string line
+    scan(&line)
+    match .router.execute(line)
+        string output
+            print(output)
+        error problem
+            router.errors += 1
+            print("error: {problem.message}{NL}")

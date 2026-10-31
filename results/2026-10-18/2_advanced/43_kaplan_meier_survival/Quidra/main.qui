@@ -1,0 +1,739 @@
+import dataset = "./dataset.qui"
+import numeric = "./numerics.qui"
+import estimator = "./estimators.qui"
+import tests = "./group_tests.qui"
+import cox = "./cox.qui"
+import plot = "./plot.qui"
+
+int as_int(real64 value)
+    int result = int(value)
+    return result
+
+string number(real64 value)
+    return plot.number(value)
+
+string optional_number(real64 value)
+    return if value < 0.0 then "NA" else number(value)
+
+string day(int value)
+    return if value < 0 then "NA" else "{value}"
+
+string integers(int[] values)
+    return [for int value = values[] then "{value}"].join(" ")
+
+bool contains_int(int[] values, int value)
+    for int item = values[]
+        if item == value
+            return true
+    return false
+
+int[][] subset(int[][] subjects, int[] groups, int column = -1, int level = -1, int after = -1)
+    int[][] result = []
+    for int[] subject = subjects[]
+        if contains_int(groups, subject[1]) and (column < 0 or subject[column] == level) and subject[2] > after
+            result = result.append(subject)
+    return result
+
+int events(int[][] subjects)
+    int result = 0
+    for int[] subject = subjects[]
+        result += subject[3]
+    return result
+
+int variable_column(string variable)
+    return if variable == "sex" then 5 else 6
+
+int[] levels(int[][] subjects, int column)
+    int[] result = []
+    for int[] subject = subjects[]
+        if not contains_int(result, subject[column])
+            result = result.append(subject[column])
+    return result.sorted()
+
+string level_text(string variable, int level)
+    return if variable == "sex" then (if level == 0 then "F" else "M") else "{level}"
+
+int percentile(real64[][] rows, real64 threshold, int column = 4)
+    for real64[] row = rows[]
+        real64 value = if row[4] == 0.0 then 0.0 else row[column]
+        if value >= 0.0 and value <= threshold
+            return as_int(row[0])
+    return -1
+
+real64[] restricted_mean(real64[][] rows, int tau)
+    real64[][] selected = [for real64[] row = rows[] if row[0] <= numeric.as_real(tau) then row]
+    int[] moments = [0]
+    real64[] survival = [1.0]
+    for real64[] row = selected[]
+        moments = moments.append(as_int(row[0]))
+        survival = survival.append(row[4])
+    moments = moments.append(tau)
+    int count = int(len(survival))
+    real64[] tails = numeric.zeros(count)
+    for int backwards < count
+        int index = count - 1 - backwards
+        real64 rectangle = survival[index] * numeric.as_real(moments[index + 1] - moments[index])
+        tails[index] = if index == count - 1 then rectangle else rectangle + tails[index + 1]
+    real64 variance = 0.0
+    for int index < int(len(selected))
+        real64[] row = selected[index]
+        int n = as_int(row[1])
+        int d = as_int(row[2])
+        real64 tail = tails[index + 1]
+        variance += tail * tail * numeric.fraction(d, n * (n - d))
+    real64 estimate = tails[0]
+    real64 standard_error = numeric.root(variance)
+    return [estimate, standard_error, estimate - numeric.Z * standard_error, estimate + numeric.Z * standard_error]
+
+class Summary(real64[][] rows, real64[][] life, int count, int event_count, int maximum, int person_days, real64 rate, real64 rate_lower, real64 rate_upper, int followup, real64 life_median, int[][] percentiles, real64[] rmst)
+
+Summary summarize(int[][] subjects, int width, int intervals, int tau)
+    real64[][] rows = estimator.kaplan_meier(subjects)
+    real64[][] life = estimator.life_table(subjects, width, intervals)
+    int event_count = events(subjects)
+    int days = 0
+    int maximum = 0
+    int[][] reverse = []
+    for int[] subject = subjects[]
+        days += subject[2]
+        if subject[2] > maximum
+            maximum = subject[2]
+        int[] copy = subject
+        copy[3] = 1 - subject[3]
+        reverse = reverse.append(copy)
+    real64 rate = numeric.fraction(1000 * event_count, days)
+    real64 eta = numeric.Z / numeric.root(numeric.as_real(event_count))
+    real64 life_median = -1.0
+    real64 previous = 1.0
+    for real64[] row = life[]
+        if row[7] <= 0.5
+            life_median = row[0] + numeric.as_real(width) * (previous - 0.5) / (previous - row[7])
+            break
+        previous = row[7]
+    int[][] percentiles = []
+    real64[] thresholds = [0.75, 0.5, 0.25]
+    for int index < 3
+        real64 threshold = thresholds[index]
+        percentiles = percentiles.append([25 * (index + 1), percentile(rows, threshold), percentile(rows, threshold, 6), percentile(rows, threshold, 7)])
+    return Summary(rows, life, int(len(subjects)), event_count, maximum, days, rate, numeric.exponential(numeric.logarithm(rate) - eta), numeric.exponential(numeric.logarithm(rate) + eta), percentile(estimator.kaplan_meier(reverse), 0.5), life_median, percentiles, restricted_mean(rows, tau))
+
+string[] km_lines(string name, int[][] subjects, Summary summary, int[] report_times, int tau)
+    string[] lines = [
+        "group {name} subjects {summary.count} events {summary.event_count} censored {summary.count - summary.event_count} max_time {summary.maximum}",
+        "person_days {summary.person_days} rate " + number(summary.rate) + " lower " + number(summary.rate_lower) + " upper " + number(summary.rate_upper),
+        "followup_median " + day(summary.followup),
+        "life_table_median " + optional_number(summary.life_median),
+    ]
+    for int[] value = summary.percentiles[]
+        lines = lines.append("percentile {value[0]} time " + day(value[1]) + " lower " + day(value[2]) + " upper " + day(value[3]))
+    real64[] rmst = summary.rmst
+    lines = lines.append("rmst tau {tau} estimate " + number(rmst[0]) + " se " + number(rmst[1]) + " lower " + number(rmst[2]) + " upper " + number(rmst[3]))
+    for int moment = report_times[]
+        real64[] row = estimator.row_at(summary.rows, moment)
+        int risk = 0
+        int event_count = 0
+        for int[] subject = subjects[]
+            if subject[2] >= moment
+                risk += 1
+            if subject[2] <= moment
+                event_count += subject[3]
+        lines = lines.append("at {moment} at_risk {risk} events {event_count} survival " + number(row[4]) + " std_err " + optional_number(row[5]) + " lower " + optional_number(row[6]) + " upper " + optional_number(row[7]) + " cum_hazard " + number(row[8]) + " hazard_se " + number(row[9]))
+    lines = lines.append("     time  at_risk   events censored survival  std_err    lower    upper  cum_haz   haz_se")
+    for real64[] row = summary.rows[]
+        string[] fields = []
+        for int column < 4
+            fields = fields.append("{as_int(row[column])}")
+        for 4 <= int column < 10
+            fields = fields.append(if column >= 5 and column <= 7 then optional_number(row[column]) else number(row[column]))
+        string line = ""
+        for string value = fields[]
+            line += string.repeat(" ", nat(9 - int(len(value)))) + value
+        lines = lines.append(line)
+    return lines
+
+string[] life_lines(string[] names, Summary[] summaries)
+    string[] lines = ["group,interval,at_risk,events,withdrawn,exposed,q,survival,std_err,hazard"]
+    for int index < int(len(names))
+        Summary summary = summaries[index]
+        for real64[] row = summary.life[]
+            string[] fields = [names[index], "{as_int(row[0])}-{as_int(row[1])}"]
+            for 2 <= int column < 5
+                fields = fields.append("{as_int(row[column])}")
+            fields = fields.append(plot.number(row[5], 1))
+            for 6 <= int column < 10
+                fields = fields.append(number(row[column]))
+            lines = lines.append(fields.join(","))
+    return lines
+
+string baseline_line(string name, int[][] subjects)
+    int total = 0
+    int[] ages = []
+    int males = 0
+    int[] stages = [0, 0, 0, 0]
+    for int[] subject = subjects[]
+        total += subject[4]
+        ages = ages.append(subject[4])
+        males += subject[5]
+        stages[subject[6] - 1] += 1
+    int count = int(len(subjects))
+    real64 mean = numeric.fraction(total, count)
+    real64 variance = 0.0
+    for int[] subject = subjects[]
+        real64 difference = numeric.as_real(subject[4]) - mean
+        variance += difference * difference
+    ages = ages.sorted()
+    real64 median = numeric.fraction(ages[(count - 1) / 2] + ages[count / 2], 2)
+    return "  group {name} subjects {count} age_mean " + number(mean) + " age_sd " + number(numeric.root(variance / numeric.as_real(count - 1))) + " age_median " + plot.number(median, 1) + " male {males} stage " + integers(stages)
+
+real64 kruskal(int[][] subjects, int groups)
+    int[] order = []
+    for int index < int(len(subjects))
+        int place = int(len(order))
+        for int position < int(len(order))
+            int other = order[position]
+            if subjects[index][4] < subjects[other][4] or (subjects[index][4] == subjects[other][4] and subjects[index][0] < subjects[other][0])
+                place = position
+                break
+        order = order[0:<place].append(index).concat(order[place:<int(len(order))])
+    real64[] ranks = numeric.zeros(int(len(subjects)))
+    int ties = 0
+    int position = 0
+    while position < int(len(order))
+        int finish = position
+        while finish < int(len(order))
+            if subjects[order[finish]][4] != subjects[order[position]][4]
+                break
+            finish += 1
+        real64 rank = numeric.fraction(position + 1 + finish, 2)
+        for position <= int index < finish
+            ranks[order[index]] = rank
+        int count = finish - position
+        ties += count * count * count - count
+        position = finish
+    real64 weighted = 0.0
+    for int group < groups
+        real64 sum = 0.0
+        int count = 0
+        for int index < int(len(subjects))
+            if subjects[index][1] == group
+                sum += ranks[index]
+                count += 1
+        weighted += sum * sum / numeric.as_real(count)
+    int count = int(len(subjects))
+    real64 raw = 12.0 * weighted / numeric.as_real(count * (count + 1)) - numeric.as_real(3 * (count + 1))
+    return raw / (1.0 - numeric.fraction(ties, count * count * count - count))
+
+real64[] contingency(int[][] subjects, int groups, int column)
+    int[] values = levels(subjects, column)
+    int[] columns = [for int value = values[] then 0]
+    for int index < int(len(values))
+        for int[] subject = subjects[]
+            if subject[column] == values[index]
+                columns[index] += 1
+    real64 statistic = 0.0
+    for int group < groups
+        int[][] members = subset(subjects, [group])
+        for int index < int(len(values))
+            int observed = 0
+            for int[] subject = members[]
+                if subject[column] == values[index]
+                    observed += 1
+            real64 expected = numeric.fraction(int(len(members)) * columns[index], int(len(subjects)))
+            real64 difference = numeric.as_real(observed) - expected
+            statistic += difference * difference / expected
+    return [statistic, numeric.as_real((groups - 1) * (int(len(values)) - 1))]
+
+string[] baseline_lines(int[][] subjects, string[] names, int[][][] collections)
+    string[] lines = ["baseline"]
+    for int index < int(len(names))
+        lines = lines.append(baseline_line(names[index], collections[index]))
+    int degrees = int(len(names)) - 2
+    real64 statistic = kruskal(subjects, degrees + 1)
+    lines = lines.append("  age kruskal_wallis chisq " + number(statistic) + " df {degrees} p " + number(numeric.p(statistic, degrees)))
+    string[] variables = ["sex", "stage"]
+    for string variable = variables[]
+        real64[] result = contingency(subjects, degrees + 1, variable_column(variable))
+        int df = as_int(result[1])
+        lines = lines.append("  {variable} chisq " + number(result[0]) + " df {df} p " + number(numeric.p(result[0], df)))
+    return lines
+
+string[] group_lines(tests.Result result, string[] names)
+    string[] lines = []
+    for int index < int(len(result.groups))
+        string name = names[result.groups[index]]
+        real64 observed = result.observed[index]
+        real64 expected = result.expected[index]
+        lines = lines.append("  group {name} events {result.events[index]} observed " + number(observed) + " expected " + number(expected) + " o_minus_e " + number(observed - expected) + " variance " + number(result.covariance[index][index]))
+    return lines
+
+string test_fields(tests.Result result)
+    return "chisq " + number(result.statistic) + " df {result.degrees} p " + number(result.probability)
+
+string[] overall_lines(int[][] subjects, string[] names)
+    int[] groups = (0:<int(len(names)))
+    string[] lines = []
+    tests.Result[] stored = []
+    for string weight = tests.weights()[]
+        tests.Result result = tests.weighted_test(subjects, groups, weight, int(len(subjects)))
+        stored = stored.append(result)
+        lines = lines.append("test {weight} " + test_fields(result)).concat(group_lines(result, names))
+    tests.Result logrank = stored[0]
+    real64 trend = 0.0
+    real64 variance = 0.0
+    for int g < int(len(groups))
+        trend += numeric.as_real(g + 1) * (logrank.observed[g] - logrank.expected[g])
+        real64 inner = 0.0
+        for int h < int(len(groups))
+            inner += numeric.as_real((g + 1) * (h + 1)) * logrank.covariance[g][h]
+        variance += inner
+    real64 statistic = trend * trend / variance
+    return lines.append("test logrank_trend chisq " + number(statistic) + " df 1 p " + number(numeric.p(statistic, 1)))
+
+string[] stratified_lines(int[][] subjects, string[] names, string variable)
+    int[] groups = (0:<int(len(names)))
+    int column = variable_column(variable)
+    int[] values = levels(subjects, column)
+    int[][][] strata = [for int value = values[] then subset(subjects, groups, column, value)]
+    string[] lines = []
+    for string weight = tests.weights()[]
+        tests.Result[] results = []
+        for int[][] members = strata[]
+            results = results.append(tests.weighted_test(members, groups, weight, int(len(subjects))))
+        tests.Result combined = tests.combine(results, groups)
+        lines = lines.append("stratified {weight} by {variable} " + test_fields(combined))
+        for int index < int(len(values))
+            tests.Result result = results[index]
+            int[][] members = strata[index]
+            lines = lines.append("  stratum " + level_text(variable, values[index]) + " subjects {len(members)} events {events(members)} chisq " + number(result.statistic) + " p " + number(result.probability))
+        lines = lines.concat(group_lines(combined, names))
+    return lines
+
+string[] landmark_lines(int[][] subjects, string[] names, int landmark)
+    int[] groups = (0:<int(len(names)))
+    int[][] selected = subset(subjects, groups, -1, -1, landmark)
+    tests.Result result = tests.weighted_test(selected, groups, "logrank", int(len(subjects)))
+    string[] lines = ["landmark {landmark} subjects {len(selected)} " + test_fields(result)]
+    return lines.concat(group_lines(result, names))
+
+class Comparison(tests.Result weighted, real64 ratio, real64 variance, real64 log_ratio, real64 lower, real64 upper)
+
+Comparison two_group(int[][] subjects, int[] groups, int population)
+    tests.Result result = tests.weighted_test(subjects, groups, "logrank", population)
+    real64 ratio = (result.observed[1] / result.expected[1]) / (result.observed[0] / result.expected[0])
+    real64 variance = 1.0 / result.expected[0] + 1.0 / result.expected[1]
+    real64 logarithm = numeric.logarithm(ratio)
+    return Comparison(result, ratio, variance, logarithm, numeric.exponential(logarithm - numeric.Z * numeric.root(variance)), numeric.exponential(logarithm + numeric.Z * numeric.root(variance)))
+
+string[] pairwise_lines(int[][] subjects, string[] names)
+    int[][] pairs = []
+    Comparison[] results = []
+    for int a < int(len(names)) - 1
+        for a + 1 <= int b < int(len(names))
+            int[] pair = [a, b]
+            pairs = pairs.append(pair)
+            results = results.append(two_group(subset(subjects, pair), pair, int(len(subjects))))
+    int[] order = []
+    for int index < int(len(pairs))
+        int place = int(len(order))
+        Comparison item = results[index]
+        for int position < int(len(order))
+            Comparison other = results[order[position]]
+            if item.weighted.probability < other.weighted.probability
+                place = position
+                break
+        order = order[0:<place].append(index).concat(order[place:<int(len(order))])
+    real64[] adjusted = numeric.zeros(int(len(pairs)))
+    real64 previous = 0.0
+    for int rank < int(len(order))
+        int index = order[rank]
+        Comparison result = results[index]
+        real64 candidate = numeric.as_real(int(len(pairs)) - rank) * result.weighted.probability
+        if candidate > 1.0
+            candidate = 1.0
+        if candidate > previous
+            previous = candidate
+        adjusted[index] = previous
+    string[] lines = ["pairwise logrank adjust holm"]
+    for int index < int(len(pairs))
+        int[] pair = pairs[index]
+        Comparison result = results[index]
+        lines = lines.append("  " + names[pair[0]] + " " + names[pair[1]] + " chisq " + number(result.weighted.statistic) + " p " + number(result.weighted.probability) + " p_holm " + number(adjusted[index]) + " hr " + number(result.ratio) + " lower " + number(result.lower) + " upper " + number(result.upper))
+    return lines
+
+string[] subgroup_lines(int[][] subjects, string[] names, string[] variables)
+    string[] lines = ["subgroups reference " + names[0]]
+    for string variable = variables[]
+        int column = variable_column(variable)
+        int[] values = levels(subjects, column)
+        for 1 <= int b < int(len(names))
+            Comparison[] results = []
+            for int value = values[]
+                int[][] members = subset(subjects, [0, b], column, value)
+                Comparison result = two_group(members, [0, b], int(len(subjects)))
+                results = results.append(result)
+                lines = lines.append("  {variable} " + level_text(variable, value) + " " + names[b] + " subjects {len(members)} events {events(members)} hr " + number(result.ratio) + " lower " + number(result.lower) + " upper " + number(result.upper) + " p " + number(result.weighted.probability))
+            real64 numerator = 0.0
+            real64 denominator = 0.0
+            for Comparison result = results[]
+                real64 weight = 1.0 / result.variance
+                numerator += weight * result.log_ratio
+                denominator += weight
+            real64 mean = numerator / denominator
+            real64 statistic = 0.0
+            for Comparison result = results[]
+                statistic += (1.0 / result.variance) * (result.log_ratio - mean) * (result.log_ratio - mean)
+            int degrees = int(len(values)) - 1
+            lines = lines.append("  {variable} " + names[b] + " heterogeneity chisq " + number(statistic) + " df {degrees} p " + number(numeric.p(statistic, degrees)))
+    return lines
+
+string difference_fields(real64 difference, real64 standard_error)
+    real64 statistic = difference / standard_error
+    return "difference " + number(difference) + " se " + number(standard_error) + " lower " + number(difference - numeric.Z * standard_error) + " upper " + number(difference + numeric.Z * standard_error) + " z " + number(statistic) + " p " + number(numeric.p(statistic * statistic, 1))
+
+string[] rmst_lines(string[] names, Summary[] summaries, int tau)
+    string[] lines = ["rmst_difference tau {tau} reference " + names[0]]
+    Summary control = summaries[0]
+    for 1 <= int index < int(len(names))
+        Summary row = summaries[index]
+        real64 standard_error = numeric.root(row.rmst[1] * row.rmst[1] + control.rmst[1] * control.rmst[1])
+        lines = lines.append("  " + names[index] + " " + difference_fields(row.rmst[0] - control.rmst[0], standard_error))
+    return lines
+
+string[] rate_lines(string[] names, Summary[] summaries)
+    string[] lines = ["rate_ratio reference " + names[0]]
+    Summary control = summaries[0]
+    for 1 <= int index < int(len(names))
+        Summary row = summaries[index]
+        real64 ratio = row.rate / control.rate
+        real64 standard_error = numeric.root(numeric.fraction(1, row.event_count) + numeric.fraction(1, control.event_count))
+        real64 logarithm = numeric.logarithm(ratio)
+        real64 statistic = logarithm / standard_error
+        lines = lines.append("  " + names[index] + " ratio " + number(ratio) + " lower " + number(numeric.exponential(logarithm - numeric.Z * standard_error)) + " upper " + number(numeric.exponential(logarithm + numeric.Z * standard_error)) + " z " + number(statistic) + " p " + number(numeric.p(statistic * statistic, 1)))
+    return lines
+
+string[] survival_lines(string[] names, Summary[] summaries, int[] moments)
+    string[] lines = ["survival_difference reference " + names[0]]
+    Summary reference = summaries[0]
+    for int moment = moments[]
+        real64[] control = estimator.row_at(reference.rows, moment)
+        for 1 <= int index < int(len(names))
+            Summary summary = summaries[index]
+            real64[] row = estimator.row_at(summary.rows, moment)
+            real64 difference = row[4] - control[4]
+            real64 standard_error = numeric.root(row[5] * row[5] + control[5] * control[5])
+            lines = lines.append("  at {moment} " + names[index] + " " + difference_fields(difference, standard_error))
+    return lines
+
+int[][] covariate_vectors(int[][] subjects, string[] names, string[] groups)
+    int[][] vectors = []
+    for int[] subject = subjects[]
+        int[] values = []
+        for string name = names[]
+            int value = 0
+            if name == "age"
+                value = subject[4]
+            elif name == "male"
+                value = subject[5]
+            elif name == "stage"
+                value = subject[6]
+            elif groups[subject[1]] == name
+                value = 1
+            values = values.append(value)
+        vectors = vectors.append(values)
+    return vectors
+
+bool is_group(string name)
+    return name != "age" and name != "male" and name != "stage"
+
+string coefficient_fields(real64 coefficient, real64 standard_error)
+    real64 statistic = coefficient / standard_error
+    return "coef " + number(coefficient) + " se " + number(standard_error) + " z " + number(statistic) + " p " + number(numeric.p(statistic * statistic, 1)) + " hr " + number(numeric.exponential(coefficient)) + " lower " + number(numeric.exponential(coefficient - numeric.Z * standard_error)) + " upper " + number(numeric.exponential(coefficient + numeric.Z * standard_error))
+
+string[] coefficient_lines(string[] names, real64[] beta, real64[][] covariance)
+    string[] lines = []
+    for int index < int(len(names))
+        lines = lines.append("term " + names[index] + " " + coefficient_fields(beta[index], numeric.root(covariance[index][index])))
+    for int a < int(len(names)) - 1
+        if not is_group(names[a])
+            continue
+        for a + 1 <= int b < int(len(names))
+            if is_group(names[b])
+                real64 coefficient = beta[b] - beta[a]
+                real64 standard_error = numeric.root(covariance[b][b] + covariance[a][a] - 2.0 * covariance[a][b])
+                lines = lines.append("contrast " + names[b] + " vs " + names[a] + " " + coefficient_fields(coefficient, standard_error))
+    return lines
+
+string[] cox_tests(int[][] subjects, int[][] vectors, string[] names, real64[] beta, real64 final_loglik, real64[][] information, real64 null_loglik, real64[] null_score, real64[][] null_information)
+    int size = int(len(names))
+    real64 likelihood_ratio = 2.0 * (final_loglik - null_loglik)
+    real64 wald = 0.0
+    for int c < size
+        real64 inner = 0.0
+        for int d < size
+            inner += information[c][d] * beta[d]
+        wald += beta[c] * inner
+    real64[] solution = numeric.solve(null_information, null_score)
+    real64 score = 0.0
+    for int c < size
+        score += null_score[c] * solution[c]
+    string[] labels = ["likelihood_ratio", "wald", "score"]
+    real64[] statistics = [likelihood_ratio, wald, score]
+    string[] lines = []
+    for int index < 3
+        real64 statistic = statistics[index]
+        lines = lines.append(labels[index] + " chisq " + number(statistic) + " df {size} p " + number(numeric.p(statistic, size)))
+    for int omitted < size
+        real64 likelihood = null_loglik
+        if size >= 2
+            int[][] reduced = []
+            for int[] vector = vectors[]
+                int[] values = []
+                for int c < size
+                    if c != omitted
+                        values = values.append(vector[c])
+                reduced = reduced.append(values)
+            cox.Model model = cox.fit(subjects, reduced)
+            likelihood = model.final_evaluation.loglik
+        real64 statistic = 2.0 * (final_loglik - likelihood)
+        lines = lines.append("drop " + names[omitted] + " loglik " + number(likelihood) + " chisq " + number(statistic) + " df 1 p " + number(numeric.p(statistic, 1)))
+    return lines
+
+string concordance(int[][] subjects, int[][] vectors, real64[] predictors)
+    int comparable = 0
+    int concordant = 0
+    int tied = 0
+    for int i < int(len(subjects))
+        int[] first = subjects[i]
+        if first[3] == 0
+            continue
+        for int j < int(len(subjects))
+            int[] second = subjects[j]
+            if i == j or not (first[2] < second[2] or (first[2] == second[2] and second[3] == 0))
+                continue
+            comparable += 1
+            bool equal = true
+            for int c < int(len(vectors[i]))
+                if vectors[i][c] != vectors[j][c]
+                    equal = false
+                    break
+            if equal
+                tied += 1
+            elif predictors[i] > predictors[j]
+                concordant += 1
+    real64 value = numeric.fraction(2 * concordant + tied, 2 * comparable)
+    return "concordance " + number(value) + " comparable {comparable} concordant {concordant} tied {tied}"
+
+int find_event(cox.EventSums[] event_sums, int moment)
+    for int index < int(len(event_sums))
+        if event_sums[index].moment == moment
+            return index
+    return -1
+
+string[] ph_lines(int[][] subjects, int[][] vectors, string[] names, cox.EventSums[] event_sums)
+    int[] selected = []
+    int time_sum = 0
+    for int index < int(len(subjects))
+        if subjects[index][3] == 0
+            continue
+        int place = int(len(selected))
+        for int position < int(len(selected))
+            int other = selected[position]
+            if subjects[index][2] < subjects[other][2] or (subjects[index][2] == subjects[other][2] and subjects[index][0] < subjects[other][0])
+                place = position
+                break
+        selected = selected[0:<place].append(index).concat(selected[place:<int(len(selected))])
+        time_sum += subjects[index][2]
+    int count = int(len(selected))
+    real64 mean_time = numeric.fraction(time_sum, count)
+    string[] lines = []
+    for int c < int(len(names))
+        real64[] residuals = []
+        real64 sum = 0.0
+        for int index = selected[]
+            cox.EventSums row = event_sums[find_event(event_sums, subjects[index][2])]
+            real64 residual = numeric.as_real(vectors[index][c]) - row.s1[c] / row.s0
+            residuals = residuals.append(residual)
+            sum += residual
+        real64 mean = sum / numeric.as_real(count)
+        real64 sxy = 0.0
+        real64 sxx = 0.0
+        real64 syy = 0.0
+        for int position < count
+            int index = selected[position]
+            real64 x = residuals[position] - mean
+            real64 y = numeric.as_real(subjects[index][2]) - mean_time
+            sxy += x * y
+            sxx += x * x
+            syy += y * y
+        real64 correlation = sxy / numeric.root(sxx * syy)
+        real64 statistic = 0.5 * numeric.logarithm((1.0 + correlation) / (1.0 - correlation)) * numeric.root(numeric.as_real(count - 3))
+        lines = lines.append("ph_check " + names[c] + " rho " + number(correlation) + " z " + number(statistic) + " p " + number(numeric.p(statistic * statistic, 1)))
+    return lines
+
+real64[][] baseline_hazard(cox.EventSums[] event_sums)
+    real64[][] rows = []
+    real64 cumulative = 0.0
+    for cox.EventSums row = event_sums[::-1][]
+        cumulative += numeric.as_real(row.events) / row.s0
+        rows = rows.append([numeric.as_real(row.moment), cumulative])
+    return rows
+
+real64 hazard_at(real64[][] rows, int moment)
+    for real64[] row = rows[::-1][]
+        if row[0] <= numeric.as_real(moment)
+            return row[1]
+    return 0.0
+
+string[] residual_lines(int[][] subjects, string[] groups, real64[] predictors, real64[][] hazard, int count)
+    real64[][] residuals = []
+    int[] order = []
+    for int index < int(len(subjects))
+        int[] subject = subjects[index]
+        real64 martingale = numeric.as_real(subject[3]) - hazard_at(hazard, subject[2]) * numeric.exponential(predictors[index])
+        real64 deviance = if subject[3] == 1 then numeric.root(-2.0 * (martingale + numeric.logarithm(1.0 - martingale))) else numeric.root(-2.0 * martingale)
+        if martingale <= 0.0
+            deviance = -deviance
+        residuals = residuals.append([martingale, deviance])
+        int place = int(len(order))
+        for int position < int(len(order))
+            int other = order[position]
+            if numeric.absolute(deviance) > numeric.absolute(residuals[other][1]) or (numeric.absolute(deviance) == numeric.absolute(residuals[other][1]) and subject[0] < subjects[other][0])
+                place = position
+                break
+        order = order[0:<place].append(index).concat(order[place:<int(len(order))])
+    string[] lines = ["residuals top {count}"]
+    for int position < count
+        int index = order[position]
+        int[] subject = subjects[index]
+        lines = lines.append("  id {subject[0]} group " + groups[subject[1]] + " time {subject[2]} event {subject[3]} martingale " + number(residuals[index][0]) + " deviance " + number(residuals[index][1]))
+    return lines
+
+string[] adjusted_lines(int[][] vectors, string[] names, real64[] beta, string[] groups, int[] moments, real64[][] hazard)
+    real64[] means = numeric.zeros(int(len(names)))
+    string[] fields = []
+    for int c < int(len(names))
+        if not is_group(names[c])
+            int sum = 0
+            for int[] vector = vectors[]
+                sum += vector[c]
+            means[c] = numeric.fraction(sum, int(len(vectors)))
+            fields = fields.append(names[c] + " " + number(means[c]))
+    if len(fields) == 0
+        fields = ["none"]
+    string[] lines = ["adjusted_survival mean " + fields.join(" ")]
+    real64[] risks = []
+    for string group = groups[]
+        real64 predictor = 0.0
+        for int c < int(len(names))
+            real64 value = if is_group(names[c]) then (if names[c] == group then 1.0 else 0.0) else means[c]
+            predictor += beta[c] * value
+        risks = risks.append(numeric.exponential(predictor))
+    for int moment = moments[]
+        fields = []
+        real64 cumulative = hazard_at(hazard, moment)
+        for int index < int(len(groups))
+            fields = fields.append(groups[index] + " " + number(numeric.exponential(-cumulative * risks[index])))
+        lines = lines.append("  at {moment} " + fields.join(" "))
+    fields = []
+    for int index < int(len(groups))
+        int median = -1
+        for real64[] row = hazard[]
+            if numeric.exponential(-row[1] * risks[index]) <= 0.5
+                median = as_int(row[0])
+                break
+        fields = fields.append(groups[index] + " " + day(median))
+    return lines.append("  median " + fields.join(" "))
+
+string[] cox_lines(int[][] subjects, string[] names, string[] groups, int[] report_times, int residual_count)
+    int[][] vectors = covariate_vectors(subjects, names, groups)
+    cox.Model model = cox.fit(subjects, vectors)
+    cox.Evaluation final = model.final_evaluation
+    cox.Evaluation null_values = model.null_evaluation
+    real64[][] covariance = numeric.inverse(final.information)
+    string[] lines = ["cox covariates " + names.join(" ") + " subjects {len(subjects)} events {events(subjects)} event_times {len(final.event_sums)}"]
+    for cox.Iteration iteration = model.iterations[]
+        string[] values = [for real64 value = iteration.beta[] then number(value)]
+        lines = lines.append("iter {iteration.number} loglik " + number(iteration.loglik) + " beta " + values.join(" "))
+    lines = lines.append("final loglik " + number(final.loglik) + " null_loglik " + number(null_values.loglik))
+    lines = lines.concat(coefficient_lines(names, model.beta, covariance))
+    lines = lines.concat(cox_tests(subjects, vectors, names, model.beta, final.loglik, final.information, null_values.loglik, null_values.score, null_values.information))
+    lines = lines.append(concordance(subjects, vectors, final.predictors))
+    lines = lines.concat(ph_lines(subjects, vectors, names, final.event_sums))
+    real64[][] hazard = baseline_hazard(final.event_sums)
+    lines = lines.concat(residual_lines(subjects, groups, final.predictors, hazard, residual_count))
+    return lines.concat(adjusted_lines(vectors, names, model.beta, groups, report_times, hazard))
+
+string[] plot_lines(string[] groups, int[][][] collections, Summary[] summaries, int[] size)
+    int width = size[0]
+    int height = size[1]
+    int time_limit = size[2]
+    int divisions = size[3]
+    string[] legend = []
+    real64[][][] estimates = []
+    for int index < int(len(groups))
+        legend = legend.append("ABCDEF"[index] + " " + groups[index])
+        Summary summary = summaries[index]
+        estimates = estimates.append(summary.rows)
+    string[] lines = ["km_plot width {width} height {height} time {time_limit}", "legend " + legend.join(" ")]
+    lines = lines.concat(plot.curves(collections[0:<int(len(groups))], estimates, width, height, time_limit))
+    lines = lines.append("time 0 to {time_limit} days, {time_limit / width} days per column")
+    int[] moments = []
+    for int index <= divisions
+        moments = moments.append(index * (time_limit / divisions))
+    lines = lines.append("at_risk " + integers(moments))
+    for int group < int(len(groups))
+        int[] counts = []
+        for int moment = moments[]
+            int count = 0
+            for int[] subject = collections[group][]
+                if subject[2] >= moment
+                    count += 1
+            counts = counts.append(count)
+        lines = lines.append(groups[group] + " " + integers(counts))
+    return lines
+
+string[] join_sections(string[][] sections)
+    string[] lines = []
+    for int index < int(len(sections))
+        if index > 0
+            lines = lines.append("")
+        lines = lines.concat(sections[index])
+    return lines
+
+void save(string name, string[] lines)
+    file.write("output/" + name, lines.join(NL) + NL)
+
+void run()
+    dataset.Params params = dataset.read_params()
+    int[][] subjects = dataset.read_subjects(params.groups)
+    string[] names = params.groups.append("all")
+    int[][][] collections = []
+    Summary[] summaries = []
+    string[][] tables = []
+    for int index < int(len(names))
+        int[][] members = if index == int(len(params.groups)) then subjects else subset(subjects, [index])
+        collections = collections.append(members)
+        Summary summary = summarize(members, params.width, params.intervals, params.tau)
+        summaries = summaries.append(summary)
+        tables = tables.append(km_lines(names[index], members, summary, params.report_times, params.tau))
+    string[][] sections = [
+        baseline_lines(subjects, names, collections),
+        overall_lines(subjects, params.groups),
+        stratified_lines(subjects, params.groups, params.strata),
+        landmark_lines(subjects, params.groups, params.landmark),
+        pairwise_lines(subjects, params.groups),
+        subgroup_lines(subjects, params.groups, params.subgroups),
+        rmst_lines(params.groups, summaries, params.tau),
+        rate_lines(params.groups, summaries),
+        survival_lines(params.groups, summaries, params.report_times),
+    ]
+    bool exists = file.is_directory("output")
+    if not exists
+        file.mkdir("output")
+    save("km_tables.txt", join_sections(tables))
+    save("life_table.csv", life_lines(names, summaries))
+    save("tests.txt", join_sections(sections))
+    save("cox.txt", cox_lines(subjects, params.covariates, params.groups, params.report_times, params.residuals))
+    save("km_plot.txt", plot_lines(params.groups, collections, summaries, params.plot_size))
+
+run()

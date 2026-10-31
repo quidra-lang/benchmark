@@ -1,0 +1,13 @@
+denominations = [10000, 5000, 1000, 500, 100, 50, 10, 5, 1]
+[3780, 15420, 99999, 506, 48263].each do |amount|
+  remaining, pieces = amount, 0
+  parts = []
+  denominations.each do |face|
+    count, remaining = remaining.divmod(face)
+    if count.positive?
+      parts << "#{face}x#{count}"
+      pieces += count
+    end
+  end
+  puts "#{amount} yen: #{parts.join(' ')} (#{pieces} pieces)"
+end

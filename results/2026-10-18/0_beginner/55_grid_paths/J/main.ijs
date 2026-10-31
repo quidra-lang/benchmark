@@ -1,0 +1,20 @@
+paths =: 3 : 0
+  grid =. > '.......';'..#....';'....#..';'.#.....';'...#.#.';'.......'
+  dp =. 6 7$0
+  dp =. 1 (<0 0)}dp
+  for_r. i.6 do.
+    for_c. i.7 do.
+      cell =. <r,c
+      if. y *. '#'=cell{grid do. dp =. 0 cell}dp
+      elseif. (r~:0)+.c~:0 do.
+        value =. 0
+        if. r>0 do. value =. value+(<(r-1),c){dp end.
+        if. c>0 do. value =. value+(<r,c-1){dp end.
+        dp =. value cell}dp
+      end.
+    end.
+  end.
+  (<5 6){dp
+)
+smoutput 'without obstacles: ',":paths 0
+smoutput 'with obstacles: ',":paths 1

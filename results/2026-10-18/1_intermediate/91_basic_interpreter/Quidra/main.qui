@@ -1,0 +1,962 @@
+import math
+
+class Value(string type, int number = 0, string text = "")
+class Token(string kind, string text, Value value = Value("S"))
+class Expression(string kind, string type, string text = "", int number = 0, int[] args = [])
+class PrintItem(string kind, int expression = -1)
+class Clause(int line = -1, int[] body = [])
+class Statement(string kind)
+    int line = 0
+    int next = -1
+    int expression = -1
+    int target = -1
+    int[] targets = []
+    int[] expressions = []
+    Value[] values = []
+    int[] numbers = []
+    Clause[] clauses = []
+    PrintItem[] items = []
+    string name = ""
+    string mode = ""
+
+class Store(int[] bounds, Value[] values)
+class Location(string name, int index = -1)
+class Frame(string kind, int position, string name = "", int limit = 0, int step = 0)
+
+class Engine()
+    map.Map<int, string> source
+    Token[] tokens = []
+    nat position = 0
+    Expression[] expressions = []
+    Statement[] statements = []
+    int[] sequence = []
+    map.Map<int, int> entries
+    map.Map<string, Value> vars
+    map.Map<string, Store> arrays
+    Frame[] stack = []
+    Value[] data = []
+    int[] data_lines = []
+    string[] input = []
+    nat data_position = 0
+    nat input_position = 0
+    int random_state = 1
+    int handler = 0
+    bool handling = false
+    int remembered = -1
+    int err = 0
+    int erl = 0
+    string buffer = ""
+    string[] output = []
+
+bool digit(string c)
+    return len(c) == 1 and "0123456789".contains(c)
+
+bool upper(string c)
+    return len(c) == 1 and "ABCDEFGHIJKLMNOPQRSTUVWXYZ".contains(c)
+
+bool valid_variable(string word)
+    if len(word) == 0 or not upper(word[0])
+        return false
+    if len(word) == 1
+        return true
+    if len(word) == 2
+        return digit(word[1]) or word[1] == "$"
+    return len(word) == 3 and digit(word[1]) and word[2] == "$"
+
+string variable_type(string name)
+    return if name.ends_with("$") then "S" else "I"
+
+Value initial(string name)
+    return if variable_type(name) == "S" then Value("S") else Value("I")
+
+bool contains_word(string[] options, string word)
+    for string option = options[]
+        if option == word
+            return true
+    return false
+
+bool valid_function(string word)
+    return contains_word(["ABS", "SGN", "INT", "SQR", "RND", "LEN", "ASC", "VAL", "CHR$", "STR$", "LEFT$", "RIGHT$", "MID$", "INSTR"], word)
+
+bool signature(string word, string types)
+    if contains_word(["ABS", "SGN", "INT", "SQR", "RND", "CHR$", "STR$"], word)
+        return types == "I"
+    if contains_word(["LEN", "ASC", "VAL"], word)
+        return types == "S"
+    if contains_word(["LEFT$", "RIGHT$"], word)
+        return types == "SI"
+    if word == "MID$"
+        return types == "SI" or types == "SII"
+    return word == "INSTR" and types == "SS"
+
+int record_expression(Engine &engine, Expression expression)
+    int id = int(len(engine.expressions))
+    engine.expressions = engine.expressions.append(expression)
+    return id
+
+int record_statement(Engine &engine, Statement statement)
+    int id = int(len(engine.statements))
+    engine.statements = engine.statements.append(statement)
+    return id
+
+int make_integer(Engine &engine, int value)
+    return record_expression(&engine, Expression("constant", "I", number = value))
+
+int make_string(Engine &engine, string value)
+    return record_expression(&engine, Expression("constant", "S", text = value))
+
+int node(Engine &engine, string kind, string type, string text, int[] args)
+    return record_expression(&engine, Expression(kind, type, text = text, args = args))
+
+string printable()
+    return " !" + DQ + "#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[" + BS + "]^_" + "`abcdefghijklmnopqrstuvwxyz{|}~"
+
+void | error tokenize(Engine &engine, string text)
+    Token[] tokens = []
+    int p = 0
+    while p < int(len(text))
+        string c = text[p]
+        if c == " "
+            p += 1
+            continue
+        int start = p
+        if c == DQ
+            p += 1
+            while p < int(len(text)) and text[p] != DQ
+                p += 1
+            if p == int(len(text))
+                return error("SYNTAX ERROR")
+            string value = text[start + 1:<p]
+            tokens = tokens.append(Token("S", text[start:<p + 1], Value("S", text = value)))
+            p += 1
+        elif digit(c)
+            while p < int(len(text)) and digit(text[p])
+                p += 1
+            string word = text[start:<p]
+            int value = int.parse(word)
+            if value > 32767
+                return error("SYNTAX ERROR")
+            tokens = tokens.append(Token("I", word, Value("I", number = value)))
+        elif upper(c)
+            if text[p:].starts_with("REM")
+                tokens = tokens.append(Token("W", "REM"))
+                break
+            while p < int(len(text)) and (upper(text[p]) or digit(text[p]))
+                p += 1
+            if p < int(len(text)) and text[p] == "$"
+                p += 1
+            string word = text[start:<p]
+            tokens = tokens.append(Token("W", word))
+        else
+            if not "+-*/^=<>() ,;:".contains(c)
+                return error("SYNTAX ERROR")
+            string word = c
+            if p + 1 < int(len(text)) and contains_word(["<>", "<=", ">="], text[p:<p + 2])
+                word = text[p:<p + 2]
+            tokens = tokens.append(Token("P", word))
+            p += int(len(word))
+    engine.tokens = tokens.append(Token("E", ""))
+    engine.position = 0
+
+Token peek(Engine engine)
+    return engine.tokens[engine.position]
+
+bool at(Engine engine, string word)
+    Token token = peek(engine)
+    return (token.kind == "W" or token.kind == "P") and token.text == word
+
+bool take(Engine &engine, string word)
+    if not at(engine, word)
+        return false
+    engine.position += 1
+    return true
+
+void | error expect(Engine &engine, string word)
+    if not take(&engine, word)
+        return error("SYNTAX ERROR")
+
+int | error number(Engine &engine)
+    Token token = peek(engine)
+    if token.kind != "I"
+        return error("SYNTAX ERROR")
+    engine.position += 1
+    return token.value.number
+
+int | error parse_expression(Engine &engine, int level = 0);
+
+int | error integer(Engine &engine, int level = 0)
+    int result = try parse_expression(&engine, level)
+    if engine.expressions[result].type != "I"
+        return error("SYNTAX ERROR")
+    return result
+
+int | error parse_target(Engine &engine)
+    Token token = peek(engine)
+    if token.kind != "W" or not valid_variable(token.text)
+        return error("SYNTAX ERROR")
+    engine.position += 1
+    int result = node(&engine, "variable", variable_type(token.text), token.text, [])
+    if take(&engine, "(")
+        int[] args = [try integer(&engine)]
+        if take(&engine, ",")
+            args = args.append(try integer(&engine))
+        try expect(&engine, ")")
+        result = node(&engine, "array", variable_type(token.text), token.text, args)
+    return result
+
+int | error primary(Engine &engine)
+    Token token = peek(engine)
+    if token.kind == "I"
+        engine.position += 1
+        return make_integer(&engine, token.value.number)
+    if token.kind == "S"
+        engine.position += 1
+        return make_string(&engine, token.value.text)
+    if take(&engine, "(")
+        int value = try parse_expression(&engine)
+        try expect(&engine, ")")
+        return value
+    if token.kind == "W" and valid_variable(token.text)
+        return parse_target(&engine)
+    if take(&engine, "ERR")
+        return node(&engine, "builtin", "I", "ERR", [])
+    if take(&engine, "ERL")
+        return node(&engine, "builtin", "I", "ERL", [])
+    if token.kind == "W" and valid_function(token.text)
+        engine.position += 1
+        try expect(&engine, "(")
+        int[] args = [try parse_expression(&engine)]
+        while take(&engine, ",")
+            args = args.append(try parse_expression(&engine))
+        try expect(&engine, ")")
+        string types = ""
+        for int expression = args[]
+            types += engine.expressions[expression].type
+        if not signature(token.text, types)
+            return error("SYNTAX ERROR")
+        return node(&engine, "call", variable_type(token.text), token.text, args)
+    return error("SYNTAX ERROR")
+
+int | error parse_expression(Engine &engine, int level = 0)
+    if level == 2 and take(&engine, "NOT")
+        return node(&engine, "unary", "I", "NOT", [try integer(&engine, 2)])
+    if level == 6 and take(&engine, "-")
+        return node(&engine, "unary", "I", "-", [try integer(&engine, 6)])
+    if level == 8
+        return primary(&engine)
+    int left = try parse_expression(&engine, level + 1)
+    string[][] operators = [
+        ["OR"], ["AND"], [], ["=", "<>", "<", ">", "<=", ">="],
+        ["+", "-"], ["*", "/", "MOD"], [], ["^"]]
+    while contains_word(operators[level], peek(engine).text)
+        string op = peek(engine).text
+        engine.position += 1
+        int right = try parse_expression(&engine, if level == 7 then 6 else level + 1)
+        string t = engine.expressions[left].type
+        if t != engine.expressions[right].type or (t == "S" and level != 3 and op != "+")
+            return error("SYNTAX ERROR")
+        left = node(&engine, "binary", if level == 3 then "I" else t, op, [left, right])
+        if level == 7
+            break
+    return left
+
+int[] | error parse_list(Engine &engine, bool in_clause = false);
+
+Clause | error parse_clause(Engine &engine)
+    if peek(engine).kind == "I"
+        return Clause(line = try number(&engine))
+    return Clause(body = try parse_list(&engine, true))
+
+int | error parse_statement(Engine &engine, bool in_clause)
+    string word = peek(engine).text
+    if in_clause and contains_word(["IF", "FOR", "NEXT", "WHILE", "WEND", "DATA"], word)
+        return error("SYNTAX ERROR")
+    Statement s = Statement(word)
+    if take(&engine, "REM") or take(&engine, "RETURN") or take(&engine, "WEND") or take(&engine, "END") or take(&engine, "STOP")
+        return record_statement(&engine, s)
+    if take(&engine, "PRINT")
+        bool last_value = false
+        while peek(engine).kind != "E" and not at(engine, ":") and not at(engine, "ELSE")
+            if take(&engine, ";")
+                s.items = s.items.append(PrintItem(";"))
+                last_value = false
+            elif take(&engine, ",")
+                s.items = s.items.append(PrintItem(","))
+                last_value = false
+            else
+                string kind = if at(engine, "TAB") then "TAB" elif at(engine, "SPC") then "SPC" else "value"
+                if kind == "value" and last_value
+                    return error("SYNTAX ERROR")
+                int expression = -1
+                if kind == "value"
+                    expression = try parse_expression(&engine)
+                else
+                    engine.position += 1
+                    try expect(&engine, "(")
+                    expression = try integer(&engine)
+                    try expect(&engine, ")")
+                s.items = s.items.append(PrintItem(kind, expression))
+                last_value = kind == "value"
+        return record_statement(&engine, s)
+    if take(&engine, "INPUT") or take(&engine, "READ") or take(&engine, "DIM")
+        while true
+            int target = try parse_target(&engine)
+            if word == "DIM" and engine.expressions[target].kind != "array"
+                return error("SYNTAX ERROR")
+            s.targets = s.targets.append(target)
+            if not take(&engine, ",")
+                break
+        return record_statement(&engine, s)
+    if take(&engine, "DATA")
+        while true
+            bool negative = take(&engine, "-")
+            Token token = peek(engine)
+            if token.kind != "I" and (token.kind != "S" or negative)
+                return error("SYNTAX ERROR")
+            engine.position += 1
+            if negative
+                s.values = s.values.append(Value("I", number = -token.value.number))
+            else
+                s.values = s.values.append(token.value)
+            if not take(&engine, ",")
+                break
+        return record_statement(&engine, s)
+    if take(&engine, "IF")
+        s.expression = try integer(&engine)
+        try expect(&engine, "THEN")
+        s.clauses = s.clauses.append(try parse_clause(&engine))
+        if take(&engine, "ELSE")
+            s.clauses = s.clauses.append(try parse_clause(&engine))
+        if peek(engine).kind != "E"
+            return error("SYNTAX ERROR")
+        return record_statement(&engine, s)
+    if take(&engine, "GOTO") or take(&engine, "GOSUB")
+        s.numbers = s.numbers.append(try number(&engine))
+        return record_statement(&engine, s)
+    if take(&engine, "ON")
+        if take(&engine, "ERROR")
+            s.kind = "handler"
+            try expect(&engine, "GOTO")
+            s.numbers = s.numbers.append(try number(&engine))
+        else
+            s.expression = try integer(&engine)
+            if take(&engine, "GOTO")
+                s.mode = "GOTO"
+            else
+                try expect(&engine, "GOSUB")
+                s.mode = "GOSUB"
+            while true
+                s.numbers = s.numbers.append(try number(&engine))
+                if not take(&engine, ",")
+                    break
+        return record_statement(&engine, s)
+    if take(&engine, "RESUME")
+        if take(&engine, "NEXT")
+            s.mode = "NEXT"
+        elif peek(engine).kind == "I"
+            s.mode = "line"
+            s.numbers = s.numbers.append(try number(&engine))
+        return record_statement(&engine, s)
+    if take(&engine, "FOR")
+        Token token = peek(engine)
+        if token.kind != "W" or not valid_variable(token.text) or variable_type(token.text) != "I"
+            return error("SYNTAX ERROR")
+        s.name = token.text
+        engine.position += 1
+        try expect(&engine, "=")
+        s.expressions = s.expressions.append(try integer(&engine))
+        try expect(&engine, "TO")
+        s.expressions = s.expressions.append(try integer(&engine))
+        s.expressions = s.expressions.append(if take(&engine, "STEP") then try integer(&engine) else make_integer(&engine, 1))
+        return record_statement(&engine, s)
+    if take(&engine, "NEXT")
+        Token token = peek(engine)
+        if token.kind == "W" and valid_variable(token.text) and variable_type(token.text) == "I"
+            s.name = token.text
+            engine.position += 1
+        return record_statement(&engine, s)
+    if take(&engine, "WHILE") or take(&engine, "RANDOMIZE")
+        s.expression = try integer(&engine)
+        return record_statement(&engine, s)
+    if take(&engine, "RESTORE")
+        if peek(engine).kind == "I"
+            s.numbers = s.numbers.append(try number(&engine))
+        return record_statement(&engine, s)
+    bool consumed = take(&engine, "LET")
+    s.kind = "assign"
+    s.target = try parse_target(&engine)
+    try expect(&engine, "=")
+    s.expression = try parse_expression(&engine)
+    if engine.expressions[s.target].type != engine.expressions[s.expression].type
+        return error("SYNTAX ERROR")
+    return record_statement(&engine, s)
+
+int[] | error parse_list(Engine &engine, bool in_clause = false)
+    int[] result = [try parse_statement(&engine, in_clause)]
+    while take(&engine, ":")
+        result = result.append(try parse_statement(&engine, in_clause))
+    return result
+
+int[] | error parse(Engine &engine, string source)
+    try tokenize(&engine, source)
+    int[] body = try parse_list(&engine)
+    if peek(engine).kind != "E"
+        return error("SYNTAX ERROR")
+    return body
+
+void connect(Engine &engine, int[] body, int after, int line)
+    int following = after
+    for len(body) > nat i >= 0
+        int id = body[i]
+        engine.statements[id].line = line
+        engine.statements[id].next = following
+        for Clause clause = engine.statements[id].clauses[]
+            connect(&engine, clause.body, following, line)
+        following = id
+
+void end_line(Engine &engine)
+    string value = engine.buffer
+    while len(value) > 0 and value[len(value) - 1] == " "
+        value = value[0:<len(value) - 1]
+    engine.output = engine.output.append(value)
+    engine.buffer = ""
+
+void message(Engine &engine, string text)
+    if engine.buffer != ""
+        end_line(&engine)
+    engine.output = engine.output.append(text)
+
+int | error checked(int n)
+    if n < -32768 or n > 32767
+        return error("OVERFLOW")
+    return n
+
+Value get_variable(Engine engine, string name)
+    match engine.vars.get(name)
+        Value found
+            return found
+        none
+            return initial(name)
+
+void declare(Engine &engine, string name, int[] bounds)
+    int count = 1
+    for int bound = bounds[]
+        count *= bound + 1
+    Value[] values = array(nat(count), fill = initial(name))
+    .engine.arrays.set(name, Store(bounds, values))
+
+Value[] | error values_of(Engine &engine, int[] expressions);
+
+Value | error evaluate(Engine &engine, int id);
+
+Location | error address(Engine &engine, int id)
+    Expression expression = engine.expressions[id]
+    if expression.kind == "variable"
+        return Location(expression.text)
+    int[] indices = []
+    for int child = expression.args[]
+        indices = indices.append((try evaluate(&engine, child)).number)
+    match engine.arrays.get(expression.text)
+        Store existing
+            bool valid = len(indices) == len(existing.bounds)
+            int offset = 0
+            if valid
+                for int i < int(len(indices))
+                    if indices[i] < 0 or indices[i] > existing.bounds[i]
+                        valid = false
+                        break
+                    offset = offset * (existing.bounds[i] + 1) + indices[i]
+            if not valid
+                return error("SUBSCRIPT OUT OF RANGE")
+            return Location(expression.text, offset)
+        none
+            int[] bounds = array(len(indices), fill = 10)
+            declare(&engine, expression.text, bounds)
+            int offset = 0
+            for int index = indices[]
+                if index < 0 or index > 10
+                    return error("SUBSCRIPT OUT OF RANGE")
+                offset = 11 * offset + index
+            return Location(expression.text, offset)
+
+Value load(Engine engine, Location place)
+    if place.index < 0
+        return get_variable(engine, place.name)
+    match engine.arrays.get(place.name)
+        Store array
+            return array.values[place.index]
+        none
+            return initial(place.name)
+
+void store(Engine &engine, Location place, Value value)
+    if place.index < 0
+        .engine.vars.set(place.name, value)
+    else
+        match engine.arrays.get(place.name)
+            Store array
+                array.values[place.index] = value
+                .engine.arrays.set(place.name, array)
+            none
+                return
+
+int | error integer_power(int number, int exponent)
+    if exponent < 0
+        return error("ILLEGAL FUNCTION CALL")
+    int result = 1
+    int b = number
+    int n = exponent
+    while n > 0
+        if n % 2 != 0
+            result = try checked(result * b)
+        n /= 2
+        if n > 0
+            b = try checked(b * b)
+    return result
+
+int compare_text(string first, string second)
+    int[] left = first.codepoints()
+    int[] right = second.codepoints()
+    for nat i < len(left)
+        if i == len(right)
+            return 1
+        if left[i] != right[i]
+            return if left[i] < right[i] then -1 else 1
+    return if len(left) < len(right) then -1 else 0
+
+int compare_values(Value a, Value b)
+    if a.type == "I"
+        return if a.number < b.number then -1 elif a.number > b.number then 1 else 0
+    return compare_text(a.text, b.text)
+
+Value[] | error values_of(Engine &engine, int[] expressions)
+    Value[] result = []
+    for int id = expressions[]
+        result = result.append(try evaluate(&engine, id))
+    return result
+
+Value | error evaluate(Engine &engine, int id)
+    Expression e = engine.expressions[id]
+    if e.kind == "constant"
+        return if e.type == "I" then Value("I", number = e.number) else Value("S", text = e.text)
+    if e.kind == "variable" or e.kind == "array"
+        return load(engine, try address(&engine, id))
+    if e.kind == "builtin"
+        return Value("I", number = if e.text == "ERR" then engine.err else engine.erl)
+    if e.kind == "unary"
+        int a = (try evaluate(&engine, e.args[0])).number
+        if e.text == "NOT"
+            return Value("I", number = int(NOT int16(a)))
+        return Value("I", number = try checked(-a))
+    Value[] args = try values_of(&engine, e.args)
+    if e.kind == "call"
+        return apply_function(&engine, e.text, args)
+    Value a = args[0]
+    Value b = args[1]
+    if contains_word(["=", "<>", "<", ">", "<=", ">="], e.text)
+        int order = compare_values(a, b)
+        bool truth = if e.text == "=" then order == 0 elif e.text == "<>" then order != 0 elif e.text == "<" then order < 0 elif e.text == ">" then order > 0 elif e.text == "<=" then order <= 0 else order >= 0
+        return Value("I", number = if truth then -1 else 0)
+    if e.type == "S"
+        string result = a.text + b.text
+        if len(result) > 255
+            return error("STRING TOO LONG")
+        return Value("S", text = result)
+    int x = a.number
+    int y = b.number
+    if e.text == "+"
+        return Value("I", number = try checked(x + y))
+    if e.text == "-"
+        return Value("I", number = try checked(x - y))
+    if e.text == "*"
+        return Value("I", number = try checked(x * y))
+    if e.text == "/" or e.text == "MOD"
+        if y == 0
+            return error("DIVISION BY ZERO")
+        int result = if e.text == "MOD" then x % y else try checked(x / y)
+        return Value("I", number = result)
+    if e.text == "^"
+        return Value("I", number = try integer_power(x, y))
+    if e.text == "AND"
+        return Value("I", number = int(int16(x) AND int16(y)))
+    return Value("I", number = int(int16(x) OR int16(y)))
+
+Value | error apply_function(Engine &engine, string name, Value[] args)
+    Value a = args[0]
+    int n = a.number
+    string s = a.text
+    int k = if len(args) > 1 then args[1].number else 0
+    if name == "ABS"
+        return Value("I", number = try checked(if n < 0 then -n else n))
+    if name == "SGN"
+        return Value("I", number = if n < 0 then -1 elif n > 0 then 1 else 0)
+    if name == "INT"
+        return a
+    if name == "SQR"
+        if n < 0
+            return error("ILLEGAL FUNCTION CALL")
+        return Value("I", number = math.floor(math.sqrt(real64(n))))
+    if name == "RND"
+        if n < 1
+            return error("ILLEGAL FUNCTION CALL")
+        engine.random_state = engine.random_state * 48271 % 2147483647
+        return Value("I", number = engine.random_state % n + 1)
+    if name == "LEN"
+        return Value("I", number = int(len(s)))
+    if name == "ASC"
+        if s == ""
+            return error("ILLEGAL FUNCTION CALL")
+        return Value("I", number = s.codepoints()[0])
+    if name == "VAL"
+        int i = 0
+        while i < int(len(s)) and s[i] == " "
+            i += 1
+        int start = i
+        if i < int(len(s)) and (s[i] == "+" or s[i] == "-")
+            i += 1
+        int digits = i
+        while i < int(len(s)) and digit(s[i])
+            i += 1
+        if i == digits
+            return Value("I")
+        int sign = if s[start] == "-" then -1 else 1
+        int number_start = if s[start] == "+" or s[start] == "-" then start + 1 else start
+        int result = int.parse(s[number_start:<i]) * sign
+        return Value("I", number = try checked(result))
+    if name == "CHR$"
+        if n < 32 or n > 126
+            return error("ILLEGAL FUNCTION CALL")
+        return Value("S", text = printable()[n - 32])
+    if name == "STR$"
+        return Value("S", text = n.string())
+    if name == "LEFT$" or name == "RIGHT$"
+        if k < 0
+            return error("ILLEGAL FUNCTION CALL")
+        int count = if k < int(len(s)) then k else int(len(s))
+        return Value("S", text = if name == "LEFT$" then s[0:<count] else s[int(len(s)) - count:])
+    if name == "MID$"
+        if k < 1 or (len(args) == 3 and args[2].number < 0)
+            return error("ILLEGAL FUNCTION CALL")
+        int first = k - 1
+        int end = if len(args) == 3 then first + args[2].number else int(len(s))
+        if first >= int(len(s))
+            return Value("S")
+        if end > int(len(s))
+            end = int(len(s))
+        return Value("S", text = s[first:<end])
+    if name == "INSTR"
+        match s.find(args[1].text)
+            nat found
+                return Value("I", number = int(found) + 1)
+            none
+                return Value("I")
+    return error("ILLEGAL FUNCTION CALL")
+
+int | error line(Engine engine, int number)
+    match engine.entries.get(number)
+        int id
+            return id
+        none
+            return error("UNDEFINED LINE NUMBER")
+
+void | error push(Engine &engine, Frame frame)
+    if len(engine.stack) == 100
+        return error("OUT OF MEMORY")
+    engine.stack = engine.stack.append(frame)
+
+int search(Engine engine, string kind, string name = "")
+    for len(engine.stack) > nat i >= 0
+        Frame item = engine.stack[i]
+        if item.kind == "GOSUB"
+            break
+        if item.kind == kind and (name == "" or name == item.name)
+            return int(i)
+    return -1
+
+int | error matching(Engine engine, int id, string opening, string closing)
+    int start = -1
+    for int i < int(len(engine.sequence))
+        if engine.sequence[i] == id
+            start = i + 1
+            break
+    int depth = 0
+    for start <= int i < int(len(engine.sequence))
+        Statement item = engine.statements[engine.sequence[i]]
+        if item.kind == opening
+            depth += 1
+        elif item.kind == closing
+            if depth == 0
+                return item.next
+            depth -= 1
+    return error("{opening} WITHOUT {closing}")
+
+int | error subroutine(Engine &engine, int target, int after)
+    int destination = try line(engine, target)
+    try push(&engine, Frame("GOSUB", after))
+    return destination
+
+int | error execute(Engine &engine, int id)
+    Statement s = engine.statements[id]
+    int next = s.next
+    if s.kind == "REM" or s.kind == "DATA"
+        return next
+    if s.kind == "assign"
+        Location location = try address(&engine, s.target)
+        store(&engine, location, try evaluate(&engine, s.expression))
+    elif s.kind == "PRINT"
+        for PrintItem item = s.items[]
+            if item.kind == ","
+                engine.buffer += string.repeat(" ", nat(10 - len(engine.buffer) % 10))
+            elif item.kind != ";"
+                Value value = try evaluate(&engine, item.expression)
+                if item.kind == "value"
+                    engine.buffer += if value.type == "S" then value.text else value.number.string()
+                else
+                    int n = value.number
+                    if n < 0
+                        return error("ILLEGAL FUNCTION CALL")
+                    int count = if item.kind == "SPC" then n else (if n > int(len(engine.buffer)) then n - int(len(engine.buffer)) else 0)
+                    engine.buffer += string.repeat(" ", nat(count))
+        if len(s.items) == 0 or not contains_word([";", ","], s.items[len(s.items) - 1].kind)
+            end_line(&engine)
+    elif s.kind == "INPUT" or s.kind == "READ"
+        for int target = s.targets[]
+            Location location = try address(&engine, target)
+            Value value = Value("I")
+            if s.kind == "READ"
+                if engine.data_position == len(engine.data)
+                    return error("OUT OF DATA")
+                value = engine.data[engine.data_position]
+                engine.data_position += 1
+                if value.type != engine.expressions[target].type
+                    return error("TYPE MISMATCH")
+            else
+                bool complete = false
+                while not complete
+                    if engine.input_position == len(engine.input)
+                        return error("INPUT PAST END")
+                    string text = engine.input[engine.input_position]
+                    engine.input_position += 1
+                    if engine.expressions[target].type == "S"
+                        value = Value("S", text = text)
+                        complete = true
+                    else
+                        int first = if len(text) > 0 and text[0] == "-" then 1 else 0
+                        bool valid = first < int(len(text))
+                        for first <= int i < int(len(text))
+                            valid = valid and digit(text[i])
+                        if valid
+                            int parsed = int.parse(text)
+                            if -32768 <= parsed <= 32767
+                                value = Value("I", number = parsed)
+                                complete = true
+                        if not complete
+                            message(&engine, "?REDO FROM START")
+            store(&engine, location, value)
+    elif s.kind == "RESTORE"
+        engine.data_position = 0
+        if len(s.numbers) > 0
+            int unused = try line(engine, s.numbers[0])
+            engine.data_position = len(engine.data)
+            for nat i < len(engine.data_lines)
+                if engine.data_lines[i] >= s.numbers[0]
+                    engine.data_position = i
+                    break
+    elif s.kind == "IF"
+        int branch = if (try evaluate(&engine, s.expression)).number != 0 then 0 else 1
+        if branch < int(len(s.clauses))
+            Clause clause = s.clauses[branch]
+            next = if clause.line >= 0 then try line(engine, clause.line) else clause.body[0]
+    elif s.kind == "GOTO"
+        next = try line(engine, s.numbers[0])
+    elif s.kind == "GOSUB"
+        next = try subroutine(&engine, s.numbers[0], next)
+    elif s.kind == "ON"
+        int n = (try evaluate(&engine, s.expression)).number
+        if n < 0
+            return error("ILLEGAL FUNCTION CALL")
+        if 1 <= n <= int(len(s.numbers))
+            next = if s.mode == "GOTO" then try line(engine, s.numbers[n - 1]) else try subroutine(&engine, s.numbers[n - 1], next)
+    elif s.kind == "RETURN"
+        int found = -1
+        for len(engine.stack) > nat i >= 0
+            if engine.stack[i].kind == "GOSUB"
+                found = int(i)
+                break
+        if found < 0
+            return error("RETURN WITHOUT GOSUB")
+        next = engine.stack[found].position
+        engine.stack = engine.stack[0:<found]
+    elif s.kind == "FOR"
+        Value[] values = try values_of(&engine, s.expressions)
+        int start = values[0].number
+        int limit = values[1].number
+        int step = values[2].number
+        if step == 0
+            return error("ILLEGAL FUNCTION CALL")
+        int found = search(engine, "FOR", s.name)
+        if found >= 0
+            engine.stack = engine.stack[0:<found]
+        .engine.vars.set(s.name, Value("I", number = start))
+        if (step > 0 and start > limit) or (step < 0 and start < limit)
+            next = try matching(engine, id, "FOR", "NEXT")
+        else
+            try push(&engine, Frame("FOR", next, s.name, limit, step))
+    elif s.kind == "NEXT"
+        int found = search(engine, "FOR", s.name)
+        if found < 0
+            return error("NEXT WITHOUT FOR")
+        engine.stack = engine.stack[0:<found + 1]
+        Frame frame = engine.stack[found]
+        int value = try checked(get_variable(engine, frame.name).number + frame.step)
+        .engine.vars.set(frame.name, Value("I", number = value))
+        if (frame.step > 0 and value > frame.limit) or (frame.step < 0 and value < frame.limit)
+            engine.stack = engine.stack[0:<found]
+        else
+            next = frame.position
+    elif s.kind == "WHILE"
+        if (try evaluate(&engine, s.expression)).number != 0
+            try push(&engine, Frame("WHILE", id))
+        else
+            next = try matching(engine, id, "WHILE", "WEND")
+    elif s.kind == "WEND"
+        int found = search(engine, "WHILE")
+        if found < 0
+            return error("WEND WITHOUT WHILE")
+        next = engine.stack[found].position
+        engine.stack = engine.stack[0:<found]
+    elif s.kind == "DIM"
+        for int target = s.targets[]
+            string name = engine.expressions[target].text
+            match engine.arrays.get(name)
+                Store existing
+                    return error("DUPLICATE DEFINITION")
+                none
+                    int[] bounds = []
+                    for int expr = engine.expressions[target].args[]
+                        int value = (try evaluate(&engine, expr)).number
+                        if value < 0
+                            return error("ILLEGAL FUNCTION CALL")
+                        bounds = bounds.append(value)
+                    int count = 1
+                    for int value = bounds[]
+                        count *= value + 1
+                    if count > 10000
+                        return error("OUT OF MEMORY")
+                    declare(&engine, name, bounds)
+    elif s.kind == "RANDOMIZE"
+        int n = (try evaluate(&engine, s.expression)).number
+        if n < 1
+            return error("ILLEGAL FUNCTION CALL")
+        engine.random_state = n
+    elif s.kind == "handler"
+        if s.numbers[0] != 0
+            int unused = try line(engine, s.numbers[0])
+        engine.handler = s.numbers[0]
+    elif s.kind == "RESUME"
+        if not engine.handling
+            return error("RESUME WITHOUT ERROR")
+        if s.mode == "line"
+            next = try line(engine, s.numbers[0])
+        elif s.mode == "NEXT"
+            next = engine.statements[engine.remembered].next
+        else
+            next = engine.remembered
+        engine.handling = false
+    elif s.kind == "STOP"
+        message(&engine, "BREAK IN LINE {s.line}")
+        return -1
+    elif s.kind == "END"
+        return -1
+    return next
+
+int error_code(string problem)
+    string[] labels = ["NEXT WITHOUT FOR", "RETURN WITHOUT GOSUB", "OUT OF DATA", "ILLEGAL FUNCTION CALL", "OVERFLOW", "OUT OF MEMORY", "UNDEFINED LINE NUMBER", "SUBSCRIPT OUT OF RANGE", "DUPLICATE DEFINITION", "DIVISION BY ZERO", "TYPE MISMATCH", "STRING TOO LONG", "RESUME WITHOUT ERROR", "FOR WITHOUT NEXT", "WHILE WITHOUT WEND", "WEND WITHOUT WHILE", "INPUT PAST END"]
+    int[] codes = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 20, 26, 29, 30, 62]
+    for int i < int(len(labels))
+        if labels[i] == problem
+            return codes[i]
+    return 0
+
+void run(Engine &engine)
+    int[][] parsed = []
+    int[] line_numbers = []
+    for int line = engine.source.keys().sorted()[]
+        string content = ""
+        match engine.source.get(line)
+            string found
+                content = found
+            none
+                continue
+        match parse(&engine, content)
+            int[] statements
+                parsed = parsed.append(statements)
+                line_numbers = line_numbers.append(line)
+            error problem
+                message(&engine, "ERROR IN LINE {line}: SYNTAX ERROR")
+                engine.output = engine.output.append("READY")
+                return
+    int after = -1
+    for len(parsed) > nat i >= 0
+        int[] body = parsed[i]
+        connect(&engine, body, after, line_numbers[i])
+        .engine.entries.set(line_numbers[i], body[0])
+        after = body[0]
+    for int i < int(len(parsed))
+        for int id = parsed[i][]
+            engine.sequence = engine.sequence.append(id)
+            Statement statement = engine.statements[id]
+            if statement.kind == "DATA"
+                for Value value = statement.values[]
+                    engine.data = engine.data.append(value)
+                    engine.data_lines = engine.data_lines.append(statement.line)
+    int position = after
+    while position >= 0
+        match execute(&engine, position)
+            int next
+                position = next
+            error problem
+                if engine.handler != 0 and not engine.handling
+                    engine.err = error_code(problem.message)
+                    engine.erl = engine.statements[position].line
+                    engine.remembered = position
+                    engine.handling = true
+                    match line(engine, engine.handler)
+                        int next
+                            position = next
+                        error failure
+                            position = -1
+                else
+                    message(&engine, "ERROR IN LINE {engine.statements[position].line}: {problem.message}")
+                    position = -1
+    if engine.buffer != ""
+        end_line(&engine)
+    engine.output = engine.output.append("READY")
+
+string programs
+scan(&programs)
+for int session < int.parse(programs)
+    Engine engine = Engine()
+    while true
+        string text
+        scan(&text)
+        if text == "RUN"
+            break
+        int p = 0
+        while p < int(len(text)) and digit(text[p])
+            p += 1
+        int line_number = int.parse(text[0:<p])
+        if p == int(len(text))
+            bool removed = .engine.source.remove(line_number)
+        else
+            while p < int(len(text)) and text[p] == " "
+                p += 1
+            .engine.source.set(line_number, text[p:])
+    while true
+        string text
+        scan(&text)
+        if text == "END"
+            break
+        engine.input = engine.input.append(text)
+    run(&engine)
+    for string line = engine.output[]
+        print(line + NL)

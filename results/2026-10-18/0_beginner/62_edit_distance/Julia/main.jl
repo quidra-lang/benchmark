@@ -1,0 +1,20 @@
+function edit_distance(a, b)
+    table = zeros(Int, length(a)+1, length(b)+1)
+    table[:, 1] = 0:length(a)
+    table[1, :] = 0:length(b)
+    for i = 1:length(a), j = 1:length(b)
+        cost = a[i] == b[j] ? 0 : 1
+        table[i+1, j+1] = min(table[i, j+1]+1, table[i+1, j]+1, table[i, j]+cost)
+    end
+    return table[end, end]
+end
+
+for (a, b) in [
+    ("kitten", "sitting"),
+    ("flaw", "lawn"),
+    ("listen", "silent"),
+    ("intention", "execution"),
+    ("algorithm", "altruistic"),
+]
+    println(a, " -> ", b, ": ", edit_distance(a, b))
+end

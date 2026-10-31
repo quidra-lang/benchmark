@@ -1,0 +1,605 @@
+[Overview]
+Write a writer that stores a table in a column-oriented file format similar to Parquet, a reader that reads that file, and an executor for simple queries. In the column-oriented format, the table is divided into groups of rows (row groups); within each row group the values are gathered column by column (column chunks) and further divided into pages for storage. Because values of the same column are placed next to each other, they can be encoded compactly using dictionaries and differences, and a query can read only the columns it needs.
+The program does the following.
+- Reads the schema and the table in CSV form, divides the table into row groups and pages, and encodes it with the methods PLAIN, dictionary (DICTIONARY), the RLE/bit-packing hybrid, bit-packed deltas (DELTA_BINARY_PACKED), and deltas of lengths plus byte arrays (DELTA_LENGTH_BYTE_ARRAY). For a column whose method is AUTO, it chooses the candidate that gives the smallest size.
+- Adds the per-page minimum, maximum and number of NULLs (statistics) and a footer recording the schema, the row groups, and the positions and sizes of the column chunks, builds the byte sequence of the whole file, and writes it out in hexadecimal.
+- Parses the built byte sequence again from the beginning, decodes the footer and the pages, and confirms that the checksums and all values match the original table.
+- Checks the queries one by one and computes their results by decoding only the needed columns, while using the statistics (zone maps) to skip the row groups and pages that cannot contain any row satisfying the condition. The results are cross-checked against the results obtained by examining the CSV table row by row.
+- Reads a file that was made by another writer and in which some bytes are corrupted, finds the corrupted pages with the checksums, and recovers the table from the readable pages.
+All computations are done with integers; floating-point numbers are not used. The program reads the files in the input/ folder and writes files to the output/ folder. It prints nothing to standard output.
+
+[Input files]
+Every input file consists of ASCII characters only, and every line ends with a newline (LF). There is no whitespace at the beginning or end of a line, and there are no empty lines.
+
+(1) input/schema.txt: the schema
+Defines the columns of the table, one column per line, from left to right. Each line has the form "<column name> <type> <nullability>", with the words separated by single spaces.
+- <column name> is a string of 1 to 16 characters that starts with a lowercase letter and consists of lowercase letters, digits and _. All column names are distinct.
+- <type> is one of INT (integer), STRING (string), BOOL (boolean), DATE (date).
+- <nullability> is NULLABLE (NULL allowed) or REQUIRED (NULL not allowed).
+The rank of a column in the schema (counted from 0) is called its column number, and increasing order of column number is called "schema order".
+
+(2) input/table.csv: the table
+The first line is the header: all column names joined with "," in schema order. Each line from the second line on is one row of the table: the values (fields) of the columns joined with "," in schema order. Every line has as many fields as there are columns. The rows of the table are given row numbers 0, 1, 2, ... in file order.
+An empty field represents NULL. Fields of REQUIRED columns are not empty. A non-empty field has the following form, depending on the column's type.
+- INT: a decimal integer. A negative number has a leading -. There are no extra zeros.
+- STRING: a string of 1 to 20 characters consisting of lowercase letters, digits, - and _, whose first character is a lowercase letter or a digit.
+- BOOL: true or false.
+- DATE: a date that exists in the Gregorian calendar, written in the form YYYY-MM-DD (4-digit year, 2-digit month, 2-digit day).
+
+(3) input/options.txt: the writer settings
+The first line has the form "row_group_size <R>", the second line "page_size <P>" and the third line "dictionary_limit <L>", with the words separated by a single space (R, P and L are positive integers). R is the number of rows in one row group, P is the number of rows in one page, and L is the upper limit of the dictionary size in bytes (section 8).
+From the fourth line on, there is one line "encoding <column name> <method>" for each column, in schema order. <method> is one of PLAIN, DICTIONARY, RLE, DELTA_BINARY_PACKED, DELTA_LENGTH_BYTE_ARRAY, AUTO; if it is not AUTO, it is one of the candidates for the column's type (section 5).
+
+(4) input/queries.txt: the queries
+One query per line, following the syntax of section 13. The queries are given query numbers 1, 2, 3, ... in file order.
+
+(5) input/damaged.hex: the damaged file
+The byte sequence of a file made by another writer in the format of section 10, written in hexadecimal. Each line consists of an even number of characters (0 to 9 and a to f), at least 2 and at most 64. Splitting the concatenation of all lines into pairs of characters from the beginning and reading each pair as a 2-digit hexadecimal number gives the bytes of the byte sequence.
+The schema, the row group and page sizes, and the encoding methods of this file are unrelated to the other input files, and can be determined only from the file's own footer and page headers. The values of some bytes in the bodies of some pages have changed (are corrupted). See [Constraints] for details.
+
+[Processing]
+Process according to sections 1 to 20 below. Sections 1 to 11 cover the file format and the encoding methods, section 12 the verification of the file, sections 13 to 19 the queries, and section 20 the recovery of the damaged file.
+
+Notation
+- floor(a / b) (b is a positive integer) is the largest integer not greater than a / b, and a mod b is a - b * floor(a / b) (between 0 and b - 1 inclusive). ceil(a / b) (a is a nonnegative integer, b is a positive integer) is the smallest integer not less than a / b.
+- A byte is an integer from 0 to 255, also written as "0x" followed by 2 hexadecimal digits, as in 0x4D. Positions in a byte sequence are counted with the first byte as 0.
+- bits(x) (x is a nonnegative integer) is the number of digits of x written in binary, and bits(0) = 0 (examples: bits(1) = 1, bits(5) = 3, bits(8) = 4).
+- A string is also treated as a byte sequence in which each character is one byte holding its ASCII code. The length of a string is its number of bytes.
+- "Write ..." means appending bytes to the end of the byte sequence being built.
+
+Section 1. Values, ordering and text forms
+Each value of a column is either NULL or one of the following values, depending on the column's type.
+- INT: an integer.
+- STRING: a string.
+- BOOL: true or false.
+- DATE: a date. A date is represented by the number of days since January 1, 1970 (its day number). The day number of 1970-01-01 is 0, it increases by 1 for each day later, and dates before 1970-01-01 have negative day numbers (examples: 1969-12-31 is -1, 2000-03-01 is 11017). A leap year is a year that is divisible by 4 and either not divisible by 100 or divisible by 400.
+The ordering of two non-NULL values of the same type is as follows. INT uses the order of the integers, DATE the order of the day numbers, and BOOL has false < true. STRING uses lexicographic order: the characters are compared one by one from the beginning by ASCII code, and the string whose character at the first differing position has the smaller ASCII code is smaller. When one string equals the beginning of the other, the shorter one is smaller (examples: c5 < c5098-us, desk < desk-lamp < desks).
+The text form of a value is the value written in characters as follows. INT: decimal (a negative number has a leading -, no extra zeros); STRING: the string itself; BOOL: true or false; DATE: the form YYYY-MM-DD (4-digit year, 2-digit month, 2-digit day, with missing digits filled with 0). The text form of NULL is the empty string in output/recovered.csv and NULL everywhere else.
+
+Section 2. Basic codes
+(1) ULEB128: writing a nonnegative integer n in ULEB128 means repeating, while n >= 128, writing (n mod 128) + 128 as 1 byte and setting n to floor(n / 128), and finally writing n as 1 byte. For example, 5 becomes 0x05 and 300 becomes 0xAC 0x02. To read a ULEB128, read bytes b_0, b_1, ..., b_t until a byte less than 128 appears, and let n = b_t * 128^t + sum (b_k - 128) * 128^k (the sum is over k = 0, 1, ..., t - 1).
+(2) Zigzag code: the zigzag code of an integer x is 2 * x if x >= 0, and -2 * x - 1 if x < 0 (0, -1, 1, -2, 2, ... become 0, 1, 2, 3, 4, ..., respectively). Conversely, the original integer obtained from a zigzag code z is z / 2 if z is even, and -(z + 1) / 2 if z is odd. "Write x in zigzag ULEB128" means writing the zigzag code of x in ULEB128.
+(3) 4-byte integer: writing an integer n with 0 <= n < 2^32 as a 4-byte integer means writing the 4 bytes n mod 256, floor(n / 256) mod 256, floor(n / 65536) mod 256, floor(n / 16777216) in this order (the low-order byte first). Writing an integer v with -2^31 <= v < 2^31 as a "signed 4-byte integer" means writing v as a 4-byte integer if v >= 0, and v + 2^32 as a 4-byte integer if v < 0. When reading a signed 4-byte integer, subtract 2^32 if the value read as a 4-byte integer is 2^31 or more.
+(4) Bit packing: packing a sequence of nonnegative integers a_0, a_1, ..., a_(m-1) (m is a multiple of 8, and each a_i is less than 2^w) with width w (w is a nonnegative integer) means building and writing a byte sequence B_0, B_1, ... of m * w / 8 bytes as follows. Bit j of a_i counted from the least significant bit (j = 0, 1, ..., w - 1; it is floor(a_i / 2^j) mod 2) becomes the bit with serial number i * w + j, and the bit with serial number k becomes bit (k mod 8), counted from the least significant bit, of byte B_floor(k / 8) (each byte is filled starting from its low-order bits). When w = 0, nothing is written. To extract the values from the packed byte sequence, do the reverse.
+Example: packing 3, 1, 0, 2, 0, 0, 0, 0 with width 2 gives the 2 bytes 0x87 0x00.
+(5) Adler-32: the Adler-32 of a byte sequence b_0, b_1, ..., b_(n-1) is B * 65536 + A after starting from A = 1, B = 0 and, for k = 0, 1, ..., n - 1 in this order, setting A to (A + b_k) mod 65521 and then setting B to (B + A) mod 65521. The Adler-32 of the empty byte sequence is 1. For example, the Adler-32 of the string abc is 38600999 (024d0127 in hexadecimal).
+
+Section 3. RLE/bit-packing hybrid code
+Encoding a sequence of nonnegative integers v_0, v_1, ..., v_(n-1) (n >= 0, each v_i less than 2^w) with width w in the RLE/bit-packing hybrid code means writing "runs" in order as follows. Let r(i) be the number of consecutive values equal to v_i starting at v_i (the number of values among v_i, v_(i+1), ... before a value different from v_i appears or the sequence ends). Starting with i = 0, repeat the following (a) or (b) while i < n.
+(a) If r(i) >= 8, write an RLE run. Write the header 2 * r(i) in ULEB128, then write the value v_i in ceil(w / 8) bytes (the low-order byte first; 0 bytes if w = 0). Add r(i) to i.
+(b) If r(i) < 8, write a bit-packed run. Let j = i and g = 0, and repeat adding 8 to j and 1 to g until at least one of j >= n, g = 63, r(j) >= 8 holds (this is done at least once). Write the header 2 * g + 1 in ULEB128, then write the 8 * g values v_i, v_(i+1), ..., v_(j-1) (values with an index of n or more are taken as 0) packed with width w (g * w bytes). Set i to j.
+Example: encoding 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1 with width 1 gives 0x14 0x01 0x03 0x02, and encoding 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2 with width 2 gives 0x05 0x10 0x00 0x00 0x0A.
+To decode c values (c >= 0) from this code, repeat the following until c or more values have been obtained: read a header h in ULEB128; if h is even, read one value written in ceil(w / 8) bytes (the low-order byte first) and append it h / 2 times; if h is odd, let g = (h - 1) / 2 and extract 8 * g values from g * w bytes. The first c of the values obtained are the result (if c = 0, nothing is read).
+
+Section 4. DELTA_BINARY_PACKED
+Encoding a sequence of integers x_0, x_1, ..., x_(n-1) (n >= 0) with DELTA_BINARY_PACKED means writing the following (1) and (2) in order.
+(1) Header: write 128 (the block size), 4 (the number of miniblocks per block) and n in this order in ULEB128, then write x_0 in zigzag ULEB128 (if n = 0, write 0 instead of x_0).
+(2) Blocks: divide the sequence of deltas d_k = x_k - x_(k-1) (k = 1, 2, ..., n - 1) into blocks of 128 from the beginning (the last block may have fewer than 128; if n <= 1 there are no blocks). For each block in order, do the following.
+ - Write the minimum m of the deltas in the block in zigzag ULEB128.
+ - Divide the deltas in the block into groups of 32 from the beginning; these are miniblocks 0, 1, 2, 3 (the later miniblocks may have fewer than 32 deltas or be empty). The width w_t of miniblock t is bits(M), where M is the maximum of d - m over the deltas d in it, if the miniblock is not empty, and 0 if it is empty. Write each of w_0, w_1, w_2, w_3 as 1 byte.
+ - For each non-empty miniblock, in increasing order of t, write the 32 values obtained by arranging d - m for the deltas d in it in delta order and padding with 0 up to 32 values, packed with width w_t (4 * w_t bytes). Nothing is written for empty miniblocks.
+Example: encoding 7, 5, 9, 9, 12 gives 0x80 0x01 0x04 0x05 0x0E, 0x03, 0x03 0x00 0x00 0x00, 0xB0 0x0A followed by ten 0x00 bytes, 22 bytes in total.
+To decode, read n and x_0 from the header (if n = 0 there are no values), and obtain the remaining n - 1 deltas as follows. For each block, read m and the 4 widths; for miniblocks t = 0, 1, 2, 3 in order, if deltas not yet obtained remain, extract 32 values from 4 * w_t bytes, and for each value u among the first min(32, number of remaining deltas) of them, the delta is m + u. The values are obtained by x_k = x_(k-1) + d_k.
+
+Section 5. Encoding methods for values
+The methods have the following method numbers: PLAIN is 0, DICTIONARY is 1, RLE is 2, DELTA_BINARY_PACKED is 3, DELTA_LENGTH_BYTE_ARRAY is 4. The candidate methods for each column type are as follows (listed in method-number order).
+- INT and DATE: PLAIN, DICTIONARY, DELTA_BINARY_PACKED
+- STRING: PLAIN, DICTIONARY, DELTA_LENGTH_BYTE_ARRAY
+- BOOL: PLAIN, RLE
+Encoding a sequence of non-NULL values y_0, y_1, ..., y_(c-1) (c >= 0) with each method means writing the following. DATE values are treated as day numbers.
+(1) PLAIN: for INT and DATE, write each value in order as a signed 4-byte integer. For STRING, for each value, write its length as a 4-byte integer, then write the bytes of the string. For BOOL, write the c values (true as 1, false as 0), with 0s appended until the count is a multiple of 8, packed with width 1 (ceil(c / 8) bytes).
+(2) DICTIONARY: uses the dictionary of the column chunk (section 8). Let D be the number of dictionary entries, and let idx(y) be the rank (counted from 0) of the dictionary entry equal to the value y. Write w = bits(D - 1) as 1 byte, then write idx(y_0), idx(y_1), ..., idx(y_(c-1)) in the RLE/bit-packing hybrid code with width w (section 3).
+(3) RLE (BOOL only): let E be the byte sequence obtained by encoding the c values (true as 1, false as 0) in the RLE/bit-packing hybrid code with width 1. Write the length of E as a 4-byte integer, then write E.
+(4) DELTA_BINARY_PACKED (INT and DATE only): write y_0, y_1, ..., y_(c-1) with DELTA_BINARY_PACKED (section 4).
+(5) DELTA_LENGTH_BYTE_ARRAY (STRING only): write the sequence of the lengths of the values with DELTA_BINARY_PACKED, then write the bytes of y_0, y_1, ..., y_(c-1) concatenated in this order.
+
+Section 6. Statistics
+The statistics of a collection of values are the pair of the minimum and the maximum of its non-NULL values (with the ordering of section 1). If there is no non-NULL value at all, the statistics are "none".
+To write statistics: if there are statistics, write 1 as 1 byte, then write the minimum and the maximum in this order in the "statistics format". If there are no statistics, write 0 as 1 byte. The statistics format is zigzag ULEB128 for INT and DATE; for STRING, the length in ULEB128 followed by the bytes of the string; for BOOL, 1 byte that is 1 for true and 0 for false.
+
+Section 7. Pages
+A page consists of a header and a body, and there are two kinds of pages: data pages and dictionary pages.
+The page header consists of the following items written in this order.
+- Page kind (1 byte): 0 for a data page, 1 for a dictionary page.
+- Method number (1 byte): always 0 (PLAIN) for a dictionary page.
+- Number of values (ULEB128): for a data page, the number of rows in the page (including the NULL rows). For a dictionary page, the number of dictionary entries.
+- Number of NULLs (ULEB128): for a data page, the number of NULLs in the page. 0 for a dictionary page.
+- Number of bytes of the body (ULEB128).
+- Checksum (4-byte integer): the Adler-32 of the body.
+- Statistics (section 6): for a data page, the statistics of the page's values. For a dictionary page, always "none" (the 1 byte 0).
+The number of bytes of the page header is the number of bytes from the page kind through the statistics.
+The body of a data page consists of the following (a) and (b) written in this order.
+(a) Definition levels (NULLABLE columns only): let E be the byte sequence obtained by encoding, in the RLE/bit-packing hybrid code with width 1, the sequence that has, for each row of the page, 1 if the value is not NULL and 0 if it is NULL. Write the length of E as a 4-byte integer, then write E. This is written even if the page has no NULL. Nothing is written for REQUIRED columns.
+(b) Value part: the sequence of the page's non-NULL values in row order, encoded with the page's method (section 5). It is written according to the method even if there is no non-NULL value at all (for example, only the header is written for DELTA_BINARY_PACKED, and only the 1 byte w for DICTIONARY).
+The body of a dictionary page is the sequence of the dictionary entries in order, encoded with PLAIN.
+
+Section 8. Row groups, column chunks and dictionaries
+The rows of the table are divided, in row-number order, into pieces of R rows; these are the row groups (the last row group may have fewer than R rows), and they are given row group numbers 0, 1, 2, ... from the beginning. The sequence of the values of a column in a row group is called that column's column chunk (chunk). The chunk divided into pieces of P rows from the beginning gives data pages 0, 1, 2, ... (the last data page may have fewer than P rows). Since the division into pages does not depend on the column, data page p represents the same range of rows in every chunk of the same row group.
+The byte sequence of a chunk encoded with method e (the chunk's byte sequence) is built as follows.
+(1) If e is DICTIONARY, determine the dictionary (a sequence of values) and the number k of data pages that use the dictionary as follows. Let the dictionary be the empty sequence and let k = 0. For data pages p = 0, 1, 2, ... in order, build the sequence obtained by appending to the end of the dictionary the page's non-NULL values that are not in the dictionary, without duplicates, in order of first appearance in the page. If the number of bytes of that sequence encoded with PLAIN exceeds L, end the repetition (that page's values are not added to the dictionary). If it is L or less, make that sequence the new dictionary, increase k by 1, and go to the next page. End after processing the last data page. Finally, if the dictionary is empty, let k = 0.
+(2) If e is DICTIONARY, the method of data page p is DICTIONARY when p < k and PLAIN when p >= k. Data pages with p >= k are called "fallback pages". If e is not DICTIONARY, the method of every data page is e.
+(3) If k > 0, the chunk's byte sequence is the dictionary page, data page 0, data page 1, ... written in this order. If k = 0, there is no dictionary page, and the chunk's byte sequence is data page 0, data page 1, ... written in this order.
+The method list of a chunk is the methods of the chunk's data pages, without duplicates, in increasing order of method number.
+
+Section 9. Choosing the method
+For each column of each row group, build the chunk's byte sequence of section 8 with every candidate e of the column's type, and call its number of bytes "the byte count of candidate e". The method used for the chunk (the chosen method) is as follows.
+- If the <method> in the settings is AUTO, the candidate with the smallest byte count. If several candidates share the minimum, the one among them with the smallest method number.
+- If the <method> in the settings is not AUTO, that method. However, for a chunk where it is DICTIONARY and section 8 (1) results in k = 0, PLAIN is considered to be chosen (the chunk's byte sequence is the same).
+The chunk's byte sequence built with the chosen method is written to the file.
+
+Section 10. File layout and footer
+The byte sequence of the file consists of the following (1) to (5) written in this order.
+(1) Magic: the 4 bytes 0x4D 0x50 0x54 0x43 (the string MPTC).
+(2) Chunks: for row groups 0, 1, 2, ... in order, the byte sequences of the chunks of the columns of the row group, in schema order.
+(3) Footer.
+(4) Number of bytes of the footer (4-byte integer).
+(5) Magic (the same 4 bytes as (1)).
+The position of a chunk is the position in the file of the first byte of the chunk's byte sequence. The position of a page is the position in the file of the first byte of the page header.
+The footer consists of the following items written in this order.
+- Version (ULEB128): 1.
+- Number of columns (ULEB128).
+- For each column in schema order: the length of the column name (ULEB128), the bytes of the column name, the type number (1 byte: INT is 0, STRING is 1, BOOL is 2, DATE is 3), and the nullability (1 byte: NULLABLE is 1, REQUIRED is 0).
+- Number of rows of the table (ULEB128).
+- Number of row groups (ULEB128).
+- For each row group in row-group-number order, the number of rows of that row group (ULEB128), followed, for each column in schema order, by the following items.
+ - The chunk position (ULEB128) and the chunk byte count (ULEB128).
+ - The number of methods in the method list (ULEB128) and the method number of each method in the list (1 byte each, in list order).
+ - Presence of a dictionary page (1 byte: 1 if present, 0 if not).
+ - Number of data pages (ULEB128).
+ - Number of NULLs in the chunk (ULEB128).
+ - Statistics of the chunk's values (section 6).
+
+Section 11. Parsing and decoding the file
+The byte sequence of a file of length N is parsed and decoded as follows.
+(1) Read a 4-byte integer from position N - 8; this is the footer byte count F. The footer starts at position N - 8 - F (this position is called the footer position). Read the footer according to the format of section 10 and obtain the schema, the number of rows of the table, the number of rows of each row group, and the information of each chunk. The row number of the first row of row group g (first_row) is the total number of rows of row groups 0, 1, ..., g - 1.
+(2) The pages of a chunk are obtained by starting at the chunk position and repeatedly reading a page header and then advancing by the body byte count, until the end of the chunk (chunk position + chunk byte count) is reached. If the presence of a dictionary page is 1, the first page is the dictionary page and the remaining pages are, in order, data pages 0, 1, 2, .... If the presence of a dictionary page is 0, all pages are data pages, in order.
+(3) The chunk's dictionary is obtained by decoding, as PLAIN, as many values as the number of values from the body of the dictionary page.
+(4) The body of a data page is decoded as follows. Let c be the page's number of values. For a NULLABLE column, first read one 4-byte integer, then decode c definition levels from the RLE/bit-packing hybrid code with width 1. For a REQUIRED column, all c definition levels are 1. Let c' be the number of definition levels equal to 1, and decode c' values from the remaining part with the page's method. For DICTIONARY, read the 1 byte w, decode c' ranks from the RLE/bit-packing hybrid code with width w, and replace each of them with the dictionary entry of that rank. For RLE, read one 4-byte integer, then decode c' values from the RLE/bit-packing hybrid code with width 1 (1 is true, 0 is false). For PLAIN, DELTA_BINARY_PACKED and DELTA_LENGTH_BYTE_ARRAY, obtain c' values by reversing the encoding of sections 4 and 5. Assign the decoded values, in row order, to the rows whose definition level is 1; the value of a row whose definition level is 0 is NULL. The values of data pages 0, 1, 2, ... of the chunk concatenated in order are that column's values for rows first_row, first_row + 1, ... of the row group.
+
+Section 12. Verifying the file
+Parse the byte sequence of the file built in section 10 with section 11, and write the information of the footer and of all pages to output/metadata.txt. Then perform the following verification.
+- Checksum verification: for every page (including dictionary pages), compute the Adler-32 of the body and compare it with the checksum in the header; the number of pages where they differ is the "number of checksum mismatches".
+- Value verification: decode every data page of every chunk, and compare each value obtained (cell) with the value in the same row and the same column of the table in input/table.csv. The number of differing cells is the "number of value mismatches". Also count the number of decoded cells and how many of them are NULL.
+
+Section 13. Query syntax
+A query is a sequence of the following tokens. There are zero or more spaces between tokens. However, when keywords, names or literals follow each other, there is at least one space between them.
+- Keyword: a word consisting of uppercase letters only, one of SELECT, WHERE, GROUP, BY, ORDER, ASC, DESC, LIMIT, AND, OR, NOT, BETWEEN, IN, IS, NULL, TRUE, FALSE, COUNT, DISTINCT, SUM, AVG, MIN, MAX.
+- Name: a word that starts with a lowercase letter and consists of lowercase letters, digits and _; it denotes a column name. It may be a name that is not in the schema.
+- Integer literal: a sequence of one or more digits, or - followed by a sequence of one or more digits; it denotes that decimal integer.
+- String literal: a part that starts with ' and ends at the next '; it denotes the string between them (zero or more lowercase letters, digits, - and _).
+- Symbol: one of = <> < <= > >= ( ) , *. <=, >= and <> are each a single symbol.
+The form of a query is as follows. A part enclosed in [ ] is optional, a part enclosed in { } is repeated zero or more times, and | means one of the two.
+- query: SELECT <select list> [ WHERE <condition> ] [ GROUP BY <name> ] [ ORDER BY <name> [ ASC | DESC ] ] [ LIMIT <integer literal> ]
+- select list: * or <item> { , <item> }
+- item: <name> (a column item), or one of the aggregate items COUNT(*), COUNT(<name>), COUNT(DISTINCT <name>), SUM(<name>), AVG(<name>), MIN(<name>), MAX(<name>)
+- condition: <conjunction> { OR <conjunction> }
+- conjunction: <negation> { AND <negation> }
+- negation: one of NOT <negation>, ( <condition> ), <comparison>
+- comparison: one of the following, where <literal> is one of an integer literal, a string literal, TRUE, FALSE.
+ <name> <comparison operator> <literal> (<comparison operator> is one of = <> < <= > >=)
+ <name> BETWEEN <literal> AND <literal>
+ <name> IN ( <literal> { , <literal> } )
+ <name> IS NULL
+ <name> IS NOT NULL
+NOT binds more tightly than AND, and AND more tightly than OR; a chain of ANDs, and a chain of ORs, associates from the left. The AND immediately after BETWEEN is part of the BETWEEN (for example, a BETWEEN 1 AND 5 AND b = 2 is (a BETWEEN 1 AND 5) AND (b = 2)).
+A query whose select list is * is treated as if a select list listing the column items of all columns in schema order had been written. The LIMIT value is 1 or more.
+
+Section 14. Checking queries
+A query that contains an aggregate item or has GROUP BY is called an "aggregate query". When a query matches any of the following (1) to (5), it is an error, and the error code of the lowest-numbered one among those it matches is recorded. Sections 15 to 19 are not performed for error queries.
+(1) unknown_column: a name that is not in the schema appears somewhere among the column items, the <name> of the aggregate items, the condition, GROUP BY, ORDER BY.
+(2) type_mismatch: a comparison in the condition has a literal that does not match the type of the column being compared. Integer literals match INT columns, string literals match STRING and DATE columns, and TRUE and FALSE match BOOL columns.
+(3) bad_aggregate: the type of the column of the <name> of SUM or AVG is not INT.
+(4) not_grouped: an aggregate query has a column item different from the <name> of GROUP BY (if there is no GROUP BY, this applies if there is even one column item).
+(5) bad_order: an aggregate query has ORDER BY.
+For a query that is not an error, each literal of the condition is converted to a value of the type of the column being compared. An integer literal becomes that integer, a string literal compared with a STRING column becomes that string, a string literal compared with a DATE column becomes that date (it is in the form YYYY-MM-DD), TRUE becomes true, and FALSE becomes false.
+
+Section 15. Evaluating conditions
+For a row of the table, a condition takes one of the values TRUE, FALSE, UNKNOWN (three-valued logic). The values of the comparisons are as follows. Below, "the value" is the value, in that row, of the column of the comparison's <name>.
+- <name> <comparison operator> <literal>: UNKNOWN if the value is NULL. Otherwise, the value and the literal are compared with the ordering of section 1; the result is TRUE if the value is equal to (=), not equal to (<>), less than (<), less than or equal to (<=), greater than (>), greater than or equal to (>=) the literal, respectively, and FALSE if this does not hold.
+- <name> BETWEEN a AND b: UNKNOWN if the value is NULL, TRUE if a <= value and value <= b, and FALSE otherwise.
+- <name> IN ( ... ): UNKNOWN if the value is NULL, TRUE if the value is equal to one of the literals, and FALSE otherwise.
+- <name> IS NULL: TRUE if the value is NULL, and FALSE otherwise. <name> IS NOT NULL: FALSE if the value is NULL, and TRUE otherwise.
+The values of the logical operations are as follows.
+- NOT x: FALSE if x is TRUE, TRUE if x is FALSE, and UNKNOWN if x is UNKNOWN.
+- x AND y: FALSE if at least one of x and y is FALSE; otherwise UNKNOWN if at least one of them is UNKNOWN; otherwise TRUE.
+- x OR y: TRUE if at least one of x and y is TRUE; otherwise UNKNOWN if at least one of them is UNKNOWN; otherwise FALSE.
+A row for which the value of the condition is TRUE is called a "row satisfying the condition". In a query without WHERE, every row satisfies the condition.
+
+Section 16. Zone-map decisions
+For a set of rows (a row group, or the range of rows of data page p within a row group), compute the set S of values that the condition can take on the rows of that set, as follows, from the "zone information" (statistics, number of NULLs z, number of rows n) of each column appearing in the condition. S is a subset of {TRUE, FALSE, UNKNOWN}.
+- Comparison (excluding IS NULL and IS NOT NULL): uses the zone information of the column of the comparison's <name>. If z > 0, include UNKNOWN in S. If there are statistics, let lo be their minimum and hi their maximum, and include TRUE in S if the condition written for TRUE in the list below holds, and FALSE in S if the condition written for FALSE holds. If there are no statistics, include neither TRUE nor FALSE. x, a, b, x_1, ..., x_q are the values of the literals.
+ = x: TRUE when lo <= x <= hi; FALSE when not "lo = x and hi = x".
+ <> x: TRUE when not "lo = x and hi = x"; FALSE when lo <= x <= hi.
+ < x: TRUE when lo < x; FALSE when hi >= x.
+ <= x: TRUE when lo <= x; FALSE when hi > x.
+ > x: TRUE when hi > x; FALSE when lo <= x.
+ >= x: TRUE when hi >= x; FALSE when lo < x.
+ BETWEEN a AND b: TRUE when lo <= b and hi >= a and a <= b; FALSE when lo < a or hi > b.
+ IN ( x_1, ..., x_q ): TRUE when there is an i with lo <= x_i <= hi; FALSE when not "lo = hi and lo is equal to one of the literals".
+- IS NULL: include TRUE in S if z > 0, and FALSE in S if z < n. IS NOT NULL: include TRUE in S if z < n, and FALSE in S if z > 0.
+- NOT x: the set of the values obtained by applying NOT to each element of the set computed for x.
+- x AND y (x OR y): the set of the values of s AND t (s OR t) over all pairs of an element s of the set computed for x and an element t of the set computed for y.
+If S does not contain TRUE, the set of rows contains no row satisfying the condition, so it is judged skippable.
+The zone information of a row group is the chunk statistics, the chunk's number of NULLs and the row group's number of rows recorded in the footer. The zone information of the range of rows of data page p is the statistics, the number of NULLs and the number of values in the header of data page p of that column.
+
+Section 17. Scanning
+For each query that is not an error, find the rows satisfying the condition as follows, using the information obtained by parsing the byte sequence of the file built in section 10 with section 11.
+- Needed columns: the columns appearing in the column items, the <name> of the aggregate items (COUNT(*) has no column), the condition, GROUP BY, ORDER BY, without duplicates, in schema order. Among them, the columns appearing in the condition are called the "condition columns", and those that are not condition columns are called the "remaining columns".
+- For row groups g = 0, 1, 2, ... in order, perform the following (1) to (3).
+ (1) If there is a condition and the decision of section 16 with the row group's zone information is "skippable", skip that row group and go to the next row group.
+ (2) If there are no needed columns (this is the case of a query without WHERE whose only item is COUNT(*)), treat all rows of the row group as rows satisfying the condition without reading any page.
+ (3) Otherwise, for data page numbers p = 0, 1, 2, ... in order, perform the following (a) and (b) (the number of data pages is the same in the chunk of every column of the row group).
+  (a) If there is a condition and the decision of section 16 with the zone information of the range of rows of data page p is "skippable", skip that range.
+  (b) Otherwise, first decode data page p of the condition columns and evaluate the condition for each row in the range. If no row satisfies the condition and there is at least one remaining column, data page p of the remaining columns is not decoded. Otherwise, also decode data page p of the remaining columns, and add the rows in the range that satisfy the condition to the result rows, in row order. Without WHERE there are no condition columns, and every row in the range satisfies the condition.
+ When decoding a data page, if the page's method is DICTIONARY and the dictionary page of that chunk has not yet been read in that query, read the dictionary page first. A dictionary page is read at most once per chunk per query.
+For each query, compute the following counts.
+- row_groups_read: the number of row groups not skipped in (1).
+- row_groups_skipped: the number of row groups skipped in (1).
+- pages_read: the number of data pages decoded.
+- pages_skipped: the number obtained by adding the number of needed columns for each range skipped in (a) (the number of data pages skipped).
+- pages_unneeded: the number of data pages of the remaining columns not decoded in (b) (the number of remaining columns for each such range).
+- dictionary_pages_read: the number of dictionary pages read.
+- bytes_read: the total of the header byte counts and the body byte counts of the data pages and dictionary pages read.
+- rows_scanned: the total number of rows of the ranges not skipped in (a). However, for a row group of case (2), add that row group's number of rows.
+- rows_matched: the number of rows satisfying the condition.
+Also, for each row group not skipped in (1), build a page record. The page record is the string of one character per data page, in order of the data page number p: s for a range skipped in (a), u for a range whose remaining columns were not decoded in (b), and r otherwise. The page record of a row group of case (2) is -.
+
+Section 18. Building the result
+From the sequence of rows satisfying the condition (in row-number order), build the result of the query (kind, number of rows satisfying the condition, sequence of output rows) as follows.
+- Kind: rows if the query is not an aggregate query, grouped if it has GROUP BY, and aggregate for an aggregate query without GROUP BY.
+- rows: arrange the rows satisfying the condition in row-number order. If there is ORDER BY, sort them by the value of that column. With ASC (including the case where neither ASC nor DESC is given), sort in increasing order of value with NULL first; with DESC, sort in decreasing order of value with NULL last. Rows with equal values (including NULLs with each other) stay in row-number order. For each arranged row, the output row is the text forms of the column values, in item order, joined with ",".
+- grouped: the rows satisfying the condition whose values of the GROUP BY column are equal form one group (the NULL rows also form one group together). That value is called the key of the group. Arrange the groups in increasing order of key, with the NULL group first, and make one output row per group. If no row satisfies the condition, there are no output rows.
+- aggregate: all rows satisfying the condition form one group (it is a group even if there are no rows at all), and one output row is made.
+- An output row of grouped and aggregate is the text forms of the following values, in item order, joined with ",".
+ - Column item: the key of the group (appears only in grouped).
+ - COUNT(*): the number of rows in the group.
+ - COUNT(c): the number of rows in the group whose value of column c is not NULL.
+ - COUNT(DISTINCT c): the number of distinct non-NULL values of column c in the group.
+ - SUM(c), AVG(c), MIN(c), MAX(c): the sum, the average, the minimum and the maximum of the non-NULL values of column c in the group. If there is no non-NULL value at all, each of them is NULL.
+ AVG(c) is T / k written as an irreducible fraction, where T is the sum and k the number of the non-NULL values. If the denominator is 1, write only the numerator; otherwise write <numerator>/<denominator> (the denominator is positive, and for a negative value the numerator has a leading -; for example, -7 / 2 is written -7/2).
+- If there is LIMIT n, keep only the first n of the sequence of output rows.
+- The item headers are the column name for a column item, and COUNT(*), COUNT(<name>), COUNT(DISTINCT <name>), SUM(<name>), AVG(<name>), MIN(<name>), MAX(<name>) for the aggregate items (they are written in this form regardless of whether the query contains spaces).
+
+Section 19. Cross-check
+For each query that is not an error, examine all rows of the table in input/table.csv in row-number order and evaluate the condition, and build the result with section 18 from the sequence of rows satisfying the condition. If this result matches the result built with section 18 from the sequence of rows satisfying the condition found in section 17 in all of the kind, the number of rows satisfying the condition and the sequence of output rows, the cross-check result is ok; otherwise it is mismatch.
+
+Section 20. Recovering the damaged file
+Parse the byte sequence of input/damaged.hex with section 11 (1) and (2). In row-group-number order, for each column of each row group in schema order, examine the pages of that chunk in order (the dictionary page first, if there is one).
+- A page whose body's Adler-32 differs from the checksum in the header is a "damaged page".
+- A data page is a "lost page" with reason checksum if the page is damaged, or otherwise with reason dictionary if the page's method is DICTIONARY and the dictionary page of the chunk is damaged. All values of that column in the rows of a lost page are unknown.
+- Data pages that are not lost are decoded with section 11 (3) and (4).
+The recovered table consists of, for every row and every column of the table, the decoded value or unknown.
+
+[Output files]
+Write the following 7 files to the output/ folder. Every file consists of ASCII characters only, and every line ends with a newline (LF). The words in a line are separated by single spaces (by "," in (3) and (7)), there is no whitespace at the beginning or end of a line, and no empty lines are output. Integers are written in decimal without extra leading zeros, and negative numbers have a leading "-". Values are written in the text form of section 1. <checksum> is the checksum value written as 8 lowercase hexadecimal digits (missing digits filled with 0). In the formats below, the parts enclosed in < > are replaced by values, and everything else is output as is.
+
+(1) output/file.hex: the byte sequence of the file built in section 10. Divide the byte sequence into pieces of 32 bytes from the beginning and write each piece on one line (the last line may have fewer than 32 bytes). Each byte is written as 2 lowercase hexadecimal digits (00 to ff), with no space between bytes.
+
+(2) output/metadata.txt: the result of section 12. Output the following lines in this order.
+  file bytes <N> footer_offset <footer position> footer_bytes <F>
+  table version <version> rows <number of rows of the table> columns <number of columns> row_groups <number of row groups>
+  column <column number> <column name> <type> <nullability> (one line per column, in schema order)
+  Then, for each row group in row-group-number order, output the following row_group line and, for each column of that row group in schema order, the chunk line and the page lines of that chunk (the line of the dictionary page first if there is one, then one line per data page in order of p).
+  row_group <g> rows <number of rows> first_row <first_row> bytes <total byte count of the chunks of that row group>
+  chunk <g> <column name> offset <chunk position> size <chunk byte count> encodings <method list> dictionary <yes if there is a dictionary page, no otherwise> pages <number of data pages> nulls <number of NULLs in the chunk> <statistics text>
+  page <g> <column name> dict offset <page position> header <header byte count> body <body byte count> checksum <checksum> entries <number of dictionary entries>
+  page <g> <column name> <p> offset <page position> header <header byte count> body <body byte count> checksum <checksum> encoding <method> values <number of values> nulls <number of NULLs> <statistics text>
+  Then output the following line for each column, in schema order.
+  summary <column name> bytes <total byte count of all chunks of that column> data_pages <total number of data pages of that column> dictionary_pages <total number of dictionary pages of that column> encodings <the methods appearing in the method lists of all chunks of that column, without duplicates, in increasing order of method number>
+  Finally output the following line.
+  roundtrip <status> cells <number of decoded cells> nulls <number of them that are NULL> mismatches <number of value mismatches> checksum_errors <number of checksum mismatches>
+  - <method list> is the names of the methods joined with "," (example: PLAIN,DICTIONARY). <method> is the name of the method.
+  - <statistics text> is min <text form of the minimum> max <text form of the maximum> if there are statistics, and stats none otherwise.
+  - <status> is ok if the number of value mismatches and the number of checksum mismatches are both 0, and failed otherwise.
+
+(3) output/encoding_report.csv: the list of the candidates of section 9. The first line is the following header.
+  row_group,column,encoding,bytes,fallback_pages,chosen
+  Then, in row-group-number order, for each column of each row group in schema order, for each candidate of the column's type in method-number order, output the following line.
+  <g>,<column name>,<method>,<byte count of the candidate>,<number of fallback pages>,<yes if it is the chosen method, no otherwise>
+  <number of fallback pages> is, for the DICTIONARY candidate, the number of fallback pages of the chunk built with that candidate (the number of data pages - the k of section 8 (1)), and 0 for the other candidates.
+
+(4) output/query_results.txt: the results of the queries. In query-number order, output the following line for an error query.
+  query <query number> error <error code>
+  For a query that is not an error, output the following 2 lines, followed by each of its output rows in order.
+  query <query number> <kind> matched <number of rows satisfying the condition> output <number of output rows>
+  columns <the item headers joined with "," in item order>
+  <number of rows satisfying the condition> is the number before applying LIMIT, and <number of output rows> is the number after applying LIMIT.
+
+(5) output/query_stats.txt: the scan counts. In query-number order, output the following line for an error query.
+  query <query number> error <error code>
+  For a query that is not an error, output the following line, followed by one row group line per row group, in row-group-number order.
+  query <query number> columns <needed columns> row_groups_read <value> row_groups_skipped <value> pages_read <value> pages_skipped <value> pages_unneeded <value> dictionary_pages_read <value> bytes_read <value> rows_scanned <value> rows_matched <value> check <cross-check result>
+  The row group line is query <query number> row_group <g> skipped for a row group skipped in section 17 (1), and query <query number> row_group <g> pages <page record> otherwise.
+  Finally output the following line.
+  total queries <number of queries> errors <number of error queries> row_groups_read <value> row_groups_skipped <value> pages_read <value> pages_skipped <value> pages_unneeded <value> dictionary_pages_read <value> bytes_read <value> rows_scanned <value> rows_matched <value> checks_ok <number of queries whose cross-check result is ok>
+  - <needed columns> is the names of the needed columns joined with "," in schema order. If there are no needed columns, it is -. <cross-check result> is ok or mismatch.
+  - Each count in the total line is the sum over all queries that are not errors.
+
+(6) output/recovery.txt: the result of section 20. Output the following lines in this order.
+  file bytes <length of the byte sequence> rows <number of rows of the table> columns <number of columns> row_groups <number of row groups>
+  column <column number> <column name> <type> <nullability> (one line per column of the footer, in schema order)
+  Then, in the order in which section 20 examines the pages, output a damaged line for each damaged page and a lost line for each lost page. For a damaged data page, the lost line of that page is output immediately after its damaged line.
+  damaged <g> <column name> <page> offset <page position> stored <checksum in the header> computed <the Adler-32 of the body, written in the same format as <checksum>>
+  lost <g> <column name> <p> rows <number of values of that page> reason <reason>
+  Finally output the following line.
+  summary pages <total number of pages examined (including dictionary pages)> damaged <number of damaged pages> lost_pages <number of lost pages> lost_cells <total number of values of the lost pages> recovered_cells <number of rows of the table * number of columns - lost_cells>
+  - <page> is dict for a dictionary page, and p for data page p. <reason> is checksum or dictionary.
+
+(7) output/recovered.csv: the table recovered in section 20. The first line is the column names of the footer joined with "," in schema order. Then, for each row of the table in row-number order, output one line with the values of the columns joined with "," in schema order. A value is its text form of section 1 if it is a decoded value (NULL is the empty string), and ? if it is unknown.
+
+[Source files]
+There are the following 5 source files. The names are language-independent role names; the extensions and the use of upper and lower case follow the conventions of each language.
+- main: handles the overall flow and contains most of the processing. Reading the input and calling each module; the writer (dividing into row groups and pages, building the dictionary and the fallback, definition levels, assembling the byte sequences of pages and chunks, statistics, choosing the method, building the footer (sections 6 to 10)); the reader (parsing the footer and the page headers, decoding pages using the dictionary and the definition levels (section 11)); verifying the file (section 12); checking queries and converting literals (section 14); evaluating conditions with three-valued logic (section 15); zone-map decisions (section 16); scanning, the counts and the page records (section 17); building results with sorting, grouping, aggregation and LIMIT (section 18); the cross-check (section 19); recovering the damaged file (section 20); building and writing the contents of all output files.
+- schema_io: reading schema.txt, table.csv, options.txt, queries.txt and damaged.hex; converting fields to values; converting between dates and day numbers; the text forms of values (section 1); writing text files.
+- bitstream: a reader with a read position that reads a byte sequence in order from the beginning; ULEB128, zigzag codes, 4-byte integers, bit packing and extracting values, Adler-32 (section 2); encoding and decoding the RLE/bit-packing hybrid code (section 3).
+- encoding: the method names and method numbers, the candidates per type, encoding and decoding DELTA_BINARY_PACKED (section 4), encoding and decoding the value part with each method (section 5), reading and writing the statistics format (section 6).
+- query: splitting a query into tokens, and a recursive-descent parser that extracts the select list, the condition tree, GROUP BY, ORDER BY and LIMIT according to the syntax of section 13.
+
+[Constraints]
+- The number of columns in input/schema.txt is between 1 and 12, and the number of rows of the table in input/table.csv is between 1 and 5000.
+- 1 <= R <= 5000, 1 <= P <= R, 1 <= L <= 100000.
+- An INT value v satisfies -2^30 < v < 2^30. A DATE value is a date from 1950-01-01 to 2049-12-31.
+- The number of queries in input/queries.txt is between 1 and 30, and each line follows the syntax of section 13. The only aggregate item that uses * is COUNT(*), and DISTINCT appears only immediately after COUNT(. The value x of an integer literal satisfies -2^30 < x < 2^30, and the LIMIT value is at most 5000. In queries that are not errors, a string literal compared with a DATE column is an existing date from 1950-01-01 to 2049-12-31 written in the form YYYY-MM-DD.
+- The following hold for input/damaged.hex.
+ - The length of the byte sequence is at most 20000, and the byte sequence in its undamaged state follows the format of sections 7 to 10 (the way the dictionary is built and the way the methods are chosen may differ from sections 8 and 9). The number of columns, the number of rows and the value ranges satisfy the constraints above for input/schema.txt and input/table.csv.
+ - Only bytes of page bodies are damaged. The magic, the footer, the footer byte count and the page headers are not damaged.
+ - The Adler-32 of the body of a damaged page differs from the checksum in its header. Pages that are not damaged can be decoded correctly with section 11.
+- For the given input, the absolute value of every integer, including intermediate values of the computations, is less than 2^53. The absolute values of the sums computed for SUM and AVG are less than 2^31. The values written in ULEB128, the values packed with bit packing, the values written as 4-byte integers and the Adler-32 values are at least 0 and less than 2^32, but may be 2^31 or more.
+
+[Example]
+The following example shows the formats and differs from the actual input files.
+The input/damaged.hex of this example is a file in which a table of 6 columns and 12 rows was written with R = 6, P = 3, L = 24, with one byte changed in each of the body of the dictionary page of station in row group 0 and the body of data page 0 of temperature in row group 1.
+Example input (input/schema.txt):
+id INT REQUIRED
+city STRING NULLABLE
+score INT NULLABLE
+active BOOL REQUIRED
+joined DATE NULLABLE
+Example input (input/table.csv):
+id,city,score,active,joined
+1,osaka,72,true,2021-04-01
+2,kyoto,58,false,2021-04-01
+3,,90,true,2022-10-15
+4,osaka,,true,
+5,nara,65,false,2020-02-29
+6,kobe,81,true,2023-01-10
+7,kyoto,77,true,2023-01-10
+8,osaka,49,false,2019-12-31
+9,kyoto,88,true,
+10,nara,70,true,2024-06-30
+11,,63,false,2024-07-01
+12,osaka,95,true,2024-07-01
+13,sakai,-5,false,2018-03-03
+14,kyoto,70,true,2022-02-22
+Example input (input/options.txt):
+row_group_size 8
+page_size 3
+dictionary_limit 24
+encoding id AUTO
+encoding city DICTIONARY
+encoding score AUTO
+encoding active AUTO
+encoding joined AUTO
+Example input (input/queries.txt):
+SELECT id, city WHERE score >= 70 ORDER BY city DESC
+SELECT city, COUNT(*), AVG(score) GROUP BY city
+SELECT COUNT(*), MIN(joined), MAX(joined) WHERE active = TRUE AND joined IS NOT NULL
+SELECT * WHERE id BETWEEN 3 AND 5
+SELECT SUM(city)
+Example input (input/damaged.hex):
+4d50544301000300186f049c2f0004005a0073742d630400000073742d610400
+000073742d6200010300042a005d00010473742d610473742d63020324000001
+0300041b003f00010473742d610473742d6102031500000003000cdf01af0e01
+944e9e4e8a1300008c1300008f130000000003000cfa017b0f01a24eb24e9113
+00009613000099130000000003000cf0019a0e01aeb902aeb902574e0000574e
+0000574e0000000003000cf1019e0e01aeb902b0b902574e0000574e0000584e
+00000000030012900bfd4a015347020000000307dcffffffdaffffffd6ffffff
+00000300126b0bd549016b5f020000000307d0ffffffcdffffffcaffffff0000
+0300070d002c000100000200000003070000000300070d002c00010000020000
+00030700010002000e7002a20d00030000006761700300000069636500010302
+090b00370001036761700367617002000000030101030000010302090c003800
+01036963650369636502000000030101030101000300186f049c2f0004000000
+73742d620400000073742d630400000073742d6100010300042a005d00010473
+742d610473742d630203240000010300041c004100010473742d610473742d63
+02031600000003000c1602671001b84ec24e9c1300009f130000a11300000000
+03000c30023b1101ca4ed24ea5130000a8130000a9130000000003000cf301b2
+0e01b0b902b0b902584e0000584e0000584e0000000003000cf401b60e01b0b9
+02b2b902584e0000584e0000594e00000000030012470ba14801870177020000
+5a0307c4ffffffbcffffffc3ffffff000003010e79070b21018b018701020000
+000303baffffffbcffffff000003000713003200010001020000000307060000
+0301070d002b000100010200000003060101000200105703dc13000300000066
+616e050000006d61696e74000103030707001f00000200000003000100010301
+0912004d00010366616e056d61696e7402000000030601030201060773746174
+696f6e01000a72656164696e675f696400000364617903000b74656d70657261
+74757265000105616c61726d0201046e6f746501010c02060452010101020001
+0473742d610473742d635634010000020001944eb24e8a0138010000020001ae
+b902b0b902c2013c0100000200016b47fe01260100000200010000a4024e0101
+01020401036761700369636506f202520101010200010473742d610473742d63
+c40334010000020001b84ed24ef80338010000020001b0b902b2b902b0043b01
+00000201018b0177eb042601000002010100019105480101010204010366616e
+056d61696e74ed0000004d505443
+Example output (output/file.hex):
+4d505443000303000a8d005e0501020680010403020200000000000303000a93
+00820501080c80010403080200000000000302000a98009f05010e1080010402
+0e020000000001000200125004102000050000006f73616b61050000006b796f
+746f00010301090f00410001056b796f746f056f73616b610200000003030103
+02000003001f6c05d43e01046b6f6265056f73616b6102000000030705000000
+6f73616b61040000006e617261040000006b6f6265000002001858041a220105
+6b796f746f056f73616b61020000000303050000006b796f746f050000006f73
+616b610000030012e90053070174b401020000000307480000003a0000005a00
+0000000003010e9e00ca03018201a20102000000030641000000510000000000
+02000e87008f0301629a010200000003034d0000003100000000000300010600
+0600010001050000030001060006000100010500000200010200020001000101
+00000300127601560a01bca402a0ad020200000003071e4900001e490000504b
+0000000003010ed601740a01a29e02ceae0202000000030691470000a74b0000
+000002000e9701d10901aa9d02ceae02020000000303a74b0000554700000003
+03000a9d00be0501121680010403120200000000000303000aa300e20501181c
+800104031802000000000100020011e203f51c00050000006b796f746f040000
+006e61726100010301090f00410001056b796f746f046e617261020000000303
+01030200000300216a060a4d01056b796f746f0573616b616902000000030705
+0000006f73616b610500000073616b6169050000006b796f746f0000030012ea
+000708017eb00102000000030758000000460000003f0000000000030012aa04
+0d200109be010200000003075f000000fbffffff460000000000030001040004
+000100010300000300010600060001000105000003010e2702840c0180b70282
+b702020000000306c04d0000c14d00000000030012c7022c1701f2920282b702
+020000000307c14d0000b9440000654a00000105026964000004636974790101
+0573636f72650001066163746976650200066a6f696e656403010e0208044201
+03000300010210469d0102000101030101046b6f6265056f73616b61e3015601
+000003010162b401b902270100000300010001e0025e010000030101aa9d02ce
+ae0206be032c010300020001121cea037002000101020101056b796f746f0573
+616b6169da043e01000002000109be0198051a0100000200010001b205400100
+00020101f2920282b702b80000004d505443
+Example output (output/metadata.txt):
+file bytes 946 footer_offset 754 footer_bytes 184
+table version 1 rows 14 columns 5 row_groups 2
+column 0 id INT REQUIRED
+column 1 city STRING NULLABLE
+column 2 score INT NULLABLE
+column 3 active BOOL REQUIRED
+column 4 joined DATE NULLABLE
+row_group 0 rows 8 first_row 0 bytes 442
+chunk 0 id offset 4 size 66 encodings DELTA_BINARY_PACKED dictionary no pages 3 nulls 0 min 1 max 8
+page 0 id 0 offset 4 header 12 body 10 checksum 055e008d encoding DELTA_BINARY_PACKED values 3 nulls 0 min 1 max 3
+page 0 id 1 offset 26 header 12 body 10 checksum 05820093 encoding DELTA_BINARY_PACKED values 3 nulls 0 min 4 max 6
+page 0 id 2 offset 48 header 12 body 10 checksum 059f0098 encoding DELTA_BINARY_PACKED values 2 nulls 0 min 7 max 8
+chunk 0 city offset 70 size 157 encodings PLAIN,DICTIONARY dictionary yes pages 3 nulls 1 min kobe max osaka
+page 0 city dict offset 70 header 10 body 18 checksum 20100450 entries 2
+page 0 city 0 offset 98 header 22 body 9 checksum 0041000f encoding DICTIONARY values 3 nulls 1 min kyoto max osaka
+page 0 city 1 offset 129 header 21 body 31 checksum 3ed4056c encoding PLAIN values 3 nulls 0 min kobe max osaka
+page 0 city 2 offset 181 header 22 body 24 checksum 221a0458 encoding PLAIN values 2 nulls 0 min kyoto max osaka
+chunk 0 score offset 227 size 86 encodings PLAIN dictionary no pages 3 nulls 1 min 49 max 90
+page 0 score 0 offset 227 header 13 body 18 checksum 075300e9 encoding PLAIN values 3 nulls 0 min 58 max 90
+page 0 score 1 offset 258 header 14 body 14 checksum 03ca009e encoding PLAIN values 3 nulls 1 min 65 max 81
+page 0 score 2 offset 286 header 13 body 14 checksum 038f0087 encoding PLAIN values 2 nulls 0 min 49 max 77
+chunk 0 active offset 313 size 39 encodings PLAIN dictionary no pages 3 nulls 0 min false max true
+page 0 active 0 offset 313 header 12 body 1 checksum 00060006 encoding PLAIN values 3 nulls 0 min false max true
+page 0 active 1 offset 326 header 12 body 1 checksum 00060006 encoding PLAIN values 3 nulls 0 min false max true
+page 0 active 2 offset 339 header 12 body 1 checksum 00020002 encoding PLAIN values 2 nulls 0 min false max true
+chunk 0 joined offset 352 size 94 encodings PLAIN dictionary no pages 3 nulls 1 min 2019-12-31 max 2023-01-10
+page 0 joined 0 offset 352 header 16 body 18 checksum 0a560176 encoding PLAIN values 3 nulls 0 min 2021-04-01 max 2022-10-15
+page 0 joined 1 offset 386 header 16 body 14 checksum 0a7401d6 encoding PLAIN values 3 nulls 1 min 2020-02-29 max 2023-01-10
+page 0 joined 2 offset 416 header 16 body 14 checksum 09d10197 encoding PLAIN values 2 nulls 0 min 2019-12-31 max 2023-01-10
+row_group 1 rows 6 first_row 8 bytes 308
+chunk 1 id offset 446 size 44 encodings DELTA_BINARY_PACKED dictionary no pages 2 nulls 0 min 9 max 14
+page 1 id 0 offset 446 header 12 body 10 checksum 05be009d encoding DELTA_BINARY_PACKED values 3 nulls 0 min 9 max 11
+page 1 id 1 offset 468 header 12 body 10 checksum 05e200a3 encoding DELTA_BINARY_PACKED values 3 nulls 0 min 12 max 14
+chunk 1 city offset 490 size 112 encodings PLAIN,DICTIONARY dictionary yes pages 2 nulls 1 min kyoto max sakai
+page 1 city dict offset 490 header 10 body 17 checksum 1cf503e2 entries 2
+page 1 city 0 offset 517 header 21 body 9 checksum 0041000f encoding DICTIONARY values 3 nulls 1 min kyoto max nara
+page 1 city 1 offset 547 header 22 body 33 checksum 4d0a066a encoding PLAIN values 3 nulls 0 min kyoto max sakai
+chunk 1 score offset 602 size 62 encodings PLAIN dictionary no pages 2 nulls 0 min -5 max 95
+page 1 score 0 offset 602 header 13 body 18 checksum 080700ea encoding PLAIN values 3 nulls 0 min 63 max 88
+page 1 score 1 offset 633 header 13 body 18 checksum 200d04aa encoding PLAIN values 3 nulls 0 min -5 max 95
+chunk 1 active offset 664 size 26 encodings PLAIN dictionary no pages 2 nulls 0 min false max true
+page 1 active 0 offset 664 header 12 body 1 checksum 00040004 encoding PLAIN values 3 nulls 0 min false max true
+page 1 active 1 offset 677 header 12 body 1 checksum 00060006 encoding PLAIN values 3 nulls 0 min false max true
+chunk 1 joined offset 690 size 64 encodings PLAIN dictionary no pages 2 nulls 1 min 2018-03-03 max 2024-07-01
+page 1 joined 0 offset 690 header 16 body 14 checksum 0c840227 encoding PLAIN values 3 nulls 1 min 2024-06-30 max 2024-07-01
+page 1 joined 1 offset 720 header 16 body 18 checksum 172c02c7 encoding PLAIN values 3 nulls 0 min 2018-03-03 max 2024-07-01
+summary id bytes 110 data_pages 5 dictionary_pages 0 encodings DELTA_BINARY_PACKED
+summary city bytes 269 data_pages 5 dictionary_pages 2 encodings PLAIN,DICTIONARY
+summary score bytes 148 data_pages 5 dictionary_pages 0 encodings PLAIN
+summary active bytes 65 data_pages 5 dictionary_pages 0 encodings PLAIN
+summary joined bytes 158 data_pages 5 dictionary_pages 0 encodings PLAIN
+roundtrip ok cells 70 nulls 5 mismatches 0 checksum_errors 0
+Example output (output/encoding_report.csv):
+row_group,column,encoding,bytes,fallback_pages,chosen
+0,id,PLAIN,68,0,no
+0,id,DICTIONARY,88,1,no
+0,id,DELTA_BINARY_PACKED,66,0,yes
+0,city,PLAIN,144,0,no
+0,city,DICTIONARY,157,2,yes
+0,city,DELTA_LENGTH_BYTE_ARRAY,150,0,no
+0,score,PLAIN,86,0,yes
+0,score,DICTIONARY,106,1,no
+0,score,DELTA_BINARY_PACKED,115,0,no
+0,active,PLAIN,39,0,yes
+0,active,RLE,54,0,no
+0,joined,PLAIN,94,0,yes
+0,joined,DICTIONARY,111,0,no
+0,joined,DELTA_BINARY_PACKED,144,0,no
+1,id,PLAIN,48,0,no
+1,id,DICTIONARY,68,0,no
+1,id,DELTA_BINARY_PACKED,44,0,yes
+1,city,PLAIN,99,0,no
+1,city,DICTIONARY,112,1,yes
+1,city,DELTA_LENGTH_BYTE_ARRAY,99,0,no
+1,score,PLAIN,62,0,yes
+1,score,DICTIONARY,78,0,no
+1,score,DELTA_BINARY_PACKED,109,0,no
+1,active,PLAIN,26,0,yes
+1,active,RLE,36,0,no
+1,joined,PLAIN,64,0,yes
+1,joined,DICTIONARY,78,0,no
+1,joined,DELTA_BINARY_PACKED,117,0,no
+Example output (output/query_results.txt):
+query 1 rows matched 8 output 8
+columns id,city
+1,osaka
+12,osaka
+10,nara
+7,kyoto
+9,kyoto
+14,kyoto
+6,kobe
+3,NULL
+query 2 grouped matched 14 output 6
+columns city,COUNT(*),AVG(score)
+NULL,2,153/2
+kobe,1,81
+kyoto,4,293/4
+nara,2,135/2
+osaka,4,72
+sakai,1,-5
+query 3 aggregate matched 7 output 1
+columns COUNT(*),MIN(joined),MAX(joined)
+7,2021-04-01,2024-07-01
+query 4 rows matched 3 output 3
+columns id,city,score,active,joined
+3,NULL,90,true,2022-10-15
+4,osaka,NULL,true,NULL
+5,nara,65,false,2020-02-29
+query 5 error bad_aggregate
+Example output (output/query_stats.txt):
+query 1 columns id,city,score row_groups_read 2 row_groups_skipped 0 pages_read 15 pages_skipped 0 pages_unneeded 0 dictionary_pages_read 2 bytes_read 527 rows_scanned 14 rows_matched 8 check ok
+query 1 row_group 0 pages rrr
+query 1 row_group 1 pages rr
+query 2 columns city,score row_groups_read 2 row_groups_skipped 0 pages_read 10 pages_skipped 0 pages_unneeded 0 dictionary_pages_read 2 bytes_read 417 rows_scanned 14 rows_matched 14 check ok
+query 2 row_group 0 pages rrr
+query 2 row_group 1 pages rr
+query 3 columns active,joined row_groups_read 2 row_groups_skipped 0 pages_read 10 pages_skipped 0 pages_unneeded 0 dictionary_pages_read 0 bytes_read 223 rows_scanned 14 rows_matched 7 check ok
+query 3 row_group 0 pages rrr
+query 3 row_group 1 pages rr
+query 4 columns id,city,score,active,joined row_groups_read 1 row_groups_skipped 1 pages_read 10 pages_skipped 5 pages_unneeded 0 dictionary_pages_read 1 bytes_read 304 rows_scanned 6 rows_matched 3 check ok
+query 4 row_group 0 pages rrs
+query 4 row_group 1 skipped
+query 5 error bad_aggregate
+total queries 5 errors 1 row_groups_read 7 row_groups_skipped 1 pages_read 45 pages_skipped 5 pages_unneeded 0 dictionary_pages_read 5 bytes_read 1471 rows_scanned 48 rows_matched 32 checks_ok 4
+Example output (output/recovery.txt):
+file bytes 974 rows 12 columns 6 row_groups 2
+column 0 station STRING REQUIRED
+column 1 reading_id INT REQUIRED
+column 2 day DATE REQUIRED
+column 3 temperature INT NULLABLE
+column 4 alarm BOOL NULLABLE
+column 5 note STRING NULLABLE
+damaged 0 station dict offset 4 stored 2f9c046f computed 375804c9
+lost 0 station 0 rows 3 reason dictionary
+lost 0 station 1 rows 3 reason dictionary
+damaged 1 temperature 0 offset 560 stored 48a10b47 computed 4de70ba1
+lost 1 temperature 0 rows 3 reason checksum
+summary pages 28 damaged 2 lost_pages 3 lost_cells 9 recovered_cells 63
+Example output (output/recovered.csv):
+station,reading_id,day,temperature,alarm,note
+?,5002,2024-11-28,-36,false,gap
+?,5004,2024-11-28,-38,false,
+?,5007,2024-11-28,-42,false,
+?,5009,2024-11-28,-48,false,ice
+?,5014,2024-11-28,-51,false,
+?,5017,2024-11-29,-54,false,
+st-b,5020,2024-11-29,?,false,
+st-c,5023,2024-11-29,?,true,
+st-a,5025,2024-11-29,?,true,
+st-a,5029,2024-11-29,-70,,
+st-c,5032,2024-11-29,-68,true,fan
+st-c,5033,2024-11-30,,false,maint

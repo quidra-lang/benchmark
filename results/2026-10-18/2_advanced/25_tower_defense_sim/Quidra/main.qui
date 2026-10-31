@@ -1,0 +1,615 @@
+import math
+import grid = "./grid_map.qui"
+import pathing = "./pathing.qui"
+import towers = "./towers.qui"
+import foes = "./enemies.qui"
+import combat = "./combat.qui"
+
+string[] read_lines(string name)
+    string[] lines = file.read("input/" + name).split(NL)
+    return lines[0:<len(lines) - 1]
+
+void write_lines(string name, string[] lines)
+    file.write("output/" + name, if len(lines) == 0 then "" else lines.join(NL) + NL)
+
+string one_decimal(int numerator, int denominator)
+    if denominator == 0
+        return "-"
+    int rounded = (20 * numerator + denominator) / (2 * denominator)
+    return "{rounded / 10}.{rounded % 10}"
+
+string digit(int count)
+    return if count == 0 then "." elif count <= 9 then "{count}" else "*"
+
+string[] ruled(string[][] rows)
+    string ruler = [for int x = (0:<int(len(rows[0])))[] then "{x % 10}"].join("")
+    return ["  " + ruler].concat([for int y = (0:<int(len(rows)))[] then "{y % 10} " + rows[y].join("")])
+
+class Params(local string[][] rows)
+    int gold = int.parse(rows[0][1])
+    int lives = int.parse(rows[1][1])
+    int interest_rate = int.parse(rows[2][1])
+    int interest_cap = int.parse(rows[2][2])
+    int sell_rate = int.parse(rows[3][1])
+    int start = int.parse(rows[4][1])
+    int interval = int.parse(rows[4][2])
+    int early = int.parse(rows[5][1])
+    int[] snapshots = [for string value = rows[6][1:][] then int.parse(value)]
+
+class Action(int tick, string command, string[] arguments)
+
+Action parse_action(string line)
+    string[] fields = line.split(" ")
+    return Action(int.parse(fields[0]), fields[1], fields[2:])
+
+class WaveRecord(int number, int plan, int start, local int group_count, local int tower_count)
+    int end_tick = 0
+    string status = ""
+    int[] released = array(nat(group_count), fill = 0)
+    int spawned = 0
+    int peak = 0
+    int kills = 0
+    int leaks = 0
+    int lives_lost = 0
+    int bounty = 0
+    int reward = 0
+    int interest = 0
+    int gold = 0
+    int lives = 0
+    int[] tower_damage = array(nat(tower_count), fill = 0)
+
+    bool all_released(foes.Wave schedule)
+        for int position < int(len(released))
+            if released[position] != schedule.groups[position].count
+                return false
+        return true
+
+    void .close(string end_status, int end_time, int end_gold, int end_lives)
+        status = end_status
+        end_tick = end_time
+        gold = end_gold
+        lives = end_lives
+
+    string csv_row()
+        string[] fields = ["{number}", "{start}", "{end_tick}", status, "{spawned}", "{peak}", "{kills}", "{leaks}", "{lives_lost}", "{bounty}", "{reward}", "{interest}", "{gold}", "{lives}"]
+        return fields.concat([for int value = tower_damage[] then "{value}"]).join(",")
+
+class Game(grid.GridMap terrain, towers.TowerType[] tower_types, foes.EnemyType[] enemy_types, foes.Wave[] waves, Params params)
+    combat.Point exit_center = grid.cell_center(terrain.exit_cell)
+    int tick = 0
+    int gold = params.gold
+    int lives = params.lives
+    towers.Tower[] built = []
+    foes.Enemy[] creeps = []
+    combat.Projectile[] projectiles = []
+    int projectile_count = 0
+    WaveRecord[] records = []
+    int active = -1
+    int next_start = params.start
+    string outcome = ""
+    pathing.DistanceField field = pathing.DistanceField(terrain, [])
+    int[][] kill_counts = array(nat(terrain.height), fill = array(nat(terrain.width), fill = 0))
+    int[] income = array(5, fill = 0)
+    int spent = 0
+    int done = 0
+    int refused = 0
+    string[] events = []
+    string[] snapshots = []
+
+    void .record(string body)
+        events = events.append("{tick} {body}")
+
+    int[] living_indices()
+        return [for int index = (0:<int(len(creeps)))[] if creeps[index].alive then index]
+
+    int[] standing_indices()
+        return [for int index = (0:<int(len(built)))[] if built[index].standing() then index]
+
+    grid.Cell[] tower_cells()
+        return [for int index = standing_indices()[] then built[index].cell]
+
+    int tower_at(grid.Cell cell)
+        for int index = standing_indices()[]
+            if built[index].cell == cell
+                return index
+        return -1
+
+    int tower_index(string text)
+        int index = int.parse(text) - 1
+        return if 0 <= index < int(len(built)) and built[index].standing() then index else -1
+
+    int find_tower_type(string name)
+        for int index < int(len(tower_types))
+            if tower_types[index].name == name
+                return index
+        return -1
+
+    string build_refusal(string name, grid.Cell cell)
+        int kind = find_tower_type(name)
+        if kind < 0
+            return "type"
+        if not terrain.inside(cell)
+            return "bounds"
+        if not terrain.buildable(cell)
+            return "terrain"
+        if tower_at(cell) >= 0
+            return "tower"
+        if gold < tower_types[kind].levels[0].cost
+            return "gold"
+        int[] walkers = [for int index = living_indices()[] if not creeps[index].flying() then index]
+        for int index = walkers[]
+            if creeps[index].cell == cell or creeps[index].next_cell == cell
+                return "enemy"
+        auto trial = pathing.DistanceField(terrain, tower_cells().append(cell))
+        for grid.Cell spawn = terrain.spawns[]
+            if trial.at(spawn) < 0
+                return "blocked"
+        for int index = walkers[]
+            if trial.at(creeps[index].next_cell) < 0
+                return "blocked"
+        return ""
+
+    bool .build(string[] arguments)
+        string name = arguments[0]
+        auto cell = grid.Cell(int.parse(arguments[1]), int.parse(arguments[2]))
+        string reason = build_refusal(name, cell)
+        if reason != ""
+            .record("BUILD_REFUSED {name} {arguments[1]} {arguments[2]} {reason}")
+            return false
+        int kind = find_tower_type(name)
+        int cost = tower_types[kind].levels[0].cost
+        auto defense = towers.Tower(int(len(built)) + 1, kind, cell, tick, cost)
+        built = built.append(defense)
+        for WaveRecord &wave = &records[]
+            wave.tower_damage = wave.tower_damage.append(0)
+        gold -= cost
+        spent += cost
+        .record("BUILD T{defense.number} {name} {cell.x} {cell.y} cost {cost} gold {gold}")
+        .update_field()
+        return true
+
+    bool .upgrade(string[] arguments)
+        int index = tower_index(arguments[0])
+        string reason = ""
+        if index < 0
+            reason = "notower"
+        elif built[index].level == int(len(tower_types[built[index].kind].levels))
+            reason = "maxlevel"
+        else
+            int cost = tower_types[built[index].kind].levels[built[index].level].cost
+            if gold < cost
+                reason = "gold"
+            else
+                gold -= cost
+                spent += cost
+                built[index].level += 1
+                built[index].investment += cost
+                .record("UPGRADE T{built[index].number} level {built[index].level} cost {cost} gold {gold}")
+                return true
+        .record("UPGRADE_REFUSED T{arguments[0]} {reason}")
+        return false
+
+    bool .sell(string[] arguments)
+        int index = tower_index(arguments[0])
+        if index < 0
+            .record("SELL_REFUSED T{arguments[0]} notower")
+            return false
+        int rate = if tick == built[index].built then 100 else params.sell_rate
+        int refund = built[index].investment * rate / 100
+        built[index].sold = tick
+        gold += refund
+        income[4] += refund
+        .record("SELL T{built[index].number} refund {refund} gold {gold}")
+        .update_field()
+        return true
+
+    bool .set_target(string[] arguments)
+        int index = tower_index(arguments[0])
+        string mode = arguments[1]
+        string reason = ""
+        if index < 0
+            reason = "notower"
+        elif not towers.valid_mode(mode)
+            reason = "mode"
+        else
+            built[index].mode = mode
+            .record("TARGET T{built[index].number} {mode}")
+            return true
+        .record("TARGET_REFUSED T{arguments[0]} {reason}")
+        return false
+
+    bool .call_wave()
+        if active >= 0
+            .record("CALL_REFUSED active")
+            return false
+        int bonus = (next_start - tick) * params.early
+        gold += bonus
+        income[3] += bonus
+        next_start = tick
+        .record("CALL {len(records) + 1} bonus {bonus} gold {gold}")
+        return true
+
+    void .perform(Action action)
+        bool succeeded = false
+        if action.command == "BUILD"
+            succeeded = .build(action.arguments)
+        elif action.command == "UPGRADE"
+            succeeded = .upgrade(action.arguments)
+        elif action.command == "SELL"
+            succeeded = .sell(action.arguments)
+        elif action.command == "TARGET"
+            succeeded = .set_target(action.arguments)
+        else
+            succeeded = .call_wave()
+        if succeeded
+            done += 1
+        else
+            refused += 1
+
+    void .update_field()
+        pathing.DistanceField previous = field
+        field = pathing.DistanceField(terrain, tower_cells())
+        for int number < int(len(terrain.spawns))
+            int old_distance = previous.at(terrain.spawns[number])
+            int new_distance = field.at(terrain.spawns[number])
+            if old_distance != new_distance
+                .record("REPATH {number + 1} {old_distance} {new_distance}")
+
+    void .start_wave()
+        int index = int(len(records))
+        records = records.append(WaveRecord(index + 1, index, tick, int(len(waves[index].groups)), int(len(built))))
+        active = index
+        next_start = 0
+        .record("WAVE_START {index + 1} enemies {waves[index].enemy_count()}")
+
+    void .add_enemy(foes.Enemy enemy)
+        creeps = creeps.append(enemy)
+        records[active].spawned += 1
+        enemy_types[enemy.kind].spawned += 1
+
+    void .spawn_enemies()
+        if tick == next_start
+            .start_wave()
+        if active < 0
+            return
+        foes.Wave plan = waves[records[active].plan]
+        for int position < int(len(plan.groups))
+            foes.Group group = plan.groups[position]
+            int released = records[active].released[position]
+            if released == group.count or group.spawn_tick(records[active].start, released) != tick
+                continue
+            records[active].released[position] += 1
+            grid.Cell spawn = terrain.spawns[group.spawn - 1]
+            auto enemy = foes.Enemy(int(len(creeps)) + 1, group.kind, group.multiplier, enemy_types[group.kind])
+            if enemy.flying()
+                enemy.point = grid.cell_center(spawn)
+            else
+                enemy.cell = spawn
+                enemy.next_cell = field.next_cell(spawn)
+            .add_enemy(enemy)
+            .record("SPAWN E{enemy.number} {enemy_types[enemy.kind].name} {group.spawn} hp {enemy.hp}")
+        records[active].peak = math.max(records[active].peak, int(len(living_indices())))
+
+    void .credit(int tower, int enemy, int damage)
+        built[tower].damage += damage
+        enemy_types[creeps[enemy].kind].damage += damage
+        records[active].tower_damage[tower] += damage
+
+    void .kill(int enemy, int tower)
+        foes.Enemy fallen = creeps[enemy]
+        creeps[enemy].alive = false
+        grid.Cell cell = fallen.occupied_cell()
+        kill_counts[cell.y][cell.x] += 1
+        int bounty = enemy_types[fallen.kind].bounty
+        built[tower].kills += 1
+        records[active].kills += 1
+        enemy_types[fallen.kind].kills += 1
+        gold += bounty
+        records[active].bounty += bounty
+        income[0] += bounty
+        .record("KILL E{fallen.number} {enemy_types[fallen.kind].name} T{built[tower].number} bounty {bounty} gold {gold}")
+        for int child_number < enemy_types[fallen.kind].split_count
+            int kind = enemy_types[fallen.kind].split_into
+            foes.Enemy child = foes.split_child(fallen, int(len(creeps)) + 1, kind, enemy_types[kind])
+            .add_enemy(child)
+            .record("SPAWN E{child.number} {enemy_types[kind].name} E{fallen.number} hp {child.hp}")
+
+    void .leak(int enemy)
+        creeps[enemy].alive = false
+        int kind = creeps[enemy].kind
+        int lost = math.min(lives, enemy_types[kind].lives)
+        lives -= lost
+        records[active].leaks += 1
+        records[active].lives_lost += lost
+        enemy_types[kind].leaks += 1
+        .record("LEAK E{creeps[enemy].number} {enemy_types[kind].name} lives {lives}")
+        if lives == 0
+            .record("DEFEAT")
+            outcome = "defeat"
+            .records[active].close("lost", tick, gold, lives)
+            active = -1
+
+    bool .walk(int index, int speed)
+        foes.Enemy &walker = &creeps[index]
+        if terrain.is_water(walker.occupied_cell())
+            speed = speed / 2
+        while speed > 0
+            int rest = 100 - walker.progress
+            if speed < rest
+                walker.progress += speed
+                speed = 0
+            else
+                speed -= rest
+                walker.cell = walker.next_cell
+                walker.progress = 0
+                if walker.cell == terrain.exit_cell
+                    return true
+                walker.next_cell = field.next_cell(walker.cell)
+        return false
+
+    void .move_enemy(int index)
+        foes.Enemy &enemy = &creeps[index]
+        if enemy.burn.active()
+            int source = enemy.burn.source
+            int damage = math.min(enemy.hp, enemy.burn.strength)
+            enemy.hp -= damage
+            .credit(source, index, damage)
+            .enemy.burn.advance_time()
+            if enemy.hp == 0
+                .kill(index, source)
+                return
+        enemy.hp = math.min(enemy.hp + enemy_types[enemy.kind].regen, enemy.max_hp)
+        int speed = enemy.slowed_speed(enemy_types[enemy.kind].speed)
+        if enemy.slow.active()
+            .enemy.slow.advance_time()
+        bool arrived = false
+        if enemy.flying()
+            combat.Advance movement = combat.advance(enemy.point, exit_center, speed)
+            enemy.point = movement.point
+            arrived = movement.arrived
+        else
+            arrived = .walk(index, speed)
+        if arrived
+            .leak(index)
+
+    void .move_enemies()
+        for int index = living_indices()[]
+            .move_enemy(index)
+            if outcome != ""
+                return
+
+    void .fire(int tower, int target)
+        towers.Tower &defense = &built[tower]
+        towers.TowerType kind = tower_types[defense.kind]
+        towers.Level stats = kind.levels[defense.level - 1]
+        projectile_count += 1
+        projectiles = projectiles.append(combat.Projectile(projectile_count, tower, target, defense.center(), creeps[target].position(), kind.targets, stats.power, stats.shot_speed, stats.splash, stats.slow_rate, stats.slow_time, stats.burn_amount, stats.burn_time))
+        defense.shots += 1
+        defense.ready = tick + stats.interval
+        .record("SHOT T{defense.number} E{creeps[target].number}")
+
+    void .fire_towers()
+        for int index = standing_indices()[]
+            if tick < built[index].ready
+                continue
+            int target = towers.select_target(built[index], tower_types[built[index].kind], creeps, living_indices(), field)
+            if target >= 0
+                .fire(index, target)
+
+    void .impact(combat.Projectile projectile)
+        int tower = projectile.tower
+        int[] victims = []
+        if projectile.splash == 0
+            if creeps[projectile.target].alive
+                victims = victims.append(projectile.target)
+        else
+            int reach = projectile.splash * projectile.splash
+            victims = [for int index = living_indices()[] if towers.can_aim(projectile.targets, creeps[index]) and combat.squared_distance(creeps[index].position(), projectile.aim) <= reach then index]
+        if len(victims) == 0
+            built[tower].fizzles += 1
+        for int index = victims[]
+            foes.Enemy &enemy = &creeps[index]
+            built[tower].hits += 1
+            int damage = combat.damage_dealt(enemy.hp, projectile.power, enemy_types[enemy.kind].armor)
+            enemy.hp -= damage
+            .credit(tower, index, damage)
+            if enemy.hp == 0
+                .kill(index, tower)
+                continue
+            if projectile.slow_rate > 0
+                .enemy.slow.receive(projectile.slow_rate, projectile.slow_time)
+            if projectile.burn_amount > 0
+                .enemy.burn.receive(projectile.burn_amount, projectile.burn_time, tower)
+
+    void .move_projectiles()
+        combat.Projectile[] flying = []
+        for combat.Projectile projectile = projectiles[]
+            if creeps[projectile.target].alive
+                projectile.aim = creeps[projectile.target].position()
+            if .projectile.fly()
+                .impact(projectile)
+            else
+                flying = flying.append(projectile)
+        projectiles = flying
+
+    void .check_wave_end()
+        if active < 0 or len(living_indices()) > 0 or not records[active].all_released(waves[records[active].plan])
+            return
+        WaveRecord &wave = &records[active]
+        int reward = waves[wave.plan].reward
+        gold += reward
+        int interest = math.min(params.interest_cap, gold * params.interest_rate / 100)
+        gold += interest
+        wave.reward = reward
+        wave.interest = interest
+        income[1] += reward
+        income[2] += interest
+        .record("WAVE_END {wave.number} reward {reward} interest {interest} gold {gold}")
+        if wave.number == int(len(waves))
+            .record("VICTORY")
+            outcome = "victory"
+        else
+            next_start = tick + params.interval
+        .wave.close("cleared", tick, gold, lives)
+        active = -1
+
+    void .run(Action[] script)
+        int position = 0
+        while true
+            tick += 1
+            while position < int(len(script)) and script[position].tick == tick
+                .perform(script[position])
+                position += 1
+            .spawn_enemies()
+            .move_enemies()
+            if outcome != ""
+                break
+            .fire_towers()
+            .move_projectiles()
+            .check_wave_end()
+            for int requested = params.snapshots[]
+                if requested == tick
+                    snapshots = snapshots.concat(block("SNAPSHOT"))
+            if outcome != ""
+                break
+        snapshots = snapshots.concat(final_block())
+
+    string[][] map_picture()
+        string[][] picture = [for string row = terrain.rows[] then [for int x = (0:<terrain.width)[] then row[x]]]
+        for grid.Cell spawn = terrain.spawns[]
+            for grid.Cell cell = field.path(spawn)[]
+                string ground = terrain.terrain_at(cell)
+                if ground == "." or ground == "~"
+                    picture[cell.y][cell.x] = "+"
+        for int index = standing_indices()[]
+            grid.Cell cell = built[index].cell
+            picture[cell.y][cell.x] = tower_types[built[index].kind].symbol
+        int[][] occupants = array(nat(terrain.height), fill = array(nat(terrain.width), fill = 0))
+        for int index = living_indices()[]
+            grid.Cell cell = creeps[index].occupied_cell()
+            occupants[cell.y][cell.x] += 1
+            picture[cell.y][cell.x] = if occupants[cell.y][cell.x] == 1 then enemy_types[creeps[index].kind].symbol else "*"
+        return picture
+
+    string[][] flow_picture()
+        string[][] picture = []
+        string arrows = "^>v<"
+        for int y < terrain.height
+            string[] row = []
+            for int x < terrain.width
+                auto cell = grid.Cell(x, y)
+                string ground = terrain.terrain_at(cell)
+                int tower = tower_at(cell)
+                string symbol = ground
+                if ground != "#" and ground != "E"
+                    if tower >= 0
+                        symbol = tower_types[built[tower].kind].symbol
+                    elif field.at(cell) < 0
+                        symbol = "?"
+                    else
+                        symbol = arrows[field.direction(cell)]
+                row = row.append(symbol)
+            picture = picture.append(row)
+        return picture
+
+    string[][] coverage_picture()
+        string[][] picture = []
+        int[] standing = standing_indices()
+        for int y < terrain.height
+            string[] row = []
+            for int x < terrain.width
+                auto cell = grid.Cell(x, y)
+                int tower = tower_at(cell)
+                string symbol = "#"
+                if not terrain.is_rock(cell)
+                    if tower >= 0
+                        symbol = tower_types[built[tower].kind].symbol
+                    else
+                        int count = math.sum<int>([for int index = standing[] if built[index].in_range(grid.cell_center(cell), tower_types[built[index].kind].levels[built[index].level - 1].range) then 1])
+                        symbol = digit(count)
+                row = row.append(symbol)
+            picture = picture.append(row)
+        return picture
+
+    string[][] kills_picture()
+        string[][] picture = []
+        for int y < terrain.height
+            string[] row = []
+            for int x < terrain.width
+                string symbol = if kill_counts[y][x] > 0 then digit(kill_counts[y][x]) elif terrain.is_rock(grid.Cell(x, y)) then "#" else "."
+                row = row.append(symbol)
+            picture = picture.append(row)
+        return picture
+
+    string[] block(string label)
+        string next_text = if active < 0 and outcome == "" then "{next_start}" else "-"
+        string[] lines = ["{label} {tick} wave {len(records)} next {next_text} gold {gold} lives {lives}"]
+        lines = lines.concat(ruled(map_picture()))
+        for int number < int(len(terrain.spawns))
+            lines = lines.append("PATH {number + 1} length {field.at(terrain.spawns[number])}")
+        for int index = standing_indices()[]
+            towers.Tower defense = built[index]
+            lines = lines.append("T{defense.number} {tower_types[defense.kind].name} {defense.cell.x} {defense.cell.y} level {defense.level} mode {defense.mode} ready {defense.ready}")
+        for int index = living_indices()[]
+            foes.Enemy enemy = creeps[index]
+            combat.Point point = enemy.position()
+            lines = lines.append("E{enemy.number} {enemy_types[enemy.kind].name} {point.x} {point.y} hp {enemy.hp}/{enemy.max_hp} slow {enemy.slow.strength} {enemy.slow.remaining} burn {enemy.burn.strength} {enemy.burn.remaining}")
+        for combat.Projectile projectile = projectiles[]
+            lines = lines.append("P{projectile.number} T{built[projectile.tower].number} E{creeps[projectile.target].number} {projectile.position.x} {projectile.position.y}")
+        return lines
+
+    string[] final_block()
+        return block("FINAL").append("FLOW").concat(ruled(flow_picture())).append("COVERAGE").concat(ruled(coverage_picture())).append("KILLS").concat(ruled(kills_picture()))
+
+    string[] wave_lines()
+        string header = "wave,start,end,status,spawned,peak,kills,leaks,lives_lost,bounty,reward,interest,gold,lives"
+        for towers.Tower defense = built[]
+            header += ",T{defense.number}"
+        return [header].concat([for WaveRecord wave = records[] then wave.csv_row()])
+
+    string mvp_line()
+        int best = -1
+        for int index < int(len(built))
+            if best < 0 or built[index].damage > built[best].damage
+                best = index
+        return if best < 0 then "mvp -" else "mvp T{built[best].number} damage {built[best].damage}"
+
+    string tower_line(int index, int total_damage)
+        towers.Tower defense = built[index]
+        string state = if defense.standing() then "active" else "sold {defense.sold}"
+        return "TOWER T{defense.number} {tower_types[defense.kind].name} {defense.cell.x} {defense.cell.y} level {defense.level} mode {defense.mode} {state} shots {defense.shots} hits {defense.hits} fizzles {defense.fizzles} kills {defense.kills} damage {defense.damage} per_shot {one_decimal(defense.damage, defense.shots)} share {one_decimal(100 * defense.damage, total_damage)} invested {defense.investment}"
+
+    string[] summary_lines(int action_count)
+        int cleared = math.sum<int>([for WaveRecord wave = records[] if wave.status == "cleared" then 1])
+        int perfect = math.sum<int>([for WaveRecord wave = records[] if wave.status == "cleared" and wave.leaks == 0 then 1])
+        int spawned = math.sum([for foes.EnemyType kind = enemy_types[] then kind.spawned])
+        int killed = math.sum([for foes.EnemyType kind = enemy_types[] then kind.kills])
+        int leaked = math.sum([for foes.EnemyType kind = enemy_types[] then kind.leaks])
+        int total_damage = math.sum([for towers.Tower defense = built[] then defense.damage])
+        int score = 10 * killed + 100 * lives + 50 * perfect + gold
+        int unused = action_count - done - refused
+        string[] lines = ["outcome {outcome}", "ticks {tick}", "waves {cleared}/{len(waves)} perfect {perfect}", "lives {lives}/{params.lives}", "gold {gold}", "enemies spawned {spawned} killed {killed} leaked {leaked}", "income bounty {income[0]} reward {income[1]} interest {income[2]} early {income[3]} refund {income[4]}", "spent {spent}", "damage {total_damage}", "actions total {action_count} done {done} refused {refused} unused {unused}", "score {score}", mvp_line()]
+        for foes.EnemyType kind = enemy_types[]
+            lines = lines.append("ENEMY {kind.name} spawned {kind.spawned} killed {kind.kills} leaked {kind.leaks} damage {kind.damage}")
+        for int index < int(len(built))
+            lines = lines.append(tower_line(index, total_damage))
+        return lines
+
+void run_game()
+    grid.GridMap terrain = grid.read_map("input/map.txt")
+    towers.TowerType[] tower_types = towers.parse_types(read_lines("towers.txt"))
+    foes.Plans plans = foes.parse_waves(read_lines("waves.txt"))
+    Action[] actions = [for string line = read_lines("actions.txt")[] then parse_action(line)]
+    auto params = Params([for string line = read_lines("params.txt")[] then line.split(" ")])
+    auto game = Game(terrain, tower_types, plans.types, plans.waves, params)
+    .game.run(actions)
+    bool directory_exists = file.is_directory("output")
+    if not directory_exists
+        file.mkdir("output")
+    write_lines("events.txt", game.events)
+    write_lines("waves.csv", game.wave_lines())
+    write_lines("snapshots.txt", game.snapshots)
+    write_lines("summary.txt", game.summary_lines(int(len(actions))))
+
+if main
+    run_game()

@@ -1,0 +1,698 @@
+import math
+import headers = "./headers.qui"
+import addresses = "./addresses.qui"
+import mime = "./mime.qui"
+import dates = "./dates.qui"
+import threader = "./threader.qui"
+
+string[] read_lines(string path)
+    string[] lines = file.read(path).split(NL)
+    return lines[0:<len(lines) - 1]
+
+headers.Line[][] read_mailbox()
+    headers.Line[][] messages = []
+    string[] lines = read_lines("input/mailbox.mbox")
+    for int position < int(len(lines))
+        string text = lines[position]
+        if text.starts_with("From ")
+            messages = messages.append([])
+        else
+            int prefix = 0
+            while prefix < int(len(text)) and text[prefix] == ">"
+                prefix += 1
+            if prefix > 0 and text[prefix:<len(text)].starts_with("From ")
+                text = text[1:<len(text)]
+            int last = int(len(messages)) - 1
+            messages[last] = messages[last].append(headers.Line(position + 1, text))
+    for int position < int(len(messages))
+        int count = int(len(messages[position]))
+        if count > 0 and messages[position][count - 1].text == ""
+            messages[position] = messages[position][0:<count - 1]
+    return messages
+
+class Sections(headers.Line[] header, headers.Line[] body)
+
+Sections split_sections(headers.Line[] lines)
+    for int position < int(len(lines))
+        if lines[position].text == ""
+            return Sections(lines[0:<position], lines[position + 1:<len(lines)])
+    return Sections(lines, [])
+
+bool is_message_id(string text)
+    if len(text) < 3 or not text.starts_with("<") or not text.ends_with(">")
+        return false
+    string inside = text[1:<len(text) - 1]
+    if len(inside.split("@")) != 2 or inside.starts_with("@") or inside.ends_with("@")
+        return false
+    for int code = inside.codepoints()[]
+        if not (33 <= code <= 126) or code == 92 or code == 34 or "<>()".contains(mime.character(code))
+            return false
+    return true
+
+string[] extract_ids(string value)
+    string[] result = []
+    int start = headers.find_from(value, "<")
+    while start >= 0
+        int end = headers.find_from(value, ">", start + 1)
+        if end < 0
+            break
+        string candidate = value[start:<end + 1]
+        if is_message_id(candidate)
+            result = result.append(candidate)
+        start = headers.find_from(value, "<", end + 1)
+    return result
+
+string subject_notation(string text)
+    return if text == "" then "(no subject)" else text
+
+string date_notation(int | none timestamp)
+    match timestamp
+        int seconds
+            return dates.format_utc(seconds)
+        none
+            return "invalid"
+
+class Entity(string number)
+    string main_type = "text"
+    string subtype = "plain"
+    map.Map<string, string> parameters
+    string disposition = ""
+    string filename = ""
+    bool multipart = false
+    int[] children = []
+    string content = ""
+
+    string parameter(string name)
+        match parameters.get(name)
+            string value
+                return value
+            none
+                return ""
+
+class Message(int number, local headers.Line[] initial_lines, local map.Map<string, int> &initial_ids)
+    string[] problems = []
+    addresses.Mailbox | none sender = none
+    string[] to = []
+    string[] cc = []
+    string subject = ""
+    string base_subject = ""
+    bool reply = false
+    int | none timestamp = none
+    string id = ""
+    string[] references = []
+    Entity[] entities = []
+    int root = -1
+    int thread = 0
+    int depth = 0
+    int parent_message = -1
+    .parse_message(initial_lines, &initial_ids)
+
+    void .problem(string text)
+        problems = problems.append(text)
+
+    void .parse_message(headers.Line[] lines, map.Map<string, int> &known_ids)
+        Sections sections = split_sections(lines)
+        auto header = headers.Header(sections.header)
+        for int line_number = header.invalid_lines[]
+            .problem("bad header line {line_number}")
+        string[] checked = ["From", "To", "Cc", "Subject", "Date", "Message-ID", "In-Reply-To", "References", "MIME-Version", "Content-Type", "Content-Transfer-Encoding", "Content-Disposition"]
+        for string name = checked[]
+            if header.count(name) > 1
+                .problem("duplicate " + name)
+        .read_sender(header)
+        to = .read_recipients(header, "To")
+        cc = .read_recipients(header, "Cc")
+        headers.TextDecoded decoded = headers.decode_unstructured(header.get("Subject"))
+        subject = decoded.text
+        if decoded.failed
+            .problem("bad encoded word in Subject")
+        base_subject = subject
+        while len(base_subject) >= 3 and headers.lowercase(base_subject[0:<3]) == "re:"
+            base_subject = base_subject[3:<len(base_subject)]
+            while base_subject.starts_with(" ")
+                base_subject = base_subject[1:<len(base_subject)]
+            reply = true
+        if header.count("Date") == 0
+            .problem("missing Date")
+        else
+            match dates.parse_date(header.get("Date"))
+                int seconds
+                    timestamp = seconds
+                error failure
+                    .problem(failure.message)
+        if header.count("Message-ID") == 0
+            .problem("missing Message-ID")
+        else
+            string candidate = header.get("Message-ID")
+            if not is_message_id(candidate)
+                .problem("bad Message-ID")
+            else
+                match known_ids.get(candidate)
+                    int first
+                        .problem("Message-ID already used by message {first}")
+                    none
+                        id = candidate
+                        .known_ids.set(candidate, number)
+        references = extract_ids(header.get("References"))
+        string[] replies = extract_ids(header.get("In-Reply-To"))
+        if len(replies) > 0 and (len(references) == 0 or references[len(references) - 1] != replies[0])
+            references = references.append(replies[0])
+        bool enabled = false
+        if header.count("MIME-Version") > 0
+            match headers.remove_comments(header.get("MIME-Version"))
+                string text
+                    enabled = headers.split_words(text).join("") == "1.0"
+                none
+                    void
+            if not enabled
+                .problem("bad MIME-Version")
+        root = .parse_entity("1", header, sections.body, enabled)
+
+    void .read_sender(headers.Header header)
+        if header.count("From") == 0
+            .problem("missing From")
+            return
+        match addresses.parse_address_list(header.get("From"))
+            addresses.Parsed parsed
+                if len(parsed.addresses) != 1 or parsed.addresses[0].group
+                    .problem("bad From")
+                else
+                    sender = parsed.addresses[0].mailboxes[0]
+                    if parsed.encoding_error
+                        .problem("bad encoded word in From")
+            none
+                .problem("bad From")
+
+    string[] .read_recipients(headers.Header header, string name)
+        string[] recipients = []
+        if header.count(name) == 0
+            return recipients
+        match addresses.parse_address_list(header.get(name))
+            addresses.Parsed parsed
+                for addresses.Address entry = parsed.addresses[]
+                    for addresses.Mailbox mailbox = entry.mailboxes[]
+                        recipients = recipients.append(mailbox.address)
+                if parsed.encoding_error
+                    .problem("bad encoded word in " + name)
+            none
+                .problem("bad " + name)
+        return recipients
+
+    int .parse_entity(string part_number, headers.Header header, headers.Line[] lines, bool enabled)
+        int index = int(len(entities))
+        entities = entities.append(Entity(part_number))
+        if enabled and header.count("Content-Type") > 0
+            match headers.parse_parameters(header.get("Content-Type"), true)
+                headers.Parameters parsed
+                    entities[index].main_type = parsed.main_type
+                    entities[index].subtype = parsed.subtype
+                    entities[index].parameters = parsed.values
+                none
+                    .problem("bad Content-Type in part {part_number}")
+        if enabled and header.count("Content-Disposition") > 0
+            match headers.parse_parameters(header.get("Content-Disposition"), false)
+                headers.Parameters parsed
+                    entities[index].disposition = parsed.main_type
+                    entities[index].filename = parsed.get("filename")
+                none
+                    .problem("bad Content-Disposition in part {part_number}")
+        if entities[index].filename == ""
+            entities[index].filename = entities[index].parameter("name")
+        if entities[index].main_type == "text" and entities[index].parameters.has("charset")
+            string charset = headers.lowercase(entities[index].parameter("charset"))
+            if charset != "us-ascii"
+                .problem("unsupported charset {DQ}{charset}{DQ} in part {part_number}")
+        if enabled and entities[index].main_type == "multipart"
+            string boundary = entities[index].parameter("boundary")
+            if boundary != ""
+                .split_multipart(index, lines, boundary)
+                return index
+            .problem("missing boundary in part {part_number}")
+        string original = [for headers.Line line = lines[] then line.text].join(NL)
+        string encoding = if enabled and header.count("Content-Transfer-Encoding") > 0 then headers.lowercase(header.get("Content-Transfer-Encoding")) else "7bit"
+        if encoding == "base64"
+            match mime.decode_base64_body(original)
+                string text
+                    entities[index].content = text
+                none
+                    .problem("bad base64 in part {part_number}")
+        elif encoding == "quoted-printable"
+            mime.Decoded decoded = mime.decode_quoted_printable(original)
+            entities[index].content = decoded.text
+            if decoded.failed
+                .problem("bad quoted-printable in part {part_number}")
+        else
+            entities[index].content = original
+            if not headers.one_of(encoding, ["7bit", "8bit", "binary"])
+                .problem("unknown encoding {DQ}{encoding}{DQ} in part {part_number}")
+        return index
+
+    void .split_multipart(int index, headers.Line[] lines, string boundary)
+        headers.Line[][] parts = []
+        bool closed = false
+        for headers.Line line = lines[]
+            string text = mime.trim_trailing(line.text)
+            if text == "--" + boundary + "--"
+                closed = true
+                break
+            if text == "--" + boundary
+                parts = parts.append([])
+            elif len(parts) > 0
+                int last = int(len(parts)) - 1
+                parts[last] = parts[last].append(line)
+        if len(parts) == 0
+            .problem("no parts in part {entities[index].number}")
+        elif not closed
+            .problem("unterminated multipart in part {entities[index].number}")
+        entities[index].multipart = true
+        for int position < int(len(parts))
+            Sections sections = split_sections(parts[position])
+            auto header = headers.Header(sections.header)
+            for int line_number = header.invalid_lines[]
+                .problem("bad header line {line_number}")
+            string part_number = "{entities[index].number}.{position + 1}"
+            int child = .parse_entity(part_number, header, sections.body, true)
+            entities[index].children = entities[index].children.append(child)
+
+    threader.MessageInfo info()
+        bool dated = false
+        int seconds = 0
+        match timestamp
+            int value
+                dated = true
+                seconds = value
+            none
+                void
+        return threader.MessageInfo(number, dated, seconds, id, references, base_subject, reply)
+
+int[] collect_text_parts(Entity[] entities, int index, bool allow_html)
+    Entity entity = entities[index]
+    if not entity.multipart
+        if entity.disposition == "attachment" or entity.main_type != "text"
+            return []
+        return if entity.subtype == "plain" or (entity.subtype == "html" and allow_html) then [index] else []
+    if entity.subtype == "alternative"
+        for bool html_pass = [false, true][]
+            for int child = entity.children[]
+                int[] found = collect_text_parts(entities, child, html_pass)
+                if len(found) > 0
+                    return found
+        return []
+    int[] result = []
+    for int child = entity.children[]
+        result = result.concat(collect_text_parts(entities, child, allow_html))
+    return result
+
+string quote_prefix(int depth)
+    return if depth == 0 then "" else string.repeat(">", nat(depth)) + " "
+
+string[] wrap(string text, string prefix)
+    string[] lines = []
+    string current = ""
+    for string word = headers.split_words(text)[]
+        if current != "" and len(current) + 1 + len(word) > 72
+            lines = lines.append(current)
+            current = word
+        elif current == ""
+            current = word
+        else
+            current += " " + word
+    lines = lines.append(current)
+    return [for string line = lines[] then prefix + line]
+
+class LogicalLine(int depth, string text, bool flowing = false)
+
+string[] flowed_lines(string content, bool delete_space)
+    if content == ""
+        return []
+    LogicalLine[] logical = []
+    for string line = content.split(NL)[]
+        int depth = 0
+        while depth < int(len(line)) and line[depth] == ">"
+            depth += 1
+        string text = line[depth:<len(line)]
+        if text.starts_with(" ")
+            text = text[1:<len(text)]
+        bool flowing = text.ends_with(" ") and text != "-- "
+        int last = int(len(logical)) - 1
+        if last >= 0 and logical[last].flowing and logical[last].depth == depth
+            if delete_space
+                logical[last].text = logical[last].text[0:<len(logical[last].text) - 1]
+            logical[last].text += text
+            logical[last].flowing = flowing
+        else
+            logical = logical.append(LogicalLine(depth, text, flowing))
+    string[] result = []
+    for LogicalLine line = logical[]
+        result = result.concat(wrap(line.text, quote_prefix(line.depth)))
+    return result
+
+string | none reference_value(string name)
+    if name == "amp"
+        return "&"
+    if name == "lt"
+        return "<"
+    if name == "gt"
+        return ">"
+    if name == "quot"
+        return DQ
+    if name == "apos"
+        return "'"
+    if name == "nbsp"
+        return " "
+    if name.starts_with("#")
+        string digits = name[1:<len(name)]
+        if dates.has_digits(digits, 1, 3)
+            int code = int.parse(digits)
+            if 32 <= code <= 126
+                return mime.character(code)
+    return none
+
+string replace_references(string text)
+    string result = ""
+    int position = 0
+    while position < int(len(text))
+        int end = -1
+        string | none replacement = none
+        if text[position] == "&"
+            end = headers.find_from(text, ";", position + 1)
+            if end >= 0
+                replacement = reference_value(text[position + 1:<end])
+        match replacement
+            string decoded
+                result += decoded
+                position = end + 1
+            none
+                result += text[position]
+                position += 1
+    return result
+
+bool tag_character(string symbol)
+    int code = symbol.codepoints()[0]
+    return (65 <= code <= 90) or (97 <= code <= 122) or (48 <= code <= 57)
+
+LogicalLine[] html_blocks(string content)
+    LogicalLine[] blocks = []
+    int depth = 0
+    string text = ""
+    string hide = ""
+    int position = 0
+    while position < int(len(content))
+        int close = if content[position] == "<" then headers.find_from(content, ">", position + 1) else -1
+        if close < 0
+            if hide == ""
+                text += content[position]
+            position += 1
+            continue
+        string inside = content[position + 1:<close]
+        position = close + 1
+        bool end_tag = inside.starts_with("/")
+        if end_tag
+            inside = inside[1:<len(inside)]
+        int name_end = 0
+        while name_end < int(len(inside)) and tag_character(inside[name_end])
+            name_end += 1
+        string name = headers.lowercase(inside[0:<name_end])
+        if hide != ""
+            if end_tag and name == hide
+                hide = ""
+        elif not end_tag and headers.one_of(name, ["head", "style", "script"])
+            hide = name
+        elif name == "br" or (name == "li" and not end_tag)
+            blocks = blocks.append(LogicalLine(depth, text))
+            text = if name == "li" then "* " else ""
+        elif headers.one_of(name, ["p", "div", "ul", "ol", "table", "tr", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"])
+            blocks = blocks.append(LogicalLine(depth, text)).append(LogicalLine(depth, ""))
+            text = ""
+            if name == "blockquote"
+                depth = if end_tag then math.max(depth - 1, 0) else depth + 1
+    return blocks.append(LogicalLine(depth, text))
+
+string[] html_lines(string content)
+    string[] lines = []
+    for LogicalLine block = html_blocks(content)[]
+        string text = headers.collapse_whitespace(block.text.split(NL).join(" "))
+        text = replace_references(text).trim()
+        if text != ""
+            lines = lines.concat(wrap(text, quote_prefix(block.depth)))
+        elif len(lines) > 0 and lines[len(lines) - 1] != ""
+            lines = lines.append("")
+    while len(lines) > 0 and lines[len(lines) - 1] == ""
+        lines = lines[0:<len(lines) - 1]
+    return lines
+
+class Display(string format, string[] lines)
+
+Display display_lines(Entity entity)
+    if entity.subtype == "html"
+        return Display("html", html_lines(entity.content))
+    if headers.lowercase(entity.parameter("format")) == "flowed"
+        return Display("flowed", flowed_lines(entity.content, headers.lowercase(entity.parameter("delsp")) == "yes"))
+    return Display("plain", if entity.content == "" then [] else entity.content.split(NL))
+
+string sender_address(Message message)
+    match message.sender
+        addresses.Mailbox mailbox
+            return mailbox.address
+        none
+            return "-"
+
+string sender_notation(Message message)
+    match message.sender
+        addresses.Mailbox mailbox
+            return if mailbox.name == "" then mailbox.address else "{mailbox.name} <{mailbox.address}>"
+        none
+            return "-"
+
+class Walk(int container, string prefix, int depth)
+
+void walk(threader.Forest forest, int node, string prefix, string stem, int depth, Walk[] &entries)
+    entries = entries.append(Walk(node, prefix, depth))
+    int[] children = forest.nodes[node].children
+    for int position < int(len(children))
+        bool last = position + 1 == int(len(children))
+        string child_prefix = stem + (if last then "`- " else "+- ")
+        string child_stem = stem + (if last then "   " else "|  ")
+        walk(forest, children[position], child_prefix, child_stem, depth + 1, &entries)
+
+string container_notation(threader.Container container, Message[] messages)
+    if container.message >= 0
+        Message message = messages[container.message]
+        return "[{message.number}] {date_notation(message.timestamp)} {sender_address(message)} {subject_notation(message.subject)}"
+    return if container.subject_container then "[subject] " + container.subject else "[missing] " + container.id
+
+string[] thread_report(threader.Forest forest, int thread_number, int root_id, Message[] &messages)
+    Walk[] entries = []
+    walk(forest, root_id, "", "", 0, &entries)
+    set.Set<string> sender_addresses
+    int[] times = []
+    int count = 0
+    int maximum_depth = 0
+    for Walk entry = entries[]
+        maximum_depth = math.max(maximum_depth, entry.depth)
+        int message_index = forest.nodes[entry.container].message
+        if message_index < 0
+            continue
+        count += 1
+        messages[message_index].thread = thread_number
+        messages[message_index].depth = entry.depth
+        int parent = forest.nodes[entry.container].parent
+        messages[message_index].parent_message = if parent < 0 then -1 else forest.nodes[parent].message
+        match messages[message_index].sender
+            addresses.Mailbox mailbox
+                .sender_addresses.add(mailbox.address)
+            none
+                void
+        match messages[message_index].timestamp
+            int seconds
+                times = times.append(seconds)
+            none
+                void
+    string[] lines = ["thread {thread_number} messages {count} depth {maximum_depth} senders {sender_addresses.size()}"]
+    if len(times) == 0
+        lines = lines.append("span -")
+    else
+        lines = lines.append("span {dates.format_utc(math.min_all(times))} .. {dates.format_utc(math.max_all(times))}")
+    lines = lines.append("subject " + subject_notation(forest.root_subject(root_id)))
+    for Walk entry = entries[]
+        lines = lines.append(entry.prefix + container_notation(forest.nodes[entry.container], messages))
+    return lines
+
+void check_parent_dates(Message[] &messages)
+    for int index < int(len(messages))
+        int parent = messages[index].parent_message
+        if parent < 0
+            continue
+        match messages[index].timestamp
+            int child_time
+                match messages[parent].timestamp
+                    int parent_time
+                        if child_time < parent_time
+                            .messages[index].problem("dated before parent message {messages[parent].number}")
+                    none
+                        void
+            none
+                void
+
+string[] message_report(Message message)
+    string parent = if message.parent_message < 0 then "-" else "{message.parent_message + 1}"
+    string[] lines = [
+        "message {message.number}",
+        "id " + (if message.id == "" then "-" else message.id),
+        "date " + date_notation(message.timestamp),
+        "from " + sender_notation(message),
+        "to " + (if len(message.to) == 0 then "-" else message.to.join(", ")),
+        "cc " + (if len(message.cc) == 0 then "-" else message.cc.join(", ")),
+        "subject " + subject_notation(message.subject),
+        "refs " + (if len(message.references) == 0 then "-" else message.references.join(" ")),
+        "thread {message.thread} depth {message.depth} parent {parent}",
+    ]
+    for Entity entity = message.entities[]
+        string line = "part {entity.number} {entity.main_type}/{entity.subtype}"
+        if not entity.multipart
+            line += " {len(entity.content)}"
+            if entity.disposition != ""
+                line += " " + entity.disposition
+            if entity.filename != ""
+                line += " {DQ}{entity.filename}{DQ}"
+        lines = lines.append(line)
+    return lines
+
+string[] body_report(string request, map.Map<string, int> known_ids, Message[] messages)
+    string[] lines = ["request " + request]
+    int message_index = -1
+    match known_ids.get(request)
+        int number
+            message_index = number - 1
+        none
+            return lines.append("not found")
+    Message message = messages[message_index]
+    int[] parts = collect_text_parts(message.entities, message.root, true)
+    lines = lines.append("message {message.number} text parts {len(parts)}")
+    for int index = parts[]
+        Entity entity = message.entities[index]
+        Display display = display_lines(entity)
+        int quoted = 0
+        int signature = 0
+        for int position < int(len(display.lines))
+            string line = mime.trim_trailing(display.lines[position])
+            if line.starts_with(">")
+                quoted += 1
+            if line == "--"
+                signature = int(len(display.lines)) - position - 1
+        lines = lines.append("part {entity.number} {display.format} lines {len(display.lines)} quoted {quoted} signature {signature}")
+        for string line = display.lines[]
+            string stripped = mime.trim_trailing(line)
+            lines = lines.append(if stripped == "" then "|" else "| " + stripped)
+    return lines
+
+class SenderStats(string address)
+    int count = 0
+    set.Set<int> threads
+    bool has_date = false
+    int first_time = 0
+    int last_time = 0
+    string name = ""
+
+    void .add(Message message)
+        count += 1
+        .threads.add(message.thread)
+        match message.timestamp
+            int seconds
+                if not has_date
+                    first_time = seconds
+                    last_time = seconds
+                    has_date = true
+                else
+                    first_time = math.min(first_time, seconds)
+                    last_time = math.max(last_time, seconds)
+            none
+                void
+        match message.sender
+            addresses.Mailbox mailbox
+                if mailbox.name != ""
+                    name = mailbox.name
+            none
+                void
+
+string csv_field(string text)
+    return if text.contains(",") or text.contains(DQ) then DQ + text.split(DQ).join(DQ + DQ) + DQ else text
+
+string[] senders_report(Message[] messages)
+    map.Map<string, SenderStats> table
+    for Message message = messages[]
+        string address = sender_address(message)
+        if address == "-"
+            continue
+        auto entry = SenderStats(address)
+        match table.get(address)
+            SenderStats found
+                entry = found
+            none
+                void
+        .entry.add(message)
+        .table.set(address, entry)
+    SenderStats[] rows = []
+    for string address = table.keys().sorted()[]
+        match table.get(address)
+            SenderStats entry
+                rows = rows.append(entry)
+            none
+                void
+    int stride = int(len(rows)) + 1
+    int64[] order = []
+    for int index < int(len(rows))
+        order = order.append(int64((int(len(messages)) - rows[index].count) * stride + index))
+    string[] lines = ["address,name,messages,threads,first,last"]
+    for int64 encoded = order.sorted()[]
+        SenderStats entry = rows[int(encoded) % stride]
+        string first = if entry.has_date then dates.format_utc(entry.first_time) else "-"
+        string last = if entry.has_date then dates.format_utc(entry.last_time) else "-"
+        lines = lines.append("{entry.address},{csv_field(entry.name)},{entry.count},{entry.threads.size()},{first},{last}")
+    return lines
+
+string[] malformed_report(Message[] messages)
+    int malformed = math.sum<int>([for Message message = messages[] if len(message.problems) > 0 then 1])
+    int total = math.sum([for Message message = messages[] then int(len(message.problems))])
+    string[] lines = ["messages {len(messages)} malformed {malformed} problems {total}"]
+    for Message message = messages[]
+        for string problem = message.problems[]
+            lines = lines.append("message {message.number}: {problem}")
+    return lines
+
+string[] join_blocks(string[][] blocks)
+    string[] lines = []
+    for string[] block = blocks[]
+        if len(lines) > 0
+            lines = lines.append("")
+        lines = lines.concat(block)
+    return lines
+
+void write_output(string name, string[] lines)
+    file.write("output/" + name, lines.join(NL) + NL)
+
+void thread_mailbox()
+    Message[] messages = []
+    map.Map<string, int> known_ids
+    for headers.Line[] lines = read_mailbox()[]
+        auto message = Message(int(len(messages)) + 1, lines, &known_ids)
+        messages = messages.append(message)
+    threader.MessageInfo[] infos = [for Message message = messages[] then message.info()]
+    auto forest = threader.Forest(infos)
+    string[][] thread_blocks = []
+    for int position < int(len(forest.roots))
+        thread_blocks = thread_blocks.append(thread_report(forest, position + 1, forest.roots[position], &messages))
+    check_parent_dates(&messages)
+    string[][] message_blocks = [for Message message = messages[] then message_report(message)]
+    string[][] body_blocks = [for string request = read_lines("input/requests.txt")[] then body_report(request, known_ids, messages)]
+    bool directory_exists = file.is_directory("output")
+    if not directory_exists
+        file.mkdir("output")
+    write_output("threads.txt", join_blocks(thread_blocks))
+    write_output("messages.txt", join_blocks(message_blocks))
+    write_output("bodies.txt", join_blocks(body_blocks))
+    write_output("senders.csv", senders_report(messages))
+    write_output("malformed.txt", malformed_report(messages))
+
+if main
+    thread_mailbox()

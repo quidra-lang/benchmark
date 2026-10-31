@@ -1,0 +1,661 @@
+import lexer = "./lexer.qui"
+import parser = "./parser.qui"
+import boxes = "./boxes.qui"
+import layout = "./layout.qui"
+import canvas = "./canvas.qui"
+
+string display(string kind, string value, const map.Map<string, string> references)
+    if kind == "command"
+        match lexer.symbol(value[1:<int(len(value))])
+            lexer.Symbol found
+                return found.display
+            none
+                return ""
+    if kind == "eqref"
+        match references.get(value)
+            string found
+                return found
+            none
+                return "(??)"
+    return value
+
+int delimited_box(boxes.Store &store, int body_index, string left, string right)
+    boxes.Box body = store.items[body_index]
+    int left_width = if left == "." then 0 else 1
+    int right_width = if right == "." then 0 else 1
+    boxes.Box result = boxes.Box(left_width + body.width + right_width, body.height, body.baseline, "delim {left} {right}")
+    boxes.draw_delimiter(&result, left, 0)
+    boxes.draw_delimiter(&result, right, left_width + body.width)
+    boxes.child(&result, body_index, left_width, 0)
+    return boxes.add(&store, result)
+
+int typeset(const parser.Node[] nodes, int index, bool script, const layout.Params params, const map.Map<string, string> references, boxes.Store &store)
+    parser.Node node = nodes[index]
+    if node.kind == "atom"
+        string kind = if node.atom_kind == "text" then "text" elif node.atom_kind == "eqref" then "eqref" else "atom"
+        string description = "{kind} {DQ}{node.value}{DQ}"
+        if not script and node.atom_kind == "command" and lexer.has(["\sum", "\prod", "\int"], node.value)
+            string[] glyph = boxes.large(node.value[1:<int(len(node.value))])
+            boxes.Box result = boxes.Box(int(len(glyph[0])), 3, 1, description)
+            for int row < int(len(glyph))
+                boxes.ink(&result, 0, row, glyph[row])
+            return boxes.add(&store, result)
+        return boxes.text_box(&store, display(node.atom_kind, node.value, references), description)
+    if node.kind == "row"
+        int[] children = []
+        for int child_index = node.children[]
+            children = children.append(typeset(nodes, child_index, script, params, references, &store))
+        layout.Spacing spacing = layout.spacing(nodes, node.children, script, params)
+        return layout.row(&store, children, spacing.gaps, "row")
+    if node.kind == "script"
+        int base_index = typeset(nodes, node.children[0], script, params, references, &store)
+        boxes.Box base = store.items[base_index]
+        int | none sub_index = none
+        int | none sup_index = none
+        int sub_width = 0
+        int sub_height = 0
+        int sup_width = 0
+        int sup_height = 0
+        match node.sub
+            int child_index
+                int built = typeset(nodes, child_index, true, params, references, &store)
+                sub_index = built
+                sub_width = store.items[built].width
+                sub_height = store.items[built].height
+            none
+                sub_index = none
+        match node.sup
+            int child_index
+                int built = typeset(nodes, child_index, true, params, references, &store)
+                sup_index = built
+                sup_width = store.items[built].width
+                sup_height = store.items[built].height
+            none
+                sup_index = none
+        parser.Node base_node = nodes[node.children[0]]
+        bool stacked = not script and ((base_node.kind == "atom" and base_node.atom_kind == "command" and lexer.has(["\sum", "\prod", "\lim", "\max", "\min"], base_node.value)) or (base_node.kind == "accent" and lexer.has(["overbrace", "underbrace"], base_node.value)))
+        boxes.Box result = boxes.Box(0, 1, 0, "scripts")
+        if stacked
+            int width = boxes.maximum(base.width, boxes.maximum(sub_width, sup_width))
+            result = boxes.Box(width, sup_height + base.height + sub_height, sup_height + base.baseline, "limits")
+            boxes.child(&result, base_index, (width - base.width) / 2, sup_height, "base: ")
+            match sub_index
+                int built
+                    boxes.child(&result, built, (width - sub_width) / 2, sup_height + base.height, "sub: ")
+                none
+                    sub_width = 0
+            match sup_index
+                int built
+                    boxes.child(&result, built, (width - sup_width) / 2, 0, "sup: ")
+                none
+                    sup_width = 0
+        else
+            int sup_top = (if base.baseline == 0 then -1 else 0) - sup_height + 1
+            int sub_top = if base.height - 1 - base.baseline == 0 then base.height else base.height - 1
+            int top = 0
+            int bottom = base.height - 1
+            match sup_index
+                int built
+                    top = boxes.minimum(0, sup_top)
+                none
+                    top = 0
+            match sub_index
+                int built
+                    bottom = boxes.maximum(bottom, sub_top + sub_height - 1)
+                none
+                    bottom = bottom
+            int shift = -top
+            result = boxes.Box(base.width + boxes.maximum(sub_width, sup_width), bottom - top + 1, base.baseline + shift, "scripts")
+            boxes.child(&result, base_index, 0, shift, "base: ")
+            match sub_index
+                int built
+                    boxes.child(&result, built, base.width, sub_top + shift, "sub: ")
+                none
+                    sub_width = 0
+            match sup_index
+                int built
+                    boxes.child(&result, built, base.width, sup_top + shift, "sup: ")
+                none
+                    sup_width = 0
+        return boxes.add(&store, result)
+    if lexer.has(["frac", "binom", "overset", "underset"], node.kind)
+        bool placed_script = node.kind == "overset" or node.kind == "underset"
+        int first_index = typeset(nodes, node.children[0], if placed_script then true else script, params, references, &store)
+        int second_index = typeset(nodes, node.children[1], script, params, references, &store)
+        if node.kind == "frac" and script
+            parser.Node first_node = nodes[node.children[0]]
+            parser.Node second_node = nodes[node.children[1]]
+            if first_node.kind == "row" or first_node.kind == "frac"
+                first_index = delimited_box(&store, first_index, "(", ")")
+            if second_node.kind == "row" or second_node.kind == "frac"
+                second_index = delimited_box(&store, second_index, "(", ")")
+            int slash = boxes.text_box(&store, "/", "atom {DQ}/{DQ}")
+            return layout.row(&store, [first_index, slash, second_index], [0, 0], "slash", ["num: ", "", "den: "])
+        boxes.Box first = store.items[first_index]
+        boxes.Box second = store.items[second_index]
+        int width = boxes.maximum(first.width, second.width)
+        boxes.Box result = boxes.Box(width, 1, 0, node.kind)
+        if node.kind == "frac" or node.kind == "binom"
+            result = boxes.Box(width + 2, first.height + 1 + second.height, first.height, node.kind)
+            if node.kind == "frac"
+                boxes.ink(&result, 0, first.height, boxes.repeat("-", width + 2))
+                boxes.child(&result, first_index, (width + 2 - first.width) / 2, 0, "num: ")
+                boxes.child(&result, second_index, (width + 2 - second.width) / 2, first.height + 1, "den: ")
+            else
+                boxes.draw_delimiter(&result, "(", 0)
+                boxes.draw_delimiter(&result, ")", width + 1)
+                boxes.child(&result, first_index, 1 + (width - first.width) / 2, 0, "upper: ")
+                boxes.child(&result, second_index, 1 + (width - second.width) / 2, first.height + 1, "lower: ")
+        elif node.kind == "overset"
+            result = boxes.Box(width, first.height + second.height, first.height + second.baseline, "overset")
+            boxes.child(&result, first_index, (width - first.width) / 2, 0, "over: ")
+            boxes.child(&result, second_index, (width - second.width) / 2, first.height, "base: ")
+        else
+            result = boxes.Box(width, first.height + second.height, second.baseline, "underset")
+            boxes.child(&result, second_index, (width - second.width) / 2, 0, "base: ")
+            boxes.child(&result, first_index, (width - first.width) / 2, second.height, "under: ")
+        return boxes.add(&store, result)
+    if node.kind == "sqrt" or node.kind == "root"
+        int body_index = typeset(nodes, node.children[int(len(node.children)) - 1], script, params, references, &store)
+        boxes.Box body = store.items[body_index]
+        int | none root_index = none
+        int extra = 0
+        int top = 0
+        if node.kind == "root"
+            int built = typeset(nodes, node.children[0], true, params, references, &store)
+            root_index = built
+            extra = boxes.maximum(0, store.items[built].width - 1)
+            top = boxes.maximum(0, store.items[built].height - body.height)
+        int height = body.height
+        boxes.Box result = boxes.Box(extra + height + 1 + body.width, height + 1 + top, body.baseline + 1 + top, node.kind)
+        boxes.ink(&result, extra + height + 1, top, boxes.repeat("_", body.width))
+        boxes.ink(&result, extra, height + top, "\")
+        for 1 <= int row < height + 1
+            boxes.ink(&result, extra + height - row + 1, row + top, "/")
+        match root_index
+            int built
+                boxes.child(&result, built, 0, height + top - store.items[built].height, "index: ")
+                boxes.child(&result, body_index, extra + height + 1, 1 + top, "body: ")
+            none
+                boxes.child(&result, body_index, extra + height + 1, 1 + top)
+        return boxes.add(&store, result)
+    if node.kind == "delim"
+        int body_index = typeset(nodes, node.children[0], script, params, references, &store)
+        return delimited_box(&store, body_index, node.left, node.right)
+    if node.kind == "matrix"
+        int[][] cells = []
+        int columns = int(len(node.rows[0]))
+        int[] widths = array(nat(columns), fill = 0)
+        int[] ascents = []
+        int[] heights = []
+        for int[] row = node.rows[]
+            int[] built_row = []
+            int ascent = 0
+            int descent = 0
+            for int column < columns
+                int built = typeset(nodes, row[column], script, params, references, &store)
+                boxes.Box cell = store.items[built]
+                built_row = built_row.append(built)
+                widths[column] = boxes.maximum(widths[column], cell.width)
+                ascent = boxes.maximum(ascent, cell.baseline)
+                descent = boxes.maximum(descent, cell.height - 1 - cell.baseline)
+            cells = cells.append(built_row)
+            ascents = ascents.append(ascent)
+            heights = heights.append(ascent + descent + 1)
+        int body_width = params.col_gap * (columns - 1)
+        int body_height = params.row_gap * (int(len(cells)) - 1)
+        for int value = widths[]
+            body_width += value
+        for int value = heights[]
+            body_height += value
+        int shift = if node.value == "matrix" then 0 else 2
+        int width = body_width + (if node.value == "matrix" then 0 elif node.value == "cases" then 2 else 4)
+        boxes.Box result = boxes.Box(width, body_height, (body_height - 1) / 2, "{node.value} rows={len(cells)} cols={columns}")
+        if node.value == "pmatrix"
+            boxes.draw_delimiter(&result, "(", 0)
+            boxes.draw_delimiter(&result, ")", body_width + 3)
+        elif node.value == "bmatrix"
+            boxes.draw_delimiter(&result, "[", 0)
+            boxes.draw_delimiter(&result, "]", body_width + 3)
+        elif node.value == "vmatrix"
+            boxes.draw_delimiter(&result, "|", 0)
+            boxes.draw_delimiter(&result, "|", body_width + 3)
+        elif node.value == "cases"
+            boxes.draw_delimiter(&result, "\{{", 0)
+        int y = 0
+        for int row < int(len(cells))
+            int x = shift
+            for int column < columns
+                int built = cells[row][column]
+                boxes.Box cell = store.items[built]
+                int offset = if node.value == "cases" then 0 else (widths[column] - cell.width) / 2
+                boxes.child(&result, built, x + offset, y + ascents[row] - cell.baseline, "cell {row + 1},{column + 1}: ")
+                x += widths[column] + params.col_gap
+            y += heights[row] + params.row_gap
+        return boxes.add(&store, result)
+    int body_index = typeset(nodes, node.children[0], script, params, references, &store)
+    boxes.Box body = store.items[body_index]
+    int width = if lexer.has(["hat", "dot", "tilde"], node.value) then boxes.maximum(body.width, 1) elif node.value == "vec" then boxes.maximum(body.width, 2) elif lexer.has(["overbrace", "underbrace"], node.value) then body.width + 2 else body.width
+    boxes.Box result = boxes.Box(width, body.height + 1, if node.value == "underbrace" then body.baseline else body.baseline + 1, node.value)
+    if node.value == "overline"
+        boxes.ink(&result, 0, 0, boxes.repeat("_", width))
+    elif lexer.has(["hat", "dot", "tilde"], node.value)
+        string mark = if node.value == "hat" then "^" elif node.value == "dot" then "." else "~"
+        boxes.ink(&result, (width - 1) / 2, 0, mark)
+    elif node.value == "vec"
+        boxes.ink(&result, 0, 0, boxes.repeat("-", width - 1) + ">")
+    elif node.value == "overbrace"
+        boxes.ink(&result, 0, 0, "/" + boxes.repeat("-", body.width) + "\")
+    else
+        boxes.ink(&result, 0, body.height, "\" + boxes.repeat("-", body.width) + "/")
+    boxes.child(&result, body_index, if lexer.has(["overbrace", "underbrace"], node.value) then 1 else 0, if node.value == "underbrace" then 0 else 1)
+    return boxes.add(&store, result)
+
+string delimiter_tree(string text)
+    return if len(text) == 1 then "'{text}'" else text
+
+string tree(const parser.Node[] nodes, int index)
+    parser.Node node = nodes[index]
+    if node.kind == "atom"
+        return if node.atom_kind == "symbol" then "'{node.value}'" elif node.atom_kind == "text" then "{DQ}{node.value}{DQ}" elif node.atom_kind == "eqref" then "(eqref {DQ}{node.value}{DQ})" else node.value
+    if node.kind == "row"
+        string result = "(row"
+        for int child_index = node.children[]
+            result += " " + tree(nodes, child_index)
+        return result + ")"
+    if node.kind == "script"
+        string base = tree(nodes, node.children[0])
+        string | none sub = none
+        string | none sup = none
+        match node.sub
+            int child_index
+                sub = tree(nodes, child_index)
+            none
+                sub = none
+        match node.sup
+            int child_index
+                sup = tree(nodes, child_index)
+            none
+                sup = none
+        match sub
+            string sub_text
+                match sup
+                    string sup_text
+                        return "(subsup {base} {sub_text} {sup_text})"
+                    none
+                        return "(sub {base} {sub_text})"
+            none
+                match sup
+                    string sup_text
+                        return "(sup {base} {sup_text})"
+                    none
+                        return base
+    if node.kind == "delim"
+        return "(delim {delimiter_tree(node.left)} {delimiter_tree(node.right)} {tree(nodes, node.children[0])})"
+    if node.kind == "matrix"
+        string result = "({node.value}"
+        for int[] row = node.rows[]
+            string[] cells = []
+            for int child_index = row[]
+                cells = cells.append(tree(nodes, child_index))
+            result += " [{cells.join(" ")}]"
+        return result + ")"
+    string name = if node.kind == "accent" then node.value else node.kind
+    string result = "({name}"
+    for int child_index = node.children[]
+        result += " " + tree(nodes, child_index)
+    return result + ")"
+
+string delimiter_text(string text)
+    return if text == "." then "" elif text == "\{{" then "{{" elif text == "\}}" then "}}" else text
+
+string linear(const parser.Node[] nodes, int index, bool script, const layout.Params params, const map.Map<string, string> references);
+
+string parenthesize(const parser.Node[] nodes, int index, bool script, const layout.Params params, const map.Map<string, string> references, bool base = false)
+    parser.Node node = nodes[index]
+    string text = linear(nodes, index, script, params, references)
+    return if node.kind == "row" or node.kind == "frac" or (base and node.kind == "script") then "({text})" else text
+
+string linear_row(const parser.Node[] nodes, const int[] elements, bool script, const layout.Params params, const map.Map<string, string> references)
+    layout.Spacing spacing = layout.spacing(nodes, elements, script, params)
+    string result = ""
+    for int position < int(len(elements))
+        if position > 0
+            result += boxes.repeat(" ", spacing.gaps[position - 1])
+        result += linear(nodes, elements[position], script, params, references)
+    return result
+
+string linear(const parser.Node[] nodes, int index, bool script, const layout.Params params, const map.Map<string, string> references)
+    parser.Node node = nodes[index]
+    if node.kind == "atom"
+        return display(node.atom_kind, node.value, references)
+    if node.kind == "row"
+        return linear_row(nodes, node.children, script, params, references)
+    if node.kind == "frac"
+        return parenthesize(nodes, node.children[0], script, params, references) + "/" + parenthesize(nodes, node.children[1], script, params, references)
+    if node.kind == "binom"
+        return "binom({linear(nodes, node.children[0], script, params, references)}, {linear(nodes, node.children[1], script, params, references)})"
+    if node.kind == "overset" or node.kind == "underset"
+        return "{node.kind}({linear(nodes, node.children[0], true, params, references)}, {linear(nodes, node.children[1], script, params, references)})"
+    if node.kind == "script"
+        string result = parenthesize(nodes, node.children[0], script, params, references, true)
+        match node.sub
+            int child_index
+                result += "_" + parenthesize(nodes, child_index, true, params, references)
+            none
+                result = result
+        match node.sup
+            int child_index
+                result += "^" + parenthesize(nodes, child_index, true, params, references)
+            none
+                result = result
+        return result
+    if node.kind == "sqrt"
+        return "sqrt({linear(nodes, node.children[0], script, params, references)})"
+    if node.kind == "root"
+        return "root({linear(nodes, node.children[0], true, params, references)}, {linear(nodes, node.children[1], script, params, references)})"
+    if node.kind == "delim"
+        return delimiter_text(node.left) + linear(nodes, node.children[0], script, params, references) + delimiter_text(node.right)
+    if node.kind == "matrix"
+        string[] rows = []
+        for int[] row = node.rows[]
+            string[] cells = []
+            for int child_index = row[]
+                cells = cells.append(linear(nodes, child_index, script, params, references))
+            rows = rows.append(cells.join(", "))
+        return "{node.value}[{rows.join("; ")}]"
+    return "{node.value}({linear(nodes, node.children[0], script, params, references)})"
+
+class Diagnostic(int column, string message)
+
+void warnings(const parser.Node[] nodes, int index, const map.Map<string, string> references, Diagnostic[] &output)
+    parser.Node node = nodes[index]
+    if node.kind == "atom"
+        if node.atom_kind == "identifier" and lexer.command_name(node.value)
+            output = output.append(Diagnostic(node.column, "{node.value} is a command name; write \{node.value}"))
+        if node.atom_kind == "eqref" and not references.has(node.value)
+            output = output.append(Diagnostic(node.column, "undefined reference {DQ}{node.value}{DQ}"))
+    if node.kind == "delim" and node.left != "." and node.right != "."
+        bool paired = (node.left == "(" and node.right == ")") or (node.left == "[" and node.right == "]") or (node.left == "|" and node.right == "|") or (node.left == "\{{" and node.right == "\}}")
+        if not paired
+            output = output.append(Diagnostic(node.column, "\left{node.left} closed by \right{node.right}"))
+    for int child_index = node.children[]
+        warnings(nodes, child_index, references, &output)
+    match node.sub
+        int child_index
+            warnings(nodes, child_index, references, &output)
+        none
+            output = output
+    match node.sup
+        int child_index
+            warnings(nodes, child_index, references, &output)
+        none
+            output = output
+    for int[] row = node.rows[]
+        for int child_index = row[]
+            warnings(nodes, child_index, references, &output)
+
+class Line(int start, int finish, int indent, int width)
+class Alignment(int column, int relation_width)
+class Overfull(int line, int width)
+class Composition(boxes.Child[] placed, int width, int height, int line_count, Overfull[] overfull)
+
+int line_width(const boxes.Store store, const int[] elements, const int[] gaps, int start, int finish)
+    int result = 0
+    for start <= int position < finish
+        result += store.items[elements[position]].width
+        if position + 1 < finish
+            result += gaps[position]
+    return result
+
+Line[] build_lines(const parser.Node[] nodes, const int[] elements, const boxes.Store store, const int[] built, const layout.Spacing spacing, const layout.Params params, int stage)
+    int[] breaks = []
+    for 1 <= int position < int(len(elements))
+        parser.Node node = nodes[elements[position]]
+        bool binary = stage >= 1 and spacing.types[position].left == 2 and node.kind == "atom" and node.atom_kind == "symbol" and lexer.has(["+", "-"], node.value)
+        if spacing.types[position].left == 3 or binary or (stage >= 2 and spacing.types[position - 1].right == 6)
+            breaks = breaks.append(position)
+    breaks = breaks.append(int(len(elements)))
+    Line[] result = []
+    int start = 0
+    Alignment | none alignment = none
+    while start < int(len(elements))
+        int indent = 0
+        if start > 0
+            match alignment
+                Alignment found
+                    indent = if spacing.types[start].left == 3 then found.column else found.column + found.relation_width + params.rel
+                none
+                    indent = params.indent
+        int finish = -1
+        int shortest = -1
+        for int candidate = breaks[]
+            if candidate <= start
+                continue
+            if shortest < 0
+                shortest = candidate
+            if indent + line_width(store, built, spacing.gaps, start, candidate) <= params.width
+                finish = candidate
+        if finish < 0
+            finish = shortest
+        if start == 0
+            for int position < finish
+                if spacing.types[position].left == 3
+                    int column = 0
+                    for int prefix < position
+                        column += store.items[built[prefix]].width + spacing.gaps[prefix]
+                    alignment = Alignment(column, store.items[built[position]].width)
+                    break
+        result = result.append(Line(start, finish, indent, line_width(store, built, spacing.gaps, start, finish)))
+        start = finish
+    return result
+
+Composition compose(const parser.Formula formula, const string | none tag, const layout.Params params, const map.Map<string, string> references, boxes.Store &store)
+    layout.Spacing spacing = layout.spacing(formula.nodes, formula.elements, false, params)
+    int[] built = []
+    for int child_index = formula.elements[]
+        built = built.append(typeset(formula.nodes, child_index, false, params, references, &store))
+    Line[] lines = []
+    for int stage < 3
+        lines = build_lines(formula.nodes, formula.elements, store, built, spacing, params, stage)
+        bool fits = true
+        for Line line = lines[]
+            if line.indent + line.width > params.width
+                fits = false
+        if fits
+            break
+    boxes.Child[] placed = []
+    Overfull[] overfull = []
+    int width = 0
+    int y = 0
+    for int position < int(len(lines))
+        Line line = lines[position]
+        if line.indent + line.width > params.width
+            overfull = overfull.append(Overfull(position + 1, line.indent + line.width))
+        int[] children = built[line.start:<line.finish]
+        int[] gaps = spacing.gaps[line.start:<line.finish - 1]
+        int built_line = layout.row(&store, children, gaps, "line {position + 1}")
+        boxes.Box box = store.items[built_line]
+        width = boxes.maximum(width, line.indent + box.width)
+        placed = placed.append(boxes.Child("", line.indent, y, built_line))
+        y += box.height
+    match tag
+        string found
+            int x = params.width - int(len(found))
+            boxes.Child last = placed[int(len(placed)) - 1]
+            boxes.Box box = store.items[last.box]
+            int tag_y = 0
+            if x >= last.x + box.width + 2
+                tag_y = last.y + box.baseline
+            else
+                tag_y = y
+                y += 1
+            int built_tag = boxes.text_box(&store, found, "tag {DQ}{found}{DQ}")
+            width = boxes.maximum(width, x + int(len(found)))
+            placed = placed.append(boxes.Child("", x, tag_y, built_tag))
+        none
+            width = width
+    return Composition(placed, width, y, int(len(lines)), overfull)
+
+class Record(string text, parser.Formula | lexer.Problem parsed, string | none tag = none, Diagnostic[] diagnostics = [])
+
+layout.Params read_params()
+    map.Map<string, int> table = map.Map<string, int>()
+    string text = file.read("input/params.txt")
+    string[] lines = text.split(NL)
+    for string line = lines[]
+        if line == ""
+            continue
+        string[] words = line.split(" ")
+        int value = int.parse(words[1])
+        .table.set(words[0], value)
+    int[] values = []
+    string[] names = ["width", "indent", "rel_space", "bin_space", "punct_space", "col_gap", "row_gap"]
+    for string name = names[]
+        match table.get(name)
+            int found
+                values = values.append(found)
+            none
+                values = values.append(0)
+    return layout.Params(values[0], values[1], values[2], values[3], values[4], values[5], values[6])
+
+void diagnostic(int number, string text, int column, string message, string[] &output)
+    output = output.concat(["formula {number}, column {column}: {message}", "  {text}", boxes.repeat(" ", column + 1) + "^"])
+
+int get_count(const map.Map<string, int> table, string key)
+    match table.get(key)
+        int found
+            return found
+        none
+            return 0
+
+void write_output(string name, const string[] lines)
+    bool exists = file.is_directory("output")
+    if not exists
+        file.mkdir("output")
+    string text = if len(lines) == 0 then "" else lines.join(NL) + NL
+    file.write("output/{name}", text)
+
+void run_program()
+    layout.Params params = read_params()
+    string source = file.read("input/formulas.txt")
+    string[] lines = source.split(NL)
+    Record[] records = []
+    for int position < int(len(lines)) - 1
+        string text = lines[position]
+        match lexer.lex(text)
+            lexer.Token[] tokens
+                parser.Formula | lexer.Problem parsed = parser.parse(tokens, int(len(text)) + 1)
+                records = records.append(Record(text, parsed))
+            lexer.Problem problem
+                records = records.append(Record(text, problem))
+    int counter = 0
+    map.Map<string, string> references = map.Map<string, string>()
+    for int position < int(len(records))
+        match records[position].parsed
+            parser.Formula formula
+                match formula.tag
+                    lexer.Token explicit_tag
+                        records[position].tag = "({explicit_tag.value})"
+                    none
+                        match formula.label
+                            lexer.Token label
+                                counter += 1
+                                records[position].tag = "({counter})"
+                            none
+                                records[position].tag = none
+            lexer.Problem problem
+                records[position].tag = none
+    for int position < int(len(records))
+        match records[position].parsed
+            parser.Formula formula
+                match formula.label
+                    lexer.Token label
+                        if references.has(label.value)
+                            records[position].diagnostics = records[position].diagnostics.append(Diagnostic(label.column, "duplicate label {DQ}{label.value}{DQ}"))
+                        else
+                            match records[position].tag
+                                string found
+                                    .references.set(label.value, found)
+                                none
+                                    records[position].tag = none
+                    none
+                        records[position].tag = records[position].tag
+            lexer.Problem problem
+                records[position].tag = none
+    string[] rendered = []
+    string[] box_lines = []
+    string[] trees = []
+    string[] errors = []
+    map.Map<string, int> kinds = map.Map<string, int>()
+    int valid = 0
+    int total_boxes = 0
+    int max_depth = 0
+    int warning_count = 0
+    int overfull_count = 0
+    for int position < int(len(records))
+        Record record = records[position]
+        int number = position + 1
+        if position > 0
+            rendered = rendered.append("")
+        rendered = rendered.append("formula {number}")
+        match record.parsed
+            lexer.Problem problem
+                rendered = rendered.append("(error)")
+                box_lines = box_lines.append("formula {number}: error")
+                trees = trees.append("formula {number}: error")
+                diagnostic(number, record.text, problem.column, problem.reason, &errors)
+            parser.Formula formula
+                valid += 1
+                for int child_index = formula.elements[]
+                    warnings(formula.nodes, child_index, references, &record.diagnostics)
+                for int index < int(len(record.diagnostics))
+                    int cursor = index
+                    while cursor > 0 and record.diagnostics[cursor].column < record.diagnostics[cursor - 1].column
+                        Diagnostic saved = record.diagnostics[cursor]
+                        record.diagnostics[cursor] = record.diagnostics[cursor - 1]
+                        record.diagnostics[cursor - 1] = saved
+                        cursor -= 1
+                warning_count += int(len(record.diagnostics))
+                for Diagnostic entry = record.diagnostics[]
+                    diagnostic(number, record.text, entry.column, "warning: {entry.message}", &errors)
+                boxes.Store store = boxes.Store()
+                Composition composition = compose(formula, record.tag, params, references, &store)
+                overfull_count += int(len(composition.overfull))
+                for Overfull entry = composition.overfull[]
+                    errors = errors.append("formula {number}: line {entry.line} is overfull (width {entry.width} > {params.width})")
+                string[][] grid = array(nat(composition.height), fill = array(nat(composition.width), fill = " "))
+                for boxes.Child entry = composition.placed[]
+                    canvas.paint(store, entry.box, entry.x, entry.y, &grid)
+                canvas.Description description = canvas.describe(store, composition.placed)
+                string[] keys = description.kinds.keys()
+                for string key = keys[]
+                    .kinds.set(key, get_count(kinds, key) + get_count(description.kinds, key))
+                total_boxes += int(len(description.lines))
+                max_depth = boxes.maximum(max_depth, description.depth)
+                box_lines = box_lines.append("formula {number}: lines={composition.line_count} width={composition.width} height={composition.height} boxes={len(description.lines)} depth={description.depth}").concat(description.lines)
+                rendered = rendered.concat(canvas.lines(grid))
+                string[] notations = []
+                for int child_index = formula.elements[]
+                    notations = notations.append(tree(formula.nodes, child_index))
+                string tree_text = notations.join(" ")
+                trees = trees.append("formula {number}:" + (if tree_text == "" then "" else " {tree_text}"))
+                string linear_text = canvas.trim_end(linear_row(formula.nodes, formula.elements, false, params, references))
+                trees = trees.append("  linear:" + (if linear_text == "" then "" else " {linear_text}"))
+                match record.tag
+                    string found
+                        trees = trees.append("  tag: {found}")
+                    none
+                        trees = trees
+    box_lines = box_lines.append("summary: boxes={total_boxes} max_depth={max_depth}")
+    string[] keys = kinds.keys().sorted()
+    for string key = keys[]
+        box_lines = box_lines.append("  {key}: {get_count(kinds, key)}")
+    errors = errors.append("formulas={len(records)} rendered={valid} errors={int(len(records)) - valid} warnings={warning_count} overfull={overfull_count}")
+    write_output("rendered.txt", rendered)
+    write_output("boxes.txt", box_lines)
+    write_output("trees.txt", trees)
+    write_output("errors.txt", errors)
+
+if main
+    run_program()

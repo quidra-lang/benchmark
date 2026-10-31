@@ -1,0 +1,679 @@
+import math
+import minstd = "./minstd.qui"
+import dungeon = "./dungeon_gen.qui"
+import entities = "./entities.qui"
+import combat = "./combat.qui"
+import fov = "./fov.qui"
+
+string[][] read_rows(string name)
+    string[] lines = file.read("input/" + name).split(NL)
+    return [for string line = lines[0:<len(lines) - 1][] then line.split(" ")]
+
+string dec_1(int numerator, int denominator)
+    if denominator == 0
+        return "-"
+    int rounded = (20 * numerator + denominator) / (2 * denominator)
+    return "{rounded / 10}.{rounded % 10}"
+
+(int, int) exploration(dungeon.Level level)
+    int explored = 0
+    int total = 0
+    for int y < level.height
+        for int x < level.width
+            if level.terrain[y][x] != " "
+                total += 1
+                if level.memory[y][x] != " "
+                    explored += 1
+    return (explored, total)
+
+class Config(local string[][] rows)
+    int generation_seed = int.parse(rows[0][1])
+    int game_seed = int.parse(rows[0][2])
+    int width = int.parse(rows[1][1])
+    int height = int.parse(rows[1][2])
+    int min_size = int.parse(rows[2][1])
+    int max_split = int.parse(rows[2][2])
+    int room_min = int.parse(rows[3][1])
+    int room_max = int.parse(rows[3][2])
+    int level_count = int.parse(rows[4][1])
+    int monster_base = int.parse(rows[5][1])
+    int monster_step = int.parse(rows[5][2])
+    int item_base = int.parse(rows[6][1])
+    int item_step = int.parse(rows[6][2])
+    int sleep_chance = int.parse(rows[7][1])
+    int wake_chance = int.parse(rows[7][2])
+    int fov_radius = int.parse(rows[8][1])
+    int max_hp = int.parse(rows[9][1])
+    int regen_interval = int.parse(rows[9][2])
+    combat.Dice hit_die = combat.parse_dice(rows[10][1])
+    int food_start = int.parse(rows[11][1])
+    int food_max = int.parse(rows[11][2])
+    int food_hungry = int.parse(rows[11][3])
+    int food_weak = int.parse(rows[11][4])
+    int pack_limit = int.parse(rows[12][1])
+    string[] start_items = rows[13][1:<len(rows[13])]
+    int[] xp_levels = [for string token = rows[14][1:<len(rows[14])][] then int.parse(token)]
+    int[] checkpoints = [for string token = rows[15][1:<len(rows[15])][] then int.parse(token)]
+
+class Command(string name, string argument)
+
+Command[] expand_commands(string[][] rows)
+    Command[] result = []
+    for string[] tokens = rows[]
+        string name = tokens[0]
+        string argument = ""
+        int count = 1
+        if name == "wait"
+            if len(tokens) == 2
+                count = int.parse(tokens[1])
+        else
+            if len(tokens) > 1
+                argument = tokens[1]
+            if len(tokens) == 3
+                count = int.parse(tokens[2])
+        for int index < count
+            result = result.append(Command(name, argument))
+    return result
+
+class Player(local Config settings, int x, int y)
+    int depth = 1
+    int hp = settings.max_hp
+    int max_hp = settings.max_hp
+    int level = 1
+    int xp = 0
+    int gold = 0
+    int satiation = settings.food_start
+    int poison = 0
+    entities.Item[] pack = []
+    int weapon_id = 0
+    int armor_id = 0
+
+    int pack_index(int identity)
+        for int index < int(len(pack))
+            if pack[index].identity == identity
+                return index
+        return -1
+
+    int defense()
+        int index = pack_index(armor_id)
+        return if index < 0 then 10 else 10 + pack[index].kind.armor + pack[index].bonus
+
+class AttackStats()
+    int count = 0
+    int hits = 0
+    int criticals = 0
+    int total_damage = 0
+
+    void .record(combat.Attack event)
+        count += 1
+        if event.outcome != "miss"
+            hits += 1
+            total_damage += event.damage
+        if event.outcome == "critical"
+            criticals += 1
+
+    string summary(string label)
+        return "{label} {count} hits {hits} criticals {criticals} damage {total_damage} accuracy {dec_1(100 * hits, count)}"
+
+class Game(Config config, entities.MonsterType[] monster_types, entities.ItemType[] item_types, Command[] commands)
+    minstd.Generator generation_rng = minstd.Generator(config.generation_seed)
+    minstd.Generator rng = minstd.Generator(config.game_seed)
+    dungeon.Level[] levels = []
+    int next_identity = 1
+    .build_levels()
+    Player player = Player(config, levels[0].arrival[0], levels[0].arrival[1])
+    .give_start_items()
+    int turn = 1
+    string[] messages = []
+    string[] map_lines = []
+    bool[][] visible = []
+    int[][] distance = []
+    string result = ""
+    string cause = ""
+    int succeeded = 0
+    int failed = 0
+    int unused = 0
+    int moves = 0
+    AttackStats player_attacks = AttackStats()
+    AttackStats monster_attacks = AttackStats()
+    int poison_damage = 0
+    int starvation_damage = 0
+    int[] usage = array(6, fill = 0)
+    int[] kills = array(len(monster_types), fill = 0)
+
+    void .build_levels()
+        for 1 <= int depth <= config.level_count
+            dungeon.Level level = dungeon.generate(&generation_rng, depth, config.width, config.height, config.min_size, config.max_split, config.room_min, config.room_max)
+            if depth < config.level_count
+                level.terrain[level.target[1]][level.target[0]] = ">"
+            else
+                auto amulet = entities.ItemType("amulet", "amulet", 0, 0, 0)
+                level.items = level.items.append(entities.Item(next_identity, amulet, level.target[0], level.target[1]))
+                next_identity += 1
+            .place_monsters(&level)
+            .place_items(&level)
+            levels = levels.append(level)
+
+    void .place_monsters(dungeon.Level &level)
+        int count = config.monster_base + config.monster_step * (level.depth - 1)
+        int[] candidates = [for int index = (0:<int(len(monster_types)))[] if monster_types[index].min_depth <= level.depth <= monster_types[index].max_depth then index]
+        int[] weights = [for int index = candidates[] then monster_types[index].weight]
+        for 1 <= int number <= count
+            int type_index = candidates[.generation_rng.select(weights)]
+            entities.MonsterType kind = monster_types[type_index]
+            int[] position = [0, 0]
+            while true
+                (int room, int[] drawn) = level.draw_room_cell(&generation_rng)
+                position = drawn
+                if room != level.arrival_room and level.terrain[position[1]][position[0]] == "." and level.monster_at(position[0], position[1]) < 0
+                    break
+            int hp = kind.hp.roll(&generation_rng)
+            bool asleep = .generation_rng.draw() % 100 < config.sleep_chance
+            level.monsters = level.monsters.append(entities.Monster(number, kind, type_index, position[0], position[1], hp, asleep))
+        level.monsters_created = count
+
+    void .place_items(dungeon.Level &level)
+        int count = config.item_base + config.item_step * (level.depth - 1)
+        int[] candidates = [for int index = (0:<int(len(item_types)))[] if item_types[index].min_depth <= level.depth <= item_types[index].max_depth then index]
+        int[] weights = [for int index = candidates[] then item_types[index].weight]
+        for int number < count
+            entities.ItemType kind = item_types[candidates[.generation_rng.select(weights)]]
+            int[] position = [0, 0]
+            while true
+                (int room, int[] drawn) = level.draw_room_cell(&generation_rng)
+                position = drawn
+                if level.terrain[position[1]][position[0]] == "." and level.item_at(position[0], position[1]) < 0
+                    break
+            int amount = if kind.category == "gold" then kind.dice.roll(&generation_rng) else 0
+            level.items = level.items.append(entities.Item(next_identity, kind, position[0], position[1], amount))
+            next_identity += 1
+        level.items_placed = int(len(level.items))
+
+    void .give_start_items()
+        for string name = config.start_items[]
+            for entities.ItemType kind = item_types[]
+                if kind.name == name
+                    auto item = entities.Item(next_identity, kind, player.x, player.y)
+                    next_identity += 1
+                    player.pack = player.pack.append(item)
+                    if kind.category == "weapon" and player.weapon_id == 0
+                        player.weapon_id = item.identity
+                    if kind.category == "armor" and player.armor_id == 0
+                        player.armor_id = item.identity
+                    break
+
+    void .say(string text)
+        messages = messages.append("{turn:int=4,zero} {text}")
+
+    string hunger_state()
+        return if player.satiation > config.food_hungry then "normal" elif player.satiation > config.food_weak then "hungry" elif player.satiation > 0 then "weak" else "starving"
+
+    void .finish(string outcome, string reason)
+        result = outcome
+        cause = reason
+
+    void .die(string reason)
+        .say("You die.")
+        .finish("died", reason)
+
+    void .update_view()
+        dungeon.Level &level = &levels[player.depth - 1]
+        visible = fov.field_of_view(level, player.x, player.y, config.fov_radius)
+        for int y < level.height
+            for int x < level.width
+                if visible[y][x]
+                    int item_index = level.item_at(x, y)
+                    level.memory[y][x] = if item_index < 0 then level.terrain[y][x] else level.items[item_index].symbol()
+        for int index < int(len(level.monsters))
+            bool seen = visible[level.monsters[index].y][level.monsters[index].x]
+            if seen and not level.monsters[index].was_visible
+                .say("You see the {level.monsters[index].kind.name}.")
+            level.monsters[index].was_visible = seen
+
+    void .run()
+        .update_view()
+        for Command command = commands[]
+            if result != ""
+                unused += 1
+            elif not .execute(command)
+                failed += 1
+            else
+                succeeded += 1
+                if result == ""
+                    .advance_turn()
+        if result == ""
+            .finish("alive", "commands_exhausted")
+
+    void .advance_turn()
+        .update_view()
+        .monsters_act()
+        if result != ""
+            return
+        .end_turn()
+        if result != ""
+            return
+        for int checkpoint = config.checkpoints[]
+            if turn == checkpoint
+                .write_checkpoint()
+                break
+        turn += 1
+
+    bool .execute(Command command)
+        if command.name == "move"
+            int[] offset = fov.direction(command.argument)
+            return .move_player(offset[0], offset[1])
+        if command.name == "wait"
+            return true
+        if command.name == "pickup"
+            return .pickup()
+        if command.name == "descend"
+            return .descend()
+        return .use_item(command.name, int.parse(command.argument))
+
+    bool .move_player(int dx, int dy)
+        dungeon.Level &level = &levels[player.depth - 1]
+        int x = player.x + dx
+        int y = player.y + dy
+        if not fov.passable(level, x, y)
+            .say("You bump into a wall.")
+            return false
+        if not fov.can_move(level, player.x, player.y, dx, dy)
+            .say("You cannot move diagonally through a door.")
+            return false
+        int monster_index = level.monster_at(x, y)
+        if monster_index >= 0
+            .player_attack(&level, monster_index)
+            return true
+        player.x = x
+        player.y = y
+        moves += 1
+        int item_index = level.item_at(x, y)
+        if item_index >= 0
+            .say("You see {level.items[item_index].reference_name()} here.")
+        elif level.terrain[y][x] == ">"
+            .say("There is a staircase down here.")
+        return true
+
+    bool .pickup()
+        dungeon.Level &level = &levels[player.depth - 1]
+        int index = level.item_at(player.x, player.y)
+        if index < 0
+            .say("There is nothing here.")
+            return false
+        entities.Item item = level.items[index]
+        if item.kind.category == "gold"
+            player.gold += item.amount
+            .say("You pick up {item.display_name()}.")
+        elif item.kind.category == "amulet"
+            .say("You pick up the amulet.")
+            .say("You win!")
+            .finish("won", "amulet")
+        elif int(len(player.pack)) >= config.pack_limit
+            .say("Your pack is full.")
+            return false
+        else
+            player.pack = player.pack.append(item)
+            .say("You pick up the {item.display_name()} ({len(player.pack)}).")
+        level.items = level.items[0:<index].concat(level.items[index + 1:<len(level.items)])
+        level.picked += 1
+        usage[0] += 1
+        return true
+
+    bool .descend()
+        if levels[player.depth - 1].terrain[player.y][player.x] != ">"
+            .say("There are no stairs here.")
+            return false
+        player.depth += 1
+        player.x = levels[player.depth - 1].arrival[0]
+        player.y = levels[player.depth - 1].arrival[1]
+        .say("You descend to depth {player.depth}.")
+        return true
+
+    entities.Item .remove_pack_item(int index)
+        entities.Item item = player.pack[index]
+        player.pack = player.pack[0:<index].concat(player.pack[index + 1:<len(player.pack)])
+        return item
+
+    bool .use_item(string name, int number)
+        if number > int(len(player.pack))
+            .say("You do not have that item.")
+            return false
+        int index = number - 1
+        entities.Item item = player.pack[index]
+        string expected = if name == "quaff" then "potion" elif name == "read" then "scroll" elif name == "wield" then "weapon" elif name == "wear" then "armor" else "food"
+        if item.kind.category != expected
+            .say("You cannot {name} that.")
+            return false
+        if name == "quaff"
+            .quaff(index)
+        elif name == "read"
+            .read_scroll(index)
+        elif name == "wield"
+            if player.weapon_id == item.identity
+                .say("You are already wielding that.")
+                return false
+            player.weapon_id = item.identity
+            usage[4] += 1
+            .say("You are now wielding the {item.display_name()}.")
+        elif name == "wear"
+            if player.armor_id == item.identity
+                .say("You are already wearing that.")
+                return false
+            player.armor_id = item.identity
+            usage[5] += 1
+            .say("You are now wearing the {item.display_name()}.")
+        else
+            .remove_pack_item(index)
+            usage[3] += 1
+            player.satiation = math.min(player.satiation + item.kind.nutrition, config.food_max)
+            .say("You eat the {item.display_name()}.")
+        return true
+
+    void .quaff(int index)
+        entities.Item item = .remove_pack_item(index)
+        usage[1] += 1
+        .say("You quaff the {item.display_name()}.")
+        if item.kind.effect == "heal"
+            player.hp += item.kind.dice.roll(&rng)
+            if player.hp > player.max_hp
+                player.max_hp += 1
+                player.hp = player.max_hp
+            player.poison = 0
+            .say("You feel better.")
+        elif item.kind.effect == "poison"
+            player.poison += item.kind.poison_turns
+            .say("You feel very sick.")
+        else
+            .say("You feel more experienced.")
+            if player.level <= int(len(config.xp_levels))
+                .gain_xp(config.xp_levels[player.level - 1] - player.xp)
+
+    void .read_scroll(int index)
+        entities.Item item = .remove_pack_item(index)
+        usage[2] += 1
+        .say("You read the {item.display_name()}.")
+        dungeon.Level &level = &levels[player.depth - 1]
+        if item.kind.effect == "mapping"
+            for int y < level.height
+                for int x < level.width
+                    if level.terrain[y][x] != " " and level.memory[y][x] == " "
+                        level.memory[y][x] = level.terrain[y][x]
+            .say("A map forms in your mind.")
+        elif item.kind.effect == "teleport"
+            while true
+                (int room, int[] position) = level.draw_room_cell(&rng)
+                if (position[0] != player.x or position[1] != player.y) and level.monster_at(position[0], position[1]) < 0
+                    player.x = position[0]
+                    player.y = position[1]
+                    break
+            .say("You are teleported.")
+        elif item.kind.effect == "enchant_weapon"
+            int equipped = player.pack_index(player.weapon_id)
+            if equipped < 0
+                .say("Your hands twitch.")
+            else
+                .say("Your {player.pack[equipped].display_name()} glows blue.")
+                player.pack[equipped].bonus += 1
+        else
+            int equipped = player.pack_index(player.armor_id)
+            if equipped < 0
+                .say("Your skin tingles.")
+            else
+                .say("Your {player.pack[equipped].display_name()} glows silver.")
+                player.pack[equipped].bonus += 1
+
+    void .player_attack(dungeon.Level &level, int index)
+        level.monsters[index].asleep = false
+        entities.Monster monster = level.monsters[index]
+        int equipped = player.pack_index(player.weapon_id)
+        int to_hit = player.level
+        combat.Dice dice = combat.Dice(1, 2)
+        int bonus = 0
+        if equipped >= 0
+            entities.Item weapon = player.pack[equipped]
+            to_hit += weapon.kind.to_hit + weapon.bonus
+            dice = weapon.kind.dice
+            bonus = weapon.bonus
+        if hunger_state() == "weak" or hunger_state() == "starving"
+            to_hit -= 2
+        combat.Attack event = combat.resolve_attack(&rng, to_hit, monster.kind.defense, dice, bonus)
+        .player_attacks.record(event)
+        if event.outcome == "miss"
+            .say("You miss the {monster.kind.name}.")
+            return
+        string hard = if event.outcome == "critical" then " hard" else ""
+        .say("You hit the {monster.kind.name}{hard} for {event.damage}.")
+        level.monsters[index].hp -= event.damage
+        if level.monsters[index].hp <= 0
+            .say("You kill the {monster.kind.name}.")
+            level.monsters = level.monsters[0:<index].concat(level.monsters[index + 1:<len(level.monsters)])
+            level.kills += 1
+            kills[monster.type_index] += 1
+            .gain_xp(monster.kind.xp)
+
+    void .gain_xp(int amount)
+        player.xp += amount
+        while player.level <= int(len(config.xp_levels)) and player.xp >= config.xp_levels[player.level - 1]
+            player.level += 1
+            int gained = config.hit_die.roll(&rng)
+            player.max_hp += gained
+            player.hp += gained
+            .say("Welcome to level {player.level}.")
+
+    void .monster_attack(entities.Monster monster)
+        entities.MonsterType kind = monster.kind
+        combat.Attack event = combat.resolve_attack(&rng, kind.to_hit, player.defense(), kind.damage, 0)
+        .monster_attacks.record(event)
+        if event.outcome == "miss"
+            .say("The {kind.name} misses you.")
+            return
+        string hard = if event.outcome == "critical" then " hard" else ""
+        .say("The {kind.name} hits you{hard} for {event.damage}.")
+        player.hp -= event.damage
+        if player.hp <= 0
+            .die("killed_by {kind.name}")
+        elif kind.poisonous
+            player.poison += 5
+            .say("You are poisoned.")
+
+    bool can_attack(dungeon.Level level, entities.Monster monster)
+        int dx = player.x - monster.x
+        int dy = player.y - monster.y
+        return math.max(math.abs(dx), math.abs(dy)) == 1 and fov.can_move(level, monster.x, monster.y, dx, dy)
+
+    void .wander(dungeon.Level &level, int index)
+        int[][] offsets = fov.directions()
+        int[] offset = offsets[.rng.draw() % 8]
+        int x = level.monsters[index].x
+        int y = level.monsters[index].y
+        if not fov.can_move(level, x, y, offset[0], offset[1])
+            return
+        x += offset[0]
+        y += offset[1]
+        if x == player.x and y == player.y
+            .monster_attack(level.monsters[index])
+        elif level.monster_at(x, y) < 0
+            level.monsters[index].x = x
+            level.monsters[index].y = y
+
+    void .chase(dungeon.Level &level, int index)
+        entities.Monster monster = level.monsters[index]
+        if can_attack(level, monster)
+            .monster_attack(monster)
+            return
+        int here = distance[monster.y][monster.x]
+        int best_x = -1
+        int best_y = -1
+        int best_distance = 0
+        for int[] offset = fov.directions()[]
+            if not fov.can_move(level, monster.x, monster.y, offset[0], offset[1])
+                continue
+            int x = monster.x + offset[0]
+            int y = monster.y + offset[1]
+            int candidate_distance = distance[y][x]
+            if candidate_distance < 0 or (here >= 0 and candidate_distance >= here)
+                continue
+            if level.monster_at(x, y) >= 0 or (x == player.x and y == player.y)
+                continue
+            if best_x < 0 or candidate_distance < best_distance
+                best_x = x
+                best_y = y
+                best_distance = candidate_distance
+        if best_x >= 0
+            level.monsters[index].x = best_x
+            level.monsters[index].y = best_y
+
+    void .monster_action(dungeon.Level &level, int index)
+        entities.Monster monster = level.monsters[index]
+        bool sees_player = visible[monster.y][monster.x]
+        if monster.asleep
+            if sees_player and .rng.draw() % 100 < config.wake_chance
+                level.monsters[index].asleep = false
+                .say("The {monster.kind.name} wakes up.")
+        elif monster.kind.stationary
+            if can_attack(level, monster)
+                .monster_attack(monster)
+        elif monster.kind.erratic and .rng.draw() % 2 == 0
+            .wander(&level, index)
+        elif sees_player
+            .chase(&level, index)
+        else
+            .wander(&level, index)
+
+    void .monsters_act()
+        dungeon.Level &level = &levels[player.depth - 1]
+        distance = fov.distances(level, player.x, player.y)
+        for int index < int(len(level.monsters))
+            level.monsters[index].energy += level.monsters[index].kind.speed
+            while level.monsters[index].energy >= 2
+                level.monsters[index].energy -= 2
+                .monster_action(&level, index)
+                if result != ""
+                    return
+
+    void .end_turn()
+        dungeon.Level &level = &levels[player.depth - 1]
+        for int index < int(len(level.monsters))
+            if level.monsters[index].kind.regenerates and level.monsters[index].hp < level.monsters[index].max_hp
+                level.monsters[index].hp += 1
+        if player.poison > 0
+            player.hp -= 1
+            poison_damage += 1
+            if player.hp <= 0
+                .die("poison")
+                return
+            player.poison -= 1
+            if player.poison == 0
+                .say("You feel less sick.")
+        if player.satiation == 0
+            player.hp -= 1
+            starvation_damage += 1
+            if player.hp <= 0
+                .die("starvation")
+                return
+        else
+            string before = hunger_state()
+            player.satiation -= 1
+            string after = hunger_state()
+            if after != before
+                .say(if after == "hungry" then "You are getting hungry." elif after == "weak" then "You feel weak from hunger." else "You are starving.")
+        if turn % config.regen_interval == 0 and player.poison == 0 and player.satiation > 0 and player.hp < player.max_hp
+            player.hp += 1
+
+    string view_symbol(dungeon.Level level, int x, int y)
+        if x == player.x and y == player.y
+            return "@"
+        int monster_index = level.monster_at(x, y)
+        if monster_index >= 0
+            return level.monsters[monster_index].kind.symbol
+        int item_index = level.item_at(x, y)
+        return if item_index >= 0 then level.items[item_index].symbol() else level.terrain[y][x]
+
+    string[] map_rows(dungeon.Level level, bool current)
+        string border = "+" + string.repeat("-", nat(level.width)) + "+"
+        string[] rows = [border]
+        for int y < level.height
+            string row = "|"
+            for int x < level.width
+                row += if current and visible[y][x] then view_symbol(level, x, y) else level.memory[y][x]
+            rows = rows.append(row + "|")
+        return rows.append(border)
+
+    string status_line()
+        return "STATUS hp {player.hp}/{player.max_hp} level {player.level} xp {player.xp} defense {player.defense()} gold {player.gold} food {player.satiation} {hunger_state()} poison {player.poison}"
+
+    void .write_checkpoint()
+        map_lines = map_lines.append("CHECKPOINT turn {turn} depth {player.depth}")
+        map_lines = map_lines.concat(map_rows(levels[player.depth - 1], true)).append(status_line())
+
+    string[] final_block()
+        string[] lines = ["FINAL turn {succeeded} depth {player.depth}"]
+        for int index < player.depth
+            dungeon.Level level = levels[index]
+            (int explored, int total) = exploration(level)
+            lines = lines.append("LEVEL {level.depth} explored {explored}/{total}")
+            lines = lines.concat(map_rows(level, level.depth == player.depth))
+        return lines.append(status_line())
+
+    string equipped_name(int identity)
+        int index = player.pack_index(identity)
+        return if index < 0 then "-" else player.pack[index].display_name()
+
+    string[] stats_lines()
+        string[] lines = [
+            "result {result}",
+            "cause {cause}",
+            "turns {succeeded}",
+            "depth {player.depth}",
+            "level {player.level}",
+            "xp {player.xp}",
+            "hp {player.hp}/{player.max_hp}",
+            "defense {player.defense()}",
+            "gold {player.gold}",
+            "food {player.satiation} {hunger_state()}",
+            "poison {player.poison}",
+            "weapon {equipped_name(player.weapon_id)}",
+            "armor {equipped_name(player.armor_id)}",
+            "commands {len(commands)} executed {succeeded} failed {failed} unused {unused}",
+            "moves {moves}",
+            player_attacks.summary("player_attacks"),
+            monster_attacks.summary("monster_attacks"),
+            "poison_damage {poison_damage} starvation_damage {starvation_damage}",
+            "picked {usage[0]} quaffed {usage[1]} read {usage[2]} eaten {usage[3]} wielded {usage[4]} worn {usage[5]}",
+            "kills {math.sum(kills)}",
+        ]
+        for int index < int(len(monster_types))
+            if kills[index] > 0
+                lines = lines.append("KILL {monster_types[index].name} {kills[index]}")
+        for dungeon.Level level = levels[]
+            (int explored, int total) = exploration(level)
+            lines = lines.append("LEVEL {level.depth} rooms {len(level.rooms)} explored {explored}/{total} {dec_1(100 * explored, total)} monsters {level.kills}/{level.monsters_created} items {level.picked}/{level.items_placed}")
+        for int index < int(len(player.pack))
+            entities.Item item = player.pack[index]
+            string line = "INVENTORY {index + 1} {item.display_name()}"
+            if item.identity == player.weapon_id
+                line += " (wielded)"
+            elif item.identity == player.armor_id
+                line += " (worn)"
+            lines = lines.append(line)
+        return lines
+
+void write_lines(string name, string[] lines)
+    file.write("output/" + name, if len(lines) == 0 then "" else lines.join(NL) + NL)
+
+void play_dungeon()
+    auto config = Config(read_rows("config.txt"))
+    entities.MonsterType[] monster_types = [for string[] tokens = read_rows("monsters.txt")[] then entities.MonsterType(tokens)]
+    entities.ItemType[] item_types = [for string[] tokens = read_rows("items.txt")[] then entities.parse_item_type(tokens)]
+    Command[] commands = expand_commands(read_rows("commands.txt"))
+    auto game = Game(config, monster_types, item_types, commands)
+    .game.run()
+    bool directory_exists = file.is_directory("output")
+    if not directory_exists
+        file.mkdir("output")
+    write_lines("messages.txt", game.messages)
+    write_lines("maps.txt", game.map_lines.concat(game.final_block()))
+    write_lines("stats.txt", game.stats_lines())
+
+if main
+    play_dungeon()

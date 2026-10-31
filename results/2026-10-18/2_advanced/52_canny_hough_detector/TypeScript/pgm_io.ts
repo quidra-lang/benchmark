@@ -1,0 +1,94 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+export interface Point {
+  x: number;
+  y: number;
+}
+export interface Image {
+  width: number;
+  height: number;
+  pixels: number[];
+}
+export interface Trig {
+  cos: number[];
+  sin: number[];
+}
+export interface Parameters {
+  gauss_size: number;
+  gauss_kernel: number[];
+  gauss_divisor: number;
+  canny_low: number;
+  canny_high: number;
+  circle_min_radius: number;
+  circle_max_radius: number;
+  circle_min_percent: number;
+  circle_max_count: number;
+  hough_rho_step: number;
+  hough_threshold: number;
+  hough_max_lines: number;
+  segment_tolerance: number;
+  segment_max_gap: number;
+  segment_min_length: number;
+  junction_distance: number;
+  junction_min_angle: number;
+  angle_tolerance: number;
+  square_tolerance: number;
+  contrast_margin: number;
+  harris_window: number;
+  harris_threshold: number;
+  harris_max_count: number;
+  corner_match_distance: number;
+  overlay_divisor: number;
+}
+const lines = (path: string) => readFileSync(path, 'ascii').trimEnd().split('\n');
+export function readImage(path: string): Image {
+  const a = lines(path);
+  const [width, height] = a[1].split(' ').map(Number);
+  return { width, height, pixels: a.slice(3).flatMap((r) => r.split(' ').map(Number)) };
+}
+export function readTrig(path: string): Trig {
+  const cos: number[] = [];
+  const sin: number[] = [];
+  for (const line of lines(path)) {
+    const [t, c, s] = line.split(' ').map(Number);
+    cos[t] = c;
+    sin[t] = s;
+  }
+  return { cos, sin };
+}
+export function readParams(path: string): Parameters {
+  const rows = lines(path).map((r) => r.split(' ').slice(1).map(Number));
+  return {
+    gauss_size: rows[0][0],
+    gauss_kernel: rows[1],
+    gauss_divisor: rows[2][0],
+    canny_low: rows[3][0],
+    canny_high: rows[4][0],
+    circle_min_radius: rows[5][0],
+    circle_max_radius: rows[6][0],
+    circle_min_percent: rows[7][0],
+    circle_max_count: rows[8][0],
+    hough_rho_step: rows[9][0],
+    hough_threshold: rows[10][0],
+    hough_max_lines: rows[11][0],
+    segment_tolerance: rows[12][0],
+    segment_max_gap: rows[13][0],
+    segment_min_length: rows[14][0],
+    junction_distance: rows[15][0],
+    junction_min_angle: rows[16][0],
+    angle_tolerance: rows[17][0],
+    square_tolerance: rows[18][0],
+    contrast_margin: rows[19][0],
+    harris_window: rows[20][0],
+    harris_threshold: rows[21][0],
+    harris_max_count: rows[22][0],
+    corner_match_distance: rows[23][0],
+    overlay_divisor: rows[24][0],
+  };
+}
+export function writeImage(path: string, width: number, height: number, pixels: ArrayLike<number>) {
+  const a = ['P2', `${width} ${height}`, '255'];
+  for (let y = 0; y < height; y++) {
+    a.push(Array.from({ length: width }, (_, x) => pixels[y * width + x]).join(' '));
+  }
+  writeFileSync(path, a.join('\n') + '\n', 'ascii');
+}

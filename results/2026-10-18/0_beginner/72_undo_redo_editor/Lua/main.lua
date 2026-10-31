@@ -1,0 +1,32 @@
+local commands = {
+    "undo", "type hello world", "delete 5", "type there", "undo", "undo", "redo", "type friend",
+    "redo", "delete 20", "undo", "redo", "redo", "type see you",
+}
+local buffer, undo_stack, redo_stack = "", {}, {}
+for _, command in ipairs(commands) do
+    local result
+    if command == "undo" then
+        if #undo_stack == 0 then
+            result = "nothing to undo"
+        else
+            redo_stack[#redo_stack + 1] = buffer
+            buffer = table.remove(undo_stack)
+        end
+    elseif command == "redo" then
+        if #redo_stack == 0 then
+            result = "nothing to redo"
+        else
+            undo_stack[#undo_stack + 1] = buffer
+            buffer = table.remove(redo_stack)
+        end
+    else
+        undo_stack[#undo_stack + 1] = buffer
+        redo_stack = {}
+        if command:sub(1, 5) == "type " then
+            buffer = buffer .. command:sub(6)
+        else
+            buffer = buffer:sub(1, math.max(0, #buffer - tonumber(command:sub(8))))
+        end
+    end
+    io.write(command, " => ", result or ('"' .. buffer .. '"'), "\n")
+end

@@ -1,0 +1,453 @@
+[Overview]
+Write a program that parses a mailbox file (mbox format) and displays its messages grouped into threads (trees of replies). The program reads the two files in the input/ folder (the mailbox and the body display requests) and, for each message, unfolds folded header lines, parses addresses, decodes RFC 2047 encoded words, converts the date to UTC, splits the MIME multipart structure, and decodes base64 and quoted-printable. Next, it builds threads with the JWZ algorithm based on Message-ID, In-Reply-To and References, merges them by subject, and sorts them. It also extracts the body text of the requested messages (restoring format=flowed text and converting from HTML). The results are written to five files in the output/ folder (the thread trees, a summary per message, the requested bodies, sender statistics, and a list of messages with problems), and nothing is printed to standard output.
+All computation is done with integers and strings only; floating-point numbers are not used.
+
+[Input files]
+Both input files consist only of ASCII characters, and every line ends with a line feed (LF). The only characters that appear in a line are printable characters (character codes 32 to 126) and the tab (character code 9).
+
+* input/mailbox.mbox (the mailbox)
+A text file containing a sequence of messages. A line that begins with "From " (the five characters F, r, o, m and one space) is called a "separator line". The first line of the file is a separator line. A separator line marks the start of a new message: the lines from the line after it up to the line just before the next separator line (or up to the last line of the file if there is no next separator line) are the lines of that message. The separator line itself is not included in any message, and the rest of the separator line (the sender and the date and time) is not used.
+The messages are numbered consecutively from 1 in order from the start of the file (the message number). The lines of the file are also numbered from 1 in order from the start (the file line number; separator lines are counted too).
+The content of each message is written in the Internet message format (header section, blank line, body section), but it may contain errors. All rules of interpretation are defined in [Processing].
+Example (two messages; each separator line is followed by a header section, a blank line and a body section, and there is a blank line between the messages):
+From ann@example.com Mon Jun  1 09:00:00 2026
+From: Ann Lee <ann@example.com>
+Subject: Hello
+Date: Mon, 1 Jun 2026 09:00:00 +0000
+Message-ID: <a1@example.com>
+
+Hi all.
+
+From ben@example.com Mon Jun  1 10:00:00 2026
+From: ben@example.com
+Subject: Re: Hello
+Date: Mon, 1 Jun 2026 10:00:00 +0000
+Message-ID: <a2@example.com>
+In-Reply-To: <a1@example.com>
+
+Hi Ann.
+
+* input/requests.txt (body display requests)
+Each line holds one request: the message ID of a message whose body is to be displayed. Each line is a string that begins with "<", ends with ">" and contains no whitespace. The order of the lines is called the "request order". The same ID may appear more than once, and a line may hold an ID that is not the ID of any message.
+Example:
+<a2@example.com>
+<zz@example.com>
+
+[Processing]
+* Common notation
+- "Whitespace" means the space (character code 32) and the tab (character code 9). "Collapse runs of whitespace into a single space" means replacing each part consisting of one or more consecutive whitespace characters with a single space. "Strip leading and trailing whitespace" means removing all whitespace characters that continue from the start and from the end. "Strip trailing whitespace" is defined likewise.
+- "Letters" means only A to Z and a to z, "digits" only 0 to 9, and "hexadecimal digits" only 0 to 9, A to F and a to f. "Lowercase" means changing A to Z into a to z, and "compare case-insensitively" means comparing after lowercasing both sides.
+- The "ascending order" of strings is the lexicographic order by character code (when one string is a prefix of the other, the shorter one comes first). Tuples (a, b, ...) are compared lexicographically, element by element from the first.
+- A "blank line" is a line of length 0. "Splitting" a string "at LF" turns a string that contains n LFs into n+1 pieces (empty pieces included). "Joining lines" means making one string by putting one LF between each pair of adjacent lines (zero lines give the empty string, and no LF is added after the last line).
+- "Turning" a byte sequence "into characters" means replacing each byte with the character whose character code is the value of that byte.
+- Text in double quotes is a literal string, and each part written in angle brackets as a description, such as <part number>, is replaced by a value (every other "<" or ">" is a literal character).
+
+1. Adjusting the message lines
+Apply the following two adjustments, in this order, to the lines of each message.
+- A body line that begins with "From " is written in the file with one ">" added at its start, to distinguish it from a separator line (mboxrd format). Therefore, for a line in which one or more ">" at its start are immediately followed by "From ", remove one leading ">". For example, ">From x" becomes "From x", and ">>From x" becomes ">From x". The file line number of the line does not change.
+- If the last line of the message is a blank line, remove that one line only (because the blank line before a separator line is not part of the message).
+
+2. Header section and body section
+Split the lines of a message (or the lines of a MIME part, described in 9) into two at the first blank line. The lines before the first blank line are the header section and the lines after it are the body section; the blank line itself belongs to neither. If there is no blank line, all lines are the header section and the body section is empty (0 lines). If the first line is a blank line, the header section is empty.
+
+The header section is turned into a sequence of fields (pairs of a name and a value) by examining its lines in order from the start.
+- A line that begins with whitespace is a "continuation line". If the previous line is the start line of some field or a continuation line of that field, this entire line (including its leading whitespace) is appended to the end of the value of that field with nothing in between. When the continuation line is the first line of the header section, and when the previous line is an invalid line, the continuation line is also an invalid line.
+- Any other line is the start line of a new field, with the part before the first ":" as the field name and the part after it as the field value. However, a line that contains no ":", a line whose field name is empty, and a line whose field name contains a character other than character codes 33 to 126 (such as whitespace) are invalid lines.
+- An invalid line is ignored, and its file line number is recorded.
+After all lines have been examined, strip leading and trailing whitespace from the value of each field. Field names are compared case-insensitively. Hereafter, for the header of some part, "the value of field X" means the value of the first field whose name is X, and if there is no field named X, "field X is absent".
+Example: if the header section consists of the three lines "Subject: Weekly", " status" and "x-note", there is one field, with name Subject and value "Weekly status", and the third line is an invalid line.
+
+3. Removing comments
+This is a procedure that removes comments from a string. Read the string one character at a time from the start, counting the nesting depth (initially 0).
+- When the depth is 0: for "(", set the depth to 1 and append one space to the result. Any other character (including ")" and "\") is appended to the result as is.
+- When the depth is 1 or more: the character is not appended to the result. For "\", skip the next character (whatever it is). For "(", increase the depth by 1, and for ")", decrease it by 1.
+If the depth is not 0 when the end has been read, comment removal fails.
+
+4. Encoded words and unstructured text
+* Strict base64 decoding
+Decode a string s as follows. If the length of s is not a multiple of 4, it fails. Let t be what remains after removing all "=" at the end of s. If three or more "=" were removed, it fails. If t contains a character that is not a base64 character (A to Z have values 0 to 25, a to z 26 to 51, 0 to 9 52 to 61, "+" 62 and "/" 63), it fails. Otherwise, write the value of each character of t as 6 bits, concatenate them in order from the start into a bit string, split it from the start into groups of 8 bits, each of which is one byte (most significant bit first), and discard the final remainder of fewer than 8 bits. The resulting byte sequence is the decoding result (if t is empty, it is the empty byte sequence).
+
+* Encoded words
+A string of length 4 or more that begins with "=?" and ends with "?=", such that the part without its first two and last two characters, split at "?", gives exactly three non-empty pieces (in order: the charset name, the encoding and the encoded text), is called a "word in encoded-word form". A word in encoded-word form "decodes successfully" when all of the following hold, and its decoding result is the obtained byte sequence turned into characters.
+- The charset name is equal to "us-ascii" when compared case-insensitively.
+- The encoding is one of "Q", "q", "B" and "b" (one character).
+- For the Q encoding ("Q" or "q"): read the encoded text from the start; "_" becomes a byte of value 32, the three characters "=" followed by two hexadecimal digits become a byte whose value is that hexadecimal number, and any other single character becomes a byte whose value is its character code. If there is a place where "=" is not followed by two hexadecimal digits, it fails. For the B encoding ("B" or "b"): decode the encoded text with strict base64 decoding (if that fails, it fails).
+- All the obtained bytes are from 32 to 126 inclusive.
+If a word in encoded-word form does not decode successfully, an "encoded-word error" has occurred, and the word is used as the original string. A word that is not in encoded-word form is used as is and is not an error.
+
+* Decoding unstructured text
+Split the field value at runs of whitespace into a sequence of words (no empty words are made). Process each word by the rules above and join the words with one space between each pair of adjacent words. However, when two adjacent words are both encoded words that decoded successfully, nothing is put between them. Finally, collapse runs of whitespace in the result into a single space and strip leading and trailing whitespace.
+Example: "Re: =?us-ascii?Q?Lunch_?= =?us-ascii?B?cGxhbg==?= x" becomes "Re: Lunch plan x" (the space between "Lunch " and "plan" is removed, and the space at the end of "Lunch " remains).
+
+5. Splitting into tokens
+Values such as addresses and Content-Type are parsed after being split into a sequence of tokens. Read the string from the start and make tokens by the following rules. Each token has a kind, a string, and a flag telling whether "whitespace preceded it".
+- Whitespace is skipped.
+- "(" starts a comment, and everything up to the matching ")" is skipped. Inside a comment, "(" and ")" nest, and "\" makes the next character an ordinary character (that character does not affect the nesting count). If the string ends without a matching ")", splitting fails.
+- A double quote (") starts a quoted string, and everything up to the next double quote (excluding one made an ordinary character by "\") is one token (kind "quoted string"). The string of the token is the characters in between, with each "\" removed and the character after it kept as is. If the string ends without a closing double quote, splitting fails.
+- Each special character (described below) is one token by itself (its kind is that character itself).
+- Each longest run of word characters (described below) is one token (kind "word").
+- If there is a character to which none of the above applies, splitting fails.
+The "whitespace preceded it" flag of a token is set when there is at least one whitespace character or comment between the token and the previous token (the start of the string for the first token).
+The special characters and word characters come in the following two variants, depending on where they are used.
+- For addresses: the special characters are the 7 characters "<", ">", ":", ";", "@", "," and ".". The word characters are the letters, the digits, and each of the characters "!", "#", "$", "%", "&", "'", "*", "+", "-", "/", "=", "?", "^", "_", "`", "{", "|", "}" and "~".
+- For MIME: the special characters are the 3 characters "/", ";" and "=". The word characters are the characters with character codes 33 to 126 that are none of "(", ")", "<", ">", "@", ",", ";", ":", "\", the double quote ("), "/", "[", "]", "?" and "=".
+
+6. Parsing addresses
+The values of From, To and Cc are split into a sequence of tokens for addresses and parsed as an "address list" by the following grammar. Parsing fails when splitting into tokens fails, when the token sequence is empty, and when it does not match the grammar.
+- Address list: one or more addresses separated by ","; it must match the entire token sequence.
+- Address: first, read as many tokens of kind "word", "quoted string" or "." as possible (zero tokens is allowed). This is called the phrase. Depending on the token after the phrase, the address takes one of the following three forms. Anything else fails.
+(a) When the next token is "<": an angle-bracketed mailbox. Read "<", read as many tokens of kind "word" or "." as possible as the local part, read "@", read as many tokens of kind "word" or "." as possible as the domain, and read ">". The display name is made from the phrase in the way described below.
+(b) When the next token is "@": a mailbox without a display name. The phrase is the local part; read "@", and read as many tokens of kind "word" or "." as possible as the domain.
+(c) When the next token is ":", the phrase is not empty, and the address is not inside a group: a group. Read ":"; if the next token is not ";", read one or more addresses inside the group separated by ",", and finally read ";". An address inside a group must have form (a) or (b). The name of the group (the phrase) is not used.
+- The local part and the domain must each be a token sequence in which "word" and "." alternate, beginning with a "word" and ending with a "word" (one or more words joined by "."). Therefore, a local part that contains a quoted string, and an empty local part or domain, fail.
+- The address string of a mailbox is the concatenation, in this order, of the strings of the tokens of the local part, "@", and the strings of the tokens of the domain, lowercased (whitespace and comments between tokens are not included).
+- The display name is the concatenation of the strings of the tokens of the phrase in order from the start. The string of a token is: for kind "word", its string (but if it is in encoded-word form, the result of processing it by the rules of 4); for "quoted string", the string of the token (not decoded); for ".", ".". Before the second and later tokens, put one space if the "whitespace preceded it" flag of that token is set. However, if that token and the previous token are both encoded words that decoded successfully, put nothing. Finally, collapse runs of whitespace into a single space and strip leading and trailing whitespace. If the result is the empty string, the mailbox has no display name.
+When parsing succeeds, a sequence of addresses (mailboxes or groups) is obtained. Also record whether an encoded-word error occurred in any display name of the value.
+Example: the value ""Smith, Carol" <Carol.Smith@Example.NET>, tools: a@x.org, Bob <bob@x.org>;" gives two addresses: a mailbox with display name "Smith, Carol" and address string "carol.smith@example.net", and a group containing two mailboxes (a@x.org, and bob@x.org with display name Bob). The display name of "P. S. Brown <peggy@example.com>" is "P. S. Brown", and "ivan@example.com (Ivan)" is a mailbox without a display name.
+
+7. Parsing dates
+Parse the value of Date by the following procedure and, if it succeeds, compute the UTC seconds (the number of seconds elapsed since 00:00:00 UTC on January 1, 1970). There are three kinds of failure reasons, each with a fixed problem text.
+(1) Remove comments by the procedure of 3 (if that fails, "bad Date syntax"). Add one space before and after each "," in the result, and then split it at runs of whitespace into a sequence of tokens (no empty tokens are made).
+(2) If there are three or more tokens, the first token is a weekday name and the second token is ",", remove those two tokens and remember that weekday name. A weekday name is a token equal, case-insensitively, to one of Mon, Tue, Wed, Thu, Fri, Sat and Sun.
+(3) If the remaining tokens are not exactly 5, "bad Date syntax". If there are 5, they are, in order, the day, the month, the year, the time and the zone, and if even one of the following five conditions is not satisfied, "bad Date syntax".
+- Day: one or two digits.
+- Month: equal, case-insensitively, to one of Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov and Dec (months 1 to 12 in this order).
+- Year: two or four digits.
+- Time: splitting at ":" gives two or three pieces (hour, minute, second), and each piece is exactly two digits. If there are two pieces, the seconds value is 0.
+- Zone: "+" or "-" followed by exactly four digits, or a named zone. A named zone is, compared case-insensitively, one of UT, GMT, Z (all with offset 0 minutes), EST (-300 minutes), EDT (-240 minutes), CST (-360 minutes), CDT (-300 minutes), MST (-420 minutes), MDT (-360 minutes), PST (-480 minutes) and PDT (-420 minutes).
+(4) If the year has two digits, add 2000 to it if its value is less than 50, or 1900 if it is 50 or more. A numeric zone +/-hhmm is the offset with hh as hours and mm as minutes (hh*60+mm minutes), made negative if the sign is "-".
+(5) If any of the following applies, "Date out of range".
+- In a numeric zone, hh exceeds 23 or mm exceeds 59.
+- The year is less than 1970 or exceeds 2099. The day is less than 1 or exceeds the number of days of that month in that year. Months 1, 3, 5, 7, 8, 10 and 12 have 31 days, months 4, 6, 9 and 11 have 30 days, and month 2 has 29 days when the year is divisible by 4 and not divisible by 100, or divisible by 400, and 28 days otherwise.
+- The hour exceeds 23, the minute exceeds 59, or the second exceeds 59.
+- The UTC seconds computed in (6) below are negative.
+(6) Let D be the number of days from January 1, 1970 to the written date (the local date) (D = 0 for January 1, 1970). The UTC seconds are D*86400 + hour*3600 + minute*60 + second - (zone offset in minutes)*60.
+(7) If a weekday name was remembered in (2) and the weekday of the written date differs from that weekday name, "Date weekday mismatch". The weekday is Mon if the remainder of (D+3) divided by 7 is 0, Tue if it is 1, ..., and Sun if it is 6 (January 1, 1970 was a Thursday).
+(8) If nothing above failed, parsing succeeds, and the UTC seconds of (6) are the result.
+The "UTC date-time notation" of UTC seconds t is the date whose number of days since January 1, 1970 is floor(t / 86400), together with the hour (floor(r / 3600)), the minute (floor((the remainder of r divided by 3600) / 60)) and the second (the remainder of r divided by 60) computed from the remainder r of t divided by 86400, written in the form "<4-digit year>-<2-digit month>-<2-digit day> <2-digit hour>:<2-digit minute>:<2-digit second>" (missing digits are filled with leading zeros).
+Example: the UTC date-time notation of "Mon, 1 Jun 2026 18:00:00 +0900 (JST)" is "2026-06-01 09:00:00". That of "1 Jun 26 10:30 GMT" is "2026-06-01 10:30:00". "Tue, 1 Jun 2026 11:00:00 +0000" is "Date weekday mismatch", because June 1, 2026 is a Monday.
+
+8. Message IDs
+A string that satisfies all of the following conditions is called a "well-formed message ID": its length is 3 or more; it begins with "<" and ends with ">"; the part between them (the inside) contains exactly one "@"; neither the first nor the last character of the inside is "@"; and every character of the inside has a character code from 33 to 126 and is none of "<", ">", "(", ")", the double quote (") and "\".
+To "extract IDs" from a field value, scan the value from the start looking for "<", and when one is found, look for the first ">" after it. If no ">" is found, stop. If one is found and the substring from that "<" to that ">" is a well-formed message ID, append it to the result sequence. The next "<" is searched for after that ">". Repeat this until no "<" is found.
+Example: extracting from "<a@x.org> (Ann's message)" gives one ID, <a@x.org>, and nothing can be extracted from "<a <b@x.org>".
+
+9. MIME structure
+The body of a message is parsed as a tree of "entities". An entity is determined by four things: its part number, the fields of its header section, the lines of its body section (each line has its file line number), and whether MIME is enabled. The top-level entity consists of the part number "1", the fields of the header section of the message, and the lines of the body section of the message; whether MIME is enabled for it is decided in 10 (9). To parse an entity, perform the following (1) to (5) in this order, and record the problems (defined in 10) in this order.
+(1) Type: initially the type is "text" and the subtype "plain", with no parameters. If MIME is enabled and field Content-Type is present, parse its value as a "value with parameters" with a subtype. If that fails, record the problem "bad Content-Type in part <part number>", and the type stays as initially set. If it succeeds, use its type, subtype and parameters.
+(2) Disposition: initially there is neither a disposition nor a file name. If MIME is enabled and field Content-Disposition is present, parse its value as a "value with parameters" without a subtype. If that fails, record the problem "bad Content-Disposition in part <part number>". If it succeeds, its type is the disposition and the value of its parameter filename is the file name. Finally (regardless of whether Content-Disposition is present and whether its parsing succeeded), if there is no file name or it is empty, the value of name among the parameters determined in (1) becomes the file name (no file name if there is no such parameter).
+(3) Charset: if the type is "text", the parameter charset is present, and its value lowercased is not "us-ascii", record the problem "unsupported charset "<lowercased value>" in part <part number>" (processing continues as is).
+(4) If MIME is enabled and the type is "multipart", the value of the parameter boundary is the boundary. If there is no boundary or it is empty, record the problem "missing boundary in part <part number>", treat this entity as a "leaf", and go on to (5). If there is a boundary, this entity is a "split multipart", and its child entities are made by the following steps ((5) is not performed).
+- Among the lines of the body section, a line whose string with trailing whitespace stripped is equal to "--<boundary>--" is called a closing line, and one equal to "--<boundary>" is called a boundary line. Examine the lines of the body section in order from the start, and stop when a closing line appears (the lines after the closing line are ignored). A boundary line starts a new part. A line that is neither a boundary line nor a closing line is ignored if it comes before the first boundary line, and is otherwise added to the lines of the current part.
+- If there is no part at all, record the problem "no parts in part <part number>". If there are one or more parts and no closing line appeared, record the problem "unterminated multipart in part <part number>".
+- Split the lines of the k-th part from the start (k = 1, 2, ...) into a header section and a body section by the rules of 2, record the problem "bad header line <file line number>" for each invalid line of the header section (in increasing order of file line number), and then parse that part, as an entity with part number "<part number of this entity>.<k>" and MIME enabled, by these steps (1) to (5). The child entities are parsed in the order of k, and their problems are also recorded in that order.
+(5) Content of a leaf: the string obtained by joining the lines of the body section is the original string. If MIME is enabled and field Content-Transfer-Encoding is present, its value lowercased is the transfer encoding; otherwise the transfer encoding is "7bit".
+- "base64": decode the original string as a base64 body (below). If that fails, record the problem "bad base64 in part <part number>", and the content is the empty string.
+- "quoted-printable": the content is the result of decoding the original string as quoted-printable (below). If there was an error, record the problem "bad quoted-printable in part <part number>".
+- "7bit", "8bit", "binary": the content is the original string.
+- Anything else: the content is the original string, and record the problem "unknown encoding "<transfer encoding>" in part <part number>".
+The "decoded size" of a leaf is the number of characters of its content.
+Example: if a multipart/mixed contains a multipart/alternative (text/plain and text/html) and an attached file, the part numbers of the entities are, in order, 1, 1.1, 1.1.1, 1.1.2 and 1.2.
+
+* Values with parameters
+Split the value into tokens for MIME (if that fails, it fails); it succeeds if the entire token sequence matches the following sequence: a token of kind "word" (the type); with a subtype, followed by "/" and a token of kind "word" (the subtype); and then zero or more groups of four: ";", a token of kind "word" (the parameter name), "=", and a token of kind "word" or "quoted string" (the parameter value). The type, the subtype and the parameter names are lowercased, and a parameter value is used as the string of its token as is. If a parameter with the same name appears two or more times, the first one is used.
+Example: "text/plain; charset="us-ascii"; format=flowed" succeeds, while "text/plain;" (nothing follows the last ";") and "attachment; filename=my notes.txt" (there is an extra token after the value) fail.
+
+* Decoding a base64 body
+Remove all spaces, tabs and LFs from the original string, and perform strict base64 decoding (if that fails, it fails). Scan the resulting byte sequence from the start, and replace each place where a byte of value 13 is immediately followed by a byte of value 10 with one byte of value 10. After that, if any byte remains whose value is none of 9, 10 and 32 to 126, it fails. Otherwise, the content is that byte sequence turned into characters.
+
+* Decoding quoted-printable
+Split the original string at LF into a sequence of lines, process each line in order as follows, and concatenate the output.
+- Strip trailing whitespace from the line. If the result ends with "=", remove that "=" and make this line a "soft line break line".
+- Read the line from the start. If "=" is followed by two hexadecimal digits and their value v is 9 or from 32 to 126 inclusive, output the character with character code v and advance 3 characters. Any other "=" is output as "=" itself, reading advances 1 character, and an error is recorded as having occurred. Characters other than "=" are output as is.
+- If the line is neither a soft line break line nor the last line, output one LF.
+
+10. Per-message processing
+For each message, split the lines adjusted by 1 into a header section and a body section by the rules of 2, and perform the following (1) to (10) in this order. Each message has a sequence of "problems", and recording a problem means appending its problem text (an ASCII string) to the end of that sequence.
+(1) For each invalid line of the header section, in increasing order of file line number, record the problem "bad header line <file line number>".
+(2) For the 12 names From, To, Cc, Subject, Date, Message-ID, In-Reply-To, References, MIME-Version, Content-Type, Content-Transfer-Encoding and Content-Disposition, in this order, if there are two or more fields with that name, record the problem "duplicate <name (spelled as written here)>". In the following steps, only the first field is used for every name.
+(3) Sender: if field From is absent, record the problem "missing From". If it is present, parse its value as an address list, and if parsing fails, if there are two or more addresses, or if the single address is a group, record the problem "bad From". In these cases there is no sender. Otherwise, the single mailbox is the sender (display name and address string), and if an encoded-word error occurred during parsing, record the problem "bad encoded word in From".
+(4) Recipients: for To and Cc, in this order, do the following. If the field is present, parse its value as an address list, and if that fails, record the problem "bad To" ("bad Cc" for Cc). If it succeeds, the recipients of the field are the sequence obtained by going through the address sequence from the start and listing, for a mailbox, its address string, and for a group, the address strings of the mailboxes in it in order (duplicates are kept as they are); if an encoded-word error occurred, record the problem "bad encoded word in To" ("bad encoded word in Cc" for Cc). When the field is absent and when parsing fails, the recipients are empty.
+(5) Subject: the subject is the value of field Subject (the empty string if it is absent) decoded as unstructured text. If an encoded-word error occurred, record the problem "bad encoded word in Subject".
+The "base subject" and whether the message is a "reply" are derived from the subject as follows. Starting from the subject, as long as its first three characters are equal, case-insensitively, to "re:", repeat removing those three characters and then removing all spaces that continue at the start. The remaining string is the base subject, and if removal happened at least once, the message is a "reply". Example: the subject "Re: RE:Lunch" has the base subject "Lunch" and is a reply. The subject "Fwd: Lunch" is not a reply, and its base subject is "Fwd: Lunch".
+(6) Date: if field Date is absent, record the problem "missing Date". If it is present, parse it by the procedure of 7, and if that fails, record its problem text (one of "bad Date syntax", "Date out of range" and "Date weekday mismatch"). Only when parsing succeeds is "the date valid", and the message then has those UTC seconds.
+(7) ID: if field Message-ID is absent, record the problem "missing Message-ID". If the value is not a well-formed message ID, record the problem "bad Message-ID". If the value is already the ID of an earlier message (one with a smaller message number), record the problem "Message-ID already used by message <message number of that message>". If none of these applies, the value is the ID of the message. A message for which one of these problems was recorded has an empty ID.
+(8) Reference list: the reference list is the sequence of IDs extracted from the value of field References (the empty string if it is absent). If extracting IDs from the value of field In-Reply-To (the empty string if it is absent) gives one or more IDs, let X be the first of them; if the reference list is empty or the last ID of the reference list differs from X, append X to the end of the reference list.
+(9) MIME enablement: if field MIME-Version is absent, MIME is disabled. If it is present, remove comments from the value by the procedure of 3 and then remove all whitespace; if the result is "1.0", MIME is enabled. When comment removal fails and when the result is not "1.0", record the problem "bad MIME-Version", and MIME is disabled.
+(10) Body: parse the top-level entity by the procedure of 9.
+The "sort key" of each message is the tuple (0 if the date is valid, 1 if it is invalid; the UTC seconds if the date is valid, 0 if it is invalid; the ID (the empty string if it is empty); the message number). The smaller key comes first. The keys of different messages are always different.
+
+11. Building threads
+Threads are built with the JWZ method, using "containers". A container has a message ID (possibly empty), a message (possibly none), a parent container (possibly none) and a collection of child containers. The "ID table" is a table that looks up a container by message ID; it is initially empty. For an ID I, "the container of I" is the container of I in the ID table if there is one; otherwise it is a newly created container with ID I and no message, no parent and no children, registered in the ID table.
+"Making A a child of B" means setting the parent of A to B and adding A to the children of B. "X is Y itself or an ancestor of Y" means that X appears while following parents one after another starting from Y (Y itself included).
+(1) Process the messages one at a time in order of message number, by the following steps a to e in this order.
+a. If the ID of the message is not empty, let M be the container of the ID. If the ID is empty, let M be a new container with an empty ID that is not registered in the ID table. Set the message of M to this message.
+b. Get the containers of the IDs of the reference list in order, and call them R1, R2, ..., Rk (k is the length of the reference list).
+c. For i = 1, 2, ..., k-1 in this order, if Ri+1 has no parent, and Ri+1 is neither Ri itself nor an ancestor of Ri, make Ri+1 a child of Ri.
+d. If M has a parent, remove M from the children of its parent, and make M have no parent.
+e. If k is 1 or more and M is neither Rk itself nor an ancestor of Rk, make M a child of Rk.
+(2) Among all containers of the ID table and the unregistered containers made in a, those without a parent form the root set.
+(3) Pruning empty containers: apply the following procedure "prune", which takes a collection S of containers and whether S is the root set, to the root set, and use its result as the new root set. In pruning, for each container C in S, first replace the children of C with the result of applying prune to the children of C (as a collection that is not the root set). Then, if C has a message, keep C. If C has no message, S is the root set, and C has two or more children, keep C (such a container is called a "missing container"). Otherwise, remove C and put all children of C in the place of C instead (the parent of the children becomes the parent of C; if S is the root set, the children become roots and have no parent; if there are no children, C is simply removed). The result of pruning is the kept containers and the children put in place.
+As a result, the only containers without a message are missing containers; every missing container is a root, and all of its children have messages.
+(4) Sorting: the key of a container with a message is the sort key of its message, and the key of a container without a message is the smallest of the keys of its children. Sort the children of every container, and the root set, each in increasing order of key.
+(5) Merging by subject: examine the root set in the order of (4), and let the "subject" of each root be the base subject of its message if the root has a message, and otherwise the base subject of the message of its first child. Group the roots whose subject is not empty by equal subject (compared case-sensitively), and for each group with two or more roots, do the following.
+- If the group has a missing container, the first of them in the order of (4) is the merge target.
+- Otherwise, if exactly one root in the group has a message that is not a reply, that root is the merge target.
+- If neither applies, create a new container with neither a message ID nor a message, give it the subject of the group, make it the merge target, and add it to the root set. This container is called a "subject container".
+- Remove each root X of the group other than the merge target from the root set; if X has a message, make X a child of the merge target, and otherwise make all children of X children of the merge target.
+Different groups share no roots, so the order in which the groups are processed does not affect the result.
+(6) Sort once more in the same way as (4) (the key of a subject container is also the smallest of the keys of its children). Each root of the root set obtained here is one thread, and the order of the roots is the thread order.
+
+12. Positions in threads and additional checks
+The threads are numbered from 1 in thread order (the thread number). The depth of a container is 0 for a root, and a child has a depth one greater than its parent. The thread number and depth of a message are those of the container that holds the message. The "parent message" of a message is the message of the parent of its container if that parent has a message; otherwise (when the container is a root, or its parent is a missing container or a subject container) the message has no parent message.
+After the threads have been built, go through the messages in order of message number, and when a message has a parent message, the dates of the message and of its parent message are both valid, and the UTC seconds of the message are less than the UTC seconds of the parent message, record the problem "dated before parent message <message number of the parent message>" at the end of that message's problem sequence.
+
+13. Body text
+* Selecting text parts
+The procedure "collect text parts" from an entity E, given whether HTML is allowed, is defined as follows.
+- When E is a leaf (every entity that is not a split multipart is a leaf): if the disposition is "attachment", collect nothing. If the type is "text" and the subtype is "plain", collect E. If the type is "text", the subtype is "html" and HTML is allowed, collect E. Otherwise collect nothing.
+- When E is a split multipart with subtype "alternative": examine the children in order from the start without allowing HTML, and the result of the first child from which one or more parts were collected is the result of E. If nothing is collected from any child, examine the children in order from the start allowing HTML, and the result of the first child from which one or more parts were collected is the result of E. If still nothing is collected, collect nothing.
+- For any other split multipart: the result is the concatenation, in order, of the results of examining the children in order from the start with the same setting as for E.
+The text parts of a message are the sequence of leaves collected from the top-level entity with HTML allowed.
+
+* Display lines
+For each text part, its format and its sequence of display lines are determined as follows.
+- If the subtype is "html", the format is "html", and the display lines are the content converted by "HTML conversion" below.
+- Otherwise, if the value of the parameter format lowercased is "flowed", the format is "flowed", and the display lines are the content processed by "flowed restoration" below (0 lines if the content is empty).
+- Otherwise, the format is "plain", and the display lines are the content split at LF (0 lines if the content is empty).
+
+Wrapping: wrapping a string T with a prefix P means the following. Split T at runs of whitespace into a sequence of words (no empty words are made). Starting with the current line empty, process the words in order. If the current line is not empty and (the number of characters of the current line) + 1 + (the number of characters of the word) exceeds 72, finalize the current line and make the word alone the new current line. Otherwise, if the current line is empty, append the word to it, and if it is not empty, append one space and the word to its end. Finally, finalize the current line (if there are no words at all, one empty line is finalized). The result is the sequence of the finalized lines, each with P added at its start.
+
+Flowed restoration: process the lines of the content split at LF in order from the start, and make a sequence of logical lines (quote depth, text, whether it flows).
+- The number of ">" continuing from the start of the line is the quote depth d; remove them. If the remainder begins with a space, remove that one character. The remainder is the text.
+- If the text ends with a space and the text is not "-- " (two "-" and one space), this line is a "flowing" line.
+- If there is a previous logical line, it is a flowing logical line, and its quote depth equals d, join this line to the previous logical line. In joining, if the value of the parameter delsp lowercased is "yes", first remove the last character of the text of the previous logical line; then append this text to its end, and whether the joined logical line flows is taken from this line. Otherwise, append this line as a new logical line at the end.
+The display lines are the lines obtained by wrapping each logical line with the prefix (d ">" characters and one space if d is 1 or more, the empty string if d is 0), in order.
+
+HTML conversion: read the content from the start, and make a sequence of lines (quote depth, text). Initially the quote depth is 0, the current text is empty, and "hide" is none.
+- At a "<" that has a ">" somewhere after it, the part from that "<" to the first ">" is a tag, and reading continues from the character after the ">". If the inside of the tag (between "<" and ">") begins with "/", it is an end tag. The tag name is the longest run of letters and digits starting after that "/" (for an end tag) or at the start of the inside (otherwise), lowercased (it may be empty).
+- Any other character is appended to the end of the current text if hide is none, and discarded if hide is set.
+Tags are handled as follows.
+- When hide is set: an end tag whose tag name equals hide sets hide to none, and all other tags are ignored.
+- When hide is none: a start tag whose tag name is one of head, style and script sets hide to that tag name. Tags with tag name br (both start and end tags) and start tags of li are "line breaks". Tags with tag name p, div, ul, ol, table, tr, blockquote, h1, h2, h3, h4, h5 or h6 (both start and end tags) are "paragraph breaks". All other tags are ignored.
+- Line break: append (current quote depth, current text) to the line sequence, and make the current text empty. For a start tag of li, then set the current text to "* " ("*" and a space).
+- Paragraph break: append (current quote depth, current text) and (current quote depth, empty string), in this order, to the line sequence, and make the current text empty. Then, for a start tag of blockquote, increase the quote depth by 1, and for an end tag of blockquote, decrease the quote depth by 1 (it never goes below 0).
+After reading the whole content, append (current quote depth, current text) to the line sequence. Then, for the text of each line, collapse each run of whitespace and LF characters into a single space, strip leading and trailing whitespace, replace character references (below), and then strip leading and trailing spaces. After that, a line whose text is not empty is wrapped with the prefix (d ">" characters and one space if its quote depth d is 1 or more, the empty string if it is 0), and the result is appended to the end of the display lines. For a line whose text is empty, one empty display line is appended only when there are one or more display lines and the last of them is not empty. Finally, remove all empty display lines at the end.
+To replace character references, read the string from the start, and when there is a "&", examine the string N between it and the first ";" that appears after it. If N is one of amp, lt, gt, quot, apos and nbsp (case-sensitive), replace the part from "&" to ";" with, respectively, "&", "<", ">", the double quote ("), "'" and a space. If N consists of "#" followed by one to three digits and the value of that number is from 32 to 126 inclusive, replace the part from "&" to ";" with the character whose character code is that value. After a replacement, continue reading from the character after the ";". In all other cases (including when there is no ";"), leave the "&" as is and move on to the next character. Characters produced by a replacement are not examined again.
+Example: the display lines of "<p>Hi&nbsp;Bob,</p><ul><li>one</li><li>two</li></ul>" are the four lines "Hi Bob,", "", "* one" and "* two".
+
+* Quoted lines and signature lines
+Consider the sequence of the display lines of a text part, each with trailing whitespace stripped. The number of lines that begin with ">" is the quoted line count. If there are lines equal to "--", the number of lines after the last of them is the signature line count; otherwise the signature line count is 0.
+
+14. Sender statistics
+Group the messages that have a sender by the address string of the sender, and compute the following for each address.
+- Message count: the number of messages whose sender is that address.
+- Thread count: the number of distinct thread numbers of those messages.
+- First and last: the minimum and maximum of the UTC seconds of those messages whose date is valid (if none of them has a valid date, neither exists).
+- Name: among those messages whose sender has a display name, the display name of the one with the largest message number (the empty string if there is none).
+
+[Output files]
+Write the following five files to output/. Every file consists only of ASCII characters, every line ends with a line feed (LF), and no line has trailing whitespace. Apart from the blank lines placed between blocks, no blank line is written at the start or the end of a file. Hereafter, the notation of a subject is "(no subject)" if the subject is the empty string, and the subject itself otherwise. The notation of a date is its UTC date-time notation if the date is valid, and "invalid" otherwise.
+
+* output/threads.txt
+Output one block per thread, in thread order, with one blank line between blocks. Each block consists of the following lines.
+- "thread <thread number> messages <message count> depth <depth> senders <sender count>": the message count is the number of containers in the thread that have a message, the depth is the maximum depth of the containers in the thread (missing containers and subject containers included), and the sender count is the number of distinct sender address strings of the messages in the thread (messages without a sender are not counted).
+- "span <first> .. <last>": the UTC date-time notations of the minimum and the maximum of the UTC seconds of the messages in the thread whose date is valid. If no message has a valid date, "span -".
+- "subject <thread subject>": the subject of the root if the root is a subject container, the base subject of the message of the root if the root has a message, and the base subject of the message of the first child if the root is a missing container. If it is the empty string, "(no subject)".
+- Then output each container of the thread tree, one per line, starting from the root, in the order in which each container is immediately followed by its children (in the order of the children, each together with its descendants) (preorder). Each line is "<prefix><container notation>".
+The prefix is determined as follows. Each container is given a "stem"; both the stem and the prefix of the root are the empty string. For a child C of a container P, if C is not the last child of P, the prefix of C is the stem of P followed by "+- ", and the stem of C is the stem of P followed by "|  " ("|" and two spaces). If C is the last child of P, the prefix of C is the stem of P followed by "`- ", and the stem of C is the stem of P followed by three spaces.
+The container notation is "[<message number>] <date notation> <sender> <subject notation>" for a container with a message, where the sender is the address string of the sender ("-" if there is no sender). For a subject container it is "[subject] <subject of the subject container>", and for a missing container it is "[missing] <message ID of that container>".
+
+* output/messages.txt
+Output one block per message, in order of message number, with one blank line between blocks. Each block consists of the following lines.
+- "message <message number>"
+- "id <ID>": "id -" if the ID is empty.
+- "date <date notation>"
+- "from <sender notation>": "<display name> <<address string>>" (the display name, a space, and the address string enclosed in "<" and ">") if the sender has a display name, the address string if it does not, and "-" if there is no sender.
+- "to <recipients>" and "cc <recipients>": the address strings of the recipients of To and of Cc, respectively, joined with ", " ("," and a space). "-" if the recipients are empty.
+- "subject <subject notation>"
+- "refs <reference list>": the IDs of the reference list separated by single spaces. "refs -" if the reference list is empty.
+- "thread <thread number> depth <depth> parent <message number of the parent message>": "parent -" if there is no parent message.
+- Then output one line per entity, starting from the top-level entity, in the order in which each entity is immediately followed by its child entities (in the order of k, each together with its descendants). A split multipart is "part <part number> <type>/<subtype>", and a leaf is "part <part number> <type>/<subtype> <decoded size>"; if the leaf has a disposition, append a space and the disposition, and if it has a file name that is not the empty string, append a space and then the file name enclosed in double quotes (one " before it and one after it).
+
+* output/bodies.txt
+In request order, output one block per request, with one blank line between blocks. The first line of each block is "request <requested ID>". If there is no message whose ID equals the requested ID, the second line is "not found" and the block ends (the IDs are those determined in 10 (7), so a message whose ID became empty because of a problem, and a message that is only referenced and is not in the mailbox, are not found).
+If one is found, the second line is "message <message number> text parts <number of text parts>". Then, for each text part, in their order, output the following.
+- "part <part number> <format> lines <number of display lines> quoted <quoted line count> signature <signature line count>"
+- The display lines, one per line: "|" if the line with trailing whitespace stripped is empty, and otherwise "| " ("|" and a space) followed by the line with trailing whitespace stripped.
+
+* output/senders.csv
+The first line is "address,name,messages,threads,first,last". Then output one line "<address string>,<name>,<message count>,<thread count>,<first>,<last>" for each address grouped in 14. The lines are ordered by decreasing message count, and for equal counts by ascending address string.
+The name is output as is if it contains neither "," nor the double quote ("); if it contains either of them, it is output with each double quote (") in the name replaced by two double quotes ("") and the result enclosed in double quotes. If the name is empty, nothing is output for it (the two "," become adjacent). First and last are UTC date-time notations, and "-" when they do not exist.
+
+* output/malformed.txt
+The first line is "messages <total number of messages> malformed <number of messages whose problem sequence is not empty> problems <total number of problems of all messages>". Then, for the messages whose problem sequence is not empty, in order of message number, output their problems in the order in which they were recorded, one per line, in the form "message <message number>: <problem text>".
+
+[Source files]
+Split the source into the following six files (file names and extensions follow the conventions of each language).
+- main: handles the overall flow and the core of the processing, and holds the most logic. It reads the mailbox and splits it into messages (mboxrd restoration, removal of the trailing blank line), splits header sections from body sections, checks each message (the rules for invalid lines, duplicates, From, To, Cc, Subject, Date, Message-ID and MIME-Version and the recording of problems, the base subject and reply detection, the sort key), checks message IDs and extracts IDs, builds reference lists, parses the MIME entity tree (multipart splitting, part headers, type, disposition and charset, choice of the transfer encoding, part numbers), selects text parts, makes display lines (flowed restoration, HTML conversion and character references, wrapping), determines thread numbers, depths and parent messages, performs the additional checks, computes the sender statistics, and assembles and writes the five output files.
+- headers: splits a header section into fields (continuation lines and invalid lines), removes comments, splits into tokens (for addresses and for MIME), decodes encoded words and unstructured text, and parses values with parameters.
+- addresses: parses address lists by the grammar (mailboxes, groups, checks of the local part and the domain) and builds display names and address strings.
+- mime: performs strict base64 decoding, base64 body decoding (CR LF replacement and the character check) and quoted-printable decoding.
+- dates: parses the date tokens, checks the range of each value and the weekday, converts to UTC seconds, and makes the UTC date-time notation.
+- threader: builds threads with the JWZ method (containers and the ID table, parent-child linking by reference lists, pruning empty containers, merging by subject, sorting by key).
+
+[Constraints]
+- There are from 1 to 500 messages, and the mailbox has at most 20000 lines. There are from 1 to 100 requests.
+- Multipart nesting is at most 5 levels deep.
+- Integer values (UTC seconds included) have absolute values less than 2^53, including intermediate values during computation. Under the rules, UTC seconds can be 2^31 or more, so a 32-bit signed integer may not be enough.
+- Apart from the conditions written here, the input may contain errors (invalid lines, broken addresses and dates, MIME errors, and so on), and all of them are handled according to the rules of [Processing].
+
+[Example]
+The following is a small example to show the formats; it differs from the actual input.
+
+input/mailbox.mbox
+From ann@example.com Mon Jun  1 09:00:00 2026
+From: Ann Lee <ann@example.com>
+To: dev@example.com
+Subject: Lunch =?us-ascii?Q?plan?=
+Date: Mon, 1 Jun 2026 18:00:00 +0900
+Message-ID: <m1@example.com>
+
+Shall we try the new place?
+>From the menu, the soup looks good.
+
+From ben@example.com Mon Jun  1 10:00:00 2026
+From: "Kim, Ben" <Ben@Example.com>
+To: dev@example.com, Ann Lee <ann@example.com>
+Subject: Re: Lunch plan
+Date: Mon, 1 Jun 2026 10:30 GMT
+Message-ID: <m2@example.com>
+References: <m1@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/plain; format=flowed
+
+> Shall we try the new place?
+
+Yes, 12:30 works for
+me.
+--b1
+Content-Type: text/html
+
+<p>Yes, 12:30 works for me.</p>
+--b1--
+
+From cy@example.com Mon Jun  1 11:00:00 2026
+From: cy@example.com
+Subject: Re: Lunch plan
+Date: Tue, 1 Jun 2026 11:00:00 +0000
+Message-ID: <m3@example.com>
+In-Reply-To: <m0@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain
+Content-Transfer-Encoding: quoted-printable
+
+Count me in =3D 3 people.=
+ See you.
+
+From ann@example.com Mon Jun  1 12:00:00 2026
+From: Ann Lee <ann@example.com>
+Subject: Re: Lunch plan
+Date: Mon, 1 Jun 2026 12:05:00 +0000
+Message-ID: <m4@example.com>
+References: <m1@example.com>
+	<m2@example.com>
+
+Great, see you there.
+
+(In the second message, the line "Yes, 12:30 works for " has one trailing space. The second line of References in the fourth message is a continuation line beginning with a tab.)
+
+input/requests.txt
+<m2@example.com>
+<m3@example.com>
+<m9@example.com>
+
+output/threads.txt
+thread 1 messages 4 depth 2 senders 3
+span 2026-06-01 09:00:00 .. 2026-06-01 12:05:00
+subject Lunch plan
+[1] 2026-06-01 09:00:00 ann@example.com Lunch plan
++- [2] 2026-06-01 10:30:00 ben@example.com Re: Lunch plan
+|  `- [4] 2026-06-01 12:05:00 ann@example.com Re: Lunch plan
+`- [3] invalid cy@example.com Re: Lunch plan
+
+output/messages.txt
+message 1
+id <m1@example.com>
+date 2026-06-01 09:00:00
+from Ann Lee <ann@example.com>
+to dev@example.com
+cc -
+subject Lunch plan
+refs -
+thread 1 depth 0 parent -
+part 1 text/plain 63
+
+message 2
+id <m2@example.com>
+date 2026-06-01 10:30:00
+from Kim, Ben <ben@example.com>
+to dev@example.com, ann@example.com
+cc -
+subject Re: Lunch plan
+refs <m1@example.com>
+thread 1 depth 1 parent 1
+part 1 multipart/alternative
+part 1.1 text/plain 56
+part 1.2 text/html 31
+
+message 3
+id <m3@example.com>
+date invalid
+from cy@example.com
+to -
+cc -
+subject Re: Lunch plan
+refs <m0@example.com>
+thread 1 depth 1 parent 1
+part 1 text/plain 32
+
+message 4
+id <m4@example.com>
+date 2026-06-01 12:05:00
+from Ann Lee <ann@example.com>
+to -
+cc -
+subject Re: Lunch plan
+refs <m1@example.com> <m2@example.com>
+thread 1 depth 2 parent 2
+part 1 text/plain 21
+
+output/bodies.txt
+request <m2@example.com>
+message 2 text parts 1
+part 1.1 flowed lines 3 quoted 1 signature 0
+| > Shall we try the new place?
+|
+| Yes, 12:30 works for me.
+
+request <m3@example.com>
+message 3 text parts 1
+part 1 plain lines 1 quoted 0 signature 0
+| Count me in = 3 people. See you.
+
+request <m9@example.com>
+not found
+
+output/senders.csv
+address,name,messages,threads,first,last
+ann@example.com,Ann Lee,2,1,2026-06-01 09:00:00,2026-06-01 12:05:00
+ben@example.com,"Kim, Ben",1,1,2026-06-01 10:30:00,2026-06-01 10:30:00
+cy@example.com,,1,1,-,-
+
+output/malformed.txt
+messages 4 malformed 1 problems 1
+message 3: Date weekday mismatch
+
+Notes:
+- The second line of the body of the first message is ">From the menu, ..." in the file, but it becomes "From the menu, ..." by the mboxrd restoration. The body has two lines, and the decoded size is 27 + 1 + 35 = 63.
+- <m0@example.com>, which the In-Reply-To of the third message points to, is not in the mailbox, so its container has no message and only one child; it is removed by pruning, and the third message becomes a root. The third message is a reply, and its base subject "Lunch plan" equals that of the first message (a root that is not a reply), so merging by subject makes it a child of the first message. The third message has an invalid date, so it is placed last among its siblings.
+- The text/plain part of the second message is format=flowed, and "Yes, 12:30 works for " is a flowing line, so it is joined with the next line. In the multipart/alternative, the text/plain child is selected, and the text/html child is not used.

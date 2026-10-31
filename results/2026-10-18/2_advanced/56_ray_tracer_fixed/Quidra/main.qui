@@ -1,0 +1,622 @@
+import fixed = "./fixed_point.qui"
+import vector = "./vector3.qui"
+import scene = "./scene.qui"
+import intersect = "./intersect.qui"
+import shading = "./shading.qui"
+
+int minimum(int first, int second)
+    return if first < second then first else second
+
+int maximum(int first, int second)
+    return if first > second then first else second
+
+int absolute(int value)
+    return if value < 0 then -value else value
+
+string words(int[] values)
+    return [for int value = values[] then value.string()].join(" ")
+
+string[] read_lines(string path)
+    string content = file.read(path)
+    string[] rows = content.split(NL)
+    return rows[0:<int(len(rows)) - 1]
+
+void write_lines(string name, string[] rows)
+    file.write("output/" + name, (if len(rows) == 0 then "" else rows.join(NL) + NL))
+
+class Settings(local string[][] rows)
+    int width = scene.integer(rows[0][1])
+    int height = scene.integer(rows[0][2])
+    int contrast = scene.integer(rows[1][1])
+    int max_depth = scene.integer(rows[2][1])
+    int far = scene.integer(rows[3][1])
+    int epsilon = scene.integer(rows[4][1])
+    int margin = scene.integer(rows[5][1])
+
+Settings read_settings()
+    string[][] rows = [for string row = read_lines("input/render.txt")[] then row.split(" ")]
+    return Settings(rows)
+
+class Node(int[] low, int[] high, int depth, int[] objects)
+    int left = -1
+    int right = -1
+    int visits = 0
+
+class Info(int object_index, int distance, int[] point, int[] normal, bool front, int[] base)
+    int[][] lighting = []
+    int illumination = 0
+
+Info empty_info()
+    return Info(-1, 0, [0, 0, 0], [0, 0, 0], true, [0, 0, 0])
+
+class Pixel(int x, int y)
+    int rays = 0
+    int depth = 0
+    int samples = 1
+    string label = "."
+    int[] center = [0, 0, 0]
+    int[] color = [0, 0, 0]
+    Info hit = empty_info()
+
+class Renderer(scene.Scene data, Settings settings)
+    int[][][] object_bounds = []
+    int[] leaf_depths = []
+    int[] planes = []
+    Node[] nodes = []
+    int root = -1
+    int[] rays = [0, 0, 0, 0]
+    int[] misses = [0, 0, 0]
+    int[] depth_counts = [for int depth <= settings.max_depth then 0]
+    int[][] tests = [[0, 0], [0, 0], [0, 0], [0, 0]]
+    int[][] object_counts = [for int j < int(len(data.objects)) then [0, 0, 0]]
+    int[][] light_counts = [for int j < int(len(data.lights)) then [0, 0, 0, 0, 0, 0]]
+    int total_internal = 0
+    int clamped = 0
+    int supersampled = 0
+    Pixel[] pixels = []
+
+    int[][] union_box(int[] members)
+        int[] low = object_bounds[members[0]][0]
+        int[] high = object_bounds[members[0]][1]
+        for int index = members[]
+            for int axis < 3
+                low[axis] = minimum(low[axis], object_bounds[index][0][axis])
+                high[axis] = maximum(high[axis], object_bounds[index][1][axis])
+        return [low, high]
+
+    int surface_cost(int[] members)
+        int[][] bounds = union_box(members)
+        int[] delta = vector.sub(bounds[1], bounds[0])
+        return (delta[0] * delta[1] + delta[1] * delta[2] + delta[2] * delta[0]) * int(len(members))
+
+    int[] axis_order(int[] members, int axis)
+        int[] result = []
+        for int index = members[]
+            int center = fixed.floor_div(object_bounds[index][0][axis] + object_bounds[index][1][axis], 2)
+            int[] updated = []
+            bool added = false
+            for int previous = result[]
+                int previous_center = fixed.floor_div(object_bounds[previous][0][axis] + object_bounds[previous][1][axis], 2)
+                if not added and (center < previous_center or (center == previous_center and index < previous))
+                    updated = updated.append(index)
+                    added = true
+                updated = updated.append(previous)
+            if not added
+                updated = updated.append(index)
+            result = updated
+        return result
+
+    int .build(int[] members, int depth)
+        int[][] bounds = union_box(members)
+        int index = int(len(nodes))
+        nodes = nodes.append(Node(bounds[0], bounds[1], depth, []))
+        if len(members) <= 2
+            nodes[index].objects = members.sorted()
+            for int object_index = members[]
+                leaf_depths[object_index] = depth
+            return index
+        int best_cost = -1
+        int[] best_left = []
+        int[] best_right = []
+        for int axis < 3
+            int[] ordered = axis_order(members, axis)
+            for 1 <= int split < int(len(ordered))
+                int[] left = ordered[0:<split]
+                int[] right = ordered[split:<int(len(ordered))]
+                int cost = surface_cost(left) + surface_cost(right)
+                if best_cost < 0 or cost < best_cost
+                    best_cost = cost
+                    best_left = left
+                    best_right = right
+        int left = .build(best_left, depth + 1)
+        int right = .build(best_right, depth + 1)
+        nodes[index].left = left
+        nodes[index].right = right
+        return index
+
+    void .prepare()
+        int[] bounded = []
+        for int index < int(len(data.objects))
+            scene.Object object = data.objects[index]
+            int[][] bounds = intersect.bounds(object.kind, object.geometry, settings.margin)
+            object_bounds = object_bounds.append(bounds)
+            leaf_depths = leaf_depths.append(-1)
+            if len(bounds) > 0
+                bounded = bounded.append(index)
+            else
+                planes = planes.append(index)
+        if len(bounded) > 0
+            root = .build(bounded, 0)
+
+    int[] .test_node(int index, int[] origin, int[] direction, int kind, bool counted)
+        if counted
+            tests[kind][0] += 1
+            nodes[index].visits += 1
+        int[] interval = intersect.slab(nodes[index].low, nodes[index].high, origin, direction)
+        if len(interval) == 0 or interval[2] <= settings.epsilon
+            return []
+        return interval
+
+    int[] .test_object(int index, int[] origin, int[] direction, int kind, bool counted)
+        if counted
+            tests[kind][1] += 1
+        scene.Object object = data.objects[index]
+        return intersect.candidate(object.kind, object.geometry, origin, direction, settings.epsilon)
+
+    void .consider(int index, int[] origin, int[] direction, int kind, bool counted, int &best_object, int[] &best_hit)
+        int[] hit = .test_object(index, origin, direction, kind, counted)
+        if len(hit) > 0 and hit[0] <= settings.far and (best_object < 0 or hit[0] < best_hit[0] or (hit[0] == best_hit[0] and index < best_object))
+            best_object = index
+            best_hit = hit
+
+    (int, int[]) .nearest(int[] origin, int[] direction, int kind, bool counted)
+        int best_object = -1
+        int[] best_hit = []
+        for int index = planes[]
+            .consider(index, origin, direction, kind, counted, &best_object, &best_hit)
+        int[] pending = if root >= 0 then [root] else []
+        while len(pending) > 0
+            int last = int(len(pending)) - 1
+            int index = pending[last]
+            pending = pending[0:<last]
+            int[] interval = .test_node(index, origin, direction, kind, counted)
+            if len(interval) == 0 or interval[0] > settings.far or (best_object >= 0 and interval[0] > best_hit[0])
+                continue
+            Node node = nodes[index]
+            if len(node.objects) > 0
+                for int object_index = node.objects[]
+                    .consider(object_index, origin, direction, kind, counted, &best_object, &best_hit)
+            else
+                pending = pending.append(node.right).append(node.left)
+        return (best_object, best_hit)
+
+    void .consider_occluder(int index, int[] origin, int[] direction, int distance, bool counted, int[] &found)
+        int[] hit = .test_object(index, origin, direction, 3, counted)
+        if len(hit) > 0 and hit[0] < distance
+            found = found.append(index)
+            if counted
+                object_counts[index][2] += 1
+
+    int[] .occluders(int[] origin, int[] direction, int distance, bool counted)
+        int[] found = []
+        for int index = planes[]
+            .consider_occluder(index, origin, direction, distance, counted, &found)
+        int[] pending = if root >= 0 then [root] else []
+        while len(pending) > 0
+            int last = int(len(pending)) - 1
+            int index = pending[last]
+            pending = pending[0:<last]
+            int[] interval = .test_node(index, origin, direction, 3, counted)
+            if len(interval) == 0 or interval[0] >= distance
+                continue
+            Node node = nodes[index]
+            if len(node.objects) > 0
+                for int object_index = node.objects[]
+                    .consider_occluder(object_index, origin, direction, distance, counted, &found)
+            else
+                pending = pending.append(node.right).append(node.left)
+        return found.sorted()
+
+    (int[], int[]) camera(int qx, int qy)
+        int u = fixed.floor_div((qx - 2 * settings.width) * data.view[0], 2 * settings.width)
+        int v = fixed.floor_div((2 * settings.height - qy) * data.view[1], 2 * settings.height)
+        int[] direction = vector.add(vector.add(data.forward, vector.sc(data.right, u)), vector.sc(data.up, v))
+        return (data.eye, vector.norm(direction))
+
+    int[][] light_samples(int index, int[] point)
+        scene.Light light = data.lights[index]
+        int intensity = light.values[int(len(light.values)) - 1]
+        if light.kind == "sun"
+            return [light.values[0:<3].concat([settings.far, intensity])]
+        int[][] positions = []
+        if light.kind == "area"
+            int k = light.values[9]
+            for int j < k
+                for int i < k
+                    int[] position = []
+                    for int axis < 3
+                        position = position.append(light.values[axis] + fixed.floor_div((2 * i + 1) * light.values[axis + 3], 2 * k) + fixed.floor_div((2 * j + 1) * light.values[axis + 6], 2 * k))
+                    positions = positions.append(position)
+        else
+            positions = [light.values[0:<3]]
+        int[][] result = []
+        for int[] position = positions[]
+            int[] relative = vector.sub(position, point)
+            result = result.append(vector.norm(relative).concat([vector.length(relative), fixed.floor_div(intensity, light.samples)]))
+        return result
+
+    int cone(int index, int[] direction)
+        scene.Light light = data.lights[index]
+        if light.kind != "spot"
+            return 4096
+        int cosine = -vector.dot(direction, light.values[3:<6])
+        if cosine <= light.values[6]
+            return 0
+        if cosine >= light.values[7]
+            return 4096
+        return fixed.floor_div((cosine - light.values[6]) * 4096, light.values[7] - light.values[6])
+
+    int[] .local_color(Info &info, int[] direction, bool counted, Pixel &pixel)
+        int diffuse_sum = 0
+        int specular_sum = 0
+        info.lighting = []
+        info.illumination = 0
+        scene.Material material = data.materials[data.objects[info.object_index].material]
+        for int index < int(len(data.lights))
+            int lit = 0
+            int diffuse = 0
+            int specular = 0
+            for int[] sample = light_samples(index, info.point)[]
+                int[] toward = sample[0:<3]
+                int ndl = vector.dot(info.normal, toward)
+                if ndl <= 0
+                    if counted
+                        light_counts[index][4] += 1
+                    continue
+                int factor = cone(index, toward)
+                if factor == 0
+                    if counted
+                        light_counts[index][5] += 1
+                    continue
+                if counted
+                    rays[3] += 1
+                    pixel.rays += 1
+                    light_counts[index][1] += 1
+                int[] blockers = .occluders(info.point, toward, sample[3], counted)
+                for int object_index = blockers[]
+                    factor = fixed.mul(factor, data.materials[data.objects[object_index].material].values[7])
+                if factor == 0
+                    if counted
+                        light_counts[index][2] += 1
+                    continue
+                if counted and len(blockers) > 0
+                    light_counts[index][3] += 1
+                int[] contribution = shading.phong(material.values, info.normal, toward, vector.neg(direction), ndl, sample[4], factor)
+                lit += 1
+                diffuse += contribution[0]
+                specular += contribution[1]
+            info.lighting = info.lighting.append([lit, diffuse, specular])
+            if lit > 0
+                info.illumination += 1
+            diffuse_sum += diffuse
+            specular_sum += specular
+        int[] color = []
+        for int axis < 3
+            int raw = fixed.floor_div(info.base[axis] * (data.ambient + diffuse_sum), 4096) + fixed.floor_div(255 * specular_sum, 4096)
+            if counted and raw > 255
+                clamped += 1
+            color = color.append(minimum(raw, 255))
+        return color
+
+    (int[], Info) .trace(int[] origin, int[] direction, int kind, int depth, bool counted, Pixel &pixel, bool recording, string[] &records)
+        string[] ray_kinds = ["primary", "reflection", "refraction", "shadow"]
+        if counted
+            rays[kind] += 1
+            depth_counts[depth] += 1
+            pixel.rays += 1
+            pixel.depth = maximum(pixel.depth, depth)
+        if recording
+            records = records.append("ray {ray_kinds[kind]} {depth} origin " + words(origin) + " direction " + words(direction))
+        (int object_index, int[] hit) = .nearest(origin, direction, kind, counted)
+        if object_index < 0
+            if counted
+                misses[kind] += 1
+            if recording
+                records = records.concat(["miss", "color " + words(data.background)])
+            return (data.background, empty_info())
+        scene.Object object = data.objects[object_index]
+        scene.Material material = data.materials[object.material]
+        int[] point = vector.add(origin, vector.sc(direction, hit[0]))
+        int[] outward = intersect.outward(object.kind, object.geometry, point, direction, hit)
+        bool front = vector.dot(outward, direction) <= 0
+        int[] normal = if front then outward else vector.neg(outward)
+        auto info = Info(object_index, hit[0], point, normal, front, shading.base_color(material.values, material.checker, material.checker_size, point))
+        if counted
+            int category = if kind == 0 then 0 else 1
+            object_counts[object_index][category] += 1
+        int[] local_value = .local_color(&info, direction, counted, &pixel)
+        if recording
+            records = records.append("hit {object.label} t {hit[0]} point " + words(point) + " normal " + words(normal) + " base " + words(info.base))
+            for int j < int(len(info.lighting))
+                int[] lighting = info.lighting[j]
+                records = records.append("light {j + 1} lit {lighting[0]} of {data.lights[j].samples} diffuse {lighting[1]} specular {lighting[2]}")
+            records = records.append("local " + words(local_value))
+        int[] color = local_value
+        if depth < settings.max_depth and (material.values[6] > 0 or material.values[7] > 0)
+            (int wr, int wt, int[] transmitted, bool internal) = shading.refraction(material.values, direction, normal, front)
+            if internal
+                if counted
+                    total_internal += 1
+                if recording
+                    records = records.append("total_internal_reflection")
+            int local_weight = 4096 - material.values[6] - material.values[7]
+            if recording
+                records = records.append("weights {local_weight} {wr} {wt}")
+            int[] reflected_color = [0, 0, 0]
+            int[] refracted_color = [0, 0, 0]
+            if wr > 0
+                (int[] result, Info child) = .trace(point, shading.reflected(direction, normal), 1, depth + 1, counted, &pixel, recording, &records)
+                reflected_color = result
+            if wt > 0
+                (int[] result, Info child) = .trace(point, transmitted, 2, depth + 1, counted, &pixel, recording, &records)
+                refracted_color = result
+            color = shading.mix([local_value, reflected_color, refracted_color], [local_weight, wr, wt])
+        if len(data.fog) > 0
+            int factor = 0
+            if hit[0] >= data.fog[4]
+                factor = 4096
+            elif hit[0] > data.fog[3]
+                factor = fixed.floor_div((hit[0] - data.fog[3]) * 4096, data.fog[4] - data.fog[3])
+            color = shading.mix([color, data.fog[0:<3]], [4096 - factor, factor])
+        if recording
+            records = records.append("color " + words(color))
+        return (color, info)
+
+    void .render()
+        for int y < settings.height
+            for int x < settings.width
+                auto pixel = Pixel(x, y)
+                (int[] origin, int[] direction) = camera(4 * x + 2, 4 * y + 2)
+                string[] records = []
+                (int[] color, Info info) = .trace(origin, direction, 0, 0, true, &pixel, false, &records)
+                pixel.center = color
+                pixel.color = color
+                pixel.hit = info
+                if info.object_index >= 0
+                    pixel.label = data.objects[info.object_index].label
+                    for int j < int(len(info.lighting))
+                        if info.lighting[j][0] > 0
+                            light_counts[j][0] += 1
+                pixels = pixels.append(pixel)
+        for int index < int(len(pixels))
+            Pixel pixel = pixels[index]
+            bool boundary = false
+            for int[] offset = [[0, -1], [0, 1], [-1, 0], [1, 0]][]
+                int x = pixel.x + offset[0]
+                int y = pixel.y + offset[1]
+                if 0 <= x < settings.width and 0 <= y < settings.height
+                    Pixel other = pixels[y * settings.width + x]
+                    int difference = 0
+                    for int axis < 3
+                        difference = maximum(difference, absolute(pixel.center[axis] - other.center[axis]))
+                    if pixel.label != other.label or difference > settings.contrast
+                        boundary = true
+            if not boundary
+                continue
+            supersampled += 1
+            pixel.samples = 4
+            int[] sum_color = [0, 0, 0]
+            for int[] offset = [[1, 1], [3, 1], [1, 3], [3, 3]][]
+                (int[] origin, int[] direction) = camera(4 * pixel.x + offset[0], 4 * pixel.y + offset[1])
+                string[] records = []
+                (int[] color, Info info) = .trace(origin, direction, 0, 0, true, &pixel, false, &records)
+                sum_color = sum_color + color
+            pixel.color = [for int value = sum_color[] then fixed.floor_div(value, 4)]
+            pixels[index] = pixel
+
+    int[] distance_range()
+        int low = -1
+        int high = -1
+        for Pixel pixel = pixels[]
+            if pixel.hit.object_index >= 0
+                int distance = pixel.hit.distance
+                low = if low < 0 then distance else minimum(low, distance)
+                high = if high < 0 then distance else maximum(high, distance)
+        return if low < 0 then [] else [low, high]
+
+    int[] mean_color(Pixel[] target)
+        int[] sum_color = [0, 0, 0]
+        for Pixel pixel = target[]
+            sum_color = sum_color + pixel.color
+        return [for int value = sum_color[] then fixed.floor_div(value, int(len(target)))]
+
+    void netpbm(string name, string magic, int[][] values)
+        string[] rows = [magic, "{settings.width} {settings.height}", "255"]
+        for int y < settings.height
+            int[] fields = []
+            for int x < settings.width
+                fields = fields.concat(values[y * settings.width + x])
+            rows = rows.append(words(fields))
+        write_lines(name, rows)
+
+    void character_map(string name, string[] values)
+        string[] rows = []
+        for int y < settings.height
+            rows = rows.append(values[y * settings.width:<(y + 1) * settings.width].join(""))
+        write_lines(name, rows)
+
+    void write_images()
+        int[] distances = distance_range()
+        int max_cost = 0
+        for Pixel pixel = pixels[]
+            max_cost = maximum(max_cost, pixel.rays)
+        int[][] colors = []
+        int[][] depths = []
+        int[][] normals = []
+        int[][] albedos = []
+        int[][] costs = []
+        string[] labels = []
+        string[] lights = []
+        string[] ray_depths = []
+        for Pixel pixel = pixels[]
+            colors = colors.append(pixel.color)
+            costs = costs.append([fixed.floor_div(255 * pixel.rays, max_cost)])
+            labels = labels.append(pixel.label)
+            ray_depths = ray_depths.append(pixel.depth.string())
+            Info hit = pixel.hit
+            if hit.object_index < 0
+                depths = depths.append([0])
+                normals = normals.append([0, 0, 0])
+                albedos = albedos.append([0, 0, 0])
+                lights = lights.append(".")
+            else
+                int value = if distances[0] == distances[1] then 255 else 255 - fixed.floor_div(235 * (hit.distance - distances[0]), distances[1] - distances[0])
+                depths = depths.append([value])
+                int[] normal = [for int component = hit.normal[] then maximum(0, minimum(255, fixed.floor_div((component + 4096) * 255, 2 * 4096)))]
+                normals = normals.append(normal)
+                albedos = albedos.append(hit.base)
+                lights = lights.append(hit.illumination.string())
+        netpbm("image.ppm", "P3", colors)
+        netpbm("depth.pgm", "P2", depths)
+        netpbm("normal.ppm", "P3", normals)
+        netpbm("albedo.ppm", "P3", albedos)
+        netpbm("cost.pgm", "P2", costs)
+        character_map("object_map.txt", labels)
+        character_map("light_map.txt", lights)
+        character_map("ray_depth.txt", ray_depths)
+
+    string[] statistics()
+        string[] ray_kinds = ["primary", "reflection", "refraction", "shadow"]
+        string[] rows = ["image {settings.width} {settings.height}", "supersampled {supersampled}"]
+        string ray_line = "rays"
+        string miss_line = "misses"
+        int ray_total = 0
+        for int kind < 4
+            ray_line += " {ray_kinds[kind]} {rays[kind]}"
+            ray_total += rays[kind]
+            if kind < 3
+                miss_line += " {ray_kinds[kind]} {misses[kind]}"
+        rows = rows.concat([ray_line + " total {ray_total}", miss_line, "depth " + words(depth_counts)])
+        for int kind < 4
+            rows = rows.append("tests {ray_kinds[kind]} nodes {tests[kind][0]} objects {tests[kind][1]}")
+        rows = rows.concat(["total_internal_reflection {total_internal}", "clamped {clamped}"])
+        int[] distances = distance_range()
+        rows = rows.append("distance " + (if len(distances) == 0 then "none" else words(distances)))
+        int max_cost = 0
+        int[] histogram = [0, 0, 0, 0, 0, 0, 0, 0]
+        for Pixel pixel = pixels[]
+            max_cost = maximum(max_cost, pixel.rays)
+            int brightness = fixed.floor_div(299 * pixel.color[0] + 587 * pixel.color[1] + 114 * pixel.color[2], 1000)
+            histogram[brightness / 32] += 1
+        rows = rows.concat(["max_pixel_rays {max_cost}", "mean " + words(mean_color(pixels)), "histogram " + words(histogram)])
+        for Node node = nodes[]
+            string role = "inner"
+            if len(node.objects) > 0
+                string labels = [for int index = node.objects[] then data.objects[index].label].join("")
+                role = "leaf " + labels
+            rows = rows.append("node {node.depth} {role} box " + words(node.low) + " " + words(node.high) + " visits {node.visits}")
+        for int index < int(len(data.objects))
+            scene.Object object = data.objects[index]
+            Pixel[] chosen = [for Pixel pixel = pixels[] if pixel.label == object.label then pixel]
+            string box = "none"
+            string color = "none"
+            if len(chosen) > 0
+                int xmin = chosen[0].x
+                int ymin = chosen[0].y
+                int xmax = xmin
+                int ymax = ymin
+                for Pixel pixel = chosen[]
+                    xmin = minimum(xmin, pixel.x)
+                    ymin = minimum(ymin, pixel.y)
+                    xmax = maximum(xmax, pixel.x)
+                    ymax = maximum(ymax, pixel.y)
+                box = "{xmin} {ymin} {xmax} {ymax}"
+                color = words(mean_color(chosen))
+            int[] counts = object_counts[index]
+            rows = rows.append("object {object.label} {object.kind} primary {counts[0]} secondary {counts[1]} shadow {counts[2]} pixels {len(chosen)} box {box} color {color}")
+        for int index < int(len(data.lights))
+            scene.Light light = data.lights[index]
+            int[] counts = light_counts[index]
+            rows = rows.append("light {index + 1} {light.kind} samples {light.samples} pixels {counts[0]} shadow_rays {counts[1]} blocked {counts[2]} attenuated {counts[3]} backfacing {counts[4]} outside {counts[5]}")
+        return rows
+
+    string[] .queries()
+        string[] rows = []
+        string[] input = read_lines("input/queries.txt")
+        for int number < int(len(input))
+            string line = input[number]
+            rows = rows.append("query {number + 1} {line}")
+            string[] fields = line.split(" ")
+            string kind = fields[0]
+            if kind == "object"
+                for int index < int(len(data.objects))
+                    scene.Object object = data.objects[index]
+                    if object.label != fields[1]
+                        continue
+                    string result = "{object.kind} material {data.materials[object.material].name}"
+                    if len(object_bounds[index]) == 0
+                        result += " bounds none leaf none"
+                    else
+                        result += " bounds " + words(object_bounds[index][0]) + " " + words(object_bounds[index][1]) + " leaf {leaf_depths[index]}"
+                    rows = rows.append(result)
+                    break
+                continue
+            int[] values = [for string text = fields[1:<int(len(fields))][] then scene.integer(text)]
+            if kind == "pixel"
+                Pixel pixel = pixels[values[1] * settings.width + values[0]]
+                string distance = if pixel.hit.object_index < 0 then "none" else pixel.hit.distance.string()
+                rows = rows.append("label {pixel.label} distance {distance} color " + words(pixel.color) + " samples {pixel.samples} rays {pixel.rays}")
+            elif kind == "trace"
+                (int[] origin, int[] direction) = camera(4 * values[0] + 2, 4 * values[1] + 2)
+                auto pixel = Pixel(0, 0)
+                (int[] color, Info info) = .trace(origin, direction, 0, 0, false, &pixel, true, &rows)
+            elif kind == "ray"
+                auto pixel = Pixel(0, 0)
+                (int[] color, Info info) = .trace(values[0:<3], vector.norm(values[3:<6]), 0, 0, false, &pixel, true, &rows)
+            elif kind == "visible"
+                int[] relative = vector.sub(values, data.eye)
+                int[] direction = vector.norm(relative)
+                int[] blockers = .occluders(data.eye, direction, vector.length(relative) - settings.epsilon, false)
+                string visibility = if len(blockers) == 0 then "yes" else "no"
+                (int object_index, int[] hit) = .nearest(data.eye, direction, 0, false)
+                rows = rows.append(if object_index < 0 then "{visibility} first none" else "{visibility} first {data.objects[object_index].label} t {hit[0]}")
+            elif kind == "shadow"
+                for int index < int(len(data.lights))
+                    int factor_sum = 0
+                    bool[] found = [for int j < int(len(data.objects)) then false]
+                    for int[] sample = light_samples(index, values)[]
+                        int[] direction = sample[0:<3]
+                        int factor = cone(index, direction)
+                        int[] blockers = .occluders(values, direction, sample[3], false)
+                        for int object_index = blockers[]
+                            found[object_index] = true
+                            factor = fixed.mul(factor, data.materials[data.objects[object_index].material].values[7])
+                        factor_sum += factor
+                    string labels = [for int j < int(len(data.objects)) if found[j] then data.objects[j].label].join("")
+                    rows = rows.append("light {index + 1} factor {factor_sum} occluders " + (if labels == "" then "none" else labels))
+            elif kind == "region"
+                Pixel[] chosen = []
+                for values[1] <= int y <= values[3]
+                    for values[0] <= int x <= values[2]
+                        chosen = chosen.append(pixels[y * settings.width + x])
+                rows = rows.append("pixels {len(chosen)} mean " + words(mean_color(chosen)))
+                string[] labels = [for scene.Object object = data.objects[] then object.label].append(".")
+                for string label = labels[]
+                    int count = 0
+                    for Pixel pixel = chosen[]
+                        if pixel.label == label
+                            count += 1
+                    if count > 0
+                        rows = rows.append("label {label} {count}")
+        return rows
+
+void run()
+    auto renderer = Renderer(scene.read_scene(), read_settings())
+    .renderer.prepare()
+    .renderer.render()
+    renderer.write_images()
+    write_lines("stats.txt", renderer.statistics())
+    string[] queries = .renderer.queries()
+    write_lines("queries.txt", queries)
+
+run()

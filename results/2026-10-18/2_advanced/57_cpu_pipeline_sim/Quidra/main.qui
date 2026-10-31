@@ -1,0 +1,642 @@
+import trace_io = "./trace_io.qui"
+import hazards = "./hazards.qui"
+import pipeline = "./pipeline.qui"
+import predictors = "./predictors.qui"
+import report = "./report.qui"
+
+const string[] classes = ["ALU", "MUL", "LOAD", "STORE", "BRANCH", "JUMP", "NOP"]
+const string[] causes = ["control", "structural", "load_use", "raw"]
+const string[] stages = ["IF", "ID", "EX", "MEM", "WB"]
+
+int minimum(int a, int b)
+    return if a < b then a else b
+
+int maximum(int a, int b)
+    return if a > b then a else b
+
+int sum(int[] values)
+    int result = 0
+    for int value = values[]
+        result += value
+    return result
+
+bool row_less(int[] first, int[] second)
+    for int i < minimum(int(len(first)), int(len(second)))
+        if first[i] != second[i]
+            return first[i] < second[i]
+    return len(first) < len(second)
+
+int[][] sort_rows(int[][] values)
+    int width = 1
+    int n = int(len(values))
+    while width < n
+        int[][] merged = []
+        for 0 <= int first < n step 2 * width
+            int middle = minimum(first + width, n)
+            int last = minimum(first + 2 * width, n)
+            int left = first
+            int right = middle
+            while left < middle or right < last
+                if left < middle and (right >= last or not row_less(values[right], values[left]))
+                    merged = merged.append(values[left])
+                    left += 1
+                else
+                    merged = merged.append(values[right])
+                    right += 1
+        values = merged
+        width *= 2
+    return values
+
+string words(int[] values)
+    return [for int value = values[] then value.string()].join(" ")
+
+bool control(int[] instruction)
+    return instruction[1] == 4 or instruction[1] == 5
+
+int index_of(string[] values, string key)
+    for int i < int(len(values))
+        if values[i] == key
+            return i
+    return -1
+
+int get(map.Map<int, int> values, int key)
+    match values.get(key)
+        int result
+            return result
+        none
+            return 0
+
+int[] get_group(map.Map<int, int[]> values, int key)
+    match values.get(key)
+        int[] result
+            return result
+        none
+            return []
+
+string cause_values(int[] values)
+    return [for int i < 4 then "{causes[i]} {values[i]}"].join(" ")
+
+class Checked(int[] instruction, string reason)
+
+Checked check(string line, map.Map<int, int> first, int[][] instructions)
+    string[] fields = line.split(" ")
+    if len(fields) != 8
+        return Checked([], "fields")
+    for string field = fields[]
+        if field == ""
+            return Checked([], "fields")
+    int pc = trace_io.hexadecimal(fields[0])
+    if pc < 0 or pc % 4 != 0
+        return Checked([], "pc")
+    int kind = index_of(classes, fields[1])
+    if kind < 0
+        return Checked([], "class")
+    int[] registers = [for int i < 3 then trace_io.register(fields[i + 2])]
+    for int i < 3
+        if fields[i + 2] != "-" and registers[i] < 0
+            return Checked([], "register")
+    int[][] usages = [[1, 1, 2], [1, 1, 1], [1, 1, 0], [0, 1, 1], [0, 1, 2], [2, 2, 0], [0, 0, 0]]
+    for int i < 3
+        if (usages[kind][i] == 1 and registers[i] < 0) or (usages[kind][i] == 0 and registers[i] >= 0)
+            return Checked([], "operands")
+    string outcome = fields[5]
+    if (kind == 4 and outcome != "T" and outcome != "N") or (kind == 5 and outcome != "T") or (kind != 4 and kind != 5 and outcome != "-")
+        return Checked([], "taken")
+    int target = trace_io.hexadecimal(fields[6])
+    if kind == 4 or kind == 5
+        if target < 0 or target % 4 != 0 or target == pc + 4
+            return Checked([], "target")
+    elif fields[6] != "-"
+        return Checked([], "target")
+    int address = trace_io.hexadecimal(fields[7])
+    if kind == 2 or kind == 3
+        if address < 0 or address % 4 != 0
+            return Checked([], "address")
+    elif fields[7] != "-"
+        return Checked([], "address")
+    int[] result = [pc, kind, registers[0], registers[1], registers[2], (if outcome == "T" then 1 elif outcome == "N" then 0 else -1), target, address, (if outcome == "T" then target else pc + 4)]
+    if first.has(pc)
+        int[] previous = instructions[get(first, pc)]
+        for 1 <= int i <= 4 step 1
+            if previous[i] != result[i]
+                return Checked([], "conflict")
+        if (kind == 4 or (kind == 5 and registers[1] < 0)) and previous[6] != target
+            return Checked([], "conflict")
+    return Checked(result, "")
+
+class Trace(int lines, int[][] instructions, string[] rejected, string[] gaps, map.Map<int, int> first)
+
+Trace validate(string[] lines)
+    int[][] instructions = []
+    string[] rejected = []
+    string[] gaps = []
+    map.Map<int, int> first = map.Map<int, int>()
+    for int i < int(len(lines))
+        Checked result = check(lines[i], first, instructions)
+        if result.reason != ""
+            rejected = rejected.append("reject line {i + 1} {result.reason}")
+        else
+            int[] instruction = result.instruction
+            if len(instructions) > 0
+                int[] previous = instructions[int(len(instructions)) - 1]
+                if previous[8] != instruction[0]
+                    gaps = gaps.append("gap line {i + 1} expected " + report.hexadecimal(previous[8]) + " found " + report.hexadecimal(instruction[0]))
+            if not first.has(instruction[0])
+                .first.set(instruction[0], int(len(instructions)))
+            instructions = instructions.append(instruction)
+    return Trace(int(len(lines)), instructions, rejected, gaps, first)
+
+class Prediction(bool[] flags, int[][] details, int[] statistics, int bits)
+
+Prediction predict(int[][] instructions, trace_io.Predictor definition, trace_io.Config config)
+    predictors.BTB btb = predictors.BTB(config.btb)
+    predictors.RAS ras = predictors.RAS(config.ras)
+    predictors.Direction direction = predictors.Direction(definition.scheme, definition.parameters)
+    bool[] flags = []
+    int[][] details = []
+    int[] statistics = [for int i < 15 then 0]
+    for int[] instruction = instructions[]
+        bool missed = false
+        int predicted = instruction[0] + 4
+        int miss_kind = -1
+        if control(instruction)
+            int pc = instruction[0]
+            int target = instruction[6]
+            bool taken = instruction[5] == 1
+            int candidate = btb.lookup(pc)
+            statistics[9] += 1
+            if candidate >= 0
+                statistics[10] += 1
+            if instruction[1] == 5 and instruction[2] < 0 and instruction[3] == 31
+                statistics[12] += 1
+                int address = .ras.pop()
+                if address >= 0
+                    candidate = address
+                    statistics[13] += 1
+                    if address == target
+                        statistics[14] += 1
+            if instruction[1] == 5 and instruction[2] == 31
+                statistics[11] += 1
+                .ras.push(pc + 4)
+            bool predicted_taken = instruction[1] == 5 or direction.predict(pc, target)
+            if definition.scheme == "PERFECT"
+                predicted = instruction[8]
+            elif predicted_taken and candidate >= 0
+                predicted = candidate
+            missed = predicted != instruction[8]
+            if missed
+                miss_kind = if instruction[1] == 4 and predicted_taken != taken then 0 elif candidate < 0 then 1 else 2
+                statistics[6 + miss_kind] += 1
+                statistics[1] += 1
+                statistics[if instruction[1] == 4 then 3 else 5] += 1
+            statistics[0] += 1
+            statistics[if instruction[1] == 4 then 2 else 4] += 1
+            if instruction[1] == 4
+                .direction.update(pc, taken)
+            if taken
+                .btb.insert(pc, target)
+        flags = flags.append(missed)
+        details = details.append([predicted, miss_kind])
+    return Prediction(flags, details, statistics, direction.storage())
+
+int[][] totals(int[][] records)
+    int[][] result = [[0, 0, 0, 0], [0, 0, 0, 0]]
+    for int[] record = records[]
+        result[0][record[0]] += record[1]
+        result[1][record[0]] += 1
+    return result
+
+class Combination(int variant, int predictor, pipeline.Result simulation, int[] stalls, int[] events)
+class Runs(Combination[] combinations, int primary)
+
+Runs all_combinations(int[][] instructions, int[][][] sources, Prediction[] predictions, trace_io.Config config)
+    Combination[] combinations = []
+    int primary = -1
+    for int v < int(len(config.variants))
+        trace_io.Variant variant = config.variants[v]
+        for int p < int(len(predictions))
+            pipeline.Result simulation = pipeline.simulate(instructions, sources, variant.forwarding, variant.stage, variant.latency, predictions[p].flags)
+            int[][] counts = totals(simulation.records)
+            combinations = combinations.append(Combination(v, p, simulation, counts[0], counts[1]))
+    int[] order = []
+    for int i < int(len(combinations))
+        Combination current = combinations[i]
+        int position = int(len(order))
+        for int j < int(len(order))
+            Combination previous = combinations[order[j]]
+            bool before = current.simulation.cycles < previous.simulation.cycles
+            if current.simulation.cycles == previous.simulation.cycles
+                string[] names = [config.variants[current.variant].name, config.variants[previous.variant].name].sorted()
+                if names[0] != names[1]
+                    before = config.variants[current.variant].name == names[0]
+                else
+                    string[] predictors_order = [config.predictors[current.predictor].name, config.predictors[previous.predictor].name].sorted()
+                    before = config.predictors[current.predictor].name == predictors_order[0]
+            if before
+                position = j
+                break
+        order = order[0:<position].concat([i]).concat(order[position:<int(len(order))])
+    combinations = [for int i = order[] then combinations[i]]
+    for int i < int(len(combinations))
+        Combination combination = combinations[i]
+        if config.variants[combination.variant].name == config.primary[0] and config.predictors[combination.predictor].name == config.primary[1]
+            primary = i
+    return Runs(combinations, primary)
+
+class Row(int number, int pc, string kind, string annotation, int[][] characters, int[][] occupied)
+
+Row[] build_rows(int[][] instructions, Combination primary, Prediction prediction, trace_io.Config config)
+    string[] annotations = [for int i < int(len(instructions)) then ""]
+    for int[] record = primary.simulation.records[]
+        if record[3] >= 0
+            annotations[record[3]] += " {causes[record[0]]} {record[1]}"
+    Row[] rows = []
+    for int i < int(len(instructions))
+        int[] instruction = instructions[i]
+        int[] t = primary.simulation.timings[i]
+        string annotation = annotations[i]
+        if prediction.flags[i]
+            string[] kinds = ["direction", "btb_miss", "wrong_target"]
+            annotation += " mispredict {kinds[prediction.details[i][1]]}"
+        rows = rows.append(Row(i + 1, instruction[0], classes[instruction[1]], annotation,
+            [[t[0], t[0], 0], [t[0] + 1, t[1] - 1, 1], [t[1], t[1], 2], [t[1] + 1, t[2] - 1, 1], [t[2], t[3] - 1, 3], [t[3], t[3], 4], [t[4], t[4], 5]],
+            [[0, t[0], t[1] - 1], [1, t[1], t[2] - 1], [2, t[2], t[3] - 1], [3, t[3], t[3]], [4, t[4], t[4]]]))
+        if prediction.flags[i]
+            bool resolved = hazards.id_resolved(instruction, config.variants[primary.variant].stage)
+            int cancel = t[2] + (if resolved then 0 else 1)
+            int[][] characters = [[t[1], t[1], 0], [t[1] + 1, t[2] - 1, 1], [cancel, cancel, 6]]
+            int[][] occupied = [[0, t[1], t[2] - 1]]
+            if not resolved
+                characters = characters.append([t[2], t[2], 2])
+                occupied = occupied.append([1, t[2], t[2]])
+            rows = rows.append(Row(-1, prediction.details[i][0], "FLUSH", "", characters, occupied))
+            if not resolved
+                rows = rows.append(Row(-1, prediction.details[i][0] + 4, "FLUSH", "", [[t[2], t[2], 0], [t[2] + 1, t[2] + 1, 6]], [[0, t[2], t[2]]]))
+    return rows
+
+string[] pipeline_lines(Row[] rows, Combination primary, trace_io.Config config)
+    int first = config.window[0]
+    int last = config.window[1]
+    int width = last - first + 1
+    string[] lines = ["pipeline variant={config.primary[0]} predictor={config.primary[1]} cycles {first}-{last}", report.heading(first, last)]
+    string[][] contents = [for int i < width then [".", ".", ".", ".", "."]]
+    int visible = 0
+    int stalled = 0
+    int flushed = 0
+    string[] symbols = ["F", "*", "D", "X", "M", "W", "x"]
+    for Row row = rows[]
+        string[] characters = [for int i < width then "."]
+        for int[] span = row.characters[]
+            for maximum(first, span[0]) <= int cycle <= minimum(last, span[1]) step 1
+                characters[cycle - first] = symbols[span[2]]
+        bool nonempty = false
+        for string character = characters[]
+            if character != "."
+                nonempty = true
+            if character == "*"
+                stalled += 1
+            if character == "x"
+                flushed += 1
+        if nonempty
+            visible += 1
+            lines = lines.append(report.row(row.number, row.pc, row.kind, characters.join(""), row.annotation))
+        for int[] span = row.occupied[]
+            for maximum(first, span[1]) <= int cycle <= minimum(last, span[2]) step 1
+                contents[cycle - first][span[0]] = if row.number < 0 then "w" else row.number.string()
+    int completed = 0
+    for int[] timing = primary.simulation.timings[]
+        if timing[4] >= first and timing[4] <= last
+            completed += 1
+    lines = lines.concat(["rows {visible} completed {completed} stall_cells {stalled} flushed {flushed}", "", "stages", "cycle IF ID EX MEM WB"])
+    for first <= int cycle <= last step 1
+        lines = lines.append(cycle.string() + " " + contents[cycle - first].join(" "))
+    return lines
+
+string accuracy(Prediction prediction, int kind)
+    int[] statistics = prediction.statistics
+    return report.percentage(statistics[kind] - statistics[kind + 1], statistics[kind])
+
+map.Map<int, int[]> group_instructions(int[][] instructions)
+    map.Map<int, int[]> groups = map.Map<int, int[]>()
+    for int i < int(len(instructions))
+        int pc = instructions[i][0]
+        .groups.set(pc, get_group(groups, pc).append(i))
+    return groups
+
+class Aggregate(int[] class_stalls, int[][] stalls, int[][] pairs)
+
+Aggregate aggregate(int[][] instructions, int[][] records, int[] pcs)
+    int[] class_stalls = [for int i < 7 then 0]
+    int[][] stalls = [for int pc = pcs[] then [0, 0, 0, 0]]
+    map.Map<int, int> pc_indices = map.Map<int, int>()
+    for int i < int(len(pcs))
+        .pc_indices.set(pcs[i], i)
+    int[][] pairs = []
+    map.Map<string, int> pair_indices = map.Map<string, int>()
+    for int[] record = records[]
+        int[] instruction = instructions[record[2]]
+        class_stalls[instruction[1]] += record[1]
+        stalls[get(pc_indices, instruction[0])][record[0]] += record[1]
+        if record[0] >= 2
+            int producer = instructions[record[4]][0]
+            int waiting = instructions[record[3]][0]
+            string key = "{producer}:{waiting}:{record[0]}"
+            int index = int(len(pairs))
+            match pair_indices.get(key)
+                int found
+                    index = found
+                none
+                    .pair_indices.set(key, index)
+                    pairs = pairs.append([producer, waiting, record[0], 0, 0])
+            pairs[index][3] += record[1]
+            pairs[index][4] += 1
+    int[][] sort_keys = [for int i < int(len(pairs)) then [-pairs[i][3], pairs[i][0], pairs[i][1], pairs[i][2], i]]
+    sort_keys = sort_rows(sort_keys)
+    pairs = [for int[] key = sort_keys[] then pairs[key[4]]]
+    return Aggregate(class_stalls, stalls, pairs)
+
+string[] statistics_lines(Trace trace, int[][][] sources, Prediction[] predictions, Runs runs, Row[] rows, trace_io.Config config)
+    int[][] instructions = trace.instructions
+    int n = int(len(instructions))
+    Combination primary = runs.combinations[runs.primary]
+    trace_io.Variant variant = config.variants[primary.variant]
+    int cycles = primary.simulation.cycles
+    int[] pcs = trace.first.keys().sorted()
+    string[] input_part = ["input lines {trace.lines} accepted {n} rejected {len(trace.rejected)} gaps {len(trace.gaps)}"].concat(trace.rejected).concat(trace.gaps)
+    int[] counts = [for int i < 7 then 0]
+    int[] distances = [0, 0, 0, 0, 0]
+    set.Set<int> addresses = set.Set<int>()
+    int taken = 0
+    int backward = 0
+    int indirect = 0
+    int links = 0
+    int source_count = 0
+    for int i < n
+        int[] instruction = instructions[i]
+        counts[instruction[1]] += 1
+        if instruction[7] >= 0
+            .addresses.add(instruction[7])
+        if instruction[1] == 4
+            if instruction[5] == 1
+                taken += 1
+            if instruction[6] < instruction[0]
+                backward += 1
+        elif instruction[1] == 5
+            if instruction[3] >= 0
+                indirect += 1
+            if instruction[2] >= 0
+                links += 1
+        source_count += int(len(sources[i]))
+        for int[] source = sources[i][]
+            if source[1] >= 0
+                distances[minimum(5, i - source[1]) - 1] += 1
+    int[] static_counts = [0, 0]
+    for int pc = pcs[]
+        int kind = instructions[get(trace.first, pc)][1]
+        if kind == 4 or kind == 5
+            static_counts[kind - 4] += 1
+    string mix = [for int i < 7 then "{classes[i]} {counts[i]}"].join(" ")
+    string[] distance_labels = ["1", "2", "3", "4", "5+"]
+    string distance_values = [for int i < 5 then "{distance_labels[i]} {distances[i]}"].join(" ")
+    string[] trace_part = ["trace", "instructions {n}", "static_instructions {len(pcs)}", "mix {mix}",
+        "branches {counts[4]} taken {taken} backward {backward}", "jumps {counts[5]} indirect {indirect} link {links}",
+        "static_control branches {static_counts[0]} jumps {static_counts[1]}",
+        "memory loads {counts[2]} stores {counts[3]} distinct_addresses {addresses.size()}",
+        "operands {source_count} with_producer {sum(distances)} distance {distance_values}"]
+    string[] prediction_part = ["prediction"]
+    for int p < int(len(predictions))
+        trace_io.Predictor definition = config.predictors[p]
+        Prediction prediction = predictions[p]
+        int[] s = prediction.statistics
+        prediction_part = prediction_part.append("{definition.name} {definition.scheme} bits {prediction.bits} control {s[0]} mispredicted {s[1]} accuracy " + accuracy(prediction, 0) + " branches " + accuracy(prediction, 2) + " jumps " + accuracy(prediction, 4) + " direction {s[6]} btb_miss {s[7]} wrong_target {s[8]}")
+    int[] btb_stats = predictions[0].statistics
+    prediction_part = prediction_part.concat(["btb entries {config.btb} lookups {btb_stats[9]} hits {btb_stats[10]} misses {btb_stats[9] - btb_stats[10]}", "ras depth {config.ras} calls {btb_stats[11]} returns {btb_stats[12]} predicted {btb_stats[13]} correct {btb_stats[14]}"])
+    int[] lengths = [0, 0, 0, 0, 0]
+    for int delay = primary.simulation.delays[]
+        if delay > 0
+            lengths[minimum(5, delay) - 1] += 1
+    int[] finish = []
+    int height = 0
+    for int i < n
+        int start = 0
+        for int[] source = sources[i][]
+            if source[1] >= 0
+                start = maximum(start, finish[source[1]])
+        int cost = if instructions[i][1] == 2 then 2 elif instructions[i][1] == 1 then variant.latency else 1
+        finish = finish.append(start + cost)
+        height = maximum(height, finish[i])
+    int flushed = 0
+    for Row row = rows[]
+        if row.number < 0
+            flushed += 1
+    int stalls = sum(primary.stalls)
+    string[] cpi_causes = [for int i < 4 then causes[i] + " " + report.decimal(primary.stalls[i], n)]
+    string[] timing_part = ["timing variant={variant.name} predictor={config.primary[1]}",
+        "forwarding " + (if variant.forwarding then "on" else "off") + " branch_stage {variant.stage} mul_latency {variant.latency}",
+        "cycles {cycles}", "cpi " + report.fraction(cycles, n) + " " + report.decimal(cycles, n), "ipc " + report.decimal(n, cycles),
+        "stall_cycles total {stalls} " + cause_values(primary.stalls), "stall_events " + cause_values(primary.events), "flushed {flushed}",
+        "cycle_check {n} + 4 + {stalls} = {n + 4 + stalls}", "cpi_stack base 1.0000 fill " + report.decimal(4, n) + " " + cpi_causes.join(" "),
+        "stall_lengths " + [for int i < 5 then "{distance_labels[i]} {lengths[i]}"].join(" "), "dataflow height {height} ilp " + report.decimal(n, height)]
+    string[] whatif = ["whatif"]
+    for int change < 4
+        bool forwarding = variant.forwarding
+        string stage = variant.stage
+        int latency = variant.latency
+        bool[] flags = predictions[primary.predictor].flags
+        string name = "perfect_prediction"
+        if change == 0
+            flags = [for int i < n then false]
+        elif change == 1
+            name = "single_cycle_mul"
+            latency = 1
+        elif change == 2
+            forwarding = not forwarding
+            name = if forwarding then "forwarding_on" else "forwarding_off"
+        else
+            stage = if stage == "ID" then "EX" else "ID"
+            name = "branch_stage_" + stage
+        pipeline.Result simulation = pipeline.simulate(instructions, sources, forwarding, stage, latency, flags)
+        whatif = whatif.append("{name} cycles {simulation.cycles} saved {cycles - simulation.cycles} speedup " + report.decimal(cycles, simulation.cycles))
+    Aggregate analysis = aggregate(instructions, primary.simulation.records, pcs)
+    string[] class_part = ["classes"]
+    for int i < 7
+        string per_instruction = if counts[i] == 0 then "-" else report.decimal(analysis.class_stalls[i], counts[i])
+        class_part = class_part.append("{classes[i]} count {counts[i]} stall_cycles {analysis.class_stalls[i]} per_instruction {per_instruction}")
+    int[] paths = [0, 0, 0]
+    for int i < n
+        for int[] source = sources[i][]
+            int[] producer_time = if source[1] < 0 then [] else primary.simulation.timings[source[1]]
+            paths[hazards.path(instructions[i], producer_time, primary.simulation.timings[i], variant.forwarding, variant.stage)] += 1
+    string[] forwarding_part = ["forwarding regfile {paths[0]} ex_mem {paths[1]} mem_wb {paths[2]}"]
+    int[][] occupancy = [for int i < 5 then [0, 0]]
+    for Row row = rows[]
+        for int[] span = row.occupied[]
+            occupancy[span[0]][if row.number < 0 then 1 else 0] += span[2] - span[1] + 1
+    string[] occupancy_part = ["occupancy cycles {cycles}"]
+    for int i < 5
+        int a = occupancy[i][0]
+        int b = occupancy[i][1]
+        occupancy_part = occupancy_part.append("{stages[i]} correct {a} wrong {b} idle {cycles - a - b} busy " + report.percentage(a + b, cycles))
+    int[][] hotspot_keys = []
+    for int i < int(len(pcs))
+        int total = sum(analysis.stalls[i])
+        if total > 0
+            hotspot_keys = hotspot_keys.append([-total, pcs[i], i])
+    hotspot_keys = sort_rows(hotspot_keys)
+    string[] hotspots = ["hotspots"]
+    for int rank < minimum(config.top, int(len(hotspot_keys)))
+        int[] key = hotspot_keys[rank]
+        int kind = instructions[get(trace.first, key[1])][1]
+        hotspots = hotspots.append("{rank + 1} " + report.hexadecimal(key[1]) + " {classes[kind]} stall_cycles {-key[0]} " + cause_values(analysis.stalls[key[2]]))
+    string[] dependency_part = ["dependencies total {len(analysis.pairs)}"]
+    for int rank < minimum(config.top, int(len(analysis.pairs)))
+        int[] pair = analysis.pairs[rank]
+        int producer_kind = instructions[get(trace.first, pair[0])][1]
+        int waiting_kind = instructions[get(trace.first, pair[1])][1]
+        dependency_part = dependency_part.append("{rank + 1} " + report.hexadecimal(pair[0]) + " {classes[producer_kind]} -> " + report.hexadecimal(pair[1]) + " {classes[waiting_kind]} {causes[pair[2]]} stall_cycles {pair[3]} events {pair[4]}")
+    string[] intervals = ["intervals size {config.interval}"]
+    for 0 <= int first < n step config.interval
+        int last = minimum(n, first + config.interval) - 1
+        int count = primary.simulation.timings[last][4] - (if first == 0 then 0 else primary.simulation.timings[first - 1][4])
+        intervals = intervals.append("{first + 1}-{last + 1} cycles {count} cpi " + report.decimal(count, last - first + 1))
+    string[] names = [for trace_io.Predictor definition = config.predictors[] then definition.name]
+    string[] cycle_table = ["cycles_table " + names.join(" ")]
+    for int v < int(len(config.variants))
+        int[] values = []
+        for int p < int(len(predictions))
+            for Combination combination = runs.combinations[]
+                if combination.variant == v and combination.predictor == p
+                    values = values.append(combination.simulation.cycles)
+        cycle_table = cycle_table.append(config.variants[v].name + " " + words(values))
+    return report.join([input_part, trace_part, prediction_part, timing_part, whatif, class_part, forwarding_part, occupancy_part, hotspots, dependency_part, intervals, cycle_table])
+
+string[] branch_lines(int[][] instructions, map.Map<int, int[]> groups, Prediction[] predictions, trace_io.Config config)
+    string[] lines = ["predictor,pc,class,executions,taken,mispredictions,accuracy"]
+    for int p < int(len(predictions))
+        for int pc = groups.keys().sorted()[]
+            int[] indices = get_group(groups, pc)
+            int[] instruction = instructions[indices[0]]
+            if control(instruction)
+                int taken = 0
+                int missed = 0
+                for int i = indices[]
+                    taken += if instructions[i][5] == 1 then 1 else 0
+                    missed += if predictions[p].flags[i] then 1 else 0
+                lines = lines.append(config.predictors[p].name + "," + report.hexadecimal(pc) + ",{classes[instruction[1]]},{len(indices)},{taken},{missed}," + report.percentage(int(len(indices)) - missed, int(len(indices))))
+    return lines
+
+string[] comparison_lines(Runs runs, Prediction[] predictions, trace_io.Config config, int count)
+    string[] lines = ["rank,variant,predictor,cycles,cpi,speedup,accuracy,mispredictions,control,structural,load_use,raw"]
+    int cycles = runs.combinations[runs.primary].simulation.cycles
+    for int rank < int(len(runs.combinations))
+        Combination combination = runs.combinations[rank]
+        string[] values = [(rank + 1).string(), config.variants[combination.variant].name, config.predictors[combination.predictor].name, combination.simulation.cycles.string(), report.decimal(combination.simulation.cycles, count), report.decimal(cycles, combination.simulation.cycles), accuracy(predictions[combination.predictor], 0), predictions[combination.predictor].statistics[1].string()]
+        values = values.concat([for int value = combination.stalls[] then value.string()])
+        lines = lines.append(values.join(","))
+    return lines
+
+string[] profile_lines(Trace trace, map.Map<int, int[]> groups, Prediction[] predictions, Combination primary, trace_io.Config config)
+    int[][] instructions = trace.instructions
+    string[] branches = ["branches"]
+    string[] loops = ["loops"]
+    string[] indirect = ["indirect"]
+    string[] static = ["instructions"]
+    map.Map<int, int> stalled = map.Map<int, int>()
+    for int[] record = primary.simulation.records[]
+        int pc = instructions[record[2]][0]
+        .stalled.set(pc, get(stalled, pc) + record[1])
+    for int pc = groups.keys().sorted()[]
+        int[] indices = get_group(groups, pc)
+        int count = int(len(indices))
+        int[] instruction = instructions[indices[0]]
+        if instruction[1] == 4
+            int taken = 0
+            int transitions = 0
+            int previous = -1
+            int length = 0
+            int[] longest = [0, 0]
+            int[] trips = []
+            int trip_length = 0
+            int max_trip = 0
+            for int i = indices[]
+                int outcome = instructions[i][5]
+                taken += outcome
+                if previous >= 0 and previous != outcome
+                    transitions += 1
+                length = if previous == outcome then length + 1 else 1
+                longest[outcome] = maximum(longest[outcome], length)
+                previous = outcome
+                trip_length += 1
+                if outcome == 0
+                    trips = trips.append(trip_length)
+                    max_trip = maximum(max_trip, trip_length)
+                    trip_length = 0
+            if trip_length > 0
+                trips = trips.append(trip_length)
+                max_trip = maximum(max_trip, trip_length)
+            int best = -1
+            int best_misses = 0
+            for int p < int(len(predictions))
+                if config.predictors[p].scheme != "PERFECT"
+                    int missed = 0
+                    for int i = indices[]
+                        missed += if predictions[p].flags[i] then 1 else 0
+                    if best < 0 or missed < best_misses
+                        best = p
+                        best_misses = missed
+            string direction = if instruction[6] < pc then "backward" else "forward"
+            branches = branches.append(report.hexadecimal(pc) + " {direction} executions {count} taken {taken} transitions {transitions} longest_taken {longest[1]} longest_not_taken {longest[0]} best {config.predictors[best].name} {best_misses}")
+            if instruction[6] < pc
+                loops = loops.append(report.hexadecimal(instruction[6]) + "-" + report.hexadecimal(pc) + " body {(pc - instruction[6]) / 4 + 1} entries {len(trips)} iterations {count} avg_trip " + report.decimal(count, int(len(trips))) + " max_trip {max_trip}")
+        elif instruction[1] == 5 and instruction[3] >= 0
+            map.Map<int, int> targets = map.Map<int, int>()
+            for int i = indices[]
+                int target = instructions[i][6]
+                .targets.set(target, get(targets, target) + 1)
+            int[][] order = [for int target = targets.keys()[] then [-get(targets, target), target]]
+            order = sort_rows(order)
+            string[] values = [for int[] key = order[] then report.hexadecimal(key[1]) + ":" + (-key[0]).string()]
+            indirect = indirect.append(report.hexadecimal(pc) + " executions {count} distinct {targets.size()} targets " + values.join(" "))
+        string registers = [for 2 <= int field <= 4 step 1 then report.register(instruction[field])].join(" ")
+        static = static.append(report.hexadecimal(pc) + " {classes[instruction[1]]} {registers} executions {count} stall_cycles {get(stalled, pc)}")
+    map.Map<int, int[]> segment_groups = map.Map<int, int[]>()
+    int first = 0
+    for int last < int(len(instructions))
+        if control(instructions[last]) or last == int(len(instructions)) - 1
+            int pc = instructions[first][0]
+            int[] group = get_group(segment_groups, pc)
+            if len(group) == 0
+                group = [0, 0, 0]
+            group[0] += 1
+            group[1] += last - first + 1
+            group[2] += primary.simulation.timings[last][4] - (if first == 0 then 0 else primary.simulation.timings[first - 1][4])
+            .segment_groups.set(pc, group)
+            first = last + 1
+    int[][] ranked = []
+    for int pc = segment_groups.keys()[]
+        int[] group = get_group(segment_groups, pc)
+        ranked = ranked.append([-group[2], pc])
+    ranked = sort_rows(ranked)
+    string[] segments = ["segments total {segment_groups.size()}"]
+    for int rank < minimum(config.top, int(len(ranked)))
+        int pc = ranked[rank][1]
+        int[] group = get_group(segment_groups, pc)
+        segments = segments.append("{rank + 1} " + report.hexadecimal(pc) + " instances {group[0]} instructions {group[1]} cycles {group[2]} cpi " + report.decimal(group[2], group[1]))
+    return report.join([branches, loops, segments, indirect, static])
+
+void run()
+    trace_io.Config config = trace_io.read_config()
+    Trace trace = validate(trace_io.lines("input/trace.txt"))
+    int[][][] sources = hazards.dependencies(trace.instructions)
+    Prediction[] predictions = [for trace_io.Predictor definition = config.predictors[] then predict(trace.instructions, definition, config)]
+    Runs runs = all_combinations(trace.instructions, sources, predictions, config)
+    Combination primary = runs.combinations[runs.primary]
+    Row[] rows = build_rows(trace.instructions, primary, predictions[primary.predictor], config)
+    map.Map<int, int[]> groups = group_instructions(trace.instructions)
+    report.write("pipeline.txt", pipeline_lines(rows, primary, config))
+    report.write("stats.txt", statistics_lines(trace, sources, predictions, runs, rows, config))
+    report.write("branches.csv", branch_lines(trace.instructions, groups, predictions, config))
+    report.write("comparison.csv", comparison_lines(runs, predictions, config, int(len(trace.instructions))))
+    report.write("profile.txt", profile_lines(trace, groups, predictions, primary, config))
+
+run()

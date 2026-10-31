@@ -1,0 +1,39 @@
+import java.util.ArrayDeque;
+import java.util.Deque;
+
+public class Main {
+    public static void main(String[] args) {
+        String[] commands = {"undo", "type hello world", "delete 5", "type there", "undo", "undo", "redo",
+            "type friend", "redo", "delete 20", "undo", "redo", "redo", "type see you"};
+        Deque<String> undo = new ArrayDeque<>(), redo = new ArrayDeque<>();
+        String buffer = "";
+        for (String command : commands) {
+            String special = null;
+            if (command.equals("undo")) {
+                if (undo.isEmpty()) {
+                    special = "nothing to undo";
+                } else {
+                    redo.push(buffer);
+                    buffer = undo.pop();
+                }
+            } else if (command.equals("redo")) {
+                if (redo.isEmpty()) {
+                    special = "nothing to redo";
+                } else {
+                    undo.push(buffer);
+                    buffer = redo.pop();
+                }
+            } else {
+                undo.push(buffer);
+                redo.clear();
+                if (command.startsWith("type ")) {
+                    buffer += command.substring(5);
+                } else {
+                    int count = Integer.parseInt(command.substring(7));
+                    buffer = buffer.substring(0, Math.max(0, buffer.length() - count));
+                }
+            }
+            System.out.println(command + " => " + (special != null ? special : "\"" + buffer + "\""));
+        }
+    }
+}

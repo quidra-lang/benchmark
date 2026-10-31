@@ -1,0 +1,691 @@
+import waveform_io = "./waveform_io.qui"
+import picker = "./picker.qui"
+import associator = "./associator.qui"
+import locator = "./locator.qui"
+import magnitude = "./magnitude.qui"
+
+real64 as_real(int value)
+    real64 result = real64(value)
+    return result
+
+real64 sum_values(real64[] values)
+    real64 total = 0.0
+    for real64 value = values[]
+        total += value
+    return total
+
+int scaled(real64 value, int digits)
+    int factor = 1
+    for _ < digits
+        factor *= 10
+    int result = locator.floor_real(locator.absolute(value) * as_real(factor) + 0.5)
+    return if value < 0.0 then -result else result
+
+string decimal(real64 value, int digits)
+    int factor = 1
+    for _ < digits
+        factor *= 10
+    int rounded = scaled(value, digits)
+    int absolute = if rounded < 0 then -rounded else rounded
+    string fraction = "{absolute % factor}"
+    string sign = if rounded < 0 then "-" else ""
+    return "{sign}{absolute / factor}." + string.repeat("0", nat(digits - int(len(fraction)))) + fraction
+
+string time_text(int sample)
+    string fraction = "{sample % 100}"
+    return "{sample / 100}." + string.repeat("0", nat(2 - int(len(fraction)))) + fraction
+
+string yes_no(bool value)
+    return if value then "yes" else "no"
+
+string integers(int[] values, string separator = " ")
+    string[] fields = [for int value = values[] then "{value}"]
+    return fields.join(separator)
+
+real64[] geometry(waveform_io.Station station)
+    return [as_real(station.x), as_real(station.y), as_real(station.elevation)]
+
+real64 pick_time(picker.Pick pick)
+    return as_real(pick.sample) / 100.0
+
+class ObservedPick(picker.Pick data, string status = "unassociated", int event = 0, real64 residual = 0.0, real64 first_residual = 0.0)
+class Candidate(int number, int first, int[] initial, int[] used, int[] dropped, real64[] dropped_residuals, locator.Run first_pass, locator.Run second_pass, bool has_second, bool rejected, int event)
+class Jack(int station, real64 dx, real64 dy, real64 dz, real64 shift)
+class Quality(locator.Ellipse uncertainty, real64 gap, real64 dmin, string grade, real64 dh, real64 dz, Jack[] jackknife, int maximum)
+class Cluster(int[] members, real64[] center, real64 span)
+class Regression(int count, real64 velocity, real64 intercept, real64 rms_value)
+
+class Event(int number, int[] used, locator.Result first)
+    locator.Result final = first
+    real64[][] observations = []
+    real64 start_rms = 0.0
+    Quality quality = Quality(locator.Ellipse(0.0, 0.0, 0.0, 0.0, 0.0), 0.0, 0.0, "", 0.0, 0.0, [], 0)
+    magnitude.PickMagnitude[] magnitudes = []
+    real64 ml = 0.0
+    real64 md = 0.0
+    real64 mlc = 0.0
+    bool has_ml = false
+    int cluster = 0
+
+string solution_text(string heading, real64[] solution, real64 rms_value, int iteration = 0)
+    string prefix = if iteration == 0 then heading else "{heading} {iteration}"
+    return "{prefix} x={decimal(solution[0], 1)} y={decimal(solution[1], 1)} z={decimal(solution[2], 1)} t0={decimal(solution[3], 3)} rms={decimal(rms_value, 4)}"
+
+real64 residual_rms(real64[] values)
+    real64 total = 0.0
+    for real64 value = values[]
+        total += value * value
+    return locator.root(total / as_real(int(len(values))))
+
+string[][] empty_grid(int width, int height)
+    return [for int row < height then [for int column < width then " "]]
+
+string[] chart_lines(string[][] canvas, int width)
+    string frame = "+" + string.repeat("-", nat(width)) + "+"
+    string[] result = [frame]
+    for string[] row = canvas[]
+        result = result.append("|" + row.join("") + "|")
+    return result.append(frame)
+
+string event_symbol(Event event)
+    if not event.has_ml
+        return "?"
+    int h = scaled(event.ml, 2)
+    return if h < 100 then "." elif h < 200 then "o" elif h < 300 then "O" else "@"
+
+string position_text(int[] position)
+    return if len(position) == 0 then "outside" else "{position[0]},{position[1]}"
+
+int symbol_rank(string mark)
+    string[] marks = [" ", "?", ".", "o", "O", "@", "^"]
+    for int i < int(len(marks))
+        if marks[i] == mark
+            return i
+    return -1
+
+void place(string[][] &canvas, int[] position, string mark)
+    if len(position) == 0
+        return
+    int column = position[0]
+    int row = position[1]
+    if symbol_rank(mark) > symbol_rank(canvas[row][column])
+        canvas[row][column] = mark
+
+class Lab self(waveform_io.Input data)
+    waveform_io.Station[] stations = data.stations
+    waveform_io.Params settings = data.params
+    ObservedPick[] picks = []
+    picker.Statistics[] wave_statistics = []
+    Candidate[] candidates = []
+    Event[] events = []
+    Cluster[] clusters = []
+    real64[][] before_by_station = [for int i < int(len(data.stations)) then []]
+    real64[][] after_by_station = [for int i < int(len(data.stations)) then []]
+    real64[][] magnitude_by_station = [for int i < int(len(data.stations)) then []]
+    real64[] corrections = [for int i < int(len(data.stations)) then 0.0]
+    real64[] magnitude_corrections = [for int i < int(len(data.stations)) then 0.0]
+    int[] added = []
+
+    int[][] ranges()
+        return [settings.grid_x, settings.grid_y, settings.grid_z]
+
+    void .detect()
+        for int ordinal < int(len(stations))
+            waveform_io.Station station = stations[ordinal]
+            picker.Detection detection = picker.detect(station.samples, station.start, ordinal, settings.sta_window, settings.lta_window, settings.trigger_on, settings.trigger_off, settings.min_duration, settings.noise_level, settings.amplitude_window, settings.clip_level)
+            wave_statistics = wave_statistics.append(detection.statistics)
+            for picker.Pick pick = detection.picks[]
+                picks = picks.append(ObservedPick(pick))
+        int base = int(len(picks)) + 1
+        int station_count = int(len(stations))
+        int[] keys = [for int i < int(len(picks)) then (picks[i].data.sample * station_count + picks[i].data.station) * base + i]
+        ObservedPick[] ordered = [for int key = keys.sorted()[] then picks[key % base]]
+        picks = ordered
+
+    int[] station_ordered(int[] indices)
+        int base = int(len(picks)) + 1
+        int[] keys = [for int index = indices[] then picks[index].data.station * base + index]
+        return [for int key = keys.sorted()[] then key % base]
+
+    real64[][] observations(int[] indices, bool corrected = false)
+        real64[][] result = []
+        for int index = indices[]
+            picker.Pick pick = picks[index].data
+            real64 observed = pick_time(pick) - (if corrected then corrections[pick.station] else 0.0)
+            result = result.append(geometry(stations[pick.station]).append(observed))
+        return result
+
+    void .locate_candidates()
+        int[][] rows = [for ObservedPick pick = picks[] then [pick.data.sample, pick.data.station]]
+        associator.Candidate[] associated = associator.associate(rows, int(len(stations)), settings.association_window, settings.min_stations)
+        for associator.Candidate associated_candidate = associated[]
+            int[] ordered = self.station_ordered(associated_candidate.picks)
+            locator.Run first_pass = locator.run_location(self.observations(ordered), settings.velocity, self.ranges())
+            int[] retained = []
+            int[] dropped = []
+            real64[] dropped_residuals = []
+            for int i < int(len(ordered))
+                real64 residual = first_pass.result.residual_values[i]
+                if locator.absolute(residual) > settings.residual_limit
+                    dropped = dropped.append(ordered[i])
+                    dropped_residuals = dropped_residuals.append(residual)
+                else
+                    retained = retained.append(ordered[i])
+            bool rejected = len(dropped) > 0 and int(len(retained)) < settings.min_stations
+            bool has_second = not rejected and len(dropped) > 0
+            locator.Run second_pass = if has_second then locator.run_location(self.observations(retained), settings.velocity, self.ranges()) else first_pass
+            int event_number = 0
+            if rejected
+                for int index = ordered[]
+                    picks[index].status = "rejected"
+            else
+                locator.Result adopted = if has_second then second_pass.result else first_pass.result
+                event_number = int(len(events)) + 1
+                for int i < int(len(retained))
+                    int index = retained[i]
+                    picks[index].status = "used"
+                    picks[index].event = event_number
+                    picks[index].first_residual = adopted.residual_values[i]
+                for int index = dropped[]
+                    picks[index].status = "dropped"
+                    picks[index].event = event_number
+                events = events.append(Event(event_number, retained, adopted))
+            candidates = candidates.append(Candidate(associated_candidate.number, associated_candidate.first, ordered, retained, dropped, dropped_residuals, first_pass, second_pass, has_second, rejected, event_number))
+        for Event event = events[]
+            for int index = event.used[]
+                ObservedPick pick = picks[index]
+                int station = pick.data.station
+                before_by_station[station] = before_by_station[station].append(pick.first_residual)
+        for int station < int(len(stations))
+            real64[] values = before_by_station[station]
+            corrections[station] = if len(values) == 0 then 0.0 else sum_values(values) / as_real(int(len(values)))
+
+    Quality quality_for_event(Event event)
+        real64[] solution = event.final.solution
+        locator.Ellipse uncertainty = locator.ellipse(solution, event.observations, settings.velocity)
+        real64[] angles = []
+        real64 nearest = inf
+        for int index = event.used[]
+            waveform_io.Station station = stations[picks[index].data.station]
+            real64 dx = as_real(station.x) - solution[0]
+            real64 dy = as_real(station.y) - solution[1]
+            real64 angle = locator.atan2(dx, dy) * 180.0 / 3.141592653589793
+            angles = angles.append(if angle < 0.0 then angle + 360.0 else angle)
+            real64 horizontal = locator.root(dx * dx + dy * dy)
+            if horizontal < nearest
+                nearest = horizontal
+        angles = angles.sorted()
+        real64 gap = angles[0] + 360.0 - angles[int(len(angles)) - 1]
+        for int i < int(len(angles)) - 1
+            real64 difference = angles[i + 1] - angles[i]
+            if difference > gap
+                gap = difference
+        string grade = "C"
+        if gap <= settings.quality_a[0] and event.final.rms_value <= settings.quality_a[1] and uncertainty.smaj <= settings.quality_a[2]
+            grade = "A"
+        elif gap <= settings.quality_b[0] and event.final.rms_value <= settings.quality_b[1] and uncertainty.smaj <= settings.quality_b[2]
+            grade = "B"
+        real64 dx = solution[0] - event.first.solution[0]
+        real64 dy = solution[1] - event.first.solution[1]
+        real64 dh = locator.root(dx * dx + dy * dy)
+        real64 dz = solution[2] - event.first.solution[2]
+        Jack[] jackknife = []
+        int maximum = 0
+        for int removed < int(len(event.used))
+            real64[][] remaining = [for int i < int(len(event.observations)) if i != removed then event.observations[i]]
+            locator.Result jackknife_fit = locator.geiger(solution, remaining, settings.velocity)
+            real64 dx_j = jackknife_fit.solution[0] - solution[0]
+            real64 dy_j = jackknife_fit.solution[1] - solution[1]
+            real64 dz_j = jackknife_fit.solution[2] - solution[2]
+            Jack record = Jack(picks[event.used[removed]].data.station, dx_j, dy_j, dz_j, locator.root(dx_j * dx_j + dy_j * dy_j))
+            jackknife = jackknife.append(record)
+            if record.shift > jackknife[maximum].shift
+                maximum = removed
+        return Quality(uncertainty, gap, nearest, grade, dh, dz, jackknife, maximum)
+
+    void .relocate()
+        for int e < int(len(events))
+            Event event = events[e]
+            event.observations = self.observations(event.used, true)
+            event.start_rms = locator.rms(event.first.solution, event.observations, settings.velocity)
+            event.final = locator.geiger(event.first.solution, event.observations, settings.velocity)
+            for int i < int(len(event.used))
+                int index = event.used[i]
+                real64 residual = event.final.residual_values[i]
+                picks[index].residual = residual
+                int station = picks[index].data.station
+                after_by_station[station] = after_by_station[station].append(residual)
+            event.quality = self.quality_for_event(event)
+            events[e] = event
+
+    void .compute_magnitudes()
+        for int e < int(len(events))
+            Event event = events[e]
+            real64[] local_values = []
+            real64[] duration_values = []
+            for int index = event.used[]
+                picker.Pick pick = picks[index].data
+                real64 radius = locator.distance(event.final.solution, geometry(stations[pick.station])) / 1000.0
+                magnitude.PickMagnitude record = magnitude.per_pick(pick.amplitude, pick.duration, pick.clipped, radius, settings.local_magnitude, settings.duration_magnitude)
+                event.magnitudes = event.magnitudes.append(record)
+                duration_values = duration_values.append(record.md)
+                if record.has_ml
+                    local_values = local_values.append(record.ml)
+            event.has_ml = len(local_values) > 0
+            event.ml = if event.has_ml then magnitude.median(local_values) else 0.0
+            event.md = magnitude.median(duration_values)
+            for int i < int(len(event.magnitudes))
+                magnitude.PickMagnitude record = event.magnitudes[i]
+                if record.has_ml
+                    int station = picks[event.used[i]].data.station
+                    magnitude_by_station[station] = magnitude_by_station[station].append(record.ml - event.ml)
+            events[e] = event
+        for int station < int(len(stations))
+            real64[] values = magnitude_by_station[station]
+            magnitude_corrections[station] = if len(values) == 0 then 0.0 else sum_values(values) / as_real(int(len(values)))
+        for int e < int(len(events))
+            Event event = events[e]
+            real64[] corrected = []
+            for int i < int(len(event.magnitudes))
+                magnitude.PickMagnitude record = event.magnitudes[i]
+                if record.has_ml
+                    int station = picks[event.used[i]].data.station
+                    corrected = corrected.append(record.ml - magnitude_corrections[station])
+            event.mlc = if event.has_ml then magnitude.median(corrected) else 0.0
+            events[e] = event
+
+    Regression regression()
+        real64[][] points = []
+        real64 sd = 0.0
+        real64 st = 0.0
+        real64 sdd = 0.0
+        real64 sdt = 0.0
+        for Event event = events[]
+            for int index = event.used[]
+                picker.Pick pick = picks[index].data
+                real64 radius = locator.distance(event.final.solution, geometry(stations[pick.station])) / 1000.0
+                real64 travel = pick_time(pick) - event.final.solution[3]
+                points = points.append([radius, travel])
+                sd += radius
+                st += travel
+                sdd += radius * radius
+                sdt += radius * travel
+        real64 count = as_real(int(len(points)))
+        real64 slope = (count * sdt - sd * st) / (count * sdd - sd * sd)
+        real64 intercept = (st - slope * sd) / count
+        real64 total = 0.0
+        for real64[] point = points[]
+            real64 residual = point[1] - intercept - slope * point[0]
+            total += residual * residual
+        return Regression(int(len(points)), 1000.0 / slope, intercept, locator.root(total / count))
+
+    void .cluster_events()
+        bool[] visited = [for int i < int(len(events)) then false]
+        for int initial < int(len(events))
+            if visited[initial]
+                continue
+            visited[initial] = true
+            int[] queue = [initial]
+            int[] members = []
+            int cursor = 0
+            while cursor < int(len(queue))
+                int index = queue[cursor]
+                cursor += 1
+                members = members.append(index)
+                real64[] first = events[index].final.solution
+                for int other < int(len(events))
+                    if visited[other]
+                        continue
+                    real64[] second = events[other].final.solution
+                    real64 dx = first[0] - second[0]
+                    real64 dy = first[1] - second[1]
+                    real64 dz = first[2] - second[2]
+                    if locator.absolute(first[3] - second[3]) <= settings.cluster[1] and locator.root((dx * dx + dy * dy) + dz * dz) <= settings.cluster[0]
+                        visited[other] = true
+                        queue = queue.append(other)
+            members = members.sorted()
+            real64[] center = [0.0, 0.0, 0.0]
+            real64 low = inf
+            real64 high = -inf
+            for int index = members[]
+                events[index].cluster = int(len(clusters)) + 1
+                real64[] solution = events[index].final.solution
+                for int axis < 3
+                    center[axis] += solution[axis]
+                if solution[3] < low
+                    low = solution[3]
+                if solution[3] > high
+                    high = solution[3]
+            for int axis < 3
+                center[axis] /= as_real(int(len(members)))
+            clusters = clusters.append(Cluster(members, center, high - low))
+
+    void .reassociate()
+        bool[][] station_sets = [for int i < int(len(events)) then [for int j < int(len(stations)) then false]]
+        for int e < int(len(events))
+            for int index = events[e].used[]
+                station_sets[e][picks[index].data.station] = true
+        for int index < int(len(picks))
+            if picks[index].status != "unassociated"
+                continue
+            picker.Pick pick = picks[index].data
+            int best = -1
+            real64 best_error = 0.0
+            for int e < int(len(events))
+                if station_sets[e][pick.station]
+                    continue
+                real64[] solution = events[e].final.solution
+                real64 residual = pick_time(pick) - solution[3] - locator.distance(solution, geometry(stations[pick.station])) / settings.velocity - corrections[pick.station]
+                if locator.absolute(residual) <= settings.residual_limit and (best < 0 or locator.absolute(residual) < locator.absolute(best_error))
+                    best = e
+                    best_error = residual
+            if best >= 0
+                picks[index].status = "added"
+                picks[index].event = best + 1
+                picks[index].residual = best_error
+                station_sets[best][pick.station] = true
+                added = added.append(index)
+
+    string[] pass_lines(int number, int[] indices, locator.Run run)
+        string[] codes = [for int index = indices[] then stations[picks[index].data.station].code]
+        string[] result = ["PASS {number} stations={codes.join(",")}", solution_text("GRID", run.grid.solution, run.grid.rms_value)]
+        string[] profile = [for real64 value = run.grid.profile[] then decimal(value, 4)]
+        result = result.append("PROFILE {profile.join(" ")}")
+        for int i < int(len(run.result.trace))
+            real64[] record = run.result.trace[i]
+            result = result.append(solution_text("ITER", record[0:<4], record[4], i + 1))
+        for int i < int(len(indices))
+            picker.Pick pick = picks[indices[i]].data
+            waveform_io.Station station = stations[pick.station]
+            real64 radius = locator.distance(run.result.solution, geometry(station))
+            result = result.append("RES {station.code} dist={decimal(radius, 1)} tt={decimal(radius / settings.velocity, 4)} obs={time_text(pick.sample)} res={decimal(run.result.residual_values[i], 4)}")
+        return result
+
+    string[] location_lines()
+        string[] result = []
+        for Candidate candidate = candidates[]
+            result = result.append("CANDIDATE {candidate.number} picks={len(candidate.initial)} first={time_text(picks[candidate.first].data.sample)}")
+            result = result.concat(self.pass_lines(1, candidate.initial, candidate.first_pass))
+            for int i < int(len(candidate.dropped))
+                int station = picks[candidate.dropped[i]].data.station
+                result = result.append("DROP {stations[station].code} res={decimal(candidate.dropped_residuals[i], 4)}")
+            if candidate.rejected
+                result = result.append("RESULT REJECTED stations={len(candidate.used)}")
+            else
+                if candidate.has_second
+                    result = result.concat(self.pass_lines(2, candidate.used, candidate.second_pass))
+                result = result.append("RESULT EVENT {candidate.event}")
+        result = result.append("CORRECTIONS")
+        for int station < int(len(stations))
+            result = result.append("{stations[station].code} n={len(before_by_station[station])} correction={decimal(corrections[station], 4)}")
+        real64[] depths = []
+        real64[] rms_values = []
+        int[] grades = [0, 0, 0]
+        for Event event = events[]
+            Quality quality = event.quality
+            locator.Ellipse uncertainty = quality.uncertainty
+            result = result.append("EVENT {event.number}").append(solution_text("START", event.first.solution, event.start_rms))
+            for int i < int(len(event.final.trace))
+                real64[] record = event.final.trace[i]
+                result = result.append(solution_text("ITER", record[0:<4], record[4], i + 1))
+            for int i < int(len(event.used))
+                picker.Pick pick = picks[event.used[i]].data
+                waveform_io.Station station = stations[pick.station]
+                real64 radius = locator.distance(event.final.solution, geometry(station))
+                result = result.append("RES {station.code} dist={decimal(radius, 1)} tt={decimal(radius / settings.velocity, 4)} obs={time_text(pick.sample)} corr={decimal(corrections[pick.station], 4)} res={decimal(event.final.residual_values[i], 4)}")
+            result = result.concat([
+                "ELLIPSE smaj={decimal(uncertainty.smaj, 1)} smin={decimal(uncertainty.smin, 1)} az={decimal(uncertainty.az, 1)} erz={decimal(uncertainty.erz, 1)} ert={decimal(uncertainty.ert, 4)}",
+                "SHIFT dh={decimal(quality.dh, 1)} dz={decimal(quality.dz, 1)}",
+                "GAP {decimal(quality.gap, 1)} DMIN {decimal(quality.dmin, 1)} QUALITY {quality.grade}",
+            ])
+            for Jack jack = quality.jackknife[]
+                result = result.append("JACK {stations[jack.station].code} dx={decimal(jack.dx, 1)} dy={decimal(jack.dy, 1)} dz={decimal(jack.dz, 1)} shift={decimal(jack.shift, 1)}")
+            Jack maximum = quality.jackknife[quality.maximum]
+            result = result.append("JACKKNIFE max={decimal(maximum.shift, 1)} station={stations[maximum.station].code}")
+            depths = depths.append(event.final.solution[2])
+            rms_values = rms_values.append(event.final.rms_value)
+            int grade = if quality.grade == "A" then 0 elif quality.grade == "B" then 1 else 2
+            grades[grade] += 1
+        Regression fit = self.regression()
+        result = result.append("FIT n={fit.count} velocity={decimal(fit.velocity, 1)} intercept={decimal(fit.intercept, 4)} rms={decimal(fit.rms_value, 4)}")
+        for int i < int(len(clusters))
+            Cluster cluster = clusters[i]
+            if len(cluster.members) >= 2
+                int[] numbers = [for int member = cluster.members[] then member + 1]
+                result = result.append("CLUSTER {i + 1} events={integers(numbers, ",")} x={decimal(cluster.center[0], 1)} y={decimal(cluster.center[1], 1)} z={decimal(cluster.center[2], 1)} span={decimal(cluster.span, 3)}")
+        result = result.append("ADDED")
+        for int index = added[]
+            ObservedPick pick = picks[index]
+            result = result.append("{stations[pick.data.station].code} sample={pick.data.sample} event={pick.event} res={decimal(pick.residual, 4)}")
+        int rejected = 0
+        int unassociated = 0
+        for Candidate candidate = candidates[]
+            if candidate.rejected
+                rejected += 1
+        for ObservedPick pick = picks[]
+            if pick.status == "unassociated"
+                unassociated += 1
+        depths = depths.sorted()
+        return result.concat([
+            "SUMMARY picks={len(picks)} candidates={len(candidates)} events={len(events)} rejected={rejected} unassociated={unassociated}",
+            "DEPTH min={decimal(depths[0], 1)} median={decimal(magnitude.median(depths), 1)} max={decimal(depths[int(len(depths)) - 1], 1)}",
+            "QUALITY A={grades[0]} B={grades[1]} C={grades[2]} mean_rms={decimal(sum_values(rms_values) / as_real(int(len(events))), 4)}",
+        ])
+
+    string[] picks_lines()
+        string[] result = ["station,sample,time_s,duration,snr,amplitude,clipped,event,status,residual"]
+        for ObservedPick observed = picks[]
+            picker.Pick pick = observed.data
+            string residual = if observed.status == "used" or observed.status == "added" then decimal(observed.residual, 4) else "-"
+            result = result.append("{stations[pick.station].code},{pick.sample},{time_text(pick.sample)},{pick.duration},{decimal(pick.ratio, 2)},{pick.amplitude},{yes_no(pick.clipped)},{observed.event},{observed.status},{residual}")
+        return result
+
+    string[] catalog_lines()
+        string[] result = ["event,origin_time,x,y,depth,rms,stations,gap,dmin,smaj,smin,azimuth,erz,ml,md,quality,cluster"]
+        for Event event = events[]
+            real64[] solution = event.final.solution
+            Quality quality = event.quality
+            locator.Ellipse uncertainty = quality.uncertainty
+            string ml = if event.has_ml then decimal(event.ml, 2) else "-"
+            result = result.append([
+                "{event.number}", decimal(solution[3], 3), decimal(solution[0], 1), decimal(solution[1], 1), decimal(solution[2], 1),
+                decimal(event.final.rms_value, 4), "{len(event.used)}", decimal(quality.gap, 1), decimal(quality.dmin, 1),
+                decimal(uncertainty.smaj, 1), decimal(uncertainty.smin, 1), decimal(uncertainty.az, 1), decimal(uncertainty.erz, 1),
+                ml, decimal(event.md, 2), quality.grade, "{event.cluster}",
+            ].join(","))
+        return result
+
+    string[] timeline_lines()
+        int duration = settings.timeline[0]
+        int width = settings.timeline[1]
+        int low = settings.timeline[2]
+        int high = settings.timeline[3]
+        int height = settings.timeline[4]
+        string[][] canvas = empty_grid(width, height)
+        for Event event = events[]
+            if not event.has_ml
+                continue
+            int origin = scaled(event.final.solution[3], 3)
+            int h = scaled(event.ml, 2)
+            if origin < 0 or origin >= 1000 * duration or h < 100 * low
+                continue
+            int column = origin * width / (1000 * duration)
+            int level = (h - 100 * low) * height / (100 * (high - low))
+            if level > height - 1
+                level = height - 1
+            for int k < level + 1
+                int row = height - 1 - k
+                if k == level
+                    canvas[row][column] = "o"
+                elif canvas[row][column] == " "
+                    canvas[row][column] = "|"
+        return ["TIMELINE t=0..{duration} ML={low}..{high}"].concat(chart_lines(canvas, width))
+
+    string[] magnitude_lines()
+        string[] result = []
+        real64[] all_local = []
+        real64[] relation_x = []
+        real64[] relation_y = []
+        for Event event = events[]
+            int count = 0
+            for magnitude.PickMagnitude record = event.magnitudes[]
+                if record.has_ml
+                    count += 1
+            string ml = if event.has_ml then decimal(event.ml, 2) else "-"
+            result = result.append("EVENT {event.number} ML={ml} n={count} MD={decimal(event.md, 2)}")
+            for int i < int(len(event.magnitudes))
+                magnitude.PickMagnitude record = event.magnitudes[i]
+                picker.Pick pick = picks[event.used[i]].data
+                string prefix = "{stations[pick.station].code} r={decimal(record.r, 3)} amp={pick.amplitude} "
+                prefix += if record.has_ml then "ml={decimal(record.ml, 2)} res={decimal(record.ml - event.ml, 2)}" else "clipped"
+                result = result.append("{prefix} dur={pick.duration} md={decimal(record.md, 2)}")
+            if event.has_ml
+                all_local = all_local.append(event.ml)
+                relation_x = relation_x.append(event.md)
+                relation_y = relation_y.append(event.ml)
+        result = result.append("CORRECTED")
+        for Event event = events[]
+            string mlc = if event.has_ml then decimal(event.mlc, 2) else "-"
+            result = result.append("EVENT {event.number} MLC={mlc}")
+        magnitude.Frequencies frequency = magnitude.frequency(all_local)
+        result = result.append("FMD")
+        for frequency.low <= int value < frequency.high + 1
+            int cumulative = 0
+            for value <= int other < frequency.high + 1
+                cumulative += frequency.counts[other - frequency.low]
+            result = result.append("M={magnitude.class_text(value)} N={frequency.counts[value - frequency.low]} CUM={cumulative}")
+        real64 xm = sum_values(relation_x) / as_real(int(len(relation_x)))
+        real64 ym = sum_values(relation_y) / as_real(int(len(relation_y)))
+        real64 xx = 0.0
+        real64 xy = 0.0
+        real64 yy = 0.0
+        for int i < int(len(relation_x))
+            real64 dx = relation_x[i] - xm
+            real64 dy = relation_y[i] - ym
+            xx += dx * dx
+            xy += dx * dy
+            yy += dy * dy
+        real64 slope = xy / xx
+        result = result.concat([
+            "MC {magnitude.class_text(frequency.completeness)}",
+            "BVALUE {decimal(frequency.b, 3)} SIGMA {decimal(frequency.sigma, 3)} N {frequency.count}",
+            "AVALUE {decimal(frequency.a, 3)}",
+            "MLMD n={len(relation_x)} slope={decimal(slope, 3)} intercept={decimal(ym - slope * xm, 3)} r={decimal(xy / locator.root(xx * yy), 3)} mean_diff={decimal(ym - xm, 3)}",
+        ])
+        return result.concat(self.timeline_lines())
+
+    string[] station_lines()
+        string[] result = []
+        for int ordinal < int(len(stations))
+            waveform_io.Station station = stations[ordinal]
+            picker.Statistics statistics = wave_statistics[ordinal]
+            int[] counts = [0, 0, 0, 0, 0]
+            for ObservedPick pick = picks[]
+                if pick.data.station != ordinal
+                    continue
+                int index = if pick.status == "used" then 0 elif pick.status == "dropped" then 1 elif pick.status == "added" then 2 elif pick.status == "rejected" then 3 else 4
+                counts[index] += 1
+            string before = "-"
+            string after = "-"
+            if len(before_by_station[ordinal]) > 0
+                before = decimal(residual_rms(before_by_station[ordinal]), 4)
+                after = decimal(residual_rms(after_by_station[ordinal]), 4)
+            result = result.concat([
+                "STATION {station.code} x={station.x} y={station.y} elevation={station.elevation}",
+                "SAMPLES start={station.start} count={len(station.samples)} mean={statistics.mean} noise={decimal(as_real(statistics.noise_twice) / 2.0, 1)} peak={statistics.peak} clipped={statistics.clipped_samples}",
+                "TRIGGERS total={statistics.triggers} short={statistics.short_triggers} picks={statistics.picks}",
+                "PICKS used={counts[0]} dropped={counts[1]} added={counts[2]} rejected={counts[3]} unassociated={counts[4]}",
+                "RESIDUALS n={len(before_by_station[ordinal])} rms={before} correction={decimal(corrections[ordinal], 4)} after={after}",
+                "MAGNITUDES n={len(magnitude_by_station[ordinal])} correction={decimal(magnitude_corrections[ordinal], 2)}",
+            ])
+        return result
+
+    int[][] plotted_positions(Event event)
+        real64[] solution = event.final.solution
+        int x = scaled(solution[0], 1)
+        int y = scaled(solution[1], 1)
+        int z = scaled(solution[2], 1)
+        int left = settings.map_area[0]
+        int right = settings.map_area[1]
+        int bottom = settings.map_area[2]
+        int top = settings.map_area[3]
+        int width = settings.map_size[0]
+        int height = settings.map_size[1]
+        int depth_limit = settings.section[0]
+        int section_height = settings.section[1]
+        int[] map_position = []
+        int[] ew_position = []
+        int[] ns_position = []
+        if 10 * left <= x < 10 * right and 10 * bottom <= y < 10 * top
+            map_position = [(x - 10 * left) * width / (10 * (right - left)), height - 1 - (y - 10 * bottom) * height / (10 * (top - bottom))]
+        if 10 * left <= x < 10 * right and z < 10 * depth_limit
+            ew_position = [(x - 10 * left) * width / (10 * (right - left)), z * section_height / (10 * depth_limit)]
+        if 10 * bottom <= y < 10 * top and z < 10 * depth_limit
+            ns_position = [(y - 10 * bottom) * width / (10 * (top - bottom)), z * section_height / (10 * depth_limit)]
+        return [map_position, ew_position, ns_position]
+
+    int[] station_position(waveform_io.Station station)
+        int left = settings.map_area[0]
+        int right = settings.map_area[1]
+        int bottom = settings.map_area[2]
+        int top = settings.map_area[3]
+        int width = settings.map_size[0]
+        int height = settings.map_size[1]
+        if station.x < left or station.x >= right or station.y < bottom or station.y >= top
+            return []
+        return [(station.x - left) * width / (right - left), height - 1 - (station.y - bottom) * height / (top - bottom)]
+
+    string[] map_lines()
+        int left = settings.map_area[0]
+        int right = settings.map_area[1]
+        int bottom = settings.map_area[2]
+        int top = settings.map_area[3]
+        int width = settings.map_size[0]
+        int height = settings.map_size[1]
+        int depth_limit = settings.section[0]
+        int section_height = settings.section[1]
+        string[][][] canvas = [empty_grid(width, height), empty_grid(width, section_height), empty_grid(width, section_height)]
+        int[][][] positions = []
+        int[][] station_positions = []
+        for Event event = events[]
+            int[][] points = self.plotted_positions(event)
+            positions = positions.append(points)
+            string mark = event_symbol(event)
+            for int i < 3
+                place(&canvas[i], points[i], mark)
+        for waveform_io.Station station = stations[]
+            int[] position = self.station_position(station)
+            station_positions = station_positions.append(position)
+            place(&canvas[0], position, "^")
+        string[] titles = ["MAP x={left}..{right} y={bottom}..{top}", "SECTION EW x={left}..{right} z=0..{depth_limit}", "SECTION NS y={bottom}..{top} z=0..{depth_limit}"]
+        string[] result = []
+        for int i < 3
+            result = result.append(titles[i]).concat(chart_lines(canvas[i], width))
+        result = result.append("LEGEND ^ station . ML<1 o ML<2 O ML<3 @ ML>=3 ? no ML")
+        for int i < int(len(stations))
+            result = result.append("STATION {stations[i].code} map={position_text(station_positions[i])}")
+        for int i < int(len(events))
+            int[][] points = positions[i]
+            result = result.append("EVENT {i + 1} {event_symbol(events[i])} map={position_text(points[0])} ew={position_text(points[1])} ns={position_text(points[2])}")
+        return result
+
+    void write_reports()
+        file.write("output/picks.csv", self.picks_lines().join(NL) + NL)
+        file.write("output/locations.txt", self.location_lines().join(NL) + NL)
+        file.write("output/catalog.csv", self.catalog_lines().join(NL) + NL)
+        file.write("output/magnitudes.txt", self.magnitude_lines().join(NL) + NL)
+        file.write("output/stations.txt", self.station_lines().join(NL) + NL)
+        file.write("output/map.txt", self.map_lines().join(NL) + NL)
+
+void run()
+    waveform_io.Input data = waveform_io.read_inputs()
+    Lab lab = Lab(data)
+    .lab.detect()
+    .lab.locate_candidates()
+    .lab.relocate()
+    .lab.compute_magnitudes()
+    .lab.cluster_events()
+    .lab.reassociate()
+    lab.write_reports()
+
+run()

@@ -1,0 +1,18 @@
+let numbers = [
+    "688126340316", "0128469655154", "92181914514156", "177332430060552", "7982377590420309",
+    "9884593615513906",
+]
+for number in numbers {
+    let digits = number.utf8.map { Int($0) - 48 }
+    var sum = 0
+    for (index, value) in digits.reversed().enumerated() {
+        var digit = value
+        if index % 2 == 1 {
+            digit *= 2
+            if digit > 9 { digit -= 9 }
+        }
+        sum += digit
+    }
+    let expected = (10 - (sum - digits.last!) % 10) % 10
+    print(number + ": " + (sum % 10 == 0 ? "valid" : "invalid (expected check digit \(expected))"))
+}

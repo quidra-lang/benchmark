@@ -1,0 +1,635 @@
+import math
+
+int integer_value(string text)
+    return int.parse(text)
+
+int cents(string text)
+    string[] parts = text.split(".")
+    return 100 * integer_value(parts[0]) + integer_value(parts[1])
+
+string money(int value)
+    int magnitude = math.abs(value)
+    return (if value < 0 then "-" else "") + "{magnitude / 100}.{magnitude % 100:int=2,zero}"
+
+string signed_quantity(int value)
+    return (if value > 0 then "+" else "") + value.string()
+
+string signed_money(int value)
+    return (if value > 0 then "+" else "") + money(value)
+
+string margin(int profit, int revenue)
+    if revenue == 0
+        return "n/a"
+    int value = math.abs(profit) * 1000 / revenue
+    return (if profit < 0 and value > 0 then "-" else "") + "{value / 10}.{value % 10}%"
+
+class Item(string code, string name, int level, int last_cost, int card_head, int card_tail)
+class Lot(int item, int day, int initial_quantity, int initial_cost, int warehouse, string kind, int cost, int removed)
+class Order(int warehouse, int item, int day, int price, int ordered, int shipped, int backorder, int cancelled, int returned, int revenue, int cogs, int issue_head, int issue_tail)
+class Part(int lot, int quantity, int cost)
+class Issue(int order, int lot, int quantity, int cost, int next)
+class Card(int day, string kind, int warehouse, int quantity, int value, int next)
+class State()
+    int day = 1
+    string[] warehouses = array(20, fill = "")
+    int warehouse_used = 0
+    Item[] items = array(100, fill = Item("", "", 0, -1, -1, -1))
+    int item_used = 0
+    Lot[] lots = array(2000, fill = Lot(0, 0, 0, 0, 0, "", 0, 0))
+    int lot_used = 0
+    int[][] item_lots = array(100, fill = array(2000, fill = 0))
+    int[] item_lot_used = array(100, fill = 0)
+    int[][] stock = array(2000, fill = array(20, fill = 0))
+    int[] fifo = array(2000, fill = 0)
+    Order[] orders = array(2000, fill = Order(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1))
+    int order_used = 0
+    Issue[] issues = []
+    int issue_used = 0
+    Card[] cards = []
+    int card_used = 0
+    int[][] totals = array(8, fill = array(2, fill = 0))
+
+void emit(string text)
+    print(text + NL)
+
+void fail(string reason)
+    emit("ERROR " + reason)
+
+int warehouse_id(const State state, string code)
+    for 0 <= int k < state.warehouse_used
+        if state.warehouses[k] == code
+            return k
+    return -1
+
+int item_id(const State state, string code)
+    for 0 <= int k < state.item_used
+        if state.items[k].code == code
+            return k
+    return -1
+
+int[] warehouse_order(const State state)
+    string[] codes = state.warehouses[:<state.warehouse_used].sorted()
+    return [for string code = codes[] then warehouse_id(state, code)]
+
+int[] item_order(const State state)
+    string[] codes = [for 0 <= int k < state.item_used then state.items[k].code]
+    codes = codes.sorted()
+    return [for string code = codes[] then item_id(state, code)]
+
+int[] lot_ids(const State state, int item)
+    if item >= 0
+        return state.item_lots[item][:<state.item_lot_used[item]]
+    return 0:<state.lot_used
+
+int[] holding(const State state, int warehouse = -1, int item = -1)
+    int quantity = 0
+    int value = 0
+    for int k = lot_ids(state, item)[]
+        int amount = if warehouse >= 0 then state.stock[k][warehouse] else state.stock[k][:<state.warehouse_used].sum()
+        quantity += amount
+        value += amount * state.lots[k].cost
+    return [quantity, value]
+
+int backordered(const State state, int warehouse = -1, int item = -1)
+    int[] quantities = [for 0 <= int k < state.order_used
+        if (warehouse < 0 or state.orders[k].warehouse == warehouse) and (item < 0 or state.orders[k].item == item)
+        then state.orders[k].backorder]
+    return quantities.sum()
+
+int[] sales(const State state, int item = -1)
+    int[] result = array(4, fill = 0)
+    for 0 <= int k < state.order_used
+        Order entry = state.orders[k]
+        if item < 0 or entry.item == item
+            result[0] += 1
+            result[1] += entry.shipped - entry.returned
+            result[2] += entry.revenue
+            result[3] += entry.cogs
+    return result
+
+void accumulate(State &state, int category, int quantity, int value)
+    state.totals[category][0] += quantity
+    state.totals[category][1] += value
+
+void card_entry(State &state, int item, string kind, int warehouse, int quantity, int value)
+    if state.card_used == int(len(state.cards))
+        int capacity = if state.card_used == 0 then 16 else 2 * state.card_used
+        Card[] grown = array(nat(capacity), fill = Card(0, "", 0, 0, 0, -1))
+        for 0 <= int k < state.card_used
+            grown[k] = state.cards[k]
+        state.cards = grown
+    int index = state.card_used
+    state.card_used += 1
+    state.cards[index] = Card(state.day, kind, warehouse, quantity, value, -1)
+    int tail = state.items[item].card_tail
+    if tail < 0
+        state.items[item].card_head = index
+    else
+        state.cards[tail].next = index
+    state.items[item].card_tail = index
+
+int create_lot(State &state, int warehouse, int item, int quantity, int cost, int day, string kind)
+    int index = state.lot_used
+    state.lot_used += 1
+    state.lots[index] = Lot(item, day, quantity, cost, warehouse, kind, cost, 0)
+    state.stock[index][warehouse] = quantity
+    state.item_lots[item][state.item_lot_used[item]] = index
+    state.item_lot_used[item] += 1
+    int position = index
+    while position > 0 and state.lots[state.fifo[position - 1]].day > day
+        state.fifo[position] = state.fifo[position - 1]
+        position -= 1
+    state.fifo[position] = index
+    return index
+
+Part[] issue_stock(State &state, int warehouse, int item, int quantity)
+    Part[] result = []
+    for 0 <= int k < state.lot_used
+        if quantity == 0
+            break
+        int index = state.fifo[k]
+        if state.lots[index].item != item or state.stock[index][warehouse] == 0
+            continue
+        int taken = math.min(quantity, state.stock[index][warehouse])
+        state.stock[index][warehouse] -= taken
+        quantity -= taken
+        result = result.append(Part(index, taken, state.lots[index].cost))
+    return result
+
+int parts_cost(const Part[] parts)
+    int[] costs = [for Part part = parts[] then part.quantity * part.cost]
+    return costs.sum()
+
+void remember_issues(State &state, int order, const Part[] parts)
+    for Part part = parts[]
+        if state.issue_used == int(len(state.issues))
+            int capacity = if state.issue_used == 0 then 16 else 2 * state.issue_used
+            Issue[] grown = array(nat(capacity), fill = Issue(0, 0, 0, 0, -1))
+            for 0 <= int k < state.issue_used
+                grown[k] = state.issues[k]
+            state.issues = grown
+        int index = state.issue_used
+        state.issue_used += 1
+        state.issues[index] = Issue(order, part.lot, part.quantity, part.cost, -1)
+        int tail = state.orders[order].issue_tail
+        if tail < 0
+            state.orders[order].issue_head = index
+        else
+            state.issues[tail].next = index
+        state.orders[order].issue_tail = index
+
+void remove_parts(State &state, const Part[] parts)
+    for Part part = parts[]
+        state.lots[part.lot].removed += part.quantity
+
+void allocate(State &state, int warehouse, int item)
+    for 0 <= int k < state.order_used
+        if state.orders[k].warehouse != warehouse or state.orders[k].item != item or state.orders[k].backorder == 0
+            continue
+        int available = holding(state, warehouse, item)[0]
+        if available == 0
+            return
+        int quantity = math.min(available, state.orders[k].backorder)
+        Part[] parts = issue_stock(&state, warehouse, item, quantity)
+        int cost = parts_cost(parts)
+        int revenue = quantity * state.orders[k].price
+        state.orders[k].shipped += quantity
+        state.orders[k].backorder -= quantity
+        state.orders[k].revenue += revenue
+        state.orders[k].cogs += cost
+        remember_issues(&state, k, parts)
+        accumulate(&state, 4, quantity, cost)
+        card_entry(&state, item, "fill", warehouse, -quantity, -cost)
+        emit("  FILL order " + (k + 1).string() + " qty " + quantity.string() + " revenue " + money(revenue) + " cogs " + money(cost) + " profit " + money(revenue - cost) + " backorder " + state.orders[k].backorder.string())
+
+string sales_fields(int[] values)
+    int profit = values[2] - values[3]
+    return " sold " + values[1].string() + " revenue " + money(values[2]) + " cogs " + money(values[3]) + " profit " + money(profit) + " margin " + margin(profit, values[2])
+
+string aging_fields(int[] values, bool monetary)
+    string[] names = ["0-30", "31-60", "61-90", "91+"]
+    return [for 0 <= int k < 4 then names[k] + " " + (if monetary then money(values[k]) else values[k].string())].join(" ")
+
+int age_bucket(int age)
+    return if age <= 30 then 0 elif age <= 60 then 1 elif age <= 90 then 2 else 3
+
+void command(State &state, string line)
+    string[] words = line.split(" ")
+    string action = words[0]
+    if action == "DAY"
+        int day = integer_value(words[1])
+        if day <= state.day
+            fail("invalid day " + words[1])
+        else
+            state.day = day
+            emit("DAY " + day.string())
+        return
+    if action == "WAREHOUSE"
+        if warehouse_id(state, words[1]) >= 0
+            fail("duplicate warehouse " + words[1])
+        else
+            state.warehouses[state.warehouse_used] = words[1]
+            state.warehouse_used += 1
+            emit("WAREHOUSE " + words[1])
+        return
+    if action == "ITEM"
+        int item = item_id(state, words[1])
+        bool added = item < 0
+        if added
+            item = state.item_used
+            state.item_used += 1
+            state.items[item] = Item(words[1], words[3], integer_value(words[2]), -1, -1, -1)
+        else
+            state.items[item].name = words[3]
+            state.items[item].level = integer_value(words[2])
+        emit("ITEM " + words[1] + (if added then " added " else " updated ") + words[3] + " level " + words[2])
+        return
+    if action == "CANCEL" or action == "RETURN" or action == "ORDER"
+        int order = integer_value(words[1]) - 1
+        if order < 0 or order >= state.order_used
+            fail("unknown order " + words[1])
+            return
+        Order entry = state.orders[order]
+        string warehouse = state.warehouses[entry.warehouse]
+        string item = state.items[entry.item].code
+        if action == "CANCEL"
+            if entry.backorder == 0
+                fail("no backorder " + words[1])
+            else
+                state.orders[order].cancelled += entry.backorder
+                state.orders[order].backorder = 0
+                emit("CANCEL order " + words[1] + " qty " + entry.backorder.string())
+        elif action == "RETURN"
+            int quantity = integer_value(words[2])
+            int cost = cents(words[3])
+            if quantity == 0
+                fail("invalid quantity")
+            elif quantity > entry.shipped - entry.returned
+                fail("return exceeds shipped " + words[1] + " " + (entry.shipped - entry.returned).string())
+            else
+                int lot = create_lot(&state, entry.warehouse, entry.item, quantity, cost, state.day, "return")
+                state.orders[order].returned += quantity
+                state.orders[order].revenue -= quantity * entry.price
+                state.orders[order].cogs -= quantity * cost
+                accumulate(&state, 1, quantity, quantity * cost)
+                card_entry(&state, entry.item, "return", entry.warehouse, quantity, quantity * cost)
+                emit("RETURN order " + words[1] + " " + warehouse + " " + item + " qty " + quantity.string() + " lot " + (lot + 1).string() + " refund " + money(quantity * entry.price) + " value " + money(quantity * cost))
+                allocate(&state, entry.warehouse, entry.item)
+        else
+            emit("ORDER " + words[1] + " " + warehouse + " " + item + " day " + entry.day.string() + " price " + money(entry.price))
+            emit("  ordered " + entry.ordered.string() + " shipped " + entry.shipped.string() + " backorder " + entry.backorder.string() + " cancelled " + entry.cancelled.string() + " returned " + entry.returned.string())
+            int cursor = entry.issue_head
+            while cursor >= 0
+                Issue part = state.issues[cursor]
+                emit("  lot " + (part.lot + 1).string() + " qty " + part.quantity.string() + " cost " + money(part.cost))
+                cursor = part.next
+            emit("  revenue " + money(entry.revenue) + " cogs " + money(entry.cogs) + " profit " + money(entry.revenue - entry.cogs))
+        return
+    if action == "RECEIVE" or action == "SHIP" or action == "TRANSFER" or action == "ADJUST" or action == "COUNT" or action == "LOTS"
+        int warehouse = warehouse_id(state, words[1])
+        if warehouse < 0
+            fail("unknown warehouse " + words[1])
+            return
+        int destination = -1
+        int item_position = 2
+        if action == "TRANSFER"
+            destination = warehouse_id(state, words[2])
+            if destination < 0
+                fail("unknown warehouse " + words[2])
+                return
+            if destination == warehouse
+                fail("same warehouse " + words[1])
+                return
+            item_position = 3
+        int item = item_id(state, words[item_position])
+        if item < 0
+            fail("unknown item " + words[item_position])
+            return
+        string pair = state.warehouses[warehouse] + " " + state.items[item].code
+        int available = holding(state, warehouse, item)[0]
+        if action == "LOTS"
+            emit("LOTS " + pair)
+            int shown = 0
+            for 0 <= int k < state.lot_used
+                int lot = state.fifo[k]
+                if state.lots[lot].item == item and state.stock[lot][warehouse] > 0
+                    Lot entry = state.lots[lot]
+                    int quantity = state.stock[lot][warehouse]
+                    emit("  lot " + (lot + 1).string() + " day " + entry.day.string() + " qty " + quantity.string() + " cost " + money(entry.cost) + " value " + money(quantity * entry.cost) + " age " + (state.day - entry.day).string())
+                    shown += 1
+            for 0 <= int k < state.order_used
+                Order entry = state.orders[k]
+                if entry.warehouse == warehouse and entry.item == item and entry.backorder > 0
+                    emit("  backorder order " + (k + 1).string() + " qty " + entry.backorder.string())
+                    shown += 1
+            if shown == 0
+                emit("  (none)")
+            return
+        int quantity = 0
+        bool positive = false
+        if action == "ADJUST"
+            positive = words[3].starts_with("+")
+            quantity = integer_value(words[3][1:])
+        else
+            quantity = integer_value(words[item_position + 1])
+        if quantity == 0 and action != "COUNT"
+            fail("invalid quantity")
+            return
+        if (action == "TRANSFER" or (action == "ADJUST" and not positive)) and available < quantity
+            fail("insufficient stock " + pair + " " + available.string())
+            return
+        if action == "RECEIVE"
+            int cost = cents(words[4])
+            int day = integer_value(words[5])
+            if day > state.day
+                fail("future day " + words[5])
+                return
+            int lot = create_lot(&state, warehouse, item, quantity, cost, day, "receive")
+            state.items[item].last_cost = cost
+            accumulate(&state, 0, quantity, quantity * cost)
+            card_entry(&state, item, "receive", warehouse, quantity, quantity * cost)
+            emit("RECEIVE " + pair + " lot " + (lot + 1).string() + " qty " + quantity.string() + " cost " + money(cost) + " day " + day.string() + " value " + money(quantity * cost))
+            allocate(&state, warehouse, item)
+        elif action == "SHIP"
+            int price = cents(words[4])
+            int filled = math.min(quantity, available)
+            Part[] parts = issue_stock(&state, warehouse, item, filled)
+            int cost = parts_cost(parts)
+            int order = state.order_used
+            state.order_used += 1
+            state.orders[order] = Order(warehouse, item, state.day, price, quantity, filled, quantity - filled, 0, 0, filled * price, cost, -1, -1)
+            remember_issues(&state, order, parts)
+            if filled > 0
+                accumulate(&state, 4, filled, cost)
+                card_entry(&state, item, "ship", warehouse, -filled, -cost)
+            emit("SHIP order " + (order + 1).string() + " " + pair + " shipped " + filled.string() + " revenue " + money(filled * price) + " cogs " + money(cost) + " profit " + money(filled * price - cost) + " backorder " + (quantity - filled).string())
+        elif action == "TRANSFER"
+            Part[] parts = issue_stock(&state, warehouse, item, quantity)
+            int cost = parts_cost(parts)
+            for Part part = parts[]
+                state.stock[part.lot][destination] += part.quantity
+            card_entry(&state, item, "transfer-out", warehouse, -quantity, -cost)
+            card_entry(&state, item, "transfer-in", destination, quantity, cost)
+            emit("TRANSFER " + state.warehouses[warehouse] + " -> " + state.warehouses[destination] + " " + state.items[item].code + " qty " + quantity.string() + " value " + money(cost) + " lots " + len(parts).string())
+            allocate(&state, destination, item)
+        elif action == "ADJUST" and positive
+            int cost = cents(words[4])
+            int lot = create_lot(&state, warehouse, item, quantity, cost, state.day, "adjust")
+            accumulate(&state, 2, quantity, quantity * cost)
+            card_entry(&state, item, "adjust", warehouse, quantity, quantity * cost)
+            emit("ADJUST " + pair + " +" + quantity.string() + " lot " + (lot + 1).string() + " value " + money(quantity * cost))
+            allocate(&state, warehouse, item)
+        elif action == "ADJUST" or quantity < available
+            int removed = if action == "ADJUST" then quantity else available - quantity
+            Part[] parts = issue_stock(&state, warehouse, item, removed)
+            int cost = parts_cost(parts)
+            remove_parts(&state, parts)
+            accumulate(&state, 3, removed, cost)
+            card_entry(&state, item, if action == "ADJUST" then "adjust" else "count", warehouse, -removed, -cost)
+            emit((if action == "ADJUST" then "ADJUST " + pair + " -" + removed.string() else "COUNT " + pair + " qty " + available.string() + " -> " + quantity.string() + " shortage " + removed.string()) + " value " + money(cost))
+        elif quantity == available
+            emit("COUNT " + pair + " qty " + quantity.string() + " ok")
+        else
+            int cost = if state.items[item].last_cost < 0 then 0 else state.items[item].last_cost
+            int added = quantity - available
+            int lot = create_lot(&state, warehouse, item, added, cost, state.day, "count")
+            accumulate(&state, 2, added, added * cost)
+            card_entry(&state, item, "count", warehouse, added, added * cost)
+            emit("COUNT " + pair + " qty " + available.string() + " -> " + quantity.string() + " surplus " + added.string() + " lot " + (lot + 1).string() + " value " + money(added * cost))
+            allocate(&state, warehouse, item)
+        return
+    if action == "MARKET" or action == "CARD"
+        int item = item_id(state, words[1])
+        if item < 0
+            fail("unknown item " + words[1])
+            return
+        if action == "CARD"
+            emit("CARD " + words[1] + " " + state.items[item].name)
+            int cursor = state.items[item].card_head
+            int quantity = 0
+            int value = 0
+            if cursor < 0
+                emit("  (none)")
+            while cursor >= 0
+                Card entry = state.cards[cursor]
+                quantity += entry.quantity
+                value += entry.value
+                emit("  day " + entry.day.string() + " " + entry.kind + " " + state.warehouses[entry.warehouse] + " " + signed_quantity(entry.quantity) + " " + signed_money(entry.value) + " balance " + quantity.string() + " " + money(value))
+                cursor = entry.next
+        else
+            int price = cents(words[2])
+            int count = 0
+            int quantity = 0
+            int loss = 0
+            for int warehouse = warehouse_order(state)[]
+                int local_loss = 0
+                for int lot = lot_ids(state, item)[]
+                    Lot entry = state.lots[lot]
+                    int held = state.stock[lot][warehouse]
+                    if entry.item == item and entry.cost > price and held > 0
+                        count += 1
+                        quantity += held
+                        int difference = held * (entry.cost - price)
+                        loss += difference
+                        local_loss += difference
+                if local_loss > 0
+                    card_entry(&state, item, "writedown", warehouse, 0, -local_loss)
+            for int lot = lot_ids(state, item)[]
+                if state.lots[lot].cost > price
+                    state.lots[lot].cost = price
+            accumulate(&state, 5, quantity, loss)
+            emit("MARKET " + words[1] + " price " + money(price) + " lots " + count.string() + " qty " + quantity.string() + " loss " + money(loss))
+        return
+    if action == "RECALL" or action == "TRACE"
+        int lot = integer_value(words[1]) - 1
+        if lot < 0 or lot >= state.lot_used
+            fail("unknown lot " + words[1])
+            return
+        Lot entry = state.lots[lot]
+        int total = state.stock[lot][:<state.warehouse_used].sum()
+        if action == "RECALL" and total == 0
+            fail("nothing to recall " + words[1])
+            return
+        if action == "TRACE"
+            emit("TRACE lot " + words[1] + " " + state.items[entry.item].code + " " + entry.kind + " " + state.warehouses[entry.warehouse] + " day " + entry.day.string() + " qty " + entry.initial_quantity.string() + " cost " + money(entry.initial_cost))
+        else
+            emit("RECALL lot " + words[1] + " " + state.items[entry.item].code + " qty " + total.string() + " value " + money(total * entry.cost))
+        for int warehouse = warehouse_order(state)[]
+            int held = state.stock[lot][warehouse]
+            if held > 0
+                if action == "TRACE"
+                    emit("  held " + state.warehouses[warehouse] + " qty " + held.string() + " cost " + money(entry.cost))
+                else
+                    emit("  " + state.warehouses[warehouse] + " qty " + held.string() + " value " + money(held * entry.cost))
+                    state.stock[lot][warehouse] = 0
+                    card_entry(&state, entry.item, "recall", warehouse, -held, -held * entry.cost)
+        if action == "RECALL"
+            state.lots[lot].removed += total
+            accumulate(&state, 7, total, total * entry.cost)
+        else
+            int[] issued = array(nat(state.order_used), fill = 0)
+            for 0 <= int k < state.issue_used
+                Issue part = state.issues[k]
+                if part.lot == lot
+                    issued[part.order] += part.quantity
+            for 0 <= int k < state.order_used
+                if issued[k] > 0
+                    emit("  order " + (k + 1).string() + " qty " + issued[k].string())
+            if entry.removed > 0
+                emit("  removed qty " + entry.removed.string())
+        return
+    if action == "EXPIRE"
+        int days = integer_value(words[1])
+        emit("EXPIRE " + days.string())
+        int all_quantity = 0
+        int all_value = 0
+        for int item = item_order(state)[]
+            for int warehouse = warehouse_order(state)[]
+                int count = 0
+                int quantity = 0
+                int value = 0
+                for int lot = lot_ids(state, item)[]
+                    if state.day - state.lots[lot].day > days and state.stock[lot][warehouse] > 0
+                        int held = state.stock[lot][warehouse]
+                        count += 1
+                        quantity += held
+                        value += held * state.lots[lot].cost
+                        state.stock[lot][warehouse] = 0
+                        state.lots[lot].removed += held
+                if count > 0
+                    card_entry(&state, item, "expire", warehouse, -quantity, -value)
+                    accumulate(&state, 6, quantity, value)
+                    all_quantity += quantity
+                    all_value += value
+                    emit("  " + state.items[item].code + " " + state.warehouses[warehouse] + " lots " + count.string() + " qty " + quantity.string() + " value " + money(value))
+        emit("  total qty " + all_quantity.string() + " value " + money(all_value))
+        return
+    if action == "VALUE" or action == "AGING"
+        int warehouse = -1
+        if len(words) == 2
+            warehouse = warehouse_id(state, words[1])
+            if warehouse < 0
+                fail("unknown warehouse " + words[1])
+                return
+        if action == "VALUE"
+            emit("VALUE" + (if warehouse < 0 then "" else " " + words[1]))
+            for int item = item_order(state)[]
+                int[] values = holding(state, warehouse, item)
+                if values[0] > 0
+                    emit("  " + state.items[item].code + " qty " + values[0].string() + " value " + money(values[1]) + " avg " + money(values[1] / values[0]))
+                    if warehouse < 0
+                        for int location = warehouse_order(state)[]
+                            int[] local_values = holding(state, location, item)
+                            if local_values[0] > 0
+                                emit("    " + state.warehouses[location] + " qty " + local_values[0].string() + " value " + money(local_values[1]))
+            int[] total = holding(state, warehouse)
+            emit("  total qty " + total[0].string() + " value " + money(total[1]))
+        else
+            emit("AGING" + (if warehouse < 0 then "" else " " + words[1]) + " day " + state.day.string())
+            int[] total_quantity = array(4, fill = 0)
+            int[] total_value = array(4, fill = 0)
+            for int item = item_order(state)[]
+                int[] quantities = array(4, fill = 0)
+                int count = 0
+                for int lot = lot_ids(state, item)[]
+                    for 0 <= int location < state.warehouse_used
+                        if warehouse < 0 or location == warehouse
+                            int held = state.stock[lot][location]
+                            int bucket = age_bucket(state.day - state.lots[lot].day)
+                            quantities[bucket] += held
+                            total_quantity[bucket] += held
+                            total_value[bucket] += held * state.lots[lot].cost
+                            count += held
+                if count > 0
+                    emit("  " + state.items[item].code + " " + aging_fields(quantities, false))
+            emit("  total " + aging_fields(total_quantity, false))
+            emit("  value " + aging_fields(total_value, true))
+        return
+    if action == "ITEMS" or action == "REORDER" or action == "MARGIN" or action == "TOP"
+        emit(action + (if action == "TOP" then " " + words[1] else ""))
+        int shown = 0
+        int[] order = item_order(state)
+        int[][] summaries = array(nat(state.item_used), fill = array(4, fill = 0))
+        if action == "MARGIN" or action == "TOP"
+            for 0 <= int item < state.item_used
+                summaries[item] = sales(state, item)
+        if action == "TOP"
+            int[] ranking = [for int item = order[] if summaries[item][0] > 0 then item]
+            for 1 <= int k < int(len(ranking))
+                int item = ranking[k]
+                int profit = summaries[item][2] - summaries[item][3]
+                int position = k
+                while position > 0
+                    int previous = ranking[position - 1]
+                    int previous_profit = summaries[previous][2] - summaries[previous][3]
+                    if previous_profit > profit or (previous_profit == profit and summaries[previous][2] >= summaries[item][2])
+                        break
+                    ranking[position] = previous
+                    position -= 1
+                ranking[position] = item
+            int limit = math.min(integer_value(words[1]), int(len(ranking)))
+            for 0 <= int k < limit
+                int item = ranking[k]
+                int[] values = summaries[item]
+                int profit = values[2] - values[3]
+                emit("  " + (k + 1).string() + " " + state.items[item].code + " profit " + money(profit) + " revenue " + money(values[2]) + " margin " + margin(profit, values[2]))
+                shown += 1
+        else
+            for int item = order[]
+                Item entry = state.items[item]
+                int held = holding(state, -1, item)[0]
+                int backorder = backordered(state, -1, item)
+                if action == "ITEMS"
+                    emit("  " + entry.code + " " + entry.name + " level " + entry.level.string() + " onhand " + held.string() + " backorder " + backorder.string() + " cost " + (if entry.last_cost < 0 then "none" else money(entry.last_cost)))
+                    shown += 1
+                elif action == "REORDER" and held - backorder <= entry.level
+                    emit("  " + entry.code + " " + entry.name + " onhand " + held.string() + " backorder " + backorder.string() + " level " + entry.level.string())
+                    shown += 1
+                elif action == "MARGIN" and summaries[item][0] > 0
+                    emit("  " + entry.code + sales_fields(summaries[item]))
+            if action == "MARGIN"
+                emit("  total" + sales_fields(sales(state)))
+        if shown == 0 and action != "MARGIN"
+            emit("  (none)")
+        return
+    if action == "BACKORDERS"
+        emit("BACKORDERS")
+        int shown = 0
+        for 0 <= int k < state.order_used
+            Order entry = state.orders[k]
+            if entry.backorder > 0
+                emit("  order " + (k + 1).string() + " " + state.warehouses[entry.warehouse] + " " + state.items[entry.item].code + " qty " + entry.backorder.string() + " day " + entry.day.string() + " price " + money(entry.price))
+                shown += 1
+        if shown == 0
+            emit("  (none)")
+    elif action == "STATUS"
+        emit("STATUS")
+        if state.warehouse_used == 0
+            emit("  (none)")
+        for int warehouse = warehouse_order(state)[]
+            int skus = 0
+            for 0 <= int item < state.item_used
+                if holding(state, warehouse, item)[0] > 0
+                    skus += 1
+            int[] values = holding(state, warehouse)
+            emit("  " + state.warehouses[warehouse] + " skus " + skus.string() + " qty " + values[0].string() + " value " + money(values[1]) + " backorder " + backordered(state, warehouse).string())
+    else
+        emit("SUMMARY")
+        string[] categories = ["received", "returned", "adjusted-in", "adjusted-out", "shipped", "written-down", "expired", "recalled"]
+        for 0 <= int k < 8
+            emit("  " + categories[k] + " qty " + state.totals[k][0].string() + " value " + money(state.totals[k][1]))
+        int[] values = holding(state)
+        emit("  on-hand qty " + values[0].string() + " value " + money(values[1]))
+        int open_orders = 0
+        for 0 <= int k < state.order_used
+            if state.orders[k].backorder > 0
+                open_orders += 1
+        emit("  orders " + state.order_used.string() + " open " + open_orders.string() + " backorder " + backordered(state).string())
+
+int command_count = 0
+scan(&command_count)
+State inventory = State()
+for 0 <= int line_number < command_count
+    string input_line = ""
+    scan(&input_line)
+    command(&inventory, input_line)

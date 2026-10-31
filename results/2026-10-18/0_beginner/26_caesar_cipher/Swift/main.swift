@@ -1,0 +1,14 @@
+import Foundation
+
+func cipher(_ text: String, _ shift: Int) -> String {
+    let bytes = text.utf8.map { byte -> UInt8 in
+        let code = Int(byte)
+        let base = (65...90).contains(code) ? 65 : (97...122).contains(code) ? 97 : -1
+        return base < 0 ? byte : UInt8(base + (code - base + shift + 26) % 26)
+    }
+    return String(bytes: bytes, encoding: .utf8)!
+}
+
+let encrypted = cipher("Zoe, meet Max by the Old Bridge at six!", 3)
+print(encrypted)
+print(cipher(encrypted, -3))

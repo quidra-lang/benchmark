@@ -1,0 +1,760 @@
+import boost = "./variants.qui"
+import evaluation = "./evaluation.qui"
+
+string real_text(real64 value, int digits = 4)
+    return evaluation.real_text(value, digits)
+
+string ratio(int first, int second)
+    return evaluation.ratio(first, second)
+
+string integers(int[] values)
+    string[] fields = [for int value = values[] then "{value}"]
+    return fields.join(" ")
+
+string reals(real64[] values)
+    string[] fields = [for real64 value = values[] then real_text(value)]
+    return fields.join(" ")
+
+real64 sum_values(real64[] values)
+    real64 result = 0.0
+    for real64 value = values[]
+        result += value
+    return result
+
+real64 minimum_value(real64[] values)
+    real64 result = values[0]
+    for real64 value = values[]
+        if value < result
+            result = value
+    return result
+
+real64 maximum_value(real64[] values)
+    real64 result = values[0]
+    for real64 value = values[]
+        if value > result
+            result = value
+    return result
+
+int[] rank_indices<T>(T[] values, bool descending)
+    int[] result = []
+    for int i < int(len(values))
+        int place = int(len(result))
+        for int k < int(len(result))
+            bool earlier = if descending then values[i] > values[result[k]] else values[i] < values[result[k]]
+            if earlier
+                place = k
+                break
+        result = result[0:<place].append(i).concat(result[place:<int(len(result))])
+    return result
+
+real64[] unique_values(real64[] values, bool descending = false)
+    real64[] result = []
+    for real64 value = values.sorted(descending = descending)[]
+        if len(result) == 0 or result[int(len(result)) - 1] != value
+            result = result.append(value)
+    return result
+
+int argmax(real64[] values)
+    int result = 0
+    for 1 <= int i < int(len(values))
+        if values[i] > values[result]
+            result = i
+    return result
+
+class Generator(int state)
+    int .draw()
+        state = 48271 * state % 2147483647
+        return state
+
+real64 magnitude(boost.adaboost.Round record)
+    real64 result = 0.0
+    for real64 value = record.values[]
+        real64 absolute = evaluation.absolute(value)
+        if absolute > result
+            result = absolute
+    return result
+
+real64 row_score(boost.adaboost.Round[] rounds, real64[] values, int limit = -1)
+    int count = if limit < 0 or limit > int(len(rounds)) then int(len(rounds)) else limit
+    real64 result = 0.0
+    for int t < count
+        boost.adaboost.Round record = rounds[t]
+        result += boost.adaboost.stumps.output(record.feature, record.thresholds, record.values, values)
+    return result
+
+real64[] calc_scores(boost.adaboost.Round[] rounds, real64[][] rows, int limit = -1)
+    return [for real64[] row = rows[] then row_score(rounds, row, limit)]
+
+int count_errors(int[] labels, real64[] values)
+    int result = 0
+    for int i < int(len(labels))
+        if evaluation.sign(values[i]) != labels[i]
+            result += 1
+    return result
+
+int class_errors(int[] labels, int[] predicted)
+    int result = 0
+    for int i < int(len(labels))
+        if predicted[i] != labels[i]
+            result += 1
+    return result
+
+real64 calc_loss(int[] labels, real64[] values, bool logit)
+    real64 result = 0.0
+    for int i < int(len(labels))
+        real64 label = evaluation.as_real(labels[i])
+        result += if logit then boost.adaboost.logarithm(1.0 + boost.adaboost.exponential(-2.0 * label * values[i])) else boost.adaboost.exponential(-label * values[i])
+    return result / evaluation.as_real(int(len(labels)))
+
+boost.adaboost.Model train_variant(string variant, real64[][] rows, int[] labels, boost.dataset.Params params)
+    if variant == "discrete"
+        return boost.adaboost.discrete(rows, labels, params.rounds, 1.0)
+    if variant == "real"
+        return boost.real_boost(rows, labels, params.rounds, params.bins, params.smoothing, params.convergence)
+    if variant == "gentle"
+        return boost.gentle(rows, labels, params.rounds)
+    return boost.logit(rows, labels, params.rounds, params.clip)
+
+class Fold(boost.adaboost.Round[] rounds, string reason, int train_count, int[] validation, int[] errors)
+class CrossValidation(Fold[] folds, int[] errors, int selected, real64[] scores)
+
+CrossValidation cross_validation(real64[][] rows, int[] labels, boost.dataset.Params params)
+    Fold[] folds = []
+    int[] errors = array(nat(params.rounds), fill = 0)
+    for int fold < params.folds
+        int[] validation = []
+        for int i < int(len(rows))
+            if i % params.folds == fold
+                validation = validation.append(i)
+        int train_count = int(len(rows)) - int(len(validation))
+        real64[] weights = [for int i = (0:<int(len(rows)))[] then if i % params.folds == fold then 0.0 else 1.0 / evaluation.as_real(train_count)]
+        boost.adaboost.Model model = boost.adaboost.discrete(rows, labels, params.rounds, 1.0, weights)
+        int[] fold_errors = []
+        for 1 <= int t <= params.rounds
+            int count = 0
+            for int i = validation[]
+                if evaluation.sign(row_score(model.rounds, rows[i], t)) != labels[i]
+                    count += 1
+            fold_errors = fold_errors.append(count)
+            errors[t - 1] += count
+        folds = folds.append(Fold(model.rounds, model.reason, train_count, validation, fold_errors))
+    int selected = 0
+    for 1 <= int t < params.rounds
+        if errors[t] < errors[selected]
+            selected = t
+    real64[] out_of_fold = []
+    for int i < int(len(rows))
+        out_of_fold = out_of_fold.append(row_score(folds[i % params.folds].rounds, rows[i], selected + 1))
+    return CrossValidation(folds, errors, selected + 1, out_of_fold)
+
+class Curve(int train_errors, int test_errors, real64 train_loss, real64 test_loss, real64 minimum)
+
+Curve[] calc_curve(boost.adaboost.Round[] rounds, real64[][] training, int[] train_labels, real64[][] testing, int[] test_labels, bool logit)
+    real64[] train_scores = array(len(training), fill = 0.0)
+    real64[] test_scores = array(len(testing), fill = 0.0)
+    real64 scale = 0.0
+    Curve[] result = []
+    for boost.adaboost.Round record = rounds[]
+        scale += magnitude(record)
+        real64 minimum = inf
+        for int i < int(len(training))
+            train_scores[i] += boost.adaboost.stumps.output(record.feature, record.thresholds, record.values, training[i])
+            real64 margin = evaluation.as_real(train_labels[i]) * train_scores[i]
+            if margin < minimum
+                minimum = margin
+        for int i < int(len(testing))
+            test_scores[i] += boost.adaboost.stumps.output(record.feature, record.thresholds, record.values, testing[i])
+        result = result.append(Curve(count_errors(train_labels, train_scores), count_errors(test_labels, test_scores), calc_loss(train_labels, train_scores, logit), calc_loss(test_labels, test_scores, logit), minimum / scale))
+    return result
+
+int[] curve_minimum(Curve[] values, bool training)
+    int selected = 0
+    for 1 <= int t < int(len(values))
+        int current = if training then values[t].train_errors else values[t].test_errors
+        int previous = if training then values[selected].train_errors else values[selected].test_errors
+        if current < previous
+            selected = t
+    return [if training then values[selected].train_errors else values[selected].test_errors, selected + 1]
+
+string metrics_line(string kind, string variant, int rounds, int[] labels, real64[] values, bool logit)
+    int tp = 0
+    int fp = 0
+    int tn = 0
+    int fn_count = 0
+    for int i < int(len(labels))
+        int predicted = evaluation.sign(values[i])
+        if predicted == 1
+            if labels[i] == 1
+                tp += 1
+            else
+                fp += 1
+        elif labels[i] == -1
+            tn += 1
+        else
+            fn_count += 1
+    int[] auc = evaluation.auc(labels, values)
+    string line = "{kind} {variant} rounds {rounds} correct {tp + tn}/{len(labels)} accuracy {ratio(tp + tn, int(len(labels)))}"
+    line += " tp {tp} fp {fp} tn {tn} fn {fn_count} precision {ratio(tp, tp + fp)} recall {ratio(tp, tp + fn_count)}"
+    line += " f1 {ratio(2 * tp, 2 * tp + fp + fn_count)} auc {ratio(auc[0], auc[1])} loss {real_text(calc_loss(labels, values, logit))}"
+    return line
+
+class Importance(real64[] values, int[] counts, real64 total, int[] order)
+
+Importance calc_importance(boost.adaboost.Round[] rounds, int features, bool samme = false)
+    real64[] values = array(nat(features), fill = 0.0)
+    int[] counts = array(nat(features), fill = 0)
+    for boost.adaboost.Round record = rounds[]
+        values[record.feature] += if samme then record.alpha else magnitude(record)
+        counts[record.feature] += 1
+    return Importance(values, counts, sum_values(values), rank_indices(values, true))
+
+string[] importance_lines(real64[] values, int[] counts, real64 total, int[] order, string[] names)
+    string[] result = ["importance"]
+    for int rank < int(len(order))
+        int j = order[rank]
+        result = result.append("{rank + 1} {names[j]} score {real_text(values[j])} share {real_text(values[j] / total)} rounds {counts[j]}")
+    return result
+
+class Permutation(int base, int[] drops, int[] minimum, int[] maximum, int[] order)
+
+Permutation permutation_importance(boost.adaboost.Round[] rounds, real64[][] rows, int[] labels, int repeats, Generator &generator)
+    int base = int(len(rows)) - count_errors(labels, calc_scores(rounds, rows))
+    int[] drops = []
+    int[] minimum = []
+    int[] maximum = []
+    for int j < int(len(rows[0]))
+        int drop = 0
+        int low = int(len(rows))
+        int high = 0
+        for _ < repeats
+            int[] order = (0:<int(len(rows)))[]
+            for 1 <= int reverse < int(len(rows))
+                int i = int(len(rows)) - reverse
+                int other = .generator.draw() % (i + 1)
+                int temporary = order[i]
+                order[i] = order[other]
+                order[other] = temporary
+            int correct = 0
+            for int i < int(len(rows))
+                real64[] values = rows[i]
+                values[j] = rows[order[i]][j]
+                if evaluation.sign(row_score(rounds, values)) == labels[i]
+                    correct += 1
+            drop += base - correct
+            if correct < low
+                low = correct
+            if correct > high
+                high = correct
+        drops = drops.append(drop)
+        minimum = minimum.append(low)
+        maximum = maximum.append(high)
+    return Permutation(base, drops, minimum, maximum, rank_indices(drops, true))
+
+class Profile(string variant, boost.adaboost.Round[] full_rounds, string reason, real64[][] cuts, boost.adaboost.Round[] final_rounds, real64 scale, real64[] train_scores, real64[] test_scores, real64[] train_margins, real64[] test_margins, Curve[] curve, real64[] importance_values, int[] importance_counts, real64 importance_total, int[] importance_order, int base, int[] drops, int[] permutation_min, int[] permutation_max, int[] permutation_order)
+
+Profile make_profile(string variant, boost.adaboost.Model full, boost.adaboost.Round[] final_rounds, boost.dataset.Data data, Generator &generator)
+    real64[] train_scores = calc_scores(final_rounds, data.training.features)
+    real64[] test_scores = calc_scores(final_rounds, data.testing.features)
+    real64 scale = 0.0
+    for boost.adaboost.Round record = final_rounds[]
+        scale += magnitude(record)
+    real64[] train_margins = [for int i = (0:<int(len(train_scores)))[] then evaluation.as_real(data.training.labels[i]) * train_scores[i] / scale]
+    real64[] test_margins = [for int i = (0:<int(len(test_scores)))[] then evaluation.as_real(data.testing.labels[i]) * test_scores[i] / scale]
+    Curve[] curve = calc_curve(full.rounds, data.training.features, data.training.labels, data.testing.features, data.testing.labels, variant == "logit")
+    Importance important = calc_importance(final_rounds, int(len(data.names)))
+    Permutation permutation = permutation_importance(final_rounds, data.testing.features, data.testing.labels, data.params.permutation_repeats, &generator)
+    return Profile(variant, full.rounds, full.reason, full.cuts, final_rounds, scale, train_scores, test_scores, train_margins, test_margins, curve, important.values, important.counts, important.total, important.order, permutation.base, permutation.drops, permutation.minimum, permutation.maximum, permutation.order)
+
+string[] ensemble_report(boost.dataset.Data data, Profile[] profiles, CrossValidation cv)
+    boost.dataset.Params params = data.params
+    string[] lines = []
+    for Profile item = profiles[]
+        if len(lines) > 0
+            lines = lines.append("")
+        string header = "variant {item.variant} rounds {len(item.full_rounds)} stop {item.reason}"
+        if item.variant == "real"
+            header += " bins {params.bins} smoothing {real_text(params.smoothing)} convergence {real_text(params.convergence, 6)}"
+        elif item.variant == "logit"
+            header += " clip {real_text(params.clip)}"
+        lines = lines.append(header)
+        if item.variant == "real"
+            for int j < int(len(data.names))
+                lines = lines.append("cuts {data.names[j]} {reals(item.cuts[j])}")
+        for int t < int(len(item.full_rounds))
+            boost.adaboost.Round record = item.full_rounds[t]
+            string line = "round {t + 1} feature {data.names[record.feature]}"
+            if item.variant == "discrete"
+                line += " threshold {real_text(record.thresholds[0])} polarity {record.polarity} error {real_text(record.error_value)}"
+                line += " alpha {real_text(record.alpha)} z {real_text(record.z)} bound {real_text(record.bound)}"
+            elif item.variant == "real"
+                line += " z {real_text(record.z)} bound {real_text(record.bound)} values {reals(record.values)}"
+            else
+                line += " threshold {real_text(record.thresholds[0])} left {real_text(record.values[0])} right {real_text(record.values[1])} error {real_text(record.error_value)}"
+                if item.variant == "logit"
+                    line += " loss {real_text(record.loss)}"
+            lines = lines.append(line)
+            if item.variant == "discrete"
+                int maximum = 0
+                real64 squares = 0.0
+                for int i < int(len(record.weights))
+                    if record.weights[i] > record.weights[maximum]
+                        maximum = i
+                    squares += record.weights[i] * record.weights[i]
+                lines = lines.append("weights {t + 1} max {real_text(record.weights[maximum], 6)} id {data.training.ids[maximum]} ess {real_text(1.0 / squares)}")
+        if item.variant == "discrete"
+            lines = lines.append("cv folds {params.folds} selected {cv.selected} errors {cv.errors[cv.selected - 1]}/{len(data.training.ids)}")
+            for int f < int(len(cv.folds))
+                Fold fold = cv.folds[f]
+                lines = lines.append("fold {f + 1} train {fold.train_count} validation {len(fold.validation)} rounds {len(fold.rounds)} stop {fold.reason} selected {fold.errors[cv.selected - 1]}/{len(fold.validation)} final {fold.errors[params.rounds - 1]}/{len(fold.validation)}")
+            lines = lines.append("cv_errors {integers(cv.errors)}")
+    return lines
+
+string[] predictions_report(boost.dataset.Data data, Profile[] profiles)
+    string[] lines = ["id,variant,score,label," + data.names.join(",")]
+    for int i < int(len(data.testing.ids))
+        for Profile item = profiles[]
+            real64[] contributions = array(len(data.names), fill = 0.0)
+            for boost.adaboost.Round record = item.final_rounds[]
+                contributions[record.feature] += boost.adaboost.stumps.output(record.feature, record.thresholds, record.values, data.testing.features[i])
+            string[] fields = [data.testing.ids[i], item.variant, real_text(item.test_scores[i]), "{evaluation.sign(item.test_scores[i])}"]
+            fields = fields.concat([for real64 value = contributions[] then real_text(value)])
+            lines = lines.append(fields.join(","))
+    return lines
+
+string[] roc_report(boost.dataset.Data data, Profile[] profiles)
+    string[] lines = ["variant,threshold,tp,fp"]
+    for Profile item = profiles[]
+        for real64 threshold = unique_values(item.test_scores, true)[]
+            int tp = 0
+            int fp = 0
+            for int i < int(len(data.testing.ids))
+                if item.test_scores[i] >= threshold
+                    if data.testing.labels[i] == 1
+                        tp += 1
+                    else
+                        fp += 1
+            lines = lines.append("{item.variant},{real_text(threshold)},{tp},{fp}")
+    return lines
+
+string[] margins_report(boost.dataset.Data data, Profile[] profiles)
+    string[] lines = []
+    for Profile item = profiles[]
+        if len(lines) > 0
+            lines = lines.append("")
+        int n = int(len(item.train_margins))
+        int m = int(len(item.test_margins))
+        lines = lines.append("variant {item.variant} rounds {len(item.final_rounds)} scale {real_text(item.scale)}")
+        lines = lines.append("train min {real_text(minimum_value(item.train_margins))} mean {real_text(sum_values(item.train_margins) / evaluation.as_real(n))}")
+        for real64 threshold = data.params.margins[]
+            int count = evaluation.count_margin(item.train_margins, threshold)
+            lines = lines.append("train le {real_text(threshold)} {count}/{n} {ratio(count, n)}")
+        int[] histogram = array(20, fill = 0)
+        for real64 value = item.train_margins[]
+            int b = evaluation.floor_int((value + 1.0) * 10.0)
+            if b > 19
+                b = 19
+            histogram[b] += 1
+        lines = lines.append("histogram {integers(histogram)}")
+        int[] hardest = rank_indices(item.train_margins, false)
+        for int rank < 5
+            int i = hardest[rank]
+            lines = lines.append("hardest {data.training.ids[i]} label {data.training.labels[i]} margin {real_text(item.train_margins[i])}")
+        lines = lines.append("test min {real_text(minimum_value(item.test_margins))} mean {real_text(sum_values(item.test_margins) / evaluation.as_real(m))}")
+        for real64 threshold = data.params.margins[]
+            int count = evaluation.count_margin(item.test_margins, threshold)
+            lines = lines.append("test le {real_text(threshold)} {count}/{m} {ratio(count, m)}")
+        for real64 threshold = data.params.margins[]
+            int count = 0
+            int correct = 0
+            for int i < m
+                if evaluation.absolute(item.test_margins[i]) > threshold
+                    count += 1
+                    if evaluation.sign(item.test_scores[i]) == data.testing.labels[i]
+                        correct += 1
+            lines = lines.append("test confident {real_text(threshold)} {count}/{m} correct {correct}/{count} {ratio(correct, count)}")
+        lines = lines.concat(importance_lines(item.importance_values, item.importance_counts, item.importance_total, item.importance_order, data.names))
+        lines = lines.append("permutation repeats {data.params.permutation_repeats} base {item.base}/{m}")
+        for int rank < int(len(item.permutation_order))
+            int j = item.permutation_order[rank]
+            lines = lines.append("{rank + 1} {data.names[j]} drop {ratio(item.drops[j], data.params.permutation_repeats * m)} min {item.permutation_min[j]}/{m} max {item.permutation_max[j]}/{m}")
+    return lines
+
+string[] shapes_report(boost.dataset.Data data, Profile[] profiles)
+    string[] lines = []
+    for Profile item = profiles[]
+        if len(lines) > 0
+            lines = lines.append("")
+        lines = lines.append("variant {item.variant} rounds {len(item.final_rounds)}")
+        for int j < int(len(data.names))
+            boost.adaboost.Round[] collected = []
+            real64[] thresholds = []
+            for boost.adaboost.Round record = item.final_rounds[]
+                if record.feature == j
+                    collected = collected.append(record)
+                    thresholds = thresholds.concat(record.thresholds)
+            real64[] cuts = unique_values(thresholds)
+            real64[] values = []
+            for int interval <= int(len(cuts))
+                real64 total = 0.0
+                for boost.adaboost.Round record = collected[]
+                    int bin_index = 0
+                    if interval > 0
+                        for real64 threshold = record.thresholds[]
+                            if threshold <= cuts[interval - 1]
+                                bin_index += 1
+                    total += record.values[bin_index]
+                values = values.append(total)
+            real64 range = maximum_value(values) - minimum_value(values)
+            lines = lines.append("feature {data.names[j]} rounds {len(collected)} cuts {len(cuts)} range {real_text(range)}")
+            for int interval <= int(len(cuts))
+                string lower = if interval == 0 then "-inf" else real_text(cuts[interval - 1])
+                string upper = if interval == int(len(cuts)) then "inf" else real_text(cuts[interval])
+                lines = lines.append("interval {lower} {upper} value {real_text(values[interval])}")
+    return lines
+string feature_summary(real64[][] rows, int j)
+    real64[] values = [for real64[] row = rows[] then row[j]]
+    return "{real_text(minimum_value(values))} {real_text(maximum_value(values))} {real_text(sum_values(values) / evaluation.as_real(int(len(values))))} {len(unique_values(values))}"
+
+string[] bootstrap_lines(boost.dataset.Data data, Profile[] profiles)
+    int samples = data.params.bootstrap_count
+    int m = int(len(data.testing.ids))
+    Generator generator = Generator(data.params.bootstrap_seed)
+    int[][] counts = [for Profile item = profiles[] then []]
+    for _ < samples
+        int[] selected = []
+        for _ < m
+            selected = selected.append(.generator.draw() % m)
+        for int v < int(len(profiles))
+            Profile item = profiles[v]
+            int correct = 0
+            for int i = selected[]
+                if evaluation.sign(item.test_scores[i]) == data.testing.labels[i]
+                    correct += 1
+            counts[v] = counts[v].append(correct)
+    string[] lines = ["bootstrap samples {samples} seed {data.params.bootstrap_seed}"]
+    int tail = samples / 40
+    for int v < int(len(profiles))
+        int[] ordered = counts[v].sorted()
+        int total = 0
+        for int value = counts[v][]
+            total += value
+        lines = lines.append("{profiles[v].variant} mean {ratio(total, samples * m)} low {ratio(ordered[tail], m)} high {ratio(ordered[samples - tail - 1], m)}")
+    for int a < int(len(profiles))
+        for a + 1 <= int b < int(len(profiles))
+            int first = 0
+            int tie = 0
+            int second = 0
+            for int sample < samples
+                if counts[a][sample] > counts[b][sample]
+                    first += 1
+                elif counts[a][sample] == counts[b][sample]
+                    tie += 1
+                else
+                    second += 1
+            lines = lines.append("{profiles[a].variant} {profiles[b].variant} first {first} tie {tie} second {second}")
+    return lines
+
+string[] calibration_lines(boost.dataset.Data data, Profile[] profiles)
+    string[] lines = []
+    string[] ranges = ["0.0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1.0"]
+    int m = int(len(data.testing.ids))
+    for Profile item = profiles[]
+        int[] counts = array(5, fill = 0)
+        int[] positives = array(5, fill = 0)
+        real64[] totals = array(5, fill = 0.0)
+        real64 brier = 0.0
+        for int i < m
+            real64 p = 1.0 / (1.0 + boost.adaboost.exponential(-2.0 * item.test_scores[i]))
+            real64 target = if data.testing.labels[i] == 1 then 1.0 else 0.0
+            brier += (p - target) * (p - target)
+            int b = evaluation.floor_int(p * 5.0)
+            if b > 4
+                b = 4
+            counts[b] += 1
+            totals[b] += p
+            if data.testing.labels[i] == 1
+                positives[b] += 1
+        lines = lines.append("calibration {item.variant} brier {real_text(brier / evaluation.as_real(m))}")
+        for int b < 5
+            string mean = if counts[b] == 0 then "-" else real_text(totals[b] / evaluation.as_real(counts[b]))
+            lines = lines.append("bin {ranges[b]} count {counts[b]} mean {mean} positives {positives[b]}")
+    return lines
+
+string[] summary_report(boost.dataset.Data data, Profile[] profiles, CrossValidation cv)
+    int n = int(len(data.training.ids))
+    int m = int(len(data.testing.ids))
+    int train_positive = 0
+    int test_positive = 0
+    for int label = data.training.labels[]
+        if label == 1
+            train_positive += 1
+    for int label = data.testing.labels[]
+        if label == 1
+            test_positive += 1
+    string[] lines = ["data train {n} test {m} features {len(data.names)} positives {train_positive} {test_positive}"]
+    for int j < int(len(data.names))
+        lines = lines.append("feature {data.names[j]} train {feature_summary(data.training.features, j)} test {feature_summary(data.testing.features, j)}")
+    lines = lines.append("cv selected {cv.selected} errors {cv.errors[cv.selected - 1]}/{n} rate {ratio(cv.errors[cv.selected - 1], n)}")
+    lines = lines.append(metrics_line("oof", "discrete", cv.selected, data.training.labels, cv.scores, false))
+    real64[] committee_train = array(nat(n), fill = 0.0)
+    real64[] committee_test = array(nat(m), fill = 0.0)
+    int total_rounds = 0
+    for Profile item = profiles[]
+        lines = lines.append(metrics_line("train", item.variant, int(len(item.final_rounds)), data.training.labels, item.train_scores, item.variant == "logit"))
+        lines = lines.append(metrics_line("test", item.variant, int(len(item.final_rounds)), data.testing.labels, item.test_scores, item.variant == "logit"))
+        total_rounds += int(len(item.final_rounds))
+        for int i < n
+            committee_train[i] += item.train_scores[i] / item.scale
+        for int i < m
+            committee_test[i] += item.test_scores[i] / item.scale
+    lines = lines.append(metrics_line("train", "committee", total_rounds, data.training.labels, committee_train, false))
+    lines = lines.append(metrics_line("test", "committee", total_rounds, data.testing.labels, committee_test, false))
+    for Profile item = profiles[]
+        int[] train_min = curve_minimum(item.curve, true)
+        int[] test_min = curve_minimum(item.curve, false)
+        lines = lines.append("curve {item.variant} rounds {len(item.full_rounds)} train_min {train_min[0]}/{n} at {train_min[1]} test_min {test_min[0]}/{m} at {test_min[1]}")
+    string[] all_wrong = []
+    for int i < m
+        bool wrong = true
+        for Profile item = profiles[]
+            if evaluation.sign(item.test_scores[i]) == data.testing.labels[i]
+                wrong = false
+        if wrong
+            all_wrong = all_wrong.append(data.testing.ids[i])
+    lines = lines.append("all_wrong {len(all_wrong)}" + (if len(all_wrong) == 0 then "" else " " + all_wrong.join(" ")))
+    lines = lines.append("agreement")
+    for int a < int(len(profiles))
+        for a + 1 <= int b < int(len(profiles))
+            int agree = 0
+            int first = 0
+            int second = 0
+            for int i < m
+                int pa = evaluation.sign(profiles[a].test_scores[i])
+                int pb = evaluation.sign(profiles[b].test_scores[i])
+                if pa == pb
+                    agree += 1
+                if pa == data.testing.labels[i] and pb != data.testing.labels[i]
+                    first += 1
+                if pb == data.testing.labels[i] and pa != data.testing.labels[i]
+                    second += 1
+            int difference = (if first >= second then first - second else second - first) - 1
+            lines = lines.append("{profiles[a].variant} {profiles[b].variant} agree {agree}/{m} only_first {first} only_second {second} chi2 {ratio(difference * difference, first + second)}")
+    lines = lines.concat(bootstrap_lines(data, profiles))
+    return lines.concat(calibration_lines(data, profiles))
+
+real64[] samme_scores(boost.adaboost.Round[] rounds, real64[] values, int classes, int limit = -1)
+    real64[] result = array(nat(classes), fill = 0.0)
+    int count = if limit < 0 or limit > int(len(rounds)) then int(len(rounds)) else limit
+    for int t < count
+        boost.adaboost.Round record = rounds[t]
+        real64 predicted = boost.adaboost.stumps.output(record.feature, record.thresholds, record.values, values)
+        int category = evaluation.as_int(predicted) - 1
+        result[category] += record.alpha
+    return result
+
+class Multiclass(boost.adaboost.Round[] rounds, string reason, boost.adaboost.Model[] ovr, int[] train_predictions, int[] test_predictions, int[] train_ovr, int[] test_ovr, real64[][] class_scores, int[][] curve)
+
+Multiclass multiclass_analysis(boost.dataset.Data data)
+    boost.dataset.Params params = data.params
+    boost.adaboost.Model model = boost.adaboost.samme(data.multi_training.features, data.multi_training.labels, params.classes, params.samme_rounds)
+    boost.adaboost.Model[] ovr = []
+    for 1 <= int c <= params.classes
+        int[] labels = [for int label = data.multi_training.labels[] then if label == c then 1 else -1]
+        ovr = ovr.append(boost.adaboost.discrete(data.multi_training.features, labels, params.samme_rounds, 1.0))
+    int[] train_predictions = []
+    int[] test_predictions = []
+    int[] train_ovr = []
+    int[] test_ovr = []
+    real64[][] class_scores = []
+    for int collection < 2
+        real64[][] rows = if collection == 0 then data.multi_training.features else data.multi_testing.features
+        for real64[] row = rows[]
+            real64[] values = samme_scores(model.rounds, row, params.classes)
+            real64[] binary = []
+            for boost.adaboost.Model classifier = ovr[]
+                binary = binary.append(row_score(classifier.rounds, row))
+            if collection == 0
+                train_predictions = train_predictions.append(argmax(values) + 1)
+                train_ovr = train_ovr.append(argmax(binary) + 1)
+            else
+                test_predictions = test_predictions.append(argmax(values) + 1)
+                test_ovr = test_ovr.append(argmax(binary) + 1)
+                class_scores = class_scores.append(values)
+    int[][] curve = []
+    for 1 <= int t <= int(len(model.rounds))
+        int[] counts = []
+        for int collection < 2
+            real64[][] rows = if collection == 0 then data.multi_training.features else data.multi_testing.features
+            int[] labels = if collection == 0 then data.multi_training.labels else data.multi_testing.labels
+            int count = 0
+            for int i < int(len(rows))
+                if argmax(samme_scores(model.rounds, rows[i], params.classes, t)) + 1 != labels[i]
+                    count += 1
+            counts = counts.append(count)
+        curve = curve.append(counts)
+    return Multiclass(model.rounds, model.reason, ovr, train_predictions, test_predictions, train_ovr, test_ovr, class_scores, curve)
+
+string[] confusion_lines(int[] labels, int[] predicted, int classes)
+    int[][] matrix = evaluation.confusion(labels, predicted, classes)
+    string[] lines = ["confusion"]
+    for int[] row = matrix[]
+        lines = lines.append(integers(row))
+    for int c < classes
+        int row_total = 0
+        int column_total = 0
+        for int other < classes
+            row_total += matrix[c][other]
+            column_total += matrix[other][c]
+        lines = lines.append("class {c + 1} precision {ratio(matrix[c][c], column_total)} recall {ratio(matrix[c][c], row_total)}")
+    return lines
+
+string[] multiclass_evaluation(boost.dataset.Data data, int[] training, int[] testing)
+    int train_error = class_errors(data.multi_training.labels, training)
+    int test_error = class_errors(data.multi_testing.labels, testing)
+    int n = int(len(data.multi_training.ids))
+    int m = int(len(data.multi_testing.ids))
+    string[] lines = ["train errors {train_error}/{n} rate {ratio(train_error, n)}", "test errors {test_error}/{m} rate {ratio(test_error, m)}"]
+    return lines.concat(confusion_lines(data.multi_testing.labels, testing, data.params.classes))
+
+string[] samme_report(boost.dataset.Data data, Multiclass multi)
+    boost.dataset.Params params = data.params
+    int n = int(len(data.multi_training.ids))
+    int m = int(len(data.multi_testing.ids))
+    string[] lines = ["samme classes {params.classes} train {n} test {m} rounds {len(multi.rounds)} stop {multi.reason}"]
+    for int t < int(len(multi.rounds))
+        boost.adaboost.Round record = multi.rounds[t]
+        int left = evaluation.as_int(record.values[0])
+        int right = evaluation.as_int(record.values[1])
+        lines = lines.append("round {t + 1} feature {data.multi_names[record.feature]} threshold {real_text(record.thresholds[0])} left {left} right {right} error {real_text(record.error_value)} alpha {real_text(record.alpha)}")
+    lines = lines.concat(multiclass_evaluation(data, multi.train_predictions, multi.test_predictions))
+    Importance important = calc_importance(multi.rounds, int(len(data.multi_names)), true)
+    lines = lines.concat(importance_lines(important.values, important.counts, important.total, important.order, data.multi_names))
+    lines = lines.append("").append("ovr classes {params.classes} rounds {params.samme_rounds}")
+    for int c < params.classes
+        boost.adaboost.Model model = multi.ovr[c]
+        int positives = 0
+        int[] train_labels = []
+        int[] test_labels = []
+        for int label = data.multi_training.labels[]
+            train_labels = train_labels.append(if label == c + 1 then 1 else -1)
+            if label == c + 1
+                positives += 1
+        for int label = data.multi_testing.labels[]
+            test_labels = test_labels.append(if label == c + 1 then 1 else -1)
+        int train_error = count_errors(train_labels, calc_scores(model.rounds, data.multi_training.features))
+        int test_error = count_errors(test_labels, calc_scores(model.rounds, data.multi_testing.features))
+        lines = lines.append("class {c + 1} rounds {len(model.rounds)} stop {model.reason} positives {positives} train_errors {train_error}/{n} test_errors {test_error}/{m}")
+    lines = lines.concat(multiclass_evaluation(data, multi.train_ovr, multi.test_ovr))
+    int agree = 0
+    for int i < m
+        if multi.test_predictions[i] == multi.test_ovr[i]
+            agree += 1
+    lines = lines.append("agreement {agree}/{m}").append("").append("predictions")
+    for int i < m
+        lines = lines.append("{data.multi_testing.ids[i]} class {data.multi_testing.labels[i]} samme {multi.test_predictions[i]} ovr {multi.test_ovr[i]} scores {reals(multi.class_scores[i])}")
+    return lines
+
+string[] error_curve_report(boost.dataset.Data data, Profile[] profiles, Multiclass multi)
+    string[] lines = ["variant,round,train_error,test_error,train_loss,test_loss,min_margin"]
+    int n = int(len(data.training.ids))
+    int m = int(len(data.testing.ids))
+    for Profile item = profiles[]
+        for int t < int(len(item.curve))
+            Curve value = item.curve[t]
+            lines = lines.append("{item.variant},{t + 1},{ratio(value.train_errors, n)},{ratio(value.test_errors, m)},{real_text(value.train_loss)},{real_text(value.test_loss)},{real_text(value.minimum)}")
+    for int t < int(len(multi.curve))
+        lines = lines.append("samme,{t + 1},{ratio(multi.curve[t][0], int(len(data.multi_training.ids)))},{ratio(multi.curve[t][1], int(len(data.multi_testing.ids)))},-,-,-")
+    return lines
+
+real64[][] restrict_features(real64[][] rows, int[] features)
+    return [for real64[] row = rows[] then [for int j = features[] then row[j]]]
+
+string experiment_fields(boost.adaboost.Model model, real64[][] training, int[] train_labels, real64[][] testing, int[] test_labels)
+    int train_error = count_errors(train_labels, calc_scores(model.rounds, training))
+    int test_error = count_errors(test_labels, calc_scores(model.rounds, testing))
+    return "rounds {len(model.rounds)} stop {model.reason} train_errors {train_error}/{len(training)} test_errors {test_error}/{len(testing)}"
+
+string[] experiments_report(boost.dataset.Data data, Profile[] profiles, CrossValidation cv)
+    boost.dataset.Params params = data.params
+    string[] lines = []
+    int n = int(len(data.training.ids))
+    int m = int(len(data.testing.ids))
+    for int fraction = params.sizes[]
+        int count = n * fraction / 100
+        real64[][] rows = data.training.features[0:<count]
+        int[] labels = data.training.labels[0:<count]
+        lines = lines.append("size {fraction} rows {count}")
+        for string variant = params.variants[]
+            boost.adaboost.Model model = train_variant(variant, rows, labels, params)
+            lines = lines.append(variant + " " + experiment_fields(model, rows, labels, data.testing.features, data.testing.labels))
+    for real64 shrinkage = params.shrinkage[]
+        boost.adaboost.Model model = boost.adaboost.discrete(data.training.features, data.training.labels, params.rounds, shrinkage)
+        Curve[] curve = calc_curve(model.rounds, data.training.features, data.training.labels, data.testing.features, data.testing.labels, false)
+        int[] minimum = curve_minimum(curve, false)
+        string fields = experiment_fields(model, data.training.features, data.training.labels, data.testing.features, data.testing.labels)
+        lines = lines.append("shrinkage {real_text(shrinkage)} {fields} test_min {minimum[0]}/{m} at {minimum[1]}")
+    int[] feature_order = []
+    for Profile item = profiles[]
+        if item.variant == "discrete"
+            feature_order = item.importance_order
+            break
+    for 1 <= int count <= int(len(data.names))
+        int[] features = feature_order[0:<count].sorted()
+        string[] names = [for int j = features[] then data.names[j]]
+        real64[][] training = restrict_features(data.training.features, features)
+        real64[][] testing = restrict_features(data.testing.features, features)
+        boost.adaboost.Model model = boost.adaboost.discrete(training, data.training.labels, cv.selected, 1.0)
+        int train_error = count_errors(data.training.labels, calc_scores(model.rounds, training))
+        int test_error = count_errors(data.testing.labels, calc_scores(model.rounds, testing))
+        lines = lines.append("top {count} features {names.join(" ")} rounds {len(model.rounds)} train_errors {train_error}/{n} test_errors {test_error}/{m}")
+    for int fraction = params.noise[]
+        int count = n * fraction / 100
+        Generator generator = Generator(params.noise_seed)
+        int[] order = (0:<n)[]
+        for int i < count
+            int other = .generator.draw() % (n - i) + i
+            int temporary = order[i]
+            order[i] = order[other]
+            order[other] = temporary
+        bool[] flipped = array(nat(n), fill = false)
+        for int i < count
+            flipped[order[i]] = true
+        int[] labels = [for int i = (0:<n)[] then if flipped[i] then -data.training.labels[i] else data.training.labels[i]]
+        lines = lines.append("noise {fraction} flipped {count}")
+        for string variant = params.variants[]
+            boost.adaboost.Model model = train_variant(variant, data.training.features, labels, params)
+            Curve[] curve = calc_curve(model.rounds, data.training.features, labels, data.testing.features, data.testing.labels, variant == "logit")
+            int[] minimum = curve_minimum(curve, false)
+            boost.adaboost.Round last = model.rounds[int(len(model.rounds)) - 1]
+            real64 weight = 0.0
+            for int i < n
+                if flipped[i]
+                    weight += last.weights[i]
+            string fields = experiment_fields(model, data.training.features, labels, data.testing.features, data.testing.labels)
+            lines = lines.append("{variant} {fields} test_min {minimum[0]}/{m} at {minimum[1]} flipped_weight {real_text(weight)}")
+    return lines
+
+void run()
+    boost.dataset.Data data = boost.dataset.read_inputs()
+    CrossValidation cv = cross_validation(data.training.features, data.training.labels, data.params)
+    Generator generator = Generator(data.params.permutation_seed)
+    Profile[] profiles = []
+    for string variant = data.params.variants[]
+        boost.adaboost.Model full = train_variant(variant, data.training.features, data.training.labels, data.params)
+        int count = int(len(full.rounds))
+        if variant == "discrete" and cv.selected < count
+            count = cv.selected
+        boost.adaboost.Round[] final_rounds = full.rounds[0:<count]
+        profiles = profiles.append(make_profile(variant, full, final_rounds, data, &generator))
+    Multiclass multi = multiclass_analysis(data)
+    evaluation.save("ensemble.txt", ensemble_report(data, profiles, cv))
+    evaluation.save("error_curve.csv", error_curve_report(data, profiles, multi))
+    evaluation.save("predictions.csv", predictions_report(data, profiles))
+    evaluation.save("roc.csv", roc_report(data, profiles))
+    evaluation.save("margins.txt", margins_report(data, profiles))
+    evaluation.save("shapes.txt", shapes_report(data, profiles))
+    evaluation.save("samme.txt", samme_report(data, multi))
+    evaluation.save("summary.txt", summary_report(data, profiles, cv))
+    evaluation.save("experiments.txt", experiments_report(data, profiles, cv))
+
+run()

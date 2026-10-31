@@ -1,0 +1,527 @@
+[Overview]
+Write a program that performs principal component analysis (PCA) of multivariate data. The data are observations of river water quality: each row is one sample and each column is one measured item (variable). After handling the missing values, the program computes the covariance matrix or the correlation matrix and finds its eigenvalues and eigenvectors by the cyclic Jacobi method. For the same matrix, it also computes the eigenvalues and eigenvectors separately by power iteration with deflation, and cross-checks them against the results of the Jacobi method.
+From the eigenvalues it computes the explained variance ratios and the cumulative ratios, and examines the number of principal components to retain by four criteria: the Kaiser criterion, the broken-stick criterion, parallel analysis and the cumulative ratio. For the retained principal components, it computes the loadings, the communalities, a varimax rotation, the principal component scores of each row, outlier detection by Hotelling's T^2 statistic and the Q statistic (SPE, the sum of squared residuals), and the reconstruction error, and projects the rows of the supplementary data onto the principal components. Furthermore, it examines the sampling adequacy (the KMO and Bartlett statistics) and how the results change with the missing-value strategy and the scaling, and draws a scree plot, a biplot, a correlation circle and a scatter plot of T^2 and SPE in ASCII characters.
+The input is three files in the input/ folder (data, supplementary data, settings), and the results are written to five files in the output/ folder. Nothing is written to standard output. Random numbers are used only in parallel analysis, and they are produced by the generator of section 7 of [Processing].
+
+[Input files]
+There are three input files: input/data.csv, input/supplementary.csv and input/params.txt. Every file consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). There is no whitespace at the start or end of a line, and there are no empty lines.
+A number is a base-10 number consisting of, in this order, "-" (only for negative numbers), a sequence of one or more digits, and, for a decimal fraction, "." and a sequence of one or more digits (examples: 673, 0.219, -1.5). An integer is a base-10 number without extra leading zeros.
+
+* input/data.csv (data)
+The first line is a header line: the string id followed by P variable names, separated by commas. A variable name is a string of 1 to 12 characters consisting of lowercase English letters, digits and _, and the variable names are distinct from each other.
+Each line from the second line on represents one sample: the ID of the sample and P values, in this order, separated by commas. An ID is a string of 1 to 8 characters consisting of uppercase English letters and digits, and differs from row to row. A value is either a number or the string NA, which denotes a missing value.
+The variables are called variable 1, 2, ..., P in the order they appear in the header line, and this order is called the "variable order". Let N be the number of lines excluding the header line; these lines are called row 1, ..., row N in file order. The value of variable j in row i is written x_ij.
+
+* input/supplementary.csv (supplementary data)
+It has the same format as data.csv (the header line is also the same) and lists samples that are not used to compute the principal components but are only projected onto the computed principal components. These samples are called "supplementary rows" and are processed in file order. The IDs of the supplementary rows are distinct from each other within the supplementary data. The values may contain NA.
+
+* input/params.txt (settings)
+It consists of the following 13 lines, in this order. Each line is a keyword, one space, and the value, in this order. In a line with two values, the two values are separated by one space.
+- MISSING s: the missing-value strategy. Either listwise (rows with missing values are removed) or mean (missing values are filled in with the mean).
+- SCALING s: the matrix to analyze. Either covariance (the covariance matrix) or correlation (the correlation matrix).
+- COMPONENTS s: how the number of retained principal components is determined. Either an integer from 1 to P (that number is used), or one of kaiser, broken_stick, parallel and cumulative (the number given by that criterion is used).
+- CUMULATIVE_TARGET c: the target value of the cumulative-ratio criterion (a number greater than 0 and at most 0.99).
+- PARALLEL R seed: the number of iterations R of parallel analysis (an integer >= 1) and the random seed seed (an integer from 1 to 2147483646).
+- T2_LIMIT L_T: the control limit of the T^2 statistic (a positive number).
+- SPE_LIMIT L_Q: the control limit of the Q statistic (SPE) (a positive number).
+- VARIMAX_CYCLES C: the number of cycles of the varimax rotation (an integer >= 0).
+- TOP_ROWS m: the number of entries in the top lists (an integer >= 1).
+- SCREE_WIDTH W_s: the width of the bar part of the scree plot (an integer >= 1).
+- BIPLOT_SIZE W_b H_b: the number of columns and the number of rows of the biplot (both integers >= 1).
+- CIRCLE_RADIUS rho: the radius of the correlation circle (an even number >= 2).
+- DIAGNOSTIC_SIZE W_d H_d: the number of columns and the number of rows of the scatter plot of T^2 and SPE (both integers >= 1).
+
+[Processing]
+* 0. Notation and computation rules
+- Real-number computations use double-precision floating point. sqrt is the square root, ln is the natural logarithm, |t| is the absolute value of t, floor(t) is the largest integer <= t, and min and max are the minimum and the maximum. 1e-22, 1e-16 and 1e-8 are real constants denoting 10 to the power -22, -16 and -8, respectively.
+- Division "/" is real division unless stated otherwise. Even a division between integers, such as 1 / i or 2 / n, is computed as a real number without truncation.
+- Unless stated otherwise, a sum SUM adds the terms one at a time from the first, in increasing order of the index (row order for rows, variable order for variables, number order for principal components).
+- Evaluate expressions in exactly the order written. For example, a * b / c is (a * b) / c and a / b * c is (a / b) * c, and an expression of the form "(A) / (B)" is computed by evaluating A and B separately and then dividing.
+- Every rule that selects a maximum or a minimum and every sorting rule always states how equal values are handled.
+- For a vector u = (u_1, ..., u_P) of P components, its length is sqrt(SUM_j u_j * u_j). To "normalize" u means to divide each component by the length of u. To "orient" u means to reverse the sign of all components if the component with the largest absolute value (the one with the smaller index if there are equal ones) is negative. The "maximum difference" of two vectors u and v is the maximum of |u_j - v_j| (j = 1, ..., P).
+- The "congruence coefficient" (Tucker's congruence coefficient) of two vectors u and v is (SUM_j u_j * v_j) / sqrt((SUM_j u_j * u_j) * (SUM_j v_j * v_j)).
+- The "top m" are the first m entries when sorted in decreasing order of value (for equal values, the one that is earlier in the order defined before comes first).
+
+* 1. Data summary and missing values
+(1) Summary per variable: for each variable j, compute the number o_j of values that are not NA (the observed values), the number of NA N - o_j, the mean of the observed values mo_j = (sum of the observed values) / o_j, the standard deviation of the observed values sqrt((SUM (x - mo_j) * (x - mo_j)) / (o_j - 1)), and the minimum and the maximum of the observed values. The sums are taken over the observed values x in row order.
+(2) Incomplete rows: the rows that contain at least one NA.
+(3) Analysis data: for each missing-value strategy (listwise or mean), the rows used for the analysis (the analysis rows) and their values are defined as follows.
+- listwise: only the rows that contain no NA are analysis rows, keeping row order. The values are used as they are.
+- mean: all rows are analysis rows, and each NA value is replaced with the mean mo_j of the observed values of that variable.
+Let n be the number of analysis rows; the analysis rows are called analysis row 1, ..., n in row order (this order is also called "row order"). The value of variable j in analysis row i is written a_ij.
+The analysis that uses the analysis data of the strategy specified by MISSING is called the "main analysis". The sensitivity analysis of section 12 uses both strategies.
+
+* 2. Covariance matrix and correlation matrix
+Compute the following values from the analysis data.
+- Mean: m_j = (SUM_i a_ij) / n
+- Covariance: for j, k with j <= k, c_jk = (SUM_i (a_ij - m_j) * (a_ik - m_k)) / (n - 1), and c_kj = c_jk.
+- Standard deviation: s_j = sqrt(c_jj)
+- Correlation: r_jj = 1, and for j != k, r_jk = c_jk / (s_j * s_k).
+When the scaling is covariance, the matrix to analyze S is the covariance matrix (c_jk) and the scale d_j of variable j is 1. When it is correlation, S is the correlation matrix (r_jk) and d_j = s_j. The standardized value of analysis row i is z_ij = (a_ij - m_j) / d_j.
+Below, S of the main analysis is simply written S.
+- Strongly correlated pairs: list the variable pairs (j, k) with j < k in increasing order of j, and for equal j in increasing order of k, and in that order select the top m by |r_jk| (r_jk is the correlation of the analysis data of the main analysis; the correlation is used even when the scaling is covariance).
+
+* 3. Cyclic Jacobi method
+The eigenvalues and eigenvectors of a P x P symmetric matrix M are found by the following procedure. The rows and columns of a matrix are numbered from 1.
+(1) Let A be a copy of M, and let V be the P x P identity matrix.
+(2) The off-diagonal sum is off(A) = SUM_(p=1..P-1) SUM_(q=p+1..P) A_pq * A_pq (added in increasing order of p, and for equal p in increasing order of q). Its value for the initial A is off_0.
+(3) The rotation (p, q) is performed as follows only when A_pq != 0 (if A_pq = 0, nothing is done).
+  theta = (A_qq - A_pp) / (2 * A_pq)
+  t = 1 / (|theta| + sqrt(theta * theta + 1)). However, if theta < 0, reverse the sign of t.
+  c = 1 / sqrt(t * t + 1), s = t * c
+  For each r other than p and q, using the original A_rp and A_rq,
+    set both A_rp and A_pr to c * A_rp - s * A_rq, and set both A_rq and A_qr to s * A_rp + c * A_rq.
+  Using the original A_pq, set A_pp to A_pp - t * A_pq and A_qq to A_qq + t * A_pq, and set A_pq and A_qp to 0.
+  For each row r of V (r = 1, ..., P), using the original V_rp and V_rq, set V_rp to c * V_rp - s * V_rq and V_rq to s * V_rp + c * V_rq.
+(4) One sweep performs the rotation for all (p, q), in the order p = 1, ..., P - 1, and for equal p in the order q = p + 1, ..., P.
+(5) If off_0 = 0, no sweep is performed. Otherwise, compute off(A) after each sweep, and stop when off(A) < 1e-22 * off_0. If it has not stopped after 100 sweeps have been completed, stop there.
+(6) Sweep count: if off_0 > 0, the number (counted from 1) of the first sweep after which off(A) is less than 1e-16 * off_0. If off_0 = 0, it is 0.
+(7) After stopping, A_kk is an eigenvalue and the k-th column of V is the corresponding eigenvector. Sort them in decreasing order of eigenvalue, and normalize each eigenvector and then orient it.
+Let lambda_k be the k-th eigenvalue and v_k = (v_k1, ..., v_kP) the k-th eigenvector obtained by applying this procedure to S of the main analysis; this is called "principal component k" (v_kj is the component for variable j).
+
+* 4. Cross-check by power iteration and deflation
+Let B be a copy of S, and perform the following procedure for k = 1, 2, ..., P in this order.
+(1) Let x = (1, 1, ..., 1).
+(2) For t = 1, 2, ..., 1000 in this order, compute w = B x (w_i = SUM_j B_ij * x_j) and replace x with w normalized. Then compute d_t = min(maximum difference of x and v_k, maximum difference of x and -v_k) (-v_k is v_k with the sign of every component reversed).
+(3) Agreement iteration: the first t with d_t < 0.000001. If there is no such t, it is "none".
+(4) After the 1000 iterations, let w = B x and mu_k = SUM_i x_i * w_i, and let y_k be x normalized and then oriented.
+(5) For all i, j, replace B_ij with B_ij - mu_k * y_ki * y_kj (the multiplications are performed from left to right).
+The cross-check of principal component k is a "match" if |mu_k - lambda_k| <= 1e-8 * lambda_1 and the maximum difference of y_k and v_k is at most 0.000001; otherwise it is a "mismatch".
+
+* 5. Explained variance ratios and the number of principal components
+- Total variance T = SUM_k lambda_k, average eigenvalue lambda_bar = T / P
+- Explained variance ratio pi_k = lambda_k / T, cumulative ratio kappa_1 = pi_1, kappa_k = kappa_(k-1) + pi_k (k = 2, ..., P)
+- Broken-stick value b_k = (SUM_(i=k..P) 1 / i) / P (1 / i is added in increasing order of i)
+- Standard error se_k = lambda_k * sqrt(2 / n)
+- Separation: principal component k is separated (yes) if |lambda_k - lambda_h| > se_k for every neighboring principal component h (each of h = k - 1 and h = k + 1 that satisfies 1 <= h <= P); otherwise it is not separated (no).
+- The parallel analysis value g_k is computed in section 7.
+The number of principal components given by each criterion is as follows.
+- kaiser: the number of k with lambda_k > lambda_bar
+- broken_stick: k - 1 for the first k with pi_k <= b_k. If there is no such k, P.
+- parallel: k - 1 for the first k with pi_k <= g_k. If there is no such k, P.
+- cumulative: the smallest k with kappa_k >= c
+The number K of retained principal components is the value of COMPONENTS if it is an integer, or the number given by the named criterion if it is a criterion name (but 1 if that number is 0).
+
+* 6. Sampling adequacy
+Use the correlation matrix R = (r_jk) of the analysis data of the main analysis (the correlation matrix is used even when the scaling is covariance).
+(1) Inverse and determinant: build the matrix J of P rows and 2P columns whose left half is R and whose right half is the identity matrix, and let det = 1. For k = 1, ..., P in this order, do the following.
+  - Let the pivot be u = J_kk, and set det to det * u.
+  - Divide each of the 2P elements of row k of J by u.
+  - For each row i other than k (in increasing order of i), let gamma = J_ik, and set each element J_ih of row i to J_ih - gamma * J_kh (J_kh is the value of row k after the division).
+  At the end, the right half of J is the inverse Xi = (xi_jk) of R, and det is the determinant of R.
+(2) Partial correlation: for j != k, pr_jk = -xi_jk / sqrt(xi_jj * xi_kk).
+(3) For variable j, let rr_j = (sum of r_jk * r_jk over k != j) and pp_j = (sum of pr_jk * pr_jk over k != j) (both added in increasing order of k), and the measure of sampling adequacy of the variable is MSA_j = rr_j / (rr_j + pp_j).
+(4) KMO = (SUM_j rr_j) / ((SUM_j rr_j) + (SUM_j pp_j))
+(5) Bartlett statistic = -(n - 1 - (2 * P + 5) / 6) * ln(det), degrees of freedom = P * (P - 1) / 2 (an integer). (2 * P + 5) / 6 is a real division.
+
+* 7. Parallel analysis
+Random numbers are produced by the MINSTD generator. The state X is initially seed; each time a random number is produced, X is replaced with (48271 * X) mod 2147483647, and the new X is used to give u = X / 2147483647 (real division). Since 48271 * X is less than 2^53, it can be computed exactly with 64-bit integers or double-precision floating point.
+For iterations r = 1, ..., R in this order, produce random data of n rows and P columns. The values are produced in the order variables 1, ..., P of row 1, variables 1, ..., P of row 2, ..., and the state of the generator carries over across iterations. Treating this data as analysis data, compute the correlation matrix by the formulas of section 2, find the eigenvalues by the procedure of section 3 and sort them in decreasing order as f_1 >= ... >= f_P, and from them and their sum F = SUM_k f_k compute ratio_k = f_k / F.
+g_k = (sum of ratio_k added in iteration order) / R.
+
+* 8. Loadings and communalities
+- Loading: for all j, k, l_jk = v_kj * sqrt(lambda_k)
+- Communality: h_j = (SUM_(k=1..K) l_jk * l_jk) / S_jj
+- Correlation with principal components: for k = 1, 2, q_jk = l_jk / sqrt(S_jj) (the correlation between variable j and principal component k)
+
+* 9. Varimax rotation
+Rotate the loadings l_jk of principal components 1 to K (j = 1, ..., P, k = 1, ..., K).
+(1) Normalization: for each variable j, let eta_j = sqrt(SUM_(k=1..K) l_jk * l_jk) and G_jk = l_jk / eta_j.
+(2) Criterion value: the criterion value of G is SUM_(k=1..K) (Q4_k / P - (Q2_k / P) * (Q2_k / P)), where Q4_k = SUM_j (G_jk * G_jk) * (G_jk * G_jk) and Q2_k = SUM_j G_jk * G_jk.
+(3) Rotation of columns a and b: for each j, let phi_j = G_ja * G_ja - G_jb * G_jb and psi_j = 2 * G_ja * G_jb, and let
+  SA = SUM_j phi_j, SB = SUM_j psi_j, SC = SUM_j (phi_j * phi_j - psi_j * psi_j), SD = SUM_j 2 * phi_j * psi_j
+  num = SD - 2 * SA * SB / P, den = SC - (SA * SA - SB * SB) / P, omega = sqrt(num * num + den * den)
+If omega = 0, no rotation is performed. Otherwise, the cosine and sine of the rotation angle are obtained by the half-angle formulas.
+  cos4 = den / omega, sin4 = num / omega
+  cos2 = sqrt((1 + cos4) / 2), sin2 = sin4 / (2 * cos2) (but if cos2 = 0, sin2 = 1)
+  cos1 = sqrt((1 + cos2) / 2), sin1 = sin2 / (2 * cos1)
+For each j, using the original G_ja and G_jb, set G_ja to cos1 * G_ja + sin1 * G_jb and G_jb to -sin1 * G_ja + cos1 * G_jb.
+(4) One cycle rotates all column pairs, in the order a = 1, ..., K - 1, and for equal a in the order b = a + 1, ..., K. C cycles are performed. The criterion value of the initial G is the criterion value of cycle 0, and the criterion value after the c-th cycle is the criterion value of cycle c. When K = 1 there is no pair to rotate, so the criterion value does not change.
+(5) Rotated loadings: compute G_jk * eta_j, and orient each column k (a vector of P components). For each column compute SS = SUM_j (component) * (component), sort the columns in decreasing order of SS (for equal values, in column number order), and call them rotated components 1, ..., K.
+(6) Correspondence: for each rotated component, compute the absolute value of the congruence coefficient with the loading column (l_1k, ..., l_Pk) of each of principal components 1 to K, and find the principal component k for which it is the largest (for equal values, the smaller number) and that value.
+
+* 10. Principal component scores and diagnostics
+(1) Scores: the score of analysis row i on principal component k (k = 1, ..., P) is t_ik = SUM_j z_ij * v_kj.
+(2) T^2 statistic: T^2_i = SUM_(k=1..K) (t_ik * t_ik) / lambda_k
+(3) Residuals and SPE: e_ij = z_ij - SUM_(k=1..K) t_ik * v_kj, and SPE_i = SUM_j e_ij * e_ij.
+(4) Quality of representation: quality_i = (SUM_(k=1..K) t_ik * t_ik) / (SUM_j z_ij * z_ij)
+(5) Flag: the flag is the string obtained by concatenating, in this order, T if T^2 > L_T and Q if SPE > L_Q (TQ, T or Q). If neither holds, the flag is -.
+(6) Contributions to T^2: the contribution of variable j for analysis row i is z_ij * w_ij, where w_ij = SUM_(k=1..K) (t_ik / lambda_k) * v_kj. The contribution to SPE is e_ij * e_ij. "The variable with the largest contribution" is the variable whose contribution is the largest (for equal values, the smaller number).
+(7) Top T^2: the top m analysis rows by T^2_i (for equal values, in row order). The top SPE is defined in the same way.
+(8) Score summary: for k = 1, ..., K, compute the standard deviation sqrt((SUM_i t_ik * t_ik) / (n - 1)), the analysis row with the minimum (for equal values, the earlier row in row order) and the analysis row with the maximum (for equal values, the earlier row), and the contribution of each analysis row t_ik * t_ik / ((n - 1) * lambda_k), and select the top m analysis rows by contribution (for equal values, in row order).
+(9) Reconstruction: for k = 1, ..., P - 1, compute for each analysis row SPE_i(k) = SUM_j (z_ij - SUM_(h=1..k) t_ih * v_hj) * (z_ij - SUM_(h=1..k) t_ih * v_hj), and compute the mean (SUM_i SPE_i(k)) / n, and the maximum and its analysis row (for equal values, the earlier row in row order).
+
+* 11. Supplementary rows
+For each supplementary row, the standardized value of variable j is 0 if the value is NA, and (x - m_j) / d_j otherwise (x is that value, and m_j and d_j are those of the main analysis). From these standardized values, compute the scores t_k (k = 1, ..., P), T^2, SPE and the flag by the same formulas as for the analysis rows. Furthermore, the nearest analysis row is the analysis row i that minimizes D_i = SUM_(k=1..K) (t_k - t_ik) * (t_k - t_ik) (for equal values, the earlier row in row order), and the distance is sqrt(D_i).
+
+* 12. Sensitivity analysis
+Take the four combinations of missing-value strategy and scaling in the order (listwise, covariance), (listwise, correlation), (mean, covariance), (mean, correlation). For each of them, build the analysis data with the strategy of section 1, compute the matrix of that scaling by the formulas of section 2, and find the eigenvalues lambda'_k and the eigenvectors v'_k by the procedure of section 3. Compute the number of analysis rows, the sweep count, lambda'_1 to lambda'_K, the cumulative ratio up to principal component K (computed from lambda'_k by the same formulas as in section 5), and, for k = 1, ..., K, |SUM_j v'_kj * v_kj| (the degree of agreement with the principal components of the main analysis).
+
+* 13. Plots
+A plot is a grid of characters; the rows of the grid are numbered 0, 1, ... from the top, and the columns 0, 1, ... from the left. To "write with a frame" means, with w the number of columns of the grid, to write a line consisting of +, w characters -, and +, then each row of the grid enclosed between | and | (from the top row down), and finally once more a line consisting of +, w characters -, and +.
+(1) Scree plot: let the Kaiser position be kc = floor(lambda_bar / lambda_1 * W_s + 0.5). For each principal component k, let the bar length be len_k = floor(lambda_k / lambda_1 * W_s + 0.5) and the broken-stick position be beta_k = floor(b_k * T / lambda_1 * W_s + 0.5), and determine the W_s characters at positions 1 to W_s as follows. The character at position p is o if p = beta_k; otherwise : if p = kc; otherwise # if p <= len_k; otherwise a space.
+(2) Biplot: draw the scores of principal components 1 and 2 on a grid of W_b columns and H_b rows. The point of analysis row i is (t_i1, t_i2), and the point of a supplementary row is (t_1, t_2).
+- M1 is the maximum of |t_1| (the absolute value of the score on principal component 1) over all analysis rows and supplementary rows, and M2 is the maximum of |t_2|.
+- The column of a point (x, y) is min(floor((x + M1) / (2 * M1) * W_b), W_b - 1), and its row is min(floor((M2 - y) / (2 * M2) * H_b), H_b - 1). Let (r0, c0) be the cell of the origin (0, 0).
+- The arrow scale is f = 0.9 * min(M1 / L1, M2 / L2), where L1 is the maximum of |l_j1| over all variables and L2 is the maximum of |l_j2| (the loadings of principal components 1 and 2 are used regardless of K). The tip of the arrow of variable j is the cell (rt, ct) of the point (f * l_j1, f * l_j2).
+- Cells of the arrow shaft: let dc = ct - c0, dr = rt - r0 and S_a = max(|dc|, |dr|); for s = 1, ..., S_a - 1, they are the cells at column c0 + sgn(dc) * floor((2 * s * |dc| + S_a) / (2 * S_a)) and row r0 + sgn(dr) * floor((2 * s * |dr| + S_a) / (2 * S_a)) (sgn is 1 for a positive value, 0 for 0 and -1 for a negative value; inside floor(...) is a division of non-negative integers, and the integer part of the quotient is taken). The shaft character is - if 2 * |dr| <= |dc|; otherwise | if 2 * |dc| <= |dr|; otherwise / if dc * dr < 0; otherwise \.
+- Drawing order (later items overwrite earlier ones): set all cells to spaces -> set every cell of row r0 to -, every cell of column c0 to |, and the cell (r0, c0) to + -> the shaft of each arrow, in variable order -> the points of the analysis rows (. if the number of analysis rows in the cell is 1, o if it is 2 or 3, @ if it is 4 or more) -> X at the cells of the analysis rows whose flag is not - -> * at the cells of the supplementary rows -> in variable order, set the tip cell of each arrow to the j-th uppercase English letter (A, B, C, ...) for variable j.
+(3) Correlation circle: for the radius rho, the grid has 2 * rho + 3 columns and rho + 3 rows, and the center cell is at row rc = rho / 2 + 1, column cc = rho + 1. A cell (r, c) is "inside the circle" when (c - cc) * (c - cc) + (2 * (r - rc)) * (2 * (r - rc)) <= rho * rho (the same formula is also used for positions outside the grid).
+- Drawing order: set all cells to spaces -> set every cell of row rc to -, every cell of column cc to |, and the cell (rc, cc) to + -> set to . each cell inside the circle for which at least one of the 4 adjacent positions (above, below, left and right) is not inside the circle -> in variable order, set the cell at row rc - floor(q_j2 * (rho / 2) + 0.5), column cc + floor(q_j1 * rho + 0.5) to the uppercase letter of the variable.
+(4) Scatter plot of T^2 and SPE: let X = 2 * L_T and Y = 2 * L_Q, and draw on a grid of W_d columns and H_d rows. The column of a point whose T^2 is tau and whose SPE is sigma is min(floor(tau / X * W_d), W_d - 1), and its row is H_d - 1 - min(floor(sigma / Y * H_d), H_d - 1).
+- Drawing order: set all cells to spaces -> set every cell of the row of the cell of the point (L_T, L_Q) to -, every cell of its column to |, and that cell to + -> the points of the analysis rows (characters by the same rule as in the biplot) -> * at the cells of the supplementary rows.
+
+[Output files]
+Write five files: output/eigen.txt, output/loadings.csv, output/scores.csv, output/outliers.txt and output/plots.txt.
+
+* Common rules
+- The output consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). Do not put extra whitespace at the start or end of a line, and do not insert blank lines that are not specified.
+- In the formats below, each part enclosed in < > is replaced with a value, and all other characters are written as they are. In a format, "..." means that values of the same kind are listed with the same separator (one space, or a comma). Explanations enclosed in parentheses "( )" are not written.
+- Integers are written in base 10 without extra leading zeros.
+- Unless specified otherwise, a real number is rounded to 4 decimal places and written in fixed-point notation with exactly 4 digits after the decimal point (examples: 12.5 is written 12.5000, -0.00004 is written 0.0000). Exponent notation is not used, and 0 is written when the integer part is 0. A negative number is prefixed with -, but a value whose rounded result is 0 is written without -. Only the determinant and the varimax criterion values are written with 6 decimal places by the same rules. The data contain no values close to a rounding boundary.
+- The setting values c, L_T and L_Q are also written by these real-number rules.
+- IDs and variable names are written as in the input. The name of principal component k is pc<k> (example: pc3), and the name of rotated component k is rc<k>.
+
+* output/eigen.txt
+Write it in the following form.
+pca rows <N> used <n> variables <P> missing <value of MISSING> scaling <value of SCALING>
+incomplete <number of incomplete rows> <ID of an incomplete row> ... (in row order; if there are no incomplete rows, write incomplete 0 -)
+(blank line)
+variable observed missing mean sd min max msa
+<variable name> <o_j> <N - o_j> <mo_j> <standard deviation of the observed values> <minimum of the observed values> <maximum of the observed values> <MSA_j>
+... (P lines, in variable order)
+adequacy kmo <KMO> determinant <det> bartlett <Bartlett statistic> df <degrees of freedom>
+(blank line)
+matrix <value of SCALING>
+<name of variable j> <S_j1> <S_j2> ... <S_jP>
+... (P lines, in variable order)
+strongest <pair> ... (the m strongly correlated pairs, in the order selected)
+(blank line)
+jacobi sweeps <sweep count of the main analysis>
+eigenvalues total <T> average <lambda_bar>
+k eigenvalue ratio cumulative broken_stick parallel se separated
+<k> <lambda_k> <pi_k> <kappa_k> <b_k> <g_k> <se_k> <separation (yes or no)>
+... (P lines, for k = 1, ..., P in this order)
+retention kaiser <number by kaiser> broken_stick <number by broken_stick> parallel <number by parallel> cumulative <number by cumulative> target <c>
+components <K> rule <value of COMPONENTS>
+(blank line)
+eigenvectors
+variable pc1 pc2 ... pc<P>
+<name of variable j> <v_1j> <v_2j> ... <v_Pj>
+... (P lines, in variable order)
+(blank line)
+power_iteration iterations 1000
+k jacobi power agree_at match
+<k> <lambda_k> <mu_k> <agreement iteration (- if none)> <yes if match, no if mismatch>
+... (P lines, for k = 1, ..., P in this order)
+cross_check <number of principal components that match>/<P>
+(blank line)
+scores
+component sd min min_id max max_id contributors
+pc<k> <standard deviation of the scores> <minimum> <ID of that analysis row> <maximum> <ID of that analysis row> <contribution pair> ... (the top m by contribution, in order)
+... (K lines, for k = 1, ..., K in this order)
+(blank line)
+varimax components <K> cycles <C>
+cycle <c> criterion <criterion value of cycle c>
+... (C + 1 lines, for c = 0, 1, ..., C in this order)
+rc<k> ss <SS> ratio <SS / T> closest pc<number of the corresponding principal component> congruence <absolute value of that congruence coefficient>
+... (K lines, for rotated components k = 1, ..., K in this order)
+(blank line)
+sensitivity
+missing scaling rows sweeps eigenvalues cumulative congruence
+<strategy> <scaling> <number of analysis rows> <sweep count> <lambda'_1> ... <lambda'_K> <cumulative ratio> <degree of agreement 1> ... <degree of agreement K>
+... (4 lines, in the order of section 12)
+The <pair> of the strongest line is, for a pair (j, k), <name of variable j>:<name of variable k>:<r_jk>. The <contribution pair> of a scores line is, for an analysis row, <ID>:<contribution>.
+
+* output/loadings.csv
+The first line is a header line listing variable, pc1, ..., pc<K>, communality, rc1, ..., rc<K> in this order, separated by commas. Then, for each variable j in variable order, write the following line.
+<variable name>,<l_j1>,...,<l_jK>,<h_j>,<value of variable j in rotated component 1>,...,<value of variable j in rotated component K>
+
+* output/scores.csv
+The first line is a header line listing id, set, pc1, ..., pc<K> in this order, separated by commas. Then write the following line for each analysis row in row order, and then for each supplementary row in the order of the supplementary rows.
+<ID>,data,<t_i1>,...,<t_iK> (analysis row)
+<ID>,supplementary,<t_1>,...,<t_K> (supplementary row)
+
+* output/outliers.txt
+Write it in the following form.
+diagnostics components <K> t2_limit <L_T> spe_limit <L_Q>
+id t2 spe quality flag
+<ID> <T^2_i> <SPE_i> <quality_i> <flag>
+... (n lines, in row order of the analysis rows)
+flagged t2 <number of flags containing T> spe <number of flags containing Q> both <number of flags equal to TQ> any <number of flags other than "-">
+(blank line)
+top t2
+rank id t2 variable contribution
+<rank> <ID> <T^2_i> <name of the variable with the largest contribution to T^2> <that contribution>
+... (the top m by T^2, in order; the ranks are 1, 2, ...)
+(blank line)
+top spe
+rank id spe variable contribution
+<rank> <ID> <SPE_i> <name of the variable with the largest contribution to SPE> <that contribution>
+... (the top m by SPE, in order)
+(blank line)
+reconstruction
+k mean_spe max_spe max_id
+<k> <mean of SPE_i(k)> <maximum of SPE_i(k)> <ID of that analysis row>
+... (P - 1 lines, for k = 1, ..., P - 1 in this order)
+(blank line)
+supplementary
+id pc1 ... pc<K> t2 spe flag nearest distance
+<ID> <t_1> ... <t_K> <T^2> <SPE> <flag> <ID of the nearest analysis row> <distance>
+... (in the order of the supplementary rows)
+
+* output/plots.txt
+Write it in the following form.
+scree width <W_s> kaiser_column <kc>
+|<characters at positions 1 to W_s>| pc<k> <lambda_k>
+... (P lines, for k = 1, ..., P in this order)
+(blank line)
+biplot pc1 pc2 width <W_b> height <H_b>
+x <-M1> <M1> y <-M2> <M2> arrow_scale <f>
+<biplot written with a frame>
+<uppercase letter of the variable> <variable name> <l_j1> <l_j2>
+... (P lines, in variable order)
+(blank line)
+circle radius <rho>
+<correlation circle written with a frame>
+<uppercase letter of the variable> <variable name> <q_j1> <q_j2> <q_j1 * q_j1 + q_j2 * q_j2>
+... (P lines, in variable order)
+(blank line)
+diagnostic width <W_d> height <H_d> t2_max <X> spe_max <Y>
+<scatter plot written with a frame>
+<-M1> and <-M2> are the values of M1 and M2 with their signs reversed.
+
+[Source files]
+Write the program as the following six source files (the file names follow the conventions of each language).
+- main: responsible for the overall flow and most of the processing. It calls the reading of the input, and performs the data summary and the construction of the analysis data, the strongly correlated pairs, the sampling adequacy (partial correlations, MSA, KMO, Bartlett statistic), parallel analysis (including the random number generation), the explained variance ratios and the number of principal components by the four criteria, the loadings and communalities, the varimax rotation and the correspondence, the scores, T^2, SPE, quality of representation, flags, contributions, top lists, score summary and reconstruction, the supplementary rows, the sensitivity analysis, the construction of the four plots, the formatting of real numbers, and the assembly and writing of the contents of the five output files.
+- dataset: reads the three input files and returns the variable names, the IDs, the sequences of values (distinguishing NA) and the setting values.
+- matrix: responsible for the basic vector and matrix computations (identity matrix, copy, extraction of a column, inner product, matrix-vector product, length, normalization, orientation, maximum difference, deflation, inverse and determinant by Gauss-Jordan elimination).
+- eigen: responsible for the cyclic Jacobi method (off-diagonal sum, rotation, sweep, sweep count, sorting of the eigenvalues and eigenvectors) and for power iteration with deflation (agreement iteration, mu_k, y_k).
+- pca: responsible for the means, the covariance matrix, the correlation matrix, the standardized values (including the handling of NA in supplementary rows), the scores, the residuals and the T^2 statistic.
+- plot: responsible for creating character grids, writing with a frame, converting values to cell positions, the cells and characters of arrow shafts, and assembling one line of the scree plot.
+
+[Constraints]
+- 2 <= P <= 12, 3 <= N <= 300, the number of supplementary rows is from 1 to 50, 1 <= R <= 50, 0 <= C <= 50, 1 <= W_s <= 80, 1 <= W_b <= 80, 1 <= H_b <= 40, 2 <= rho <= 36, 1 <= W_d <= 80, 1 <= H_d <= 40. m is at most P * (P - 1) / 2 and at most n of the main analysis.
+- The given data have N = 240, P = 10 and 12 supplementary rows. In data.csv, 26 values are NA (23 rows contain NA), and in supplementary.csv, 3 values are NA. Parallel analysis has 20 iterations.
+- The input files correctly follow the formats above. There is no need to check for input errors.
+- Under either missing-value strategy, there are at least P + 1 analysis rows, and s_j > 0 for every variable. Each variable has at least 2 observed values.
+- For every matrix to which the procedure of section 3 is applied (main analysis, sensitivity analysis, parallel analysis), off(A) < 1e-22 * off_0 is reached within 100 sweeps. The eigenvalues of the matrices of the main analysis and the sensitivity analysis are distinct from each other, the difference between adjacent eigenvalues is sufficiently larger than 1e-6 times the larger one, and the component with the largest absolute value used when orienting an eigenvector is unique.
+- All pivots in section 6 are positive, and det > 0. The agreement iteration of section 4 is found for every principal component.
+- eta_j > 0, M1 > 0, M2 > 0, L1 > 0 and L2 > 0, and SUM_j z_ij * z_ij > 0 for every analysis row. |q_jk| < 1.
+- In the given data, every real number that is output is sufficiently far from a rounding boundary. Also, comparisons of magnitude, selections of maxima and minima, sorting, comparisons with thresholds, the results of floor(...), the sweep counts and the agreement iterations have enough margin that they do not change with differences in the order of additions, fused multiply-add, or differences in the last digit of the result of ln (about 1 ulp). However, compute with the formulas and orders defined in this statement.
+- The amount of computation: about 6 sweeps for the Jacobi method of the main analysis, 1000 iterations for each of the 10 principal components in power iteration, and 20 sets of random data of 240 rows and 10 columns in parallel analysis.
+
+[Example]
+A small example that differs from the actual input (12 rows, 4 variables, 3 supplementary rows; the missing-value strategy is listwise, the scaling is covariance, and COMPONENTS is an integer).
+input/data.csv:
+id,temp,oxygen,bod,nitrate
+P01,14.8,8.3,1.7,0.1
+P02,23.8,6.8,4.4,2.4
+P03,11.6,8.8,4.0,2.6
+P04,15.8,6.6,6.1,3.7
+P05,20.6,9.2,NA,2.7
+P06,22.0,9.1,2.7,2.1
+P07,16.9,3.7,6.9,3.7
+P08,16.3,8.8,3.6,3.7
+P09,20.7,7.7,4.3,1.8
+P10,NA,7.8,4.8,3.2
+P11,21.2,10.2,0.5,1.8
+P12,20.5,10.4,4.0,3.6
+input/supplementary.csv:
+id,temp,oxygen,bod,nitrate
+Q1,28.2,6.2,1.8,1.0
+Q2,21.0,9.1,0.6,0.3
+Q3,23.7,5.4,5.3,NA
+input/params.txt:
+MISSING listwise
+SCALING covariance
+COMPONENTS 2
+CUMULATIVE_TARGET 0.9
+PARALLEL 3 7
+T2_LIMIT 4.0
+SPE_LIMIT 1.5
+VARIMAX_CYCLES 3
+TOP_ROWS 3
+SCREE_WIDTH 20
+BIPLOT_SIZE 21 11
+CIRCLE_RADIUS 8
+DIAGNOSTIC_SIZE 20 8
+output/eigen.txt:
+pca rows 12 used 10 variables 4 missing listwise scaling covariance
+incomplete 2 P05 P10
+
+variable observed missing mean sd min max msa
+temp 11 1 18.5636 3.6990 11.6000 23.8000 0.5663
+oxygen 12 0 8.1167 1.8210 3.7000 10.4000 0.3897
+bod 11 1 3.9091 1.8168 0.5000 6.9000 0.4452
+nitrate 12 0 2.6167 1.0794 0.1000 3.7000 0.3531
+adequacy kmo 0.4066 determinant 0.127051 bartlett 14.0983 df 6
+
+matrix covariance
+temp 14.6960 1.0996 -1.3769 -0.3000
+oxygen 1.0996 3.9049 -2.8942 -0.6167
+bod -1.3769 -2.8942 3.5707 1.5389
+nitrate -0.3000 -0.6167 1.5389 1.3806
+strongest oxygen:bod:-0.7751 bod:nitrate:0.6931 oxygen:nitrate:-0.2656
+
+jacobi sweeps 3
+eigenvalues total 23.5521 average 5.8880
+k eigenvalue ratio cumulative broken_stick parallel se separated
+1 15.0893 0.6407 0.6407 0.5208 0.4582 6.7481 yes
+2 6.6537 0.2825 0.9232 0.2708 0.2711 2.9756 yes
+3 1.5830 0.0672 0.9904 0.1458 0.1899 0.7079 yes
+4 0.2261 0.0096 1.0000 0.0625 0.0807 0.1011 yes
+retention kaiser 2 broken_stick 2 parallel 2 cumulative 2 target 0.9000
+components 2 rule 2
+
+eigenvectors
+variable pc1 pc2 pc3 pc4
+temp 0.9765 -0.2146 0.0006 0.0182
+oxygen 0.1393 0.6695 0.6124 0.3965
+bod -0.1578 -0.6621 0.3394 0.6492
+nitrate -0.0454 -0.2593 0.7139 -0.6488
+
+power_iteration iterations 1000
+k jacobi power agree_at match
+1 15.0893 15.0893 16 yes
+2 6.6537 6.6537 11 yes
+3 1.5830 1.5830 7 yes
+4 0.2261 0.2261 1 yes
+cross_check 4/4
+
+scores
+component sd min min_id max max_id contributors
+pc1 3.8845 -6.5262 P03 5.0549 P02 P03:0.3136 P02:0.1882 P06:0.1120
+pc2 2.5795 -4.9301 P07 3.2296 P11 P07:0.4059 P11:0.1742 P01:0.1480
+
+varimax components 2 cycles 3
+cycle 0 criterion 0.297434
+cycle 1 criterion 0.364949
+cycle 2 criterion 0.364949
+cycle 3 criterion 0.364949
+rc1 ss 14.6770 ratio 0.6232 closest pc1 congruence 0.9889
+rc2 ss 7.0659 ratio 0.3000 closest pc2 congruence 0.9464
+
+sensitivity
+missing scaling rows sweeps eigenvalues cumulative congruence
+listwise covariance 10 3 15.0893 6.6537 0.9232 1.0000 1.0000
+listwise correlation 10 3 2.2272 0.9664 0.7984 0.3881 0.3222
+mean covariance 12 3 12.8013 5.5371 0.9206 0.9999 0.9999
+mean correlation 12 4 2.2182 0.9773 0.7989 0.3927 0.2903
+output/loadings.csv:
+variable,pc1,pc2,communality,rc1,rc2
+temp,3.7934,-0.5535,1.0000,3.8219,0.2988
+oxygen,0.5413,1.7270,0.8388,0.1461,1.8040
+bod,-0.6130,-1.7080,0.9222,-0.2202,-1.8012
+nitrate,-0.1762,-0.6689,0.3466,-0.0239,-0.6913
+output/scores.csv:
+id,set,pc1,pc2
+P01,data,-2.9946,2.9771
+P02,data,5.0549,-2.3426
+P03,data,-6.5262,1.8272
+P04,data,-3.1125,-2.2227
+P06,data,3.8994,0.7869
+P07,data,-2.5687,-4.9301
+P08,data,-1.9232,0.7983
+P09,data,2.1960,-0.8531
+P11,data,3.6323,3.2296
+P12,data,2.3426,0.7294
+Q1,supplementary,9.7418,-1.6039
+Q2,supplementary,3.3359,2.8588
+Q3,supplementary,4.6133,-3.8934
+output/outliers.txt:
+diagnostics components 2 t2_limit 4.0000 spe_limit 1.5000
+id t2 spe quality flag
+P01 1.9263 5.4075 0.7673 Q
+P02 2.5182 0.4505 0.9857 -
+P03 3.3244 0.3805 0.9918 -
+P04 1.3846 0.5197 0.9657 -
+P06 1.1008 0.0051 0.9997 -
+P07 4.0903 0.8721 0.9726 T
+P08 0.3409 1.8561 0.7003 Q
+P09 0.4290 0.8340 0.8694 -
+P11 2.4420 0.6924 0.9715 -
+P12 0.4437 5.2642 0.5335 Q
+flagged t2 1 spe 3 both 0 any 4
+
+top t2
+rank id t2 variable contribution
+1 P07 4.0903 oxygen 2.2560
+2 P03 3.3244 temp 3.2535
+3 P02 2.5182 temp 2.1906
+
+top spe
+rank id spe variable contribution
+1 P01 5.4075 nitrate 3.2898
+2 P12 5.2642 oxygen 2.3877
+3 P08 1.8561 nitrate 1.6124
+
+reconstruction
+k mean_spe max_spe max_id
+1 7.6165 25.1781 P07
+2 1.6282 5.4075 P01
+3 0.2035 0.5783 P11
+
+supplementary
+id pc1 pc2 t2 spe flag nearest distance
+Q1 9.7418 -1.6039 6.6760 9.2190 TQ P02 4.7448
+Q2 3.3359 2.8588 1.9658 4.2228 Q P11 0.4747
+Q3 4.6133 -3.8934 3.6886 1.2347 - P02 1.6124
+output/plots.txt:
+scree width 20 kaiser_column 8
+|#######:#######o####| pc1 15.0893
+|#######o#           | pc2 6.6537
+|##  o  :            | pc3 1.5830
+| o     :            | pc4 0.2261
+
+biplot pc1 pc2 width 21 height 11
+x -9.7418 9.7418 y -4.9301 4.9301 arrow_scale 2.3113
++---------------------+
+|          |          |
+|          |B  .      |
+|       X  ||  *      |
+|   .      ||         |
+|        X |  X.      |
+|----------+----------|
+|         || .  ----A |
+|       . |D         *|
+|        | |    .     |
+|        C |    *     |
+|       X  |          |
++---------------------+
+A temp 3.7934 -0.5535
+B oxygen 0.5413 1.7270
+C bod -0.6130 -1.7080
+D nitrate -0.1762 -0.6689
+
+circle radius 8
++-------------------+
+|         |         |
+|         .         |
+|    .....|.B...    |
+|   .     |     .   |
+|  .      |      .  |
+|-.-------+-------.-|
+|  .      |      .A |
+|   .    D|     .   |
+|    .....|.....    |
+|      C  .         |
+|         |         |
++-------------------+
+A temp 0.9895 -0.1444 1.0000
+B oxygen 0.2739 0.8740 0.8388
+C bod -0.3244 -0.9039 0.9222
+D nitrate -0.1499 -0.5693 0.3466
+
+diagnostic width 20 height 8 t2_max 8.0000 spe_max 3.0000
++--------------------+
+| .  *     |     *   |
+|          |         |
+|          |         |
+|.---------+---------|
+|         *|         |
+| .        .         |
+|   .  o . |         |
+|  .       |         |
++--------------------+
+In this example, rows P05 and P10 contain NA, so under the listwise strategy there are 10 analysis rows (12 in the mean lines of the sensitivity analysis). COMPONENTS is the integer 2, so K = 2, and 2 is written as the rule. The scaling is covariance, so d_j = 1, and the average eigenvalue is T / P = 5.8880. The nitrate value of supplementary row Q3 is NA, so its standardized value is 0. In the biplot, |t_1| of supplementary row Q1 is the largest, so M1 = 9.7418, and the column of the point of Q1 is W_b - 1 = 20. In the scatter plot, points whose SPE is Y or more are drawn in the top row. Analysis row P01 and supplementary row Q2 are in the same cell, so that cell is *.

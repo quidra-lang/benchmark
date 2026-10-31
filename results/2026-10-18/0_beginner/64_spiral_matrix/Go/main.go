@@ -1,0 +1,27 @@
+package main
+
+import "fmt"
+
+func main() {
+	matrix := [5][6]int{}
+	dr, dc := []int{0, 1, 0, -1}, []int{1, 0, -1, 0}
+	r, c, d := 0, 0, 0
+	for n := 1; n <= 30; n++ {
+		matrix[r][c] = n
+		if n == 30 {
+			break
+		}
+		nr, nc := r+dr[d], c+dc[d]
+		if nr < 0 || nr >= 5 || nc < 0 || nc >= 6 || matrix[nr][nc] != 0 {
+			d = (d + 1) % 4
+			nr, nc = r+dr[d], c+dc[d]
+		}
+		r, c = nr, nc
+	}
+	for _, row := range matrix {
+		for _, n := range row {
+			fmt.Printf("%3d", n)
+		}
+		fmt.Println()
+	}
+}

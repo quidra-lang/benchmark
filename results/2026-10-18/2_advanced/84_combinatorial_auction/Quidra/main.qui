@@ -1,0 +1,719 @@
+import bids_io = "./bids_io.qui"
+import wdp_solver = "./wdp_solver.qui"
+import payments = "./payments.qui"
+import auctions = "./auctions.qui"
+import report = "./report.qui"
+
+class Bidder(string name, string language)
+    bids_io.Bid[] valid = []
+    int eligible = 0
+class Rejection(int number, string bidder, string message)
+class Auction(string name, int[] offered, nat32 offered_mask, Bidder[] bidders, int total, bids_io.Bid[] valid, bids_io.Bid[] eligible, Rejection[] rejected)
+class Allocation(bids_io.Bid[] winning, int accepted, int retained, int welfare, nat32 unsold)
+class Ascending()
+    string[] lines = []
+    int[] paid = []
+    int[] values = []
+    int[] utilities = []
+    int revenue = 0
+    int welfare = 0
+    int retained = 0
+    int rounds = 0
+    bool capped = false
+    int exposed = 0
+    int exposure = 0
+
+class AuctionResult(Auction auction, wdp_solver.Search search, Allocation optimal, bids_io.Bid[] order, Allocation greedy, payments.Critical[] critical, int[] values, payments.Vcg[] vcg, int[] greedy_values, int[] critical_paid, int[] vcg_utilities, int[] critical_utilities, Ascending ascending)
+class Mechanism(string name, int winner, int price, int revenue, int welfare, int[] utilities, int steps = -1)
+class Totals()
+    int bids = 0
+    int valid = 0
+    int eligible = 0
+    int nodes = 0
+    int greedy_optimal = 0
+    int[] revenues = [0, 0, 0, 0, 0]
+    int checked = 0
+    int skipped = 0
+    int[] core = [0, 0, 0, 0]
+    int rounds = 0
+    int capped = 0
+    int exposed = 0
+    int exposure = 0
+    int lots = 0
+    int slots = 0
+    int errors = 0
+    int envy_free = 0
+    int nash = 0
+    int equilibria = 0
+class Reports()
+    string[] wdp = []
+    string[] vcg = []
+    string[] core = []
+    string[] ascending = []
+    string[] single = []
+    string[] summary = ["mechanism,revenue,welfare,efficiency"]
+    Totals totals = Totals()
+
+int item_index(bids_io.Item[] items, string name)
+    for int i < int(len(items))
+        if items[i].name == name
+            return i
+    return -1
+
+bool lowercase_word(string text)
+    if len(text) == 0
+        return false
+    for int code = text.codepoints()[]
+        if code < 97 or code > 122
+            return false
+    return true
+
+bool decimal_digits(string text)
+    if len(text) == 0
+        return false
+    for int code = text.codepoints()[]
+        if code < 48 or code > 57
+            return false
+    return true
+
+Auction validate_auction(bids_io.AuctionInput input, bids_io.Item[] items, bids_io.Parameters settings)
+    int[] offered = []
+    nat32 offered_mask = 0
+    for string name = input.offered[]
+        int index = item_index(items, name)
+        offered = offered.append(index)
+        offered_mask = offered_mask OR report.bit_for(index)
+    Bidder[] bidders = []
+    bids_io.Bid[] valid = []
+    bids_io.Bid[] eligible = []
+    Rejection[] rejected = []
+    set.Set<string> seen = set.Set<string>()
+    int number = 0
+    for bids_io.BidderLine line = input.lines[]
+        string line_error = ""
+        if seen.has(line.name)
+            line_error = "duplicate bidder"
+        elif line.language != "XOR" and line.language != "OR"
+            line_error = "bad language " + line.language
+        .seen.add(line.name)
+        int bidder = -1
+        if line_error == ""
+            bidder = int(len(bidders))
+            bidders = bidders.append(Bidder(line.name, line.language))
+        map.Map<nat32, int> earlier_bundles = map.Map<nat32, int>()
+        for string text = line.bids[]
+            number += 1
+            string problem = line_error
+            nat32 bundle = 0
+            int amount = 0
+            int reserve = 0
+            int size = 0
+            if problem == ""
+                string[] parts = text.split(":")
+                bool malformed = len(parts) != 2
+                string[] names = []
+                if not malformed
+                    names = parts[0].split("+")
+                    for string name = names[]
+                        malformed = malformed or not lowercase_word(name)
+                    string price_text = parts[1]
+                    malformed = malformed or not decimal_digits(price_text) or len(price_text) > 5 or (len(price_text) > 1 and price_text[0] == "0")
+                if malformed
+                    problem = "malformed bid"
+                else
+                    amount = int.parse(parts[1])
+                    size = int(len(names))
+                    for string name = names[]
+                        int index = item_index(items, name)
+                        if index < 0
+                            problem = "unknown item " + name
+                            break
+                        if not report.contains_item(offered_mask, index)
+                            problem = "item not offered " + name
+                            break
+                        if report.contains_item(bundle, index)
+                            problem = "duplicate item " + name
+                            break
+                        bundle = bundle OR report.bit_for(index)
+                        reserve += items[index].reserve
+                    if problem == "" and size > settings.max_bundle_size
+                        problem = "bundle too large"
+                    if problem == "" and amount == 0
+                        problem = "zero value"
+                    if problem == ""
+                        match earlier_bundles.get(bundle)
+                            int previous
+                                problem = "duplicate bundle {previous}"
+                            none
+                                void
+                    if problem == "" and int(len(bidders[bidder].valid)) >= settings.max_bids
+                        problem = "too many bids"
+            if problem != ""
+                rejected = rejected.append(Rejection(number, line.name, problem))
+                continue
+            bids_io.Bid bid = bids_io.Bid(number, bidder, bundle, amount, line.language == "XOR", size, reserve)
+            valid = valid.append(bid)
+            bidders[bidder].valid = bidders[bidder].valid.append(bid)
+            .earlier_bundles.set(bundle, number)
+            if amount >= reserve
+                eligible = eligible.append(bid)
+                bidders[bidder].eligible += 1
+    return Auction(input.name, offered, offered_mask, bidders, number, valid, eligible, rejected)
+
+Allocation allocation_values(Auction auction, bids_io.Item[] items, bids_io.Bid[] chosen)
+    bids_io.Bid[] winning = wdp_solver.bid_number_order(chosen)
+    int accepted = 0
+    nat32 sold = 0
+    for bids_io.Bid bid = winning[]
+        accepted += bid.amount
+        sold = sold OR bid.bundle
+    nat32 unsold = auction.offered_mask AND NOT sold
+    int retained = 0
+    for int item = auction.offered[]
+        if report.contains_item(unsold, item)
+            retained += items[item].reserve
+    return Allocation(winning, accepted, retained, accepted + retained, unsold)
+
+string unsold_names(nat32 mask, bids_io.Item[] items)
+    string[] names = []
+    for int i < int(len(items))
+        if report.contains_item(mask, i)
+            names = names.append(items[i].name)
+    return if len(names) == 0 then "-" else names.join(" ")
+
+Ascending simulate_ascending(Auction auction, bids_io.Item[] items, bids_io.Parameters settings, int optimum)
+    Ascending result = Ascending()
+    result.lines = ["AUCTION {auction.name} increment {settings.saa_increment}"]
+    auctions.Candidate[][] candidates = []
+    int[] eligibility = []
+    for Bidder bidder = auction.bidders[]
+        auctions.Candidate[] choices = auctions.enumerate_candidates(bidder.valid, bidder.language == "XOR")
+        candidates = candidates.append(choices)
+        int maximum = 0
+        for auctions.Candidate candidate = choices[]
+            int size = report.mask_size(candidate.bundle)
+            if size > maximum
+                maximum = size
+        eligibility = eligibility.append(maximum)
+    int[] prices = [for bids_io.Item item = items[] then item.reserve]
+    int[] holders = array(len(items), fill = -1)
+    int[] bid_counts = array(len(items), fill = 0)
+    int[] round_counts = array(len(items), fill = 0)
+    int[] last_rounds = array(len(items), fill = 0)
+    int random_state = settings.seed
+    for 1 <= int round <= settings.round_cap
+        result.rounds = round
+        nat32[] new_bids = []
+        int[] activity = []
+        int demand = 0
+        for int bidder < int(len(auction.bidders))
+            nat32 held = 0
+            for int item = auction.offered[]
+                if holders[item] == bidder
+                    held = held OR report.bit_for(item)
+            int chosen = -1
+            int best_surplus = 0
+            for int i < int(len(candidates[bidder]))
+                auctions.Candidate candidate = candidates[bidder][i]
+                if report.mask_size(candidate.bundle OR held) > eligibility[bidder]
+                    continue
+                int asking_total = 0
+                for int item = auction.offered[]
+                    if report.contains_item(candidate.bundle, item)
+                        asking_total += prices[item] + (if holders[item] >= 0 and holders[item] != bidder then settings.saa_increment else 0)
+                int surplus = candidate.value - asking_total
+                if surplus > best_surplus
+                    best_surplus = surplus
+                    chosen = i
+            nat32 bids = 0
+            nat32 active = held
+            if chosen >= 0
+                nat32 wanted = candidates[bidder][chosen].bundle
+                active = active OR wanted
+                for int item = auction.offered[]
+                    if report.contains_item(wanted, item) and holders[item] != bidder
+                        bids = bids OR report.bit_for(item)
+            activity = activity.append(report.mask_size(active))
+            new_bids = new_bids.append(bids)
+            demand += report.mask_size(bids)
+        if demand == 0
+            result.lines = result.lines.append("ROUND {round} none")
+        else
+            string line = "ROUND {round} demand {demand}"
+            for int bidder < int(len(auction.bidders))
+                if new_bids[bidder] != 0
+                    line += " {auction.bidders[bidder].name}:" + report.bundle_text(new_bids[bidder], items)
+            result.lines = result.lines.append(line)
+            for int item = auction.offered[]
+                int[] entrants = []
+                for int bidder < int(len(auction.bidders))
+                    if report.contains_item(new_bids[bidder], item)
+                        entrants = entrants.append(bidder)
+                int count = int(len(entrants))
+                if count == 0
+                    continue
+                bid_counts[item] += count
+                round_counts[item] += 1
+                last_rounds[item] = round
+                int selected = 0
+                if count >= 2
+                    random_state = 48271 * random_state % 2147483647
+                    selected = random_state % count
+                if holders[item] >= 0
+                    prices[item] += settings.saa_increment
+                holders[item] = entrants[selected]
+            string standing = "STANDING"
+            for int item = auction.offered[]
+                string holder = if holders[item] < 0 then "-" else auction.bidders[holders[item]].name
+                standing += " {items[item].name}={prices[item]}@{holder}"
+            result.lines = result.lines.append(standing)
+        string[] changed = []
+        for int bidder < int(len(auction.bidders))
+            if activity[bidder] < eligibility[bidder]
+                eligibility[bidder] = activity[bidder]
+                changed = changed.append("{auction.bidders[bidder].name}={eligibility[bidder]}")
+        if len(changed) > 0
+            result.lines = result.lines.append("ELIGIBILITY " + changed.join(" "))
+        if demand == 0
+            break
+        if round == settings.round_cap
+            result.capped = true
+    result.lines = result.lines.append("END rounds {result.rounds} " + (if result.capped then "cap" else "quiet"))
+    for int item = auction.offered[]
+        if holders[item] < 0
+            result.retained += items[item].reserve
+            result.lines = result.lines.append("ITEM {items[item].name} unsold reserve {items[item].reserve}")
+        else
+            result.lines = result.lines.append("ITEM {items[item].name} price {prices[item]} holder {auction.bidders[holders[item]].name} bids {bid_counts[item]} rounds {round_counts[item]} last {last_rounds[item]}")
+    for int bidder < int(len(auction.bidders))
+        nat32 won = 0
+        int paid = 0
+        for int item = auction.offered[]
+            if holders[item] == bidder
+                won = won OR report.bit_for(item)
+                paid += prices[item]
+        int value = auctions.value_of(candidates[bidder], won)
+        int utility = value - paid
+        result.paid = result.paid.append(paid)
+        result.values = result.values.append(value)
+        result.utilities = result.utilities.append(utility)
+        result.revenue += paid
+        result.welfare += value
+        string line = "BIDDER {auction.bidders[bidder].name} won " + report.bundle_text(won, items) + " paid {paid} value {value} utility {utility} eligibility {eligibility[bidder]}"
+        if utility < 0
+            result.exposed += 1
+            result.exposure -= utility
+            line += " exposed"
+        result.lines = result.lines.append(line)
+    result.welfare += result.retained
+    report.Fraction efficiency = report.Fraction(result.welfare, optimum)
+    result.lines = result.lines.append("TOTAL revenue {result.revenue} welfare {result.welfare} efficiency " + efficiency.text() + " exposure {result.exposure} exposed {result.exposed}")
+    return result
+
+AuctionResult analyze_auction(Auction auction, bids_io.Item[] items, bids_io.Parameters settings)
+    wdp_solver.Search search = wdp_solver.solve_wdp(auction.offered, items, auction.eligible)
+    Allocation optimal = allocation_values(auction, items, search.winning)
+    bids_io.Bid[] order = wdp_solver.greedy_order(auction.eligible)
+    Allocation greedy = allocation_values(auction, items, wdp_solver.greedy_select(order))
+    payments.Critical[] critical = payments.critical_payments(order, greedy.winning)
+    int[] values = array(len(auction.bidders), fill = 0)
+    for bids_io.Bid bid = optimal.winning[]
+        values[bid.bidder] += bid.amount
+    payments.Vcg[] vcg = payments.vcg_payments(auction.offered, items, auction.eligible, optimal.welfare, values)
+    int[] greedy_values = array(len(auction.bidders), fill = 0)
+    int[] critical_paid = array(len(auction.bidders), fill = 0)
+    for bids_io.Bid bid = greedy.winning[]
+        greedy_values[bid.bidder] += bid.amount
+        for payments.Critical price = critical[]
+            if price.number == bid.number
+                critical_paid[bid.bidder] += price.payment
+    int[] vcg_utilities = []
+    int[] critical_utilities = []
+    for int bidder < int(len(auction.bidders))
+        vcg_utilities = vcg_utilities.append(values[bidder] - vcg[bidder].payment)
+        critical_utilities = critical_utilities.append(greedy_values[bidder] - critical_paid[bidder])
+    Ascending ascending = simulate_ascending(auction, items, settings, optimal.welfare)
+    return AuctionResult(auction, search, optimal, order, greedy, critical, values, vcg, greedy_values, critical_paid, vcg_utilities, critical_utilities, ascending)
+
+void append_summary(Reports &reports, string name, string format, report.Fraction revenue, report.Fraction welfare, report.Fraction efficiency)
+    reports.summary = reports.summary.append(name + "/" + format + "," + revenue.text() + "," + welfare.text() + "," + efficiency.text())
+
+void append_wdp(Reports &reports, AuctionResult result, bids_io.Item[] items)
+    Auction auction = result.auction
+    string[] lines = ["AUCTION {auction.name} items {len(auction.offered)} bidders {len(auction.bidders)} bids {auction.total} valid {len(auction.valid)} eligible {len(auction.eligible)}"]
+    for Bidder bidder = auction.bidders[]
+        lines = lines.append("BIDDER {bidder.name} {bidder.language} valid {len(bidder.valid)} eligible {bidder.eligible}")
+    for Rejection rejected = auction.rejected[]
+        lines = lines.append("REJECT {rejected.number} {rejected.bidder} {rejected.message}")
+    for bids_io.Bid bid = auction.valid[]
+        if bid.amount < bid.reserve
+            lines = lines.append("BELOW_RESERVE {bid.number} {auction.bidders[bid.bidder].name} value {bid.amount} reserve {bid.reserve}")
+    for wdp_solver.Share share = result.search.shares[]
+        string source = if share.source < 0 then "reserve" else "bid {share.source}"
+        lines = lines.append("SHARE {items[share.item].name} " + share.amount.text() + " " + source)
+    lines = lines.append("ROOT_BOUND " + result.search.bound.text())
+    for wdp_solver.Improvement improvement = result.search.improvements[]
+        lines = lines.append("IMPROVE {improvement.node} welfare {improvement.welfare} bids " + report.number_list(improvement.numbers))
+    Allocation optimal = result.optimal
+    lines = lines.append("OPTIMAL welfare {optimal.welfare} accepted {optimal.accepted} retained {optimal.retained} winners {len(optimal.winning)}")
+    for bids_io.Bid bid = optimal.winning[]
+        lines = lines.append("WIN {bid.number} {auction.bidders[bid.bidder].name} " + report.bundle_text(bid.bundle, items) + " {bid.amount}")
+    lines = lines.concat(["UNSOLD " + unsold_names(optimal.unsold, items), "SEARCH nodes {result.search.nodes} pruned {result.search.pruned} leaves {result.search.leaves} improvements {len(result.search.improvements)}"])
+    string order = if len(result.order) == 0 then "-" else [for bids_io.Bid bid = result.order[] then bid.number.string()].join(" ")
+    lines = lines.append("GREEDY_ORDER " + order)
+    Allocation greedy = result.greedy
+    report.Fraction efficiency = report.Fraction(greedy.welfare, optimal.welfare)
+    lines = lines.append("GREEDY welfare {greedy.welfare} accepted {greedy.accepted} retained {greedy.retained} winners {len(greedy.winning)} efficiency " + efficiency.text())
+    for int i < int(len(greedy.winning))
+        bids_io.Bid bid = greedy.winning[i]
+        payments.Critical price = result.critical[i]
+        string rival = if price.rival < 0 then "-" else price.rival.string()
+        lines = lines.append("GWIN {bid.number} {auction.bidders[bid.bidder].name} " + report.bundle_text(bid.bundle, items) + " {bid.amount} critical {price.payment} against {rival}")
+    lines = lines.append("GUNSOLD " + unsold_names(greedy.unsold, items))
+    for int item = auction.offered[]
+        int demand = 0
+        string optimal_owner = "-"
+        string greedy_owner = "-"
+        for bids_io.Bid bid = auction.eligible[]
+            if report.contains_item(bid.bundle, item)
+                demand += 1
+        for bids_io.Bid bid = optimal.winning[]
+            if report.contains_item(bid.bundle, item)
+                optimal_owner = auction.bidders[bid.bidder].name
+        for bids_io.Bid bid = greedy.winning[]
+            if report.contains_item(bid.bundle, item)
+                greedy_owner = auction.bidders[bid.bidder].name
+        lines = lines.append("ITEM {items[item].name} reserve {items[item].reserve} demand {demand} optimal {optimal_owner} greedy {greedy_owner}")
+    reports.wdp = reports.wdp.concat(lines)
+    reports.totals.bids += auction.total
+    reports.totals.valid += int(len(auction.valid))
+    reports.totals.eligible += int(len(auction.eligible))
+    reports.totals.nodes += result.search.nodes
+    if greedy.welfare == optimal.welfare
+        reports.totals.greedy_optimal += 1
+
+void append_vcg(Reports &reports, AuctionResult result)
+    Auction auction = result.auction
+    string[] lines = ["AUCTION {auction.name} welfare {result.optimal.welfare}"]
+    int revenue = 0
+    int utilities = 0
+    int critical_total = 0
+    for int bidder < int(len(auction.bidders))
+        string name = auction.bidders[bidder].name
+        if result.values[bidder] == 0
+            lines = lines.append("BIDDER {name} lost")
+        else
+            int[] won = [for bids_io.Bid bid = result.optimal.winning[] if bid.bidder == bidder then bid.number]
+            payments.Vcg payment = result.vcg[bidder]
+            lines = lines.append("BIDDER {name} won " + report.number_list(won) + " value {result.values[bidder]} without {payment.without} alternative " + report.number_list(payment.alternative) + " payment {payment.payment} utility {result.vcg_utilities[bidder]}")
+        revenue += result.vcg[bidder].payment
+        utilities += result.vcg_utilities[bidder]
+        critical_total += result.critical_paid[bidder]
+    lines = lines.append("TOTAL revenue {revenue} pay_as_bid {result.optimal.accepted} retained {result.optimal.retained} seller {revenue + result.optimal.retained} bidders {utilities}")
+    for int bidder < int(len(auction.bidders))
+        lines = lines.append("PAYMENTS {auction.bidders[bidder].name} vcg {result.vcg[bidder].payment} pay_as_bid {result.values[bidder]} greedy {result.greedy_values[bidder]} critical {result.critical_paid[bidder]} saa {result.ascending.paid[bidder]}")
+    for int bidder < int(len(auction.bidders))
+        lines = lines.append("UTILITIES {auction.bidders[bidder].name} vcg {result.vcg_utilities[bidder]} critical {result.critical_utilities[bidder]} saa {result.ascending.utilities[bidder]}")
+    reports.vcg = reports.vcg.concat(lines)
+    int[] revenues = [revenue, result.optimal.accepted, result.greedy.accepted, critical_total, result.ascending.revenue]
+    int[] welfares = [result.optimal.welfare, result.optimal.welfare, result.greedy.welfare, result.greedy.welfare, result.ascending.welfare]
+    string[] formats = ["vcg", "pay_as_bid", "greedy", "critical", "saa"]
+    for int i < 5
+        reports.totals.revenues[i] += revenues[i]
+        append_summary(&reports, auction.name, formats[i], report.Fraction(revenues[i]), report.Fraction(welfares[i]), report.Fraction(welfares[i], result.optimal.welfare))
+
+string coalition_name(payments.Coalition coalition, Bidder[] bidders)
+    return if len(coalition.members) == 0 then "-" else [for int bidder = coalition.members[] then bidders[bidder].name].join("+")
+
+void append_core(Reports &reports, AuctionResult result, bids_io.Item[] items, bids_io.Parameters settings)
+    Auction auction = result.auction
+    string[] lines = ["AUCTION {auction.name} bidders {len(auction.bidders)}"]
+    if int(len(auction.bidders)) > settings.core_max
+        reports.totals.skipped += 1
+        reports.core = reports.core.concat(lines).append("SKIPPED")
+        return
+    reports.totals.checked += 1
+    payments.Coalition[] coalitions = payments.coalition_welfares(auction.offered, items, auction.eligible, int(len(auction.bidders)))
+    lines = lines.append("COALITIONS {len(coalitions)}")
+    int vcg_revenue = 0
+    int critical_revenue = 0
+    for int bidder < int(len(auction.bidders))
+        vcg_revenue += result.vcg[bidder].payment
+        critical_revenue += result.critical_paid[bidder]
+    string[] names = ["vcg", "greedy", "critical", "saa"]
+    int[] sellers = [vcg_revenue + result.optimal.retained, result.greedy.welfare, critical_revenue + result.greedy.retained, result.ascending.revenue + result.ascending.retained]
+    int[] zero = array(len(auction.bidders), fill = 0)
+    int[][] utilities = [result.vcg_utilities, zero, result.critical_utilities, result.ascending.utilities]
+    for int outcome < 4
+        lines = lines.append("OUTCOME {names[outcome]} seller {sellers[outcome]} utilities " + [for int utility = utilities[outcome][] then utility.string()].join(" "))
+        payments.Blocking blocking = payments.blocking_coalitions(coalitions, sellers[outcome], utilities[outcome])
+        for payments.Block block = blocking.minimal[]
+            lines = lines.append("BLOCK " + coalition_name(block.coalition, auction.bidders) + " welfare {block.coalition.welfare} payoff {block.payoff} deficit {block.deficit} bids " + report.number_list(block.coalition.numbers))
+        if len(blocking.all) == 0
+            reports.totals.core[outcome] += 1
+            lines = lines.append("RESULT core")
+        else
+            int maximum = 0
+            for int i < int(len(blocking.all))
+                if blocking.all[i].deficit > blocking.all[maximum].deficit
+                    maximum = i
+            lines = lines.append("RESULT blocked {len(blocking.all)} minimal {len(blocking.minimal)} max_deficit {blocking.all[maximum].deficit} by " + coalition_name(blocking.all[maximum].coalition, auction.bidders))
+    reports.core = reports.core.concat(lines)
+
+string participants_error(bids_io.Participant[] participants, string kind)
+    if len(participants) == 0
+        return if kind == "lot" then "no bidders" else "no advertisers"
+    set.Set<string> seen = set.Set<string>()
+    for bids_io.Participant participant = participants[]
+        if seen.has(participant.name)
+            return (if kind == "lot" then "duplicate bidder " else "duplicate advertiser ") + participant.name
+        .seen.add(participant.name)
+    if kind == "lot"
+        for bids_io.Participant participant = participants[]
+            if participant.bid > participant.value
+                return "bid above value " + participant.name
+    return ""
+
+int[] participant_ranking(bids_io.Participant[] participants, bool by_value)
+    int[] result = []
+    for int i < int(len(participants))
+        result = result.append(i)
+        int position = i
+        while position > 0
+            int a = result[position]
+            int b = result[position - 1]
+            int first = if by_value then participants[a].value else participants[a].bid
+            int second = if by_value then participants[b].value else participants[b].bid
+            if first <= second
+                break
+            result[position] = b
+            result[position - 1] = a
+            position -= 1
+    return result
+
+Mechanism mechanism_result(string name, int winner, int price, int reserve, bids_io.Participant[] participants, int steps = -1)
+    int[] utilities = array(len(participants), fill = 0)
+    int revenue = price
+    int welfare = reserve
+    if winner >= 0
+        welfare = participants[winner].value
+        utilities[winner] = welfare - price
+    if name == "all_pay"
+        revenue = 0
+        for int i < int(len(participants))
+            if participants[i].bid >= reserve
+                revenue += participants[i].bid
+                utilities[i] = (if i == winner then participants[i].value else 0) - participants[i].bid
+    return Mechanism(name, winner, price, revenue, welfare, utilities, steps)
+
+void process_lot(Reports &reports, bids_io.Group group, bids_io.Parameters settings)
+    reports.totals.lots += 1
+    bids_io.Participant[] participants = group.participants
+    string problem = participants_error(participants, "lot")
+    if problem != ""
+        reports.totals.errors += 1
+        reports.single = reports.single.append("LOT {group.name} ERROR {problem}")
+        return
+    int reserve = int.parse(group.arguments[0])
+    int[] bid_order = participant_ranking(participants, false)
+    int[] value_order = participant_ranking(participants, true)
+    int efficient = if participants[value_order[0]].value >= reserve then value_order[0] else -1
+    int optimum = if efficient < 0 then reserve else participants[efficient].value
+    int first_winner = if participants[bid_order[0]].bid >= reserve then bid_order[0] else -1
+    int first_price = if first_winner < 0 then 0 else participants[first_winner].bid
+    int second_price = 0
+    if efficient >= 0
+        second_price = reserve
+        if len(value_order) > 1 and participants[value_order[1]].value > second_price
+            second_price = participants[value_order[1]].value
+    auctions.Clock english = auctions.english_clock(participants, reserve, settings.english_increment)
+    auctions.Clock dutch = auctions.dutch_clock(participants, reserve, settings.dutch_start, settings.dutch_decrement)
+    Mechanism[] mechanisms = [
+        mechanism_result("first_price", first_winner, first_price, reserve, participants),
+        mechanism_result("second_price", efficient, second_price, reserve, participants),
+        mechanism_result("english", english.winner, english.price, reserve, participants, english.steps),
+        mechanism_result("dutch", dutch.winner, dutch.price, reserve, participants, dutch.steps),
+        mechanism_result("all_pay", first_winner, first_price, reserve, participants),
+    ]
+    string efficient_name = if efficient < 0 then "-" else participants[efficient].name
+    string[] lines = ["LOT {group.name} reserve {reserve} bidders {len(participants)} efficient {efficient_name} optimum {optimum}"]
+    string[] labels = ["FIRST_PRICE", "SECOND_PRICE", "ENGLISH", "DUTCH", "ALL_PAY"]
+    for int i < 5
+        Mechanism mechanism = mechanisms[i]
+        string line = labels[i]
+        if mechanism.winner < 0
+            line += " unsold"
+        else
+            int winner = mechanism.winner
+            line += " winner {participants[winner].name} price {mechanism.price} utility {mechanism.utilities[winner]}"
+        if mechanism.steps >= 0
+            line += " steps {mechanism.steps}"
+        report.Fraction efficiency = report.Fraction(mechanism.welfare, optimum)
+        lines = lines.append(line + " revenue {mechanism.revenue} welfare {mechanism.welfare} efficiency " + efficiency.text())
+        if i == 2
+            string drops = "ENGLISH_DROPS"
+            for int j < int(len(participants))
+                string value = if english.drops[j] < 0 then "-" else english.drops[j].string()
+                drops += " {participants[j].name}={value}"
+            lines = lines.append(drops)
+        append_summary(&reports, group.name, mechanism.name, report.Fraction(mechanism.revenue), report.Fraction(mechanism.welfare), efficiency)
+    for int bidder < int(len(participants))
+        string line = "UTILITY {participants[bidder].name}"
+        for Mechanism mechanism = mechanisms[]
+            line += " {mechanism.utilities[bidder]}"
+        lines = lines.append(line)
+    int[] ranking = [0, 1, 2, 3, 4]
+    for 1 <= int i < 5
+        int j = i
+        while j > 0 and mechanisms[ranking[j]].revenue > mechanisms[ranking[j - 1]].revenue
+            int temporary = ranking[j - 1]
+            ranking[j - 1] = ranking[j]
+            ranking[j] = temporary
+            j -= 1
+    lines = lines.append("RANKING " + [for int index = ranking[] then mechanisms[index].name].join(" "))
+    reports.single = reports.single.concat(lines)
+
+class Rates(bool valid, string bad, report.Fraction[] values)
+
+Rates parse_rates(string[] texts)
+    report.Fraction[] rates = []
+    for string text = texts[]
+        string[] parts = text.split("/")
+        bool malformed = len(parts) != 2
+        if not malformed
+            malformed = not decimal_digits(parts[0]) or not decimal_digits(parts[1]) or parts[0][0] == "0" or parts[1][0] == "0"
+        if malformed
+            return Rates(false, text, [])
+        report.Fraction rate = report.Fraction(int.parse(parts[0]), int.parse(parts[1]))
+        if report.Fraction(1).less(rate) or (len(rates) > 0 and not rate.less(rates[int(len(rates)) - 1]))
+            return Rates(false, text, [])
+        rates = rates.append(rate)
+    return Rates(true, "", rates)
+
+report.Fraction rate_at(report.Fraction[] rates, int rank)
+    return if rank < int(len(rates)) then rates[rank] else report.Fraction(0)
+
+int bid_at(bids_io.Participant[] participants, int[] ranking, int rank)
+    return if rank < int(len(ranking)) then participants[ranking[rank]].bid else 0
+
+void process_slots(Reports &reports, bids_io.Group group)
+    reports.totals.slots += 1
+    Rates parsed = parse_rates(group.arguments)
+    string problem = if parsed.valid then participants_error(group.participants, "slots") else "bad ctr " + parsed.bad
+    if problem != ""
+        reports.totals.errors += 1
+        reports.single = reports.single.append("SLOTS {group.name} ERROR {problem}")
+        return
+    report.Fraction[] rates = parsed.values
+    bids_io.Participant[] participants = group.participants
+    int[] ranking = participant_ranking(participants, false)
+    int[] efficient = participant_ranking(participants, true)
+    int slots = int(len(rates))
+    int count = int(len(participants))
+    int assigned = if count < slots then count else slots
+    string[] lines = ["SLOTS {group.name} slots {slots} advertisers {count}"]
+    report.Fraction gsp_revenue = report.Fraction(0)
+    report.Fraction gsp_welfare = report.Fraction(0)
+    report.Fraction optimum = report.Fraction(0)
+    for int rank < assigned
+        optimum = optimum.add(rates[rank].times(participants[efficient[rank]].value))
+    for int rank < assigned
+        bids_io.Participant participant = participants[ranking[rank]]
+        int price = payments.gsp_price(participants, ranking, rank)
+        report.Fraction payment = rates[rank].times(price)
+        report.Fraction utility = rates[rank].times(participant.value - price)
+        gsp_revenue = gsp_revenue.add(payment)
+        gsp_welfare = gsp_welfare.add(rates[rank].times(participant.value))
+        lines = lines.append("GSP {rank + 1} {participant.name} ctr " + rates[rank].text() + " bid {participant.bid} price {price} payment " + payment.text() + " utility " + utility.text())
+    report.Fraction efficiency = gsp_welfare.divided(optimum)
+    lines = lines.append("GSP_TOTAL revenue " + gsp_revenue.text() + " welfare " + gsp_welfare.text() + " efficiency " + efficiency.text())
+    report.Fraction vcg_revenue = report.Fraction(0)
+    for int rank < assigned
+        bids_io.Participant participant = participants[efficient[rank]]
+        report.Fraction payment = payments.slot_vcg_payment(participants, efficient, rates, rank)
+        report.Fraction price = payment.divided(rates[rank])
+        report.Fraction utility = rates[rank].times(participant.value).subtract(payment)
+        vcg_revenue = vcg_revenue.add(payment)
+        lines = lines.append("VCG {rank + 1} {participant.name} ctr " + rates[rank].text() + " value {participant.value} payment " + payment.text() + " price " + price.text() + " utility " + utility.text())
+    lines = lines.append("VCG_TOTAL revenue " + vcg_revenue.text() + " welfare " + optimum.text() + " efficiency 1")
+    int violations = 0
+    int envy_stop = if count < slots + 1 then count else slots + 1
+    for 1 <= int rank < envy_stop
+        bids_io.Participant participant = participants[ranking[rank]]
+        report.Fraction stay = rate_at(rates, rank).times(participant.value - payments.gsp_price(participants, ranking, rank))
+        report.Fraction swap = rates[rank - 1].times(participant.value - participant.bid)
+        bool violated = stay.less(swap)
+        if violated
+            violations += 1
+        lines = lines.append("ENVY {rank + 1} {participant.name} stay " + stay.text() + " swap " + swap.text() + " " + (if violated then "violated" else "ok"))
+    lines = lines.append(if violations == 0 then "ENVY_FREE yes" else "ENVY_FREE no violations {violations}")
+    int deviations = 0
+    for int rank < count
+        bids_io.Participant participant = participants[ranking[rank]]
+        report.Fraction current = rate_at(rates, rank).times(participant.value - payments.gsp_price(participants, ranking, rank))
+        for int target < slots
+            if target == rank
+                continue
+            int price = bid_at(participants, ranking, if target < rank then target else target + 1)
+            report.Fraction moved = rates[target].times(participant.value - price)
+            if current.less(moved)
+                deviations += 1
+                report.Fraction gain = moved.subtract(current)
+                lines = lines.append("DEVIATE {participant.name} from {rank + 1} to {target + 1} gain " + gain.text())
+    lines = lines.append(if deviations == 0 then "NASH yes" else "NASH no deviations {deviations}")
+    bool equilibrium = violations == 0 and deviations == 0
+    lines = lines.append("EQUILIBRIUM " + (if equilibrium then "yes" else "no"))
+    if violations == 0
+        reports.totals.envy_free += 1
+    if deviations == 0
+        reports.totals.nash += 1
+    if equilibrium
+        reports.totals.equilibria += 1
+    reports.single = reports.single.concat(lines)
+    append_summary(&reports, group.name, "gsp", gsp_revenue, gsp_welfare, efficiency)
+    append_summary(&reports, group.name, "vcg", vcg_revenue, optimum, report.Fraction(1))
+
+void finish_reports(Reports &reports, int count)
+    Totals totals = reports.totals
+    reports.wdp = reports.wdp.append("TOTAL auctions {count} bids {totals.bids} valid {totals.valid} eligible {totals.eligible} nodes {totals.nodes} greedy_optimal {totals.greedy_optimal}")
+    reports.vcg = reports.vcg.append("OVERALL vcg {totals.revenues[0]} pay_as_bid {totals.revenues[1]} greedy {totals.revenues[2]} critical {totals.revenues[3]} saa {totals.revenues[4]}")
+    reports.core = reports.core.append("SUMMARY checked {totals.checked} skipped {totals.skipped} vcg {totals.core[0]} greedy {totals.core[1]} critical {totals.core[2]} saa {totals.core[3]}")
+    reports.ascending = reports.ascending.append("SUMMARY auctions {count} rounds {totals.rounds} capped {totals.capped} exposed {totals.exposed} exposure {totals.exposure}")
+    reports.single = reports.single.append("SUMMARY lots {totals.lots} slot_groups {totals.slots} errors {totals.errors} envy_free {totals.envy_free} nash {totals.nash} equilibria {totals.equilibria}")
+
+void run_program()
+    bids_io.Inputs inputs = bids_io.read_inputs()
+    Reports reports = Reports()
+    for string name = inputs.parameters.runs[]
+        int selected = 0
+        for int i < int(len(inputs.auctions))
+            if inputs.auctions[i].name == name
+                selected = i
+        Auction auction = validate_auction(inputs.auctions[selected], inputs.items, inputs.parameters)
+        AuctionResult result = analyze_auction(auction, inputs.items, inputs.parameters)
+        append_wdp(&reports, result, inputs.items)
+        append_vcg(&reports, result)
+        append_core(&reports, result, inputs.items, inputs.parameters)
+        reports.ascending = reports.ascending.concat(result.ascending.lines)
+        reports.totals.rounds += result.ascending.rounds
+        if result.ascending.capped
+            reports.totals.capped += 1
+        reports.totals.exposed += result.ascending.exposed
+        reports.totals.exposure += result.ascending.exposure
+    for bids_io.Group group = inputs.groups[]
+        if group.kind == "lot"
+            process_lot(&reports, group, inputs.parameters)
+        else
+            process_slots(&reports, group)
+    finish_reports(&reports, int(len(inputs.parameters.runs)))
+    bool directory_exists = file.is_directory("output")
+    if not directory_exists
+        file.mkdir("output")
+    report.write_lines("wdp.txt", reports.wdp)
+    report.write_lines("vcg.txt", reports.vcg)
+    report.write_lines("core_check.txt", reports.core)
+    report.write_lines("ascending_log.txt", reports.ascending)
+    report.write_lines("single_item.txt", reports.single)
+    report.write_lines("summary.csv", reports.summary)
+
+run_program()

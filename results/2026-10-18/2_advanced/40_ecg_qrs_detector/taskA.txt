@@ -1,0 +1,411 @@
+[Overview]
+Write a program that detects QRS complexes (heartbeats) in a single-lead electrocardiogram (ECG), evaluates the detection performance by matching the detections against reference annotations, and analyzes heart rate variability (HRV) and arrhythmias.
+Detection follows a procedure based on the Pan-Tompkins method and is done entirely in integer arithmetic. The ECG is passed in order through an integer low-pass filter and an integer high-pass filter (together a band-pass filter), a five-point derivative, squaring and a 150-millisecond moving-window integration, and the peaks of the integrated signal are classified as beats or noise using two sets of adaptive thresholds, one on the integrated signal and one on the band-pass signal. The procedure also includes a refractory period, a re-search with lower thresholds when no beat has been found for a long time (search-back), and T-wave discrimination by slope.
+Each detected beat is given the label N (normal), V (premature ventricular contraction) or A (premature supraventricular contraction) from its RR interval and QRS width. From the matching against the reference annotations the program computes the sensitivity, the positive predictivity and so on, and it computes statistics of the RR intervals and NN intervals, a histogram and the triangular index, Poincare plot indices, the list of premature beats and their runs, pause, bradycardia, tachycardia, bigeminy and trigeminy events, and the heart rate per segment. In addition, it draws a tachogram, a Poincare plot, the average waveform for each label and a rhythm strip as charts made of ASCII characters.
+The input is 3 files in the input/ folder (the ECG, the reference annotations and the settings), and the results are written to 8 files in the output/ folder. Nothing is printed to standard output. All computation is done with integers; floating-point numbers are not used. Use only the standard library.
+
+[Input files]
+All 3 files consist of ASCII characters only, and every line (including the last line) ends with a newline (LF). There are no spaces at the start or end of a line, and there are no empty lines. Integers are written in decimal without extra leading zeros, and only negative numbers are preceded by "-".
+
+# input/ecg.csv (ECG)
+The first line is a header line, the string sample,microvolts. Each following line consists of two integers, the sample number and the potential (in microvolts), in this order, separated by a comma.
+- The sample numbers are 0, 1, 2, ..., increasing by 1. If N is the number of lines excluding the header line, the sample number of the last line is N - 1.
+- The potential at sample number n is written x[n].
+- The sampling frequency is 200 Hz, and the time of sample number n is 5 * n milliseconds.
+
+# input/annotations.csv (reference annotations)
+The first line is a header line, the string sample,label. Each following line is the reference annotation of one beat: the sample number of the position of that beat's R wave (an integer from 0 to N - 1) and one character representing the beat type (one of N, V, A), in this order, separated by a comma. N denotes a normal beat, V a premature ventricular contraction, and A a premature supraventricular contraction.
+- The lines are in increasing order of sample number, and no two lines have the same sample number.
+- The reference annotations are used only for the matching (Section 6 of [Processing]) and for the marks of the rhythm strip; they are not used for detection.
+
+# input/params.txt (settings)
+It consists of the following 16 lines, in this order. Each line consists of a keyword, one space and a value (an integer), in this order. The values whose keyword ends with _ms are in milliseconds.
+- refractory_ms: the length of the refractory period
+- twave_ms: the length of the period in which T-wave discrimination is performed
+- searchback_percent: the interval at which search-back starts, as a ratio (percentage) of the RR average
+- premature_percent: the RR interval regarded as premature, as a ratio (percentage) of the average of the preceding RR intervals
+- qrs_width_ms: the QRS width criterion (a beat whose QRS width is greater than this value is regarded as wide)
+- match_ms: the matching tolerance
+- pause_ms: the pause criterion (an RR interval longer than this value is regarded as a pause)
+- brady_ms: the bradycardia criterion (an RR interval longer than this value is regarded as a bradycardia interval)
+- tachy_ms: the tachycardia criterion (an RR interval shorter than this value is regarded as a tachycardia interval)
+- excerpt_ms: the length of the signal excerpt
+- segment_ms: the length of the segments used for the per-segment summaries
+- strip_start_ms: the start time of the rhythm strip
+- strip_ms: the length of the rhythm strip
+- strip_rows: the number of rows of the rhythm strip chart
+- chart_rows: the number of rows of the tachogram and average waveform charts
+- poincare_size: the number of rows and the number of columns of the Poincare plot
+A millisecond value v converted to a number of samples is v div 5 (for example, if refractory_ms is 200, it is 40 samples). Below, the values of refractory_ms, twave_ms, match_ms and segment_ms converted to numbers of samples are written Rf, Tw, Mt and G respectively.
+
+[Processing]
+# 0. Notation and common rules
+- All computation is done with integers. floor(t) is the largest integer <= t, ceil(t) is the smallest integer >= t, and |a| is the absolute value of a.
+- For an integer a and a positive integer b, a div b = floor(a / b). Even when a is negative, the quotient is rounded toward negative infinity (for example, -7 div 2 = -4, -525 div 32 = -17, -2 div 8 = -1, -701 div 4 = -176). Take care in languages whose integer division truncates toward zero. In this task, div of negative numbers appears many times in the filter and threshold computations.
+- For a nonnegative integer a and a positive integer b, a mod b = a - b * (a div b).
+- For an integer a and a positive integer b, rdiv(a, b) = (2 * a + b) div (2 * b). This is a / b rounded to the nearest integer, with values exactly halfway rounded to the larger integer (for example, rdiv(5, 2) = 3, rdiv(-5, 2) = -2, rdiv(-7, 4) = -2, rdiv(7, 4) = 2).
+- For a nonnegative integer t, isqrt(t) is the largest nonnegative integer r satisfying r * r <= t.
+- For a nonnegative integer p and a positive integer q, root(p, q) = (isqrt((40000 * p) div q) + 1) div 2. This is 100 times the square root of p / q, rounded to the nearest integer (for example, root(2400, 6) = 2000, root(10, 3) = 183, root(2000, 2) = 3162).
+- 2-decimal notation: for an integer h, if h < 0, write "-", followed by, in this order, the decimal notation of |h| div 100, ".", and the 2-digit decimal notation of |h| mod 100 (with a leading 0 if it has one digit). If h >= 0, no "-" is written (for example, 12345 is 123.45, 7 is 0.07, -68 is -0.68, 0 is 0.00).
+- 4-decimal notation: for a nonnegative integer h, the decimal notation of h div 10000, ".", and the 4-digit decimal notation of h mod 10000 (padded with leading 0s if it has fewer than 4 digits), in this order (for example, 78125 is 7.8125, 7812500 is 781.2500).
+- Reduced fraction notation: for a nonnegative integer a and a positive integer b, let g be the greatest common divisor of a and b (g = b when a = 0); the notation is "<a div g>/<b div g>" (for example, 12 and 15 give 4/5, and 0 and 3 give 0/1).
+- Ratio notation: for nonnegative integers a and b, if b > 0 it is "<a>/<b> reduced=<reduced fraction notation of a and b> percent=<2-decimal notation of rdiv(10000 * a, b)>", and if b = 0 it is "<a>/<b> none" (for example, 12 and 15 give "12/15 reduced=4/5 percent=80.00", and 0 and 0 give "0/0 none").
+- Sum denotes a sum. Since these are sums of integers, the order of addition does not affect the result.
+- Every rule that selects the largest or smallest item always states how to choose when several items have the same value.
+
+# 1. Filters
+Apply the following 5 stages of computation to x in order to obtain the low-pass signal l, the band-pass signal f, the derivative signal d, the squared signal q and the integrated signal m. Each is a sequence of N integers, computed in the order n = 0, 1, ..., N - 1. In this section, all values of x, c, l, s, f and q with negative indices are 0.
+(1) Low-pass filter: c[n] = 2 * c[n - 1] - c[n - 2] + x[n] - 2 * x[n - 6] + x[n - 12], and l[n] = c[n] div 32.
+(2) High-pass filter: s[n] = s[n - 1] + l[n] - l[n - 32], and f[n] = l[n - 16] - (s[n] div 32).
+(3) Derivative: d[n] = (2 * f[n] + f[n - 1] - f[n - 3] - 2 * f[n - 4]) div 8.
+(4) Squaring: q[n] = d[n] * d[n].
+(5) Moving-window integration: m[n] = (q[n - 29] + q[n - 28] + ... + q[n]) div 30 (a window of 30 samples, 150 milliseconds).
+c[n] equals the sum of x[n], x[n - 1], ..., x[n - 10] multiplied by the weights 1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1 respectively, and s[n] equals l[n - 31] + ... + l[n]. Either form may be used for the computation. The band-pass signal f lags the original ECG by 21 samples.
+
+# 2. Peak detection and measurement
+- Peaks of the integrated signal: among the n satisfying 0 <= n <= N - 1, each n that satisfies all of the following 3 conditions is called a "peak", and n is called the time of that peak.
+ (1) m[n] > 0
+ (2) m[j] < m[n] for every j satisfying max(0, n - 20) <= j <= n - 1
+ (3) m[j] <= m[n] for every j satisfying n + 1 <= j <= min(N - 1, n + 20)
+ The times of two peaks are always at least 21 apart.
+- For the peak at time n, compute the following values.
+ R position r: the j with the largest |f[j]| among the j satisfying max(0, n - 30) <= j <= n (if several are largest, the smallest such j)
+ PEAKI: m[n]
+ PEAKF: |f[r]|
+ Slope: the maximum of |d[j]| over the j satisfying max(0, n - 29) <= j <= n
+
+# 3. Levels and thresholds
+- Detection keeps 4 levels SPKI, NPKI, SPKF and NPKF. SPKI and NPKI are the signal and noise levels of the integrated signal, and SPKF and NPKF are the signal and noise levels of the band-pass signal. Their initial values are determined from the first 400 samples (a 2-second learning period) as follows.
+ SPKI = (the maximum of m[0], m[1], ..., m[399]) div 3
+ NPKI = (m[0] + m[1] + ... + m[399]) div 800
+ SPKF = (the maximum of |f[0]|, |f[1]|, ..., |f[399]|) div 3
+ NPKF = (|f[0]| + |f[1]| + ... + |f[399]|) div 800
+- The thresholds are obtained from the current levels as follows (when the levels change, the thresholds change too).
+ THI1 = NPKI + ((SPKI - NPKI) div 4), THI2 = THI1 div 2
+ THF1 = NPKF + ((SPKF - NPKF) div 4), THF2 = THF1 div 2
+ SPKI - NPKI and SPKF - NPKF can be negative; div then also rounds toward negative infinity (for example, if SPKI = 299 and NPKI = 1000, THI1 = 1000 + (-701 div 4) = 1000 - 176 = 824).
+- There are 3 kinds of level update. PEAKI and PEAKF are the values of the peak used for the update.
+ Signal update: replace SPKI with (PEAKI + 7 * SPKI) div 8 and SPKF with (PEAKF + 7 * SPKF) div 8.
+ Noise update: replace NPKI with (PEAKI + 7 * NPKI) div 8 and NPKF with (PEAKF + 7 * NPKF) div 8.
+ Search-back update: replace SPKI with (PEAKI + 3 * SPKI) div 4 and SPKF with (PEAKF + 3 * SPKF) div 4.
+
+# 4. Detection procedure
+Each peak is given exactly one of the following 5 classes.
+ qrs (a beat detected by the thresholds), searchback (a beat detected by search-back), twave (noise discriminated as a T wave), refractory (a peak within the refractory period), noise (noise)
+Besides the 4 levels, detection keeps the following state.
+- Last beat: the peak of the most recently registered beat. Initially it is "none".
+- RR list: the most recent detection intervals (in numbers of samples), at most 8 of them, in order from oldest to newest. Initially it is empty.
+- RR averages RA1 and RA2: both are initially 200.
+"Registering a beat": registering a peak P as a beat means doing the following.
+ 1. If there is a last beat Q, append v = (time of P) - (time of Q) to the end of the RR list, and if the list then has 9 elements, remove the first one. Set RA1 = (sum of the RR list) div (number of elements in the RR list), and if 92 * RA1 <= 100 * v <= 116 * RA1, replace RA2 with RA1 (otherwise RA2 does not change).
+ 2. Make P the last beat.
+ Beats are numbered 1, 2, 3, ... in the order in which they are registered. This number is called the "beat number".
+"Search-back at time t": repeat the following.
+ 1. Let t0 be the time of the last beat (0 if the last beat is none). If t - t0 <= (RA2 * searchback_percent) div 100, stop.
+ 2. The candidates are the peaks with class noise whose time n satisfies t0 < n < t and that have PEAKI > THI2 and PEAKF > THF2 (using the thresholds at this point). If there are no candidates, stop.
+ 3. Select the candidate with the largest PEAKI (if several, the one with the smallest time among them). Perform the search-back update with that peak, change its class to searchback, register it as a beat, and go back to step 1.
+Process the peaks one at a time in increasing order of time, as follows. Let n be the time of the peak being processed.
+ 1. Perform the search-back at time n.
+ 2. Take THI1 and THF1 at this point as this peak's recorded thresholds thr_i and thr_f.
+ 3. If there is a last beat Q and n - (time of Q) < Rf, the class is refractory. The levels are not updated.
+ 4. If step 3 does not apply and PEAKI > thr_i and PEAKF > thr_f: if there is a last beat Q, n - (time of Q) < Tw, and 2 * (slope of this peak) < (slope of Q), the class is twave and a noise update is performed. Otherwise, the class is qrs; perform a signal update and then register this peak as a beat.
+ 5. If neither step 3 nor step 4 applies, the class is noise and a noise update is performed.
+After all peaks have been processed, finally perform the search-back at time N. This ends the detection.
+A peak registered by search-back is always a peak after the last beat, so the times of the beats' peaks increase in order of beat number.
+
+# 5. Beats
+Let B be the number of beats. For the beat with beat number k (k = 1, 2, ..., B), let r be the R position of its peak, and determine the following values.
+- Position: s_k = max(0, r - 21) (the R-wave position with the lag of the band-pass signal removed). In the given input, s_1 < s_2 < ... < s_B, and adjacent positions differ by at least 10.
+- RR interval: exists only for the beats with k >= 2; rr_k = 5 * (s_k - s_(k-1)) (in milliseconds).
+- Instantaneous heart rate: exists only for the beats with k >= 2; the 2-decimal notation of rdiv(6000000, rr_k) (beats per minute).
+- QRS width: let P = |f[r]|; among the j satisfying max(0, r - 25) <= j <= min(N - 1, r + 25), let j1 be the smallest and j2 the largest j satisfying 4 * |f[j]| >= P; then w_k = 5 * (j2 - j1 + 1) (in milliseconds) (j = r always satisfies the condition).
+- Detection method: threshold if the class of the peak is qrs, and searchback if it is searchback.
+- Label: when k >= 10 and 800 * rr_k < premature_percent * (rr_(k-8) + rr_(k-7) + ... + rr_(k-1)), the beat is "premature" (this means that its RR interval is less than premature_percent % of the average of the preceding 8 RR intervals). The label of a premature beat is V if w_k > qrs_width_ms, and A otherwise. The label of a beat that is not premature is N.
+
+# 6. Matching against the reference annotations
+Examine the beats one at a time in order of beat number. For beat k, if among the reference annotations not yet matched to any beat there are some satisfying |(sample number of the annotation) - s_k| <= Mt, match to beat k the one among them with the smallest |(sample number of the annotation) - s_k| (if several, the one with the smallest sample number among them). If there is no such annotation, beat k is "unmatched".
+- TP is the number of beats matched to an annotation, FP is the number of unmatched beats, and FN is the number of annotations not matched to any beat.
+- The "offset" of a matched pair of beat k and an annotation is 5 * (s_k - (sample number of the annotation)) (in milliseconds).
+- The "type" of an annotation is the annotation's character (N, V, A), and the "label" of a beat is the character determined in Section 5.
+
+# 7. Heart rate variability analysis
+7.1 RR intervals and NN intervals
+- The RR intervals are the B - 1 values rr_2, ..., rr_B.
+- rr_k with k >= 3 is an "NN interval" when the labels of beat k - 1 and beat k are both N and 5 * |rr_k - rr_(k-1)| <= rr_(k-1) (that is, when the change from the preceding RR interval is within 20%).
+- For each k such that rr_(k-1) and rr_k are both NN intervals, the pair of the two values (rr_(k-1), rr_k) is called an "NN pair". Let K be the number of NN pairs. The difference of an NN pair (a, b) is b - a, and its sum is a + b.
+7.2 Statistics
+Let v_1, ..., v_c (c = B - 1) be the values of the RR intervals.
+- mean_rr = rdiv(100 * Sum v, c), mean_hr = rdiv(6000000 * c, Sum v).
+- The shortest RR interval is the minimum of the RR intervals, accompanied by the number of the beat that has it (if several, the smallest number). The longest RR interval is the maximum, likewise accompanied by the beat number (if several, the smallest number).
+Let u_1, ..., u_e (e is the number of NN intervals) be the values of the NN intervals.
+- mean_nn = rdiv(100 * Sum u, e).
+- sdnn = root(e * Sum u^2 - (Sum u)^2, e * (e - 1)) (100 times the sample standard deviation of the NN intervals).
+Let d_1, ..., d_K be the differences of the NN pairs and y_1, ..., y_K their sums.
+- rmssd = root(Sum d^2, K).
+- sdsd = root(K * Sum d^2 - (Sum d)^2, K * (K - 1)).
+- nn50 is the number of differences satisfying |d| > 50, and pnn50 = rdiv(10000 * nn50, K).
+- sd1 = root(K * Sum d^2 - (Sum d)^2, 2 * K * (K - 1)), sd2 = root(K * Sum y^2 - (Sum y)^2, 2 * K * (K - 1)) (the standard deviations along the minor axis and the major axis of the Poincare plot).
+7.3 Histogram
+The bin of an NN interval u is (16 * u) div 125. Bin b covers the NN intervals of at least 7.8125 * b milliseconds and less than 7.8125 * (b + 1) milliseconds. The count of a bin is the number of NN intervals in that bin. Let M be the maximum count; e / M is called the triangular index.
+7.4 Premature beats
+For each beat k whose label is V or A, compute the following values (since k >= 10, rr_(k-8) ... rr_(k-1) all exist).
+- W = rr_(k-8) + rr_(k-7) + ... + rr_(k-1) (the sum of the preceding 8 RR intervals)
+- Mean: rdiv(100 * W, 8); prematurity: rdiv(80000 * rr_k, W) (100 times the percentage relative to the average RR interval)
+- Next RR interval: rr_(k+1) if k < B; it does not exist if k = B.
+- Compensation: "-" if k = B. If k < B, let T = rr_k + rr_(k+1); it is full if 10 * |4 * T - W| <= W (T is within +/-10% of twice the mean), otherwise partial if 4 * T < W, and long otherwise.
+7.5 Runs
+Let the character c be V or A. When the beats with label c occupy a range of consecutive beat numbers and the beats immediately before and immediately after that range (if they exist) do not have label c, that range is called a "run". If its length (number of beats) is 1, its kind is isolated; if 2, couplet; if 3 or more, run.
+7.6 Events
+Find the following 5 kinds of events.
+- pause: each k satisfying rr_k > pause_ms.
+- bradycardia: among the maximal ranges k = a, a + 1, ..., b of consecutive k satisfying rr_k > brady_ms (rr_(a-1) and rr_(b+1), if they exist, do not satisfy the condition), those with b - a + 1 >= 3.
+- tachycardia: found in the same way as bradycardia, for rr_k < tachy_ms.
+- bigeminy: arrange the beats with label V in order of beat number; when two adjacent beats in that arrangement, with numbers i < j, satisfy j = i + 2 and beat i + 1 has label N, the two beats are "linked". The events are, among the maximal sequences i_1 < i_2 < ... < i_t formed by following linked beats in order, those with t >= 3 (every V beat belongs to exactly one sequence; a V beat with no link forms a sequence of length 1).
+- trigeminy: the same as bigeminy, except that the linking condition is j = i + 3 and the labels of beat i + 1 and beat i + 2 are both N.
+7.7 Segments
+Segment g (g = 0, 1, ..., ceil(N / G) - 1) is the range of sample numbers at least g * G and less than min((g + 1) * G, N). The start of the segment in milliseconds is 5 * g * G, and its end in milliseconds is 5 * min((g + 1) * G, N). A beat belongs to a segment when its position s_k is in that range, an annotation when its sample number is, and a peak when its time is.
+
+# 8. Common rules for charts
+All charts are written with ASCII characters. A "row" below is one line of the output file.
+- Scale position: for integers v, top and bottom (top >= bottom) and a number of rows H, scale(v) = rdiv((top - v) * (H - 1), top - bottom) if top > bottom, and scale(v) = 0 if top = bottom. Every v used in this task is at least bottom and at most top, so 0 <= scale(v) <= H - 1, scale(top) = 0, and scale(bottom) = H - 1 when top > bottom.
+- Waveform chart: from a number of columns C, a number of rows H, and for each column i (i = 0, ..., C - 1) an upper value hi_i and a lower value lo_i (hi_i >= lo_i), write H rows. Let top be the maximum of the hi_i and bottom the minimum of the lo_i; if bottom <= 0 <= top, z = scale(0), and otherwise z is "none". Row r (r = 0, ..., H - 1) consists of the label right-aligned to 6 characters, " |", the characters of columns 0, ..., C - 1, and "|", in this order.
+ Label: the decimal notation of top if r = 0, otherwise of bottom if r = H - 1, otherwise of 0 if r = z; in all other cases it is empty (right-aligned to 6 characters, it becomes 6 spaces).
+ Character of column i: "#" if scale(hi_i) <= r <= scale(lo_i), otherwise "-" if r = z, and a space if neither.
+- Axis row: from a number of columns C and a rule saying which columns get a "+", the row consisting of 7 spaces, "+", then for each of the columns 0, ..., C - 1 a "+" if that column gets a "+" and a "-" otherwise, and finally "+", in this order.
+- Label row: from a heading string p and pairs of a column number and a string (i_1, t_1), (i_2, t_2), ... (i_1 < i_2 < ...), build the following row. Put p right-aligned to 6 characters followed by 2 spaces at the start of the row, and place each t_j so that its first character is character 8 + i_j counting from the start of the row (the first character of the row is character 0). Positions where no character is placed are filled with spaces, and nothing follows the last t_j. In this task, the placed strings never overlap or touch each other.
+
+[Output files]
+Common format:
+- Everything is ASCII characters, and every line ends with a newline (LF). No line has trailing spaces, and there are no empty lines.
+- Integers are written in decimal without extra leading zeros, and negative numbers are preceded by "-".
+- "Right-aligned to w characters" means padding a string on the left with spaces to w characters (in the given input it never exceeds w characters).
+- In the formats below, each part enclosed in < > is replaced by a value, and all other characters are written as they are.
+- All 8 files must always be created.
+
+# output/beats.csv (beat list)
+The first line is beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label. Then write one line per beat in order of beat number: "<k>,<s_k>,<5 * s_k>,<rr_k>,<instantaneous heart rate>,<w_k>,<label>,<detection method>,<sample number of the matched annotation>,<type of the matched annotation>". For k = 1, rr_ms and hr_bpm are "-", and for an unmatched beat, ref_sample and ref_label are "-".
+
+# output/peaks.csv (peak list)
+The first line is peak,sample,r_sample,peak_i,peak_f,slope,thr_i,thr_f,class. Then write one line per peak in order of time: "<peak number>,<time n>,<R position r>,<PEAKI>,<PEAKF>,<slope>,<thr_i>,<thr_f>,<class>".
+- The peak numbers are 1, 2, 3, ... in order of time.
+- The class is the one at the end of detection (a peak changed to searchback by search-back is searchback).
+- thr_i and thr_f are the values recorded in step 2 when the peak was processed in Section 4 (for a searchback peak too, they are the values recorded when it was classified as noise).
+
+# output/matching.csv (matching list)
+The first line is ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree. Then write lines of the following 3 kinds.
+- For each matched pair of a beat and an annotation: "<sample number of the annotation>,<type of the annotation>,<beat number>,<s_k>,<label of the beat>,<offset>,TP,<agreement>". The agreement is yes if the label of the beat and the type of the annotation are the same, and no if they differ.
+- For each annotation not matched to any beat: "<sample number of the annotation>,<type of the annotation>,-,-,-,-,FN,-"
+- For each unmatched beat: "-,-,<beat number>,<s_k>,<label of the beat>,-,FP,-"
+The key of a TP or FN line is the sample number of the annotation, and the key of an FP line is s_k; the lines are sorted in increasing order of key. Among lines with the same key, TP and FN lines come before FP lines (a TP line and an FN line never have the same key, and no two FP lines have the same key).
+
+# output/signals_excerpt.csv (signal excerpt)
+The first line is sample,ecg,lowpass,bandpass,derivative,squared,integrated. Then write one line for each n = 0, 1, ..., (excerpt_ms div 5) - 1, in this order: "<n>,<x[n]>,<l[n]>,<f[n]>,<d[n]>,<q[n]>,<m[n]>".
+
+# output/performance.txt (detection and matching results)
+Write the following lines in this order.
+1. "DETECTOR"
+2. "samples <N>"
+3. "duration_ms <5 * N>"
+4. "peaks <number of peaks> qrs=<> searchback=<> twave=<> refractory=<> noise=<>". After each =, the number of peaks with that class at the end of detection.
+5. "initial_levels spki=<> npki=<> spkf=<> npkf=<>". The initial values of the levels from Section 3.
+6. "final_levels spki=<> npki=<> spkf=<> npkf=<>". The levels at the end of detection.
+7. "final_thresholds thr_i=<THI1> thr_f=<THF1>". The thresholds at the end of detection.
+8. "final_rr_averages rravg1_ms=<5 * RA1> rravg2_ms=<5 * RA2>". The RR averages at the end of detection.
+9. "MATCHING"
+10. "tolerance_ms <match_ms>"
+11. "references <number of annotations> N=<> V=<> A=<>". After each =, the number of annotations of that type.
+12. "detections <B> N=<> V=<> A=<>". After each =, the number of beats with that label.
+13. "true_positives <TP>"
+14. "false_positives <FP>"
+15. "false_negatives <FN>"
+16. "sensitivity <ratio notation of TP and TP + FN>"
+17. "positive_predictivity <ratio notation of TP and TP + FP>"
+18. "detection_error_rate <ratio notation of FP + FN and the number of annotations>"
+19. "by_method threshold=<number of matched beats among the beats whose detection method is threshold>/<number of beats whose detection method is threshold> searchback=<number of matched beats among the beats whose detection method is searchback>/<number of beats whose detection method is searchback>"
+20. If TP >= 1, "offset_ms mean=<2-decimal notation of rdiv(100 * (sum of the offsets), TP)> mean_abs=<2-decimal notation of rdiv(100 * (sum of the absolute values of the offsets), TP)> max_abs=<maximum of the absolute values of the offsets>"; if TP = 0, "offset_ms none"
+21. "CONFUSION"
+22. A line consisting of "ref  " (ref and 2 spaces), followed by N, V and A each right-aligned to 6 characters, and finally "  miss" (2 spaces and miss)
+23. Three lines, for the annotation types c = N, V, A in this order: a line consisting of c and 4 spaces, followed by, for the beat labels e = N, V, A in this order, the number of pairs in which an annotation of type c is matched to a beat with label e, right-aligned to 6 characters, and finally the number of annotations of type c not matched to any beat, right-aligned to 6 characters
+24. A line consisting of "extra" followed by, for e = N, V, A in this order, the number of unmatched beats with label e, right-aligned to 6 characters
+25. "veb_sensitivity <ratio notation of H_V and the number of annotations of type V>"
+26. "veb_positive_predictivity <ratio notation of H_V and the number of beats with label V>"
+27. "sveb_sensitivity <ratio notation of H_A and the number of annotations of type A>"
+28. "sveb_positive_predictivity <ratio notation of H_A and the number of beats with label A>"
+ H_V is the number of pairs in which an annotation of type V is matched to a beat with label V, and H_A is the number of pairs in which an annotation of type A is matched to a beat with label A.
+29. "SEGMENTS segment_ms=<segment_ms> segments=<number of segments>"
+30. One line per segment, in order of segment number: "<start in milliseconds right-aligned to 6 characters>-<end in milliseconds right-aligned to 6 characters> refs=<number of annotations in the segment> tp=<number of those annotations that are matched> fp=<number of unmatched beats in the segment> fn=<number of annotations in the segment not matched to any beat> noise_peaks=<number of peaks in the segment whose class at the end of detection is noise>"
+31. "ERRORS count=<FP + FN>"
+32. One line for each unmatched beat and each annotation not matched to any beat, in increasing order of sample number (s_k for a beat) (if equal, the line of the beat comes first). An unmatched beat is written "false_positive beat=<k> sample=<s_k> time_ms=<5 * s_k> label=<label>", and an annotation "false_negative sample=<sample number> time_ms=<5 * (sample number)> label=<type>".
+
+# output/hrv.txt (heart rate variability and arrhythmia analysis)
+Write the following lines in this order. "none" means that there is no value.
+1. "RR"
+2. "beats <B>"
+3. "intervals <B - 1>"
+4. "mean_rr_ms <2-decimal notation of mean_rr>"
+5. "min_rr_ms <shortest RR interval> beat=<number of that beat>"
+6. "max_rr_ms <longest RR interval> beat=<number of that beat>"
+7. "mean_hr_bpm <2-decimal notation of mean_hr>"
+ If B - 1 = 0, lines 4 to 7 are "mean_rr_ms none", "min_rr_ms none", "max_rr_ms none" and "mean_hr_bpm none" respectively.
+8. "NN"
+9. "intervals <e>"
+10. "mean_nn_ms <2-decimal notation of mean_nn>" ("mean_nn_ms none" if e = 0)
+11. "sdnn_ms <2-decimal notation of sdnn>" ("sdnn_ms none" if e < 2)
+12. "differences <K>"
+13. "rmssd_ms <2-decimal notation of rmssd>" ("rmssd_ms none" if K = 0)
+14. "sdsd_ms <2-decimal notation of sdsd>" ("sdsd_ms none" if K < 2)
+15. "nn50 <nn50>"
+16. "pnn50 <2-decimal notation of pnn50>%" ("pnn50 none" if K = 0)
+17. "sd1_ms <2-decimal notation of sd1>" ("sd1_ms none" if K < 2)
+18. "sd2_ms <2-decimal notation of sd2>" ("sd2_ms none" if K < 2)
+19. "HISTOGRAM bin_ms=7.8125 bins=<number of bins with a count of 1 or more> max=<M (0 if e = 0)>"
+20. One line per bin with a count of 1 or more, in increasing order of bin: a line consisting of the 4-decimal notation of 78125 * b right-aligned to 10 characters, one space, the 4-decimal notation of 78125 * (b + 1) right-aligned to 10 characters, one space, the count right-aligned to 3 characters, " |", and as many "#" as the count, in this order (b is the bin)
+21. "triangular_index <reduced fraction notation of e and M> <2-decimal notation of rdiv(100 * e, M)>" ("triangular_index none" if e = 0)
+22. "PREMATURE count=<number of beats with label V or A> V=<number of beats with label V> A=<number of beats with label A>"
+23. One line per beat with label V or A, in order of beat number: "beat=<k> sample=<s_k> label=<label> rr_ms=<rr_k> next_rr_ms=<next RR interval> mean_ms=<2-decimal notation of the mean> prematurity=<2-decimal notation of the prematurity>% compensation=<compensation> width_ms=<w_k> ref=<type of the matched annotation>". If there is no next RR interval, next_rr_ms is "-", and ref of an unmatched beat is "-".
+24. "RUNS count=<number of runs>"
+25. One line per run, in order of the number of its first beat: "<c> <kind> beats=<number of the first beat>-<number of the last beat> length=<length> start_ms=<5 * (position of the first beat)>" (a run of length 1 is also written like beats=7-7)
+26. "EVENTS count=<number of events>"
+27. Write the events one per line, in the order pause, bradycardia, tachycardia, bigeminy, trigeminy, and within the same kind in order of the number of the first beat.
+ pause: "pause beats=<k - 1>-<k> rr_ms=<rr_k> start_ms=<5 * s_(k-1)>"
+ bradycardia and tachycardia (range k = a, ..., b): "<kind> beats=<a - 1>-<b> intervals=<b - a + 1> mean_hr=<2-decimal notation of rdiv(6000000 * (b - a + 1), rr_a + ... + rr_b)> start_ms=<5 * s_(a-1)>"
+ bigeminy and trigeminy (sequence i_1 < ... < i_t): "<kind> beats=<i_1>-<i_t> cycles=<t> start_ms=<5 * s_(i_1)>"
+28. "TREND segment_ms=<segment_ms> segments=<number of segments>"
+29. One line per segment, in order of segment number. Let z be the list of the RR interval values of the beats with k >= 2 among the beats in the segment, and |z| its number of elements. If z is not empty, the line is "<start in milliseconds right-aligned to 6 characters>-<end in milliseconds right-aligned to 6 characters> beats=<number of beats in the segment> mean_hr=<h> min_hr=<2-decimal notation of rdiv(6000000, maximum of z)> max_hr=<2-decimal notation of rdiv(6000000, minimum of z)> |<rdiv(h, 500) copies of "#">", and if it is empty, "<start in milliseconds right-aligned to 6 characters>-<end in milliseconds right-aligned to 6 characters> beats=<number of beats in the segment> mean_hr=none min_hr=none max_hr=none |". Here h = rdiv(6000000 * |z|, Sum z), and mean_hr is written as the 2-decimal notation of h.
+
+# output/charts.txt (tachogram, Poincare plot, average waveforms)
+If B - 1 >= 1, let lo be the minimum of the RR intervals, hi the maximum, and H = chart_rows, and write (1) and (2). If B - 1 = 0, write instead of (1) and (2) the 2 lines "TACHOGRAM intervals=0" and "POINCARE points=0". Then write (3). The scale in (1) and (2) is the scale position of Section 8 with top = hi and bottom = lo.
+(1) Tachogram (column j is the RR interval of beat j + 2; j = 0, ..., B - 2)
+- "TACHOGRAM intervals=<B - 1> min_ms=<lo> max_ms=<hi> rows=<H>"
+- H rows, for r = 0, ..., H - 1 in this order: a row consisting of the label right-aligned to 6 characters, " |", the characters of columns j = 0, ..., B - 2, and "|", in this order. The label is the decimal notation of hi if r = 0, of lo if r = H - 1, and empty otherwise. The character of column j is "*" if scale(rr_(j+2)) = r, and a space otherwise.
+- Axis row: with B - 1 columns, a "+" is placed in each column j for which j + 2 is a multiple of 10.
+- Label row: the heading is beat, and the pairs are the columns j for which j + 2 is a multiple of 10, each with the decimal notation of j + 2.
+- A row consisting of " label |" followed by the labels of beats 2, 3, ..., B, and finally "|"
+(2) Poincare plot (S = poincare_size)
+For each k = 2, ..., B - 1, (rr_k, rr_(k+1)) is a point (there are B - 2 points). The column of a point (a, b) is rdiv((a - lo) * (S - 1), hi - lo) if hi > lo and 0 if hi = lo, and its row is scale(b) (using S in place of the number of rows H). For each cell (each pair of a row and a column), count the number of points that fall in that cell.
+- "POINCARE points=<B - 2> size=<S> min_ms=<lo> max_ms=<hi>"
+- S rows, for rows 0, ..., S - 1 in this order: a row consisting of the label right-aligned to 6 characters, " |", the characters of columns 0, ..., S - 1, and "|", in this order. The label is the decimal notation of hi for row 0, of lo for row S - 1, and empty otherwise. The character of a cell is "." if its number of points is 0, that digit if it is from 1 to 9, and "#" if it is 10 or more.
+- A row consisting of 7 spaces, "+", S copies of "-", and "+", in this order
+- A row consisting of 8 spaces and the decimal notation of lo, followed by the decimal notation of hi placed so that its last character is character 7 + S counting from the start of the row (the first character of the row is character 0) (the gap between them is filled with spaces)
+(3) Average waveforms
+For the labels Y = N, V, A in this order, write the following. Among the beats with label Y, those satisfying 60 <= s_k <= N - 100 are the "beats used for averaging", and let a be their number.
+- If a = 0, write only the single line "TEMPLATE <Y> beats=0".
+- If a >= 1, for each j = -60, -59, ..., 99, compute the average value t[j] = rdiv(Sum (10 * x[s_k + j] - Z_k), 10 * a). The Sum is over the beats used for averaging, and Z_k = x[s_k - 60] + x[s_k - 59] + ... + x[s_k - 51] (the sum of the 10 samples starting 300 milliseconds before the beat, which is 10 times the baseline).
+- "TEMPLATE <Y> beats=<a> max_uv=<maximum of t> max_ms=<5 * (the j attaining the maximum)> min_uv=<minimum of t> min_ms=<5 * (the j attaining the minimum)> rows=<H>". If several j attain the maximum (minimum), use the smallest such j.
+- Waveform chart: 80 columns and H rows; the upper value of column i (i = 0, ..., 79) is the larger of t[2 * i - 60] and t[2 * i - 59], and the lower value is the smaller of them.
+- Axis row: with 80 columns, a "+" is placed in each column i for which i is a multiple of 10.
+- Label row: the heading is ms, and the pairs are the columns i for i = 0, 10, 20, ..., 70, each with the decimal notation of 10 * i - 300.
+
+# output/rhythm_strip.txt (rhythm strip)
+Let a = strip_start_ms div 5, L = strip_ms div 5, and C = L div 10. Draw x[a], ..., x[a + L - 1] of the ECG so that column i (i = 0, ..., C - 1) covers the 10 samples (50 milliseconds) x[a + 10 * i], ..., x[a + 10 * i + 9]. Write the following lines in this order.
+- "RHYTHM start_ms=<strip_start_ms> end_ms=<strip_start_ms + strip_ms> columns=<C> rows=<strip_rows> max_uv=<maximum of x[a], ..., x[a + L - 1]> min_uv=<minimum over the same range>"
+- Waveform chart: C columns and strip_rows rows; the upper value of column i is the maximum of the 10 samples it covers, and the lower value is their minimum.
+- Axis row: with C columns, a "+" is placed in each column i for which i is a multiple of 20.
+- Label row: the heading is s, and the pairs are the columns i for i = 0, 20, 40, ... (less than C), each with the decimal notation of (strip_start_ms + 50 * i) div 1000 (seconds).
+- A row consisting of " beats |", C characters of marks, and "|", in this order. The marks: for each beat k satisfying a <= s_k < a + L, the character of column (s_k - a) div 10 is the label of that beat; the other columns are spaces.
+- A row consisting of "  refs |", C characters of marks, and "|", in this order. The marks: for each annotation whose sample number p satisfies a <= p < a + L, the character of column (p - a) div 10 is the type of that annotation; the other columns are spaces.
+When two or more beats (annotations) fall in the same column, use the character of the one with the larger beat number (sample number).
+
+[Source files]
+Split the source into the following 6 files (name the files according to the conventions of each language).
+- main: handles the overall flow (from reading the 3 input files to writing the 8 output files). It holds the detection procedure of Section 4 (computing and updating the levels and thresholds, the RR list and the RR averages, registering beats, search-back, and the refractory period and T-wave discrimination), determining the beat positions, RR intervals and labels of Section 5, the matching of Section 6, the detection and matching tallies, assembling each item of Section 7 (selecting the NN intervals and NN pairs, the list of premature beats and the compensation, runs, events, and the per-segment summaries), the chart drawing of Section 8 (scale position, waveform chart, axis row, label row) and the assembly of the tachogram, Poincare plot, average waveforms and rhythm strip, and assembling the lines of all output files. Most of the processing is placed in this file.
+- signal_io: reading input/ecg.csv, input/annotations.csv and input/params.txt, and writing a list of lines to a file.
+- filters: the 5 filter stages of Section 1 (low-pass, high-pass, derivative, squaring, moving-window integration).
+- detector: the peak type (time, R position, PEAKI, PEAKF, slope, recorded thresholds, class), the peak detection and measurement of Section 2, the QRS width measurement of Section 5, and the computation of the initial level values of Section 3.
+- hrv: the statistics of Section 7 (the means such as mean_rr, sdnn, rmssd, sdsd, sd1 and sd2 using root, and the mean heart rate), the histogram binning, and enumerating the maximal ranges of consecutive items that satisfy a condition.
+- report: rdiv, the 2-decimal and 4-decimal notations, the reduced fraction notation, the ratio notation, and the "-" notation for a missing value.
+
+[Constraints]
+- N in input/ecg.csv is from 2000 to 12000, and every potential is from -5000 to 5000.
+- input/annotations.csv contains from 1 to 300 annotations.
+- The values in input/params.txt satisfy the following. refractory_ms is from 100 to 300, twave_ms is greater than refractory_ms and at most 500, searchback_percent is from 100 to 300, premature_percent is from 50 to 100, qrs_width_ms and match_ms are from 50 to 250, pause_ms, brady_ms and tachy_ms are from 100 to 5000, and all of these except searchback_percent and premature_percent are multiples of 5. excerpt_ms is a multiple of 5 from 5 to 5 * N, segment_ms is a multiple of 1000 and at least 1000, strip_start_ms and strip_ms are multiples of 1000, strip_ms >= 1000, and strip_start_ms + strip_ms <= 5 * N. strip_rows and chart_rows are from 3 to 40, and poincare_size is from 10 to 60.
+- In the given input, the number of beats B is at least 10, and, as stated in Section 5, the beat positions are strictly increasing and adjacent positions differ by at least 10.
+- In the given input, the absolute value of every integer that appears during the computation is less than 2^40. 32-bit integers may not be enough, so use 64-bit integers (in languages that represent integers as double-precision floating-point numbers, these values are also represented exactly). Always compute div by rounding toward negative infinity.
+- No floating-point computation is needed. All output is uniquely determined by integer computation alone.
+
+[Example]
+The actual input is large, so the computation steps and the output formats are shown here with small examples.
+
+(1) Filter computation
+Suppose the first 20 samples of the ECG are 10, 12, 15, 20, 60, 300, 900, 600, 100, -250, -180, -60, 0, 20, 30, 35, 40, 40, 35, 30. The values of Section 1 are as follows.
+n=0: x=10 c=10 l=0 s=0 f=0 d=0 q=0 m=0
+n=1: x=12 c=32 l=1 s=1 f=0 d=0 q=0 m=0
+n=2: x=15 c=69 l=2 s=3 f=0 d=0 q=0 m=0
+n=3: x=20 c=126 l=3 s=6 f=0 d=0 q=0 m=0
+n=4: x=60 c=243 l=7 s=13 f=0 d=0 q=0 m=0
+n=5: x=300 c=660 l=20 s=33 f=-1 d=-1 q=1 m=0
+n=6: x=900 c=1957 l=61 s=94 f=-2 d=-1 q=1 m=0
+n=7: x=600 c=3830 l=119 s=213 f=-6 d=-2 q=4 m=0
+n=8: x=100 c=5773 l=180 s=393 f=-12 d=-4 q=16 m=0
+n=9: x=-250 c=7426 l=232 s=625 f=-19 d=-6 q=36 m=1
+n=10: x=-180 c=8779 l=274 s=899 f=-28 d=-9 q=81 m=4
+n=11: x=-60 c=9472 l=296 s=1195 f=-37 d=-10 q=100 m=7
+n=12: x=0 c=8375 l=261 s=1456 f=-45 d=-11 q=121 m=12
+n=13: x=20 c=6110 l=190 s=1646 f=-51 d=-11 q=121 m=16
+n=14: x=30 c=3690 l=115 s=1761 f=-55 d=-9 q=81 m=18
+n=15: x=35 c=1825 l=57 s=1818 f=-56 d=-6 q=36 m=19
+n=16: x=40 c=420 l=13 s=1831 f=-57 d=-4 q=16 m=20
+n=17: x=40 c=-525 l=-17 s=1814 f=-55 d=-2 q=4 m=20
+n=18: x=35 c=-535 l=-17 s=1797 f=-54 d=0 q=0 m=20
+n=19: x=30 c=45 l=1 s=1798 f=-53 d=1 q=1 m=20
+For example, at n = 5, f[5] = l[-11] - (33 div 32) = 0 - 1 = -1 and d[5] = (2 * (-1)) div 8 = -2 div 8 = -1. At n = 17, l[17] = -525 div 32 = -17 and d[17] = (2 * (-55) + (-57) - (-55) - 2 * (-51)) div 8 = -10 div 8 = -2. With truncation toward zero, d[5], l[17] and d[17] would be 0, -16 and -1 respectively, which is wrong.
+
+(2) Detection procedure
+For illustration, suppose that the initial levels are SPKI = 4000, NPKI = 1000, SPKF = 240, NPKF = 40, that Rf = 40, Tw = 72 and searchback_percent = 166, that there are the following 7 peaks (time, R position, PEAKI, PEAKF, slope): (150, 131, 9000, 600, 200), (180, 163, 3000, 300, 90), (205, 188, 2600, 250, 80), (310, 291, 8000, 560, 190), (380, 362, 600, 80, 30), (470, 451, 1500, 150, 70), (640, 621, 8500, 580, 195), and that N = 1000.
+- Time 150: there is no last beat, and 150 - 0 <= (200 * 166) div 100 = 332, so no search-back is done. THI1 = 1000 + (3000 div 4) = 1750 and THF1 = 40 + (200 div 4) = 90, and 9000 > 1750 and 600 > 90, so the class is qrs. The signal update gives SPKI = (9000 + 28000) div 8 = 4625 and SPKF = (600 + 1680) div 8 = 285, and the peak is registered as beat 1.
+- Time 180: 180 - 150 = 30 < 40, so the class is refractory (THI1 = 1906 and THF1 = 101 are recorded).
+- Time 205: the peak exceeds THI1 = 1906 and THF1 = 101, 205 - 150 = 55 < 72, and 2 * 80 = 160 < 200, so the class is twave. The noise update gives NPKI = (2600 + 7000) div 8 = 1200 and NPKF = (250 + 280) div 8 = 66.
+- Time 310: the peak exceeds THI1 = 1200 + (3425 div 4) = 2056 and THF1 = 66 + (219 div 4) = 120, and 310 - 150 = 160 >= 72, so the class is qrs. SPKI = 5046 and SPKF = 319, and the peak is registered as beat 2. v = 160, the RR list is 160, RA1 = 160, and 92 * 160 <= 100 * 160 <= 116 * 160, so RA2 = 160.
+- Time 380: THI1 = 2161 and THF1 = 129, and 600 <= 2161, so the class is noise. NPKI = 1125 and NPKF = 67.
+- Time 470: 470 - 310 = 160 <= (160 * 166) div 100 = 265, so no search-back is done. THI1 = 2105 and THF1 = 130, and the class is noise. NPKI = 1171 and NPKF = 77.
+- Time 640: 640 - 310 = 330 > 265, so a search-back is done. THI1 = 1171 + (3875 div 4) = 2139 and THF1 = 77 + (242 div 4) = 137, so THI2 = 1069 and THF2 = 68. The only candidate is the peak at time 470 (the peak at time 380 has 600 <= 1069); the search-back update gives SPKI = (1500 + 15138) div 4 = 4159 and SPKF = (150 + 957) div 4 = 276, its class is changed to searchback, and it is registered as beat 3 (v = 160, RA1 = 160, RA2 = 160). Next, 640 - 470 = 170 <= 265, so the search-back ends. The peak at time 640 exceeds THI1 = 1171 + (2988 div 4) = 1918 and THF1 = 77 + (199 div 4) = 126, so it is qrs; SPKI = 4701 and SPKF = 314, and it is registered as beat 4 (v = 170, the RR list is 160, 160, 170, RA1 = 490 div 3 = 163, RA2 = 163).
+- Finally, the search-back at time 1000 is done. 1000 - 640 = 360 > (163 * 166) div 100 = 270, but there are no candidates, so it ends.
+The lines of output/peaks.csv from the second line on are then as follows.
+1,150,131,9000,600,200,1750,90,qrs
+2,180,163,3000,300,90,1906,101,refractory
+3,205,188,2600,250,80,1906,101,twave
+4,310,291,8000,560,190,2056,120,qrs
+5,380,362,600,80,30,2161,129,noise
+6,470,451,1500,150,70,2105,130,searchback
+7,640,621,8500,580,195,1918,126,qrs
+The beat positions are 131 - 21 = 110, 270, 430, 600, and the RR intervals are 800, 800, 850. If all QRS widths are 130 and each beat is matched to an annotation of type N with the same sample number, the lines of output/beats.csv from the second line on are as follows.
+1,110,550,-,-,130,N,threshold,110,N
+2,270,1350,800,75.00,130,N,threshold,270,N
+3,430,2150,800,75.00,130,N,searchback,430,N
+4,600,3000,850,70.59,130,N,threshold,600,N
+
+(3) Labels and premature beats
+Suppose that rr_2, ..., rr_9 are 800, 790, 810, 805, 795, 800, 790, 810 (sum W = 6400), premature_percent = 80, and qrs_width_ms = 150.
+- If rr_10 = 500 and w_10 = 205, then 800 * 500 = 400000 < 80 * 6400 = 512000, so the beat is premature, and 205 > 150, so its label is V. The mean is rdiv(640000, 8) = 80000, written 800.00, and the prematurity is rdiv(40000000, 6400) = 6250, written 62.50. If rr_11 = 1100, then T = 1600 and |4 * 1600 - 6400| = 0, so the compensation is full.
+- If rr_10 = 560 and w_10 = 130, then 448000 < 512000, so the beat is premature, its label is A, and the prematurity is 70.00. If rr_11 = 850, then T = 1410, and 10 * |5640 - 6400| = 7600 > 6400 and 5640 < 6400, so the compensation is partial.
+
+(4) Statistics
+- If the NN intervals are 800, 820, 780, then e = 3, Sum u = 2400, Sum u^2 = 1920800, and sdnn = root(3 * 1920800 - 2400^2, 6) = root(2400, 6) = 2000, written as 20.00.
+- If the differences of the NN pairs are 20, -40, then rmssd = root(2000, 2) = (isqrt(40000000) + 1) div 2 = (6324 + 1) div 2 = 3162, written as 31.62.
+- The bin of an NN interval of 785 is 12560 div 125 = 100, and if its count is 3, the histogram line is "  781.2500   789.0625   3 |###".
+
+(5) Matching
+With Mt = 30, for the beat with s_k = 1000, if not-yet-matched annotations are at 990 and 1012, the differences are 10 and 12, so 990 is matched. If they are at 994 and 1006, both differences are 6, so 994, the one with the smaller sample number, is matched.
+
+(6) Charts
+The waveform chart with 6 columns and 5 rows, where the (upper value, lower value) of the columns are (100, 20), (400, 50), (900, -300), (200, -100), (60, 0), (40, 10), is as follows (top = 900, bottom = -300, z = scale(0) = rdiv(3600, 1200) = 3).
+   900 |  #   |
+       |  #   |
+       | ###  |
+     0 |######|
+  -300 |  #   |
+The axis row with 45 columns and a "+" in the columns that are multiples of 20, and the label row with heading s and pairs (0, 40), (20, 41), (40, 42), are as follows.
+       ++-------------------+-------------------+----+
+     s  40                  41                  42
+
+(7) Examples of other lines (the values only illustrate the formats and are not results for the given input)
+sensitivity 98/100 reduced=49/50 percent=98.00
+veb_positive_predictivity 0/0 none
+offset_ms mean=-1.25 mean_abs=2.50 max_abs=10
+ 20000- 30000 refs=12 tp=11 fp=2 fn=1 noise_peaks=7
+false_positive beat=8 sample=1520 time_ms=7600 label=N
+beat=14 sample=2210 label=A rr_ms=560 next_rr_ms=850 mean_ms=800.00 prematurity=70.00% compensation=partial width_ms=130 ref=A
+V couplet beats=31-32 length=2 start_ms=24100
+tachycardia beats=40-43 intervals=3 mean_hr=125.00 start_ms=30200
+     0- 10000 beats=12 mean_hr=75.00 min_hr=70.59 max_hr=80.00 |###############
+TEMPLATE V beats=4 max_uv=310 max_ms=75 min_uv=-690 min_ms=0 rows=12

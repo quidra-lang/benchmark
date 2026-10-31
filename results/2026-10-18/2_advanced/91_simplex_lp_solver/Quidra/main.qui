@@ -1,0 +1,615 @@
+import r = "./rational.qui"
+import lp = "./lp_parser.qui"
+import tab = "./tableau.qui"
+import simplex = "./simplex.qui"
+import bnb = "./branch_bound.qui"
+
+int variable_index(const string[] names, string sought)
+    for int position < int(len(names))
+        if names[position] == sought
+            return position
+    return -1
+
+r.Fraction[] coefficients(const string[] names, const lp.Term[] terms)
+    r.Fraction[] values = array(len(names), fill = r.Fraction(0))
+    for lp.Term term = terms[]
+        int position = variable_index(names, term.name)
+        values[position] = values[position].add(term.coefficient)
+    return values
+
+bool inconsistent(const lp.Bound bound)
+    match bound.lower
+        r.Fraction lower
+            match bound.upper
+                r.Fraction upper
+                    return lower.compare(upper) > 0
+                none
+                    return false
+        none
+            return false
+
+r.Fraction | none rounded(const r.Fraction | none value, bool lower)
+    match value
+        r.Fraction found
+            return r.Fraction(if lower then found.ceil() else found.floor())
+        none
+            return none
+
+lp.Model | lp.Problem content(const lp.Parsed parsed)
+    match parsed.problem
+        lp.Problem problem
+            return problem
+        none
+            string[] names = []
+            lp.Term[][] expressions = [parsed.objective]
+            for lp.Constraint row = parsed.constraints[]
+                expressions = expressions.append(row.terms)
+            for lp.Term[] terms = expressions[]
+                for lp.Term term = terms[]
+                    if not lp.has(names, term.name)
+                        names = names.append(term.name)
+            lp.Bound[] bounds = array(len(names), fill = lp.Bound(r.Fraction(0), none))
+            bool[] integers = array(len(names), fill = false)
+            string[] seen = []
+            for lp.Constraint row = parsed.constraints[]
+                if lp.has(seen, row.name)
+                    return lp.Problem(row.line, "duplicate constraint {row.name}")
+                seen = seen.append(row.name)
+            for lp.BoundLine line = parsed.bounds[]
+                int position = variable_index(names, line.name)
+                if position < 0
+                    return lp.Problem(line.line, "unknown variable {line.name}")
+                if line.kind != "upper"
+                    bounds[position].lower = line.lower
+                if line.kind != "lower"
+                    bounds[position].upper = line.upper
+                if inconsistent(bounds[position])
+                    return lp.Problem(line.line, "inconsistent bounds {line.name}")
+            for lp.Declaration line = parsed.integers[]
+                for string name = line.names[]
+                    int position = variable_index(names, name)
+                    if position < 0
+                        return lp.Problem(line.line, "unknown variable {name}")
+                    integers[position] = true
+                    bounds[position].lower = rounded(bounds[position].lower, true)
+                    bounds[position].upper = rounded(bounds[position].upper, false)
+                    if inconsistent(bounds[position])
+                        return lp.Problem(line.line, "inconsistent bounds {name}")
+            for lp.Declaration line = parsed.binaries[]
+                for string name = line.names[]
+                    int position = variable_index(names, name)
+                    if position < 0
+                        return lp.Problem(line.line, "unknown variable {name}")
+                    integers[position] = true
+                    bounds[position] = lp.Bound(r.Fraction(0), r.Fraction(1))
+            r.Fraction[][] matrix = []
+            r.Fraction[] rhs = []
+            string[] comparisons = []
+            string[] row_names = []
+            for lp.Constraint row = parsed.constraints[]
+                matrix = matrix.append(coefficients(names, row.terms))
+                rhs = rhs.append(row.rhs)
+                comparisons = comparisons.append(row.comparison)
+                row_names = row_names.append(row.name)
+            return lp.Model(parsed.name, parsed.maximize, names, coefficients(names, parsed.objective), matrix, rhs, comparisons, row_names, bounds, integers)
+
+tab.Converted standard(const lp.Model model, const lp.Bound[] bounds)
+    string[] columns = []
+    tab.Substitution[] substitutions = []
+    r.Fraction[] costs = []
+    for int variable < int(len(model.names))
+        lp.Bound bound = bounds[variable]
+        tab.Part[] parts = []
+        string kind = ""
+        r.Fraction offset = r.Fraction(0)
+        match bound.lower
+            r.Fraction lower
+                parts = parts.append(tab.Part(int(len(columns)), r.Fraction(1)))
+                columns = columns.append(model.names[variable])
+                costs = costs.append(model.costs[variable])
+                kind = "shift"
+                offset = lower
+            none
+                match bound.upper
+                    r.Fraction upper
+                        parts = parts.append(tab.Part(int(len(columns)), r.Fraction(-1)))
+                        columns = columns.append(model.names[variable] + "'")
+                        costs = costs.append(model.costs[variable].negate())
+                        kind = "reflect"
+                        offset = upper
+                    none
+                        parts = parts.append(tab.Part(int(len(columns)), r.Fraction(1)))
+                        columns = columns.append(model.names[variable] + "+")
+                        costs = costs.append(model.costs[variable])
+                        parts = parts.append(tab.Part(int(len(columns)), r.Fraction(-1)))
+                        columns = columns.append(model.names[variable] + "-")
+                        costs = costs.append(model.costs[variable].negate())
+                        kind = "split"
+        substitutions = substitutions.append(tab.Substitution(kind, offset, parts))
+    int variable_columns = int(len(columns))
+    string[] rows = model.row_names
+    string[] comparisons = model.comparisons
+    r.Fraction[][] matrix = []
+    r.Fraction[] beta = []
+    for int row < int(len(model.matrix))
+        r.Fraction[] entries = array(nat(variable_columns), fill = r.Fraction(0))
+        r.Fraction rhs = model.rhs[row]
+        for int variable < int(len(model.names))
+            rhs = rhs.subtract(model.matrix[row][variable].multiply(substitutions[variable].offset))
+            for tab.Part part = substitutions[variable].columns[]
+                entries[part.column] = part.direction.multiply(model.matrix[row][variable])
+        matrix = matrix.append(entries)
+        beta = beta.append(rhs)
+    int[] upper_rows = array(len(model.names), fill = -1)
+    for int variable < int(len(model.names))
+        if substitutions[variable].kind != "shift"
+            continue
+        match bounds[variable].upper
+            r.Fraction upper
+                upper_rows[variable] = int(len(rows))
+                rows = rows.append(model.names[variable] + ".ub")
+                comparisons = comparisons.append("<=")
+                r.Fraction[] entries = array(nat(variable_columns), fill = r.Fraction(0))
+                entries[substitutions[variable].columns[0].column] = r.Fraction(1)
+                matrix = matrix.append(entries)
+                beta = beta.append(upper.subtract(substitutions[variable].offset))
+            none
+                upper_rows[variable] = -1
+    r.Fraction[] signs = array(len(rows), fill = r.Fraction(1))
+    for int row < int(len(rows))
+        if beta[row].numerator < 0
+            signs[row] = r.Fraction(-1)
+            beta[row] = beta[row].negate()
+            for int column < int(len(matrix[row]))
+                matrix[row][column] = matrix[row][column].negate()
+            comparisons[row] = if comparisons[row] == "<=" then ">=" elif comparisons[row] == ">=" then "<=" else "="
+    int[] initial = array(len(rows), fill = -1)
+    int[] slacks = initial
+    for int row < int(len(rows))
+        if comparisons[row] == "="
+            continue
+        int column = int(len(columns))
+        columns = columns.append("s:" + rows[row])
+        costs = costs.append(r.Fraction(0))
+        for int other < int(len(matrix))
+            matrix[other] = matrix[other].append(r.Fraction(0))
+        matrix[row][column] = r.Fraction(if comparisons[row] == "<=" then 1 else -1)
+        slacks[row] = column
+        if comparisons[row] == "<="
+            initial[row] = column
+    int[] artificial = []
+    for int row < int(len(rows))
+        if comparisons[row] == "<="
+            continue
+        int column = int(len(columns))
+        columns = columns.append("a:" + rows[row])
+        costs = costs.append(r.Fraction(0))
+        for int other < int(len(matrix))
+            matrix[other] = matrix[other].append(r.Fraction(0))
+        matrix[row][column] = r.Fraction(1)
+        initial[row] = column
+        artificial = artificial.append(column)
+    r.Fraction sign = r.Fraction(if model.maximize then -1 else 1)
+    r.Fraction constant = r.Fraction(0)
+    for int variable < int(len(model.names))
+        constant = constant.add(model.costs[variable].multiply(substitutions[variable].offset))
+    r.Fraction[] phase1 = []
+    r.Fraction[] phase2 = []
+    for int column < int(len(columns))
+        phase1 = phase1.append(r.Fraction(if lp.has(artificial, column) then 1 else 0))
+        phase2 = phase2.append(sign.multiply(costs[column]))
+    tab.Standard representation = tab.Standard(columns, rows, signs, initial, slacks, artificial, phase1, phase2, constant, sign, substitutions, upper_rows)
+    return tab.Converted(representation, tab.Tableau(matrix, beta, initial))
+
+r.Fraction[] recover(const tab.Standard representation, const r.Fraction[] columns, bool offset)
+    r.Fraction[] result = []
+    for tab.Substitution variable = representation.substitutions[]
+        r.Fraction value = if offset then variable.offset else r.Fraction(0)
+        for tab.Part part = variable.columns[]
+            value = value.add(part.direction.multiply(columns[part.column]))
+        result = result.append(value)
+    return result
+
+tab.Result solve_lp(lp.Model model, lp.Bound[] bounds, int node_number, int level)
+    tab.Converted converted = standard(model, bounds)
+    tab.Standard representation = converted.standard
+    tab.Tableau state = converted.tableau
+    string[] log = ["SOLVE node {node_number} rows {len(representation.rows)} columns {len(representation.columns)} artificials {len(representation.artificial)}"]
+    if level >= 1
+        for int variable < int(len(representation.substitutions))
+            tab.Substitution substitution = representation.substitutions[variable]
+            string line = "MAP {model.names[variable]} {substitution.kind}"
+            if substitution.kind != "split"
+                line += " {substitution.offset.text()}"
+                if substitution.kind == "shift"
+                    match bounds[variable].upper
+                        r.Fraction upper
+                            line += " upper {upper.text()}"
+                        none
+                            line = line
+            log = log.append(line)
+        for int row < int(len(representation.signs))
+            if representation.signs[row].numerator < 0
+                log = log.append("FLIP {representation.rows[row]}")
+    int phase1 = 0
+    int phase2 = 0
+    int drives = 0
+    int redundant = 0
+    string status = "OPTIMAL"
+    r.Fraction infeasibility = r.Fraction(0)
+    int | none unbounded = none
+    if len(representation.artificial) > 0
+        if level >= 1
+            log = log.append("PHASE 1")
+        if level >= 2
+            log = log.concat(tab.display(state, "phase 1 start", representation.columns, representation.rows, representation.phase1, r.Fraction(0), r.Fraction(1)))
+        int[] candidates = []
+        for int column < int(len(representation.columns))
+            candidates = candidates.append(column)
+        simplex.Phase result = simplex.phase(&state, representation.phase1, candidates, representation.columns, representation.rows, r.Fraction(0), r.Fraction(1), level, &log)
+        phase1 = result.iterations
+        infeasibility = tab.value(state, representation.phase1)
+        if level >= 1
+            log = log.append("PHASE 1 END objective {infeasibility.text()} iterations {phase1}")
+        if infeasibility.numerator > 0
+            status = "INFEASIBLE"
+            if level >= 2
+                log = log.concat(tab.display(state, "final", representation.columns, representation.rows, representation.phase1, r.Fraction(0), r.Fraction(1)))
+        else
+            for int row < int(len(representation.rows))
+                if not lp.has(representation.artificial, state.basis[row])
+                    continue
+                int entering = -1
+                for int column < int(len(representation.columns))
+                    if not lp.has(representation.artificial, column) and state.matrix[row][column].numerator != 0
+                        entering = column
+                        break
+                if entering >= 0
+                    if level >= 1
+                        log = log.append("DRIVE row {representation.rows[row]} enter {representation.columns[entering]} leave {representation.columns[state.basis[row]]}")
+                    tab.pivot(&state, row, entering)
+                    drives += 1
+                else
+                    redundant += 1
+                    if level >= 1
+                        log = log.append("REDUNDANT row {representation.rows[row]}")
+    if status != "INFEASIBLE"
+        if level >= 1
+            log = log.append("PHASE 2")
+        if level >= 2
+            log = log.concat(tab.display(state, "phase 2 start", representation.columns, representation.rows, representation.phase2, representation.constant, representation.sign))
+        int[] candidates = []
+        for int column < int(len(representation.columns))
+            if not lp.has(representation.artificial, column)
+                candidates = candidates.append(column)
+        simplex.Phase result = simplex.phase(&state, representation.phase2, candidates, representation.columns, representation.rows, representation.constant, representation.sign, level, &log)
+        phase2 = result.iterations
+        unbounded = result.unbounded
+        match unbounded
+            int column
+                status = "UNBOUNDED"
+                if level >= 1
+                    log = log.append("UNBOUNDED enter {representation.columns[column]}")
+            none
+                status = "OPTIMAL"
+        r.Fraction objective = representation.constant.add(representation.sign.multiply(tab.value(state, representation.phase2)))
+        if level >= 1
+            log = log.append("PHASE 2 END objective {objective.text()} iterations {phase2}")
+        if level >= 2
+            log = log.concat(tab.display(state, "final", representation.columns, representation.rows, representation.phase2, representation.constant, representation.sign))
+    r.Fraction value = representation.constant.add(representation.sign.multiply(tab.value(state, representation.phase2)))
+    r.Fraction[] columns = array(len(representation.columns), fill = r.Fraction(0))
+    for int row < int(len(representation.rows))
+        columns[state.basis[row]] = state.beta[row]
+    r.Fraction[] solution = recover(representation, columns, true)
+    r.Fraction[] reduced = tab.reduced(state, representation.phase1)
+    r.Fraction[] multipliers = []
+    if status == "INFEASIBLE"
+        for int row < int(len(representation.initial))
+            int column = representation.initial[row]
+            multipliers = multipliers.append(representation.signs[row].multiply(representation.phase1[column].subtract(reduced[column])))
+    r.Fraction[] ray = []
+    r.Fraction rate = r.Fraction(0)
+    match unbounded
+        int column
+            r.Fraction[] direction = array(len(representation.columns), fill = r.Fraction(0))
+            direction[column] = r.Fraction(1)
+            for int row < int(len(representation.rows))
+                direction[state.basis[row]] = state.matrix[row][column].negate()
+            ray = recover(representation, direction, false)
+            for int variable < int(len(model.names))
+                rate = rate.add(model.costs[variable].multiply(ray[variable]))
+        none
+            rate = rate
+    string objective_text = if status == "OPTIMAL" then value.text() else "-"
+    log = log.append("RESULT {status} objective {objective_text} phase1 {phase1} phase2 {phase2} drives {drives} redundant {redundant}")
+    return tab.Result(representation, state, status, value, solution, phase1, phase2, drives, infeasibility, multipliers, ray, rate, log)
+
+class Range(string lower, string upper)
+
+r.Fraction | none raise_lower(const r.Fraction | none current, const r.Fraction candidate)
+    match current
+        r.Fraction found
+            return if candidate.compare(found) > 0 then candidate else found
+        none
+            return candidate
+
+r.Fraction | none lower_upper(const r.Fraction | none current, const r.Fraction candidate)
+    match current
+        r.Fraction found
+            return if candidate.compare(found) < 0 then candidate else found
+        none
+            return candidate
+
+Range interval(const r.Fraction value, const r.Fraction | none lower, const r.Fraction | none upper)
+    string low = "-inf"
+    string high = "inf"
+    match lower
+        r.Fraction found
+            low = value.add(found).text()
+        none
+            low = "-inf"
+    match upper
+        r.Fraction found
+            high = value.add(found).text()
+        none
+            high = "inf"
+    return Range(low, high)
+
+string[] sensitivity(const lp.Model model, const tab.Result result)
+    tab.Standard representation = result.standard
+    tab.Tableau state = result.tableau
+    r.Fraction[] reduced_columns = tab.reduced(state, representation.phase2)
+    int[] nonbasic = []
+    for int column < int(len(representation.columns))
+        if not lp.has(state.basis, column) and not lp.has(representation.artificial, column)
+            nonbasic = nonbasic.append(column)
+    r.Fraction[] prices = []
+    for int row < int(len(model.matrix))
+        prices = prices.append(representation.sign.negate().multiply(representation.signs[row]).multiply(reduced_columns[representation.initial[row]]))
+    r.Fraction[] reduced = []
+    for int variable < int(len(model.names))
+        r.Fraction value = model.costs[variable]
+        for int row < int(len(model.matrix))
+            value = value.subtract(prices[row].multiply(model.matrix[row][variable]))
+        reduced = reduced.append(value)
+    r.Fraction objective = r.Fraction(0)
+    for int row < int(len(model.matrix))
+        objective = objective.add(prices[row].multiply(model.rhs[row]))
+    for int variable < int(len(model.names))
+        objective = objective.add(reduced[variable].multiply(result.solution[variable]))
+    string kind = if bnb.integer_count(model) > 0 then "relaxation" else "lp"
+    string[] basis_names = []
+    for int column = state.basis[]
+        basis_names = basis_names.append(representation.columns[column])
+    int primal = 0
+    int dual = 0
+    for int row < int(len(representation.rows))
+        if not lp.has(representation.artificial, state.basis[row]) and state.beta[row].numerator == 0
+            primal += 1
+    for int column = nonbasic[]
+        if reduced_columns[column].numerator == 0
+            dual += 1
+    string[] lines = ["MODEL {model.name} {kind} objective {result.value.text()}", "BASIS {basis_names.join(" ")}", "DEGENERACY primal {primal} dual {dual}", "DUAL objective {objective.text()}"]
+    for int row < int(len(model.matrix))
+        r.Fraction[] rho = []
+        bool fixed = false
+        for int other < int(len(representation.rows))
+            r.Fraction value = representation.signs[row].multiply(state.matrix[other][representation.initial[row]])
+            rho = rho.append(value)
+            if value.numerator != 0 and lp.has(representation.artificial, state.basis[other])
+                fixed = true
+        Range ends = Range(model.rhs[row].text(), model.rhs[row].text())
+        if not fixed
+            r.Fraction | none lower = none
+            r.Fraction | none upper = none
+            for int other < int(len(representation.rows))
+                if rho[other].numerator > 0
+                    lower = raise_lower(lower, state.beta[other].negate().divide(rho[other]))
+                elif rho[other].numerator < 0
+                    upper = lower_upper(upper, state.beta[other].negate().divide(rho[other]))
+            ends = interval(model.rhs[row], lower, upper)
+        lines = lines.append("CONSTRAINT {model.row_names[row]} price {prices[row].text()} rhs {model.rhs[row].text()} range {ends.lower} {ends.upper}")
+    for int variable < int(len(model.names))
+        tab.Substitution substitution = representation.substitutions[variable]
+        string status = "basic"
+        if substitution.kind == "split"
+            bool basic = false
+            for tab.Part part = substitution.columns[]
+                if lp.has(state.basis, part.column)
+                    basic = true
+            status = if basic then "basic" else "zero"
+        elif not lp.has(state.basis, substitution.columns[0].column)
+            status = if substitution.kind == "shift" then "lower" else "upper"
+        elif substitution.kind == "shift" and representation.upper_rows[variable] >= 0
+            int upper_row = representation.upper_rows[variable]
+            if not lp.has(state.basis, representation.slacks[upper_row])
+                status = "upper"
+        r.Fraction[] h = array(len(representation.columns), fill = r.Fraction(0))
+        for tab.Part part = substitution.columns[]
+            h[part.column] = representation.sign.multiply(part.direction)
+        r.Fraction[] eta = tab.reduced(state, h)
+        r.Fraction | none lower = none
+        r.Fraction | none upper = none
+        for int column = nonbasic[]
+            if eta[column].numerator > 0
+                lower = raise_lower(lower, reduced_columns[column].negate().divide(eta[column]))
+            elif eta[column].numerator < 0
+                upper = lower_upper(upper, reduced_columns[column].negate().divide(eta[column]))
+        Range ends = interval(model.costs[variable], lower, upper)
+        lines = lines.append("VARIABLE {model.names[variable]} {status} value {result.solution[variable].text()} reduced {reduced[variable].text()} cost {model.costs[variable].text()} range {ends.lower} {ends.upper}")
+    return lines
+
+string range_text(const r.Fraction[] values)
+    if len(values) == 0
+        return "- -"
+    r.Fraction low = values[0]
+    r.Fraction high = values[0]
+    for r.Fraction value = values[]
+        if value.compare(low) < 0
+            low = value
+        if value.compare(high) > 0
+            high = value
+    return "{low.text()} {high.text()}"
+
+string statistics(const lp.Model model)
+    r.Fraction[] matrix_values = []
+    r.Fraction[] objective_values = []
+    r.Fraction[] rhs_values = []
+    r.Fraction[] bound_values = []
+    for r.Fraction[] row = model.matrix[]
+        for r.Fraction value = row[]
+            if value.numerator != 0
+                matrix_values = matrix_values.append(value.magnitude())
+    for r.Fraction value = model.costs[]
+        if value.numerator != 0
+            objective_values = objective_values.append(value.magnitude())
+    for r.Fraction value = model.rhs[]
+        if value.numerator != 0
+            rhs_values = rhs_values.append(value.magnitude())
+    for lp.Bound bound = model.bounds[]
+        match bound.lower
+            r.Fraction value
+                if value.numerator != 0
+                    bound_values = bound_values.append(value.magnitude())
+            none
+                bound_values = bound_values
+        match bound.upper
+            r.Fraction value
+                if value.numerator != 0
+                    bound_values = bound_values.append(value.magnitude())
+            none
+                bound_values = bound_values
+    return "STATS nonzeros {len(matrix_values)} matrix {range_text(matrix_values)} objective {range_text(objective_values)} rhs {range_text(rhs_values)} bounds {range_text(bound_values)}"
+
+int setting(const map.Map<string, int> values, string key, int fallback)
+    match values.get(key)
+        int found
+            return found
+        none
+            return fallback
+
+void write_output(string name, const string[] lines)
+    bool exists = file.is_directory("output")
+    if not exists
+        file.mkdir("output")
+    string text = if len(lines) == 0 then "" else lines.join(NL) + NL
+    file.write("output/{name}", text)
+
+void run_program()
+    lp.Parsed[] blocks = lp.read_models()
+    lp.Params params = lp.read_params()
+    string[] iterations = []
+    string[] solutions = []
+    string[] sensitivity_lines = []
+    string[] tree = []
+    string[] csv = ["model,status,objective,approx,relaxation,nodes,pivots"]
+    int[] statuses = [0, 0, 0, 0, 0]
+    int[] totals = [0, 0, 0, 0]
+    int analyzed = 0
+    int integer_models = 0
+    int integer_nodes = 0
+    int limits = 0
+    for lp.Parsed block = blocks[]
+        match content(block)
+            lp.Problem problem
+                statuses[4] += 1
+                iterations = iterations.append("MODEL {block.name} error")
+                solutions = solutions.concat(["MODEL {block.name}", "STATUS ERROR line {problem.line} {problem.reason}"])
+                sensitivity_lines = sensitivity_lines.append("MODEL {block.name} skipped ERROR")
+                csv = csv.append("{block.name},ERROR,-,-,-,0,0")
+            lp.Model model
+                bool integer_model = bnb.integer_count(model) > 0
+                int level = setting(params.levels, model.name, params.level)
+                int limit = setting(params.limits, model.name, params.limit)
+                iterations = iterations.append("MODEL {model.name} level {level}")
+                bnb.Outcome outcome
+                if integer_model
+                    outcome = bnb.solve(model, limit, level, solve_lp)
+                else
+                    tab.Result root = solve_lp(model, model.bounds, 1, level)
+                    r.Fraction[] | none solution = none
+                    r.Fraction | none objective = none
+                    if root.status == "OPTIMAL"
+                        solution = root.solution
+                        objective = root.value
+                    outcome = bnb.Outcome(root.status, root, solution, objective, 1, root.phase1, root.phase2, root.drives, [], root.log)
+                iterations = iterations.concat(outcome.log)
+                tab.Result root = outcome.root
+                string status = outcome.status
+                int status_index = if status == "OPTIMAL" then 0 elif status == "INFEASIBLE" then 1 elif status == "UNBOUNDED" then 2 else 3
+                statuses[status_index] += 1
+                totals[0] += outcome.nodes
+                totals[1] += outcome.phase1
+                totals[2] += outcome.phase2
+                totals[3] += outcome.drives
+                if integer_model
+                    integer_models += 1
+                    integer_nodes += outcome.nodes
+                    if status == "NODE_LIMIT"
+                        limits += 1
+                    tree = tree.concat(outcome.lines)
+                string direction = if model.maximize then "maximize" else "minimize"
+                solutions = solutions.concat(["MODEL {model.name} {direction} variables {len(model.names)} constraints {len(model.matrix)} integers {bnb.integer_count(model)}", statistics(model), "STATUS {status}"])
+                string objective_text = "-"
+                string approximate_text = "-"
+                match outcome.objective
+                    r.Fraction value
+                        objective_text = value.text()
+                        approximate_text = value.approximate()
+                        solutions = solutions.append("OBJECTIVE {objective_text} approx {approximate_text}")
+                    none
+                        objective_text = "-"
+                string relaxation = "-"
+                if root.status == "OPTIMAL"
+                    relaxation = root.value.text()
+                    if integer_model
+                        solutions = solutions.append("RELAXATION {relaxation} approx {root.value.approximate()}")
+                if root.status == "INFEASIBLE"
+                    solutions = solutions.append("INFEASIBILITY {root.infeasibility.text()}")
+                    for int row < int(len(root.multipliers))
+                        solutions = solutions.append("FARKAS {root.standard.rows[row]} {root.multipliers[row].text()}")
+                r.Fraction[] | none values = outcome.solution
+                if status == "UNBOUNDED"
+                    values = root.solution
+                match values
+                    r.Fraction[] found
+                        for int variable < int(len(model.names))
+                            solutions = solutions.append("VALUE {model.names[variable]} {found[variable].text()}")
+                    none
+                        solutions = solutions
+                if status == "UNBOUNDED"
+                    for int variable < int(len(model.names))
+                        solutions = solutions.append("RAY {model.names[variable]} {root.ray[variable].text()}")
+                    solutions = solutions.append("RATE {root.rate.text()}")
+                match outcome.solution
+                    r.Fraction[] found
+                        for int row < int(len(model.matrix))
+                            r.Fraction value = r.Fraction(0)
+                            for int variable < int(len(model.names))
+                                value = value.add(model.matrix[row][variable].multiply(found[variable]))
+                            r.Fraction margin = if model.comparisons[row] == "<=" then model.rhs[row].subtract(value) else value.subtract(model.rhs[row])
+                            solutions = solutions.append("ROW {model.row_names[row]} {value.text()} {margin.text()}")
+                    none
+                        solutions = solutions
+                if integer_model
+                    solutions = solutions.append("NODES {outcome.nodes}")
+                solutions = solutions.append("PIVOTS {outcome.pivots()}")
+                if root.status == "OPTIMAL"
+                    analyzed += 1
+                    sensitivity_lines = sensitivity_lines.concat(sensitivity(model, root))
+                else
+                    sensitivity_lines = sensitivity_lines.append("MODEL {model.name} skipped {root.status}")
+                csv = csv.append("{model.name},{status},{objective_text},{approximate_text},{relaxation},{outcome.nodes},{outcome.pivots()}")
+    iterations = iterations.append("TOTAL solves {totals[0]} phase1 {totals[1]} phase2 {totals[2]} drives {totals[3]} pivots {totals[1] + totals[2] + totals[3]}")
+    solutions = solutions.append("SUMMARY models {len(blocks)} optimal {statuses[0]} infeasible {statuses[1]} unbounded {statuses[2]} node_limit {statuses[3]} error {statuses[4]}")
+    sensitivity_lines = sensitivity_lines.append("SUMMARY analyzed {analyzed} skipped {int(len(blocks)) - analyzed}")
+    tree = tree.append("SUMMARY models {integer_models} nodes {integer_nodes} node_limit {limits}")
+    write_output("iterations.txt", iterations)
+    write_output("solutions.txt", solutions)
+    write_output("sensitivity.txt", sensitivity_lines)
+    write_output("bnb_tree.txt", tree)
+    write_output("summary.csv", csv)
+
+if main
+    run_program()
