@@ -1,7 +1,7 @@
 # Task B selection — 83_topological_sort / Quidra
 
-The candidate indexes refer to the alphabetically sorted array. Each pass selects the first untaken index with zero indegree and stops the outer loop if the sentinel remains. Change only the direction of the candidate scan so the first eligible index is the largest one. The next outer iteration still rechecks eligibility, and the untaken-course comprehension still follows ascending indexes independently of selection order.
+The sorted course array and its length establish the ascending index order. The scan picks the first eligible index and exits the scan immediately. Change that choice to the last eligible index by removing the early exit, retaining the no-candidate sentinel. Each scan still tests the current eligibility. The change does not touch the outer termination check, prerequisite updates, remainder sorting, or formatting. As in the Python selection, those unaffected lines are outside the excerpt.
 
-Selected complete source lines in order are 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 28.
+Selected source lines in order are 4, 5, 13, 14, 15, 16, 17.
 
-Tokenizer: Task A 737 tokens; Task B 161 tokens.
+Task A uses 737 tokens. Task B uses 87 tokens.

@@ -1,7 +1,7 @@
-# Task B selection: 84_sales_csv_summary / Quidra
+# Task B selection — 84_sales_csv_summary / Quidra
 
-The relevant rows and split-and-parse lines trace quantity and price into revenue. The separate increments distinguish regional revenue from product quantities, while the two entry ordering contracts establish their different ordering and the regional tie-break.
+The selected CSV records are those for north or notebook, with the header establishing the column meanings. Quantity and price are parsed as integers; only their product increments regional revenue, while quantity alone increments the product map. North totals 4,800 and notebook totals 25. The two output loops use the documented contracts of ranked_entries (revenue descending, key ascending for ties) and sorted_entries (key ascending). Daily totals and printing syntax do not affect either computation.
 
-The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
+Selected source lines in order are 1, 3, 4, 5, 9, 10, 13, 15, 18, 19, 22, 23, 24, 25, 26, 28, 29, 32, 34.
 
-Task A: 687 tokens. Task B: 364 tokens.
+Task A uses 663 tokens. Task B uses 348 tokens.

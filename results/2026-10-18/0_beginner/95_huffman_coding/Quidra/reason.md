@@ -1,7 +1,7 @@
-# Task B selection: 95_huffman_coding / Quidra
+# Task B selection — 95_huffman_coding / Quidra
 
-The two recursive calls are the only sites assigning a bit to a move. Swapping their bit literals changes code strings without changing their lengths, the tree, or the output order.
+The recursive calls identify the bit appended for each child. Swap their two literal bits. Child selection and priority are determined before this traversal and remain unchanged. Code lengths are invariant under swapping the bit labels, so both bit totals and the existing order and formatting remain valid. Both recursive call lines are required to identify both edits.
 
-The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
+Selected source lines in order are 15, 16.
 
-Task A: 659 tokens. Task B: 52 tokens.
+Task A uses 651 tokens. Task B uses 52 tokens.
