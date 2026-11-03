@@ -14,9 +14,9 @@ For 506, 10000/5000/1000 give zero and do not change remaining. At 500 the quoti
 
 Source: `main.qui`. Selected original lines: 1-13. The following line-by-line dependency record identifies the original statements retained (including unavoidable extra operations on a complete line):
 
-- L1: `int[] amounts = [3780, 15420, 99999, 506, 48263]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
-- L2: `int[] denominations = [10000, 5000, 1000, 500, 100, 50, 10, 5, 1]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
-- L3: `for int amount = amounts[]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
+- L1: `int[] amounts := [3780, 15420, 99999, 506, 48263]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
+- L2: `int[] denominations := [10000, 5000, 1000, 500, 100, 50, 10, 5, 1]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
+- L3: `for int amount := amounts[]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L4: `    int remaining = amount` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L5: `    int pieces = 0` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L6: `    print("{amount} yen:")` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
@@ -36,14 +36,14 @@ Each selected statement was reviewed against the answer dependencies above. Scop
 
 The following smaller deletion candidates were measured as alternative line sets. They lose the indicated original statement and therefore the corresponding calculation/control/data/output evidence described above; a lower count alone is insufficient. This is a source-dependency minimization, not a proof of a global mathematical optimum.
 
-- Without L1: 180 tokens (versus 220); removes `int[] amounts = [3780, 15420, 99999, 506, 48263]`.
-- Without L2: 169 tokens (versus 220); removes `int[] denominations = [10000, 5000, 1000, 500, 100, 50, 10, 5, 1]`.
-- Without L3: 209 tokens (versus 220); removes `for int amount = amounts[]`.
-- Without L4: 211 tokens (versus 220); removes `int remaining = amount`.
-- Without L5: 211 tokens (versus 220); removes `int pieces = 0`.
+- Without L1: 180 tokens (versus 220); removes `int[] amounts := [3780, 15420, 99999, 506, 48263]`.
+- Without L2: 169 tokens (versus 220); removes `int[] denominations := [10000, 5000, 1000, 500, 100, 50, 10, 5, 1]`.
+- Without L3: 209 tokens (versus 220); removes `for int amount := amounts[]`.
+- Without L4: 211 tokens (versus 220); removes `int remaining := amount`.
+- Without L5: 211 tokens (versus 220); removes `int pieces := 0`.
 - Without L6: 207 tokens (versus 220); removes `print("{amount} yen:")`.
-- Without L7: 208 tokens (versus 220); removes `for int face = denominations[]`.
-- Without L8: 206 tokens (versus 220); removes `int count = remaining / face`.
+- Without L7: 208 tokens (versus 220); removes `for int face := denominations[]`.
+- Without L8: 206 tokens (versus 220); removes `int count := remaining / face`.
 - Without L9: 212 tokens (versus 220); removes `remaining %= face`.
 - Without L10: 212 tokens (versus 220); removes `pieces += count`.
 - Without L11: 210 tokens (versus 220); removes `if count > 0`.

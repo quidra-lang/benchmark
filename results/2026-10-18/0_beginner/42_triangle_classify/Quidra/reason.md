@@ -28,10 +28,10 @@ Each selected statement was reviewed against the answer dependencies above. Scop
 
 The following smaller deletion candidates were measured as alternative line sets. They lose the indicated original statement and therefore the corresponding calculation/control/data/output evidence described above; a lower count alone is insufficient. This is a source-dependency minimization, not a proof of a global mathematical optimum.
 
-- Without L3: 64 tokens (versus 78); removes `int64[] ordered = original.sorted()`.
-- Without L4: 66 tokens (versus 78); removes `int64 a = ordered[0]`.
-- Without L5: 66 tokens (versus 78); removes `int64 b = ordered[1]`.
-- Without L6: 66 tokens (versus 78); removes `int64 c = ordered[2]`.
+- Without L3: 64 tokens (versus 78); removes `int64[] ordered := original.sorted()`.
+- Without L4: 66 tokens (versus 78); removes `int64 a := ordered[0]`.
+- Without L5: 66 tokens (versus 78); removes `int64 b := ordered[1]`.
+- Without L6: 66 tokens (versus 78); removes `int64 c := ordered[2]`.
 - Without L7: 50 tokens (versus 78); removes `print("{original[0]} {original[1]} {original[2]}: ")`.
 
 ## Quidra develop re-evaluation (2026-11-01)

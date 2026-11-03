@@ -14,3 +14,5 @@ The print statement is the operation that must become conditional on the length 
 ## Semantics and minimization
 
 The excerpt retains the operations needed to support this Task B answer. Imports, unrelated input values, headings and unchanged setup are omitted where they do not establish an answer dependency. Standard library operations use their documented semantics; their implementations do not need to be included. Evidence fragments need not compile independently. This is a dependency-based selection, not a claim of globally minimal token count.
+
+The declaration-syntax migration keeps the same source locations and answer dependencies. The current tokenizer counts are 134 for Task A and 15 for Task B.

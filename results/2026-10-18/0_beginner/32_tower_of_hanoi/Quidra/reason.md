@@ -21,7 +21,7 @@ Source: `main.qui`. Selected original lines: 1-7,9. The following line-by-line d
 - L5: `    print("move disk {n} from {source} to {target}{NL}")` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L6: `    int last = hanoi(n - 1, auxiliary, target, source)` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L7: `    return first + 1 + last` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
-- L9: `int moves = hanoi(4, "A", "C", "B")` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
+- L9: `int moves := hanoi(4, "A", "C", "B")` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 
 ## Minimization and semantics
 
@@ -34,11 +34,11 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L1: 133 tokens (versus 157); removes `int hanoi(int n, string source, string target, string auxiliary)`.
 - Without L2: 148 tokens (versus 157); removes `if n == 0`.
 - Without L3: 151 tokens (versus 157); removes `return 0`.
-- Without L4: 132 tokens (versus 157); removes `int first = hanoi(n - 1, source, auxiliary, target)`.
+- Without L4: 132 tokens (versus 157); removes `int first := hanoi(n - 1, source, auxiliary, target)`.
 - Without L5: 128 tokens (versus 157); removes `print("move disk {n} from {source} to {target}{NL}")`.
-- Without L6: 132 tokens (versus 157); removes `int last = hanoi(n - 1, auxiliary, target, source)`.
+- Without L6: 132 tokens (versus 157); removes `int last := hanoi(n - 1, auxiliary, target, source)`.
 - Without L7: 144 tokens (versus 157); removes `return first + 1 + last`.
-- Without L9: 131 tokens (versus 157); removes `int moves = hanoi(4, "A", "C", "B")`.
+- Without L9: 131 tokens (versus 157); removes `int moves := hanoi(4, "A", "C", "B")`.
 
 ## Quidra develop re-evaluation (2026-11-01)
 

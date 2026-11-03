@@ -14,9 +14,9 @@ Start lo=0, hi=15. Probe 7 reads31<50, so lo=8; probe11 reads53>50, so hi=10; pr
 
 Source: `main.qui`. Selected original lines: 1-12,14-18,20-21. The following line-by-line dependency record identifies the original statements retained (including unavoidable extra operations on a complete line):
 
-- L1: `int[] values = [3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
-- L2: `int[] targets = [42, 3, 77, 31, 50, 1]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
-- L3: `for int target = targets[]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
+- L1: `int[] values := [3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
+- L2: `int[] targets := [42, 3, 77, 31, 50, 1]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
+- L3: `for int target := targets[]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L4: `    int lo = 0` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L5: `    int hi = 15` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L6: `    int found = -1` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
@@ -42,15 +42,15 @@ Each selected statement was reviewed against the answer dependencies above. Scop
 
 The following smaller deletion candidates were measured as alternative line sets. They lose the indicated original statement and therefore the corresponding calculation/control/data/output evidence described above; a lower count alone is insufficient. This is a source-dependency minimization, not a proof of a global mathematical optimum.
 
-- Without L1: 217 tokens (versus 287); removes `int[] values = [3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77]`.
-- Without L2: 257 tokens (versus 287); removes `int[] targets = [42, 3, 77, 31, 50, 1]`.
-- Without L3: 276 tokens (versus 287); removes `for int target = targets[]`.
-- Without L4: 278 tokens (versus 287); removes `int lo = 0`.
-- Without L5: 277 tokens (versus 287); removes `int hi = 15`.
-- Without L6: 277 tokens (versus 287); removes `int found = -1`.
+- Without L1: 217 tokens (versus 287); removes `int[] values := [3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77]`.
+- Without L2: 257 tokens (versus 287); removes `int[] targets := [42, 3, 77, 31, 50, 1]`.
+- Without L3: 276 tokens (versus 287); removes `for int target := targets[]`.
+- Without L4: 278 tokens (versus 287); removes `int lo := 0`.
+- Without L5: 277 tokens (versus 287); removes `int hi := 15`.
+- Without L6: 277 tokens (versus 287); removes `int found := -1`.
 - Without L7: 275 tokens (versus 287); removes `print("{target}: probes")`.
 - Without L8: 278 tokens (versus 287); removes `while lo <= hi`.
-- Without L9: 267 tokens (versus 287); removes `int mid = (lo + hi) / 2`.
+- Without L9: 267 tokens (versus 287); removes `int mid := (lo + hi) / 2`.
 - Without L10: 275 tokens (versus 287); removes `print(" {mid}")`.
 - Without L11: 274 tokens (versus 287); removes `if values[mid] == target`.
 - Without L12: 278 tokens (versus 287); removes `found = mid`.

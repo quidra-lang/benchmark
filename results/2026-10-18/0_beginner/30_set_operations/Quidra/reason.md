@@ -4,4 +4,4 @@ The extension calls identify which input forms each distinct set. The difference
 
 The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
 
-Task A: 250 tokens. Task B: 55 tokens.
+Task A: 246 tokens. Task B: 51 tokens.

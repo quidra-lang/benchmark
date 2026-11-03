@@ -4,4 +4,4 @@ The sorted course array assigns ascending alphabetical indices. The eligibility 
 
 Selected complete lines in order are 4, 5, 11, 12, 13, 14, 15.
 
-Task A uses 686 tokens. Task B uses 87 tokens.
+Task A uses 684 tokens. Task B uses 87 tokens.

@@ -7,4 +7,4 @@ per-symbol code lengths, or output order, so the corresponding statements
 are outside the necessary evidence.
 
 Selected complete lines in order are 15, 16.
-Task A uses 632 tokens. Task B uses 52 tokens.
+Task A uses 624 tokens. Task B uses 52 tokens.

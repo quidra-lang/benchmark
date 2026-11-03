@@ -4,4 +4,4 @@ The selected fixture rows, rank counts and suit checks identify both hands as no
 
 Selected complete lines in order are 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 35, 36, 37, 38, 40, 42, 45, 54, 55, 56, 57.
 
-Task A uses 875 tokens. Task B uses 623 tokens.
+Task A uses 873 tokens. Task B uses 621 tokens.
