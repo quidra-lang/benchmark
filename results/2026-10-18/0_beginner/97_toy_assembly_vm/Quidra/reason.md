@@ -1,7 +1,7 @@
-# Task B selection — 97_toy_assembly_vm / Quidra
+# Task B selection for 97_toy_assembly_vm
 
-The instruction mnemonic is extracted before the common executed increment. Gate that increment on the mnemonic being neither PRINT nor HALT, before dispatch, so a JNZ is counted whether or not its jump is taken. The instruction handlers, output, and final count label are unchanged.
+The selected lines show the instruction mnemonic and the common execution counter update. Gate that update on the mnemonic being neither PRINT nor HALT before dispatch. JNZ is counted once per encounter regardless of its branch outcome. The dispatch bodies and the final output label need no changes.
 
-Selected complete source lines in order are 19, 20, 21.
+Selected complete lines in order are 21, 22, 23.
 
-Tokenizer: Task A 661 tokens; Task B 38 tokens.
+Task A uses 648 tokens. Task B uses 38 tokens.

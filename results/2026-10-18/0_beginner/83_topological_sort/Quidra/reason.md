@@ -1,7 +1,7 @@
-# Task B selection — 83_topological_sort / Quidra
+# Task B selection for 83_topological_sort
 
-The sorted course array and its length establish the ascending index order. The scan picks the first eligible index and exits the scan immediately. Change that choice to the last eligible index by removing the early exit, retaining the no-candidate sentinel. Each scan still tests the current eligibility. The change does not touch the outer termination check, prerequisite updates, remainder sorting, or formatting. As in the Python selection, those unaffected lines are outside the excerpt.
+The sorted course array assigns ascending alphabetical indices. The eligibility scan chooses the first untaken index with zero indegree and immediately breaks. Removing that inner break selects the last eligible index while keeping the no-candidate sentinel and recomputing eligibility each round. The graph construction, edge updates, cycle-line order, and output formatting need no changes for this request.
 
-Selected source lines in order are 4, 5, 13, 14, 15, 16, 17.
+Selected complete lines in order are 4, 5, 11, 12, 13, 14, 15.
 
-Task A uses 737 tokens. Task B uses 87 tokens.
+Task A uses 686 tokens. Task B uses 87 tokens.

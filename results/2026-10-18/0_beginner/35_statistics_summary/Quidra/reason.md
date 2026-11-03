@@ -1,7 +1,7 @@
-# Task B selection — 35_statistics_summary / Quidra
+# Task B selection for 35_statistics_summary
 
-The count is the number of values, converted to real64. Leave that shared count and the mean calculation as they are, and use count minus one only in the division inside the standard-deviation calculation. The math.sqrt operation and the output label and formatting stay as written.
+Change only the denominator in the square-root expression from count to count - 1.0, preserving real64 arithmetic. The count binding establishes the number of values used by the existing denominator. The unchanged squared-difference accumulation and output format are outside the necessary change.
 
-Selected complete source lines in order are 2, 5, 16.
+Selected complete lines in order are 2, 5, 16.
 
-Tokenizer: Task A 296 tokens; Task B 35 tokens.
+Task A uses 295 tokens. Task B uses 35 tokens.

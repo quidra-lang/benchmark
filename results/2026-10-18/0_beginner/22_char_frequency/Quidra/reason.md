@@ -1,7 +1,7 @@
-# Task B selection: 22_char_frequency / Quidra
+# Task B selection for 22_char_frequency
 
-The token extraction controls whether cases are merged; the ordering API sorts the resulting exact keys by ascending code point, so uppercase letters already precede lowercase letters. Counting and formatting continue using the original key.
+Change ignore_case to false so ascii_words still excludes nonletters while preserving the case of each ASCII character. Character splitting and frequencies then retain separate keys for P and p. sorted_entries orders these keys by code point, placing A–Z before a–z, and the existing output line retains the required format. The source sentence is unnecessary for locating the change.
 
-The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
+Selected complete lines in order are 1, 2, 5, 6, 7, 8.
 
-Task A: 123 tokens. Task B: 97 tokens.
+Task A uses 122 tokens. Task B uses 96 tokens.

@@ -1,5 +1,7 @@
-The answer must establish why 7 stays marked, why 49 is crossed out, why processing 7 does not cross out 7 itself, and how those flags control the printed primes. The initial true flags, outer prime check, multiple range starting at twice the prime, and false assignment supply the marking evidence. They imply that 7 remains true and 49 is marked false when p is 7. The empty primes array and increasing n loop append exactly the marked values. Chunking and joined output connect that list to printed values.
+# Task B selection for 27_sieve_primes
 
-Known Collections semantics preserve the order and every input element when chunks(10) produces successive groups, including the short final group. Text join inserts its separator between values without a trailing separator. Quidra's typed array values and ordinary value assignment provide the declared bool and integer meanings; no helper implementation is needed. The two imports identify the extension and text functions.
+The flags start true. Marking multiples from twice each still-marked p preserves 7 when p is 7 and crosses out 49 on that iteration. The later scan pushes only still-marked integers, so 7 enters the list and 49 does not. The documented chunks and join operations preserve the list order in output. The count label supplies no additional evidence about 7 or 49.
 
-The omitted flags for 0 and 1 do not affect 7 or 49, since both loops start at 2. The count label is unrelated to whether these two values print. Alternatives considered were retaining the old per-element separator branches or selecting only the final join; the former adds unrelated layout mechanics, while the latter loses the dependency from the flags to the printed list. Every retained statement contributes initialization, a condition, the affected operation, or that data flow. This is a sufficient locally reviewed selection, without claiming a globally proven minimum.
+Selected complete lines in order are 1, 2, 4, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18.
+
+Task A uses 216 tokens. Task B uses 180 tokens.

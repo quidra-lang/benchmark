@@ -1,7 +1,7 @@
-# Task B selection: 46_word_frequency / Quidra
+# Task B selection for 46_word_frequency
 
-The passage and ASCII tokenization allow a tied pair to be counted and show where case is normalized. The frequency map, ranking contract, and five-entry slice show why ascending word order breaks equal counts before selection.
+The passage and ASCII word tokenization show that Dog is normalized to dog before counting. For example, cat and bird both occur three times, so ranked_entries places bird before cat by ascending key on equal counts. The slice retains the first five ranked entries. The final printed totals do not supply ranking evidence.
 
-The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
+Selected complete lines in order are 1, 2, 4, 5, 6, 7.
 
-Task A: 230 tokens. Task B: 193 tokens.
+Task A uses 229 tokens. Task B uses 192 tokens.
