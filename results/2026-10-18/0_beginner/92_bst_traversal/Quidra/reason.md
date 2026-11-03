@@ -1,7 +1,19 @@
-# Task B selection — 92_bst_traversal / Quidra
+# Task B selection for 92_bst_traversal
 
-Insertion and the key order establish the initial tree. Removal of 6 precedes removal of 27. At 27, both children exist, so leftmost on its right subtree finds 31. Its value replaces 27 and recursive removal of the original 31 returns its right child 34, which becomes the left child of 39. The stored node replacement and updated root determine the final preorder and height. The documented Collections traversal and height contracts supply the meaning of the final queries. The label formatter and initial reporting do not affect the trace.
+The insertion order and search branches establish the subtree before
+deletion. Removing 6 leaves 13 to the left of 27. Deleting 27 calls
+`BinaryNodes.detach_leftmost` on the subtree rooted at 39. The documented
+operation follows left links, returns 31 and reconnects 31's right child 34
+at its former position. The caller replaces the target value with 31,
+assigns the remaining subtree rooted at 39 to its right, and writes the
+updated node back to the store. Thus 31 has left child 13 and right child 39,
+whose left child is 34. The final calls visit the replacement before its
+descendants and compute the height from the updated root.
 
-Selected source lines in order are 1, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 50, 51, 56, 57, 58, 59, 64, 65, 66, 67.
+The selection keeps construction, both removals, and the final traversal
+and height calls. It excludes the initial output and the formatting helper.
+The documented Collections operations establish traversal order, height,
+and the successor splice without requiring their implementations.
 
-Task A uses 923 tokens. Task B uses 783 tokens.
+Selected complete lines in order are 1, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 47, 48, 53, 54, 55, 56, 61, 62, 63, 64.
+Task A uses 877 tokens. Task B uses 737 tokens.

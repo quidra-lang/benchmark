@@ -1,7 +1,10 @@
-# Task B selection — 95_huffman_coding / Quidra
+# Task B selection for 95_huffman_coding
 
-The recursive calls identify the bit appended for each child. Swap their two literal bits. Child selection and priority are determined before this traversal and remain unchanged. Code lengths are invariant under swapping the bit labels, so both bit totals and the existing order and formatting remain valid. Both recursive call lines are required to identify both edits.
+Swap the bit appended by the two recursive calls so that the left
+link contributes 1 and the right link contributes 0. The selected calls show
+the exact branch labels. Changing them does not alter tree construction,
+per-symbol code lengths, or output order, so the corresponding statements
+are outside the necessary evidence.
 
-Selected source lines in order are 15, 16.
-
-Task A uses 651 tokens. Task B uses 52 tokens.
+Selected complete lines in order are 15, 16.
+Task A uses 632 tokens. Task B uses 52 tokens.
