@@ -1,0 +1,537 @@
+import pgm_io = "./pgm_io.qui"
+import costs = "./costs.qui"
+import aggregation = "./aggregation.qui"
+import refinement = "./refinement.qui"
+import evaluation = "./evaluation.qui"
+
+const string[] kinds = ["sad", "ssd", "census"]
+const string[] method_names = ["sad", "ssd", "census", "sgm", "fusion", "wta_final", "sgm_final"]
+const string[] region_names = ["nonocc", "all", "disc"]
+const string[] source_names = ["kept", "median", "background", "interpolated", "none"]
+
+int absolute(int value)
+    return if value < 0 then -value else value
+
+int total(int[] values)
+    int result = 0
+    for int value = values[]
+        result += value
+    return result
+
+int lower_median(int[] values)
+    int[] ordered = values.sorted()
+    return ordered[(int(len(ordered)) - 1) / 2]
+
+int[] distinct(int[] values)
+    int[] ordered = values.sorted()
+    int[] result = []
+    for int value = ordered[]
+        if len(result) == 0 or value != result[int(len(result)) - 1]
+            result = result.append(value)
+    return result
+
+int valid_count(int[] image)
+    int result = 0
+    for int value = image[]
+        if value >= 0
+            result += 1
+    return result
+
+string optional(int value)
+    return if value < 0 then "-" else value.string()
+
+int[] neighbours(int pixel, int width, int height, bool diagonal)
+    int x = pixel % width
+    int y = pixel / width
+    int[] result = []
+    for -1 <= int dy <= 1
+        for -1 <= int dx <= 1
+            if (dx == 0 and dy == 0) or (not diagonal and dx != 0 and dy != 0)
+                continue
+            int nx = x + dx
+            int ny = y + dy
+            if nx >= 0 and nx < width and ny >= 0 and ny < height
+                result = result.append(ny * width + nx)
+    return result
+
+int[][] components(int[] image, int width, int height, int tolerance)
+    bool[] visited = [for int p < width * height then false]
+    int[][] result = []
+    for int first < width * height
+        if image[first] < 0 or visited[first]
+            continue
+        int[] queue = [first]
+        visited[first] = true
+        int next = 0
+        while next < int(len(queue))
+            int pixel = queue[next]
+            next += 1
+            for int adjacent = neighbours(pixel, width, height, false)[]
+                if image[adjacent] >= 0 and not visited[adjacent] and absolute(image[pixel] - image[adjacent]) <= tolerance
+                    visited[adjacent] = true
+                    queue = queue.append(adjacent)
+        result = result.append(queue)
+    return result
+
+class Method(int[] image, int window, int[] reasons, int[] margins, int[] lr, int bounds, int[] sources, int[] post_summary, int[] votes)
+
+Method select(int[][] volume, int[] texture, int width, int height, pgm_io.Params params, int window)
+    int pixels = width * height
+    int disparities = params.dmax - params.dmin + 1
+    int[] right = [for int p < pixels then -1]
+    for int y < height
+        for int x < width
+            int best = -1
+            int best_cost = 0
+            for params.dmin <= int d <= params.dmax
+                if x + d < width
+                    int value = volume[y * width + x + d][d - params.dmin]
+                    if best < 0 or value < best_cost
+                        best = d
+                        best_cost = value
+            right[y * width + x] = best
+    int[] image = [for int p < pixels then -1]
+    int[] reasons = [for int p < pixels then 0]
+    int[] margins = [for int p < pixels then 0]
+    int[] lr = [0, 0, 0, 0]
+    int bounds = 0
+    for int pixel < pixels
+        int x = pixel % width
+        int y = pixel / width
+        int best = 0
+        for 1 <= int index < disparities
+            if volume[pixel][index] < volume[pixel][best]
+                best = index
+        int disparity = best + params.dmin
+        int c1 = volume[pixel][best]
+        int c2 = 0
+        bool first = true
+        for int index < disparities
+            if absolute(index - best) >= 2
+                if first or volume[pixel][index] < c2
+                    first = false
+                    c2 = volume[pixel][index]
+        if disparity == params.dmin or disparity == params.dmax
+            bounds += 1
+        int reason = 0
+        if texture[pixel] < params.texture_threshold
+            reason = 50
+        elif 100 * c2 <= (100 + params.uniqueness) * c1
+            reason = 100
+        elif x - disparity < 0
+            reason = 150
+        elif absolute(disparity - right[y * width + x - disparity]) > params.lr_diff
+            bool consistent = false
+            for params.dmin <= int d <= params.dmax
+                if x - d >= 0 and absolute(d - right[y * width + x - d]) <= params.lr_diff
+                    consistent = true
+            reason = if consistent then 200 else 255
+        if reason == 0
+            image[pixel] = disparity
+            margins[pixel] = c2 - c1
+        reasons[pixel] = reason
+        if reason == 0 or reason == 200 or reason == 255
+            int difference = absolute(disparity - right[y * width + x - disparity])
+            lr[if difference < 3 then difference else 3] += 1
+    return Method(image, window, reasons, margins, lr, bounds, [], [], [])
+
+Method postprocess(Method selected, int width, int height, pgm_io.Params params)
+    int[] original = selected.image
+    int[] a1 = original
+    int removed_components = 0
+    int removed_pixels = 0
+    for int[] group = components(original, width, height, params.speckle_range)[]
+        if int(len(group)) < params.speckle_size
+            removed_components += 1
+            removed_pixels += int(len(group))
+            for int pixel = group[]
+                a1[pixel] = -1
+    int[] a2 = a1
+    int changed = 0
+    for int pixel < width * height
+        if a1[pixel] < 0
+            continue
+        int[] values = [a1[pixel]]
+        for int adjacent = neighbours(pixel, width, height, true)[]
+            if a1[adjacent] >= 0
+                values = values.append(a1[adjacent])
+        a2[pixel] = lower_median(values)
+        if a2[pixel] != a1[pixel]
+            changed += 1
+    int[] a3 = a2
+    int[] sources = [for int p < width * height then 4]
+    for int pixel < width * height
+        if a2[pixel] >= 0
+            sources[pixel] = if a2[pixel] == original[pixel] then 0 else 1
+            continue
+        int x = pixel % width
+        int y = pixel / width
+        int reason = selected.reasons[pixel]
+        bool background = reason == 150 or reason == 255
+        int[][] directions = if background then [[-1, 0], [1, 0]] else aggregation.directions
+        int[] values = []
+        for int[] direction = directions[]
+            int nx = x + direction[0]
+            int ny = y + direction[1]
+            while nx >= 0 and nx < width and ny >= 0 and ny < height
+                int value = a2[ny * width + nx]
+                if value >= 0
+                    values = values.append(value)
+                    break
+                nx += direction[0]
+                ny += direction[1]
+        if len(values) != 0
+            a3[pixel] = if background then values.sorted()[0] else lower_median(values)
+            sources[pixel] = if background then 2 else 3
+    int[] summary = [removed_components, removed_pixels, changed]
+    for int source = [2, 3, 4][]
+        summary = summary.append(int(len([for int value = sources[] if value == source then value])))
+    return Method(a3, 0, [], [], [], 0, sources, summary, [])
+
+Method fusion(Method[] methods, int pixels, int required_votes)
+    int[] image = []
+    int[] votes = [0, 0, 0, 0, 0]
+    for int pixel < pixels
+        int[] values = [for int i < 4 if methods[i].image[pixel] >= 0 then methods[i].image[pixel]]
+        votes[int(len(values))] += 1
+        int disparity = -1
+        if len(values) != 0
+            int middle = lower_median(values)
+            int agreeing = int(len([for int value = values[] if absolute(value - middle) <= 1 then value]))
+            if agreeing >= required_votes
+                disparity = middle
+        image = image.append(disparity)
+    return Method(image, 0, [], [], [], 0, [], [], votes)
+
+bool better(evaluation.Metrics first, evaluation.Metrics second)
+    if first.bad1 != second.bad1
+        return first.bad1 < second.bad1
+    if first.bad2 != second.bad2
+        return first.bad2 < second.bad2
+    if first.valid == 0 or second.valid == 0
+        return first.valid > 0 and second.valid == 0
+    return first.error_sum * second.valid < second.error_sum * first.valid
+
+class Object(int[] pixels, int median, int first, int target, int overlap)
+
+class Study(pgm_io.Image left, pgm_io.Image right, pgm_io.Image truth, pgm_io.Params params)
+    int width = left.width
+    int height = left.height
+    int pixels = width * height
+    evaluation.Regions regions = evaluation.regions(truth.pixels, width, height)
+    bool[][] masks = [regions.nonocc, regions.known, regions.disc]
+    int[] census_left = costs.census(left.pixels, width, height)
+    int[] census_right = costs.census(right.pixels, width, height)
+    int[] texture = costs.texture(left.pixels, width, height, params.texture_window)
+    Method[] methods = []
+    int[][] aggregate = []
+    string[] sweep_lines = []
+    string[] path_lines = []
+    evaluation.Metrics[][] metrics = []
+    int[] layers = distinct([for int value = truth.pixels[] if value != 0 then value])
+
+    int[][] make_cost(string kind, int window)
+        return costs.volume(left.pixels, right.pixels, census_left, census_right, width, height, kind, window, params.dmin, params.dmax)
+
+    string compact_summary(string prefix, Method method)
+        evaluation.Metrics measured = evaluation.evaluate(method.image, truth.pixels, regions.nonocc)
+        return prefix + " valid {valid_count(method.image)} bad1 " + evaluation.ratio(measured.bad1, measured.pixels) + " bad2 " + evaluation.ratio(measured.bad2, measured.pixels)
+
+    void .match_images()
+        for int kind < 3
+            Method chosen = Method([], 0, [], [], [], 0, [], [], [])
+            evaluation.Metrics best = evaluation.Metrics(0, 0, 0, 0, 0, 0)
+            bool first = true
+            for int window = params.windows[kind][]
+                Method candidate = select(make_cost(kinds[kind], window), texture, width, height, params, window)
+                evaluation.Metrics measured = evaluation.evaluate(candidate.image, truth.pixels, regions.nonocc)
+                sweep_lines = sweep_lines.append(compact_summary("sweep {kinds[kind]} window {window}", candidate))
+                if first or measured.bad1 < best.bad1 or (measured.bad1 == best.bad1 and measured.bad2 < best.bad2)
+                    first = false
+                    chosen = candidate
+                    best = measured
+            methods = methods.append(chosen)
+        int[][][] stages = aggregation.cumulative_costs(make_cost(params.sgm_kind, params.sgm_window), left.pixels, width, height, params.paths, params.p1, params.p2, params.gamma)
+        for int i < params.paths
+            aggregate = stages[i]
+            Method candidate = select(aggregate, texture, width, height, params, params.sgm_window)
+            path_lines = path_lines.append(compact_summary("paths {i + 1}", candidate))
+            if i + 1 == params.paths
+                methods = methods.append(candidate)
+        methods = methods.append(fusion(methods, pixels, params.fusion_votes))
+        int selected = 0
+        for int i < 3
+            if kinds[i] == params.wta_kind
+                selected = i
+        methods = methods.append(postprocess(methods[selected], width, height, params))
+        methods = methods.append(postprocess(methods[3], width, height, params))
+        metrics = [for Method method = methods[] then [for bool[] mask = masks[] then evaluation.evaluate(method.image, truth.pixels, mask)]]
+
+    string[] header_lines()
+        string[] lines = ["image {width} {height}", "disparities {params.dmin} {params.dmax}"]
+        int[][] images = [left.pixels, right.pixels]
+        string[] names = ["left", "right"]
+        for int i < 2
+            int[] ordered = images[i].sorted()
+            lines = lines.append("{names[i]} mean " + refinement.two_decimals(total(images[i]), pixels) + " min {ordered[0]} max {ordered[pixels - 1]}")
+        int textureless = int(len([for int value = texture[] if value < params.texture_threshold then value]))
+        lines = lines.append("texture mean " + refinement.two_decimals(total(texture), pixels) + " textureless {textureless}")
+        int known = evaluation.count(regions.known)
+        int nonocc = evaluation.count(regions.nonocc)
+        int occluded = evaluation.count(regions.occluded)
+        int disc = evaluation.count(regions.disc)
+        lines = lines.append("ground_truth known {known} nonocc {nonocc} occluded {occluded} disc {disc} unknown {pixels - known}")
+        int sum_abs = 0
+        int sum_difference = 0
+        for int pixel < pixels
+            if regions.nonocc[pixel]
+                int delta = right.pixels[pixel - truth.pixels[pixel]] - left.pixels[pixel]
+                sum_abs += absolute(delta)
+                sum_difference += delta
+        string bias = refinement.two_decimals(absolute(sum_difference), nonocc)
+        if sum_difference < 0 and bias != "0.00"
+            bias = "-" + bias
+        return lines.append("photometric pixels {nonocc} mean_abs " + refinement.two_decimals(sum_abs, nonocc) + " bias {bias}")
+
+    string[] method_lines(int index)
+        Method method = methods[index]
+        int[] image = method.image
+        int valid = valid_count(image)
+        string[] lines = ["method {method_names[index]} valid {valid} invalid {pixels - valid}"]
+        int[] values = [for int value = image[] if value >= 0 then value].sorted()
+        if valid == 0
+            lines = lines.append("disparity min - max - median - distinct 0")
+        else
+            lines = lines.append("disparity min {values[0]} max {values[valid - 1]} median {values[(valid - 1) / 2]} distinct {len(distinct(values))}")
+        int horizontal = 0
+        int vertical = 0
+        for int y < height
+            for int x < width
+                int pixel = y * width + x
+                if image[pixel] < 0
+                    continue
+                if x + 1 < width and image[pixel + 1] >= 0 and absolute(image[pixel] - image[pixel + 1]) >= 2
+                    horizontal += 1
+                if y + 1 < height and image[pixel + width] >= 0 and absolute(image[pixel] - image[pixel + width]) >= 2
+                    vertical += 1
+        lines = lines.append("jumps horizontal {horizontal} vertical {vertical}")
+        if index < 4
+            int[] counts = [for int code = [50, 100, 150, 200, 255][] then int(len([for int reason = method.reasons[] if reason == code then reason]))]
+            lines = lines.concat(["window {method.window} bounds {method.bounds}", "reasons textureless {counts[0]} nonunique {counts[1]} outside {counts[2]} mismatch {counts[3]} occluded {counts[4]}", "lr 0 {method.lr[0]} 1 {method.lr[1]} 2 {method.lr[2]} 3+ {method.lr[3]}"])
+        elif index == 4
+            lines = lines.append("votes 0 {method.votes[0]} 1 {method.votes[1]} 2 {method.votes[2]} 3 {method.votes[3]} 4 {method.votes[4]}")
+        else
+            int[] summary = method.post_summary
+            lines = lines.append("postprocess speckles {summary[0]} {summary[1]} median {summary[2]} background {summary[3]} interpolated {summary[4]} unfilled {summary[5]}")
+            for int source < 5
+                bool[] mask = [for int pixel < pixels then regions.known[pixel] and method.sources[pixel] == source]
+                evaluation.Metrics measured = evaluation.evaluate(image, truth.pixels, mask)
+                lines = lines.append("source {source_names[source]} pixels {measured.pixels} bad1 " + evaluation.ratio(measured.bad1, measured.pixels))
+        for int region < 3
+            evaluation.Metrics measured = metrics[index][region]
+            string mae = if measured.valid == 0 then "-" else refinement.two_decimals(measured.error_sum, measured.valid)
+            lines = lines.append("region {region_names[region]} pixels {measured.pixels} valid {measured.valid} bad1 " + evaluation.ratio(measured.bad1, measured.pixels) + " bad2 " + evaluation.ratio(measured.bad2, measured.pixels) + " mae {mae} exact {measured.exact}")
+        int[] depth_errors = []
+        int[] errors = [0, 0, 0, 0, 0, 0]
+        for int pixel < pixels
+            if not regions.known[pixel]
+                continue
+            if image[pixel] < 0
+                errors[5] += 1
+            else
+                int difference = absolute(image[pixel] - truth.pixels[pixel])
+                errors[if difference >= 4 then 4 else difference] += 1
+                if regions.nonocc[pixel]
+                    int estimate_depth = refinement.depth_hundredths(image[pixel], params.focal, params.baseline)
+                    int true_depth = refinement.depth_hundredths(truth.pixels[pixel], params.focal, params.baseline)
+                    depth_errors = depth_errors.append(absolute(estimate_depth - true_depth))
+        if len(depth_errors) == 0
+            lines = lines.append("depth_error pixels 0 mean - max -")
+        else
+            int[] ordered = depth_errors.sorted()
+            lines = lines.append("depth_error pixels {len(depth_errors)} mean " + refinement.two_decimals(total(depth_errors), 100 * int(len(depth_errors))) + " max " + refinement.two_decimals(ordered[int(len(ordered)) - 1], 100))
+        return lines.append("errors 0 {errors[0]} 1 {errors[1]} 2 {errors[2]} 3 {errors[3]} 4+ {errors[4]} invalid {errors[5]}")
+
+    string[] ranking_lines()
+        string[] lines = []
+        for int region < 3
+            int[] order = []
+            for int candidate < 7
+                int position = int(len(order))
+                for int i < int(len(order))
+                    if better(metrics[candidate][region], metrics[order[i]][region])
+                        position = i
+                        break
+                order = order[0:<position].concat([candidate]).concat(order[position:<int(len(order))])
+            lines = lines.append("ranking {region_names[region]} " + [for int i = order[] then method_names[i]].join(" "))
+        return lines
+
+    string[] occlusion_lines()
+        string[] lines = []
+        for int index < 4
+            int tp = 0
+            int fp = 0
+            int fn = 0
+            for int pixel < pixels
+                int reason = methods[index].reasons[pixel]
+                bool detected = reason == 150 or reason == 255
+                if regions.occluded[pixel]
+                    if detected
+                        tp += 1
+                    else
+                        fn += 1
+                elif regions.nonocc[pixel] and detected
+                    fp += 1
+            lines = lines.append("occlusion {method_names[index]} tp {tp} fp {fp} fn {fn} precision " + evaluation.ratio(tp, tp + fp) + " recall " + evaluation.ratio(tp, tp + fn))
+        return lines
+
+    string[] confidence_lines()
+        string[] lines = []
+        for int index < 4
+            Method method = methods[index]
+            int[] order = []
+            int largest = 0
+            for int margin = method.margins[]
+                if margin > largest
+                    largest = margin
+            int[] keys = []
+            for int pixel < pixels
+                if regions.nonocc[pixel] and method.image[pixel] >= 0
+                    keys = keys.append((largest - method.margins[pixel]) * pixels + pixel)
+            order = [for int key = keys.sorted()[] then key % pixels]
+            for int percent = [25, 50, 75, 100][]
+                int count = (int(len(order)) * percent + 99) / 100
+                int bad = 0
+                for int i < count
+                    int pixel = order[i]
+                    if absolute(method.image[pixel] - truth.pixels[pixel]) > 1
+                        bad += 1
+                string margin = if count == 0 then "-" else method.margins[order[count - 1]].string()
+                lines = lines.append("confidence {method_names[index]} {percent} pixels {count} margin {margin} bad1 " + evaluation.ratio(bad, count))
+        return lines
+
+    string[] layer_lines()
+        string[] lines = []
+        for int layer = layers[]
+            int known = int(len([for int value = truth.pixels[] if value == layer then value]))
+            bool[] mask = [for int pixel < pixels then truth.pixels[pixel] == layer and regions.nonocc[pixel]]
+            int nonocc = evaluation.count(mask)
+            string[] bad = []
+            for Method method = methods[]
+                evaluation.Metrics measured = evaluation.evaluate(method.image, truth.pixels, mask)
+                bad = bad.append(measured.bad1.string())
+            lines = lines.append("layer {layer} pixels {known} nonocc {nonocc} bad1 " + bad.join(" "))
+        return lines
+
+    string[] evaluation_lines()
+        string[] lines = header_lines().concat(sweep_lines).concat(path_lines)
+        for int index < 7
+            lines = lines.concat(method_lines(index))
+        lines = lines.concat(ranking_lines()).concat(occlusion_lines()).concat(confidence_lines()).concat(layer_lines())
+        for params.dmin <= int disparity <= params.dmax
+            int count = int(len([for int value = methods[6].image[] if value == disparity then value]))
+            lines = lines.append("histogram {disparity} {count}")
+        return lines
+
+    string[] sample_lines()
+        string[] rows = ["x,y,sad,ssd,census,sgm,disparity,source,subpixel,depth,truth,truth_depth"]
+        for int[] sample = params.samples[]
+            int pixel = sample[1] * width + sample[0]
+            string[] values = [sample[0].string(), sample[1].string()]
+            for int index < 4
+                values = values.append(optional(methods[index].image[pixel]))
+            int disparity = methods[6].image[pixel]
+            if disparity < 0
+                values = values.concat(["-", "none", "-", "-"])
+            else
+                values = values.concat([disparity.string(), source_names[methods[6].sources[pixel]]])
+                values = values.concat(refinement.subpixel(disparity, aggregate[pixel], params.dmin, params.dmax, params.focal, params.baseline))
+            int known = truth.pixels[pixel]
+            values = values.concat(if known == 0 then ["-", "-"] else [known.string(), refinement.two_decimals(params.focal * params.baseline, known)])
+            rows = rows.append(values.join(","))
+        return rows
+
+    string[] object_lines()
+        Object[] objects = []
+        int small = 0
+        int object_pixels = 0
+        for int[] group = components(methods[6].image, width, height, params.object_range)[]
+            if int(len(group)) < params.object_min
+                small += 1
+                continue
+            int[] disparities = [for int pixel = group[] then methods[6].image[pixel]]
+            int middle = lower_median(disparities)
+            int target = -1
+            int overlap = 0
+            for int layer = layers[]
+                int count = int(len([for int pixel = group[] if truth.pixels[pixel] == layer then pixel]))
+                if count > overlap
+                    target = layer
+                    overlap = count
+            Object item = Object(group, middle, group[0], target, overlap)
+            int position = int(len(objects))
+            for int i < int(len(objects))
+                Object old = objects[i]
+                if middle > old.median or (middle == old.median and len(group) > len(old.pixels)) or (middle == old.median and len(group) == len(old.pixels) and item.first < old.first)
+                    position = i
+                    break
+            objects = objects[0:<position].concat([item]).concat(objects[position:<int(len(objects))])
+            object_pixels += int(len(group))
+        string[] lines = ["objects {len(objects)} small {small} pixels {object_pixels}"]
+        int[] detected = []
+        for int index < int(len(objects))
+            Object item = objects[index]
+            int n = int(len(item.pixels))
+            int[] xs = [for int pixel = item.pixels[] then pixel % width].sorted()
+            int[] ys = [for int pixel = item.pixels[] then pixel / width].sorted()
+            int[] disparities = [for int pixel = item.pixels[] then methods[6].image[pixel]].sorted()
+            int sum_d = total(disparities)
+            int x0 = xs[0]
+            int x1 = xs[n - 1]
+            int y0 = ys[0]
+            int y1 = ys[n - 1]
+            string suffix = "truth - iou -"
+            if item.target >= 0
+                int layer_pixels = int(len([for int value = truth.pixels[] if value == item.target then value]))
+                int union_pixels = n + layer_pixels - item.overlap
+                suffix = "truth {item.target} iou " + evaluation.ratio(item.overlap, union_pixels)
+                if 2 * item.overlap > union_pixels
+                    detected = detected.append(item.target)
+            lines = lines.append("object {index + 1} pixels {n} box {x0} {y0} {x1} {y1} disparity {disparities[0]} {disparities[n - 1]} median {item.median} mean " + refinement.two_decimals(sum_d, n) + " depth " + refinement.two_decimals(params.focal * params.baseline * n, sum_d) + " size " + refinement.two_decimals((x1 - x0 + 1) * params.baseline, item.median) + " " + refinement.two_decimals((y1 - y0 + 1) * params.baseline, item.median) + " " + suffix)
+        detected = distinct(detected)
+        int[] missed = []
+        for int layer = layers[]
+            bool found = false
+            for int value = detected[]
+                found = found or value == layer
+            if not found
+                missed = missed.append(layer)
+        string missing = if len(missed) == 0 then "-" else [for int value = missed[] then value.string()].join(" ")
+        return lines.append("layers {len(layers)} detected {len(detected)} missed {missing}")
+
+    int[] error_image()
+        int[] result = []
+        for int pixel < pixels
+            int value = 0
+            if truth.pixels[pixel] != 0
+                int disparity = methods[6].image[pixel]
+                if disparity < 0
+                    value = 255
+                else
+                    int difference = absolute(disparity - truth.pixels[pixel])
+                    value = if difference >= 3 then 200 else 50 * (difference + 1)
+            result = result.append(value)
+        return result
+
+void run()
+    Study study = Study(pgm_io.read_image("input/left.pgm"), pgm_io.read_image("input/right.pgm"), pgm_io.read_image("input/ground_truth.pgm"), pgm_io.read_params())
+    .study.match_images()
+    pgm_io.write_image("disparity_wta.pgm", study.width, study.height, [for int value = study.methods[5].image[] then (if value < 0 then 0 else 8 * value)])
+    pgm_io.write_image("disparity_sgm.pgm", study.width, study.height, [for int value = study.methods[6].image[] then (if value < 0 then 0 else 8 * value)])
+    pgm_io.write_image("occlusion.pgm", study.width, study.height, study.methods[3].reasons)
+    pgm_io.write_image("error_sgm.pgm", study.width, study.height, study.error_image())
+    pgm_io.write_lines("depth.csv", study.sample_lines())
+    pgm_io.write_lines("evaluation.txt", study.evaluation_lines())
+    pgm_io.write_lines("objects.txt", study.object_lines())
+
+run()

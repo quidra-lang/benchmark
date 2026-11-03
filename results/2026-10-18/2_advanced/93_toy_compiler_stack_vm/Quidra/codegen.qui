@@ -1,0 +1,240 @@
+import lexer = "./lexer.qui"
+import parser = "./parser.qui"
+import semantic = "./semantic.qui"
+
+class Instruction(string op, int[] operands, lexer.Position position, int callee = -1)
+class Unit(string name, int function, int[] slots, Instruction[] code)
+class Label(int position = -1, int[] patches = [])
+class Context(semantic.Context model, Instruction[] code = [], Label[] labels = [])
+class Generated(semantic.Context model, Unit[] units, int area)
+class Flat(Instruction[] instructions, int[] owners, int[] starts)
+
+void emit(Context &context, string op, const int[] operands, const lexer.Position position, int callee = -1)
+    context.code = context.code.append(Instruction(op, operands, position, callee))
+
+int new_label(Context &context)
+    int index = int(len(context.labels))
+    context.labels = context.labels.append(Label())
+    return index
+
+void jump(Context &context, string op, int label, const lexer.Position position)
+    int index = int(len(context.code))
+    int target = context.labels[label].position
+    emit(&context, op, [if target < 0 then 0 else target], position)
+    if target < 0
+        context.labels[label].patches = context.labels[label].patches.append(index)
+
+void mark(Context &context, int label)
+    context.labels[label].position = int(len(context.code))
+    int[] patches = context.labels[label].patches
+    for int index = patches[]
+        context.code[index].operands[0] = int(len(context.code))
+
+string binary_opcode(string operator)
+    string[] operators = ["+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!="]
+    string[] opcodes = ["ADD", "SUB", "MUL", "DIV", "MOD", "LT", "LE", "GT", "GE", "EQ", "NE"]
+    for int index < int(len(operators))
+        if operators[index] == operator
+            return opcodes[index]
+    return ""
+
+int | error array_size(const parser.Variable variable)
+    match variable.size
+        int size
+            return size
+        none
+            return error("missing array size")
+
+void generate_expression(Context &context, int index)
+    parser.Expr expression = context.model.program.syntax.expressions[index]
+    if expression.kind == "integer"
+        int value = int.parse(expression.value)
+        emit(&context, "PUSH", [value], expression.position)
+    elif expression.kind == "bool"
+        emit(&context, "PUSH", [if expression.value == "true" then 1 else 0], expression.position)
+    elif expression.kind == "read"
+        emit(&context, "READ", [], expression.position)
+    elif expression.kind == "variable" or expression.kind == "element"
+        semantic.Symbol symbol = context.model.symbols[expression.reference]
+        parser.Variable variable = context.model.program.syntax.variables[symbol.index]
+        if expression.kind == "element"
+            generate_expression(&context, expression.children[0])
+            int size = array_size(variable)
+            emit(&context, "LOADA", [variable.address, size], expression.position)
+        else
+            emit(&context, if variable.address >= 0 then "LOADG" else "LOADL", [if variable.address >= 0 then variable.address else variable.slot], expression.position)
+    elif expression.kind == "call"
+        for int child = expression.children[]
+            generate_expression(&context, child)
+        emit(&context, "CALL", [0, int(len(expression.children))], expression.position, expression.reference)
+    elif expression.kind == "unary"
+        generate_expression(&context, expression.children[0])
+        emit(&context, if expression.value == "-" then "NEG" else "NOT", [], expression.position)
+    else
+        generate_expression(&context, expression.children[0])
+        if expression.value == "&&" or expression.value == "||"
+            int alternative = new_label(&context)
+            int end = new_label(&context)
+            jump(&context, if expression.value == "&&" then "JUMPF" else "JUMPT", alternative, expression.position)
+            generate_expression(&context, expression.children[1])
+            jump(&context, "JUMP", end, expression.position)
+            mark(&context, alternative)
+            emit(&context, "PUSH", [if expression.value == "&&" then 0 else 1], expression.position)
+            mark(&context, end)
+        else
+            generate_expression(&context, expression.children[1])
+            emit(&context, binary_opcode(expression.value), [], expression.position)
+
+void generate_statement(Context &context, int index, int break_label = -1, int continue_label = -1)
+    parser.Stmt statement = context.model.program.syntax.statements[index]
+    string kind = statement.kind
+    if kind == "empty"
+        return
+    if kind == "block"
+        for int child = statement.statements[]
+            generate_statement(&context, child, break_label, continue_label)
+    elif kind == "declaration"
+        parser.Variable variable = context.model.program.syntax.variables[statement.variable]
+        match variable.initializer
+            int initial
+                generate_expression(&context, initial)
+            none
+                emit(&context, "PUSH", [0], variable.name.position)
+        emit(&context, "STOREL", [variable.slot], variable.name.position)
+    elif kind == "assignment"
+        semantic.Symbol symbol = context.model.symbols[statement.reference]
+        parser.Variable variable = context.model.program.syntax.variables[symbol.index]
+        bool indexed = false
+        match statement.index
+            int expression_index
+                indexed = true
+                generate_expression(&context, expression_index)
+            none
+                indexed = false
+        generate_expression(&context, statement.expressions[0])
+        if indexed
+            int size = array_size(variable)
+            emit(&context, "STOREA", [variable.address, size], statement.position)
+        else
+            emit(&context, if variable.address >= 0 then "STOREG" else "STOREL", [if variable.address >= 0 then variable.address else variable.slot], statement.position)
+    elif kind == "call"
+        generate_expression(&context, statement.expressions[0])
+        if context.model.program.syntax.expressions[statement.expressions[0]].type != "void"
+            emit(&context, "POP", [], statement.position)
+    elif kind == "print"
+        for int expression_index = statement.expressions[]
+            generate_expression(&context, expression_index)
+        emit(&context, "PRINT", [int(len(statement.expressions))], statement.position)
+    elif kind == "if"
+        int alternative = new_label(&context)
+        generate_expression(&context, statement.expressions[0])
+        jump(&context, "JUMPF", alternative, statement.position)
+        generate_statement(&context, statement.statements[0], break_label, continue_label)
+        if len(statement.statements) > 1
+            int end = new_label(&context)
+            jump(&context, "JUMP", end, statement.position)
+            mark(&context, alternative)
+            generate_statement(&context, statement.statements[1], break_label, continue_label)
+            mark(&context, end)
+        else
+            mark(&context, alternative)
+    elif kind == "while"
+        int start = new_label(&context)
+        int end = new_label(&context)
+        mark(&context, start)
+        generate_expression(&context, statement.expressions[0])
+        jump(&context, "JUMPF", end, statement.position)
+        generate_statement(&context, statement.statements[0], end, start)
+        jump(&context, "JUMP", start, statement.position)
+        mark(&context, end)
+    elif kind == "for"
+        if statement.statements[0] >= 0
+            generate_statement(&context, statement.statements[0], break_label, continue_label)
+        int start = new_label(&context)
+        int next = new_label(&context)
+        int end = new_label(&context)
+        mark(&context, start)
+        if statement.expressions[0] >= 0
+            generate_expression(&context, statement.expressions[0])
+            jump(&context, "JUMPF", end, statement.position)
+        generate_statement(&context, statement.statements[2], end, next)
+        mark(&context, next)
+        if statement.statements[1] >= 0
+            generate_statement(&context, statement.statements[1], break_label, continue_label)
+        jump(&context, "JUMP", start, statement.position)
+        mark(&context, end)
+    elif kind == "break" or kind == "continue"
+        jump(&context, "JUMP", if kind == "break" then break_label else continue_label, statement.position)
+    elif kind == "return"
+        if len(statement.expressions) > 0
+            generate_expression(&context, statement.expressions[0])
+            emit(&context, "RETV", [], statement.position)
+        else
+            emit(&context, "RET", [], statement.position)
+
+int[] declarations(const parser.Store syntax, int index)
+    parser.Stmt statement = syntax.statements[index]
+    if statement.kind == "declaration"
+        return [statement.variable]
+    int[] result = []
+    for int child = statement.statements[]
+        if child >= 0
+            result = result.concat(declarations(syntax, child))
+    return result
+
+Generated generate(const semantic.Context model, const int[] reachable)
+    Context context = Context(model)
+    int area = 0
+    for parser.Top declaration = context.model.program.declarations[]
+        if declaration.kind == "variable"
+            context.model.program.syntax.variables[declaration.index].address = area
+            parser.Variable variable = context.model.program.syntax.variables[declaration.index]
+            match variable.size
+                int size
+                    area += size
+                none
+                    area += 1
+    for parser.Top declaration = context.model.program.declarations[]
+        if declaration.kind != "variable"
+            continue
+        parser.Variable variable = context.model.program.syntax.variables[declaration.index]
+        match variable.initializer
+            int initial
+                generate_expression(&context, initial)
+                emit(&context, "STOREG", [variable.address], variable.name.position)
+            none
+                area = area
+    int entry = semantic.global_id(context.model, "main")
+    semantic.Symbol entry_symbol = context.model.symbols[entry]
+    emit(&context, "CALL", [0, 0], entry_symbol.name.position, entry)
+    emit(&context, "HALT", [], entry_symbol.name.position)
+    Unit[] units = [Unit("<init>", -1, [], context.code)]
+    for parser.Top declaration = context.model.program.declarations[]
+        if declaration.kind != "function"
+            continue
+        parser.Function function = context.model.program.syntax.functions[declaration.index]
+        if not lexer.has(reachable, function.id)
+            continue
+        int[] local_variables = declarations(context.model.program.syntax, function.body)
+        for int position < int(len(local_variables))
+            int cursor = position
+            while cursor > 0
+                lexer.Position first = context.model.program.syntax.variables[local_variables[cursor]].name.position
+                lexer.Position second = context.model.program.syntax.variables[local_variables[cursor - 1]].name.position
+                if lexer.compare_position(first, second) >= 0
+                    break
+                int saved = local_variables[cursor]
+                local_variables[cursor] = local_variables[cursor - 1]
+                local_variables[cursor - 1] = saved
+                cursor -= 1
+        int[] slots = function.parameters.concat(local_variables)
+        for int position < int(len(slots))
+            context.model.program.syntax.variables[slots[position]].slot = position
+        context.code = []
+        context.labels = []
+        emit(&context, "ENTER", [int(len(slots))], function.name.position)
+        generate_statement(&context, function.body)
+        if function.type == "void"
+            emit(&context, "RET", [], context.model.program.syntax.statements[function.body].close)
+        units = units.append(Unit(function.name.text, declaration.index, slots, context.code))
+    return Generated(context.model, units, area)

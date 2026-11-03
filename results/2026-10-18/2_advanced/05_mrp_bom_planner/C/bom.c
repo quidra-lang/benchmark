@@ -1,0 +1,17 @@
+#include "mrp.h"
+
+int64_t need(const Link *link,int64_t quantity) { return (quantity*link->quantity*(100+link->scrap)+99)/100; }
+static bool path_search(const Model *model,int item,int target,bool *visited,int *path,int *count) { if (item==target) { path[(*count)++]=item; return true; } visited[item]=true; const Item *record=&model->items[item]; for (int i=0;i<record->child_count;i++) { int child=model->links[record->children[i]].child; if (visited[child]) continue; int length=*count; path[(*count)++]=item; if (path_search(model,child,target,visited,path,count)) return true; *count=length; } return false; }
+void read_bom(Model *model) {
+    Strings lines=read_lines("bom.csv");
+    for (int i=1;i<lines.count;i++) { Strings fields=split(lines.data[i],','); char **f=fields.data,*message=NULL; int parent=find_item(model,f[0]),child=find_item(model,f[1]); int64_t quantity=integer(f[2]),scrap=integer(f[3]);
+        if (parent<0) message=format("unknown item %s",f[0]); else if (child<0) message=format("unknown item %s",f[1]); else if (quantity<1) message=format("bad quantity %" PRId64,quantity); else if (scrap>50) message=format("bad scrap %" PRId64,scrap); else if (parent==child) message=format("cycle %s -> %s",f[0],f[0]);
+        if (!message) for (int j=0;j<model->items[parent].child_count;j++) if (model->links[model->items[parent].children[j]].child==child) { message=format("duplicate %s -> %s",f[0],f[1]); break; }
+        if (!message) { bool visited[100]={false}; int path[100],count=0; if (path_search(model,child,parent,visited,path,&count)) { Strings names={0}; add_string(&names,f[0]); for (int j=0;j<count;j++) add_string(&names,model->items[path[j]].id); message=format("cycle %s",join(names," -> ")); } }
+        if (message) { record_error(model,"bom.csv",i+1,message); continue; }
+        int index=model->link_count++; model->links[index]=(Link){parent,child,quantity,scrap}; Item *p=&model->items[parent],*c=&model->items[child]; int position=p->child_count++; while (position>0 && strcmp(model->items[model->links[p->children[position-1]].child].id,c->id)>0) { p->children[position]=p->children[position-1]; position--; } p->children[position]=index; position=c->parent_count++; while (position>0 && strcmp(model->items[model->links[c->parents[position-1]].parent].id,p->id)>0) { c->parents[position]=c->parents[position-1]; position--; } c->parents[position]=index;
+    }
+}
+static int low_level(Model *model,int index) { Item *item=&model->items[index]; if (item->code>=0) return item->code; int value=0; for (int i=0;i<item->parent_count;i++) { int code=low_level(model,model->links[item->parents[i]].parent)+1; if (code>value) value=code; } return item->code=value; }
+static int cumulative(Model *model,int index) { Item *item=&model->items[index]; if (item->cumulative>=0) return item->cumulative; int value=0; for (int i=0;i<item->child_count;i++) { int lead=cumulative(model,model->links[item->children[i]].child); if (lead>value) value=lead; } return item->cumulative=item->lead+value; }
+void compute_structure(Model *model) { for (int i=0;i<model->item_count;i++) { low_level(model,i); cumulative(model,i); int j=i; while (j>0 && strcmp(model->items[model->item_order[j-1]].id,model->items[i].id)>0) { model->item_order[j]=model->item_order[j-1]; j--; } model->item_order[j]=i; j=i; while (j>0) { Item *a=&model->items[model->order[j-1]],*b=&model->items[i]; if (a->code<b->code || (a->code==b->code && strcmp(a->id,b->id)<=0)) break; model->order[j]=model->order[j-1]; j--; } model->order[j]=i; } }

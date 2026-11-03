@@ -1,0 +1,673 @@
+import math
+import dataset = "./dataset.qui"
+import minstd = "./minstd.qui"
+import resampling = "./resampling.qui"
+import tests = "./tests.qui"
+import report = "./report.qui"
+
+class Summary(real64 estimate, real64[] values, local int[] ranks)
+    real64[] ordered = values.sorted()
+    local resampling.MeanSe spread = resampling.MeanSe(values)
+    real64 average = spread.average
+    real64 se = spread.se
+    real64 bias = average - estimate
+    real64 low = ordered[ranks[0] - 1]
+    real64 high = ordered[ranks[1] - 1]
+    real64 basic_low = 2.0 * estimate - high
+    real64 basic_high = 2.0 * estimate - low
+
+    string csv_line(string name, string statistic)
+        real64[] fields = [estimate, se, bias, low, high, basic_low, basic_high]
+        return [name, statistic].concat([for real64 field = fields[] then report.real_text(field)]).join(",")
+
+    string interval_text()
+        return "se {report.real_text(se)} bias {report.real_text(bias)} percentile {report.real_text(low)} {report.real_text(high)} basic {report.real_text(basic_low)} {report.real_text(basic_high)}"
+
+class GroupBootstrap(dataset.Group group, int[][] indices, local int[] ranks)
+    int[][] samples = [for int[] replicate = indices[] then group.values[replicate]]
+    local real64[] estimates = resampling.statistics(group.values)
+    local real64[][] replicates = [for int[] sample = samples[] then resampling.statistics(sample)]
+    Summary[] summaries = [for int i = (0:<4)[] then Summary(estimates[i], [for real64[] replicate = replicates[] then replicate[i]], ranks)]
+
+class PairBootstrap(GroupBootstrap first, GroupBootstrap second, local int[] ranks)
+    string name = first.group.name + "-" + second.group.name
+    local real64[] estimates = resampling.pair_statistics(first.group.values, second.group.values)
+    local real64[][] replicates = [for int i = (0:<int(len(first.samples)))[] then resampling.pair_statistics(first.samples[i], second.samples[i])]
+    Summary[] summaries = [for int i = (0:<4)[] then Summary(estimates[i], [for real64[] replicate = replicates[] then replicate[i]], ranks)]
+
+class Spread(local real64[] values)
+    local int count = int(len(values))
+    real64 average = math.sum(values) / real64(count)
+    local real64[] offsets = values - average
+    real64 variance = real64(count - 1) * math.sum(offsets * offsets) / real64(count)
+
+class Jackknife(local real64 estimate, real64[] values)
+    local Spread spread = Spread(values)
+    real64 average = spread.average
+    real64 variance = spread.variance
+    real64 bias = real64(int(len(values)) - 1) * (average - estimate)
+    real64 se = math.sqrt(variance)
+
+class Tally(int observed)
+    int extreme = 0
+    int greater = 0
+
+    void .count(int value)
+        if math.abs(value) >= math.abs(observed)
+            extreme += 1
+        if value >= observed
+            greater += 1
+
+    string text(int offset, int denominator)
+        return "extreme {extreme} greater {greater} p_two {report.p_value(extreme + offset, denominator)} p_greater {report.p_value(greater + offset, denominator)}"
+
+class DisplayRange(local int[] values)
+    int low = math.min_all(values)
+    int delta = 100 * (math.max_all(values) - low)
+
+    int position(int value)
+        return (120 * (value - 100 * low) + delta) / (2 * delta)
+
+string[] group_names()
+    return ["mean", "median", "trimmed_mean", "sd"]
+
+string[] pair_names()
+    return ["mean_diff", "median_ratio", "hodges_lehmann", "cohen_d"]
+
+int[] outlier_indices(int[] values)
+    int first = resampling.quantile_numerator(values, 25)
+    int third = resampling.quantile_numerator(values, 75)
+    return [for int i = (0:<int(len(values)))[] if 200 * values[i] < 5 * first - 3 * third or 200 * values[i] > 5 * third - 3 * first then i]
+
+void fill_band(string[] &band, int start, int end, string symbol)
+    for start <= int i <= end
+        band[i] = symbol
+
+string box_plot(int[] values, DisplayRange display, int[] outliers, int[] whiskers)
+    string[] band = array(61, fill = ".")
+    fill_band(&band, display.position(100 * whiskers[0]), display.position(100 * whiskers[1]), "-")
+    fill_band(&band, display.position(resampling.quantile_numerator(values, 25)), display.position(resampling.quantile_numerator(values, 75)), "=")
+    band[display.position(resampling.quantile_numerator(values, 50))] = "|"
+    for int index = outliers[]
+        band[display.position(100 * values[index])] = "o"
+    return band.join("")
+
+string[] stem_lines(int[] values)
+    int[] ordered = values.sorted()
+    string[] lines = []
+    for ordered[0] / 100 <= int stem <= ordered[len(ordered) - 1] / 100
+        string leaves = [for int value = ordered[] if value / 100 == stem then "{value % 100 / 10}"].join("")
+        lines = lines.append(if len(leaves) == 0 then "stem {stem}" else "stem {stem} {leaves}")
+    return lines
+
+string[] series_lines(string kind, string name, int[] values, DisplayRange display, bool with_stems)
+    int count = int(len(values))
+    real64 average = resampling.mean(values)
+    real64 deviation = resampling.sd(values)
+    real64[] moments = resampling.central_moments(values)
+    int[] clipped = resampling.winsorized(values)
+    int first_quartile = resampling.quantile_numerator(values, 25)
+    int third_quartile = resampling.quantile_numerator(values, 75)
+    int[] outliers = outlier_indices(values)
+    bool[] outside = array(len(values), fill = false)
+    for int index = outliers[]
+        outside[index] = true
+    int[] inside = [for int i = (0:<count)[] if not outside[i] then values[i]]
+    int[] whiskers = [math.min_all(inside), math.max_all(inside)]
+    int[] percentiles = [5, 10, 90, 95]
+    string[] labels = ["p05", "p10", "p90", "p95"]
+    string percentile_text = [for int i = (0:<4)[] then "{labels[i]} {report.real_text(real64(resampling.quantile_numerator(values, percentiles[i])) / 10000.0)}"].join(" ")
+    string[] lines = [
+        "{kind} {name}",
+        "n {count}",
+        "mean {report.real_text(average)}",
+        "median {report.real_text(resampling.median(values))}",
+        "trimmed_mean {report.real_text(resampling.trimmed_mean(values))} trim {count / 10}",
+        "winsorized_mean {report.real_text(resampling.mean(clipped))} winsorized_sd {report.real_text(resampling.sd(clipped))}",
+        "sd {report.real_text(deviation)}",
+        "se_mean {report.real_text(deviation / math.sqrt(real64(count)))}",
+        "cv {report.real_text(deviation / average)}",
+        "skewness {report.real_text(moments[1] / (moments[0] * math.sqrt(moments[0])))}",
+        "kurtosis {report.real_text(moments[2] / (moments[0] * moments[0]) - 3.0)}",
+        "mad {report.real_text(resampling.mad(values))}",
+        "min {report.real_text(real64(math.min_all(values)) / 100.0)}",
+        "q1 {report.real_text(real64(first_quartile) / 10000.0)}",
+        "q3 {report.real_text(real64(third_quartile) / 10000.0)}",
+        "iqr {report.real_text(real64(third_quartile - first_quartile) / 10000.0)}",
+        "max {report.real_text(real64(math.max_all(values)) / 100.0)}",
+        "percentiles {percentile_text}",
+        "whiskers {report.real_text(real64(whiskers[0]) / 100.0)} {report.real_text(real64(whiskers[1]) / 100.0)}",
+        "outliers {report.number_list(outliers + 1)}",
+        "box {box_plot(values, display, outliers, whiskers)}"
+    ]
+    return if with_stems then lines.concat(stem_lines(values)) else lines
+
+real64 bca_alpha(real64 z0, real64 acceleration, real64 z)
+    return resampling.phi(z0 + (z0 + z) / (1.0 - acceleration * (z0 + z)))
+
+int[][] omitted_replicates(int[][] indices, int size)
+    bool[][] selected = []
+    for int[] replicate = indices[]
+        bool[] used = array(nat(size), fill = false)
+        for int index = replicate[]
+            used[index] = true
+        selected = selected.append(used)
+    return [for int i = (0:<size)[] then [for int j = (0:<int(len(indices)))[] if not selected[j][i] then j]]
+
+string[] pair_jackknife_lines(PairBootstrap pair)
+    int[] x = pair.first.group.values
+    int[] y = pair.second.group.values
+    real64[][] first_values = [for int i = (0:<int(len(x)))[] then resampling.pair_statistics(resampling.without(x, i), y)]
+    real64[][] second_values = [for int i = (0:<int(len(y)))[] then resampling.pair_statistics(x, resampling.without(y, i))]
+    string[] names = pair_names()
+    string[] lines = []
+    for int i < 4
+        real64 estimate = pair.summaries[i].estimate
+        auto first = Jackknife(estimate, [for real64[] row = first_values[] then row[i]])
+        auto second = Jackknife(estimate, [for real64[] row = second_values[] then row[i]])
+        real64 bias = first.bias + second.bias
+        real64 se = math.sqrt(first.variance + second.variance)
+        lines = lines.append("pair {pair.name} {names[i]} estimate {report.real_text(estimate)} bias {report.real_text(bias)} se {report.real_text(se)}")
+    return lines
+
+string welch_line(int[][] samples)
+    int count = int(len(samples))
+    real64[] means = [for int[] sample = samples[] then resampling.mean(sample)]
+    real64[] weights = []
+    for int[] sample = samples[]
+        real64 deviation = resampling.sd(sample)
+        weights = weights.append(real64(len(sample)) / (deviation * deviation))
+    real64 total = math.sum(weights)
+    real64 center = math.sum(weights * means) / total
+    real64[] offsets = means - center
+    real64 spread = math.sum(weights * (offsets * offsets)) / real64(count - 1)
+    real64[] terms = []
+    for int i < count
+        real64 share = 1.0 - weights[i] / total
+        terms = terms.append(share * share / real64(int(len(samples[i])) - 1))
+    real64 lambda = math.sum(terms)
+    real64 f = spread / (1.0 + real64(2 * (count - 2)) * lambda / real64(count * count - 1))
+    real64 df = real64(count * count - 1) / (3.0 * lambda)
+    return "welch f {report.real_text(f)} df {count - 1} {report.real_text(df)}"
+
+class PairResult(string[] lines, int[] extremes)
+
+class Study(dataset.Dataset source, local minstd.Generator &bootstrap_generator)
+    dataset.Settings settings = source.settings
+    int low_rank = (settings.bootstrap + 1) * (100 - settings.confidence) / 200
+    int[] ranks = [low_rank, settings.bootstrap + 1 - low_rank]
+    real64 z_low = resampling.phi_inverse(real64(100 - settings.confidence) / 200.0)
+    GroupBootstrap[] ordinary = []
+    for dataset.Group group = source.groups[]
+        ordinary = ordinary.append(GroupBootstrap(group, resampling.ordinary_indices(&bootstrap_generator, int(len(group.values)), settings.bootstrap), ranks))
+    GroupBootstrap[] balanced = []
+    for dataset.Group group = source.groups[]
+        balanced = balanced.append(GroupBootstrap(group, resampling.balanced_indices(&bootstrap_generator, int(len(group.values)), settings.bootstrap), ranks))
+    local real64[] initial_mean_values = []
+    local real64[] initial_correlation_values = []
+    for int[] replicate = resampling.ordinary_indices(&bootstrap_generator, int(len(source.paired.differences)), settings.bootstrap)[]
+        initial_mean_values = initial_mean_values.append(resampling.mean(source.paired.differences[replicate]))
+        initial_correlation_values = initial_correlation_values.append(resampling.correlation(source.paired.before[replicate], source.paired.after[replicate]))
+    Summary mean_summary = Summary(resampling.mean(source.paired.differences), initial_mean_values, ranks)
+    Summary correlation_summary = Summary(resampling.correlation(source.paired.before, source.paired.after), initial_correlation_values, ranks)
+    PairBootstrap[] pairs = [for int[] pair = source.pairs[] then PairBootstrap(ordinary[pair[0]], ordinary[pair[1]], ranks)]
+
+    string[] descriptive_file()
+        int[] everything = []
+        for dataset.Group group = source.groups[]
+            everything = everything.concat(group.values)
+        string[] lines = ["groups {len(source.groups)} observations {len(everything)}"]
+        auto display = DisplayRange(everything)
+        for dataset.Group group = source.groups[]
+            lines = lines.concat(series_lines("group", group.name, group.values, display, true))
+        dataset.Paired paired = source.paired
+        lines = lines.append("paired subjects {len(paired.differences)}")
+        auto paired_display = DisplayRange(paired.before.concat(paired.after))
+        lines = lines.concat(series_lines("series", "before", paired.before, paired_display, false))
+        lines = lines.concat(series_lines("series", "after", paired.after, paired_display, false))
+        return lines.concat(series_lines("series", "diff", paired.differences, DisplayRange(paired.differences), false))
+
+    string[] bootstrap_file()
+        string[] lines = ["group,statistic,estimate,se,bias,percentile_lo,percentile_hi,basic_lo,basic_hi"]
+        string[] names = group_names()
+        for int i < int(len(ordinary))
+            for int j < 4
+                lines = lines.append(ordinary[i].summaries[j].csv_line(ordinary[i].group.name, names[j]))
+            for int j < 4
+                lines = lines.append(balanced[i].summaries[j].csv_line(balanced[i].group.name, "balanced_" + names[j]))
+        string[] comparisons = pair_names()
+        for PairBootstrap pair = pairs[]
+            for int j < 4
+                lines = lines.append(pair.summaries[j].csv_line(pair.name, comparisons[j]))
+        return lines
+
+    string[] histogram_lines(string name, string statistic, Summary summary)
+        int bins = settings.bins
+        real64 low = math.min_all(summary.values)
+        real64 high = math.max_all(summary.values)
+        int[] counts = array(nat(bins), fill = 0)
+        for real64 value = summary.values[]
+            counts[report.bin_number(value, low, high, bins) - 1] += 1
+        int top = math.max_all(counts)
+        string[] empty_marks = []
+        string[][] marks = array(nat(bins), fill = empty_marks)
+        int lower = report.bin_number(summary.low, low, high, bins) - 1
+        marks[lower] = marks[lower].append("L")
+        string estimate_bin = "none"
+        if low <= summary.estimate <= high
+            int position = report.bin_number(summary.estimate, low, high, bins)
+            estimate_bin = "{position}"
+            marks[position - 1] = marks[position - 1].append("E")
+        int upper = report.bin_number(summary.high, low, high, bins) - 1
+        marks[upper] = marks[upper].append("H")
+        string[] convergence = []
+        for 1 <= int quarter <= 4
+            int size = quarter * settings.bootstrap / 4
+            resampling.MeanSe spread = resampling.MeanSe(summary.values[0:<size])
+            convergence = convergence.append("{size}:{report.real_text(spread.se)}")
+        string[] lines = ["histogram {name} {statistic} min {report.real_text(low)} max {report.real_text(high)} width {report.real_text((high - low) / real64(bins))} top {top} estimate_bin {estimate_bin}", "convergence " + convergence.join(" ")]
+        for int i < bins
+            real64 edge = low + (high - low) * real64(i) / real64(bins)
+            string[] parts = ["bin", "{i + 1}", report.real_text(edge), "{counts[i]}"]
+            if counts[i] > 0
+                parts = parts.append(report.bar(counts[i], top))
+            lines = lines.append(parts.concat(marks[i]).join(" "))
+        return lines
+
+    string[] histogram_file()
+        string[] lines = []
+        string[] names = group_names()
+        for GroupBootstrap bootstrap = ordinary[]
+            for int i < 4
+                lines = lines.concat(histogram_lines(bootstrap.group.name, names[i], bootstrap.summaries[i]))
+        string[] comparisons = pair_names()
+        for PairBootstrap pair = pairs[]
+            for int i < 4
+                lines = lines.concat(histogram_lines(pair.name, comparisons[i], pair.summaries[i]))
+        return lines
+
+    string bca_line(string statistic, Summary summary, Jackknife jackknife)
+        int count = settings.bootstrap
+        int below = math.sum<int>([for real64 value = summary.values[] if value < summary.estimate then 1])
+        real64 z0 = resampling.phi_inverse(real64(below) / real64(count))
+        real64[] differences = jackknife.average - jackknife.values
+        real64 square_sum = math.sum(differences * differences)
+        real64 cube_sum = math.sum(differences * differences * differences)
+        real64 acceleration = cube_sum / (6.0 * square_sum * math.sqrt(square_sum))
+        int lower_raw = math.floor(real64(count + 1) * bca_alpha(z0, acceleration, z_low))
+        int upper_offset = math.floor(real64(count + 1) * (1.0 - bca_alpha(z0, acceleration, -z_low)))
+        int lower = math.min(math.max(lower_raw, 1), count)
+        int upper = math.min(math.max(count + 1 - upper_offset, 1), count)
+        return "bca {statistic} below {below} z0 {report.real_text(z0)} acceleration {report.real_text(acceleration)} ranks {lower} {upper} interval {report.real_text(summary.ordered[lower - 1])} {report.real_text(summary.ordered[upper - 1])}"
+
+    string[] after_bootstrap_lines(GroupBootstrap bootstrap, Jackknife mean_jackknife)
+        int[] values = bootstrap.group.values
+        int count = int(len(values))
+        int[][] omitted = omitted_replicates(bootstrap.indices, count)
+        real64[][] errors = []
+        for Summary summary = bootstrap.summaries[]
+            real64[] column = []
+            for int[] numbers = omitted[]
+                resampling.MeanSe spread = resampling.MeanSe(summary.values[numbers])
+                column = column.append(spread.se)
+            errors = errors.append(column)
+        string[] lines = []
+        string[] names = group_names()
+        for int i < 4
+            Spread spread = Spread(errors[i])
+            lines = lines.append("after_bootstrap {names[i]} se {report.real_text(bootstrap.summaries[i].se)} average {report.real_text(spread.average)} se_of_se {report.real_text(math.sqrt(spread.variance))}")
+        int[] sizes = [for int[] numbers = omitted[] then int(len(numbers))]
+        lines = lines.append("without min {math.min_all(sizes)} max {math.max_all(sizes)}")
+        int total = math.sum(values)
+        int[] ranking = []
+        for int i < count
+            int position = int(len(ranking))
+            ranking = ranking.append(i)
+            while position > 0 and math.abs(count * values[i] - total) > math.abs(count * values[ranking[position - 1]] - total)
+                ranking[position] = ranking[position - 1]
+                position -= 1
+            ranking[position] = i
+        for int rank < 5
+            int index = ranking[rank]
+            real64 influence = real64(count - 1) * (mean_jackknife.average - mean_jackknife.values[index])
+            real64[] shifted = (bootstrap.summaries[0].values[omitted[index]] - bootstrap.summaries[0].estimate).sorted()
+            string[] quantiles = []
+            for int percent = [5, 50, 95][]
+                int position = (percent * sizes[index] + 99) / 100
+                quantiles = quantiles.append(report.real_text(shifted[position - 1]))
+            lines = lines.append("influence {rank + 1} obs {index + 1} value {report.real_text(real64(values[index]) / 100.0)} l {report.real_text(influence)} without {sizes[index]} se {report.real_text(errors[0][index])} q05 {quantiles[0]} q50 {quantiles[1]} q95 {quantiles[2]}")
+        return lines
+
+    string[] group_jackknife_lines(GroupBootstrap bootstrap)
+        int[] values = bootstrap.group.values
+        real64[][] replicates = [for int i = (0:<int(len(values)))[] then resampling.statistics(resampling.without(values, i))]
+        Jackknife[] jackknives = [for int i = (0:<4)[] then Jackknife(bootstrap.summaries[i].estimate, [for real64[] row = replicates[] then row[i]])]
+        string[] lines = ["group {bootstrap.group.name} n {len(values)}"]
+        string[] names = group_names()
+        for int i < 4
+            Summary summary = bootstrap.summaries[i]
+            Jackknife jackknife = jackknives[i]
+            lines = lines.append("jackknife {names[i]} estimate {report.real_text(summary.estimate)} average {report.real_text(jackknife.average)} bias {report.real_text(jackknife.bias)} se {report.real_text(jackknife.se)}")
+        for int i < 4
+            lines = lines.append(bca_line(names[i], bootstrap.summaries[i], jackknives[i]))
+        return lines.concat(after_bootstrap_lines(bootstrap, jackknives[0]))
+
+    string[] jackknife_file()
+        string[] lines = []
+        for GroupBootstrap bootstrap = ordinary[]
+            lines = lines.concat(group_jackknife_lines(bootstrap))
+        for PairBootstrap pair = pairs[]
+            lines = lines.concat(pair_jackknife_lines(pair))
+        return lines
+
+    PairResult permutation_lines(int[] x, int[] y, minstd.Generator &generator)
+        int permutations = settings.permutations
+        int[] combined = x.concat(y)
+        int[] rank_values = tests.doubled_ranks(combined)
+        int[] positions = 0:<int(len(combined))
+        int[] observed = tests.split_statistics(combined, rank_values, positions, int(len(x)))
+        Tally[] tallies = [for int value = observed[] then Tally(value)]
+        for int replicate < permutations
+            int[] order = positions
+            .generator.shuffle(&order)
+            int[] statistics = tests.split_statistics(combined, rank_values, order, int(len(x)))
+            for int i < 4
+                .tallies[i].count(statistics[i])
+        int k = int(len(x))
+        int m = int(len(y))
+        int rank_total = math.sum(rank_values[0:<k])
+        string[] results = [for Tally tally = tallies[] then tally.text(1, permutations + 1)]
+        string[] lines = [
+            "permutation n {k} {m} perms {permutations}",
+            "mean diff {report.real_text(resampling.mean_difference(x, y))} {results[0]}",
+            "median diff {report.real_text(real64(observed[1]) / 200.0)} {results[1]}",
+            "ranksum w {report.real_text(real64(rank_total) / 2.0)} u {report.real_text(real64(rank_total - k * (k + 1)) / 2.0)} {results[2]}",
+            "absdev diff {report.real_text(real64(observed[3]) / real64(200 * k * m))} {results[3]}"
+        ]
+        return PairResult(lines, [for Tally tally = tallies[] then tally.extreme])
+
+    bool simulation_rejects(int[] first, int[] second, minstd.Generator &generator)
+        int k = int(len(first))
+        int m = int(len(second))
+        int[] combined = first.concat(second)
+        int total = math.sum(combined)
+        int observed = math.abs(tests.contrast(math.sum(first), k, math.sum(second), m))
+        int count = 0
+        for int replicate < settings.power_perms
+            int[] shuffled = combined
+            .generator.shuffle(&shuffled)
+            int head = math.sum(shuffled[0:<k])
+            if math.abs(tests.contrast(head, k, total - head, m)) >= observed
+                count += 1
+        return 100 * (count + 1) <= (100 - settings.confidence) * (settings.power_perms + 1)
+
+    string power_line(int[] x, int[] y, minstd.Generator &generator)
+        int rejections = 0
+        for int replicate < settings.power_sims
+            int[] first = x[resampling.resample_indices(&generator, int(len(x)))]
+            int[] second = y[resampling.resample_indices(&generator, int(len(y)))]
+            if simulation_rejects(first, second, &generator)
+                rejections += 1
+        real64 power = real64(rejections) / real64(settings.power_sims)
+        real64 se = math.sqrt(power * (1.0 - power) / real64(settings.power_sims))
+        return "power sims {settings.power_sims} perms {settings.power_perms} rejections {rejections} power {report.real_text(power)} se {report.real_text(se)}"
+
+    string critical_line(int[] mean_values, int size, int splits)
+        tests.ValueCount[] counts = tests.value_counts([for int value = mean_values[] then math.abs(value)])
+        int critical = -1
+        int cumulative = 0
+        int attained = 0
+        for int(len(counts)) - 1 >= int i >= 0
+            cumulative += counts[i].count
+            if 100 * cumulative > (100 - settings.confidence) * splits
+                break
+            critical = counts[i].value
+            attained = cumulative
+        if critical < 0
+            return "critical diff none attained none"
+        return "critical diff {report.real_text(real64(critical) / real64(100 * size * size))} attained {report.p_value(attained, splits)}"
+
+    string[] exact_lines(int[] x, int[] y)
+        int size = settings.pilot
+        int[] combined = x[0:<size].concat(y[0:<size])
+        int[] rank_values = tests.doubled_ranks(combined)
+        int total = math.sum(combined)
+        int[] mean_values = []
+        int[] ranks_values = []
+        for int[] choice = tests.position_choices(2 * size, size)[]
+            int chosen = math.sum(combined[choice])
+            mean_values = mean_values.append(tests.contrast(chosen, size, total - chosen, size))
+            ranks_values = ranks_values.append(math.sum(rank_values[choice]) - size * (2 * size + 1))
+        int splits = int(len(mean_values))
+        auto mean_tally = Tally(mean_values[0])
+        auto rank_tally = Tally(ranks_values[0])
+        for int i < splits
+            .mean_tally.count(mean_values[i])
+            .rank_tally.count(ranks_values[i])
+        int rank_total = math.sum(rank_values[0:<size])
+        real64 difference = resampling.mean_difference(x[0:<size], y[0:<size])
+        return [
+            "exact size {size} splits {splits}",
+            "mean diff {report.real_text(difference)} {mean_tally.text(0, splits)}",
+            "ranksum w {report.real_text(real64(rank_total) / 2.0)} u {report.real_text(real64(rank_total - size * (size + 1)) / 2.0)} {rank_tally.text(0, splits)}",
+            critical_line(mean_values, size, splits)
+        ]
+
+    string[] studentized_lines(PairBootstrap pair)
+        int[] x = pair.first.group.values
+        int[] y = pair.second.group.values
+        int k = int(len(x))
+        int m = int(len(y))
+        real64 estimate = resampling.mean_difference(x, y)
+        real64 first_sd = resampling.sd(x)
+        real64 second_sd = resampling.sd(y)
+        real64 first_variance = first_sd * first_sd / real64(k)
+        real64 second_variance = second_sd * second_sd / real64(m)
+        real64 se0 = math.sqrt(first_variance + second_variance)
+        real64 t = estimate / se0
+        real64[] statistics = []
+        for int i < settings.bootstrap
+            real64 first_replicate = pair.first.summaries[3].values[i]
+            real64 second_replicate = pair.second.summaries[3].values[i]
+            real64 spread = math.sqrt(first_replicate * first_replicate / real64(k) + second_replicate * second_replicate / real64(m))
+            statistics = statistics.append((pair.summaries[0].values[i] - estimate) / spread)
+        int extreme = math.sum<int>([for real64 value = statistics[] if math.abs(value) >= math.abs(t) then 1])
+        real64[] ordered = statistics.sorted()
+        real64 lower = estimate - ordered[ranks[1] - 1] * se0
+        real64 upper = estimate - ordered[ranks[0] - 1] * se0
+        real64 degrees = (first_variance + second_variance) * (first_variance + second_variance) / (first_variance * first_variance / real64(k - 1) + second_variance * second_variance / real64(m - 1))
+        int greater = 0
+        int equal = 0
+        for int a = x[]
+            for int b = y[]
+                if a > b
+                    greater += 1
+                elif a == b
+                    equal += 1
+        real64 d = resampling.cohen_d(x, y)
+        real64 hedges = d * (1.0 - 3.0 / real64(4 * (k + m - 2) - 1))
+        real64 cles = real64(2 * greater + equal) / real64(2 * k * m)
+        return [
+            "bootstrap_t t {report.real_text(t)} df {report.real_text(degrees)} extreme {extreme} p {report.p_value(extreme + 1, settings.bootstrap + 1)} interval {report.real_text(lower)} {report.real_text(upper)}",
+            "effect pooled_sd {report.real_text(resampling.pooled_sd(x, y))} cohen_d {report.real_text(d)} hedges_g {report.real_text(hedges)} cles {report.real_text(cles)}"
+        ]
+
+    PairResult pair_test_lines(PairBootstrap pair, minstd.Generator &generator)
+        dataset.Group first = pair.first.group
+        dataset.Group second = pair.second.group
+        string[] lines = ["compare {first.name} {second.name}"]
+        PairResult permutation = permutation_lines(first.values, second.values, &generator)
+        lines = lines.concat(permutation.lines)
+        lines = lines.append(power_line(first.values, second.values, &generator))
+        lines = lines.concat(exact_lines(first.values, second.values))
+        return PairResult(lines.concat(studentized_lines(pair)), permutation.extremes)
+
+    string[] holm_lines(int[][] extremes)
+        int permutations = settings.permutations
+        int count = int(len(pairs))
+        string[] names = ["mean", "median", "ranksum", "absdev"]
+        string[] lines = []
+        for int column < 4
+            int[] values = [for int[] pair_extremes = extremes[] then pair_extremes[column]]
+            int[] order = []
+            for int i < count
+                int position = int(len(order))
+                order = order.append(i)
+                while position > 0 and values[i] < values[order[position - 1]]
+                    order[position] = order[position - 1]
+                    position -= 1
+                order[position] = i
+            int adjusted = 0
+            for int rank < count
+                int index = order[rank]
+                int extreme = values[index]
+                adjusted = math.max(adjusted, math.min(permutations + 1, (count - rank) * (extreme + 1)))
+                string verdict = if 100 * adjusted <= (100 - settings.confidence) * (permutations + 1) then "reject" else "retain"
+                string first = pairs[index].first.group.name
+                string second = pairs[index].second.group.name
+                lines = lines.append("holm {names[column]} rank {rank + 1} {first} {second} p {report.p_value(extreme + 1, permutations + 1)} adjusted {report.p_value(adjusted, permutations + 1)} {verdict}")
+        return lines
+
+    string[] paired_lines()
+        int[] before = source.paired.before
+        int[] after = source.paired.after
+        int[] differences = source.paired.differences
+        int count = int(len(differences))
+        int positive = math.sum<int>([for int difference = differences[] if difference > 0 then 1])
+        int negative = math.sum<int>([for int difference = differences[] if difference < 0 then 1])
+        real64 average = resampling.mean(differences)
+        real64 deviation = resampling.sd(differences)
+        real64 r = resampling.correlation(before, after)
+        real64 z = 0.5 * math.log((1.0 + r) / (1.0 - r))
+        real64 half_width = -z_low / math.sqrt(real64(count - 3))
+        real64 lower_growth = math.exp(2.0 * (z - half_width))
+        real64 upper_growth = math.exp(2.0 * (z + half_width))
+        real64 lower = (lower_growth - 1.0) / (lower_growth + 1.0)
+        real64 upper = (upper_growth - 1.0) / (upper_growth + 1.0)
+        return [
+            "paired subjects {count} positive {positive} negative {negative} zero {count - positive - negative}",
+            "paired before {report.real_text(resampling.mean(before))} after {report.real_text(resampling.mean(after))} diff {report.real_text(average)} sd_diff {report.real_text(deviation)} t {report.real_text(average / (deviation / math.sqrt(real64(count))))} dz {report.real_text(average / deviation)}",
+            "paired_bootstrap {mean_summary.interval_text()}",
+            "correlation r {report.real_text(r)} {correlation_summary.interval_text()} fisher {report.real_text(lower)} {report.real_text(upper)}"
+        ]
+
+    string[] sign_flip_lines(minstd.Generator &generator)
+        int permutations = settings.permutations
+        int[] differences = source.paired.differences
+        int[] signed = tests.signed_ranks(differences)
+        auto mean_tally = Tally(math.sum(differences))
+        auto rank_tally = Tally(math.sum(signed))
+        for int replicate < permutations
+            int[] signs = []
+            for int i < int(len(differences))
+                signs = signs.append(if .generator.draw() % 2 == 1 then -1 else 1)
+            .mean_tally.count(math.sum(signs * differences))
+            .rank_tally.count(math.sum(signs * signed))
+        real64 w_plus = real64(math.sum([for int rank = signed[] if rank > 0 then rank])) / 2.0
+        return [
+            "signflip flips {permutations}",
+            "mean diff {report.real_text(resampling.mean(differences))} {mean_tally.text(1, permutations + 1)}",
+            "signedrank w_plus {report.real_text(w_plus)} {rank_tally.text(1, permutations + 1)}"
+        ]
+
+    string[] anova_permutation_lines(int[] combined, int[] rank_values, int[] sizes, real64 f, real64 h, real64 correction, minstd.Generator &generator)
+        int permutations = settings.permutations
+        int group_count = int(len(sizes))
+        int total_count = int(len(combined))
+        int[][] comparisons = []
+        for int i < group_count
+            for i + 1 <= int j < group_count
+                comparisons = comparisons.append([i, j])
+        tests.Delta[] observed = tests.group_deltas(tests.split_list(combined, sizes), comparisons)
+        int f_extreme = 0
+        int h_extreme = 0
+        int[] extremes = array(len(comparisons), fill = 0)
+        int[] maxima = array(len(comparisons), fill = 0)
+        int[] positions = 0:<total_count
+        for int replicate < permutations
+            int[] order = positions
+            .generator.shuffle(&order)
+            int[][] parts = tests.split_list(order, sizes)
+            int[][] samples = [for int[] part = parts[] then combined[part]]
+            tests.Squares squares = tests.sums_of_squares(samples)
+            if tests.f_statistic(squares.between, squares.within, group_count, total_count) >= f - 0.000000001 * f
+                f_extreme += 1
+            int[] rank_sums = [for int[] part = parts[] then math.sum(rank_values[part])]
+            if tests.h_statistic(rank_sums, sizes, correction) >= h - 0.000000001 * h
+                h_extreme += 1
+            tests.Delta[] deltas = tests.group_deltas(samples, comparisons)
+            tests.Delta largest = deltas[0]
+            for 1 <= int i < int(len(deltas))
+                if not largest.at_least(deltas[i])
+                    largest = deltas[i]
+            for int i < int(len(observed))
+                if deltas[i].at_least(observed[i])
+                    extremes[i] += 1
+                if largest.at_least(observed[i])
+                    maxima[i] += 1
+        string[] lines = ["anova_permutation perms {permutations} f_extreme {f_extreme} f_p {report.p_value(f_extreme + 1, permutations + 1)} h_extreme {h_extreme} h_p {report.p_value(h_extreme + 1, permutations + 1)}"]
+        for int i < int(len(comparisons))
+            dataset.Group first = source.groups[comparisons[i][0]]
+            dataset.Group second = source.groups[comparisons[i][1]]
+            real64 difference = resampling.mean_difference(first.values, second.values)
+            lines = lines.append("pairwise {first.name} {second.name} diff {report.real_text(difference)} extreme {extremes[i]} p {report.p_value(extremes[i] + 1, permutations + 1)} maxt {maxima[i]} adjusted {report.p_value(maxima[i] + 1, permutations + 1)}")
+        return lines
+
+    string[] anova_lines(minstd.Generator &generator)
+        int[][] samples = [for dataset.Group group = source.groups[] then group.values]
+        int[] sizes = [for int[] sample = samples[] then int(len(sample))]
+        int group_count = int(len(samples))
+        int total_count = math.sum(sizes)
+        tests.Squares squares = tests.sums_of_squares(samples)
+        real64 f = tests.f_statistic(squares.between, squares.within, group_count, total_count)
+        real64 eta = squares.between / (squares.between + squares.within)
+        real64 msw = squares.within / real64(total_count - group_count)
+        real64 omega = (squares.between - real64(group_count - 1) * msw) / (squares.between + squares.within + msw)
+        real64[] eta_values = []
+        for int i < settings.bootstrap
+            tests.Squares replicate_squares = tests.sums_of_squares([for GroupBootstrap bootstrap = ordinary[] then bootstrap.samples[i]])
+            eta_values = eta_values.append(replicate_squares.between / (replicate_squares.between + replicate_squares.within))
+        auto eta_summary = Summary(eta, eta_values, ranks)
+        int[] combined = []
+        for int[] sample = samples[]
+            combined = combined.concat(sample)
+        int[] rank_values = tests.doubled_ranks(combined)
+        int[] rank_sums = [for int[] part = tests.split_list(rank_values, sizes)[] then math.sum(part)]
+        int[] ties = [for tests.ValueCount entry = tests.value_counts(combined)[] if entry.count >= 2 then entry.count]
+        int tie_total = math.sum(ties * ties * ties - ties)
+        real64 correction = 1.0 - real64(tie_total) / real64(total_count * total_count * total_count - total_count)
+        real64 h = tests.h_statistic(rank_sums, sizes, correction)
+        string[] lines = [
+            "anova groups {group_count} observations {total_count} ssb {report.real_text(squares.between)} ssw {report.real_text(squares.within)} df {group_count - 1} {total_count - group_count} f {report.real_text(f)} eta_squared {report.real_text(eta)} omega_squared {report.real_text(omega)}",
+            "eta_bootstrap {eta_summary.interval_text()}",
+            welch_line(samples),
+            "kruskal h {report.real_text(h)} tie_groups {len(ties)}"
+        ]
+        return lines.concat(anova_permutation_lines(combined, rank_values, sizes, f, h, correction, &generator))
+
+    string[] tests_file(minstd.Generator &generator)
+        string[] lines = []
+        int[][] extremes = []
+        for PairBootstrap pair = pairs[]
+            PairResult result = pair_test_lines(pair, &generator)
+            lines = lines.concat(result.lines)
+            extremes = extremes.append(result.extremes)
+        lines = lines.concat(holm_lines(extremes))
+        lines = lines.concat(paired_lines())
+        lines = lines.concat(sign_flip_lines(&generator))
+        return lines.concat(anova_lines(&generator))
+
+void run()
+    dataset.Dataset data = dataset.load()
+    auto generator = minstd.Generator(data.settings.seed)
+    auto study = Study(data, &generator)
+    string[] test_lines = study.tests_file(&generator)
+    file.mkdir("output")
+    report.write_lines("output/descriptives.txt", study.descriptive_file())
+    report.write_lines("output/bootstrap.csv", study.bootstrap_file())
+    report.write_lines("output/jackknife.txt", study.jackknife_file())
+    report.write_lines("output/tests.txt", test_lines)
+    report.write_lines("output/histograms.txt", study.histogram_file())
+
+if main
+    run()

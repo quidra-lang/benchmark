@@ -1,0 +1,547 @@
+[Overview]
+Write an encoder that creates QR Code (Model 2) symbols and a decoder that reads symbols. The symbol versions handled are 1 to 10.
+For each request, the encoder splits the text into segments in the numeric, alphanumeric and 8-bit byte modes and turns it into a bit string, appends Reed-Solomon error correction codewords according to the error correction level, and places the result, together with function patterns such as the finder patterns, in a square array of modules (the symbol). It evaluates the penalties of the 8 masks to choose a mask, and writes the symbol out as text and as a PBM image.
+The decoder determines the orientation of the symbol, reads the format information and version information, removes the mask, extracts the codewords, corrects errors with the Reed-Solomon code, and parses the bit string. The program checks that each symbol it created can be read back from its image and decoded correctly (self-check), and also decodes symbols with specified damage applied and measures tolerance to damage. It also decodes symbols given in an input file.
+The program reads the files in the input/ folder and writes files to the output/ folder. It prints nothing to standard output. No random numbers and no real numbers are used; all computation is done with integers.
+
+[Input files]
+There are 5 input files: input/requests.txt, input/params.txt, input/tables.txt, input/damage.txt and input/scans.txt. Every file consists of ASCII characters only, and every line (including the last line) ends with a line feed (LF). There are no blank lines. Except for the text part of requests.txt, the values in a line are separated by single spaces, with no spaces at the beginning or end of a line. Integers are written in decimal without extra leading zeros (however, <version> and <mask> in requests.txt are read as strings and checked in section 2).
+
+(1) input/requests.txt (generation requests)
+Each line holds one request. Each line has the following format.
+  <id> <level> <mode> <version> <mask>:<text>
+- The first five items are strings of one or more characters containing neither ":" nor spaces, separated by single spaces. A ":" immediately follows the fifth item, and <text> is everything from just after that ":" to the end of the line. <text> may also contain ":" and spaces (the first ":" that appears in the line is the separator).
+- <id> is a string of 1 to 16 characters consisting of lowercase letters and digits, and differs between requests.
+- The correct values of <level>, <mode>, <version> and <mask> are as follows, but incorrect values may also be written (they are checked in section 2).
+  - <level>: one of L, M, Q, H, representing the error correction level, or one of them followed by "+" (L+, M+, Q+, H+). The "+" means that the level boost of section 4 (3) is performed.
+  - <mode>: one of NUMERIC, ALPHANUMERIC, BYTE, AUTO, MIXED.
+  - <version>: one of the strings 1, 2, ..., 10 representing the integers 1 to 10 (without leading zeros), or AUTO.
+  - <mask>: one of the single characters 0, 1, ..., 7 representing the integers 0 to 7, or AUTO.
+- <text> is a string of zero or more characters with ASCII codes 32 to 126 (space and printable characters). When it has one or more characters, its first and last characters are not spaces.
+Let R be the number of requests, and call the order in the file the "request order".
+
+(2) input/params.txt (image settings)
+It consists of the following 2 lines in this order.
+  quiet_zone Q
+  scale S
+Q is the width (in modules) of the margin (quiet zone) placed around the symbol in the PBM image, and S is the number of pixels on a side of the square that represents one module.
+
+(3) input/tables.txt (symbol tables)
+It consists of 50 lines: the first 40 lines are the error correction block table and the remaining 10 lines are the alignment pattern table.
+- The first 40 lines have the following format and are ordered by version v = 1, 2, ..., 10, and within the same version in the order L, M, Q, H.
+  block <v> <level> <e> <b1> <k1> <b2> <k2>
+  In a symbol of version v and error correction level <level>, the data codewords are divided into b1 blocks with k1 data codewords each (group 1) and b2 blocks with k2 data codewords each (group 2), and e error correction codewords are appended to every block. When b2 = 0, k2 = 0, and when b2 >= 1, k2 = k1 + 1.
+- The remaining 10 lines have the following format and are ordered by v = 1, 2, ..., 10.
+  align <v> <c_1> <c_2> ... <c_m>
+  c_1 < c_2 < ... < c_m are the candidate coordinates of the centers of the alignment patterns of version v (section 7 (3)). For version 1, m = 0 and the line is just "align 1".
+The values of these tables are the same as the tables of the QR Code standard (JIS X 0510, ISO/IEC 18004).
+
+(4) input/damage.txt (damage specification)
+Each line holds one operation. Each line has one of the following 4 formats.
+  <id> flip <x> <y>
+  <id> fill <x> <y> <w> <h> <color>
+  <id> rotate
+  <id> mirror
+<id> is the identifier of a request in requests.txt and means that the operation is applied to that request's symbol. <color> is light or dark. The meaning of the operations is explained in section 14. Lines with the same identifier may be apart from each other.
+
+(5) input/scans.txt (external symbols)
+It lists one or more symbols to decode. Each symbol consists of the following n + 1 lines.
+  scan <name>
+  (n lines of the symbol)
+<name> is a string of 1 to 16 characters consisting of lowercase letters, digits and "_", and differs between symbols. Of the following n lines, the (y + 1)-th line (y = 0, 1, ..., n - 1) is a string of n characters that represents the modules of row y of the symbol in the order x = 0, 1, ..., n - 1, with a dark module as "#" and a light module as ".". n is one of 21, 25, 29, ..., 57 (n = 17 + 4 * v, 1 <= v <= 10). Call the order in the file the "symbol order".
+
+[Processing]
+Process according to sections 1 to 18 below. Sections 1 to 12 describe the encoding and decoding methods, and sections 13 to 18 describe the processing that uses them.
+
+Notation
+- floor(a / b) (for integers a >= 0, b >= 1) is the integer obtained by discarding the fractional part of a / b, and a mod b is a - b * floor(a / b). |a| is the absolute value of a.
+- A symbol consists of n x n modules, and for a symbol of version v, n = 17 + 4 * v. The position of a module is written (x, y). x counts from left to right and y from top to bottom, both starting at 0. Each module is either dark (value 1) or light (value 0). Row y of the symbol is the sequence of modules with equal y, and column x is the sequence of modules with equal x.
+- A bit string is a sequence of 0s and 1s. Writing a value a in w bits means arranging the w digits of the binary representation of a (from the most significant digit, with missing high digits as 0). A codeword is an 8-bit value (0 to 255); to turn a sequence of codewords into a bit string, write each codeword in 8 bits and concatenate them in order. Splitting a bit string into 8-bit pieces from the start and reading each piece as a binary number gives a sequence of codewords.
+- Writing a value in the output "as a w-digit binary number" means writing the bit string of the value written in w bits with the characters 0 and 1. Writing a sequence of codewords "in hexadecimal" means writing each codeword as two lowercase hexadecimal digits (00 to ff) and concatenating them with nothing in between.
+- The Hamming distance between two w-bit values is the number of digits whose values differ when they are written in binary.
+- The order of strength of the error correction levels is L < M < Q < H.
+
+Section 1. Modes and segments
+(1) The 3 modes, the characters each can encode (character set), the values of the characters, and the mode indicators (4 bits) are as follows.
+  - NUMERIC: the 10 characters 0-9 (digits). The mode indicator is 0001.
+  - ALPHANUMERIC: the 45 characters 0-9, A-Z, space, $, %, *, +, -, ., /, :. The character values are 0 to 9 for 0-9, 10 to 35 for A-Z, 36 for space, 37 for $, 38 for %, 39 for *, 40 for +, 41 for -, 42 for ., 43 for / and 44 for :. The mode indicator is 0010.
+  - BYTE: all characters with ASCII codes 32 to 126. The character value is the ASCII code. The mode indicator is 0100.
+  When a character is contained in a mode's character set, the character is said to be encodable in that mode.
+(2) The number of bits cw(mu, v) of the character count indicator of mode mu in version v is, for v <= 9, 10 for NUMERIC, 9 for ALPHANUMERIC and 8 for BYTE, and for v = 10, 12 for NUMERIC, 11 for ALPHANUMERIC and 16 for BYTE.
+(3) A segment is a pair (mu, string) of a mode mu and a string of one or more characters consisting only of characters encodable in mu. The string of a segment is divided, from the start, into the following groups.
+  - NUMERIC: split every 3 characters (the last group has 1 to 3 characters). The value of a group is the digit sequence read as a decimal number (for example "007" is 7), and the number of bits is 10 for 3 characters, 7 for 2 characters and 4 for 1 character.
+  - ALPHANUMERIC: split every 2 characters (the last group may have 1 character). The value of a 2-character group is 45 * (value of the 1st character) + (value of the 2nd character), and the number of bits is 11. The value of a 1-character group is the value of that character, and the number of bits is 6.
+  - BYTE: groups of 1 character each; the value is the character value and the number of bits is 8.
+  The total number of bits dw(mu, k) of the groups of a segment of k characters is 10 * floor(k / 3) + r for NUMERIC (r is 0, 4, 7 when k mod 3 is 0, 1, 2 respectively), 11 * floor(k / 2) + 6 * (k mod 2) for ALPHANUMERIC, and 8 * k for BYTE.
+(4) The bit string of a segment in version v consists of the mode indicator (4 bits), the character count k written in cw(mu, v) bits (character count indicator), and the value of each group written in its number of bits (in group order), in this order; its length is 4 + cw(mu, v) + dw(mu, k).
+
+Section 2. Request checks
+For each request, examine the following (a) to (g) in order, and the first one that applies is the request's error. A request to which none of them applies is called a "valid request".
+  (a) <level> is none of L, M, Q, H, L+, M+, Q+, H+: the error content is level <level>.
+  (b) <mode> is none of NUMERIC, ALPHANUMERIC, BYTE, AUTO, MIXED: mode <mode>.
+  (c) <version> is none of AUTO, 1, 2, ..., 10 (for example 0, 11 and 01 are errors): version <version>.
+  (d) <mask> is none of AUTO, 0, 1, ..., 7: mask <mask>.
+  (e) <text> is empty (0 characters): text.
+  (f) <mode> is NUMERIC or ALPHANUMERIC and <text> has a character that cannot be encoded in that mode: charset position <p>. p is the position of the first such character (the position counted with the first character of <text> as 0).
+  (g) The version is not determined in section 4 (2): capacity bits <B> capacity <C> (B and C are explained in section 4 (2)).
+<level>, <mode>, <version> and <mask> in <content> are the strings exactly as written in requests.txt. For a request with an error, only writing the error to codes.txt ([Output files] (1)) and counting it in summary.txt (section 18) are done; no other processing or output is performed.
+
+Section 3. Splitting into segments
+Depending on the request's <mode>, split <text> into a sequence of segments (below, <text> is written s_0 s_1 ... s_(L-1) (L characters)).
+- NUMERIC, ALPHANUMERIC, BYTE: the whole string is made one segment in that mode.
+- AUTO: examine NUMERIC, ALPHANUMERIC, BYTE in this order, and make the whole string one segment in the first mode that can encode every character of the string. This mode is called the request's "determined mode". For the other modes, <mode> itself is called the determined mode.
+- MIXED: for each version v, find the split with the minimum total bit string length by the following dynamic programming (the split may differ depending on v).
+  (1) Let c(0) = 0. For i = 1, 2, ..., L in this order, do the following. Over the pairs (j, mu) of an integer j with 0 <= j <= i - 1 and a mode mu (NUMERIC, ALPHANUMERIC, BYTE) such that every character of s_j s_(j+1) ... s_(i-1) can be encoded in mu, compute c(j) + 4 + cw(mu, v) + dw(mu, i - j); let c(i) be the minimum and let the pair giving the minimum be the choice (j_i, mu_i). If several pairs give the minimum, the choice is the one with the smallest j, and if j is also equal, the one whose mu comes first in the order NUMERIC, ALPHANUMERIC, BYTE (since BYTE can encode every character, c(i) is always determined).
+  (2) Starting with i = L, repeat making the segment (mu_i, s_(j_i) ... s_(i-1)) and replacing i with j_i until i = 0. The segments arranged in the reverse of the order in which they were made (from the start of the string) form the split, and the total length of their bit strings is c(L).
+The split for version v is written seg(v), and the total length of the bit strings (section 1 (4)) of its segments is written B(v). For NUMERIC, ALPHANUMERIC, BYTE and AUTO requests, seg(v) is the single segment above regardless of v.
+
+Section 4. Determining the version and error correction level
+(1) When the line of tables.txt for version v and level lv is block v lv e b1 k1 b2 k2, the number of data codewords is D(v, lv) = b1 * k1 + b2 * k2, the data capacity is C(v, lv) = 8 * D(v, lv) (bits), the number of blocks is b1 + b2, and the total number of codewords is T(v) = D(v, lv) + e * (b1 + b2) (T(v) does not depend on lv).
+(2) The first character of <level> is the base level lv0.
+  - When <version> is AUTO: examine v = 1, 2, ..., 10 in this order, and the first v with B(v) <= C(v, lv0) is the version. If there is no such v, the error is capacity bits <B(10)> capacity <C(10, lv0)>.
+  - When <version> is an integer w: if B(w) <= C(w, lv0), w is the version; otherwise the error is capacity bits <B(w)> capacity <C(w, lv0)>.
+(3) Let v be the determined version. If <level> has no "+", the error correction level is lv = lv0. If it has "+", lv is the strongest level, among the levels at least as strong as lv0, that satisfies B(v) <= C(v, lv) (lv0 always satisfies it). When lv != lv0, the request is said to have boosted its level. Below, this lv is called the request's level, and seg(v) is used as the sequence of segments.
+
+Section 5. Data codewords
+The data codewords of a request with version v and level lv are made as follows. Let C = C(v, lv) and D = D(v, lv).
+(1) Concatenate the bit strings of the segments of seg(v) in segment order. Its length is B = B(v).
+(2) Doing the following (a) to (c) is called padding a bit string of length at most C to length C.
+  (a) Terminator: append min(4, C - (current length)) zeros.
+  (b) Zero fill: append zeros until the length is a multiple of 8 (possibly none).
+  (c) Pad bytes: until the length is C, append 11101100 (0xEC) and 00010001 (0x11) alternately in this order (starting with 0xEC). The number of 8-bit units appended is called the number of pad bytes.
+(3) Pad the bit string of (1) to length C; the D codewords d_0, d_1, ..., d_(D-1) obtained by splitting it into 8-bit pieces from the start are the data codewords.
+
+Section 6. Error correction codewords and placement order
+(1) GF(256) arithmetic: the elements of GF(256) are the integers 0 to 255. The sum a + b is the bitwise exclusive OR (XOR) of a and b (the difference is the same). Let alpha^0 = 1, and for i = 0, 1, ..., 253, if twice alpha^i is 256 or more, alpha^(i+1) is that doubled value XORed with 285 (0x11D); otherwise alpha^(i+1) is the doubled value. alpha^0, alpha^1, ..., alpha^254 take each of the values 1 to 255 exactly once, and when a = alpha^i (0 <= i <= 254), log a = i. Exponents are taken mod 255 (alpha^(i+255) = alpha^i). The product a * b is alpha^((log a + log b) mod 255) if a and b are both nonzero, and 0 otherwise. The quotient a / b (b != 0) is alpha^((log a - log b + 255) mod 255) if a != 0, and 0 if a = 0.
+(2) Blocks: divide the data codewords d_0, d_1, ... from the start into b1 blocks of k1 codewords each, followed by b2 blocks of k2 codewords each, and number them block 0, 1, ..., b1 + b2 - 1 in order. The number of data codewords of block b is written k_b.
+(3) Error correction codewords: the generator polynomial of degree e is g(x) = (x + alpha^0)(x + alpha^1) ... (x + alpha^(e-1)) (the coefficients are elements of GF(256), and the coefficient of x^e is 1). For a block with data codewords m_0, m_1, ..., m_(k-1), let r_0 x^(e-1) + r_1 x^(e-2) + ... + r_(e-1) be the remainder of dividing the polynomial m_0 x^(k-1) + m_1 x^(k-2) + ... + m_(k-1) multiplied by x^e by g(x); r_0, r_1, ..., r_(e-1) are the error correction codewords of the block. The codewords of a block are the N = k + e codewords consisting of the data codewords followed by the error correction codewords, and positions within them are counted from 0 (positions 0 to k - 1 are data codewords and positions k to N - 1 are error correction codewords).
+(4) Placement order: let k_max be the maximum of k_b. For i = 0, 1, ..., k_max - 1 in this order, and for each i in order of block number, list position i of each block b with i < k_b; then, for i = 0, 1, ..., e - 1 in this order, and for each i in order of block number, list position k_b + i of block b. This sequence of T(v) (block, position) pairs is called the placement order, and the codewords of the blocks arranged in placement order are called the codeword sequence.
+
+Section 7. Function patterns
+The following modules of a symbol of version v (n = 17 + 4 * v) are called function modules, and the other modules are called the data region. (1) to (4) are called the function patterns, (5) the format information area and (6) the version information area. The values of the modules of (1) to (4) are as follows.
+(1) Finder patterns and separators: for each of the 3 centers (3, 3), (n - 4, 3), (3, n - 4), the modules (cx + dx, cy + dy) with -4 <= dx <= 4, -4 <= dy <= 4 that lie inside the symbol. Let d = max(|dx|, |dy|); the module is dark if d is 0, 1 or 3, and light if d is 2 or 4.
+(2) Timing patterns: the modules (6, i) and (i, 6) with 8 <= i <= n - 9. The module is dark if i is even and light if i is odd.
+(3) Alignment patterns: for every pair (cx, cy) of two candidates chosen from c_1, ..., c_m of the align line (the two may be the same), except (c_1, c_1), (c_1, c_m) and (c_m, c_1), the modules (cx + dx, cy + dy) with |dx| <= 2, |dy| <= 2. Let d = max(|dx|, |dy|); the module is dark if d is 0 or 2, and light if d is 1 (if m = 0 there are no alignment patterns). At modules where an alignment pattern overlaps a timing pattern, the two values agree.
+(4) Dark module: module (8, n - 8), which is made dark.
+(5) Format information area: the 30 modules at the first and second positions of the format information of section 8 (4).
+(6) Version information area: present only when v >= 7; the 36 modules at the first and second positions of the version information of section 8 (4).
+(1) to (6) do not overlap each other (except for the overlap of (2) and (3)). The number of function modules is written F(v), and the number of modules in the data region is written M(v) = n * n - F(v).
+
+Section 8. Format information and version information
+(1) Remainder of GF(2) polynomials: regard an integer of 0 or more as a polynomial over GF(2) whose coefficient of x^i is bit i (the 2^i place). The remainder of an integer a divided by an integer G is the remainder of the division of these polynomials (a polynomial of lower degree than G) converted back to an integer. For example, write a in binary, and repeatedly shift G to the left so that its highest 1 is at the same digit as the highest 1 of a and XOR it, until the digit of the highest 1 of a is lower than the digit of the highest 1 of G; this gives the remainder.
+(2) Format information: the format information for level lv and mask m is the following 15-bit value. Let the level indicator be L = 1, M = 0, Q = 3, H = 2; with q = 8 * (level indicator) + m and r the remainder of q * 2^10 divided by 10100110111 (binary), the format information = (q * 2^10 + r) XOR 101010000010010 (binary). For example, the format information for level H, mask 7 written as a 15-digit binary number is 000100000111011.
+(3) Version information: the version information of version v (7 <= v <= 40) is the 18-bit value v * 2^12 + r, where r is the remainder of v * 2^12 divided by 1111100100101 (binary). For example, the version information of version 12 written as an 18-digit binary number is 001100011101100010.
+(4) Positions: let f be the value of the format information, and bit i be floor(f / 2^i) mod 2. The format information is placed in 2 places.
+  - First: bits i = 0 to 5 go to module (8, i), i = 6 to (8, 7), i = 7 to (8, 8), i = 8 to (7, 8), and i = 9 to 14 to (14 - i, 8).
+  - Second: bits i = 0 to 7 go to module (n - 1 - i, 8), and i = 8 to 14 to (8, n - 15 + i).
+  Bit i (i = 0 to 17) of the version information (18 bits) goes to module (n - 11 + (i mod 3), floor(i / 3)) in the first place and to module (floor(i / 3), n - 11 + (i mod 3)) in the second place.
+  Writing a value to a set of positions means setting the value of the module at the position of each bit i to the value of bit i. Reading a value from a set of positions means computing the sum of b_i * 2^i, where b_i is the value of the module at the position of each bit i.
+
+Section 9. Data placement
+(1) Reading order: in a symbol of version v, take the column pairs (r, r - 1) for r = n - 1, n - 3, n - 5, ..., 8 in this order (r decreases by 2), followed by r = 5, 3, 1 in this order (column 6 is skipped because it is a timing pattern). For the k-th pair (k = 0, 1, ...), take y in the order y = n - 1, n - 2, ..., 0 (upward) if k is even, and in the order y = 0, 1, ..., n - 1 (downward) if k is odd, and for each y take the modules (r, y), (r - 1, y) in this order. The sequence of M(v) modules p_0, p_1, ..., p_(M(v)-1) obtained by arranging, in the order taken, only those taken modules that belong to the data region is called the reading order.
+(2) Unmasked symbol: set the function pattern modules to the values of section 7 (1) to (4), write the version information of version v into the version information area (v >= 7), and make the modules of the format information area light. Of the 8 * T(v) bits of the codeword sequence turned into a bit string, the value of the j-th bit (counted from 0) becomes the value of module p_j, and the modules p_j (j >= 8 * T(v)) are made light. M(v) - 8 * T(v) is called the number of remainder bits.
+
+Section 10. Masks and penalties
+(1) The condition of mask m (0 to 7) is as follows. Here i is the y of the module and j is the x of the module.
+  0: (i + j) mod 2 = 0
+  1: i mod 2 = 0
+  2: j mod 3 = 0
+  3: (i + j) mod 3 = 0
+  4: (floor(i / 2) + floor(j / 3)) mod 2 = 0
+  5: (i * j) mod 2 + (i * j) mod 3 = 0
+  6: ((i * j) mod 2 + (i * j) mod 3) mod 2 = 0
+  7: ((i + j) mod 2 + (i * j) mod 3) mod 2 = 0
+  Applying mask m to a symbol means inverting the values (swapping 0 and 1) of the modules of the data region that satisfy the condition. Function modules are not changed.
+(2) Let S(m) be the symbol obtained by applying mask m to the unmasked symbol and writing the format information for the request's level lv and mask m into both places of the format information.
+(3) The penalty of a symbol is the sum of the following N1 to N4.
+  - N1: for each row and each column, for every maximal run of consecutive modules with the same value (one whose neighbors on both sides are outside the symbol or have a different value) whose length k satisfies k >= 5, add k - 2 points.
+  - N2: 3 times the number of (x, y) with 0 <= x <= n - 2, 0 <= y <= n - 2 for which the 4 modules (x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1) all have the same value (overlapping ones are each counted).
+  - N3: 40 times the number of places where, looking at each row from left to right and each column from top to bottom, the values of 11 consecutive modules match 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0 or 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1 (runs of 11 with different starting positions count as different places; modules outside the symbol are not considered).
+  - N4: with K the number of dark modules, 10 * floor(|20 * K - 10 * n * n| / (n * n)).
+(4) Mask selection: if <mask> is AUTO, choose the mask of the one with the lowest penalty among S(0), S(1), ..., S(7) (if several share the lowest penalty, the one with the smallest m). If <mask> is an integer, choose that mask. S(m) for the chosen mask m is called the request's final symbol.
+
+Section 11. Writing and reading images
+(1) PBM image: with W = (n + 2 * Q) * S, the PBM image of a symbol has P1 on line 1, <W> <W> on line 2, followed by W lines of pixel rows. The (py + 1)-th pixel row (py = 0, 1, ..., W - 1) is a string of W characters representing the pixels (0, py), (1, py), ..., (W - 1, py), with no spaces in between. Pixel (px, py) is the character 1 if X = floor(px / S) - Q and Y = floor(py / S) - Q are both between 0 and n - 1 inclusive and module (X, Y) is dark, and the character 0 otherwise.
+(2) Reading an image: read a symbol from the text of a PBM image as follows. Obtain the width W and the height H from line 2, and the value of each pixel (1 for the character 1, 0 for 0) from the following H lines. Let left be the minimum x of the pixels with value 1, right the maximum x, and top the minimum y. Let run be the number of pixels with value 1 that continue without interruption to the right (toward increasing x) from pixel (left, top), including pixel (left, top) itself, and let u = floor(run / 7) and n' = floor((right - left + 1) / u). The symbol read consists of n' x n' modules, and the value of module (x, y) is the value of pixel (left + u * x, top + u * y). The image is said to be "well-formed" if, for every pixel, the pixel's value equals the value of module (floor((px - left) / u), floor((py - top) / u)) when left <= px < left + u * n' and top <= py < top + u * n', and the pixel's value is 0 otherwise. floor(left / u) is called the quiet zone width read.
+
+Section 12. Decoding
+This is the procedure for decoding an n x n array A of modules (n = 17 + 4 * v, 1 <= v <= 10). The result of decoding is a sequence of lines described below (the decoding lines), plus the decoded string on success, or failure otherwise.
+(1) Orientation: for k = 0, 1, 2, 3, consider the 7 x 7 regions whose top-left modules are (n - 7, n - 7), (n - 7, 0), (0, 0), (0, n - 7) respectively (the bottom-right, top-right, top-left and bottom-left corners). With (x0, y0) the top-left module of a region, the finder score of that corner is the number of (i, j) with 0 <= i <= 6, 0 <= j <= 6 for which the value of module (x0 + i, y0 + j) equals "1 if max(|i - 3|, |j - 3|) != 2, otherwise 0". Let K be the k with the minimum score (the smallest k if several share the minimum), and let A' be the result of rotating A clockwise by 90 degrees K times. The value of module (x, y) of an array rotated clockwise by 90 degrees is the value of module (y, n - 1 - x) before the rotation.
+(2) Attempts: doing (3) to (7) on A' is called an attempt. If the attempt fails, redo the attempt on the transpose of A' (the array in which the value of module (x, y) is the value of module (y, x) of A'). If the redone attempt succeeds, it is adopted with "mirrored"; if it fails, the first attempt is adopted with "not mirrored". If the first attempt succeeds, it is adopted with "not mirrored". The decoding lines are the following line followed by the lines of the adopted attempt.
+  orientation rotations <K> mirrored <yes if mirrored, no if not mirrored>
+  Decoding succeeds if the adopted attempt succeeds, and the string obtained in that attempt is the decoded string.
+(3) Format information: read the values f1 and f2 from the first and second positions of the format information. For each of f1 and f2, let d1 and d2 be the minimum Hamming distance to the 32 format information values (all combinations of the 4 levels and 8 masks). If d2 < d1, choose the second, otherwise the first, and let d be the distance of the chosen one. If d > 3, output the following line and the attempt fails.
+  format <f1> <f2> distance <d1> <d2> unreadable
+  If d <= 3, use the level lv and mask m of the format information whose Hamming distance to the chosen value is d (when d <= 3 it is uniquely determined), and output the following line.
+  format <f1> <f2> distance <d1> <d2> level <lv> mask <m>
+  <f1> and <f2> are written as 15-digit binary numbers.
+(4) Version information: let v = (n - 17) / 4. When v >= 7, read the values g1 and g2 from the first and second positions of the version information, compute the minimum Hamming distances e1 and e2 to the 34 version information values of versions 7 to 40 in the same way as in (3), and choose the second if e2 < e1, otherwise the first. If the distance of the chosen one is greater than 3, output the first line below and the attempt fails; otherwise, find the version v' of the version information with the minimum Hamming distance to the chosen value and output the second line below, and if v' != v the attempt fails. <g1> and <g2> are written as 18-digit binary numbers.
+  version <g1> <g2> distance <e1> <e2> unreadable
+  version <g1> <g2> distance <e1> <e2> decoded <v'>
+  When v <= 6, the version information is not read and no line is output.
+(5) Codeword extraction: determine the function modules and data region of version v as in section 7, and apply mask m to the array (section 10 (1)). Split the first 8 * T(v) bits of the bit string formed by the values of the modules in reading order (section 9 (1)) into 8-bit pieces to make T(v) codewords, put the j-th codeword at the j-th (block, position) of the placement order for version v and level lv, and so form the received codewords r_0, r_1, ..., r_(N-1) (N = k_b + e) of each block.
+(6) Error correction: for each block, in order of block number, do the following (a) to (c) and output one line. After the lines of all blocks are output, the attempt fails if even one block failed correction.
+  (a) Compute the syndromes S_j (j = 0, 1, ..., e - 1) as S_j = r_0 * alpha^(j(N-1)) + r_1 * alpha^(j(N-2)) + ... + r_(N-1) * alpha^0 (GF(256) arithmetic). Starting with s = 0 and replacing s with s * alpha^j + r_i for i = 0, 1, ..., N - 1 in this order, the final s is S_j.
+  (b) If all S_j are 0, there are no errors.
+  (c) Otherwise, let t = floor(e / 2). If there is a codeword sequence c_0, c_1, ..., c_(N-1) whose syndromes are all 0 and for which the number of positions i with c_i != r_i is at most t, it is uniquely determined, and the received codewords are corrected to it (the positions whose values differ are called the corrected positions). If there is none, correction fails. It is found by the following procedure (polynomial coefficients are elements of GF(256)).
+    - Berlekamp-Massey method: starting with Lambda(x) = 1, B(x) = 1, L = 0, p = 1, beta = 1, for q = 0, 1, ..., e - 1 in this order, compute delta = S_q + Lambda_1 * S_(q-1) + ... + Lambda_L * S_(q-L) (Lambda_i is the coefficient of x^i in Lambda(x)); if delta = 0, increase p by 1; if delta != 0 and 2 * L <= q, let U(x) be the original Lambda(x), replace Lambda(x) with Lambda(x) + (delta / beta) * x^p * B(x), and set L to q + 1 - L, B(x) to U(x), beta to delta and p to 1; if delta != 0 and 2 * L > q, replace Lambda(x) with Lambda(x) + (delta / beta) * x^p * B(x) and increase p by 1. If the final L is greater than t, it fails.
+    - Error positions: with X_i = alpha^(N-1-i), find the i with 0 <= i <= N - 1 for which Lambda(inverse of X_i) = 0 (the inverse of X_i is alpha^((255 - (N - 1 - i)) mod 255)). If their number differs from L, it fails.
+    - Error values: let S(x) = S_0 + S_1 x + ... + S_(e-1) x^(e-1), let Omega(x) be the terms x^0 to x^(e-1) of S(x) * Lambda(x), and let Lambda'(x) be the sum obtained by replacing each odd-degree term Lambda_h x^h of Lambda(x) with Lambda_h x^(h-1). For each error position i, with Z the inverse of X_i, c_i is r_i plus X_i * Omega(Z) / Lambda'(Z); at the other positions, c_i = r_i.
+    - Finally, compute the syndromes of c_0, ..., c_(N-1), and fail if any of them is nonzero.
+  The line output is one of the following. <syndromes> is S_0, S_1, ..., S_(e-1) in this order written in hexadecimal, and <positions> is the corrected positions in increasing order separated by single spaces. For a block whose correction succeeded, c_i is used instead of r_i from here on.
+  block <block number> syndromes <syndromes> ok (when there are no errors)
+  block <block number> syndromes <syndromes> corrected <positions> (when corrected)
+  block <block number> syndromes <syndromes> failed (when correction failed)
+(7) Bit string parsing: concatenate the codewords at positions 0 to k_b - 1 of each block in order of block number to form the D(v, lv) data codewords, and turn them into a bit string (length 8 * D(v, lv)). With the position at the start (0), repeat the following.
+  (a) If the number of remaining bits (bit string length - current position) is less than 4, stop.
+  (b) Read 4 bits. If they are 0000, stop. If they are 0001, 0010, 0100, let the mode mu be NUMERIC, ALPHANUMERIC, BYTE respectively; otherwise output parse failed indicator <the 4 bits read, written as a 4-digit binary number> and the attempt fails.
+  (c) If the number of remaining bits is less than cw(mu, v), output parse failed length <mu> and the attempt fails. Otherwise read cw(mu, v) bits as the character count k, and if the number of remaining bits is less than dw(mu, k), output parse failed length <mu> and the attempt fails.
+  (d) Divide the k characters into groups as in section 1 (3), and for each group in group order, read its number of bits to obtain the value a. For NUMERIC, a must be less than 1000, 100, 10 for groups of 3, 2, 1 characters respectively, and the group's characters are a written as a 3-, 2-, 1-digit decimal number (missing high digits as 0). For ALPHANUMERIC, a < 2025 must hold for a 2-character group, and the group's characters are the characters whose values are floor(a / 45) and a mod 45, in this order; a < 45 must hold for a 1-character group, and its character is the character whose value is a. For BYTE, 32 <= a <= 126 must hold, and the character is the one whose ASCII code is a. If any group does not satisfy its condition, output parse failed value <mu> and the attempt fails.
+  (e) When the k characters have been read, output segment <mu> <k> and return to (a).
+  If it ends without failing, let E be the position just after the last segment read (0 if there is no segment); output padding ok if the first E bits of the bit string padded to length 8 * D(v, lv) (section 5 (2)) equal the whole bit string, and padding bad if not. Then, with the characters of the segments read concatenated in segment order as the decoded string, output text "<decoded string>", and the attempt succeeds (if the string is empty, text "").
+
+Section 13. Processing flow of requests
+For each valid request, in request order, do the following.
+(1) Make the final symbol by sections 3 to 10, and write it to codes.txt, codewords.txt and bitstream.txt.
+(2) Write the PBM image of the final symbol to output/qr_<id>.pbm.
+(3) Self-check: read the text of the PBM image of (2) by section 11 (2), and decode the symbol read by section 12 (the "clean check").
+(4) If damage.txt has operations for the request, decode the symbol with the damage of section 14 applied by section 12 (the "damaged check").
+(5) Compute the tolerance of section 15.
+The result of a check is ok if decoding succeeds and the decoded string equals <text>, mismatch if it succeeds but the string differs, and failed if it fails.
+
+Section 14. Damage
+(1) To a copy of the final symbol, apply the request's flip and fill operations in damage.txt in file order. flip <x> <y> inverts the value of module (x, y), and fill <x> <y> <w> <h> <color> makes every module (X, Y) with x <= X <= x + w - 1, y <= Y <= y + h - 1 light if <color> is light and dark if it is dark. The result is called the damaged symbol.
+(2) Modules whose values differ between the damaged symbol and the final symbol are called changed modules; count them. Also divide the changed modules into those in the function patterns, those in the format information area, those in the version information area, those in the data region that are p_j (j < 8 * T(v)) of the reading order (data), and those in the data region that are p_j (j >= 8 * T(v)) (remainder bits), and count each. Furthermore, for each changed data module p_j, the floor(j / 8)-th codeword (counted from 0) of the codeword sequence is called a damaged codeword, and for each block b, E_b is the number of damaged codewords that belong to block b in the placement order (the same codeword is counted only once).
+(3) Decode the damaged symbol after applying the request's rotate and mirror operations in damage.txt to it in file order. rotate rotates the array clockwise by 90 degrees (section 12 (1)), and mirror transposes the array (section 12 (2)).
+
+Section 15. Tolerance
+For each of the cases where the color c is light and dark, compute the tolerance as follows. For s = 1, 2, ..., n in this order, with a = floor((n - s) / 2), decode by section 12 a copy of the final symbol in which every module (X, Y) with a <= X <= a + s - 1, a <= Y <= a + s - 1 is set to color c, and check whether decoding succeeds and the decoded string equals <text>. Stop at the first s for which they are not equal (including failure), and s - 1 is the tolerance for that color. If they are equal up to s = n, the tolerance is n.
+
+Section 16. External symbols
+Decode the symbols of scans.txt by section 12 in symbol order.
+
+Section 17. Capacity table
+For v = 1, 2, ..., 10, compute T(v), M(v), and for each level lv, D(v, lv) and the other values. Also, for each mode mu, compute the largest number of characters k satisfying 4 + cw(mu, v) + dw(mu, k) <= C(v, lv) (the maximum number of characters that can be encoded in one segment).
+
+Section 18. Summary
+Write the following values to summary.txt ([Output files] (8)).
+- The number of requests R, the number of valid requests, the number of requests with errors, and the number for each kind of error (level, mode, version, mask, text, charset, capacity).
+- For the valid requests: the number for each determined mode (MIXED requests are counted as MIXED), the number for each final level and the number of requests that boosted their level, the number for each version 1 to 10, the number for each chosen mask 0 to 7, the total number of segments of seg(v), the total number of data codewords D(v, lv), the total number of error correction codewords e * (b1 + b2), the total number of modules n * n, and the total number of dark modules of the final symbols.
+- The number of clean checks and damaged checks (the decodings for computing tolerance and the decodings of external symbols are not included) and the number for each result ok, mismatch, failed. For the same checks, the number of block lines output in the adopted attempt for each of ok, corrected, failed, and the total number of corrected positions.
+- The number of external symbols, and the numbers whose decoding succeeded and failed.
+
+[Output files]
+Write the following files to the output/ folder. Every file consists of ASCII characters only, and every line ends with a line feed (LF). Words in a line are separated by single spaces, with no spaces at the beginning or end of a line, and no blank lines are output (where a string is written enclosed in double quotes ("), the string is written exactly as it is). Integers are written in decimal without extra leading zeros. In the formats below, the parts enclosed in < > are replaced by values, and everything else is output as is.
+
+(1) output/codes.txt: for each request, in request order, output the following line.
+  request <id>
+  For a request with an error, then output the following one line. <content> is the error content of section 2.
+  error <content>
+  For a valid request, then output the following lines in this order.
+  symbol version <v> level <lv> mask <m> size <n>
+  segments <number of segments> <mode>:<character count> <mode>:<character count> ...
+  bits data <B(v)> capacity <C(v, lv)> alternatives NUMERIC <b_N> ALPHANUMERIC <b_A> BYTE <b_B> MIXED <b_X>
+  fits L <v_L> M <v_M> Q <v_Q> H <v_H>
+  modules function <F(v)> data <M(v)> remainder <number of remainder bits> dark <number of dark modules>
+  format <format information> version <version information>
+  penalty <m'> n1 <N1> n2 <N2> n3 <N3> n4 <N4> total <penalty> (8 lines, for m' = 0, 1, ..., 7 in this order)
+  (n lines of the final symbol)
+  - <v> is the version, <lv> is the request's level (after any boost), and <m> is the chosen mask.
+  - The segments line gives the number of segments of seg(v) and the mode and character count of each segment in segment order.
+  - <b_N>, <b_A>, <b_B> are the lengths of the bit string when the whole string is made one segment of NUMERIC, ALPHANUMERIC, BYTE respectively in version v, or - if the string has a character that cannot be encoded in that mode. <b_X> is the total bit string length c(L) of the MIXED split (section 3) in version v.
+  - <v_lv'> (lv' = L, M, Q, H) is the smallest version v' (1 <= v' <= 10) that satisfies B(v') <= C(v', lv') with the request's split into segments in its determined mode (for MIXED, the split for each version), or - if there is none.
+  - <number of dark modules> is that of the final symbol. <format information> is the format information of the final symbol written as a 15-digit binary number, and <version information> is the version information of version v written as an 18-digit binary number if v >= 7, and none if v <= 6.
+  - The penalty lines give the penalties of S(m'), and <penalty> is N1 + N2 + N3 + N4.
+  - The (y + 1)-th line of the symbol (y = 0, 1, ..., n - 1) is n characters arranging the modules (0, y), (1, y), ..., (n - 1, y) as "#" if dark and "." if light.
+(2) output/codewords.txt: for each valid request, in request order, output the following lines.
+  request <id> version <v> level <lv> blocks <number of blocks> data <D(v, lv)> ec_per_block <e> total <T(v)>
+  block <b> data <data codewords>
+  block <b> ec <error correction codewords>
+  interleaved <codeword sequence>
+  The two block lines are output for each block in the order b = 0, 1, .... <data codewords> and <error correction codewords> are the data codewords and the error correction codewords of the block, and <codeword sequence> is the codeword sequence of section 6 (4), each written in hexadecimal.
+(3) output/bitstream.txt: for each valid request, in request order, output the following lines.
+  request <id> version <v> bits <B(v)> capacity <C(v, lv)>
+  segment <mode> indicator <mode indicator> count <character count> <character count indicator>
+  group <value> <bits> "<characters>"
+  terminator <number of terminator bits> zero_fill <number of zero-fill bits> pad_bytes <number of pad bytes>
+  A segment line is output for each segment of seg(v) in segment order, and after each segment line, a group line is output for each group of that segment in group order. <mode indicator> is a 4-digit binary number, <character count indicator> is the character count written as a cw(mu, v)-digit binary number, <value> is the value of the group, <bits> is the value of the group written as a binary number with as many digits as the group's number of bits, and <characters> is the characters of the group (1 to 3 characters). The values of the terminator line are the numbers of zeros appended in (a) and in (b), and the number of pad bytes of (c), when the bit string is padded to length C(v, lv) in section 5 (3).
+(4) output/qr_<id>.pbm: for each valid request, output the PBM image (section 11 (1)) of the final symbol.
+(5) output/selfcheck.txt: for each valid request, in request order, output the following lines.
+  request <id>
+  image <W> <H> quiet <quiet zone width read> scale <u> size <n'> <ok if the image is well-formed, otherwise bad>
+  check clean
+  (decoding lines of the clean check)
+  result <result of the clean check>
+  check damaged operations <number of operations>
+  damage changed <number of changed modules> function <a> format <b> version <c> data <d> remainder <r>
+  errors <E_0> <E_1> ... <E_(B-1)> limit <t>
+  (decoding lines of the damaged check)
+  result <result of the damaged check>
+  tolerance light <tolerance for the light color> dark <tolerance for the dark color>
+  - The image line gives the values obtained when the image is read in section 13 (3) (W and H are the values on line 2 of the PBM).
+  - The lines from check damaged to the second result are output only when damage.txt has operations for the request. <number of operations> is the number of lines of damage.txt for the request.
+  - <a>, <b>, <c>, <d>, <r> of the damage line are the numbers of the changed modules of section 14 (2) that are in the function patterns, in the format information area, in the version information area, data, and remainder bits, respectively.
+  - E_b of the errors line is the value of section 14 (2) for block b = 0, 1, ..., B - 1 (B is the number of blocks), and <t> is floor(e / 2).
+  - The decoding lines are the lines of section 12.
+(6) output/scans.txt: for each symbol of scans.txt, in symbol order, output the following lines.
+  scan <name> size <n>
+  (decoding lines)
+  result <decoded if decoding succeeds, failed if it fails>
+(7) output/capacity.txt: for v = 1, 2, ..., 10 in this order, output the following one line and 4 lines for the levels L, M, Q, H in this order.
+  version <v> size <n> data_modules <M(v)> codewords <T(v)> remainder <M(v) - 8 * T(v)> alignment <c_1> <c_2> ... <c_m>
+  level <lv> blocks <b1 + b2> data <D(v, lv)> ec_per_block <e> numeric <k_N> alphanumeric <k_A> byte <k_B>
+  When m = 0, write alignment none. <k_N>, <k_A>, <k_B> are the maximum numbers of characters of section 17 for NUMERIC, ALPHANUMERIC and BYTE respectively.
+(8) output/summary.txt: output the following 11 lines in this order.
+  requests <R> encoded <number of valid requests> errors <number of requests with errors>
+  error_kinds level <count> mode <count> version <count> mask <count> text <count> charset <count> capacity <count>
+  modes NUMERIC <count> ALPHANUMERIC <count> BYTE <count> MIXED <count>
+  levels L <count> M <count> Q <count> H <count> boosted <number of requests that boosted their level>
+  versions <count of version 1> <count of version 2> ... <count of version 10>
+  masks <count of mask 0> <count of mask 1> ... <count of mask 7>
+  segments <total number of segments> data_codewords <total number of data codewords> ec_codewords <total number of error correction codewords>
+  modules <total number of modules> dark <total number of dark modules>
+  checks <number of checks> ok <count> mismatch <count> failed <count>
+  blocks ok <count> corrected <count> failed <count> codewords <total number of corrected positions>
+  scans <number of external symbols> decoded <number decoded successfully> failed <number failed>
+  Each value is as described in section 18.
+
+[Source files]
+There are the following 6 source files. The names are language-independent role names; file extensions and capitalization follow the conventions of each language.
+- main: handles the overall flow and contains most of the processing: reading the input files, request checks (section 2), splitting into groups and the numbers of bits of the character count indicator and so on (section 1), splitting into segments (including the dynamic programming of section 3), determining the version and level (section 4), assembling and padding the bit string (section 5), splitting into blocks and the placement order (section 6 (2), (4)), the flow of data placement and mask selection (section 9 (2), section 10 (2), (4)), reading images (section 11 (2)), decoding (the orientation of section 12, redoing the attempt, reading the format information and version information, codeword extraction, bit string parsing, and the padding check), damage and tolerance (sections 14 and 15), external symbols (section 16), the capacity table (section 17), the summary (section 18), and creating and writing the contents of all output files.
+- bitstream: writing values to a bit string (appending a value in w bits), reading values from a bit string (reading w bits from the current position and advancing the position), conversion between bit strings and sequences of codewords, and the table of alphanumeric mode characters.
+- reed_solomon: GF(256) arithmetic (section 6 (1)), computing the generator polynomial and the error correction codewords (section 6 (3)), and computing syndromes and correcting errors (section 12 (6)).
+- matrix: placing the function patterns and the area type of each module (section 7), computing the format information and version information, their positions, and writing and reading values (section 8), and computing the reading order (section 9 (1)).
+- masking: mask conditions and applying masks (section 10 (1)), and computing the penalties N1 to N4 (section 10 (3)).
+- render: creating the text lines of a symbol ("#" and ".") and creating the text of the PBM image (section 11 (1)).
+
+[Constraints]
+- 1 <= R <= 40, and <text> has at most 400 characters.
+- 0 <= Q <= 8 and 1 <= S <= 4.
+- In tables.txt, 1 <= e <= 30, b1 >= 1 and k1 >= 1. For every version v, the value of D(v, lv) + e * (b1 + b2) is the same for the 4 levels lv (this is T(v)), and 0 <= M(v) - 8 * T(v) <= 7.
+- damage.txt has at least one line, and the <id> of every line is the identifier of a valid request. With n the side of that request's symbol, 0 <= x <= n - 1 and 0 <= y <= n - 1 for flip, and 0 <= x, 0 <= y, 1 <= w, 1 <= h, x + w <= n and y + h <= n for fill.
+- The number of symbols in scans.txt is at least 1 and at most 20.
+- The absolute value of every integer, including intermediate values of computations, is less than 2^31.
+
+[Example]
+The following example shows the format and differs from the actual input files.
+Input (input/requests.txt):
+demo M AUTO AUTO AUTO:QR 2026
+mix L+ MIXED AUTO 3:abc12345678
+bad H NUMERIC AUTO AUTO:12.5
+Input (input/params.txt):
+quiet_zone 1
+scale 1
+Input (input/tables.txt): the same content as the actual input file (50 lines).
+Input (input/damage.txt):
+demo flip 10 12
+demo fill 8 9 2 3 light
+demo rotate
+Input (input/scans.txt):
+scan sample
+#######.#.#...#######
+#.....#.###.#.#.....#
+#.###.#.....#.#.###.#
+#.###.#.#..#..#.###.#
+#.###.#..####.#.###.#
+#.....#..#.##.#.....#
+#######.#.#.#.#######
+........#............
+.##.####..##.##..#.##
+####...##.#..#..##..#
+......#####..#.#....#
+##.#.#.#...#.#.###..#
+#.#.####..#.#..#....#
+..........#...##...#.
+#######.##..#...#..#.
+#.....#.#....#####.#.
+#.###.#.#...##.##.#.#
+#.###.#..##..#.#....#
+#.###.#.#.#.#.#.###.#
+#.....#.#....#..##...
+#######..##.##..####.
+Output (output/codes.txt):
+request demo
+symbol version 1 level M mask 1 size 21
+segments 1 ALPHANUMERIC:7
+bits data 52 capacity 128 alternatives NUMERIC - ALPHANUMERIC 52 BYTE 68 MIXED 52
+fits L 1 M 1 Q 1 H 1
+modules function 233 data 208 remainder 0 dark 236
+format 101000100100101 version none
+penalty 0 n1 173 n2 99 n3 80 n4 0 total 352
+penalty 1 n1 188 n2 132 n3 0 n4 0 total 320
+penalty 2 n1 207 n2 114 n3 0 n4 0 total 321
+penalty 3 n1 187 n2 102 n3 240 n4 0 total 529
+penalty 4 n1 171 n2 141 n3 120 n4 0 total 432
+penalty 5 n1 188 n2 171 n3 240 n4 0 total 599
+penalty 6 n1 187 n2 156 n3 120 n4 0 total 463
+penalty 7 n1 193 n2 153 n3 200 n4 0 total 546
+#######.#####.#######
+#.....#..####.#.....#
+#.###.#.##.##.#.###.#
+#.###.#..##.#.#.###.#
+#.###.#..#.##.#.###.#
+#.....#.#####.#.....#
+#######.#.#.#.#######
+.........##.#........
+#.#...##.......#..#.#
+....#..##.##.###.###.
+.####.###..###.####..
+.#...#.#..##.###..#.#
+#....##..#########.#.
+........##.......##..
+#######.#.#...#..##..
+#.....#..#..#...#..##
+#.###.#..#....#..####
+#.###.#...##.##......
+#.###.#.#..###.######
+#.....#...##.##.#.#.#
+#######.#.#####.#####
+request mix
+symbol version 1 level Q mask 3 size 21
+segments 2 BYTE:3 NUMERIC:8
+bits data 77 capacity 104 alternatives NUMERIC - ALPHANUMERIC - BYTE 100 MIXED 77
+fits L 1 M 1 Q 1 H 2
+modules function 233 data 208 remainder 0 dark 206
+format 011101000000110 version none
+penalty 0 n1 173 n2 84 n3 40 n4 0 total 297
+penalty 1 n1 205 n2 165 n3 160 n4 0 total 530
+penalty 2 n1 211 n2 129 n3 40 n4 0 total 380
+penalty 3 n1 183 n2 135 n3 160 n4 0 total 478
+penalty 4 n1 215 n2 150 n3 80 n4 0 total 445
+penalty 5 n1 177 n2 156 n3 160 n4 0 total 493
+penalty 6 n1 176 n2 120 n3 40 n4 0 total 336
+penalty 7 n1 179 n2 90 n3 120 n4 0 total 389
+#######...#.#.#######
+#.....#.#..#..#.....#
+#.###.#.#.....#.###.#
+#.###.#...#...#.###.#
+#.###.#....#..#.###.#
+#.....#...##..#.....#
+#######.#.#.#.#######
+.........####........
+.###.##..#.#......##.
+.#.#...#...#.#.##.#.#
+..#.#.##.#.###...####
+..#.#......#.#...#...
+#.#.#########..#.....
+........###...####...
+#######..#..##.####..
+#.....#.#.#.#...#.###
+#.###.#.......#.#...#
+#.###.#.#.##..##...#.
+#.###.#.##..#.#...#..
+#.....#.#.#..#...#..#
+#######...#..#..#.#..
+request bad
+error charset position 2
+Output (output/codewords.txt):
+request demo version 1 level M blocks 1 data 16 ec_per_block 10 total 26
+block 0 data 203cadcac00860ec11ec11ec11ec11ec
+block 0 ec 8c3bbfb856b9d369c01a
+interleaved 203cadcac00860ec11ec11ec11ec11ec8c3bbfb856b9d369c01a
+request mix version 1 level Q blocks 1 data 13 ec_per_block 13 total 26
+block 0 data 40361626310207b7227000ec11
+block 0 ec 495b6480cb0f5afc08dd33d0c8
+interleaved 40361626310207b7227000ec11495b6480cb0f5afc08dd33d0c8
+Output (output/bitstream.txt):
+request demo version 1 bits 52 capacity 128
+segment ALPHANUMERIC indicator 0010 count 7 000000111
+group 1197 10010101101 "QR"
+group 1622 11001010110 " 2"
+group 2 00000000010 "02"
+group 6 000110 "6"
+terminator 4 zero_fill 0 pad_bytes 9
+request mix version 1 bits 77 capacity 104
+segment BYTE indicator 0100 count 3 00000011
+group 97 01100001 "a"
+group 98 01100010 "b"
+group 99 01100011 "c"
+segment NUMERIC indicator 0001 count 8 0000001000
+group 123 0001111011 "123"
+group 456 0111001000 "456"
+group 78 1001110 "78"
+terminator 4 zero_fill 7 pad_bytes 2
+Output (output/qr_demo.pbm):
+P1
+23 23
+00000000000000000000000
+01111111011111011111110
+01000001001111010000010
+01011101011011010111010
+01011101001101010111010
+01011101001011010111010
+01000001011111010000010
+01111111010101011111110
+00000000001101000000000
+01010001100000001001010
+00000100110110111011100
+00111101110011101111000
+00100010100110111001010
+01000011001111111110100
+00000000011000000011000
+01111111010100010011000
+01000001001001000100110
+01011101001000010011110
+01011101000110110000000
+01011101010011101111110
+01000001000110110101010
+01111111010111110111110
+00000000000000000000000
+Output (output/qr_mix.pbm): (omitted)
+Output (output/selfcheck.txt):
+request demo
+image 23 23 quiet 1 scale 1 size 21 ok
+check clean
+orientation rotations 0 mirrored no
+format 101000100100101 101000100100101 distance 0 0 level M mask 1
+block 0 syndromes 00000000000000000000 ok
+segment ALPHANUMERIC 7
+padding ok
+text "QR 2026"
+result ok
+check damaged operations 3
+damage changed 3 function 0 format 0 version 0 data 3 remainder 0
+errors 2 limit 5
+orientation rotations 3 mirrored no
+format 101000100100101 101000100100101 distance 0 0 level M mask 1
+block 0 syndromes 08d03de3a2a1651283d8 corrected 19 22
+segment ALPHANUMERIC 7
+padding ok
+text "QR 2026"
+result ok
+tolerance light 6 dark 6
+request mix
+image 23 23 quiet 1 scale 1 size 21 ok
+check clean
+orientation rotations 0 mirrored no
+format 011101000000110 011101000000110 distance 0 0 level Q mask 3
+block 0 syndromes 00000000000000000000000000 ok
+segment BYTE 3
+segment NUMERIC 8
+padding ok
+text "abc12345678"
+result ok
+tolerance light 6 dark 6
+Output (output/scans.txt):
+scan sample size 21
+orientation rotations 0 mirrored yes
+format 110100101110110 110100101110110 distance 0 0 level L mask 7
+block 0 syndromes 88401377dff12b corrected 5 12
+segment ALPHANUMERIC 2
+segment NUMERIC 4
+padding ok
+text "ID0042"
+result decoded
+Output (output/capacity.txt): omitted, because it is determined by tables.txt alone and is the same as the actual output.
+Output (output/summary.txt):
+requests 3 encoded 2 errors 1
+error_kinds level 0 mode 0 version 0 mask 0 text 0 charset 1 capacity 0
+modes NUMERIC 0 ALPHANUMERIC 1 BYTE 0 MIXED 1
+levels L 0 M 1 Q 1 H 0 boosted 1
+versions 2 0 0 0 0 0 0 0 0 0
+masks 0 1 0 1 0 0 0 0
+segments 3 data_codewords 29 ec_codewords 23
+modules 882 dark 442
+checks 3 ok 3 mismatch 0 failed 0
+blocks ok 2 corrected 1 failed 0 codewords 2
+scans 1 decoded 1 failed 0

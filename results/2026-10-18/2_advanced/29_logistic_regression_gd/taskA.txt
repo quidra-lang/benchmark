@@ -1,0 +1,758 @@
+[Overview]
+Write a program that trains and evaluates logistic regression on data consisting of numeric features and class labels. The features are expanded into monomials up to degree P and then standardized. For binary classification (deciding whether a row belongs to a given class), the L2 regularization coefficient lambda is chosen by 5-fold cross-validation, and models are trained and compared with three methods: gradient descent, mini-batch stochastic gradient descent, and Newton's method (using the Cholesky decomposition). In addition, the program outputs the changes with lambda, the degree and the amount of training data; evaluation on the test data such as the confusion matrix, ROC curve, AUC and calibration; the coefficient table and diagnostics of the Newton's method model (Hosmer-Lemeshow test, leverage and Cook's distance, marginal effects, bootstrap, permutation importance, and so on); a comparison of multiclass softmax regression with one-vs-rest; and maps of the predictions.
+The input is three files in the input/ folder (training data, test data, settings), and the results are written to five files in the output/ folder. Nothing is written to standard output. All rules, including how random numbers (the MINSTD generator) are used, are defined in [Processing], so the result is uniquely determined.
+
+[Input files]
+There are three input files: input/train.csv, input/test.csv and input/params.txt. Every file consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). There is no whitespace at the start or end of a line. Values are separated by a comma in the CSV files and by a single space in params.txt.
+An integer is a base-10 number without extra leading zeros; negative integers do not appear. A decimal number is a base-10 number consisting of, in this order, "-" (only for negative numbers), a sequence of one or more digits (the integer part), ".", and a sequence of one or more digits (the fractional part) (examples: 0.5, -1.62, 0.003). Exponent notation is not used.
+
+* input/train.csv (training data)
+The first line is a header line listing the string id, the d names of the base features, and the string label in this order, separated by commas (example: id,x1,x2,label). A base feature name is a string of 1 to 8 characters that starts with a lowercase English letter and consists of lowercase English letters and digits only; the names are distinct from each other and are not intercept.
+Each line from the second line on represents one example, listing the ID, the d base feature values (decimal numbers) and the label in this order, separated by commas.
+- An ID is a string of 1 to 8 characters consisting of uppercase English letters and digits; the IDs are distinct within the file.
+- A label is a class number, an integer >= 0.
+Let n be the number of examples; in the order of the lines in the file they are called training row 1, ..., training row n. This order is called the "training data order". K = (the maximum label in the training data) + 1 is called the "number of classes".
+
+* input/test.csv (test data)
+It has the same format as train.csv, and its header line is also the same as that of train.csv. Let m be the number of examples; in the order of the lines in the file they are called test row 1, ..., test row m, and this order is called the "test data order". The labels are between 0 and K - 1 inclusive. The labels of the test data are used only for evaluation. The test data may contain rows whose base feature values are all the same as those of another row (rows that differ only in the ID, or only in the ID and the label).
+
+* input/params.txt (settings)
+The following 11 lines appear in this order. Each line consists of an uppercase keyword and values, separated by single spaces.
+- POSITIVE c+: the number of the class whose rows are the "positive examples" in binary classification (an integer from 0 to K - 1).
+- DEGREE P: the degree of the expansion (an integer from 1 to 3).
+- THRESHOLD tau: the prediction threshold (a decimal number greater than 0 and less than 1).
+- LAMBDAS lambda_1 lambda_2 ...: the candidates for the regularization coefficient lambda (positive decimal numbers, 1 to 8 of them, distinct and in increasing order, with at most 4 digits in the fractional part). This order is called the "lambda candidate order".
+- GD alpha_g T_g: the learning rate (a positive decimal number) and the number of iterations (a multiple of 100 from 100 to 1000) of gradient descent.
+- SGD alpha_s B E seed_s: the learning rate (a positive decimal number), the mini-batch size B (an integer from 1 to n), the number of epochs E (an integer from 1 to 100) and the random seed seed_s (an integer from 1 to 2147483646) of stochastic gradient descent.
+- SOFTMAX alpha_m T_m lambda_m: the learning rate (a positive decimal number), the number of iterations (a multiple of 100 from 100 to 1000) and the regularization coefficient (a positive decimal number with at most 4 digits in the fractional part) of softmax regression.
+- BOOTSTRAP N_b seed_b: the number of bootstrap resamples (a multiple of 40 from 40 to 1000) and the random seed (an integer from 1 to 2147483646).
+- PERMUTATION N_p seed_p: the number of repetitions of permutation importance (an integer from 1 to 20) and the random seed (an integer from 1 to 2147483646).
+- MAP W H: the width of the map in characters and its height in characters (integers from 1 to 80).
+- COST c_fp c_fn: the cost of one false positive and the cost of one false negative (integers from 1 to 100).
+
+[Processing]
+* 1. Notation and computation rules
+- All real-number computations are done in double precision (IEEE 754 64-bit floating point). Input decimal numbers are converted to double precision before use.
+- exp is the exponential function, ln is the natural logarithm, sqrt is the square root, |t| is the absolute value of t, floor(t) is the largest integer less than or equal to t, and max and min are the maximum and the minimum. a mod b is the remainder of dividing an integer a >= 0 by a positive integer b.
+- A sum written with SUM (in place of the summation sign) starts from 0 and adds one term at a time in increasing order of the index (or, when an order of the sequence is defined, in that order). Other sums follow the same rule unless stated otherwise. Multiplications and divisions in an expression are computed from left to right in the written order, and additions and subtractions are also computed from left to right in the written order.
+- Counting is done with integers. A division that obtains a real number from integers (except for ratios) converts both operands to double precision before dividing. How to write a "ratio" and a "fraction" is defined in [Output files].
+- The "length" of a vector with components v_1, ..., v_k is sqrt(SUM v_i * v_i).
+- Random numbers are produced by the MINSTD generator. A generator has an integer state rho, which is initially the given seed. "Draw one random number" means replacing rho with (48271 * rho) mod 2147483647 and returning the new rho (the product is less than 2^47, so it can be computed exactly with either 64-bit integers or doubles). Generators with different seeds are independent of each other.
+- To "shuffle" a sequence a_1, ..., a_L of length L with a generator means: for i = L, L - 1, ..., 2 in order, draw one random number, call its value r, let k = (r mod i) + 1, and swap a_i and a_k.
+
+* 2. Feature expansion
+The feature columns of train.csv are called the "base features" and are numbered 1, ..., d in column order.
+For k = 1, ..., P in order, for each k, list all index tuples (i_1, ..., i_k) satisfying 1 <= i_1 <= i_2 <= ... <= i_k <= d in increasing lexicographic order; all the tuples arranged in this order are the "expanded features" (example: for d = 2, P = 3 there are 9 of them: (1), (2), (1, 1), (1, 2), (2, 2), (1, 1, 1), (1, 1, 2), (1, 2, 2), (2, 2, 2)). Let p be the number of expanded features, and number them 1, ..., p in this order. The length k of the tuple is called the "degree" of the feature, and p_D is the number of features of degree D or less (the features of degree D or less are the first p_D features, and p_P = p).
+- Name: the names of the base features of the indices of the tuple, joined with * in the order of the tuple (examples: x1, x1*x2, x1*x1*x2).
+- Value: with v_1, ..., v_d the base feature values of a row, the value of the tuple (i_1, ..., i_k) is v_i1 * v_i2 * ... * v_ik (the product multiplied from the left; for k = 1 it is v_i1 itself). These p values are called the "expanded values" of the row.
+
+* 3. Standardization
+From the expanded values of a sequence of rows R (r rows), compute for each expanded feature j (j = 1, ..., p) the mean mu_j = (SUM phi_ij) / r and the standard deviation s_j = sqrt((SUM (phi_ij - mu_j) * (phi_ij - mu_j)) / (r - 1)). phi_ij is the value of feature j of the i-th row of R, and the sums are added in the order of R. These are called the "statistics of R".
+The "standardized vector" of a row by the statistics mu, s is the (p + 1)-dimensional vector with components 0, 1, ..., p, xt = (1, (phi_1 - mu_1) / s_1, ..., (phi_p - mu_p) / s_p) (component 0 is always 1.0, and phi_j are the expanded values of that row).
+The statistics of all training rows (in training data order) are called the "overall statistics", and the standardized vectors by them the "overall standardized vectors". Unless stated otherwise, both training rows and test rows use the overall standardized vectors. When "only the first q features are used", the statistics are computed from expanded features 1, ..., q only (or only entries 1, ..., q of already computed statistics are used), and (q + 1)-dimensional standardized vectors with components 0, ..., q are used.
+
+* 4. Binary logistic regression
+The target y of each row is 1 if its label is c+ and 0 otherwise. Rows with y = 1 are called positive examples, and rows with y = 0 negative examples. Below, the dimension of the standardized vectors and of the weights is q + 1 (components 0, ..., q) (q = p unless stated otherwise). In the weights w = (w_0, ..., w_q), w_0 is called the intercept.
+- Score: u(w, xt) = SUM w_j * xt_j (j = 0, ..., q)
+- Probability: sigma(u) is 1 / (1 + exp(-u)) if u >= 0, and e / (1 + e) (e = exp(u)) if u < 0. sigma(u(w, xt)) is called the "probability" of the row.
+- Loss: ell(u, y) = max(u, 0) - y * u + ln(1 + exp(-|u|))
+- For a sequence of rows (standardized vectors xt_1, ..., xt_r, targets y_1, ..., y_r) and lambda, the objective function is J(w) = (SUM ell(u_i, y_i)) / r + lambda * S / 2, where u_i = u(w, xt_i) and S = SUM w_j * w_j (j = 1, ..., q; the intercept is not included). (SUM ell(u_i, y_i)) / r is called the "average loss" (it does not include the regularization term).
+- Gradient g(w): with e_i = sigma(u_i) - y_i and G_j = SUM e_i * xt_ij (i = 1, ..., r), g_0 = G_0 / r and g_j = G_j / r + lambda * w_j (j = 1, ..., q).
+- Hessian H(w): with v_i = sigma(u_i) * (1 - sigma(u_i)), the components with j >= k are H_jk = (SUM v_i * xt_ij * xt_ik) / r, and when j = k >= 1, lambda is further added. H_kj = H_jk.
+- Prediction: for a probability pi, it is 1 if pi >= tau and 0 otherwise. A prediction is "correct" when it equals y. The "number correct" of a sequence of rows is the number of rows whose prediction is correct.
+
+* 5. The three optimization methods
+In every method, the initial weights have all components 0. "Move the weights by alpha in the direction of g" means replacing w_j with w_j - alpha * g_j for every j (g is the one computed with w before the replacement).
+(1) Gradient descent (GD): for t = 1, ..., T_g in order, compute the gradient g(w) on all training rows and move the weights by alpha_g in the direction of g. The weights at t = 0 (before training) and whenever t becomes a multiple of 100 are recorded as the "weights at checkpoint t".
+(2) Stochastic gradient descent (SGD): prepare a generator with seed seed_s, and prepare the sequence o = (1, 2, ..., n). For epochs e = 1, ..., E in order, do the following. First, shuffle o with the generator (the sequence shuffled in the previous epoch is shuffled further). Next, split o from the start into chunks of B elements (the last chunk may have fewer than B elements), and in chunk order, for each "mini-batch", compute the gradient g(w) on the sequence of the training rows of the mini-batch arranged in the order of o (r is the number of rows in the mini-batch), and move the weights by alpha_s in the direction of g. The weights at e = 0 (before training) and at the end of each epoch are the "weights at checkpoint e".
+(3) Newton's method: for t = 1, ..., 10 in order, compute g = g(w) and H = H(w) on the sequence of rows used, solve H Delta = g by the Cholesky decomposition below, and replace w_j with w_j - Delta_j for every j. The weights at t = 0 and after each iteration are the "weights at checkpoint t".
+- Cholesky decomposition: for a symmetric matrix A (components 0, ..., s - 1), for j = 0, ..., s - 1 in order, and for each j for i = j, ..., s - 1 in order, let sigma_ij = A_ij - (SUM L_ik * L_jk (k = 0, ..., j - 1)) (the sum is computed first and then subtracted); if i = j, L_jj = sqrt(sigma_jj), otherwise L_ij = sigma_ij / L_jj.
+- Solution of the linear system A x = b: by forward substitution, for i = 0, ..., s - 1 in order, compute z_i = (b_i - SUM L_ik * z_k (k = 0, ..., i - 1)) / L_ii; then by back substitution, for i = s - 1, ..., 0 in order, compute x_i = (z_i - SUM L_ki * x_k (k = i + 1, ..., s - 1)) / L_ii.
+When training with these methods, the sequence of rows used, the targets and lambda are stated explicitly. Below, when the text simply says "train with Newton's method", all training rows (with the overall standardized vectors) are used.
+
+* 6. Inverse matrix and leverage
+- Inverse matrix: Cholesky-decompose the symmetric matrix A (components 0, ..., s - 1), and for each k = 0, ..., s - 1, solve A x = b with b the vector whose component k is 1.0 and whose other components are 0.0; component j of the solution is the (j, k) entry M_jk of the inverse matrix M.
+- Influence computation: for weights w, a sequence of rows (xt_i, y_i, i = 1, ..., r) and lambda, let M be the inverse matrix of H(w), and compute the following values for each row i.
+  pi_i = sigma(u_i), v_i = pi_i * (1 - pi_i), Q_i = SUM SUM xt_ij * M_jk * xt_ik (for j = 0, ..., q in order, and for each j for k = 0, ..., q in order, added as a single sum),
+  leverage h_i = v_i * Q_i / r, Pearson residual e_i = (y_i - pi_i) / sqrt(v_i), standardized residual t_i = e_i / sqrt(1 - h_i),
+  Cook's distance D_i = e_i * e_i * h_i / ((q + 1) * ((1 - h_i) * (1 - h_i)))
+- Fit measures: the effective number of parameters edf = SUM h_i, the deviance dev = 2 * r * L (L is the average loss of w), AIC = dev + 2 * edf, and BIC = dev + ln(r) * edf.
+
+* 7. Cross-validation and the choice of lambda
+Training row i is a "validation row of fold f" if (i - 1) mod 5 = f - 1, and a "training row of fold f" otherwise (f = 1, ..., 5; both are arranged in training data order).
+"Cross-validate lambda with the first q features" means doing the following for f = 1, ..., 5 in order. Compute the statistics (of the first q features) of the training rows of fold f, and train with Newton's method on the standardized vectors of the training rows of fold f by those statistics, their targets, and lambda. For each validation row i of fold f, compute the score u_i with its standardized vector by the same statistics, record the "validation loss" ell_i = ell(u_i, y_i) and the "validation probability" sigma(u_i), and count an error if the prediction from the validation probability differs from y_i. The loss of fold f is (the sum of ell_i over the validation rows of fold f) / (the number of validation rows of fold f). When all 5 folds are done, compute the cross-validation loss CV = (SUM ell_i (i = 1, ..., n)) / n.
+For each lambda in lambda candidate order, cross-validate with the first p (that is, all) features. The lambda with the smallest CV (if tied, the larger one) is the "selected lambda", written lambda*.
+- One-standard-error rule: for the 5 fold losses f_1, ..., f_5 of lambda*, let f_bar = (SUM f_k) / 5 and se = sqrt((SUM (f_k - f_bar) * (f_k - f_bar)) / 4) / sqrt(5); the largest lambda candidate with CV <= (CV of lambda*) + se is lambda_1se.
+- Validation evaluation: with the validation probabilities of the cross-validation of lambda*, compare the predictions with y and count tp (y = 1, prediction 1), fp (y = 0, prediction 1), tn (y = 0, prediction 0) and fn (y = 1, prediction 0); also compute the AUC (11 (3)) with the validation probabilities as the scores.
+
+* 8. lambda path, degree comparison, learning curve
+(1) lambda path: for each lambda in lambda candidate order, train with Newton's method with lambda, and compute J(w), the average loss of the training rows, the average loss of the test rows, the number correct of the training rows, the number correct of the test rows, and the length of (w_1, ..., w_p).
+(2) Degree comparison: for D = 1, ..., P in order, let q = p_D, use only the first q features (the statistics remain the overall statistics), and train with Newton's method with lambda*. Compute the CV obtained when cross-validating lambda* with the first q features, the average losses of the training rows and of the test rows, the number correct of the test rows, the AUC with the probabilities of the test rows as the scores, and edf, AIC and BIC from the influence computation with its weights, all training rows (standardized vectors of the first q features) and lambda*.
+(3) Learning curve: for k = 1, ..., 4 in order, let s = floor(k * n / 4), compute the statistics of training rows 1, ..., s, and train with Newton's method on the standardized vectors of training rows 1, ..., s by those statistics, their targets, and lambda*. Standardize the test rows with the same statistics as well, and compute the average loss of training rows 1, ..., s, the average loss of the test rows, the number correct of the test rows, and the AUC with the probabilities of the test rows as the scores.
+
+* 9. Final models
+The models trained with lambda* by gradient descent, stochastic gradient descent and Newton's method are called gd, sgd and newton respectively, and this order is called the "model order". The weights of each model are the weights at its last checkpoint. The weights of newton are written w^N. In addition, the model trained by the softmax regression of 10 is called softmax.
+- Weights in original units: for weights w, let w'_j = w_j / s_j (j = 1, ..., p) and w'_0 = w_0 - SUM w'_j * mu_j (j = 1, ..., p) (mu and s are the overall statistics). These are the weights that multiply the expanded values directly.
+- Correlation matrix and VIF: R_jk = (SUM xt_ij * xt_ik) / (n - 1) (j, k = 1, ..., p; i runs over all training rows, added in training data order) forms the p x p correlation matrix, and the (j, j) entry of its inverse matrix (6) is the VIF of feature j.
+- Coefficient table: using the M of the influence computation with w^N, all training rows and lambda*, compute for j = 0, ..., p the standard error se_j = sqrt(M_jj / n), z_j = w^N_j / se_j, the lower bound w^N_j - 1.96 * se_j, the upper bound w^N_j + 1.96 * se_j, and the odds ratio exp(w^N_j).
+
+* 10. Softmax regression
+Each of the K classes has weights W_k = (W_k0, ..., W_kp) (k = 0, ..., K - 1). For a standardized vector xt, let a_k = u(W_k, xt), a_max = (the maximum of a_0, ..., a_{K-1}), b_k = a_k - a_max and S = SUM exp(b_k) (k = 0, ..., K - 1); the probability of class k is P_k = exp(b_k) / S. The predicted class is the k with the largest P_k (if tied, the smaller k). The loss of a row with label c is ln(S) - b_c.
+- Objective function: J_m = (the sum of the losses) / r + lambda_m * S_W / 2. S_W is W_kj * W_kj added as a single sum, for k = 0, ..., K - 1 in order, and for each k for j = 1, ..., p in order.
+- Gradient: for each class k, with e_ik = P_ik - delta_ik (delta_ik is 1 if the label of training row i is k and 0 otherwise) and G_kj = SUM e_ik * xt_ij (i = 1, ..., r), g_k0 = G_k0 / r and g_kj = G_kj / r + lambda_m * W_kj (j = 1, ..., p).
+- Training: all training rows (overall standardized vectors, r = n) are used. Set all W_kj to 0; for t = 1, ..., T_m in order, compute the gradients of all k (with the weights before the replacement), and replace W_kj with W_kj - alpha_m * g_kj for all k and j. The weights at t = 0 and whenever t becomes a multiple of 100 are the "weights at checkpoint t".
+
+* 11. Evaluation of the binary models
+(1) Confusion matrix: for each model in model order, compute the probability pi_j of test row j, compare the prediction with y_j, and count tp, fp, tn and fn (with the same meaning as in 7). Let Pos be the number of positive examples and Neg the number of negative examples among the test rows.
+(2) log_loss is the average loss of the test rows, and brier is (SUM (pi_j - y_j) * (pi_j - y_j)) / m.
+(3) AUC: for a sequence of scores s_1, ..., s_N and a sequence of targets a_1, ..., a_N (N_+ is the number with a = 1 and N_- the number with a = 0), arrange all rows in increasing order of score; when a group of rows with equal scores (equal as double values) occupies positions b through e (counted from 1), the "doubled rank" of each row of the group is b + e. With A = (the sum of the doubled ranks of the rows with a = 1) - N_+ * (N_+ + 1) and B = 2 * N_+ * N_-, the AUC is expressed as the fraction A / B. This equals the sum, over all pairs of a row with a = 1 and a row with a = 0, of 1 if the score of the row with a = 1 is larger and 1/2 if they are equal, divided by N_+ * N_-.
+(4) ROC points: let v_1, v_2, ... be the distinct values of the probabilities of the test rows (compared as double values) in decreasing order, and for each v_k compute the number of positive examples TP_k and the number of negative examples FP_k among the test rows with pi_j >= v_k. (v_k, TP_k, FP_k) is called an ROC point, and the ROC points are arranged in order of k.
+(5) Average precision: AP = (SUM (TP_k - TP_{k-1}) * TP_k / (TP_k + FP_k)) / Pos (TP_0 = 0; each term is the real number obtained by dividing the integer (TP_k - TP_{k-1}) * TP_k by the integer TP_k + FP_k, and the terms are added in order of k).
+(6) Youden point: the ROC point with the largest TP_k * Neg - FP_k * Pos (an integer) (if tied, the one with the larger v_k).
+(7) Best F1 point: the ROC point with the largest 2 * TP_k / (Pos + TP_k + FP_k) (compared exactly as fractions; if tied, the one with the larger v_k).
+(8) Minimum cost point: the ROC point with the smallest cost c_fp * FP_k + c_fn * (Pos - TP_k) (an integer) (if tied, the one with the larger v_k).
+(9) Calibration table: put each test row into the bin beta = min(9, floor(pi_j * 10)). For each bin beta = 0, ..., 9, compute the number of rows c_beta, the sum of the probabilities S_beta (added in test data order), and the number of positive examples O_beta. Over the bins that contain rows (in order of beta), compute ECE = (SUM |S_beta - O_beta|) / m, MCE = the maximum of |S_beta / c_beta - O_beta / c_beta| (starting from 0 and keeping the larger value), and HL = SUM (O_beta - S_beta) * (O_beta - S_beta) / (S_beta * (1 - S_beta / c_beta)), and count the number of bins that contain rows.
+(10) Gains table: arrange the test rows in decreasing order of probability (if tied, in test data order). For each g = 1, ..., 10, let size = floor(g * m / 10), and compute the number of positive examples hits among the first size rows.
+(11) Also compute the number correct of the training rows.
+(12) Model comparison: for each pair (a, b) in the order (gd, sgd), (gd, newton), (sgd, newton), count, among the test rows, the number of rows on which the predictions of the two models are equal, the number n_a of rows on which only a is correct, and the number n_b of rows on which only b is correct. The McNemar value is the ratio of (|n_a - n_b| - 1) * (|n_a - n_b| - 1) and n_a + n_b.
+
+* 12. Diagnostics of newton
+(1) Fit: let pi_bar = (the number of positive examples among the training rows) / n, and compute null_loss = -(pi_bar * ln(pi_bar) + (1 - pi_bar) * ln(1 - pi_bar)). With L the average loss of newton on the training rows, compute McFadden's R-squared 1 - L / null_loss, and compute dev, edf, AIC and BIC by the influence computation with w^N, all training rows and lambda*.
+(2) Hosmer-Lemeshow test on the training rows: with the pi_i (the probabilities of the training rows) of the influence computation of (1), arrange the training rows in increasing order of probability (if tied, in training data order). For each g = 1, ..., 10, the rows at sorted positions floor((g - 1) * n / 10) + 1 through floor(g * n / 10) form group g; compute the number of rows of the group, the number of positive examples O_g and the sum of the probabilities E_g (added in sorted order), and compute HL = SUM (O_g - E_g) * (O_g - E_g) / (E_g * (1 - E_g / (the number of rows of group g))) (added in order of g).
+(3) Iteration log: for each iteration t = 1, ..., 10 of the Newton's method of newton, compute, at the weights w before the replacement in that iteration (the weights at checkpoint t - 1), J(w), the length of g = g(w), the length of the solution Delta of H(w) Delta = g, and (SUM g_j * Delta_j) / 2.
+(4) Marginal effects: for a vector of base feature values v = (v_1, ..., v_d) and a base feature k, the slope slope_k(v) is the sum, in expanded feature order, of w'_j * (c * Pi) over each feature j whose tuple contains k (w' is the weights of w^N in original units). c is the number of occurrences of k in the tuple, and Pi is the product of the values of the indices that remain after removing one k from the tuple, multiplied starting from 1.0 in the order of the remaining indices (1.0 if none remain).
+  The average marginal effect is (SUM pi_i * (1 - pi_i) * slope_k(the base feature values of training row i)) / n (pi_i is the same as in (2)). The marginal effect at the mean is pi_bar_c * (1 - pi_bar_c) * slope_k(v_bar), where v_bar is the overall mean of the base features (mu_1, ..., mu_d of the overall statistics) and pi_bar_c is the probability of newton on the overall standardized vector of the expanded values of v_bar.
+(5) Threshold table: for each k = 1, ..., 9, count tp, fp, tn and fn of newton on the test rows when predicting with the threshold k / 10 (1 if pi_j >= k / 10).
+(6) Error examples: among the test rows of newton whose prediction differs from y, the first 5 rows (all of them if there are fewer than 5) when arranged in decreasing order of |pi_j - tau| (if tied, in test data order).
+(7) Bootstrap: prepare a generator with seed seed_b. For b = 1, ..., N_b in order, draw m random numbers; for each drawn value r, select test row number (r mod m) + 1; then compute AUC = A_b / B_b with the newton probabilities and the targets of the m selected rows arranged in selection order (the same row may be included several times). With a_b = A_b / B_b (a real number), compute mean = (SUM a_b) / N_b and sd = sqrt((SUM (a_b - mean) * (a_b - mean)) / (N_b - 1)) (both added in order of b). Arrange the AUCs in increasing order of value; the (floor(N_b / 40) + 1)-th one is the lower bound and the (N_b - floor(N_b / 40))-th one is the upper bound.
+(8) Influence: from the influence computation of (1), compute the number of training rows with |t_i| > 2, and the first 5 rows (all of them if there are fewer than 5) of the training rows arranged in decreasing order of Cook's distance (if tied, in training data order).
+
+* 13. Permutation importance and profiles
+(1) Permutation importance: as the baseline, compute the average loss L_0 of newton on the test rows, its AUC A_0 / B_0, and the number correct C_0 of softmax on the test rows (the number of rows whose predicted class equals the label). Prepare a generator with seed seed_p, and keep using the same generator for all repetitions of all base features (it is not reset when moving to the next base feature). For base features k = 1, ..., d in order, and for repetitions t = 1, ..., N_p in order, do the following. Shuffle the sequence o = (1, 2, ..., m) (each repetition starts from this sequence) with the generator, and build data in which the value of base feature k of each test row j is replaced with the value of base feature k of test row o_j (the other base features and the label are unchanged). With the overall standardized vectors of its expanded values, compute the average loss L_t of newton, the A_t of its AUC (B_t equals B_0), and the number correct C_t of softmax. Compute log_loss_increase = (SUM L_t) / N_p - L_0; the AUC is expressed as the fraction (SUM A_t) / (N_p * B_0), and the softmax accuracy as the ratio of (SUM C_t) and N_p * m.
+(2) Profiles: for base features k = 1, ..., d in order, compute the minimum lo and the maximum hi of base feature k over the training rows, and for g = 0, ..., 4 in order, for the point obtained by replacing the k-th value of v_bar (12 (4)) with lo + (hi - lo) * g / 4, compute the probability of newton and the K probabilities of softmax with the overall standardized vector of its expanded values.
+
+* 14. Evaluation of softmax and one-vs-rest
+(1) Confusion matrix: for each test row, compute the probabilities P_jk of softmax and the predicted class; in the K x K table U, U[c][k] is the number of test rows whose label is c and whose prediction is k. row_k is the sum of U[k][0], ..., U[k][K - 1], and col_k is the sum of U[0][k], ..., U[K - 1][k].
+(2) For each class k, precision is the ratio of U[k][k] and col_k, recall is the ratio of U[k][k] and row_k, f1 is the ratio of 2 * U[k][k] and col_k + row_k, and the AUC is computed with the scores P_jk and the targets (1 if the label is k, 0 otherwise).
+(3) The accuracy is the ratio of SUM U[k][k] and m, and the kappa coefficient is the ratio of m * SUM U[k][k] - SUM row_k * col_k and m * m - SUM row_k * col_k (every sum is in order of k).
+(4) log_loss is the sum of the losses of the test rows divided by m; brier is obtained by computing, for each test row, the sum of (P_jk - delta_jk) * (P_jk - delta_jk) added in order of k, adding these sums in test data order, and dividing by m.
+(5) Binary view: with P_j,c+ (the probability of the positive class) as the score, compute the AUC with the targets y_j, log_loss = (SUM -ln(q_j)) / m (q_j is P_j,c+ if y_j = 1, and 1 - P_j,c+ otherwise), the number correct of the predictions obtained by the rule of 4 with P_j,c+ as the probability, and the number of test rows on which that prediction equals the prediction of newton.
+(6) Confidence table: the confidence of each test row is the probability of the predicted class, and the row is a hit if the predicted class equals the label. Put the row into the bin beta = min(9, floor(confidence * 10)), and for each bin beta = 0, ..., 9 compute the number of rows, the sum of the confidences (in test data order) and the number of hits. ECE is |sum of the confidences - number of hits| over the bins that contain rows, added in order of beta and divided by m.
+(7) one-vs-rest: for k = 0, ..., K - 1 in order, with the target 1 if the label is k and 0 otherwise, train with Newton's method with lambda_m, and compute J(w) at its weights (all training rows, lambda_m) and the AUC with the probabilities of the test rows as the scores (the target being whether the label is k). For each test row, the class whose model gives the largest probability among the K models (if tied, the smaller class) is the one-vs-rest prediction; count the number of rows whose prediction equals the label and the number of rows whose prediction equals the prediction of softmax.
+
+* 15. Maps
+Base feature 1 is the horizontal axis and base feature 2 the vertical axis; let lo_1 and hi_1 be the minimum and maximum of base feature 1 over the training rows, and lo_2 and hi_2 the minimum and maximum of base feature 2. A map is a grid W characters wide and H rows high; the center of the cell in row r from the top and column c from the left (r = 0, ..., H - 1, c = 0, ..., W - 1) is the point whose base feature 1 value is lo_1 + (c + 0.5) * (hi_1 - lo_1) / W, whose base feature 2 value is hi_2 - (r + 0.5) * (hi_2 - lo_2) / H, and whose other base feature values (when d >= 3) are those of v_bar.
+With the overall standardized vector of the expanded values of each cell center, compute the predicted class of softmax and place its single digit on the "class map", and place the single digit min(9, floor(pi * 10)) computed from the probability pi of newton on the "probability map". Count, on the class map, the number of cells in which the digit of each class is placed.
+
+[Output files]
+Write five files: output/weights.txt, output/loss_trace.csv, output/predictions.csv, output/evaluation.txt and output/roc.csv. The output/ folder is provided empty.
+
+* Common rules
+- The output consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). Do not put extra spaces at the start or end of a line, and do not insert blank lines that are not specified.
+- In the formats below, each part enclosed in < > is replaced with a value, and all other characters are written as they are. Values are separated by a single space (a comma in the CSV files).
+- Integers are written in base 10 without extra leading zeros.
+- A value marked with a number of digits, such as "(6 decimals)", is rounded to that many digits after the decimal point and written in fixed-point notation with exactly that many digits after the decimal point (example: 2.5 with 4 decimals is 2.5000). Exponent notation is not used, and 0 is written when the integer part is 0. Negative numbers get a leading -, but a value whose rounded result is 0 gets no - (example: -0.0000002 with 6 decimals is 0.000000). Input decimal numbers such as lambda are also written this way.
+- The "ratio of a and b" (a >= 0 and b >= 0 integers) is written as follows: if b > 0, compute the integer q = floor((20000 * a + b) / (2 * b)) with integer arithmetic, and write floor(q / 10000), ".", and q mod 10000 as 4 digits (padded with leading zeros if needed) in this order (this is a / b rounded to 4 decimal places, with an exact half rounded up). If b = 0, write -. <ratio a/b> has the same meaning.
+- The "fraction A / B" (A >= 0 and B > 0 integers) is written, with G the greatest common divisor of A and B (G = B if A = 0), as A / G, "/", B / G, a space, and the ratio of A and B, in this order (example: 49/54 0.9074).
+- The model names are gd, sgd, newton and softmax.
+
+* output/weights.txt
+Write the following parts in this order. Put one blank line before each part from the second part on.
+(a) Features
+- features <d> degree <P> expanded <p>
+- standardization
+- One line per expanded feature, in expanded feature order: <name> mean <mu_j (6 decimals)> sd <s_j (6 decimals)> vif <VIF (4 decimals)> (mu and s are the overall statistics)
+- correlation
+- One line for each j = 1, ..., p in order: <R_j1 (4 decimals)> <R_j2 (4 decimals)> ... <R_jp (4 decimals)>
+(b) Binary models (in model order, one part per model)
+- model <model name> lambda <lambda* (4 decimals)>
+- term intercept standardized <w_0 (4 decimals)> original <w'_0 (4 decimals)>
+- One line per expanded feature, in expanded feature order: term <name> standardized <w_j (4 decimals)> original <w'_j (4 decimals)>
+- norm <length of (w_1, ..., w_p) (4 decimals)>
+- Only for gd and sgd: distance_to_newton <length of the vector with components w_j - w^N_j (j = 0, ..., p) (6 decimals)>
+(c) Coefficient table
+- coefficients newton lambda <lambda* (4 decimals)>
+- One line for each j = 0, ..., p in order: <name> weight <w^N_j (4 decimals)> se <se_j (4 decimals)> z <z_j (4 decimals)> lower <lower bound (4 decimals)> upper <upper bound (4 decimals)> odds_ratio <odds ratio (4 decimals)>. The name for j = 0 is intercept; for j >= 1 it is the name of the expanded feature.
+(d) Softmax regression
+- model softmax lambda <lambda_m (4 decimals)>
+- For k = 0, ..., K - 1 in order, a line class <k> followed by p + 1 term lines for W_k in the same format as in (b) (original is the weights of W_k in original units).
+
+* output/loss_trace.csv
+The first line is the header line optimizer,iteration,loss,gradient_norm,test_loss.
+From the second line on, write one line for each checkpoint of gd (t = 0, 100, ..., T_g), of sgd (e = 0, 1, ..., E), of newton (t = 0, 1, ..., 10) and of softmax (t = 0, 100, ..., T_m), in this order, with the following values separated by commas: the model name, the checkpoint number, the objective function at those weights (6 decimals), the length of the gradient (6 decimals), and the average loss of the test rows (6 decimals).
+For gd, sgd and newton, the objective function is J(w) and the gradient is g(w) (both with all training rows and lambda*). For softmax, the objective function is J_m, the length of the gradient is the length of the vector of the g_kj arranged in order of k and, for each k, in order of j = 0, ..., p, and the average loss of the test rows is the sum of the losses of the test rows divided by m.
+
+* output/predictions.csv
+The first line is the header line id,model,probability,predicted,actual.
+From the second line on, for gd, sgd, newton and softmax in this order, write one line per test row of each model, in test data order. A line of gd, sgd or newton contains the ID, the model name, the probability pi_j (6 decimals), the prediction (1 or 0) and y_j (1 or 0). A line of softmax contains the ID, softmax, the probability of the predicted class (6 decimals), the predicted class and the label.
+
+* output/evaluation.txt
+Write the following parts in this order. Put one blank line before each part from the second part on.
+(a) Data
+- data train <n> test <m> base_features <d> degree <P> features <p>
+- binary positive_class <c+> train <number of positive examples among the training rows>/<n> test <Pos>/<m>
+- classes <K> train <number of training rows with label 0> ... <number of training rows with label K - 1> test <number of test rows with label 0> ... <number of test rows with label K - 1>
+(b) Cross-validation
+- cross_validation folds 5 newton_iterations 10
+- One line per lambda, in lambda candidate order: lambda <lambda (4 decimals)> fold_loss <loss of fold 1 (6 decimals)> ... <loss of fold 5 (6 decimals)> cv_loss <CV (6 decimals)> errors <number of errors>/<n>
+- selected lambda <lambda* (4 decimals)> cv_loss <CV of lambda* (6 decimals)> se <se (6 decimals)> lambda_1se <lambda_1se (4 decimals)>
+- out_of_fold tp <tp> fp <fp> tn <tn> fn <fn> accuracy <ratio (tp + tn)/n> auc <AUC as a fraction>
+(c) lambda path
+- lambda_path
+- One line per lambda, in lambda candidate order: lambda <lambda (4 decimals)> objective <J (6 decimals)> train_loss <average loss of the training rows (6 decimals)> test_loss <average loss of the test rows (6 decimals)> train_accuracy <ratio (number correct of the training rows)/n> test_accuracy <ratio (number correct of the test rows)/m> norm <length (4 decimals)>
+(d) Degree comparison
+- degrees lambda <lambda* (4 decimals)>
+- One line for each D = 1, ..., P in order: degree <D> features <p_D> cv_loss <CV (6 decimals)> train_loss <(6 decimals)> test_loss <(6 decimals)> test_accuracy <ratio (number correct of the test rows)/m> auc <AUC as a fraction> edf <edf (4 decimals)> aic <AIC (4 decimals)> bic <BIC (4 decimals)>
+(e) Learning curve
+- learning_curve lambda <lambda* (4 decimals)>
+- One line for each k = 1, ..., 4 in order: size <s> train_loss <(6 decimals)> test_loss <(6 decimals)> test_accuracy <ratio (number correct of the test rows)/m> auc <AUC as a fraction>
+(f) Binary models (in model order, one part per model)
+- model <model name> lambda <lambda* (4 decimals)>
+- train correct <number correct of the training rows>/<n> accuracy <ratio (number correct of the training rows)/n>
+- test tp <tp> fp <fp> tn <tn> fn <fn>
+- test accuracy <ratio (tp + tn)/m> precision <ratio tp/(tp + fp)> recall <ratio tp/(tp + fn)> specificity <ratio tn/(tn + fp)> f1 <ratio (2 * tp)/(2 * tp + fp + fn)>
+- log_loss <log_loss (6 decimals)> brier <brier (6 decimals)>
+- auc <AUC as a fraction> average_precision <AP (4 decimals)>
+- youden threshold <v of the Youden point (6 decimals)> tpr <ratio TP/Pos> fpr <ratio FP/Neg> j <ratio (TP * Neg - FP * Pos)/(Pos * Neg)>
+- best_f1 threshold <v of the best F1 point (6 decimals)> precision <ratio TP/(TP + FP)> recall <ratio TP/Pos> f1 <ratio (2 * TP)/(Pos + TP + FP)>
+- min_cost threshold <v of the minimum cost point (6 decimals)> cost <cost> fp <FP> fn <Pos - TP>
+- calibration
+- One line for each beta = 0, ..., 9 in order: bin <range> count <c_beta> mean_probability <S_beta / c_beta (4 decimals)> positive_rate <ratio O_beta/c_beta>. The ranges for beta = 0, 1, ..., 9 are, in order, 0.0-0.1, 0.1-0.2, ..., 0.9-1.0. When c_beta = 0, the value of mean_probability is also written as -.
+- ece <ECE (4 decimals)> mce <MCE (4 decimals)> hosmer_lemeshow <HL (4 decimals)> groups <number of bins that contain rows>
+- gains
+- One line for each g = 1, ..., 10 in order: decile <g> rows <size> positives <hits> gain <ratio hits/Pos> lift <ratio (hits * m)/(size * Pos)>
+(g) Model comparison
+- One line per pair, in the order of the pairs of 11 (12): agreement <name of a> <name of b> same <number of rows with equal predictions>/<m> only_first <n_a> only_second <n_b> mcnemar <McNemar value>
+(h) Diagnostics of newton
+- diagnostics newton lambda <lambda* (4 decimals)>
+- fit null_loss <null_loss (6 decimals)> train_loss <L (6 decimals)> mcfadden_r2 <R-squared (4 decimals)> deviance <dev (4 decimals)> edf <edf (4 decimals)> aic <AIC (4 decimals)> bic <BIC (4 decimals)>
+- hosmer_lemeshow_train groups 10 statistic <HL (4 decimals)>
+- One line for each g = 1, ..., 10 in order: group <g> rows <number of rows of the group> observed <O_g> expected <E_g (4 decimals)>
+- newton_iterations
+- One line for each t = 1, ..., 10 in order: iteration <t> objective <J (6 decimals)> gradient_norm <length of g (6 decimals)> step_norm <length of Delta (6 decimals)> predicted_decrease <(SUM g_j * Delta_j) / 2 (6 decimals)>
+- One line per base feature, in base feature order: marginal <name of the base feature> average <average marginal effect (4 decimals)> at_mean <marginal effect at the mean (4 decimals)>
+- One line for each k = 1, ..., 9 in order: cut 0.<k> positive <tp + fp> tp <tp> fp <fp> precision <ratio tp/(tp + fp)> recall <ratio tp/(tp + fn)> accuracy <ratio (tp + tn)/m>
+- One line per error example, in the order of the error examples: error <ID> actual <y_j> probability <pi_j (6 decimals)>
+- bootstrap resamples <N_b> seed <seed_b> auc_mean <mean (4 decimals)> auc_sd <sd (4 decimals)> lower <AUC of the lower bound as a fraction> upper <AUC of the upper bound as a fraction>
+- influence effective_parameters <edf (4 decimals)> large_residuals <number of training rows with |t_i| > 2>
+- One line for each of the rows in Cook's distance order: cook <ID> actual <y_i> probability <pi_i (4 decimals)> leverage <h_i (4 decimals)> residual <t_i (4 decimals)> distance <D_i (4 decimals)>
+(i) Permutation importance
+- importance repeats <N_p> seed <seed_p>
+- baseline log_loss <L_0 (6 decimals)> auc <fraction A_0 / B_0> softmax_accuracy <ratio C_0/m>
+- One line per base feature, in base feature order: feature <name of the base feature> log_loss_increase <(6 decimals)> auc <AUC as a fraction> softmax_accuracy <softmax accuracy as a ratio>
+(j) Profiles
+- profiles
+- For base features k in order, and for each k for g = 0, ..., 4 in order, one line: profile <name of base feature k> value <the replaced value (4 decimals)> newton <probability of newton (4 decimals)> softmax <probability of class 0 (4 decimals)> ... <probability of class K - 1 (4 decimals)>
+(k) softmax
+- softmax classes <K> lambda <lambda_m (4 decimals)> iterations <T_m>
+- confusion
+- One line for each c = 0, ..., K - 1 in order: <U[c][0]> <U[c][1]> ... <U[c][K - 1]>
+- One line for each k = 0, ..., K - 1 in order: class <k> precision <precision> recall <recall> f1 <f1> auc <AUC as a fraction>
+- accuracy <accuracy> kappa <kappa coefficient>
+- log_loss <log_loss (6 decimals)> brier <brier (6 decimals)>
+- binary_view positive_class <c+> auc <AUC as a fraction> log_loss <log_loss (6 decimals)> accuracy <ratio (number correct)/m> agreement_with_newton <number of rows equal to the prediction of newton>/<m>
+- confidence
+- One line for each beta = 0, ..., 9 in order: bin <range> count <number of rows> mean_confidence <sum of the confidences / number of rows (4 decimals)> accuracy <ratio (number of hits)/(number of rows)>. The ranges are the same as in (f); when the number of rows is 0, the value of mean_confidence is also written as -.
+- ece <ECE (4 decimals)>
+(l) one-vs-rest
+- one_vs_rest lambda <lambda_m (4 decimals)> newton_iterations 10
+- One line for each k = 0, ..., K - 1 in order: class <k> objective <J (6 decimals)> auc <AUC as a fraction>
+- accuracy <ratio (number correct)/m> agreement_with_softmax <number of rows equal to the prediction of softmax>/<m>
+(m) Maps
+- map <name of base feature 1> <name of base feature 2> width <W> height <H>
+- softmax_classes
+- One line for each r = 0, ..., H - 1 in order: the W characters of row r of the class map, in order c = 0, ..., W - 1
+- cells <number of cells of class 0> <number of cells of class 1> ... <number of cells of class K - 1>
+- newton_probability
+- One line for each r = 0, ..., H - 1 in order: the W characters of row r of the probability map, in order c = 0, ..., W - 1
+
+* output/roc.csv
+The first line is the header line model,threshold,tpr,fpr,precision.
+From the second line on, for each of the models gd, sgd and newton in model order, first write the one line <model name>,inf,0.0000,0.0000,- and then one line per ROC point, in the order of the ROC points, with the following values separated by commas: the model name, v_k (6 decimals), the ratio TP_k/Pos, the ratio FP_k/Neg, and the ratio TP_k/(TP_k + FP_k).
+
+[Source files]
+Split the program into the following six source files (the file names follow the conventions of each language).
+- main: holds the overall flow and most of the processing. It calls the reading of the input, and performs the cross-validation (per-fold standardization and training, validation losses and validation probabilities, number of errors) and the choice of lambda* and lambda_1se, the validation evaluation, the lambda path, the degree comparison, the learning curve, the inverse matrix, the influence computation and the fit measures, the weights in original units, the correlation matrix and VIF, and the coefficient table; it calls the training of the three binary models and of softmax; and it performs the evaluation of the binary models (confusion matrix, the various ratios, AP, the Youden, best F1 and minimum cost points, the calibration table, the gains table) and the model comparison, the diagnostics of newton (Hosmer-Lemeshow test, iteration log, marginal effects, threshold table, error examples, bootstrap, Cook's distance), permutation importance, profiles, the evaluation of softmax (confusion matrix, kappa coefficient, binary view, confidence table), one-vs-rest, the maps, and the assembly and writing of the five output files.
+- dataset: reads the three input files and returns the IDs, the names and values of the base features, the labels, and the setting values. It is also responsible for building the tuples, names and values of the expanded features, and for computing statistics and building standardized vectors.
+- logistic: the formulas of binary logistic regression (score, probability, loss, objective function, gradient, Hessian).
+- optimizers: gradient descent, stochastic gradient descent (MINSTD generator, shuffling sequences, mini-batches), Newton's method, the Cholesky decomposition and the solution of linear systems.
+- softmax: the probabilities, loss, objective function and gradient of softmax regression, and training by gradient descent (weights at the checkpoints).
+- metrics: formatting of real numbers (number of decimals, rounding, handling of -0), writing ratios and fractions, counting confusion matrices, the AUC (doubled ranks), and ROC points.
+
+[Constraints]
+- 2 <= d <= 6, p <= 30, 2 <= K <= 4, 20 <= n <= 300, 10 <= m <= 150. The given data have n = 240, m = 120, d = 2, P = 3 (p = 9), K = 3, and 6 lambda candidates.
+- The input files correctly follow the formats above. There is no need to check for input errors.
+- The training data contain all the labels 0, ..., K - 1. The test data, the training rows of each cross-validation fold, the training rows of each learning curve step, and each bootstrap resample all contain both positive and negative examples, and the same holds for each class of one-vs-rest. Every standard deviation computed in standardization is greater than 0, and every matrix that is Cholesky-decomposed is positive definite.
+- For the given data, every decision (the choice of lambda and lambda_1se, the comparison of predictions with thresholds, bins and map characters, the choice of maxima, sort orders, the grouping of ROC points, the test |t_i| > 2) and every output character remain unchanged under differences in the order of additions, fused multiply-add, differences in the last digit of exp and ln, and changes of the input decimal numbers by about 1e-12. For example, the probabilities compared with tau, with the bin boundaries and with k / 10 are all at least 1e-5 away from those values, and the probabilities of test rows with different base feature values are at least 1e-7 apart from each other in every model (probabilities are equal only for rows with equal base feature values). Every real number that is output is sufficiently far from a rounding boundary.
+- For the given data, the numerator of every value described as a "ratio" is 0 or more.
+- For the given data, apart from the products of the MINSTD generator (which are less than 2^47), every integer that appears has an absolute value less than 2^31.
+
+[Example]
+A small example that differs from the actual input (20 training rows, 12 test rows, 2 base features, degree 2, 2 lambda candidates, a map 12 characters wide and 5 rows high). The content of each file runs from the line after the file name line to the line before the next file name line (for the last file, to the last line) (blank lines inside the files are shown as they are).
+
+input/train.csv:
+id,x1,x2,label
+R001,1.11,1.83,0
+R002,2.22,1.44,2
+R003,1.57,1.36,1
+R004,2.36,-0.75,2
+R005,0.84,0.81,1
+R006,-0.96,-0.18,0
+R007,-0.98,-0.14,0
+R008,-0.63,1.41,0
+R009,-0.22,-2.32,2
+R010,-1.82,-1.63,2
+R011,-0.18,0.15,0
+R012,0.08,-0.46,0
+R013,-1.62,-1.52,2
+R014,-0.76,1.78,0
+R015,-1.67,-1.21,1
+R016,1.68,2.08,2
+R017,2.28,0.14,2
+R018,-0.45,0.63,0
+R019,0.21,-0.63,0
+R020,1.88,0.66,1
+input/test.csv:
+id,x1,x2,label
+T001,0.55,1.01,0
+T002,-1.98,-2.05,2
+T003,1.14,-0.12,1
+T004,0.34,1.45,0
+T005,1.69,1.09,1
+T006,-1.22,-1.09,1
+T007,0.76,-2.17,2
+T008,-0.83,1.65,0
+T009,-1.98,-2.05,1
+T010,-0.24,0.08,0
+T011,-0.99,-2.30,2
+T012,0.04,-1.12,0
+input/params.txt:
+POSITIVE 2
+DEGREE 2
+THRESHOLD 0.5
+LAMBDAS 0.01 0.1
+GD 0.5 200
+SGD 0.1 8 3 12345
+SOFTMAX 0.5 200 0.05
+BOOTSTRAP 40 99
+PERMUTATION 2 777
+MAP 12 5
+COST 1 2
+output/weights.txt:
+features 2 degree 2 expanded 5
+standardization
+x1 mean 0.247000 sd 1.398338 vif 2.1544
+x2 mean 0.172500 sd 1.271704 vif 1.5147
+x1*x1 mean 1.918590 sd 1.852587 vif 1.9588
+x1*x2 mean 0.843875 sd 1.523260 vif 1.5200
+x2*x2 mean 1.566125 sd 1.579469 vif 1.2683
+correlation
+1.0000 0.4743 0.5308 0.0587 -0.0596
+0.4743 1.0000 -0.0017 0.0631 0.0489
+0.5308 -0.0017 1.0000 0.3490 -0.0318
+0.0587 0.0631 0.3490 1.0000 0.4183
+-0.0596 0.0489 -0.0318 0.4183 1.0000
+
+model gd lambda 0.0100
+term intercept standardized -1.9688 original -6.1844
+term x1 standardized 0.8355 original 0.5975
+term x2 standardized -1.4953 original -1.1758
+term x1*x1 standardized 2.1532 original 1.1623
+term x1*x2 standardized 0.2946 original 0.1934
+term x2*x2 standardized 1.8937 original 1.1989
+norm 3.3531
+distance_to_newton 0.377063
+
+model sgd lambda 0.0100
+term intercept standardized -0.1351 original -0.6079
+term x1 standardized 0.0909 original 0.0650
+term x2 standardized -0.1172 original -0.0921
+term x1*x1 standardized 0.2373 original 0.1281
+term x1*x2 standardized 0.1148 original 0.0754
+term x2*x2 standardized 0.1647 original 0.1043
+norm 0.3444
+distance_to_newton 3.895575
+
+model newton lambda 0.0100
+term intercept standardized -2.2371 original -6.8191
+term x1 standardized 0.8916 original 0.6376
+term x2 standardized -1.5829 original -1.2447
+term x1*x1 standardized 2.3474 original 1.2671
+term x1*x2 standardized 0.3657 original 0.2400
+term x2*x2 standardized 2.0228 original 1.2807
+norm 3.6105
+
+coefficients newton lambda 0.0100
+intercept weight -2.2371 se 1.4506 z -1.5421 lower -5.0803 upper 0.6062 odds_ratio 0.1068
+x1 weight 0.8916 se 1.2010 z 0.7423 lower -1.4625 upper 3.2456 odds_ratio 2.4389
+x2 weight -1.5829 se 1.2272 z -1.2899 lower -3.9881 upper 0.8223 odds_ratio 0.2054
+x1*x1 weight 2.3474 se 1.3530 z 1.7350 lower -0.3045 upper 4.9992 odds_ratio 10.4581
+x1*x2 weight 0.3657 se 1.2688 z 0.2882 lower -2.1212 upper 2.8526 odds_ratio 1.4415
+x2*x2 weight 2.0228 se 1.1341 z 1.7835 lower -0.2002 upper 4.2457 odds_ratio 7.5591
+
+model softmax lambda 0.0500
+class 0
+term intercept standardized 0.3793 original 2.0029
+term x1 standardized -0.4819 original -0.3446
+term x2 standardized 0.5344 original 0.4202
+term x1*x1 standardized -0.9769 original -0.5273
+term x1*x2 standardized -0.6596 original -0.4330
+term x2*x2 standardized -0.2359 original -0.1493
+class 1
+term intercept standardized -0.0681 original 0.2600
+term x1 standardized 0.0892 original 0.0638
+term x2 standardized 0.1406 original 0.1106
+term x1*x1 standardized -0.0373 original -0.0201
+term x1*x2 standardized 0.4672 original 0.3067
+term x2*x2 standardized -0.5881 original -0.3723
+class 2
+term intercept standardized -0.3113 original -2.2629
+term x1 standardized 0.3927 original 0.2808
+term x2 standardized -0.6751 original -0.5308
+term x1*x1 standardized 1.0142 original 0.5474
+term x1*x2 standardized 0.1923 original 0.1263
+term x2*x2 standardized 0.8240 original 0.5217
+output/loss_trace.csv:
+optimizer,iteration,loss,gradient_norm,test_loss
+gd,0,0.693147,0.465904,0.693147
+gd,100,0.181402,0.017833,0.465653
+gd,200,0.175112,0.006189,0.493355
+sgd,0,0.693147,0.465904,0.693147
+sgd,1,0.633175,0.419739,0.646347
+sgd,2,0.586276,0.385521,0.605451
+sgd,3,0.542884,0.350146,0.575726
+newton,0,0.693147,0.465904,0.693147
+newton,1,0.269564,0.114602,0.424810
+newton,2,0.198861,0.040498,0.433450
+newton,3,0.177602,0.012132,0.474653
+newton,4,0.174110,0.002013,0.508426
+newton,5,0.173987,0.000073,0.516857
+newton,6,0.173987,0.000000,0.517170
+newton,7,0.173987,0.000000,0.517170
+newton,8,0.173987,0.000000,0.517170
+newton,9,0.173987,0.000000,0.517170
+newton,10,0.173987,0.000000,0.517170
+softmax,0,1.098612,0.704553,1.098612
+softmax,100,0.504240,0.001687,0.650365
+softmax,200,0.504218,0.000066,0.651190
+output/predictions.csv:
+id,model,probability,predicted,actual
+T001,gd,0.004673,0,0
+T002,gd,0.995606,1,1
+T003,gd,0.020617,0,0
+T004,gd,0.007134,0,0
+T005,gd,0.204897,0,0
+T006,gd,0.097957,0,0
+T007,gd,0.943711,1,1
+T008,gd,0.007998,0,0
+T009,gd,0.995606,1,0
+T010,gd,0.001742,0,0
+T011,gd,0.979170,1,1
+T012,gd,0.034013,0,0
+T001,sgd,0.382668,0,0
+T002,sgd,0.667882,1,1
+T003,sgd,0.409725,0,0
+T004,sgd,0.389787,0,0
+T005,sgd,0.507514,1,0
+T006,sgd,0.457108,0,0
+T007,sgd,0.520526,1,1
+T008,sgd,0.367033,0,0
+T009,sgd,0.667882,1,0
+T010,sgd,0.348810,0,0
+T011,sgd,0.595913,1,1
+T012,sgd,0.407461,0,0
+T001,newton,0.002725,0,0
+T002,newton,0.996963,1,1
+T003,newton,0.013248,0,0
+T004,newton,0.004279,0,0
+T005,newton,0.180105,0,0
+T006,newton,0.074916,0,0
+T007,newton,0.938944,1,1
+T008,newton,0.004626,0,0
+T009,newton,0.996963,1,0
+T010,newton,0.000916,0,0
+T011,newton,0.981579,1,1
+T012,newton,0.021843,0,0
+T001,softmax,0.798214,0,0
+T002,softmax,0.970699,2,2
+T003,softmax,0.615311,0,1
+T004,softmax,0.870045,0,0
+T005,softmax,0.521232,1,1
+T006,softmax,0.481398,0,1
+T007,softmax,0.744362,2,2
+T008,softmax,0.969436,0,0
+T009,softmax,0.970699,2,1
+T010,softmax,0.855628,0,0
+T011,softmax,0.935788,2,2
+T012,softmax,0.781947,0,0
+output/evaluation.txt:
+data train 20 test 12 base_features 2 degree 2 features 5
+binary positive_class 2 train 7/20 test 3/12
+classes 3 train 9 4 7 test 5 4 3
+
+cross_validation folds 5 newton_iterations 10
+lambda 0.0100 fold_loss 0.109400 0.248647 0.218345 0.070509 0.603593 cv_loss 0.250098 errors 2/20
+lambda 0.1000 fold_loss 0.253501 0.380984 0.330384 0.426414 0.492222 cv_loss 0.376701 errors 5/20
+selected lambda 0.0100 cv_loss 0.250098 se 0.094344 lambda_1se 0.0100
+out_of_fold tp 6 fp 1 tn 12 fn 1 accuracy 0.9000 auc 86/91 0.9451
+
+lambda_path
+lambda 0.0100 objective 0.173987 train_loss 0.108808 test_loss 0.517170 train_accuracy 1.0000 test_accuracy 0.9167 norm 3.6105
+lambda 0.1000 objective 0.367323 train_loss 0.266566 test_loss 0.387982 train_accuracy 1.0000 test_accuracy 0.9167 norm 1.4196
+
+degrees lambda 0.0100
+degree 1 features 2 cv_loss 0.663990 train_loss 0.475377 test_loss 0.432623 test_accuracy 0.7500 auc 49/54 0.9074 edf 2.7975 aic 24.6102 bic 27.3957
+degree 2 features 5 cv_loss 0.250098 train_loss 0.108808 test_loss 0.517170 test_accuracy 0.9167 auc 49/54 0.9074 edf 4.4650 aic 13.2822 bic 17.7282
+
+learning_curve lambda 0.0100
+size 5 train_loss 0.040126 test_loss 2.150996 test_accuracy 0.7500 auc 25/54 0.4630
+size 10 train_loss 0.053803 test_loss 0.615570 test_accuracy 0.9167 auc 49/54 0.9074
+size 15 train_loss 0.096048 test_loss 0.491698 test_accuracy 0.9167 auc 49/54 0.9074
+size 20 train_loss 0.108808 test_loss 0.517170 test_accuracy 0.9167 auc 49/54 0.9074
+
+model gd lambda 0.0100
+train correct 20/20 accuracy 1.0000
+test tp 3 fp 1 tn 8 fn 0
+test accuracy 0.9167 precision 0.7500 recall 1.0000 specificity 0.8889 f1 0.8571
+log_loss 0.493355 brier 0.087346
+auc 49/54 0.9074 average_precision 0.6389
+youden threshold 0.943711 tpr 1.0000 fpr 0.1111 j 0.8889
+best_f1 threshold 0.943711 precision 0.7500 recall 1.0000 f1 0.8571
+min_cost threshold 0.943711 cost 1 fp 1 fn 0
+calibration
+bin 0.0-0.1 count 7 mean_probability 0.0249 positive_rate 0.0000
+bin 0.1-0.2 count 0 mean_probability - positive_rate -
+bin 0.2-0.3 count 1 mean_probability 0.2049 positive_rate 0.0000
+bin 0.3-0.4 count 0 mean_probability - positive_rate -
+bin 0.4-0.5 count 0 mean_probability - positive_rate -
+bin 0.5-0.6 count 0 mean_probability - positive_rate -
+bin 0.6-0.7 count 0 mean_probability - positive_rate -
+bin 0.7-0.8 count 0 mean_probability - positive_rate -
+bin 0.8-0.9 count 0 mean_probability - positive_rate -
+bin 0.9-1.0 count 4 mean_probability 0.9785 positive_rate 0.7500
+ece 0.1078 mce 0.2285 hosmer_lemeshow 10.3760 groups 3
+gains
+decile 1 rows 1 positives 1 gain 0.3333 lift 4.0000
+decile 2 rows 2 positives 1 gain 0.3333 lift 2.0000
+decile 3 rows 3 positives 2 gain 0.6667 lift 2.6667
+decile 4 rows 4 positives 3 gain 1.0000 lift 3.0000
+decile 5 rows 6 positives 3 gain 1.0000 lift 2.0000
+decile 6 rows 7 positives 3 gain 1.0000 lift 1.7143
+decile 7 rows 8 positives 3 gain 1.0000 lift 1.5000
+decile 8 rows 9 positives 3 gain 1.0000 lift 1.3333
+decile 9 rows 10 positives 3 gain 1.0000 lift 1.2000
+decile 10 rows 12 positives 3 gain 1.0000 lift 1.0000
+
+model sgd lambda 0.0100
+train correct 17/20 accuracy 0.8500
+test tp 3 fp 2 tn 7 fn 0
+test accuracy 0.8333 precision 0.6000 recall 1.0000 specificity 0.7778 f1 0.7500
+log_loss 0.575726 brier 0.192060
+auc 49/54 0.9074 average_precision 0.6389
+youden threshold 0.520526 tpr 1.0000 fpr 0.1111 j 0.8889
+best_f1 threshold 0.520526 precision 0.7500 recall 1.0000 f1 0.8571
+min_cost threshold 0.520526 cost 1 fp 1 fn 0
+calibration
+bin 0.0-0.1 count 0 mean_probability - positive_rate -
+bin 0.1-0.2 count 0 mean_probability - positive_rate -
+bin 0.2-0.3 count 0 mean_probability - positive_rate -
+bin 0.3-0.4 count 4 mean_probability 0.3721 positive_rate 0.0000
+bin 0.4-0.5 count 3 mean_probability 0.4248 positive_rate 0.0000
+bin 0.5-0.6 count 3 mean_probability 0.5413 positive_rate 0.6667
+bin 0.6-0.7 count 2 mean_probability 0.6679 positive_rate 0.5000
+bin 0.7-0.8 count 0 mean_probability - positive_rate -
+bin 0.8-0.9 count 0 mean_probability - positive_rate -
+bin 0.9-1.0 count 0 mean_probability - positive_rate -
+ece 0.2895 mce 0.4248 hosmer_lemeshow 5.0294 groups 4
+gains
+decile 1 rows 1 positives 1 gain 0.3333 lift 4.0000
+decile 2 rows 2 positives 1 gain 0.3333 lift 2.0000
+decile 3 rows 3 positives 2 gain 0.6667 lift 2.6667
+decile 4 rows 4 positives 3 gain 1.0000 lift 3.0000
+decile 5 rows 6 positives 3 gain 1.0000 lift 2.0000
+decile 6 rows 7 positives 3 gain 1.0000 lift 1.7143
+decile 7 rows 8 positives 3 gain 1.0000 lift 1.5000
+decile 8 rows 9 positives 3 gain 1.0000 lift 1.3333
+decile 9 rows 10 positives 3 gain 1.0000 lift 1.2000
+decile 10 rows 12 positives 3 gain 1.0000 lift 1.0000
+
+model newton lambda 0.0100
+train correct 20/20 accuracy 1.0000
+test tp 3 fp 1 tn 8 fn 0
+test accuracy 0.9167 precision 0.7500 recall 1.0000 specificity 0.8889 f1 0.8571
+log_loss 0.517170 brier 0.086397
+auc 49/54 0.9074 average_precision 0.6389
+youden threshold 0.938944 tpr 1.0000 fpr 0.1111 j 0.8889
+best_f1 threshold 0.938944 precision 0.7500 recall 1.0000 f1 0.8571
+min_cost threshold 0.938944 cost 1 fp 1 fn 0
+calibration
+bin 0.0-0.1 count 7 mean_probability 0.0175 positive_rate 0.0000
+bin 0.1-0.2 count 1 mean_probability 0.1801 positive_rate 0.0000
+bin 0.2-0.3 count 0 mean_probability - positive_rate -
+bin 0.3-0.4 count 0 mean_probability - positive_rate -
+bin 0.4-0.5 count 0 mean_probability - positive_rate -
+bin 0.5-0.6 count 0 mean_probability - positive_rate -
+bin 0.6-0.7 count 0 mean_probability - positive_rate -
+bin 0.7-0.8 count 0 mean_probability - positive_rate -
+bin 0.8-0.9 count 0 mean_probability - positive_rate -
+bin 0.9-1.0 count 4 mean_probability 0.9786 positive_rate 0.7500
+ece 0.1014 mce 0.2286 hosmer_lemeshow 10.3325 groups 3
+gains
+decile 1 rows 1 positives 1 gain 0.3333 lift 4.0000
+decile 2 rows 2 positives 1 gain 0.3333 lift 2.0000
+decile 3 rows 3 positives 2 gain 0.6667 lift 2.6667
+decile 4 rows 4 positives 3 gain 1.0000 lift 3.0000
+decile 5 rows 6 positives 3 gain 1.0000 lift 2.0000
+decile 6 rows 7 positives 3 gain 1.0000 lift 1.7143
+decile 7 rows 8 positives 3 gain 1.0000 lift 1.5000
+decile 8 rows 9 positives 3 gain 1.0000 lift 1.3333
+decile 9 rows 10 positives 3 gain 1.0000 lift 1.2000
+decile 10 rows 12 positives 3 gain 1.0000 lift 1.0000
+
+agreement gd sgd same 11/12 only_first 1 only_second 0 mcnemar 0.0000
+agreement gd newton same 12/12 only_first 0 only_second 0 mcnemar -
+agreement sgd newton same 11/12 only_first 0 only_second 1 mcnemar 0.0000
+
+diagnostics newton lambda 0.0100
+fit null_loss 0.647447 train_loss 0.108808 mcfadden_r2 0.8319 deviance 4.3523 edf 4.4650 aic 13.2822 bic 17.7282
+hosmer_lemeshow_train groups 10 statistic 1.5033
+group 1 rows 2 observed 0 expected 0.0016
+group 2 rows 2 observed 0 expected 0.0046
+group 3 rows 2 observed 0 expected 0.0052
+group 4 rows 2 observed 0 expected 0.0092
+group 5 rows 2 observed 0 expected 0.1202
+group 6 rows 2 observed 0 expected 0.4297
+group 7 rows 2 observed 1 expected 1.0954
+group 8 rows 2 observed 2 expected 1.5939
+group 9 rows 2 observed 2 expected 1.8359
+group 10 rows 2 observed 2 expected 1.9041
+newton_iterations
+iteration 1 objective 0.693147 gradient_norm 0.465904 step_norm 1.738807 predicted_decrease 0.372088
+iteration 2 objective 0.269564 gradient_norm 0.114602 step_norm 1.066492 predicted_decrease 0.056618
+iteration 3 objective 0.198861 gradient_norm 0.040498 step_norm 0.911757 predicted_decrease 0.017608
+iteration 4 objective 0.177602 gradient_norm 0.012132 step_norm 0.537753 predicted_decrease 0.003139
+iteration 5 objective 0.174110 gradient_norm 0.002013 step_norm 0.125770 predicted_decrease 0.000120
+iteration 6 objective 0.173987 gradient_norm 0.000073 step_norm 0.004716 predicted_decrease 0.000000
+iteration 7 objective 0.173987 gradient_norm 0.000000 step_norm 0.000006 predicted_decrease 0.000000
+iteration 8 objective 0.173987 gradient_norm 0.000000 step_norm 0.000000 predicted_decrease 0.000000
+iteration 9 objective 0.173987 gradient_norm 0.000000 step_norm 0.000000 predicted_decrease 0.000000
+iteration 10 objective 0.173987 gradient_norm 0.000000 step_norm 0.000000 predicted_decrease 0.000000
+marginal x1 average 0.1400 at_mean 0.0015
+marginal x2 average -0.0727 at_mean -0.0009
+cut 0.1 positive 5 tp 3 fp 2 precision 0.6000 recall 1.0000 accuracy 0.8333
+cut 0.2 positive 4 tp 3 fp 1 precision 0.7500 recall 1.0000 accuracy 0.9167
+cut 0.3 positive 4 tp 3 fp 1 precision 0.7500 recall 1.0000 accuracy 0.9167
+cut 0.4 positive 4 tp 3 fp 1 precision 0.7500 recall 1.0000 accuracy 0.9167
+cut 0.5 positive 4 tp 3 fp 1 precision 0.7500 recall 1.0000 accuracy 0.9167
+cut 0.6 positive 4 tp 3 fp 1 precision 0.7500 recall 1.0000 accuracy 0.9167
+cut 0.7 positive 4 tp 3 fp 1 precision 0.7500 recall 1.0000 accuracy 0.9167
+cut 0.8 positive 4 tp 3 fp 1 precision 0.7500 recall 1.0000 accuracy 0.9167
+cut 0.9 positive 4 tp 3 fp 1 precision 0.7500 recall 1.0000 accuracy 0.9167
+error T009 actual 0 probability 0.996963
+bootstrap resamples 40 seed 99 auc_mean 0.9170 auc_sd 0.0786 lower 31/40 0.7750 upper 1/1 1.0000
+influence effective_parameters 4.4650 large_residuals 0
+cook R015 actual 0 probability 0.3813 leverage 0.4543 residual -1.0628 distance 0.1568
+cook R017 actual 1 probability 0.7593 leverage 0.4890 residual 0.7876 distance 0.0990
+cook R016 actual 1 probability 0.8346 leverage 0.5364 residual 0.6538 distance 0.0824
+cook R013 actual 1 probability 0.7141 leverage 0.3775 residual 0.8021 distance 0.0650
+cook R020 actual 0 probability 0.2483 leverage 0.3259 residual -0.7000 distance 0.0395
+
+importance repeats 2 seed 777
+baseline log_loss 0.517170 auc 49/54 0.9074 softmax_accuracy 0.7500
+feature x1 log_loss_increase -0.173952 auc 26/27 0.9630 softmax_accuracy 0.6250
+feature x2 log_loss_increase 0.911995 auc 14/27 0.5185 softmax_accuracy 0.2917
+
+profiles
+profile x1 value -1.8200 newton 0.0174 softmax 0.6905 0.2302 0.0793
+profile x1 value -0.7750 newton 0.0012 softmax 0.8615 0.1271 0.0114
+profile x1 value 0.2700 newton 0.0012 softmax 0.8240 0.1628 0.0132
+profile x1 value 1.3150 newton 0.0196 softmax 0.4992 0.4002 0.1006
+profile x1 value 2.3600 newton 0.8408 softmax 0.0267 0.2631 0.7101
+profile x2 value -2.3200 newton 0.9552 softmax 0.1868 0.0151 0.7981
+profile x2 value -1.2200 newton 0.0380 softmax 0.7720 0.1291 0.0989
+profile x2 value -0.1200 newton 0.0016 softmax 0.8186 0.1654 0.0159
+profile x2 value 0.9800 newton 0.0015 softmax 0.8641 0.1230 0.0130
+profile x2 value 2.0800 newton 0.0290 softmax 0.8951 0.0523 0.0526
+
+softmax classes 3 lambda 0.0500 iterations 200
+confusion
+5 0 0
+2 1 1
+0 0 3
+class 0 precision 0.7143 recall 1.0000 f1 0.8333 auc 1/1 1.0000
+class 1 precision 1.0000 recall 0.2500 f1 0.4000 auc 55/64 0.8594
+class 2 precision 0.7500 recall 1.0000 f1 0.8571 auc 49/54 0.9074
+accuracy 0.7500 kappa 0.6129
+log_loss 0.651190 brier 0.349924
+binary_view positive_class 2 auc 49/54 0.9074 log_loss 0.395899 accuracy 0.9167 agreement_with_newton 12/12
+confidence
+bin 0.0-0.1 count 0 mean_confidence - accuracy -
+bin 0.1-0.2 count 0 mean_confidence - accuracy -
+bin 0.2-0.3 count 0 mean_confidence - accuracy -
+bin 0.3-0.4 count 0 mean_confidence - accuracy -
+bin 0.4-0.5 count 1 mean_confidence 0.4814 accuracy 0.0000
+bin 0.5-0.6 count 1 mean_confidence 0.5212 accuracy 1.0000
+bin 0.6-0.7 count 1 mean_confidence 0.6153 accuracy 0.0000
+bin 0.7-0.8 count 3 mean_confidence 0.7748 accuracy 1.0000
+bin 0.8-0.9 count 2 mean_confidence 0.8628 accuracy 1.0000
+bin 0.9-1.0 count 4 mean_confidence 0.9617 accuracy 0.7500
+ece 0.2810
+
+one_vs_rest lambda 0.0500 newton_iterations 10
+class 0 objective 0.315498 auc 1/1 1.0000
+class 1 objective 0.448157 auc 55/64 0.8594
+class 2 objective 0.300157 auc 49/54 0.9074
+accuracy 0.7500 agreement_with_softmax 12/12
+
+map x1 x2 width 12 height 5
+softmax_classes
+000000000122
+000000000112
+000000000012
+100000000022
+222220022222
+cells 39 5 16
+newton_probability
+000000000269
+000000000026
+000000000026
+100000001269
+987555578999
+output/roc.csv:
+model,threshold,tpr,fpr,precision
+gd,inf,0.0000,0.0000,-
+gd,0.995606,0.3333,0.1111,0.5000
+gd,0.979170,0.6667,0.1111,0.6667
+gd,0.943711,1.0000,0.1111,0.7500
+gd,0.204897,1.0000,0.2222,0.6000
+gd,0.097957,1.0000,0.3333,0.5000
+gd,0.034013,1.0000,0.4444,0.4286
+gd,0.020617,1.0000,0.5556,0.3750
+gd,0.007998,1.0000,0.6667,0.3333
+gd,0.007134,1.0000,0.7778,0.3000
+gd,0.004673,1.0000,0.8889,0.2727
+gd,0.001742,1.0000,1.0000,0.2500
+sgd,inf,0.0000,0.0000,-
+sgd,0.667882,0.3333,0.1111,0.5000
+sgd,0.595913,0.6667,0.1111,0.6667
+sgd,0.520526,1.0000,0.1111,0.7500
+sgd,0.507514,1.0000,0.2222,0.6000
+sgd,0.457108,1.0000,0.3333,0.5000
+sgd,0.409725,1.0000,0.4444,0.4286
+sgd,0.407461,1.0000,0.5556,0.3750
+sgd,0.389787,1.0000,0.6667,0.3333
+sgd,0.382668,1.0000,0.7778,0.3000
+sgd,0.367033,1.0000,0.8889,0.2727
+sgd,0.348810,1.0000,1.0000,0.2500
+newton,inf,0.0000,0.0000,-
+newton,0.996963,0.3333,0.1111,0.5000
+newton,0.981579,0.6667,0.1111,0.6667
+newton,0.938944,1.0000,0.1111,0.7500
+newton,0.180105,1.0000,0.2222,0.6000
+newton,0.074916,1.0000,0.3333,0.5000
+newton,0.021843,1.0000,0.4444,0.4286
+newton,0.013248,1.0000,0.5556,0.3750
+newton,0.004626,1.0000,0.6667,0.3333
+newton,0.004279,1.0000,0.7778,0.3000
+newton,0.002725,1.0000,0.8889,0.2727
+newton,0.000916,1.0000,1.0000,0.2500

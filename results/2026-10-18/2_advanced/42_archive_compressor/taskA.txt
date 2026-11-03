@@ -1,0 +1,342 @@
+[Overview]
+Write a small archiver that bundles ASCII text files into a single archive. The archiver has five compression methods, STORE (no compression), LZW, LZ77, LZH (a combination of LZ77 and Huffman coding) and ARITH (adaptive arithmetic coding with contexts), and it does the following.
+- Create (CREATE): compress each file listed in input/manifest.txt with all five methods, choose the method that gives the smallest compressed byte count, build an archive, and write it out in hexadecimal. Also write a table of byte counts and ratios per file and per method, and internal statistics of each method. Also parse the created archive again and confirm that every entry is restored exactly to the original.
+- List (LIST), test (TEST), extract (EXTRACT): parse input/archive.hex, made by another archiver, to make a list of its entries, decode each entry and check it with Adler-32, and report corrupted entries, entries with an unsupported method and truncated entries together with their positions. When Adler-32 shows that exactly one byte of the decoded result has changed, repair that byte.
+- Write out the texts of the intact entries (including repaired ones), compare them line by line with the files of manifest.txt, and build a new archive (the salvage archive) in which they are recompressed with the best method.
+All computation is done with integers; floating-point numbers are not used. The program reads files from the input/ folder and writes files to the output/ folder. It prints nothing to standard output.
+
+[Input files]
+The input files are input/manifest.txt, the text files in the input/files/ folder, and input/archive.hex. Every file consists of ASCII characters only. Every line of manifest.txt and archive.hex ends with a newline (LF) and has no spaces at its start or end, and there are no empty lines.
+
+(1) input/manifest.txt: settings for creation
+Line 1 is "offset_bits <B>", line 2 is "length_bits <K>", and line 3 is "max_code_length <M>" (<B>, <K> and <M> are decimal integers, written simply as B, K and M below). B and K are the values that determine the LZ77 window and token sizes (section 5), and M is the upper limit on the Huffman code lengths of LZH (sections 6 and 7).
+From line 4 on there are one or more lines of the form "file <name>", giving the names of the files to put into the archive, in the order in which they are put into the archive.
+In every line, words are separated by a single space. <name> is a string of 1 to 32 characters consisting of lowercase English letters, digits, ".", "_" and "-", and all names are distinct.
+
+(2) input/files/<name>: the text files to put into the archive
+For each <name> in manifest.txt, there is a file with the same name in the input/files/ folder. Each file is either empty (0 bytes) or consists only of printable ASCII characters (0x20 to 0x7E) and newlines (LF, 0x0A) with LF as its last byte. A space (0x20) is never immediately followed by LF (no line has trailing spaces). The contents of a file are treated as a byte sequence exactly as they are (no newline conversion or the like is done).
+
+(3) input/archive.hex: the archive to test
+The byte sequence of an archive that another archiver made in the format of section 10, written in hexadecimal. Each line consists of an even number of characters (0 to 9 and a to f), at least 2 and at most 64. Concatenate all lines into one string and split it from the start into groups of 2 characters; the value of each group read as a 2-digit hexadecimal number is the corresponding byte of the byte sequence.
+The B and K of this archive are written in the archive header and are unrelated to the values in manifest.txt. The other archiver chooses the methods freely (for LZH, also the format of the code tables), so the method of an entry is not necessarily the one that gives the smallest size. The archive may contain corrupted entries and entries with an unsupported method, and the archive may be cut off partway.
+
+[Processing]
+Process according to sections 1 to 14 below. Sections 1 to 9 cover bit sequences and the methods, section 10 the archive format, section 11 creation, and sections 12 to 14 the parsing, repair, extraction, comparison and salvage of the given archive.
+
+Notation
+- floor(a / b) (b is a positive integer) is the largest integer not greater than a / b, and a mod b is a - b * floor(a / b) (between 0 and b - 1 inclusive). ceil(a / b) is the smallest integer not less than a / b.
+- bits(x) (x is a nonnegative integer) is the number of digits of x written in binary, and bits(0) = 0 (examples: bits(1) = 1, bits(5) = 3, bits(511) = 9, bits(512) = 10).
+- A byte is an integer from 0 to 255. Positions in a byte sequence are counted with the first byte as 0. A string is also treated as a byte sequence in which each character is one byte holding its ASCII code.
+- An "n-byte big-endian integer" is an integer from 0 to less than 256^n written as n digits in base 256, arranged one digit per byte starting from the most significant digit.
+- The "lines" of a text (a byte sequence that is empty or whose last byte is LF) are the parts obtained by splitting the text at each LF (the LF is not included); the empty part after the last LF is not counted as a line. An empty text has 0 lines. Lines are numbered 1, 2, 3, ... from the start (line numbers).
+
+Section 1. Bit sequences
+The compressed data (the payload) that each method produces is a sequence of bits (a bit sequence) packed into a byte sequence.
+(1) Writing: the bit sequence is initially empty. "Write the value v in w bits" (w is a nonnegative integer, 0 <= v < 2^w) means writing v as a w-digit binary number (missing high-order digits are 0) and appending its digits one bit at a time, starting from the most significant digit, to the end of the bit sequence (if w = 0, nothing is appended). When writing is finished, 0 bits are appended to the end until the number of bits is a multiple of 8 (this is called "padding"), and then each group of 8 bits from the start becomes one byte whose first bit is the most significant bit (the 2^7 place); these bytes form the payload. In other words, each byte is filled starting from its high-order bit. If the bit sequence is empty, the payload is empty (0 bytes).
+Example: writing 5 in 3 bits, 1 in 1 bit and 300 in 9 bits, in this order, gives the bit sequence 1011100101100 (13 bits), and the payload with the 3 padding bits added is the 2 bytes 0xB9 0x60.
+(2) Reading: a payload P of c bytes is read as a bit sequence of length 8 * c whose bit number i is bit number (i mod 8), counted from the top starting at 0, of the byte at position floor(i / 8) of P. The read position is initially 0 and advances by 1 each time a bit is taken. "Read a w-bit value" means taking the next w bits and reading them as a w-digit binary number whose most significant digit is the first bit taken.
+When decoding LZW, LZ77 and LZH, if fewer than w bits remain when a w-bit value is to be read, nothing is taken and the error is end_of_data (section 9). When decoding ARITH, every bit after the end of the bit sequence is taken as 0 (this is not an error).
+
+Section 2. Adler-32
+The Adler-32 of a byte sequence x_0, x_1, ..., x_(n-1) is s2 * 65536 + s1 after starting from s1 = 1, s2 = 0 and, for k = 0, 1, ..., n - 1 in this order, setting s1 to (s1 + x_k) mod 65521 and then setting s2 to (s2 + s1) mod 65521 (for an empty byte sequence it is 1). For example, the Adler-32 of the string abc is 38600999 (024d0127 in hexadecimal). For an Adler-32 value X, floor(X / 65536) is called the high part of X and X mod 65536 the low part of X.
+
+Section 3. Methods and STORE
+The methods have the following method numbers and method names: 0 is STORE, 1 is LZW, 2 is LZ77, 3 is LZH and 4 is ARITH. Increasing order of method number is called "method order".
+Each method consists of "encoding", which makes a payload from the original data (a byte sequence D of n bytes, n >= 0), and "decoding", which rebuilds D from the payload and the original byte count n. Decoding starts from an empty byte sequence (the output) and appends bytes to its end.
+In STORE encoding, the payload is D itself. In STORE decoding, bytes of the payload are appended to the output one at a time from the start until the output has n bytes, and decoding finishes when it has n bytes (the rest of the payload is ignored). If the payload runs out of bytes before the output reaches n bytes, it is end_of_data.
+
+Section 4. LZW
+(1) Dictionary: the dictionary is a mapping between integers from 0 to 4095 (codes) and byte sequences. A code k from 0 to 255 always represents the byte sequence consisting of the single byte k. 256 is CLEAR and 257 is END; these are special codes that do not represent byte sequences. Codes 258 and above represent byte sequences from the time they are registered. "Initialize the dictionary" means deleting all registrations of codes 258 and above and setting the number to be registered next, N, to 258.
+(2) Code width: in both encoding and decoding, each code is written (read) in min(12, bits(258 + c)) bits, where c is the number of codes written (read) before that code that come after the last CLEAR (if there has been no CLEAR yet, the number of all codes written (read) before it). For example, the first CLEAR is 9 bits, the 254 codes right after each CLEAR are 9 bits, the next 512 codes are 10 bits, the next 1024 are 11 bits, and all later ones are 12 bits (a CLEAR written when the dictionary becomes full is 12 bits).
+(3) Encoding:
+ - Initialize the dictionary and write CLEAR. Let the sequence w be the empty byte sequence.
+ - Process the bytes x of D in order from the start. If the sequence w+x, which is w with x appended to its end, is the sequence represented by a code from 0 to 255 or by a registered code, set w to w+x. Otherwise, write the code that represents w, register w+x under number N, and increase N by 1. If N has then become 4096, write CLEAR and initialize the dictionary. Then set w to the sequence consisting of the single byte x.
+ - After all bytes have been processed, if w is not empty, write the code that represents w. Finally, write END.
+Example: for D = ababab, the 6 codes CLEAR, 97, 98, 258, 258, END are written in 9 bits each, and the payload is 0x80 0x18 0x4C 0x50 0x28 0x14 0x04. For an empty D, only CLEAR and END are written, and the payload is 0x80 0x40 0x40.
+(4) Decoding: initialize the dictionary and set the previous code p to "none". Repeat (a) to (f) below.
+ (a) Read a code k with the width of (2).
+ (b) If k is CLEAR, initialize the dictionary, set p to "none", and go back to (a).
+ (c) If k is END, finish. If the output then has fewer than n bytes, it is early_end.
+ (d) If k is anything else (a data code), determine the sequence e as follows. If the c used in (a) is 3838, it is bad_code (in a correct payload, the code after the 3838th data code following a CLEAR is CLEAR or END). If p is "none": if k >= 256 it is bad_code, and otherwise e is the sequence of the single byte k. If p is not "none": if k < N, e is the sequence represented by k; if k = N, e is "the sequence represented by p" with the first byte of that sequence appended to its end; and if k > N, it is bad_code.
+ (e) If the byte count of the output plus the length of e exceeds n, it is overrun. Otherwise, append e to the end of the output.
+ (f) If p is not "none", register "the sequence represented by p" with the first byte of e appended to its end under number N, and increase N by 1. Set p to k and go back to (a).
+
+Section 5. LZ77
+Let W = 2^B be the window size and L = 2^K + 2 the maximum match length. There are two kinds of tokens: a literal x, which represents one byte x, and a match (d, l), which has a distance d (1 <= d <= W) and a length l (3 <= l <= L).
+(1) Splitting into tokens (common to LZ77 and LZH): starting from position i = 0, repeat the following while i < n. For each d = 1, 2, ..., min(W, i), let m(d) be the largest m not greater than min(L, n - i) such that D[i + j] = D[i + j - d] holds for all j = 0, 1, ..., m - 1 (when j >= d, this compares bytes at position i and later with each other). Choose the d for which m(d) is largest (if there are several such d, the smallest of them), and let m be that m(d). If m >= 3, emit the match (d, m) and add m to i; otherwise (including the case i = 0), emit the literal D[i] and add 1 to i.
+(2) LZ77 encoding: for the tokens of (1) in order, for a literal x write 0 in 1 bit and then x in 8 bits, and for a match (d, l) write 1 in 1 bit, d - 1 in B bits and l - 3 in K bits, in this order.
+Example: with B = 6 and K = 2, the tokens of abcabcabcd are the literals a, b, c, the match (3, 6) and the literal d, and the payload is 0x30 0x98 0x8C 0x70 0xB3 0x20. The tokens of aaaaaaaaab are the literal a, the match (1, 6) and the literals a, a, b.
+(3) Outputting a match (common to LZ77 and LZH): when outputting a match (d, l), first, if d is greater than the byte count of the output, it is bad_offset; next, if the byte count of the output plus l is greater than n, it is overrun. If neither, repeat "append the d-th byte from the end of the output to the end of the output" l times (the appended bytes are also referenced in later repetitions).
+(4) LZ77 decoding: while the output has fewer than n bytes, read a 1-bit value; if it is 0, read an 8-bit value x and append x to the end of the output. If it is 1, read a B-bit value u and a K-bit value v in this order, and output the match (u + 1, v + 3) as in (3). When the output has n bytes, finish (the rest of the payload is ignored).
+
+Section 6. Huffman codes
+How to build, write and read the code tables used in LZH. Symbols are represented by symbol numbers from 0 to A - 1, and each symbol s has a frequency f_s (a nonnegative integer).
+(1) Code lengths: symbols with a positive frequency are called "used symbols". If there are no used symbols, the code length of every symbol is 0. If there is exactly one used symbol, the code length of that symbol is 1 and the code lengths of the other symbols are 0. If there are two or more used symbols, build a tree as follows. For each used symbol s, create a node with weight f_s and minimum symbol s. While there are two or more nodes, remove the smallest node and the second smallest node in the lexicographic order of the pair (weight, minimum symbol) (the smaller weight is smaller, and for equal weights the smaller minimum symbol is smaller), and add a new node that has those two as children, whose weight is the sum of the two weights and whose minimum symbol is the smaller of the two minimum symbols. The last remaining node is the root, and the code length of each symbol is the number of edges from that symbol's node to the root. The code length of a symbol that is not used is 0.
+(2) Length limit: when the maximum of the code lengths found in (1) exceeds the limit M, replace the frequency f_s of every symbol with ceil(f_s / 2) (0 stays 0) and redo (1); repeat this until the maximum is M or less. This replacement is called "halving".
+Example: if the frequencies, from symbol 0 in order, are 5, 2, 0, 1, 1, 9, the code lengths are 2, 3, 0, 4, 4, 1. If the frequencies are 1, 1, 2, 3, 5, 8, 13, 21, the code lengths are 7, 7, 6, 5, 4, 3, 2, 1; if the limit is 4, two halvings make the frequencies 1, 1, 1, 1, 2, 2, 4, 6, and the code lengths become 4, 4, 4, 4, 3, 3, 2, 2.
+(3) Canonical codes: arrange the symbols with a positive code length in increasing lexicographic order of the pair (code length, symbol number). The code of the first symbol is 0, and the code of each later symbol is the code of the previous symbol plus 1, shifted left by (the code length of that symbol - the code length of the previous symbol) bits (that is, multiplied by 2^(difference of the code lengths)). "Write the symbol s" means writing the code of s in as many bits as the code length of s.
+Example: if the code lengths are 2, 3, 0, 4, 4, 1, the codes of symbols 5, 0, 1, 3, 4 are 0, 10, 110, 1110, 1111 respectively (in binary, with as many digits as the code length).
+(4) Fixed code lengths: the fixed code lengths for a symbol count A (A >= 2) are defined with k = bits(A - 1) and u = 2^k - A: symbols whose symbol number is less than u have code length k - 1, and all other symbols have code length k. For example, for A = 272, symbols 0 to 239 have code length 8 and symbols 240 to 271 have code length 9, and in the canonical code the code of a symbol x (x <= 239) is the same as x written in 8 bits. For A = 10, symbols 0 to 5 have code length 3 and symbols 6 to 9 have code length 4.
+(5) Writing a code table: write the sequence of code lengths l_0, l_1, ..., l_(A-1) as follows. Starting from s = 0, while s < A: if l_s > 0, write l_s in 4 bits and add 1 to s. If l_s = 0, let r be the number of consecutive symbols with code length 0 starting at symbol s (if r exceeds 256, let r = 256), write 0 in 4 bits and r - 1 in 8 bits, and add r to s.
+Example: for A = 272 with l_65 = 2, l_66 = 1, l_68 = 2 and all other code lengths 0, (0, 64), 2, 1, (0, 0), 2, (0, 202) are written (a parenthesized pair is a 4-bit 0 and an 8-bit value), giving the 48-bit bit sequence 0x04 0x02 0x10 0x00 0x20 0xCA.
+(6) Reading a code table: until the sequence of code lengths has A elements, read a 4-bit value v; if v > 0, append one code length v to the end of the sequence, and if v = 0, read an 8-bit value r and append r + 1 code lengths of 0. However, if appending would make more than A elements, it is bad_table. When there are A elements, perform the following check, and if it does not hold, it is bad_table: if exactly one symbol has a positive code length, that code length is 1; if two or more do, the sum of 2^(15 - l_s) over the symbols s with a positive code length is 2^15. (If no symbol has a positive code length, the code table is valid without any check.)
+(7) Reading a symbol: if no symbol has a positive code length, it is bad_code without reading any bits. Otherwise, read values one bit at a time, and when the sequence of bits read so far equals the code of some symbol (a binary number with as many digits as its code length), that symbol is the result. When exactly one symbol has a positive code length, if the first bit read is 1, it is bad_code. (When two or more symbols have a positive code length, the check of (6) guarantees that the bits always match the code of some symbol within 15 bits.)
+
+Section 7. LZH
+The LZ77 token sequence (section 5 (1)) is written with two code tables.
+- Literal/length table: the number of symbols is A_1 = 256 + 2^K. A literal x is represented by symbol x, and the length l of a match (d, l) by symbol 256 + l - 3.
+- Distance table: the number of symbols is A_2 = B + 1. For a match (d, l), let u = d - 1; g = bits(u) is called the distance slot (0 <= g <= B). The distance is represented by the symbol g of its distance slot, and when g >= 2, u - 2^(g-1) is then written in g - 1 bits (the extra bits). When g = 0 or 1, u = g, so there are no extra bits.
+(1) Writing the token part: given the sequence of code lengths P of the literal/length table and the sequence of code lengths Q of the distance table, the "token part" is the result of writing the tokens in order as follows: for a literal x, the symbol x (with the canonical code of P); for a match (d, l), the length symbol 256 + l - 3 (with the canonical code of P), the distance slot symbol g (with the canonical code of Q) and the extra bits (when g >= 2), in this order.
+(2) Encoding: over all tokens, count the occurrences of each symbol of the literal/length table and of each symbol of the distance table as their frequencies, and for each table find the code lengths with the limit M by section 6 (1) and (2) (the dynamic code lengths). Compare the bit counts of the following two formats.
+ - Fixed format: the token part using the fixed code lengths of section 6 (4) for the literal/length table and the distance table. Let F be its bit count.
+ - Dynamic format: the code table (section 6 (5)) of the dynamic code lengths of the literal/length table, the code table of the dynamic code lengths of the distance table, and the token part using the dynamic code lengths, in this order. Let G be its bit count.
+If F <= G, choose the fixed format: write 0 in 1 bit and then the bit sequence of the fixed format. Otherwise, choose the dynamic format: write 1 in 1 bit and then the bit sequence of the dynamic format.
+Example: with B = 6, K = 2 and M = 9, for abcabcabcd (the token sequence is the same as in the example of section 5), F = 45 and G = 86, so the fixed format is chosen, and the payload is 0x30 0xB1 0x31 0xFF 0xD9 0x90 (the fixed code lengths for A_1 = 260 are 8 for symbols 0 to 251 and 9 for symbols 252 to 259, and the match (3, 6) is written as the code 111111111 of length symbol 259, the code 011 of distance slot 2 and the extra bit 0).
+(3) Decoding: read a 1-bit value; if it is 1, read the code table of the literal/length table (A_1 symbols) (section 6 (6), including the check), and then the code table of the distance table (A_2 symbols). If it is 0, read no code tables and use the fixed code lengths. Then, while the output has fewer than n bytes, repeat the following. Read a symbol t of the literal/length table (section 6 (7)). If t < 256, append the byte t to the end of the output. If t >= 256, let l = t - 253, read a symbol g of the distance table; if g >= 2, read a (g - 1)-bit value e and let u = 2^(g-1) + e, and if g <= 1, let u = g; then output the match (u + 1, l) as in section 5 (3). When the output has n bytes, finish (the rest of the payload is ignored).
+The B and K used here are the values in manifest.txt for creation and the values in the header of the archive for parsing (the same holds for LZ77).
+
+Section 8. ARITH
+The following constants are used: TOP = 65535, HALF = 32768, QUARTER = 16384, THREE = 49152.
+(1) Model: for each context (an integer from 0 to 255) there is a frequency table of 257 symbols (0 to 255 are those bytes, and 256 is EOF). In every context, every symbol initially has frequency 1. In the frequency table of a context c, let f(s) be the frequency of symbol s, T the sum of the frequencies of all symbols, and C(s) the sum of the frequencies of symbols 0 to s - 1 (C(0) = 0).
+The context of the first symbol (the first byte of D, or EOF if D is empty) is 10, and the context of each later symbol is the value of the previous byte.
+After encoding (decoding) a byte s, add 32 to f(s) in the frequency table of its context, and if T is then 8192 or more, replace the frequency f of every symbol in that table with ceil(f / 2) (this is called "rescaling"). The frequency tables are not changed after EOF.
+(2) Encoding: let low = 0, high = TOP and follow = 0. Encode each byte of D in order from the start, and finally EOF, each as a symbol s, as follows.
+ - In the frequency table of the context of that symbol, let r = high - low + 1, set high to low + floor(r * (C(s) + f(s)) / T) - 1, and set low to low + floor(r * C(s) / T) (both formulas use low before the update).
+ - Perform the following loop. If high < HALF, "output bit 0". Otherwise, if low >= HALF, "output bit 1" and subtract HALF from both low and high. Otherwise, if low >= QUARTER and high < THREE, add 1 to follow and subtract QUARTER from both low and high. If none of these applies, end the loop. If the loop has not ended, set low to 2 * low and high to 2 * high + 1 and continue the loop.
+ - "Output bit b" means writing b in 1 bit, then writing 1 - b in 1 bit follow times, and setting follow to 0.
+ After encoding EOF, add 1 to follow, and output bit 0 if low < QUARTER and bit 1 otherwise (according to "output bit b" above). Finally, apply the padding of section 1 (1).
+ Example: when D is the single byte a, the payload is 0x61 0x9D 0x40 (18 bits before padding), and when D is empty, it is 0xFF 0x40 (10 bits).
+(3) Decoding: let low = 0 and high = TOP, and let value be the value of the first 16 bits of the payload (as in section 1 (2), bits after the end of the bit sequence are 0). With the context set to 10, repeat the following.
+ - Let r = high - low + 1 and q = floor(((value - low + 1) * T - 1) / r), and find the symbol s that satisfies C(s) <= q < C(s) + f(s) (there is exactly one). Update low and high with the same formulas as in (2), and perform the loop with the same conditions as in (2). However, instead of outputting bits: when subtracting HALF, also subtract HALF from value; when subtracting QUARTER, also subtract QUARTER from value; and when continuing the loop, at the same time as low and high, set value to 2 * value + (the value of the next bit read).
+ - If s is EOF, finish. If the output then has fewer than n bytes, it is early_end. If s is a byte and the output already has n bytes, it is overrun. Otherwise, append s to the end of the output, update the frequency table as in (1), and set the context to s.
+In decoding, low <= value <= high always holds, so 0 <= q < T. Also, r <= 65536, and T < 8192 always holds in the frequency tables used for encoding and decoding, so every product is less than 2^29.
+
+Section 9. Decoding errors
+There are six decoding errors, end_of_data, bad_code, bad_offset, bad_table, overrun and early_end, and each occurs at the point described in sections 1 to 8. When an error occurs, decoding stops at that point. The byte count of the output when an error occurs is called the "position" of the error. If decoding reaches a "finish" of sections 3 to 8 without an error, decoding succeeds, and the output has exactly n bytes.
+
+Section 10. Archive format
+An archive is a byte sequence consisting of a header and a sequence of entries.
+(1) Header (8 bytes): the 4 bytes of the magic TXAR (0x54 0x58 0x41 0x52), B (1 byte), K (1 byte), and the number of entries E (2-byte big-endian integer).
+(2) Entries: E entries follow one after another. Each entry consists of an entry header, which is the following items in this order, followed by the payload.
+ - Name length m (1 byte)
+ - Name (m bytes)
+ - Method number (1 byte)
+ - Original byte count (4-byte big-endian integer)
+ - Compressed byte count, that is, the byte count of the payload (4-byte big-endian integer)
+ - Adler-32 of the original data (4-byte big-endian integer)
+ - Check byte (1 byte): the remainder when the sum of the 14 + m bytes of this entry header from the name length through the Adler-32 is divided by 256
+ The entry header is 15 + m bytes. The position in the archive of the first byte of an entry is called the position of the entry. The entries are given entry numbers 1, 2, 3, ... from the start.
+Example: the entry with name hi.txt, STORE and the 3-byte original data hi followed by LF is 06 68 69 2e 74 78 74 00 00 00 00 03 00 00 00 03 02 17 00 dc 60 68 69 0a (hexadecimal; the check byte is 0x60).
+
+Section 11. Creation
+For each file in manifest.txt, in the order of manifest.txt, do the following. Let D be the contents of the file, build the token sequence by section 5 (1) (with the B and K of manifest.txt), and make payloads with the five methods (LZ77 and LZH use the same token sequence, and the limit for LZH is M). Choose the method whose payload has the smallest byte count (if several are smallest, the first of them in method order).
+The archive has the B and K of manifest.txt in its header and E equal to the number of files, followed by the entries of the files in the order of manifest.txt (name, chosen method, original byte count, byte count of its payload, Adler-32, check byte, and its payload).
+Parse the created archive by section 12, and count the entries whose status is ok and whose decoded result equals the contents of the corresponding file (the file with the same entry number) (verification).
+
+Section 12. Parsing an archive
+Parse a byte sequence X (of length len) as follows and determine a status for each entry. The status is one of ok, repaired, checksum, error, unsupported, truncated and bad_header.
+(1) If len < 8 or the first 4 bytes differ from the magic, it is the archive error bad_magic. Otherwise, if X[4] (B) and X[5] (K) do not satisfy 6 <= B <= 12 and 2 <= K <= 5, it is the archive error bad_params. For an archive error, no entry is examined.
+(2) If there is no archive error, read E from X[6] and X[7], let pos = 8, and do (a) to (f) below for the entry numbers k = 1, 2, ..., E in order. When parsing "stops" partway, the remaining entries are not examined. pos is the position of the entry.
+ (a) If pos >= len, or pos + 15 + X[pos] > len, set the status to truncated (cut off within the header) and stop.
+ (b) Read each item of the header. Let m be the name length, start = pos + 15 + m the position where the payload begins, and next = start + (the compressed byte count) the position where the payload ends.
+ (c) If the check byte differs from the value defined in section 10, or the name is invalid (m = 0, m > 32, or it contains a character other than lowercase English letters, digits, ".", "_" and "-"), set the status to bad_header. In this case set pos to next, and stop if pos > len. Otherwise, go on to the next entry.
+ (d) If next > len, set the status to truncated (cut off within the payload) and stop.
+ (e) If the method number is 5 or more, set the status to unsupported, set pos to next, and go on to the next entry.
+ (f) Decode the payload X[start] to X[next - 1] with its method, its original byte count, and the B and K of this archive. If an error occurs, set the status to error. If decoding succeeds and the Adler-32 of the output equals the Adler-32 in the header, set the status to ok. If they are not equal, attempt the repair of section 13; if it can be repaired, set the status to repaired, and otherwise to checksum. Set pos to next and go on to the next entry.
+The number of entries whose status has been determined is called the "number of examined entries", and E - (the number of examined entries) the "number of missing entries". When all E entries have been examined without stopping, len - pos is the "number of trailing bytes"; when parsing stopped, the number of trailing bytes is 0. An entry that did not become truncated in (a) and did not become bad_header in (c) is called an "entry with a valid header".
+
+Section 13. One-byte repair
+When the Adler-32 R of a successfully decoded output Y of n bytes differs from the Adler-32 S in the header, attempt a repair as follows. This uses the fact that when the byte at position p of Y changes by delta, s1 of Adler-32 changes by delta and s2 changes by (n - p) * delta (both modulo 65521).
+- Let deltaA = (the low part of S - the low part of R) mod 65521 and deltaB = (the high part of S - the high part of R) mod 65521.
+- If 1 <= deltaA <= 255, let delta = deltaA; if 65266 <= deltaA <= 65520, let delta = deltaA - 65521; otherwise it cannot be repaired.
+- Find the inverse v of delta mod 65521 (the integer v from 1 to 65520 that satisfies (delta mod 65521) * v mod 65521 = 1; since 65521 is prime, it can be found, for example, as (delta mod 65521)^65519 mod 65521), and let t = (deltaB * v) mod 65521.
+- If 1 <= t <= n does not hold, it cannot be repaired. Let p = n - t; if Y[p] + delta is not between 0 and 255 inclusive, it cannot be repaired.
+- If the Adler-32 of the byte sequence Y', obtained by replacing the byte at position p of Y with Y[p] + delta, equals S, it can be repaired, and from then on the decoded result of this entry is Y'. If not, it cannot be repaired.
+Example: if the original data is xyz followed by LF (Adler-32 044d0176) and the decoded result is xYz followed by LF (Adler-32 03ed0156), then deltaA = 32, deltaB = 96, delta = 32, t = 3 and p = 1, and it can be repaired by replacing the byte at position 1 from 89 to 121.
+
+Section 14. Extraction, comparison and salvage
+Parse the byte sequence of input/archive.hex by section 12; the entries whose status is ok or repaired are called "intact entries". For the intact entries, in order of entry number, do the following (their decoded results are treated as texts).
+(1) Extraction: write the text to output/extracted.txt.
+(2) Comparison: if the name of the entry equals the name of one of the files in manifest.txt, compare the sequence of lines of the text (old) with the sequence of lines of that file (new). If all lines are equal and the numbers of lines are also equal, they are "the same". Otherwise, the smallest line number at which the line contents of old and new differ is the "first difference" (when one is identical to the beginning of the other, it is the number of lines of the shorter one plus 1). In addition, build the edit list by the following procedure. Let a be the number of lines of old and b the number of lines of new, and for 0 <= i <= a and 0 <= j <= b, let L(i, j) be the length of the longest common subsequence (a sequence of lines that can be taken from both while keeping their order) of the sequence of lines of old from line i + 1 on and the sequence of lines of new from line j + 1 on (L(a, j) = L(i, b) = 0). Starting from i = j = 0, while i < a or j < b, do the first of the following that applies.
+ - If i < a and j < b and line i + 1 of old equals line j + 1 of new, add 1 to each of i and j.
+ - If j = b, or i < a and L(i + 1, j) >= L(i, j + 1), append "deletion of line i + 1 of old" to the edit list and add 1 to i.
+ - Otherwise, append "addition of line j + 1 of new" to the edit list and add 1 to j.
+(3) Salvage: encode the byte sequence of the text with the five methods using the B and K of the given archive and the M of manifest.txt, and choose the method by the same rule as in section 11.
+The salvage archive has the B and K of the given archive in its header and E equal to the number of intact entries, followed by the entries in the order of the intact entries (name, method chosen in (3), byte count of the text, byte count of its payload, Adler-32 of the text, check byte, and its payload). Parse the salvage archive by section 12, and count the entries whose status is ok and whose decoded result equals the corresponding text.
+For an archive error, there are no intact entries, and the values of manifest.txt are used for B and K in the header of the salvage archive.
+
+[Output files]
+Write the following 8 files to the output/ folder. Every file consists of ASCII characters only, and every line ends with a newline (LF). Except for the parts of (6) and (7) that write the contents of text lines as they are, the words within a line are separated by single spaces, there are no spaces at the start or end of a line, and no empty lines are output. A file with no lines to output is an empty (0-byte) file. Integers are written in decimal without extra leading zeros. In the formats below, parts enclosed in < > are replaced with values, and everything else is output as it is.
+- <ratio> is floor(1000 * z / o) (permille) if o > 0, or - if o = 0, where o is the total original byte count and z the total compressed byte count.
+- <method name> is one of STORE, LZW, LZ77, LZH and ARITH. <method> is the method name if the method number is 0 to 4, or # followed by the method number if it is 5 or more (example: #9).
+- <8 hex digits> is the value written as 8 lowercase hexadecimal digits (missing high-order digits are filled with 0).
+- <hex archive> is the byte sequence of the archive split from the start into groups of 32 bytes, each group written on one line (the last line may have fewer than 32 bytes). Each byte is written as 2 lowercase hexadecimal digits (00 to ff), with no spaces between bytes.
+
+(1) output/sizes.txt: the result of creation (section 11). Output the following lines in this order.
+  params offset_bits <B> length_bits <K> window <W> lookahead <L> max_code_length <M>
+  file <name> original <original byte count> STORE <byte count> <ratio> LZW <byte count> <ratio> LZ77 <byte count> <ratio> LZH <byte count> <ratio> ARITH <byte count> <ratio> best <method name of the chosen method> (one line per file, in the order of manifest.txt)
+  total original <total original byte count> STORE <total> <ratio> LZW <total> <ratio> LZ77 <total> <ratio> LZH <total> <ratio> ARITH <total> <ratio> best <total payload byte count of the chosen methods> <ratio>
+  chosen STORE <count> LZW <count> LZ77 <count> LZH <count> ARITH <count>
+  archive bytes <archive byte count> entries <E> ratio <ratio>
+  verify entries <number of examined entries> ok <count from verification>
+  - In a file line, <byte count> is the byte count of the payload of that method, and <ratio> is the ratio of that byte count to the original byte count.
+  - In the total line, each <total> is the sum over all files of the payload byte counts of that method, and each <ratio> is the ratio of that total to the total original byte count.
+  - In the chosen line, <count> is the number of files for which that method was chosen.
+  - In the archive line, <ratio> is the ratio of the archive byte count to the total original byte count.
+
+(2) output/analysis.txt: the internal statistics of each method. For each file, in the order of manifest.txt, output the following 5 lines.
+  lzw <name> codes <number of codes> clears <number of CLEARs> widths <number of 9-bit codes> <number of 10-bit codes> <number of 11-bit codes> <number of 12-bit codes> longest <length of the longest sequence>
+  lz77 <name> tokens <number of tokens> literals <number of literals> matches <number of matches> matched <sum of match lengths> longest <maximum match length> farthest <maximum match distance>
+  lzh <name> mode <format> fixed_bits <F> table_bits <code table bit count> code_bits <token part bit count> halvings <number of halvings> litlen_used <count> litlen_max <maximum> offset_used <count> offset_max <maximum>
+  slots <name> <count of distance slot 0> <count of distance slot 1> ... <count of distance slot B>
+  arith <name> bits <bit count> contexts <number of contexts> rescales <number of rescalings>
+  - The lzw line gives values for LZW encoding (section 4 (3)). <number of codes> is the number of all codes written (including CLEAR and END), <number of CLEARs> is the number of CLEARs written (including the first CLEAR), the 4 values after widths are the numbers of codes written with each width, and <length of the longest sequence> is the maximum length of a sequence w whose code was written (0 if there is no such sequence).
+  - The lz77 line gives values for the token sequence of section 5 (1). If there are no matches, <maximum match length> and <maximum match distance> are 0.
+  - The lzh line gives values for LZH encoding (section 7 (2)). <format> is the chosen format: fixed for the fixed format and dynamic for the dynamic format. <code table bit count> is the total bit count of the two code tables of the dynamic format, and <token part bit count> is the bit count of the token part of the dynamic format (the values for the dynamic format are written even when the fixed format is chosen). <number of halvings> is the total number of halvings of the two tables. litlen_used and offset_used are the numbers of symbols with a positive dynamic code length in the literal/length table and in the distance table respectively, and litlen_max and offset_max are the maximum dynamic code lengths.
+  - The slots line gives the B + 1 values obtained by counting the matches of the token sequence per distance slot.
+  - The arith line gives values for ARITH encoding (section 8 (2)). <bit count> is the number of bits before padding, <number of contexts> is the number of distinct context values used when encoding the symbols (including EOF), and <number of rescalings> is the total number of rescalings over all contexts.
+
+(3) output/archive.hex: the <hex archive> of the archive created in section 11.
+
+(4) output/listing.txt: the listing of the given archive. For an archive error, output only the following line.
+  archive bytes <len> error <bad_magic or bad_params>
+  Otherwise, output the following lines in this order.
+  archive bytes <len> offset_bits <B> length_bits <K> entries <E>
+  For each examined entry, in order of entry number, a line of the form of the first line below for an entry with a valid header, of the second line for a bad_header entry, and of the third line for an entry that became truncated in section 12 (a)
+   entry <entry number> offset <entry position> method <method> original <original byte count> compressed <compressed byte count> ratio <ratio> adler <8 hex digits of the Adler-32 in the header> name <name>
+   entry <entry number> offset <entry position> bad_header
+   entry <entry number> offset <entry position> truncated header
+  For each method with method number 0 to 4, in method order, the following line
+   method <method name> entries <count> original <total original byte count> compressed <total compressed byte count> ratio <ratio>
+  end listed <number of entries with a valid header> of <E> stop <state> trailing <number of trailing bytes>
+  - The <ratio> of an entry line is the ratio of the compressed byte count to the original byte count.
+  - A method line gives values for the entries with a valid header that have that method number.
+  - <state> is complete if all E entries were examined without stopping, and truncated if parsing stopped.
+
+(5) output/test_report.txt: the results of testing and salvage. For an archive error, output the following line as line 1, followed by the salvaged line described below.
+  archive error <bad_magic or bad_params>
+  Otherwise, for each examined entry, in order of entry number, output a line of the following form for an entry with a valid header.
+  entry <entry number> offset <entry position> name <name> method <method> status <status><details>
+  <details> is empty for the statuses ok and unsupported; for repaired it is " byte <p> from <old value> to <new value>" (p is the position of section 13, and the values are the byte before and after the replacement); for checksum it is " stored <8 hex digits of the Adler-32 in the header> computed <8 hex digits of the Adler-32 of the decoded result>"; for error it is " <error kind> at <error position>"; and for truncated it is " payload have <len - start> need <compressed byte count>" (each including its leading space).
+  A bad_header entry gives the line entry <entry number> offset <entry position> status bad_header, and an entry that became truncated in section 12 (a) gives the line entry <entry number> offset <entry position> status truncated header.
+  Then output the following line.
+  summary entries <E> checked <number of examined entries> ok <count> repaired <count> checksum <count> error <count> unsupported <count> truncated <count> bad_header <count> missing <number of missing entries> trailing <number of trailing bytes>
+  (Each <count> is the number of entries with that status; truncated counts both (a) and (d) of section 12.)
+  Then, for each intact entry, in order of entry number, output the following line.
+  salvage <name> method <method name of the method chosen in section 14 (3)> compressed <byte count of that payload> was <method of the entry> <compressed byte count of the entry>
+  Finally, output the following line.
+  salvaged entries <number of intact entries> bytes <byte count of the salvage archive> original <total byte count of the texts of the intact entries> verified <count from section 14>
+
+(6) output/extracted.txt: the texts of the intact entries. For each intact entry, in order of entry number, output the following line, followed by each line of the text in line-number order, with its contents written as they are, one per line (an empty line is output as an empty line).
+  file <name> bytes <byte count of the text> lines <number of lines> words <number of words> longest <number of characters of the longest line>
+  <number of words> is the total, over all lines, of the number of runs of consecutive characters other than the space (0x20) (each bounded on both sides by an end of the line or a space). <number of characters of the longest line> is the maximum number of characters in a line, or 0 if there are no lines.
+
+(7) output/compare.txt: the results of the comparison (section 14 (2)). For each intact entry, in order of entry number, output one of the following.
+  - If the name equals the name of no file in manifest.txt, the single line archive_only <name>.
+  - If they are the same, the single line same <name> lines <number of lines>.
+  - If they are not the same, the following line, followed by each edit of the edit list in order, one per line.
+   differs <name> first_line <first difference> archive_lines <number of lines of old> manifest_lines <number of lines of new> removed <number of deletions> added <number of additions>
+   A deletion line is "-<line number in old>:<contents of that line>" and an addition line is "+<line number in new>:<contents of that line>" (examples: -8:it carries, +12:the end). If the contents of the line are empty, nothing is written after the ":".
+  Then, for each file of manifest.txt whose name equals the name of no intact entry, output the single line new <name>, in the order of manifest.txt.
+
+(8) output/salvaged.hex: the <hex archive> of the salvage archive.
+
+[Source files]
+There are the following 6 source files. The names are language-neutral role names; file extensions and the use of upper and lower case follow the conventions of each language.
+- main: handles the overall flow and contains most of the processing: reading manifest.txt, the text files and archive.hex; the creation flow (encoding with the five methods, choosing the method, the statistics, section 11); STORE (section 3); writing and reading LZ77 payloads (section 5 (2) and (4)); all of LZH (symbols and distance slots, fixed code lengths, writing, reading and checking code tables, reading symbols, choosing between the fixed and dynamic formats, section 6 (4) to (7), section 7); dispatching decoding by method and receiving errors (section 9); Adler-32 (section 2); one-byte repair (section 13); building and parsing archives (sections 10 and 12); extraction, comparison by longest common subsequence, and salvage (section 14); and building and writing the contents of all output files.
+- bitio: writing to a bit sequence and padding (section 1 (1)), reading bits with a read position (end_of_data when not enough bits remain, and reading with bits after the end taken as 0, section 1 (2)), and the type that represents decoding errors.
+- lzw: the LZW dictionary, code widths, encoding and decoding (section 4), and the statistics of the lzw line.
+- lz77: splitting into tokens (section 5 (1)), and checking and copying when outputting a match (section 5 (3)).
+- huffman: computing code lengths with the tree and handling equal weights, the length limit by halving, and assigning canonical codes (section 6 (1) to (3)).
+- arith_coder: the per-context frequency tables and rescaling, arithmetic encoding and decoding (section 8), and the statistics of the arith line.
+
+[Constraints]
+- 6 <= B <= 12, 2 <= K <= 5, and 9 <= M <= 15.
+- The number of files in manifest.txt is from 1 to 20, each file is at most 20000 bytes, and the total byte count is at most 40000.
+- The byte sequence of input/archive.hex is at most 20000 bytes long. The names of the entries with a valid header are all distinct (some may be the same as names in manifest.txt). The decoded result of each intact entry (for a repaired entry, after the repair) is either empty or consists only of printable ASCII characters and LF with LF as its last byte, and a space is never immediately followed by LF.
+- In the given input, the Adler-32 of the decoded result of a corrupted entry never happens to equal the value in the header, and the repaired data of an entry repaired by section 13 is the original data before the corruption.
+- Every integer, including intermediate values of the computation, has an absolute value less than 2^32. Adler-32 values, 4-byte big-endian integers and the products in section 13 can be 2^31 or more. The products in section 8 are less than 2^29.
+
+[Example]
+The following example shows the format and differs from the actual input files.
+The input/archive.hex of this example is an archive with B = 6 and K = 2 that declares 5 entries; one byte of the payload of the 3rd entry (STORE) has been changed, one byte of the payload of the 4th entry (LZW) has been changed, and the 5th entry is missing.
+Example input (input/manifest.txt):
+offset_bits 6
+length_bits 2
+max_code_length 9
+file note.txt
+file abc.txt
+Example input (input/files/note.txt):
+meet at noon
+Example input (input/files/abc.txt):
+abcabcabcabcabcabc
+Example input (input/archive.hex):
+54584152060200050668692e747874000000000300000003021700dc6068690a
+076162632e747874020000000a0000000614ba037d1b30988c70b05005782e74
+7874000000000400000004044d0176db78597a0a05792e747874010000001300
+00001640d3063180801d0df2031194406f39080dc6f3a08205043282a020
+Example output (output/sizes.txt):
+params offset_bits 6 length_bits 2 window 64 lookahead 6 max_code_length 9
+file note.txt original 13 STORE 13 1000 LZW 16 1230 LZ77 15 1153 LZH 14 1076 ARITH 14 1076 best STORE
+file abc.txt original 19 STORE 19 1000 LZW 14 736 LZ77 8 421 LZH 9 473 ARITH 10 526 best LZ77
+total original 32 STORE 32 1000 LZW 30 937 LZ77 23 718 LZH 23 718 ARITH 24 750 best 21 656
+chosen STORE 1 LZW 0 LZ77 1 LZH 0 ARITH 0
+archive bytes 74 entries 2 ratio 2312
+verify entries 2 ok 2
+Example output (output/analysis.txt):
+lzw note.txt codes 14 clears 1 widths 14 0 0 0 longest 2
+lz77 note.txt tokens 13 literals 13 matches 0 matched 0 longest 0 farthest 0
+lzh note.txt mode fixed fixed_bits 104 table_bits 128 code_bits 39 halvings 0 litlen_used 8 litlen_max 4 offset_used 0 offset_max 0
+slots note.txt 0 0 0 0 0 0 0
+arith note.txt bits 110 contexts 8 rescales 0
+lzw abc.txt codes 12 clears 1 widths 12 0 0 0 longest 4
+lz77 abc.txt tokens 7 literals 4 matches 3 matched 15 longest 6 farthest 3
+lzh abc.txt mode fixed fixed_bits 71 table_bits 100 code_bits 24 halvings 0 litlen_used 6 litlen_max 3 offset_used 1 offset_max 1
+slots abc.txt 0 0 3 0 0 0 0
+arith abc.txt bits 80 contexts 4 rescales 0
+Example output (output/archive.hex):
+5458415206020002086e6f74652e747874000000000d0000000d215a04856a6d
+656574206174206e6f6f6e0a076162632e747874020000001300000008486b06
+ef8030988c70b85c2014
+Example output (output/listing.txt):
+archive bytes 126 offset_bits 6 length_bits 2 entries 5
+entry 1 offset 8 method STORE original 3 compressed 3 ratio 1000 adler 021700dc name hi.txt
+entry 2 offset 32 method LZ77 original 10 compressed 6 ratio 600 adler 14ba037d name abc.txt
+entry 3 offset 60 method STORE original 4 compressed 4 ratio 1000 adler 044d0176 name x.txt
+entry 4 offset 84 method LZW original 19 compressed 22 ratio 1157 adler 40d30631 name y.txt
+entry 5 offset 126 truncated header
+method STORE entries 2 original 7 compressed 7 ratio 1000
+method LZW entries 1 original 19 compressed 22 ratio 1157
+method LZ77 entries 1 original 10 compressed 6 ratio 600
+method LZH entries 0 original 0 compressed 0 ratio -
+method ARITH entries 0 original 0 compressed 0 ratio -
+end listed 4 of 5 stop truncated trailing 0
+Example output (output/test_report.txt):
+entry 1 offset 8 name hi.txt method STORE status ok
+entry 2 offset 32 name abc.txt method LZ77 status ok
+entry 3 offset 60 name x.txt method STORE status repaired byte 1 from 89 to 121
+entry 4 offset 84 name y.txt method LZW status error bad_code at 2
+entry 5 offset 126 status truncated header
+summary entries 5 checked 5 ok 2 repaired 1 checksum 0 error 1 unsupported 0 truncated 1 bad_header 0 missing 0 trailing 0
+salvage hi.txt method STORE compressed 3 was STORE 3
+salvage abc.txt method LZ77 compressed 6 was LZ77 6
+salvage x.txt method STORE compressed 4 was STORE 4
+salvaged entries 3 bytes 84 original 17 verified 3
+Example output (output/extracted.txt):
+file hi.txt bytes 3 lines 1 words 1 longest 2
+hi
+file abc.txt bytes 10 lines 1 words 1 longest 9
+abcabcabc
+file x.txt bytes 4 lines 1 words 1 longest 3
+xyz
+Example output (output/compare.txt):
+archive_only hi.txt
+differs abc.txt first_line 1 archive_lines 1 manifest_lines 1 removed 1 added 1
+-1:abcabcabc
++1:abcabcabcabcabcabc
+archive_only x.txt
+new note.txt
+Example output (output/salvaged.hex):
+54584152060200030668692e747874000000000300000003021700dc6068690a
+076162632e747874020000000a0000000614ba037d1b30988c70b05005782e74
+7874000000000400000004044d0176db78797a0a

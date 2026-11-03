@@ -1,0 +1,22 @@
+import 'dart:math' as math;
+
+void main() {
+  const polygons = [
+    [(0, 0), (5, 0), (6, 4), (1, 3)],
+    [(2, 1), (0, 4), (3, 7), (7, 6), (8, 2)],
+    [(0, 0), (8, 0), (8, 6), (5, 6), (4, 3), (3, 6), (0, 6)],
+  ];
+  for (var k = 0; k < polygons.length; k++) {
+    final points = polygons[k];
+    var cross = 0, perimeter = 0.0;
+    for (var i = 0; i < points.length; i++) {
+      final a = points[i], b = points[(i + 1) % points.length];
+      cross += a.$1 * b.$2 - b.$1 * a.$2;
+      final dx = a.$1 - b.$1, dy = a.$2 - b.$2;
+      perimeter += math.sqrt(dx * dx + dy * dy);
+    }
+    print(
+      'polygon ${k + 1}: area=${(cross.abs() / 2).toStringAsFixed(1)} perimeter=${perimeter.toStringAsFixed(3)}',
+    );
+  }
+}

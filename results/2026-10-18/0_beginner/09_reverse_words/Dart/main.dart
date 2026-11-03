@@ -1,0 +1,5 @@
+void main() {
+  const sentence = 'every program starts with a single line';
+  print(sentence.split('').reversed.join());
+  print(sentence.split(' ').reversed.join(' '));
+}

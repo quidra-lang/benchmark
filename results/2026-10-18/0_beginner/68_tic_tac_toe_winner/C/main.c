@@ -1,0 +1,25 @@
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    const char *boards[6][3] = {{"XXX", "OO.", "O.X"}, {"X.O", ".X.", "O.."}, {"XO.", ".OX", "XO."},
+        {"XOX", "XOO", "OXX"}, {"X.O", "XO.", "O.X"}, {"XOX", "OXO", "OXX"}};
+    int lines[][3] = {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}, {0, 3, 6},
+                      {1, 4, 7}, {2, 5, 8}, {0, 4, 8}, {2, 4, 6}};
+    for (int k = 0; k < 6; k++) {
+        char cells[10];
+        snprintf(cells, sizeof cells, "%s%s%s", boards[k][0], boards[k][1], boards[k][2]);
+        char winner = 0;
+        for (int i = 0; i < 8; ++i) {
+            char first = cells[lines[i][0]];
+            if (first != '.' && first == cells[lines[i][1]] && first == cells[lines[i][2]])
+                winner = first;
+        }
+        printf("board %d: ", k + 1);
+        if (winner)
+            printf("%c wins\n", winner);
+        else
+            puts(strchr(cells, '.') ? "in progress" : "draw");
+    }
+    return 0;
+}

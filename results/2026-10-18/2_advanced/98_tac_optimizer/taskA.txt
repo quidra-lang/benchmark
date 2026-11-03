@@ -1,0 +1,635 @@
+[Overview]
+Write an optimizer for programs written in three-address code (called "TAC" below). The program reads the TAC in input/program.tac and, for each function, builds the basic blocks and the control-flow graph (CFG) and computes the depth-first-search orders, the dominance relation and the dominator tree, the natural loops, and the iterative data-flow analyses (reaching definitions, liveness, available expressions, available copies). Next, it repeatedly applies the optimization passes enabled in input/params.txt (constant propagation and constant folding, copy propagation, global common-subexpression elimination, dead-code elimination, loop-invariant code motion using preheaders, unreachable-code elimination) in a fixed order until nothing changes. After all functions have been optimized, it removes the functions that are no longer reachable from main in the call graph. For each optimized function it performs Chaitin-style graph-colouring register allocation (k registers, choice of potential spills by spill cost, optimistic selection, a bias toward variables connected by copies) and builds a program in which the variables are rewritten to register names. Finally, it runs the three programs (the original program, the optimized program and the register-allocated program) in an interpreter for each set of input values in input/input.txt (each set is called a "run" below), checks that the outputs agree, and compares the numbers of executed instructions.
+The results are written to five files: the optimized program (output/optimized.tac), the analysis results (output/analysis.txt), the pass records (output/passes.txt), the register allocation results (output/regalloc.txt) and the run comparison (output/comparison.txt). The program is run in a directory that contains, besides the source files, input/ holding the input files and an empty output/; it prints nothing to standard output.
+The 3 input files and the 5 output files are all ASCII text files in which every line ends with a newline (LF). Output lines must not contain spaces at the beginning or the end other than those specified in this document.
+
+[Input files]
+* input/program.tac
+The TAC program. Each line consists only of printable ASCII characters (character codes 32 to 126). Each line is read as a sequence of "words" separated by one or more spaces (spaces at the beginning and end of the line are ignored). Lines with no words and lines whose first word starts with "#" (comments) are skipped. Every other line is one of the following.
+  array name size
+    A declaration of a global array. size is a positive integer. The elements of the array are integers, at indices 0 to size-1. Array declarations appear only before the first function.
+  func name param1 param2 ... paramn
+    The start of a function (n >= 0). The parameters are variable names of that function. The lines up to the next "end" line are the body of that function.
+  end
+    The end of a function.
+  label:
+    A line consisting of one word whose last character is ":" (a label line). The part without the ":" is the label.
+  instruction
+    An instruction line of (2) below.
+The body of a function is a sequence of label lines and instruction lines. Below, the sequence of lines of the body (label lines and instructions) is called the "code" of the function.
+(1) Names and operands
+  - Variable, array and function names are words that start with a lowercase letter (a to z) followed by lowercase letters, digits and "_". Labels are words that start with a letter (A to Z and a to z) followed by letters, digits and "_". However, temporary variables and labels created by the optimizer start with "_" (10 (4), 12 (4)), and register names start with "R" (14 (6)).
+  - An "operand" is a variable name or an integer constant. A word whose first character is "-" or a digit is an integer constant (decimal; a negative number has a leading "-"), and any other word is a variable name.
+(2) Instructions
+There are 11 instructions, listed below. The name on the left is called the instruction's "kind" (it is also used in the output). x is a variable, a and b are operands, arr is an array name, f is a function name, L is a label, and n is an integer >= 0. Words are separated by spaces. However, "arr[a]" is a single word containing no spaces (e.g. data[i], hist[0]).
+  copy    x = a          Assigns the value of a to x.
+  bin     x = a op b     Assigns the result of the operation on a and b to x. op is one of "+ - * / % < <= > >= == !=".
+  load    x = arr[a]     Assigns the element of array arr at index a to x.
+  store   arr[a] = b     Assigns b to the element of array arr at index a.
+  goto    goto L         Goes to label L.
+  if      if a op b goto L   Goes to label L if the comparison of a and b holds, otherwise goes to the next instruction. op is one of "< <= > >= == !=".
+  param   param a        Pushes the value of a as an argument for the function to be called next.
+  call    x = call f n   or   call f n
+                         Calls function f with the last n of the pushed values as arguments. In "x = call f n", the value returned by f is assigned to x.
+  return  return   or   return a
+                         Ends the function. "return a" returns the value of a.
+  read    read x         Assigns the next value of the run's input to x.
+  print   print a        Outputs the value of a.
+(3) Operations
+  - "+", "-" and "*" are integer sum, difference and product.
+  - "a / b" is the quotient truncated toward 0 (e.g. -7 / 2 is -3). "a % b" is "a - b * (a / b)" (e.g. -7 % 2 is -1, 7 % -2 is 1).
+  - A comparison operation gives 1 if it holds and 0 if it does not. In an if, only whether it holds is used.
+(4) Definitions, uses and expressions
+  - An instruction "defines" a variable by assigning to it: x of copy, bin and load, x of "x = call f n", and x of "read x". No other instruction defines a variable.
+  - The "used variables" of an instruction are those of its operands that are variables, in the following order (a variable that appears twice is counted twice): a for copy and load; a, b in that order for bin and if; a (index), b (value) in that order for store; a for param, return and print. goto, call and read use no variables.
+  - The "a op b" of a bin and the "arr[a]" of a load are called the instruction's "expression". Two expressions are the same expression when they agree in all of: bin versus load, the operator (for load, the array name), and the operands (variables with the same name, or integers with the same value) ("a + b" and "b + a" are different expressions). The string of an expression is, for bin, operand a, the operator and operand b concatenated without spaces (e.g. i*4, n-1, x+-3), and for load, the form "arr[a]" (e.g. data[i]).
+  - A parameter p of a function is considered to be defined at the start of the function.
+(5) Instruction numbers
+The instructions of each function's code are numbered 1, 2, 3, ... from the top (label lines are not numbered). The numbers are reassigned every time the code is rewritten, and analyses and records use the numbers of the code at that time.
+
+* input/params.txt
+The optimization settings. Line 1 is "registers k", line 2 is "passes" followed by pass names, each preceded by a single space, and line 3 is "max_rounds R". k is the number of registers, and R is the upper limit on the number of rounds ([Processing] 7). Each pass name is one of constprop, copyprop, cse, dce, licm and unreachable; there are one or more of them, without duplicates, in any order. The passes listed are enabled, and passes not listed are not used.
+
+* input/input.txt
+The input of the runs. Line 1 is the number of runs N. Each of the following N lines is the input of one run: the first integer m, followed by m integer values separated by spaces. The values are read in order from the first by the read instructions of that run.
+
+[Processing]
+* 1. Writing code
+(1) Instruction strings
+An instruction is written as the string of the words in the form of the table in (2) of [Input files], separated by single spaces. For example, "x = a op b" is written like "t1 = i * 4", "if a op b goto L" like "if i >= n goto L2", "x = arr[a]" like "v = data[i]", and "x = call f n" like "s = call sum_range 2". Integer constants are written in decimal (a negative number has a leading "-").
+(2) Writing a program
+A program is written as the following sequence of lines.
+  - If there are array declarations, the lines "array name size", in the order of input/program.tac.
+  - For each function (in file order): a line consisting of "func name" followed by the parameters, each preceded by a single space (just "func name" if there are no parameters), each line of the code, and the line "end". A label line of the code is written as "label:" starting at the beginning of the line, and an instruction line is written as 4 spaces followed by the instruction string.
+  - One empty line is inserted between the array declaration lines and the first function, and between consecutive functions. No other empty lines are inserted.
+For example, a program consisting of the declaration of an array a and two functions main and f consists of, in order: the line "array a 4", an empty line, main from its "func" line to its "end" line, an empty line, and f from its "func" line to its "end" line.
+
+* 2. Basic blocks and the control-flow graph
+For each function, the following are computed from the code at that time.
+(1) An instruction of the function that satisfies any of the following is a "leader".
+  - The first instruction of the function.
+  - An instruction whose immediately preceding line in the code is a label line.
+  - An instruction whose immediately preceding instruction is a goto, an if or a return.
+The sequence of instructions from a leader up to just before the next leader (or up to the end of the function) is called a "block" (basic block), and the blocks are named B1, B2, B3, ... in the order they appear in the code. The number of a block is the number in its name. The labels of the label lines (zero or more) immediately preceding the leader of a block, in the order they appear in the code, are called the "labels" of that block. The "next block" of a block is the block whose number is 1 greater.
+(2) The "successors" of a block B are the sequence of blocks determined by the last instruction of B as follows.
+  - goto L: the block that has L as a label.
+  - if ... goto L: two blocks, the next block and then the block that has L as a label. However, if these two are the same block, just that one block.
+  - return: none (an empty sequence).
+  - Anything else: the next block.
+The "predecessors" of a block B are the blocks that have B as a successor, in order of block number.
+
+* 3. Depth-first search and reachability
+(1) Unmark all blocks, prepare an empty sequence "postorder", and perform the following procedure visit on B1.
+  visit(B): Mark B. Look at the successors of B one by one in sequence order, and perform visit(S) on each successor S that is unmarked at that moment. Finally, append B to the end of the postorder.
+(2) The marked blocks are called "reachable blocks", and the others "unreachable blocks". The reverse of the postorder is called the "reverse postorder" (its first block is B1).
+(3) The analyses of 4 and 5 consider only reachable blocks. The "reachable predecessors" used there are the predecessors that are reachable. Instructions in unreachable blocks are not examined or rewritten by the passes of 8 to 11.
+
+* 4. Dominance and loops
+(1) Dominator sets: for each reachable block B, compute the set Dom(B). Initially, Dom(B1) is {B1}, and Dom of every reachable block other than B1 is the set of all reachable blocks. Look at the blocks B from the second block of the reverse postorder onward in order, replacing Dom(B) with "the intersection of Dom of all reachable predecessors of B, with B added"; repeat this until no Dom changes during one pass over the blocks. When a block A is in Dom(B), A is said to "dominate" B.
+(2) Immediate dominator: for a reachable block B other than B1, among the blocks of Dom(B) other than B, the one whose Dom has the largest number of elements is called the "immediate dominator" of B (B1 has none). The tree in which each block's parent is its immediate dominator (with root B1) is called the "dominator tree".
+(3) Natural loops: for a reachable block h, a reachable block t such that h is a successor of t and h dominates t is called a "latch" of h. For each h that has one or more latches, create one loop with h as its "header" (all back edges to the same header are merged into one loop). The "blocks" of the loop are h and all reachable blocks that can reach some latch without passing through h. That is, it is the set obtained by starting from h and the latches and adding the reachable predecessors of the already added blocks (other than h) until nothing new is added.
+(4) Loops are ordered by header number.
+  - The "depth" of a loop is the number of loops (including the loop itself) whose blocks include that loop's header.
+  - The "depth" of a block is the number of loops that contain the block (0 if no loop contains it).
+  - The "exit blocks" of a loop are the blocks of the loop that have a successor that is not a block of the loop, and the blocks of the loop whose last instruction is a return.
+  - The "outside successors" of a loop are the successors of the loop's blocks that are not blocks of the loop.
+
+* 5. Data-flow analysis
+For each reachable block B, compute the entry set IN(B) and the exit set OUT(B). For each analysis, a "transfer" of a single instruction (a rule from a set to a set) is defined.
+(1) Reaching definitions
+The elements of the sets are "definitions", written as a pair (v, n) of a variable v and a number n. When instruction number n defines v, that definition is (v, n). The definition of a function parameter p is (p, 0).
+  - Instruction transfer: when the instruction defines a variable x, remove all definitions of x (elements of the form (x, *)) from the set and add the instruction's definition (x, n). For an instruction that defines no variable, the set does not change.
+  - IN(B1) is the union of the definitions of all parameters and the OUT of all reachable predecessors of B1. For B other than B1, IN(B) is the union of the OUT of all reachable predecessors.
+  - OUT(B) is the set obtained by applying the transfers of the instructions of B to IN(B) in order from the first.
+  - The initial value of OUT is the empty set.
+(2) Liveness
+The elements of the sets are variables.
+  - Instruction transfer: remove the variable defined by the instruction, then add the variables used by the instruction (in this order).
+  - OUT(B) is the union of IN of all successors of B (the empty set if there are no successors).
+  - IN(B) is the set obtained by applying the transfers of the instructions of B to OUT(B) in reverse order, from the last instruction.
+  - The initial value of IN is the empty set.
+(3) Available expressions
+The elements of the sets are expressions. The set of all expressions of the bin and load instructions in reachable blocks is called the "universe of expressions".
+  - Instruction transfer: perform (a) to (d) below in this order. (a) If it is a bin or a load, add its expression. (b) If it is a store, remove all load expressions of the same array. (c) If it is a call (whether or not the result is assigned), remove all load expressions. (d) If it is an instruction that defines a variable x, remove all expressions that have x as an operand (for bin, a or b is x; for load, the index is x). Therefore, after "i = i + 1", "i+1" is not available.
+  - IN(B1) is the empty set. For B other than B1, IN(B) is the intersection of the OUT of all reachable predecessors.
+  - OUT(B) is the set obtained by applying the transfers of the instructions of B to IN(B) in order from the first.
+  - The initial value of OUT is the universe of expressions for every block (including B1).
+(4) Available copies
+The elements of the sets are pairs of variables (x, y). The set of all pairs (x, y) of copy instructions "x = y" (y a variable different from x) in reachable blocks is called the "universe of copies".
+  - Instruction transfer: when the instruction defines a variable x, remove all pairs containing x (elements of the forms (x, *) and (*, x)); then, if the instruction is a copy of the form "x = y" (y a variable different from x), add (x, y).
+  - IN and OUT are computed, and initialized, the same way as in (3) (the universe being the universe of copies).
+(5) Iteration
+For reaching definitions, available expressions and available copies, look at the blocks one at a time in reverse postorder, computing the block's IN (from the values of the predecessors' OUT at that moment) and then recomputing its OUT. Looking at all blocks once is "one iteration"; iterations are repeated until no OUT changes during one iteration. For liveness, look at the blocks one at a time in postorder, computing OUT (from the values of the successors' IN at that moment) and then recomputing IN, and repeat until no IN changes during one iteration. The "number of iterations" is the count including the last iteration (in which nothing changed).
+(6) Just before and just after an instruction
+The reaching definitions (available expressions, available copies) "just before" an instruction s of block B are the set obtained by applying to IN(B) the transfers of the instructions of B before s, in order from the first. The live variables "just after" s are the set obtained by applying to OUT(B) the transfers of the instructions of B after s, in reverse order from the last instruction, and the live variables just before s are the set obtained by applying the transfer of s to that.
+(7) The available copies never contain two or more pairs for the same x.
+
+* 6. Call graph
+For every function of the program, when the code of a function f contains an instruction "call g n" or "x = call g n" (regardless of whether it is in a reachable block), g is a "callee" of f. The callees of f, ordered by the order in which the functions appear in the file, are the "callee list". A function g is "reachable from main" when g is main or g can be reached from main by following callees one or more times. A function f is "recursive" when f can be reached from f by following callees one or more times.
+
+* 7. Optimization flow
+The functions are optimized one at a time, in file order. For one function, the following "round" is repeated.
+(1) In a round, the passes enabled in params.txt are applied once each, in the order constprop (8), copyprop (9), cse (10), dce (11), licm (12), unreachable (13) (not in the order written in params.txt). Each pass returns the function's "change count" and a sequence of "record" lines to be written to passes.txt.
+(2) If the change counts of all passes of the round are 0, optimization ends with that round. Otherwise the next round is performed. However, when the number of rounds performed becomes equal to max_rounds, optimization ends there.
+(3) Each pass recomputes 2 to 5 for the code at the start of the pass, and makes its decisions using those results and the instruction numbers of the code at the start of the pass. Even if the code is rewritten during the pass, the analyses are not redone within that pass. The numbers written in records are also the numbers at the start of the pass.
+(4) After all functions have been optimized, the removal of unneeded functions of 13 (4) is performed.
+
+* 8. Constant propagation (constprop)
+Look at the reachable blocks in order of block number, and at the instructions of each block in order from the first; for each instruction s, perform (1) and (2) below in this order.
+(1) Constant substitution: look at the operands of s that are variables, in used-variable order ((4) of [Input files]). Let v be that variable and let D be the set of definitions of v in the reaching definitions just before s. When D is not empty, every definition in D comes from a copy instruction of the form "v = c" (c an integer constant) in the code at the start of the pass, and all those c have the same value, replace that operand with c and add the record "#n: v -> c" (n is the number of s). A parameter definition (v, 0) does not come from an instruction of this form.
+(2) Folding: if s after (1) matches one of the following, rewrite s.
+  - An if whose two operands are both integer constants: if the comparison holds, change s to "goto L" and add the record "#n: fold goto L"; if it does not hold, delete s and add the record "#n: delete T" (T is the string of s after (1)).
+  - A bin whose two operands are both integer constants: if op is "/" or "%" and the right operand is 0, or if the result of the operation is not within -2147483648 to 2147483647 inclusive, do nothing. Otherwise, change s to "x = result" (a copy).
+  - A bin in which exactly one operand is an integer constant (let y be the other, a variable): change "x = y + 0", "x = 0 + y", "x = y - 0", "x = y * 1", "x = 1 * y" and "x = y / 1" to "x = y", and change "x = y * 0" and "x = 0 * y" to "x = 0". Otherwise do nothing.
+  When a bin is rewritten, add the record "#n: fold T" (T is the string of s after the rewrite).
+The change count is the number of record lines.
+
+* 9. Copy propagation (copyprop)
+Look at the reachable blocks in order of block number, and at the instructions of each block in order from the first; for each instruction s, look at its operands that are variables in used-variable order. Let v be that variable; if the available copies just before s contain a pair (v, w), replace that operand with w and add the record "#n: v -> w". The change count is the number of record lines.
+
+* 10. Common-subexpression elimination (cse)
+(1) Candidates: among the bin and load instructions in reachable blocks, those whose expression is in the available expressions just before the instruction are "candidates".
+(2) Group the candidates by expression, and process the expressions one at a time in order of the smallest number among each expression's candidates. Below, let e be the expression being processed; a bin or load instruction whose expression is e (including the candidates) is called an "instruction computing e".
+(3) Sources: for each candidate s of e, find the "sources" of s as follows.
+  - If there are instructions computing e before s within the block B of s, only the one closest to s (the last one) is a source.
+  - Otherwise, make the reachable predecessors of B the "blocks to search", and repeat the following until there are no blocks to search. Take one block P out of the blocks to search; if P has already been examined, do nothing. Otherwise, mark P as examined and look at the instructions of P in reverse order from the last. If there is an instruction computing e, add the first one found (the last one in P) to the sources, and do not proceed to the predecessors of P. If there is none, add the reachable predecessors of P to the blocks to search. B itself, when it appears as a predecessor, is examined in the same way (in this case from its last instruction). The set of sources found does not depend on the order in which blocks are taken out.
+(4) Rewriting: combine the sources of all candidates of e, and let S be the set of those that are not candidates. Create a new temporary variable "_tk" of the function (k is a number that starts at 1 and increases by 1 each time cse creates a temporary variable in that function; it continues across rounds), change each instruction "w = e" of S to "_tk = e" and insert the instruction "w = _tk" (a copy) immediately after it, and change each candidate "x = e" of e to "x = _tk" (a copy).
+(5) Records: add one line "E: _tk sources=P replaced=Q" per expression. E is the string of e, P is the numbers of the instructions of S, and Q is the numbers of the candidates; each is a list of "#number" in increasing order separated by commas ("-" if empty).
+(6) The change count is the number of candidates.
+
+* 11. Dead-code elimination (dce)
+Look at the reachable blocks B in order of block number. Let the set L be OUT(B) (liveness), look at the instructions of B in reverse order from the last, and for each instruction s perform the first of (a) to (d) below that applies.
+  (a) If s is a copy that assigns the same variable as its destination ("x = x"), delete s and add the record "#n: delete T" (T is the string of s). L is not changed.
+  (b) If s is a copy, bin or load and the variable defined by s is not in L, delete s and add a record of the same form as (a). L is not changed.
+  (c) If s is "x = call f n" and x is not in L, add the record "#n: unused result T" (T is the string of s before the change) and change s to "call f n". Then perform (d).
+  (d) Remove from L the variable defined by s, and add the variables used by s.
+The records are ordered by increasing instruction number. The change count is the number of record lines.
+
+* 12. Loop-invariant code motion (licm)
+(1) Examine the loops in increasing order of number of blocks, and for the same number of blocks in increasing order of header number. For each loop, determine the "instructions to move" by (2) and (3); for the first loop with one or more instructions to move, perform (4) and end this pass. In one pass, instructions are moved out of only one loop. If no loop has instructions to move, the change count is 0 and there are no records.
+(2) Marking invariant instructions: look at the instructions of the loop's blocks in instruction-number order, and mark each unmarked instruction s that satisfies all three of the following conditions. Repeat this until no new mark is added during one pass over the instructions. The order in which marks are added is the "mark order".
+  - s is a copy, bin or load.
+  - If s is a load, the loop's blocks contain no store instruction to the same array as s and no call instruction.
+  - Every operand of s is "invariant". An operand is invariant when it is an integer constant, or it is a variable v such that the definitions of v in the reaching definitions just before s are either all definitions from outside the loop (definitions by instructions not in the loop's blocks, and parameter definitions), or exactly one definition by a marked instruction inside the loop (including instructions marked earlier during the same pass).
+(3) Instructions to move: look at the marked instructions in mark order, and if an instruction s (let x be the variable defined by s and H the block containing s) satisfies all of (i) to (iv) below, append s to the end of the instructions to move. The order of appending is the "move order".
+  (i) Among the instructions of the loop's blocks, s is the only one that defines x.
+  (ii) x is not in IN (liveness) of the header.
+  (iii) At least one of (a) and (b) below holds. (a) H dominates all exit blocks of the loop. (b) s is not a "dangerous instruction", and x is not in IN (liveness) of any outside successor of the loop. Dangerous instructions are load instructions and bin instructions whose op is "/" or "%" and whose right operand is a variable or 0.
+  (iv) For each variable among the operands of s, all of that variable's definitions in the reaching definitions just before s that come from instructions inside the loop have already been added to the instructions to move.
+(4) Preheader: let h be the header of the loop, and let Q be the set of predecessors of h (including unreachable blocks) that are not blocks of the loop.
+  - If h is not B1, Q consists of exactly one block p, and the only successor of p is h, use p as the "preheader". Remove the instructions to move from their original positions and place them, in move order, immediately after the last instruction of p (before the label lines of h). However, if the last instruction of p is a goto or an if, place them immediately before that instruction. Add the record "Bh: hoist I to Bp".
+  - Otherwise, create a new label "_pj" of the function (j is a number that starts at 1 and increases by 1 each time licm creates a label in that function; it continues across rounds). Place the label line "_pj:" followed by the instructions to move (in move order) immediately before the first label line of h if h has labels, or immediately before the first instruction of h otherwise, and remove the instructions to move from their original positions. Furthermore, for each block of Q whose last instruction is a goto or an if whose target label is one of the labels of h, change that target to _pj. Add the record "Bh: hoist I to new _pj".
+  In the records, Bh and Bp are the names of h and p, and I is the numbers of the instructions to move, written as "#number", in move order, separated by commas.
+(5) The change count is the number of instructions to move.
+
+* 13. Unreachable-code elimination (unreachable)
+Perform (1) to (3) below in this order.
+(1) Delete all unreachable blocks together with their label lines, and add one record "remove block Bn" per block, in order of block number.
+(2) In the code after (1), delete every goto and if instruction whose target label is among the labels of the label lines (one or more) immediately following it (that is, whose target is the very next instruction), and add the records "remove jump #n" in order of number. Which instructions to delete is decided on the code after (1).
+(3) In the code after (2), delete every label line that is not the target of any goto or if instruction, and add the records "remove label L" in the order they appeared in the code.
+The change count is the number of record lines.
+(4) Removal of unneeded functions: in 7 (4), if unreachable is enabled, remove all functions that are not reachable from main in the call graph (6) of the program after optimization. If unreachable is not enabled, no functions are removed. Below, "the optimized program" means the program after this removal.
+
+* 14. Register allocation
+For each function of the optimized program, perform (1) to (7) below. k is the number of registers in params.txt. Blocks, loops and liveness (2 to 5) are computed for the code of the optimized program.
+(1) Nodes: the parameters of the function and all variables defined or used by the instructions of reachable blocks are the "nodes".
+(2) Interference graph: for each reachable block B, let the set L be OUT(B) (liveness), look at the instructions of B in reverse order from the last, and for each instruction s do the following. When s defines a variable x, add an edge between x and each variable v in L that is different from x and, if s is a copy of the form "x = y" (y a variable), also different from y. Then remove from L the variable defined by s and add the variables used by s. In addition, for each parameter p of the function, add an edge between p and each variable other than p that is in the union of IN (liveness) of B1 and the set of all parameters. Multiple edges between the same two nodes count as one. The "degree" of a node is the number of nodes connected to it by an edge (its "neighbors").
+(3) Spill cost: the spill cost of a node v is the sum, over all instructions of the reachable blocks B, of the number of occurrences of v in the instruction (once as the defined variable, and once each time it appears as a used variable) multiplied by 10 to the power d (d is the depth of B). If v is a parameter, 1 is added further.
+(4) Simplification: make all nodes "remaining", and repeat the following until the remaining set is empty. For each remaining node, its number of neighbors among the remaining nodes is its "current degree". If there are nodes with current degree less than k, choose the one with the smallest current degree (on a tie, the one whose name is smallest in lexicographic order of character codes). If there are none, choose the one with the smallest "spill cost / current degree" (on a tie, the one with the smallest name), and record it as a "potential spill" together with its current degree at that time. This comparison is done exactly as fractions (a/b and c/d are compared by comparing a*d and c*b). Push the chosen node onto the stack and remove it from the remaining set. The order of pushing is the "simplification order".
+(5) Selection: pop the nodes from the stack one at a time (the reverse of the push order) and assign registers. The numbers 0 to k-1, excluding the register numbers of neighbors that have already been assigned registers, are the "free" numbers. If there are no free numbers, the node is not assigned a register and is a "spill". If there are free numbers: if any number already assigned to a "partner" of the node is free, assign the smallest such number; otherwise assign the smallest free number. The partners of a node v are, for each copy instruction "x = y" (y a variable different from x) in the code of the optimized function in which one of x and y is v, the other variable.
+(6) Rewriting: replace every occurrence, in the function's code and parameters, of a variable that was assigned a register by the name consisting of "R" followed by the register number (e.g. R0, R3). Spilled variables keep their names. After the replacement, delete all copy instructions whose destination and source are the same name after the replacement, and call their number the "number of removed moves". The functions obtained this way, together with the array declarations, are called the "allocated program".
+(7) Pressure: for each instruction of the reachable blocks, take the number of live variables just before the instruction and the number of live variables just after it; the maximum of all of these is the "pressure".
+
+* 15. Execution
+Each of the three programs, the original program (as in input/program.tac), the optimized program and the allocated program, is executed with the input of each run as follows.
+(1) At the start of a run, set all array elements to 0, set the input read position to the first value of that run, and call main with no arguments. When main ends, the run ends.
+(2) Each time a function is called, prepare a new table of variable values for that call and a new list of pushed arguments (initially empty), assign the argument values to the parameter variables, and execute from the first instruction. Variable values are separate for each call, and the arrays are shared by all calls.
+(3) Each instruction is executed as in the table of (2) of [Input files], and execution proceeds to the next instruction unless specified otherwise. The value of an operand is, for an integer constant, its value, and for a variable, the value of that variable in that call.
+  - For goto L, and for if ... goto L when the comparison holds, execution proceeds to the first instruction after the label line L.
+  - param a appends the value of a to the end of the list of pushed arguments.
+  - call f n removes the last n values of the list of pushed arguments from the list, as the 1st, 2nd, ... parameters of f in the order they were appended, and calls f. When f ends, for "x = call f n" the value returned by f is assigned to x, and execution proceeds to the next instruction.
+  - return ends that call. "return a" returns the value of a.
+  - read x assigns the value at the input read position to x and advances the read position by one. print a appends the value of a to the end of the run's output.
+(4) For each instruction executed, increase the "step count" of the function that executed it by 1. Each time a function is called (including main at the start of a run), increase that function's "call count" by 1. The number of executed instructions is also counted per kind.
+(5) Names starting with R in the allocated program are treated the same as any other variable.
+
+[Output files]
+Below, a "list" is a string of elements separated by commas "," (with no spaces), or the single character "-" if there are no elements. Blocks are written by name, such as B1.
+
+* output/optimized.tac
+The optimized program, written as in 1 (2).
+
+* output/analysis.txt
+Write the following four parts in this order.
+(1) The line "== call graph (original) ==" and the call graph of the original program (in the form of (5)).
+(2) The "function analysis" (in the form of (6)) of each function of the original program (in file order). The heading type is "original".
+(3) The line "== call graph (optimized) ==" and the call graph (in the form of (5)) of the program after optimization, before the removal of 13 (4).
+(4) The function analysis of each function of the optimized program (in file order). The heading type is "optimized".
+(5) Call graph: for each function (in file order), write the line "f -> C". f is the function name, and C is the callee list. If f is recursive, append " (recursive)" to the end of the line. Then write the line "unreachable functions: U". U is the list of functions not reachable from main, in file order.
+(6) Function analysis: for the function's code at that time, write the following lines in order.
+  - "== f (type) ==" (f is the function name, type is the heading type).
+  - The line "code:" and each line of the code. A label line is written as "label:". An instruction is a line consisting of 2 spaces, "#", the instruction number, 1 space and the instruction string. However, for an instruction of a reachable block that uses one or more variables, this is followed by " | " and, for each used variable (each variable only at its first appearance, in used-variable order), "v:D", separated by single spaces. D is the numbers of the definitions of v in the reaching definitions just before that instruction, in increasing order separated by commas (a parameter definition is 0; this is the ud chain). Example: "  #4 if i >= n goto L2 | i:3,8 n:1".
+  - "blocks: N" (N is the number of blocks) and, for each block (in order of number), the line "Bk a-b labels=L preds=P succs=S". a and b are the numbers of the block's first and last instructions, L is the list of the block's labels, P is the list of predecessors (including unreachable blocks), and S is the list of successors.
+  - "unreachable: U" (U is the list of unreachable blocks in order of number).
+  - "order: O" (O is the list of the reverse postorder).
+  - The line "dominators:" and, for each reachable block (in order of number), the line "Bk idom=I dom=D". I is the immediate dominator ("-" for B1), and D is the list of the blocks of Dom(Bk) in order of number.
+  - The line "dominator tree:" and a line for each block of the dominator tree. Starting from B1, after writing a block's line, write the blocks whose immediate dominator is that block, in order of number, in the same way (preorder). Each line is the block name preceded by a number of spaces equal to twice its depth in the dominator tree (B1 is 0).
+  - "loops: M" (M is the number of loops) and, for each loop (in the order of 4 (4)), the line "header=H latches=T depth=d blocks=K exits=X". H is the header, T is the list of latches (in order of number), d is the depth of the loop, K is the list of the loop's blocks (in order of number), and X is the list of exit blocks (in order of number).
+  - For each of the three analyses, "reaching definitions: iterations=I", "liveness: iterations=I" and "available expressions: iterations=I": that line (I is the number of iterations) and, for each reachable block (in order of number), the line "Bk in=A out=B". A and B are the lists of the elements of IN(Bk) and OUT(Bk). A reaching definition is written as "v:n", sorted in increasing order by number n and then by variable name in lexicographic order of character codes. The variables of liveness and the expression strings of available expressions are sorted in lexicographic order of the character codes of the strings.
+
+* output/passes.txt
+For each optimized function (in the order optimized in 7, including functions removed in 13 (4)), write the following lines.
+  - "== f ==" (f is the function name).
+  - For each round, a line consisting of "round r: " (r is the round number counted from 1) followed by "name=count" (the pass name and its change count) for each pass applied in that round, in the order of 7 (1), separated by single spaces. Then write each record of the round's passes (in pass order, and within each pass in the order the records were added), one per line, as two spaces, the pass name, one space and the record.
+  - "result: rounds=R instructions=A->B". R is the number of rounds performed, and A and B are the numbers of instructions of that function before and after optimization.
+Then write the line "== program ==" and the line "removed functions: F" (F is the list of functions removed in 13 (4), in file order). Finally, write the line "== total ==" and a line of "name=count" (the change count summed over all functions and all rounds) for each enabled pass, in the order of 7 (1), separated by single spaces.
+
+* output/regalloc.txt
+For each function of the optimized program (in file order), write the following lines.
+  - "== f ==".
+  - "nodes=N edges=E registers=k". N is the number of nodes and E is the number of edges.
+  - For each node (in lexicographic order of the character codes of the names), "v degree=d cost=c neighbors=A". d is the degree, c is the spill cost, and A is the list of neighbors (in lexicographic order of names).
+  - "simplify: S". S is the list of the simplification order.
+  - "potential spills: P". P is the list of "v(c/d)" (v is the node, c is the spill cost, and d is the current degree when it was chosen) in the order the potential spills were chosen.
+  - For each node (in lexicographic order of names), "v -> Rr" (r is the register number) for a node that was assigned a register, and "v -> spill" for a spilled node.
+  - "summary: pressure=P used=U spilled=S moves=M spill_uses=X spill_defs=Y". P is the pressure, U is the number of distinct register numbers assigned, S is the number of spilled nodes, and M is the number of removed moves. X is the total number of occurrences of spilled variables among the variables (operands) used by the instructions of the optimized function's code, and Y is the number of instructions that define a spilled variable plus the number of spilled parameters.
+  - The lines of that function of the allocated program, written as in 1 (2) (from the "func" line to the "end" line; the array declaration lines and empty lines are not written).
+
+* output/comparison.txt
+For each run (numbered from 1 in the order of input.txt), write the following 5 lines. Lines 2 to 5 start with 2 spaces.
+  - "run i: inputs=m"
+  - "  original: steps=S calls=C output=V"
+  - "  optimized: steps=S calls=C output=V"
+  - "  allocated: steps=S calls=C output=V"
+  - "  result: R"
+i is the run number, and m is the number of input values of that run. Lines 2 to 4 are the results of executing the original program, the optimized program and the allocated program with that run's input: S is the total step count of all functions, C is the total call count of all functions, and V is the list of the output values in the order they were output. R is "same" if all three output lists are the same, and "different" otherwise.
+Then write the line "== profile ==" and, for each function of the original program (in file order, including functions removed in 13 (4)), the line "f: calls=C original=A optimized=B allocated=D". C is the total call count of f in the original program over all runs, and A, B and D are the total step counts of f over all runs in the original program, the optimized program and the allocated program (0 if f is not in that program).
+Finally, write the line "== summary ==" and the following 7 lines.
+  - "runs=N same=X different=Y": N is the number of runs, and X and Y are the numbers of runs whose result is same and different.
+  - "instructions: original=A optimized=B": A and B are the numbers of instructions of all functions of the original program and of the optimized program.
+  - A line consisting of "kinds: " followed by "kind=a->b" for each of the 11 instruction kinds (in the order copy, bin, load, store, goto, if, param, call, return, read, print), separated by single spaces. a and b are the numbers of instructions of that kind in the original program and in the optimized program.
+  - "steps: original=A optimized=B allocated=C": A, B and C are the total step counts of all functions over all runs for each program.
+  - Three lines starting with "dynamic original: ", "dynamic optimized: " and "dynamic allocated: ": for each program, count the instructions executed over all runs per kind, and list "kind=c" in the same kind order as kinds, separated by single spaces.
+
+[Source files]
+Split the source files into the following 6 roles (file names may follow each language's conventions).
+- main: the overall flow. Reading params.txt and input.txt, the per-function round loop and the totalling of change counts and records (7), the decisions of the 6 passes (deciding constants for constant propagation, copy propagation, the search for common-subexpression candidates and sources, the dead-code decisions, the marking of loop-invariant instructions and the conditions for moving them, and building the records of each pass) (8 to 13), the call graph and the removal of unneeded functions (6, 13 (4)), the interpreter (arrays, calls and the argument list, executing each instruction, counting step counts, call counts and per-kind counts) (15), writing the function analyses (code with ud chains, blocks, dominance and the dominator tree, loops, the sets of the three analyses), rewriting to register names and the pressure (14 (6), (7)), totalling the comparisons and statistics, and writing the 5 output files. It handles the largest part of the processing.
+- tac_parser: the representation of instructions, reading program.tac ([Input files]), instruction and program strings (1), the variables defined and used by an instruction, expressions and expression strings, and the operations ((3) of [Input files]).
+- cfg: splitting into blocks, successors and predecessors (2), the postorder, reverse postorder and reachability by depth-first search (3), dominator sets and immediate dominators (4 (1), (2)), natural loops, loop and block depths, and exit blocks (4 (3), (4)).
+- dataflow: the instruction transfers of reaching definitions, liveness, available expressions and available copies, their iterative solution, the number of iterations, and the state just before an instruction (5).
+- optimizations: the building blocks for rewriting code. Constant folding and algebraic simplification (8 (2)), deleting instructions, creating temporary variables and rewriting common subexpressions (10 (4)), choosing and creating preheaders, moving instructions, retargeting jumps (12 (4)), and deleting unreachable blocks and unneeded jumps and labels (13 (1) to (3)).
+- regalloc: the interference graph (14 (1), (2)), spill costs (14 (3)), partners, and simplification and selection (14 (4), (5)).
+
+[Constraints]
+- program.tac has at most 300 lines, and each line has at most 100 characters. There are at most 12 functions, each function has at most 80 instructions, there are at most 8 arrays, and each array size is between 1 and 64 inclusive. Names and labels are at most 16 characters, and the variable names and labels of program.tac do not start with "_". The absolute value of each integer constant is at most 1000.
+- Function names are distinct, and there is a function main with no parameters. The parameter names of a function are distinct, and its labels are distinct. The target labels of goto and if are in the code of the same function. Each label line is followed (possibly with other label lines in between) by an instruction line. The last instruction of each function is a return. Only declared array names are used, and they differ from variable names. Variable, array and function names are none of array, func, end, goto, if, param, call, return, read and print.
+- The f of "call f n" and "x = call f n" is an existing function, and n is its number of parameters. Each call instruction is immediately preceded by exactly n param instructions. There are no other param instructions.
+- In the original program, every variable used by an instruction of a reachable block is defined before that instruction on every path from the start of the function to that instruction (parameters are defined at the start of the function).
+- In every code during optimization, every block whose last instruction is neither a goto nor a return has a next block. When a new label is created in 12 (4), it never happens that the block immediately before h (the block whose number is 1 smaller) is a block of the loop whose last instruction is neither a goto nor a return.
+- In 8 (2), the result of the operation is never outside -2147483648 to 2147483647 inclusive. Every function reaches a round in which all change counts are 0 within max_rounds rounds.
+- In params.txt, k is between 2 and 16 inclusive, and max_rounds is between 1 and 50 inclusive. The number of runs in input.txt is between 1 and 10 inclusive, each run has at most 100 values, and the absolute value of each value is at most 1000.
+- In every run, for each of the three programs, the following hold. read is executed only while input values remain. The right value of "/" and "%" is not 0. Array indices are at least 0 and less than the size. Assigned values and compared values are between -2147483648 and 2147483647 inclusive. A function f called by "x = call f n" ends with "return a". At most 50 calls are in progress at the same time, and the total step count of one run is at most 100000.
+
+[Example]
+The output for the following input is shown. Below, the content of each file is shown from the line after the line "--- file name ---" up to the line before the line "--- end ---" (these two kinds of lines are not part of the file content; an empty line within the content is an empty line in the file).
+
+--- input/program.tac ---
+array a 4
+
+func main
+    read n
+    k = 3
+    s = 0
+    i = 0
+L1:
+    if i >= n goto L2
+    read x
+    t = k * 2
+    u = x * t
+    a[i] = u
+    w = x * t
+    s = s + w
+    i = i + 1
+    goto L1
+L2:
+    param s
+    r = call twice 1
+    print r
+    return
+end
+
+func twice x
+    y = x + x
+    z = y
+    return z
+    print 0
+    return 0
+end
+--- end ---
+
+--- input/params.txt ---
+registers 3
+passes constprop copyprop cse dce licm unreachable
+max_rounds 10
+--- end ---
+
+--- input/input.txt ---
+2
+4 3 5 1 7
+3 2 4 8
+--- end ---
+
+--- output/optimized.tac ---
+array a 4
+
+func main
+    read n
+    s = 0
+    i = 0
+L1:
+    if i >= n goto L2
+    read x
+    _t1 = x * 6
+    a[i] = _t1
+    s = s + _t1
+    i = i + 1
+    goto L1
+L2:
+    param s
+    r = call twice 1
+    print r
+    return
+end
+
+func twice x
+    y = x + x
+    return y
+end
+--- end ---
+
+--- output/analysis.txt ---
+== call graph (original) ==
+main -> twice
+twice -> -
+unreachable functions: -
+== main (original) ==
+code:
+  #1 read n
+  #2 k = 3
+  #3 s = 0
+  #4 i = 0
+L1:
+  #5 if i >= n goto L2 | i:4,12 n:1
+  #6 read x
+  #7 t = k * 2 | k:2
+  #8 u = x * t | x:6 t:7
+  #9 a[i] = u | i:4,12 u:8
+  #10 w = x * t | x:6 t:7
+  #11 s = s + w | s:3,11 w:10
+  #12 i = i + 1 | i:4,12
+  #13 goto L1
+L2:
+  #14 param s | s:3,11
+  #15 r = call twice 1
+  #16 print r | r:15
+  #17 return
+blocks: 4
+B1 1-4 labels=- preds=- succs=B2
+B2 5-5 labels=L1 preds=B1,B3 succs=B3,B4
+B3 6-13 labels=- preds=B2 succs=B2
+B4 14-17 labels=L2 preds=B2 succs=-
+unreachable: -
+order: B1,B2,B4,B3
+dominators:
+B1 idom=- dom=B1
+B2 idom=B1 dom=B1,B2
+B3 idom=B2 dom=B1,B2,B3
+B4 idom=B2 dom=B1,B2,B4
+dominator tree:
+B1
+  B2
+    B3
+    B4
+loops: 1
+header=B2 latches=B3 depth=1 blocks=B2,B3 exits=B2
+reaching definitions: iterations=3
+B1 in=- out=n:1,k:2,s:3,i:4
+B2 in=n:1,k:2,s:3,i:4,x:6,t:7,u:8,w:10,s:11,i:12 out=n:1,k:2,s:3,i:4,x:6,t:7,u:8,w:10,s:11,i:12
+B3 in=n:1,k:2,s:3,i:4,x:6,t:7,u:8,w:10,s:11,i:12 out=n:1,k:2,x:6,t:7,u:8,w:10,s:11,i:12
+B4 in=n:1,k:2,s:3,i:4,x:6,t:7,u:8,w:10,s:11,i:12 out=n:1,k:2,s:3,i:4,x:6,t:7,u:8,w:10,s:11,i:12,r:15
+liveness: iterations=3
+B1 in=- out=i,k,n,s
+B2 in=i,k,n,s out=i,k,n,s
+B3 in=i,k,n,s out=i,k,n,s
+B4 in=s out=-
+available expressions: iterations=2
+B1 in=- out=-
+B2 in=- out=-
+B3 in=- out=k*2,x*t
+B4 in=- out=-
+== twice (original) ==
+code:
+  #1 y = x + x | x:0
+  #2 z = y | y:1
+  #3 return z | z:2
+  #4 print 0
+  #5 return 0
+blocks: 2
+B1 1-3 labels=- preds=- succs=-
+B2 4-5 labels=- preds=- succs=-
+unreachable: B2
+order: B1
+dominators:
+B1 idom=- dom=B1
+dominator tree:
+B1
+loops: 0
+reaching definitions: iterations=2
+B1 in=x:0 out=x:0,y:1,z:2
+liveness: iterations=2
+B1 in=x out=-
+available expressions: iterations=1
+B1 in=- out=x+x
+== call graph (optimized) ==
+main -> twice
+twice -> -
+unreachable functions: -
+== main (optimized) ==
+code:
+  #1 read n
+  #2 s = 0
+  #3 i = 0
+L1:
+  #4 if i >= n goto L2 | i:3,9 n:1
+  #5 read x
+  #6 _t1 = x * 6 | x:5
+  #7 a[i] = _t1 | i:3,9 _t1:6
+  #8 s = s + _t1 | s:2,8 _t1:6
+  #9 i = i + 1 | i:3,9
+  #10 goto L1
+L2:
+  #11 param s | s:2,8
+  #12 r = call twice 1
+  #13 print r | r:12
+  #14 return
+blocks: 4
+B1 1-3 labels=- preds=- succs=B2
+B2 4-4 labels=L1 preds=B1,B3 succs=B3,B4
+B3 5-10 labels=- preds=B2 succs=B2
+B4 11-14 labels=L2 preds=B2 succs=-
+unreachable: -
+order: B1,B2,B4,B3
+dominators:
+B1 idom=- dom=B1
+B2 idom=B1 dom=B1,B2
+B3 idom=B2 dom=B1,B2,B3
+B4 idom=B2 dom=B1,B2,B4
+dominator tree:
+B1
+  B2
+    B3
+    B4
+loops: 1
+header=B2 latches=B3 depth=1 blocks=B2,B3 exits=B2
+reaching definitions: iterations=3
+B1 in=- out=n:1,s:2,i:3
+B2 in=n:1,s:2,i:3,x:5,_t1:6,s:8,i:9 out=n:1,s:2,i:3,x:5,_t1:6,s:8,i:9
+B3 in=n:1,s:2,i:3,x:5,_t1:6,s:8,i:9 out=n:1,x:5,_t1:6,s:8,i:9
+B4 in=n:1,s:2,i:3,x:5,_t1:6,s:8,i:9 out=n:1,s:2,i:3,x:5,_t1:6,s:8,i:9,r:12
+liveness: iterations=3
+B1 in=- out=i,n,s
+B2 in=i,n,s out=i,n,s
+B3 in=i,n,s out=i,n,s
+B4 in=s out=-
+available expressions: iterations=2
+B1 in=- out=-
+B2 in=- out=-
+B3 in=- out=x*6
+B4 in=- out=-
+== twice (optimized) ==
+code:
+  #1 y = x + x | x:0
+  #2 return y | y:1
+blocks: 1
+B1 1-2 labels=- preds=- succs=-
+unreachable: -
+order: B1
+dominators:
+B1 idom=- dom=B1
+dominator tree:
+B1
+loops: 0
+reaching definitions: iterations=2
+B1 in=x:0 out=x:0,y:1
+liveness: iterations=2
+B1 in=x out=-
+available expressions: iterations=1
+B1 in=- out=x+x
+--- end ---
+
+--- output/passes.txt ---
+== main ==
+round 1: constprop=2 copyprop=0 cse=1 dce=1 licm=1 unreachable=0
+  constprop #7: k -> 3
+  constprop #7: fold t = 6
+  cse x*t: _t1 sources=#8 replaced=#10
+  dce #2: delete k = 3
+  licm B2: hoist #6 to B1
+round 2: constprop=1 copyprop=2 cse=0 dce=3 licm=0 unreachable=0
+  constprop #7: t -> 6
+  copyprop #9: u -> _t1
+  copyprop #11: w -> _t1
+  dce #4: delete t = 6
+  dce #8: delete u = _t1
+  dce #10: delete w = _t1
+round 3: constprop=0 copyprop=0 cse=0 dce=0 licm=0 unreachable=0
+result: rounds=3 instructions=17->14
+== twice ==
+round 1: constprop=0 copyprop=1 cse=0 dce=1 licm=0 unreachable=1
+  copyprop #3: z -> y
+  dce #2: delete z = y
+  unreachable remove block B2
+round 2: constprop=0 copyprop=0 cse=0 dce=0 licm=0 unreachable=0
+result: rounds=2 instructions=5->2
+== program ==
+removed functions: -
+== total ==
+constprop=3 copyprop=3 cse=1 dce=5 licm=1 unreachable=1
+--- end ---
+
+--- output/regalloc.txt ---
+== main ==
+nodes=6 edges=9 registers=3
+_t1 degree=3 cost=30 neighbors=i,n,s
+i degree=4 cost=41 neighbors=_t1,n,s,x
+n degree=4 cost=11 neighbors=_t1,i,s,x
+r degree=0 cost=2 neighbors=-
+s degree=4 cost=22 neighbors=_t1,i,n,x
+x degree=3 cost=20 neighbors=i,n,s
+simplify: r,n,_t1,i,s,x
+potential spills: n(11/4)
+_t1 -> R0
+i -> R2
+n -> spill
+r -> R0
+s -> R1
+x -> R0
+summary: pressure=4 used=3 spilled=1 moves=0 spill_uses=1 spill_defs=1
+func main
+    read n
+    R1 = 0
+    R2 = 0
+L1:
+    if R2 >= n goto L2
+    read R0
+    R0 = R0 * 6
+    a[R2] = R0
+    R1 = R1 + R0
+    R2 = R2 + 1
+    goto L1
+L2:
+    param R1
+    R0 = call twice 1
+    print R0
+    return
+end
+== twice ==
+nodes=2 edges=0 registers=3
+x degree=0 cost=3 neighbors=-
+y degree=0 cost=2 neighbors=-
+simplify: x,y
+potential spills: -
+x -> R0
+y -> R0
+summary: pressure=1 used=1 spilled=0 moves=0 spill_uses=0 spill_defs=0
+func twice R0
+    R0 = R0 + R0
+    return R0
+end
+--- end ---
+
+--- output/comparison.txt ---
+run 1: inputs=4
+  original: steps=39 calls=2 output=156
+  optimized: steps=31 calls=2 output=156
+  allocated: steps=31 calls=2 output=156
+  result: same
+run 2: inputs=3
+  original: steps=30 calls=2 output=144
+  optimized: steps=24 calls=2 output=144
+  allocated: steps=24 calls=2 output=144
+  result: same
+== profile ==
+main: calls=2 original=63 optimized=51 allocated=51
+twice: calls=2 original=6 optimized=4 allocated=4
+== summary ==
+runs=2 same=2 different=0
+instructions: original=22 optimized=16
+kinds: copy=4->2 bin=6->4 load=0->0 store=1->1 goto=1->1 if=1->1 param=1->1 call=1->1 return=3->2 read=2->2 print=2->1
+steps: original=69 optimized=55 allocated=55
+dynamic original: copy=8 bin=27 load=0 store=5 goto=5 if=7 param=2 call=2 return=4 read=7 print=2
+dynamic optimized: copy=4 bin=17 load=0 store=5 goto=5 if=7 param=2 call=2 return=4 read=7 print=2
+dynamic allocated: copy=4 bin=17 load=0 store=5 goto=5 if=7 param=2 call=2 return=4 read=7 print=2
+--- end ---
+
+In main in this example, in round 1, constprop replaces k in #7 "t = k * 2" with 3 and folds it to "t = 6", cse rewrites candidate #10 of expression "x*t" to use the temporary variable _t1 (its source is #8), dce deletes "k = 3", which is no longer used, and licm moves "t = 6" of B3 to the end of the preheader B1. B3 does not dominate the loop's exit block B2, but a copy is not a dangerous instruction and t is not in IN of the loop's outside successor B4, so (b) of (iii) of 12 (3) holds. In round 2, constprop replaces t in "_t1 = x * t" with 6, copyprop replaces the uses of u and w with _t1, and dce deletes 3 instructions. In round 3 nothing changes. In twice, after copyprop and dce, the unreachable block B2 after the return is removed. In register allocation, 4 variables are live at the same time inside main's loop (pressure 4), so 3 registers are not enough. After r has been pushed there is no node with current degree less than 3, so n, which has the smallest spill cost / current degree (11/4), is pushed as a potential spill, and in selection n also has no free number and becomes a spill.

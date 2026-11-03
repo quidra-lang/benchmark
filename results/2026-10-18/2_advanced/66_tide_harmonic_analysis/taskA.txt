@@ -1,0 +1,317 @@
+[Overview]
+Write a program that performs a harmonic analysis of hourly sea-level observations from coastal tide gauges and predicts future tides.
+The program reads three files from the input/ folder (settings, a table of tidal constituents, observations) and writes five files to the output/ folder: a data-check report, the harmonic constants of every constituent, hourly predicted levels, the list of high and low waters, and a per-station summary. It prints nothing to standard output.
+The observations contain gaps, runs of a repeated value caused by a stuck sensor, and isolated outliers (spikes). For each station the program removes the repeated values, removes spikes found by a median/MAD rule applied to the residuals of a preliminary fit, selects the constituents that the Rayleigh criterion can resolve for the record length, and fits the model "mean level + one cosine and one sine term per constituent" by least squares (normal equations solved by Gaussian elimination with partial pivoting). From the fitted amplitudes and phases it derives predicted levels, the times and heights of high and low waters (refined by parabolic interpolation), the tidal form number and tide type, tidal datums, comparisons between stations and more. Use the standard library only.
+
+[Input files]
+All input files consist of ASCII characters only, and every line ends with LF. No line has leading or trailing spaces, and there are no empty lines.
+Below, a "datetime" is a string of the form YYYY-MM-DD HH:MM (4-digit year, "-", 2-digit month, "-", 2-digit day, one space, 2-digit hour, ":", 2-digit minute; example: 2026-05-01 07:00). It denotes a date of the Gregorian calendar and a time of day counted from 00:00 of that date. There are no time zones and no daylight saving time. An "integer" is a decimal integer without superfluous leading zeros, with a leading "-" only when it is negative. A "real" is a non-negative decimal number that may contain a decimal point and a fractional part (examples: 4.0, 0.12, 1).
+
+input/params.txt
+One setting per line, in the order below. Each line is a keyword followed by its values, all separated by single spaces. Only the station line (item 2) is repeated, S times (S >= 2); every other item is a single line. The symbols introduced here are used in the rest of this statement.
+ 1. epoch DATETIME: the time origin E. Its hour and minute are both 00.
+ 2. station CODE NAME: a station code (3 uppercase letters) and the station name. NAME is the rest of the line after the single space that follows CODE; it consists of letters and spaces and starts and ends with a letter. This line appears S times, and the order of these lines is called the station order.
+ 3. reference CODE: the reference station Cref of the comparisons (one of the codes of item 2).
+ 4. flat_run Lf: the minimum length Lf (integer, hours) of a run of equal values that is treated as a sensor fault.
+ 5. spike W C Ks D: the half width W of the spike window (integer, hours), the minimum number C of values needed for a test (integer), the factor Ks (real) and the lower bound D of the limit (real, metres).
+ 6. rayleigh R: the Rayleigh criterion constant R (real).
+ 7. snr_min Smin: the smallest SNR Smin that counts as significant (real).
+ 8. top_residuals Nr: the number Nr of largest residuals to report (integer).
+ 9. surge Th Hs: the threshold Th of residual events (real, metres) and their minimum duration Hs (integer, hours).
+ 10. predict DATETIME P: the start Ps and the length P (integer, hours) of the prediction window. The hour and minute of Ps are both 00.
+ 11. grid_minutes G: the spacing G (integer, minutes) of the grid on which high and low waters are searched.
+ 12. min_range Mr: the smallest height difference Mr (real, metres) of a pair of neighbouring extrema that is kept.
+ 13. correlation_lag Lc: the largest lag Lc (integer, hours) of the residual cross-correlation.
+ 14. plot CODE Wp Zt Zb Zs: the station Cp to plot (one of the codes of item 2), the number of hours Wp (integer), and the top Zt, the bottom Zb and the step Zs of the vertical axis (all three integers, centimetres).
+
+input/constituents.txt
+The first line holds the number Q of constituents (a positive integer). Each of the next Q lines (line i for i = 1, ..., Q) holds the name name_i of a constituent and its angular speed w_i in degrees per hour, separated by one space. A name is a string of 1 to 4 letters and digits (examples: M2, 2N2, MSf); names are case-sensitive and all different. An angular speed is a positive decimal number made of an integer part of one or more digits, ".", and exactly 7 fractional digits (example: 28.9841042). The order of the lines is the priority order of the constituent selection (section 1).
+
+input/observations.csv
+The first line is station,time,level. Every following line has the form CODE,DATETIME,VALUE and gives the observed sea level (metres) of station CODE at that datetime. CODE is one of the codes of params.txt. DATETIME is not earlier than E, and its minute is always 00. VALUE is either NA (missing) or a decimal number made of an integer part of one or more digits, ".", and exactly 3 fractional digits, with a leading "-" only when it is negative (-0.000 does not occur).
+The lines are sorted by datetime, and lines with the same datetime follow the station order. No station has two lines with the same datetime. An hour without an observation may have no line at all. Every station has at least one line, and for every station the lines with its earliest and its latest datetime have numeric values.
+
+[Processing]
+0. Notation and common rules
+- All real arithmetic uses IEEE 754 binary64 (double precision). pi = 3.141592653589793.
+- Unless stated otherwise, every sum, and every mean (the sum divided by the count), is accumulated in increasing order of index or time, that is, from the start of the sequence.
+- floor(x) is the largest integer not greater than x. For an integer a >= 0 and a positive integer b, a div b = floor(a / b).
+- The median of a list of numbers is, after sorting the values in increasing order, the middle value when the count is odd, and the sum of the two middle values divided by 2 when the count is even.
+- Times are numbers of hours t or numbers of minutes m counted from E. The datetime of t is the datetime t hours after E, the datetime of m is the datetime m minutes after E, and the date of a time is the YYYY-MM-DD part of its datetime. Every observation time is an integer t. The observed value of a station at time t is written h(t).
+- ts is the number of hours from E to Ps (an integer).
+- When the largest or the smallest item has to be chosen and several items share that value, the earliest one (by time or by date) is chosen unless stated otherwise.
+- All comparisons, choices of maxima and minima, sorts and threshold tests use the values before rounding.
+- The amplitude, phase and angular speed of the constituent named M2 are written Amp_M2, g_M2 and w_M2; the same notation is used for S2, K1, O1 and M4.
+
+1. Constituent selection
+The selection for a length tau (integer, hours) is defined as follows. Go through the constituents of constituents.txt from the first to the last. For constituent i:
+- If w_i * tau < 360 * R, its status is short and it is not selected.
+- Otherwise, check the constituents j selected so far, in the order in which they were selected. If some j satisfies |w_i - w_j| * tau < 360 * R, then, for the first such j, the status of i is "conflict:" followed by name_j (example: conflict:K1), and i is not selected.
+- Otherwise its status is fitted and it is selected.
+The selected constituents are numbered k = 1, 2, ..., K in the order in which they were selected.
+
+2. Harmonic fit
+(1) Angle: the angle of a constituent with angular speed w at time t (a real number of hours) is computed as d = w * t, d2 = d - 360 * floor(d / 360), theta = d2 * pi / 180 (each expression evaluated from left to right). The angle of constituent k is written theta_k(t).
+(2) Model: with the coefficients Z0, a_k and b_k (k = 1, ..., K), H(t) = Z0 + (sum over k = 1, ..., K of (a_k * cos(theta_k(t)) + b_k * sin(theta_k(t)))). It is evaluated by starting from Z0 and adding the value in the inner parentheses for k = 1, 2, ..., K in this order.
+(3) Regressors: let p = 2K + 1. The vector x(t) = (x_0, ..., x_{p-1}) of time t is x_0 = 1, x_{2k-1} = cos(theta_k(t)) and x_{2k} = sin(theta_k(t)) for k = 1, ..., K.
+(4) Normal equations: for a given set of times, the p x p matrix A and the vector y of length p are A[i][j] = sum over t of x_i(t) * x_j(t) and y[i] = sum over t of x_i(t) * h(t) (i, j = 0, ..., p-1; the sums run over the times of the set in increasing order).
+(5) Solution: build the matrix M with p rows and 2p + 1 columns consisting of A, then the column y, then the p columns u_0, ..., u_{p-1} of the identity matrix (u_m has 1 in component m and 0 elsewhere). Columns are numbered from 0, so column p is y and column p + 1 + m is u_m. For each column j = 0, 1, ..., p-1 in this order:
+  - Among the rows j, ..., p-1 choose the row i with the largest |M[i][j]| (the smallest such i on ties); if i != j, swap rows i and j.
+  - For each row i = j+1, ..., p-1: let f = M[i][j] / M[j][j], and for each column c = j, ..., 2p replace M[i][c] by M[i][c] - f * M[j][c].
+  Then, for each column c = p, ..., 2p, compute sol[i] for i = p-1, p-2, ..., 0 in this order: set s = M[i][c], replace s by s - M[i][j] * sol[j] for j = i+1, ..., p-1 in this order, and set sol[i] = s / M[i][i]. The vector sol obtained from column p is the coefficient vector c_0, ..., c_{p-1}, and Z0 = c_0, a_k = c_{2k-1}, b_k = c_{2k}. Component i of the vector sol obtained from column p + 1 + m is Ainv[i][m] (Ainv is the inverse of A).
+(6) Amplitude and phase: the amplitude of constituent k is Amp_k = sqrt(a_k * a_k + b_k * b_k), and its phase g_k is atan2(b_k, a_k) * 180 / pi, increased by 360 if it is negative. (The term of constituent k equals Amp_k * cos(theta_k(t) - g_k * pi / 180).)
+
+3. Data check (per station)
+For each station, using only the lines of that station:
+(1) Span: the times whose value is not NA are the numeric times. F is the smallest and Lt the largest numeric time, and T = Lt - F is the record length. Every integer time from F to Lt without a line gets the reason absent, and every time whose value is NA gets the reason na.
+(2) Runs of equal values: consecutive times u, u+1, ..., v between F and Lt form a run if all of them have numeric values, these values are all equal, and neither u-1 nor v+1 satisfies this condition (it has no numeric value, or a different one); a run may consist of a single time. For every run with v - u + 1 >= Lf, the times u+1, ..., v get the reason flat (the value at the first time u is kept). Values are compared as the written decimal numbers.
+(3) Candidates: the numeric times whose reason is not flat are the candidates.
+(4) Preliminary fit: perform the selection of section 1 with the length T. This selection is used for every fit of this station except the validation of section 6. Fit the model of section 2 to all candidates; with that model H0, compute the preliminary residual e(t) = h(t) - H0(t) of every candidate t. prefit_rms = sqrt((sum of e(t)^2) / (number of candidates)).
+(5) Spikes: for each candidate t, collect the preliminary residuals e(u) of the candidates u with |u - t| <= W (t itself included). If fewer than C values are collected, t is not tested. Otherwise t is a tested time: let Me be the median of the collected values, let Md (the MAD) be the median of the values |e(u) - Me| over the collected values, and let limit = max(Ks * 1.4826 * Md, D) (Ks * 1.4826 * Md is multiplied from left to right). If |e(t) - Me| > limit, time t gets the reason spike. All tests use the preliminary residuals, and a time found to be a spike still belongs to the windows of other times.
+(6) Usable times: the candidates whose reason is not spike are the usable times; their number is n.
+(7) Gaps: a gap is a maximal stretch of consecutive times between F and Lt that are not usable (every such time has exactly one reason: absent, na, flat or spike). "Maximal" means that the time just before the stretch and the time just after it are each usable or outside F..Lt. The cause of a gap is the common reason of its times if they all have the same reason, and mixed otherwise.
+
+4. Final fit and residuals (per station)
+Fit the model of section 2 to all usable times. This fit gives the station model H, the coefficients Z0, a_k and b_k, the amplitudes Amp_k, the phases g_k and the matrix Ainv; from here on "the station model" always means this fit. The residual of a usable time t is r(t) = h(t) - H(t).
+- SS = sum of r(t)^2, dof = n - p, s2 = SS / dof, rms = sqrt(SS / n), and max_abs is the largest |r(t)|.
+- explained_percent = 100 * (1 - SS / (sum of (h(t) - hm)^2)), where hm is the mean of the observed values at the usable times and the sum runs over the usable times.
+- lag1_autocorrelation = (sum of r(t) * r(t+1)) / (sum of r(t)^2), where both sums run over the usable times t for which t+1 is also usable.
+- Errors and SNR: for constituent k let a = a_k, b = b_k, Amp = Amp_k, ia = 2k - 1, ib = 2k, va = s2 * Ainv[ia][ia], vb = s2 * Ainv[ib][ib] and cab = s2 * Ainv[ia][ib], and
+  amplitude_error = sqrt(a * a * va + b * b * vb + 2 * a * b * cab) / Amp
+  phase_error = sqrt(b * b * va + a * a * vb - 2 * a * b * cab) / (Amp * Amp) * 180 / pi
+  snr = (Amp / amplitude_error)^2
+  (the expressions under the square roots are evaluated from left to right). The constituent is significant (yes) if snr >= Smin, and not significant (no) otherwise.
+- Largest residuals: sort the usable times by |r(t)| in decreasing order (the earlier time first on ties) and give the ranks 1, 2, ... to the first Nr of them.
+
+5. Prediction, high and low waters (per station)
+(1) Hourly predictions: compute H(ts + i) for i = 0, 1, ..., P.
+(2) Grid: let J = P * 60 / G. For j = 0, 1, ..., J let m_j = 60 * ts + j * G (minutes, an integer) and y_j = H(m_j / 60), where m_j / 60 is a real division.
+(3) Extrema: an index j with 1 <= j <= J-1 is a high water if y_{j-1} < y_j and y_j > y_{j+1}, and a low water if y_{j-1} > y_j and y_j < y_{j+1}. These extrema are listed in increasing order of j, and their number is raw. For each of them let delta = (y_{j-1} - y_{j+1}) / (2 * (y_{j-1} - 2 * y_j + y_{j+1})); its refined time is mu = m_j + delta * G (minutes, a real number) and its height is z = y_j - (y_{j-1} - y_{j+1}) * delta / 4.
+(4) Removing small extrema: while the list holds at least two extrema, take the pair of neighbouring extrema with the smallest absolute height difference |z - z'| (the pair nearest to the front of the list on ties). If that difference is less than Mr, remove both extrema of the pair from the list and repeat; otherwise stop. From here on "extrema" means the remaining extrema; their number is extremes.
+(5) Time and date: for each extremum let Mx = floor(mu + 1/2) (an integer number of minutes). The datetime and the date of minute Mx are the time and the date of the extremum.
+(6) Labels: among the high waters of one date, the highest one is HHW and the others are LHW. Among the low waters of one date, the lowest one is LLW and the others are HLW.
+(7) Daily table: for each of the P / 24 consecutive dates that start with the date of Ps, find the number of high waters and the number of low waters on that date, hhw (the largest height of a high water on that date, or "none" if there is no high water), llw (the smallest height of a low water on that date, or "none" if there is no low water), and range = hhw - llw ("none" if hhw or llw is "none").
+
+6. Validation (per station)
+Let mid = F + T div 2. The usable times not greater than mid are the training times, and the usable times greater than mid are the test times. Perform the selection of section 1 with the length (last training time - first training time), fit the model of section 2 to the training times only, and call the resulting model Hv. For each test time t let eps(t) = h(t) - Hv(t). With nv the number of test times,
+  rms = sqrt((sum of eps(t)^2) / nv), in_sample_rms = sqrt((sum of r(t)^2) / nv) (r is the residual of section 4), and skill = 1 - (sum of eps(t)^2) / (sum of (h(t) - htest)^2),
+where htest is the mean of the observed values at the test times and all sums run over the test times. constituents is the number of constituents chosen by this selection.
+
+7. Residual events (per station)
+Consider consecutive usable times u, u+1, ..., v (each one hour after the previous one, all usable) such that r > Th at all of them, or r < -Th at all of them, and such that neither u-1 nor v+1 is a usable time that satisfies the same condition. Such a stretch with v - u + 1 >= Hs is a residual event; it is positive if r > Th and negative if r < -Th. Its peak is the time with the largest r (positive event) or the smallest r (negative event). Events are listed in increasing order of their start u.
+
+8. Daily mean sea level (per station)
+For every integer time t with F <= t <= Lt, the filled level fl(t) is h(t) if t is usable and H(t) otherwise. The weights of the Doodson X0 filter are wt_0, wt_1, ..., wt_19 = 0, 2, 1, 1, 2, 0, 1, 1, 0, 2, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1.
+For each date from the date of F to the date of Lt, let tn be the time of 12:00 on that date. If tn - 19 >= F and tn + 19 <= Lt, the daily mean of that date is level = (sum over j = -19, ..., 19 of wt_|j| * fl(tn + j)) / 30 (added in increasing order of j), and filled is the number of j in -19, ..., 19 for which tn + j is not usable. Dates that do not satisfy the condition are skipped.
+Over the dates that have a daily mean (in date order): days is their number, average is the mean of level, and max and min are the largest and the smallest level. With x_i the number of days since the first such date (0, 1, ...), v_i the level, and xm and vm the means of x_i and v_i, slope = (sum of (x_i - xm) * (v_i - vm)) / (sum of (x_i - xm)^2) and slope_mm_per_day = 1000 * slope.
+
+9. Tidal characteristics and datums (per station)
+The amplitudes and phases below are those of the final fit of section 4.
+- form_number = (Amp_K1 + Amp_O1) / (Amp_M2 + Amp_S2). The type is semidiurnal if form_number < 0.25, mixed_semidiurnal if 0.25 <= form_number < 1.5, mixed_diurnal if 1.5 <= form_number < 3.0, and diurnal if form_number >= 3.0.
+- spring = 2 * (Amp_M2 + Amp_S2) and neap = 2 * (Amp_M2 - Amp_S2).
+- Datums: MHHW is the mean of the hhw values of the daily table (skipping "none"), MLLW is the mean of its llw values (skipping "none"), MHW is the mean height of all high waters and MLW is the mean height of all low waters (the means are accumulated in date or time order). MTL = (MHW + MLW) / 2, DTL = (MHHW + MLLW) / 2, mn = MHW - MLW and gt = MHHW - MLLW.
+- hat = Z0 + As and lat = Z0 - As, where As is the sum of the amplitudes of all selected constituents (in increasing order of k).
+- highest is the high water with the largest height, and lowest is the low water with the smallest height.
+- Among the dates of the daily table whose range is not "none", widest is the date with the largest range and narrowest the date with the smallest range.
+- Of the P + 1 hourly predictions of 5(1), let n_above be the number of predictions greater than MHHW and n_below the number of predictions smaller than MLLW; above_mhhw = 100 * n_above / (P + 1) and below_mllw = 100 * n_below / (P + 1).
+- Asymmetry: going through the extrema in time order, take every neighbouring pair in which a low water is immediately followed by a high water and compute (Mx of the high water - Mx of the low water), and every neighbouring pair in which a high water is immediately followed by a low water and compute (Mx of the low water - Mx of the high water). rise_minutes is the mean of the former values and fall_minutes the mean of the latter. m4_m2_ratio = Amp_M4 / Amp_M2. relative_phase is 2 * g_M2 - g_M4 brought into the range from 0 (inclusive) to 360 (exclusive) by adding or subtracting 360 as many times as needed; dominance is flood if relative_phase < 180 and ebb otherwise.
+- Spring and neap tides: let dw = w_S2 - w_M2 and dg = g_S2 - g_M2, and for an integer q let t_q = (dg + 180 * q) / dw. Take every integer q with ts <= t_q <= ts + P, in increasing order. It is a spring tide if q is even and a neap tide if q is odd, and its time is the minute floor(t_q * 60 + 1/2).
+
+10. Comparison between stations
+For each station other than Cref, in station order, compute the following. A value marked (Cref) is the value of station Cref.
+- hw_lag_min: for each high water of the station, choose the high water of Cref whose Mx is closest to its Mx (the one with the smaller Mx on ties) and compute (Mx of the station's high water - Mx of the chosen high water). hw_lag_min is the mean of these values (accumulated in the time order of the station's high waters). lw_lag_min is computed in the same way from the low waters.
+- range_ratio = gt / gt(Cref) and mtl_diff = MTL - MTL(Cref).
+- For each of M2, S2, K1 and O1: amplitude_ratio = Amp / Amp(Cref); phase_diff is g - g(Cref), decreased by 360 if it is greater than 180 and increased by 360 if it is less than or equal to -180 (so that -180 < phase_diff <= 180); time_lag_min = phase_diff / w * 60, where w is the angular speed of that constituent.
+
+11. Residual cross-correlation
+For every pair of stations (A, B) in which A comes before B in the station order (pairs ordered by A, then by B), and for every lag l = -Lc, ..., Lc: collect, in increasing order, the usable times t of A for which t + l is a usable time of B. Their number is pairs(l). Let x_i = r_A(t) and y_i = r_B(t + l), where r_A and r_B are the residuals of section 4 of the two stations. With mx and my the means of the x_i and of the y_i, sxy = sum of (x_i - mx) * (y_i - my), sxx = sum of (x_i - mx)^2, syy = sum of (y_i - my)^2 and rho(l) = sxy / sqrt(sxx * syy). best_lag is the l with the largest rho(l) (on ties the one with the smaller |l|, and if still tied the negative one).
+
+12. Plot
+The tide curve of station Cp is drawn with characters. The number of rows is Nrow = (Zt - Zb) / Zs + 1. Row q (q = 0, ..., Nrow-1, row 0 at the top) stands for the height Zt - q * Zs centimetres, and column c (c = 0, ..., Wp-1) stands for the prediction H(ts + c) of 5(1). The Nrow x Wp cells are filled as follows.
+ 1. Every cell is a space.
+ 2. Let qz = floor((Zt - 100 * Z0) / Zs + 1/2). If 0 <= qz <= Nrow-1, every cell of row qz becomes "-".
+ 3. For each extremum of station Cp, in time order, let c = (Mx - 60 * ts + 30) div 60. If 0 <= c <= Wp-1, the mark of column c becomes "H" for a high water and "L" for a low water (a later extremum overwrites an earlier mark of the same column).
+ 4. For each column c let q = floor((Zt - 100 * H(ts + c)) / Zs + 1/2). If q < 0, the cell of row 0 in column c becomes "^"; if q > Nrow-1, the cell of row Nrow-1 in column c becomes "v"; otherwise the cell of row q in column c becomes the mark of column c if the column has one, and "*" if it has none.
+The label of row q is (Zt - q * Zs) / 100 written with exactly 2 decimals (examples: 2.50, -0.20) and padded on the left with spaces to the length of the longest label.
+
+[Output files]
+Common format:
+- ASCII only; every line ends with LF; no trailing spaces; no empty lines.
+- In the line formats below, a part in angle brackets < > is replaced by a value, and every other character is written as it is. <expr:d> is the real value of expr rounded to the nearest number with exactly d decimals (examples for <x:3>: x = -1.23456 gives -1.235, and x = 2 gives 2.000). A value whose rounded digits are all zero is written without "-", even if it is negative (example: 0.000). A part without :d is an integer (decimal, without superfluous leading zeros, with "-" for negative numbers) or a string, written as it is.
+- <datetime(t)> is the datetime of time t (hours), <datetime[m]> is the datetime of minute m, and <date of ...> is a date; they are written in the same forms as in the input (YYYY-MM-DD HH:MM or YYYY-MM-DD).
+- The per-station parts are written in station order. The names in name=value items refer to the quantities defined with the same names in [Processing].
+
+output/cleaning.txt
+For each station, these lines in this order:
+station=<CODE> name=<NAME>
+span start=<datetime(F)> end=<datetime(Lt)> hours=<T + 1> record_length=<T>
+counts rows=<number of lines of the station, NA lines included> numeric=<number of numeric times> na=<number of times with reason na> absent=<number of times with reason absent> flat=<number of times with reason flat> spikes=<number of times with reason spike> usable=<n>
+then, for each run that produced flat times in 3(2), in time order, one line:
+flat start=<datetime(u)> end=<datetime(v)> value=<value of the run:3> removed=<v - u>
+then one line:
+spike_test window=<W> candidates=<number of candidates> tested=<number of tested times> prefit_rms=<prefit_rms:4>
+then, for each time with reason spike, in time order, one line:
+spike time=<datetime(t)> value=<h(t):3> residual=<e(t):4> median=<Me:4> mad=<Md:4> limit=<limit:4>
+then, for each gap, in time order, one line (the gap runs from time a to time b):
+gap start=<datetime(a)> end=<datetime(b)> hours=<b - a + 1> cause=<absent, na, flat, spike or mixed>
+
+output/constituents.csv
+The first line is station,constituent,speed,status,amplitude,phase,amplitude_error,phase_error,snr,significant. Then, for each station, one line per constituent in the order of constituents.txt. The status is the one given by the selection used for the fit of section 4. A constituent with status fitted is written as
+<CODE>,<name_i>,<w_i:7>,fitted,<Amp:4>,<g:2>,<amplitude_error:4>,<phase_error:2>,<snr:1>,<yes or no>
+and any other constituent as
+<CODE>,<name_i>,<w_i:7>,<status, for example short or conflict:K1>,,,,,,
+(six commas follow the status).
+
+output/predictions.csv
+The first line is time followed, for every station in station order, by a comma and the station code (example: time,AAA,BBB). Then P + 1 lines for i = 0, 1, ..., P: <datetime(ts + i)> followed, for every station in station order, by a comma and <H(ts + i) of that station:3>.
+
+output/extremes.txt
+For each station, these lines in this order:
+station=<CODE> extremes=<extremes> raw=<raw> removed=<raw - extremes>
+then, for each extremum, in time order, one line:
+<datetime[Mx]> <label: HHW, LHW, HLW or LLW> <z:3> change=<change>
+where change is none for the first extremum of the station and <(z - z of the previous extremum):3> for the others;
+then, for each date of the daily table, in date order, one line:
+day date=<date> high_waters=<number of high waters> low_waters=<number of low waters> hhw=<hhw:3> llw=<llw:3> range=<range:3>
+where a value that is "none" is written as none.
+
+output/summary.txt
+For each station, these lines in this order (the square brackets, as in "[station <CODE>]", are written as they are):
+[station <CODE>] <NAME>
+record first=<datetime(F)> last=<datetime(Lt)> length=<T> usable=<n>
+fit constituents=<K> unknowns=<p> dof=<dof> mean_level=<Z0:4>
+residual rms=<rms:4> max_abs=<max_abs:4> explained_percent=<explained_percent:4> lag1_autocorrelation=<lag1_autocorrelation:4>
+then, for each largest residual, in rank order, one line:
+top_residual rank=<rank> time=<datetime(t)> observed=<h(t):3> fitted=<H(t):4> residual=<r(t):4>
+then these lines:
+validation split=<datetime(mid)> train=<number of training times> test=<nv> constituents=<constituents> rms=<rms:4> in_sample_rms=<in_sample_rms:4> skill=<skill:4>
+form_number=<form_number:4> type=<type>
+ranges spring=<spring:3> neap=<neap:3> mn=<mn:3> gt=<gt:3>
+asymmetry rise_minutes=<rise_minutes:1> fall_minutes=<fall_minutes:1> m4_m2_ratio=<m4_m2_ratio:4> relative_phase=<relative_phase:2> dominance=<flood or ebb>
+datums mhhw=<MHHW:3> mhw=<MHW:3> mtl=<MTL:3> dtl=<DTL:3> mlw=<MLW:3> mllw=<MLLW:3>
+bounds hat=<hat:3> lat=<lat:3>
+window high_waters=<number of high waters> low_waters=<number of low waters> highest=<z of highest:3> highest_time=<datetime[Mx of highest]> lowest=<z of lowest:3> lowest_time=<datetime[Mx of lowest]>
+daily_range widest=<range of widest:3> widest_date=<date of widest> narrowest=<range of narrowest:3> narrowest_date=<date of narrowest>
+exceedance above_mhhw=<above_mhhw:2> below_mllw=<below_mllw:2>
+then, for each spring or neap tide of section 9, in increasing order of q, one line:
+<spring or neap> time=<datetime[floor(t_q * 60 + 1/2)]>
+then one line:
+surges count=<number of residual events> threshold=<Th:3> min_hours=<Hs>
+then, for each residual event, in order of start, one line:
+surge type=<positive or negative> start=<datetime(u)> end=<datetime(v)> hours=<v - u + 1> peak=<r at the peak:4> peak_time=<datetime(time of the peak)>
+then one line:
+daily_mean days=<days> average=<average:4> slope_mm_per_day=<slope_mm_per_day:3> max=<max:4> max_date=<date of max> min=<min:4> min_date=<date of min>
+then, for each date with a daily mean, in date order, one line:
+daily_mean date=<date> level=<level:4> filled=<filled>
+
+After all stations, the following lines:
+[comparison] reference=<Cref>
+then, for each station other than Cref, in station order, the line
+<CODE> tide hw_lag_min=<hw_lag_min:1> lw_lag_min=<lw_lag_min:1> range_ratio=<range_ratio:4> mtl_diff=<mtl_diff:3>
+followed, for each of the constituents M2, S2, K1 and O1 in this order, by the line
+<CODE> <constituent name> amplitude_ratio=<amplitude_ratio:4> phase_diff=<phase_diff:2> time_lag_min=<time_lag_min:1>
+then the line
+[correlation] max_lag=<Lc>
+followed, for each pair (A, B) of section 11, by the line
+<code of A>-<code of B> lag0=<rho(0):4> best_lag=<best_lag> best=<rho(best_lag):4> pairs=<pairs(best_lag)>
+and finally the line
+[plot] station=<Cp> start=<datetime(ts)> hours=<Wp> step_cm=<Zs>
+followed by Nrow lines, one for each row q = 0, ..., Nrow-1: the label of the row, one space, "|", the characters of the cells of columns c = 0, ..., Wp-1 (Wp characters) and "|";
+and by a last line made of as many spaces as the length of a label, one space, "+", then for c = 0, ..., Wp-1 the character "+" if c is a multiple of 6 and "-" otherwise (Wp characters), and "+".
+
+[Source files]
+Split the program into the following six source files (name them according to the conventions of each language).
+- main: the overall flow, from reading the input to writing the five files: the per-station data-check steps, the constituent selection (Rayleigh criterion), the preliminary and final fits, residual statistics, errors and SNR, largest residuals, validation, residual events, daily mean sea level, removal of small extrema, rounding of times, labels and the daily table, tidal characteristics and datums, spring and neap tides, the comparison between stations, the residual cross-correlation, filling the plot cells, and building the lines of every output file. Most of the processing belongs in this file.
+- records: reading and parsing the three files of input/, and conversion between datetimes and times (hours, minutes) in the Gregorian calendar.
+- cleaning: the median, detection of runs of equal values, the spike test on preliminary residuals, and the listing of gaps.
+- harmonic_fit: the angle, the regressor vector, assembly of the normal equations, Gaussian elimination with partial pivoting for several right-hand sides, and the conversion to amplitude and phase.
+- predict: evaluation of the model H(t), and detection of extrema on the grid with parabolic interpolation.
+- report: real-number formatting (rounding, and dropping the "-" of values that round to zero), writing lines to files, and assembling the plot lines.
+
+[Constraints]
+- 2 <= S <= 6, all station codes are different, and every station name has at most 30 characters.
+- 1 <= Q <= 30 and 0 < w_i < 100. Constituents named M2, S2, K1, O1 and M4 exist, and in the given data all five of them are selected at every station by the selection used for the fit of section 4.
+- Every observation time satisfies 0 <= t <= 10000, every observed value has an absolute value less than 10, and F < Lt at every station.
+- 2 <= Lf, 1 <= W, 1 <= C <= 2W + 1, 0 < Ks, 0 < D, 0 < R, 0 < Smin, 1 <= Nr <= n, 0 < Th, 1 <= Hs, 0 < Mr and 0 <= Lc <= 48.
+- P is a multiple of 24 with 24 <= P <= 2400, and Ps is later than every observation time. G divides 60.
+- 1 <= Wp <= P + 1, Zb < Zt, Zs > 0, Zt - Zb is a multiple of Zs, and Nrow <= 60.
+- Every integer that appears in the computation (minute times included) has an absolute value less than 2^31.
+- In the given data, every fit has more times than unknowns (n > p, and for the validation more training times than its p), no M[j][j] of the elimination is zero, no divisor is zero, and every square root is taken of a positive number.
+- In the given data, at every station: the extrema contain at least one high water and at least one low water, at least one low water immediately followed by a high water and at least one high water immediately followed by a low water; the daily table has at least one date whose range is not "none"; the training times and the test times are both non-empty; daily means exist for at least two dates; and pairs(l) >= 2 for every pair of stations and every l.
+- In the given data, every decision that depends on computed real values is clear: the Rayleigh tests, the spike tests, the comparisons of neighbouring grid values y_j, the removal of small extrema, the labels, the choices of maxima and minima (the largest residuals and their order, highest, lowest, widest, narrowest, max and min of the daily means, the peaks of residual events, best_lag), the threshold tests of residual events, significance, the tide type, exceedance, dominance, the range test of spring and neap tides, the floors that decide plot rows, and the wraps of phases at 0/360 and at -180/180. In each of them the two compared values differ by at least max(1, v) * 1e-7, where v is the larger of their absolute values. (Comparisons of integers and of written input values are exact.) For the roundings to whole minutes (Mx and the times of spring and neap tides), the value before rounding differs from every rounding boundary (an integer plus 1/2) by at least 0.001. Every phase of every station and constituent lies between 0.01 and 359.99. Therefore neither the order of summation nor last-bit differences of sin, cos, atan2 or sqrt can change any result.
+- In the given data, every real number that is written differs from every rounding boundary (the midpoint between two neighbouring numbers with d decimals) by at least max(1, v) * 1e-9, where v is its absolute value.
+
+[Example]
+The following only illustrates the formats. All values are made up and are not the correct output for the given input.
+
+input/params.txt (example):
+epoch 2025-01-01 00:00
+station AAA Alpha Point
+station BBB Beta Bay
+reference AAA
+flat_run 3
+spike 3 5 5.0 0.1
+rayleigh 1.0
+snr_min 2.0
+top_residuals 3
+surge 0.2 2
+predict 2025-02-10 00:00 48
+grid_minutes 15
+min_range 0.05
+correlation_lag 4
+plot BBB 24 200 0 25
+
+Beginning of input/constituents.txt (example):
+3
+M2 28.9841042
+K1 15.0410686
+
+Beginning of input/observations.csv (example):
+station,time,level
+AAA,2025-01-01 00:00,1.205
+BBB,2025-01-01 00:00,NA
+AAA,2025-01-01 01:00,-0.042
+
+Part of output/cleaning.txt (example):
+station=AAA name=Alpha Point
+span start=2025-01-01 00:00 end=2025-01-30 23:00 hours=720 record_length=719
+counts rows=700 numeric=695 na=5 absent=20 flat=2 spikes=1 usable=692
+flat start=2025-01-04 10:00 end=2025-01-04 12:00 value=0.512 removed=2
+spike_test window=3 candidates=693 tested=680 prefit_rms=0.0412
+spike time=2025-01-09 05:00 value=2.940 residual=0.8123 median=0.0050 mad=0.0201 limit=0.1490
+gap start=2025-01-02 03:00 end=2025-01-02 05:00 hours=3 cause=absent
+
+Part of output/constituents.csv (example):
+station,constituent,speed,status,amplitude,phase,amplitude_error,phase_error,snr,significant
+AAA,M2,28.9841042,fitted,0.8123,101.25,0.0021,0.15,149620.3,yes
+AAA,P1,14.9589314,conflict:K1,,,,,,
+
+Beginning of output/predictions.csv (example):
+time,AAA,BBB
+2025-02-10 00:00,1.234,0.987
+2025-02-10 01:00,1.102,1.010
+
+Part of output/extremes.txt (example):
+station=AAA extremes=7 raw=9 removed=2
+2025-02-10 03:47 HHW 1.876 change=none
+2025-02-10 10:02 LLW 0.123 change=-1.753
+day date=2025-02-10 high_waters=2 low_waters=1 hhw=1.876 llw=0.123 range=1.753
+day date=2025-02-11 high_waters=1 low_waters=0 hhw=1.540 llw=none range=none
+
+Part of output/summary.txt (example):
+form_number=0.4321 type=mixed_semidiurnal
+neap time=2025-02-11 06:42
+surge type=negative start=2025-01-20 04:00 end=2025-01-20 06:00 hours=3 peak=-0.2512 peak_time=2025-01-20 05:00
+[correlation] max_lag=4
+AAA-BBB lag0=0.6123 best_lag=2 best=0.7001 pairs=650
+[plot] station=BBB start=2025-02-10 00:00 hours=24 step_cm=25
+2.00 |                        |
+1.75 |      *H*               |
+1.50 |     *   *             *|
+1.25 |----*-----*-----------*-|
+1.00 |   *       *         *  |
+0.75 |  *         *       *   |
+0.50 |**           *     *    |
+0.25 |              *L***     |
+0.00 |                        |
+     ++-----+-----+-----+-----+

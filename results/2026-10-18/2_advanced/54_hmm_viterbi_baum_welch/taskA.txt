@@ -1,0 +1,498 @@
+[Overview]
+Using the analysis of searching DNA sequences for CpG islands (regions rich in the bases C and G) as the subject, write a program that trains and evaluates discrete hidden Markov models (HMMs) and assigns a state label to each position of a sequence. The program reads 4 files from the input/ folder (initial model, unlabeled sequences, labeled sequences, parameters) and writes 8 files to the output/ folder. It prints nothing to standard output.
+The processing consists of the following 7 main parts.
+1. Input validation: validate the unlabeled sequences and the labeled sequences, and reject those that do not meet the conditions. Lowercase letters are treated as uppercase letters, and positions holding the missing character are treated as having no observation.
+2. Unsupervised training: starting from the initial model, build 2 models: one with the Baum-Welch method based on the scaled forward-backward algorithm, and one with Viterbi training, which repeats Viterbi decoding and counting.
+3. Supervised training: build a model from the labeled sequences for training by counting with additive smoothing. The smoothing value is selected by cross-validation, and a learning curve is also computed.
+4. Evaluation: with each of the initial model and the 3 trained models, decode the labeled sequences for testing by Viterbi decoding and by posterior decoding, and compute confusion matrices, various metrics, region-level and boundary-level evaluations, and the calibration of the posterior probabilities.
+5. Annotation: decode the unlabeled sequences with the Baum-Welch model, extract candidate island segments, and attach to them a support count from samples of the posterior distribution and a judgement based on base composition. Missing positions are filled with the most likely symbol.
+6. Synthesis: generate sequences from the Baum-Welch model with random numbers (MINSTD) and examine the decoding accuracy.
+7. Diagnostics: summarize the log-likelihood, the stationary distribution, the mean duration, and so on, of each model.
+The number of states, the kinds of symbols, the state that represents islands, and so on, are all given in the input, so the program can be used as it is for symbol sequences other than DNA.
+
+[Input files]
+There are 4 input files: input/model.txt, input/sequences.txt, input/labeled.txt and input/params.txt. Every file consists of ASCII characters only, and every line (including the last one) ends with a line feed (LF). There are no blank lines. Tokens within a line are separated by a single space, and there is no whitespace at the start or end of a line.
+
+* input/model.txt (initial model)
+It consists of exactly 4 + 2K lines, with the following lines in this order (K is the number of states and M is the number of kinds of symbols).
+- Line 1: "STATES" followed by K state names. A state name is one uppercase letter, and the state names are distinct from each other.
+- Line 2: "SYMBOLS" followed by M symbols. A symbol is one uppercase letter, and the symbols are distinct from each other.
+- Line 3: "MISSING" followed by one missing character. The missing character is one uppercase letter, different from every symbol.
+- Line 4: "INITIAL" followed by K weights.
+- The next K lines: "TRANSITION", a state name, and K weights. The state names appear one per line in the order of line 1.
+- The next K lines: "EMISSION", a state name, and M weights. The state names appear one per line in the order of line 1.
+A weight is a positive decimal number, written either as a sequence of digits, or as a sequence of digits, ".", and a sequence of digits concatenated in this order (examples: 0.9, 3, 12.5).
+The sequence of state names on line 1 is called the "state order", and the states are also called state 1, state 2, ..., state K in that order. The sequence of symbols on line 2 is called the "symbol order", and the symbols are also written c1, c2, ..., cM.
+
+* input/sequences.txt (unlabeled sequences)
+Each line holds one sequence in the form "name observation-string".
+- Name: a string of 1 to 16 characters consisting of lowercase letters, digits and "_".
+- Observation string: a string of 1 to 300 characters consisting of English letters (uppercase and lowercase). Lowercase letters are parts that were made lowercase in the original data as a mark of, for example, repeated sequences, and they are treated the same as the corresponding uppercase letters. The string may contain characters other than the symbols and the missing character (such lines are rejected in part 2 of [Processing]).
+
+* input/labeled.txt (labeled sequences)
+Each record is written on 2 lines, and the records are listed one after another.
+- Line 1: "name role observation-string". The formats of the name and the observation string are the same as in sequences.txt. The role is TRAIN (for training) or TEST (for testing).
+- Line 2: the label string. It is a string of 1 to 300 characters consisting of English letters, and lists the correct state name of each position of the observation string in position order.
+
+* input/params.txt (parameters)
+It consists of the following 20 lines in this order. Each line has the form "key value". The smoothing and rich_symbols lines have one or more values, the motif line has exactly 2 values, and every other line has one value.
+- iterations: the number of iterations N. An integer from 1 to 20.
+- pseudocount: the pseudocount p. A positive decimal number.
+- smoothing: the smoothing candidates for supervised training. One or more positive decimal numbers; the order in which they are written is called the "candidate order".
+- folds: the number of cross-validation folds F. An integer >= 2.
+- min_sequence_length: the minimum length of a sequence. An integer >= 1.
+- max_missing_percent: the upper limit of the proportion of missing positions (as a percentage). An integer from 0 to 50.
+- segment_state: the name of the state that represents islands.
+- merge_gap: the upper limit of the gap length for which segments may be merged. An integer >= 0.
+- min_segment_length: the minimum length of a segment. An integer >= 1.
+- motif: the 2-character pair used for the composition judgement. Two symbols (they may be the same symbol).
+- rich_symbols: the set of symbols used for the composition judgement. One or more distinct symbols.
+- min_rich_percent: the lower limit of the proportion of rich_symbols (as a percentage). An integer from 0 to 100.
+- min_motif_percent: the lower limit of the ratio of the observed to the expected number of the pair (as a percentage). An integer from 0 to 1000.
+- confidence: the confidence threshold. A decimal number greater than 0 and less than 1.
+- boundary_tolerance: the upper limit of the distance for which boundaries count as matching. An integer >= 0.
+- posterior_seed: the random seed used for the posterior path samples. An integer from 1 to 2147483646.
+- posterior_samples: the number of posterior path samples per sequence. An integer from 1 to 100.
+- sample_seed: the random seed used for the synthetic sequences. An integer from 1 to 2147483646.
+- sample_count: the number of synthetic sequences. An integer from 1 to 10.
+- sample_length: the length of the synthetic sequences. An integer from 1 to 300.
+The decimal format of pseudocount, smoothing and confidence is the same as that of the weights in model.txt.
+
+[Processing]
+* 1. Terms and common rules
+- Position: the characters of a sequence are specified by positions counted 1, 2, 3, ... from the start. The positions of a sequence of length T are 1 to T.
+- Observation sequence: after converting the lowercase letters of the observation string to uppercase, each position is that symbol if its character is a symbol, and "missing" if it is the missing character. Positions that are not missing are called "observed positions".
+- Path: a sequence that assigns one state to each position of a sequence. The path represented by the label string of a labeled sequence is called the "true path".
+- Run: a maximal range of a path in which the same state continues (a range whose preceding and following positions have a different state or are the ends of the sequence).
+- Sums and products: unless stated otherwise, a sum is computed by starting from 0 and adding one term at a time in increasing order of the index (position order for positions, state order for states, symbol order for symbols, and the order in which the sequences are listed for sequences). A product is computed from left to right in the order written in the formula.
+- log is the natural logarithm.
+- Normalization: to normalize a sequence of real numbers v1, ..., vn means to compute W = v1 + v2 + ... + vn (added from the left) and to replace each vk by vk / W.
+- Model: a set of initial probabilities pi(i), transition probabilities a(i,j) (the probability that state i is followed by state j) and emission probabilities b(i,c) (the probability that symbol c is emitted in state i). Each model has a name.
+- Emission factor: for position t of an observation sequence and state j, the emission factor e(t,j) is b(j,c) if position t is observed and its symbol is c, and 1 if it is missing. The log emission factor l(t,j) is log b(j,c) if observed, and 0 if missing.
+- Model order: the initial model INITIAL, the Baum-Welch model BAUM_WELCH, the Viterbi-training model VITERBI_TRAINING and the supervised model SUPERVISED, listed in this order.
+- Decoder order: VITERBI (Viterbi decoding), then POSTERIOR (posterior decoding).
+- Correct count: when two paths (or state sequences) are compared, the number of positions at which the states are the same.
+
+* 2. Input validation
+Examine the lines of sequences.txt in order from the top. Check (a) to (d) below in the order written, and reject the line with the first one that applies as the reason.
+(a) The name is the same as the name of an earlier line (including rejected lines): the reason is "duplicate name".
+(b) The observation string with its lowercase letters converted to uppercase contains a character that is neither a symbol nor the missing character: the reason is "invalid symbol <character> at position <position>". <character> and <position> are the earliest such character (the character after conversion to uppercase) and its position.
+(c) The length is less than min_sequence_length: the reason is "too short <length>".
+(d) With m the number of missing positions and T the length, 100 * m > max_missing_percent * T: the reason is "too many missing <m>".
+A line to which none of these applies is accepted. The accepted sequences in file order are called the "unlabeled sequences".
+
+Examine the records of labeled.txt in order from the top. Check (a) to (f) below in the order written, and reject the record with the first one that applies as the reason.
+(a) The name is the same as the name of an earlier record (including rejected records): "duplicate name".
+(b) The same as (b) for sequences.txt: "invalid symbol <character> at position <position>".
+(c) The label string contains a character that is not a state name: "invalid label <character> at position <position>". <character> and <position> are the earliest such character and its position in the label string. The label string is not converted to uppercase, so a lowercase letter is never a state name.
+(d) The length A of the observation string and the length B of the label string differ: "length mismatch <A> <B>".
+(e) The same as (c) for sequences.txt: "too short <length>".
+(f) The same as (d) for sequences.txt: "too many missing <m>".
+Among the accepted records, those whose role is TRAIN, in file order, are called the "training records", and those whose role is TEST, in file order, are called the "test records". The names in sequences.txt and the names in labeled.txt are unrelated (the same name may appear in both).
+
+* 3. Initial model
+Let pi(1), ..., pi(K) be the normalized weights of the INITIAL line of model.txt, a(i,1), ..., a(i,K) the normalized weights of the TRANSITION line of state i, and b(i,c1), ..., b(i,cM) the normalized weights of the EMISSION line of state i. This model is called the "initial model" (name INITIAL).
+
+* 4. Scaled forward-backward algorithm
+For a model and an observation sequence of length T, compute the following values.
+- Forward: at position 1, for each state j, F'(1,j) = pi(j) * e(1,j). At position t (2 <= t <= T), F'(t,j) = (sum_i F(t-1,i) * a(i,j)) * e(t,j). At each position t, compute the scale factor s(t) = sum_j F'(t,j), and let F(t,j) = F'(t,j) / s(t).
+- Log-likelihood: log s(1) + log s(2) + ... + log s(T) (added in position order) is called the log-likelihood of the observation sequence. The total log-likelihood of several observation sequences is obtained by adding them in the order in which the observation sequences are listed.
+- Backward: G(T,i) = 1, and for t = T-1, T-2, ..., 1 in this order, G(t,i) = (sum_j a(i,j) * e(t+1,j) * G(t+1,j)) / s(t+1).
+- Posterior probability: gamma(t,i) = F(t,i) * G(t,i). It represents the probability that the state at position t is i.
+- Posterior transition probability (1 <= t <= T-1): xi(t,i,j) = F(t,i) * a(i,j) * e(t+1,j) * G(t+1,j) / s(t+1).
+- Confidence: the confidence of position t is the maximum of gamma(t,1), ..., gamma(t,K).
+
+* 5. Viterbi decoding and posterior decoding
+Viterbi decoding: delta(1,j) = log pi(j) + l(1,j). For t = 2, ..., T in this order, for each state j, let psi(t,j) be the state i for which delta(t-1,i) + log a(i,j) is maximal (if several are maximal, the one earliest in state order), and let delta(t,j) = (delta(t-1,psi(t,j)) + log a(psi(t,j),j)) + l(t,j). The state at position T is the state j with the maximal delta(T,j) (if several are maximal, the earliest one), and for t = T, T-1, ..., 2 in this order, with k the state at position t, the state at position t-1 is psi(t,k). The path obtained this way is called the "Viterbi path", and the maximum of delta(T,1), ..., delta(T,K) is called the "Viterbi log-probability".
+Posterior decoding: the path that selects, at each position t, the state i with the maximal gamma(t,i) (if several are maximal, the earliest one) is called the "posterior path".
+To "decode an observation sequence" means to compute both the Viterbi path and the posterior path.
+
+* 6. Random numbers and drawing
+A random number generator is initialized with a seed x0 and has a state x (initial value x0). Each time one uniform random number is taken, x is updated to (48271 * x) mod 2147483647, and u = x / 2147483647 (real division) is returned.
+A draw from weights w1, ..., wn (non-negative real numbers) works as follows. Compute W = w1 + ... + wn (added from the left), take one uniform random number u, and choose the smallest k for which u * W < Ck, where Ck = w1 + ... + wk (added from the left) is the cumulative sum. If there is no such k, choose n.
+
+* 7. Baum-Welch training
+All unlabeled sequences are used. Let lambda_0 be the initial model; for n = 1, 2, ..., N in this order, build lambda_n from lambda_(n-1) as follows.
+1. For the observation sequence of each unlabeled sequence, compute the forward-backward algorithm with lambda_(n-1).
+2. Compute the expected values g(i) = sum gamma(1,i), x(i,j) = sum xi(t,i,j) (over positions t with 1 <= t <= T-1), and y(i,c) = sum gamma(t,i) (over positions t that are observed with symbol c). Every expected value starts from 0 and is accumulated in the order of the unlabeled sequences, and within each sequence in position order.
+3. The pi(1), ..., pi(K) of lambda_n are (g(1) + p, ..., g(K) + p) normalized, a(i,1), ..., a(i,K) are (x(i,1) + p, ..., x(i,K) + p) normalized, and b(i,c1), ..., b(i,cM) are (y(i,c1) + p, ..., y(i,cM) + p) normalized (p is pseudocount).
+lambda_N is called the "Baum-Welch model" (name BAUM_WELCH). In addition, compute the following values for n = 0, 1, ..., N.
+- L_n: the total log-likelihood of the observation sequences of the unlabeled sequences under lambda_n (for n < N, it can be obtained from the computation of step 1 when building lambda_(n+1) from lambda_n).
+- H_n: the total log-likelihood of the held-out data under lambda_n. The held-out data are the observation sequences of the training records (in training-record order) followed by the observation sequences of the test records (in test-record order).
+- Delta_n = L_n - L_(n-1) (n >= 1).
+- D_n: the maximum, over all probabilities (pi, a, b) of lambda_n and lambda_(n-1), of the absolute value of the difference between corresponding values (n >= 1).
+- Monotonicity check: for n >= 1, iteration n is a "violation" when L_n < L_(n-1) - 0.000001 * |L_(n-1)|. The log-likelihood of this method theoretically never decreases, so a decrease on the order of numerical error is not a violation.
+- Best held-out iteration: the n with the maximal H_n (if several are maximal, the smaller one).
+
+* 8. Estimation by counting
+From a sequence of pairs of an observation sequence and a path, and a positive real number alpha, build a model as follows.
+- n(i): the number of pairs whose path has state i at position 1.
+- n(i,j): the number of (pair, position t) combinations (1 <= t <= T-1) in which the path has state i at position t and state j at position t+1.
+- n(i,c): the number of (pair, position t) combinations in which the path has state i at position t and position t of the observation sequence is observed with symbol c.
+Let pi(1), ..., pi(K) be (n(1) + alpha, ..., n(K) + alpha) normalized, a(i,1), ..., a(i,K) be (n(i,1) + alpha, ..., n(i,K) + alpha) normalized, and b(i,c1), ..., b(i,cM) be (n(i,c1) + alpha, ..., n(i,cM) + alpha) normalized (the real numbers obtained by adding alpha to each count are normalized).
+
+* 9. Viterbi training
+All unlabeled sequences are used. Let mu_0 be the initial model, and compute the Viterbi path under mu_0 of the observation sequence of each unlabeled sequence. Then repeat the following for r = 1, 2, ... in this order.
+1. From the sequence of pairs of the observation sequence of each unlabeled sequence and its most recently computed Viterbi path, build mu_r by counting with alpha = p (pseudocount).
+2. Recompute the Viterbi path of the observation sequence of each unlabeled sequence under mu_r. The number of positions whose state differs from the previous Viterbi path, summed over all sequences, is called the "change count".
+3. Stop if the change count is 0 or r = N.
+The last mu_r built is called the "Viterbi-training model" (name VITERBI_TRAINING), and the r at that time is the number of iterations. If the last change count is 0, the training has "converged".
+
+* 10. Supervised training
+- Cross-validation: number the training records 0, 1, 2, ... from the start, and let fold f (f = 1, ..., F) be the records whose number leaves the remainder f-1 when divided by F. For each smoothing candidate a, and for each f = 1, ..., F, build a model by counting with alpha = a from the pairs of the observation sequence and the true path of the training records not in fold f, Viterbi-decode the observation sequence of each record of fold f with that model, and compute the correct count against the true path. Select the candidate with the largest total correct count over all folds (if several are largest, the one earliest in candidate order).
+- Supervised model: the model built by counting, with the selected candidate as alpha, from the pairs of the observation sequence and the true path of all training records is called the "supervised model" (name SUPERVISED).
+- Learning curve: for r = 1, 2, ..., (the number of training records), build a model by counting, with the selected candidate as alpha, from the pairs of the first r training records, Viterbi-decode the observation sequences of all test records with that model, and compute the total correct count against the true paths.
+
+* 11. Segment extraction
+Extract "segments" from a path by the following procedure. A segment is a pair of a start position and an end position, and its length is (end position - start position + 1).
+1. List the runs whose state is segment_state in position order.
+2. The first run becomes the first segment. Look at the second and later runs in order; with e the end position of the previous segment and s the start position of the run, if s - e - 1 <= merge_gap, replace the end position of the previous segment with the end position of the run (merge); otherwise the run becomes a new segment.
+3. Keep only the segments whose length is min_segment_length or more.
+A merged segment may contain positions whose state is not segment_state.
+
+* 12. Judgement by composition
+For a segment of an observation sequence (start position s, end position e), count the following integers.
+- n: the number of observed positions in the segment.
+- r: the number of observed positions in the segment whose symbol is one of rich_symbols.
+- q: the number of positions t with s <= t < e such that the symbol at position t is the first character of motif and the symbol at position t+1 is the second character of motif (both positions being observed).
+- k1, k2: the number of observed positions in the segment whose symbol is the first character of motif, and the number whose symbol is the second character.
+The "rich fraction" is r / n (undefined when n = 0), and the "pair ratio" is (q * n) / (k1 * k2) (undefined when k1 * k2 = 0). When all of k1 * k2 > 0, 100 * r >= min_rich_percent * n and 100 * q * n >= min_motif_percent * k1 * k2 hold, the segment is judged to be an "island" (these 3 comparisons are done in integers). The pair ratio corresponds to the "observed-to-expected ratio of CG" used to identify CpG islands.
+
+* 13. Evaluation on the test records
+With each of the 4 models in model order, decode the observation sequence of each test record, and for each of the 2 decoders in decoder order, compare the true path of the test record with the decoded path (the Viterbi path or the posterior path) and compute the following.
+- Confusion matrix: C(i,j), the number of positions whose true state is i and whose decoded state is j, summed over all test records.
+- Accuracy: (C(1,1) + ... + C(K,K)) / Z. Z is the sum of all elements of the confusion matrix (here, the total number of positions of all test records).
+- Kappa coefficient: with R(i) = sum_j C(i,j), P(i) = sum_j C(j,i) and S = sum_i R(i) * P(i), it is (Z * (C(1,1) + ... + C(K,K)) - S) / (Z * Z - S).
+- For state i, the precision C(i,i) / P(i), the recall C(i,i) / R(i) and the F1 score (2 * C(i,i)) / (P(i) + R(i)).
+- Region evaluation: for each test record, the predicted regions are the segments (section 11) of the decoded path, and the true regions are the runs of the true path whose state is segment_state (with neither merging nor a length limit). Two regions "overlap" when they share at least one position. Sum over all test records the number of predicted regions, the number of true regions, the number of predicted regions that overlap some true region, and the number of true regions that overlap some predicted region, and compute the precision (number of overlapping predicted regions / number of predicted regions) and the recall (number of overlapping true regions / number of true regions).
+- Boundary evaluation: a boundary of a path is a position t with 2 <= t <= T such that the states at positions t-1 and t differ. For each test record, a predicted boundary (a boundary of the decoded path) t for which at least one boundary t' of the true path satisfies |t - t'| <= boundary_tolerance is a "matched predicted boundary". Likewise, a true boundary for which at least one predicted boundary lies within distance boundary_tolerance of it is a "matched true boundary". Sum over all test records the number of predicted boundaries, the number of true boundaries, and the numbers of matched boundaries of each kind, and compute the precision (number of matched predicted boundaries / number of predicted boundaries) and the recall (number of matched true boundaries / number of true boundaries).
+- Calibration (computed only for posterior decoding): for each position of the test records, with m its confidence, compute b = floor(10 * m) (if b is 10 or more, use 9), and for each b count the number of positions and the number of those positions at which the state of the posterior path equals the true state.
+- The correct count of each test record.
+
+* 14. Annotation of the unlabeled sequences
+The Baum-Welch model is used. Prepare one generator seeded with posterior_seed, and compute the following for each sequence, in the order of the unlabeled sequences.
+- The log-likelihood of the observation sequence, the Viterbi path, the Viterbi log-probability, the posterior path, and the confidence of each position.
+- Difference count: the number of positions at which the states of the Viterbi path and the posterior path differ.
+- Uncertain count: the number of positions whose confidence is less than confidence.
+- Posterior path samples: using the generator, build posterior_samples paths one at a time in order. One path is built by first determining the state at position T by a draw from the weights F(T,1), ..., F(T,K), and then, for t = T-1, T-2, ..., 1 in this order, with j the state at position t+1, determining the state at position t by a draw from the weights F(t,1) * a(1,j), ..., F(t,K) * a(K,j). Paths built this way follow the posterior distribution of paths given the observation sequence. The samples are built even for a sequence that has no segment.
+- Expected segment count: (the total number of segments (section 11) of the sample paths) / posterior_samples.
+- Imputation: for each missing position t, compute sum_i gamma(t,i) * b(i,c) for each symbol c in symbol order, and let the symbol for which it is maximal (if several are maximal, the one earliest in symbol order) be the imputed symbol of that position.
+- Segment list: for each of the segments of the Viterbi path and the segments of the posterior path, the mean posterior probability (the sum of gamma(t,<segment_state>) from the start position s to the end position e of the segment, computed in position order, divided by the length of the segment), the support count (the number of sample paths in which twice the number of positions in the segment whose state is segment_state is greater than the length of the segment), and the judgement by composition (section 12).
+
+* 15. Synthetic sequences
+Using the Baum-Welch model and one generator seeded with sample_seed, build sample_count sequences in order. One sequence is built for positions 1, 2, ..., sample_length in this order by first drawing the state (at position 1 using the weights pi(1), ..., pi(K); at position t >= 2, with i the state at position t-1, using the weights a(i,1), ..., a(i,K)) and then drawing a symbol from the weights b(j,c1), ..., b(j,cM) of that state j. Decode the resulting symbol sequence (which has no missing positions) as an observation sequence with the same model, and for each of the Viterbi path and the posterior path compute the correct count against the generated state sequence.
+
+* 16. Model diagnostics
+For each of the 4 models in model order, compute the following.
+- The total log-likelihood L of the observation sequences of the unlabeled sequences, the log-likelihood per observed position L / (the total number of observed positions of the unlabeled sequences), and the total log-likelihood of the observation sequences of the test records.
+- Stationary distribution: phi(1), ..., phi(K) satisfying sum_i phi(i) * a(i,j) = phi(j) for every state j and phi(1) + ... + phi(K) = 1. Since all transition probabilities are positive, it is uniquely determined. Compute it by solving this system of linear equations with a direct method such as Gaussian elimination (an iterative method that repeatedly multiplies phi by the transition probabilities must not be used, because some models converge slowly). With any direct method, the printed digits do not change even if the order of elimination and so on differs.
+- Mean duration: for state i, 1 / (1 - a(i,i)).
+- For the paths obtained by Viterbi-decoding the observation sequences of the unlabeled sequences with the model: the occupancy of each state (number of positions in that state / total number of positions) and its mean run length (number of positions in that state / number of runs of that state), the number of segments, the mean segment length (total length of the segments / number of segments), and the number of segments judged to be islands.
+- State alignment: Viterbi-decode the observation sequences of the training records with the model, and build the confusion matrix C(i,j) of true state against decoded state (in the same orientation as section 13). Among the state permutations sigma (which map each model state j one-to-one to a true state sigma(j)), select the one with the maximal agreement count C(sigma(1),1) + ... + C(sigma(K),K) (if several are maximal, the smallest when (sigma(1), ..., sigma(K)) are compared lexicographically as sequences of state numbers).
+In addition, compute the following.
+- Preference: for each unlabeled sequence, select the model under which the log-likelihood of its observation sequence is maximal (if several are maximal, the one earliest in model order), and count for each model the number of sequences that selected it.
+- Agreement rate: for each pair of 2 models, (the total correct count obtained by comparing the Viterbi paths of the unlabeled sequences under the two models) / (the total number of positions of the unlabeled sequences).
+- Best model: for each decoder, the model with the largest total correct count on the test records (if several are largest, the one earliest in model order).
+- Truth statistics: for each of the true paths of the training records and the true paths of the test records, the occupancy and the mean run length of each state.
+- Symbol composition: among the observed positions of the unlabeled sequences, the proportion of positions holding each symbol.
+
+[Output files]
+The output files are the following 8 files in the output/ folder.
+
+* Common format
+- Every file consists of ASCII characters only, and every line (including the last one) ends with a line feed (LF). No whitespace is added at the end of a line. Blank lines appear only where the description of each file specifies them. Unless stated otherwise, the separator within a line is a single space.
+- A <real> is written in fixed-point notation rounded to 4 decimal places (6 places only for max_change in loglik_trace.csv) (examples: -1.3652, 0.0800, 12.5000). A negative value is preceded by "-". However, when all digits of the rounded result are 0, no "-" is written. Log-likelihoods (including their totals and differences), Viterbi log-probabilities (including their totals), probabilities, stationary distributions, proportions, occupancies, ratios, means and expected segment counts are all written as <real>.
+- A <fraction> is written as "x/y", where the numerator x and the denominator y (y > 0) have been reduced by dividing them by their greatest common divisor (examples: 12/16 is written 3/4, 0/5 is written 0/1, 7/7 is written 1/1). When the numerator is negative, reduce using the absolute value of the numerator and prefix "-". When the denominator is 0, write "-". Accuracies, kappa coefficients, precisions, recalls, F1 scores, agreement rates, and the agreement on the ALIGNMENT line of report.txt are all written as <fraction>.
+- Integers are written in decimal notation without extra leading zeros.
+- Paths and state sequences are written as the state names, and symbol sequences as the symbols, concatenated in position order without separators.
+- A <candidate> is a smoothing value written exactly as written in params.txt.
+
+* output/trained_model.txt
+Write the 3 models BAUM_WELCH, VITERBI_TRAINING and SUPERVISED in this order, with one blank line between consecutive models. One model is the following 5 + 2K lines.
+MODEL <model name>
+STATES <state name> ... (in state order)
+SYMBOLS <symbol> ... (in symbol order)
+MISSING <missing character>
+INITIAL <pi(1)> ... <pi(K)>
+TRANSITION <name of state i> <a(i,1)> ... <a(i,K)> (K lines, for i = 1, ..., K)
+EMISSION <name of state i> <b(i,c1)> ... <b(i,cM)> (K lines, for i = 1, ..., K)
+
+* output/loglik_trace.csv
+The record of Baum-Welch training. The field separator is ",". Line 1 is the header "iteration,loglik,heldout,change,max_change,status", followed by one line for each n = 0, 1, ..., N in this order.
+- The line for n = 0: "0,<L_0>,<H_0>,,," (the last 3 fields are empty).
+- The line for n >= 1: "<n>,<L_n>,<H_n>,<Delta_n>,<D_n>,<status>". <D_n> is a <real> with 6 decimal places, and <status> is violation if iteration n is a violation and ok otherwise.
+
+* output/viterbi_trace.csv
+The record of Viterbi training. The field separator is ",". Line 1 is the header "iteration,logprob,loglik,changed", followed, for r = 0, 1, ..., (the number of iterations) in this order, by one line "<r>,<total Viterbi log-probability>,<total log-likelihood>,<change count>" each. r = 0 gives the values for mu_0 (the initial model), and r >= 1 those for mu_r. The total Viterbi log-probability is the Viterbi log-probabilities of the unlabeled sequences under that model added in the order of the unlabeled sequences, and the total log-likelihood is the total log-likelihood of the observation sequences of the unlabeled sequences under that model. The <change count> field of the r = 0 line is left empty (the line ends with ",").
+
+* output/decodings.txt
+In the order of the unlabeled sequences, write the following 5 lines per sequence.
+SEQUENCE <name> length <length> loglik <log-likelihood> viterbi <Viterbi log-probability> differences <difference count> uncertain <uncertain count> expected_segments <expected segment count>
+VITERBI <Viterbi path>
+POSTERIOR <posterior path>
+CONFIDENT <the posterior path with the state name at each position whose confidence is less than confidence replaced by ".">
+IMPUTED <the observation sequence written with each observed position as its symbol and each missing position as the lowercase letter of its imputed symbol>
+
+* output/segments.csv
+The field separator is ",". Line 1 is the header "sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island". Then, in the order of the unlabeled sequences, write for each sequence the segments of the Viterbi path in order of start position, followed by the segments of the posterior path in order of start position, one line per segment with the following 10 fields.
+<name>, <viterbi for a segment of the Viterbi path, posterior for a segment of the posterior path>, <start position>, <end position>, <length>, <mean posterior probability>, <support count>, <rich fraction>, <pair ratio>, <yes if an island, no otherwise>
+When the rich fraction or the pair ratio is undefined, write "-".
+
+* output/samples.txt
+In the order in which the synthetic sequences were built, write the following 5 lines per sequence, and finally write one total line.
+SAMPLE <number> loglik <log-likelihood> viterbi <Viterbi log-probability> viterbi_correct <correct count of the Viterbi path> posterior_correct <correct count of the posterior path>
+STATES <generated state sequence>
+SYMBOLS <generated symbol sequence>
+VITERBI <Viterbi path>
+POSTERIOR <posterior path>
+Numbers start from 1. The last line is "TOTAL positions <total number of positions> viterbi_accuracy <fraction> posterior_accuracy <fraction>", where the two fractions are the total correct count of the Viterbi paths and of the posterior paths, respectively, divided by the total number of positions.
+
+* output/evaluation.txt
+Write the following blocks in this order, with one blank line between consecutive blocks.
+- 8 evaluation blocks: for each model in model order, write VITERBI then POSTERIOR.
+- The cross-validation block.
+- The learning-curve block.
+An evaluation block consists of the following lines.
+EVALUATION <model name> <VITERBI or POSTERIOR>
+<the K+1 lines of the confusion matrix>
+ACCURACY <accuracy>
+KAPPA <kappa coefficient>
+STATE <state name> precision <precision> recall <recall> f1 <F1 score> (K lines, in state order)
+REGIONS <segment_state> predicted <number of predicted regions> true <number of true regions> precision <precision> recall <recall>
+BOUNDARIES predicted <number of predicted boundaries> true <number of true boundaries> precision <precision> recall <recall>
+CALIBRATION <range> positions <number of positions> correct <correct count> accuracy <fraction> (written only in POSTERIOR blocks; one line for each b whose number of positions is 1 or more, in increasing order of b)
+RECORD <name> length <length> correct <correct count> (one line per test record, in test-record order)
+The <range> of CALIBRATION is "0.<b>-0.<b+1>" when b is 0 to 8, and "0.9-1.0" when b is 9 (example: 0.7-0.8 for b = 7). accuracy is correct count / number of positions.
+Format of the confusion matrix: let w be the maximum number of digits among all C(i,j) written in decimal. The first line is a single space followed, for each state in state order, by "a single space and the state name right-aligned to width w". Each of the next K lines is, for each state i in state order, the name of state i followed, for each state j in state order, by "a single space and C(i,j) right-aligned to width w". Right alignment pads on the left with spaces.
+The cross-validation block consists of the following lines.
+CROSS_VALIDATION folds <F>
+SMOOTHING <candidate> positions <number of positions> correct <correct count> accuracy <fraction> (one line per candidate, in candidate order; the number of positions is the total number of positions of all training records, and the correct count is the total correct count over all folds)
+SELECTED <selected candidate>
+FOLD <f> records <number of records of fold f> positions <total number of positions of fold f> correct <correct count of fold f> accuracy <fraction> (for the selected candidate, one line for each f = 1, ..., F in this order)
+<the K+1 lines of the confusion matrix>
+ACCURACY <accuracy>
+KAPPA <kappa coefficient>
+STATE <state name> precision <precision> recall <recall> f1 <F1 score> (K lines, in state order)
+The last K+3+K lines are the confusion matrix built from the Viterbi paths and the true paths of all folds for the selected candidate, together with its metrics, in the same format as in an evaluation block.
+The learning-curve block has "LEARNING_CURVE" as its first line, followed, for r = 1, 2, ..., (the number of training records) in this order, by one line "RECORDS <r> correct <correct count> accuracy <fraction>" each (the fraction is correct count / total number of positions of all test records).
+
+* output/report.txt
+Write the 6 blocks, the input block, the training block and the 4 model blocks (in model order), in this order, with one blank line between consecutive blocks.
+The input block consists of the following lines.
+INPUT
+SEQUENCES accepted <number of accepted lines> rejected <number of rejected lines> positions <total number of positions of the unlabeled sequences> missing <number of missing positions among them>
+LABELED train <number of training records> test <number of test records> rejected <number of rejected records> positions <total number of positions of the training records and the test records> missing <number of missing positions among them>
+REJECT <file name> line <line number> <name> <reason> (one line per rejected line or record; those of sequences.txt in line order, followed by those of labeled.txt in record order)
+COMPOSITION <symbol c1> <proportion> <symbol c2> <proportion> ... <symbol cM> <proportion>
+TRUTH TRAIN <state name> occupancy <occupancy> mean_run <mean run length> (K lines in state order, for the true paths of the training records)
+TRUTH TEST <state name> occupancy <occupancy> mean_run <mean run length> (K lines in state order, for the true paths of the test records)
+<file name> is sequences.txt or labeled.txt, and <line number> is the line number counted with the first line of the file as line 1 (for labeled.txt, the line number of the first line of the record). When there are no runs, the mean run length is written as "-".
+The training block consists of the following lines.
+TRAINING BAUM_WELCH iterations <N> initial_loglik <L_0> final_loglik <L_N> violations <number of violations> best_heldout_iteration <best held-out iteration>
+TRAINING VITERBI_TRAINING iterations <number of iterations> converged <yes if converged, no otherwise>
+TRAINING SUPERVISED smoothing <selected candidate>
+PREFERENCE INITIAL <count> BAUM_WELCH <count> VITERBI_TRAINING <count> SUPERVISED <count>
+AGREEMENT <model name> <model name> <agreement rate> (6 lines: the pairs INITIAL and BAUM_WELCH, INITIAL and VITERBI_TRAINING, INITIAL and SUPERVISED, BAUM_WELCH and VITERBI_TRAINING, BAUM_WELCH and SUPERVISED, VITERBI_TRAINING and SUPERVISED, in this order, each with the names written in this order)
+BEST VITERBI <model name> accuracy <accuracy>
+BEST POSTERIOR <model name> accuracy <accuracy>
+The accuracy on a BEST line is the total correct count of the best model on the test records / the total number of positions of all test records.
+A model block consists of the following lines.
+MODEL <model name>
+LOGLIK unlabeled <L> per_symbol <log-likelihood per observed position> test <total log-likelihood of the observation sequences of the test records>
+SEGMENTS count <number of segments> mean_length <mean segment length> islands <number of segments judged to be islands>
+ALIGNMENT <name of state 1>=<name of state sigma(1)> ... <name of state K>=<name of state sigma(K)> agreement <agreement count / total number of positions of the training records>
+STATE <name of state i> stationary <phi(i)> duration <mean duration> occupancy <occupancy> mean_run <mean run length> (K lines, for i = 1, ..., K)
+mean_length is written as "-" when there are no segments, and mean_run as "-" when there are no runs. No whitespace is placed before or after the "=" of ALIGNMENT.
+
+[Source files]
+Split the source code into files with the following 6 roles (file names and extensions follow the conventions of each language).
+- main: the overall flow and the largest share of the processing. Interpreting the parameters, validating and rejecting sequences and records, the iterations and records of Baum-Welch training (held-out log-likelihood, maximum change, monotonicity check, best held-out iteration), the iterations and convergence test of Viterbi training, the selection of the smoothing by cross-validation and the learning curve, segment extraction and merging, the judgement by composition, assembling the evaluation blocks (including regions, boundaries and calibration), the annotation of the unlabeled sequences (posterior path samples, expected segment count, support count, imputation), the evaluation of the synthetic sequences, diagnostics such as the stationary distribution, state alignment, preference and agreement rates, and assembling the lines of all output files.
+- model_io: the model data structure, normalization, reading the 4 input files and splitting them into lines and tokens, formatting <real>, formatting the model blocks, and writing a sequence of lines to a file.
+- inference: emission factors, the scaled forward-backward algorithm, posterior probabilities, Viterbi decoding, and selecting the index that gives the maximum.
+- training: one Baum-Welch re-estimation (accumulating the expected values and normalizing), estimation by counting, and the total log-likelihood of a sequence of observation sequences.
+- evaluation: formatting <fraction>, accumulating and formatting confusion matrices, the lines of accuracy, kappa coefficient and per-state metrics, extracting runs, and deciding region overlap and boundary matching.
+- sampler: the MINSTD generator, weighted drawing, generating synthetic sequences, and generating posterior path samples.
+
+[Constraints]
+- 2 <= K <= 4 and 2 <= M <= 8.
+- sequences.txt has at most 30 lines, and labeled.txt has at most 30 records.
+- There is at least one unlabeled sequence, one training record and one test record, and the number of training records is F or more.
+- The input files correctly follow the formats in [Input files]. The only errors to be detected are those listed in part 2 of [Processing].
+- Every integer appearing in the computation (including intermediate values) is less than 2^31. However, the MINSTD product 48271 * x can be 2^31 or more, and is less than 2^53.
+- In the given data, the comparisons in Viterbi decoding, the selection of the maximum in posterior decoding and imputation, the comparison of confidence values with confidence, the boundaries of b in calibration, the comparison of u * W with the cumulative sums in drawing, the selection of the preference and of the best held-out iteration, and the monotonicity check all involve differences sufficiently larger than 1e-9, and every printed real number is at least 1e-9 away from a rounding boundary. Therefore the output does not change even if the order of adding sums or the last digit of log values differs slightly between runtime environments.
+- One iteration of Baum-Welch training requires about K * K operations for each position of the unlabeled sequences and the held-out data.
+
+[Example]
+(A small example, different from the actual input.)
+input/model.txt:
+STATES H L
+SYMBOLS A C G T
+MISSING N
+INITIAL 1 1
+TRANSITION H 0.8 0.2
+TRANSITION L 0.15 0.85
+EMISSION H 0.1 0.4 0.35 0.15
+EMISSION L 0.3 0.2 0.15 0.35
+
+input/sequences.txt:
+s1 ATTACGCGGCGCATTATAAT
+s2 TAAtcgcgNcgcGCAATTA
+s3 ACGT
+s4 GGCGCCGATATTTACCGCG
+
+input/labeled.txt:
+t1 TRAIN ATACGCGCGGCATTAT
+LLLHHHHHHHHLLLLL
+t2 TRAIN TTACGGCGCAATN
+LLLHHHHHHLLLL
+u1 TEST AATCGCGACGTTAA
+LLLHHHHHHHHLLL
+
+input/params.txt:
+iterations 3
+pseudocount 0.5
+smoothing 0.2 1
+folds 2
+min_sequence_length 8
+max_missing_percent 10
+segment_state H
+merge_gap 1
+min_segment_length 3
+motif C G
+rich_symbols C G
+min_rich_percent 50
+min_motif_percent 60
+confidence 0.97
+boundary_tolerance 1
+posterior_seed 1
+posterior_samples 4
+sample_seed 7
+sample_count 1
+sample_length 12
+
+output/trained_model.txt (only the first model is shown; it is followed by a blank line and the VITERBI_TRAINING and SUPERVISED models):
+MODEL BAUM_WELCH
+STATES H L
+SYMBOLS A C G T
+MISSING N
+INITIAL 0.3734 0.6266
+TRANSITION H 0.8761 0.1239
+TRANSITION L 0.1357 0.8643
+EMISSION H 0.0344 0.4804 0.4647 0.0206
+EMISSION L 0.4611 0.0405 0.0233 0.4751
+
+output/loglik_trace.csv:
+iteration,loglik,heldout,change,max_change,status
+0,-74.7001,-57.2647,,,
+1,-68.7864,-53.7847,5.9137,0.089602,ok
+2,-64.5427,-51.8079,4.2437,0.055374,ok
+3,-62.9498,-51.3083,1.5929,0.027215,ok
+
+output/viterbi_trace.csv:
+iteration,logprob,loglik,changed
+0,-82.1338,-74.7001,
+1,-62.3063,-61.8267,0
+
+output/decodings.txt (only the 5 lines of the second sequence s2 are shown):
+SEQUENCE s2 length 19 loglik -20.0020 viterbi -20.3431 differences 0 uncertain 4 expected_segments 1.0000
+VITERBI LLLLHHHHHHHHHHLLLLL
+POSTERIOR LLLLHHHHHHHHHHLLLLL
+CONFIDENT LLL..HHHHHHHH..LLLL
+IMPUTED TAATCGCGcCGCGCAATTA
+
+output/segments.csv:
+sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island
+s1,viterbi,5,12,8,0.9791,4,1.0000,1.5000,yes
+s1,posterior,5,12,8,0.9791,4,1.0000,1.5000,yes
+s2,viterbi,5,14,10,0.9801,4,1.0000,1.8000,yes
+s2,posterior,5,14,10,0.9801,4,1.0000,1.8000,yes
+s4,viterbi,1,7,7,0.9893,4,1.0000,1.1667,yes
+s4,viterbi,15,19,5,0.9806,4,1.0000,1.6667,yes
+s4,posterior,1,7,7,0.9893,4,1.0000,1.1667,yes
+s4,posterior,15,19,5,0.9806,4,1.0000,1.6667,yes
+
+output/samples.txt:
+SAMPLE 1 loglik -14.0914 viterbi -14.6536 viterbi_correct 12 posterior_correct 12
+STATES HHHHHHHHHHHH
+SYMBOLS GCCGCGGGGGTG
+VITERBI HHHHHHHHHHHH
+POSTERIOR HHHHHHHHHHHH
+TOTAL positions 12 viterbi_accuracy 1/1 posterior_accuracy 1/1
+
+output/evaluation.txt (only the 1st and 4th evaluation blocks, the cross-validation block and the learning-curve block are shown):
+EVALUATION INITIAL VITERBI
+  H L
+H 0 8
+L 0 6
+ACCURACY 3/7
+KAPPA 0/1
+STATE H precision - recall 0/1 f1 0/1
+STATE L precision 3/7 recall 1/1 f1 3/5
+REGIONS H predicted 0 true 1 precision - recall 0/1
+BOUNDARIES predicted 0 true 2 precision - recall 0/1
+RECORD u1 length 14 correct 6
+
+EVALUATION BAUM_WELCH POSTERIOR
+  H L
+H 7 1
+L 0 6
+ACCURACY 13/14
+KAPPA 6/7
+STATE H precision 1/1 recall 7/8 f1 14/15
+STATE L precision 6/7 recall 1/1 f1 12/13
+REGIONS H predicted 1 true 1 precision 1/1 recall 1/1
+BOUNDARIES predicted 2 true 2 precision 1/1 recall 1/1
+CALIBRATION 0.7-0.8 positions 1 correct 1 accuracy 1/1
+CALIBRATION 0.9-1.0 positions 13 correct 12 accuracy 12/13
+RECORD u1 length 14 correct 13
+
+CROSS_VALIDATION folds 2
+SMOOTHING 0.2 positions 29 correct 29 accuracy 1/1
+SMOOTHING 1 positions 29 correct 29 accuracy 1/1
+SELECTED 0.2
+FOLD 1 records 1 positions 16 correct 16 accuracy 1/1
+FOLD 2 records 1 positions 13 correct 13 accuracy 1/1
+   H  L
+H 14  0
+L  0 15
+ACCURACY 1/1
+KAPPA 1/1
+STATE H precision 1/1 recall 1/1 f1 1/1
+STATE L precision 1/1 recall 1/1 f1 1/1
+
+LEARNING_CURVE
+RECORDS 1 correct 13 accuracy 13/14
+RECORDS 2 correct 12 accuracy 6/7
+
+output/report.txt (only the input block, the training block and the BAUM_WELCH model block are shown):
+INPUT
+SEQUENCES accepted 3 rejected 1 positions 58 missing 1
+LABELED train 2 test 1 rejected 0 positions 43 missing 1
+REJECT sequences.txt line 3 s3 too short 4
+COMPOSITION A 0.2456 C 0.2632 G 0.2456 T 0.2456
+TRUTH TRAIN H occupancy 0.4828 mean_run 7.0000
+TRUTH TRAIN L occupancy 0.5172 mean_run 3.7500
+TRUTH TEST H occupancy 0.5714 mean_run 8.0000
+TRUTH TEST L occupancy 0.4286 mean_run 3.0000
+
+TRAINING BAUM_WELCH iterations 3 initial_loglik -74.7001 final_loglik -62.9498 violations 0 best_heldout_iteration 3
+TRAINING VITERBI_TRAINING iterations 1 converged yes
+TRAINING SUPERVISED smoothing 0.2
+PREFERENCE INITIAL 0 BAUM_WELCH 0 VITERBI_TRAINING 1 SUPERVISED 2
+AGREEMENT INITIAL BAUM_WELCH 1/1
+AGREEMENT INITIAL VITERBI_TRAINING 1/1
+AGREEMENT INITIAL SUPERVISED 1/1
+AGREEMENT BAUM_WELCH VITERBI_TRAINING 1/1
+AGREEMENT BAUM_WELCH SUPERVISED 1/1
+AGREEMENT VITERBI_TRAINING SUPERVISED 1/1
+BEST VITERBI BAUM_WELCH accuracy 13/14
+BEST POSTERIOR BAUM_WELCH accuracy 13/14
+
+MODEL BAUM_WELCH
+LOGLIK unlabeled -62.9498 per_symbol -1.1044 test -18.6977
+SEGMENTS count 4 mean_length 7.5000 islands 4
+ALIGNMENT H=H L=L agreement 1/1
+STATE H stationary 0.5228 duration 8.0741 occupancy 0.5172 mean_run 7.5000
+STATE L stationary 0.4772 duration 7.3698 occupancy 0.4828 mean_run 5.6000
+
+In this example, s3 is rejected because its length 4 is less than min_sequence_length 8, so the unlabeled sequences are the 3 sequences s1, s2 and s4. The lowercase letters of s2 are treated as uppercase letters, and the imputed symbol C is obtained for the missing character N at position 9, so position 9 is c on the IMPUTED line. With Viterbi decoding under the initial model, every position of the test record u1 becomes L, so in the first evaluation block the denominators of the precision of state H and of the precisions of REGIONS and BOUNDARIES are 0, and these are written as "-".

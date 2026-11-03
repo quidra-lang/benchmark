@@ -1,0 +1,278 @@
+[Overview]
+Write a program that simulates dependency resolution in a package manager. The program reads a sequence of commands from standard input, executes them one at a time from the first, and writes the results to standard output. Each version of a package has a number in the form of Semantic Versioning (SemVer) (e.g. 1.4.2, 2.0.0-beta.1), and declares the packages it depends on and the packages it conflicts with by constraints that express ranges of versions (e.g. "^1.2.0", ">=1.0.0 <2.0.0 || 3.x"). The features covered are: comparing versions and interpreting constraints, registering and yanking packages, resolving install requests by backtracking, displaying install plans, explaining why resolution is impossible, removing packages and cleaning up packages that are no longer needed, upgrading, holding versions, rolling back the history, displaying why a package is installed, dependency trees, packages that can be updated, and lock contents, and auditing and fixing based on vulnerability advisories.
+
+[Input format]
+The first line contains N, the number of commands, and each of the following N lines contains one command. Each line consists of a command name followed by zero or more arguments, separated by single spaces. There is no whitespace at the start or end of a line, and there are no empty lines. There are the following 23 command forms ([ ] denotes an optional part).
+PKG name version
+YANK name version
+INFO name version
+VERSIONS name [constraint]
+DEPENDENTS name [version]
+COMPARE version1 version2
+MATCH version constraint
+RANGE constraint
+INSTALL name [constraint]
+SIMULATE name [constraint]
+REMOVE name
+UPGRADE [name]
+ROLLBACK
+HOLD name
+UNHOLD name
+WHY name
+TREE [name]
+OUTDATED
+LOCK
+STATUS
+ADVISORY id name constraint
+AUDIT
+AUDIT FIX
+
+A PKG line may have, after the form above, zero or more "clauses", each written after "; " (a semicolon and one space). A clause has the form "DEP name constraint" (a dependency declaration) or "CONFLICT name constraint" (a conflict declaration). For example, "PKG tls 2.0.0; DEP crypto ^2.0.0; DEP log >=1.5.0 <3" is a PKG line with two DEP clauses. AUDIT FIX is AUDIT followed by the string FIX.
+
+Arguments are written as follows.
+- name is a package name. A package name is a string of 1 to 12 characters that starts with a lowercase letter (a-z) and consists only of lowercase letters and digits (0-9).
+- id is an advisory identifier. An identifier is a string of 1 to 12 characters that starts with an uppercase letter (A-Z) and consists only of uppercase letters, digits and "-".
+- version, version1 and version2 are strings of 1 to 20 characters consisting of printable ASCII characters (character codes 33 to 126) excluding space and ";". They are not necessarily in the valid form of a version (see "Versions" in [Processing]).
+- constraint is a string of 1 to 50 characters consisting of printable ASCII characters (character codes 32 to 126) excluding ";"; its first and last characters are not spaces, and it never contains two or more consecutive spaces. A constraint may contain spaces in the middle. On RANGE, MATCH, VERSIONS, INSTALL, SIMULATE and ADVISORY lines, the constraint is the entire rest of the line after the single space that follows the command name or argument immediately preceding the constraint. In a PKG clause, the constraint is the entire rest of the clause (up to just before the next "; ", or up to the end of the line) after the single space that follows the name in the clause. It is not necessarily in the valid form of a constraint.
+It is guaranteed that every line follows these forms and the [Constraints]. However, the packages and versions specified by the arguments do not necessarily exist (how this is handled is described in [Processing]).
+
+[Processing]
+Process the commands one at a time in input order, writing the output of each command as it is processed. Below, a string shown in double quotes as something to output appears in the output exactly as written. However, a part enclosed in < and >, such as <n> or <v>, is replaced by its value. When the enclosed part is the name of an argument of that command (<name>, <version>, <constraint>, etc.), it stands for the argument string exactly as written in the input.
+
+== Name order ==
+Package names are compared with each other, and identifiers with each other, in the following order. Compare the character codes (ASCII) one character at a time from the beginning; the string whose code is smaller at the first differing character comes first. When one string matches the beginning of the other, the shorter one comes first. Below, "name order" means this order.
+
+== Versions ==
+A string that is valid as a version is either a "core part" alone, or a core part followed by "-" and a "prerelease part".
+- The core part is three numbers separated by ".". From left to right they are called major, minor and patch. Here a number is a string of 1 to 4 characters consisting only of digits, whose first character is not 0 if it has two or more characters (it represents an integer from 0 to 9999).
+- The prerelease part is one or more identifiers separated by ".". An identifier is a string of one or more characters consisting only of lowercase letters and digits. An identifier consisting only of digits is called a numeric identifier, and a numeric identifier must also satisfy the conditions for a number above. An identifier containing a lowercase letter is called an alphanumeric identifier.
+A string that does not fit this is an invalid version. For example, 1.2.3, 0.0.0, 1.0.0-alpha.1, 1.0.0-rc10 and 1.0.0-1a are valid, and 1.2, 01.2.0, v1.2.3, 1.2.3.4, 1.2.3-, 1.2.3-beta..1, 1.2.3-01, 1.2.3-Beta, 1.2.3-beta-2 and 10000.0.0 are not valid.
+A version without a prerelease part is called a stable version, and a version with a prerelease part is called a prerelease version.
+
+The order of two valid versions A and B is determined as follows.
+1. Compare major, minor and patch as numbers in this order; the first difference decides the order.
+2. When all three are equal, a stable version is greater than a prerelease version. If both are stable versions, A and B are equal.
+3. When all three are equal and both are prerelease versions, compare the identifiers one at a time from the left; the first difference decides the order. Two numeric identifiers are compared as numbers, two alphanumeric identifiers are compared in name order (the one that comes first is smaller), and a numeric identifier is smaller than an alphanumeric identifier. When all identifiers are equal until one side runs out, the one with fewer identifiers is smaller.
+For example, 1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-alpha.beta < 1.0.0-beta < 1.0.0-beta.2 < 1.0.0-beta.11 < 1.0.0-rc.1 < 1.0.0 < 1.0.1. Under these rules, two valid versions are equal only when they are identical as strings. Below, "newer" and "older" refer to this order, and "newest first" means in descending order.
+
+== Version constraints ==
+A constraint is one or more "alternatives" separated by the 4-character string " || " (a space, two vertical bars, a space), and each alternative is one or more "terms" separated by single spaces. When the constraint string is split into alternatives at every occurrence of " || ", and each alternative is further split into terms at every space, the constraint is invalid if an empty term arises or if some term does not match the term syntax described next. For example, ">=1.0.0 ||", "|| 1.0.0", "1.0.0 || || 2.0.0" and "1.0.0||2.0.0" are all invalid.
+
+A term is an "operator" followed by a "pattern". Check, in this order, whether the term starts with >=, <=, >, <, =, ^ or ~; the first one that matches is the operator, and the rest is the pattern. If the term starts with none of them, the operator is empty and the whole term is the pattern. If the pattern matches neither (a) nor (b) below, the term does not match the syntax.
+(a) One to three "parts" separated by ".". A part is a number as defined above, or a wildcard (the single character "x" or "*"). A number must not come after a wildcard (for example, 1.x.3 does not match the syntax).
+(b) A valid version that is a prerelease version.
+For example, ~>1.2.0, =>1.0.0, 1.2.x-beta, X.2, ^ and >= do not match the syntax.
+
+Let k (0 <= k <= 3) be the number of parts of the pattern that are numbers, and let M, m, p be the values of the number parts from left to right (missing ones are 0). When the pattern is (b), k = 3. Let L be the version whose core part is M.m.p, with the prerelease part of the pattern appended if the pattern is (b). Also, for i = 1, 2, 3, let Ui be the stable version obtained from M.m.p by adding 1 to the i-th number from the left and setting the numbers to its right to 0 (for example, if M.m.p is 1.2.3, then U1 is 2.0.0, U2 is 1.3.0 and U3 is 1.2.4). A number in Ui may exceed 9999.
+
+Each term is replaced by zero or more "comparators" according to the following rules. When k = 0, only the first rule is used; when k is 1 or more, exactly one of the second and later rules is used, according to the operator. A comparator is a pair of a comparison operator (one of =, >, >=, <, <=) and a version, written as the comparison operator immediately followed by the version, like ">=1.2.0".
+- When k = 0 (the pattern consists only of wildcards): if the operator is > or <, the single comparator <0.0.0-0; otherwise, no comparators.
+- When the operator is empty or =: if k = 3, =L; if k is 1 or 2, the two comparators >=L and <Uk.
+- When the operator is >: if k = 3, >L; if k is 1 or 2, >=Uk.
+- When the operator is <=: if k = 3, <=L; if k is 1 or 2, <Uk.
+- When the operator is >=: >=L.
+- When the operator is <: <L.
+- When the operator is ~: if k is 2 or 3, >=L and <U2; if k = 1, >=L and <U1.
+- When the operator is ^: >=L and <Ui, where i is 1 if M is not 0 or k = 1; otherwise 2 if m is not 0 or k = 2; otherwise 3.
+When a term is replaced by several comparators, they are arranged in the order written above. For example, ^1.2.3 becomes ">=1.2.3 <2.0.0", ^0.2.3 becomes ">=0.2.3 <0.3.0", ^0.0.3 becomes ">=0.0.3 <0.0.4", ~1.2 becomes ">=1.2.0 <1.3.0", 1.x becomes ">=1.0.0 <2.0.0", and >1.2 becomes ">=1.3.0". Since 0.0.0-0 is the smallest of all valid versions, no version satisfies <0.0.0-0.
+The comparator list of an alternative is the concatenation, in order, of the comparators that replace the terms of that alternative from left to right.
+
+A valid version V satisfies an alternative when both of the following hold.
+- V satisfies all comparators of the alternative. V satisfies a comparator when V and the comparator's version stand in the relation expressed by the comparison operator.
+- V is a stable version, or the alternative contains a term whose pattern is (b) and whose M.m.p equals the core part of V.
+V satisfies a constraint when V satisfies at least one of the alternatives of the constraint. For example, a prerelease version satisfies neither * nor >=1.0.0. 2.0.0-rc.3 and 2.1.0 satisfy ^2.0.0-rc.1, but 2.1.0-alpha does not.
+
+The normal form of a constraint is the string formed by joining, in the order of the alternatives and separated by " || ", the following string for each alternative: its comparators separated by single spaces if its comparator list is not empty, or "*" if the list is empty. The version of a comparator is written as the three numbers of the core part in decimal without extra leading zeros, followed, if there is a prerelease part, by "-" and the prerelease part as is.
+
+== Registry ==
+The registry records the registered package versions. Version v of package name n is written "n@v". Each registered n@v has a DEP list, a CONFLICT list, and whether it is yanked (it is not yanked when registered). The DEP list and the CONFLICT list are lists of pairs of the other package's name and a constraint string, in the order written on the PKG line. A DEP (d, c) of n@v means that n@v needs a version of d that satisfies c; in this case d is called a dependency of n@v. A CONFLICT (d, c) of n@v means that n@v cannot be installed at the same time as a version of d that satisfies c. Initially the registry is empty. A package name with one or more registered versions is called a known package.
+
+== State ==
+Besides the registry, there is the following state. All of it is initially empty.
+- Request list: a list of pairs of a package name and a constraint string. Each package name appears at most once, and the pairs are in the order in which they were first added. When the request list has a pair for package name n, n is said to be "requested".
+- Installed packages: a mapping from package names to versions. For each package name, at most one version is installed. The version mapped to n is called the installed version of n.
+- Held set: a set of package names. A held package is always installed.
+- Advisories: a mapping from identifiers to pairs of a package name and a constraint string. An advisory (d, c) applies to n@v when d equals n and v satisfies c.
+- History: a stack of snapshots. A snapshot is a pair of the request list at that time (including its order) and the installed packages.
+Through the processing below, the installed packages are always kept exactly equal to the set of packages reachable from the requested packages by following the dependencies of the installed versions (including the requested packages themselves), satisfying the constraints of all requests and all DEP constraints, and hitting no CONFLICT.
+
+== Usable versions ==
+Each resolution (described in the next subsection) is performed with a specified set of package names called the "preferred set" and a specification of whether it runs in audit mode. n@v is usable when both of the following hold.
+- n@v is not yanked, or v is the installed version of n.
+- The resolution is not in audit mode, or no advisory applies to n@v.
+
+== Resolution ==
+Resolution is a depth-first backtracking search that chooses a version for each package while processing requirements one at a time. A requirement is a triple of a package name, a constraint string and an origin. The origin is either "request" or a selected package version n'@v'; the latter means that the requirement arose from a DEP of n'@v'. During the search, a "selection" (initially empty), which is a mapping from package names to versions, is kept, and for each selected package the requirement that was being processed when it was selected is recorded.
+
+The search is carried out by the following procedure "search", which takes a list of requirements and returns success or failure. First, search is called with the list formed by turning each pair (n, c) of the request list, in order, into a requirement with origin "request".
+1. If the list is empty, return success.
+2. Let r be the first requirement of the list, with package name n and constraint c. Let R be the rest of the list without r.
+3. If n is selected: if the selected version w of n satisfies c, call search with R and return its result. Otherwise, record the failure "selected" and return failure.
+4. If n is not selected and is held: if the installed version u of n satisfies c and n@u is usable, let the candidate list be the list consisting only of u. Otherwise, record the failure "held" and return failure.
+5. If n is neither selected nor held: let the candidate list be the registered versions of n that satisfy c and are usable, newest first. However, if n is in the preferred set and the installed version of n is in the candidate list, move it to the front of the list. If the candidate list is empty (it is also empty when n is not a known package), record the failure "no candidate" and return failure.
+6. Try the versions v of the candidate list in order from the front. For each v, first check for conflicts. Take the selected packages one at a time in name order as q (let w be the selected version of q); if n@v has a CONFLICT whose other package is q and whose constraint is satisfied by w, or q@w has a CONFLICT whose other package is n and whose constraint is satisfied by v, stop checking, with that q as the conflicting package. If a conflicting package is found, record the failure "conflict" and go on to the next v. If there is no conflicting package, select v for n (recording r), and call search with the list formed by turning the DEPs (d1, c1), (d2, c2), ... of n@v, in this order, into requirements with origin n@v, followed by R. If the result is success, return success. If it is failure, undo the selection of n and go on to the next v.
+7. If no v succeeded, return failure.
+If the first call of search returns success, the resolution succeeds, and the selection at that time is the "new installation state". If it returns failure, the resolution fails.
+
+When a failure is recorded, count the number s of packages selected at that time (in step 3, n is also counted; in step 6, n is not selected yet). Only when there is no record yet, or s is greater than the s of the failure already recorded, replace the record with this failure. The failure that remains at the end (the first to occur among the failures with the largest s) is reported in the following form. The content of the lines is as of the time the failure was recorded.
+- The first line is "UNSATISFIABLE".
+- Next, output the requirement chain of r (defined below), with two spaces prepended to each line.
+- Next, output the following reason line, with two spaces prepended.
+  Failure "selected": "<n>@<w> was selected by:"
+  Failure "held": "<n>@<u> is held"
+  Failure "no candidate": "no version of <n> matches <c>"
+  Failure "conflict": "<n>@<v> conflicts with <q>@<w>, which was selected by:"
+- For the failure "selected", output the requirement chain of the requirement recorded when n was selected; for the failure "conflict", output the requirement chain of the requirement recorded when q was selected; in both cases with four spaces prepended to each line.
+The requirement chain of a requirement whose origin is "request" is the list consisting of that requirement alone. The requirement chain of a requirement whose origin is n'@v' is the requirement chain of the requirement recorded when n' was selected, followed by that requirement. Each requirement of a chain is written on one line. With package name n and constraint string c, it is "requested <n> <c>" if the origin is "request", and "<n'>@<v'> requires <n> <c>" if the origin is n'@v'.
+
+== Plan ==
+INSTALL, SIMULATE, REMOVE, UPGRADE, ROLLBACK and AUDIT FIX output the plan for changing the installed packages into the new installation state, as follows. The current installed packages are called "old", and the new installation state is called "new".
+1. Arrange the packages in new in the following order: repeatedly choose, among the packages not yet arranged all of whose dependencies (of their versions in new) have already been arranged, the first one in name order. For each package n in this order, let v be its version in new; if n is not in old, output "install <n>@<v>". If n is in old and its version o in old differs from v, output "upgrade <n> <o> -> <v>" if v is newer than o, or "downgrade <n> <o> -> <v>" if it is older. If o and v are equal, output nothing.
+2. Arrange the packages that are in old but not in new in the following order: repeatedly choose, among these packages not yet arranged that are not a dependency of the old version of any other of these packages not yet arranged, the first one in name order. For each package n in this order, let o be its version in old, and output "remove <n>@<o>".
+3. If steps 1 and 2 output one or more lines, output "<a> installed, <b> upgraded, <c> downgraded, <d> removed", where a, b, c and d are the numbers of lines starting with install, upgrade, downgrade and remove, respectively. If no lines were output, output "no changes".
+
+"Updating the state" means pushing the current request list and installed packages onto the history as a snapshot, replacing the request list and the installed packages with the specified ones, and removing from the held set the packages that are not in the new installed packages.
+
+== Version display form ==
+The display form of n@v is "<n>@<v>" followed by " (yanked, installed)" if n@v is yanked and v is also the installed version of n, by " (yanked)" if it is only yanked, or by " (installed)" if v is only the installed version of n. If neither holds, nothing is appended.
+
+== Commands ==
+For each command, check the errors listed for it in the order listed, and output only the line of the first error that applies. When an error line is output, the command outputs nothing else and does not change the state.
+
+PKG name version [clause...]
+Check errors in the following order. If version is not a valid version, "error: invalid version '<version>'"; if name@version is already registered, "error: <name>@<version> is already registered". Then check the constraints of the clauses from left to right; if there is an invalid constraint, "error: invalid constraint '<c>'" for the first such constraint c. If there is no error, register name@version in the registry with the DEPs and the CONFLICTs of the clauses, each in the order written, and output "registered <name>@<version>".
+
+YANK name version
+If name@version is not registered (including when version is not a valid version), "error: <name>@<version> is not registered"; if it is already yanked, "error: <name>@<version> is already yanked". Otherwise, mark name@version as yanked and output "yanked <name>@<version>". The installed packages do not change.
+
+INFO name version
+If name@version is not registered, output the same error line as YANK. Otherwise, first output the display form of name@version on one line, then output "  requires <d> <c>" for each DEP (d, c) in the order written, "  conflicts with <d> <c>" for each CONFLICT (d, c) in the order written, and "  advisory <id>" for each advisory that applies to name@version, in name order of the identifiers (each with two leading spaces).
+
+VERSIONS name [constraint]
+If constraint is given and is not a valid constraint, "error: invalid constraint '<constraint>'"; if name is not a known package, "error: unknown package <name>" (checked in this order). Otherwise, output the registered versions of name that satisfy constraint (all of them when constraint is omitted), including yanked ones, newest first, one per line in display form. If there are none, output "no matching versions".
+
+DEPENDENTS name [version]
+If version is given and is not a valid version, "error: invalid version '<version>'". Otherwise, examine the known packages m in name order and, for each, the registered versions w of m newest first; if m@w has a DEP (name, c) whose other package is name (when version is given, only one for which version satisfies c), output "<m>@<w> requires <name> <c>". If no lines were output, output "no dependents". name need not be a known package.
+
+COMPARE version1 version2
+Check version1 and then version2; if either is not a valid version, output "error: invalid version '<x>'" for the first such one x. Otherwise, output "<version1> < <version2>" if version1 is smaller than version2, "<version1> = <version2>" if they are equal, and "<version1> > <version2>" if it is greater (the <, = and > in the middle are the symbols themselves).
+
+MATCH version constraint
+If version is not a valid version, "error: invalid version '<version>'"; if constraint is not a valid constraint, "error: invalid constraint '<constraint>'" (checked in this order). Otherwise, output "yes" if version satisfies constraint, or "no" if it does not.
+
+RANGE constraint
+If constraint is not a valid constraint, "error: invalid constraint '<constraint>'". Otherwise, output the normal form of constraint.
+
+INSTALL name [constraint]
+When constraint is omitted, treat it as if "*" were written as constraint (the constraint string put into the request list is also "*"). If constraint is not a valid constraint, "error: invalid constraint '<constraint>'"; if name is not a known package, "error: unknown package <name>" (checked in this order). Otherwise, the new request list is, if name is requested, the request list with the constraint of that pair replaced by constraint (its position does not change), or, if name is not requested, the request list with the pair (name, constraint) appended at the end. Perform resolution for the new request list, with the preferred set being all installed packages, not in audit mode. If it succeeds, output the plan and update the state to the new request list and the new installation state. If it fails, report the failure and do not change the state.
+
+SIMULATE name [constraint]
+Processed in the same way as INSTALL, but when the resolution succeeds, only output the plan and do not change the state (nothing is pushed onto the history either).
+
+REMOVE name
+When name is not requested, output "error: <name> is required by <m>" if name is installed, or "error: <name> is not installed" if it is not installed. Here m is the first in name order among the installed packages whose installed version has name as a dependency.
+When name is requested, let the new request list be the request list with the pair of name removed, and let K be the set of packages reachable from the packages in the new request list by following the dependencies of the installed versions (including the packages in the new request list themselves). If name is in K, output "<name>@<v> is still required by <m>" (v is the installed version of name, and m has the same meaning as above), and update the state to the new request list and the same installed packages as now. If name is not in K, output the plan with the new installation state being the state in which only the packages of K are installed, at their current versions, and update the state to the new request list and the new installation state. REMOVE does not perform resolution.
+
+UPGRADE [name]
+If name is given and is not installed, "error: <name> is not installed". Otherwise, perform resolution for the current request list, with the preferred set being all installed packages except name (the empty set when name is omitted), not in audit mode. Since the current state satisfies all the conditions, this resolution always succeeds. Output the plan and update the state to the same request list as now and the new installation state.
+
+ROLLBACK
+If the history is empty, "error: nothing to roll back". Otherwise, take the last snapshot of the history, removing it from the history, and output the plan with its installed packages as the new installation state. Then replace the request list (including its order) and the installed packages with those of the snapshot, and remove from the held set the packages that are not in the new installed packages. ROLLBACK pushes nothing onto the history.
+
+HOLD name
+If name is not installed, "error: <name> is not installed"; if it is already held, "error: <name> is already held". Otherwise, add name to the held set and output "held <name>@<v>" (v is the installed version of name).
+
+UNHOLD name
+If name is not held, "error: <name> is not held". Otherwise, remove name from the held set and output "released <name>".
+
+WHY name
+If name is not installed, "error: <name> is not installed". If name is requested, output "<name>@<v> is explicitly installed" (v is the installed version of name). Otherwise, find a path by the following breadth-first search. First, mark all requested packages and put them into the queue in name order. Until the queue becomes empty, repeatedly take out the package x at the front, examine the dependencies of the installed version of x in name order, and for each one that is not marked, mark it, set its parent to x, and put it at the end of the queue. Finally, let p1, p2, ..., pk (pk is name) be the packages from name, following parents until a requested package is reached, in reverse order, and output the single line "<p1>@<v1> -> <p2>@<v2> -> ... -> <pk>@<vk>" (vi is the installed version of pi).
+
+TREE [name]
+If name is given and is not installed, "error: <name> is not installed". Otherwise, perform the following "tree display" once with name as the root when name is given, or, when name is omitted, once with each requested package as the root, in name order. When name is omitted and there are no requested packages, output "(empty)".
+The tree display is the following procedure, which takes a package n, a constraint string c (which may be absent), a prefix h and an indent g. For a root, c is the constraint of its pair if n is requested (if n is not requested, there is no c), and h and g are empty strings.
+- Let v be the installed version of n, and let the line body be the concatenation of h, "<n>@<v>" and, if c is present, " [<c>]".
+- If this command has already output a line for n, output the line body followed by " (*)" and end this procedure (the dependencies of n are not displayed).
+- Otherwise, output the line body and process the DEPs (d1, c1), ..., (dt, ct) of n@v in the order written. For (dj, cj) with j < t, perform the tree display with package dj, constraint cj, prefix g + "|-- " and indent g + "|   ". For the last one, (dt, ct), perform the tree display with prefix g + "`-- " and indent g + "    ". Here + denotes string concatenation; "|-- " and "`-- " are the symbols followed by one space, "|   " is a vertical bar followed by three spaces, and "    " is four spaces.
+
+OUTDATED
+Examine the installed packages n in name order. Let cur be the installed version of n, and let the constraints relevant to n be all of the following: the constraint of n's pair if n is requested, and the constraints of those DEPs of the installed versions of the installed packages whose other package is n. Let wanted be the newest among the registered versions of n that are not yanked or are equal to cur, and that satisfy all the constraints relevant to n (wanted always exists, since cur itself meets the conditions). Also, let latest be the newest among the registered versions of n that are stable versions and not yanked. When wanted differs from cur, or latest exists and latest is newer than cur, output "<n> <cur> <wanted> <latest>". When latest does not exist, write "-" instead of <latest>. If no lines were output, output "all packages are up to date". Holds, conflicts and advisories are not considered in OUTDATED.
+
+LOCK
+Output the installed packages n in name order, one per line, in the form "<n>@<v>" (v is the installed version of n). If there are no installed packages, output "(empty)".
+
+STATUS
+Output each pair (n, c) of the request list, in list order, in the form "<n> <c> -> <v>" (v is the installed version of n). If the request list is empty, output "no requests" instead. Finally, output "<a> installed, <b> held, <s> snapshots", where a is the number of installed packages, b is the number of elements of the held set, and s is the number of snapshots in the history.
+
+ADVISORY id name constraint
+If an advisory with identifier id already exists, "error: advisory <id> already exists"; if constraint is not a valid constraint, "error: invalid constraint '<constraint>'" (checked in this order). Otherwise, record the pair (name, constraint) as the advisory with identifier id, and output "advisory <id> recorded". name need not be a known package.
+
+AUDIT
+Examine the installed packages n in name order. Let v be the installed version of n; if one or more advisories apply to n@v, let I be their identifiers in name order separated by ", " (a comma and one space), and output "<n>@<v>: <I> (fix: <f>)" or "<n>@<v>: <I> (no fix)". Here f is the oldest among the registered versions of n that are newer than v, stable, not yanked, and have no applicable advisory. If there is no such f, use the latter form. If no lines were output, output "no known vulnerabilities".
+
+AUDIT FIX
+Perform resolution for the current request list, with the preferred set being all installed packages, in audit mode. If it succeeds, output the plan and update the state to the same request list as now and the new installation state. If it fails, report the failure and do not change the state.
+
+[Output format]
+The output of each command consists of the lines defined in [Processing], output in command order. When one command outputs several lines, they are output in the order described in [Processing].
+All output consists of ASCII characters, and every line ends with a newline (LF). No line has trailing spaces, and no empty lines are output. The only lines that start with spaces are the second and later lines of INFO, the second and later lines of a failure report, and some lines of TREE.
+Numbers are written in decimal without extra leading zeros.
+Unless specified otherwise, a space in a string is a single space.
+
+[Constraints]
+- 1 <= N <= 1000
+- At most 300 versions in total are successfully registered by PKG, and there are at most 50 known packages.
+- A PKG line has at most 8 clauses. The same package name never appears two or more times in the clauses of the same PKG line, and the name of that line never appears in its clauses.
+- The graph whose vertices are package names, with an edge from n to d for each DEP (d, c) of each registered n@v, has no cycles (following dependencies never leads back to the same package).
+- At most 50 advisories are recorded.
+- In any resolution, the total number of times a candidate version v is tried in step 6 is at most 10000.
+
+[Example]
+Input:
+15
+PKG base 1.0.0
+PKG base 1.1.0
+PKG base 2.0.0
+PKG core 1.0.0; DEP base ^1.0.0
+PKG core 1.2.0; DEP base >=1.1.0
+PKG ui 0.3.0; DEP core ~1.2.0; CONFLICT base 2.x
+INSTALL core
+INSTALL ui ^0.3.0
+TREE
+INSTALL base ^2.0.0
+WHY base
+REMOVE ui
+LOCK
+MATCH 1.3.0-beta ^1.2.0
+STATUS
+
+Output:
+registered base@1.0.0
+registered base@1.1.0
+registered base@2.0.0
+registered core@1.0.0
+registered core@1.2.0
+registered ui@0.3.0
+install base@2.0.0
+install core@1.2.0
+2 installed, 0 upgraded, 0 downgraded, 0 removed
+downgrade base 2.0.0 -> 1.1.0
+install ui@0.3.0
+1 installed, 0 upgraded, 1 downgraded, 0 removed
+core@1.2.0 [*]
+`-- base@1.1.0 [>=1.1.0]
+ui@0.3.0 [^0.3.0]
+`-- core@1.2.0 [~1.2.0] (*)
+UNSATISFIABLE
+  requested base ^2.0.0
+  base@1.1.0 was selected by:
+    requested core *
+    core@1.2.0 requires base >=1.1.0
+core@1.2.0 -> base@1.1.0
+remove ui@0.3.0
+0 installed, 0 upgraded, 0 downgraded, 1 removed
+base@1.1.0
+core@1.2.0
+no
+core * -> 1.2.0
+2 installed, 0 held, 3 snapshots

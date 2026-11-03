@@ -1,0 +1,479 @@
+[Overview]
+Write a program that simulates garbage collectors (GC).
+The heap is an array of words (the unit of storage), and an object occupies consecutive words consisting of one header word, pointer fields and data fields. The behavior of the mutator (the program that uses the heap) is given as a script, a list of commands such as allocating objects, pushing onto and popping from the root stack, and overwriting pointer fields. The same script is run from the beginning under each of several collectors specified in the configuration file. There are 5 collector types: mark-sweep using a list of free blocks, sliding mark-compact, Cheney-style (breadth-first) semispace copying, a generational GC consisting of a copying young generation and a mark-sweep old generation (it uses a write barrier and a remembered set), and reference counting with a backup collection for reclaiming cyclic references. A collection is performed when an allocation fails, and marking uses an explicit stack.
+The program reads 2 files from the input/ folder and writes to 5 files in the output/ folder: the result of validating and analyzing the script, the state of the heap at checkpoints, the collection records, a summary per collector, and a report of the objects that reference counting could not reclaim. Nothing is written to standard output. All computation is done with integers; floating-point numbers are not used. No random numbers are used. Use only the standard library.
+
+[Input files]
+Both input files consist of ASCII characters only, and every line ends with a newline (LF).
+
+* input/config.txt
+The simulation settings. Each line is one or more tokens separated by single spaces; there are no spaces at the beginning or end of a line, and there are no empty lines. Every integer is non-negative and written in decimal without extra leading zeros. The following lines appear in this order.
+- "HEAP <H>": the heap size H (number of words).
+- "COLLECTOR <name> <type>" or "COLLECTOR <name> GENERATIONAL <N> <A>": there are one or more such lines, and each line represents one collector. <type> is one of MARK_SWEEP, MARK_COMPACT, COPYING, REFCOUNT. Only when the type is GENERATIONAL, the young generation size N (number of words) and the promotion age A follow. The collectors are run in the order of these lines, and the output is also written in this order. This order is called the "configuration order".
+- "MAPS <label> <label> ...": the labels of the checkpoints at which heap maps (Section 11) are written.
+- "MMU <w> <w> ...": the window widths for which the minimum mutator utilization (Section 12) is computed.
+- "WIDTH <W>": the number of words placed on one line of a heap map.
+
+* input/mutator.txt
+The mutator script. Each line is one command, and the lines are numbered 1, 2, 3, ... from the top. Each line consists only of printable ASCII characters and spaces, but its format is not necessarily correct (it is checked in Section 1). A correct line has one of the following forms. Each part in < > is one token.
+- "ALLOC <p> <d>": allocates an object with p pointer fields and d words of data fields, and pushes its reference onto the root stack.
+- "PUSH <r>": pushes the value of slot r (null if r is "-") onto the root stack.
+- "LOAD <i> <f>": pushes onto the root stack the value of pointer field f of the object referenced by slot i.
+- "POP <n>": removes n slots from the top of the root stack.
+- "SET <i> <f> <r>": writes the value of slot r (null if r is "-") into pointer field f of the object referenced by slot i.
+- "OVERWRITE <i> <r>": replaces the value of slot i with the value of slot r (null if r is "-").
+- "CHECKPOINT <label>": an observation point. The state does not change.
+The detailed meaning of the commands is defined in Section 2.
+
+[Processing]
+Section 0. Notation and common rules
+- All computation is done with integers. For a non-negative integer a and a positive integer b, a div b is the integer obtained by truncating the fractional part of a / b, and a mod b is its remainder.
+- dec2(a, b) (a is a non-negative integer, b is a positive integer): the decimal notation of a / b rounded to 2 decimal places. Let z = (200 * a + b) div (2 * b); concatenate, in this order, the decimal notation of z div 100, ".", and z mod 100 written with 2 digits (padded with a leading 0 if it has 1 digit). For example, dec2(1, 3) = 0.33, dec2(2, 3) = 0.67, dec2(1, 8) = 0.13, dec2(5, 1) = 5.00.
+- pct(a, b) (a and b are non-negative integers): "-" if b = 0, otherwise dec2(100 * a, b) (this is a / b expressed as a percentage). For example, pct(1, 3) = 33.33, pct(0, 7) = 0.00.
+- Size classes: a positive integer n is put into the class "1" if n = 1, "2-3" if 2 <= n <= 3, "4-7" if 4 <= n <= 7, "8-15" if 8 <= n <= 15, and "16+" if n >= 16. For a collection of positive integers, let c1, c2, c3, c4, c5 be the numbers of them in each class; "1:<c1> 2-3:<c2> 4-7:<c3> 8-15:<c4> 16+:<c5>" is called the "class table" (if the collection is empty, all counts are 0).
+- Pair: for a collection of objects, the pair of their count and the sum of their sizes (numbers of words) is called the "(count, words) pair", or "pair" for short. To "add an object" to a pair means to add 1 to the count and the size of that object to the words.
+- Objects: one object is created each time a correct ALLOC command of the script is executed, and the objects are given object numbers 1, 2, 3, ... in the order they are created. The object created by the k-th correct ALLOC command has number k in every run. An object has p pointer fields (field 0, field 1, ..., field p - 1) and d words of data fields, and its size is 1 + p + d words (the first word is the header). Each pointer field holds a reference to an object or null, and all of them are null when the object is created. The contents of the data fields are not handled.
+- Heap: the sequence of words at addresses 0, 1, ..., H - 1. An object placed in the heap occupies, starting at its address, as many consecutive words as its size. The address of an object is the address of its header. Two objects never occupy the same word.
+- Root stack: a sequence of slots, numbered slot 0, slot 1, ... from the bottom. Each slot holds a reference to an object or null. Let R be the number of slots. To "push" means to add a new slot (slot R) at the top, and to "remove" means to remove the top slot.
+- Reachable: an object referenced by a non-null slot of the root stack is reachable. An object referenced by a pointer field of a reachable object is also reachable (this is repeated). All other objects are unreachable. An object that has once become unreachable never becomes reachable again.
+- Free block: within some range of words, a maximal interval of consecutive words that are not occupied by any object (it cannot be extended further). It is represented by the starting address of the interval and its length. The "free block list" of a range is the free blocks of that range arranged in ascending address order.
+- First fit: placing an object of size s at the starting address of the free block, among the free blocks of some range, whose length is s or more and whose address is the smallest. If there is no such free block, the object cannot be placed.
+
+Section 1. Validating the script
+Examine the lines of mutator.txt in order from the top and divide them into "correct lines" and "error lines". An error line is given exactly one of the following reasons. Check the reasons in order from the top and give the first one that applies. The reasons stack, null, field and duplicate are checked in the state after executing the correct lines so far (as stated in Section 2, that state is the same in every run).
+- syntax: the line does not match any of the 7 forms in [Input files]. Split the line at every single space into a sequence of tokens. Where two or more spaces are consecutive, or where there is a space at the beginning or end of the line, empty tokens arise at those positions. An empty line consists of one empty token. A line matches a form only when the first token is a command name (one of ALLOC, PUSH, LOAD, POP, SET, OVERWRITE, CHECKPOINT; case-sensitive), the number of tokens is the same as in that command's form, and each token satisfies the following rules. <p>, <d>, <i>, <f>, <n> are number tokens, <r> is a number token or the single character "-", and <label> is a label token. A number token consists only of 1 to 4 digits (0-9), and if it has 2 or more characters it does not begin with 0. A label token has 1 to 16 characters, each of which is a lowercase letter (a-z), a digit (0-9) or "_".
+- range: for ALLOC, p > 6 or d > 24; or for POP, n = 0.
+- stack: for ALLOC, PUSH, LOAD, R = 64. <i> of LOAD, SET, OVERWRITE, or <r> (other than "-") of PUSH, SET, OVERWRITE is R or more. For POP, n > R.
+- null: for LOAD, SET, slot i is null.
+- field: for LOAD, SET, f is greater than or equal to the number p of pointer fields of the object referenced by slot i.
+- duplicate: for CHECKPOINT, the label is the same as the label of an earlier correct CHECKPOINT line.
+Error lines are ignored in every run (nothing is executed and they are not counted as commands). Below, "command" refers to the command of a correct line, and the line number of that line is the line number of the command. "Checkpoint" means a CHECKPOINT command.
+
+Section 2. Meaning of the commands
+Each command changes the root stack and the pointer fields of objects as follows. The "value" of slot x is the reference or null held by slot x. When <r> is "-", the value is null.
+- ALLOC p d: create a new object and place it in the heap according to the collector's rules (Sections 6-10). A collection may occur before placing it. During the collection, the root stack is the one before the new object is pushed. Once it is placed, push its reference.
+- PUSH r: push the value of slot r.
+- LOAD i f: push the value of field f of the object referenced by slot i.
+- POP n: repeat n times: remove the top slot.
+- SET i f r: change field f of the object referenced by slot i to the value of slot r.
+- OVERWRITE i r: change the value of slot i to the value of slot r (R does not change).
+- CHECKPOINT: change nothing.
+Under every collector, the changes to the root stack and the pointer fields are exactly the same. Therefore, which objects are reachable after each command is also the same in all runs. What differs between collectors is the addresses where objects are placed, the collections, and the times when objects are freed.
+
+Section 3. Reference run
+The script itself is analyzed with a "reference run" that performs no collections. In the reference run, the heap size is unlimited, no object is freed, and addresses are not considered. Execute the commands in order, and after each command determine the reachable objects.
+- Death: an object that becomes unreachable for the first time after some command "died" at that command, and the line number of that command is the object's "death line".
+- Allocation clock: the sum of the sizes of the objects created so far (initially 0). The value of the allocation clock immediately before creating an object o is the birth time b(o) of o.
+- Lifetime: for an object o that died at some command, let C be the value of the allocation clock after that command; the lifetime is C - b(o) - (size of o) (the number of words allocated after o). Lifetimes are counted in the classes "0-63" (0 to 63 inclusive), "64-255", "256-1023", "1024-4095" and "4096+" (4096 or more). An object that has not died even after the last command is counted in the class "live".
+- Live amount: the pair of the objects reachable after a command. The "peak" is the command at which the words of the live amount is the largest. If there are several such commands, it is the earliest one.
+- Analysis at checkpoints: for each checkpoint, determine R at that moment, the live amount, the pair of the objects created so far (the number created and the value of the allocation clock), the pair of the objects created in the "phase", the pair of the "survivors", that is, the objects created in the phase that are reachable at the checkpoint, and the survival rate pct(words of the survivors, words of the objects created in the phase). The phase is from just after the previous checkpoint (the beginning of the script for the first checkpoint) up to this checkpoint.
+
+Section 4. Rules common to the collectors
+- For each COLLECTOR line of config.txt, execute the list of commands from the beginning. This is called a "run". Each run has its own heap (of size H), root stack and objects, and is independent of the other runs. Initially the heap is empty and R = 0.
+- "Objects in the heap" are the objects created in that run, placed in the heap and not yet freed. The sum of their sizes is called the "used amount". A freed object is removed from the heap, and the words it occupied become free. A reachable object is never freed.
+- Each collector has a "free block list" (defined per collector in Sections 6-10). The sum of the lengths in the free block list is called the "total free", and the maximum length (0 if the list is empty) is called the "largest free".
+- A collection is performed only when an ALLOC command cannot place an object. The "roots" of a collection are the slots of the root stack at that moment, handled in order from slot 0. R also counts null slots.
+- Each time a collection is performed, a "collection record" consisting of the following items is created: number (1, 2, 3, ... per run), line (the line number of the ALLOC command), request (the size of the object being placed), kind (Sections 6-10), live, freed, moved, promoted (each a pair, initially (0, 0)), stack (the maximum depth of the mark stack; initially 0), work (the amount of work; initially 0), before (the total free and the largest free immediately before the collection), and after (the total free and the largest free immediately after the collection). Every object freed by the collection is added to freed.
+- Move count: each object has a move count (initially 0). It is increased where Sections 6-9 say "add 1 to the move count".
+- Out of memory: if the object still cannot be placed after performing the collections defined by the collector's rules, the run ends as "out of memory" at the line of that ALLOC command. That ALLOC command is not executed (nothing is pushed), and the commands after it are not executed either. The records of the collections completed within that command are kept.
+- Pause: each collection is one "pause". In REFCOUNT, a cascade (Section 10) is also a pause. The work of a pause is the work of the collection record for a collection, and the work of the cascade for a cascade. The freed of a pause is defined likewise.
+
+Section 5. Marking
+MARK_SWEEP, MARK_COMPACT, the kinds major and full of GENERATIONAL, and the backup collection of REFCOUNT use the following "marking". Let rec be the record of the collection being performed.
+(1) Clear the marks of all objects in the heap, add R to the work of rec, and prepare an empty mark stack (last in, first out).
+(2) For each slot in order from slot 0: if its value is null or the object it references is already marked, do nothing. Otherwise, mark that object and push it onto the mark stack, repeat the following (3) until the mark stack is empty, and then go on to the next slot.
+(3) Pop the object o at the top of the mark stack, add o to the live of rec, and add 1 + (number of pointer fields of o) to the work of rec. Then, for each pointer field of o in order from field 0: if its value is not null and the object it references is not marked, mark that object and push it onto the mark stack.
+The stack of rec is the maximum number of elements on the mark stack immediately after an object is pushed onto the mark stack. When marking is finished, the marked objects are exactly the reachable objects.
+
+Section 6. MARK_SWEEP (mark-sweep)
+- Free block list: the free block list of the range 0 to H - 1.
+- Allocation: place the object by first fit in the range 0 to H - 1. If it cannot be placed, perform one collection of kind sweep and place it by first fit again. If it still cannot be placed, it is out of memory.
+- Collection: perform marking (Section 5). Then, as the sweep, add the number of objects in the heap (including the marked ones) to work, and free all unmarked objects, adding them to freed.
+
+Section 7. MARK_COMPACT (sliding mark-compact)
+- It has an allocation position top (initially 0). The objects are always arranged from address 0 without gaps, and top is the address where they end.
+- Free block list: if top < H, it consists of one free block of length H - top; if top = H, it is empty.
+- Allocation: for size s, if top + s <= H, place the object at address top and add s to top. Otherwise, perform one collection of kind compact and try again in the same way. If still top + s > H, it is out of memory.
+- Collection: perform marking (Section 5). Then, with n the number of objects in the heap, add n + R to work, set the destination dest = 0, and process the objects in the heap one at a time in ascending address order as follows. If it is unmarked, free it and add it to freed. If it is marked, add its number of pointer fields to work; if its address differs from dest, add it to moved, add its size to work, change its address to dest and add 1 to its move count; and then add its size to dest. Finally, set top = dest.
+
+Section 8. COPYING (Cheney-style semispace copying)
+- Divide the heap into two semispaces of length H / 2 (addresses 0 to H / 2 - 1 and H / 2 to H - 1). One of them is "active", and its starting address is base. Initially base = 0. It has an allocation position top (initially 0).
+- Free block list: if top < base + H / 2, it consists of one free block of length base + H / 2 - top; otherwise it is empty.
+- Allocation: for size s, if top + s <= base + H / 2, place the object at address top and add s to top. Otherwise, perform one collection of kind copy and try again in the same way. If it still cannot be placed, it is out of memory.
+- Collection: first swap the active semispace by changing base to H / 2 - base, set top = base, and prepare an empty queue. "Copying" an object o is the following operation. If o is null or o has already been copied in this collection, do nothing. Otherwise, change the address of o to top, add the size of o to top, add 1 to the move count of o, add o to live and moved, and append o to the end of the queue.
+ Add R to work, and copy the value of each slot in order from slot 0. Next, for each object o in order from the front of the queue (including the ones appended to the end during processing), add (size of o) + (number of pointer fields of o) to work, and copy the value of each pointer field of o in order from field 0. Finally, free all objects in the heap that were not copied in this collection, adding them to freed.
+
+Section 9. GENERATIONAL (generational)
+It uses N and A of the COLLECTOR line.
+- Areas: addresses 0 to N - 1 are the young generation, and N to H - 1 are the old generation. The young generation is divided into two halves of length N / 2 (0 to N / 2 - 1 and N / 2 to N - 1); one of them is "active", and its starting address is base. Initially base = 0 and the allocation position top = 0. An object whose address is less than N is called "young", and an object whose address is N or more is called "old". The free blocks of the range N to H - 1 are called "old free blocks", and the maximum of their lengths (0 if there are none) is M.
+- Age: each object has an age (initially 0).
+- Remembered set: a set of old objects, initially empty.
+- Write barrier: in a SET command, if the object referenced by slot i (the object being written) is old, do the following before the write. Add 1 to the barrier count. Further, if the value being written is not null and references a young object, and the object being written is not in the remembered set, add it to the remembered set and add 1 to the remember count.
+- Free block list: the list consisting of, first, a free block of length base + N / 2 - top if top < base + N / 2, followed by the old free blocks in ascending address order (even if the first free block and an old free block are adjacent, they are not merged into one).
+- Allocation: for size s, do the following in this order.
+ (1) If top + s <= base + N / 2, place the object at address top, add s to top, and finish.
+ (2) If M < top - base, perform a collection of kind major; otherwise, of kind minor.
+ (3) If top + s <= base + N / 2, place the object as in (1) and finish.
+ (4) If M < top - base, perform a collection of kind full; otherwise, of kind tenure (M, top and base are the values after the collection of (2)).
+ (5) If top + s <= base + N / 2, place the object as in (1) and finish. Otherwise, it is out of memory.
+- A collection is performed by the following steps.
+ (a) Only when the kind is major or full, perform marking (Section 5). Then, as the sweep of the old generation, add the number of old objects in the heap (including the marked ones) to work, and free all unmarked old objects, adding them to freed and also removing them from the remembered set.
+ (b) Evacuation: all young objects in the heap at that moment become the "evacuation set". Let the destination t be the starting address of the half that is not active, and prepare an empty queue. "Evacuating" an object o is the following operation. If o is null or not in the evacuation set (it is old, or it has already been evacuated in this collection), do nothing. Otherwise, remove o from the evacuation set, add 1 to each of the age and the move count of o, and do one of the following. If the kind is tenure or full, or the age is A or more, then as a "promotion", re-place o by first fit in the range N to H - 1 and add o to promoted. If it cannot be placed, it is out of memory as described in the note below. Otherwise, change the address of o to t and add the size of o to t. In either case, then add o to moved, also add o to live if the kind is minor or tenure, and append o to the end of the queue.
+  The evacuation procedure is as follows. Add R to work, and evacuate the value of each slot in order from slot 0. Next, for the objects of the remembered set one at a time in ascending address order, add 1 + (its number of pointer fields) to work, and evacuate the value of each of its pointer fields in order from field 0. Next, for each object o in order from the front of the queue (including the ones appended to the end during processing), add (size of o) + (number of pointer fields of o) to work, and evacuate the value of each pointer field of o in order from field 0. Finally, free all objects remaining in the evacuation set, adding them to freed.
+ (c) Change base to the starting address of the destination half, and top to t. Replace the remembered set with the set of all old objects in the heap that have one or more pointer fields referencing a young object (the remember count does not change).
+ Note: when an object cannot be placed by a promotion, that collection is aborted, and the run becomes out of memory at the line of that ALLOC command. The aborted collection is not recorded (it does not use a number either), and its work is not counted anywhere, but the move counts it has already increased stay increased. The records of the collections completed earlier in the same ALLOC command are kept.
+
+Section 10. REFCOUNT (reference counting)
+- The free block list and allocation are the same as for MARK_SWEEP (first fit in the range 0 to H - 1). If the object cannot be placed, perform one collection of kind backup (the backup collection) and place it by first fit again. If it still cannot be placed, it is out of memory.
+- Reference count: each object has a reference count (initially 0), which is increased and decreased by the following two operations.
+ - Retain v: if v is null, do nothing. Otherwise, add 1 to the reference count of v and add 1 to the increment count.
+ - Release v: if v is null, do nothing. Otherwise, add 1 to the decrement count and subtract 1 from the reference count of v. If it becomes 0, free v. When an object x is freed, then for each non-null pointer field of x in order from field 0, add 1 to the decrement count and subtract 1 from the reference count of the referenced object; if it becomes 0, the referenced object is also freed in the same way (this cascades).
+- Operations in each command: in ALLOC, after placing the object, retain the new object and then push it. In PUSH and LOAD, retain the value to push and then push it. In POP, repeat n times: remove the top slot and release its value. In SET and OVERWRITE, retain the new value, perform the write, and then release the value before the write. In CHECKPOINT, do nothing.
+- Cascade: if one or more objects were freed by the releases within one command, they together form one "cascade". The line of the cascade is the line number of that command, its freed is the pair of the freed objects, and its work is the sum of 1 + (number of pointer fields) over the freed objects. A cascade is a pause but not a collection, and no collection record is created for it.
+- Backup collection: perform marking (Section 5). Next, for the set of unmarked objects (the unreachable objects in the heap), create a leak report (below) with the title "backup <k> line <line>". <k> is the number of this collection, and <line> is the line number of the ALLOC command. Then, as the sweep, add the number of objects in the heap (including the marked ones) to work, and free all unmarked objects, adding them to freed. Finally, for each non-null pointer field of each freed object that references a marked object, subtract 1 from the reference count of the referenced object and add 1 to the decrement count.
+- At the end: if the run executed up to the last command without running out of memory, create a leak report with the title "end" for the set of unreachable objects in the heap at that moment.
+- Leak report: divide the set of objects G into "groups" as follows. Two objects of G are adjacent when a pointer field of one references the other, and the objects of G connected by the adjacency relation together form one group (connected components ignoring direction). The groups are arranged in ascending order of the smallest object number they contain. An object x of G is "on a cycle" when one can return to x itself by following pointer-field references from x one or more times, where every object passed through must be in G (an object that has a field referencing itself is on a cycle). For each group, determine the number of objects, the words, the number of objects on a cycle, the maximum of the death lines (Section 3) of its objects, and the list of object numbers.
+
+Section 11. Observation at checkpoints
+In each run, after executing a checkpoint command, determine the following (not determined if the run has already ended out of memory before it). Which objects are reachable is the same as after that checkpoint in the reference run.
+- heap: the pair of the objects in the heap, the pair of those that are reachable, and the pair of those that are unreachable (garbage).
+- free: for the free block list, the total free, the largest free, the number of free blocks, the class table of the free block lengths, and the fragmentation ratio pct(total free - largest free, total free).
+- locality: counted over each non-null pointer field (let c be the referenced object) of each reachable object o in the heap: the number of pointers, the number of those where the address of c is greater than the address of o (forward), the number of those where it is smaller (backward), and the sum D of |address of c - address of o|. The mean distance is "-" if the number of pointers is 0, otherwise dec2(D, number of pointers).
+- generations (GENERATIONAL only): the pair of the young objects in the heap, the pair of the old objects, the number of elements of the remembered set, and the age distribution of the young objects (the numbers of those with age 0, 1, 2, and 3 or more).
+- Heap map (only when the label of that checkpoint is in the MAPS line): build a string of H characters. The character for address a is initially ".". In COPYING, the words of the semispace that is not active, and in GENERATIONAL, the words of the half of the young generation that is not active, are changed to "-". Then, for each object in the heap, its header word is changed to the uppercase letter of the object if it is reachable, or "#" if it is unreachable, and its words other than the header are changed to the lowercase letter of the object if it is reachable, or "=" if it is unreachable. The letter of object number k is the ((k - 1) mod 26)-th letter (counting from 0) of the letters A to Z (a to z for lowercase) (number 1 is A, 26 is Z, and 27 is A again). Split this string into pieces of W characters each from address 0; each line of the map is a piece preceded by the starting address of that piece written with 4 digits (padded with leading zeros if shorter) and a single space.
+
+Section 12. Pause and utilization statistics
+- Pause statistics: for a collection of pauses, determine the sum of the work, the sum of the words of freed, p50, p90, and the maximum of the work (0 if there are no pauses). pX (X is 50 or 90) is determined by the nearest-rank method: with n the number of pauses, it is the ((X * n + 99) div 100)-th value (counting from 1) of the list of work values sorted in ascending order. If there are no pauses, it is "-".
+- Timeline: for each run, build a sequence that places, for each executed command, the following units in this order. (1) For each collection performed within that command, as many "GC units" as its work. (2) "Mutator units": as many as the size of the object for ALLOC, and 1 for any other command. (3) In REFCOUNT, if a cascade occurred in that command, as many GC units as its work. For an ALLOC command that ran out of memory, place only (1) (for the completed collections) and finish.
+- Utilization: with T the length of the timeline and U the number of mutator units in it, pct(U, T).
+- Minimum mutator utilization (MMU): for a window width w, "-" if w > T. Otherwise, among all intervals consisting of w consecutive units of the timeline (there are T - w + 1 of them), let m be the number of mutator units in the interval with the fewest mutator units; the MMU is pct(m, w).
+- Per-phase statistics: for each checkpoint, for the collection of pauses whose line is "greater than the line number of the previous checkpoint (0 for the first checkpoint) and less than or equal to the line number of this checkpoint", determine the number of collections, the number of pauses, and the pause statistics.
+
+[Output files]
+Common format:
+- Everything is ASCII characters, and every line ends with a newline (LF). Do not put spaces at the end of a line, and do not write empty lines that are not specified.
+- Integers are written in decimal without extra leading zeros. No negative numbers appear in the output.
+- In the formats below, a value goes in each part enclosed in < >, and all other characters are written as they are. For <pair>, write the count and the words of the pair in this order, separated by a single space.
+- All 5 files are always created. A file with no lines to write is empty (0 bytes).
+
+* output/mutator.txt
+The results of validating the script (Section 1) and of the reference run (Section 3), in the following order.
+- "script lines <lines> valid <number of correct lines> errors <number of error lines>": <lines> is the number of lines of mutator.txt.
+- For each error line, in ascending order of line number, "error line <line number> <reason>"
+- "commands ALLOC <count> PUSH <count> LOAD <count> POP <count> SET <count> OVERWRITE <count> CHECKPOINT <count>": the number of each command.
+- "allocated objects <number of objects created> words <sum of their sizes> sizes <class table>": the class table is for the sizes of all created objects.
+- "peak_live objects <count> words <words> line <line number>": the live amount after the peak command, and the line number of that command.
+- "end_live objects <count> words <words> stack <R>": the live amount and R after the last command.
+- "lifetimes 0-63 <count> 64-255 <count> 256-1023 <count> 1024-4095 <count> 4096+ <count> live <count>": the number of objects in each lifetime class.
+- For each checkpoint in order, "checkpoint <label> line <line number> stack <R> live <live amount> allocated <pair of the objects created so far> phase <pair of the objects created in the phase> survivors <pair of the survivors> survival <survival rate>"
+
+* output/heap_maps.txt
+For each checkpoint in order, and within it for each collector in configuration order, write the following block. Write one empty line between blocks.
+- Line 1 is "checkpoint <label> line <line number> collector <name>".
+- If the run has already ended out of memory before it, write "out_of_memory" on line 2 and end the block.
+- Otherwise, write the observations of Section 11 in the following order.
+ - "heap objects <pair of the objects in the heap> reachable <pair of the reachable ones> garbage <pair of the unreachable ones>"
+ - "free total <total free> largest <largest free> blocks <number of free blocks> sizes <class table> fragmentation <fragmentation ratio>"
+ - "locality pointers <number of pointers> forward <forward count> backward <backward count> mean_distance <mean distance>"
+ - GENERATIONAL only: "generations young <pair> old <pair> remembered <number of elements of the remembered set> ages 0:<count> 1:<count> 2:<count> 3+:<count>"
+ - When the heap map is written, its H / W lines.
+
+* output/collections.txt
+For each collector in configuration order, write the following block. Write one empty line between blocks.
+- "collector <name> <type>"
+- For each collection record in order of number, "<number> line <line> size <request> kind <kind> live <pair> freed <pair> moved <pair> promoted <pair> stack <stack> work <work> before <total free> <largest free> after <total free> <largest free>"
+- "totals collections <number of collections> pauses <number of pauses> work <sum of the work> freed <sum of the words of freed> pause p50 <p50> p90 <p90> max <maximum>": the pause statistics of all pauses of that run.
+- "utilization <utilization> mmu <w>:<MMU> <w>:<MMU> ...": <w>:<MMU> is written for each window width of the MMU line of config.txt, in that order.
+- GENERATIONAL only: "generational minor <count> <work> major <count> <work> tenure <count> <work> full <count> <work> promoted <pair> barrier <barrier count> remembered <remember count>": the number of collections of each kind and the sum of their work, and the sum of promoted over all collection records.
+- REFCOUNT only: "refcount increments <increment count> decrements <decrement count> cascades <number of cascades> freed <pair> max_cascade <count> <work> line <line>": freed is the sum of the freed of all cascades. max_cascade is the count of freed, the work and the line of the cascade with the largest work (the earliest one if there are several). If there are no cascades, write "max_cascade 0 0 line -".
+- For each checkpoint in order: if the run has ended out of memory before that checkpoint, "phase <label> out_of_memory"; otherwise "phase <label> collections <number of collections> pauses <number of pauses> work <sum of the work> freed <sum of the words of freed> max_pause <maximum of the work>": the per-phase statistics (Section 12).
+- The last line is "status completed" if the run executed up to the last command, or "status out_of_memory line <line number> size <request>" if it ended out of memory. <request> is the size of the object that could not be placed.
+
+* output/summary.csv
+Line 1 is the header line "collector,type,status,collections,pauses,live,moved,moved_objects,max_moves,freed,total_work,p50_pause,p90_pause,max_pause,peak_used,end_used,end_free,largest_free,fragmentation". From line 2 on, write one line per collector in configuration order, with the values separated by "," in the order of the header.
+- collector, type: the name and the type of the collector. status: completed if the run executed up to the last command, out_of_memory if it ended out of memory.
+- collections, pauses: the number of collections and the number of pauses.
+- live, moved: the sum of the counts of live and the sum of the counts of moved over all collection records.
+- moved_objects: the number of objects, among the objects created in that run and placed in the heap (including the ones freed later), whose move count is 1 or more. max_moves: the maximum move count of those objects (0 if there are no such objects).
+- freed, total_work, p50_pause, p90_pause, max_pause: the sum of the words of freed, the sum of the work, p50, p90, and the maximum of the work, from the pause statistics of all pauses.
+- peak_used: the maximum of the used amount immediately after an ALLOC command placed and pushed an object (0 if no object was placed).
+- end_used, end_free, largest_free, fragmentation: if the run executed up to the last command, the used amount, the total free, the largest free, and the fragmentation ratio pct(total free - largest free, total free) after the last command. If it ended out of memory, all four are "-".
+
+* output/leaks.txt
+If there is no REFCOUNT collector, write only the single line "none". Otherwise, for each REFCOUNT collector in configuration order, write the following block. Write one empty line between blocks.
+- "collector <name>"
+- For each leak report created in that run, in the order created, the header line "<title> groups <number of groups> objects <number of objects> words <words>", followed by, for each group in order, "group <number> objects <count> words <words> cycle <number on a cycle> died <maximum death line> ids <list of object numbers>". Group numbers are 1, 2, 3, ... within each report. The list of object numbers is the object numbers of the group in ascending order, separated by single spaces, with "*" appended immediately after the number of each object on a cycle. A report with no groups consists of the header line only.
+- If the run ended out of memory, finally "status out_of_memory".
+
+[Source files]
+Split the source into files with the following 6 roles (file names and extensions follow the conventions of each language).
+- main: the overall flow and the largest share of the processing. The state-dependent checks (the reasons stack, null, field, duplicate of Section 1), the execution of commands (Section 2: root stack operations, and calls to the write barrier and reference counting), the reference run (Section 3: reachability, death, lifetimes, peak, analysis at checkpoints), the REFCOUNT collector (Section 10: retain, release, cascades, backup collection) and leak reports (determining groups and cycles), the run of each collector (handling out of memory, the timeline), observation at checkpoints (Section 11), pause statistics, utilization, MMU, per-phase statistics (Section 12), and assembling and writing the lines of the 5 output files.
+- heap: the representation of objects and collection records, the free block list (first fit, rebuilding from the objects in the heap, largest free), dec2 and pct, size classes and class tables, and assembling the heap map string.
+- mutator: reading config.txt and mutator.txt, and matching the token rules and the command forms (the reasons syntax and range of Section 1).
+- mark_sweep: marking (Section 5) and sweeping, and the MARK_SWEEP (Section 6) and MARK_COMPACT (Section 7) collectors.
+- copying: the COPYING collector (Section 8).
+- generational: the GENERATIONAL collector (Section 9: the two halves of the young generation, old free blocks, write barrier, remembered set, evacuation and promotion).
+
+[Constraints]
+- config.txt: 64 <= H <= 4096, 8 <= W <= 128, and H is even and a multiple of W. There are 1 to 8 COLLECTOR lines; each <name> satisfies the rule for label tokens (Section 1), and the names are distinct. N of GENERATIONAL is even with 2 <= N < H, and A satisfies 1 <= A <= 9. The MAPS line has 1 to 10 labels, which are distinct, and each is the label of some checkpoint. The MMU line has 1 to 8 window widths, each between 1 and 100000 inclusive.
+- mutator.txt: 1 to 5000 lines, each line at most 100 characters. There is at least one ALLOC command.
+- For the given input, the absolute value of every integer appearing during the computation is less than 2^31.
+
+[Example]
+The following is a small example to show the formats. It is different data from the given input, and the output is the correct output for this example's input. Line 36 of mutator.txt (example) has two spaces between POP and 1.
+
+input/config.txt (example):
+HEAP 128
+COLLECTOR ms MARK_SWEEP
+COLLECTOR mc MARK_COMPACT
+COLLECTOR cp COPYING
+COLLECTOR gen GENERATIONAL 48 3
+COLLECTOR rc REFCOUNT
+MAPS mid
+MMU 20 60
+WIDTH 64
+
+input/mutator.txt (example):
+ALLOC 2 1
+ALLOC 3 2
+SET 0 0 1
+ALLOC 0 5
+SET 1 2 2
+POP 2
+ALLOC 3 0
+ALLOC 3 0
+SET 1 0 2
+SET 2 1 1
+ALLOC 0 3
+SET 2 2 3
+POP 3
+CHECKPOINT start
+ALLOC 0 9
+LOAD 0 0
+SET 2 1 1
+LOAD 0 4
+OVERWRITE 1 -
+PUSH 5
+SET 1 0 0
+ALLOC 1 6
+SET 3 0 0
+ALLOC 0 7
+SET 0 1 4
+POP 1
+ALLOC 2 4
+SET 4 0 3
+POP 4
+CHECKPOINT mid
+ALLOC 3 12
+ALLOC 3 12
+SET 1 0 2
+SET 2 0 1
+POP 2
+POP  1
+ALLOC 0 30
+ALLOC 4 10
+ALLOC 1 8
+SET 1 0 2
+ALLOC 2 9
+SET 0 1 3
+ALLOC 0 12
+POP 4
+ALLOC 2 11
+ALLOC 0 10
+SET 1 1 2
+ALLOC 1 14
+POP 1
+ALLOC 2 0
+ALLOC 2 0
+SET 3 0 4
+SET 4 0 3
+POP 2
+CHECKPOINT start
+CHECKPOINT end
+
+output/mutator.txt (example):
+script lines 56 valid 50 errors 6
+error line 18 field
+error line 20 stack
+error line 21 null
+error line 36 syntax
+error line 37 range
+error line 55 duplicate
+commands ALLOC 21 PUSH 0 LOAD 1 POP 8 SET 16 OVERWRITE 1 CHECKPOINT 3
+allocated objects 21 words 190 sizes 1:0 2-3:2 4-7:7 8-15:9 16+:3
+peak_live objects 8 words 79 line 48
+end_live objects 7 words 63 stack 3
+lifetimes 0-63 13 64-255 1 256-1023 0 1024-4095 0 4096+ 0 live 7
+checkpoint start line 14 stack 1 live 3 16 allocated 6 28 phase 6 28 survivors 3 16 survival 57.14
+checkpoint mid line 30 stack 1 live 5 34 allocated 10 61 phase 4 33 survivors 2 18 survival 54.55
+checkpoint end line 56 stack 3 live 7 63 allocated 21 190 phase 11 129 survivors 3 37 survival 28.68
+
+output/heap_maps.txt (example):
+checkpoint start line 14 collector ms
+heap objects 6 28 reachable 3 16 garbage 3 12
+free total 100 largest 100 blocks 1 sizes 1:0 2-3:0 4-7:0 8-15:0 16+:1 fragmentation 0.00
+locality pointers 2 forward 2 backward 0 mean_distance 5.00
+
+checkpoint start line 14 collector mc
+heap objects 6 28 reachable 3 16 garbage 3 12
+free total 100 largest 100 blocks 1 sizes 1:0 2-3:0 4-7:0 8-15:0 16+:1 fragmentation 0.00
+locality pointers 2 forward 2 backward 0 mean_distance 5.00
+
+checkpoint start line 14 collector cp
+heap objects 6 28 reachable 3 16 garbage 3 12
+free total 36 largest 36 blocks 1 sizes 1:0 2-3:0 4-7:0 8-15:0 16+:1 fragmentation 0.00
+locality pointers 2 forward 2 backward 0 mean_distance 5.00
+
+checkpoint start line 14 collector gen
+heap objects 6 28 reachable 3 16 garbage 3 12
+free total 76 largest 56 blocks 2 sizes 1:0 2-3:0 4-7:0 8-15:0 16+:2 fragmentation 26.32
+locality pointers 2 forward 2 backward 0 mean_distance 9.00
+generations young 1 4 old 5 24 remembered 1 ages 0:1 1:0 2:0 3+:0
+
+checkpoint start line 14 collector rc
+heap objects 6 28 reachable 3 16 garbage 3 12
+free total 100 largest 100 blocks 1 sizes 1:0 2-3:0 4-7:0 8-15:0 16+:1 fragmentation 0.00
+locality pointers 2 forward 2 backward 0 mean_distance 5.00
+
+checkpoint mid line 30 collector ms
+heap objects 10 61 reachable 5 34 garbage 5 27
+free total 67 largest 67 blocks 1 sizes 1:0 2-3:0 4-7:0 8-15:0 16+:1 fragmentation 0.00
+locality pointers 4 forward 4 backward 0 mean_distance 20.00
+0000 AaaaBbbbbbCccccc#===#===#===Gggggggggg#=======Iiiiiiii#======...
+0064 ................................................................
+
+checkpoint mid line 30 collector mc
+heap objects 10 61 reachable 5 34 garbage 5 27
+free total 67 largest 67 blocks 1 sizes 1:0 2-3:0 4-7:0 8-15:0 16+:1 fragmentation 0.00
+locality pointers 4 forward 4 backward 0 mean_distance 20.00
+0000 AaaaBbbbbbCccccc#===#===#===Gggggggggg#=======Iiiiiiii#======...
+0064 ................................................................
+
+checkpoint mid line 30 collector cp
+heap objects 10 61 reachable 5 34 garbage 5 27
+free total 3 largest 3 blocks 1 sizes 1:0 2-3:1 4-7:0 8-15:0 16+:0 fragmentation 0.00
+locality pointers 4 forward 4 backward 0 mean_distance 20.00
+0000 AaaaBbbbbbCccccc#===#===#===Gggggggggg#=======Iiiiiiii#======...
+0064 ----------------------------------------------------------------
+
+checkpoint mid line 30 collector gen
+heap objects 10 61 reachable 5 34 garbage 5 27
+free total 43 largest 34 blocks 2 sizes 1:0 2-3:0 4-7:0 8-15:1 16+:1 fragmentation 20.93
+locality pointers 4 forward 3 backward 1 mean_distance 22.50
+generations young 2 15 old 8 46 remembered 1 ages 0:2 1:0 2:0 3+:0
+0000 Iiiiiiii#======.........------------------------Aaaa#===#===Bbbb
+0064 bbCccccc#=======#===Gggggggggg..................................
+
+checkpoint mid line 30 collector rc
+heap objects 8 46 reachable 5 34 garbage 3 12
+free total 82 largest 74 blocks 2 sizes 1:0 2-3:0 4-7:0 8-15:1 16+:1 fragmentation 9.76
+locality pointers 4 forward 4 backward 0 mean_distance 20.00
+0000 AaaaBbbbbbCccccc#===#===#===Gggggggggg........Iiiiiiii..........
+0064 ................................................................
+
+checkpoint end line 56 collector ms
+heap objects 10 85 reachable 7 63 garbage 3 22
+free total 43 largest 36 blocks 2 sizes 1:0 2-3:0 4-7:1 8-15:0 16+:1 fragmentation 16.28
+locality pointers 5 forward 5 backward 0 mean_distance 12.80
+
+checkpoint end line 56 collector mc
+heap objects 9 69 reachable 7 63 garbage 2 6
+free total 59 largest 59 blocks 1 sizes 1:0 2-3:0 4-7:0 8-15:0 16+:1 fragmentation 0.00
+locality pointers 5 forward 5 backward 0 mean_distance 12.40
+
+checkpoint end line 56 collector cp
+out_of_memory
+
+checkpoint end line 56 collector gen
+heap objects 10 85 reachable 7 63 garbage 3 22
+free total 19 largest 8 blocks 5 sizes 1:2 2-3:1 4-7:1 8-15:1 16+:0 fragmentation 57.89
+locality pointers 5 forward 4 backward 1 mean_distance 25.00
+generations young 3 22 old 7 63 remembered 0 ages 0:3 1:0 2:0 3+:0
+
+checkpoint end line 56 collector rc
+heap objects 9 69 reachable 7 63 garbage 2 6
+free total 59 largest 34 blocks 4 sizes 1:0 2-3:0 4-7:2 8-15:1 16+:1 fragmentation 42.37
+locality pointers 5 forward 5 backward 0 mean_distance 38.60
+
+output/collections.txt (example):
+collector ms MARK_SWEEP
+1 line 41 size 12 kind sweep live 7 59 freed 7 59 moved 0 0 promoted 0 0 stack 2 work 34 before 10 10 after 69 39
+2 line 48 size 16 kind sweep live 7 63 freed 4 46 moved 0 0 promoted 0 0 stack 2 work 30 before 19 10 after 65 36
+totals collections 2 pauses 2 work 64 freed 105 pause p50 30 p90 34 max 34
+utilization 77.39 mmu 20:0.00 60:43.33
+phase start collections 0 pauses 0 work 0 freed 0 max_pause 0
+phase mid collections 0 pauses 0 work 0 freed 0 max_pause 0
+phase end collections 2 pauses 2 work 64 freed 105 max_pause 34
+status completed
+
+collector mc MARK_COMPACT
+1 line 41 size 12 kind compact live 7 59 freed 7 59 moved 4 43 promoted 0 0 stack 2 work 90 before 10 10 after 69 69
+2 line 51 size 3 kind compact live 8 66 freed 5 62 moved 4 40 promoted 0 0 stack 2 work 91 before 0 0 after 62 62
+totals collections 2 pauses 2 work 181 freed 121 pause p50 90 p90 91 max 91
+utilization 54.75 mmu 20:0.00 60:0.00
+phase start collections 0 pauses 0 work 0 freed 0 max_pause 0
+phase mid collections 0 pauses 0 work 0 freed 0 max_pause 0
+phase end collections 2 pauses 2 work 181 freed 121 max_pause 91
+status completed
+
+collector cp COPYING
+1 line 31 size 16 kind copy live 5 34 freed 5 27 moved 5 34 promoted 0 0 stack 0 work 40 before 3 3 after 30 30
+2 line 32 size 16 kind copy live 6 50 freed 0 0 moved 6 50 promoted 0 0 stack 0 work 60 before 14 14 after 14 14
+totals collections 2 pauses 2 work 100 freed 27 pause p50 40 p90 60 max 60
+utilization 48.45 mmu 20:0.00 60:0.00
+phase start collections 0 pauses 0 work 0 freed 0 max_pause 0
+phase mid collections 0 pauses 0 work 0 freed 0 max_pause 0
+phase end out_of_memory
+status out_of_memory line 32 size 16
+
+collector gen GENERATIONAL
+1 line 11 size 4 kind minor live 5 24 freed 0 0 moved 5 24 promoted 0 0 stack 0 work 38 before 80 80 after 80 80
+2 line 11 size 4 kind tenure live 5 24 freed 0 0 moved 5 24 promoted 5 24 stack 0 work 38 before 80 80 after 80 56
+3 line 24 size 8 kind minor live 3 22 freed 0 0 moved 3 22 promoted 0 0 stack 0 work 35 before 58 56 after 58 56
+4 line 24 size 8 kind tenure live 3 22 freed 0 0 moved 3 22 promoted 3 22 stack 0 work 35 before 58 56 after 58 34
+5 line 31 size 16 kind minor live 1 8 freed 1 7 moved 1 8 promoted 0 0 stack 0 work 12 before 43 34 after 50 34
+6 line 32 size 16 kind minor live 2 24 freed 0 0 moved 2 24 promoted 0 0 stack 0 work 32 before 34 34 after 34 34
+7 line 32 size 16 kind tenure live 2 24 freed 0 0 moved 2 24 promoted 2 24 stack 0 work 32 before 34 34 after 34 24
+8 line 38 size 15 kind major live 5 34 freed 6 52 moved 0 0 promoted 0 0 stack 2 work 22 before 18 10 after 70 24
+9 line 39 size 10 kind minor live 1 15 freed 0 0 moved 1 15 promoted 0 0 stack 0 work 21 before 55 16 after 55 16
+10 line 39 size 10 kind tenure live 1 15 freed 0 0 moved 1 15 promoted 1 15 stack 0 work 21 before 55 16 after 55 24
+11 line 43 size 13 kind major live 7 63 freed 1 8 moved 2 22 promoted 0 0 stack 2 work 66 before 33 12 after 41 19
+12 line 43 size 13 kind full live 7 63 freed 0 0 moved 2 22 promoted 2 22 stack 2 work 65 before 41 19 after 41 24
+13 line 45 size 14 kind major live 5 38 freed 3 38 moved 0 0 promoted 0 0 stack 2 work 21 before 28 11 after 66 24
+14 line 46 size 11 kind minor live 1 14 freed 0 0 moved 1 14 promoted 0 0 stack 0 work 18 before 52 15 after 52 15
+15 line 46 size 11 kind tenure live 1 14 freed 0 0 moved 1 14 promoted 1 14 stack 0 work 18 before 52 15 after 52 24
+16 line 48 size 16 kind minor live 1 11 freed 0 0 moved 1 11 promoted 0 0 stack 0 work 17 before 41 13 after 41 13
+17 line 48 size 16 kind tenure live 1 11 freed 0 0 moved 1 11 promoted 1 11 stack 0 work 17 before 41 13 after 41 24
+totals collections 17 pauses 17 work 508 freed 105 pause p50 22 p90 65 max 66
+utilization 30.12 mmu 20:0.00 60:0.00
+generational minor 7 173 major 3 109 tenure 6 161 full 1 65 promoted 15 132 barrier 7 remembered 7
+phase start collections 2 pauses 2 work 76 freed 0 max_pause 38
+phase mid collections 2 pauses 2 work 70 freed 0 max_pause 35
+phase end collections 13 pauses 13 work 362 freed 105 max_pause 66
+status completed
+
+collector rc REFCOUNT
+1 line 48 size 16 kind backup live 7 63 freed 5 44 moved 0 0 promoted 0 0 stack 2 work 31 before 21 14 after 65 34
+totals collections 1 pauses 5 work 47 freed 121 pause p50 5 p90 31 max 31
+utilization 82.33 mmu 20:0.00 60:43.33
+refcount increments 38 decrements 23 cascades 4 freed 7 77 max_cascade 3 8 line 44
+phase start collections 0 pauses 0 work 0 freed 0 max_pause 0
+phase mid collections 0 pauses 1 work 5 freed 15 max_pause 5
+phase end collections 1 pauses 4 work 42 freed 106 max_pause 31
+status completed
+
+output/summary.csv (example):
+collector,type,status,collections,pauses,live,moved,moved_objects,max_moves,freed,total_work,p50_pause,p90_pause,max_pause,peak_used,end_used,end_free,largest_free,fragmentation
+ms,MARK_SWEEP,completed,2,2,14,0,0,0,105,64,30,34,34,118,85,43,36,16.28
+mc,MARK_COMPACT,completed,2,2,15,8,8,1,121,181,90,91,91,128,69,59,59,0.00
+cp,COPYING,out_of_memory,2,2,11,11,6,2,27,100,40,60,60,61,-,-,-,-
+gen,GENERATIONAL,completed,17,17,51,31,15,3,105,508,22,65,66,86,85,19,8,57.89
+rc,REFCOUNT,completed,1,5,7,0,0,0,121,47,5,31,31,120,69,59,34,42.37
+
+output/leaks.txt (example):
+collector rc
+backup 1 line 48 groups 2 objects 5 words 44
+group 1 objects 3 words 12 cycle 2 died 13 ids 4* 5* 6
+group 2 objects 2 words 32 cycle 2 died 35 ids 11* 12*
+end groups 1 objects 2 words 6
+group 1 objects 2 words 6 cycle 2 died 54 ids 20* 21*

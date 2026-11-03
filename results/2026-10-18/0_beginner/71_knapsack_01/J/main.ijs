@@ -1,0 +1,29 @@
+main =: 3 : 0
+  names =. ;:'tent stove lantern rope camera blanket water'
+  weights =. 10 3 2 3 5 5 6
+  values =. 120 65 45 20 90 85 100
+  dp =. 8 21$0
+  for_i. >:i.7 do.
+    weight =. (i-1){weights
+    value =. (i-1){values
+    for_capacity. i.21 do.
+      best =. (<(i-1),capacity){dp
+      if. weight<:capacity do.
+        best =. best >. value+(<(i-1),capacity-weight){dp
+      end.
+      dp =. best (<i,capacity)}dp
+    end.
+  end.
+  chosen =. 7$0
+  capacity =. 20
+  for_i. |.>:i.7 do.
+    if. ((<i,capacity){dp)~:(<(i-1),capacity){dp do.
+      chosen =. 1 (i-1)}chosen
+      capacity =. capacity-(i-1){weights
+    end.
+  end.
+  smoutput 'max value: ',":(<7 20){dp
+  smoutput 'total weight: ',":+/chosen#weights
+  smoutput 'items: ',}. ; (<' ') ,&.> chosen#names
+)
+main ''

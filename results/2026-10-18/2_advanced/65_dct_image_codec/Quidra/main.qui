@@ -1,0 +1,672 @@
+import math
+import image_io = "./image_io.qui"
+import color = "./color.qui"
+import dct = "./dct.qui"
+import entropy = "./entropy.qui"
+import bitstream = "./bitstream.qui"
+
+const int[] table_keys = [0, 4, 1, 5]
+const string[] table_names = ["dc_luma", "ac_luma", "dc_chroma", "ac_chroma"]
+const string[] component_names = ["Y", "Cb", "Cr"]
+
+int total(int[] values)
+    int result = 0
+    for int value = values[]
+        result += value
+    return result
+
+int maximum(int[] values)
+    int result = values[0]
+    for int value = values[]
+        if value > result
+            result = value
+    return result
+
+int absolute(int value)
+    return if value < 0 then -value else value
+
+string integers_text(int[] values)
+    return [for int value = values[] then value.string()].join(" ")
+
+int[] word(int value)
+    return [value / 256, value % 256]
+
+int read_word(int[] bytes, int offset)
+    return 256 * bytes[offset] + bytes[offset + 1]
+
+int[] segment(int marker, int[] contents)
+    return [255, marker].concat(word(int(len(contents)) + 2)).concat(contents)
+
+class Component(int identifier, int horizontal, int vertical, int quant_id, int dc_id, int ac_id)
+class Block(int mcu, int component, int bx, int by)
+
+Component[] standard_components(int horizontal, int vertical)
+    return [Component(1, horizontal, vertical, 0, 0, 0), Component(2, 1, 1, 1, 1, 1), Component(3, 1, 1, 1, 1, 1)]
+
+class Layout(int width, int height, Component[] components, int restart_interval)
+    int[][] factors = [for Component component = components[] then [component.horizontal, component.vertical]]
+    int hmax = maximum([for Component component = components[] then component.horizontal])
+    int vmax = maximum([for Component component = components[] then component.vertical])
+    int mx = (width + 8 * hmax - 1) / (8 * hmax)
+    int my = (height + 8 * vmax - 1) / (8 * vmax)
+    int mcus = mx * my
+    int blocks_per_mcu = total([for Component component = components[] then component.horizontal * component.vertical])
+    Block[] blocks = []
+    for int mcu < mcus
+        for int k < 3
+            for int vertical < components[k].vertical
+                for int horizontal < components[k].horizontal
+                    local int bx = components[k].horizontal * (mcu % mx) + horizontal
+                    local int by = components[k].vertical * (mcu / mx) + vertical
+                    blocks = blocks.append(Block(mcu, k, bx, by))
+    int step = if restart_interval == 0 then mcus else restart_interval
+    int[][] intervals = []
+    for 0 <= int first < mcus step step
+        intervals = intervals.append([first, if first + step < mcus then step else mcus - first])
+
+    int[] interval_blocks(int index)
+        int first = intervals[index][0] * blocks_per_mcu
+        int last = (intervals[index][0] + intervals[index][1]) * blocks_per_mcu
+        return [for first <= int number < last then number]
+
+class Prepared(Layout layout, int[][] planes, int[][] quantization, int[][] coefficients)
+class Symbol(int table_index, int value, int extra, int width)
+class Symbols(Symbol[][] blocks, int[] differences, int[][] frequencies)
+class Encoded(Prepared prepared, entropy.Table[] tables, int[][] frequencies, int[] differences, int[] block_bits, int[][] intervals, int[] bytes, int header_bytes, int scan_bytes, int padding_bits, int stuffed_bytes)
+class Segment(int position, string name, int length)
+class IntervalState(string status, string fault, int mcu, int offset, int resync)
+class Parsed(Layout layout, int[][] quantization, entropy.Table[] tables, bool[] defined_tables, Segment[] segments, int scan_start, int scan_bytes)
+class Decoded(Parsed parsed, int[][] coefficients, IntervalState[] states, int[][] planes, int[][] expanded, int[][] image)
+
+entropy.Table[] empty_tables()
+    return [for int i < 8 then entropy.Table([for int j < 16 then 0], [])]
+
+entropy.Table[] standard_tables(image_io.Tables supplied)
+    entropy.Table[] result = empty_tables()
+    for int i < 4
+        result[table_keys[i]] = entropy.Table(supplied.counts[i], supplied.symbols[i])
+    return result
+
+Prepared prepare(int[][] image, int width, int height, int quality, string sampling, int restart_interval, image_io.Tables supplied)
+    int horizontal = if sampling == "444" then 1 else 2
+    int vertical = if sampling == "420" then 2 else 1
+    Layout layout = Layout(width, height, standard_components(horizontal, vertical), restart_interval)
+    int[][] planes = color.component_planes(color.split_planes(image), width, height, layout.factors, layout.mx, layout.my)
+    int[][] quantization = dct.quantization_tables(supplied.basic_quantization, quality)
+    int[][] coefficients = []
+    for Block block = layout.blocks[]
+        Component component = layout.components[block.component]
+        int plane_width = 8 * component.horizontal * layout.mx
+        int[] pixels = []
+        for int y < 8
+            for int x < 8
+                pixels = pixels.append(planes[block.component][(8 * block.by + y) * plane_width + 8 * block.bx + x])
+        int[] transformed = dct.forward(pixels, supplied.transform)
+        coefficients = coefficients.append(dct.zigzag(dct.quantize(transformed, quantization[component.quant_id])))
+    return Prepared(layout, planes, quantization, coefficients)
+
+Symbols build_symbols(Prepared prepared)
+    Layout layout = prepared.layout
+    int[][] frequencies = [for int i < 8 then [for int symbol < 256 then 0]]
+    Symbol[][] blocks = []
+    int[] differences = []
+    for int interval < int(len(layout.intervals))
+        int[] predictors = [0, 0, 0]
+        for int number = layout.interval_blocks(interval)[]
+            Block block = layout.blocks[number]
+            Component component = layout.components[block.component]
+            int[] sequence = prepared.coefficients[number]
+            int difference = sequence[0] - predictors[block.component]
+            predictors[block.component] = sequence[0]
+            differences = differences.append(difference)
+            int[] extra = entropy.extra_bits(difference)
+            Symbol[] symbols = [Symbol(component.dc_id, extra[1], extra[0], extra[1])]
+            int ac_table = 4 + component.ac_id
+            int zero_run = 0
+            for 1 <= int index < 64
+                int value = sequence[index]
+                if value == 0
+                    zero_run += 1
+                    continue
+                while zero_run >= 16
+                    symbols = symbols.append(Symbol(ac_table, 240, 0, 0))
+                    zero_run -= 16
+                extra = entropy.extra_bits(value)
+                symbols = symbols.append(Symbol(ac_table, 16 * zero_run + extra[1], extra[0], extra[1]))
+                zero_run = 0
+            if zero_run > 0
+                symbols = symbols.append(Symbol(ac_table, 0, 0, 0))
+            for Symbol symbol = symbols[]
+                frequencies[symbol.table_index][symbol.value] += 1
+            blocks = blocks.append(symbols)
+    return Symbols(blocks, differences, frequencies)
+
+int[] header(Layout layout, int[][] quantization, entropy.Table[] tables)
+    int[] bytes = [255, 216]
+    int[] contents = []
+    for int identifier < 2
+        contents = contents.append(identifier).concat(dct.zigzag(quantization[identifier]))
+    bytes = bytes.concat(segment(219, contents))
+    contents = [8].concat(word(layout.height)).concat(word(layout.width)).concat([3])
+    for Component component = layout.components[]
+        contents = contents.concat([component.identifier, 16 * component.horizontal + component.vertical, component.quant_id])
+    bytes = bytes.concat(segment(192, contents))
+    contents = []
+    for int key = table_keys[]
+        entropy.Table table = tables[key]
+        contents = contents.append(16 * (key / 4) + key % 4).concat(table.counts).concat(table.symbols)
+    bytes = bytes.concat(segment(196, contents))
+    if layout.restart_interval > 0
+        bytes = bytes.concat(segment(221, word(layout.restart_interval)))
+    contents = [3]
+    for Component component = layout.components[]
+        contents = contents.concat([component.identifier, 16 * component.dc_id + component.ac_id])
+    return bytes.concat(segment(218, contents.concat([0, 63, 0])))
+
+Encoded encode_prepared(Prepared prepared, string mode, image_io.Tables supplied)
+    Symbols symbols = build_symbols(prepared)
+    entropy.Table[] tables = standard_tables(supplied)
+    if mode == "optimized"
+        for int key = table_keys[]
+            tables[key] = entropy.optimized_table(symbols.frequencies[key])
+    int[] prefix = header(prepared.layout, prepared.quantization, tables)
+    bitstream.Writer writer = bitstream.Writer()
+    int[] block_bits = [for int i < int(len(prepared.coefficients)) then 0]
+    int[][] intervals = []
+    Layout layout = prepared.layout
+    for int interval < int(len(layout.intervals))
+        if interval > 0
+            .writer.restart(interval - 1)
+        int start = int(len(writer.bytes))
+        for int number = layout.interval_blocks(interval)[]
+            for Symbol symbol = symbols.blocks[number][]
+                entropy.Table table = tables[symbol.table_index]
+                int length = table.lengths[symbol.value]
+                .writer.write(table.codes[symbol.value], length)
+                .writer.write(symbol.extra, symbol.width)
+                block_bits[number] += length + symbol.width
+        .writer.pad()
+        intervals = intervals.append([layout.intervals[interval][0], layout.intervals[interval][1], int(len(prefix)) + start, int(len(writer.bytes)) - start])
+    int[] bytes = prefix.concat(writer.bytes).concat([255, 217])
+    return Encoded(prepared, tables, symbols.frequencies, symbols.differences, block_bits, intervals, bytes, int(len(prefix)), int(len(writer.bytes)), writer.padding_bits, writer.stuffed_bytes)
+
+Encoded encode(int[][] image, int width, int height, int quality, string sampling, string mode, int restart_interval, image_io.Tables supplied)
+    return encode_prepared(prepare(image, width, height, quality, sampling, restart_interval, supplied), mode, supplied)
+
+Parsed parse_header(int[] bytes)
+    int position = 2
+    Segment[] segments = [Segment(0, "SOI", 0)]
+    int[][] quantization = [for int i < 4 then []]
+    entropy.Table[] tables = empty_tables()
+    bool[] defined_tables = [for int i < 8 then false]
+    Component[] components = []
+    int restart_interval = 0
+    int width = 0
+    int height = 0
+    while true
+        int marker = bytes[position + 1]
+        int length = read_word(bytes, position + 2)
+        int[] contents = bytes[position + 4:<position + length + 2]
+        string name = ""
+        if marker >= 224 and marker <= 239
+            name = "APP{marker - 224}"
+        elif marker == 192
+            name = "SOF0"
+        elif marker == 196
+            name = "DHT"
+        elif marker == 219
+            name = "DQT"
+        elif marker == 221
+            name = "DRI"
+        elif marker == 218
+            name = "SOS"
+        else
+            name = "COM"
+        segments = segments.append(Segment(position, name, length))
+        position += length + 2
+        if marker == 219
+            for 0 <= int offset < int(len(contents)) step 65
+                int[] table = [for int i < 64 then 0]
+                for int i < 64
+                    table[dct.positions[i]] = contents[offset + 1 + i]
+                quantization[contents[offset]] = table
+        elif marker == 196
+            int offset = 0
+            while offset < int(len(contents))
+                int key = 4 * (contents[offset] / 16) + contents[offset] % 16
+                int[] counts = contents[offset + 1:<offset + 17]
+                int symbol_count = total(counts)
+                tables[key] = entropy.Table(counts, contents[offset + 17:<offset + 17 + symbol_count])
+                defined_tables[key] = true
+                offset += 17 + symbol_count
+        elif marker == 192
+            height = read_word(contents, 1)
+            width = read_word(contents, 3)
+            for int i < 3
+                int offset = 6 + 3 * i
+                int factors = contents[offset + 1]
+                components = components.append(Component(contents[offset], factors / 16, factors % 16, contents[offset + 2], 0, 0))
+        elif marker == 221
+            restart_interval = read_word(contents, 0)
+        elif marker == 218
+            for int i < 3
+                int selectors = contents[2 + 2 * i]
+                components[i].dc_id = selectors / 16
+                components[i].ac_id = selectors % 16
+            break
+    segments = segments.append(Segment(int(len(bytes)) - 2, "EOI", 0))
+    return Parsed(Layout(width, height, components, restart_interval), quantization, tables, defined_tables, segments, position, int(len(bytes)) - 2 - position)
+
+int read_symbol(bitstream.Reader &reader, entropy.Table table)
+    int code = 0
+    for 1 <= int length <= 16
+        int next = .reader.bit()
+        if reader.fault != ""
+            return -1
+        code = 2 * code + next
+        for int symbol = table.symbols[]
+            if table.lengths[symbol] == length and table.codes[symbol] == code
+                return symbol
+    reader.fault = "code"
+    return -1
+
+int[] decode_block(bitstream.Reader &reader, int component_index, Component component, entropy.Table[] tables, int[] &predictors)
+    int[] coefficients = [for int i < 64 then 0]
+    int size = read_symbol(&reader, tables[component.dc_id])
+    if reader.fault != ""
+        return []
+    int bits = .reader.read(size)
+    if reader.fault != ""
+        return []
+    predictors[component_index] += entropy.amplitude(bits, size)
+    coefficients[0] = predictors[component_index]
+    int index = 1
+    while index <= 63
+        int symbol = read_symbol(&reader, tables[4 + component.ac_id])
+        if reader.fault != ""
+            return []
+        if symbol == 0
+            break
+        int zero_run = symbol / 16
+        size = symbol % 16
+        index += zero_run
+        if index > 63
+            reader.fault = "index"
+            return []
+        if size > 0
+            bits = .reader.read(size)
+            if reader.fault != ""
+                return []
+            coefficients[index] = entropy.amplitude(bits, size)
+        index += 1
+    return coefficients
+
+int[] reconstruct_component(Layout layout, int component_index, int[][] coefficients, int[][] quantization, int[][] transform, int keep = 64)
+    Component component = layout.components[component_index]
+    int width = 8 * component.horizontal * layout.mx
+    int height = 8 * component.vertical * layout.my
+    int[] plane = [for int p < width * height then 128]
+    for int number < int(len(layout.blocks))
+        Block block = layout.blocks[number]
+        if block.component != component_index
+            continue
+        int[] pixels = dct.inverse(dct.dequantize(coefficients[number], quantization[component.quant_id], keep), transform)
+        for int y < 8
+            for int x < 8
+                plane[(8 * block.by + y) * width + 8 * block.bx + x] = pixels[8 * y + x]
+    return plane
+
+Decoded decode(int[] bytes, int[][] transform)
+    Parsed parsed = parse_header(bytes)
+    Layout layout = parsed.layout
+    int[][] coefficients = [for Block block = layout.blocks[] then [for int i < 64 then 0]]
+    IntervalState[] states = [for int[] interval = layout.intervals[] then IntervalState("lost", "", 0, 0, 0)]
+    bitstream.Reader reader = bitstream.Reader(bytes, parsed.scan_start)
+    int interval = 0
+    while interval < int(len(layout.intervals))
+        int[] predictors = [0, 0, 0]
+        int[][] pending = []
+        int current_mcu = layout.intervals[interval][0]
+        reader.fault = ""
+        for int number = layout.interval_blocks(interval)[]
+            Block block = layout.blocks[number]
+            current_mcu = block.mcu
+            int[] sequence = decode_block(&reader, block.component, layout.components[block.component], parsed.tables, &predictors)
+            if reader.fault != ""
+                break
+            pending = pending.append(sequence)
+        .reader.discard()
+        if reader.fault == ""
+            int expected = if interval + 1 < int(len(layout.intervals)) then 208 + interval % 8 else 217
+            if bytes[reader.position] != 255 or bytes[reader.position + 1] != expected
+                reader.fault = "sync"
+        if reader.fault == ""
+            int[] numbers = layout.interval_blocks(interval)
+            for int i < int(len(numbers))
+                coefficients[numbers[i]] = pending[i]
+            states[interval] = IntervalState("ok", "", 0, 0, 0)
+            reader.position += 2
+            interval += 1
+        else
+            int offset = reader.position
+            int resync = bitstream.find_resync(bytes, offset)
+            states[interval] = IntervalState("damaged", reader.fault, current_mcu, offset, resync)
+            int marker = bytes[resync + 1]
+            if marker == 217
+                break
+            int adjustment = (marker - 208 - interval) % 8
+            if adjustment < 0
+                adjustment += 8
+            interval += 1 + adjustment
+            reader.position = resync + 2
+    int[][] planes = [for int k < 3 then reconstruct_component(layout, k, coefficients, parsed.quantization, transform)]
+    int[][] expanded = color.upsample(planes, layout.factors, layout.mx, layout.width, layout.height)
+    return Decoded(parsed, coefficients, states, planes, expanded, color.combine_rgb(expanded))
+
+Encoded repair(Decoded decoded, image_io.Tables supplied)
+    Layout source = decoded.parsed.layout
+    Component first = source.components[0]
+    Layout layout = Layout(source.width, source.height, standard_components(first.horizontal, first.vertical), source.restart_interval)
+    int[][] quantization = [decoded.parsed.quantization[first.quant_id], decoded.parsed.quantization[source.components[1].quant_id]]
+    return encode_prepared(Prepared(layout, [], quantization, decoded.coefficients), "optimized", supplied)
+
+int[] image_values(int[][] image)
+    int[] values = []
+    for int[] pixel = image[]
+        values = values.concat(pixel)
+    return values
+
+string psnr(int[] first, int[] second)
+    int squared_error = 0
+    for int i < int(len(first))
+        int difference = first[i] - second[i]
+        squared_error += difference * difference
+    if squared_error == 0
+        return "inf"
+    real64 logarithm = math.log(real64(65025 * int(len(first))) / real64(squared_error))
+    real64 value = 10.0 * logarithm / 2.302585092994046
+    int rounded = math.floor(value * 100.0 + 0.5)
+    string fraction = (rounded % 100).string()
+    return (rounded / 100).string() + "." + (if len(fraction) == 1 then "0" else "") + fraction
+
+string image_psnr(int[][] first, int[][] second)
+    return psnr(image_values(first), image_values(second))
+
+class Quality(string[] scores, int max_error)
+
+Quality quality_metrics(int[][] original, int[][] original_planes, Decoded decoded)
+    string[] scores = [for int k < 3 then psnr(original_planes[k], decoded.expanded[k])]
+    scores = scores.append(image_psnr(original, decoded.image))
+    int max_error = 0
+    for int pixel < int(len(original))
+        for int channel < 3
+            int difference = absolute(original[pixel][channel] - decoded.image[pixel][channel])
+            if difference > max_error
+                max_error = difference
+    return Quality(scores, max_error)
+
+int gcd(int first, int second)
+    int a = first
+    int b = second
+    while b != 0
+        int remainder = a % b
+        a = b
+        b = remainder
+    return a
+
+string bits_per_pixel(int bytes, int width, int height)
+    int numerator = 8 * bytes
+    int denominator = width * height
+    int divisor = gcd(numerator, denominator)
+    return "{numerator / divisor}/{denominator / divisor}"
+
+class BlockStats(string[] lines, int[] squared_errors)
+
+BlockStats block_statistics(Encoded encoded, Decoded decoded)
+    Layout layout = encoded.prepared.layout
+    string[] lines = ["blocks {len(layout.blocks)}"]
+    int[] squared_errors = []
+    for int number < int(len(layout.blocks))
+        Block block = layout.blocks[number]
+        Component component = layout.components[block.component]
+        int plane_width = 8 * component.horizontal * layout.mx
+        int squared_error = 0
+        for int y < 8
+            for int x < 8
+                int pixel = (8 * block.by + y) * plane_width + 8 * block.bx + x
+                int difference = encoded.prepared.planes[block.component][pixel] - decoded.planes[block.component][pixel]
+                squared_error += difference * difference
+        squared_errors = squared_errors.append(squared_error)
+        int[] sequence = encoded.prepared.coefficients[number]
+        int nonzero = 0
+        int last = 0
+        for 1 <= int i < 64
+            if sequence[i] != 0
+                nonzero += 1
+                last = i
+        lines = lines.append("block {number} {component_names[block.component]} {block.bx} {block.by} dc {sequence[0]} diff {encoded.differences[number]} nonzero {nonzero} last {last} bits {encoded.block_bits[number]} sse {squared_error}")
+    return BlockStats(lines, squared_errors)
+
+string binary_text(int code, int width)
+    string result = ""
+    int shift = width - 1
+    while shift >= 0
+        result += ((code / (2 ^ shift)) % 2).string()
+        shift -= 1
+    return result
+
+string[] huffman_lines(Encoded encoded)
+    string[] lines = []
+    for int i < 4
+        int key = table_keys[i]
+        entropy.Table table = encoded.tables[key]
+        int[] frequencies = encoded.frequencies[key]
+        int bits = total([for int symbol = table.symbols[] then frequencies[symbol] * table.lengths[symbol]])
+        lines = lines.concat(["table {table_names[i]} class {key / 4} id {key % 4} symbols {len(table.symbols)} coded {total(frequencies)} bits {bits}", "counts " + integers_text(table.counts)])
+        for int symbol = table.symbols[]
+            int length = table.lengths[symbol]
+            lines = lines.append("symbol " + image_io.hex_byte(symbol) + " length {length} code " + binary_text(table.codes[symbol], length) + " count {frequencies[symbol]}")
+    return lines
+
+int[][] thumbnail(Decoded decoded)
+    Layout layout = decoded.parsed.layout
+    int width = (layout.width + 7) / 8
+    int height = (layout.height + 7) / 8
+    int[][] image = []
+    for int y < height
+        for int x < width
+            int[] values = []
+            for int k < 3
+                Component component = layout.components[k]
+                int bx = x * component.horizontal / layout.hmax
+                int by = y * component.vertical / layout.vmax
+                int dc = 0
+                for int number < int(len(layout.blocks))
+                    Block block = layout.blocks[number]
+                    if block.component == k and block.bx == bx and block.by == by
+                        dc = decoded.coefficients[number][0]
+                        break
+                int divisor = decoded.parsed.quantization[component.quant_id][0]
+                values = values.append(color.clamp(color.floor_div(dc * divisor + 4, 8) + 128))
+            image = image.append(color.to_rgb(values[0], values[1], values[2]))
+    return image
+
+string[] stream_report(Decoded decoded, Encoded repaired, Decoded repaired_decoded)
+    Parsed parsed = decoded.parsed
+    Layout layout = parsed.layout
+    string[] lines = [for Segment entry = parsed.segments[] then "stream_segment {entry.position} {entry.name} {entry.length}"]
+    lines = lines.append("stream_image {layout.width} {layout.height}")
+    for Component component = layout.components[]
+        lines = lines.append("stream_component {component.identifier} {component.horizontal} {component.vertical} {component.quant_id} {component.dc_id} {component.ac_id}")
+    for int identifier < 4
+        if len(parsed.quantization[identifier]) != 0
+            lines = lines.append("stream_quant {identifier} " + integers_text(dct.zigzag(parsed.quantization[identifier])))
+    for int key < 8
+        if parsed.defined_tables[key]
+            entropy.Table table = parsed.tables[key]
+            int longest = 0
+            for 1 <= int length <= 16
+                if table.counts[length - 1] > 0
+                    longest = length
+            lines = lines.append("stream_huffman {key / 4} {key % 4} symbols {len(table.symbols)} longest {longest}")
+    int[] counts = [0, 0, 0]
+    string[] statuses = ["ok", "damaged", "lost"]
+    for IntervalState state = decoded.states[]
+        for int i < 3
+            if state.status == statuses[i]
+                counts[i] += 1
+    lines = lines.append("stream_restart {layout.restart_interval} intervals {len(layout.intervals)} ok {counts[0]} damaged {counts[1]} lost {counts[2]}")
+    for int i < int(len(layout.intervals))
+        IntervalState state = decoded.states[i]
+        string description = state.status
+        if state.status == "damaged"
+            description += " {state.fault} mcu {state.mcu} offset {state.offset} resync {state.resync}"
+        lines = lines.append("stream_interval {i} {layout.intervals[i][0]} {layout.intervals[i][1]} {description}")
+    string identical = if decoded.image == repaired_decoded.image then "yes" else "no"
+    return lines.concat(["stream_scan_bytes {parsed.scan_bytes}", "repair {len(repaired.bytes)} {repaired.header_bytes} {repaired.scan_bytes} identical {identical}"])
+
+class Experiment(image_io.Image input_image, image_io.Params params, image_io.Tables supplied, int[] stream)
+    int width = input_image.width
+    int height = input_image.height
+    int[][] image = input_image.pixels
+    int[][] original_planes = color.split_planes(image)
+    int quality = params.qualities[0]
+    Encoded reference = encode(image, width, height, quality, params.sampling, params.huffman_mode, params.restart_interval, supplied)
+    Decoded reference_decoded = decode(reference.bytes, supplied.transform)
+
+    Encoded encoding(int requested_quality, string requested_sampling, string requested_mode)
+        return encode(image, width, height, requested_quality, requested_sampling, requested_mode, params.restart_interval, supplied)
+
+    string[] rate_distortion()
+        string[] lines = ["quality,bytes_standard,bytes_optimized,bpp,psnr_y,psnr_cb,psnr_cr,psnr_rgb,max_error"]
+        for int requested_quality = params.qualities[]
+            Prepared prepared = prepare(image, width, height, requested_quality, params.sampling, params.restart_interval, supplied)
+            Encoded standard = encode_prepared(prepared, "standard", supplied)
+            Encoded optimized = encode_prepared(prepared, "optimized", supplied)
+            Encoded selected = if params.huffman_mode == "standard" then standard else optimized
+            Quality measured = quality_metrics(image, original_planes, decode(selected.bytes, supplied.transform))
+            string[] values = [requested_quality.string(), len(standard.bytes).string(), len(optimized.bytes).string(), bits_per_pixel(int(len(selected.bytes)), width, height)]
+            lines = lines.append(values.concat(measured.scores).append(measured.max_error.string()).join(","))
+        return lines
+
+    string[] reference_report(int[] squared_errors)
+        Layout layout = reference.prepared.layout
+        int[] counts = [for Component component = layout.components[] then component.horizontal * component.vertical * layout.mcus]
+        string[] lines = ["image {width} {height}", "sampling {params.sampling} mcu {8 * layout.hmax} {8 * layout.vmax} grid {layout.mx} {layout.my}",
+            "padded {8 * layout.hmax * layout.mx} {8 * layout.vmax * layout.my}", "blocks " + integers_text(counts),
+            "restart_interval {params.restart_interval} markers {int(len(layout.intervals)) - 1}", "huffman {params.huffman_mode}", "quality {quality}"]
+        for int identifier < 2
+            lines = lines.append("quant {identifier} " + integers_text(dct.zigzag(reference.prepared.quantization[identifier])))
+        lines = lines.append("symbols " + integers_text([for int key = table_keys[] then total(reference.frequencies[key])]))
+        int eob = reference.frequencies[4][0] + reference.frequencies[5][0]
+        int zrl = reference.frequencies[4][240] + reference.frequencies[5][240]
+        int zero_ac = 0
+        int[] nonzero = [for int i < 64 then 0]
+        for int[] sequence = reference.prepared.coefficients[]
+            bool any_ac = false
+            for int i < 64
+                if sequence[i] != 0
+                    nonzero[i] += 1
+                    if i != 0
+                        any_ac = true
+            if not any_ac
+                zero_ac += 1
+        lines = lines.concat(["eob {eob} zrl {zrl}", "zero_ac_blocks {zero_ac}", "nonzero " + integers_text(nonzero)])
+        for int k < 3
+            int bits = 0
+            int count = 0
+            int squared_error = 0
+            for int number < int(len(layout.blocks))
+                if layout.blocks[number].component != k
+                    continue
+                bits += reference.block_bits[number]
+                squared_error += squared_errors[number]
+                for int value = reference.prepared.coefficients[number][]
+                    if value != 0
+                        count += 1
+            lines = lines.append("component {component_names[k]} bits {bits} nonzero {count} sse {squared_error}")
+        lines = lines.concat(["padding_bits {reference.padding_bits}", "stuffed_bytes {reference.stuffed_bytes}", "header_bytes {reference.header_bytes}", "scan_bytes {reference.scan_bytes}", "total_bytes {len(reference.bytes)}"])
+        for int i < int(len(reference.intervals))
+            int[] interval = reference.intervals[i]
+            lines = lines.append("interval {i} {interval[0]} {interval[1]} {interval[2]} {interval[3]}")
+        int[] histogram = [for int i < 8 then 0]
+        int[] boundaries = [1, 2, 4, 8, 16, 32, 64]
+        for int pixel < width * height
+            for int channel < 3
+                int difference = absolute(image[pixel][channel] - reference_decoded.image[pixel][channel])
+                int bin = 0
+                while bin < 7 and difference >= boundaries[bin]
+                    bin += 1
+                histogram[bin] += 1
+        lines = lines.append("error_histogram " + integers_text(histogram))
+        for int keep = params.truncate[]
+            int[] plane = reconstruct_component(layout, 0, reference_decoded.coefficients, reference_decoded.parsed.quantization, supplied.transform, keep)
+            int plane_width = 8 * layout.components[0].horizontal * layout.mx
+            int[] cropped = []
+            for int y < height
+                cropped = cropped.concat(plane[y * plane_width:<y * plane_width + width])
+            lines = lines.append("truncate {keep} " + psnr(original_planes[0], cropped))
+        return lines
+
+    string[] sampling_comparison()
+        string[] lines = []
+        for string sampling = ["444", "422", "420"][]
+            Encoded encoded = encoding(quality, sampling, params.huffman_mode)
+            Quality measured = quality_metrics(image, original_planes, decode(encoded.bytes, supplied.transform))
+            lines = lines.append("sampling_compare {sampling} {len(encoded.bytes)} " + measured.scores[1:<4].join(" "))
+        return lines
+
+    string[] generation_lines()
+        string[] lines = []
+        int[][] previous = image
+        for 1 <= int generation <= params.generations
+            Encoded encoded = if generation == 1 then reference else encode(previous, width, height, quality, params.sampling, params.huffman_mode, params.restart_interval, supplied)
+            Decoded decoded = if generation == 1 then reference_decoded else decode(encoded.bytes, supplied.transform)
+            int changed = 0
+            for int pixel < width * height
+                if previous[pixel] != decoded.image[pixel]
+                    changed += 1
+            lines = lines.append("generation {generation} {len(encoded.bytes)} " + image_psnr(image, decoded.image) + " {changed}")
+            previous = decoded.image
+        return lines
+
+    string[] quality_search()
+        int lower = 1
+        int upper = 100
+        string[] lines = []
+        while lower < upper
+            int middle = (lower + upper + 1) / 2
+            Encoded encoded = encoding(middle, params.sampling, params.huffman_mode)
+            int size = int(len(encoded.bytes))
+            lines = lines.append("rate_control_step {middle} {size}")
+            if size <= params.target_bytes
+                lower = middle
+            else
+                upper = middle - 1
+        Encoded encoded = encoding(lower, params.sampling, params.huffman_mode)
+        string fits = if int(len(encoded.bytes)) <= params.target_bytes then "yes" else "no"
+        string value = image_psnr(image, decode(encoded.bytes, supplied.transform).image)
+        return lines.append("rate_control {lower} {len(encoded.bytes)} {fits} {value}")
+
+    void write_outputs()
+        BlockStats statistics = block_statistics(reference, reference_decoded)
+        string[] report = reference_report(statistics.squared_errors).concat(sampling_comparison()).concat(generation_lines()).concat(quality_search())
+        Decoded stream_decoded = decode(stream, supplied.transform)
+        Encoded repaired = repair(stream_decoded, supplied)
+        Decoded repaired_decoded = decode(repaired.bytes, supplied.transform)
+        report = report.concat(stream_report(stream_decoded, repaired, repaired_decoded))
+        image_io.write_lines("rate_distortion.csv", rate_distortion())
+        image_io.write_ppm("decoded.ppm", width, height, reference_decoded.image)
+        image_io.write_hex("bitstream.hex", reference.bytes)
+        image_io.write_ppm("thumbnail.ppm", (width + 7) / 8, (height + 7) / 8, thumbnail(reference_decoded))
+        image_io.write_lines("huffman_tables.txt", huffman_lines(reference))
+        image_io.write_lines("blocks.txt", statistics.lines)
+        image_io.write_ppm("stream_decoded.ppm", stream_decoded.parsed.layout.width, stream_decoded.parsed.layout.height, stream_decoded.image)
+        image_io.write_hex("repaired.hex", repaired.bytes)
+        image_io.write_lines("report.txt", report)
+
+void run()
+    Experiment experiment = Experiment(image_io.read_ppm("input/image.ppm"), image_io.read_params(), image_io.read_tables(), image_io.read_hex("input/stream.hex"))
+    experiment.write_outputs()
+
+run()

@@ -1,0 +1,5 @@
+import Foundation
+
+final class Minstd { private var state: Int64; init(_ seed: Int64) { state = seed }; func uniform() -> Double { state = 48271 * state % 2147483647; return Double(state) / 2147483647 } }
+func choose(_ probabilities: [Double], _ random: Minstd) -> Int { let uniform = random.uniform(); var cumulative = 0.0; for (state, probability) in probabilities.enumerated() { cumulative += probability; if uniform < cumulative { return state } }; return probabilities.count - 1 }
+func weightedSample(_ topologicalOrder: [Int], _ parents: [[Int]], _ cpts: [[[Double]]], _ sizes: [Int], _ evidence: [Evidence], _ random: Minstd) -> (sample: [Int], weight: Double) { var sample = Array(repeating: 0, count: sizes.count), weight = 1.0; for variable in topologicalOrder { let row = cpts[variable][parentRow(parents[variable], sample, sizes)]; if let item = evidence.first(where: { $0.variable == variable }) { sample[variable] = item.state; weight *= row[item.state] } else { sample[variable] = choose(row, random) } }; return (sample, weight) }

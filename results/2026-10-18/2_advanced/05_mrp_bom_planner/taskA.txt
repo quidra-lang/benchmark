@@ -1,0 +1,433 @@
+[Overview]
+Write a program that performs material requirements planning (MRP) for a furniture manufacturer. It reads the following files from the input/ folder: the item master, the bill of materials (BOM), work centers, routings, the master production schedule (MPS), scheduled receipts, customer inquiries, and parameters. First it validates the input, reporting cycles in the bill of materials together with their paths and removing them. Next it computes low-level codes, derives net requirements from the weekly gross requirements, determines lot sizes, and creates planned orders offset earlier by the lead time. Then it promises due dates for the inquiries, considering both materials and work center capacity. For the final plan, which includes the promised orders, it writes 9 files to the output/ folder: an MRP grid for each item, pegging (tracing which demands each supply is allocated to), a BOM explosion, a standard cost rollup with ABC analysis, exception messages, a work center load table, the results of due-date promising, the readiness of the orders to be released this week, and a weekly value plan. Nothing is written to standard output.
+
+[Input files]
+The common format is as follows.
+- Every file consists of ASCII characters only, and every line ends with a newline (LF). There are no blank lines.
+- In a file with the extension .csv, line 1 is the header line (its content is fixed as shown below), and from line 2 on there is one data row per line. Fields are separated by a single comma (,); there are no quotes and no spaces before or after a field.
+- Line numbers in a file are counted with the header line as line 1 (the first data row is line 2).
+- Item IDs, work center IDs and order IDs are strings of 1 to 8 characters consisting of uppercase letters and digits.
+- Numeric fields (except the lot parameter) are non-negative decimal integers without extra leading zeros.
+- The description is a string of 1 to 40 characters consisting of letters, digits, spaces and periods; it does not begin or end with a space. The description is always the last field of a line.
+- In the explanations below, <...> denotes a part where a value goes. The symbols < and > themselves appear in neither the input nor the output.
+
+(1) input/items.csv (item master)
+Header line: item,lead_time,lot_rule,lot_param,safety_stock,on_hand,material_cents,labor_cents,description
+The fields are: item ID, lead time (weeks), lot-sizing rule, lot parameter, safety stock, on-hand quantity, material cost (cents), labor cost (cents), and description. The lot-sizing rule is a string of 1 to 8 uppercase letters; a valid rule is one of LFL, FOQ, POQ, MIN. The lot parameter is either one non-negative decimal integer, or two non-negative decimal integers joined by / (for example 10/5).
+
+(2) input/bom.csv (bill of materials)
+Header line: parent,child,qty_per,scrap_percent
+The fields are: parent item ID, child item ID, quantity per (the number of child items used for one parent item), and scrap rate (percent).
+
+(3) input/workcenters.csv (work centers)
+Header line: center,minutes,efficiency,description
+The fields are: work center ID, working time per week (minutes), efficiency (percent), and description.
+
+(4) input/routings.csv (routings)
+Header line: item,operation,center,setup_minutes,run_minutes
+The fields are: item ID, operation number, work center ID, setup time (minutes), and run time per unit (minutes).
+
+(5) input/mps.csv (master production schedule)
+Header line: item,week,quantity
+The fields are: item ID, week, and quantity. A row represents the independent demand (planned shipment quantity) of that item in that week.
+
+(6) input/receipts.csv (scheduled receipts)
+Header line: item,week,quantity
+The fields are: item ID, week, and quantity. A row represents a quantity that has already been ordered and is scheduled to arrive at the beginning of that week.
+
+(7) input/orders.csv (inquiries)
+Header line: order,item,quantity,week
+The fields are: order ID, item ID, quantity, and requested week. A row represents an inquiry in which a customer wants to receive that quantity of that item in that week.
+
+(8) input/params.txt (parameters)
+It consists of the following 3 lines; the tokens on each line are separated by a single space.
+horizon <H>
+peg <item ID 1> <item ID 2> ...
+tree_quantity <N>
+<H> is the number of weeks in the planning horizon; weeks 1 through <H> are planned. The peg line lists the items for which pegging is output. <N> is the quantity in which each top-level item is exploded in the BOM explosion.
+
+[Processing]
+== 1. Common rules ==
+- Order of IDs: IDs are compared in lexicographic order, comparing character codes (ASCII) one character at a time from the first character (digits are smaller than letters, and when one ID is a prefix of the other, the shorter one is smaller). "In increasing order of ID" always means this order.
+- Rounding up and rounding down: every division in this task divides a non-negative integer by a positive integer. "Rounded up to an integer" and "rounded down to an integer" mean the quotient rounded up (ceil) and rounded down (floor) to an integer, respectively.
+- Rounding to the nearest integer: for a non-negative integer a and a positive integer b, "a / b rounded to the nearest integer" means floor((2a + b) / (2b)) (exactly .5 is rounded up).
+- Money: all amounts are computed as integers in cents. In the output an amount is written as "<dollars>.<2-digit cents>". <dollars> is the quotient of the amount divided by 100 (without extra leading zeros), and <2-digit cents> is the remainder written with 2 digits (with a leading 0 if it has 1 digit). For example, 12345 cents is 123.45 and 7 cents is 0.07. All output amounts are non-negative.
+- Weeks: weeks are integers from 1 to H. Anything received in week t arrives at the beginning of week t and can be used for the demand of week t.
+
+== 2. Input validation ==
+Examine the data rows one at a time, in the file order items.csv, bom.csv, workcenters.csv, routings.csv, mps.csv, receipts.csv, orders.csv, and within each file in increasing order of line number. For each row, check the conditions listed below in the listed order; if a condition applies, the first condition that applies makes the row an error: reject the row and record "<file name> line <line number>: <message>" as an error (<file name> is the name without the folder, such as items.csv). A row to which no condition applies is accepted. All later processing uses only the accepted rows. params.txt is not validated.
+Below, "an item exists" means that a row with that item ID has been accepted in items.csv.
+
+* items.csv
+1. A row with the same item ID has already been accepted: duplicate item <item ID>
+2. The lot-sizing rule is none of LFL, FOQ, POQ, MIN: unknown lot rule <lot-sizing rule>
+3. The lot parameter does not fit the lot-sizing rule: bad lot parameter <lot parameter> for <lot-sizing rule>
+The lot parameter fits the rule when: for LFL, it is a single integer whose value is 0; for FOQ and POQ, it is a single integer whose value is at least 1; for MIN, it is two integers joined by / and both are at least 1. The <lot parameter> in the message is the string exactly as written in the file.
+An accepted item holds, for FOQ, the value as the fixed order quantity F; for POQ, the value as the number of periods P; for MIN, the value before / as the minimum order quantity m and the value after it as the order multiple k.
+
+* bom.csv
+1. The parent item does not exist: unknown item <parent item ID>
+2. The child item does not exist: unknown item <child item ID>
+3. The quantity per is less than 1: bad quantity <quantity per>
+4. The scrap rate is greater than 50: bad scrap <scrap rate>
+5. The parent item and the child item are the same: cycle <parent item ID> -> <parent item ID>
+6. A row with the same pair of parent item and child item has already been accepted: duplicate <parent item ID> -> <child item ID>
+7. Adding this row would create a cycle: cycle <parent item ID> -> <path>
+Condition 7 applies when the path search below finds a path from the child item to the parent item. <path> is the item IDs of the path found, in order from the child item to the parent item, joined by " -> " (one space on each side).
+The path search is a depth-first search that uses only the rows already accepted and starts from the child item. When item x is visited: if x is the parent item, the visit succeeds and the path of x consists of x alone. Otherwise, mark x as visited, examine the accepted rows whose parent is x in increasing order of child item ID, and visit the child item of each row if it is not yet visited. If that visit succeeds, the path of x is x followed by the path of that child item; x also succeeds, and the examination stops. If no child item succeeds, x fails. The visited marks are valid only within a single search.
+Example: when the accepted rows (parent item, child item) are the three rows (S, P), (S, R), (P, R), the row "R,S,1,0" gives "cycle R -> S -> P -> R", because the children of S are examined in the order P, R.
+
+* workcenters.csv
+1. A row with the same work center ID has already been accepted: duplicate center <work center ID>
+2. The efficiency is less than 50 or greater than 150: bad efficiency <efficiency>
+The effective capacity A of an accepted work center is floor(working time * efficiency / 100) (minutes).
+
+* routings.csv
+1. The item does not exist: unknown item <item ID>
+2. The work center has not been accepted: unknown center <work center ID>
+3. The item is a purchased item (see 3.): purchased item <item ID>
+4. The run time is less than 1: bad run time <run time>
+5. A row with the same pair of item and operation number has already been accepted: duplicate <item ID> operation <operation number>
+The accepted rows of an item, arranged in increasing order of operation number, form the routing of that item.
+
+* mps.csv
+1. The item does not exist: unknown item <item ID>
+2. The week is not between 1 and H inclusive: week <week> outside horizon
+3. The quantity is less than 1: bad quantity <quantity>
+4. A row with the same pair of item and week has already been accepted: duplicate <item ID> week <week>
+
+* receipts.csv
+Check the same conditions as conditions 1 to 3 of mps.csv, in the same order (there is no condition 4).
+
+* orders.csv
+1. A row with the same order ID has already been accepted: duplicate order <order ID>
+2. The item does not exist: unknown item <item ID>
+3. The week is not between 1 and H inclusive: week <week> outside horizon
+4. The quantity is less than 1: bad quantity <quantity>
+The accepted rows are called inquiries.
+
+== 3. Structure of the bill of materials ==
+- The child rows of item X are the accepted bom.csv rows whose parent item is X. Child rows are always handled in increasing order of child item ID. The parent rows of item X are the rows whose child item is X.
+- An item with one or more child rows is called a manufactured item, and an item with no child row is called a purchased item.
+- Requirement: for a child row L with quantity per q and scrap rate s, the quantity of the child item needed for Q units of the parent item, need(L, Q), is ceil(Q * q * (100 + s) / 100).
+- Low-level code: the low-level code of an item without parent rows is 0; the low-level code of an item with parent rows is "the maximum of the low-level codes of its parent items + 1" (it is uniquely determined because the accepted rows contain no cycle).
+- Planning order: the order of the items sorted by increasing low-level code, and for equal codes by increasing item ID, is called the planning order. Every item comes after all of its parent items.
+- Cumulative lead time: the cumulative lead time of item X is "the lead time of X + the maximum cumulative lead time of the child items of X (0 for a purchased item)".
+
+== 4. Running MRP ==
+Computing the plan of all items for a given demand set (all accepted rows of mps.csv, plus some inquiries, each placed in a specified week) is called "running MRP". The procedure is as follows.
+(1) Demand elements: each item has a list of demand elements. A demand element has a week, a kind and a quantity; there are the following 3 kinds.
+  - MPS: one for each accepted row of mps.csv. Its week and quantity are the values of that row.
+  - ORDER: one for each inquiry included in the demand set. It has the order ID; its week is the week in which the inquiry is placed, and its quantity is the quantity of the inquiry.
+  - DEPENDENT (dependent demand): created in (5) from a planned order of a parent item. It has the parent item ID and the parent order number.
+(2) Plan the items one at a time in planning order. When item X is planned, all demand elements of X are already present. Let SS be the safety stock, OH the on-hand quantity and LT the lead time, and compute the following values for each week t (1 <= t <= H).
+  - Gross requirement GR[t]: the sum of the quantities of the demand elements whose week is t.
+  - Scheduled receipts SR[t]: the sum of the quantities of the accepted receipts.csv rows of X whose week is t.
+  Let POH[0] = OH, and for t = 1, 2, ..., H in this order compute a = POH[t-1] + SR[t] - GR[t]. If a >= SS, set the net requirement NET[t] = 0, the planned receipt PR[t] = 0, and POH[t] = a. If a < SS, set NET[t] = SS - a, compute the lot size Q of (3), create one planned order received in week t, and set PR[t] = Q and POH[t] = a + Q. POH[t] is called the projected on-hand of week t.
+(3) The lot size Q, with NET = NET[t], is as follows.
+  - LFL: Q = NET.
+  - FOQ: Q is the smallest multiple of F that is at least NET.
+  - MIN: the smallest multiple of k that is at least the larger of NET and m.
+  - POQ: let a_t = a, and for u = t + 1 to min(t + P - 1, H) in order let a_u = a_(u-1) + SR[u] - GR[u]. Q is the maximum of SS - a_u over u = t to min(t + P - 1, H). In other words, it is the smallest quantity for which the projected on-hand does not fall below the safety stock without additional planned orders during the P weeks starting at week t (up to the end of the horizon).
+  For every rule, Q >= NET.
+(4) Planned orders: the planned orders of each item are numbered from 1 in the order they are created (increasing order of receipt week). A planned order has a receipt week t, a quantity Q, an original release week r = t - LT, and a release week max(1, r). An order with r less than 1 is called a past-due order. The planned release PL[w] is the sum of the quantities of the planned orders whose release week is w (past-due orders are counted in week 1).
+(5) When the planning of X is finished, go through the planned orders of X in order of number, and for each order go through the child rows L of X in order, adding one DEPENDENT demand element to the child item of L. Its week is the release week of the order, its quantity is need(L, quantity of the order), its parent item ID is X, and its parent order number is the number of that order.
+
+== 5. Work center load ==
+For the result of running MRP, compute the load (minutes) for each work center and each week as follows. Initially all loads are 0. For each planned order (receipt week t, quantity Q) of a manufactured item that has a routing, number the operations of the routing j = 0, 1, ..., n - 1 from the first (n is the number of operations), and let the week w in which operation j is placed be the larger of "t - LT + floor(j * LT / n)" and 1. Add "setup time + Q * run time" to the load of the work center of operation j in week w. Scheduled receipts are not included in the load.
+The overload of a work center in week t is max(0, load - A).
+
+== 6. Due-date promising ==
+Process the inquiries one at a time in increasing order of orders.csv line number, and promise a due date for each.
+- The set of promised inquiries (each placed in the week promised for it) is initially empty. The result of running MRP with the demand set "the accepted rows of mps.csv and the promised inquiries" is called the current plan. In particular, the plan when there are no promised inquiries at all is called the base plan.
+- The shortage indicators of a plan are the past-due quantity of each item (the sum of the quantities of its past-due orders) and the overload of each work center and week.
+- For an inquiry (item X, quantity q, requested week d), try the following for w = d, d + 1, ..., H in this order. Run MRP with the promised inquiries plus this inquiry placed in week w (the trial plan), and compare its shortage indicators with those of the current plan.
+  1. Go through the items in planning order; if there is an item whose past-due quantity in the trial plan is greater than in the current plan, week w is infeasible. The item ID of the first such item found is the reason for week w.
+  2. If week w was not made infeasible by 1, week w is feasible in terms of materials. Then go through the work centers in increasing order of work center ID, and within the same work center in increasing order of week; if there is one whose overload in the trial plan is greater than in the current plan, week w is infeasible. The first work center and week found, written as "<work center ID> week <week>", is the reason for week w.
+  3. If week w was made infeasible by neither 1 nor 2, week w is the promised week: add this inquiry placed in week w to the set of promised inquiries, and the trial plan becomes the current plan. Weeks after w are not tried.
+- If no promised week has been determined after trying up to H, the inquiry is rejected, and the set of promised inquiries does not change.
+- If the promised week equals the requested week, the inquiry is "on time"; if it is later than the requested week, it is "late". For late and rejected inquiries, the reason for week d and the first week that was feasible in terms of materials (the material-feasible week) are output. If there is no material-feasible week, it is none.
+- The current plan after all inquiries have been processed is called the final plan. Sections 7 to 12 all deal with the final plan.
+
+== 7. Pegging ==
+For each item of the final plan, allocate the supplies to the demands as follows.
+- Demand list: if SS > 0, first put the safety stock demand (kind SAFETY, quantity SS). Then put all demand elements of the item in increasing order of week, and within the same week in the order MPS, ORDER, DEPENDENT. ORDER elements among themselves are in increasing order of orders.csv line number; DEPENDENT elements among themselves are in increasing order of parent item ID, and if that is also equal, in increasing order of parent order number.
+- Supply list: if OH > 0, first put the on-hand stock (STOCK, quantity OH). Then put the item's scheduled receipts (accepted receipts.csv rows) and planned orders in increasing order of week (the receipt week for planned orders). Within the same week, scheduled receipts come before planned orders, and scheduled receipts among themselves are in increasing order of line number.
+- Allocation: going through the demand list from the start, for each demand, take from the first supply in the supply list whose remainder is not 0, until the demand's remainder becomes 0. The amount taken at a time (the share) is the smaller of the demand's remainder and the supply's remainder. Each time something is taken, record (supply, demand, share) as an allocation and subtract the share from both remainders. In the final plan, every demand is always satisfied. The remainder of a supply after all demands have been processed is called the excess of that supply.
+- Root demands: the set of root demands of a planned order o is the union, over the allocations from o, of the following (duplicates merged into one): if the demand is SAFETY, the safety stock of that item; if MPS, the MPS of that item and that week; if ORDER, that order ID with that item and that week; if DEPENDENT, the set of root demands of the planned order of the parent item with that order number.
+
+== 8. Exception messages ==
+Go through the items of the final plan in planning order, and for each item record the following messages in this order.
+(1) If OH < SS: BELOW_SAFETY <item ID> on hand <OH> safety <SS>
+(2) Go through the planned orders in order of number; if the original release week r is less than 1, record PAST_DUE <item ID> order <order number> receipt <receipt week> release <r> late <1 - r> quantity <quantity>, and if r is 1, record RELEASE <item ID> order <order number> receipt <receipt week> quantity <quantity>.
+(3) Rescheduling of scheduled receipts: let the item's scheduled receipts be R1, R2, ... in increasing order of week (in increasing order of line number if equal). Let B[t] = OH - (GR[1] + GR[2] + ... + GR[t]). For Ri, let C be the sum of the quantities of R1 to R(i-1) (0 for R1); the smallest week t (1 <= t <= H) with B[t] + C < SS is the need week of Ri (planned orders are not considered). In the messages below, "..." stands for "<item ID> receipt line <line number> week <week> quantity <quantity>" (the line number, week and quantity of Ri).
+  - There is no need week: CANCEL ...
+  - The need week is earlier than the week of Ri: EXPEDITE ... to <need week>
+  - The need week is later than the week of Ri: DEFER ... to <need week>
+  - The need week is the same as the week of Ri: nothing is recorded.
+(4) A manufactured item that has no routing: NO_ROUTING <item ID>
+(5) The sum of GR[1] to GR[H] is 0 and OH > 0: NO_DEMAND <item ID> on hand <OH>
+After all items, go through the work centers in increasing order of work center ID, and within the same work center in increasing order of week, and for each work center and week whose overload is greater than 0 record OVERLOAD <work center ID> week <week> load <load> available <A>.
+
+== 9. This week's releases ==
+Process the planned orders of the final plan whose release week is 1 (those whose original release week r is at most 1) in increasing order of r, then in increasing order of item ID, and if that is also equal, in increasing order of order number. The available quantity of each item is initially OH + SR[1].
+- Order of a purchased item: its purchase value is "quantity * the material cost of that item (the value in items.csv)".
+- Order of a manufactured item: compute the requirement need(L, quantity of the order) for each child row L. If for every child item the requirement is at most the available quantity of that child item, the order is ready (READY); otherwise it is short (SHORT). Only when it is READY, subtract the requirement from the available quantity of each child item. The week and the time (setup time + quantity * run time) of each operation are the same as in 5.
+
+== 10. BOM explosion ==
+An item that has child rows and no parent rows is called a top-level item. For each top-level item, starting with explosion quantity N and cumulative quantity per 1, traverse the child rows in depth-first preorder (in increasing order of child item ID). For a child row L of an item with explosion quantity G and cumulative quantity per E, the cumulative quantity per of the child item is E * quantity per, and its explosion quantity is need(L, G). When the same item appears in several places, it is expanded every time it appears.
+- Totals: for each item that appeared under the top-level item, sum the explosion quantities over all the places where it appeared.
+- Critical path: the sequence of items obtained by starting from the top-level item and repeatedly moving to the child item of the child row whose child item has the largest cumulative lead time (the smaller child item ID if tied), until a purchased item is reached.
+
+== 11. Cost rollup and ABC analysis ==
+- Standard cost: compute the standard material cost and the standard labor cost of the items, computing child items before their parent items (for example, in decreasing order of low-level code). The standard material cost of item X is "the material cost of X (the value in items.csv) + the sum, over the child rows L, of 'quantity per * (100 + scrap rate) * standard material cost of the child item / 100, rounded to the nearest integer'". The standard labor cost is computed in the same way, using the labor cost and the standard labor costs of the child items. The standard cost is the sum of the standard material cost and the standard labor cost.
+- Usage: the sum of GR[1] to GR[H] in the final plan. The usage value is usage * standard cost.
+- ABC class: sort the items in decreasing order of usage value, and for equal values in increasing order of item ID, and let T be the total usage value of all items. For each item, let S be the total usage value of the items before it in this order; the class is C if its usage value is 0; otherwise A if S is less than 80% of T (100 * S < 80 * T); otherwise B if S is less than 95% of T (100 * S < 95 * T); otherwise C.
+
+== 12. Value plan ==
+For each week t, compute the following 3 amounts.
+- Inventory value: the sum over all items of "POH[t] * standard cost".
+- Purchases: the sum over the purchased items of "PL[t] * material cost (the value in items.csv)".
+- Labor: the sum over the manufactured items of "PL[t] * labor cost (the value in items.csv)".
+
+[Output files]
+Write the following 9 files to the output/ folder. In every file, the separator within a line is a single space (a single comma in csv files, and the widths shown below in the rows of fixed-width tables), and no line has trailing spaces. A line begins with spaces only where indentation is specified, in pegging.txt, promises.txt and releases.txt. Every line ends with a newline (LF), and no blank lines are output. Integers are written in decimal without extra leading zeros, and negative numbers (which appear only as the release value of PAST_DUE) are prefixed with -.
+
+(1) output/mrp_grid.txt
+For each item of the final plan, in planning order, output the following 9 lines.
+ITEM <item ID> LLC <low-level code> LT <lead time> LOT <rule> SS <safety stock> OH <on-hand quantity> <description>
+The WEEK line, the GROSS line, the RECEIPTS line, the ON_HAND line, the NET line, the PLAN_RCPT line, the PLAN_REL line
+TOTAL gross <sum of GR> receipts <sum of SR> planned <sum of PR> orders <number of planned orders> ending <POH[H]>
+<rule> is LFL for LFL, FOQ <F> for FOQ, POQ <P> for POQ, and MIN <m>/<k> for MIN.
+Lines 2 to 8 consist of the label, left-aligned in a width of 10 (padded with spaces on the right), followed by the values for weeks 1 to H, each right-aligned in a width of 6 (padded with spaces on the left). The label and values of each line are: WEEK with the week number, GROSS with GR[t], RECEIPTS with SR[t], ON_HAND with POH[t], NET with NET[t], PLAN_RCPT with PR[t], and PLAN_REL with PL[t].
+
+(2) output/pegging.txt
+For each item X listed on the peg line, in the listed order, output the following.
+- Line 1: PEG <item ID> orders <number of planned orders>
+- Where used: go through the parent rows of X in increasing order of parent item ID, and for each row output "<d periods><d> <parent item ID> qty <quantity per> ext <cumulative quantity per>", and immediately after it do the same for the parent rows of that parent item at depth d + 1. The depth d of the parent rows of X is 1, and the cumulative quantity per is "the cumulative quantity per of the item one level below (1 for X) * quantity per". For example, a line at depth 2 has a form such as "..2 K9 qty 2 ext 6".
+- On-hand stock: if OH > 0, the line "STOCK quantity <OH>", the allocation lines of that supply (depth 1), and the excess line.
+- Scheduled receipts: for each scheduled receipt of X, in supply-list order, the line "RECEIPT line <line number> week <week> quantity <quantity>", the allocation lines of that supply (depth 1), and the excess line.
+- Planned orders: in order of number, the line "ORDER <order number> receipt <receipt week> release <release week> quantity <quantity>", the allocation lines of that supply (starting at depth 1 and following the parent orders recursively), the excess line, and the root demand lines.
+Allocation lines are written in the order in which the allocations from that supply were recorded, each preceded by "depth * 2" spaces, in the following forms. <item ID> is the item that has the demand.
+  - SAFETY: ALLOC <share> SAFETY <item ID>
+  - MPS: ALLOC <share> MPS <item ID> week <week>
+  - ORDER: ALLOC <share> ORDER <order ID> <item ID> week <week>
+  - DEPENDENT: ALLOC <share> <parent item ID> order <parent order number> week <week>
+In the allocation lines of a planned order, immediately after a DEPENDENT line, output the allocation lines from the planned order of that parent item with that number in the same way, with the depth increased by 1 (if there are further DEPENDENT lines, continue likewise). No such recursion is done in the allocation lines of on-hand stock and scheduled receipts.
+The excess line is written only when the excess of that supply is greater than 0, as two spaces followed by "EXCESS <excess>". When the excess is 0, it is not output.
+The root demand lines list the root demands of that planned order sorted in increasing order of item ID, within the same item in the order MPS, ORDER, SAFETY, within the same kind in increasing order of week, and if that is also equal, in increasing order of order ID; each is written as two spaces followed by one of the following forms.
+  - ROOT MPS <item ID> week <week>
+  - ROOT ORDER <order ID> <item ID> week <week>
+  - ROOT SAFETY <item ID>
+
+(3) output/bom_tree.txt
+For each top-level item, in increasing order of item ID, output the following.
+TREE <item ID> quantity <N>
+0 <item ID> ext 1 gross <N> lt <lead time> cum <cumulative lead time> <description>
+Then, for each child row traversed, in traversal order, output one line "<d periods><d> <child item ID> qty <quantity per> scrap <scrap rate> ext <cumulative quantity per> gross <explosion quantity> lt <lead time> cum <cumulative lead time> <description>". d is the depth from the top-level item (1 for direct children); the lead time, cumulative lead time and description are those of the child item.
+Then, for each totaled item in increasing order of item ID, output "SUM <item ID> <total explosion quantity>".
+Finally, output "CRITICAL <item ID> -> <item ID> -> ... -> <item ID> cum <cumulative lead time of the top-level item>" (the items of the critical path joined by " -> ").
+
+(4) output/cost_rollup.csv
+Line 1 is the header line "item,material,labor,total,usage,value,class". Then output all items in increasing order of item ID, in the form "<item ID>,<standard material cost>,<standard labor cost>,<standard cost>,<usage>,<usage value>,<ABC class>". All numbers except the usage are in the money format.
+
+(5) output/exceptions.txt
+First, output the errors recorded in 2, in the order they were recorded, in the form "ERROR <recorded error>". Then output the messages recorded in 8, in the order they were recorded. Finally, output the following line.
+SUMMARY errors <number of errors> below_safety <count> past_due <count> release <count> expedite <count> defer <count> cancel <count> no_routing <count> no_demand <count> overload <count>
+The <count> values are the numbers of BELOW_SAFETY, PAST_DUE, RELEASE, EXPEDITE, DEFER, CANCEL, NO_ROUTING, NO_DEMAND and OVERLOAD messages, respectively.
+
+(6) output/capacity.txt
+For the final plan, output the following 7 lines for each work center, in increasing order of work center ID.
+CENTER <work center ID> minutes <working time> efficiency <efficiency> available <A> <description>
+The WEEK line, the LOAD line, the UTIL line, the OVER line, the LEVELED line
+TOTAL load <total load> available <A * H> utilization <utilization> overloaded <number of weeks with overload> peak <peak week> backlog <remaining carry-over>
+Lines 2 to 6 consist of the label, left-aligned in a width of 10, followed by the values for weeks 1 to H, each right-aligned in a width of 7. The values are: WEEK the week number, LOAD the load, UTIL "100 * load / A rounded to the nearest integer", OVER the overload, and LEVELED the leveled load defined next.
+Leveling: let the carry-over c be 0, and for t = H, H - 1, ..., 2 in this order let x = load[t] + c, leveled[t] = min(x, A), and c = x - leveled[t]. Finally, let leveled[1] = load[1] + c.
+On the TOTAL line, the utilization is "100 * total load / (A * H) rounded to the nearest integer", the peak week is the week with the largest load (the smaller week if tied; 0 if the total load is 0), and the remaining carry-over is max(0, leveled[1] - A).
+After all work centers, sort the work centers in decreasing order of "total load / A", and for equal values in increasing order of work center ID, assign ranks starting from 1, and output one line "RANK <rank> <work center ID> load <total load> utilization <utilization>" for each. The comparison of "total load / A" values is decided exactly by comparing integers after clearing the denominators. The utilization is the same value as on the TOTAL line.
+
+(7) output/promises.txt
+For each inquiry, in processing order, output one of the following lines (the order ID, item ID, quantity and requested week are those of the inquiry).
+- On time: ORDER <order ID> <item ID> quantity <quantity> requested <requested week> promised <promised week>
+- Late: ORDER <order ID> <item ID> quantity <quantity> requested <requested week> promised <promised week> late <promised week - requested week> material <material-feasible week> reason <reason>
+- Rejected: ORDER <order ID> <item ID> quantity <quantity> requested <requested week> rejected material <material-feasible week or none> reason <reason>
+For on-time and late inquiries, immediately after that line, output one line "  SUPPLY <item ID> order <order number> receipt <receipt week> release <release week> quantity <quantity>" (with two leading spaces) for each planned order of the final plan whose root demands include the ORDER with that order ID, in the planning order of the items, and within the same item in increasing order of order number.
+After all inquiries, go through the items in planning order, and for each item for which PR[t] differs between the base plan and the final plan in at least one week, output "CHANGE <item ID> from <first week in which PR[t] differs> planned <sum of PR in the base plan> -> <sum of PR in the final plan> orders <number of planned orders in the base plan> -> <number of planned orders in the final plan>".
+Finally, output "SUMMARY orders <number of inquiries> on_time <number on time> late <number late> rejected <number rejected>".
+
+(8) output/releases.txt
+Output the following for each order, in the order of 9. <lateness> is " late <1 - r>" (with one leading space) if the original release week r is less than 1, and the empty string if r is 1.
+- Purchased item: BUY <item ID> order <order number> receipt <receipt week> quantity <quantity><lateness> value <purchase value>
+- Manufactured item: MAKE <item ID> order <order number> receipt <receipt week> quantity <quantity><lateness> <READY or SHORT>
+  Then, for each child row, output "  PICK <child item ID> need <requirement> available <available quantity> short <max(0, requirement - available quantity)>". <available quantity> is the value before the subtraction for this order.
+  Then, for each operation of the routing, output "  OPERATION <operation number> <work center ID> week <week> minutes <time>" (nothing is output if there is no routing).
+Finally, output "SUMMARY make <number of manufactured-item orders> ready <number of READY> short <number of SHORT> buy <number of purchased-item orders> value <total purchase value>".
+
+(9) output/value_plan.csv
+Line 1 is the header line "week,inventory,purchases,labor". Then, for weeks 1 to H in order, output "<week>,<inventory value>,<purchases>,<labor>". All amounts are in the money format.
+
+[Source files]
+Organize the program into the following 7 source files (name the files according to the conventions of each language).
+- main: holds the overall flow and the core of the processing: reading and validating params.txt, mps.csv, receipts.csv and orders.csv; running MRP (gross requirements, net requirements, planned orders, explosion of dependent demand); totaling the work center loads; due-date promising; pegging; exception messages; this week's releases; the BOM explosion; the value plan; and building the lines of all output files.
+- items: item records, interpreting and validating lot parameters, and reading and validating items.csv.
+- bom: BOM row records and the computation of the requirement need, reading and validating bom.csv (including the cycle path search), and computing low-level codes and cumulative lead times.
+- lot_sizing: computing lot sizes with the 4 lot-sizing rules.
+- capacity: work center and operation records, reading and validating workcenters.csv and routings.csv, computing the week in which an operation is placed, and load leveling.
+- costing: the standard cost rollup and determining the ABC classes.
+- report: writing the files, formatting the rows of fixed-width tables, and formatting money and percentages.
+
+[Constraints]
+- 4 <= H <= 26. The peg line lists 1 to 5 distinct item IDs, each of which is accepted in items.csv. 1 <= N <= 1000.
+- The number of data rows in each file is at most 100 for items.csv, 300 for bom.csv, 20 for workcenters.csv, 200 for routings.csv, 500 for mps.csv, 200 for receipts.csv, and 50 for orders.csv.
+- The lead time is at most 8, the safety stock and on-hand quantity are at most 10000, the material cost and labor cost are at most 100000, and each integer of the lot parameter is at most 1000. The quantity per is at most 20, and the scrap rate is at most 99. The working time is between 100 and 10000 inclusive, the efficiency is at most 200, the operation number is between 1 and 999 inclusive, and the setup time and run time are at most 600. In mps.csv, receipts.csv and orders.csv, the week is at most 99 and the quantity is at most 10000.
+- Considering only the accepted rows, the routing of every item has at most 10 operations, and the depth of the bill of materials (the number of levels from a top-level item) is at most 8.
+- All table values in mrp_grid.txt are at most 99999, and all table values in capacity.txt are at most 999999 (so there is always a space between table values).
+- The absolute values of all integers appearing in the computation are less than 2^53. However, values such as 100 * T used in the ABC class comparison can exceed 2^31, so compute them with 64-bit integers (or a type that can represent integers below 2^53 exactly). Perform all divisions and comparisons exactly with integers.
+- MRP is run at most 2000 times in total, counting the final plan and every trial plan of due-date promising.
+
+[Example]
+The following is a small example (it differs from the actual data in input/).
+input/items.csv:
+item,lead_time,lot_rule,lot_param,safety_stock,on_hand,material_cents,labor_cents,description
+A1,1,LFL,0,0,2,500,1000,Stool
+B1,1,FOQ,10,2,4,0,300,Seat
+C1,2,POQ,2,0,5,250,0,Leg
+C1,1,LFL,0,0,0,0,0,Leg copy
+input/bom.csv:
+parent,child,qty_per,scrap_percent
+A1,B1,1,0
+A1,C1,3,10
+B1,C1,1,0
+C1,A1,1,0
+input/workcenters.csv:
+center,minutes,efficiency,description
+W1,100,90,Bench
+input/routings.csv:
+item,operation,center,setup_minutes,run_minutes
+A1,10,W1,5,4
+B1,10,W1,10,2
+input/mps.csv:
+item,week,quantity
+A1,2,3
+A1,4,5
+input/receipts.csv:
+item,week,quantity
+C1,1,6
+input/orders.csv:
+order,item,quantity,week
+S1,A1,4,3
+input/params.txt:
+horizon 5
+peg C1
+tree_quantity 2
+
+output/mrp_grid.txt:
+ITEM A1 LLC 0 LT 1 LOT LFL SS 0 OH 2 Stool
+WEEK           1     2     3     4     5
+GROSS          0     3     4     5     0
+RECEIPTS       0     0     0     0     0
+ON_HAND        2     0     0     0     0
+NET            0     1     4     5     0
+PLAN_RCPT      0     1     4     5     0
+PLAN_REL       1     4     5     0     0
+TOTAL gross 12 receipts 0 planned 10 orders 3 ending 0
+ITEM B1 LLC 1 LT 1 LOT FOQ 10 SS 2 OH 4 Seat
+WEEK           1     2     3     4     5
+GROSS          1     4     5     0     0
+RECEIPTS       0     0     0     0     0
+ON_HAND        3     9     4     4     4
+NET            0     3     0     0     0
+PLAN_RCPT      0    10     0     0     0
+PLAN_REL      10     0     0     0     0
+TOTAL gross 10 receipts 0 planned 10 orders 1 ending 4
+ITEM C1 LLC 2 LT 2 LOT POQ 2 SS 0 OH 5 Leg
+WEEK           1     2     3     4     5
+GROSS         14    14    17     0     0
+RECEIPTS       6     0     0     0     0
+ON_HAND       14     0     0     0     0
+NET            3     0    17     0     0
+PLAN_RCPT     17     0    17     0     0
+PLAN_REL      34     0     0     0     0
+TOTAL gross 45 receipts 6 planned 34 orders 2 ending 0
+output/pegging.txt:
+PEG C1 orders 2
+.1 A1 qty 3 ext 3
+.1 B1 qty 1 ext 1
+..2 A1 qty 1 ext 1
+STOCK quantity 5
+  ALLOC 4 A1 order 1 week 1
+  ALLOC 1 B1 order 1 week 1
+RECEIPT line 2 week 1 quantity 6
+  ALLOC 6 B1 order 1 week 1
+ORDER 1 receipt 1 release 1 quantity 17
+  ALLOC 3 B1 order 1 week 1
+    ALLOC 3 A1 order 2 week 2
+      ALLOC 4 ORDER S1 A1 week 3
+    ALLOC 5 A1 order 3 week 3
+      ALLOC 5 MPS A1 week 4
+  ALLOC 14 A1 order 2 week 2
+    ALLOC 4 ORDER S1 A1 week 3
+  ROOT MPS A1 week 4
+  ROOT ORDER S1 A1 week 3
+ORDER 2 receipt 3 release 1 quantity 17
+  ALLOC 17 A1 order 3 week 3
+    ALLOC 5 MPS A1 week 4
+  ROOT MPS A1 week 4
+output/bom_tree.txt:
+TREE A1 quantity 2
+0 A1 ext 1 gross 2 lt 1 cum 4 Stool
+.1 B1 qty 1 scrap 0 ext 1 gross 2 lt 1 cum 3 Seat
+..2 C1 qty 1 scrap 0 ext 1 gross 2 lt 2 cum 2 Leg
+.1 C1 qty 3 scrap 10 ext 3 gross 7 lt 2 cum 2 Leg
+SUM B1 2
+SUM C1 9
+CRITICAL A1 -> B1 -> C1 cum 4
+output/cost_rollup.csv:
+item,material,labor,total,usage,value,class
+A1,15.75,13.00,28.75,12,345.00,A
+B1,2.50,3.00,5.50,10,55.00,B
+C1,2.50,0.00,2.50,45,112.50,A
+output/exceptions.txt:
+ERROR items.csv line 5: duplicate item C1
+ERROR bom.csv line 5: cycle C1 -> A1 -> B1 -> C1
+RELEASE A1 order 1 receipt 2 quantity 1
+RELEASE B1 order 1 receipt 2 quantity 10
+PAST_DUE C1 order 1 receipt 1 release -1 late 2 quantity 17
+RELEASE C1 order 2 receipt 3 quantity 17
+SUMMARY errors 2 below_safety 0 past_due 1 release 3 expedite 0 defer 0 cancel 0 no_routing 0 no_demand 0 overload 0
+output/capacity.txt:
+CENTER W1 minutes 100 efficiency 90 available 90 Bench
+WEEK            1      2      3      4      5
+LOAD           39     21     25      0      0
+UTIL           43     23     28      0      0
+OVER            0      0      0      0      0
+LEVELED        39     21     25      0      0
+TOTAL load 85 available 450 utilization 19 overloaded 0 peak 1 backlog 0
+RANK 1 W1 load 85 utilization 19
+output/promises.txt:
+ORDER S1 A1 quantity 4 requested 3 promised 3
+  SUPPLY A1 order 2 receipt 3 release 2 quantity 4
+  SUPPLY B1 order 1 receipt 2 release 1 quantity 10
+  SUPPLY C1 order 1 receipt 1 release 1 quantity 17
+CHANGE A1 from 3 planned 6 -> 10 orders 2 -> 3
+CHANGE B1 from 2 planned 10 -> 10 orders 1 -> 1
+CHANGE C1 from 1 planned 20 -> 34 orders 1 -> 2
+SUMMARY orders 1 on_time 1 late 0 rejected 0
+output/releases.txt:
+BUY C1 order 1 receipt 1 quantity 17 late 2 value 42.50
+MAKE A1 order 1 receipt 2 quantity 1 READY
+  PICK B1 need 1 available 4 short 0
+  PICK C1 need 4 available 11 short 0
+  OPERATION 10 W1 week 1 minutes 9
+MAKE B1 order 1 receipt 2 quantity 10 SHORT
+  PICK C1 need 10 available 7 short 3
+  OPERATION 10 W1 week 1 minutes 30
+BUY C1 order 2 receipt 3 quantity 17 value 42.50
+SUMMARY make 2 ready 1 short 1 buy 2 value 85.00
+output/value_plan.csv:
+week,inventory,purchases,labor
+1,109.00,85.00,40.00
+2,49.50,0.00,40.00
+3,22.00,0.00,50.00
+4,22.00,0.00,0.00
+5,22.00,0.00,0.00

@@ -1,0 +1,502 @@
+[Overview]
+Write a simulation program that reproduces, as pure text processing, how an IRC (Internet Relay Chat) chat server handles the traffic of many clients.
+The input is the two files in the input/ folder (the server settings, and the record of traffic that arrived from clients). The traffic record says which line arrived from which connection at each time, and when connections start and end. The server parses each arriving line according to the RFC 1459/2812 grammar (an optional prefix, a command, middle parameters and a trailing parameter), and compares nicknames and channel names under the rfc1459 case mapping (in addition to letters, [ ] \ ^ are treated as identical to { } | ~ respectively). It handles registration with NICK and USER (sending the welcome replies 001 to 005 and the MOTD replies 375/372/376), joining and leaving channels, messages to users and channels, topics, member lists, WHOIS, setting away, invitations, kicks, PING and PONG, channel modes (o, v, b, i, k, l, m, n, t) and the user mode (i), and answers errors with the numeric replies defined in this task. Bans are decided by matching masks of the form "nickname!username@hostname" with wildcards (* and ?). In addition, it performs flood control with a token bucket per connection (when there is no token, an arriving line waits in the receive queue, and the connection is disconnected when the queue overflows), sends PING to connections with no traffic, and disconnects them on timeout.
+Every line the server sends is recorded in output/sent.txt, in the order sent, together with the time and the recipient; the final state of the channels and clients and the statistics are written to the remaining three files in the output/ folder. Nothing is printed to standard output.
+All computation is done in integers, and neither real numbers nor random numbers are used, so the result is uniquely determined.
+
+[Input files]
+There are two input files, input/server.txt and input/traffic.txt. Both files consist only of printable ASCII characters (codes 32 to 126), and every line (including the last line) ends with a newline (LF). There are no empty lines and no trailing spaces. In the descriptions below, <...> denotes a part where a value goes. The symbols < > themselves never appear in the input or the output.
+
+== input/server.txt (server settings) ==
+Each line has the form "<key> <value>", with the key and the value separated by one space. The value is all characters after the space that immediately follows the key, up to the end of the line (the value may contain spaces). There is exactly one line for each of the following 14 keys, in this order, followed by one or more MOTD lines.
+- NAME: the server name. It consists of letters, digits, periods (.) and hyphens (-).
+- VERSION: a string representing the server version. It contains no spaces.
+- CREATED: a string representing the date and time the server was created.
+- DESCRIPTION: the description of the server.
+- NICKLEN: the maximum number of characters of a nickname.
+- CHANNELLEN: the maximum number of characters of a channel name (including the leading #).
+- TOPICLEN: the maximum number of characters of a topic.
+- MAXCHANNELS: the maximum number of channels one client can be in at the same time.
+- BUCKET: the capacity of the token bucket.
+- REFILL: the interval (in seconds) at which one token is refilled.
+- QUEUE: the maximum length of the receive queue.
+- PINGFREQ: the number of seconds without traffic before a PING is sent to a connection.
+- TIMEOUT: the number of seconds after sending a PING before the connection is disconnected as unresponsive.
+- MOTD: one line of the MOTD (Message Of The Day: the notice sent to a client that has finished registration). The order of the MOTD lines is the order of the lines of the notice.
+The values from NICKLEN to TIMEOUT are decimal integers >= 0 without extra leading zeros.
+
+== input/traffic.txt (traffic record) ==
+Each line has the form "<time> <connection ID> <body>", where the time and the connection ID, and the connection ID and the body, are each separated by one space. The body is all characters after the second space, up to the end of the line. The time is a decimal integer >= 0 without extra leading zeros (in seconds), and the lines are in increasing order of time. Lines with the same time are in the order they arrived at the server. A connection ID is a string of lowercase letters and digits, and represents one connection to the server.
+Lines fall into the following three kinds according to their body.
+- Connect line: a line whose body has the form "CONNECT <host name>". It means a new connection started with this connection ID; <host name> is the host name the connection comes from.
+- Disconnect line: a line whose body is exactly "DISCONNECT". It means the connection with this connection ID was closed on the client side.
+- Message line: any other line. The body is one line of message (without the trailing newline) that the client of that connection sent to the server. From here on, the body of a message line is called a "raw line".
+
+[Processing]
+== 1. Terms and common rules ==
+- Client: a connection is called a client from the moment it starts with a connect line until it is disconnected. A client has a connection ID, a host name, a connection time, a nickname, a user name, a real name, whether it is invisible (user mode i), whether it is registered, a registration time, a last received time, a last speaking time, a PING state, a token count, a refill time, a receive queue, a list of joined channels (in the order joined), an invite list, an away message, a received line count, and a sent line count. The nickname and the user name are "unset" until they are set. When the away message is the empty string, the client is not away.
+- Connection order: the order of the clients by when they connected (the order in which their connect lines were processed). A connection never starts twice with the same connection ID.
+- Fold: to "fold" a string means to replace each of its characters as follows: uppercase letters A to Z by the corresponding lowercase letters a to z, [ by {, ] by }, \ by |, and ^ by ~. Two nicknames, two channel names, or two ban masks are called "the same" when their folded results are equal as strings. All other comparisons (such as comparing keys) compare the strings themselves.
+- Letters are A to Z and a to z, digits are 0 to 9, and the special characters are the 9 characters [ ] \ ` _ ^ { | }.
+- Valid nickname: a string of at least 1 character whose first character is a letter or a special character, and whose every character from the second on is a letter, a digit, a special character, or a hyphen (-).
+- Valid channel name: a string of at least 2 and at most CHANNELLEN characters whose first character is # and which contains no colon (:).
+- Addressee: the addressee of a client is its nickname if the nickname is set, and * if it is unset.
+- Prefix: the prefix of a client is "<nickname>!<user name>@<host name>" (example: alice!alice@home.example.org). In the line forms below, <p> denotes the prefix of the client that sent the command (hereafter "the sender").
+- Find a user: to "find a user" with a string x means to look, among the registered clients, for the one whose nickname is the same as x. A client that has not finished registration is not found, even if its nickname is set.
+- Find a channel: to "find a channel" with a string x means to look, among the existing channels, for the one whose stored name is the same as x (Section 9). In the line forms below, <ch> denotes the stored name of the channel found.
+- Split into a list: to "split a string into a list" means to cut it at each comma (,) into a sequence of strings (example: "#a,#b" becomes "#a" and "#b").
+- Current time: while the processing for time t of Section 3 is in progress, t is called the current time.
+
+== 2. Parsing a message ==
+A raw line is split into a command and a sequence of parameters by the following steps.
+1. If the raw line starts with a colon (:), skip everything from there up to just before the first space as the prefix (if the raw line contains no space in this case, the message is an "empty message"). The prefix given by the client is not used.
+2. Skip the following spaces (any number of them), and take everything from there up to just before the next space (or the end of the line if there is none) as the command. If the command is the empty string, the message is an empty message. Lowercase letters in the command are converted to uppercase (example: privmsg becomes PRIVMSG).
+3. Then read the parameters by repeating the following.
+  - Skip spaces (any number of them). If the end of the line is reached, stop.
+  - If the next character is a colon, take everything after that colon up to the end of the line (it may contain spaces, and it may be the empty string) as one parameter (the trailing parameter), and stop.
+  - If 14 parameters have already been read, take everything from there up to the end of the line as the 15th parameter, and stop.
+  - Otherwise, take everything from there up to just before the next space (or the end of the line if there is none) as one parameter.
+The parameters are called, from the first one, the first parameter, the second parameter, and so on. When counting parameters, empty-string parameters are counted too.
+Example: ":bob  privmsg  #a   :hi  there" gives the command PRIVMSG and the parameters "#a" and "hi  there". "PRIVMSG #a hi there" gives the three parameters "#a", "hi" and "there".
+
+== 3. Flow of the simulation ==
+Let T be the time of the last line of traffic.txt. For each time t = 0, 1, 2, ..., T, perform the following three phases in this order.
+- Phase A (refill): go through the clients present at that moment in connection order, and for each one, refill tokens and then process the receive queue (Section 4).
+- Phase B (arrival): process the lines of traffic.txt with time t, one at a time in file order, by the rules below.
+- Phase C (PING): go through the clients present at that moment in connection order, and for each one, check PING and timeout (Section 5).
+Phases A and C go through the clients present when the phase starts (in neither phase does processing one client disconnect another client).
+Each line in phase B is processed as follows.
+- Connect line: create a new client. The connection ID and the host name are those written in the line, and the connection time and the last received time are the current time. The nickname and the user name are unset, the real name is the empty string, it is not invisible, not registered, the PING state is not sent, the token count is BUCKET, the refill time is none, the receive queue, the list of joined channels and the invite list are empty, the away message is the empty string, and the received and sent line counts are 0.
+- Disconnect line: if there is a client with that connection ID, disconnect it with reason "Remote host closed the connection" and kind closed (Section 7). Otherwise do nothing.
+- Message line: if there is no client with that connection ID (when it has not connected yet or has already been disconnected), drop the line. Such a line is called a "dropped line". If there is a client c, increase c's received line count by 1, set c's last received time to the current time, reset c's PING state to not sent, and then do the first of the following that applies.
+  - If c's receive queue is empty and c's token count is 1 or more, use one token (Section 4) and process the raw line immediately (Section 10).
+  - If the length of c's receive queue is QUEUE or more, disconnect c with reason "Excess Flood" and kind flood. This line is also counted as a line discarded by disconnection.
+  - Otherwise, append the raw line to the end of c's receive queue. Such a line is called a "queued line".
+
+== 4. Flood control (token bucket) ==
+- Use one token: if the token count equals BUCKET, set the refill time to "current time + REFILL". Then decrease the token count by 1.
+- Refill tokens: if the refill time equals the current time, increase the token count by 1; if the token count after the increase is less than BUCKET, set the refill time to "current time + REFILL", otherwise set the refill time to none. When the refill time differs from the current time (including when it is none), do nothing.
+- Process the receive queue: while the client has not been disconnected, its receive queue is not empty, and its token count is 1 or more, repeat: use one token, take the raw line at the head of the receive queue and process it (Section 10).
+
+== 5. PING and timeout ==
+In phase C, do one of the following for client c. It does not matter whether c is registered.
+- If c's PING state is sent and "current time - time the PING was sent" is TIMEOUT or more, disconnect c with reason "Ping timeout: <current time - c's last received time> seconds" and kind timeout.
+- If c's PING state is not sent and "current time - c's last received time" is PINGFREQ or more, send c the line "PING :<server name>", set c's PING state to sent, and set the time the PING was sent to the current time.
+When a message line arrives from c, the PING state is reset to not sent regardless of its content (Section 3).
+
+== 6. Sending lines ==
+- To "send" a line to client c means to append the line "<current time> <c's connection ID> <line>" to output/sent.txt and increase c's sent line count by 1. The lines of sent.txt are in the order sent.
+- Numeric reply: to "send the numeric reply N" to client c means to send c the line ":<server name> <N> <c's addressee> <content>". <N> is N written as a 3-digit decimal number (padded with leading zeros if it has fewer than 3 digits; example: 001). <content> is defined per number in the list in Section 11. The values in a <content> of the list are the values determined by the processing that sends the reply.
+- Send to all members of a channel: send to each member in the order of the channel's member list (the order joined). When "sending to the members other than the sender", skip the sender.
+- Peers: the peers of client c are the clients other than c that are in at least one of the channels c is in. When "sending to the peers", send once to each peer, in connection order.
+
+== 7. Disconnection ==
+To disconnect client c with reason r and kind k (one of quit, closed, flood, timeout), process in the following order.
+1. If k is not closed, send c the line "ERROR :Closing Link: <c's addressee>[<c's host name>] (<r>)".
+2. If c is registered, send the line ":<c's prefix> QUIT :<r>" to c's peers.
+3. Remove c from each channel it is in, in the order joined (removing a member, Section 9).
+4. Discard all lines remaining in c's receive queue, counting them as lines discarded by disconnection.
+5. Remove c. From then on, c's nickname is considered not used by any client.
+6. Append the tuple (current time, c's connection ID, c's addressee, r) to the end of the disconnection record. Increase the number of disconnections of kind k by 1.
+
+== 8. Registration ==
+- A client's nickname is set by NICK, and its user name and real name by USER (Section 10). When both the nickname and the user name of a client that is not registered have been set, that client's registration is complete.
+- When registration is complete, mark the client as registered and set its registration time and last speaking time to the current time. Then send that client the numeric replies 001, 002, 003, 004, 005 and 375 in this order, then the numeric reply 372 for each MOTD line in MOTD order, then the numeric reply 376. Further, if the client is invisible, send it the line ":<nickname> MODE <nickname> :+i".
+- The user name never changes after registration. The nickname can be changed with NICK.
+
+== 9. Channels ==
+- A channel has a stored name, a creation time, a member list (in the order joined), a topic, the topic setter and set time, a ban list (each ban has a mask, a setter and a set time), whether it has each of the flags i, m, n, t, a key, a user limit, a peak member count, and a message count. When the topic is the empty string the channel has "no topic", when the key is the empty string it has "no key", and when the user limit is 0 it has "no user limit". For each member it is determined whether the member has operator privilege and whether it has voice (a member may have both).
+- When a channel is created, its stored name is the string specified in JOIN, exactly as given, its creation time is the current time, it has only the flags n and t, no topic, no key, no user limit, no bans, no members, and its peak member count and message count are 0. The existing channels are kept in the order they were created.
+- Adding a member: append the client to the end of the channel's member list, and also append the channel to the end of the client's list of joined channels. If the number of members becomes greater than the peak member count, set the peak member count to that number.
+- Removing a member: to remove member c from channel ch, remove c from ch's member list and ch from c's list of joined channels. If ch then has no members, delete ch and remove ch from the invite list of every client. The topic, bans, modes and everything else of a deleted channel are lost; a channel created later with the same name is a new channel.
+- Display name: the display name of member c in channel ch is c's nickname preceded by "@" if c has operator privilege in ch, otherwise by "+" if c has voice, and by the empty string if it has neither (examples: @alice, +bob, carol).
+- Ban matching: matching mask m against string s succeeds when, after folding both m and s, all of m can be made to correspond to all of s exactly, with each * in m corresponding to any sequence of 0 or more characters, each ? to any single character, and every other character to itself (example: *!*@*.example.org matches bob!bob@pc.example.org and does not match bob!bob@example.org).
+- Banned: client c is banned from channel ch when the mask of at least one ban of ch matches c's prefix.
+- Mask normalization: the argument x of +b/-b in MODE is converted to a ban mask by the following rule. If x contains both ! and @, it stays x; if it contains only @, it becomes "*!<x>"; if it contains only !, it becomes "<x>@*"; if it contains neither but contains a period (.), it becomes "*!*@<x>"; otherwise it becomes "<x>!*@*".
+- Can speak: client c can speak in channel ch when all of the following three hold.
+  (1) c is a member of ch, or ch does not have the flag n.
+  (2) ch does not have the flag m, or c is a member of ch with operator privilege or voice.
+  (3) c is a member of ch with operator privilege or voice, or c is not banned from ch.
+- Mode display: the mode display of channel ch is "+" followed, in the order i, k, l, m, n, t, by i if ch has the flag i, k if it has a key, l if it has a user limit, m if it has the flag m, n if it has the flag n, and t if it has the flag t. When displaying "including the key", if there is a key, append one space and the key after that. Further, if there is a user limit, append one space and the value of the user limit after that (example: +iklnt sesame 10; without the key, +iklnt 10; if there is nothing, +).
+
+== 10. Processing commands ==
+A raw line is processed in the following order.
+1. Increase the number of processed raw lines by 1. Parse the raw line as in Section 2; if it is an empty message, increase the number of empty messages by 1 and stop.
+2. Increase the processing count of that command by 1. Commands are distinguished by their string after conversion to uppercase, and commands not in the list below are counted too.
+3. If the sender is not registered and the command is none of NICK, USER, PING, PONG, QUIT, send the sender the numeric reply 451 and stop.
+4. If the command is one of (1) to (15) below, perform its processing. Otherwise, send the sender the numeric reply 421.
+In the descriptions below, "end with N" means to send the sender the numeric reply N and finish processing the command. When it only says "send reply N", send it to the sender and continue processing. The values in each reply's <content> are as in Section 11.
+
+(1) NICK
+  1. If there is no parameter, or the first parameter is the empty string, end with 431.
+  2. Let n be the first NICKLEN characters of the first parameter (the whole first parameter if it has NICKLEN characters or fewer).
+  3. If n is not a valid nickname, end with 432.
+  4. If n is equal as a string to the sender's nickname, stop without doing anything (a change that differs only in case proceeds to the next step).
+  5. If a client other than the sender (registered or not) has a nickname that is the same as n, end with 433.
+  6. If the sender is registered, send the line ":<p> NICK :<n>" (where <p> is the prefix before the change) to the sender, and then to the sender's peers.
+  7. Set the sender's nickname to n. If the sender is not registered, check whether registration is complete (Section 8).
+(2) USER
+  1. If the sender's user name is already set, end with 462.
+  2. If there are fewer than 4 parameters, end with 461.
+  3. Set the user name to the first parameter and the real name to the fourth parameter. If the second parameter consists only of digits and has 1 to 3 characters, and floor(its value / 8) is odd, make the sender invisible; otherwise make it not invisible. Then check whether registration is complete (Section 8).
+(3) PING
+  1. If there is no parameter, or the first parameter is the empty string, end with 409.
+  2. Send the sender the line ":<server name> PONG <server name> :<first parameter>".
+(4) PONG
+  Do nothing (its arrival resets the PING state to not sent as described in Section 3).
+(5) QUIT
+  If there is a first parameter and it is not the empty string, the reason is "Quit: <first parameter>"; otherwise the reason is "Client Quit". Disconnect the sender with that reason and kind quit.
+(6) JOIN
+  1. If there is no parameter, end with 461.
+  2. If the first parameter is exactly "0", then for each channel the sender is in, in the order joined, send the line ":<p> PART <ch>" to all members of that channel, and then remove the sender from that channel. Then stop.
+  3. Let the name list be the first parameter split into a list, and the key list be the second parameter split into a list if there is one (an empty list otherwise). The i-th name x of the name list is paired with the i-th element of the key list (the empty string if there is none) as its key y. In the order of the name list, do the following for each name x.
+    a. If x is not a valid channel name, send reply 403 and go on to the next name.
+    b. Find a channel with x; if it is found and the sender is a member of it, do nothing and go on to the next name.
+    c. If the number of channels the sender is in is MAXCHANNELS or more, send reply 405 and go on to the next name.
+    d. If no channel was found, create a channel with stored name x. If one was found, then, calling the sender "invited" when that channel is in the sender's invite list, if any of the following applies, send the reply with the number of the first one that applies, and go on to the next name.
+      - The sender is banned from that channel and is not invited: 474
+      - The channel has the flag i and the sender is not invited: 473
+      - The channel has a key and y is not equal as a string to the key: 475
+      - The channel has a user limit and the number of members is the user limit or more: 471
+    e. If the channel is in the sender's invite list, remove it from there. Add the sender as a member of the channel. If the channel had no members before the addition, give the sender operator privilege.
+    f. Send the line ":<p> JOIN <ch>" to all members of the channel (including the sender just added).
+    g. If the channel has a topic, send the sender the numeric replies 332 and 333 in this order.
+    h. Send the sender the names reply of that channel.
+  - Names reply: to send client c the "names reply" of channel ch means: list all members of ch if c is a member of ch, otherwise only the members that are not invisible, in the order of the member list, by display name separated by one space (call this <name list>); if there is at least one, send c the numeric reply 353; then send c the numeric reply 366 (where <x> is ch's stored name).
+(7) PART
+  1. If there is no parameter, end with 461.
+  2. If there is a second parameter and it is not the empty string, let <suffix> be " :<second parameter>" (beginning with one space); otherwise let <suffix> be the empty string.
+  3. Split the first parameter into a list, and in that order do the following for each name x. Find a channel with x; if it is not found, send reply 403 and go on to the next name. If the sender is not a member of that channel, send reply 442 and go on to the next name. If it is a member, send the line ":<p> PART <ch><suffix>" to all members of the channel, and then remove the sender from the channel.
+(8) PRIVMSG and NOTICE
+  Below, <command> denotes whichever of PRIVMSG or NOTICE is being processed. NOTICE never sends any numeric reply. Where the steps below would send a reply, NOTICE does not send it and otherwise proceeds exactly as PRIVMSG does (where a step says "end with N", NOTICE also finishes processing the command there).
+  1. If <command> is PRIVMSG, set the sender's last speaking time to the current time.
+  2. If there is no parameter, or the first parameter is the empty string, end with 411.
+  3. If there are fewer than 2 parameters, or the second parameter is the empty string, end with 412.
+  4. Let the text be the second parameter. Split the first parameter into a list, and in that order do the following for each target x.
+    - When x starts with #: find a channel with x; if it is not found, send reply 401. If the sender cannot speak in the channel found, send reply 404. If it can speak, increase the channel's message count by 1, and send the line ":<p> <command> <ch> :<text>" to the members other than the sender.
+    - When x does not start with #: find a user with x; if it is not found, send reply 401. Send the user u found the line ":<p> <command> <u's nickname> :<text>", and if <command> is PRIVMSG and u is away, then send reply 301. u may be the sender itself.
+(9) TOPIC
+  1. If there is no parameter, end with 461.
+  2. Find a channel with the first parameter; if it is not found, end with 403.
+  3. If the sender is not a member of that channel, end with 442.
+  4. If there is one parameter: if there is a topic, send the numeric replies 332 and 333 in this order; if there is no topic, send the numeric reply 331; then stop.
+  5. If the channel has the flag t and the sender does not have operator privilege, end with 482.
+  6. Take the first TOPICLEN characters of the second parameter (the whole of it if it has TOPICLEN characters or fewer) as the new topic, set the topic setter to the sender's nickname and the set time to the current time (if the new topic is the empty string, the channel has no topic). Send the line ":<p> TOPIC <ch> :<new topic>" to all members of the channel.
+(10) NAMES
+  1. If there is no parameter, send the numeric reply 366 (where <x> is *) and stop.
+  2. Split the first parameter into a list, and in that order, for each name x, find a channel with x; if it is found, send the sender the names reply of that channel; if it is not found, send the numeric reply 366 (where <x> is x).
+(11) WHOIS
+  1. If there is no parameter, end with 431.
+  2. Find a user with the first parameter; if it is not found, send the numeric reply 401, then send the numeric reply 318 (where <x> is the first parameter), and stop.
+  3. For the user u found, send the following replies in this order.
+    - 311
+    - 319 if u is in one or more channels
+    - 312
+    - 301 if u is away
+    - 317
+    - 318 (where <x> is u's nickname)
+(12) AWAY
+  If there is a first parameter and it is not the empty string, set the sender's away message to the first parameter and send reply 306. Otherwise, set the away message to the empty string and send reply 305.
+(13) INVITE
+  1. If there are fewer than 2 parameters, end with 461.
+  2. Find a user with the first parameter; if it is not found, end with 401. Let u be the user found.
+  3. Find a channel with the second parameter; if it is not found, end with 403.
+  4. If the sender is not a member of that channel, end with 442.
+  5. If u is a member of that channel, end with 443.
+  6. If the channel has the flag i and the sender does not have operator privilege, end with 482.
+  7. If that channel is not in u's invite list, append it to the end. Send reply 341, send reply 301 if u is away, and send u the line ":<p> INVITE <u's nickname> :<ch>".
+(14) KICK
+  1. If there are fewer than 2 parameters, end with 461.
+  2. Find a channel with the first parameter; if it is not found, end with 403.
+  3. If the sender is not a member of that channel, end with 442; if it does not have operator privilege, end with 482.
+  4. Find a user with the second parameter; if it is not found, end with 401. If the user u found is not a member of that channel, end with 441.
+  5. The reason is the third parameter if there is one and it is not the empty string, otherwise the sender's nickname. Send the line ":<p> KICK <ch> <u's nickname> :<reason>" to all members of the channel (including u), and then remove u from the channel.
+(15) MODE
+  1. If there is no parameter, end with 461.
+  2. If the first parameter starts with #, perform the channel mode processing below; otherwise perform the user mode processing.
+  - User mode
+    1. Find a user with the first parameter; if it is not found, end with 401.
+    2. If the user found is not the sender, end with 502.
+    3. If there is one parameter, end with 221.
+    4. Examine the characters of the second parameter from the first. The sign is initially +. For "+" or "-", set the sign to that character. For "i": if the sign is + and the sender is not invisible, make it invisible; if the sign is - and the sender is invisible, make it not invisible; if either was done, append that change (the sign and the character i, no argument) to the end of the change list. Any other character is an "unknown character".
+    5. If the change list is not empty, send the sender the line ":<sender's nickname> MODE <sender's nickname> :<change string>". Then, if there was one or more unknown characters, send reply 501 exactly once.
+  - Channel mode
+    1. Find a channel with the first parameter; if it is not found, end with 403.
+    2. If there is one parameter, send the numeric replies 324 and 329 in this order and stop.
+    3. From the second parameter (the mode string) and the sequence of the third and later parameters (the argument list), build a list of items by the following rules. Each item has a sign, a character and an argument (which may be absent). Examine the characters of the mode string from the first; the sign is initially +. To "take an argument" means, if any arguments of the argument list not yet taken remain, to take the first of them (if none remain, nothing can be taken).
+      - "+", "-": set the sign to that character. No item is created.
+      - o, v, b: take an argument, and if one was taken, use it as the item's argument.
+      - k: if the sign is +, the same as o. If the sign is -, take an argument and discard it (it is fine if none can be taken), and set the item's argument to "*".
+      - l: if the sign is +, take an argument; if the argument taken consists only of digits, has 1 to 4 characters, and its value is 1 or more, use it as the item's argument. In all other cases the item has no argument. If the sign is -, take no argument and the item has no argument.
+      - Any other character: take no argument and the item has no argument.
+    4. Process the items in order by the following rules; for each item, apply only the first of rules a to e that applies, then go on to the next item. Let s be the item's sign, c its character, and a its argument.
+      a. If c is none of b, i, k, l, m, n, o, t, v, send reply 472.
+      b. If c is b and there is no argument: if s is + and the ban list has not yet been sent in this command, send the ban list, that is, send reply 367 for each ban in the order of the ban list, then send reply 368 (operator privilege is not needed). In all other cases do nothing.
+      c. If c is o or v and there is no argument, or if s is + and c is k or l and there is no argument, do nothing.
+      d. If the sender did not have operator privilege in the channel at the moment before item processing began (this decision does not change even if the sender's own privilege changes during this command), send reply 482 if it has not yet been sent in this command. Nothing is changed by this item.
+      e. If none of a to d applies, act as follows according to c. Whenever something is changed, append that change (sign, character, argument) to the end of the change list.
+        - o and v: find a user with a; if it is not found, send reply 401. If the user u found is not a member of the channel, send reply 441. If it is a member, then for operator privilege with o, and for voice with v: if s is + and u does not have it, give it; if s is - and u has it, take it away. The argument of the change is u's nickname.
+        - b: let m be the normalized mask of a. If s is + and the ban list has no ban whose mask is the same as m, append to the end of the ban list a ban with mask m, the sender's nickname as setter, and the current time as set time. The argument of the change is m. If s is - and the ban list has a ban whose mask is the same as m, remove it. The argument of the change is the mask of the removed ban.
+        - k: if s is +: if there is a key, send reply 467; if there is no key, set the key to a (the argument of the change is a). If s is -: if there is a key, set no key (the argument of the change is "*").
+        - l: if s is +, let v be the value of a, and if the user limit differs from v, set the user limit to v. The argument of the change is v written in decimal (without extra leading zeros). If s is -, if there is a user limit, set no user limit. The change has no argument.
+        - i, m, n, t: if s is + and the channel does not have that flag, give it the flag; if s is - and it has the flag, remove it. The change has no argument.
+    5. If the change list is not empty, send the line ":<p> MODE <ch> <change string>" to all members of the channel.
+  - Change string: go through the change list in order, and for each change, write its sign if it differs from the sign written last (always for the first change), followed by its character. After that, append the arguments of the changes that have an argument, in the order of the change list, each preceded by one space (examples: +ol-v grace 10 paster, +b *!*@*.example.org, -kl *, +i).
+
+== 11. Contents of numeric replies ==
+The <content> for each number is as follows. <ch> is the stored name of the channel found in the steps, and <nick> is the nickname of the user called u in the steps. <x> is, for 318 and 366, the string defined in the steps, and otherwise the string defined in the parentheses on each line. A parenthesized remark after the content (such as "(<c> is the item's character)") is an explanation and is not written, but the parentheses inside the content of 411, 471, 473, 474 and 475 are written as they are (example: :No recipient given (PRIVMSG)).
+- 001: :Welcome to the Internet Relay Network <prefix of the receiving client>
+- 002: :Your host is <server name>, running version <value of VERSION>
+- 003: :This server was created <value of CREATED>
+- 004: <server name> <value of VERSION> i biklmnotv
+- 005: CASEMAPPING=rfc1459 CHANTYPES=# NICKLEN=<value of NICKLEN> CHANNELLEN=<value of CHANNELLEN> TOPICLEN=<value of TOPICLEN> CHANLIMIT=#:<value of MAXCHANNELS> CHANMODES=b,k,l,imnt PREFIX=(ov)@+ :are supported by this server
+- 221: <mode> (+i if the receiving client is invisible, otherwise +)
+- 301: <nick> :<u's away message>
+- 305: :You are no longer marked as being away
+- 306: :You have been marked as being away
+- 311: <nick> <u's user name> <u's host name> * :<u's real name>
+- 312: <nick> <server name> :<value of DESCRIPTION>
+- 317: <nick> <current time - u's last speaking time> <u's registration time> :seconds idle, signon time
+- 318: <x> :End of /WHOIS list.
+- 319: <nick> :<channel list> (the channels u is in, in the order joined, each stored name preceded by @ or + by the same rule as u's display name in that channel (possibly neither), separated by one space; example: @#lobby +#help #rust)
+- 324: <ch> <mode display> (the display including the key if the sender is a member of that channel, otherwise the display not including the key)
+- 329: <ch> <creation time of the channel>
+- 331: <ch> :No topic is set
+- 332: <ch> :<topic>
+- 333: <ch> <topic setter> <topic set time>
+- 341: <nick> <ch>
+- 353: = <ch> :<name list> (as defined for the names reply in Section 10 (6))
+- 366: <x> :End of /NAMES list.
+- 367: <ch> <mask of the ban> <setter of the ban> <set time of the ban>
+- 368: <ch> :End of channel ban list
+- 372: :- <MOTD line>
+- 375: :- <server name> Message of the day -
+- 376: :End of /MOTD command.
+- 401: <x> :No such nick/channel (<x> is the string searched for)
+- 403: <x> :No such channel (<x> is, in JOIN, the invalid channel name x, and otherwise the string searched for)
+- 404: <ch> :Cannot send to channel
+- 405: <x> :You have joined too many channels (<x> is the JOIN name x)
+- 409: :No origin specified
+- 411: :No recipient given (<command>)
+- 412: :No text to send
+- 421: <command> :Unknown command (<command> is the command after conversion to uppercase)
+- 431: :No nickname given
+- 432: <n> :Erroneous nickname
+- 433: <n> :Nickname is already in use
+- 441: <nick> <ch> :They aren't on that channel
+- 442: <ch> :You're not on that channel
+- 443: <nick> <ch> :is already on channel
+- 451: :You have not registered
+- 461: <command> :Not enough parameters (<command> is the command after conversion to uppercase)
+- 462: :You may not reregister
+- 467: <ch> :Channel key already set
+- 471: <ch> :Cannot join channel (+l)
+- 472: <c> :is unknown mode char to me for <ch> (<c> is the item's character)
+- 473: <ch> :Cannot join channel (+i)
+- 474: <ch> :Cannot join channel (+b)
+- 475: <ch> :Cannot join channel (+k)
+- 482: <ch> :You're not channel operator
+- 501: :Unknown MODE flag
+- 502: :Cannot change mode for other users
+As this list shows, a numeric reply line is ":<server name> <number> <addressee> " followed by <content> (example: :irc.example.net 433 * bob :Nickname is already in use).
+
+[Output files]
+Write the following four files in the output/ folder. Every file consists only of ASCII characters, every line ends with a newline (LF), and there are no empty lines. Integers are written in decimal without extra leading zeros (only the numbers of numeric replies are written with 3 digits). Within the lines of channels.txt, clients.txt and stats.txt, the separator is one space, with no spaces at the start or end of a line. However, topics, away messages and disconnection reasons are written as they are, including any spaces inside them. "At the end" means the moment phase C of time T has finished.
+
+(1) output/sent.txt
+Write every line the server sent, one per line in the order sent, in the form "<time> <connection ID> <line>" (Section 6). <line> is the sent line itself; spaces contained in the text and elsewhere are written as they are.
+
+(2) output/channels.txt
+For each channel existing at the end, in the order created, write the following lines.
+- CHANNEL <stored name> created <creation time> members <number of members> peak <peak member count> messages <message count> modes <mode display including the key>
+- If there is a topic, "TOPIC <topic setter> <topic set time> <topic>"; if not, "TOPIC none"
+- For each ban, in the order of the ban list, "BAN <mask> <setter> <set time>"
+- MEMBERS <name list> (the display names of all members, in the order of the member list, separated by one space)
+After all channels, write the following one line.
+TOTAL channels <number of channels> members <total number of members> bans <total number of bans>
+
+(3) output/clients.txt
+For each client present at the end, in connection order, write the following lines.
+- CLIENT <connection ID> <addressee> <user name> <host name> <mode> connected <connection time> signon <registration time> received <received line count> sent <sent line count> tokens <token count> queue <receive queue length> channels <joined channels> invites <invites>
+  <user name> is written as * if unset. <mode> is +i if invisible, otherwise +. <registration time> is written as - if not registered. <joined channels> is the channels the client is in, in the order joined, each stored name preceded by @ or + by the same rule as in reply 319, separated by commas (,). <invites> is the stored names of the channels in the invite list, in that order, separated by commas. Either one is written as none if there are none.
+- If away, then "AWAY <connection ID> <away message>"
+After all clients, write the following one line.
+TOTAL clients <number of clients> registered <number of registered clients> invisible <number of invisible clients> away <number of away clients>
+
+(4) output/stats.txt
+Write the following lines in this order.
+- END <T>
+- LINES total <number of lines of traffic.txt> connect <number of connect lines> disconnect <number of disconnect lines> messages <number of message lines>
+- MESSAGES dropped <number of dropped lines> queued <number of queued lines> processed <number of processed raw lines> discarded <number of lines discarded by disconnection> pending <total number of lines remaining in receive queues at the end> empty <number of empty messages>
+  The number of processed raw lines is the number of raw lines processed by the steps of Section 10 (including empty messages). The sum of dropped, processed, discarded and pending equals messages.
+- SENT lines <number of lines sent> numerics <number of numeric replies sent> pings <number of PING lines sent in Section 5> errors <number of ERROR lines sent in Section 7>
+- For each command whose processing count is 1 or more, in lexicographic order of the command (compare from the first character, smaller character code first; if one is a prefix of the other, the shorter one comes first), "COMMAND <command> <processing count>"
+- For each numeric reply number sent at least once, in increasing order of number, "NUMERIC <number> <number of times a reply with that number was sent>" (<number> is written with 3 digits)
+- PEAK connections <peak connection count> at <time>
+- PEAK registered <peak registered count> at <time>
+  The peak connection count is computed as follows. Initially both the value and the time are 0; each time a client is created by a connect line, if the number of clients present at that moment is greater than the current value, set the value to that number and the time to the current time. The peak registered count is updated in the same way each time a registration completes, with the number of registered clients at that moment (including the client that just completed).
+- DISCONNECTS quit <number of disconnections of kind quit> closed <number of disconnections of kind closed> flood <number of disconnections of kind flood> timeout <number of disconnections of kind timeout>
+- For each record, in the order of the disconnection record, "GONE <time> <connection ID> <addressee> <reason>"
+
+[Source files]
+Organize the program into the following 6 source files (follow each language's conventions for file names).
+- main: holds the overall flow and the core of the processing: reading server.txt and traffic.txt, running the three phases per time (refill and receive queue processing, processing arriving lines, PING and timeout), sending lines and building numeric replies, sending to peers, completing registration, disconnection, processing all commands (NICK, USER, PING, PONG, QUIT, JOIN, PART, PRIVMSG, NOTICE, TOPIC, NAMES, WHOIS, AWAY, INVITE, KICK, user and channel MODE), collecting the statistics, and building and writing the lines of the four output files (sent.txt, channels.txt, clients.txt, stats.txt).
+- protocol: parsing raw lines (prefix, command, middle parameters, trailing parameter, the 15th parameter), folding strings by the rfc1459 rules, checking valid nicknames and valid channel names, and checking whether a string consists only of digits.
+- masks: wildcard matching with * and ? (written by hand, without using the standard library's regular expressions or the like), and normalizing a MODE argument into a ban mask.
+- clients: recording the state of a client (connection ID, host name, nickname, user name, real name, mode, registration state, the various times, PING state, token count and refill time, receive queue, joined channels and invite list, away message, line counts), building the addressee, prefix and mode strings, and using and refilling tokens.
+- channels: recording the state of a channel (stored name, creation time, members and their privileges, topic, bans, flags, key, user limit, peak member count, message count), finding, adding and removing members, display names and the name list, deciding whether a client is banned and whether it can speak, and building the mode display.
+- modes: building the list of items from a channel mode string and argument list, and building the change string from the change list.
+
+[Constraints]
+- In server.txt, NICKLEN is 1 to 30, CHANNELLEN is 2 to 50, TOPICLEN is 1 to 300, MAXCHANNELS and BUCKET are 1 to 20, REFILL is 1 to 60, QUEUE is 0 to 100, and PINGFREQ and TIMEOUT are 1 to 600. The values of NAME, VERSION, CREATED, DESCRIPTION and of each MOTD line have 1 to 80 characters, and there are 1 to 20 MOTD lines.
+- traffic.txt has 1 to 3000 lines, and times are <= 3600.
+- A connection ID has 1 to 8 characters. A host name is a string of 1 to 63 characters consisting of letters, digits, periods and hyphens. There are never two or more connect lines with the same connection ID (message lines and disconnect lines may appear before the connect line, or for a connection ID that has no connect line).
+- A raw line has 1 to 400 characters and does not start with a space. A trailing parameter does not start with a space.
+- A string that is split into a list (the first and second parameters of JOIN, the first of PART, the first of PRIVMSG and NOTICE, and the first parameter of NAMES) is not the empty string, does not start with a comma, does not end with a comma, and never contains two consecutive commas. However, the first parameter of PRIVMSG and NOTICE may be the empty string.
+- Empty-string parameters (a trailing parameter consisting of ":" alone) appear only as the first parameter of NICK, PING, QUIT, AWAY, PRIVMSG, NOTICE, the second parameter of PART, TOPIC, PRIVMSG, NOTICE, the third parameter of KICK, and the fourth parameter of USER.
+- At most 100 clients are present at the same time, and at most 100 channels exist at the same time. Every integer appearing in the output is less than 2^31.
+
+[Example]
+The following is a small example (it differs from the actual data in input/).
+input/server.txt:
+NAME irc.example.net
+VERSION mptircd-1.0
+CREATED Mon Sep 28 2026
+DESCRIPTION Example server
+NICKLEN 9
+CHANNELLEN 16
+TOPICLEN 20
+MAXCHANNELS 3
+BUCKET 3
+REFILL 2
+QUEUE 2
+PINGFREQ 20
+TIMEOUT 10
+MOTD Welcome to the example network.
+input/traffic.txt:
+0 a1 CONNECT ann.example.org
+0 a1 NICK Ann[1]
+1 a1 USER ann 8 * :Ann Smith
+2 b2 CONNECT 10.0.0.7
+2 b2 NICK ann{1}
+2 b2 NICK bob
+3 b2 USER bob 0 * :Bob
+3 a1 JOIN #Lobby
+4 b2 join #lobby
+5 a1 MODE #lobby +k-n sesame
+5 a1 PRIVMSG #LOBBY :hi bob
+5 d4 CONNECT 192.0.2.4
+5 d4 NICK dan
+6 b2 TOPIC #lobby :Hello
+7 c3 CONNECT spam.example.com
+7 c3 NICK x
+7 c3 USER x 0 * x
+7 c3 JOIN #lobby
+7 c3 PRIVMSG #lobby :a
+7 c3 PRIVMSG #lobby :b
+7 c3 PRIVMSG #lobby :c
+8 a1 MODE #lobby +b spam.example.com
+9 b2 AWAY :lunch
+9 a1 PRIVMSG bob :are you there?
+10 a1 NICK Anna
+12 b2 QUIT :bye
+13 b2 PRIVMSG Anna :hello?
+35 a1 PING :x
+output/sent.txt:
+1 a1 :irc.example.net 001 Ann[1] :Welcome to the Internet Relay Network Ann[1]!ann@ann.example.org
+1 a1 :irc.example.net 002 Ann[1] :Your host is irc.example.net, running version mptircd-1.0
+1 a1 :irc.example.net 003 Ann[1] :This server was created Mon Sep 28 2026
+1 a1 :irc.example.net 004 Ann[1] irc.example.net mptircd-1.0 i biklmnotv
+1 a1 :irc.example.net 005 Ann[1] CASEMAPPING=rfc1459 CHANTYPES=# NICKLEN=9 CHANNELLEN=16 TOPICLEN=20 CHANLIMIT=#:3 CHANMODES=b,k,l,imnt PREFIX=(ov)@+ :are supported by this server
+1 a1 :irc.example.net 375 Ann[1] :- irc.example.net Message of the day -
+1 a1 :irc.example.net 372 Ann[1] :- Welcome to the example network.
+1 a1 :irc.example.net 376 Ann[1] :End of /MOTD command.
+1 a1 :Ann[1] MODE Ann[1] :+i
+2 b2 :irc.example.net 433 * ann{1} :Nickname is already in use
+3 b2 :irc.example.net 001 bob :Welcome to the Internet Relay Network bob!bob@10.0.0.7
+3 b2 :irc.example.net 002 bob :Your host is irc.example.net, running version mptircd-1.0
+3 b2 :irc.example.net 003 bob :This server was created Mon Sep 28 2026
+3 b2 :irc.example.net 004 bob irc.example.net mptircd-1.0 i biklmnotv
+3 b2 :irc.example.net 005 bob CASEMAPPING=rfc1459 CHANTYPES=# NICKLEN=9 CHANNELLEN=16 TOPICLEN=20 CHANLIMIT=#:3 CHANMODES=b,k,l,imnt PREFIX=(ov)@+ :are supported by this server
+3 b2 :irc.example.net 375 bob :- irc.example.net Message of the day -
+3 b2 :irc.example.net 372 bob :- Welcome to the example network.
+3 b2 :irc.example.net 376 bob :End of /MOTD command.
+3 a1 :Ann[1]!ann@ann.example.org JOIN #Lobby
+3 a1 :irc.example.net 353 Ann[1] = #Lobby :@Ann[1]
+3 a1 :irc.example.net 366 Ann[1] #Lobby :End of /NAMES list.
+4 a1 :bob!bob@10.0.0.7 JOIN #Lobby
+4 b2 :bob!bob@10.0.0.7 JOIN #Lobby
+4 b2 :irc.example.net 353 bob = #Lobby :@Ann[1] bob
+4 b2 :irc.example.net 366 bob #Lobby :End of /NAMES list.
+5 a1 :Ann[1]!ann@ann.example.org MODE #Lobby +k-n sesame
+5 b2 :Ann[1]!ann@ann.example.org MODE #Lobby +k-n sesame
+5 b2 :Ann[1]!ann@ann.example.org PRIVMSG #Lobby :hi bob
+6 b2 :irc.example.net 482 bob #Lobby :You're not channel operator
+7 c3 :irc.example.net 001 x :Welcome to the Internet Relay Network x!x@spam.example.com
+7 c3 :irc.example.net 002 x :Your host is irc.example.net, running version mptircd-1.0
+7 c3 :irc.example.net 003 x :This server was created Mon Sep 28 2026
+7 c3 :irc.example.net 004 x irc.example.net mptircd-1.0 i biklmnotv
+7 c3 :irc.example.net 005 x CASEMAPPING=rfc1459 CHANTYPES=# NICKLEN=9 CHANNELLEN=16 TOPICLEN=20 CHANLIMIT=#:3 CHANMODES=b,k,l,imnt PREFIX=(ov)@+ :are supported by this server
+7 c3 :irc.example.net 375 x :- irc.example.net Message of the day -
+7 c3 :irc.example.net 372 x :- Welcome to the example network.
+7 c3 :irc.example.net 376 x :End of /MOTD command.
+7 c3 :irc.example.net 475 x #Lobby :Cannot join channel (+k)
+7 c3 ERROR :Closing Link: x[spam.example.com] (Excess Flood)
+8 a1 :Ann[1]!ann@ann.example.org MODE #Lobby +b *!*@spam.example.com
+8 b2 :Ann[1]!ann@ann.example.org MODE #Lobby +b *!*@spam.example.com
+9 b2 :irc.example.net 306 bob :You have been marked as being away
+9 b2 :Ann[1]!ann@ann.example.org PRIVMSG bob :are you there?
+9 a1 :irc.example.net 301 Ann[1] bob :lunch
+10 a1 :Ann[1]!ann@ann.example.org NICK :Anna
+10 b2 :Ann[1]!ann@ann.example.org NICK :Anna
+12 b2 ERROR :Closing Link: bob[10.0.0.7] (Quit: bye)
+12 a1 :bob!bob@10.0.0.7 QUIT :Quit: bye
+25 d4 PING :irc.example.net
+30 a1 PING :irc.example.net
+35 a1 :irc.example.net PONG irc.example.net :x
+35 d4 ERROR :Closing Link: dan[192.0.2.4] (Ping timeout: 30 seconds)
+output/channels.txt:
+CHANNEL #Lobby created 3 members 1 peak 2 messages 1 modes +kt sesame
+TOPIC none
+BAN *!*@spam.example.com Ann[1] 8
+MEMBERS @Anna
+TOTAL channels 1 members 1 bans 1
+output/clients.txt:
+CLIENT a1 Anna ann ann.example.org +i connected 0 signon 1 received 9 sent 20 tokens 2 queue 0 channels @#Lobby invites none
+TOTAL clients 1 registered 1 invisible 1 away 0
+output/stats.txt:
+END 35
+LINES total 28 connect 4 disconnect 0 messages 24
+MESSAGES dropped 1 queued 2 processed 20 discarded 3 pending 0 empty 0
+SENT lines 52 numerics 33 pings 2 errors 3
+COMMAND AWAY 1
+COMMAND JOIN 3
+COMMAND MODE 2
+COMMAND NICK 6
+COMMAND PING 1
+COMMAND PRIVMSG 2
+COMMAND QUIT 1
+COMMAND TOPIC 1
+COMMAND USER 3
+NUMERIC 001 3
+NUMERIC 002 3
+NUMERIC 003 3
+NUMERIC 004 3
+NUMERIC 005 3
+NUMERIC 301 1
+NUMERIC 306 1
+NUMERIC 353 2
+NUMERIC 366 2
+NUMERIC 372 3
+NUMERIC 375 3
+NUMERIC 376 3
+NUMERIC 433 1
+NUMERIC 475 1
+NUMERIC 482 1
+PEAK connections 4 at 7
+PEAK registered 3 at 7
+DISCONNECTS quit 1 closed 0 flood 1 timeout 1
+GONE 7 c3 x Excess Flood
+GONE 12 b2 bob Quit: bye
+GONE 35 d4 dan Ping timeout: 30 seconds
+In this example, b2's "NICK ann{1}" folds to the same string as Ann[1], so it results in 433. At time 7, c3 uses its 3 tokens on NICK, USER and JOIN, the next 2 lines wait in the receive queue, and at the line after that the length of the receive queue is QUEUE (2) or more, so c3 is disconnected. The argument spam.example.com of +b at time 8 contains neither ! nor @ but contains a period, so it is normalized to *!*@spam.example.com. d4 receives a PING at time 25 without having finished registration, and is disconnected at time 35. b2's line at time 13 comes after its disconnection, so it is a dropped line.

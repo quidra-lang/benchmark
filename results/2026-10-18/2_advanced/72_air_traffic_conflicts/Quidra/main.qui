@@ -1,0 +1,641 @@
+import math
+import flight_plans = "./flight_plans.qui"
+import trajectory = "./trajectory.qui"
+import conflict = "./conflict.qui"
+import resolution = "./resolution.qui"
+import report = "./report.qui"
+
+real64 total(real64[] values)
+    if len(values) == 0
+        return 0.0
+    real64 result = values[0]
+    for 1 <= int i < int(len(values))
+        result += values[i]
+    return result
+
+real64 arctangent(real64 value)
+    bool invert = value > 1.0
+    real64 z = if invert then 1.0 / value else value
+    bool reduce = z > 0.41421356237309503
+    if reduce
+        z = (z - 1.0) / (z + 1.0)
+    real64 squared = z * z
+    real64 power = z
+    real64 result = 0.0
+    for int j < 40
+        result += power / real64(2 * j + 1)
+        power *= -squared
+    if reduce
+        result += 3.141592653589793 / 4.0
+    return if invert then 3.141592653589793 / 2.0 - result else result
+
+real64 segment_track(trajectory.Segment segment)
+    real64 vx = segment.velocity[0]
+    real64 vy = segment.velocity[1]
+    real64 radians = 0.0
+    if vy == 0.0
+        radians = if vx >= 0.0 then 3.141592653589793 / 2.0 else -3.141592653589793 / 2.0
+    else
+        real64 ratio = vx / vy
+        radians = arctangent(conflict.absolute(ratio))
+        if ratio < 0.0
+            radians = -radians
+        if vy < 0.0
+            radians += if vx >= 0.0 then 3.141592653589793 else -3.141592653589793
+    real64 degrees = radians * 180.0 / 3.141592653589793
+    return if degrees < 0.0 then degrees + 360.0 else degrees
+
+bool sector_contains(flight_plans.Sector sector, real64[] position)
+    return real64(sector.x1) / 10.0 <= position[0] and position[0] < real64(sector.x2) / 10.0 and real64(sector.y1) / 10.0 <= position[1] and position[1] < real64(sector.y2) / 10.0 and real64(sector.lower * 100) <= position[2] and position[2] < real64(sector.upper * 100)
+
+int containing_sector(flight_plans.Sector[] sectors, real64[] position)
+    for int i < int(len(sectors))
+        if sector_contains(sectors[i], position)
+            return i
+    return -1
+
+bool active(conflict.Conflict encounter, real64 moment)
+    return encounter.start <= moment and moment < encounter.end
+
+class Classification(real64[] levels, real64[] tracks, real64 angle, string geometry, string severity, int sector)
+
+Classification classify(conflict.Conflict encounter, trajectory.Path[] paths, flight_plans.Sector[] sectors, int dh)
+    trajectory.Segment a = paths[encounter.first].segments[encounter.closest.first_segment - 1]
+    trajectory.Segment b = paths[encounter.second].segments[encounter.closest.second_segment - 1]
+    real64[] pa = trajectory.position_at(a, encounter.closest.loss.closest_time)
+    real64[] pb = trajectory.position_at(b, encounter.closest.loss.closest_time)
+    real64 theta_a = segment_track(a)
+    real64 theta_b = segment_track(b)
+    real64 gap = conflict.absolute(theta_a - theta_b)
+    real64 angle = if gap > 180.0 then 360.0 - gap else gap
+    real64 dot = a.velocity[0] * b.velocity[0] + a.velocity[1] * b.velocity[1]
+    real64 cross = a.velocity[0] * b.velocity[1] - a.velocity[1] * b.velocity[0]
+    string geometry = "crossing"
+    if dot * dot > cross * cross
+        geometry = if dot < 0.0 then "head_on" else "trailing"
+    string severity = if 10.0 * encounter.closest.loss.distance < 4.0 * real64(dh) then "HIGH" else (if 10.0 * encounter.closest.loss.distance < 7.0 * real64(dh) then "MEDIUM" else "LOW")
+    int sector = containing_sector(sectors, [for int axis < 3 then (pa[axis] + pb[axis]) / 2.0])
+    return Classification([pa[2] / 100.0, pb[2] / 100.0], [theta_a, theta_b], angle, geometry, severity, sector)
+
+real64[] inside_interval(trajectory.Segment segment, flight_plans.Sector sector)
+    real64 lo = segment.start
+    real64 hi = segment.end
+    real64[] lower = [real64(sector.x1) / 10.0, real64(sector.y1) / 10.0, real64(sector.lower * 100)]
+    real64[] upper = [real64(sector.x2) / 10.0, real64(sector.y2) / 10.0, real64(sector.upper * 100)]
+    for int axis < 3
+        real64 p = segment.position[axis]
+        real64 v = segment.velocity[axis]
+        if v == 0.0
+            if not (lower[axis] <= p and p < upper[axis])
+                return []
+        else
+            real64 r1 = (lower[axis] - p) / v
+            real64 r2 = (upper[axis] - p) / v
+            lo = conflict.larger(lo, segment.start + conflict.smaller(r1, r2))
+            hi = conflict.smaller(hi, segment.start + conflict.larger(r1, r2))
+    return if hi - lo > 0.000001 then [lo, hi] else []
+
+class Transit(int aircraft, int sector, real64 entry, real64 exit, int previous, int next)
+
+Transit[] sector_transits(trajectory.Path[] paths, flight_plans.Sector[] sectors)
+    Transit[] result = []
+    for int aircraft < int(len(paths))
+        Transit[] current = []
+        for int sector < int(len(sectors))
+            Transit[] joined = []
+            for trajectory.Segment segment = paths[aircraft].segments[]
+                real64[] interval = inside_interval(segment, sectors[sector])
+                if len(interval) == 0
+                    continue
+                int last = int(len(joined)) - 1
+                if last >= 0 and interval[0] - joined[last].exit <= 0.000001
+                    joined[last].exit = interval[1]
+                else
+                    joined = joined.append(Transit(aircraft, sector, interval[0], interval[1], -1, -1))
+            current = current.concat(joined)
+        Transit[] ordered = []
+        for Transit transit = current[]
+            int at = int(len(ordered))
+            for int i < int(len(ordered))
+                if transit.entry < ordered[i].entry or (transit.entry == ordered[i].entry and transit.sector < ordered[i].sector)
+                    at = i
+                    break
+            ordered = ordered[0:<at].append(transit).concat(ordered[at:<int(len(ordered))])
+        for 1 <= int i < int(len(ordered))
+            if conflict.absolute(ordered[i].entry - ordered[i - 1].exit) <= 0.000001
+                ordered[i].previous = ordered[i - 1].sector
+                ordered[i - 1].next = ordered[i].sector
+        result = result.concat(ordered)
+    return result
+
+int[][] occupancy(trajectory.Path[] paths, flight_plans.Sector[] sectors, int[] moments)
+    int[][] result = [for int s < int(len(sectors)) then [for int t < int(len(moments)) then 0]]
+    for int t < int(len(moments))
+        real64 moment = real64(moments[t])
+        for trajectory.Path path = paths[]
+            int segment = trajectory.segment_at(path, moment)
+            if segment < 0
+                continue
+            real64[] position = trajectory.position_at(path.segments[segment], moment)
+            for int s < int(len(sectors))
+                if sector_contains(sectors[s], position)
+                    result[s][t] += 1
+    return result
+
+int largest_integer(int[] values)
+    int largest = 0
+    for int value = values[]
+        if value > largest
+            largest = value
+    return largest
+
+class Alert(int first, int second, int beginning, int ending, int samples, real64 predicted, real64 distance)
+
+Alert[] replay_alerts(trajectory.Path[] paths, int[] moments, flight_plans.Settings settings)
+    Alert[] alerts = []
+    for int first < int(len(paths))
+        for first + 1 <= int second < int(len(paths))
+            int current = -1
+            for int moment = moments[]
+                int a = trajectory.segment_at(paths[first], real64(moment))
+                int b = trajectory.segment_at(paths[second], real64(moment))
+                if a < 0 or b < 0
+                    current = -1
+                    continue
+                trajectory.Segment segment_a = paths[first].segments[a]
+                trajectory.Segment segment_b = paths[second].segments[b]
+                real64[] pa = trajectory.position_at(segment_a, real64(moment))
+                real64[] pb = trajectory.position_at(segment_b, real64(moment))
+                conflict.Loss loss = conflict.loss_interval([for int axis < 3 then pa[axis] - pb[axis]], [for int axis < 3 then segment_a.velocity[axis] - segment_b.velocity[axis]], 0.0, real64(settings.alert), settings.dh, settings.dv)
+                if not loss.exists
+                    current = -1
+                elif current >= 0 and moment - alerts[current].ending == 60
+                    alerts[current].ending = moment
+                    alerts[current].samples += 1
+                    alerts[current].distance = conflict.smaller(alerts[current].distance, loss.distance)
+                else
+                    current = int(len(alerts))
+                    alerts = alerts.append(Alert(first, second, moment, moment, 1, real64(moment) + loss.lo, loss.distance))
+    Alert[] ordered = []
+    for Alert alert = alerts[]
+        int at = int(len(ordered))
+        for int i < int(len(ordered))
+            Alert other = ordered[i]
+            if alert.beginning < other.beginning or (alert.beginning == other.beginning and (alert.first < other.first or (alert.first == other.first and alert.second < other.second)))
+                at = i
+                break
+        ordered = ordered[0:<at].append(alert).concat(ordered[at:<int(len(ordered))])
+    return ordered
+
+int[] screen_cell(real64[] position, int[] radar)
+    real64 fx = (10.0 * position[0] - real64(radar[0])) * real64(radar[4]) / real64(radar[2] - radar[0])
+    real64 fy = (10.0 * position[1] - real64(radar[1])) * real64(radar[5]) / real64(radar[3] - radar[1])
+    int column = math.floor(fx)
+    int row = math.floor(fy)
+    return if 0 <= column and column < radar[4] and 0 <= row and row < radar[5] then [column, radar[5] - 1 - row] else []
+
+string lowercase(string character)
+    string upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    string lower = "abcdefghijklmnopqrstuvwxyz"
+    for int i < 26
+        if character == upper[i]
+            return lower[i]
+    return character
+
+class Study(flight_plans.Input data)
+    flight_plans.Settings settings = data.settings
+    flight_plans.Plan[] initial_plans = data.plans
+    flight_plans.Plan[] plans = initial_plans
+    int count = int(len(plans))
+    trajectory.Path[] initial_paths = [for flight_plans.Plan plan = plans[] then trajectory.build(plan, data.aircraft_types[plan.type_index])]
+    trajectory.Path[] paths = initial_paths
+    conflict.Conflict[] initial_conflicts = conflict.all_conflicts(paths, settings.dh, settings.dv)
+    conflict.Conflict[] final_conflicts = []
+    bool[][] unresolved = [for int a < count then [for int b < count then false]]
+    bool[][] resolved = unresolved
+    conflict.Conflict[] unresolved_conflicts = []
+    string[] resolution_lines = []
+    int rounds = 0
+    int accepted_rounds = 0
+    int level_changes = 0
+    int speed_changes = 0
+    int delay_changes = 0
+    int trials = 0
+    int infeasible = 0
+    int blocked = 0
+    int[] moments = [for settings.sample_start <= int moment < settings.sample_end step 60 then moment]
+    Transit[] initial_transits = []
+    Transit[] final_transits = []
+    int[][] initial_occupancy = []
+    int[][] final_occupancy = []
+
+    string pair_name(int first, int second)
+        return plans[first].callsign + "-" + plans[second].callsign
+
+    string sector_name(int sector)
+        return if sector < 0 then "-" else data.sectors[sector].name
+
+    int flight_conflict_count(conflict.Conflict[] encounters, int aircraft)
+        return int(len([for conflict.Conflict encounter = encounters[] if encounter.first == aircraft or encounter.second == aircraft then encounter]))
+
+    string manoeuvre_text(int aircraft)
+        return if len(plans[aircraft].history) == 0 then "-" else plans[aircraft].history.join(",")
+
+    conflict.Conflict[] blockers(int changed, int partner, trajectory.Path proposed, real64 target_start)
+        conflict.Conflict[] result = []
+        for int other < count
+            if other == changed
+                continue
+            int first = if changed < other then changed else other
+            int second = if changed < other then other else changed
+            if unresolved[first][second]
+                continue
+            trajectory.Path a = if first == changed then proposed else paths[first]
+            trajectory.Path b = if second == changed then proposed else paths[second]
+            for conflict.Conflict encounter = conflict.pair_conflicts(first, second, a, b, settings.dh, settings.dv)[]
+                if other == partner or encounter.start < target_start + real64(settings.lookahead)
+                    result = result.append(encounter)
+        return conflict.ordered(result)
+
+    void .resolve_all()
+        while true
+            conflict.Conflict[] encounters = conflict.all_conflicts(paths, settings.dh, settings.dv)
+            int selected = -1
+            for int i < int(len(encounters))
+                if not unresolved[encounters[i].first][encounters[i].second]
+                    selected = i
+                    break
+            if selected < 0
+                final_conflicts = encounters
+                break
+            conflict.Conflict target = encounters[selected]
+            rounds += 1
+            string pair = pair_name(target.first, target.second)
+            resolution_lines = resolution_lines.append("ROUND {rounds} {pair} start=" + report.number(target.start, 3) + " end=" + report.number(target.end, 3) + " dist=" + report.number(target.closest.loss.distance, 3))
+            int[] priority = resolution.priority_order(target.first, target.second, plans)
+            bool accepted = false
+            string accepted_text = ""
+            for int turn < 2
+                int aircraft = priority[turn]
+                int partner = priority[1 - turn]
+                for resolution.Manoeuvre manoeuvre = resolution.manoeuvres(settings.max_delay)[]
+                    trials += 1
+                    string prefix = "  TRY {plans[aircraft].callsign} {manoeuvre.name} "
+                    resolution.Proposal proposal = resolution.propose(plans[aircraft], manoeuvre, data.aircraft_types[plans[aircraft].type_index], settings)
+                    if not proposal.feasible
+                        infeasible += 1
+                        resolution_lines = resolution_lines.append(prefix + "infeasible")
+                        continue
+                    trajectory.Path proposed = trajectory.build(proposal.plan, data.aircraft_types[proposal.plan.type_index])
+                    conflict.Conflict[] found = blockers(aircraft, partner, proposed, target.start)
+                    if len(found) != 0
+                        blocked += 1
+                        resolution_lines = resolution_lines.append(prefix + "blocked " + pair_name(found[0].first, found[0].second) + " start=" + report.number(found[0].start, 3))
+                        continue
+                    plans[aircraft] = proposal.plan
+                    plans[aircraft].history = plans[aircraft].history.append(manoeuvre.name)
+                    paths[aircraft] = proposed
+                    resolution_lines = resolution_lines.append(prefix + "accepted")
+                    accepted = true
+                    accepted_text = "{plans[aircraft].callsign} {manoeuvre.name}"
+                    if manoeuvre.name == "level_up" or manoeuvre.name == "level_down"
+                        level_changes += 1
+                    elif manoeuvre.name == "speed_down"
+                        speed_changes += 1
+                    else
+                        delay_changes += 1
+                    break
+                if accepted
+                    break
+            if accepted
+                accepted_rounds += 1
+                resolved[target.first][target.second] = true
+                resolution_lines = resolution_lines.append("  RESULT resolved " + accepted_text)
+            else
+                unresolved[target.first][target.second] = true
+                unresolved_conflicts = unresolved_conflicts.append(target)
+                resolution_lines = resolution_lines.append("  RESULT unresolved")
+        initial_transits = sector_transits(initial_paths, data.sectors)
+        final_transits = sector_transits(paths, data.sectors)
+        initial_occupancy = occupancy(initial_paths, data.sectors, moments)
+        final_occupancy = occupancy(paths, data.sectors, moments)
+
+    string[] trajectory_report()
+        string[] lines = ["callsign,segment,leg,phase,t_start,t_end,x_start,y_start,fl_start,x_end,y_end,fl_end"]
+        for int f < count
+            for trajectory.Segment segment = paths[f].segments[]
+                lines = lines.append("{plans[f].callsign},{segment.number},{segment.leg},{segment.phase}," + report.number(segment.start, 3) + "," + report.number(segment.end, 3) + "," + report.number(segment.position[0], 3) + "," + report.number(segment.position[1], 3) + ",{int(segment.position[2] / 100.0)}," + report.number(segment.endpoint[0], 3) + "," + report.number(segment.endpoint[1], 3) + ",{int(segment.endpoint[2] / 100.0)}")
+        return lines
+
+    string[] conflict_report(string plan_name, trajectory.Path[] trajectories, conflict.Conflict[] encounters)
+        string[] lines = ["CONFLICTS plan={plan_name} count={len(encounters)}"]
+        Classification[] classified = [for conflict.Conflict encounter = encounters[] then classify(encounter, trajectories, data.sectors, settings.dh)]
+        for int i < int(len(encounters))
+            conflict.Conflict encounter = encounters[i]
+            Classification description = classified[i]
+            bool remaining = len([for conflict.Conflict other = final_conflicts[] if other.first == encounter.first and other.second == encounter.second then other]) != 0
+            string outcome = if remaining then "remaining" else (if resolved[encounter.first][encounter.second] then "resolved" else "indirect")
+            lines = lines.append("CONFLICT {i + 1} " + pair_name(encounter.first, encounter.second) + " start=" + report.number(encounter.start, 3) + " end=" + report.number(encounter.end, 3) + " duration=" + report.number(encounter.end - encounter.start, 3) + " outcome={outcome}")
+            conflict.Loss closest = encounter.closest.loss
+            lines = lines.append("  CPA t=" + report.number(closest.closest_time, 3) + " dist=" + report.number(closest.distance, 3) + " vert=" + report.number(closest.vertical, 1) + " levels=" + report.number(description.levels[0], 2) + "/" + report.number(description.levels[1], 2) + " tracks=" + report.number(description.tracks[0], 1) + "/" + report.number(description.tracks[1], 1) + " angle=" + report.number(description.angle, 1))
+            trajectory.Segment a = trajectories[encounter.first].segments[encounter.closest.first_segment - 1]
+            trajectory.Segment b = trajectories[encounter.second].segments[encounter.closest.second_segment - 1]
+            lines = lines.append("  TYPE geometry={description.geometry} phases={a.phase}/{b.phase} segments={a.number}/{b.number} sector=" + sector_name(description.sector) + " severity={description.severity}")
+            for conflict.Piece piece = encounter.pieces[]
+                lines = lines.append("  PIECE {piece.first_segment}/{piece.second_segment} " + report.number(piece.loss.lo, 3) + " " + report.number(piece.loss.hi, 3))
+        real64 duration = total([for conflict.Conflict encounter = encounters[] then encounter.end - encounter.start])
+        string minimum_distance = "-"
+        if len(encounters) != 0
+            real64 minimum = encounters[0].closest.loss.distance
+            for conflict.Conflict encounter = encounters[]
+                minimum = conflict.smaller(minimum, encounter.closest.loss.distance)
+            minimum_distance = report.number(minimum, 3)
+        int head_on = int(len([for Classification description = classified[] if description.geometry == "head_on" then description]))
+        int crossing = int(len([for Classification description = classified[] if description.geometry == "crossing" then description]))
+        int trailing = int(len(encounters)) - head_on - crossing
+        int high = int(len([for Classification description = classified[] if description.severity == "HIGH" then description]))
+        int medium = int(len([for Classification description = classified[] if description.severity == "MEDIUM" then description]))
+        int low = int(len(encounters)) - high - medium
+        lines = lines.append("SUMMARY count={len(encounters)} total=" + report.number(duration, 3) + " min_dist={minimum_distance} head_on={head_on} crossing={crossing} trailing={trailing} high={high} medium={medium} low={low}")
+        int[] involved = []
+        for int f < count
+            conflict.Conflict[] related = [for conflict.Conflict encounter = encounters[] if encounter.first == f or encounter.second == f then encounter]
+            if len(related) == 0
+                continue
+            involved = involved.append(f)
+            string[] partners = []
+            for int other < count
+                if len([for conflict.Conflict encounter = related[] if encounter.first == other or encounter.second == other then encounter]) != 0 and other != f
+                    partners = partners.append(plans[other].callsign)
+            lines = lines.append("FLIGHT {plans[f].callsign} conflicts={len(related)} first=" + report.number(related[0].start, 3) + " partners=" + partners.join(","))
+        lines = lines.append("TIMELINE from={settings.sample_start} to={settings.sample_end} step=60")
+        for int f = involved[]
+            string timeline = ""
+            for int moment = moments[]
+                bool flying = trajectory.segment_at(trajectories[f], real64(moment)) >= 0
+                bool endangered = len([for conflict.Conflict encounter = encounters[] if (encounter.first == f or encounter.second == f) and active(encounter, real64(moment)) then encounter]) != 0
+                timeline += if not flying then "." else (if endangered then "X" else "-")
+            lines = lines.append(plans[f].callsign + " " + timeline)
+        return lines
+
+    string[] resolution_report()
+        string[] lines = resolution_lines
+        real64[] extra_times = []
+        int total_delay = 0
+        for int f < count
+            real64 extra = paths[f].arrival - initial_paths[f].arrival
+            extra_times = extra_times.append(extra)
+            total_delay += plans[f].delay
+            int before = flight_conflict_count(initial_conflicts, f)
+            int after = flight_conflict_count(final_conflicts, f)
+            lines = lines.append("FLIGHT {plans[f].callsign} departure={plans[f].departure + plans[f].delay} delay={plans[f].delay} level=" + report.signed_integer(plans[f].offset) + " speed={plans[f].initial_speed}->{plans[f].speed} arrival=" + report.number(initial_paths[f].arrival, 3) + "->" + report.number(paths[f].arrival, 3) + " extra=" + report.number(extra, 3) + " length=" + report.number(paths[f].length, 3) + " conflicts={before}->{after} manoeuvres=" + manoeuvre_text(f))
+        for conflict.Conflict encounter = unresolved_conflicts[]
+            lines = lines.append("UNRESOLVED " + pair_name(encounter.first, encounter.second) + " start=" + report.number(encounter.start, 3) + " dist=" + report.number(encounter.closest.loss.distance, 3))
+        return lines.append("TOTAL rounds={rounds} resolved={accepted_rounds} unresolved={len(unresolved_conflicts)} level={level_changes} speed={speed_changes} delay={delay_changes} total_delay={total_delay} total_extra=" + report.number(total(extra_times), 3) + " trials={trials} infeasible={infeasible} blocked={blocked}")
+
+    string[] transit_report()
+        string[] lines = ["callsign,sector,entry,exit,duration,from,to"]
+        for Transit transit = final_transits[]
+            lines = lines.append("{plans[transit.aircraft].callsign},{data.sectors[transit.sector].name}," + report.number(transit.entry, 3) + "," + report.number(transit.exit, 3) + "," + report.number(transit.exit - transit.entry, 3) + "," + sector_name(transit.previous) + "," + sector_name(transit.next))
+        return lines
+
+    int entry_count(Transit[] transits, int sector, int start, int end)
+        return int(len([for Transit transit = transits[] if transit.sector == sector and real64(start) <= transit.entry and transit.entry < real64(end) then transit]))
+
+    string[] load_report()
+        string[] lines = ["sector,period,start,end,entries_initial,entries_final,peak_initial,peak_final,mean_final,capacity,status"]
+        for int s < int(len(data.sectors))
+            flight_plans.Sector sector = data.sectors[s]
+            for int period < int(len(moments)) / 5
+                int beginning = settings.sample_start + 300 * period
+                int ending = beginning + 300
+                int entries_initial = entry_count(initial_transits, s, beginning, ending)
+                int entries_final = entry_count(final_transits, s, beginning, ending)
+                int peak_initial = largest_integer(initial_occupancy[s][5 * period:<5 * period + 5])
+                int peak_final = largest_integer(final_occupancy[s][5 * period:<5 * period + 5])
+                int sum = 0
+                for 5 * period <= int j < 5 * period + 5
+                    sum += final_occupancy[s][j]
+                string status = if peak_final > sector.capacity then "OVER" else (if peak_initial > sector.capacity then "RELIEVED" else "OK")
+                lines = lines.append("{sector.name},{period + 1},{beginning},{ending},{entries_initial},{entries_final},{peak_initial},{peak_final}," + report.number(real64(sum) / 5.0, 1) + ",{sector.capacity},{status}")
+        return lines
+
+    string sector_summary(string label, int sector, Transit[] transits, int[][] loads, conflict.Conflict[] encounters, trajectory.Path[] trajectories)
+        Transit[] selected = [for Transit transit = transits[] if transit.sector == sector then transit]
+        real64 dwell = total([for Transit transit = selected[] then transit.exit - transit.entry])
+        string mean = if len(selected) == 0 then "-" else report.number(dwell / real64(len(selected)), 3)
+        int peak = largest_integer(loads[sector])
+        int over = 0
+        for int period < int(len(moments)) / 5
+            if largest_integer(loads[sector][5 * period:<5 * period + 5]) > data.sectors[sector].capacity
+                over += 1
+        int conflict_count = int(len([for conflict.Conflict encounter = encounters[] if classify(encounter, trajectories, data.sectors, settings.dh).sector == sector then encounter]))
+        return "{label} entries={len(selected)} time=" + report.number(dwell, 3) + " mean={mean} peak={peak} over={over} conflicts={conflict_count}"
+
+    real64[] level_usage(trajectory.Path[] trajectories, int level)
+        int flights = 0
+        real64[] durations = []
+        for trajectory.Path path = trajectories[]
+            bool present = false
+            for trajectory.Segment segment = path.segments[]
+                if segment.phase == "LVL" and int(segment.position[2] / 100.0) == level
+                    present = true
+                    durations = durations.append(segment.end - segment.start)
+            if present
+                flights += 1
+        return [real64(flights), total(durations)]
+
+    string[] sector_report()
+        string[] lines = []
+        for int s < int(len(data.sectors))
+            flight_plans.Sector sector = data.sectors[s]
+            lines = lines.append("SECTOR {sector.name} x={sector.x1}..{sector.x2} y={sector.y1}..{sector.y2} fl={sector.lower}..{sector.upper} capacity={sector.capacity}")
+            lines = lines.append(sector_summary("INITIAL", s, initial_transits, initial_occupancy, initial_conflicts, initial_paths))
+            lines = lines.append(sector_summary("FINAL", s, final_transits, final_occupancy, final_conflicts, paths))
+            int height = largest_integer(final_occupancy[s])
+            if sector.capacity + 1 > height
+                height = sector.capacity + 1
+            string[] rows = []
+            int k = height
+            while k >= 1
+                string row = ""
+                for int value = final_occupancy[s][]
+                    row += if value >= k then "#" else (if k == sector.capacity then "-" else ".")
+                rows = rows.append(row)
+                k -= 1
+            lines = lines.concat(report.frame(rows, int(len(moments))))
+        int[] levels = []
+        for trajectory.Path path = initial_paths.concat(paths)[]
+            for trajectory.Segment segment = path.segments[]
+                if segment.phase != "LVL"
+                    continue
+                int level = int(segment.position[2] / 100.0)
+                bool present = false
+                for int item = levels[]
+                    present = present or item == level
+                if not present
+                    levels = levels.append(level)
+        lines = lines.append("LEVELS")
+        for int level = levels.sorted()[::-1][]
+            real64[] before = level_usage(initial_paths, level)
+            real64[] after = level_usage(paths, level)
+            lines = lines.append("LEVEL {level} flights={int(before[0])}->{int(after[0])} time=" + report.number(before[1], 3) + "->" + report.number(after[1], 3))
+        int[][] handoffs = [for int s < int(len(data.sectors)) then [for int t < int(len(data.sectors)) then 0]]
+        int handoff_count = 0
+        for Transit transit = final_transits[]
+            if transit.next >= 0
+                handoffs[transit.sector][transit.next] += 1
+                handoff_count += 1
+        lines = lines.append("HANDOFFS plan=final count={handoff_count}")
+        for int s < int(len(data.sectors))
+            for int t < int(len(data.sectors))
+                if handoffs[s][t] != 0
+                    lines = lines.append("HANDOFF {data.sectors[s].name} {data.sectors[t].name} {handoffs[s][t]}")
+        return lines
+
+    string[] alert_report(string plan_name, trajectory.Path[] trajectories, conflict.Conflict[] encounters)
+        Alert[] alerts = replay_alerts(trajectories, moments, settings)
+        bool[] detected = [for int i < int(len(encounters)) then false]
+        real64[] leads = []
+        string[] lines = ["ALERTS plan={plan_name} horizon={settings.alert} count={len(alerts)}"]
+        for int i < int(len(alerts))
+            Alert alert = alerts[i]
+            int[] matching = [for int j < int(len(encounters)) if encounters[j].first == alert.first and encounters[j].second == alert.second and encounters[j].start < real64(alert.ending + settings.alert) and encounters[j].end > real64(alert.beginning) then j]
+            string verdict = "status=false lead=-"
+            if len(matching) != 0
+                real64 lead = encounters[matching[0]].start - real64(alert.beginning)
+                leads = leads.append(lead)
+                verdict = "status=true lead=" + report.number(lead, 3)
+                for int j = matching[]
+                    detected[j] = true
+            lines = lines.append("ALERT {i + 1} " + pair_name(alert.first, alert.second) + " first={alert.beginning} last={alert.ending} samples={alert.samples} predicted=" + report.number(alert.predicted, 3) + " min_dist=" + report.number(alert.distance, 3) + " " + verdict)
+        int missed = 0
+        for int i < int(len(encounters))
+            if not detected[i]
+                missed += 1
+                conflict.Conflict encounter = encounters[i]
+                lines = lines.append("MISSED " + pair_name(encounter.first, encounter.second) + " start=" + report.number(encounter.start, 3) + " end=" + report.number(encounter.end, 3))
+        string mean_lead = if len(leads) == 0 then "-" else report.number(total(leads) / real64(len(leads)), 3)
+        return lines.append("SUMMARY alerts={len(alerts)} true={len(leads)} false={int(len(alerts)) - int(len(leads))} missed={missed} mean_lead={mean_lead}")
+
+    string[] radar_snapshot(string plan_name, int moment, trajectory.Path[] trajectories, conflict.Conflict[] encounters)
+        int width = settings.radar[4]
+        int height = settings.radar[5]
+        string[][] grid = [for int row < height then [for int column < width then "."]]
+        int[][] cell_counts = [for int row < height then [for int column < width then 0]]
+        int[] segments = [for trajectory.Path path = trajectories[] then trajectory.segment_at(path, real64(moment))]
+        conflict.Conflict[] current = [for conflict.Conflict encounter = encounters[] if active(encounter, real64(moment)) then encounter]
+        int aircraft_count = 0
+        string[] details = []
+        for int f < count
+            if segments[f] < 0
+                continue
+            aircraft_count += 1
+            trajectory.Segment segment = trajectories[f].segments[segments[f]]
+            real64[] position = trajectory.position_at(segment, real64(moment))
+            int[] cell = screen_cell(position, settings.radar)
+            string location = "outside"
+            if len(cell) != 0
+                int column = cell[0]
+                int row = cell[1]
+                location = "{column},{row}"
+                cell_counts[row][column] += 1
+                if cell_counts[row][column] == 1
+                    bool endangered = len([for conflict.Conflict encounter = current[] if encounter.first == f or encounter.second == f then encounter]) != 0
+                    string character = plans[f].callsign[0]
+                    grid[row][column] = if endangered then lowercase(character) else character
+                else
+                    grid[row][column] = cell_counts[row][column].string()
+            details = details.append("{plans[f].callsign} x=" + report.number(position[0], 3) + " y=" + report.number(position[1], 3) + " fl=" + report.number(position[2] / 100.0, 2) + " track=" + report.number(segment_track(segment), 1) + " phase={segment.phase} cell={location}")
+        for int f < count
+            if segments[f] < 0
+                continue
+            int later = trajectory.segment_at(trajectories[f], real64(moment + settings.leader))
+            if later >= 0
+                int[] cell = screen_cell(trajectory.position_at(trajectories[f].segments[later], real64(moment + settings.leader)), settings.radar)
+                if len(cell) != 0 and grid[cell[1]][cell[0]] == "."
+                    grid[cell[1]][cell[0]] = "*"
+        string[] lines = ["RADAR plan={plan_name} t={moment} aircraft={aircraft_count} conflicts={len(current)}"]
+        lines = lines.concat(report.frame([for string[] row = grid[] then row.join("")], width)).concat(details)
+        for conflict.Conflict encounter = current[]
+            real64[] pa = trajectory.position_at(trajectories[encounter.first].segments[segments[encounter.first]], real64(moment))
+            real64[] pb = trajectory.position_at(trajectories[encounter.second].segments[segments[encounter.second]], real64(moment))
+            real64 dx = pa[0] - pb[0]
+            real64 dy = pa[1] - pb[1]
+            real64 distance = trajectory.square_root(dx * dx + dy * dy)
+            lines = lines.append("CONFLICT " + pair_name(encounter.first, encounter.second) + " dist=" + report.number(distance, 3) + " vert=" + report.number(conflict.absolute(pa[2] - pb[2]), 1))
+        return lines
+
+    string[] density_report(string plan_name, trajectory.Path[] trajectories)
+        int width = settings.radar[4]
+        int height = settings.radar[5]
+        int[][] counts = [for int row < height then [for int column < width then 0]]
+        for int moment = moments[]
+            for trajectory.Path path = trajectories[]
+                int segment = trajectory.segment_at(path, real64(moment))
+                if segment >= 0
+                    int[] cell = screen_cell(trajectory.position_at(path.segments[segment], real64(moment)), settings.radar)
+                    if len(cell) != 0
+                        counts[cell[1]][cell[0]] += 1
+        int maximum = 0
+        string[] rows = []
+        for int[] row = counts[]
+            string text = ""
+            for int value = row[]
+                if value > maximum
+                    maximum = value
+                text += if value == 0 then "." else (if value >= 10 then "#" else value.string())
+            rows = rows.append(text)
+        return ["DENSITY plan={plan_name} from={settings.sample_start} to={settings.sample_end} step=60 max={maximum}"].concat(report.frame(rows, width))
+
+    string[] radar_report()
+        string[] lines = []
+        for int moment = settings.snapshots[]
+            lines = lines.concat(radar_snapshot("initial", moment, initial_paths, initial_conflicts))
+            lines = lines.concat(radar_snapshot("final", moment, paths, final_conflicts))
+        return lines.concat(density_report("initial", initial_paths)).concat(density_report("final", paths))
+
+    real64[] waypoint_times(trajectory.Path path)
+        real64[] times = [path.segments[0].start]
+        for int i < int(len(path.segments))
+            if i + 1 == int(len(path.segments)) or path.segments[i + 1].leg != path.segments[i].leg
+                times = times.append(path.segments[i].end)
+        return times
+
+    int[] waypoint_levels(trajectory.Path path)
+        int[] levels = [int(path.segments[0].position[2] / 100.0)]
+        for int i < int(len(path.segments))
+            if i + 1 == int(len(path.segments)) or path.segments[i + 1].leg != path.segments[i].leg
+                levels = levels.append(int(path.segments[i].endpoint[2] / 100.0))
+        return levels
+
+    string[] strips_report()
+        string[] lines = []
+        for int f < count
+            flight_plans.Plan plan = plans[f]
+            lines = lines.append("STRIP {plan.callsign} type={data.aircraft_types[plan.type_index].name} waypoints={len(plan.waypoints)} length=" + report.number(paths[f].length, 3) + " manoeuvres=" + manoeuvre_text(f))
+            real64[] times_before = waypoint_times(initial_paths[f])
+            real64[] times_after = waypoint_times(paths[f])
+            int[] levels_before = waypoint_levels(initial_paths[f])
+            int[] levels_after = waypoint_levels(paths[f])
+            for int k < int(len(plan.waypoints))
+                flight_plans.Waypoint point = plan.waypoints[k]
+                lines = lines.append("WPT {k} at={point.x}:{point.y} eta=" + report.number(times_before[k], 3) + "->" + report.number(times_after[k], 3) + " fl={levels_before[k]}->{levels_after[k]}")
+            string[] sequence = [for Transit transit = final_transits[] if transit.aircraft == f then sector_name(transit.sector) + "@" + report.number(transit.entry, 3)]
+            lines = lines.append("SECTORS " + (if len(sequence) == 0 then "-" else sequence.join(",")))
+        return lines
+
+void run_program()
+    Study study = Study(flight_plans.read_inputs())
+    .study.resolve_all()
+    report.write_lines("trajectories.csv", study.trajectory_report())
+    report.write_lines("conflicts.txt", study.conflict_report("initial", study.initial_paths, study.initial_conflicts).concat(study.conflict_report("final", study.paths, study.final_conflicts)))
+    report.write_lines("resolutions.txt", study.resolution_report())
+    report.write_lines("sector_transits.csv", study.transit_report())
+    report.write_lines("sector_load.csv", study.load_report())
+    report.write_lines("sector_report.txt", study.sector_report())
+    report.write_lines("alerts.txt", study.alert_report("initial", study.initial_paths, study.initial_conflicts).concat(study.alert_report("final", study.paths, study.final_conflicts)))
+    report.write_lines("radar.txt", study.radar_report())
+    report.write_lines("strips.txt", study.strips_report())
+
+run_program()

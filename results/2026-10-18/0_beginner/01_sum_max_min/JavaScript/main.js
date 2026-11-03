@@ -1,0 +1,4 @@
+const values = [17, -8, 42, 5, -23, 36, 5, 0, -11, 29];
+console.log(`sum: ${values.reduce((sum, value) => sum + value, 0)}`);
+console.log(`max: ${Math.max(...values)}`);
+console.log(`min: ${Math.min(...values)}`);

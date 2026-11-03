@@ -1,0 +1,446 @@
+[Overview]
+Write a program that binarizes grayscale images, extracts the foreground regions (sets of connected pixels), measures their shape and brightness, and filters and classifies them. There are three inputs: several named PGM images in ASCII format, a parameter file describing the per-image processing settings (how to choose the threshold, morphological operations, etc.), and a rule file describing the rules for filtering and classifying regions.
+For each image, the program computes thresholds from the gray-level histogram by Otsu's method and by the ISODATA method, binarizes the image with the specified threshold, and applies morphological operations such as erosion and dilation using structuring elements. It then numbers the regions by connected-component labeling with union-find, examines holes and the containment relation (which region lies inside a hole of which region), and computes, for each region, features such as area, centroid, perimeter, chain code, moments, convex hull, and thinned skeleton. Finally, it filters and classifies the regions according to the rules and writes the results to four files: threshold computation, label images, region features, and summary.
+All computations are done exactly with integers and with rational numbers represented as ratios of integers; no floating-point numbers are used. The program reads the files in the input/ folder and writes files to the output/ folder. It prints nothing to standard output.
+
+[Input files]
+All input files consist of ASCII characters only, and every line ends with a newline (LF). Integers are written in decimal, and negative numbers have a leading "-".
+
+(1) input/images.txt: images
+On each line, everything from the first "#" to the end of the line is a comment and is ignored. What remains after removing the comment is a sequence of words separated by one or more ASCII spaces (some lines have leading or trailing spaces, and some lines contain no words). When all words of the whole file are listed in order from the beginning, blocks of the following form repeat until the end of the file. Each block represents one image.
+  image <name> P2 <W> <H> <M> <pixel value 1> <pixel value 2> ... <pixel value (W * H)>
+W and H are the width and height of the image, respectively, and M is the maximum pixel value. The pixel values are listed in the order of pixels (0, 0), (1, 0), ..., (W - 1, 0), (0, 1), ..., (W - 1, H - 1) (raster order). The pixel value of pixel (x, y) is written I(x, y). Line breaks in the file do not necessarily coincide with row breaks of the image (the number of pixel values on one line is determined independently of the image width).
+For example, the following 6 lines represent an image a1 of width 3, height 2, and maximum value 15.
+  image a1
+  P2
+  # comment
+  3 2   # width height
+  15
+  0 15 7 7 3 1
+
+(2) input/params.txt: parameters
+Each line consists of words separated by single ASCII spaces, with no leading or trailing spaces and no comments. Lines 1 to 4 are as follows. The symbol after the word on each line is the symbol used for that value in the description below.
+- otsu_top K: the number of candidates output in the evaluation of Otsu's method.
+- sweep D: the step of the threshold sweep.
+- isotropy alpha/beta: the upper limit of anisotropy regarded as isotropic, iota = alpha / beta (alpha and beta are integers).
+- bay_min G: the lower limit on the number of pixels of a bay to be counted.
+From line 5 on, one or more structuring element lines follow, and after them comes one image settings line per image.
+- Structuring element line: element <name> <w> <h> <ox> <oy> <row 1> <row 2> ... <row h>
+  Defines a structuring element of width w and height h. <row j> (j = 1, ..., h) is a string of length w consisting of "#" and ".", and if its i-th character (i = 1, ..., w) is "#", the offset (i - 1 - ox, j - 1 - oy) belongs to the structuring element ((ox, oy) is the position of the origin, where the position of the top-left character counts as (0, 0)). A structuring element is a set of such offsets. For example, "element cross 3 3 1 1 .#. ### .#." defines a structuring element cross consisting of the 5 offsets (0, -1), (-1, 0), (0, 0), (1, 0), (0, 1).
+- Image settings line: image <name> <c> <threshold> <polarity> <operation 1> <operation 2> ...
+  There is exactly one line for each image in images.txt (the order of the lines is not necessarily the same as the order of the images in images.txt). <c> is the connectivity of the foreground, 4 or 8. <threshold> is otsu (Otsu's method), isodata (ISODATA method), or an integer from 0 to M inclusive (a fixed threshold). <polarity> is bright (pixels brighter than the threshold are foreground) or dark (dark pixels at or below the threshold are foreground). There are zero or more <operation>s, each being one of erode:<structuring element name>, dilate:<structuring element name>, open:<structuring element name>, close:<structuring element name>, and fill.
+
+(3) input/rules.txt: rules
+Each line consists of words separated by single ASCII spaces, with no leading or trailing spaces. filter lines, class lines, and flag lines appear in this order (there are zero or more lines of each kind).
+- filter <condition>: a filtering rule. Regions that do not satisfy the condition are discarded.
+- class <class name> <condition 1> <condition 2> ...: a classification rule (there are zero or more conditions).
+- flag <flag name> <condition 1> <condition 2> ...: a flag rule (there are one or more conditions).
+<condition> is the three words "<feature> <operator> <value>". <feature> is one of the following among the names of the features defined in section 10.
+  Integer features: area, width, height, border, perimeter, chain, turns, runs, holes, hole_area, euler, depth, feret2, bays, bay_area, skeleton, endpoints, branches
+  Rational features: mean, variance, contrast, compactness, hu1, anisotropy, extent, mirror_lr, mirror_tb, solidity, width2, elongation
+  Name feature: orientation
+<operator> is one of <, <=, >, >=, =, !=. <value> is an integer (e.g. 6, -1) or a fraction p/q (p is an integer >= 0 and q is an integer >= 1; e.g. 7/10). However, when the feature is orientation, <value> is one of none, horizontal, vertical, falling, rising, and the operator is = or !=.
+
+[Processing]
+Process as described in sections 1 to 12 below.
+
+== Notation ==
+- A pixel is denoted by coordinates (x, y). x is counted 0, 1, ..., W - 1 from left to right, and y is counted 0, 1, ..., H - 1 from top to bottom. A position with 0 <= x <= W - 1 and 0 <= y <= H - 1 is said to be "inside the image", and a pixel satisfying any of x = 0, y = 0, x = W - 1, y = H - 1 is called a pixel "on the image edge".
+- Raster order: the order of pixels by increasing y, and for equal y by increasing x. The "first pixel" of a set of pixels is the pixel of the set that comes earliest in raster order.
+- floor(a / b) (a and b are integers with b > 0) is the largest integer not exceeding a / b. |a| is the absolute value of a.
+- The 4-neighbors of pixel (x, y) are the 4 positions (x + 1, y), (x, y - 1), (x - 1, y), (x, y + 1), and the 8-neighbors are the 8 positions consisting of the 4-neighbors plus (x + 1, y - 1), (x - 1, y - 1), (x - 1, y + 1), (x + 1, y + 1). When c is 4 or 8, "c-neighbors" means the 4-neighbors or the 8-neighbors, respectively. Also, c' = 12 - c (4 if c = 8, 8 if c = 4) is called the complementary connectivity of c.
+- Connected components: for a set of pixels Z and a connectivity c, two pixels of Z are c-connected if one can be reached from the other by repeatedly moving to a c-neighbor while passing only through pixels of Z (positions outside the image are not in Z). The groups obtained by dividing Z into sets of mutually c-connected pixels are called the c-connected components of Z.
+- A binary image is an image in which each pixel is either foreground or background.
+- cross(a, b, p): for three points a = (ax, ay), b = (bx, by), p = (px, py), the value (bx - ax) * (py - ay) - (by - ay) * (px - ax).
+- Decimal representation: the string representing a rational number v = p / q (p and q are integers with q > 0) with k digits after the decimal point is built as follows. Let m = floor((2 * 10^k * |p| + q) / (2 * q)) (the integer equal to 10^k times |v| rounded to k decimal places). Concatenate, in this order: "-" if p < 0 and m > 0; floor(m / 10^k); "."; and the remainder of m divided by 10^k, padded with leading zeros to k digits. For example, with k = 3, v = -7/8 gives -0.875, v = 2/3 gives 0.667, and v = -1/3000 gives 0.000. Below, a value marked "(k decimals)" is represented by this string.
+- Rational numbers are compared exactly, as integers after clearing denominators.
+
+== 1. Overall flow ==
+Process the images in images.txt one at a time, in the order they appear in the file. For each image, perform sections 2 to 12 using that image's settings line in params.txt, and write the results to the output files. Finally, write the summary over all images. Below, W, H, and M denote the width, height, and maximum value of the image being processed, N = W * H is the number of pixels, and c is <c> of the settings line.
+
+== 2. Histogram and statistics ==
+For v = 0, 1, ..., M, let h(v) be the number of pixels whose value is v, and let S = 0 * h(0) + 1 * h(1) + ... + M * h(M) (the sum of the pixel values). Compute the following values.
+- Minimum, maximum: the smallest and the largest v with h(v) > 0.
+- Mean: S / N.
+- Median: the smallest v such that twice the sum h(0) + h(1) + ... + h(v) is N or more.
+- Mode: the v with the largest h(v) (if there are several, the smallest such v).
+- Levels: the number of v with h(v) > 0.
+- Bins: let the bin width be b = floor((M + 8) / 8) (the smallest integer >= (M + 1) / 8). For k = 0, 1, ... with k * b <= M, the frequency of the k-th bin is the sum of h(v) over all v with k * b <= v <= min((k + 1) * b - 1, M).
+
+== 3. Otsu's method ==
+For t = 0, 1, ..., M - 1, let n0(t) = h(0) + h(1) + ... + h(t), s0(t) = 0 * h(0) + 1 * h(1) + ... + t * h(t), n1(t) = N - n0(t), and s1(t) = S - s0(t). A t satisfying h(t) > 0 and n1(t) > 0 is called a candidate (when the pixels are divided into the two groups "value <= t" and "value > t", a candidate is a t for which both groups are nonempty and which is the smallest of the t's giving the same division).
+The score of candidate t is the rational number A(t) / B(t), where
+  A(t) = s0(t)^2 * n1(t) + s1(t)^2 * n0(t), B(t) = n0(t) * n1(t)
+(the score is N times the between-class variance of the two groups plus S^2 / N, so a larger score means a larger between-class variance). The scores of two candidates t1 and t2 are compared exactly by the following method. For i = 1, 2, let Q_i = floor(A(t_i) / B(t_i)) and R_i = A(t_i) - Q_i * B(t_i). If Q_1 != Q_2, the score with the larger Q_i is larger; if Q_1 = Q_2, compare R_1 * B(t2) with R_2 * B(t1), and the score with the larger one is larger (if R_1 * B(t2) = R_2 * B(t1), the scores are equal).
+Sort the candidates by decreasing score, and for equal scores by increasing t, and rank them 1st, 2nd, ... in this order. The 1st candidate is Otsu's threshold t_o, and u is the smallest v greater than t_o with h(v) > 0, minus 1 (every t from t_o to u inclusive gives the same division). If there are no candidates (when the pixel values are all the same), both t_o and u are the minimum value.
+
+== 4. ISODATA method ==
+Starting with t = floor(S / N) and k = 0, repeat the following (i) to (iii).
+  (i) Compute n0(t), s0(t), n1(t), s1(t) with the same formulas as in section 3 (for t = M, n0(M) = N, s0(M) = S, n1(M) = 0, s1(M) = 0). If n0(t) = 0 or n1(t) = 0, stop.
+  (ii) Let t' = floor((s0(t) * n1(t) + s1(t) * n0(t)) / (2 * n0(t) * n1(t))) (the average of the two group means, rounded down), and add 1 to k. If t' = t, stop.
+  (iii) Replace t with t'. If k = 100, stop; otherwise go back to (i).
+The value of t at termination is the ISODATA threshold t_i, and k is the number of iterations.
+
+== 5. Binarization ==
+Let the threshold T be t_o if the setting's <threshold> is otsu, t_i if it is isodata, and its value if it is an integer. Create the binary image in which the pixels satisfying I(x, y) > T if the polarity is bright, or I(x, y) <= T if the polarity is dark, are foreground and all other pixels are background, and call it B0.
+
+== 6. Morphological operations ==
+Apply the setting's <operation>s to B0 from left to right. The result of an operation using structuring element E on a binary image X is as follows. All positions outside the image are regarded as background.
+- erode:E (erosion): pixel (x, y) is foreground if position (x + dx, y + dy) is foreground in X for every offset (dx, dy) of E, and background otherwise.
+- dilate:E (dilation): pixel (x, y) is foreground if there is at least one offset (dx, dy) of E such that position (x - dx, y - dy) is foreground in X, and background otherwise.
+- open:E (opening): erode X by E, then dilate the result by E.
+- close:E (closing): dilate X by E, then erode the result by E.
+- fill (hole filling): among the c'-connected components of the set of all background pixels of X, those that contain no pixel on the image edge have all their pixels made foreground.
+In erosion and dilation, every pixel of the result is determined only from the image X before the operation. Let B be the result of applying all operations (B = B0 if there are no operations). Below, unless otherwise stated, foreground and background refer to those of B.
+
+== 7. Threshold sweep ==
+For each of t = D, 2 * D, 3 * D, ... that is at most M - 1, binarize the image using t instead of T with the same polarity as in section 5 (no morphological operations are applied), and compute the number of foreground pixels and the number of c-connected components of the set of all foreground pixels.
+
+== 8. Labeling ==
+The c-connected components of the set of all foreground pixels of B are called regions. Compare the first pixels of the regions, and number the regions 1, 2, ... starting from the region whose first pixel is earliest in raster order. Let L(x, y) be the number of the region containing pixel (x, y), and let L(x, y) = 0 for background pixels. Let R be the number of regions.
+This numbering can be obtained by a two-pass method that scans the pixels in raster order, assigns provisional labels, and merges provisional labels belonging to the same region with union-find. The number of pixels at which a new provisional label is created in this method is called the provisional label count P. That is, P is the number of foreground pixels (x, y) such that none of the 2 positions (x - 1, y), (x, y - 1) if c = 4, or none of the 4 positions (x - 1, y), (x - 1, y - 1), (x, y - 1), (x + 1, y - 1) if c = 8, is a foreground pixel inside the image.
+Also, regardless of c, compute the number of 4-connected components and the number of 8-connected components of the set of all foreground pixels of B.
+
+== 9. Holes and containment ==
+(1) Holes
+The c'-connected components of the set of all background pixels of B are called background components. A background component that contains no pixel on the image edge is called a hole, and the pixels contained in holes are called hole pixels. Holes are numbered 1, 2, ... starting from the hole whose first pixel is earliest in raster order. If the first pixel of a hole is (x, y), then y >= 1 and the pixel at position (x, y - 1) is foreground. The region containing this pixel is the owner of the hole.
+(2) Parent and depth
+Let (x, y) be the first pixel of region r. If y >= 1 and the pixel at position (x, y - 1) (this pixel is always background) is a hole pixel, the owner of that hole is the parent of r. Otherwise, r has no parent. The depth of r is 0 if r has no parent, and the parent's depth plus 1 if it has one (the parent's number is smaller than r, so depths can be computed in increasing order of number).
+(3) Containment tree
+A region whose parent is r is called a child of r. The tree notation of region r is the number of r if r has no children; otherwise it is the string formed by concatenating, in this order, "the number of r", "(", "the tree notations of the children, in increasing order of child number, separated by single ASCII spaces", and ")". The containment tree of the image is the tree notations of the regions that have no parent, in increasing order of number, separated by single ASCII spaces (e.g. 1(4(5) 6) 2 3).
+(4) Euler number
+The Euler number of B is the number of regions R minus the number of holes. The Euler number is also computed by the following bit-quad method. For each pair (x, y) with -1 <= x <= W - 1 and -1 <= y <= H - 1, count how many of the 4 positions (x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1) are foreground pixels (positions outside the image are background). Let q1 be the number of pairs for which that count is exactly 1, q3 the number of pairs for which it is exactly 3, and qd the number of pairs for which it is exactly 2 and the two foreground positions are (x, y) and (x + 1, y + 1), or (x + 1, y) and (x, y + 1). The bit-quad Euler number is (q1 - q3 - 2 * qd) / 4 if c = 8, and (q1 - q3 + 2 * qd) / 4 if c = 4 (the division is exact, and the result equals the Euler number above).
+
+== 10. Region features ==
+For each region r, compute the following features. Let X be the set of pixels of region r, and A the number of pixels of X. Unless otherwise stated, sum(f) denotes the sum of f over all pixels (x, y) of X. Values given lowercase English names are features used in the output and in the rules.
+(1) Basic quantities
+- area: A.
+- Bounding box: the minimum x0 of x, the minimum y0 of y, the maximum x1 of x, and the maximum y1 of y over the pixels of X. width = x1 - x0 + 1, height = y1 - y0 + 1.
+- border: 1 if any of x0 = 0, y0 = 0, x1 = W - 1, y1 = H - 1 holds, and 0 otherwise.
+- Centroid: with Sx = sum(x) and Sy = sum(y), cx = Sx / A and cy = Sy / A.
+- Brightness: with SI = sum(I(x, y)) and SII = sum(I(x, y)^2), mean = SI / A and variance = (A * SII - SI^2) / A^2. Also, the minimum and the maximum of the pixel values of X.
+- contrast: let Y be the set of all positions among the 8-neighbors of the pixels of X that are inside the image and have L = 0 (the same position is counted only once), let nY be the number of pixels of Y, and let SY be the sum of the pixel values of Y. If nY > 0, contrast = SI / A - SY / nY = (SI * nY - SY * A) / (A * nY); if nY = 0, contrast = 0.
+(2) Boundary
+- perimeter: the number of pixels (x, y) of X such that at least one of its c'-neighbor positions is outside the image or has L != r.
+- Chain code: trace the outer contour of the region by the following procedure. The direction numbers and their vectors (dx, dy) are 0: (1, 0), 1: (1, -1), 2: (0, -1), 3: (-1, -1), 4: (-1, 0), 5: (-1, 1), 6: (0, 1), 7: (1, 1) if c = 8, and 0: (1, 0), 1: (0, -1), 2: (-1, 0), 3: (0, 1) if c = 4 (starting from the right and going counterclockwise on the screen). Let F be the number of directions (8 if c = 8, 4 if c = 4).
+  (i) Let V_0 be the first pixel of X. Set the current pixel to V_0, the direction dir of the previous move to F - 1, and n = 0.
+  (ii) Let the direction s at which the search starts be, if c = 8, (dir + 7) mod 8 when dir is even and (dir + 6) mod 8 when dir is odd, and, if c = 4, (dir + 3) mod 4 (mod is the remainder of the division). In the order of directions s, s + 1, ..., s + F - 1 (each taken as the remainder of division by F), check whether the position one step from the current pixel in that direction is a pixel of X, and let d be the first direction for which it is a pixel of X. If none of the directions gives a pixel of X (this happens when A = 1), the chain code is empty and the procedure ends.
+  (iii) Make the pixel one step from the current pixel in direction d the new current pixel, set dir = d, add 1 to n, and call this pixel V_n and the direction of this move d_n.
+  (iv) If n >= 2, V_n = V_1, and V_(n-1) = V_0, stop. Otherwise, go back to (ii).
+  When it is not empty, the chain code is the sequence of directions d_1, d_2, ..., d_(n-1) (the last d_n is not included).
+- chain: the length of the chain code (the number of directions).
+- straight, diagonal: if c = 8, the number of even directions and the number of odd directions in the chain code. If c = 4, straight is the length of the chain code and diagonal is 0.
+- turns: writing the chain code as d_1, ..., d_m (m = chain), the number of i (1 <= i <= m) with d_i != d_(i-1), where d_0 stands for d_m. If m = 0, it is 0.
+- compactness: (5 * straight + 7 * diagonal)^2 / (25 * A). ((5 * straight + 7 * diagonal) / 5 is the length of the contour when a diagonal move has length 7/5.)
+- runs: the number of pixels (x, y) of X such that position (x - 1, y) is not in X (the number of horizontal runs).
+(3) Holes and containment
+- holes: the number of holes whose owner is r. hole_area: the sum of the numbers of pixels of the holes whose owner is r. euler: 1 - holes.
+- parent: the parent of r (section 9 (2)). depth: the depth of r.
+(4) Moments
+- Let M20 = A * sum(x^2) - Sx^2, M02 = A * sum(y^2) - Sy^2, and M11 = A * sum(x * y) - Sx * Sy.
+- var_x = M20 / A^2, var_y = M02 / A^2, cov_xy = M11 / A^2 (the variance of x, the variance of y, and the covariance, respectively).
+- hu1 = (M20 + M02) / A^3 (Hu's first invariant moment).
+- anisotropy: (|M20 - M02| + 2 * |M11|) / (M20 + M02) if M20 + M02 > 0, and 0 if M20 + M02 = 0.
+- orientation: let u = M20 - M02 and v = 2 * M11. If anisotropy <= iota, it is none. Otherwise, if |v| >= |u|, it is falling when v > 0 (a shape slanting from upper left to lower right) and rising when v < 0 (a shape slanting from lower left to upper right). If |v| < |u|, it is horizontal when u > 0 and vertical when u < 0.
+(5) Shape
+- extent: A / (width * height).
+- mirror_lr: the number of pixels (x, y) of X such that position (x0 + x1 - x, y) is in X, divided by A (the degree of left-right symmetry).
+- mirror_tb: the number of pixels (x, y) of X such that position (x, y0 + y1 - y) is in X, divided by A (the degree of top-bottom symmetry).
+(6) Convex hull
+Regard each pixel (x, y) of X as a square of side length 1 with vertices at the 4 points (x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1), and call these points, over all pixels of X, the corner points. The smallest convex polygon containing all corner points is called the convex hull. Every vertex of the convex hull is a corner point (the values below are the same whether or not corner points lying on edges of the convex hull are included as vertices).
+- hull_area: the area of the convex hull. Let (vx_1, vy_1), ..., (vx_m, vy_m) be the vertices of the convex hull in order along its boundary, and let Hd = |(vx_1 * vy_2 - vx_2 * vy_1) + (vx_2 * vy_3 - vx_3 * vy_2) + ... + (vx_m * vy_1 - vx_1 * vy_m)| (twice the area of the convex hull, which is an integer).
+- solidity: A / (Hd / 2) = (2 * A) / Hd.
+- feret2: the maximum of the squared distance between two corner points (the square of the maximum diameter of the convex hull).
+- width2: for each edge of the convex hull, let a and b be the two endpoints of that edge, let z be the maximum of |cross(a, b, p)| over all vertices p of the convex hull, and compute z^2 / ((bx - ax)^2 + (by - ay)^2) (the square of the maximum distance of the vertices of the convex hull from the line containing that edge). width2 is the minimum of this value over all edges (it equals the square of the minimum distance between two parallel lines enclosing the convex hull).
+- elongation: feret2 / width2.
+- Bays: a pixel (x, y) with L(x, y) = 0 that is not a hole pixel and whose center (x + 1/2, y + 1/2) lies inside or on the boundary of the convex hull is called a concavity pixel of r. The c'-connected components of the set of all concavity pixels of r are called the bays of r. bays is the number of bays with G or more pixels, and bay_area is the number of concavity pixels of r.
+(7) Skeleton
+Thin X by the following Zhang-Suen method. The pixel set Gamma is initially X. For a pixel p = (x, y) in Gamma, let P2, P3, ..., P9 be 1 if positions (x, y - 1), (x + 1, y - 1), (x + 1, y), (x + 1, y + 1), (x, y + 1), (x - 1, y + 1), (x - 1, y), (x - 1, y - 1), respectively, are in Gamma, and 0 if not (positions outside the image are 0). Let nb(p) = P2 + P3 + ... + P9, and let tr(p) be the number of pairs of adjacent terms (8 pairs) of the sequence P2, P3, ..., P9, P2 in which the first is 0 and the second is 1.
+  (a) Find all pixels p of Gamma that satisfy all of 2 <= nb(p) <= 6, tr(p) = 1, P2 * P4 * P6 = 0, and P4 * P6 * P8 = 0, and remove them from Gamma simultaneously.
+  (b) Find all pixels p of Gamma (after (a)) that satisfy all of 2 <= nb(p) <= 6, tr(p) = 1, P2 * P4 * P8 = 0, and P2 * P6 * P8 = 0, and remove them from Gamma simultaneously.
+  Repeat (a) and (b) alternately, and stop when neither of an (a) and the (b) performed right after it removed any pixel. The Gamma at termination is called the skeleton of r.
+- skeleton: the number of pixels of the skeleton.
+- endpoints, branches: for a skeleton pixel p, tr(p) computed in the same way as above with Gamma taken to be the skeleton is called its crossing number. endpoints is the number of skeleton pixels whose crossing number is 1, and branches is the number of skeleton pixels whose crossing number is 3 or more.
+
+== 11. Applying the rules ==
+For each region, check the conditions of the filter lines in order from the top line. If there is a filter line whose condition is not satisfied, the region is discarded, and it is counted as discarded by the first filter line it did not satisfy. The regions that satisfy the conditions of all filter lines (all regions if there are no filter lines) are called kept regions.
+The class name of a kept region is the class name of the first class line, checking the class lines in order from the top, whose conditions are all satisfied (a line with zero conditions is always satisfied). If no line is satisfied, the class name is other. Several class lines may have the same class name.
+The flags of a kept region are the flag names of the flag lines whose conditions are all satisfied, in the order of the flag lines.
+A condition "<feature> <operator> <value>" is satisfied when the result of comparing the region's value of that feature with <value> using <operator> is true. = means equal, != means not equal, < means less than, <= means less than or equal to, > means greater than, and >= means greater than or equal to. Comparisons are done exactly as rational numbers (for example, if compactness is exactly 25, the condition compactness < 25 is not satisfied).
+
+== 12. Nearest neighbor ==
+For a kept region r and a kept region s other than r in the same image, let d(r, s) = (x0_r + x1_r - x0_s - x1_s)^2 + (y0_r + y1_r - y0_s - y1_s)^2 (x0_r etc. are the bounding box values of region r; d(r, s) / 4 is the squared distance between the centers of the two bounding boxes). The s with the smallest d(r, s) (on ties, the one with the smaller number) is the nearest neighbor of r. If r is the only kept region in its image, r has no nearest neighbor.
+
+[Output files]
+Write the following 4 files to the output/ folder. Every file consists of ASCII characters only, and every line ends with a newline (LF). Words within a line are separated by single ASCII spaces (by single commas in regions.csv), with no leading or trailing spaces, and no blank lines are output. Integers are written in decimal without extra leading zeros, and negative numbers have a leading "-". In the formats below, the parts enclosed in < > are replaced by values, and everything else is output as is. Values marked "(k decimals)" are written in the decimal representation of the Notation section.
+
+(1) output/thresholds.txt: threshold computation
+For each image, in the order of images.txt, output the following lines.
+  image <name> size <W> <H> maxval <M>
+  histogram pixels <N> min <minimum> max <maximum> mean <mean (2 decimals)> median <median> mode <mode> levels <levels>
+  bins <b> <frequency of bin 0> <frequency of bin 1> ...
+  otsu threshold <t_o> upper <u> candidates <number of candidates>
+  rank <i> t <t> below <n0(t)> above <n1(t)> mean_below <s0(t) / n0(t) (2 decimals)> mean_above <s1(t) / n1(t) (2 decimals)> gap <(s1(t) * n0(t) - s0(t) * n1(t)) / (n0(t) * n1(t)) (2 decimals)>
+  isodata threshold <t_i> iterations <number of iterations>
+  threshold <T> <method> <polarity> foreground <number of foreground pixels of B0>
+  morph <operation> foreground <number of foreground pixels after applying that operation>
+  sweep <t> foreground <number of foreground pixels> regions <number of connected components>
+The rank lines are min(K, number of candidates) lines, output starting from the 1st candidate of Otsu's method (<i> is the rank and <t> is that candidate). <method> is otsu if the setting's <threshold> is otsu, isodata if it is isodata, and fixed if it is an integer. <polarity> is the setting's <polarity>. One morph line is output per operation, in the order applied, and <operation> is the word of the settings line written as is (e.g. open:cross). One sweep line is output per t of section 7, in increasing order of t (none are output if section 7 has no t).
+
+(2) output/labels.txt: label images
+For each image, in the order of images.txt, output the following 3 maps in this order. Each map consists of one heading line followed by H lines, and line y + 1 of those lines (y = 0, 1, ..., H - 1) is a string of W characters, one character for each of the pixels (0, y), (1, y), ..., (W - 1, y) in this order.
+- Heading morphology <name> <W> <H>: a map showing the effect of the morphological operations. A pixel that is foreground in both B0 and B is "#", a pixel that is background in B0 and foreground in B is "+", a pixel that is foreground in B0 and background in B is "-", and a pixel that is background in both is ".".
+- Heading labels <name> <W> <H>: a map showing the regions. A pixel with L(x, y) = r >= 1 is the symbol sigma(r) if r is a kept region, and "#" if r is a discarded region. A pixel with L(x, y) = 0 is ":" if it is a hole pixel, and "." otherwise. Here sigma(r) is the ((remainder of r divided by 62) + 1)-th character of the 62-character string 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz (for example, sigma(1) is 1, sigma(10) is A, and sigma(36) is a).
+- Heading skeleton <name> <W> <H>: a map showing the skeletons. It is the same as the labels map, except that, among the pixels with L(x, y) = r >= 1, the pixels not contained in the skeleton of region r are "+" (this applies to discarded regions as well; their skeleton pixels remain "#").
+
+(3) output/regions.csv: region features
+Line 1 is the following header line.
+  image,label,class,flags,area,x0,y0,x1,y1,cx,cy,mean,variance,min,max,contrast,border,perimeter,chain,straight,diagonal,turns,compactness,runs,holes,hole_area,euler,parent,depth,var_x,var_y,cov_xy,hu1,orientation,anisotropy,extent,mirror_lr,mirror_tb,hull_area,solidity,feret2,width2,elongation,bays,bay_area,skeleton,endpoints,branches,neighbor,distance2,codes
+From line 2 on, output one line per kept region, in the order of the images in images.txt and, within the same image, in increasing order of number; each line lists the values of the 51 columns of the header in this order, separated by single commas. The value of each column is as follows.
+- image: the name of the image. label: the region number. class: the class name. flags: the flag names joined with single "+" characters (- if there are no flags).
+- cx, cy: (3 decimals). mean, variance: (2 decimals). min, max: the minimum and the maximum of the pixel values of X. contrast: (2 decimals).
+- compactness: (3 decimals). parent: the number of the parent (- if there is no parent).
+- var_x, var_y, cov_xy: (3 decimals). hu1: (4 decimals). anisotropy, extent, mirror_lr, mirror_tb: (3 decimals).
+- hull_area: the string formed by concatenating, in this order, floor(Hd / 2), ".", and 0 if Hd is even or 5 if Hd is odd (e.g. 12.0, 3.5).
+- solidity, width2, elongation: (3 decimals).
+- neighbor: the number of the nearest neighbor. distance2: d(r, s) / 4 (2 decimals; s is the nearest neighbor). If there is no nearest neighbor, both are -.
+- codes: the string of the direction numbers of the chain code in order (e.g. 5713). If the chain code is empty, it is -.
+- The other columns (area, x0, y0, x1, y1, border, perimeter, chain, straight, diagonal, turns, runs, holes, hole_area, euler, depth, orientation, feret2, bays, bay_area, skeleton, endpoints, branches) are the values of the same names computed in section 10.
+
+(4) output/summary.txt: summary
+For each image, in the order of images.txt, output the following lines.
+  image <name>
+  threshold <T> <method> <polarity> conn <c>
+  foreground <number of foreground pixels of B0> <number of foreground pixels of B>
+  regions <R> provisional <P> kept <number of kept regions> dropped <number of discarded regions>
+  connectivity four <number of 4-connected components of the foreground of B> eight <number of 8-connected components of the foreground of B>
+  holes <number of holes> hole_pixels <number of hole pixels> euler <R - number of holes> bitquad <bit-quad Euler number>
+  hole <number> owner <number of the owner> area <number of pixels> box <minimum of x> <minimum of y> <maximum of x> <maximum of y>
+  depth_max <maximum depth of the regions>
+  tree <containment tree>
+  intensity foreground <mean pixel value of the foreground pixels (2 decimals)> background <mean pixel value of the background pixels (2 decimals)>
+  area total <total area> mean <mean area (2 decimals)> largest <number> <area> smallest <number> <area>
+  classes <class name 1> <count 1> <class name 2> <count 2> ...
+  orientations none <count> horizontal <count> vertical <count> falling <count> rising <count>
+  flags <flag name 1> <count 1> <flag name 2> <count 2> ...
+<method> and <polarity> are the same as in thresholds.txt. One hole line is output per hole, in order of number (none are output if there are no holes), giving the number of pixels of that hole and the minimum and maximum of x and of y over the pixels of that hole. depth_max is 0 if there are no regions. If there are no regions, the tree line is a line consisting of tree alone. A mean on the intensity line is - if there is no foreground (background) pixel.
+The area line is about the kept regions: mean is the total area divided by the number of kept regions, largest is the kept region with the largest area (on ties, the one with the smaller number), and smallest is the kept region with the smallest area (on ties, the one with the smaller number). If there are no kept regions, the area line is "area total 0 mean - largest - smallest -".
+The classes line lists, in the order of the class name list (the class names appearing in the class lines, without duplicates, in order of first appearance, followed by other at the end), each class name and the number of kept regions with that class name. The orientations line lists the number of kept regions whose orientation is each of the values. The flags line lists, in the order of the flag lines, each flag name and the number of kept regions having that flag (if there are no flag lines, it is a line consisting of flags alone).
+After all images, output the following lines.
+  overall
+  images <number of images>
+  regions <sum of R> kept <total number of kept regions> dropped <total number of discarded regions>
+  holes <total number of holes> euler <sum of the Euler numbers (R - number of holes)>
+  filter <i> <feature> <operator> <value> dropped <count>
+  class <class name> count <count> area <total area> mean <mean area (2 decimals)>
+  flag <flag name> count <count>
+  orientations none <count> horizontal <count> vertical <count> falling <count> rising <count>
+  largest <name> <number> <area>
+One filter line is output per filter line, from top to bottom. <i> is the position of the filter line counted from 1, <feature> <operator> <value> are the words of that line of rules.txt written as is, and <count> is the number of regions discarded by that filter line over all images. One class line is output per class name, in the order of the class name list, giving the number of kept regions with that class name over all images, their total area, and their mean area (mean is - if the count is 0). One flag line is output per flag line, in the order of the flag lines, giving the number of kept regions having that flag over all images. The orientations line gives the counts over all images. The largest line gives the image name, number, and area of the kept region with the largest area among the kept regions of all images (on ties, the one in the image that comes earlier in images.txt, and within the same image, the one with the smaller number); if there are no kept regions at all, it is "largest -".
+
+[Source files]
+There are the following 6 source files. The names are language-neutral role names; extensions and the use of upper and lower case follow the conventions of each language.
+- main: handles the overall flow and contains most of the processing: reading the parameters and rules, the order of the per-image processing, the threshold sweep (section 7), hole filling (fill in section 6), holes, parent and depth, and the containment tree (section 9 (1) to (3)), the region features (section 10 (1) to (6), including the chain-code tracing and the convex hull computation) and counting the endpoints and branch points of skeletons, applying the rules (section 11), the nearest neighbor (section 12), building the 3 maps, and assembling every line of the 4 output files and the summaries.
+- pgm_reader: reading images.txt (removing comments, splitting into words, interpreting the per-image blocks).
+- threshold: the histogram and statistics (section 2), the candidates of Otsu's method, the exact comparison of scores and the ranking (section 3), and the ISODATA method (section 4).
+- morphology: erosion, dilation, opening, and closing with structuring elements (section 6), and thinning by the Zhang-Suen method (section 10 (7)).
+- labeling: two-pass labeling with union-find and the provisional label count (section 8), and the bit-quad Euler number (section 9 (4)).
+- report: the decimal representation of the Notation section and the representation of hull_area, and writing to the output files.
+
+[Constraints]
+- There are 1 to 8 images, and all image names are distinct. Image names and structuring element names are strings of 1 to 16 characters consisting of lowercase English letters, digits, and "_", and all structuring element names are distinct. Class names and flag names are strings of 1 to 16 characters consisting of lowercase English letters and "_". No class name is other, and all flag names are distinct.
+- 8 <= W <= 64, 8 <= H <= 48, 1 <= M <= 255, 0 <= I(x, y) <= M.
+- 1 <= K <= 10, 1 <= D <= 255, 0 <= alpha <= 1000, 1 <= beta <= 1000, 1 <= G <= 100.
+- There are 1 to 10 structuring elements, with 1 <= w <= 7, 1 <= h <= 7, 0 <= ox <= w - 1, 0 <= oy <= h - 1, and every structuring element contains at least one "#". An image settings line has 0 to 6 operations, and every structuring element named in an operation is defined.
+- rules.txt has at most 20 filter lines, at most 20 class lines, and at most 20 flag lines, and class lines and flag lines have at most 6 conditions each. Integer values in conditions have absolute value at most 100000, and fractions p/q satisfy 0 <= p <= 100000 and 1 <= q <= 1000.
+- Each image has at most 62 regions (so the symbols sigma(r) in the labels map are different for different regions).
+- Values such as A(t) and R_1 * B(t2) in section 3 and 2 * 10^k * |p| + q in the decimal representation computation can be 2^31 or larger (compute them with a type that represents integers below 2^53 exactly). A(t1) * B(t2) can exceed 2^53, so compare the scores in section 3 using Q_i and R_i. All other values, including intermediate values of computations (including the values after clearing denominators in rule comparisons), have absolute value below 2^53.
+- Every value output in decimal representation is more than 10^-9 away from a rounding boundary (a value for which the fractional part of |v| * 10^k is exactly 0.5).
+
+[Example]
+The following example shows the format; it differs from the actual input files.
+Input (input/images.txt):
+image demo
+P2
+# example image
+16 12
+15
+2 4 2 3 2 3 3 3 4 3 2 2 3 2 3 3
+4 11 13 12 12 13 11 4 2 3 2 2 11 4 4 2
+3 13 2 3 4 2 13 2 3 3 4 11 12 11 4 2
+3 12 2 3 4 4 11 2 4 4 3 2 13 3 4 4
+4 12 4 4 2 3 12 4 3 4 3 4 2 3 2 4
+3 12 13 11 12 13 13 4 4 3 2 3 4 4 2 2
+4 3 3 3 4 2 3 2 3 4 13 4 4 3 4 2
+2 4 11 11 11 4 13 11 3 4 12 13 3 3 3 4
+4 4 13 11 12 4 13 11 4 4 2 12 11 3 3 4
+4 2 4 3 3 3 3 3 2 4 4 4 13 3 3 4
+2 2 4 11 4 4 2 2 4 3 2 4 11 11 2 3
+2 3 2 3 2 4 2 3 3 2 2 2 3 4 2 4
+image tiny
+P2
+12 8 # width height
+9
+7 8 8 7 7 8 7 7 7 6 6 7
+7 1 1 0 7 6 7 2 2 0 2 7
+6 0 6 1 6 6 8 0 7 8 8 8
+7 2 0 2 8 8 7 0 8 8 6 7
+8 8 7 8 8 7 6 2 1 0 0 6
+7 6 0 1 7 8 6 7 8 7 6 6
+8 6 2 6 8 7 6 8 8 8 6 7
+6 7 6 6 8 8 7 8 6 7 6 8
+Input (input/params.txt):
+otsu_top 2
+sweep 4
+isotropy 1/10
+bay_min 2
+element cross 3 3 1 1 .#. ### .#.
+element pair 2 1 0 0 ##
+image demo 8 otsu bright close:pair
+image tiny 4 isodata dark fill
+Input (input/rules.txt):
+filter area >= 3
+class ring holes >= 1
+class square orientation = none extent = 1
+class bar elongation >= 4
+flag big area > 10
+Output (output/thresholds.txt):
+image demo size 16 12 maxval 15
+histogram pixels 192 min 2 max 13 mean 5.02 median 4 mode 4 levels 6
+bins 2 0 94 56 0 0 17 25 0
+otsu threshold 4 upper 10 candidates 5
+rank 1 t 4 below 150 above 42 mean_below 3.08 mean_above 11.93 gap 8.85
+rank 2 t 11 below 167 above 25 mean_below 3.89 mean_above 12.56 gap 8.67
+isodata threshold 7 iterations 2
+threshold 4 otsu bright foreground 42
+morph close:pair foreground 44
+sweep 4 foreground 42 regions 6
+sweep 8 foreground 42 regions 6
+sweep 12 foreground 14 regions 9
+image tiny size 12 8 maxval 9
+histogram pixels 96 min 0 max 8 mean 5.70 median 7 mode 7 levels 6
+bins 2 14 7 0 49 26
+otsu threshold 2 upper 5 candidates 5
+rank 1 t 2 below 21 above 75 mean_below 0.90 mean_above 7.04 gap 6.14
+rank 2 t 1 below 14 above 82 mean_below 0.36 mean_above 6.61 gap 6.25
+isodata threshold 3 iterations 2
+threshold 3 isodata dark foreground 21
+morph fill foreground 22
+sweep 4 foreground 21 regions 3
+sweep 8 foreground 96 regions 1
+Output (output/labels.txt):
+morphology demo 16 12
+................
+.######.....#...
+.#....#....###..
+.#....#.....#...
+.#....#.........
+.######.........
+..........#.....
+..###+##..##....
+..###+##...##...
+............#...
+...#........##..
+................
+labels demo 16 12
+................
+.111111.....2...
+.1::::1....222..
+.1::::1.....2...
+.1::::1.........
+.111111.........
+..........3.....
+..444444..33....
+..444444...33...
+............3...
+...#........33..
+................
+skeleton demo 16 12
+................
+.111111.....+...
+.1::::1....+2+..
+.1::::1.....+...
+.1::::1.........
+.111111.........
+..........+.....
+..+4444+..++....
+..++++++...+3...
+............3...
+...#........3+..
+................
+morphology tiny 12 8
+............
+.###...####.
+.#+#...#....
+.###...#....
+.......####.
+..##........
+..#.........
+............
+labels tiny 12 8
+............
+.111...2222.
+.111...2....
+.111...2....
+.......2222.
+..33........
+..3.........
+............
+skeleton tiny 12 8
+............
+.+++...2222.
+.+1+...2....
+.+++...2....
+.......2222.
+..3+........
+..+.........
+............
+Output (output/regions.csv):
+image,label,class,flags,area,x0,y0,x1,y1,cx,cy,mean,variance,min,max,contrast,border,perimeter,chain,straight,diagonal,turns,compactness,runs,holes,hole_area,euler,parent,depth,var_x,var_y,cov_xy,hu1,orientation,anisotropy,extent,mirror_lr,mirror_tb,hull_area,solidity,feret2,width2,elongation,bays,bay_area,skeleton,endpoints,branches,neighbor,distance2,codes
+demo,1,ring,big,18,1,1,6,5,3.500,3.000,12.17,0.58,11,13,9.14,0,18,18,18,0,4,18.000,8,1,12,0,-,0,4.028,2.889,0.000,0.3843,horizontal,0.165,0.600,1.000,1.000,30.0,0.600,61,25.000,2.440,0,0,18,0,0,4,21.25,666600000222244444
+demo,2,other,-,5,11,1,13,3,12.000,2.000,11.60,0.64,11,13,8.60,0,4,4,0,4,4,6.272,3,0,0,1,-,0,0.400,0.400,0.000,0.1600,none,0.000,0.556,1.000,1.000,7.0,0.714,10,8.000,1.250,0,4,1,0,0,3,36.25,5713
+demo,3,bar,-,8,10,6,13,10,11.375,8.125,12.00,0.75,11,13,8.82,0,8,9,4,5,7,15.125,5,0,0,1,-,0,0.984,1.859,1.203,0.3555,falling,1.154,0.400,0.250,0.250,12.0,0.667,41,6.231,6.580,0,5,3,2,0,2,36.25,677603233
+demo,4,bar,big,12,2,7,7,8,4.500,7.500,10.42,8.91,4,13,7.37,0,12,12,12,0,4,12.000,2,0,0,1,-,0,2.917,0.250,0.000,0.2639,horizontal,0.842,1.000,1.000,1.000,12.0,1.000,40,4.000,10.000,0,0,4,2,0,1,21.25,600000244444
+tiny,1,square,-,9,1,1,3,3,2.000,2.000,1.44,3.14,0,6,-5.87,0,8,8,8,0,4,7.111,3,0,0,1,-,0,0.667,0.667,0.000,0.1481,none,0.000,1.000,1.000,1.000,9.0,1.000,18,9.000,2.000,0,0,1,0,0,3,12.50,33001122
+tiny,2,other,-,10,7,1,10,4,8.200,2.500,0.90,0.89,0,2,-6.06,0,10,18,18,0,6,32.400,4,0,0,1,-,0,1.360,1.850,0.000,0.3210,vertical,0.153,0.625,0.800,1.000,16.0,0.625,32,16.000,2.000,1,6,10,2,0,1,42.50,333000222111000222
+tiny,3,other,-,3,2,5,3,6,2.333,5.333,1.00,0.67,0,2,-5.92,0,3,4,4,0,4,5.333,2,0,0,1,-,0,0.222,0.222,-0.111,0.1481,rising,0.500,0.750,0.667,0.667,3.5,0.857,8,4.000,2.000,0,1,1,0,0,1,12.50,3102
+Output (output/summary.txt):
+image demo
+threshold 4 otsu bright conn 8
+foreground 42 44
+regions 5 provisional 5 kept 4 dropped 1
+connectivity four 5 eight 5
+holes 1 hole_pixels 12 euler 4 bitquad 4
+hole 1 owner 1 area 12 box 2 2 5 4
+depth_max 0
+tree 1 2 3 4 5
+intensity foreground 11.57 background 3.07
+area total 43 mean 10.75 largest 1 18 smallest 2 5
+classes ring 1 square 0 bar 2 other 1
+orientations none 1 horizontal 2 vertical 0 falling 1 rising 0
+flags big 2
+image tiny
+threshold 3 isodata dark conn 4
+foreground 21 22
+regions 3 provisional 3 kept 3 dropped 0
+connectivity four 3 eight 3
+holes 0 hole_pixels 0 euler 3 bitquad 3
+depth_max 0
+tree 1 2 3
+intensity foreground 1.14 background 7.05
+area total 22 mean 7.33 largest 2 10 smallest 3 3
+classes ring 0 square 1 bar 0 other 2
+orientations none 1 horizontal 0 vertical 1 falling 0 rising 1
+flags big 0
+overall
+images 2
+regions 8 kept 7 dropped 1
+holes 1 euler 7
+filter 1 area >= 3 dropped 1
+class ring count 1 area 18 mean 18.00
+class square count 1 area 9 mean 9.00
+class bar count 2 area 20 mean 10.00
+class other count 3 area 18 mean 6.00
+flag big count 2
+orientations none 2 horizontal 2 vertical 1 falling 1 rising 1
+largest demo 1 18

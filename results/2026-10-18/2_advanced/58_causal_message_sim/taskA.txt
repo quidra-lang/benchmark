@@ -1,0 +1,436 @@
+[Overview]
+Write a program that reproduces, by discrete-event simulation, a distributed system consisting of several processes that exchange messages (as an example, think of a bank with several branches), and investigates logical clocks, causal ordering and global snapshots.
+The input consists of 3 files in the input/ folder (the configuration of processes and channels, scripts describing the behavior of each process, and settings). Following its script, each process performs internal events, message sends, broadcasts and money transfers, and in reaction to the messages it receives, it replies, forwards and transfers money. For each channel, a delay (fixed, or a range decided with MINSTD random numbers) and whether overtaking can occur (whether the channel is FIFO or not) are given. Every event is given a Lamport clock value and a vector clock value. On the receiving side, the program performs FIFO delivery using per-channel sequence numbers and causal broadcast using vectors (with a hold-back queue), and records the delivery order and the waiting times. It takes global snapshots with the Chandy-Lamport algorithm and checks that the recorded cut is consistent (contains no receipt of a message that has not been sent) and that the total amount of money is conserved. In addition, it performs a comparison run with the ordering guarantees removed, and shows that a snapshot taken by the same procedure can be inconsistent.
+On the results of the simulation, it determines the causal relation of specified event pairs (computed both from vector clocks and from reachability in the event graph, and cross-checked), the number of concurrent event pairs, the longest causal chain, message races, causal order violations, the consistency of specified cuts, the number of consistent cuts (by enumeration), and the evaluation of global predicates, and it draws a space-time diagram with characters. The results are written to 5 files in the output/ folder. Nothing is written to standard output.
+All computation is done with integers; no real numbers are used. Since the only random numbers used come from the specified MINSTD generator, the results are uniquely determined.
+
+[Input files]
+The input files are the 3 files input/topology.txt, input/programs.txt and input/params.txt. Every file consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). There are no empty lines, and there are no spaces at the start or end of a line. The items in a line are separated by a single space. All numbers are decimal integers >= 0 without extra leading zeros. In the description below, <...> denotes a part where a value goes; the symbols < and > themselves appear in neither the input nor the output.
+
+* input/topology.txt (configuration)
+The first line is "PROCESSES <name1> <name2> ... <nameN>", which lists the names of the N processes. A name is a string of 1 to 6 uppercase English letters; the names are distinct from each other, and none of them is SENDER. The order in which the names are written on this line is called the "process order", and the i-th process in process order (i = 1, ..., N) is also called "process i".
+Each line from the 2nd line on represents one channel and has one of the following forms.
+CHANNEL <source> <destination> <type> <a>
+CHANNEL <source> <destination> <type> <a> <b>
+The source and the destination are names of different processes, and the type is FIFO or NONFIFO. If there is one number, the delay is always a (fixed delay); if there are two, the delay is chosen at random from the range a to b inclusive (range delay; a < b). There is exactly one line for each ordered pair of source and destination (N * (N - 1) pairs). The lines are in arbitrary order. Channels are one-way, and the channel from source X to destination Y is written X->Y.
+
+* input/programs.txt (scripts)
+The file consists of one block per process, in process order. Each block has the following form.
+PROCESS <name> BALANCE <initial balance>
+<script line> (0 or more lines)
+END
+Each script line has one of the following 3 forms, and the script lines may appear in any order within a block.
+- AT <time> <action>: performs <action> once at time <time>.
+- AT <time> EVERY <period> <action>: performs <action> at the times <time>, <time> + <period>, <time> + 2 * <period>, ...
+- ON <tag> <action>: performs <action> every time a message whose tag is <tag> is delivered (a reaction rule).
+<action> has one of the following 5 forms.
+- LOCAL <label>: causes one internal event.
+- SEND <destination> <tag>: sends one message to the destination.
+- TRANSFER <destination> <amount>: transfers the amount of money to the destination (sends a transfer message).
+- BROADCAST <tag>: broadcasts a message to all processes other than itself.
+- SNAPSHOT <snapshot name>: initiates a snapshot. This action appears only on AT lines.
+<destination> is the name of a process other than itself or, only on ON lines, SENDER (which denotes the source of the message that triggered the reaction). <tag> and <label> are strings of 1 to 8 lowercase English letters. The tag transfer is used as the tag of transfer messages and does not appear as the <tag> of SEND or BROADCAST ("ON transfer <action>" is a reaction rule for transfer messages). <snapshot name> is a string consisting of one uppercase English letter followed by 0 to 2 characters, each an uppercase English letter or a digit (example: S1). <time>, <period>, <amount> and <initial balance> are integers.
+
+* input/params.txt (settings)
+The file consists of lines of the following forms, in this order.
+- SEED <s>: the seed of the MINSTD random numbers.
+- END <T>: the end time of the simulation.
+- CUTCOUNT <Tc>: the time that determines the range in which consistent cuts are enumerated (section 11 (8)).
+- COMPARE <event name 1> <event name 2>: a pair of events whose causal relation is examined (1 or more lines). Event names are defined in section 5.
+- CUT <c_1> <c_2> ... <c_N>: a cut whose consistency is examined (1 or more lines; N integers in process order).
+- PREDICATE <x>: the threshold of a global predicate to evaluate (1 or more lines).
+
+[Processing]
+# 1. Notation and common rules
+- Vector: a sequence of N integers in process order is called a vector, and its k-th component is called "the component of process k". In output, a vector is written as its components in process order joined with commas (,) (example: 3,0,12). For vectors u and v, we write u <= v when, in every component, the component of u is less than or equal to the component of v.
+- Channel order: the order in which channels are sorted by the process order of the source, and for the same source by the process order of the destination.
+- Name list: when the names of several processes are output, they are sorted in process order and joined with commas (,).
+- Times are integers >= 0.
+
+# 2. Messages, copies and markers
+- The SEND, TRANSFER and BROADCAST actions each create one message (TRANSFER creates none when the balance is insufficient). Messages are given message IDs 1, 2, 3, ... in the order in which they are created. In output, a message is represented in the form m<ID> (example: m7). Messages of SEND and TRANSFER are called point-to-point messages (kind P2P), and messages of BROADCAST are called broadcast messages (kind BCAST). A message has a tag and an amount. The amount is the transferred amount for a message of TRANSFER (tag transfer; hereafter called a "transfer message"), and 0 otherwise.
+- The unit that travels over a channel is called a copy. A point-to-point message has one copy to its destination, and a broadcast message has one copy to each process other than its source (N - 1 in total). A copy has the message's ID, kind, tag and amount, and its source and destination. A copy is sometimes written in the form "m<ID>-><destination name>" (example: m7->OSK). "Copy order" means ascending order of message ID, and for the same message ID the process order of the destination (this is the same as the order in which the copies are created).
+- Snapshot markers (section 8) also travel over channels, but a marker is not a message, has no ID, and causes no event.
+- Copies and markers together are called packets.
+
+# 3. Random numbers and delays
+- Random numbers come from the MINSTD generator x(k + 1) = (48271 * x(k)) mod 2147483647 with x(0) = s (the value of SEED). "Drawing a random number once" means advancing the state from x(k) to x(k + 1) and using that value x(k + 1).
+- When a packet is dispatched onto a channel, process the following steps in order.
+  1. Assign the channel's sequence number. Sequence numbers are 1, 2, 3, ... per channel, in dispatch order (copies and markers are counted together without distinction).
+  2. Determine the delay d. For a fixed delay, d = a. For a range delay, draw a random number once, let x be its value, and let d = a + (x mod (b - a + 1)). Random numbers are drawn only when a packet is dispatched onto a channel with a range delay.
+  3. Let the arrival time be "dispatch time + d". However, on a FIFO channel, the arrival time is the larger of this value and the maximum of the arrival times of the packets dispatched onto that channel before. Hence packets never overtake each other on a FIFO channel, but they can on a NONFIFO channel.
+  4. Add to the scheduling queue an "arrival" item that occurs at the destination process at that arrival time (section 4).
+
+# 4. Scheduling queue and execution order
+- The simulation proceeds by processing the items of the scheduling queue one at a time. An item is either a "scheduled action" or a "packet arrival", and both kinds have a time, a process and a creation number. Creation numbers are serial numbers 1, 2, 3, ... assigned in the order in which items are created.
+- First, for each process in process order, examine its AT lines in the order in which they are written in the file, and for each line create scheduled-action items for all the times at which that line's action is performed that are <= T, in increasing order of time (a line without EVERY has only one time).
+- Then, while the scheduling queue is not empty and the time of the smallest item in the scheduling queue is <= T, repeatedly remove the smallest item from the scheduling queue and process it. Items are compared by time, then by process order, then by creation number. While an item is being processed, its time is called the "current time".
+- For a scheduled-action item, the process performs the action (section 6). For an arrival item, the process handles the arrival of the packet (section 7). New items may be created during processing, but their times are always later than the current time. Items whose time is greater than T are not processed.
+
+# 5. Events and logical clocks
+- There are 5 event types: LOCAL (an internal event), NOFUNDS (a transfer that could not be made because of an insufficient balance), SEND (sending a point-to-point message), BCAST (sending a broadcast message) and RECV (delivery of a copy). Recording a snapshot state and processing markers are not events.
+- Each process has a Lamport clock L (initially 0), a vector clock V (initially the vector whose components are all 0), a balance (initially the initial balance) and a broadcast counter B (initially the vector whose components are all 0).
+- When an event other than RECV occurs at process p, increase L by 1 and increase the component of process p of V by 1.
+- When the RECV event of a copy c occurs at process p, let Lc be the Lamport clock value and Vc the vector clock value of the event that sent c (SEND or BCAST); set L to max(L, Lc) + 1, replace each component of V with the larger of that component's values in V and in Vc, and then increase the component of process p of V by 1.
+- Each event has the time at which it occurred (the current time), L and V after the update, and the balance after the event. These are called the event's time, Lamport value, vector value and balance.
+- The name (event name) of the k-th event (k = 1, 2, ...) that occurs at process p is "<name of p>.<k>" (example: TKY.12). The component of process p of the vector value of event p.k equals k. In addition, the events of all processes are numbered from 1 in the order in which they occur; this number is called the event number.
+
+# 6. Actions
+When process p performs an action at the current time, it does the following, depending on the action.
+- LOCAL <label>: causes a LOCAL event.
+- SEND <destination> <tag>: creates a point-to-point message (amount 0), causes a SEND event, and then dispatches its copy onto the channel p-><destination>.
+- TRANSFER <destination> <amount>: if the amount is greater than p's balance, it only causes a NOFUNDS event (no message is created). Otherwise, it subtracts the amount from the balance, creates a point-to-point message with tag transfer, causes a SEND event, and then dispatches its copy.
+- BROADCAST <tag>: increases the component of process p of B by 1, and then creates a broadcast message. This message carries B after the increase as its stamp. It causes a BCAST event, and then dispatches the copies in the process order of the destinations.
+- SNAPSHOT <snapshot name>: as described in section 8.
+(Reactions) When the RECV event of a copy c occurs at process q, immediately afterwards q performs, as q's actions at the current time, all of q's ON lines whose tag matches the tag of c, in the order in which they are written in the file. If the <destination> of an action is SENDER, the source of c is used as the destination. The events caused by the reaction actions follow immediately after that RECV event, in this order. A reaction action never causes another delivery on the spot (because a packet always arrives at a later time).
+
+# 7. Arrival and delivery (main run)
+Each process q has, for each other process r, a "next sequence number to accept" (initially 1) and a "reorder buffer" (initially empty) for the channel r->q. q also has one "hold-back queue" (initially an empty list).
+(1) Handling an arrival: when a packet c from process r arrives at q, do the following.
+  - If the sequence number of c differs from the next sequence number to accept of r->q, put c into the reorder buffer of r->q. In this case c is said to have made a "FIFO wait".
+  - If they are equal, accept c ((2)). Then, as long as the reorder buffer of r->q contains a packet with the next sequence number to accept, repeatedly take that packet out of the buffer and accept it.
+  In either case, finally compute q's held count (the total of the number of packets in all of q's reorder buffers and the number of copies in q's hold-back queue). The maximum of the held counts computed at each arrival handling (0 if there were no arrivals) is called q's maximum held count.
+(2) Acceptance: when q accepts a packet c of the channel r->q, process the following steps in order.
+  a. Increase the next sequence number to accept of r->q by 1.
+  b. If c is a marker, perform the marker acceptance of section 8, and stop here.
+  c. For each snapshot for which q has recorded its state and has not yet accepted the marker of r->q, append c to the end of that snapshot's channel state of r->q.
+  d. If c is a copy of a point-to-point message, deliver c.
+  e. If c is a copy of a broadcast message, check whether c is deliverable. Let S be the stamp of c and B the broadcast counter of q; c is deliverable when the component of process r of S equals (the component of process r of B) + 1, and for every process k other than r, the component of process k of S is less than or equal to the component of process k of B.
+    If it is deliverable, deliver c, and then repeatedly scan the hold-back queue from the front, remove the first deliverable copy found from the hold-back queue and deliver it, until there are no deliverable copies (after each delivery, restart the scan from the front).
+    If it is not deliverable, append c to the end of the hold-back queue. In this case c is said to have made a "causal wait". Also, as the "missing-process list" of c at this moment, record the name list of the processes k for which the component of process k of S is greater than "the component of process k of B (plus 1 when k = r)".
+(3) Delivery: when q delivers a copy c, it increases the component of process r of B by 1 if c is a copy of a broadcast message, adds the amount of c to the balance, causes the RECV event of c, and performs the reaction actions. The current time at this moment is called the delivery time of c.
+FIFO waits never occur on a FIFO channel. The order of point-to-point messages is preserved per channel, but the causal order between messages that travel over different channels is not guaranteed. Also, while a copy of a broadcast message is in a causal wait, later packets of the same channel may be delivered.
+
+# 8. Snapshots (the Chandy-Lamport algorithm)
+- Snapshots are distinguished by their names. A snapshot with a given name comes into existence when a SNAPSHOT action with that name is performed for the first time, and the time at that moment is its start time. The order in which snapshots come into existence is called the "snapshot order".
+- Recording the state: when process q records its state for snapshot s, it saves, as s's record of q, the current time, the reason for recording, q's balance, L, V, and the list of copies in the hold-back queue (in order from the front; these are called the "pending copies"). Next, for each other process r, it starts recording s's channel state of r->q as an empty list, and dispatches one marker of s to each other process, in the process order of the destinations. The reason for recording is initiate when it is due to a SNAPSHOT action, and "marker <name of the marker's source>" when it is due to a marker.
+- The SNAPSHOT <name> action: if p has already recorded its state for that snapshot, it does nothing, and records p and the current time as an "ignored initiation". Otherwise, it records its state with the reason initiate.
+- Accepting a marker: when q accepts a marker of snapshot s on the channel r->q, if q has not yet recorded its state for s, it records its state with the reason marker <name of r> (hence the channel state of r->q stays empty). Then it finishes the recording of s's channel r->q and records the time at which it accepted the marker. If, as a result, the markers of s have now been accepted on all channels (N * (N - 1) channels), the current time becomes the completion time of s.
+- For each marker, the time at which it was dispatched and the time at which it was accepted are recorded. Recording states and processing markers do not change clock values.
+
+# 9. Comparison run (without ordering guarantees)
+Separately from the simulation of sections 4 to 8 (the main run), run the simulation once more from the beginning with the same input. The random numbers (from x(0) = s), message IDs, creation numbers, sequence numbers and so on all start over from the beginning. In the comparison run only the handling of arrivals differs, as follows; everything else is the same as in the main run.
+- When a packet arrives, it is accepted immediately, regardless of its sequence number (reorder buffers are not used).
+- In step e of acceptance, copies of broadcast messages are also delivered immediately, without checking whether they are deliverable (the hold-back queue is not used).
+The results of the comparison run are used only for the output lines that start with RAW. All other output uses the results of the main run.
+
+# 10. Cuts
+- A cut is a vector c of N integers satisfying 0 <= c_p <= (number of events of process p), and represents the set of the first c_p events of each process p.
+- A copy "was sent within the cut" means that the event that sent it is contained in the cut. A copy "was received within the cut" means that the copy has been delivered and its RECV event is contained in the cut.
+- A copy that was received within the cut but was not sent within the cut is called an orphan. A cut without orphans is called a consistent cut, and a cut with orphans is called an inconsistent cut. (A cut c is a consistent cut if and only if, for every process p with c_p >= 1, the vector value of event p.c_p <= c.)
+- A copy that was sent within the cut but was not received within the cut (including copies that were never delivered) is called a copy "in transit" at that cut.
+- The balance of process p at a cut is the balance of event p.c_p if c_p >= 1, and the initial balance if c_p = 0. The money of a cut is the sum of the balances of all processes at the cut plus the sum of the amounts of the copies in transit. The initial total is the sum of the initial balances of all processes. For a consistent cut, the money of the cut always equals the initial total.
+- The cut of snapshot s is the vector that lists in process order, for each process p, the component of process p of the V of s's record of p (the number of events that occurred at p before the recording).
+
+# 11. Analysis
+(1) Causal relation: for events e and f, when the vector value of e <= the vector value of f and the two are not equal, e is said to have happened before f (e -> f). The relation is "->" if e -> f, "<-" if f -> e, and "||" if neither holds (e and f are then said to be concurrent).
+(2) Event graph: the directed graph whose vertices are the events, with an edge from each event to the next event of the same process, and, for each delivered copy, an edge from the event that sent it to its RECV event. The edges leaving an event are handled in this order: first the edge to the next event of the same process, then the edges to the RECV events of the copies sent by that event, in copy order.
+  A path from event e to f is found by breadth-first search starting from e. Start with a queue containing only e, and mark e as discovered. Repeatedly remove the event at the front of the queue and examine the edges leaving it in the above order; if the destination of an edge is not yet discovered, mark it as discovered, make the removed event the parent of that destination, and append the destination to the end of the queue. If f is discovered, a path exists, and the path is the reverse (from e to f) of the sequence obtained by following parents from f back to e. If the queue becomes empty without f being discovered, there is no path.
+  The relation by the graph is "->" if there is a path from e to f, otherwise "<-" if there is a path from f to e, and "||" if there is neither.
+(3) Range notation: split a sequence of events into parts, each consisting of consecutive events of the same process; write each part as "<name>.<k>" if it consists of one event and as "<name>.<first k>-<last k>" if it consists of two or more events; and join the parts with single spaces (example: TKY.3-5 OSK.4 NGO.7-9).
+(4) Window: the past frontier of an event e = p.k is the vector value of e. The future frontier is the vector that lists in process order, for each process q, the number of events of q whose vector value has a component of process p less than k (this is the largest consistent cut that contains neither e nor any event f with e -> f).
+(5) Concurrency: for every pair of two distinct events (unordered pair), count it as ordered if the relation of (1) is "->" or "<-", and as concurrent if it is "||". Also count the number of concurrent pairs whose Lamport values are equal. In addition, among the pairs that differ both in time and in Lamport value, count as an "inversion" each pair in which the event with the larger time has the smaller Lamport value. Furthermore, for each pair of processes (i < j), count the number of concurrent pairs consisting of an event of process i and an event of process j.
+(6) Longest causal chain: start from the event with the largest Lamport value (for ties, the one with the smallest event number), and while the Lamport value of the current event e is greater than 1, repeatedly move to a preceding event as follows. If e is a RECV event and the Lamport value of the event that sent its copy equals "Lamport value of e - 1", move to that event. Otherwise, move to the previous event of the same process as e. The chain is the visited events arranged in reverse order (in ascending order of Lamport value). The length of the chain (the number of events) equals the largest Lamport value.
+(7) Races and violations: arrange the copies delivered to process q in delivery order.
+  - Two adjacent copies a and b (a first) such that the event that sent a and the event that sent b are concurrent are called a race.
+  - Two copies a and b (a delivered first; they need not be adjacent) such that (the event that sent b) -> (the event that sent a) are called a causal order violation, and we say that "a overtook b". A causal order violation in which a and b have the same source is called a FIFO violation.
+(8) Counting consistent cuts: for each process p, let n_p be the number of events of p whose time is <= Tc (these are the first n_p events of p). Among all cuts c satisfying 0 <= c_p <= n_p (there are (n_1 + 1) * ... * (n_N + 1) of them), count the consistent cuts. The level of a cut c is c_1 + ... + c_N.
+(9) Global predicates: the predicate with threshold x is "the sum of the amounts of the copies in transit at the cut is >= x". For a consistent cut, this amount equals "initial total - sum of the balances at the cut". Count the consistent cuts of (8) for which this predicate holds; possibly is yes if there is at least one, and no if there is none. Also, consider the paths from (0,...,0) to (n_1,...,n_N) that repeatedly move by increasing one component by 1 and pass only through consistent cuts of (8); definitely is yes when every such path passes through at least one cut where the predicate holds (both ends included), and no otherwise.
+
+[Output files]
+Write the following 5 files to the output/ folder. Every file consists of ASCII characters only, every line ends with a newline (LF), and there are no empty lines. Items in a line are separated by a single space, and there are no spaces at the start or end of a line (only for diagram.txt, the placement of spaces is defined in (5)). Integers are written in decimal without extra leading zeros. Negative numbers do not appear. <vector> is written as defined in section 1, <event name> as defined in section 5, and <name list> as defined in section 1.
+
+(1) output/trace.txt
+Output the events of the main run in order of event number, one per line, in the following form.
+<event number> t=<time> <event name> <type> <details> L=<Lamport value> V=<vector value>
+<details> depends on the type as follows. <amount part> is " amount <amount> balance <balance after the event>" (with one leading space) for a transfer message, and the empty string otherwise.
+- LOCAL: <label>
+- NOFUNDS: to <destination name> amount <amount> balance <balance>
+- SEND: m<ID> to <destination name> tag <tag><amount part>
+- BCAST: m<ID> tag <tag>
+- RECV: m<ID> from <source name> tag <tag><amount part>
+Then output the following line.
+SUMMARY events <number of events> messages <number of messages> copies <number of copies> delivered <number of delivered copies> undelivered <number of undelivered copies> draws <number of random draws>
+Then, for each process in process order, output the following line (the values are those at the end).
+FINAL <name> events <number of events> L=<L> V=<V> B=<B> balance <balance> in <amount received> out <amount sent> refused <number of NOFUNDS events> min <minimum balance>
+The amount received is the sum of the amounts of the copies of transfer messages delivered to that process, and the amount sent is the sum of the amounts of the transfer messages created by that process. The minimum balance is the smallest of the initial balance and the balances of all events of that process.
+Finally, for each process in process order, output the following line.
+COUNTS <name> local <number of LOCAL> nofunds <number of NOFUNDS> send <number of SEND> bcast <number of BCAST> recv <number of RECV>
+
+(2) output/deliveries.txt
+For each process in process order, output the following lines.
+- PROCESS <name>
+- For each copy delivered to that process, numbered from 1 in delivery order, the following line.
+<number> m<ID> from <source name> <kind> tag <tag> sent <send time> arrived <arrival time> delivered <delivery time> wait <delivery time - arrival time> <wait mode>
+  The send time is the time of the event that sent the copy. <wait mode> is direct if the copy made neither a FIFO wait nor a causal wait, fifo if it made only a FIFO wait, "causal <missing-process list>" if it made only a causal wait, and "fifo+causal <missing-process list>" if it made both.
+- For each copy that arrived (arrival time <= T) but was not delivered, in copy order, the following line. <place> is fifo if at the end the copy is in a reorder buffer, and "causal <missing-process list>" if it is in the hold-back queue (the missing-process list is the one recorded when it made the causal wait).
+HELD m<ID> from <source name> <kind> tag <tag> sent <send time> arrived <arrival time> <place>
+- For each copy whose arrival time is greater than T, in copy order, the following line.
+TRANSIT m<ID> from <source name> <kind> tag <tag> sent <send time> arrival <arrival time>
+- TOTAL delivered <number of deliveries> direct <count> fifo <count> causal <count> both <count> wait <total waiting time> max_wait <maximum waiting time> max_held <maximum held count>
+  The <count> values for direct, fifo, causal and both are the numbers of deliveries whose <wait mode> was direct, fifo, causal ... and fifo+causal ..., respectively. The waiting time is "delivery time - arrival time" of a delivered copy; if there are no deliveries at all, both the total and the maximum are 0.
+- BCASTS <ID list>
+  <ID list> is obtained by going through the events of that process in order and listing, separated by single spaces, "m<ID>" of the message of each BCAST event and of the message of each RECV event of a copy of a broadcast message. If there are none, write none.
+After all processes, for each channel in channel order, output the following line.
+CHANNEL <source name>-><destination name> <type> <delay> messages <number of copies> markers <number of markers> buffered <number buffered> max_delay <maximum delay> entries <number of differential components>
+<delay> is a for a fixed delay and "a-b" for a range delay. The number of copies and the number of markers are the numbers dispatched onto that channel. The number buffered is the number of packets (copies and markers) on that channel that made a FIFO wait. The maximum delay is the maximum of "arrival time - dispatch time" over the packets dispatched onto that channel (0 if there are none). The number of differential components is the number of components that would be sent with differential transmission of vector clocks (the Singhal-Kshemkalyani technique), computed as follows. Each channel keeps a "previous vector" (initially all components 0); in the order in which copies are dispatched onto the channel, add the number of components in which the vector value of the event that sent the copy differs from the previous vector, and replace the previous vector with that vector value. Markers are not counted.
+Then, for each tag that appears in copies, in lexicographic order of the tags (comparing ASCII character codes from the first character; when one is a prefix of the other, the shorter one comes first), output the following line.
+TAG <tag> copies <number of copies with that tag> delivered <number of them that were delivered> latency <sum of "delivery time - send time" over the delivered ones> max <maximum of that value>
+The maximum is 0 if none of them were delivered.
+Then, for each broadcast message in ascending order of ID, output the following line. <stable time> is the maximum of the delivery times of its N - 1 copies if all of them have been delivered, and none otherwise.
+STABLE m<ID> <source name> tag <tag> sent <send time> stable <stable time>
+Then examine the pairs of broadcast messages (b1, b2) (ID of b1 < ID of b2) in ascending order of the ID of b1, and for the same b1 in ascending order of the ID of b2. For each process whose BCASTS list contains both b1 and b2, put that process into the "earlier group" if b1 comes first, and into the "later group" if b2 comes first. When neither the earlier group nor the later group is empty, output the following line.
+DISAGREE m<ID of b1> m<ID of b2> <name list of the earlier group> <name list of the later group>
+Finally, output "DISAGREEMENTS <number of DISAGREE lines>".
+
+(3) output/snapshots.txt
+For each snapshot of the main run, in snapshot order, output the following lines.
+- SNAPSHOT <snapshot name> started <start time> completed <completion time>
+- For each process in process order, its record as one line in the following form. <pending> is "m<ID>" of the pending copies listed with single spaces between them, or none if there are none.
+RECORD <name> t=<recording time> <reason> balance <balance> L=<L> V=<V> pending <pending>
+- For each channel in channel order, the following line. <state> is the copies of the channel state in list order, separated by single spaces, where each copy is written as m<ID> if its amount is 0 and as m<ID>:<amount> otherwise. If the channel state is empty, write empty.
+CHANNEL <source name>-><destination name> marker <time the marker was dispatched> <time the marker was accepted> state <state>
+- For each ignored initiation, in order of occurrence, the following line.
+IGNORED <name> t=<time>
+- CUT <cut of the snapshot> consistent <verdict> vector <vector verdict>
+  <verdict> is yes for a consistent cut, and for an inconsistent cut it is no followed by " m<ID>-><destination name>" (with one leading space) for each orphan in copy order. <vector verdict> is yes if "the component of process p of the V of r <= the component of process p of the cut" holds for every record r and every process p, and no otherwise.
+- TRANSIT channels <total number of channel-state copies> pending <total number of pending copies> cut <number of copies in transit at the cut> match <match>
+  <match> is yes if the collection of all channel-state copies together with the pending copies of all records equals the collection of copies in transit at the cut of the snapshot, and no otherwise.
+- MONEY balances <sum of the recorded balances> channels <sum of the amounts of the channel-state copies> total <sum of these two> initial <initial total> conserved <conserved>
+  <conserved> is yes if the values of total and initial are equal, and no otherwise.
+After all snapshots, for each snapshot of the comparison run, in snapshot order, output the following line. All values are those of the comparison run; <verdict> is written the same way as on the CUT line above, and <money> is computed the same way as total on the MONEY line above.
+RAW <snapshot name> completed <completion time> cut <cut> consistent <verdict> money <money> conserved <conserved>
+
+(4) output/analysis.txt
+Output the following lines in this order.
+- For each COMPARE line of params.txt, in that order, the following lines (e1 and e2 are the events written on that line).
+COMPARE <e1> <relation> <e2> L=<Lamport value of e1>,<Lamport value of e2> graph <graph relation> agree <agreement>
+  <relation> is the one of section 11 (1) and <graph relation> the one of (2); <agreement> is yes if the two are equal and no otherwise. If the graph relation is "->", for the path from e1 to e2, and if it is "<-", for the path from e2 to e1, output the following line next (nothing is output for "||"). <message count> is the number of places in the path where two adjacent events belong to different processes.
+PATH length <number of events in the path> messages <message count> <range notation of the path>
+  Then, for e1 and e2 in this order, one line each as follows.
+WINDOW <event name> past <past frontier> future <future frontier>
+- CONCURRENCY events <number of events> pairs <number of pairs> ordered <number of ordered pairs> concurrent <number of concurrent pairs> same_lamport <number of concurrent pairs with equal Lamport values> inversions <number of inversions>
+- For each pair of processes (i < j), in ascending order of i, and for the same i in ascending order of j, the following line.
+PAIR <name of process i> <name of process j> <number of concurrent pairs>
+- CHAIN length <length of the chain> <range notation of the chain>
+- For each process in process order, the races at that process, one per line in delivery order of a, in the following form. Then one line with the total number of races in the form "RACES <total>".
+RACE <name> m<ID of a> <source name of a> m<ID of b> <source name of b>
+- For each process in process order, the causal order violations at that process, one per line in delivery order of a, and for the same a in delivery order of b, in the following form. Then one line "VIOLATIONS causal <total number of causal order violations> fifo <total number of FIFO violations>".
+VIOLATION <name> m<ID of a> <source name of a> overtook m<ID of b> <source name of b>
+- RAW events <number of events in the comparison run> delivered <number of copies delivered in the comparison run> causal <total number of causal order violations in the comparison run> fifo <total number of FIFO violations in the comparison run>
+- For each CUT line of params.txt, in that order, the following line. <orphan list> is the orphans in copy order, each in the form "m<ID>-><destination name>", separated by single spaces.
+  For a consistent cut: CUT <cut> consistent transit <number of copies in transit> money <money of the cut> initial <initial total>
+  For an inconsistent cut: CUT <cut> inconsistent orphans <orphan list> transit <number of copies in transit> money <money of the cut> initial <initial total>
+- CUTCOUNT t=<Tc> events <n_1,...,n_N> product <value of (n_1 + 1) * ... * (n_N + 1)> consistent <number of consistent cuts>
+- LEVELS <number of consistent cuts of level 0> <number of consistent cuts of level 1> ... <number of consistent cuts of level n_1 + ... + n_N>
+- For each PREDICATE line of params.txt, in that order, the following line.
+PREDICATE transit>=<x> cuts <number of consistent cuts where the predicate holds> possibly <yes or no> definitely <yes or no>
+
+(5) output/diagram.txt
+The space-time diagram of the main run. The first half is drawn in order of time, and the second half in order of Lamport value. Each half starts with a header line, followed by lines each of which draws one event (in the first half, also snapshot recordings).
+- Positions: positions are counted with the first character of a line as position 0. The column of process i (i = 1, ..., N) is position 8 * i - 2 (process 1 at position 6, process 2 at position 14, ...).
+- Header line: it starts with "    t" in the first half and "    L" in the second half (in both cases 4 spaces and one letter), position 5 is a space, the name of process i is written starting at position 8 * i - 2, and the gaps are filled with spaces.
+- Event line: positions 0 to 4 hold <value> (the time in the first half, the Lamport value in the second half) right-aligned in a width of 5 (padded on the left with spaces), position 5 is a space, and the positions from 6 to the column of the last process are filled with "|" at each process column and with spaces elsewhere. Then, at the column of the event's process (hereafter "own column"), place the following symbol and, where required, write characters.
+  - LOCAL: place "*".
+  - NOFUNDS: place "x".
+  - SEND: place "S", and write m<ID> starting at the position after the own column.
+  - BCAST: place "B", and write m<ID> starting at the position after the own column.
+  - Snapshot recording (first half only): place "#", and write the snapshot name starting at the position after the own column.
+  - RECV: place "R", and draw an arrow between the source's column and the own column. Let A be the smaller and Z the larger of the positions of the two columns; fill positions A + 1 to Z - 1 with "+" where the position is the column of some process and with "-" otherwise. Then, if the source's column is to the left of the own column, set position Z - 1 to ">"; if it is to the right, set position A + 1 to "<". Finally, write m<ID> starting at position A + 2.
+  "Writing" means overwriting one character at a time starting from the given position; any part that goes beyond the end of the line extends the line. Finally, the trailing spaces of the line are removed.
+- Lines of the first half: the events and the snapshot recordings of the main run, one per line, in order of occurrence (a recording is placed at the point at which the state was recorded).
+- Lines of the second half: the events of the main run, one per line, in ascending order of Lamport value, and for equal Lamport values in process order.
+
+[Source files]
+Organize the program into the following 6 source files (name the files according to each language's conventions).
+- main: holds the overall flow and the core of the processing: reading params.txt; the part that runs the simulation (the scheduling queue, executing scheduled actions and reactions, creating and dispatching messages and copies, handling arrivals, acceptance and delivery including FIFO waits and causal waits, recording snapshot states and processing markers) for both the main run and the comparison run; the longest causal chain and range notation; and building and writing the lines of all output files (trace.txt, deliveries.txt, snapshots.txt, analysis.txt, diagram.txt).
+- network: reading topology.txt, channel bookkeeping (sequence numbers, determining delays and computing arrival times, tallying the number of dispatched packets, the number buffered, the maximum delay and the number of differential components), and the MINSTD random number generator.
+- clocks: updating Lamport clocks and vector clocks, comparing vectors and determining causal relations, determining broadcast deliverability, and formatting vectors.
+- processes: reading programs.txt, keeping the process state (balance, clocks, broadcast counter, reorder buffers, hold-back queue, reaction rules, event list), expanding AT and EVERY, and looking up balances at a cut.
+- snapshot: snapshot records (each process's record, channel states, marker times, ignored initiations), determining the orphans and in-transit copies of a cut, and computing the money of a cut.
+- analysis: the event graph and paths by breadth-first search, tallying concurrent pairs, detecting races and causal order violations, counting consistent cuts, and searching for a path that avoids the predicate (the definitely test).
+
+[Constraints]
+- 2 <= N <= 6. Fixed delays satisfy 1 <= a <= 20, and range delays satisfy 1 <= a < b <= 20.
+- Initial balances are between 0 and 100000 inclusive, and TRANSFER amounts are between 1 and 100000 inclusive.
+- AT times are between 0 and 1000 inclusive, and EVERY periods are between 1 and 1000 inclusive. Each block has at most 50 script lines.
+- 1 <= s <= 2147483646, 1 <= T <= 1000, and 0 <= Tc <= T.
+- In both the main run and the comparison run, the number of events is at most 1000 and the number of messages is at most 9999.
+- In both the main run and the comparison run, every snapshot completes by time T.
+- The two events of a COMPARE line are distinct events that occur in the main run. Each value of a CUT line satisfies 0 <= c_p <= (number of events of process p in the main run). PREDICATE thresholds are between 1 and 1000000 inclusive.
+- (n_1 + 1) * ... * (n_N + 1) is at most 100000.
+- Every integer that appears in the computation has an absolute value less than 2^31, except for the products that appear in the middle of the random number computation (less than 2^47). Use 64-bit integers (or a type that can represent integers less than 2^53 exactly) for the random number computation.
+
+[Example]
+The following is a small example (it differs from the actual data in input/; there are 3 processes and the end time is 20).
+input/topology.txt:
+PROCESSES A B C
+CHANNEL A B FIFO 2
+CHANNEL A C FIFO 5
+CHANNEL B A FIFO 2
+CHANNEL B C NONFIFO 1 4
+CHANNEL C A NONFIFO 1 3
+CHANNEL C B FIFO 1
+input/programs.txt:
+PROCESS A BALANCE 100
+AT 1 BROADCAST news
+AT 2 TRANSFER B 30
+AT 6 SNAPSHOT S1
+ON ack LOCAL done
+END
+PROCESS B BALANCE 50
+AT 7 SNAPSHOT S1
+ON transfer SEND C note
+ON transfer SEND C memo
+ON news BROADCAST echo
+END
+PROCESS C BALANCE 0
+AT 3 TRANSFER A 10
+AT 15 SNAPSHOT S1
+ON echo SEND A ack
+ON memo TRANSFER B 5
+END
+input/params.txt:
+SEED 11
+END 20
+CUTCOUNT 6
+COMPARE A.1 C.2
+COMPARE B.4 C.1
+CUT 2 2 1
+CUT 2 2 5
+PREDICATE 30
+output/trace.txt:
+1 t=1 A.1 BCAST m1 tag news L=1 V=1,0,0
+2 t=2 A.2 SEND m2 to B tag transfer amount 30 balance 70 L=2 V=2,0,0
+3 t=3 B.1 RECV m1 from A tag news L=2 V=1,1,0
+4 t=3 B.2 BCAST m3 tag echo L=3 V=1,2,0
+5 t=3 C.1 NOFUNDS to A amount 10 balance 0 L=1 V=0,0,1
+6 t=4 B.3 RECV m2 from A tag transfer amount 30 balance 80 L=4 V=2,3,0
+7 t=4 B.4 SEND m4 to C tag note L=5 V=2,4,0
+8 t=4 B.5 SEND m5 to C tag memo L=6 V=2,5,0
+9 t=5 A.3 RECV m3 from B tag echo L=4 V=3,2,0
+10 t=6 C.2 RECV m1 from A tag news L=2 V=1,0,2
+11 t=6 C.3 RECV m3 from B tag echo L=4 V=1,2,3
+12 t=6 C.4 SEND m6 to A tag ack L=5 V=1,2,4
+13 t=7 C.5 RECV m4 from B tag note L=6 V=2,4,5
+14 t=7 C.6 RECV m5 from B tag memo L=7 V=2,5,6
+15 t=7 C.7 NOFUNDS to B amount 5 balance 0 L=8 V=2,5,7
+16 t=9 A.4 RECV m6 from C tag ack L=6 V=4,2,4
+17 t=9 A.5 LOCAL done L=7 V=5,2,4
+SUMMARY events 17 messages 6 copies 8 delivered 8 undelivered 0 draws 6
+FINAL A events 5 L=7 V=5,2,4 B=1,1,0 balance 70 in 0 out 30 refused 0 min 70
+FINAL B events 5 L=6 V=2,5,0 B=1,1,0 balance 80 in 30 out 0 refused 0 min 50
+FINAL C events 7 L=8 V=2,5,7 B=1,1,0 balance 0 in 0 out 0 refused 2 min 0
+COUNTS A local 1 nofunds 0 send 1 bcast 1 recv 2
+COUNTS B local 0 nofunds 0 send 2 bcast 1 recv 2
+COUNTS C local 0 nofunds 2 send 1 bcast 0 recv 4
+output/deliveries.txt:
+PROCESS A
+1 m3 from B BCAST tag echo sent 3 arrived 5 delivered 5 wait 0 direct
+2 m6 from C P2P tag ack sent 6 arrived 9 delivered 9 wait 0 direct
+TOTAL delivered 2 direct 2 fifo 0 causal 0 both 0 wait 0 max_wait 0 max_held 0
+BCASTS m1 m3
+PROCESS B
+1 m1 from A BCAST tag news sent 1 arrived 3 delivered 3 wait 0 direct
+2 m2 from A P2P tag transfer sent 2 arrived 4 delivered 4 wait 0 direct
+TOTAL delivered 2 direct 2 fifo 0 causal 0 both 0 wait 0 max_wait 0 max_held 0
+BCASTS m1 m3
+PROCESS C
+1 m1 from A BCAST tag news sent 1 arrived 6 delivered 6 wait 0 direct
+2 m3 from B BCAST tag echo sent 3 arrived 5 delivered 6 wait 1 causal A
+3 m4 from B P2P tag note sent 4 arrived 7 delivered 7 wait 0 direct
+4 m5 from B P2P tag memo sent 4 arrived 5 delivered 7 wait 2 fifo
+TOTAL delivered 4 direct 2 fifo 1 causal 1 both 0 wait 3 max_wait 2 max_held 2
+BCASTS m1 m3
+CHANNEL A->B FIFO 2 messages 2 markers 1 buffered 0 max_delay 2 entries 2
+CHANNEL A->C FIFO 5 messages 1 markers 1 buffered 0 max_delay 5 entries 1
+CHANNEL B->A FIFO 2 messages 1 markers 1 buffered 0 max_delay 2 entries 2
+CHANNEL B->C NONFIFO 1-4 messages 3 markers 1 buffered 1 max_delay 3 entries 5
+CHANNEL C->A NONFIFO 1-3 messages 1 markers 1 buffered 0 max_delay 3 entries 3
+CHANNEL C->B FIFO 1 messages 0 markers 1 buffered 0 max_delay 1 entries 0
+TAG ack copies 1 delivered 1 latency 3 max 3
+TAG echo copies 2 delivered 2 latency 5 max 3
+TAG memo copies 1 delivered 1 latency 3 max 3
+TAG news copies 2 delivered 2 latency 7 max 5
+TAG note copies 1 delivered 1 latency 3 max 3
+TAG transfer copies 1 delivered 1 latency 2 max 2
+STABLE m1 A tag news sent 1 stable 6
+STABLE m3 B tag echo sent 3 stable 6
+DISAGREEMENTS 0
+output/snapshots.txt:
+SNAPSHOT S1 started 6 completed 12
+RECORD A t=6 initiate balance 70 L=4 V=3,2,0 pending none
+RECORD B t=7 initiate balance 80 L=6 V=2,5,0 pending none
+RECORD C t=9 marker B balance 0 L=8 V=2,5,7 pending none
+CHANNEL A->B marker 6 8 state empty
+CHANNEL A->C marker 6 11 state empty
+CHANNEL B->A marker 7 9 state empty
+CHANNEL B->C marker 7 9 state empty
+CHANNEL C->A marker 9 12 state m6
+CHANNEL C->B marker 9 10 state empty
+IGNORED C t=15
+CUT 3,5,7 consistent yes vector yes
+TRANSIT channels 1 pending 0 cut 1 match yes
+MONEY balances 150 channels 0 total 150 initial 150 conserved yes
+RAW S1 completed 12 cut 3,5,7 consistent yes money 150 conserved yes
+output/analysis.txt:
+COMPARE A.1 -> C.2 L=1,2 graph -> agree yes
+PATH length 2 messages 1 A.1 C.2
+WINDOW A.1 past 1,0,0 future 0,0,1
+WINDOW C.2 past 1,0,2 future 3,5,1
+COMPARE B.4 || C.1 L=5,1 graph || agree yes
+WINDOW B.4 past 2,4,0 future 5,3,4
+WINDOW C.1 past 0,0,1 future 3,5,0
+CONCURRENCY events 17 pairs 136 ordered 90 concurrent 46 same_lamport 12 inversions 14
+PAIR A B 11
+PAIR A C 18
+PAIR B C 17
+CHAIN length 8 A.1 B.1-5 C.6-7
+RACES 0
+VIOLATIONS causal 0 fifo 0
+RAW events 17 delivered 8 causal 3 fifo 1
+CUT 2,2,1 consistent transit 4 money 150 initial 150
+CUT 2,2,5 inconsistent orphans m4->C transit 3 money 150 initial 150
+CUTCOUNT t=6 events 3,5,4 product 120 consistent 59
+LEVELS 1 2 3 5 5 5 6 8 8 7 5 3 1
+PREDICATE transit>=30 cuts 16 possibly yes definitely yes
+output/diagram.txt:
+    t A       B       C
+    1 Bm1     |       |
+    2 Sm2     |       |
+    3 |-m1--->R       |
+    3 |       Bm3     |
+    3 |       |       x
+    4 |-m2--->R       |
+    4 |       Sm4     |
+    4 |       Sm5     |
+    5 R<m3----|       |
+    6 #S1     |       |
+    6 |-m1----+------>R
+    6 |       |-m3--->R
+    6 |       |       Sm6
+    7 |       #S1     |
+    7 |       |-m4--->R
+    7 |       |-m5--->R
+    7 |       |       x
+    9 R<m6----+-------|
+    9 *       |       |
+    9 |       |       #S1
+    L A       B       C
+    1 Bm1     |       |
+    1 |       |       x
+    2 Sm2     |       |
+    2 |-m1--->R       |
+    2 |-m1----+------>R
+    3 |       Bm3     |
+    4 R<m3----|       |
+    4 |-m2--->R       |
+    4 |       |-m3--->R
+    5 |       Sm4     |
+    5 |       |       Sm6
+    6 R<m6----+-------|
+    6 |       Sm5     |
+    6 |       |-m4--->R
+    7 *       |       |
+    7 |       |-m5--->R
+    8 |       |       x

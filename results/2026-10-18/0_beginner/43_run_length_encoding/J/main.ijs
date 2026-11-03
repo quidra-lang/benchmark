@@ -1,0 +1,37 @@
+encode =: 3 : 0
+  result =. ''
+  i =. 0
+  while. i<#y do.
+    end =. i+1
+    while. end<#y do.
+      if. (end{y)~:i{y do. break. end.
+      end =. >:end
+    end.
+    result =. result,(":end-i),i{y
+    i =. end
+  end.
+  result
+)
+decode =: 3 : 0
+  result =. ''
+  i =. 0
+  while. i<#y do.
+    count =. 0
+    while. (i{y)e.'0123456789' do.
+      count =. (10*count)+'0123456789'i.i{y
+      i =. >:i
+    end.
+    result =. result,count$i{y
+    i =. >:i
+  end.
+  result
+)
+main =: 3 : 0
+  values =. 'AAABBBCCCD';'WWWWWWWWWWWWBWWWWWWWWWWWWBBB';'ALGORITHM';'MISSISSIPPI';'XXXXXXXXXXYYYYYYYYYYYYYYYYYYYYYZ'
+  for_box. values do.
+    value =. >box
+    encoded =. encode value
+    smoutput value,' -> ',encoded,' -> ',decode encoded
+  end.
+)
+main ''

@@ -1,0 +1,638 @@
+[Overview]
+Write a reinforcement learning program that, in a grid world (a world made of a grid of cells) with walls, ice, wind, goals and pits, finds a way of choosing actions (a policy) with which an agent obtains as much reward as possible. Using dynamic programming with the model of the environment (the transition probabilities) - value iteration, in-place value iteration and policy iteration - the program finds the optimal state values and the optimal policy, and with five learning methods that learn by trial and error without the model (first-visit Monte Carlo, SARSA, Q-learning, Expected SARSA, Dyna-Q) it learns action values (Q values). It compares the learned policies with the optimal policy, evaluates them by computation with the model and by trials with random numbers (rollouts), and also examines how the optimal policy changes when the discount rate and the slipperiness are changed.
+Every value is represented as "an integer in units of 1/10000" (a fixed-point number), and all computation is done with integers. Divisions use the rounding down defined in [Processing], so values that should be equal in a left-right symmetric world are exactly equal in every language, and the result is uniquely determined. Random numbers come only from the generator defined in [Processing].
+The input is two files in the input/ folder (world, settings), and the results are written to five files in the output/ folder. Nothing is written to standard output.
+
+[Input files]
+There are two input files: input/world.txt and input/params.txt. Both files consist of ASCII characters only, and every line (including the last line) ends with a newline (LF). There is no whitespace at the start or end of a line, and there are no empty lines. An integer is a base-10 number without extra leading zeros, and a negative number has a leading -.
+
+* input/world.txt (world)
+It consists of the following lines, in this order.
+- Line 1: ROWS H (H is the number of rows of the world)
+- Line 2: COLS W (W is the number of columns of the world)
+- H lines from line 3: strings of exactly W characters, representing the rows of the world from top to bottom. Each character represents one cell: # is a wall, . is floor, S is the start (a kind of floor), ~ is ice, G is a goal and P is a pit.
+- The next line: WIND, a single space, and then W digits (0 to 9). The c-th digit from the left (c counted from 0) is the wind strength of column c.
+- The last line: REWARDS followed by the rewards (integers) of the goal and pit cells, in the order of those cells in row-major order (section 1 of [Processing]), separated by single spaces.
+
+* input/params.txt (settings)
+It consists of the following 15 lines, in this order. Each line is a keyword followed by one or more integers, separated by single spaces.
+- GAMMA g: the numerator of the discount rate g / 100
+- STEP_REWARD r_s: the reward for arriving at a cell that is neither a goal nor a pit
+- SLIP q p_f p_i: the denominator q of the slip probability, the numerator p_f of the slip on floor (cells . and S), and the numerator p_i of the slip on ice cells
+- THETA theta: the value used to decide when to stop iterating (a fixed-point number)
+- GAMMA_SWEEP g_1 g_2 ...: the values of g tried in the sensitivity analysis (one or more)
+- SLIP_SWEEP f_1 i_1 f_2 i_2 ...: the pairs (p_f, p_i) tried in the sensitivity analysis (one or more pairs; the values are grouped into pairs two at a time from the front)
+- EPISODES N_e: the number of episodes of each learning method
+- STEP_LIMIT L: the upper limit of the number of steps of one episode (also used as the limit for nominal paths and for the absorption analysis)
+- BLOCK_SIZE B: the number of episodes in one block of the learning curve
+- ALPHA s_1 a_1 s_2 a_2 ...: the learning-rate schedule (a list of pairs of a start episode and a learning-rate numerator)
+- EPSILON s_1 e_1 s_2 e_2 ...: the exploration-rate schedule (a list of pairs of a start episode and an exploration-rate numerator)
+- PLANNING_STEPS n_p: the number of planning updates per step of Dyna-Q
+- SEED x_0: the random seed used for learning
+- ROLLOUTS M: the number of rollouts per policy
+- ROLLOUT_SEED y_0: the random seed used for rollouts
+
+[Processing]
+* 1. Notation and arithmetic rules
+- All values are integers, and all computation is done with integers. Floating-point numbers are not used.
+- floor(a / b) is the largest integer less than or equal to the value of the integer a divided by the positive integer b (rounding toward negative infinity). Be careful when a is negative. Examples: floor(7 / 2) = 3, floor(-7 / 2) = -4, floor(-1 / 100) = -1.
+- a mod b is the remainder of dividing the non-negative integer a by the positive integer b. |a| is the absolute value of a, and max and min are the maximum and the minimum.
+- A "fixed-point number" is an integer that represents a value in units of 1/10000. For example, the integer 123456 represents 12.3456 and -5 represents -0.0005. Every value described as a fixed-point number, such as values, Q values and errors, is an integer in this representation.
+- The "average value" of an integer total T and a positive integer k is the fixed-point number floor(10000 * T / k).
+- A cell is denoted by (row number r, column number c). r is counted 0, 1, 2, ... from the top row, and c is counted 0, 1, 2, ... from the left column.
+- "Row-major order" is the order that sorts cells by r in increasing order and, for equal r, by c in increasing order. Unless stated otherwise, a collection of cells is handled in this order.
+- There are four actions (directions): N (north), E (east), S (south) and W (west). This order is called the "action order", and the actions are numbered 0, 1, 2, 3 in this order. Moving one cell in direction d decreases r by 1 for N, increases c by 1 for E, increases r by 1 for S, and decreases c by 1 for W. The "right neighbor direction" of the direction numbered d is the direction numbered (d + 1) mod 4, and the "left neighbor direction" is the direction numbered (d + 3) mod 4 (example: the right neighbor of N is E and its left neighbor is W).
+- When each of the four actions has a value, the "first maximum" is, among the actions with the maximum value, the one that comes first in the action order.
+- Every rule that selects a maximum or minimum always comes with how to choose when there are equal values.
+
+* 2. World
+- A cell that is not a wall is called a "state". Goal and pit cells are called "terminal states", and the other states (cells ., S and ~) are called "non-terminal states". Let n be the number of non-terminal states.
+- List the terminal states in row-major order, and assign to the k-th terminal state (k counted from 0) the k-th value of REWARDS as its reward. The "symbol" of the k-th terminal state is the k-th lowercase English letter counting from a (a for k = 0, b for k = 1, ...).
+- The S cell is called the "start state". All cells on the outermost border of the world are walls, so a move never leaves the world.
+
+* 3. One move
+The cell move(x, d) reached by moving from a non-terminal state x = (r, c) in direction d is determined as follows.
+1. Let y be the cell one step from x in direction d. If that cell is a wall, let y = x (the agent stays where it is).
+2. If y is a terminal state, move(x, d) = y (no wind blows).
+3. Otherwise, let w be the wind strength of column c of the starting cell x, and repeat the following at most w times. If the cell one above y (r smaller by 1) is a wall, end the repetition. Otherwise set y to that cell above, and if it is a terminal state, end the repetition. The y at the end of the repetition is move(x, d).
+The "reward" R(y) for arriving at cell y is the reward of that terminal state if y is a terminal state, and r_s otherwise.
+
+* 4. Transition model
+When action a is chosen in a non-terminal state x, the agent either goes in the intended direction or slips and goes sideways. Let p = p_i if x is an ice cell and p = p_f otherwise; the following three are the "slip outcomes", and this order is called the "slip outcome order".
+- direction a, numerator q - 2 * p
+- the right neighbor direction of direction a, numerator p
+- the left neighbor direction of direction a, numerator p
+Each slip outcome occurs with probability (numerator) / q, and the cell reached in that case is move(x, that direction). The "transitions" of (x, a) are the pairs (reached cell y, numerator m) of the slip outcomes whose numerator is positive. A slip outcome whose numerator is 0 is not included in the transitions. Even if several transitions reach the same cell, they are not merged but handled separately (the values of the sums below do not change).
+
+* 5. Bellman update and value iteration
+- A "state value" V assigns a fixed-point number V(x) to each non-terminal state x. The value of a terminal state is always 0 and is not included in V.
+- For a discount-rate numerator gamma and a state value V, the "Bellman update" B(V, x, a) is defined, with the sum over all transitions (y, m) of (x, a), as
+  B(V, x, a) = floor( SUM m * (10000 * R(y) + F(y)) / q )
+  where F(y) is 0 if y is a terminal state and floor(gamma * V(y) / 100) if it is a non-terminal state. Unless stated otherwise, gamma = g.
+- Value iteration: let V_0(x) = 0 for all non-terminal states. For k = 1, 2, ... in order, compute V_k(x) = max_a B(V_(k-1), x, a) for all non-terminal states x (the maximum over the four actions; the right-hand side always uses V_(k-1)), and let Delta_k = max_x |V_k(x) - V_(k-1)(x)|. Let K be the first k with Delta_k <= theta; K is called the "number of iterations", and V* = V_K is called the "optimal value".
+- The optimal action value is Q*(x, a) = B(V*, x, a).
+- The optimal policy pi* is the policy that chooses, in each non-terminal state x, the action pi*(x) that is the first maximum of Q*(x, .). The "optimal action set" A*(x) is the set of all actions a for which Q*(x, a) equals the maximum of the four values Q*(x, .).
+- In-place value iteration: start from V(x) = 0 for all non-terminal states and repeat the following sweep. In a sweep, let delta = 0 and process the non-terminal states x one at a time in row-major order. For each x, compute v = max_a B(V, x, a) (values already updated in this sweep are used as they are), set delta to max(delta, |v - V(x)|), and set V(x) to v. After the sweep, stop if delta <= theta. The number of sweeps performed is the "number of in-place iterations" K'.
+
+* 6. Policy evaluation and policy iteration
+- A "policy" pi assigns an action pi(x) to each non-terminal state x.
+- Policy evaluation Eval(pi, U): start the state value V from U and repeat the following sweep. In a sweep, let delta = 0 and process the non-terminal states x one at a time in row-major order. For each x, compute v = B(V, x, pi(x)) (values already updated in this sweep are used as they are), set delta to max(delta, |v - V(x)|), and set V(x) to v. After the sweep, stop if delta <= theta; the result is the V at that time and the number of sweeps performed. "Eval(pi, 0)" means U is the state value whose values are all 0.
+- Policy iteration: let pi be the policy that chooses N in every non-terminal state, and let V be the state value whose values are all 0. For i = 1, 2, ... in order, perform the following round.
+1. Set V and the number of sweeps to the result of Eval(pi, V) (starting from the V of the previous round).
+2. Let the new policy pi' be the policy that chooses, in each non-terminal state x, the first maximum action of B(V, x, .). The number of non-terminal states with pi'(x) != pi(x) is called the "number of changes".
+3. Record the number of sweeps of round i, the number of changes and V(start state), and set pi to pi'. If the number of changes is 0, policy iteration ends.
+Let I be the number of rounds performed; the last pi is the policy-iteration policy pi_PI and the last V is the policy-iteration value V_PI.
+- Number of Bellman updates: K * n * 4 for value iteration, K' * n * 4 for in-place value iteration, and (the sum of the numbers of sweeps of all rounds) * n + I * n * 4 for policy iteration.
+
+* 7. Random numbers and one environment step
+- The random number generator produces a sequence of integers from the seed X_0 by X_(j+1) = (48271 * X_j) mod 2147483647. To "draw a random number" means to take X_1, X_2, ... one at a time in order.
+- One environment step step(x, a): draw one random number u and let t = u mod q. Let d be direction a if t < q - 2 * p, otherwise the right neighbor direction of direction a if t < q - p, and otherwise the left neighbor direction of direction a (p is the value defined for x in section 4). The result is the reached cell y = move(x, d) and the reward R(y). Exactly one random number is always drawn, even when p = 0.
+
+* 8. Schedules and action selection
+- From the ALPHA pairs (s_1, a_1), (s_2, a_2), ..., the learning-rate numerator alpha(e) of episode e (counted from 1) is a_j for the largest j with s_j <= e. In the same way, the exploration-rate numerator epsilon(e) is obtained from the EPSILON pairs. The learning rate is alpha / 100 and the exploration rate is epsilon / 1000.
+- "Phases": combine all start episodes of ALPHA and EPSILON, remove duplicates and sort them in increasing order, giving h_1 < h_2 < ... < h_z. The k-th phase consists of episodes h_k to h_(k+1) - 1 (up to episode N_e when k = z).
+- Action selection by epsilon-greedy choose(x): draw one random number u; if u mod 1000 < epsilon, draw one more random number u' and choose the action numbered u' mod 4. Otherwise choose the first maximum action of Q(x, .) at that time (in this case the second random number is not drawn). epsilon is epsilon(e) of that episode.
+
+* 9. Common part of learning
+There are five learning methods, mc, sarsa, q_learning, expected_sarsa and dyna_q, and this order is called the "method order". For each method, the following learning is performed independently of the others.
+- Restart the random number generator from the seed x_0 (X_0 = x_0 for every method).
+- For every non-terminal state x and action a, let the action value Q(x, a) = 0 and the visit count visits(x, a) = 0. Action values are fixed-point numbers.
+- Perform episodes e = 1, 2, ..., N_e in order. In each episode, let alpha = alpha(e) and epsilon = epsilon(e), take the start state as the current state, and proceed one step at a time. In each step, determine the action a in the current state x (how it is determined is defined per method in section 10; sarsa uses the action chosen beforehand), let y and r be the result of step(x, a), add 1 to visits(x, a), perform the method's update, and make y the current state. If y is a terminal state, the episode ends. If L steps have been performed without reaching a terminal state, the episode ends there.
+- For each episode, record the "return" (the sum of the rewards r of the steps of that episode; no discounting), the number of steps, and the "ending" (goal if it reached a goal, pit if it reached a pit, timeout if it ended after L steps). In addition, for the last episode (e = N_e), record the sequence of visited cells (the start state followed by the y of each step, in order).
+- TD target: from the reward r, the reached cell y and the next value f, Tgt = 10000 * r if y is a terminal state, and Tgt = 10000 * r + floor(g * f / 100) if it is a non-terminal state.
+- TD update of (x, a): set Q(x, a) to Q(x, a) + floor(alpha * (Tgt - Q(x, a)) / 100).
+
+* 10. The learning methods
+(1) q_learning: in each step, a = choose(x). After step, let f = max_b Q(y, b) (the maximum over the four actions when y is a non-terminal state; if y is a terminal state, f is not used), and perform the TD update of (x, a).
+(2) sarsa: at the start of an episode, a = choose(start state). In each step, step is performed with the current a. If y is a non-terminal state, choose the next action a' = choose(y) (with the Q before the update of (x, a)), perform the TD update of (x, a) with f = Q(y, a'), and set a to a'. If y is a terminal state, perform the TD update without choosing a next action (and without drawing random numbers). Even at the L-th step, a' is chosen if y is a non-terminal state (that a' is not used).
+(3) expected_sarsa: the same as (1), but f = floor((epsilon * SUM_b Q(y, b) + 4 * (1000 - epsilon) * max_b Q(y, b)) / 4000) (SUM_b is the sum over the four actions).
+(4) dyna_q: after the same update as (1), record the model and plan. The model and the list of observed pairs are empty at the start of learning and keep being used across episodes. The model remembers, for each pair (x, a), the (r, y) observed last. When (x, a) is observed for the first time, that pair is appended to the end of the "list of observed pairs". Then repeat the planning update n_p times. In one planning update, draw one random number u, take the pair (x', a') at position u mod (length of the list) (counted from 0) of the list of observed pairs and its model entry (r', y'), let f = max_b Q(y', b) (if y' is a terminal state, f is not used), and perform the TD update of (x', a') (the target is computed from r', y' and f, and the learning rate is the alpha of that episode). Planning is performed also in a step whose y is a terminal state. Planning updates do not change the visit counts.
+(5) mc (first-visit Monte Carlo): in each step, a = choose(x), and after step only (x, a, r) is recorded; Q is not changed in the middle of an episode. When the episode ends (whatever its ending), traverse the recorded steps in the order t = T, T - 1, ..., 1 (T is the number of steps of that episode), starting G at 0, and at each t set G to 10000 * r_t + floor(g * G / 100). If the pair (x_t, a_t) of step t appears for the first time in that episode (the same pair does not occur at an earlier step), add G to the return total Sum(x_t, a_t) of that pair, add 1 to the count Cnt(x_t, a_t), and set Q(x_t, a_t) to floor(Sum(x_t, a_t) / Cnt(x_t, a_t)). Sum and Cnt are all 0 initially and accumulate across episodes. mc does not use the learning rate.
+
+* 11. Block records
+When episode e is a multiple of B, record the following values immediately after the processing of that episode has finished (for mc, including the update after the episode). e / B is called the "block number", and episodes e - B + 1 to e are called the "block".
+- agree: the number of non-terminal states x for which the first maximum action of Q(x, .) equals pi*(x)
+- value_error: floor(SUM_x |max_a Q(x, a) - V*(x)| / n) (SUM_x is the sum over all non-terminal states; a fixed-point number)
+- coverage: the number of non-terminal states x with SUM_a visits(x, a) > 0
+
+* 12. Policy analysis
+- The policy pi_m of a learning method is the policy that chooses, for the Q at the end of learning, the first maximum action of Q(x, .) in each non-terminal state x.
+- The seven policies value_iteration (pi*), policy_iteration (pi_PI), mc, sarsa, q_learning, expected_sarsa and dyna_q (the policy of each learning method) are handled in this order, and this order is called the "policy order".
+- Nominal path path(pi, o): the sequence of cells visited when moving from a non-terminal state o according to policy pi, assuming no slipping. Start the sequence with o only, and repeat the following. For the last cell z of the sequence, compute y = move(z, pi(z)), check whether y is already in the sequence, and then append y to the end of the sequence. If y is a terminal state, end with the ending goal for a goal or pit for a pit. Otherwise, if y was already in the sequence, end with loop. Otherwise, if the number of cells appended to the sequence (the number of moves) has reached L, end with limit. If none of these applies, repeat. The number of moves is called the "number of steps" of the path.
+- Basin symbol: the basin symbol of a non-terminal state x for policy pi is the symbol of the last cell (a terminal state) of the sequence if the ending of path(pi, x) is goal or pit, and * if it is loop or limit.
+- Action counts: the numbers of non-terminal states x with pi(x) equal to N, E, S and W, respectively.
+- Number of risky states: the number of non-terminal states x for which at least one transition of (x, pi(x)) reaches a pit.
+- Distance: the distance from the start state to each state is found by breadth-first search as follows. The distance of the start state is 0. For k = 0, 1, 2, ... in order, for every non-terminal state x with distance k, set the distance of each reached cell y of every transition of every action a whose distance is not yet determined to k + 1. The search does not proceed from terminal states. The number of non-terminal states whose distance is determined (including the start state) is called the "number of reachable states".
+- Symmetry: a non-terminal state (r, c) with c < W - 1 - c such that (r, W - 1 - c) is also a non-terminal state is called a "mirror pair". Count the number of mirror pairs, the number of pairs with V*(r, c) = V*(r, W - 1 - c), and the number of pairs for which pi*(r, W - 1 - c) equals the mirror image of pi*(r, c) (the mirror image of N is N, of E is W, of S is S, and of W is E).
+
+* 13. Policy evaluation
+For each policy pi, in policy order, compute the following values. (4), (5) and (8) to (11) are computed only for the policies of the learning methods.
+(1) Value: let V^pi and the number of sweeps be the result of Eval(pi, 0). Compute the number of non-terminal states with pi(x) = pi*(x) (agree), the number of non-terminal states for which pi(x) is contained in A*(x) (optimal_actions), V^pi(start state), and the number of sweeps. Also compute the maximum of V*(x) - V^pi(x) (it can be negative) and the non-terminal state where that maximum occurs (for equal values, the first in row-major order).
+(2) Improvement: let the policy pi^+ be the policy that chooses, in each non-terminal state x, the first maximum action of B(V^pi, x, .). Compute the number of non-terminal states with pi^+(x) != pi(x), the value at the start state of the value of Eval(pi^+, 0), and the number of non-terminal states with pi^+(x) = pi*(x).
+(3) Absorption analysis: only this analysis is computed with integers in units of 1/100000000 (D = 100000000 represents 1). Let G_0(x) = P_0(x) = E_0(x) = 0 for all non-terminal states, and for k = 1, 2, ..., L in order, compute the following for all non-terminal states x, with the sums over all transitions (y, m) of (x, pi(x)) (the right-hand sides always use the values of k - 1).
+  G_k(x) = floor( SUM m * phi(y) / q ) (phi(y) is D if y is a goal, 0 if it is a pit, and G_(k-1)(y) if it is a non-terminal state)
+  P_k(x) = floor( SUM m * psi(y) / q ) (psi(y) is D if y is a pit, 0 if it is a goal, and P_(k-1)(y) if it is a non-terminal state)
+  E_k(x) = D + floor( SUM m * chi(y) / q ) (chi(y) is 0 if y is a terminal state and E_(k-1)(y) if it is a non-terminal state)
+  For the start state o, let p_goal = G_L(o), p_pit = P_L(o), p_timeout = D - p_goal - p_pit, and expected_steps = E_L(o). They correspond, respectively, to the probability of reaching a goal within L steps, the probability of reaching a pit within L steps, the probability of reaching neither, and the expected number of steps (counting any number above L as L). When writing them, write floor(value / 10000) as a fixed-point number for every value.
+(4) Behaviour-policy value: let epsilon_f = epsilon(N_e), and let the weight w(x, a) of each non-terminal state x and action a be epsilon_f + 4 * (1000 - epsilon_f) if a = pi(x), and epsilon_f otherwise (the four weights sum to 4000). Start the state value V at all 0 and repeat the following sweep. In a sweep, let delta = 0 and process the non-terminal states x one at a time in row-major order. For each x, compute v = floor( SUM_a w(x, a) * B(V, x, a) / 4000 ) (all four B are computed with the same V before V(x) is updated; values of other states already updated in this sweep are used as they are), set delta to max(delta, |v - V(x)|), and set V(x) to v. After the sweep, stop if delta <= theta. Compute V(start state) at the end and the number of sweeps performed.
+(5) Q errors: for the Q at the end of learning, let err(x) = |max_a Q(x, a) - V*(x)| for each non-terminal state x. Compute floor(SUM_x err(x) / n), the maximum of err(x) and the non-terminal state where that maximum occurs (for equal values, the first in row-major order), the number of non-terminal states with SUM_a visits(x, a) = 0, and the number of non-terminal states in which two or more actions attain the maximum of Q(x, .). Also, for each action a, compute the sum of |Q(x, a) - Q*(x, a)| over all non-terminal states x with visits(x, a) > 0 and the number k_a of those states, and compute floor(sum / k_a) (this value does not exist when k_a = 0).
+(6) Rollouts: restart the random number generator from the seed y_0 (restarted for each policy), and perform the following rollout M times. Start from the start state; in each step, perform step(x, pi(x)) (the only random number drawn is the one of step), record the reward, and move to the reached cell. End when a terminal state is reached or when L steps have been performed. For each rollout, record the return (the sum of the rewards), the discounted return, the number of steps, the ending (goal, pit, timeout) and the terminal state reached. The discounted return is a fixed-point number obtained by traversing the recorded rewards from the last one to the first one, starting the value at 0 and, for each reward r, setting the value to 10000 * r + floor(g * value / 100).
+(7) Agreement table: for every pair (A, Z) of policies in policy order, the number of non-terminal states x with A(x) = Z(x) (counted even when A and Z are the same policy).
+(8) Training summary: compute the sum of the numbers of steps of all episodes, the numbers of episodes whose ending is goal, pit and timeout respectively, the number of the block with the largest sum of returns (for equal values, the smaller number) and the mean return of that block, the mean return of the last block, and the reach block. The "mean return" of a block is the average value of the sum of the returns of that block and B. With T_j the sum of the returns of block j, the reach block is the number of the first block with 10 * M * T_j >= 9 * B * R_vi. R_vi is the sum of the returns of the M rollouts of the value_iteration policy (that is, it is the first block whose mean return reached at least 90% of the mean rollout return of the optimal policy). If there is no such block, the reach block is -.
+(9) Most visited states: the first three non-terminal states when they are sorted by SUM_a visits(x, a) in decreasing order (for equal values, in row-major order), and the SUM_a visits(x, a) of each.
+(10) Last episode: the return, number of steps, ending and sequence of visited cells of the last episode recorded in section 9.
+(11) Phase summary: for each phase, compute the alpha and epsilon of the first episode of that phase, the average value of the sum of the returns of the phase's episodes and the number of episodes, the average value of the sum of the numbers of steps and the number of episodes, and the number of episodes whose ending is goal.
+
+* 14. Sensitivity analysis
+- Discount rate: for each value g' of GAMMA_SWEEP, perform the value iteration of section 5 with gamma = g' (theta and the world are the same), and find its number of iterations and its optimal value V'. Let the policy pi' be the policy that chooses, in each non-terminal state x, the first maximum action of B(V', x, .) (the Bellman update with gamma = g'). Compute V'(start state), the ending of path(pi', start state), its number of steps, the last cell of the sequence, and the number of non-terminal states with pi'(x) != pi*(x).
+- Slip: for each pair (f, i) of SLIP_SWEEP, do the same with gamma = g in the world where p_f is changed to f and p_i to i (q and everything else are the same).
+
+[Output files]
+Write five files: output/values.txt, output/policies.txt, output/q_tables.csv, output/learning_curves.csv and output/evaluation.txt.
+
+* Common rules
+- The output consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). Do not put extra whitespace at the start or end of a line, and do not insert empty lines that are not specified.
+- In the formats below, each part enclosed in < > is replaced by a value, and every other character is written as it is. Values in text files are separated by a single space, and values in CSV files by a comma. When values of the same kind are listed, as in "<...> ...", they are listed with that separator.
+- An integer is written as a base-10 number without extra leading zeros, and a negative number has a leading -.
+- A fixed-point number v is written as follows: write - if v < 0, then floor(|v| / 10000) in base 10, a decimal point ., and |v| mod 10000 as exactly 4 decimal digits (padded with leading zeros). Examples: 123456 is 12.3456, -5 is -0.0005, 0 is 0.0000, -30000 is -3.0000.
+- A cell is written as r,c (row number, comma, column number; no spaces).
+- Policy names, learning method names and endings are written with the lowercase English names defined in [Processing] (value_iteration, goal, etc.). Actions are written with the letters N, E, S, W.
+- A "grid" consists of H lines corresponding to the rows of the world, each line listing W fields from left to right. The field of a wall cell is #, the field of a goal is G, the field of a pit is P, and the field of a non-terminal state holds the content defined for each grid. In a "grid without separators", the field contents (each one character) are concatenated without separators; in a "grid with separators", the fields are separated by a single space.
+
+* output/values.txt
+Write the following parts (1) to (10) in this order, with one empty line between parts.
+(1) World summary
+world rows <H> cols <W> states <n> walls <number of wall cells> floor <number of . and S cells> ice <number of ice cells> goals <number of goals> pits <number of pits>
+start <cell of the start state> reachable <number of reachable states>
+terminal <cell> <goal or pit> reward <reward> distance <distance>
+... (one line per terminal state, in row-major order; write goal for a goal and pit for a pit, and write - as the distance of a terminal state whose distance was not determined)
+(2) Value iteration
+value_iteration gamma <g> theta <theta (fixed-point number)> iterations <K>
+iteration <k> max_change <Delta_k (fixed-point number)>
+... (one line each, for k = 1, 2, ..., K in order)
+(3) Optimal values
+optimal_values
+<grid with separators; the field of a non-terminal state x is V*(x) (fixed-point number)>
+(4) Numbers of optimal actions
+optimal_action_counts
+<grid without separators; the field of a non-terminal state x is the number of actions in A*(x) (a digit from 1 to 4)>
+(5) Ties and symmetry
+ties <number of non-terminal states whose A*(x) contains two or more actions>
+tie <cell> <string concatenating the letters of the actions of A*(x) in action order>
+... (one line per non-terminal state whose A*(x) contains two or more actions, in row-major order)
+symmetry pairs <number of mirror pairs> equal_values <number of pairs with equal values> mirrored_actions <number of pairs whose policies are mirror images>
+(6) Policy iteration
+policy_iteration rounds <I>
+round <i> sweeps <number of sweeps> changed <number of changes> value_start <V(start state) (fixed-point number)>
+... (one line each, for i = 1, 2, ..., I in order; the values recorded in section 6)
+(7) Policy-iteration values
+policy_iteration_values
+<grid with separators; the field of a non-terminal state x is V_PI(x) (fixed-point number)>
+(8) Comparison and amount of computation
+comparison policy_differences <number of non-terminal states with pi_PI(x) != pi*(x)> max_value_difference <maximum of |V_PI(x) - V*(x)| (fixed-point number)> at <the non-terminal state where that maximum occurs (for equal values, the first in row-major order)>
+backups value_iteration <number of Bellman updates of value iteration> in_place_iterations <K'> in_place <number of Bellman updates of in-place value iteration> policy_iteration <number of Bellman updates of policy iteration>
+(9) Discount-rate sensitivity analysis
+gamma_sweep
+gamma <g'> iterations <number of iterations> value_start <V'(start state) (fixed-point number)> path <ending of the path> steps <number of steps of the path> last <last cell of the sequence> differences <number of non-terminal states where pi' and pi* differ>
+... (one line each, in the order of GAMMA_SWEEP)
+(10) Slip sensitivity analysis
+slip_sweep
+slip <f> <i> iterations <number of iterations> value_start <V'(start state) (fixed-point number)> path <ending of the path> steps <number of steps of the path> last <last cell of the sequence> differences <number of non-terminal states where pi' and pi* differ>
+... (one line each, in the order of the pairs of SLIP_SWEEP)
+
+* output/policies.txt
+For each policy pi, in policy order, write the following part, with one empty line between parts.
+<policy name>
+<grid without separators; the field of a non-terminal state x is the character representing pi(x) (^ for N, > for E, v for S, < for W)>
+path <ending> steps <number of steps> <cell> <cell> ...
+actions N <number of N> E <number of E> S <number of S> W <number of W> risk <number of risky states>
+basins
+<grid without separators; the field of a non-terminal state x is the basin symbol of x>
+The path line is path(pi, start state); its cells are the whole sequence from the start state to the last cell, in order. The actions line gives the action counts and the number of risky states of section 12.
+For the policies of the learning methods, the following is also written immediately after the basins grid.
+visits
+<grid without separators; the field of a non-terminal state x is the number of digits of SUM_a visits(x, a) written in base 10 (0 if SUM_a visits(x, a) = 0)>
+
+* output/q_tables.csv
+The first line is method,row,col,action,value,visits (the header line). Then, for value_iteration (writing Q*), mc, sarsa, q_learning, expected_sarsa and dyna_q (writing the Q at the end of learning), in this order, write the following line for each non-terminal state x in row-major order and, in each state, for each action a in action order.
+<name>,<r of x>,<c of x>,<letter of a>,<Q value (fixed-point number)>,<visits(x, a)>
+In the value_iteration lines, write - in the visits field.
+
+* output/learning_curves.csv
+The first line is method,block,mean_return,mean_steps,goals,pits,timeouts,agree,value_error,coverage (the header line). Then, for each learning method in method order and, within each method, in block-number order, write the following line (1 + 5 * N_e / B lines in total).
+<method>,<block number>,<mean return of the block>,<average value of the sum of the numbers of steps of the block and B>,<number of goal>,<number of pit>,<number of timeout>,<agree>,<value_error (fixed-point number)>,<coverage>
+The numbers of goal, pit and timeout are the numbers of episodes of that block with that ending. agree, value_error and coverage are the values recorded in section 11.
+
+* output/evaluation.txt
+Write the following parts (1) to (14) in this order, with one empty line between parts. A part whose lines start with a policy name has 7 lines in policy order, and a part whose lines start with a method name has 5 lines in method order. All values are those computed in section 13. Values, average values, mean returns, the mean of discounted returns (mean_discounted), errors, max_gap and the values of the absorption analysis are written as fixed-point numbers, and all other values (numbers of states or episodes, numbers of sweeps, block numbers, epsilon_f, returns, visit counts, etc.) are written as integers.
+(1) Summary
+summary states <n> start <cell of the start state> rollouts <M> step_limit <L>
+(2) Values
+policies
+policy agree optimal_actions value_start sweeps max_gap at
+<policy> <agree> <optimal_actions> <V^pi(start state)> <number of sweeps> <maximum of V*(x) - V^pi(x)> <the cell where that maximum occurs>
+(3) Improvement
+improvement
+policy changed value_start agree
+<policy> <number of non-terminal states where pi^+ and pi differ> <value at the start state of the value of Eval(pi^+, 0)> <number of non-terminal states where pi^+ and pi* agree>
+(4) Absorption analysis
+absorption
+policy p_goal p_pit p_timeout expected_steps
+<policy> <p_goal> <p_pit> <p_timeout> <expected_steps>
+(5) Behaviour-policy value
+behaviour
+method epsilon value_start sweeps
+<method> <epsilon_f> <V(start state)> <number of sweeps>
+(6) Q errors
+q_errors
+method mean_abs max_abs at unvisited tied
+<method> <floor(SUM_x err(x) / n)> <maximum of err(x)> <the cell where that maximum occurs> <number of non-terminal states with SUM_a visits(x, a) = 0> <number of non-terminal states in which two or more actions attain the maximum>
+(7) Q errors per action
+q_action_errors
+method N E S W
+<method> <value of N> <value of E> <value of S> <value of W> (write - for an action that has no value)
+(8) Rollouts
+rollouts
+policy mean_return mean_discounted mean_steps goals pits timeouts min median max
+<policy> <average value of the sum of the returns and M> <floor(sum of the discounted returns / M)> <average value of the sum of the numbers of steps and M> <number of goal> <number of pit> <number of timeout> <minimum return> <median return> <maximum return>
+The median return is the floor((M + 1) / 2)-th value (counted from 1) when the M returns are sorted in increasing order. The minimum, median and maximum returns are written as integers.
+(9) Terminal states reached
+terminals
+policy <cell of a terminal state ...>
+<policy> <number of rollouts that ended at each terminal state ...>
+The terminal states are listed in row-major order.
+(10) Agreement table
+agreement
+policy value_iteration policy_iteration mc sarsa q_learning expected_sarsa dyna_q
+<policy A> <number of agreements of A with each policy Z ...>
+Z is listed in policy order.
+(11) Training summary
+training
+method steps goals pits timeouts best_block best_mean last_mean reach
+<method> <sum of the numbers of steps> <number of goal> <number of pit> <number of timeout> <number of the block with the largest sum of returns> <its mean return> <mean return of the last block> <reach block>
+(12) Most visited states
+visited
+<method> <cell>:<visit count> <cell>:<visit count> <cell>:<visit count>
+The visit count is SUM_a visits(x, a), and the three cells are listed in the order of section 13 (9).
+(13) Last episodes
+last_episodes
+<method> return <return> steps <number of steps> end <ending> <cell> <cell> ...
+The cells are the whole sequence of visited cells, in order.
+(14) Phase summary
+phases
+<method> <first episode of the phase>-<last episode of the phase> alpha <alpha> epsilon <epsilon> mean_return <average value of the returns> mean_steps <average value of the numbers of steps> goals <number of goal>
+... (one line each, for each learning method in method order and, within each method, in phase order)
+
+[Source files]
+Split the program into the following six source files (file names follow the conventions of each language).
+- main: the overall flow and most of the processing. Reading the settings, schedules and phases, the learning of the five learning methods (advancing episodes and steps, calling each method's action selection and update, recording returns, numbers of steps, endings and visited cells, block records), the policy of each learning method, the numbers of agreements between policies, nominal paths and basin symbols, action counts and numbers of risky states, distances by breadth-first search, symmetry, absorption analysis, behaviour-policy values, rollouts, policy evaluation and improvement, Q errors, the training summary, most visited states and phase summary, the discount-rate and slip sensitivity analyses, and assembling the contents of the five output files.
+- environment: reading input/world.txt (cells, states, terminal states and their rewards, the start state, wind strengths), one move (handling walls and wind), slip outcomes and the transition model, rewards, the random number generator, and one environment step.
+- dynamic_programming: the Bellman update, action values from state values, the first maximum, value iteration, in-place value iteration, policy evaluation and policy iteration.
+- td_learning: action selection by epsilon-greedy, the TD target, the next value (maximum and expectation), the TD update, and the Dyna-Q model (recording and planning updates).
+- monte_carlo: the first-visit Monte Carlo update (computing returns, and the per-pair return totals, counts and averages) and the discounted return of a sequence of rewards.
+- report: the fixed-point number format, the average value format, the cell format, building grids (values, policy characters, the various symbols), the rows of the Q-value table, and writing sequences of lines to files.
+
+[Constraints]
+- 3 <= H <= 30, 3 <= W <= 30. All cells on the outermost border of the world are walls. There is exactly one S cell, at least 1 and at most 26 terminal states, and at least 3 non-terminal states.
+- Rewards and r_s are integers from -100 to 100, and wind strengths are from 0 to 9.
+- 1 <= g <= 99, and every value of GAMMA_SWEEP is also from 1 to 99. 1 <= q <= 100, 0 <= p_f, 0 <= p_i, 2 * p_f <= q, 2 * p_i <= q (every pair of SLIP_SWEEP satisfies the same conditions). 1 <= theta.
+- 1 <= B, and N_e is a multiple of B. ALPHA and EPSILON each have at least one pair, s_1 = 1, the start episodes are in increasing order, and all are at most N_e. Learning-rate numerators are from 1 to 100, and exploration-rate numerators are from 0 to 1000.
+- 1 <= L, 0 <= n_p, 1 <= M, 1 <= x_0 <= 2147483646, 1 <= y_0 <= 2147483646.
+- The given data has H = 12, W = 17, n = 121, 9 terminal states (3 goals, 6 pits), N_e = 1500, L = 200, B = 50, M = 200.
+- For the given data, value iteration (including that of the sensitivity analyses), in-place value iteration, policy evaluation and the sweeps of the behaviour-policy value all finish within 1000 iterations, and policy iteration finishes within 100 rounds.
+- The absolute value of every integer, including intermediate values, is less than 2^53. However, values exceeding 2^31 appear in the random-number computation (48271 * X_j), the numerator of f in Expected SARSA, the behaviour-policy value, the absorption analysis and elsewhere, so compute all integers with 64-bit integers (or a type that represents integers below 2^53 exactly).
+- The input files strictly follow the format above. There is no need to check the input for errors.
+- All computation in this task is integer computation. floor( ) rounds toward negative infinity even when the dividend is negative (the result differs from integer division that truncates toward 0). If you compute exactly with the formulas and in the order defined in this statement, the results agree in every language.
+
+[Example]
+A small example that differs from the actual input (a world of 5 rows and 7 columns, 20 episodes per learning method).
+
+input/world.txt:
+ROWS 5
+COLS 7
+#######
+#P.G.P#
+#.~#~.#
+#..S..#
+#######
+WIND 0010100
+REWARDS -5 10 -5
+input/params.txt:
+GAMMA 90
+STEP_REWARD -1
+SLIP 10 1 3
+THETA 5
+GAMMA_SWEEP 50 99
+SLIP_SWEEP 0 0 2 4
+EPISODES 20
+STEP_LIMIT 10
+BLOCK_SIZE 10
+ALPHA 1 50 13 20
+EPSILON 1 300 8 100
+PLANNING_STEPS 3
+SEED 12345
+ROLLOUTS 10
+ROLLOUT_SEED 777
+output/values.txt:
+world rows 5 cols 7 states 11 walls 21 floor 9 ice 2 goals 1 pits 2
+start 3,3 reachable 11
+terminal 1,1 pit reward -5 distance 3
+terminal 1,3 goal reward 10 distance 3
+terminal 1,5 pit reward -5 distance 3
+
+value_iteration gamma 90 theta 0.0005 iterations 14
+iteration 1 max_change 7.8000
+iteration 2 max_change 5.4360
+iteration 3 max_change 3.7519
+iteration 4 max_change 1.8773
+iteration 5 max_change 0.8437
+iteration 6 max_change 0.3720
+iteration 7 max_change 0.1643
+iteration 8 max_change 0.0700
+iteration 9 max_change 0.0286
+iteration 10 max_change 0.0115
+iteration 11 max_change 0.0045
+iteration 12 max_change 0.0017
+iteration 13 max_change 0.0007
+iteration 14 max_change 0.0003
+
+optimal_values
+# # # # # # #
+# P 9.5121 G 9.5121 P #
+# 3.9312 6.8390 # 6.8390 3.9312 #
+# 4.5238 6.6154 4.5889 6.6154 4.5238 #
+# # # # # # #
+
+optimal_action_counts
+#######
+#P1G1P#
+#11#11#
+#11211#
+#######
+
+ties 1
+tie 3,3 EW
+symmetry pairs 5 equal_values 5 mirrored_actions 5
+
+policy_iteration rounds 2
+round 1 sweeps 29 changed 9 value_start -5.2997
+round 2 sweeps 11 changed 0 value_start 4.5890
+
+policy_iteration_values
+# # # # # # #
+# P 9.5121 G 9.5121 P #
+# 3.9312 6.8390 # 6.8390 3.9312 #
+# 4.5238 6.6154 4.5890 6.6154 4.5239 #
+# # # # # # #
+
+comparison policy_differences 0 max_value_difference 0.0001 at 3,3
+backups value_iteration 616 in_place_iterations 10 in_place 440 policy_iteration 528
+
+gamma_sweep
+gamma 50 iterations 9 value_start -0.0255 path goal steps 3 last 1,3 differences 0
+gamma 99 iterations 15 value_start 6.5723 path goal steps 3 last 1,3 differences 0
+
+slip_sweep
+slip 0 0 iterations 4 value_start 6.2000 path goal steps 3 last 1,3 differences 2
+slip 2 4 iterations 20 value_start 2.1700 path goal steps 3 last 1,3 differences 0
+output/policies.txt: the first 14 lines (the value_iteration part) are as follows.
+value_iteration
+#######
+#P>G<P#
+#>>#<<#
+#>^>^<#
+#######
+path goal steps 3 3,3 3,4 1,4 1,3
+actions N 2 E 5 S 0 W 4 risk 2
+basins
+#######
+#PbGbP#
+#bb#bb#
+#bbbbb#
+#######
+The mc part and the sarsa part (including the empty line between them) are as follows (the policy_iteration, q_learning, expected_sarsa and dyna_q parts are omitted).
+mc
+#######
+#P>G<P#
+#^<#^^#
+#^^<>^#
+#######
+path goal steps 3 3,3 3,2 1,2 1,3
+actions N 6 E 2 S 0 W 3 risk 4
+basins
+#######
+#PbGbP#
+#aa#bc#
+#abbcc#
+#######
+visits
+#######
+#P2G1P#
+#01#00#
+#02210#
+#######
+
+sarsa
+#######
+#P>GvP#
+#v>#v^#
+#^^<^^#
+#######
+path goal steps 3 3,3 3,2 1,2 1,3
+actions N 5 E 2 S 3 W 1 risk 3
+basins
+#######
+#PbG*P#
+#*b#*c#
+#*bb*c#
+#######
+visits
+#######
+#P2G1P#
+#11#10#
+#02210#
+#######
+output/q_tables.csv: the first 45 lines (the header and the value_iteration part) are as follows (the parts of the learning methods are omitted).
+method,row,col,action,value,visits
+value_iteration,1,2,N,6.5486,-
+value_iteration,1,2,E,9.5121,-
+value_iteration,1,2,S,6.5486,-
+value_iteration,1,2,W,-2.4879,-
+value_iteration,1,4,N,6.5486,-
+value_iteration,1,4,E,-2.4879,-
+value_iteration,1,4,S,6.5486,-
+value_iteration,1,4,W,9.5121,-
+value_iteration,2,1,N,-3.2307,-
+value_iteration,2,1,E,3.9312,-
+value_iteration,2,1,S,3.2264,-
+value_iteration,2,1,W,1.8375,-
+value_iteration,2,2,N,3.7925,-
+value_iteration,2,2,E,6.8390,-
+value_iteration,2,2,S,2.8302,-
+value_iteration,2,2,W,1.8147,-
+value_iteration,2,4,N,3.7925,-
+value_iteration,2,4,E,1.8147,-
+value_iteration,2,4,S,2.8302,-
+value_iteration,2,4,W,6.8390,-
+value_iteration,2,5,N,-3.2307,-
+value_iteration,2,5,E,1.8375,-
+value_iteration,2,5,S,3.2264,-
+value_iteration,2,5,W,3.9312,-
+value_iteration,3,1,N,2.8329,-
+value_iteration,3,1,E,4.5239,-
+value_iteration,3,1,S,3.2596,-
+value_iteration,3,1,W,3.0180,-
+value_iteration,3,2,N,6.6154,-
+value_iteration,3,2,E,3.7755,-
+value_iteration,3,2,S,4.6908,-
+value_iteration,3,2,W,3.3019,-
+value_iteration,3,3,N,3.4947,-
+value_iteration,3,3,E,4.5890,-
+value_iteration,3,3,S,3.4947,-
+value_iteration,3,3,W,4.5890,-
+value_iteration,3,4,N,6.6154,-
+value_iteration,3,4,E,3.3019,-
+value_iteration,3,4,S,4.6908,-
+value_iteration,3,4,W,3.7755,-
+value_iteration,3,5,N,2.8329,-
+value_iteration,3,5,E,3.0180,-
+value_iteration,3,5,S,3.2596,-
+value_iteration,3,5,W,4.5239,-
+output/learning_curves.csv:
+method,block,mean_return,mean_steps,goals,pits,timeouts,agree,value_error,coverage
+mc,1,2.7000,5.7000,8,1,1,3,3.7974,6
+mc,2,7.5000,3.5000,10,0,0,3,3.7787,6
+sarsa,1,-3.3000,5.7000,4,5,1,5,4.8366,8
+sarsa,2,7.1000,3.9000,10,0,0,4,4.2071,8
+q_learning,1,-4.9000,5.8000,3,6,1,5,5.1920,10
+q_learning,2,1.6000,4.9000,7,3,0,4,4.7897,11
+expected_sarsa,1,-3.3000,5.3000,4,6,0,2,4.8677,9
+expected_sarsa,2,3.3000,5.1000,8,1,1,3,3.9461,11
+dyna_q,1,0.0000,6.5000,7,3,0,7,3.0551,10
+dyna_q,2,-2.4000,7.5000,5,1,4,6,3.6146,10
+output/evaluation.txt:
+summary states 11 start 3,3 rollouts 10 step_limit 10
+
+policies
+policy agree optimal_actions value_start sweeps max_gap at
+value_iteration 11 11 4.5890 11 0.0000 1,2
+policy_iteration 11 11 4.5890 11 0.0000 1,2
+mc 3 4 3.8553 9 9.4712 3,4
+sarsa 4 5 4.0632 21 10.7282 2,4
+q_learning 4 5 -0.2338 39 10.5074 3,5
+expected_sarsa 3 4 3.6560 62 13.7283 3,5
+dyna_q 6 6 -1.2894 26 8.0510 2,5
+
+improvement
+policy changed value_start agree
+value_iteration 0 4.5890 11
+policy_iteration 0 4.5890 11
+mc 7 4.5890 10
+sarsa 7 4.5890 9
+q_learning 7 4.5890 11
+expected_sarsa 7 4.5890 10
+dyna_q 5 4.5890 11
+
+absorption
+policy p_goal p_pit p_timeout expected_steps
+value_iteration 0.9861 0.0113 0.0025 3.9998
+policy_iteration 0.9861 0.0113 0.0025 3.9998
+mc 0.8933 0.1057 0.0009 3.7572
+sarsa 0.9305 0.0000 0.0694 4.3437
+q_learning 0.6245 0.3139 0.0614 4.7975
+expected_sarsa 0.8914 0.0550 0.0534 4.2248
+dyna_q 0.5998 0.1353 0.2647 7.0381
+
+behaviour
+method epsilon value_start sweeps
+mc 100 2.7393 9
+sarsa 100 3.1113 17
+q_learning 100 -0.4198 34
+expected_sarsa 100 2.6419 50
+dyna_q 100 -1.2367 22
+
+q_errors
+method mean_abs max_abs at unvisited tied
+mc 3.7787 9.5121 1,4 5 6
+sarsa 4.2071 9.5121 1,4 3 7
+q_learning 4.7897 9.5121 1,4 0 4
+expected_sarsa 3.9461 7.2314 3,4 0 1
+dyna_q 3.6146 6.8390 2,2 1 2
+
+q_action_errors
+method N E S W
+mc 6.0652 3.6224 3.6599 2.2958
+sarsa 4.8117 3.5670 5.5163 2.4896
+q_learning 4.3500 3.8348 4.7183 3.5437
+expected_sarsa 4.4326 3.8414 4.6395 2.6316
+dyna_q 3.9408 4.2351 3.2928 4.5380
+
+rollouts
+policy mean_return mean_discounted mean_steps goals pits timeouts min median max
+value_iteration 6.5000 4.0121 4.5000 10 0 0 3 6 8
+policy_iteration 6.5000 4.0121 4.5000 10 0 0 3 6 8
+mc 5.2000 3.0741 4.3000 9 1 0 -7 6 8
+sarsa 4.9000 3.0178 5.0000 9 0 1 -10 6 8
+q_learning -3.4000 -3.3077 3.9000 3 7 0 -8 -7 7
+expected_sarsa 4.5000 2.8628 5.0000 9 1 0 -14 6 8
+dyna_q 2.9000 0.4114 7.0000 9 0 1 -10 4 8
+
+terminals
+policy 1,1 1,3 1,5
+value_iteration 0 10 0
+policy_iteration 0 10 0
+mc 1 9 0
+sarsa 0 9 0
+q_learning 7 3 0
+expected_sarsa 1 9 0
+dyna_q 0 9 0
+
+agreement
+policy value_iteration policy_iteration mc sarsa q_learning expected_sarsa dyna_q
+value_iteration 11 11 3 4 4 3 6
+policy_iteration 11 11 3 4 4 3 6
+mc 3 3 11 6 3 6 3
+sarsa 4 4 6 11 4 5 2
+q_learning 4 4 3 4 11 6 5
+expected_sarsa 3 3 6 5 6 11 2
+dyna_q 6 6 3 2 5 2 11
+
+training
+method steps goals pits timeouts best_block best_mean last_mean reach
+mc 92 18 1 1 2 7.5000 7.5000 2
+sarsa 96 14 5 1 2 7.1000 7.1000 2
+q_learning 107 10 9 1 2 1.6000 1.6000 -
+expected_sarsa 104 12 7 1 2 3.3000 3.3000 -
+dyna_q 140 12 4 4 1 0.0000 -2.4000 -
+
+visited
+mc 3,3:42 1,2:24 3,2:21
+sarsa 3,3:40 1,2:23 3,2:18
+q_learning 3,3:34 1,2:18 3,2:18
+expected_sarsa 3,3:37 1,2:16 3,2:15
+dyna_q 3,3:37 2,5:24 3,4:21
+
+last_episodes
+mc return 8 steps 3 end goal 3,3 3,2 1,2 1,3
+sarsa return 6 steps 5 end goal 3,3 3,3 3,2 1,2 1,2 1,3
+q_learning return 7 steps 4 end goal 3,3 3,2 2,2 1,2 1,3
+expected_sarsa return 6 steps 5 end goal 3,3 3,2 3,3 3,2 1,2 1,3
+dyna_q return 5 steps 6 end goal 3,3 3,4 1,4 1,4 1,4 1,4 1,3
+
+phases
+mc 1-7 alpha 50 epsilon 300 mean_return 0.8571 mean_steps 6.4285 goals 5
+mc 8-12 alpha 50 epsilon 100 mean_return 7.2000 mean_steps 3.8000 goals 5
+mc 13-20 alpha 20 epsilon 100 mean_return 7.5000 mean_steps 3.5000 goals 8
+sarsa 1-7 alpha 50 epsilon 300 mean_return -7.8572 mean_steps 6.5714 goals 1
+sarsa 8-12 alpha 50 epsilon 100 mean_return 7.4000 mean_steps 3.6000 goals 5
+sarsa 13-20 alpha 20 epsilon 100 mean_return 7.0000 mean_steps 4.0000 goals 8
+q_learning 1-7 alpha 50 epsilon 300 mean_return -7.8572 mean_steps 6.5714 goals 1
+q_learning 8-12 alpha 50 epsilon 100 mean_return 0.0000 mean_steps 5.0000 goals 3
+q_learning 13-20 alpha 20 epsilon 100 mean_return 2.7500 mean_steps 4.5000 goals 6
+expected_sarsa 1-7 alpha 50 epsilon 300 mean_return -4.8572 mean_steps 5.1428 goals 2
+expected_sarsa 8-12 alpha 50 epsilon 100 mean_return -1.0000 mean_steps 6.0000 goals 3
+expected_sarsa 13-20 alpha 20 epsilon 100 mean_return 4.8750 mean_steps 4.7500 goals 7
+dyna_q 1-7 alpha 50 epsilon 300 mean_return -2.1429 mean_steps 6.7142 goals 4
+dyna_q 8-12 alpha 50 epsilon 100 mean_return -0.4000 mean_steps 6.2000 goals 3
+dyna_q 13-20 alpha 20 epsilon 100 mean_return -0.8750 mean_steps 7.7500 goals 5
+In this example, the cell directly above the start state 3,3 is a wall, so the values going around from the east and from the west are exactly equal (Q*(3,3,E) and Q*(3,3,W) are both 4.5890), and by the first-maximum rule pi*(3,3) is E. Q*(3,1,E) is 4.5239, which differs from V*(3,1) = 4.5238, because Q* is the value after one more Bellman update from V* = V_K. In the policy-iteration values, the values of 3,1 and 3,5 differ because the in-place sweeps proceed in row-major order. Moving north from 3,2, the agent is pushed up one cell by the wind of column 2 and arrives at 1,2. In the phase summary, the mean_return of sarsa 1-7 is floor(10000 * (-55) / 7) = -78572 from the return sum -55, and it is written as -7.8572.

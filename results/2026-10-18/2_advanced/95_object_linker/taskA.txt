@@ -1,0 +1,445 @@
+[Overview]
+Write a static linker for building firmware for embedded devices. The linker reads object files (files output by a compiler or assembler that hold byte sequences of machine code and data, a symbol table, and relocation information) and archives (libraries) that bundle object files, and builds one executable image as specified by a link script. The object files and archives in this task are written in a custom text format.
+The program does the following.
+- It loads the object files in the order they are listed in the link script, and from archives it extracts, by the classic Unix rule, only the members that define a symbol that is undefined at that point. Archives specified in a group are examined repeatedly until no more members are extracted.
+- After discarding duplicate COMDAT groups and performing symbol wrapping (renaming), it resolves symbols with the priority order strong definition, common symbol, weak definition. Duplicate strong definitions are an error.
+- It removes the sections that cannot be reached from the entry symbol by following relocations (garbage collection), gathers the remaining sections into segments and output sections, and assigns addresses. In doing so it sorts by priority, merges identical strings, allocates common symbols, and adds veneers (relay code created by the linker) for calls that cannot reach their targets.
+- It determines the load addresses of segments that are stored in another region, defines symbols with link script expressions, and applies 7 kinds of relocations while checking for overflow.
+- It writes a checksum into the image, and writes a hex dump of the image, an Intel HEX file for programming, a link map, a cross-reference table, a list of relocations, and diagnostic messages.
+All computation is done with integers; floating-point numbers are not used. The program reads files from the input/ folder and writes files to the output/ folder. It prints nothing to standard output.
+
+[Input files]
+Every input file consists of ASCII characters only, and every line ends with a newline (LF). No line has leading or trailing whitespace, and there are no empty lines. Words within a line are separated by exactly one space each (only inside the expression on a define line of (1) do the separation of words and the notation of numbers follow Section 10 and [Constraints] instead). Names and numbers have the following forms.
+- An object file name is a string of one or more characters consisting of lowercase letters, digits and _, followed by .obj; an archive name is a string of the same form followed by .lib. Both are at most 32 characters in total.
+- A segment name is a string of 1 to 16 characters consisting of lowercase letters and digits.
+- A section name is a string of 2 to 48 characters that starts with "." and whose remaining characters are letters (uppercase and lowercase), digits, _ and ".".
+- A symbol name is a string of 1 to 40 characters consisting of letters (uppercase and lowercase), digits, _ and ".", whose first character is not a digit.
+- Integers are written in decimal without extra leading zeros, and negative numbers have a leading -.
+- Addresses and lengths are written as "0x" followed by 8 hexadecimal digits, and byte values as "0x" followed by 2 hexadecimal digits (a-f are lowercase).
+
+(1) input/link.txt: link script
+The following lines appear in this order.
+- Line 1 is entry <symbol name>. It specifies the name of the entry symbol (the symbol that represents the position where program execution starts).
+- Line 2 is gc on or gc off. It specifies whether to perform garbage collection (Section 5).
+- The following one or more lines are segment <segment name> <base address> <length> <fill> <output section name> <output section name> ... . Each line defines one segment. <base address> is the address of the start of the segment, <length> is the upper limit on the number of bytes the segment may use, and <fill> (a byte value) is the value used to fill the gaps in the image. The one or more output section names that follow list the output sections placed in that segment, in placement order. All segment names are distinct, and all output section names are distinct.
+- The following zero or more lines are load <segment name> <segment name>. load A B means that the contents of segment A are stored in the region of segment B (Section 9).
+- The following zero or more lines are keep <output section name> (Section 5).
+- The following zero or more lines are sort <output section name> (Section 7).
+- The following zero or more lines are wrap <symbol name> (Section 1).
+- The following zero or more lines are define <symbol name> = <expression>. <expression> is the whole part of the line after " = " (an = with one space before it and one space after it); its syntax is described in Section 10. A name defined by a define line is called a "script symbol".
+- The following zero lines or one line is checksum <segment name> <symbol name> (Section 14).
+- The remaining one or more lines are input lines, each of which is one of object <object file name>, library <archive name>, or group <archive name> <archive name> ... (two or more archive names).
+
+(2) Object files
+These are the files in the input/ folder whose names are specified on object lines. The lines (a) to (e) below appear in this order.
+(a) Definitions of one or more sections. Each section is defined by a line section <section name> <alignment> <size>. <alignment> is a power of 2 between 1 and 256 inclusive, and <size> is an integer >= 0 (a number of bytes). If the name is not the name of a NOBITS section (see Notation and terms), this line is immediately followed by data lines that give the contents of the section as a byte sequence, from the beginning in order. In data <hex string>, <hex string> is a concatenation of 1 to 32 bytes, each written as 2 hexadecimal digits (a-f lowercase); the total number of bytes on the data lines of one section equals the size of that section (if the size is 0, there are no data lines). A NOBITS section has only a size and no data lines.
+(b) Zero or more lines comdat <signature> <section name> <section name> ... . Each line represents one COMDAT group (a set of sections of which identical copies may appear in several object files, such as C++ inline functions). <signature> is the identifying name of the group, a string of the same form as a symbol name. The one or more section names that follow are the sections of this object file that belong to the group.
+(c) Zero or more symbol definitions, each in one of the following three forms.
+ symbol <symbol name> <binding> <section name> <offset>: a symbol defined at the position of the offset (number of bytes from the start) within the section. <binding> is one of local (a name used only within this object file), global, or weak (a weak definition).
+ symbol <symbol name> <binding> undef: an undefined symbol (a reference that is expected to be defined elsewhere). <binding> is global or weak.
+ symbol <symbol name> global common <size> <alignment>: a common symbol (a tentative definition of a global variable without an initial value). <alignment> is a power of 2 between 1 and 256 inclusive.
+(d) Zero or more lines reloc <section name> <offset> <type> <symbol name> <addend>. Each line represents one relocation (a place where an address or similar value is written at link time) and instructs that the value at the position of the offset in the section be rewritten with a value computed from the value of the symbol and <addend> (an integer). <type> is one of ABS32, REL32, ABS16, HI16, LO16, GPREL16, CALL24 (Section 13), and <symbol name> is the name of a symbol in (c) of this object file.
+(e) The last line is end.
+
+(3) Archives
+These are the files in the input/ folder whose names are specified on library or group lines. An archive is a sequence of one or more members; each member consists of a line member <member name> <symbol name> <symbol name> ... (zero or more symbol names) followed by the contents of an object file (in the form of (2), up to and including the end line). <member name> is a string of the same form as an object file name, and all member names within one archive are distinct. The symbol names listed on the member line are called the "exported symbols" of that member. The exported symbols are the names of those symbols of the member whose binding is global or weak and that are defined in a section, together with the names of its common symbols, listed in the order of the lines of (c).
+
+[Processing]
+Process according to Sections 1 to 15 below. Sections 1 to 6 cover loading the objects and resolving symbols, Sections 7 to 12 cover layout, and Sections 13 to 15 cover relocation, the image, and diagnostic messages.
+
+## Notation and terms
+- floor(x) is the largest integer <= x. a mod b (b is a positive integer) is a - b * floor(a / b), a value between 0 and b - 1 inclusive even when a is negative. min(...) is the minimum. align(x, n) (n is a positive integer) is the smallest integer that is >= x and a multiple of n (e.g. align(13, 4) = 16, align(16, 4) = 16).
+- An address is an integer >= 0 and < 2^32. "8 hexadecimal digits" means the value written in hexadecimal (a-f lowercase), padded on the left with 0s to 8 digits if it has fewer digits (without 0x).
+- Writing an integer x (>= 0 and < 2^(8n)) in n bytes in little-endian means writing the n bytes x mod 256, floor(x / 256) mod 256, floor(x / 65536) mod 256, ... in this order (starting from the low-order byte).
+- The "ASCII order" of strings is the order that compares ASCII codes one character at a time from the beginning, puts first the string whose code is smaller at the first differing character, and, when one string is a prefix of the other, puts the shorter one first (e.g. . comes before digits, digits before uppercase letters, uppercase letters before _, and _ before lowercase letters, so .Ls0 < Abc < _start < main).
+- "Objects" are the object files specified on object lines and the members extracted from archives. The name of an object is the file name for an object file (e.g. main.obj), and "<archive name>(<member name>)" for a member (e.g. libc.lib(printf.obj)). Objects are ranked in the order in which they are loaded (Sections 1 and 2), and this order is called the "load order".
+- When the name of a section equals a name X, or starts with the string X followed by ".", the section is said to "belong to X" (e.g. .text.main and .text belong to .text, but .textx and .stext do not). A section whose name belongs to .bss is called a NOBITS section, and any other section a PROGBITS section. Output sections are called the same way according to their names. A section whose name belongs to .rodata.str is called a "string section".
+
+## 1. Loading objects
+To "load" an object means to perform (1) to (4) below in this order and then append the object to the end of the load order.
+(1) COMDAT groups: examine the comdat lines of the object in order. If a "keeper" of a group with the same signature already exists, all sections belonging to that group become "sections discarded by COMDAT", and this object is recorded as an object that discarded the group of that signature. If there is no keeper, this object becomes the keeper of the group of that signature.
+(2) Each symbol with binding global or weak that is defined in a section discarded by COMDAT is changed into an undefined symbol with the same name and the same binding (a global definition becomes a global undefined symbol, and a weak definition becomes a weak undefined symbol).
+(3) Wrapping: let W be the set of names specified on wrap lines. For each undefined symbol (including those changed in (2)), if its name X is in W, its name is changed to __wrap_X; if X has the form __real_Y and Y is in W, its name is changed to Y. The names of symbols defined in sections and of common symbols are not changed. From then on, this symbol and the relocations that refer to it are handled with the changed name (for example, with wrap malloc, a reference to an undefined malloc becomes __wrap_malloc, and a reference to an undefined __real_malloc becomes malloc).
+(4) Each symbol with binding global or weak (including undefined symbols and common symbols) is registered as an "entry" of its name.
+
+For a name N, the following is defined.
+- N is "defined" when the entries of N include one defined in a section or a common symbol, or when N is a script symbol.
+- N is "undefined" when N is not defined and either N is the name of the entry symbol or the entries of N include an undefined symbol with binding global. Undefined symbols with binding weak alone do not make N undefined.
+
+## 2. Processing input lines and extracting archive members
+Process the input lines of link.txt from top to bottom as follows.
+- object F: load the object file F.
+- library L: scan the archive L.
+- group L_1 L_2 ... L_k: scanning L_1, L_2, ..., L_k once each in this order is one "round"; if one or more members were extracted during a round, perform the next round, and if no member was extracted, finish.
+To "scan" an archive L means to repeat the following pass until a pass extracts no member. In a pass, examine the members of L in the order in which they appear in the file; if a member that has not been loaded yet has an exported symbol that is undefined at that point, extract that member and load it immediately. Therefore, when the subsequent members are examined, the definitions and references of the extracted member are already reflected. Members that have already been loaded (including those extracted during an earlier scan of the same archive) are not examined.
+Each time a member is extracted, record as an extraction record the object name of the extracted member, the reason name, and the referrer. The reason name is, among the exported symbols of that member that are undefined at that point, the one that appears earliest on the member line. The referrer is the name of the object that comes first in load order among the objects that have an undefined symbol with binding global among the entries of the reason name; if there is no such object (which happens when the name was undefined because it is the name of the entry symbol), the referrer is *entry*.
+
+## 3. Symbol resolution
+Names that have one or more entries, and the names of script symbols, are called "global names". Among the entries of a global name N, those with binding global defined in a section are called "strong definitions", those with binding weak defined in a section "weak definitions", common symbols "common definitions", and undefined symbols "references". The kind, the definition, and the definer of each global name N are determined by the first of 1 to 6 below that applies.
+1. N is a script symbol: the kind is script and the definer is *script*.
+2. There is a strong definition: the kind is global. The strong definition that comes first in load order is the "definition" of N, and the name of its object is the definer.
+3. There is a common definition: the kind is common. The maximum of the sizes of the common definitions is the size of N, and the maximum of their alignments is the alignment of N; the definer is the name of the object of the common definition that comes first in load order among those whose size equals that maximum.
+4. There is a weak definition: the kind is weak. The weak definition that comes first in load order is the definition of N, and the name of its object is the definer.
+5. There is a reference with binding global: the kind is undefined and the definer is -.
+6. None of the above (all entries are references with binding weak): the kind is weakundef and the definer is -.
+In addition, the names of the objects that have a reference of N, listed in load order, are the "referrers" of N. The "definition location" of a global name of kind global or weak is the section and the offset at which the symbol of its definition is defined.
+
+## 4. Assignment to output sections and orphan sections
+The things represented by the output section names listed on segment lines are called "output sections". Each section of the loaded objects, other than the sections discarded by COMDAT, is assigned to the output section it belongs to (a section belongs to at most one output section). A section that belongs to no output section is called an "orphan section" and is discarded.
+
+## 5. Garbage collection
+The sections other than the sections discarded by COMDAT and the orphan sections are called "candidate sections", the global names of kind common are called "common blocks", and candidate sections and common blocks together are called "units". Whether each unit is "live" is determined as follows.
+- With gc off, all units are live.
+- With gc on, only the units that can be reached from the following roots by following relocation references are live. The roots are all candidate sections assigned to the output sections specified on keep lines, and, if the name of the entry symbol is a global name, the section of its definition location if its kind is global or weak, or its common block if its kind is common. For each relocation of a live candidate section, the "target" of that relocation is also live. The target of a relocation is the section in which the symbol is defined if the binding of the relocation's symbol is local; otherwise it is the section of the definition location if the kind of the symbol's name (a global name) is global or weak, and its common block if the kind is common; for any other kind there is no target.
+Candidate sections that are not live are called "sections discarded by GC", and common blocks that are not live are called "common blocks discarded by GC". From here on, "live sections" alone means live candidate sections.
+
+## 6. Checking the entry symbol and undefined symbols
+(1) If the name of the entry symbol is not a global name, or its kind is undefined or weakundef, the entry symbol is undefined.
+(2) For a global name N of kind undefined, the names of the objects that have, in a live section, a "relocation whose symbol's binding is not local and whose symbol name is N", listed in load order, are the "unresolved referrers" of N.
+
+## 7. Layout
+Layout is performed with a given set V of veneer pairs (Section 8). The elements of V are pairs of an output section and a symbol name.
+For each segment in the order of the segment lines, let the cursor c be the base address of that segment, and for each output section of that segment in the listed order, perform (1) to (5) below.
+(1) Arrange the live sections assigned to the output section O in the load order of their objects, and within the same object in the order of the section lines. If O is specified on a sort line, re-sort them in ascending order of priority. The priority of a section is 65536 if its name equals the name of O, and if its name is the name of O followed by "." and a sequence of decimal digits, the priority is the integer represented by that digit sequence (e.g. the priority of .init_array.00050 is 50). Sections with equal priority keep their order from before the sort.
+(2) Remove all string sections from the arranged sections and, in their place, put one "merged string block" at the position where the first of the removed sections was (if there are no string sections, put none). The contents of the merged string block are built as follows. Split the contents of each removed string section, from the beginning, into parts each ending with a byte of value 0 (including that 0 byte), and treat each part as one "string". Examine the strings in the order of the sections from (1), and within the same section from the beginning; if a byte sequence identical to the string has not yet been added to the contents, append that string to the end of the contents (the contents start as an empty byte sequence). Only whole strings are compared: a string that occurs in the contents only as a part of a longer string that was added (for example, as its tail) is still appended. The "merged position" of each string is the position in the contents (a number of bytes, with the start of the contents as 0) at which the identical byte sequence that was added starts.
+(3) If the name of O is .bss, append the live common blocks at the end, arranged in descending order of alignment, and in ASCII order of name for equal alignment.
+(4) For each symbol name X of the elements of V whose output section is O, in ASCII order of symbol name, append a veneer to X (Section 8) at the end.
+(5) The items arranged in this way are called the "components" of O. The size and alignment of a component are the size and alignment of the section for a section, the number of bytes of the contents and 1 for a merged string block, the size and alignment from Section 3 for a common block, and 8 and 4 for a veneer. Let the alignment of O be the maximum of the alignments of its components (1 if there are no components), set c to align(c, alignment of O), and make this c the address of O. Then, for each component in order, set c to align(c, alignment of that component), make this c the address of that component, and add the size of that component to c. The final c minus the address of O is the size of O.
+The value of c when all output sections of the segment are finished, minus the base address of the segment, is the memsz of that segment. Also, the sum of the address and the size of the PROGBITS output section of that segment that is listed last on the segment line, minus the base address, is the filesz of that segment (if there are no PROGBITS output sections, filesz is 0).
+
+## 8. Veneers
+A CALL24 relocation (Section 13) goes through a veneer (8 bytes of relay code created by the linker) when the call target is too far away to reach.
+For a given layout, a CALL24 relocation of a live section whose symbol's binding is not local, whose symbol name's kind is global or weak, and for which v = S + A - P does not satisfy -2^25 <= v < 2^25, where S is the address of the definition location of that name (Section 11), P is the address of the relocation position, and A is the addend, is called a "far call". The "veneer pair" of a far call is the pair of the output section to which the relocation's section is assigned and the name of the symbol.
+Starting with V as the empty set, repeat the following. Perform the layout of Section 7 using V, and find all far calls in that layout. If none of their veneer pairs is outside V, end the repetition. Otherwise, add all of them to V and repeat. The last layout performed and V are used in the subsequent processing.
+The contents of the veneer to symbol name X are 8 bytes in total: the 4 bytes 0x04, 0xf0, 0x1f, 0xe5, followed by the address of the definition location of X (Section 11) written in 4 bytes in little-endian.
+
+## 9. Load addresses
+Let the paddr (load address) of each segment be its base address, and let the storage position q_B of each segment B be the base address of B + the memsz of B. Process the load lines from top to bottom; for load A B, set the paddr of segment A to align(q_B, 4), and set q_B to the paddr of A + the filesz of A. After all load lines have been processed, q_B - the base address of B is the used (amount used) of segment B.
+For the segment A of load A B, the runtime addresses stay as they are, starting from its base address, but the contents of its image (filesz bytes) are assumed to be stored at the position of the paddr in the region of B and copied at startup.
+
+## 10. Link script expressions and script symbols
+Process the define lines from top to bottom, evaluating the expression of each line and making the result the value of that script symbol.
+An expression consists of the following tokens. Spaces have no meaning other than separating tokens.
+- Number: "0x" followed by one or more hexadecimal digits (a-f lowercase), or a decimal integer >= 0 (without extra leading zeros).
+- Name: symbol names and section names.
+- Punctuation: the following 5 single characters: ( ) , + -
+The syntax of expressions is as follows.
+ expression: term, or "expression + term", or "expression - term" (+ and - are computed from left to right)
+ term: number, symbol name, ( expression ), start(section name), end(section name), size(section name), loadaddr(section name), align(expression, expression)
+The values of terms are as follows. start, end, size, loadaddr and align are treated as function names only when they are immediately followed by (.
+- Number: its value. Symbol name: the value of the script symbol defined on a define line before that line.
+- start(O), end(O), size(O): the address, the address + the size, and the size of the output section O.
+- loadaddr(O): with G the segment in which O is placed, the paddr of G + (the address of O - the base address of G).
+- align(x, n): align(x, n) from Notation and terms.
+
+## 11. Symbol values
+The address of the position at offset t of section s is defined as follows. If s is a string section (in which case t is the start position of some string of s), it is the merged position of that string plus the address of the merged string block. Otherwise, it is the address of s + t.
+The value of a relocation's symbol is defined as follows.
+- If the binding of the symbol is local: the address of the position at the section and offset where the symbol is defined.
+- Otherwise, it depends on the kind of the symbol's name: for global and weak, the address of the definition location; for common, the address of the common block; for script, the value of the script symbol; for weakundef, 0; for undefined, there is no value.
+
+## 12. Segment checks
+(1) A segment whose used exceeds its length "overflows" by used - length bytes.
+(2) For every pair of a segment a that comes earlier and a segment b that comes later in the order of the segment lines, if the memsz of a and the memsz of b are both >= 1, and the base address of a < the base address of b + the memsz of b, and the base address of b < the base address of a + the memsz of a, then a and b "overlap".
+
+## 13. Applying relocations
+Process the relocations of live sections one at a time, in the order of segments, output sections, and components, and within the same section in the order of the reloc lines, as in (1) to (4) below. P is the address of the relocation position (the address of its section + the offset), A is the addend, S is the value of the symbol (Section 11), and GP is the value of the script symbol _gp.
+(1) If the type is HI16 and the next relocation (the one immediately after it when the relocations of the same section are arranged in the order of the reloc lines) does not satisfy "its type is LO16, its symbol is the same (the one from the same symbol line of the same object), and its addend is equal" (including the case where there is no next relocation), the relocation is an "unpaired HI16".
+(2) If there is no S (the kind of the symbol's name is undefined), set the status to undefined and finish processing this relocation without changing the section contents.
+(3) If the type is CALL24 and this relocation is a far call in the last layout of Section 8, replace S with the address of the veneer of that veneer pair and set the status to veneer. Otherwise, set the status to ok.
+(4) Compute the value v with the formula below for each type. If v does not satisfy the range of the type, set the status to overflow. Regardless of whether the range is satisfied, write the field value f in little-endian, in as many bytes as the width of the type, at the position of the offset in the section contents (replacing the bytes that were there).
+ - ABS32: v = S + A, the range is -2^31 <= v < 2^32, the width is 4, and f = v mod 2^32.
+ - REL32: v = S + A - P, the range is -2^31 <= v < 2^31, the width is 4, and f = v mod 2^32.
+ - ABS16: v = S + A, the range is -2^15 <= v < 2^16, the width is 2, and f = v mod 2^16.
+ - HI16: v = S + A, the range is -2^31 <= v < 2^32, the width is 2, and f = floor(((v mod 2^32) + 32768) / 65536) mod 65536.
+ - LO16: v = S + A, there is no range (it is always satisfied), the width is 2, and f = v mod 2^16.
+ - GPREL16: v = S + A - GP, the range is -2^15 <= v < 2^15, the width is 2, and f = v mod 2^16.
+ - CALL24: v = S + A - P, the range is -2^25 <= v < 2^25, the width is 3, and f = floor(v / 4) mod 2^24.
+HI16 and LO16 are used to split a 32-bit address into its upper and lower 16 bits and embed them in two instructions. Because the LO16 value is treated as a signed 16-bit value when it is used, 1 is added to the HI16 value in advance when the lower 16 bits are 0x8000 or greater (the + 32768 in the formula above corresponds to this).
+
+## 14. Image and checksum
+The "image" of each segment is a byte sequence of filesz bytes. First set every byte to the fill value, then, for each component of the PROGBITS output sections, write its contents into the image starting at the position (address of the component - base address). The contents of a section are those after the relocations have been applied in Section 13, the contents of a merged string block are those from Section 7 (2), and the contents of a veneer are those from Section 8.
+If there is a checksum G X line, do the following for the image of segment G. Let k be the address of the definition location of X minus the base address of G. After setting all 4 bytes from image position k to 0, split the image into 4-byte chunks from the beginning (if the last chunk is shorter than 4 bytes, it is treated as padded with bytes of value 0 for the missing part), and let T be the sum of the values of the chunks, each read as a 4-byte little-endian integer. Write (2^32 - (T mod 2^32)) mod 2^32 in 4 bytes in little-endian at image position k. As a result, the sum of the chunk values of the image after writing is a multiple of 2^32.
+
+## 15. Diagnostic messages
+Arrange the diagnostic message lines in the order (1) to (7) below.
+(1) For each name of orphan sections, in ASCII order of name, the following line. <count> is the number of orphan sections with that name.
+ warning: orphan section <section name> discarded from <count> object(s)
+(2) For each global name, in ASCII order of name, output those of (a) to (c) below that apply, in this order.
+ (a) If the number of strong definitions (plus 1 for a script symbol) is 2 or more: error: multiple definition of <name>: <definer list>. <definer list> puts *script* first if the name is a script symbol, followed by the names of the objects of the strong definitions in load order, separated by single spaces.
+ (b) If there is a common definition and the kind is global or script: warning: common symbol <name> overridden by <definer>
+ (c) If the kind is common and there are two or more distinct (size, alignment) pairs among the common definitions: warning: common symbol <name> merged to size <size> align <alignment> (the size and alignment are those determined in Section 3)
+(3) If the entry symbol is undefined (Section 6 (1)): error: entry symbol <entry symbol name> is undefined
+(4) For each global name of kind undefined, in ASCII order of name, if it has one or more unresolved referrers: error: undefined symbol <name> referenced by <the unresolved referrers, separated by single spaces>
+(5) For each segment in the order of the segment lines, if it overflows: error: segment <segment name> overflows its length by <number of overflowing bytes> bytes
+(6) For each pair (a, b) of overlapping segments, in the segment line order of a, and for the same a in the segment line order of b: error: segments <segment name of a> and <segment name of b> overlap
+(7) In the processing order of Section 13, for each relocation, output error: unpaired HI16 at <location> against <symbol name> if it is an unpaired HI16, and error: relocation overflow at <location>: <type> value <v> against <symbol name> if its status is overflow (if both apply, these are two lines in this order). <location> is "<object name> <section name>+<offset>", and <symbol name> is the name of the relocation's symbol (the name after wrapping).
+Finally, with E the number of lines starting with error and W the number of lines starting with warning, add the one line errors <E> warnings <W>.
+
+[Output files]
+Write the following 6 files to the output/ folder. Every file consists of ASCII characters only, and every line ends with a newline (LF). Words within a line are separated by single spaces, there is no leading or trailing whitespace on a line, and no empty lines are output. Integers are written in decimal (negative numbers with a leading -, without extra leading zeros), and values that represent addresses, such as <address>, are written as 8 hexadecimal digits. In the formats below, the parts enclosed in < > are replaced with values, and everything else is output as is. The entry address is the address of the definition location if the name of the entry symbol is a global name whose kind is global or weak, the address of the common block if the kind is common, and 0 otherwise.
+
+(1) output/image.hex: hex dump of the image
+The first line is the following line.
+ entry <entry address> <entry symbol name>
+Then, for each segment in the order of the segment lines, output the following header line, followed by one line for each chunk obtained by splitting the image of that segment into 16-byte chunks from the beginning (the last chunk may be shorter than 16 bytes; if filesz is 0, there are no chunk lines).
+ segment <segment name> vaddr <base address> paddr <paddr> filesz <filesz> memsz <memsz>
+ <chunk start address> <byte> <byte> ...
+The chunk start address is the base address + the position of the chunk within the image. <byte> is each byte of the chunk written as 2 hexadecimal digits (a-f lowercase).
+
+(2) output/flash.ihex: Intel HEX file for programming
+This is a file in Intel HEX format for writing the image to the positions starting at the paddr of each segment. Each line is one record: ":" followed by each byte of the record's byte sequence written as 2 hexadecimal digits (A-F uppercase). The byte sequence of a record consists of, in this order, the number of data bytes n, the upper 8 bits of the address, the lower 8 bits of the address, the record type, the n bytes of data, and the checksum; the checksum is (256 - (s mod 256)) mod 256, where s is the sum of all bytes before it.
+Arrange the segments whose filesz is >= 1 in ascending order of paddr (in the order of the segment lines for equal paddr), let the upper address u be 0, and do the following for each segment. Let k be 0, and while k < filesz, repeat the following. Let a = paddr + k and n = min(16, filesz - k, 65536 - (a mod 65536)). If floor(a / 65536) differs from u, set u to floor(a / 65536) and output a type 4 record (the address is 0 and the data are the 2 bytes floor(u / 256), u mod 256). Then output a type 0 record (the address is a mod 65536 and the data are the n bytes starting at image position k), and add n to k.
+After all segments are finished, output a type 5 record (the address is 0 and the data are the 4 bytes of the entry address arranged starting from the most significant byte) and a type 1 record (n = 0, the address is 0, no data, that is, :00000001FF).
+
+(3) output/link.map: link map
+Output the following lines in this order.
+- For each extraction record, in the order of extraction, the following line.
+ member <object name of the extracted member> <referrer> <reason name>
+- For each signature of a COMDAT group, in the order in which their keepers were determined, the following line. <discarding objects> is the names of the objects that discarded the group of that signature, in load order, joined with ","; it is - if there are none.
+ comdat <signature> <object name of the keeper> <discarding objects>
+- For each segment in the order of the segment lines, the following segment line, followed, for each output section of that segment in the listed order, by the output section line and the lines of its components (one line each, in the order of the components). <usage> is floor(100 * used / length).
+ segment <segment name> vaddr <base address> paddr <paddr> filesz <filesz> memsz <memsz> used <used> length <length> <usage>%
+ section <output section name> <address> <size> <alignment>
+ The component lines depend on the kind of component, as follows.
+ Section: input <address> <size> <alignment> <object name> <section name>
+ Merged string block: merged <address> <size> sections <number of removed string sections> strings <number of split strings> unique <number of strings added to the contents> saved <total size of the removed string sections - size of the merged string block>
+ Common block: common <address> <size> <alignment> <definer> <name>
+ Veneer: veneer <address> 8 <symbol name>
+- For each discarded section (sections discarded by COMDAT, orphan sections, and sections discarded by GC), in the load order of the objects, and within the same object in the order of the section lines, the following line. <reason> is comdat for a section discarded by COMDAT, orphan for an orphan section, and gc for a section discarded by GC.
+ discard <object name> <section name> <size> <reason>
+- For each common block discarded by GC, in ASCII order of name, the following line.
+ discard <definer> COMMON(<name>) <size> gc
+- Finally, output the following symbol lines in ascending order of address, and in ASCII order of name for equal addresses.
+ symbol <address> <name> <kind> <definer>
+ They are output for: the global names of kind global or weak whose definition location section is live (the address is the address of the definition location), the live common blocks (the kind is common and the address is the address of the common block), all script symbols (the kind is script, the address is the value, and the definer is *script*), and all veneers (the name is __veneer_<symbol name>, the kind is veneer, the definer is *linker*, and the address is the address of the veneer).
+
+(4) output/xref.txt: cross-reference table
+For each global name, in ASCII order of name, output the following line.
+ <name> <kind> <status> <definer> <referrer list>
+<status> is, for kind global or weak, kept if the section of the definition location is live and discarded otherwise. For kind common, it is kept if the common block is live and discarded otherwise. For kind script it is kept, and for undefined or weakundef it is -. <referrer list> is the referrers from Section 3 joined with ","; it is - if there are none.
+
+(5) output/relocations.txt: list of relocations
+In the processing order of Section 13, output the following line for each relocation.
+ <P> <object name> <section name>+<offset> <type> <symbol name> <addend> <S> <v> <f> <status>
+<P> is 8 hexadecimal digits, <symbol name> is the name of the relocation's symbol (the name after wrapping), <S> is S after the replacement in Section 13 (3) written as 8 hexadecimal digits, <v> is in decimal, and <f> is the field value written in hexadecimal with 8 digits if the width is 4, 6 digits if it is 3, and 4 digits if it is 2 (a-f lowercase, with missing digits padded with 0s on the left). For a relocation with status undefined, <S>, <v> and <f> are each -.
+Then, for each type in the order ABS32, REL32, ABS16, HI16, LO16, GPREL16, CALL24, output the following line (types with a count of 0 are output too).
+ summary <type> total <number of relocations of that type> ok <number with status ok> veneer <number with status veneer> overflow <number with status overflow> undefined <number with status undefined>
+
+(6) output/diagnostics.txt: diagnostic messages
+Output the diagnostic message lines of Section 15, in that order.
+
+[Source files]
+There are the following 6 source files. The names are language-neutral role names; extensions and the use of uppercase and lowercase follow the conventions of each language.
+- main: handles the overall flow and contains most of the processing: reading link.txt, loading objects (COMDAT groups, wrapping, registering entries) and processing the input lines (Sections 1 and 2), determining defined and undefined, diagnostics of the resolution results (Section 3, Section 15 (2)), assignment to output sections and orphan sections (Section 4), garbage collection (Section 5), checking the entry symbol and undefined symbols (Section 6), building the components (sorting by priority, merging strings, common blocks, veneers) and repeating the layout until there are no more far calls (Sections 7 and 8), load addresses (Section 9), splitting expressions into tokens and evaluating them by recursive descent (Section 10), symbol values (Section 11), segment checks (Section 12), the flow of applying relocations and tallying the statuses (Section 13), the image and the checksum (Section 14), ordering the diagnostic messages (Section 15), and building and writing the contents of the 6 output files.
+- object_parser: data structures representing sections, symbols, relocations, and objects; parsing the object file format (section, data, comdat, symbol, reloc and end lines); determining NOBITS sections and string sections; reading the lines of text files.
+- archive: parsing the archive format (the exported symbols on member lines and the object file contents of each member) and scanning one archive (repeating passes and extracting members, Section 2).
+- resolver: the processing that splits the entries of one global name into strong definitions, weak definitions, common definitions, and references, and determines the kind, the definition, the definer, the size and alignment of the common block, the definer list of the strong definitions, and the referrers (Section 3).
+- layout: data structures for segments and output sections, align, determining the output section a section belongs to, assigning addresses to the output sections and components of one segment, and computing filesz and memsz (Section 7 (5)).
+- relocator: the width and range of each relocation type, the formulas for the value v, computing the field value f, and determining HI16/LO16 pairs (Section 13).
+
+[Constraints]
+- The following hold for input/link.txt.
+ - There are 1 to 8 segment lines, and the length of each segment is >= 1. Output section names are strings that start with "." like .text and .rodata and consist of lowercase letters, digits and _. No output section name belongs to another output section. NOBITS output sections are listed only after the PROGBITS output sections of the same segment. If there is a global name that has a common definition, there is an output section named .bss.
+ - A and B of load A B are different segments. No segment appears two or more times as the first segment (A) of load lines, and a segment that appears as the first segment (A) of a load line does not appear as the second segment (B).
+ - The names on keep and sort lines are names of output sections, and the names on wrap lines do not start with __wrap_ or __real_. The names on wrap lines are distinct from each other, and the names on define lines are distinct from each other. The name of the entry symbol is not a script symbol and is not in W.
+ - The expressions on define lines follow the syntax of Section 10. The symbol names appearing in an expression are script symbols defined on define lines before that line, the section names given to functions are names of output sections, and the value of the second argument of align is a positive power of 2. All intermediate values and results of the expression evaluation are >= 0 and < 2^32. As for the notation, there is one space before and one space after each + and -, one space after each ",", and no whitespace anywhere else.
+ - If there is a checksum G X line, the kind of X is global, and the section of the definition location of X is live and is assigned to a PROGBITS output section of G. The address of the definition location of X - the base address of G is a multiple of 4, and the 4 bytes from that position are inside the image.
+ - The same object file name is never specified two or more times on object lines. On library and group lines, the same archive name may appear any number of times. All specified files exist in the input/ folder.
+- The following hold for each object (object files and archive members).
+ - The section names are distinct from each other, the symbol names are distinct from each other, and the signatures of the comdat lines are distinct from each other. The section names on a comdat line are names of sections of that object, and no section belongs to two or more groups. Symbol names do not start with __veneer_.
+ - The offset of a symbol defined in a section is >= 0 and <= the size of that section. Symbols with binding local are defined in sections.
+ - The section of a relocation is a PROGBITS section, and the offset + the width of the type is <= the size of that section. The byte ranges rewritten by relocations of the same section do not overlap. The addend A satisfies -2^31 <= A < 2^31.
+ - A string section is a PROGBITS section with alignment 1 whose last byte has the value 0. String sections have no relocations, and the offset of every symbol defined in a string section is the start position of some string of that section.
+ - Sections whose names belong to no output section (those that become orphan sections) have no symbols defined in them and have no relocations.
+ - Groups with the same signature define, in every object, the symbols with binding global or weak with the same names and the same bindings. A relocation of a section outside a group never refers to a symbol with binding local defined in a section belonging to that group.
+ - Even after the names are changed by the wrapping of Section 1 (3), the symbol names of one object are all distinct.
+ - NOBITS sections belong only to NOBITS output sections, and PROGBITS sections belong only to PROGBITS output sections. The name of a section belonging to an output section specified on a sort line equals the name of that output section, or is that name followed by "." and a sequence of 1 to 5 digits (whose value is <= 65535).
+- The exported symbols of each archive member are as described in [Input files] (3).
+- If a live section has a GPREL16 relocation, _gp is a script symbol. The v (Section 13) of a CALL24 relocation is always a multiple of 4, both before and after S is replaced.
+- In the given input, the base address + used and the base address + memsz of every segment are <= 2^32. The absolute value of every integer, including intermediate values, is < 2^53.
+- The input/ folder contains at most 12 object files and at most 4 archives, and one archive has at most 12 members. One object has at most 40 sections, at most 60 symbols, and at most 200 relocations, and the size of one section is at most 4096.
+
+[Example]
+The following is a small example that shows the format; it differs from the actual input files. Below, the contents of each file are shown starting on the line after a "file name:" line, and one empty line is inserted between files as a separator. These separating empty lines are not part of the file contents.
+In this example, the three members that define puts, fast_copy and spare, which app.obj references, are extracted from mini.lib. Since spare is referenced only from .text.unused, which is discarded, the section of spare.obj is also discarded by GC. The call from .text in rom to fast_copy in .fast in ram cannot reach its target, so it goes through a veneer. The contents of ram are stored after rom, and in the Intel HEX file the records are split where they cross 0x00010000.
+input/link.txt:
+entry reset
+gc on
+segment rom 0x0000ffd8 0x00000100 0xff .text .rodata
+segment ram 0x20007ff0 0x00000040 0x00 .fast .data .bss
+load ram rom
+define __bss_end = end(.bss)
+define __stack = align(__bss_end, 16) + 0x20
+checksum rom image_sum
+object start.obj
+object app.obj
+library mini.lib
+
+input/start.obj:
+section .text 4 20
+data 0000a0e30000a0e30000a0e3000000eb00000000
+section .comment 1 4
+data 47434300
+symbol reset global .text 0
+symbol image_sum global .text 16
+symbol __stack global undef
+symbol main global undef
+reloc .text 0 HI16 __stack 0
+reloc .text 4 LO16 __stack 0
+reloc .text 12 CALL24 main -8
+end
+
+input/app.obj:
+section .text.main 4 24
+data 0010a0e30010a0e3000000eb000000eb0000d0e1000000eb
+section .text.unused 4 8
+data 000000eb1eff2fe1
+section .rodata.str 1 8
+data 68656c6c6f000a00
+section .data 4 4
+data 07000000
+section .comment 1 4
+data 47434300
+symbol main global .text.main 0
+symbol unused global .text.unused 0
+symbol .Lhello local .rodata.str 0
+symbol counter global .data 0
+symbol buf global common 8 4
+symbol puts global undef
+symbol fast_copy global undef
+symbol missing global undef
+symbol spare global undef
+reloc .text.main 0 HI16 .Lhello 0
+reloc .text.main 4 LO16 .Lhello 0
+reloc .text.main 8 CALL24 puts -8
+reloc .text.main 12 CALL24 fast_copy -8
+reloc .text.main 16 ABS16 counter 0
+reloc .text.main 20 CALL24 missing -8
+reloc .text.unused 0 CALL24 spare -8
+end
+
+input/mini.lib:
+member puts.obj puts buf
+section .text.puts 4 12
+data 0000a0e30000a0e31eff2fe1
+section .rodata.str.puts 1 2
+data 0a00
+symbol puts global .text.puts 0
+symbol .Lnl local .rodata.str.puts 0
+symbol buf global common 16 8
+reloc .text.puts 0 HI16 .Lnl 0
+reloc .text.puts 4 LO16 .Lnl 0
+end
+member fast.obj fast_copy
+section .fast 4 12
+data 0000a0e30000a0e31eff2fe1
+symbol fast_copy global .fast 0
+symbol buf global undef
+reloc .fast 0 HI16 buf 4
+reloc .fast 4 LO16 buf 4
+end
+member spare.obj spare
+section .text.spare 4 4
+data 1eff2fe1
+symbol spare global .text.spare 0
+end
+
+output/image.hex:
+entry 0000ffd8 reset
+segment rom vaddr 0000ffd8 paddr 0000ffd8 filesz 72 memsz 72
+0000ffd8 01 20 a0 e3 30 80 a0 e3 00 00 a0 e3 00 00 00 eb
+0000ffe8 ac 0a 08 e6 01 00 a0 e3 18 00 a0 e3 02 00 00 eb
+0000fff8 04 00 00 eb fc 7f d0 e1 00 00 00 eb 01 00 a0 e3
+00010008 1e 00 a0 e3 1e ff 2f e1 04 f0 1f e5 f0 7f 00 20
+00010018 68 65 6c 6c 6f 00 0a 00
+segment ram vaddr 20007ff0 paddr 00010020 filesz 16 memsz 32
+20007ff0 01 20 a0 e3 04 80 a0 e3 1e ff 2f e1 07 00 00 00
+
+output/flash.ihex:
+:10FFD8000120A0E33080A0E30000A0E3000000EBD4
+:10FFE800AC0A08E60100A0E31800A0E3020000EB59
+:08FFF800040000EBFC7FD0E1E6
+:020000040001F9
+:10000000000000EB0100A0E31E00A0E31EFF2FE1B3
+:1000100004F01FE5F07F002068656C6C6F000A003B
+:100020000120A0E30480A0E31EFF2FE107000000F1
+:040000050000FFD820
+:00000001FF
+
+output/link.map:
+member mini.lib(puts.obj) app.obj puts
+member mini.lib(fast.obj) app.obj fast_copy
+member mini.lib(spare.obj) app.obj spare
+segment rom vaddr 0000ffd8 paddr 0000ffd8 filesz 72 memsz 72 used 88 length 256 34%
+section .text 0000ffd8 64 4
+input 0000ffd8 20 4 start.obj .text
+input 0000ffec 24 4 app.obj .text.main
+input 00010004 12 4 mini.lib(puts.obj) .text.puts
+veneer 00010010 8 fast_copy
+section .rodata 00010018 8 1
+merged 00010018 8 sections 2 strings 3 unique 2 saved 2
+segment ram vaddr 20007ff0 paddr 00010020 filesz 16 memsz 32 used 32 length 64 50%
+section .fast 20007ff0 12 4
+input 20007ff0 12 4 mini.lib(fast.obj) .fast
+section .data 20007ffc 4 4
+input 20007ffc 4 4 app.obj .data
+section .bss 20008000 16 8
+common 20008000 16 8 mini.lib(puts.obj) buf
+discard start.obj .comment 4 orphan
+discard app.obj .text.unused 8 gc
+discard app.obj .comment 4 orphan
+discard mini.lib(spare.obj) .text.spare 4 gc
+symbol 0000ffd8 reset global start.obj
+symbol 0000ffe8 image_sum global start.obj
+symbol 0000ffec main global app.obj
+symbol 00010004 puts global mini.lib(puts.obj)
+symbol 00010010 __veneer_fast_copy veneer *linker*
+symbol 20007ff0 fast_copy global mini.lib(fast.obj)
+symbol 20007ffc counter global app.obj
+symbol 20008000 buf common mini.lib(puts.obj)
+symbol 20008010 __bss_end script *script*
+symbol 20008030 __stack script *script*
+
+output/xref.txt:
+__bss_end script kept *script* -
+__stack script kept *script* start.obj
+buf common kept mini.lib(puts.obj) mini.lib(fast.obj)
+counter global kept app.obj -
+fast_copy global kept mini.lib(fast.obj) app.obj
+image_sum global kept start.obj -
+main global kept app.obj start.obj
+missing undefined - - app.obj
+puts global kept mini.lib(puts.obj) app.obj
+reset global kept start.obj -
+spare global discarded mini.lib(spare.obj) app.obj
+unused global discarded app.obj -
+
+output/relocations.txt:
+0000ffd8 start.obj .text+0 HI16 __stack 0 20008030 536903728 2001 ok
+0000ffdc start.obj .text+4 LO16 __stack 0 20008030 536903728 8030 ok
+0000ffe4 start.obj .text+12 CALL24 main -8 0000ffec 0 000000 ok
+0000ffec app.obj .text.main+0 HI16 .Lhello 0 00010018 65560 0001 ok
+0000fff0 app.obj .text.main+4 LO16 .Lhello 0 00010018 65560 0018 ok
+0000fff4 app.obj .text.main+8 CALL24 puts -8 00010004 8 000002 ok
+0000fff8 app.obj .text.main+12 CALL24 fast_copy -8 00010010 16 000004 veneer
+0000fffc app.obj .text.main+16 ABS16 counter 0 20007ffc 536903676 7ffc overflow
+00010000 app.obj .text.main+20 CALL24 missing -8 - - - undefined
+00010004 mini.lib(puts.obj) .text.puts+0 HI16 .Lnl 0 0001001e 65566 0001 ok
+00010008 mini.lib(puts.obj) .text.puts+4 LO16 .Lnl 0 0001001e 65566 001e ok
+20007ff0 mini.lib(fast.obj) .fast+0 HI16 buf 4 20008000 536903684 2001 ok
+20007ff4 mini.lib(fast.obj) .fast+4 LO16 buf 4 20008000 536903684 8004 ok
+summary ABS32 total 0 ok 0 veneer 0 overflow 0 undefined 0
+summary REL32 total 0 ok 0 veneer 0 overflow 0 undefined 0
+summary ABS16 total 1 ok 0 veneer 0 overflow 1 undefined 0
+summary HI16 total 4 ok 4 veneer 0 overflow 0 undefined 0
+summary LO16 total 4 ok 4 veneer 0 overflow 0 undefined 0
+summary GPREL16 total 0 ok 0 veneer 0 overflow 0 undefined 0
+summary CALL24 total 4 ok 2 veneer 1 overflow 0 undefined 1
+
+output/diagnostics.txt:
+warning: orphan section .comment discarded from 2 object(s)
+warning: common symbol buf merged to size 16 align 8
+error: undefined symbol missing referenced by app.obj
+error: relocation overflow at app.obj .text.main+16: ABS16 value 536903676 against counter
+errors 2 warnings 2

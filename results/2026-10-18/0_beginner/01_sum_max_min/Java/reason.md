@@ -1,0 +1,27 @@
+# Task B selection: 01_sum_max_min / Java
+
+## Common answer requirements
+
+1. Trace the contribution of -23 to the sum and the minimum for the actual array.
+2. Explain why both occurrences of 5 contribute to addition, but duplicates do not change the minimum.
+
+## Answer supported by the excerpt
+
+The prefix 17, -8, 42, 5 has sum 56; adding -23 produces 33, and all ten elements sum to 92. The minimum before -23 is -8 and becomes -23, which no later value undercuts. Both array occurrences of 5 are visited or reduced, contributing 10 in total. Minimum selection compares values and does not accumulate multiplicities.
+
+## Source evidence and dependencies
+
+Selected `Main.java` lines: 5,6,7,9. The excerpt preserves these complete lines in their original order and indentation.
+
+The array line supplies the order, both 5 occurrences and all values needed to establish -23 as the final minimum. The selected addition and minimum reduction/update establish the two requested computations. Explicit loops also require initialization and traversal. Maximum-only updates are irrelevant and omitted unless inseparable on a retained line.
+
+Arrays.stream(...).summaryStatistics() computes count, sum, minimum and maximum by documented standard-library semantics. The aggregate computes the values; selected getSum/getMin output calls explicitly connect them to the reported fields.
+
+
+Independent excerpt-only review found: summaryStatistics guarantees stored aggregate values, but no source connects its getMin/getSum to the reported output fields. The final selection additionally retains original line(s) 7, 9. These accessor/output calls connect the aggregate to the reported sum and minimum. Their standard semantics retrieve the actual stored values.
+
+## Language semantics and minimization
+
+Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. A final output reference alone would not expose the data or accumulation. The standard aggregate determines both numeric statistics; the accessor/output lines are retained specifically to connect them to the reported fields. The data plus the actual reductions are the narrower sufficient alternative.
+
+The selected excerpt contains **121 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 146 tokens; the complete source contains 186 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.

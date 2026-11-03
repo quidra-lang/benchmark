@@ -1,0 +1,266 @@
+[Overview]
+Write a program that detects earthquakes from continuous waveforms recorded by a small seismic network, determines their hypocenters (location and origin time) and magnitudes, and produces an earthquake catalog and various reports. The processing is done in the following order.
+1. From the waveform of each station, detect P-wave arrivals (picks) by the STA/LTA method.
+2. Group the picks of several stations into sets that are considered to come from the same earthquake (association).
+3. Determine the hypocenter by a grid search and Geiger's method, and if there are picks with large residuals, remove them and determine it again.
+4. Compute a correction for each station, determine the hypocenters again, and evaluate the errors, the quality and the stability by the jackknife method.
+5. Perform a straight-line fit of travel times, clustering of hypocenters, and reassociation of picks that were not associated.
+6. Compute magnitudes from amplitudes and durations, and compute statistics such as the frequency distribution by magnitude and the b-value.
+7. Draw an epicenter map, cross-sections and a time-magnitude chart in characters.
+The input is three files in the input/ folder and the output is six files in the output/ folder. The program writes nothing to standard output.
+
+[Input files]
+* input/stations.csv (stations)
+The first line is the header line "code,x_m,y_m,elevation_m". From the second line on, there is one station per line: the code, the x coordinate, the y coordinate and the elevation, in this order, separated by commas. A code is a string of 1 to 8 characters consisting of uppercase English letters and digits, and the codes are distinct from each other. The x coordinate points east and the y coordinate points north (in m), and the elevation is the height above sea level (in m); all of them are integers.
+In what follows, "station order" means the order in which the stations are written in this file.
+
+* input/waveforms.txt (waveforms)
+There is one block per station, in station order. The first line of each block has the form "STATION <code> <start sample number> <sample count>" (the code is the same as in stations.csv), with the four items separated by single spaces. The following lines contain the sample values (integers), as many as the sample count, in time order. The sample values are written 50 per line, separated by single spaces; only the last line of a block may contain fewer than 50.
+The sampling interval is 0.01 seconds. All times are expressed as "sample numbers", and the time of sample number k is k / 100 seconds. The sample number of the first (0th) sample of a block is the start sample number, and the sample number of the i-th sample (counting from 0) is "start sample number + i".
+
+* input/params.txt (parameters)
+It consists of the following 24 lines, in this order. Each line is a key and one or more values, separated by single spaces. A value that contains a decimal point is a real number; a value that does not is an integer. The values of each line are referred to by the symbols shown here.
+sta_window Sw: length of the STA window (in samples)
+lta_window Lw: length of the LTA window (in samples)
+trigger_on p_on q_on: ratio p_on / q_on at which a trigger starts
+trigger_off p_off q_off: ratio p_off / q_off at which a trigger ends
+min_duration Dmin: minimum duration of a trigger that is treated as a pick (in samples)
+noise_level N: noise level used when moving the pick position earlier (squared amplitude)
+amplitude_window Aw: length of the window in which the maximum amplitude is measured (in samples)
+clip_level K: absolute sample value at or above which a sample is regarded as clipped
+association_window W: time window of the association (in samples)
+min_stations Nmin: minimum number of picks needed for one earthquake
+velocity v: P-wave velocity (m/s)
+grid_x x_min x_max x_step: range and step of x for the grid search (m)
+grid_y y_min y_max y_step: range and step of y for the grid search (m)
+grid_z z_min z_max z_step: range and step of the depth for the grid search (m)
+residual_limit Rlim: residual limit (seconds)
+quality_a G_A R_A E_A: conditions for quality A (upper limits of the azimuthal gap (degrees), the RMS (seconds) and the semi-major axis of the error ellipse (m))
+quality_b G_B R_B E_B: conditions for quality B (same as above)
+cluster D_link T_link: distance (m) and time (seconds) limits for clustering
+local_magnitude a_L b_L c_L: coefficients of the local magnitude
+duration_magnitude a_D b_D c_D: coefficients of the duration magnitude
+map_area X_min X_max Y_min Y_max: area of the epicenter map (m)
+map_size Wm Hm: number of columns and number of rows of the epicenter map
+section Z_max Hs: lower end of the depth range of the cross-sections (m) and number of rows
+timeline T_d Wt M_lo M_hi Ht: for the time-magnitude chart, the time range (0 to T_d seconds), the number of columns, the magnitude range (M_lo to M_hi, integers) and the number of rows
+
+[Processing]
+* Common rules
+- All integer computations are done exactly. For a division between integers, "floor(a / b)" denotes the quotient rounded toward negative infinity (the floor function) (examples: floor(-7 / 2) = -4, floor(7 / 2) = 3). Every "/" not written inside floor(...) is real-number division, even when both operands are integers (for example tc / 10 and duration / 100).
+- Real-number computations are done in IEEE 754 double precision. When an integer value is used in a real-number computation, it is converted to double precision. Unless stated otherwise, a "sum" adds the terms one at a time from the first, in the order written (for example, station order).
+- ln is the natural logarithm and sqrt is the square root. log10(x) is defined as ln(x) / 2.302585092994046. pi = 3.141592653589793. atan2(Y, X) is the argument of the point (X, Y) (in radians, -pi < atan2(Y, X) <= pi).
+- The mean is the sum of the values divided by the number of values.
+- The median is obtained by sorting the values in increasing order: if the count is odd, it is the exact middle value; if even, it is the sum of the two middle values divided by 2.
+- The "d-decimal notation" of a value is its decimal representation rounded half up to d digits after the decimal point (if the integer part is 0, write "0"). No "-" is written for a value whose rounded result is 0 (example: the 4-decimal notation of -0.00004 is 0.0000).
+- The "time notation" of a sample number k (k >= 0) is the concatenation of the quotient of k divided by 100, ".", and the remainder as two digits (prefixed with a 0 if it has one digit) (examples: 4321 gives 43.21, 7 gives 0.07).
+
+* 1. Pick detection
+For each station, picks are found from the sample values s[0], s[1], ..., s[n - 1] of its block (n is the sample count) as follows. All computations here are done in integers, except the ratio R(i) in (3).
+(1) Let m = floor((s[0] + s[1] + ... + s[n - 1]) / n), and for i = 0, ..., n - 1 let d[i] = s[i] - m and e[i] = d[i]^2.
+(2) For each i with Sw + Lw - 1 <= i <= n - 1, let STA(i) = e[i - Sw + 1] + ... + e[i] (the sum of the Sw values ending at i) and LTA(i) = e[i - Sw - Lw + 1] + ... + e[i - Sw] (the sum of the Lw values just before the STA window).
+(3) Set the trigger state to "off", and do the following for i = Sw + Lw - 1, Sw + Lw, ..., n - 1 in this order.
+  - When off: if STA(i) * Lw * q_on >= p_on * LTA(i) * Sw, turn it on and set the start of the trigger to i_on = i.
+  - When on (except when it was turned on at this same i): if STA(i) * Lw * q_off < p_off * LTA(i) * Sw, turn it off and end this trigger with i_off = i. At this i, the check for turning on is not performed.
+  If it is still on after examining up to the last i = n - 1, end that trigger with i_off = n.
+  The duration of each trigger is i_off - i_on, and its maximum ratio is the maximum of R(i) = (STA(i) * Lw) / (LTA(i) * Sw) over i_on <= i < i_off. R(i) is the value obtained by computing the numerator and the denominator as integers, converting them to double precision, and dividing.
+(4) Triggers whose duration is less than Dmin are discarded as "short triggers". One pick is made from each of the other triggers.
+(5) The pick position k is determined as follows. Start with k = i_on, and decrease k by 1 while k - 1 >= i_on - Sw + 1 and e[k - 1] >= N. For the k at which this stops, the sample number of the pick is "start sample number + k", and the pick time is "sample number of the pick / 100" (seconds, double precision).
+(6) Over j = k, k + 1, ..., min(k + Aw - 1, n - 1), the maximum of |d[j]| is the maximum amplitude A. If there is at least one j in the same range with |s[j]| >= K, the pick is "clipped".
+A pick has its station, sample number, duration, maximum ratio, maximum amplitude, and whether it is clipped.
+In addition, compute the following values for each station (they are used in output/stations.txt): m, the noise (the median of |d[i]| (i = 0, ..., n - 1)), the peak (the maximum of |d[i]|), the number of clipped samples (the number of i with |s[i]| >= K), the total number of triggers (including short triggers), the number of short triggers, and the number of picks.
+Finally, sort the picks of all stations in increasing order of sample number, and for equal sample numbers in station order. In what follows, "pick order" means this order.
+
+* 2. Association
+Initially, every pick is "unassigned". Take the picks p one at a time in pick order, and do the following.
+If p is already assigned, do nothing. Otherwise, examine, in pick order, the unassigned picks among p and the picks after it whose sample number is at most "sample number of p + W", and select, for each station, the first such pick that appears (p itself is always selected). If Nmin or more picks are selected, group them into one "candidate" and mark all of them as assigned. If fewer than Nmin are selected, do nothing (p stays unassigned).
+Candidates are numbered from 1 in the order they are created. The "first pick" of a candidate is p.
+
+* 3. Common location procedures
+A hypocenter is written (x, y, z). x and y are in the same coordinates as the stations (m), and z is the depth measured downward from sea level (m). An "observation" is a pair of a station and a time (seconds), and a list of observations is always in station order. For observation j, let (x_j, y_j) be the coordinates of its station, h_j the elevation, and t_j the time.
+- Distance from the hypocenter to the station: D_j = sqrt((x - x_j)^2 + (y - y_j)^2 + (z + h_j)^2). The travel time is D_j / v.
+- Residual of observation j for hypocenter (x, y, z) and origin time t0: r_j = t_j - t0 - D_j / v.
+- RMS: sqrt((r_1^2 + r_2^2 + ... + r_n^2) / n) (n is the number of observations).
+
+(1) Grid search
+The grid nodes are x = x_min + a * x_step (a = 0, 1, ..., within the range x <= x_max), and likewise for y and z. Examine all grid nodes in increasing order of x, for equal x in increasing order of y, and for equal x and y in increasing order of z. At each grid node, compute delta_j = t_j - D_j / v (in observation order), t0 = (delta_1 + ... + delta_n) / n and S = (delta_1 - t0)^2 + ... + (delta_n - t0)^2, and select the grid node with the smallest S (the selection is replaced only when S is smaller than the minimum so far, so for equal values the grid node examined first is selected). The result is the (x, y, z) of the selected grid node, the t0 there, and RMS = sqrt(S / n).
+Also, for each value of the depth z, take the minimum S_z of S over the grid nodes with that z, compute sqrt(S_z / n), and arrange these values in increasing order of z; this is the "depth profile".
+
+(2) Geiger's method
+Starting from initial values (x, y, z, t0), repeat the following update exactly 8 times.
+At the current (x, y, z, t0), compute D_j and the residual r_j of each observation j, and let g_j = ((x - x_j) / (v * D_j), (y - y_j) / (v * D_j), (z + h_j) / (v * D_j), 1). Let the 4 x 4 matrix A and the 4-dimensional vector b be A[a][c] = SUM g_j[a] * g_j[c] and b[a] = SUM g_j[a] * r_j (a, c = 0, 1, 2, 3; the sums are in observation order). The matrix element A[a][c] denotes the element in row a and column c, and the indices of vectors and matrices count from 0.
+Solve A Delta = b by the following Cholesky decomposition. First compute the lower triangular matrix L row by row for a = 0, 1, 2, 3, and within each row column by column for c = 0, 1, ..., a, as
+  for c < a: L[a][c] = (A[a][c] - (L[a][0] * L[c][0] + ... + L[a][c - 1] * L[c][c - 1])) / L[c][c],
+  for c = a: L[a][a] = sqrt(A[a][a] - (L[a][0]^2 + ... + L[a][a - 1]^2))
+(the sums in parentheses are in increasing order of index, and are 0 if there are no terms). Next, for a = 0, 1, 2, 3 in this order, let u[a] = (b[a] - (L[a][0] * u[0] + ... + L[a][a - 1] * u[a - 1])) / L[a][a] (forward substitution), and for a = 3, 2, 1, 0 in this order, let Delta[a] = (u[a] - (L[a + 1][a] * Delta[a + 1] + ... + L[3][a] * Delta[3])) / L[a][a] (back substitution).
+Then add Delta[0], Delta[1], Delta[2] and Delta[3] to x, y, z and t0 respectively, and if z has become negative, set z = 0.
+Record the (x, y, z, t0) after each update and the RMS there. The values after the 8th update are the result of Geiger's method.
+
+(3) Location run
+Performing the grid search of (1) on a list of observations, and then Geiger's method of (2) with the resulting (x, y, z, t0) as the initial values, is called a "location run". The result of a location run is the result of Geiger's method, and the residual of each observation there is called the "final residual" of that location run.
+
+* 4. Processing of candidates
+Process the candidates in number order. Arrange the picks of the candidate in station order, and make an observation (station, pick time) from each pick.
+- Pass 1: perform a location run with these observations. Picks whose final residual has an absolute value greater than Rlim are "dropped" (all such picks are dropped at the same time).
+- If no picks were dropped, adopt the result of pass 1.
+- If some picks were dropped and fewer than Nmin picks remain, the candidate is "rejected".
+- If some picks were dropped and Nmin or more picks remain, perform another location run with the observations of the remaining picks (pass 2), and adopt its result. No picks are dropped in pass 2.
+Candidates that were not rejected become "events" and are numbered from 1 in order. The picks used in the adopted location run are the "used picks" of that event. The result of the adopted location run is the "first-stage solution" (x1, y1, z1, t01), and the final residual of each used pick there is its "first-stage residual".
+The state of each pick is determined as follows. The used picks of an event are used, and the dropped picks of a candidate that became an event are dropped; both kinds carry the number of that event. All picks of a rejected candidate are rejected, and picks that did not enter any candidate are unassociated (an unassociated pick may change to added by the reassociation of section 8 (3)).
+
+* 5. Station corrections and relocation
+For each station, its correction c is the mean of the first-stage residuals of the used picks of that station (added in event number order). The correction of a station with no used picks is 0.
+Next, for each event, make a corrected observation (station, pick time - correction of that station) for each used pick, and run Geiger's method with the first-stage solution as the initial values (no grid search is performed). Its result is the "final solution" (x, y, z, t0); the residuals of the corrected observations at the final solution are the "final residuals", and their RMS is the "final RMS". When "final residual" is written simply for an event, it means this value (not the first-stage residual). In what follows, unless stated otherwise, the hypocenter and origin time of an event mean the final solution.
+
+* 6. Errors and quality
+For each event, compute the following values. n is the number of used picks.
+(1) Covariance: build the matrix A by the same formulas as in section 3 (2), using the final solution and the corrected observations. Let sigma^2 = (sum of the squares of the final residuals) / (n - 4). Decompose A by Cholesky decomposition with the same procedure as in section 3 (2), solve the four systems of equations whose right-hand sides are the unit vectors (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0) and (0, 0, 0, 1) by the same forward and back substitution, and take the respective solutions as columns 0 to 3 of the inverse matrix A^-1. The covariance matrix is C = sigma^2 * A^-1.
+(2) Error ellipse: let Cxx = C[0][0], Cyy = C[1][1], Cxy = C[0][1], mu = (Cxx + Cyy) / 2 and rho = sqrt(((Cxx - Cyy) / 2)^2 + Cxy^2). The semi-major axis is smaj = sqrt(mu + rho), the semi-minor axis is smin = sqrt(mu - rho), and the azimuth of the major axis is az = 90 - theta (degrees), where theta = atan2(2 * Cxy, Cxx - Cyy) / 2 * 180 / pi (az is the angle measured clockwise from north, and is at least 0 and less than 180). In addition, the depth error is erz = sqrt(C[2][2]) and the origin time error is ert = sqrt(C[3][3]).
+(3) Shift: dh = sqrt((x - x1)^2 + (y - y1)^2) and dz = z - z1 (the difference between the final solution and the first-stage solution).
+(4) Azimuthal gap: for the station of each used pick, let phi = atan2(x_j - x, y_j - y) * 180 / pi, and add 360 if phi is negative. Sort these in increasing order as phi_1 <= phi_2 <= ... <= phi_n; the gap is the largest of the adjacent differences phi_(k+1) - phi_k (k = 1, ..., n - 1) and phi_1 + 360 - phi_n.
+(5) DMIN: the minimum of the horizontal distances sqrt((x_j - x)^2 + (y_j - y)^2) to the stations of the used picks.
+(6) Quality: A if gap <= G_A and final RMS <= R_A and smaj <= E_A; otherwise B if gap <= G_B and final RMS <= R_B and smaj <= E_B; otherwise C.
+(7) Jackknife: remove the used picks one at a time, in station order, and run Geiger's method with the remaining corrected observations, using the final solution as the initial values. With its result (x', y', z'), let dx = x' - x, dy = y' - y, dz = z' - z and shift = sqrt(dx^2 + dy^2). Find the maximum of shift and the station that gave it (the one removed). If the maximum is tied, take the station earlier in station order.
+
+* 7. Magnitudes
+For each used pick of each event, let r = D / 1000 (km), using the distance D (formula of section 3) from the final solution to its station.
+- Local magnitude: ML_i = log10(A) + a_L * log10(r / 100) + b_L * (r - 100) + c_L (A is the maximum amplitude). It is not computed for clipped picks.
+- Duration magnitude: Md_i = a_D + b_D * log10(tau) + c_D * r (tau = duration / 100, in seconds). It is computed for all used picks.
+- ML of an event: the median of ML_i over the used picks that are not clipped. If there are no such picks, the event has no ML.
+- Md of an event: the median of Md_i over all used picks.
+- ML residual: for the used picks that are not clipped of an event that has an ML, ML_i - ML.
+- Magnitude correction k of a station: the mean of the ML residuals of that station (added in event number order). It is 0 if there are no ML residuals.
+- Corrected magnitude MLC: the median of ML_i - k (k is the value of that station) over the used picks that are not clipped. If there are no such picks, there is no MLC.
+
+* 8. Travel-time line fit, clusters, reassociation
+(1) Travel-time line fit: in event number order, take the used picks of each event in station order and make points (D_i, T_i). D_i is the distance from the final solution to that station / 1000 (km), and T_i is the pick time (before correction) - the t0 of the final solution. Let n be the number of points, and let SD = SUM D_i, ST = SUM T_i, SDD = SUM D_i^2 and SDT = SUM D_i * T_i (the sums are in point order); then slope = (n * SDT - SD * ST) / (n * SDD - SD^2), intercept = (ST - slope * SD) / n, rms = sqrt(SUM (T_i - intercept - slope * D_i)^2 / n), and the apparent velocity = 1000 / slope (m/s).
+(2) Clusters: two events are "adjacent" when the absolute difference of their origin times is at most T_link and the distance between their hypocenters sqrt((difference of x)^2 + (difference of y)^2 + (difference of z)^2) is at most D_link. A set of events connected by following the adjacency relation is one cluster (an event that is adjacent to no event is a cluster by itself). Clusters are numbered from 1 in increasing order of the smallest event number they contain.
+For each cluster that contains two or more events, compute the centroid (the means of x, y and z of its events, added in event number order) and the span (the maximum minus the minimum of the t0 of its events).
+(3) Reassociation: the "station set" of each event is initially the set of stations of its used picks. Examine the picks whose state is unassociated one at a time, in pick order. For the pick being examined, compute rho = pick time - t0 - D / v - c for each event whose station set does not contain the station of the pick (t0 and D are those of the final solution of that event, and c is the correction of that station). If there are events with |rho| <= Rlim, reassociate this pick to the one among them with the smallest |rho| (for equal values, the one with the smaller event number). The state of a reassociated pick becomes added, its event number becomes the number of that event, and the station of this pick is added to the station set of that event. Reassociation does not affect hypocenters or magnitudes.
+
+* 9. Catalog statistics
+For the events that have an ML, let h be the integer equal to 100 times "the 2-decimal notation of ML" (example: 137 for 1.37), and let the class be t = floor((h + 5) / 10). Class t represents the magnitude t / 10 in steps of 0.1.
+- The frequency N(t) is the number of events in class t, and the cumulative frequency CUM(t) is the number of events whose class is t or more.
+- The class tc of the magnitude of completeness is the class with the largest frequency (the smaller one if tied). Let Mc = tc / 10.
+- b-value: let Nb be the number of events whose class is tc or more, and Mbar = (sum of their t) / (10 * Nb) the mean of their classes; then b = 0.4342944819032518 / (Mbar - (Mc - 0.05)), sigma_b = b / sqrt(Nb), and a = log10(Nb) + b * Mc.
+- Relation between ML and Md: for the events that have an ML, in event number order, let x_i = Md and y_i = ML (both are the values before rounding). Let n be the count, xbar = SUM x_i / n, ybar = SUM y_i / n, Sxx = SUM (x_i - xbar)^2, Sxy = SUM (x_i - xbar) * (y_i - ybar) and Syy = SUM (y_i - ybar)^2; then slope = Sxy / Sxx, intercept = ybar - slope * xbar, r = Sxy / sqrt(Sxx * Syy), and mean_diff = ybar - xbar.
+
+* 10. Charts
+A chart is a grid of characters, initially all spaces. Columns are counted from the left and rows from the top, both starting at 0.
+(1) Integer positions: for an event, use the integers X, Y and Z equal to 10 times the x, y and depth written to output/catalog.csv (in 1-decimal notation). For a station, X = 10 * x coordinate and Y = 10 * y coordinate.
+(2) Epicenter map (Wm columns, Hm rows): a point with 10 * X_min <= X < 10 * X_max and 10 * Y_min <= Y < 10 * Y_max is placed at column col = floor((X - 10 * X_min) * Wm / (10 * (X_max - X_min))) and row row = Hm - 1 - floor((Y - 10 * Y_min) * Hm / (10 * (Y_max - Y_min))).
+(3) East-west cross-section (Wm columns, Hs rows): an event with 10 * X_min <= X < 10 * X_max and Z < 10 * Z_max is placed at the same column col as in (2) and at row floor(Z * Hs / (10 * Z_max)).
+(4) North-south cross-section (Wm columns, Hs rows): an event with 10 * Y_min <= Y < 10 * Y_max and Z < 10 * Z_max is placed at column floor((Y - 10 * Y_min) * Wm / (10 * (Y_max - Y_min))) and row floor(Z * Hs / (10 * Z_max)).
+(5) Symbols: the symbol of an event is "?" if it has no ML, "." if h < 100, "o" if 100 <= h < 200, "O" if 200 <= h < 300, and "@" if h >= 300 (h is the value from section 9). The symbol of a station is "^", and it is placed only on the epicenter map. The priority of the symbols, from highest, is ^, @, O, o, ., ?. First place the events in number order, then the stations in station order. When there is already a symbol at the position, replace it only if the symbol being placed has a higher priority.
+(6) Time-magnitude chart (Wt columns, Ht rows): draw the events that have an ML, in number order. Let T be the integer equal to 1000 times the origin_time written to output/catalog.csv (in 3-decimal notation), and draw only the events with 0 <= T < 1000 * T_d and h >= 100 * M_lo. Let the column be col = floor(T * Wt / (1000 * T_d)) and the height L = floor((h - 100 * M_lo) * Ht / (100 * (M_hi - M_lo))), and if L is greater than Ht - 1, set L = Ht - 1. The position at level k from the bottom (k = 0, 1, ..., L) is row Ht - 1 - k of that column. At the position with k = L, place "o" (replacing whatever is already there), and at a position with k < L, place "|" only if it is a space.
+
+[Output files]
+Every file consists of ASCII characters only, and every line ends with a newline (LF). No line has trailing spaces, and no empty lines are written. In the line formats below, each <...> part is replaced by a value. Number formats are as stated for each item, where "d decimals" denotes the d-decimal notation.
+
+* output/picks.csv
+The first line is the header line "station,sample,time_s,duration,snr,amplitude,clipped,event,status,residual". From the second line on, write all picks (short triggers are not included) one per line in pick order, with the following 10 items in this order, separated by commas.
+- station: the code of the station
+- sample: the sample number of the pick
+- time_s: the time notation of the sample number of the pick
+- duration: the duration
+- snr: the maximum ratio (2 decimals)
+- amplitude: the maximum amplitude A
+- clipped: yes if clipped, otherwise no
+- event: for a pick whose state is used, dropped or added, its event number; otherwise 0
+- status: the state (one of used, dropped, added, rejected, unassociated)
+- residual: for used, the final residual of section 5 (4 decimals); for added, the rho of the reassociation (4 decimals); otherwise "-"
+
+* output/locations.txt
+Write the following (1) to (9) in this order. x, y, z, dist, dh, dz, dx, dy, shift, smaj, smin, erz, az, the gap and DMIN are written with 1 decimal; t0 with 3 decimals; rms, tt, res, corr, ert and the depth profile values with 4 decimals. obs is the time notation of the sample number of the pick.
+(1) For each candidate, in number order, write the following.
+CANDIDATE <candidate number> picks=<number of picks of the candidate> first=<time notation of the sample number of the first pick>
+Then write the location record of pass 1 (described below), and if any picks were dropped, write "DROP <code> res=<final residual of pass 1>" for each such pick (in station order). If the candidate was rejected, write "RESULT REJECTED stations=<number of remaining picks>". If it was adopted, write the location record of pass 2 if pass 2 was performed, and finally write "RESULT EVENT <event number>".
+A location record consists of the following lines (<k> is the pass number, 1 or 2).
+PASS <k> stations=<codes of the stations in observation order, separated by commas>
+GRID x=<x> y=<y> z=<z> t0=<t0> rms=<rms> (the result of the grid search)
+PROFILE <values of the depth profile, separated by single spaces>
+ITER <iteration> x=<x> y=<y> z=<z> t0=<t0> rms=<rms> (the values after the 1st to 8th updates of Geiger's method; 8 lines)
+RES <code> dist=<D> tt=<D / v> obs=<time notation> res=<final residual> (one line per observation, in observation order; D is the distance from the result of Geiger's method)
+(2) After the single line "CORRECTIONS", write "<code> n=<number of used picks> correction=<correction (4 decimals)>" in station order.
+(3) For each event, in number order, write the following.
+EVENT <event number>
+START x=<x1> y=<y1> z=<z1> t0=<t01> rms=<RMS of the corrected observations at the first-stage solution>
+ITER <iteration> x=<x> y=<y> z=<z> t0=<t0> rms=<rms> (the values after the 1st to 8th updates of the Geiger's method of section 5; 8 lines)
+RES <code> dist=<D> tt=<D / v> obs=<time notation> corr=<correction> res=<final residual> (one line per used pick, in station order; D is the distance from the final solution)
+ELLIPSE smaj=<smaj> smin=<smin> az=<az> erz=<erz> ert=<ert>
+SHIFT dh=<dh> dz=<dz>
+GAP <gap> DMIN <DMIN> QUALITY <quality>
+JACK <code of the removed station> dx=<dx> dy=<dy> dz=<dz> shift=<shift> (one line per station, in station order)
+JACKKNIFE max=<maximum of shift> station=<code of the station that gave it>
+(4) FIT n=<number of points> velocity=<apparent velocity (1 decimal)> intercept=<intercept (4 decimals)> rms=<rms (4 decimals)>
+(5) For each cluster that contains two or more events, in cluster number order, write "CLUSTER <cluster number> events=<numbers of its events in increasing order, separated by commas> x=<x of the centroid> y=<y of the centroid> z=<z of the centroid> span=<span (3 decimals)>".
+(6) After the single line "ADDED", write "<code> sample=<sample number> event=<event number> res=<rho (4 decimals)>" for each reassociated pick, in pick order.
+(7) SUMMARY picks=<number of picks> candidates=<number of candidates> events=<number of events> rejected=<number of rejected candidates> unassociated=<number of picks whose final state is unassociated>
+(8) DEPTH min=<minimum depth of the final solutions> median=<median> max=<maximum> (all 1 decimal)
+(9) QUALITY A=<number of events of quality A> B=<number of quality B> C=<number of quality C> mean_rms=<mean of the final RMS values (added in event number order; 4 decimals)>
+
+* output/catalog.csv
+The first line is the header line "event,origin_time,x,y,depth,rms,stations,gap,dmin,smaj,smin,azimuth,erz,ml,md,quality,cluster". From the second line on, write the events one per line in number order, with the following 17 items in this order, separated by commas.
+event number, t0 (3 decimals), x (1 decimal), y (1 decimal), z (1 decimal), final RMS (4 decimals), number of used picks, gap (1 decimal), DMIN (1 decimal), smaj (1 decimal), smin (1 decimal), az (1 decimal), erz (1 decimal), ML (2 decimals; "-" if the event has no ML), Md (2 decimals), quality, cluster number
+
+* output/magnitudes.txt
+(1) For each event, in number order, first write "EVENT <event number> ML=<ML (2 decimals; "-" if none)> n=<number of used picks that are not clipped> MD=<Md (2 decimals)>", and then for each used pick, in station order, write the following one line.
+  When not clipped: <code> r=<r (3 decimals)> amp=<A> ml=<ML_i (2 decimals)> res=<ML_i - ML (2 decimals)> dur=<duration> md=<Md_i (2 decimals)>
+  When clipped: <code> r=<r (3 decimals)> amp=<A> clipped dur=<duration> md=<Md_i (2 decimals)>
+(2) After the single line "CORRECTED", write "EVENT <event number> MLC=<MLC (2 decimals; "-" if none)>" for each event, in number order.
+(3) After the single line "FMD", for every integer t from the minimum to the maximum class of the events that have an ML, in increasing order, write "M=<notation of t> N=<N(t)> CUM=<CUM(t)>". The notation of class t is the concatenation, in this order, of "-" if t is negative, the quotient of |t| divided by 10, ".", and the remainder of |t| divided by 10 (examples: t = 12 gives 1.2, t = 7 gives 0.7, t = -3 gives -0.3).
+(4) MC <notation of tc>
+(5) BVALUE <b (3 decimals)> SIGMA <sigma_b (3 decimals)> N <Nb>
+(6) AVALUE <a (3 decimals)>
+(7) MLMD n=<count> slope=<slope (3 decimals)> intercept=<intercept (3 decimals)> r=<r (3 decimals)> mean_diff=<mean_diff (3 decimals)>
+(8) Write the single line "TIMELINE t=0..<T_d> ML=<M_lo>..<M_hi>", a frame line, each row of the time-magnitude chart (from the top row down), and a frame line. A frame line is the concatenation of "+", Wt "-" characters and "+", in this order; each chart line is the concatenation of "|", the Wt characters of that row and "|", in this order.
+
+* output/stations.txt
+For each station, in station order, write the following 6 lines.
+STATION <code> x=<x coordinate> y=<y coordinate> elevation=<elevation>
+SAMPLES start=<start sample number> count=<sample count> mean=<m> noise=<noise (1 decimal)> peak=<peak> clipped=<number of clipped samples>
+TRIGGERS total=<total number of triggers> short=<number of short triggers> picks=<number of picks>
+PICKS used=<count> dropped=<count> added=<count> rejected=<count> unassociated=<count> (the number of picks of that station in each state)
+RESIDUALS n=<number of used picks> rms=<RMS of the first-stage residuals (4 decimals)> correction=<correction (4 decimals)> after=<RMS of the final residuals (4 decimals)>
+MAGNITUDES n=<number of ML residuals> correction=<magnitude correction k (2 decimals)>
+The RMS values on the RESIDUALS line are computed over the used picks of that station, adding in event number order. If there are no used picks, rms and after are "-".
+
+* output/map.txt
+Write the following in this order. The frame lines and chart lines have the same form as in the time-magnitude chart of output/magnitudes.txt, with Wm columns.
+MAP x=<X_min>..<X_max> y=<Y_min>..<Y_max>
+a frame line, the Hm rows of the epicenter map, a frame line
+SECTION EW x=<X_min>..<X_max> z=0..<Z_max>
+a frame line, the Hs rows of the east-west cross-section, a frame line
+SECTION NS y=<Y_min>..<Y_max> z=0..<Z_max>
+a frame line, the Hs rows of the north-south cross-section, a frame line
+LEGEND ^ station . ML<1 o ML<2 O ML<3 @ ML>=3 ? no ML
+Then, for each station, in station order, write "STATION <code> map=<col>,<row>". For a station that does not satisfy the range condition of section 10 (2), write "STATION <code> map=outside".
+Finally, for each event, in number order, write "EVENT <event number> <symbol> map=<col>,<row> ew=<col>,<row> ns=<col>,<row>". map, ew and ns are the positions on the epicenter map, the east-west cross-section and the north-south cross-section respectively; when the range condition of that chart is not satisfied, write map=outside, ew=outside or ns=outside. Even when the symbol was not placed because of the priority, the position is written as long as the range condition is satisfied.
+
+[Source files]
+The program must consist of the following six source files. The file names denote roles; the actual names and extensions follow the conventions of each language.
+- main: handles the overall flow of the program and holds most of the processing: reading the input, calling pick detection and association, processing the candidates (pass 1 and pass 2, dropping and rejection, managing event numbers and pick states), station corrections and relocation, evaluating the errors, quality, azimuthal gap, DMIN and jackknife, aggregating and correcting the magnitudes of each event, the travel-time line fit, clustering, reassociation, aggregating the catalog statistics, and creating the six output files (including number formatting and drawing the charts).
+- waveform_io: reading input/stations.csv, input/waveforms.txt and input/params.txt.
+- picker: the processing of section 1 (mean removal, STA/LTA triggering, determining the pick positions, maximum amplitude and clipping decisions, waveform statistics of each station).
+- associator: the association of section 2.
+- locator: the processing of section 3 (distances and residuals, grid search and depth profile, Geiger's method, solving systems of equations by Cholesky decomposition), and the covariance and error ellipse of section 6 (1) and (2).
+- magnitude: log10, the formulas of ML_i and Md_i, the median, the classes of section 9, and the computation of the magnitude of completeness and the b-value.
+
+[Constraints]
+- There are 4 to 12 stations. Nmin is at least 6 and at most the number of stations.
+- The sample count of each block is at least Sw + Lw and at most 12000, the start sample number is at least 0, and every sample number is less than 100000. The absolute value of every sample value is at most 32767.
+- Sw, Lw, Dmin, Aw, W, Wm, Hm, Hs, Wt, Ht and T_d are at least 1; p_on, q_on, p_off and q_off are from 1 to 100; v is at least 1. x_step, y_step and z_step are at least 1, and x_max - x_min is divisible by x_step (likewise for y and z). z_min is at least 0. X_min < X_max, Y_min < Y_max, 0 < Z_max and M_lo < M_hi.
+- Every intermediate value of the integer computations has an absolute value less than 10^13 (including products such as STA(i) * Lw * q_on). LTA(i) is always at least 1.
+- There is at least one event, and at least two events have an ML. The values whose square roots are taken in the Cholesky decomposition, the maximum amplitudes of picks that are not clipped, Sxx, Syy, n * SDD - SD^2 and slope are all positive.
+- The input data are constructed so that the output does not change because of differences in summation order, fused multiply-add, or differences in the last bit of ln, atan2, sqrt and the like. Specifically, the S of the grid node selected in a grid search differs from the second-smallest S by a relative amount of at least 10^-3. The |residual| values used in the drop and reassociation decisions are at least 0.03 seconds away from Rlim. The values used in the quality decisions are at least a relative 10^-3 away from the thresholds, and the time differences and distances used in the cluster decisions are at least 0.1 seconds and at least 100 m away from the thresholds, respectively. The maximum jackknife shift differs from the second-largest value by at least 0.5 m. Every real number that is output is at least 10^-4 units of the last digit away from a rounding boundary (a value that is exactly a half when rounding).
+
+[Example]
+The actual input is large, so only the pick detection procedure is shown here with a small example.
+Suppose Sw = 2, Lw = 4, p_on / q_on = 3 / 1, p_off / q_off = 3 / 2, Dmin = 2, N = 25, Aw = 3 and K = 40, and the block of a station is "STATION AB1 500 20" with the sample values -9, -11, -8, -10, -12, -9, -10, -7, -11, -4, -41, 18, -50, 2, -32, -11, -27, -9, -10, -11.
+- The sum of the sample values is -262, so m = floor(-262 / 20) = -14 (not -13). d becomes 5, 3, 6, 4, 2, 5, 4, 7, 3, 10, -27, 32, -36, 16, -18, 3, -13, 5, 4, 3.
+- The examination starts at i = 5. At i = 9, STA = 9 + 100 = 109 and LTA = 4 + 25 + 16 + 49 = 94, and 109 * 4 * 1 = 436 is less than 3 * 94 * 2 = 564, so the state stays off. At i = 10, STA = 829 and LTA = 99, and 3316 >= 594, so it turns on, with i_on = 10.
+- At i = 11, 12 and 13 it stays on, and at i = 14, STA = 580 and LTA = 3149, and 580 * 4 * 2 = 4640 < 3 * 3149 * 2 = 18894, so it turns off, with i_off = 14. The duration is 4, and the maximum ratio is R = 7012 / 348 = 20.1494... at i = 11, so the snr notation is 20.15.
+- For the pick position, start with k = 10; since k - 1 = 9 >= 9 and e[9] = 100 >= 25, set k = 9; next, k - 1 = 8 is less than 9, so it stops. The sample number of the pick is 509, and its time notation is 5.09.
+- The |d| values for j = 9, 10, 11 are 10, 27, 32, so A = 32. In the same range, the absolute value of s[10] = -41 is K or more, so the pick is clipped.
+- If this pick did not enter any event, its line in output/picks.csv is "AB1,509,5.09,4,20.15,32,yes,0,unassociated,-". Also, the SAMPLES line of this station in output/stations.txt is "SAMPLES start=500 count=20 mean=-14 noise=5.0 peak=36 clipped=2", and the TRIGGERS line is "TRIGGERS total=1 short=0 picks=1".
+Class example: if the notation of ML is 1.34, then h = 134 and t = floor(139 / 10) = 13, so it falls in class "M=1.3"; if it is 1.35, then t = floor(140 / 10) = 14, so it falls in class "M=1.4".

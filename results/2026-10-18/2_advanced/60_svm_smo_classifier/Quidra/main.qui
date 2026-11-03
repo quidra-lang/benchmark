@@ -1,0 +1,687 @@
+import math
+import dataset = "./dataset.qui"
+import kernels = "./kernels.qui"
+import smo = "./smo.qui"
+import multiclass = "./multiclass.qui"
+import evaluation = "./evaluation.qui"
+
+real64 absolute(real64 value)
+    return if value < 0.0 then -value else value
+
+real64 maximum(real64 first, real64 second)
+    return if first > second then first else second
+
+real64 minimum(real64 first, real64 second)
+    return if first < second then first else second
+
+string words(int[] values)
+    return [for int value = values[] then value.string()].join(" ")
+
+string real_words(real64[] values, int places = 4)
+    return [for real64 value = values[] then evaluation.fixed(value, places)].join(" ")
+
+string yes(bool value)
+    return if value then "yes" else "no"
+
+real64[][] example_points(dataset.Example[] examples)
+    return [for dataset.Example example = examples[] then example.point]
+
+int[] example_labels(dataset.Example[] examples)
+    return [for dataset.Example example = examples[] then example.label]
+
+smo.Model train_model(real64[][] points, int[] labels, dataset.Kernel definition, real64[][] matrix, real64 coefficient, dataset.Params params)
+    return smo.train(points, labels, definition.kind, definition.degree, definition.gamma, definition.coef0, matrix, coefficient, params.tolerance, params.eps, params.max_passes)
+
+int[] support_counts(real64[] alpha, real64 coefficient)
+    int total = 0
+    int bound = 0
+    for real64 value = alpha[]
+        if value > 0.0
+            total += 1
+            if value == coefficient
+                bound += 1
+    return [total, bound, total - bound]
+
+string support_text(real64[] alpha, real64 coefficient)
+    int[] counts = support_counts(alpha, coefficient)
+    return "support_vectors {counts[0]} bound {counts[1]} free {counts[2]}"
+
+string run_info(int passes, int steps, bool converged)
+    return "passes {passes} steps {steps} converged " + yes(converged)
+
+real64[] objectives(real64[][] matrix, int[] labels, real64[] alpha)
+    real64[] scores = []
+    for real64[] row = matrix[]
+        real64 total = 0.0
+        for int i < int(len(alpha))
+            if alpha[i] > 0.0
+                total += alpha[i] * real64(labels[i]) * row[i]
+        scores = scores.append(total)
+    real64 quadratic = 0.0
+    real64 alpha_total = 0.0
+    for int i < int(len(alpha))
+        quadratic += alpha[i] * real64(labels[i]) * scores[i]
+        alpha_total += alpha[i]
+    return [quadratic, alpha_total - quadratic / 2.0]
+
+class Fold(int training, int testing, int correct, int support, int passes, int steps, bool converged)
+class Candidate(int kernel, int c_index, real64[] values, Fold[] folds, int correct, int support, int passes, int steps)
+class CrossValidation(real64[][][] matrices, Candidate[] combinations, int[] best, int selected, int[] ranking)
+
+CrossValidation cross_validate(dataset.Example[] training, dataset.Params params)
+    real64[][] points = example_points(training)
+    int[] labels = example_labels(training)
+    int n = int(len(training))
+    int[][][] partitions = evaluation.folds(n, params.fold_count)
+    real64[][][] matrices = []
+    Candidate[] combinations = []
+    int[] best = []
+    for int k < int(len(params.kernels))
+        dataset.Kernel definition = params.kernels[k]
+        real64[][] matrix = kernels.matrix(definition.kind, definition.degree, definition.gamma, definition.coef0, points)
+        matrices = matrices.append(matrix)
+        int chosen = -1
+        for int c < int(len(params.c_grid))
+            real64[] values = [for int i < n then 0.0]
+            Fold[] folds = []
+            int total_correct = 0
+            int total_support = 0
+            int total_passes = 0
+            int total_steps = 0
+            for int[][] partition = partitions[]
+                int[] train_indices = partition[0]
+                int[] test_indices = partition[1]
+                real64[][] fold_points = [for int i = train_indices[] then points[i]]
+                int[] fold_labels = [for int i = train_indices[] then labels[i]]
+                smo.Model model = train_model(fold_points, fold_labels, definition, kernels.submatrix(matrix, train_indices), params.c_grid[c], params)
+                int correct = 0
+                for int i = test_indices[]
+                    real64 value = model.decision(points[i])
+                    values[i] = value
+                    if evaluation.sign(value) == labels[i]
+                        correct += 1
+                int[] counts = support_counts(model.alpha, model.coefficient)
+                folds = folds.append(Fold(int(len(train_indices)), int(len(test_indices)), correct, counts[0], model.passes(), model.steps, model.converged))
+                total_correct += correct
+                total_support += counts[0]
+                total_passes += model.passes()
+                total_steps += model.steps
+            int index = int(len(combinations))
+            combinations = combinations.append(Candidate(k, c, values, folds, total_correct, total_support, total_passes, total_steps))
+            if chosen < 0 or total_correct > combinations[chosen].correct
+                chosen = index
+        best = best.append(chosen)
+    int selected = best[0]
+    for int index = best[]
+        Candidate current = combinations[index]
+        Candidate previous = combinations[selected]
+        if current.correct > previous.correct or (current.correct == previous.correct and current.c_index < previous.c_index)
+            selected = index
+    int kernel_count = int(len(params.kernels))
+    int c_count = int(len(params.c_grid))
+    int base = kernel_count * c_count
+    int[] keys = [for Candidate candidate = combinations[] then (n - candidate.correct) * base + candidate.c_index * kernel_count + candidate.kernel]
+    int[] ranking = [for int key = keys.sorted()[] then (key % kernel_count) * c_count + (key % base) / kernel_count]
+    return CrossValidation(matrices, combinations, best, selected, ranking)
+
+string[] cross_validation_lines(int size, dataset.Params params, CrossValidation cv)
+    string[] lines = ["cross_validation folds {params.fold_count} examples {size}"]
+    for int index = cv.best[]
+        Candidate candidate = cv.combinations[index]
+        lines = lines.append("best {params.kernels[candidate.kernel].name} C " + evaluation.fixed(params.c_grid[candidate.c_index]) + " correct {candidate.correct}/{size} accuracy " + evaluation.ratio(candidate.correct, size))
+    Candidate selected = cv.combinations[cv.selected]
+    string name = params.kernels[selected.kernel].name
+    lines = lines.concat(["selected {name} C " + evaluation.fixed(params.c_grid[selected.c_index]), "ranking"])
+    for int rank < int(len(cv.ranking))
+        Candidate candidate = cv.combinations[cv.ranking[rank]]
+        lines = lines.append("{rank + 1} {params.kernels[candidate.kernel].name} C " + evaluation.fixed(params.c_grid[candidate.c_index]) + " correct {candidate.correct}/{size}")
+    lines = lines.append("cv_detail {name} C " + evaluation.fixed(params.c_grid[selected.c_index]))
+    for int i < int(len(selected.folds))
+        Fold fold = selected.folds[i]
+        lines = lines.append("fold {i + 1} train {fold.training} test {fold.testing} correct {fold.correct} support_vectors {fold.support} " + run_info(fold.passes, fold.steps, fold.converged))
+    return lines
+
+class Final(smo.Model model, real64[] train_values, real64[] test_values, real64[] weights, string[] lines)
+
+Final evaluate_final(smo.Model model, dataset.Example[] training, dataset.Example[] testing, dataset.Kernel definition, real64 tolerance)
+    int n = int(len(training))
+    int m = int(len(testing))
+    real64[] train_values = model.training_decisions()
+    real64[] test_values = [for dataset.Example example = testing[] then model.decision(example.point)]
+    int[] test_labels = example_labels(testing)
+    real64[] objective = objectives(model.matrix, model.labels, model.alpha)
+    real64 quadratic = objective[0]
+    real64 dual = objective[1]
+    real64 label_alignment = 0.0
+    real64 matrix_squares = 0.0
+    real64 matrix_minimum = model.matrix[0][0]
+    real64 diagonal_maximum = model.matrix[0][0]
+    for int i < n
+        for int j < n
+            real64 value = model.matrix[i][j]
+            label_alignment += real64(model.labels[i] * model.labels[j]) * value
+            matrix_squares += value * value
+            matrix_minimum = minimum(matrix_minimum, value)
+        diagonal_maximum = maximum(diagonal_maximum, model.matrix[i][i])
+    real64 alignment = label_alignment / (real64(n) * math.sqrt(matrix_squares))
+    real64 equality = 0.0
+    real64 w1 = 0.0
+    real64 w2 = 0.0
+    int[] class_counts = [0, 0, 0, 0]
+    for int i < n
+        real64 alpha = model.alpha[i]
+        int label = model.labels[i]
+        equality += alpha * real64(label)
+        if definition.kind == "linear"
+            w1 += alpha * real64(label) * training[i].point[0]
+            w2 += alpha * real64(label) * training[i].point[1]
+        if alpha > 0.0
+            int slot = (if label == 1 then 0 else 2) + (if alpha == model.coefficient then 0 else 1)
+            class_counts[slot] += 1
+    real64 norm = math.sqrt(quadratic)
+    real64 radius = diagonal_maximum - matrix_minimum
+    real64 hinge_total = 0.0
+    int violation_count = 0
+    int estimated_errors = 0
+    real64 largest_violation = 0.0
+    for int i < n
+        real64 alpha = model.alpha[i]
+        real64 label = real64(model.labels[i])
+        real64 value = train_values[i]
+        real64 hinge = maximum(0.0, 1.0 - label * value)
+        hinge_total += hinge
+        real64 residual = label * value - 1.0
+        real64 violation = if alpha == 0.0 then maximum(0.0, -residual) elif alpha == model.coefficient then maximum(0.0, residual) else absolute(residual)
+        if violation > tolerance
+            violation_count += 1
+        largest_violation = maximum(largest_violation, violation)
+        if 2.0 * alpha * radius + hinge >= 1.0
+            estimated_errors += 1
+    real64 primal = quadratic / 2.0 + model.coefficient * hinge_total
+    int train_correct = evaluation.correct_count(model.labels, train_values)
+    int[] counts = evaluation.binary_counts(test_labels, test_values)
+    int inside = 0
+    real64 positive_total = 0.0
+    real64 negative_total = 0.0
+    for int i < m
+        if absolute(test_values[i]) < 1.0
+            inside += 1
+        if test_labels[i] == 1
+            positive_total += test_values[i]
+        else
+            negative_total += test_values[i]
+    string[] lines = ["model {definition.name}", "kernel " + kernels.description(definition.kind, definition.degree, definition.gamma, definition.coef0), "C " + evaluation.fixed(model.coefficient),
+        "alignment " + evaluation.fixed(alignment, 6), "passes {model.passes()} full {model.full_passes} nonbound {model.nonbound_passes} converged " + yes(model.converged),
+        "examined {model.examined} steps {model.steps}", "choice heuristic {model.choices[0]} nonbound_loop {model.choices[1]} full_loop {model.choices[2]}",
+        "clipping none {model.clipping[0]} lower {model.clipping[1]} upper {model.clipping[2]}", support_text(model.alpha, model.coefficient), "b " + evaluation.fixed(model.b, 6), "equality " + evaluation.fixed(equality, 6)]
+    if definition.kind == "linear"
+        lines = lines.append("w " + evaluation.fixed(w1, 6) + " " + evaluation.fixed(w2, 6))
+    lines = lines.concat(["sv_by_class positive bound {class_counts[0]} free {class_counts[1]} negative bound {class_counts[2]} free {class_counts[3]}",
+        "norm " + evaluation.fixed(norm, 6) + " margin " + evaluation.fixed(2.0 / norm, 6), "dual_objective " + evaluation.fixed(dual, 6), "primal_objective " + evaluation.fixed(primal, 6), "duality_gap " + evaluation.fixed(primal - dual, 6),
+        "kkt_violations {violation_count} max " + evaluation.fixed(largest_violation, 6), "xi_alpha radius " + evaluation.fixed(radius, 6) + " errors {estimated_errors}/{n} accuracy " + evaluation.ratio(n - estimated_errors, n),
+        "train correct {train_correct}/{n} accuracy " + evaluation.ratio(train_correct, n), "test correct {counts[0] + counts[2]}/{m} accuracy " + evaluation.ratio(counts[0] + counts[2], m) + " tp {counts[0]} fp {counts[1]} tn {counts[2]} fn {counts[3]}",
+        "test precision " + evaluation.ratio(counts[0], counts[0] + counts[1]) + " recall " + evaluation.ratio(counts[0], counts[0] + counts[3]) + " f1 " + evaluation.ratio(2 * counts[0], 2 * counts[0] + counts[1] + counts[3]) + " auc " + evaluation.fixed(evaluation.auc(test_labels, test_values)),
+        "test inside_margin {inside}", "test mean_decision positive " + evaluation.fixed(positive_total / real64(counts[0] + counts[3])) + " negative " + evaluation.fixed(negative_total / real64(counts[1] + counts[2]))])
+    for int i < n
+        if model.alpha[i] > 0.0
+            lines = lines.append("sv {training[i].id} y {training[i].label} alpha " + evaluation.fixed(model.alpha[i], 6) + " f " + evaluation.fixed(train_values[i]) + " " + (if model.alpha[i] == model.coefficient then "bound" else "free"))
+    return Final(model, train_values, test_values, [w1, w2], lines)
+
+string[] training_log(smo.Model model, string name)
+    string[] lines = ["training_log {name}"]
+    int index = 0
+    while index < int(len(model.records))
+        smo.Pass record = model.records[index]
+        if record.full
+            real64 dual = objectives(model.matrix, model.labels, record.alpha)[1]
+            lines = lines.append("pass {index + 1} full examined {record.examined} changed {record.changed} dual_objective " + evaluation.fixed(dual, 6))
+            index += 1
+        else
+            int first = index + 1
+            int examined = 0
+            int changed = 0
+            while index < int(len(model.records)) and not model.records[index].full
+                examined += model.records[index].examined
+                changed += model.records[index].changed
+                index += 1
+            lines = lines.append("passes {first}-{index} nonbound examined {examined} changed {changed}")
+    return lines
+
+string[] c_path(dataset.Input data, Candidate selected, real64[][] matrix)
+    dataset.Kernel definition = data.params.kernels[selected.kernel]
+    string[] lines = ["c_path {definition.name}"]
+    for real64 coefficient = data.params.c_grid[]
+        smo.Model model = train_model(example_points(data.training), example_labels(data.training), definition, matrix, coefficient, data.params)
+        real64 dual = objectives(model.matrix, model.labels, model.alpha)[1]
+        int train_correct = evaluation.correct_count(model.labels, model.training_decisions())
+        real64[] values = [for dataset.Example example = data.testing[] then model.decision(example.point)]
+        int test_correct = evaluation.correct_count(example_labels(data.testing), values)
+        lines = lines.append("C " + evaluation.fixed(coefficient) + " " + support_text(model.alpha, coefficient) + " dual_objective " + evaluation.fixed(dual, 6) + " train {train_correct}/{len(data.training)} test {test_correct}/{len(data.testing)} " + run_info(model.passes(), model.steps, model.converged))
+    return lines
+
+string[] learning_curve(dataset.Input data, Candidate selected, real64[][] matrix)
+    dataset.Kernel definition = data.params.kernels[selected.kernel]
+    real64 coefficient = data.params.c_grid[selected.c_index]
+    string[] lines = ["learning_curve {definition.name} C " + evaluation.fixed(coefficient)]
+    for int percentage = data.params.learning_curve[]
+        int size = int(len(data.training)) * percentage / 100
+        dataset.Example[] examples = data.training[0:<size]
+        int[] indices = [for int i < size then i]
+        smo.Model model = train_model(example_points(examples), example_labels(examples), definition, kernels.submatrix(matrix, indices), coefficient, data.params)
+        int train_correct = evaluation.correct_count(model.labels, model.training_decisions())
+        real64[] values = [for dataset.Example example = data.testing[] then model.decision(example.point)]
+        int test_correct = evaluation.correct_count(example_labels(data.testing), values)
+        int[] counts = support_counts(model.alpha, coefficient)
+        lines = lines.append("size {size} support_vectors {counts[0]} train {train_correct}/{size} test {test_correct}/{len(data.testing)} " + run_info(model.passes(), model.steps, model.converged))
+    return lines
+
+real64 probability(real64 value, real64 coefficient, real64 intercept)
+    return 1.0 / (1.0 + math.exp(coefficient * value + intercept))
+
+real64 negative_log_likelihood(real64[] values, real64[] targets, real64 coefficient, real64 intercept)
+    real64 total = 0.0
+    for int i < int(len(values))
+        real64 p = probability(values[i], coefficient, intercept)
+        real64 positive_log = math.log(p)
+        real64 negative_log = math.log(1.0 - p)
+        total += targets[i] * positive_log + (1.0 - targets[i]) * negative_log
+    return -total
+
+class Calibration(real64 coefficient, real64 intercept, real64[] probabilities, string[] lines)
+
+Calibration calibrate(dataset.Input data, Candidate selected, real64[] test_values)
+    int positive_count = 0
+    for dataset.Example example = data.training[]
+        if example.label == 1
+            positive_count += 1
+    int negative_count = int(len(data.training)) - positive_count
+    real64[] targets = [for dataset.Example example = data.training[] then (if example.label == 1 then real64(positive_count + 1) / real64(positive_count + 2) else 1.0 / real64(negative_count + 2))]
+    real64[] values = selected.values
+    real64 coefficient = 0.0
+    real64 intercept = math.log(real64(negative_count + 1) / real64(positive_count + 1))
+    real64 nll = negative_log_likelihood(values, targets, coefficient, intercept)
+    string name = data.params.kernels[selected.kernel].name
+    string[] lines = ["calibration {name} C " + evaluation.fixed(data.params.c_grid[selected.c_index]) + " positives {positive_count} negatives {negative_count}", "start A " + evaluation.fixed(coefficient, 6) + " B " + evaluation.fixed(intercept, 6) + " nll " + evaluation.fixed(nll, 6)]
+    for int iteration < data.params.newton_iterations
+        real64 g1 = 0.0
+        real64 g2 = 0.0
+        real64 h11 = 0.0
+        real64 h21 = 0.0
+        real64 h22 = 0.0
+        for int i < int(len(values))
+            real64 value = values[i]
+            real64 p = probability(value, coefficient, intercept)
+            real64 target = targets[i]
+            g1 += value * (target - p)
+            g2 += target - p
+            h11 += value * value * p * (1.0 - p)
+            h21 += value * p * (1.0 - p)
+            h22 += p * (1.0 - p)
+        real64 determinant = h11 * h22 - h21 * h21
+        coefficient -= (h22 * g1 - h21 * g2) / determinant
+        intercept -= (h11 * g2 - h21 * g1) / determinant
+        nll = negative_log_likelihood(values, targets, coefficient, intercept)
+        lines = lines.append("iteration {iteration + 1} A " + evaluation.fixed(coefficient, 6) + " B " + evaluation.fixed(intercept, 6) + " nll " + evaluation.fixed(nll, 6))
+    real64[] probabilities = [for real64 value = test_values[] then probability(value, coefficient, intercept)]
+    real64 log_total = 0.0
+    real64 brier_total = 0.0
+    int[] bin_counts = [0, 0, 0, 0, 0]
+    int[] bin_positives = [0, 0, 0, 0, 0]
+    real64[] bin_totals = [0.0, 0.0, 0.0, 0.0, 0.0]
+    for int i < int(len(data.testing))
+        real64 p = probabilities[i]
+        bool positive = data.testing[i].label == 1
+        real64 logarithm = math.log(if positive then p else 1.0 - p)
+        log_total += logarithm
+        real64 difference = p - (if positive then 1.0 else 0.0)
+        brier_total += difference * difference
+        int bin = math.floor(p * 5.0)
+        if bin > 4
+            bin = 4
+        bin_counts[bin] += 1
+        bin_totals[bin] += p
+        if positive
+            bin_positives[bin] += 1
+    lines = lines.append("test log_loss " + evaluation.fixed(-log_total / real64(len(data.testing)), 6) + " brier " + evaluation.fixed(brier_total / real64(len(data.testing)), 6))
+    string[] ranges = ["0.0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1.0"]
+    for int i < 5
+        int count = bin_counts[i]
+        string mean = if count == 0 then "-" else evaluation.fixed(bin_totals[i] / real64(count))
+        lines = lines.append("bin {ranges[i]} count {count} mean_probability {mean} positive_rate " + evaluation.ratio(bin_positives[i], count))
+    int[] closest = []
+    for int i < int(len(test_values))
+        int position = int(len(closest))
+        for int j < int(len(closest))
+            if absolute(test_values[i]) < absolute(test_values[closest[j]])
+                position = j
+                break
+        closest = closest[0:<position].concat([i]).concat(closest[position:<int(len(closest))])
+    for int rank < 5
+        int i = closest[rank]
+        lines = lines.append("closest {data.testing[i].id} label {data.testing[i].label} decision " + evaluation.fixed(test_values[i]) + " probability " + evaluation.fixed(probabilities[i]))
+    return Calibration(coefficient, intercept, probabilities, lines)
+
+real64 linear_decision(real64[] weights, real64[] point)
+    return weights[0] * point[0] + weights[1] * point[1] + weights[2]
+
+class Pegasos(real64[] values, string[] lines)
+
+Pegasos pegasos(dataset.Input data, Final comparison, string name)
+    dataset.Params params = data.params
+    int state = params.seed
+    real64 w1 = 0.0
+    real64 w2 = 0.0
+    real64 bias = 0.0
+    real64 sum1 = 0.0
+    real64 sum2 = 0.0
+    real64 sum_bias = 0.0
+    int updates = 0
+    int n = int(len(data.training))
+    int m = int(len(data.testing))
+    int[] train_labels = example_labels(data.training)
+    int[] test_labels = example_labels(data.testing)
+    string[] lines = ["pegasos lambda " + evaluation.fixed(params.regularization) + " iterations {params.pegasos_iterations} seed {params.seed}"]
+    for 1 <= int iteration <= params.pegasos_iterations
+        state = 48271 * state % 2147483647
+        dataset.Example example = data.training[state % n]
+        real64 label = real64(example.label)
+        real64 eta = 1.0 / (params.regularization * real64(iteration))
+        real64 sigma = 1.0 - eta * params.regularization
+        if label * linear_decision([w1, w2, bias], example.point) < 1.0
+            w1 = sigma * w1 + eta * label * example.point[0]
+            w2 = sigma * w2 + eta * label * example.point[1]
+            bias = sigma * bias + eta * label
+            updates += 1
+        else
+            w1 = sigma * w1
+            w2 = sigma * w2
+            bias = sigma * bias
+        sum1 += w1
+        sum2 += w2
+        sum_bias += bias
+        if iteration % (params.pegasos_iterations / 10) == 0
+            real64[] train_values = [for dataset.Example item = data.training[] then linear_decision([w1, w2, bias], item.point)]
+            real64 hinge_total = 0.0
+            for int i < n
+                hinge_total += maximum(0.0, 1.0 - real64(train_labels[i]) * train_values[i])
+            real64 objective = params.regularization / 2.0 * (w1 * w1 + w2 * w2 + bias * bias) + hinge_total / real64(n)
+            int correct = evaluation.correct_count(train_labels, train_values)
+            lines = lines.append("checkpoint {iteration} objective " + evaluation.fixed(objective, 6) + " train {correct}/{n}")
+    real64[] weights = [w1, w2, bias]
+    real64[] average = [sum1 / real64(params.pegasos_iterations), sum2 / real64(params.pegasos_iterations), sum_bias / real64(params.pegasos_iterations)]
+    real64[] train_values = [for dataset.Example example = data.training[] then linear_decision(weights, example.point)]
+    real64[] values = [for dataset.Example example = data.testing[] then linear_decision(weights, example.point)]
+    real64[] average_values = [for dataset.Example example = data.testing[] then linear_decision(average, example.point)]
+    int train_correct = evaluation.correct_count(train_labels, train_values)
+    int test_correct = evaluation.correct_count(test_labels, values)
+    int average_correct = evaluation.correct_count(test_labels, average_values)
+    real64 v1 = comparison.weights[0]
+    real64 v2 = comparison.weights[1]
+    real64 cosine = (w1 * v1 + w2 * v2) / (math.sqrt(w1 * w1 + w2 * w2) * math.sqrt(v1 * v1 + v2 * v2))
+    int agreement = 0
+    for int i < m
+        if evaluation.sign(values[i]) == evaluation.sign(comparison.test_values[i])
+            agreement += 1
+    lines = lines.concat(["updates {updates}", "w " + evaluation.fixed(w1, 6) + " " + evaluation.fixed(w2, 6) + " bias " + evaluation.fixed(bias, 6),
+        "train correct {train_correct}/{n} accuracy " + evaluation.ratio(train_correct, n), "test correct {test_correct}/{m} accuracy " + evaluation.ratio(test_correct, m),
+        "average w " + evaluation.fixed(average[0], 6) + " " + evaluation.fixed(average[1], 6) + " bias " + evaluation.fixed(average[2], 6) + " test correct {average_correct}/{m}",
+        "compare {name} cosine " + evaluation.fixed(cosine, 6) + " test_agreement {agreement}/{m}"])
+    return Pegasos(values, lines)
+
+string[] mcnemar_lines(dataset.Input data, Final[] finals, real64[] pegasos_values)
+    string[] names = [for dataset.Kernel definition = data.params.kernels[] then definition.name].append("pegasos")
+    real64[][] values = [for Final result = finals[] then result.test_values].append(pegasos_values)
+    string[] lines = ["mcnemar"]
+    for int first < int(len(names))
+        for first + 1 <= int second < int(len(names))
+            int only_first = 0
+            int only_second = 0
+            for int i < int(len(data.testing))
+                bool a = evaluation.sign(values[first][i]) == data.testing[i].label
+                bool b = evaluation.sign(values[second][i]) == data.testing[i].label
+                if a and not b
+                    only_first += 1
+                elif b and not a
+                    only_second += 1
+            int denominator = only_first + only_second
+            int difference = (if only_first >= only_second then only_first - only_second else only_second - only_first) - 1
+            string chi2 = if denominator == 0 then "-" else evaluation.fixed(real64(difference * difference) / real64(denominator))
+            lines = lines.append("{names[first]} {names[second]} only_first {only_first} only_second {only_second} chi2 {chi2}")
+    return lines
+
+string multiclass_summary(string role, dataset.Example[] examples, multiclass.Classification[] classifications)
+    int rest_correct = 0
+    int pair_correct = 0
+    int agreement = 0
+    int ties = 0
+    for int i < int(len(examples))
+        if classifications[i].ovr == examples[i].label
+            rest_correct += 1
+        if classifications[i].ovo == examples[i].label
+            pair_correct += 1
+        if classifications[i].ovr == classifications[i].ovo
+            agreement += 1
+        if classifications[i].tied
+            ties += 1
+    int size = int(len(examples))
+    return "{role} ovr {rest_correct}/{size} " + evaluation.ratio(rest_correct, size) + " ovo {pair_correct}/{size} " + evaluation.ratio(pair_correct, size) + " agreement {agreement}/{size} vote_ties {ties}"
+
+string[] multiclass_lines(dataset.Input data, multiclass.Models models)
+    multiclass.Classification[] training_results = [for dataset.Example example = data.multi_training[] then models.classify(example.point)]
+    multiclass.Classification[] testing_results = [for dataset.Example example = data.multi_testing[] then models.classify(example.point)]
+    int n = int(len(data.multi_training))
+    int m = int(len(data.multi_testing))
+    string[] lines = ["multiclass kernel {data.params.multiclass_name} C " + evaluation.fixed(data.params.multiclass_c) + " classes 3 train {n} test {m}", "ovr"]
+    for int k < 3
+        int correct = 0
+        int positives = 0
+        for int label = models.ovr_models[k].labels[]
+            if label == 1
+                positives += 1
+        for int i < m
+            int expected = if data.multi_testing[i].label == k + 1 then 1 else -1
+            if evaluation.sign(testing_results[i].ovr_values[k]) == expected
+                correct += 1
+        lines = lines.append("model {k + 1}-rest examples {n} positives {positives} " + support_text(models.ovr_models[k].alpha, data.params.multiclass_c) + " b " + evaluation.fixed(models.ovr_models[k].b, 6) + " " + run_info(models.ovr_models[k].passes(), models.ovr_models[k].steps, models.ovr_models[k].converged) + " test {correct}/{m}")
+    lines = lines.append("ovo")
+    for int k < 3
+        int first = multiclass.pairs[k][0]
+        int second = multiclass.pairs[k][1]
+        int correct = 0
+        int test_count = 0
+        int positives = 0
+        for int label = models.ovo_models[k].labels[]
+            if label == 1
+                positives += 1
+        for int i < m
+            int actual = data.multi_testing[i].label
+            if actual == first or actual == second
+                test_count += 1
+                int expected = if actual == first then 1 else -1
+                if evaluation.sign(testing_results[i].ovo_values[k]) == expected
+                    correct += 1
+        lines = lines.append("model {first}-{second} examples {len(models.ovo_models[k].labels)} positives {positives} " + support_text(models.ovo_models[k].alpha, data.params.multiclass_c) + " b " + evaluation.fixed(models.ovo_models[k].b, 6) + " " + run_info(models.ovo_models[k].passes(), models.ovo_models[k].steps, models.ovo_models[k].converged) + " test {correct}/{test_count}")
+    lines = lines.append("predictions")
+    for int i < m
+        multiclass.Classification classification = testing_results[i]
+        lines = lines.append("{data.multi_testing[i].id} class {data.multi_testing[i].label} ovr " + real_words(classification.ovr_values) + " pred {classification.ovr} ovo " + real_words(classification.ovo_values) + " votes " + words(classification.votes) + " pred {classification.ovo}")
+    lines = lines.concat([multiclass_summary("train", data.multi_training, training_results), multiclass_summary("test", data.multi_testing, testing_results), "confusion ovr"])
+    int[] classes = example_labels(data.multi_testing)
+    int[][] rest_matrix = evaluation.confusion_matrix(classes, [for multiclass.Classification classification = testing_results[] then classification.ovr])
+    int[][] pair_matrix = evaluation.confusion_matrix(classes, [for multiclass.Classification classification = testing_results[] then classification.ovo])
+    return lines.concat(evaluation.confusion_lines(rest_matrix)).append("confusion ovo").concat(evaluation.confusion_lines(pair_matrix))
+
+string[] framed_plot(string[] cells, int width, int height)
+    string border = "+" + string.repeat("-", nat(width)) + "+"
+    string[] lines = [border]
+    for int row < height
+        lines = lines.append("|" + cells[row * width:<(row + 1) * width].join("") + "|")
+    return lines.append(border)
+
+int plot_cell(real64[] point, real64 x_min, real64 y_max, real64 dx, real64 dy, int width, int height)
+    int column = math.floor((point[0] - x_min) / dx)
+    int row = math.floor((y_max - point[1]) / dy)
+    return if column >= 0 and column < width and row >= 0 and row < height then row * width + column else -1
+
+int character_count(string[] cells, string character)
+    int result = 0
+    for string cell = cells[]
+        if cell == character
+            result += 1
+    return result
+
+string[] decision_plots(dataset.Input data, Final[] finals, Candidate selected, Calibration calibration, multiclass.Models models)
+    dataset.Params params = data.params
+    int width = params.plot_size[0]
+    int height = params.plot_size[1]
+    real64 x_min = params.plot_x[0]
+    real64 x_max = params.plot_x[1]
+    real64 y_min = params.plot_y[0]
+    real64 y_max = params.plot_y[1]
+    real64 dx = (x_max - x_min) / real64(width)
+    real64 dy = (y_max - y_min) / real64(height)
+    int cell_count = width * height
+    smo.Model model = finals[selected.kernel].model
+    string name = params.kernels[selected.kernel].name
+    string[] binary_cells = []
+    string[] probability_cells = []
+    string[] multi_cells = []
+    int[][] grid_signs = [for Final result = finals[] then []]
+    int[] levels = [for int digit < 10 then 0]
+    for int row < height
+        for int column < width
+            real64[] point = [x_min + (real64(column) + 0.5) * dx, y_max - (real64(row) + 0.5) * dy]
+            real64[] values = [for Final result = finals[] then result.model.decision(point)]
+            real64 value = values[selected.kernel]
+            string character = if value >= 1.0 then "+" elif value > 0.0 then "." elif value > -1.0 then "-" else " "
+            binary_cells = binary_cells.append(character)
+            int level = math.floor(probability(value, calibration.coefficient, calibration.intercept) * 10.0)
+            if level > 9
+                level = 9
+            probability_cells = probability_cells.append(level.string())
+            levels[level] += 1
+            for int i < int(len(finals))
+                grid_signs[i] = grid_signs[i].append(evaluation.sign(values[i]))
+            multiclass.Classification classification = models.classify(point)
+            string[] shades = [" ", ".", ":"]
+            multi_cells = multi_cells.append(if classification.ovr != classification.ovo then "?" else shades[classification.ovr - 1])
+    int[] binary_assignments = [for int i < cell_count then -1]
+    int binary_outside = 0
+    for int i < int(len(data.training))
+        int cell = plot_cell(data.training[i].point, x_min, y_max, dx, dy, width, height)
+        if cell < 0
+            binary_outside += 1
+        else
+            int previous = binary_assignments[cell]
+            if previous < 0 or (model.alpha[i] > 0.0 and model.alpha[previous] <= 0.0)
+                binary_assignments[cell] = i
+    int binary_points = 0
+    for int cell < cell_count
+        int index = binary_assignments[cell]
+        if index >= 0
+            binary_points += 1
+            bool support = model.alpha[index] > 0.0
+            binary_cells[cell] = if data.training[index].label == 1 then (if support then "X" else "x") else (if support then "O" else "o")
+    int[] multi_assignments = [for int cell < cell_count then -1]
+    int multi_outside = 0
+    for int i < int(len(data.multi_training))
+        int cell = plot_cell(data.multi_training[i].point, x_min, y_max, dx, dy, width, height)
+        if cell < 0
+            multi_outside += 1
+        elif multi_assignments[cell] < 0
+            multi_assignments[cell] = i
+    int multi_points = 0
+    for int cell < cell_count
+        int index = multi_assignments[cell]
+        if index >= 0
+            multi_points += 1
+            multi_cells[cell] = data.multi_training[index].label.string()
+    string[] lines = ["binary {name} C " + evaluation.fixed(model.coefficient), "x " + evaluation.fixed(x_min) + " " + evaluation.fixed(x_max) + " y " + evaluation.fixed(y_min) + " " + evaluation.fixed(y_max) + " grid {width}x{height}"]
+    lines = lines.concat(framed_plot(binary_cells, width, height))
+    lines = lines.concat(["cells outer_positive {character_count(binary_cells, "+")} inner_positive {character_count(binary_cells, ".")} inner_negative {character_count(binary_cells, "-")} outer_negative {character_count(binary_cells, " ")} points {binary_points} outside {binary_outside}", "", "probability {name} A " + evaluation.fixed(calibration.coefficient, 6) + " B " + evaluation.fixed(calibration.intercept, 6)])
+    lines = lines.concat(framed_plot(probability_cells, width, height)).concat(["levels " + words(levels), "", "grid_agreement"])
+    int[] positive_counts = []
+    for int[] signs = grid_signs[]
+        int positive = 0
+        for int sign = signs[]
+            if sign == 1
+                positive += 1
+        positive_counts = positive_counts.append(positive)
+    for int first < int(len(finals))
+        for first + 1 <= int second < int(len(finals))
+            int agreement = 0
+            for int cell < cell_count
+                if grid_signs[first][cell] == grid_signs[second][cell]
+                    agreement += 1
+            lines = lines.append("{params.kernels[first].name} {params.kernels[second].name} {agreement}/{cell_count} positive {positive_counts[first]} {positive_counts[second]}")
+    lines = lines.concat(["", "multiclass {params.multiclass_name} C " + evaluation.fixed(params.multiclass_c)]).concat(framed_plot(multi_cells, width, height))
+    return lines.append("cells class1 {character_count(multi_cells, " ")} class2 {character_count(multi_cells, ".")} class3 {character_count(multi_cells, ":")} disagree {character_count(multi_cells, "?")} points {multi_points} outside {multi_outside}")
+
+string[] cv_grid_lines(CrossValidation cv, dataset.Params params, int size)
+    string[] header = ["kernel", "C"]
+    for 1 <= int i <= params.fold_count
+        header = header.append("fold{i}")
+    header = header.concat(["correct", "accuracy", "support_vectors", "passes", "steps"])
+    string[] lines = [header.join(",")]
+    for Candidate candidate = cv.combinations[]
+        string[] row = [params.kernels[candidate.kernel].name, evaluation.fixed(params.c_grid[candidate.c_index])]
+        row = row.concat([for Fold fold = candidate.folds[] then fold.correct.string()])
+        row = row.concat([candidate.correct.string(), evaluation.ratio(candidate.correct, size), candidate.support.string(), candidate.passes.string(), candidate.steps.string()])
+        lines = lines.append(row.join(","))
+    return lines
+
+string[] prediction_lines(dataset.Input data, Final[] finals, Candidate selected, real64[] pegasos_values, real64[] probabilities)
+    string[] header = ["id", "label"].concat([for dataset.Kernel definition = data.params.kernels[] then definition.name]).concat(["pegasos", "predicted", "probability"])
+    string[] lines = [header.join(",")]
+    for int i < int(len(data.testing))
+        string[] row = [data.testing[i].id, data.testing[i].label.string()]
+        row = row.concat([for Final result = finals[] then evaluation.fixed(result.test_values[i])])
+        row = row.concat([evaluation.fixed(pegasos_values[i]), evaluation.sign(finals[selected.kernel].test_values[i]).string(), evaluation.fixed(probabilities[i])])
+        lines = lines.append(row.join(","))
+    return lines
+
+string[] join_parts(string[][] sections)
+    string[] lines = []
+    for int i < int(len(sections))
+        if i > 0
+            lines = lines.append("")
+        lines = lines.concat(sections[i])
+    return lines
+
+void run()
+    dataset.Input data = dataset.read_inputs()
+    CrossValidation cv = cross_validate(data.training, data.params)
+    Candidate selected = cv.combinations[cv.selected]
+    Final[] finals = []
+    for int i < int(len(cv.best))
+        Candidate candidate = cv.combinations[cv.best[i]]
+        dataset.Kernel definition = data.params.kernels[i]
+        smo.Model model = train_model(example_points(data.training), example_labels(data.training), definition, cv.matrices[i], data.params.c_grid[candidate.c_index], data.params)
+        finals = finals.append(evaluate_final(model, data.training, data.testing, definition, data.params.tolerance))
+    Final selected_result = finals[selected.kernel]
+    string[][] sections = [cross_validation_lines(int(len(data.training)), data.params, cv)]
+    for Final result = finals[]
+        sections = sections.append(result.lines)
+    sections = sections.append(training_log(selected_result.model, data.params.kernels[selected.kernel].name))
+    sections = sections.append(c_path(data, selected, cv.matrices[selected.kernel]))
+    sections = sections.append(learning_curve(data, selected, cv.matrices[selected.kernel]))
+    Calibration calibration = calibrate(data, selected, selected_result.test_values)
+    sections = sections.append(calibration.lines)
+    int comparison = -1
+    int multi_index = -1
+    for int i < int(len(data.params.kernels))
+        if comparison < 0 and data.params.kernels[i].kind == "linear"
+            comparison = i
+        if data.params.kernels[i].name == data.params.multiclass_name
+            multi_index = i
+    Pegasos descent = pegasos(data, finals[comparison], data.params.kernels[comparison].name)
+    sections = sections.append(descent.lines).append(mcnemar_lines(data, finals, descent.values))
+    dataset.Kernel definition = data.params.kernels[multi_index]
+    multiclass.Models models = multiclass.train(example_points(data.multi_training), example_labels(data.multi_training), definition.kind, definition.degree, definition.gamma, definition.coef0, data.params.multiclass_c, data.params.tolerance, data.params.eps, data.params.max_passes)
+    evaluation.write("model.txt", join_parts(sections))
+    evaluation.write("cv_grid.csv", cv_grid_lines(cv, data.params, int(len(data.training))))
+    evaluation.write("predictions.csv", prediction_lines(data, finals, selected, descent.values, calibration.probabilities))
+    evaluation.write("multiclass.txt", multiclass_lines(data, models))
+    evaluation.write("decision_plot.txt", decision_plots(data, finals, selected, calibration, models))
+
+run()

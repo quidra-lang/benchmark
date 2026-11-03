@@ -1,0 +1,453 @@
+[Overview]
+Write a chiptune synthesizer that synthesizes 8-bit PCM audio from four-channel tracker-style song data using integer arithmetic only.
+The song data contains instruments, patterns and an order list. An instrument has a waveform (a pulse wave with a selectable duty cycle, a 4-bit stepped triangle wave, a sawtooth wave, noise from a 15-bit linear feedback shift register, or a 32-step wavetable), an ADSR volume envelope measured in ticks, vibrato, arpeggio and a pitch sweep. A pattern consists of 64 rows x 4 channels of cells, and each cell holds a note, an instrument number, a volume and an effect. The effects include arpeggio, portamento, vibrato, tremolo, volume slide, note cut, note delay, retrigger, position jump, pattern break, and speed and tempo changes.
+The program plays the song tick by tick following the order list, generates the waveform of each channel with a 16.16 fixed-point phase accumulator, mixes and clips the four channels, and produces a sequence of 8-bit samples. It detects the point where the song loops in order to end playback, and fades out if needed. It also performs a static analysis of the song (unreachable rows), key estimation, and the synthesis of a preview of each instrument.
+The program reads the two files in the input/ folder and writes seven files to the output/ folder: a hex dump of the sample sequence, a log of the channel states per row, a list of the notes, a piano roll, statistics, waveform plots, and the instrument preview results. It prints nothing to standard output.
+All computation is done with integers; floating-point numbers are not used. Use only the standard library.
+
+[Input files]
+There are two input files, input/song.txt and input/params.txt. Both consist of ASCII characters only, and every line ends with a newline (LF). Below, a "word" is each part of a line separated by spaces. Unless stated otherwise, words are separated by single spaces, and there is no space at the beginning or end of a line. "Two hex digits" means two characters each of which is 0 to 9 or A to F (uppercase letters), and "one hex digit" means one such character.
+
+(1) input/song.txt: the song
+Blank lines and lines beginning with "#" (comments) are ignored wherever they appear in the file. The description below considers only the other lines.
+The first 5 lines are the following lines, in this order.
+ TITLE <title>: the title is everything after "TITLE " up to the end of the line. It consists of one or more words and is at most 40 characters long.
+ RATE <rate>: the sampling frequency (in Hz).
+ SPEED <speed>: the initial value of the speed (the number of ticks per row).
+ TEMPO <tempo>: the initial value of the tempo.
+ GAIN <gain>: the mixing gain.
+They are followed by instrument blocks, pattern blocks and the order list line, in any order. There is exactly one order list line.
+
+An instrument block consists of an "INSTRUMENT <number> <name>" line, attribute lines and an "END" line, in this order. The number is two hex digits from 01 to FF, and the name is a word of 1 to 12 characters consisting of lowercase letters and digits. Each attribute line is one of the following; there is exactly one WAVE line and exactly one ENVELOPE line, at most one VIBRATO line, at most one ARPEGGIO line and at most one SWEEP line, in any order.
+ WAVE PULSE <d>: a pulse wave. d is one of 12, 25, 50, 75, representing a duty cycle of 12.5%, 25%, 50%, 75% respectively.
+ WAVE TRIANGLE: a triangle wave.
+ WAVE SAW: a sawtooth wave.
+ WAVE NOISE <NORMAL or SHORT>: noise.
+ WAVE TABLE <32 characters>: a wavetable. Each of the 32 characters is one hex digit, and the values (0 to 15) of character 0, character 1, ..., character 31 are the values of the table.
+ ENVELOPE <a> <d> <s> <r>: an ADSR envelope. a, d and r are integers from 0 to 63, and s is an integer from 0 to 15.
+ VIBRATO <delay> <speed> <depth>: the vibrato of the instrument. delay is an integer from 0 to 255, speed is an integer from 1 to 63, and depth is an integer from 1 to 15.
+ ARPEGGIO <o_0> <o_1> ... <o_{m-1}>: the arpeggio of the instrument. These are 1 to 16 integers, each from 0 to 24.
+ SWEEP <s>: a pitch sweep. s is a nonzero integer from -255 to 255.
+An instrument without a VIBRATO, ARPEGGIO or SWEEP line has "no vibrato", "no arpeggio" or "sweep 0", respectively.
+
+A pattern block consists of a "PATTERN <number>" line, row description lines and an "END" line, in this order. The number is two hex digits from 00 to FF. A pattern consists of 64 rows with row numbers 0 to 63, and each row has four cells, for channels 1 to 4. Each row description line consists of the row number (two hex digits from 00 to 3F), a single space, and the four cells in the order of channels 1 to 4, separated by " | " (a space, a vertical bar, a space). The row numbers of the row descriptions are strictly increasing within a block. The four cells of a row that has no description are empty.
+A cell is 12 characters: the note (3 characters), a space, the instrument (2 characters), a space, the volume (1 character), a space, and the effect (3 characters), in this order.
+ Note: "..." (none), "OFF" (key-off), or a note name. A note name is the two-character pitch name (one of C-, C#, D-, D#, E-, F-, F#, G-, G#, A-, A#, B-) followed by the octave (one digit from 1 to 7) (e.g. C-4, D#5).
+ Instrument: ".." (none) or an instrument number (two hex digits).
+ Volume: "." (none) or one hex digit.
+ Effect: "..." (none) or three characters of the form shown in section 7.
+A cell in which everything is "none" is called an empty cell. Example of a row description: "00 C-4 01 F ... | ... .. . 047 | OFF .. . ... | ... .. . ..."
+
+The order list line is "ORDER <p_0> <p_1> ... <p_{L-1}>". Each p_i is the number of a defined pattern (two hex digits), and i (0 <= i < L) is called an order position.
+
+(2) input/params.txt: the settings
+The following 7 lines appear in this order, followed by zero or more trace lines.
+ max_samples <M>: the upper limit on the number of samples.
+ loops <K>: the number of times the same row may be played.
+ fade <F>: the number of fade-out samples (0 means no fade-out).
+ mute <m_1> <m_2> <m_3> <m_4>: the mute settings of channels 1 to 4 (1 means muted, 0 means normal).
+ window <start> <length> <width> <height> <scope>: the range and size of the waveform plots.
+ roll <start> <rows>: the range of the piano roll.
+ preview <note name> <Tp> <Rp>: the note name, the number of ticks, and the tick at which to key off, for the instrument previews.
+ trace <P> <R>: the order position P and the row number R (both two hex digits) of a row for which a per-tick log is written.
+
+[Processing]
+== 0. Notation and common rules
+- All computation is done with integers. For an integer a and a positive integer b, a div b = floor(a / b) (rounding toward negative infinity) and a mod b = a - b * (a div b) (at least 0 and less than b). The same holds when a is negative; for example, -7 div 2 = -4 and -7 mod 12 = 5. Take care in languages whose integer division truncates toward 0.
+- clamp(v, lo, hi) = min(max(v, lo), hi).
+- For an integer n >= 0, isqrt(n) is the largest integer r >= 0 with r * r <= n.
+- For an integer v >= 0, hex2(v) is v written as a two-digit hexadecimal number (uppercase letters, with a leading 0 if it has one digit), and hex1(v) (0 <= v <= 15) is v written as a one-digit hexadecimal number (uppercase letter) (e.g. hex2(10) = 0A, hex1(13) = D).
+- Unless stated otherwise, a sum (written sum) is taken in increasing order of the index.
+- Frequencies are represented as integers in units of 0.01 Hz. FMIN = 1000 and FMAX = 50 * rate.
+- The Adler-32 of a sequence x_0, x_1, ..., x_{N-1} of integers from 0 to 255 is obtained by starting from a = 1, b = 0, and, for i = 0, 1, ..., N - 1 in order, replacing a with (a + x_i) mod 65521 and then replacing b with (b + a) mod 65521; the result is b * 65536 + a at the end.
+
+== 1. Note names and frequencies
+- A note name corresponds to the note number n = 12 * octave + position of the pitch name. The positions of the pitch names are: C- is 0, C# is 1, D- is 2, D# is 3, E- is 4, F- is 5, F# is 6, G- is 7, G# is 8, A- is 9, A# is 10, B- is 11 (e.g. C-4 is 48 and A-4 is 57). Conversely, the note name of note number n is the pitch name at position n mod 12 followed by the octave n div 12.
+- The table T = [26163, 27718, 29366, 31113, 32963, 34923, 36999, 39200, 41530, 44000, 46616, 49388] gives the frequencies of the 12 notes of octave 4.
+- The frequency nf(n) of note number n: with o = n div 12 and j = n mod 12, it is T[j] * 2^(o-4) if o >= 4, and T[j] div 2^(4-o) if o < 4 (e.g. nf(57) = 44000, nf(33) = 11000, nf(28) = 8240).
+- The transposition tr(f, k) (f is a frequency, k is an integer >= 0) = ((f * T[k mod 12]) div T[0]) * 2^(k div 12). It approximately represents the frequency f raised by k semitones.
+- Let the sine table be S = [0, 24, 49, 74, 97, 120, 141, 161, 180, 197, 212, 224, 235, 244, 250, 253, 255, 253, 250, 244, 235, 224, 212, 197, 180, 161, 141, 120, 97, 74, 49, 24] (32 entries). For 0 <= p <= 63, d >= 0 and c >= 1, the oscillation value osc(p, d, c) is, with q = (S[p mod 32] * d) div c, q if p < 32 and -q if p >= 32.
+
+== 2. Instruments and waveforms
+- Waveform value: from a phase phi (at least 0 and less than 65536), the mode m of the channel and the shift register q, a value L from 0 to 15 is obtained as follows.
+ PULSE: 15 if phi div 8192 is less than D[m], otherwise 0. D = [1, 2, 4, 6].
+ TRIANGLE: with j = phi div 2048, 15 - j if j < 16, and j - 16 if j >= 16.
+ SAW: phi div 4096.
+ TABLE: with j = phi div 2048, the value of character j of the table.
+ NOISE: 15 if q mod 2 = 0, and 0 if q mod 2 = 1.
+- The initial mode of an instrument: for PULSE, 0, 1, 2, 3 for d = 12, 25, 50, 75 respectively; for NOISE, 0 for NORMAL and 1 for SHORT; 0 for the other waveforms.
+- Clocking the shift register: let b be the exclusive OR of bit 0 (the least significant bit) of q and, if the mode is 0, bit 1 of q, or, if the mode is 1, bit 6 of q; replace q with (q div 2) + b * 16384.
+- Envelope value: from the instrument's ENVELOPE a d s r, the number of ticks u since the note-on, and the key-off state, a value from 0 to 15 is obtained as follows.
+ When not keyed off: (15 * (u + 1)) div a if u < a; 15 - ((15 - s) * (u - a + 1)) div d if a <= u < a + d; s if u >= a + d.
+ When keyed off (let u0 be the value of u at the key-off, and e0 the value recorded at that time): with w = u - u0, (e0 * (r - 1 - w)) div r if w < r, and 0 if w >= r.
+
+== 3. Channel state
+Each of the four channels (numbered 1 to 4) has the following state. The value in parentheses is the value at the start of playback.
+ instrument (none), note (none; when there is a note, its note number), base frequency f (0), target frequency g (0), portamento speed (0), slide speed (0), detune (0), vibrato speed, depth and position (all 0), tremolo speed, depth and position (all 0), volume v (15), mode (0), phase phi (0), shift register q (1), number of ticks since the note-on u (0), key-off state (not keyed off) and u0, e0, envelope value e (0), output frequency (0), output volume W (0), amplitude A (0), phase increment inc (0), current effect (none).
+A channel that has no note produces no sound.
+
+== 4. Playback flow
+- The current speed and tempo are initially the SPEED and TEMPO values of song.txt, and they are changed by the effect Fxx. The number of samples per tick is spt = (rate * 5) div (tempo * 2).
+- Playback starts at row 0 of order position 0. Below, row R of position P means the row with row number R of pattern p_P, also written (P, R).
+- Playing one row works as follows.
+ (1) Perform the row start processing of section 5. This determines the delay E of the row, speed and tempo. The number of ticks of the row is T = speed * (1 + E), and spt is computed from the tempo at this point.
+ (2) For t = 0, 1, ..., T - 1 in order, process tick t. Processing tick t first performs the processing of section 6, then generates n = min(spt, M - Nc) samples according to section 8 (Nc is the number of samples generated so far). Finally, add 1 to u of every channel that has a note; for every channel whose current effect is 4xy or 6xy, replace the vibrato position with (position + vibrato speed) mod 64, and for every channel whose current effect is 7xy, replace the tremolo position with (position + tremolo speed) mod 64.
+ (3) After processing tick t, if the number of samples equals M, playback ends at that point (end reason limit). This row, ended partway, is also counted as a played row.
+- When a row has been played without ending by limit, the next row is determined from the effects of its four cells. If several channels have an effect of the same kind (Bxx with Bxx, Dxx with Dxx), the one in the channel with the larger number is used.
+ - If F00 is in any of the cells, playback ends (end reason stop).
+ - Otherwise, if at least one of Bxx and Dxx is present, the next position is the xx of Bxx if there is a Bxx, otherwise P + 1, and the next row number is the xx of Dxx if there is a Dxx (but 0 if xx >= 64), otherwise 0.
+ - If neither is present, the next row is (P, R + 1) if R < 63, and (P + 1, 0) if R = 63.
+- If the next position is L or more, playback ends (end reason finished). Otherwise, if the next row has already been played K times so far, playback ends (end reason loop); this next row is called the loop row. If neither applies, the next row is played.
+
+== 5. Row start processing
+Set E = 0, then, for channels 1 to 4 in order, perform (1) to (3) below for each channel, using that channel's cell of the row being played.
+ (1) Make the effect of the cell the current effect of the channel (make it "none" if the cell has no effect). Set the slide speed to 0.
+ (2) Unless the effect is EDx with x >= 1, perform the cell content processing (below). It is performed "with portamento" if the effect is 3xx or 5xy, and "without portamento" otherwise.
+ (3) Perform the tick 0 processing of the effect (section 7).
+After the four channels are done, compute T = speed * (1 + E); then, for channels 1 to 4 in order, emit the warning "cut beyond row" for a channel whose current effect is ECx with x >= T, and the warning "delay beyond row" for a channel whose current effect is EDx with x >= T.
+
+The cell content processing means performing a to d below in this order.
+ a. If the cell has an instrument number: if no instrument with that number is defined, emit the warning "undefined instrument <hex2(instrument number)>" and ignore the instrument number. If it is defined, make that instrument the instrument of the channel, set the volume v to 15, and set the mode to the initial mode of that instrument.
+ b. If the cell has a volume: set v to that value.
+ c. If the note is OFF: if there is a note and it is not keyed off, key off (set u0 to the current u and e0 to the current e, and enter the keyed-off state). Otherwise, emit the warning "key off without note".
+ d. If the note is a note name (let n be its note number): if the channel has no instrument, emit the warning "note without instrument" and ignore the note. If it has an instrument, the processing is with portamento, and there is a note, set g = nf(n) and set the note to n (no note-on is performed). In all other cases, perform a note-on. However, if the processing is with portamento and there was no note, emit the warning "portamento without note" before the note-on.
+A note-on means setting f and g to nf(n), setting phi, u, the vibrato position and the tremolo position to 0, entering the not-keyed-off state, and setting the note to n.
+
+== 6. Tick processing
+At tick t, for channels 1 to 4 in order, perform (1) to (6) below for each channel.
+ (1) If there is a note, u >= 1, and the sweep s of the instrument is not 0, set f = clamp(f + 10 * s, FMIN, FMAX).
+ (2) If t >= 1, perform the per-tick processing of the current effect (section 7).
+ (3) If the current effect is EDx with x >= 1 and t = x, perform the cell content processing without portamento.
+ (4) If the current effect is E9x with x >= 1, t >= 1, t mod x = 0, and there is a note, retrigger. Retriggering means setting phi and u to 0 and entering the not-keyed-off state (the rest of the state is not changed).
+ (5) If the current effect is ECx with t = x, and there is a note, perform a note cut. A note cut means setting the note to none.
+ (6) If there is a note, compute the output of this tick as follows.
+  - Number of semitones k: if the current effect is 0xy, it is 0, x, y when t mod 3 is 0, 1, 2 respectively; for any other effect it is 0. In addition, if the instrument of the channel has an arpeggio o_0, ..., o_{m-1}, add o_{u mod m} to k.
+  - Let F = tr(f, k) + detune. If the current effect is 4xy or 6xy, add osc(vibrato position, vibrato depth, 4) to F. If the instrument of the channel has a vibrato (delay, speed, depth) and u >= delay, add osc(((u - delay) * speed) mod 64, depth, 4) to F. The output frequency is clamp(F, FMIN, FMAX).
+  - Set e to the envelope value (section 2) obtained from the ENVELOPE of the channel's instrument, u, and the key-off state.
+  - Output volume W: clamp(v + osc(tremolo position, tremolo depth, 255), 0, 15) if the current effect is 7xy, otherwise v.
+  - Amplitude A = e * W, and phase increment inc = (output frequency * 65536) div (100 * rate).
+A channel whose output was computed in (6) of this tick is called a "sounding channel".
+
+== 7. Effects
+The first of the three characters of an effect is called the command. When the command is not E, characters 2 and 3 are a two-hex-digit argument xx (0 to 255), whose upper digit is x and whose lower digit is y (xx = 16 * x + y). When the command is E, character 2 is the subcommand (one of 1, 2, 9, A, B, C, D, E) and character 3 is a one-hex-digit argument x. Below, the kinds of effects are written like 0xy, 1xx, E1x, and the command (for E, the two characters of the command and the subcommand) is called the effect name.
+"Approach with step d" means setting f = min(f + d, g) if f < g, and otherwise f = max(f - d, g). "Volume slide" means setting v = clamp(v + x - y, 0, 15).
+The tick 0 processing (section 5 (3)) and the per-tick processing (section 6 (2)) of each effect are as follows. Any processing not mentioned means doing nothing.
+ 0xy (arpeggio): changes the number of semitones of the output (section 6 (6)).
+ 1xx (slide up): per tick: f = clamp(f + 10 * xx, FMIN, FMAX).
+ 2xx (slide down): per tick: f = clamp(f - 10 * xx, FMIN, FMAX).
+ 3xx (tone portamento): tick 0: if xx > 0, set the portamento speed to xx. Per tick: approach with step 10 * portamento speed. The cell content processing is with portamento.
+ 4xy (vibrato): tick 0: if x > 0, set the vibrato speed to x; if y > 0, set the vibrato depth to y. The output frequency and the vibrato position are as described in section 6 (6) and section 4.
+ 5xy (portamento and volume slide): per tick: approach with step 10 * portamento speed, then volume slide (the portamento speed is not changed). The cell content processing is with portamento.
+ 6xy (vibrato and volume slide): per tick: volume slide. The output frequency and the vibrato position are the same as for 4xy (the vibrato speed and depth are not changed).
+ 7xy (tremolo): tick 0: if x > 0, set the tremolo speed to x; if y > 0, set the tremolo depth to y. The output volume and the tremolo position are as described in section 6 (6) and section 4.
+ Axy (volume slide): per tick: volume slide.
+ Bxx (position jump), Dxx (pattern break): change the next row (section 4).
+ Cxx (set volume): tick 0: v = min(xx, 15).
+ E1x (fine slide up): tick 0: f = clamp(f + 10 * x, FMIN, FMAX).
+ E2x (fine slide down): tick 0: f = clamp(f - 10 * x, FMIN, FMAX).
+ E9x (retrigger): section 6 (4).
+ EAx (fine volume up): tick 0: v = min(v + x, 15).
+ EBx (fine volume down): tick 0: v = max(v - x, 0).
+ ECx (note cut): section 6 (5).
+ EDx (note delay): section 5 (2), section 6 (3).
+ EEx (row delay): tick 0: E = x.
+ Fxx (speed and tempo): tick 0: if 1 <= xx <= 31, set speed = xx; if xx >= 32, set tempo = xx. If xx = 0 (F00), do nothing (the end of playback is as described in section 4).
+ Pxx (detune): tick 0: set the detune to xx - 128.
+ Qxy (note slide up): tick 0: if there is a note, set the note to min(note + y, 95), g = nf(note), and slide speed = 2 * x + 1. If there is no note, emit the warning "slide without note". Per tick: if the slide speed is not 0, approach with step 10 * slide speed.
+ Rxy (note slide down): the same as Qxy, except that the note is set to max(note - y, 12).
+ Vxx (mode): tick 0: if the channel has an instrument and its waveform is PULSE with xx <= 3, or NOISE with xx <= 1, set the mode to xx. Otherwise, emit the warning "invalid mode <hex2(xx)>".
+
+== 8. Sample generation
+The n samples generated in one tick are generated one at a time, in order, as follows.
+ (1) For channels 1 to 4 in order, compute the channel value c. For a sounding channel, obtain the waveform value L (section 2) from the waveform of the channel's instrument, the mode of the channel, phi and q, set c = (2 * L - 15) * A, and then replace phi with phi + inc. If then phi >= 65536, subtract 65536 from phi, and, if the waveform of the instrument is NOISE, clock the shift register once. For a channel that is not sounding, c = 0, and phi and q do not change.
+ (2) Append the c of each channel to the end of that channel's "lane". A lane is a sequence of integers per channel, empty at the start of playback.
+ (3) Let C be the sum of c over the channels that are not muted, and let s = 128 + (gain * C) div 4096. If s < 0 or s > 255, this sample is "clipped", and s is set to clamp(s, 0, 255). Append s to the end of the sample sequence.
+
+== 9. Processing after playback ends
+- End the note records (section 10) that have not ended yet, with reason end.
+- If the end reason is limit or loop and F > 0, fade out. Let the sample sequence be s[0], s[1], ..., s[N - 1] and m = min(F, N), and replace each s[i] for i = N - m, ..., N - 1 with 128 + ((s[i] - 128) * (N - 1 - i)) div m. The lanes are not changed.
+- Hereafter, "the sample sequence" refers to the sequence after the fade-out, and N is its length.
+
+== 10. Note records
+Each note-on (section 5 d) creates one note record. A record has a serial number (1, 2, ... in the order of creation), the channel number, the position and row number of the row in which the note-on happened, the instrument number (the instrument of the channel at the note-on), the note number, and the start.
+ - The "sample count at the time" of some processing is the number of samples generated before the tick in which that processing is performed. The start is the sample count at the time of the note-on.
+ - A record ends with reason next at the time of the next note-on in the same channel, and with reason cut at the time of a note cut (section 6 (5)). The length of a record is the sample count at the time it ended (N for a record ended in section 9) minus the start.
+ - If a key-off (section 5 c) happens in that channel before the record ends, the sample count at the time of the key-off minus the start is the release of that record (if a key-off happens two or more times during one record, it is computed from the last key-off). The release of a record without a key-off is "-".
+
+== 11. Warnings
+The warnings emitted in sections 5 and 7 are of 8 kinds: undefined instrument, key off without note, note without instrument, portamento without note, slide without note, invalid mode, cut beyond row, delay beyond row. Warnings are recorded in the order in which they occur, and each is written to output/stats.txt in the form "warning <hex2(P)>:<hex2(R)> ch<channel number> <message>". P and R are the position and row number of the row being played when the warning occurred.
+
+== 12. Reachable rows
+Consider the (P, R) with 0 <= P < L and 0 <= R <= 63. The "next row" of each (P, R) is determined by the rules of section 4 (if there is an F00, there is no next row; if the next position is L or more, there is no next row). The rows that appear when following the next rows successively from (0, 0) (including (0, 0)) are called "reachable rows". The loop count, the sample limit, the speed and the tempo are irrelevant.
+For each position P, the number of row numbers R such that (P, R) is not a reachable row and at least one of its four cells has a note (a note name or OFF) is called the dead of position P.
+
+== 13. Key estimation
+- Among the note records, for those whose record instrument's waveform is not NOISE, compute for each value j (0 to 11) of note number mod 12 the total d[j] of the lengths of the records.
+- Let the major weights be MAJ = [64, 22, 35, 23, 44, 41, 25, 52, 24, 37, 23, 29] and the minor weights be MIN = [64, 27, 35, 54, 27, 35, 25, 48, 40, 27, 34, 32]. The major score of the tonic k (0 to 11) is sum_{j=0}^{11} MAJ[(j - k) mod 12] * d[j], and the minor score is the same expression with MIN in place of MAJ.
+- The name of a key is the name of the tonic and major or minor, joined by a single space (e.g. A minor). The name of tonic k is the k-th (counting from 0) of C, C#, D, D#, E, F, F#, G, G#, A, A#, B.
+- List the 24 keys in the order C major, C# major, ..., B major, C minor, C# minor, ..., B minor, and sort them in decreasing order of score (keys with equal scores stay in this order). The first one is the estimated key and the second one is the runner-up.
+
+== 14. Instrument previews
+Let n be the note number of the note name of preview in params.txt, and compute spt from the TEMPO value of song.txt. For each defined instrument (in increasing order of number), prepare one channel in the state at the start of playback (section 3), and set its instrument to that instrument, its mode to the initial mode of that instrument, its note to n, and f and g to nf(n). Then, for t = 0, 1, ..., Tp - 1 in order, do the following.
+ (1) If t = Rp, key off (u0 = t, e0 = e).
+ (2) If t >= 1 and the sweep s of the instrument is not 0, set f = clamp(f + 10 * s, FMIN, FMAX).
+ (3) With u = t, compute the output of section 6 (6) (the current effect is none, the detune is 0, and v stays 15).
+ (4) Treating this channel as the only sounding channel, generate spt samples according to (1) and (3) of section 8 (the mute settings are not used).
+The Tp * spt samples generated in this way are the preview samples of that instrument. The previews are separate from playback and do not affect the sample sequence, the lanes or the statistics of playback.
+
+[Output files]
+Common format:
+- Every file consists of ASCII characters only, and every line ends with a newline (LF). No line has trailing spaces, and no blank lines are written. All seven files are always created. A file with no lines to write is empty (0 bytes).
+- Integers are written in decimal without extra leading zeros, with "-" for negative numbers. "Right-aligned in w characters" means padding with spaces on the left to w characters (in the given input, a value never exceeds w characters).
+- In the formats below, the parts enclosed in < > are replaced by values, and all other characters are written as they are. Note names are written in the three-character notation of section 1 (e.g. C-4, G#5).
+- The name of a waveform is one of PULSE, TRIANGLE, SAW, NOISE, TABLE.
+
+== output/samples.txt
+Split the sample sequence from the beginning into groups of 32 (the last line holds all the remaining ones), and write each group on one line. Each sample is written as hex2, concatenated without separators.
+
+== output/channel_log.txt
+For each played row, in the order played, write one line with the row record.
+- Row record: "<hex2(P)> <hex2(p_P)> <hex2(R)> <start> <speed> <tempo> | <ch1> | <ch2> | <ch3> | <ch4>". start is the sample count at the time of tick 0 of the row, right-aligned in 7 characters; speed and tempo are the values after section 5 has finished, right-aligned in 2 characters and 3 characters respectively. <chk> is the state of channel k, using the values at the time when the processing of section 6 for tick 0 has finished for all four channels. A channel that has a note is written "<note name> <hex2(number of the channel's instrument)> <output frequency right-aligned in 7 characters> <hex1(e)> <hex1(W)> <effect>", and a channel that has no note is written "--- --<7 spaces>- - <hex1(v)> <effect>". <effect> is the three characters of the effect of that channel's cell in that row (... if there is no effect).
+- For a row (P, R) for which params.txt has a trace line (position P, row number R), after the row record write, for each tick in order t = 0, 1, ..., the line "  tick <t right-aligned in 3 characters> <sample count at the time of that tick right-aligned in 7 characters> | <ch1> | <ch2> | <ch3> | <ch4>" (the line starts with two spaces). <chk> is "<output frequency right-aligned in 7 characters> <inc right-aligned in 5 characters> <hex1(e)><hex1(W)>" for a channel that is sounding in that tick, and "<6 spaces>- <4 spaces>- --" for a channel that is not sounding. For a row ended partway by limit, write only the ticks that were processed. When the same row is played two or more times, write them each time.
+
+== output/notes.txt
+For each note record, in the order of serial numbers, one line: "<serial number right-aligned in 4 characters> ch=<channel number> at=<hex2(position)>:<hex2(row number)> ins=<hex2(instrument number)> note=<note name> start=<start> length=<length> release=<release> end=<reason> peak=<pk> cycles=<cy>".
+pk and cy are computed from the part of the lane of the record's channel with indices at least (start) and less than (start + length), called r_0, r_1, .... pk is the maximum of |r_i| (0 if the length is 0), and cy is the number of i (i >= 1) with r_{i-1} < 0 <= r_i.
+
+== output/roll.txt
+Number the played rows 0, 1, 2, ... in the order played (a row played twice gets two numbers). With start and rows of roll in params.txt, the target rows are the rows whose number is at least start and less than start + rows, and w is their count (if fewer rows were played, only the existing ones are targets). For each target row, use the note of each channel at the same time as for the row record of channel_log.txt.
+- Line 1: "ROLL start=<start> rows=<w> pitches=<h>". h is the number of distinct note numbers that appear as the note of some channel in the target rows.
+- Then, for each of those note numbers, in decreasing order, one line: "<note name> |<w characters>|". Character i (counting from 0) of the w characters is, for the i-th target row, a space if no channel has that note number as its note, the digit of that channel's number if exactly one channel does, and "*" if two or more do.
+- Last line: four spaces, "+", then, for each of i = 0, ..., w - 1, "+" if i mod 16 = 0 and "-" otherwise, and finally "+", in this order.
+
+== output/stats.txt
+Write the following lines in this order.
+ 1. "title=<title>"
+ 2. "rate=<rate>"
+ 3. "samples=<N>"
+ 4. "duration_ms=<(N * 1000) div rate>"
+ 5. "end=<end reason>": the end reason is one of finished, limit, "stop order=<hex2(P)> row=<hex2(R)>" ((P, R) is the row that had F00), and "loop order=<hex2(P)> row=<hex2(R)>" ((P, R) is the loop row).
+ 6. "loop_start=<start of the first play of the loop row>" and 7. "loop_length=<N - loop_start>": if the end reason is not loop, write "-" in place of the value for both.
+ 8. "rows=<number of played rows>" (a row played twice is counted as 2)
+ 9. "ticks=<number of processed ticks>"
+ 10. "clipped=<number of clipped samples>"
+ 11. "peak=<maximum of |s[i] - 128|>", 12. "min=<minimum of s[i]>", 13. "max=<maximum of s[i]>", 14. "rms=<isqrt((sum_{i=0}^{N-1} (s[i] - 128)^2) div N)>", 15. "zero_crossings=<number of i with 1 <= i <= N - 1 for which exactly one of s[i - 1] < 128 and s[i] < 128 holds>", 16. "adler32=<Adler-32 of the sample sequence written as an 8-digit hexadecimal number with uppercase letters (padded with leading 0s)>"
+ 17. "path <position> <position> ...": the positions of the played rows in the order played, with each run of the same position merged into one, written as hex2 separated by single spaces.
+ 18. For the first played row, and for each row whose pair of speed and tempo after section 5 has finished differs from that of the previously played row, one line each, in the order played: "timing sample=<start of that row> order=<hex2(P)> row=<hex2(R)> speed=<speed> tempo=<tempo>"
+ 19. For each channel k = 1, ..., 4: "channel <k> notes=<number of note-ons> retriggers=<number of retriggers> cuts=<number of note cuts> active=<number of ticks in which it was sounding> audible=<number of those ticks in which A > 0> peak=<maximum of |c| over the lane> rms=<isqrt((sum of the squares of all values of the lane) div N)>"
+ 20. For each defined instrument, in increasing order of number: "instrument <hex2(number)> <name> <waveform name> notes=<number of note-ons with that instrument> ticks=<the number of sounding channels in a tick whose channel instrument is that instrument, summed over all ticks> range=<note name of the smallest note number>..<note name of the largest note number> average=<total length div number of records>". range and average refer to the note records whose instrument number is that instrument; if there is no such record, write "range=none average=-".
+ 21. For each defined pattern, in increasing order of number: "pattern <hex2(number)> rows=<number of rows that have at least one non-empty cell> notes=<number of cells that have a note (a note name or OFF)> orders=<number of positions in the order list that refer to that pattern>"
+ 22. For each order position P = 0, ..., L - 1: "order <hex2(P)> pattern=<hex2(p_P)> rows=<number of rows played at position P> first=<start of the first row played at position P; - if no row was played there> dead=<dead of position P (section 12)>"
+ 23. For each note number that had a note-on, in increasing order: "note <note name> count=<number of note-ons of that note number>"
+ 24. "effects <effect name>=<count> <effect name>=<count> ...": count, per effect name, the effects made the current effect in the row start processing (section 5 (1)), and write the names that occurred at least once in the order 0, 1, 2, 3, 4, 5, 6, 7, A, B, C, D, E1, E2, E9, EA, EB, EC, ED, EE, F, P, Q, R, V. If there are none at all, write "effects none".
+ 25. "unused_instruments=<instruments with 0 note-ons>", 26. "unused_patterns=<defined patterns that are not in the order list>", 27. "unreached_orders=<positions with 0 played rows>": each is written as hex2 in increasing order of number (position), separated by single spaces. If there are none, write none.
+ 28. "pitch_classes C=<d[0]> C#=<d[1]> D=<d[2]> D#=<d[3]> E=<d[4]> F=<d[5]> F#=<d[6]> G=<d[7]> G#=<d[8]> A=<d[9]> A#=<d[10]> B=<d[11]>" (d of section 13)
+ 29. "key=<estimated key> score=<its score> runner_up=<runner-up key> score=<its score>"
+ 30. For each channel k = 1, ..., 4: a line consisting of "usage ch<k> range=<range>" followed by " <hex2(instrument number)>=<count>" for every defined instrument in increasing order of number. The range is the note name of the smallest note number and the note name of the largest note number among the note records whose channel number is k, joined by ".." (none if there is no such record), and the count is the number of those records whose instrument number is that instrument.
+ 31. The warning lines (section 11), in the order in which they occurred.
+
+== output/waveform.txt
+This uses start, length, width, height and scope of window in params.txt.
+How to build a plot: from an integer sequence x of length length, a bottom value lo, a top value hi, a middle value mid and a number of rows H, build a plot of H rows as follows.
+ - The row number of a value v is row(v) = (2 * (hi - v) * (H - 1) + (hi - lo)) div (2 * (hi - lo)).
+ - Column c (0 <= c <= width - 1) covers the x[j] with indices j satisfying (c * length) div width <= j < ((c + 1) * length) div width. Let top be the maximum and bottom the minimum of the covered values.
+ - The character at row r (0 <= r <= H - 1), column c is "#" if row(top) <= r <= row(bottom); otherwise "-" if r = row(mid); otherwise a space.
+ - Row r is the line consisting of the label right-aligned in 5 characters, " |", the characters of columns 0, ..., width - 1, and "|", in this order. The label is the decimal notation of hi if r = 0, of mid if r = row(mid), and of lo if r = H - 1; in all other rows it is empty (right-aligned in 5 characters, it becomes five spaces).
+The two axis lines:
+ - Line 1: six spaces, "+", then, for each of c = 0, ..., width - 1, "+" if c mod 10 = 0 and "-" otherwise, and finally "+", in this order.
+ - Line 2: the line that starts with "    ms" (four spaces and ms) and, for each of c = 0, 10, 20, ... (less than width), has the decimal notation of ((start + (c * length) div width) * 1000) div rate placed so that its first character is character 7 + c counted from the beginning of the line (the first character of the line is character 0). Positions where no character is placed are filled with spaces, and nothing follows the last digit.
+The lines to write are as follows.
+ 1. "MIX start=<start> length=<length> width=<width> height=<height>"
+ 2. The plot of the sequence s[start], ..., s[start + length - 1] (lo = 0, hi = 255, mid = 128, H = height)
+ 3. The two axis lines
+ 4. For each k = 1, ..., 4, the line "CHANNEL <k>" and the plot of the part of the lane of channel k with indices at least start and less than start + length (lo = -3375, hi = 3375, mid = 0, H = scope)
+ 5. The two axis lines
+
+== output/instruments.txt
+For each defined instrument, in increasing order of number, write the following three lines. Let x be the preview samples (Tp * spt of them).
+ - "instrument <hex2(number)> <name> wave=<waveform name> samples=<Tp * spt> peak=<maximum of |x_i - 128|> rms=<isqrt((sum (x_i - 128)^2) div (Tp * spt))> adler32=<Adler-32 of x written as an 8-digit hexadecimal number with uppercase letters>"
+ - "  env <e of each tick>": hex1(e) for t = 0, ..., Tp - 1 in order, concatenated without separators (the line starts with two spaces).
+ - "  freq <output frequency of each tick>": the values for t = 0, ..., Tp - 1 in order, separated by single spaces (the line starts with two spaces).
+
+[Source files]
+Split the source into the following six files. The names are language-neutral role names; follow each language's conventions for extensions and capitalization.
+- main: the overall flow (from reading the two input files to writing the seven output files). It holds the channel state, the row start processing (cell content processing, note-on, key-off, and the tick 0 processing of all effects), the tick processing (sweep, slides and portamento, note delay, retrigger, note cut, and the computation of the output frequency, envelope, output volume and phase increment), the playback flow (next row, loop detection, end reason, and the decision whether to fade out), the note records, the warnings, the row records and tick records, the assembly of every line of the statistics (including the key estimation and the aggregation per instrument, pattern and position), the piano roll, the assembly of the waveform plots, and the instrument previews. Most of the processing is placed in this file.
+- song_parser: reading input/song.txt and input/params.txt (removing comments and blank lines, interpreting instrument blocks, pattern blocks and the order list), conversion between note names and note numbers, and splitting cells and effects into their parts.
+- instruments: the table T and the sine table S, nf, tr, osc, the envelope value, the values of the five waveforms, and clocking the shift register.
+- sequencer: the computation of spt, determining the next row from the effects of a row (F00, Bxx, Dxx), and the computation of the reachable rows (section 12).
+- mixer: generating the samples of one tick (phase accumulation, noise clocking, channel values and recording into the lanes, muting, gain, counting clipped samples) and the fade-out computation.
+- report: building the hex dump lines, Adler-32, isqrt, and the statistics of a sample sequence (peak, rms, zero crossings).
+
+[Constraints]
+- RATE is from 8000 to 32000, SPEED is from 1 to 31, TEMPO is from 32 to 255, and GAIN is from 1 to 255.
+- There are 1 to 32 instruments and 1 to 32 patterns; instrument numbers are pairwise distinct, and pattern numbers are pairwise distinct. The length L of the order list is from 1 to 64. song.txt has at most 3000 lines, and each line has at most 200 characters.
+- All note names are from C-1 to B-7 (note numbers 12 to 95). Since RATE >= 8000, FMIN <= nf(n) <= FMAX for every note number n. Also, since the output frequency is at most FMAX, inc is at most 32768.
+- params.txt: M is from 1 to 400000, K is from 1 to 4, F is from 0 to M, and m_1 to m_4 are 0 or 1. width is from 8 to 120, length is at least width, height is an odd number from 5 to 31, scope is an odd number from 3 to 15, and start is at least 0. The start of roll is at least 0, and rows is from 1 to 120. The note name of preview is from C-1 to B-7, Tp is from 1 to 64, and Rp is from 0 to Tp (if Rp = Tp, no key-off happens). There are at most 16 trace lines, their pairs of position and row number are pairwise distinct, the position is less than L, and the row number is at most 3F.
+- In the given input, start + length of window is at most N.
+- The absolute value of every integer that appears during the computation is less than 2^53, and everything can be computed exactly with 64-bit integers (some values, such as the products in tr and the sum of (s[i] - 128)^2, do not fit in 32-bit integers). The values can also be represented exactly in languages that represent integers as double-precision floating-point numbers.
+- No floating-point computation is needed. Every output is uniquely determined by integer computation alone.
+
+[Example]
+The following is a small example to show the formats. Its data differ from the given input, and the outputs are the correct outputs for this example input.
+
+input/song.txt (example):
+# tiny example
+TITLE Tiny Example
+RATE 8000
+SPEED 2
+TEMPO 250
+GAIN 64
+
+INSTRUMENT 01 beep
+WAVE PULSE 50
+ENVELOPE 0 2 10 2
+ARPEGGIO 0 12
+END
+
+INSTRUMENT 02 hiss
+WAVE NOISE SHORT
+ENVELOPE 0 3 0 0
+END
+
+PATTERN 00
+00 C-5 01 . 047 | C-6 02 F ... | ... .. . ... | E-4 .. . ...
+01 ... .. . 140 | ... .. . E91 | ... .. . ... | ... .. . ...
+02 OFF .. . ... | G-6 02 8 ... | ... .. . ... | ... .. . ...
+03 E-5 01 C A02 | ... .. . EC1 | ... .. . ... | OFF .. . F00
+END
+
+ORDER 00
+
+input/params.txt (example):
+max_samples 100000
+loops 1
+fade 0
+mute 0 1 0 0
+window 0 640 16 5 3
+roll 0 4
+preview C-5 4 2
+trace 00 01
+
+output/samples.txt (example):
+ADADADADADADADAD5252525252525252ADADADADADADAD5252525252525252AD
+ADADADADADADAD52525252525252ADADADADADADADAD5252525252525252ADAD
+ADADADADAD5252525252525252ADADADA3A35C5C5CA3A3A35C5C5CA3A3A35C5C
+5CA3A3A35C5C5CA3A3A35C5C5CA3A3A35C5C5CA3A3A3A35C5C5CA3A3A35C5C5C
+A3A3A35C5C5CA3A3A35C5C5CA3A3A35C5C5CA3A3A35C5C5CA3A3A35C5C5CA3A3
+A3A35C5C5C5C5C5C5CA3A3A3A3A3A3A3A35C5C5C5C5C5C5C5CA3A3A3A3A3A3A3
+5C5C5C5C5C5C5C5CA3A3A3A3A3A3A3A35C5C5C5C5C5C5CA3A3A3A3A3A3A3A35C
+5C5C5C5C5C5C5CA3A3A3A3A3A3A35C5C5C5C5CA3A3A3A35C5C5C5CA3A3A35C5C
+5C5CA3A3A3A35C5C5C5CA3A3A3A35C5C5CA3A3A3A35C5C5C5CA3A3A3A35C5C5C
+A3A3A3A35C5C5C5CA3A3A3A35C5C5C5CA3A3A35C5C5C5CA3A3A3A35C5C5C5CA3
+919191916E6E6E6E6E6E6E6E91919191919191916E6E6E6E6E6E6E9191919191
+9191916E6E6E6E6E6E6E91919191919191916E6E6E6E6E6E6E91919191919191
+916E6E6E6E6E6E6E919191919191919180808080808080808080808080808080
+8080808080808080808080808080808080808080808080808080808080808080
+8080808080808080808080808080808080808080808080808080808080808080
+A4A4A4A4A4A4A45B5B5B5B5B5BA4A4A4A4A4A45B5B5B5B5B5BA4A4A4A4A4A45B
+5B5B5B5B5BA4A4A4A4A4A45B5B5B5B5B5BA4A4A4A4A4A45B5B5B5B5B5BA4A4A4
+A4A4A45B5B5B5B5B5BA4A4A4A4A4A45B68686897979768686897979768686897
+9797686868979797686868979797686868979797686868979797686868979797
+6868686897979768686897979768686897979768686897979768686897979768
+
+output/channel_log.txt (example):
+00 00 00       0  2 250 | C-5 01   52326 D F 047 | C-6 02  104652 A F ... | --- --       - - F ... | --- --       - - F ...
+00 00 01     160  2 250 | C-5 01   52326 A F 140 | C-6 02  104652 0 F E91 | --- --       - - F ... | --- --       - - F ...
+  tick   0     160 |   52326  4286 AF |  104652  8573 0F |       -     - -- |       -     - --
+  tick   1     240 |  105932  8677 AF |  104652  8573 AF |       -     - -- |       -     - --
+00 00 02     320  2 250 | C-5 01   52966 5 F ... | G-6 02  156800 A 8 ... | --- --       - - F ... | --- --       - - F ...
+00 00 03     480  2 250 | E-5 01   65926 D C A02 | G-6 02  156800 0 8 EC1 | --- --       - - F ... | --- --       - - F F00
+
+output/notes.txt (example):
+   1 ch=1 at=00:00 ins=01 note=C-5 start=0 length=480 release=320 end=next peak=2925 cycles=39
+   2 ch=2 at=00:00 ins=02 note=C-6 start=0 length=320 release=- end=next peak=2250 cycles=3
+   3 ch=2 at=00:02 ins=02 note=G-6 start=320 length=240 release=- end=cut peak=1200 cycles=7
+   4 ch=1 at=00:03 ins=01 note=E-5 start=480 length=160 release=- end=end peak=2340 cycles=19
+
+output/roll.txt (example):
+ROLL start=0 rows=4 pitches=4
+G-6 |  22|
+C-6 |22  |
+E-5 |   1|
+C-5 |111 |
+    ++---+
+
+output/stats.txt (example):
+title=Tiny Example
+rate=8000
+samples=640
+duration_ms=80
+end=stop order=00 row=03
+loop_start=-
+loop_length=-
+rows=4
+ticks=8
+clipped=0
+peak=46
+min=82
+max=173
+rms=31
+zero_crossings=117
+adler32=50FE408B
+path 00
+timing sample=0 order=00 row=00 speed=2 tempo=250
+channel 1 notes=2 retriggers=0 cuts=0 active=8 audible=7 peak=2925 rms=2022
+channel 2 notes=2 retriggers=1 cuts=1 active=7 audible=5 peak=2250 rms=1284
+channel 3 notes=0 retriggers=0 cuts=0 active=0 audible=0 peak=0 rms=0
+channel 4 notes=0 retriggers=0 cuts=0 active=0 audible=0 peak=0 rms=0
+instrument 01 beep PULSE notes=2 ticks=8 range=C-5..E-5 average=320
+instrument 02 hiss NOISE notes=2 ticks=7 range=C-6..G-6 average=280
+pattern 00 rows=4 notes=7 orders=1
+order 00 pattern=00 rows=4 first=0 dead=0
+note C-5 count=1
+note E-5 count=1
+note C-6 count=1
+note G-6 count=1
+effects 0=1 1=1 A=1 E9=1 EC=1 F=1
+unused_instruments=none
+unused_patterns=none
+unreached_orders=none
+pitch_classes C=480 C#=0 D=0 D#=0 E=160 F=0 F#=0 G=0 G#=0 A=0 A#=0 B=0
+key=C major score=37760 runner_up=C minor score=35040
+usage ch1 range=C-5..E-5 01=2 02=0
+usage ch2 range=C-6..G-6 01=0 02=2
+usage ch3 range=none 01=0 02=0
+usage ch4 range=none 01=0 02=0
+warning 00:00 ch4 note without instrument
+warning 00:03 ch4 key off without note
+
+output/waveform.txt (example):
+MIX start=0 length=640 width=16 height=5
+  255 |                |
+      |########    ##  |
+  128 |################|
+      |########    ##  |
+    0 |                |
+      ++---------+-----+
+    ms 0         50
+CHANNEL 1
+ 3375 |########    ##  |
+    0 |################|
+-3375 |########    ##  |
+CHANNEL 2
+ 3375 |##    ##        |
+    0 |#-#####-########|
+-3375 |#     #         |
+CHANNEL 3
+ 3375 |                |
+    0 |################|
+-3375 |                |
+CHANNEL 4
+ 3375 |                |
+    0 |################|
+-3375 |                |
+      ++---------+-----+
+    ms 0         50
+
+output/instruments.txt (example):
+instrument 01 beep wave=PULSE samples=320 peak=46 rms=30 adler32=79BA9FC1
+  env DA50
+  freq 52326 104652 52326 104652
+instrument 02 hiss wave=NOISE samples=320 peak=36 rms=19 adler32=1229ABD1
+  env A500
+  freq 52326 52326 52326 52326

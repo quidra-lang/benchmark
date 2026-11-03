@@ -1,0 +1,503 @@
+[Overview]
+Write a "read mapping" program that determines where the short sequences read by a sequencer (reads) come from in a reference genome (a few DNA sequences). From the text formed by joining the reference sequences, build a suffix array by prefix doubling, and then build the Burrows-Wheeler transform (BWT) and the FM index (occurrence table, suffix array sample). For each read, after cutting off its low-quality end, try to place it by, in this order, exact backward search, backtracking search that tolerates mismatches (pruned with the same lower bound as BWA), and seed-and-extend (banded affine-gap alignment). Write the results in SAM format, and in addition output the coverage depth, the calling of single-base substitution variants, the index statistics and check results, and the mapping statistics.
+The input is three files in the input/ folder (reference sequences, reads, settings), and the results are written to five files in the output/ folder. Nothing is written to standard output. No random numbers are used. All computation is done in integers, and real numbers appear only when ratios are output, so the result is uniquely determined.
+
+[Input files]
+There are three input files: input/reference.fasta, input/reads.fastq and input/params.txt. Every file consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). There are no empty lines and no spaces at the start or end of a line.
+
+* input/reference.fasta (reference sequences)
+FASTA format, listing one or more sequences. Each sequence consists of one header line followed by one or more sequence lines.
+- A header line starts with ">", immediately followed by the sequence name. The sequence name may be followed by one space and a description. The sequence name is a string of 1 to 16 letters and digits, and differs between sequences. The description is not used.
+- Sequence lines consist of A, C, G, T and their lowercase forms a, c, g, t. Lowercase letters mark parts that have been "masked" (repeats and the like), and as bases they are treated the same as the corresponding uppercase letters. The sequence is the string obtained by joining the sequence lines of one sequence in order and converting lowercase letters to uppercase. The length of a sequence line is not fixed.
+The sequences are numbered 0, 1, 2, ... in file order, and this order is called the "sequence order". The number of sequences is written m, the string of sequence r is written S_r, and its length M_r. The number of lowercase letters in the sequence lines of sequence r is called its "masked count".
+
+* input/reads.fastq (reads)
+FASTQ format; every 4 lines represent one read.
+- Line 1: "@" followed by the read name. The read name is a string of 1 to 32 characters consisting of letters, digits and "_", and differs between reads.
+- Line 2: the bases of the read. It consists of A, C, G, T and N (N is a base that could not be read).
+- Line 3: a line consisting only of "+".
+- Line 4: the quality string. It has the same length as line 2, and the ASCII code of each character minus 33 is the quality value of the base at the same position in line 2. The characters range from "!" to "J" (quality values 0 to 41).
+The first character of the quality string may be "@" or "+", so determine the kind of each line from its position in the file (which line it is within each group of 4). The number of reads is written N_R, and the file order is called the "read order".
+
+* input/params.txt (settings)
+It consists of the following 16 lines, in this order. Each line is a keyword followed by one or more integers, each separated by one space.
+- MAX_MISMATCHES Z: the maximum number of mismatches allowed in the backtracking search (at least 1 and at most 3).
+- MIN_READ_LENGTH Lmin: the minimum length after trimming (at least 1).
+- TRIM_QUALITY Qt: the quality threshold used to trim the end (at least 0).
+- SEED_LENGTH Ls: the seed length (at least 1).
+- SEED_STEP Ss: the interval at which seeds are taken (at least 1).
+- MAX_SEED_HITS Hs: the maximum number of occurrences of a seed that is used (at least 1).
+- BAND_WIDTH B: the band width of the alignment (at least 0).
+- SCORES a b go ge: the match score a, the mismatch penalty b, the gap open penalty go and the gap extension penalty ge (all at least 1).
+- MIN_SCORE_PERCENT P: the score fraction required to accept an alignment (at least 1 and at most 100; the unit is %).
+- MAX_ALT_HITS Xa: the maximum number of other positions written in the XA tag (at least 1).
+- OCC_INTERVAL k: the interval of the checkpoints of the occurrence table (at least 1).
+- SA_SAMPLE_INTERVAL s: the interval of text positions at which the suffix array is sampled (at least 1).
+- DIRECT_SORT_LIMIT Ld: the maximum length of a sequence for which the direct sort cross-check is done (at least 0).
+- COVERAGE_WINDOW Wc: the length of the windows in which coverage depth is summarized (at least 1).
+- COVERAGE_MIN_MAPQ Qc: the minimum mapping quality of the reads used for coverage depth and variant calling (at least 0).
+- VARIANTS Vd Vq Vp Vh: for variant calling, the minimum depth Vd (at least 1), the minimum base quality Vq (at least 0), the minimum fraction of the alternative base Vp (at least 1 and at most 100; the unit is %), and the fraction at which a variant is considered homozygous Vh (at least 1 and at most 100; the unit is %).
+
+[Processing]
+* 1. Notation and common rules
+- For a string X, its length is written |X|, its i-th character counted from the start (counting from 0) X[i], and the substring from X[i] to X[j - 1] X[i..j). Unless stated otherwise, positions and numbers are counted from 0. Positions written to the output are counted from 1 only where this is stated.
+- There are 6 symbols, $, #, A, C, G, T, ordered $ < # < A < C < G < T; this is called the "symbol order". When symbols are listed, they are also listed in this order. The bases are the four A, C, G, T, and the "base order" is A, C, G, T.
+- The complement of a base swaps A with T and C with G; the complement of N is N. The reverse complement of a string is the string reversed with each character replaced by its complement.
+- floor(x / y) (for integers x >= 0, y > 0) is the quotient of x divided by y (the integer with the fractional part truncated).
+- Two strings are compared character by character from the start in symbol order, and the first differing character decides.
+- All computations in this task can be done in integers. Real numbers appear only at output time, as "ratios" (integer / integer).
+
+* 2. Text
+The string formed by joining the reference sequences separated by "#" and appending "$" at the end,
+  T = S_0 + "#" + S_1 + "#" + ... + "#" + S_(m-1) + "$"
+is called the text (if m = 1, T = S_0 + "$"). n = |T|. The start position of sequence r is off_r = (M_0 + 1) + (M_1 + 1) + ... + (M_(r-1) + 1) (off_0 = 0). A text position p belongs to the sequence r satisfying off_r <= p < off_r + M_r, and its position within that sequence (offset) is p - off_r. The positions of "#" and "$" belong to no sequence.
+Also, the string S_0 + "#" + ... + "#" + S_(m-1) reversed, with "$" appended at the end, is called the reverse text T'. |T'| = n.
+
+* 3. Suffix array (prefix doubling)
+For a string X of length N whose last character, and only that character, is "$", consider the suffix X[i..N) starting at position i. The sequence of start positions obtained by sorting all suffixes in increasing order under the string comparison rule of 1 is called the suffix array SA. The suffix SA[i] is called the suffix of "row i". Compute the suffix array by the following prefix doubling.
+(1) Give each position i the number of the character X[i] in symbol order ($ = 0, # = 1, A = 2, C = 3, G = 4, T = 5), and apply a stable counting sort by this number to the list of positions in the order 0, 1, ..., N - 1. In the resulting order, assign values starting from 0, giving the same value to positions with the same number and increasing the value by 1 each time the number changes; this is the rank rank[i] of each position. Let c_0 be the number of distinct rank values, and set c = c_0 and h = 1.
+(2) While c < N, repeat the following "round". For each position i, the first key is key1(i) = rank[i], and the second key is key2(i) = rank[i + h] + 1 (when i + h < N) or 0 (when i + h >= N). Apply a stable counting sort by the second key to the list of positions in the order 0, 1, ..., N - 1, and then apply a stable counting sort by the first key to that result. In the resulting order, assign values starting from 0, giving the same value to positions with the same (key1, key2) pair and increasing the value by 1 each time the pair changes; these are the new ranks, and the number of distinct values is the new c. Finally, double h.
+(3) The last order when c = N is reached (the order of (1) if no round was performed) is SA.
+The number of rounds performed is written R, and the value of c after the t-th round (t = 1, ..., R) is written c_t. c_t equals the number of distinct substrings among X[i..min(i + 2^t, N)) (i = 0, ..., N - 1).
+
+* 4. Suffix array checks
+(1) Adjacent comparison: for each i = 1, 2, ..., N - 1, compare the suffixes of row i - 1 and row i character by character from the start, and let l_i be the number of consecutive equal characters from the start. Since the final character "$" occurs only once, a differing character always appears. If that first differing character is smaller in symbol order on the row i - 1 side, the pair is "correctly ordered". Find the number of correctly ordered pairs, the sum of l_i (lcp_sum), the maximum of l_i (max_lcp), and the smallest i for which l_i = max_lcp (written i*).
+(2) k-mer statistics (done only for the text T): let k = Ls. A position p with 0 <= p <= n - k such that T[p..p + k) consists only of bases (A, C, G, T) is a "k-mer position", and its string T[p..p + k) is called the k-mer at that position. Find the number of k-mer positions (occurrences), the number of distinct k-mers (distinct), the number of k-mers that occur at exactly one position (unique), and the maximum number of positions at which a single k-mer occurs (max_occurrence). (In SA order, the positions of the same k-mer are consecutive and the l_i between them are at least k, so these can be counted from the suffix array.)
+(3) Direct sort cross-check: in sequence order, for each sequence r with M_r <= Ld, compute the suffix array of U = S_r + "$" both by prefix doubling and by sorting all suffixes by directly comparing their strings (direct sort), and check whether the two agree. U contains no "#", and $ < A < C < G < T is the same as ASCII code order, so the direct sort can use each language's comparison of strings in ASCII code order (locale-independent byte order). Also find the number of rounds R of prefix doubling.
+
+* 5. BWT and FM index
+For a string X of length N (T or T') and its suffix array SA, build the following.
+- BWT: BWT[i] = X[SA[i] - 1] (when SA[i] > 0), X[N - 1] (when SA[i] = 0; this is "$").
+- C array: for each symbol c, C[c] = (the number of symbols in X that are smaller than c in symbol order).
+- Occurrences: Occ(c, i) = (the number of symbols c in BWT[0..i)) (0 <= i <= N). For occurrences, build "checkpoints" that record Occ(c, q * k) of the 6 symbols for q = 0, 1, ..., floor(N / k), and compute Occ(c, i) = (the value for c at checkpoint floor(i / k)) + (the number of c in BWT[floor(i / k) * k .. i)). The number of checkpoints is floor(N / k) + 1.
+- LF mapping: LF(i) = C[BWT[i]] + Occ(BWT[i], i).
+- Interval extension: for an interval of rows [lo, hi) (rows lo to hi - 1) and a base c, the extension by c is [C[c] + Occ(c, lo), C[c] + Occ(c, hi)). The extension by N is the empty interval. An interval is empty when lo >= hi.
+- Suffix array sample (built only for T): a row i whose SA[i] is a multiple of s (including 0) is a "sampled row", and its SA[i] is recorded. The number of samples is floor((N - 1) / s) + 1.
+- Locate: the start position of the suffix of row i is found as follows. Start with j = i and steps = 0, and while j is not a sampled row, replace j with LF(j) and increase steps by 1. When j is a sampled row, the answer is (the value recorded for row j) + steps. The steps at this point are called the "LF steps".
+- Inverse transform: let j = 0, and set Y[N - 1] of a string Y of length N to "$". For p = N - 2, N - 3, ..., 0 in this order, set Y[p] = BWT[j] and replace j with LF(j). The Y obtained this way is called the "string reconstructed from the BWT".
+The structures built from the text T are called the "forward index", and those built from the reverse text T' (which has no sample) the "reverse index". Below, unless stated otherwise, C, Occ and extension refer to the forward index.
+
+* 6. Exact backward search
+In the backward search of a base sequence Q (which may contain N), start from the interval [lo, hi) = [0, n), and extend the interval by Q[i] for i = |Q| - 1, |Q| - 2, ..., 0 in this order. If the interval becomes empty along the way, stop there; the result is empty. The text positions obtained by locating each row of the resulting interval are the positions at which Q occurs in T. Since Q consists only of bases and N, every position found always lies within exactly one sequence. Below, a text position obtained by locating is handled as the pair of the sequence r it belongs to and its offset.
+
+* 7. Lower-bound array D
+For a base sequence W of length L, define an integer D(i) for each i (0 <= i < L) as follows. It is a lower bound on the number of mismatches needed to match W[0..i + 1) against T. Using the reverse index, start with z = 0 and [lo, hi) = [0, n), and for i = 0, 1, ..., L - 1 in this order, extend the interval by W[i] (with the C and Occ of the reverse index). If the interval becomes empty, increase z by 1 and reset the interval to [0, n). The value of z after that is D(i). In addition, D(-1) = 0.
+
+* 8. Mismatch-tolerant backtracking search
+Search for a base sequence W of length L, allowing up to zmax mismatches (substitutions only; insertions and deletions are not considered). Perform a depth-first search that, one character at a time from the end of W toward the start, tries the four bases at each position, using an explicit stack.
+- A state is a tuple (i, z, lo, hi). i is the last position that has not yet been assigned a base, z is the number of mismatches remaining, and [lo, hi) is the interval of rows at which the sequence of bases assigned to the positions of W[i + 1..L) occurs in T.
+- Initially, push only (L - 1, zmax, 0, n) onto the stack.
+- Until the stack is empty, repeatedly pop the most recently pushed state. Each time a state is popped, increase the "node count" by 1 and process it as follows.
+  1. If z < D(i), do nothing (pruning).
+  2. Otherwise, if i = -1, it is a "leaf": report the interval [lo, hi) and the number of mismatches zmax - z.
+  3. Otherwise, for bases b = T, G, C, A in this order, if the interval obtained by extending [lo, hi) by b is not empty, push (i - 1, z, extended interval) when b = W[i], or (i - 1, z - 1, extended interval) when b != W[i] and z >= 1 (when W[i] is N, every b differs from W[i]).
+Locate each row of the interval of each reported leaf; each pair of such a position and that leaf's number of mismatches is a "hit". Record, for each search, the node count, the number of leaves, and the number of hits (the sum of the sizes of the leaf intervals). (The push order does not affect the result, but use this order.)
+
+* 9. Read preprocessing
+For each read, let F be its bases and q the quality values derived from its quality string.
+- Trimming: start from L = |F|, and while L > 0 and q[L - 1] < Qt, decrease L by 1. t = |F| - L is called the "number of trimmed bases", F[0..L) the "core", and L the "trimmed length".
+- A read with L < Lmin is not mapped, and its reason is SHORT.
+- For the other reads, the core itself is the forward-strand oriented sequence W+, and the reverse complement of the core is the reverse-strand oriented sequence W-. The forward strand is denoted "+" (flag 0) and the reverse strand "-" (flag 16).
+- The "cycle" of position i (0 <= i < L) of an oriented sequence (which base of the original read it is, counting from the start, from 1) is i + 1 for the forward strand and L - i for the reverse strand. The quality value of that base is q[cycle - 1].
+- Position order: tuples (r, offset, strand) of positions on the reference are ordered by increasing sequence number, then by increasing offset, then with + before -.
+
+* 10. Stage 1: mapping by search
+(1) Run the backward search of both W+ and W-. If either is found at one or more positions, zs = 1; if neither is found, zs = Z.
+(2) For W+ and then W-, run the backtracking search with zmax = zs. Hits of W+ are hits on the + strand, hits of W- are hits on the - strand, and each hit is a tuple (number of mismatches mm, sequence r, offset, strand).
+(3) If there is at least one hit, the read is mapped in stage 1. Sort the hits by increasing mm, and for equal mm in position order. Let best = (the minimum of mm), n1 = (the number of hits with mm = best), n2 = (the number of hits with mm = best + 1), and determine the following.
+- Method: EXACT if best = 0, MISMATCH if best >= 1.
+- Primary alignment: the first hit in the sorted order. Its operation sequence is L operations M (see 10 (4) and 13).
+- Other alignments: the hits with mm <= best + 1 other than the first (in the sorted order). Each of their operation sequences is L operations M.
+- Score AS = (L - best) * a - best * b, X0 = n1, X1 = n2.
+- Mapping quality MAPQ: 0 if n1 >= 2. 60 - 12 * best if n1 = 1 and n2 = 0. The larger of 30 - 12 * best - 3 * n2 and 1 if n1 = 1 and n2 >= 1.
+(4) An alignment is represented by the tuple (sequence r, start offset pos, strand, operation sequence). There are three kinds of operations: M (aligns a core base with a reference base; it is M whether they match or not), I (advances only the core base; insertion), and D (advances only the reference base; deletion). The operation sequence lists them in order from the start of the oriented sequence of the core. pos is the offset of the reference base that the first M or D corresponds to.
+(5) If there are no hits, proceed to stage 2.
+
+* 11. Stage 2: seed-and-extend
+If L < Ls, the read cannot be mapped, and its reason is NOHIT. Otherwise, proceed as follows.
+(1) Seeds: for strands + and then -, for the oriented sequence W of that strand, take the values o = 0, Ss, 2 * Ss, ... that satisfy o + Ls <= L in increasing order, and W[o..o + Ls) is a "seed". Each seed is handled as follows.
+- A seed containing N is not used (a "seed containing N").
+- Otherwise, run its backward search; if the number of positions found is greater than Hs, it is not used (a "repetitive seed"). If it is 0, it is a "seed without hits".
+- Otherwise, for each position found (sequence r, offset e), create the candidate (strand, r, c = e - o). c may be negative. Candidates with the same tuple are merged into one.
+(2) Sort the candidates by strand (+ first), sequence number, and increasing c, and perform the alignment of 12 in this order. If an alignment exists and its score sc satisfies 100 * sc >= P * a * L, the alignment is "accepted". Among the accepted alignments, those with the same (r, pos, strand) are merged into one, keeping the one with the larger score (if equal, the one accepted first).
+(3) If there are no accepted alignments, the reason is NOHIT. Otherwise, the read is mapped in stage 2. Sort the alignments by decreasing score, and for equal scores in position order of (r, pos, strand). Let S1 = (the maximum score) and n1 = (the number of alignments with score S1), and determine the following.
+- Method: SEED.
+- Primary alignment: the first one in the sorted order. Other alignments: all except the first (in the sorted order).
+- Score AS = S1, X0 = n1, X1 = (the number of alignments) - n1.
+- With S2 = (the maximum score among alignments whose score is smaller than S1; 0 if there is none), MAPQ is 0 if n1 >= 2, and otherwise floor(60 * (S1 - S2) / S1).
+
+* 12. Banded affine-gap alignment
+Align the oriented sequence W of length L to the string S (of length M) of sequence r around the candidate's c. All of W is used; on the S side, both the start and the end are free.
+(1) Cells: an integer pair (i, j) with 0 <= i <= L and 0 <= j <= M is a cell, representing "the state in which the first i characters of W are aligned so as to end at S[j - 1]". Only cells satisfying |j - i - c| <= B are used; these are called "cells in the band".
+(2) Values: for each cell in the band, compute three values H(i, j), E(i, j), F(i, j). A value may be "unreachable". Unreachable values and values of cells outside the band are excluded from the candidates of the maxima below. If there are no candidates at all, the value is unreachable. sigma(x, y) is a if x = y, and -b if x != y (an N in W differs from every base).
+- i = 0: H(0, j) = 0; E(0, j) and F(0, j) are unreachable.
+- i >= 1: compute for i = 1, 2, ..., L in this order, and for each i in increasing order of j.
+  F(i, j) = max(H(i - 1, j) - go - ge, F(i - 1, j) - ge)
+  E(i, j) = max(H(i, j - 1) - go - ge, E(i, j - 1) - ge) (there are candidates only when j >= 1)
+  H(i, j) = max(H(i - 1, j - 1) + sigma(W[i - 1], S[j - 1]), E(i, j), F(i, j)) (the first candidate exists only when j >= 1)
+A gap of length g is penalized by go + g * ge. All values are integers. The absolute value of every reachable value is less than 2000, so unreachable may be represented by a sufficiently small number such as -1000000 (values computed from such a value can neither equal a reachable value nor satisfy the acceptance condition, so the result does not change).
+(3) End point: among the cells in the band with i = L whose H(L, j) is reachable, the one with the maximum H(L, j) (if equal, the smaller j) is the end point, and its H(L, j) is the score of the alignment. If there is no reachable one, this candidate yields no alignment.
+(4) Traceback: starting from the end point in state H, derive the operations one at a time backward by the following rules.
+- In state H, if i = 0, stop.
+- In state H with i >= 1: if j >= 1, H(i - 1, j - 1) is reachable and H(i, j) = H(i - 1, j - 1) + sigma(W[i - 1], S[j - 1]), emit operation M and move to (i - 1, j - 1) (staying in state H). Otherwise, if F(i, j) is reachable and H(i, j) = F(i, j), change to state I (without moving). If neither holds, change to state D (without moving).
+- State I: emit operation I. If F(i - 1, j) is reachable and F(i, j) = F(i - 1, j) - ge, stay in state I; otherwise change to state H. Then move to (i - 1, j).
+- State D: emit operation D. If E(i, j - 1) is reachable and E(i, j) = E(i, j - 1) - ge, stay in state D; otherwise change to state H. Then move to (i, j - 1).
+The emitted operations in reverse order are the operation sequence, and j at the end is the start offset pos.
+
+* 13. Describing an alignment
+For an alignment (r, pos, strand, operation sequence) of a read with oriented sequence W of the core and t trimmed bases, define the following.
+- Correspondence: go through the operation sequence from the start, beginning with position i = 0 of W and reference offset j = pos. For M, (i, j) is an "aligned pair" and both i and j increase by 1; for I, only i increases by 1; for D, only j increases by 1. An aligned pair with W[i] != S_r[j] is called a "mismatch" (if W[i] is N, it is a mismatch).
+- CIGAR: turn each run of the same operation in the operation sequence into "length + operation character" (e.g. 12M1I13M) and join them in order. If t > 0, add "t + S" (e.g. 5S) at the end for the + strand and at the beginning for the - strand.
+- NM: the number of mismatches + the number of I + the number of D.
+- MD: the string of the SAM MD tag. Go through the operation sequence from the start: for M with a match, increase the count u by 1; for M with a mismatch, write "u + reference base" and set u = 0; ignore I; for a run of D (a longest run of one or more consecutive D), write "u + "^" + the reference bases those D correspond to" and set u = 0. u starts at 0, and u is written at the end (e.g. 9A8, 24, 36^GTA53, 0C5).
+- The CIGAR and NM of other alignments are derived in the same way, with the oriented sequence of their strand and the same t.
+
+* 14. Coverage depth
+For each mapped read with MAPQ >= Qc, increase by 1 the depth at the reference position of each aligned pair of its primary alignment (I, D and S do not count toward depth). Depth is a value for each offset of each sequence, initially all 0.
+In addition, count the start offsets pos of the primary alignments of mapped reads with MAPQ = 0 (used for mapq0 of each window).
+
+* 15. Variant calling (single-base substitutions)
+(1) Pileup: for the same reads as in 14 (MAPQ >= Qc), for each aligned pair (i, j) of the primary alignment where W[i] is not N and the quality value of that base (q[cycle - 1] with the cycle of 9) is at least Vq, increase by 1 the count of base W[i] at reference position j, separately for the read's strand (+ or -). W[i] is the base in reference orientation (for the - strand, the base after reverse complementing). The total of the four base counts at position j (both strands) is called the "call depth" of that position.
+(2) A position with call depth at least Vd is a "callable position". For a callable position, the alternative base is the base, among the three bases other than the reference base S_r[j], with the largest count (sum of both strands) (if equal, the one earlier in base order); its count is n_alt and the call depth is dp. If n_alt >= 2 and 100 * n_alt >= Vp * dp, the position is a variant. The genotype is 1/1 (homozygous) if 100 * n_alt >= Vh * dp, and 0/1 (heterozygous) otherwise.
+(3) Variants are ordered in sequence order, and within the same sequence by increasing offset.
+
+* 16. Mapping statistics
+- A mapped read is "unique" if X0 = 1 and "multi" if X0 >= 2.
+- The error tally uses only the primary alignments of unique reads. For each aligned pair (i, j), examine its cycle, the reference base S_r[j], the base W[i] of the oriented sequence, the quality value of that base, and whether it is a match or a mismatch, and count the values of the summary.txt lines from error_profile through quality_bins. Insertions and deletions are also tallied only over unique reads: one run of consecutive I is one insertion "event", and the number of those I is the number of inserted bases (likewise for D).
+- The CIGAR operation tally is the total, over the primary alignments of all mapped reads, of the numbers of M, I and D, and of the numbers of trimmed bases t (the S count).
+
+[Output files]
+Write five files: output/alignments.sam, output/coverage.txt, output/variants.txt, output/index_stats.txt and output/summary.txt.
+
+* Common format
+- The output consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). Do not put extra spaces at the start or end of a line, and do not insert empty lines that are not specified.
+- In the formats below, parts enclosed in < > are replaced by values, and all other characters are written as they are. Except in alignments.sam, values are separated by one space.
+- Integers are written in decimal without extra leading zeros (negative numbers do not occur).
+- A ratio x / y is written, if y > 0, as x / y rounded to 4 decimal places, in fixed-point notation with exactly 4 digits after the decimal point (e.g. 0.5 is written as 0.5000 and 13 / 7 as 1.8571). If y = 0, write -. All ratios are at least 0, and the given data contain no values close to a rounding boundary.
+- When a position is written as "name:position", join the sequence name, ":", and the offset counted from 1 (offset + 1) (e.g. chr1:3001). When the text position belongs to no sequence, write *.
+
+* output/alignments.sam
+Values are separated by tab characters (ASCII code 9). First write the following header lines.
+@HD<TAB>VN:1.6<TAB>SO:unsorted
+@SQ<TAB>SN:<sequence name><TAB>LN:<M_r> (m lines, in sequence order)
+@PG<TAB>ID:fm_index_aligner<TAB>PN:fm_index_aligner<TAB>VN:1.0
+Then write one line for each read, in read order. The line of a mapped read consists of the following 17 values (18 when there is an XA tag) separated by tabs.
+<read name> <flag> <sequence name> <pos + 1> <MAPQ> <CIGAR> * 0 0 <SEQ> <QUAL> NM:i:<NM> MD:Z:<MD> AS:i:<AS> X0:i:<X0> X1:i:<X1> YM:Z:<method>
+- The flag is 0 if the strand of the primary alignment is + and 16 if it is -. The sequence name, pos, CIGAR, NM and MD are those of the primary alignment.
+- SEQ is the read's bases F as they are (including the trimmed part) for the + strand, and the reverse complement of all of F for the - strand. QUAL is the quality string as it is for the + strand, and the quality string reversed for the - strand.
+- The method is one of EXACT, MISMATCH and SEED.
+- If the number of other alignments is at least 1 and at most Xa, append XA:Z:<list of other alignments> at the end. The list is, for each other alignment in the sorted order, <sequence name>,<strand character + or -><pos + 1>,<CIGAR>,<NM>; joined without separators (e.g. XA:Z:chr2,+2191,75M,0;chrM,-868,41M,1;). When the number is 0 or exceeds Xa, no XA tag is written.
+The line of an unmapped read consists of the following 12 values separated by tabs. SEQ and QUAL are as in the input.
+<read name> 4 * 0 0 * * 0 0 <SEQ> <QUAL> YM:Z:<reason>
+The reason is SHORT (too short after trimming) or NOHIT (not found at any stage).
+
+* output/coverage.txt
+Line 1 is the following line.
+window <Wc> min_mapq <Qc>
+Then, in sequence order, write the following lines for each sequence.
+reference <sequence name> length <M_r> covered <number of positions with depth at least 1> breadth <covered / M_r> mean_depth <sum of depths / M_r> max_depth <maximum depth>
+depth_histogram <0:count> <1:count> ... <d_max:count>
+<window line> (one line per window)
+The depth_histogram line lists "d:(number of positions with depth d)" for d = 0, 1, ..., d_max (d_max is the maximum depth) in this order (d with count 0 are also written). The windows divide the sequence into pieces of Wc positions starting from offset 0; the last window may be shorter. A window line has the following form.
+<sequence name> <first offset of the window + 1> <last offset of the window + 1> gc <number of G and C in the reference in the window / window length> sum <sum of depths in the window> mean <sum / window length> max <maximum depth in the window> zero <number of positions with depth 0 in the window> mapq0 <number of reads with MAPQ = 0 whose start offset lies in the window> |<string of #>
+The last part is "|" followed by floor(10 * sum / window length) characters "#" (just "|" if there are 0).
+
+* output/variants.txt
+Line 1 is the following line.
+min_depth <Vd> min_base_quality <Vq> min_alt_percent <Vp> hom_percent <Vh>
+Then, in the order of 15 (3), write the following line for each variant.
+<sequence name> <offset + 1> <substitution> depth <dp> alt <n_alt> fraction <n_alt / dp> genotype <genotype> strands <count of the alternative base on the + strand> <count of the alternative base on the - strand> counts <count of A> <count of C> <count of G> <count of T>
+The substitution is the 3 characters formed by joining the reference base, ">", and the alternative base. counts are the sums over both strands (e.g. chr1 1234 A>G depth 7 alt 6 fraction 0.8571 genotype 1/1 strands 2 4 counts 1 0 6 0).
+Finally, write the following line.
+callable <number of callable positions> variants <number of variants> heterozygous <number of 0/1> homozygous <number of 1/1>
+
+* output/index_stats.txt
+Write it in the following form. (empty line) stands for one empty line.
+text length <n> sequences <m>
+sequence <sequence name> length <M_r> offset <off_r> gc <number of G and C in S_r / M_r> masked <masked count> (m lines, in sequence order)
+symbols $ <number of $ in T> # <number of # in T> A <number of A in T> C <number of C in T> G <number of G in T> T <number of T in T>
+(empty line)
+forward_index
+suffix_array rounds <R>
+round <t> prefix_length <2^t> classes <c_t> (R + 1 lines, for t = 0, 1, ..., R in this order)
+sa_check pairs <n - 1> ordered <number of correctly ordered pairs> lcp_sum <lcp_sum> mean_lcp <lcp_sum / (n - 1)> max_lcp <max_lcp>
+longest_repeat <max_lcp> <name:position of SA[i* - 1]> <name:position of SA[i*]>
+kmers length <Ls> occurrences <occurrences> distinct <distinct> unique <unique> max_occurrence <max_occurrence> unique_fraction <unique / occurrences>
+bwt runs <number of runs in the BWT> head <first min(60, n) characters of the BWT>
+c_array $ <C[$]> # <C[#]> A <C[A]> C <C[C]> G <C[G]> T <C[T]>
+occ interval <k> checkpoints <number of checkpoints>
+sa_sample interval <s> samples <number of samples>
+locate rows <n> correct <number of rows whose locate result agreed with SA> total_steps <sum of LF steps> max_steps <maximum LF steps> mean_steps <total_steps / n>
+inverse_bwt identical <yes or no>
+(empty line)
+reverse_index
+suffix_array rounds <R of the reverse text>
+sa_check pairs <n - 1> ordered <number of correctly ordered pairs of the reverse text>
+bwt runs <number of runs in the BWT of the reverse text> head <first min(60, n) characters of the BWT of the reverse text>
+inverse_bwt identical <yes or no>
+(empty line)
+direct_sort
+<sequence name> length <M_r + 1> rounds <R of U> identical <yes or no> (one line per sequence covered by 4 (3), in sequence order)
+(empty line)
+index_size bwt_bytes <n> occ_bytes <24 * number of checkpoints> sample_bytes <4 * number of samples> bitmap_bytes <floor((n + 7) / 8)> total_bytes <sum of the previous four> full_bytes <5 * n> ratio <total_bytes / full_bytes>
+Notes:
+- The forward_index part concerns the text T and the forward index. The locate check locates every row 0, 1, ..., n - 1 by the method of 5 and compares the result with SA[i].
+- A run of the BWT is a longest part of the BWT in which the same character repeats (e.g. AACCCA has 3 runs).
+- The inverse_bwt line is yes if the string reconstructed from the BWT equals the original text (the reverse text for reverse_index), and no otherwise. identical on a direct_sort line is likewise yes if the two suffix arrays agree, and no otherwise.
+- If no sequence is covered by 4 (3), write just none on the line after direct_sort.
+- The index_size line gives the size of the index when the BWT takes 1 byte per character, each checkpoint 6 * 4 bytes, each sample 4 bytes and the marks of the sampled rows 1 bit per row, and its ratio to the size 5 * n of the text plus the full suffix array (4 bytes per element).
+
+* output/summary.txt
+Write the following lines in this order.
+reads total <N_R> trimmed <number of reads with at least 1 trimmed base t> trimmed_bases <sum of t> short <number of reads whose reason is SHORT>
+mapped <number of mapped reads> rate <mapped / N_R> unique <number of unique reads> multi <number of multi reads> unmapped <number of unmapped reads>
+unmapped short <number with reason SHORT> nohit <number with reason NOHIT>
+method exact <number of EXACT> mismatch <number of MISMATCH> seed <number of SEED>
+strand forward <number of mapped reads with flag 0> reverse <number of mapped reads with flag 16>
+reference <sequence name> mapped <number of reads whose primary alignment is on this sequence> unique <how many of them are unique> forward <how many of them have flag 0> reverse <how many of them have flag 16> (m lines, in sequence order)
+length_bins
+<lo>-<lo + 9> reads <number of reads with trimmed length at least lo and at most lo + 9> mapped <how many of them are mapped> unique <how many of them are unique>
+(one line for each lo, in increasing order, where lo is a multiple of 10, for all lo from the one whose range contains the minimum trimmed length to the one whose range contains the maximum trimmed length; SHORT reads are included)
+n_reads <number of reads whose F contains N> n_bases <total number of N in the F of those reads> mapped <how many of them are mapped>
+multi_targets
+<name set> <count>
+(For a multi read, its "name set" is the string formed by joining with "+", without duplicates and in sequence order, the names of the sequences on which it has an alignment with mm = best (in stage 2, with score S1) (e.g. chr1+chr2, chr1). Count the reads per name set, and write one line per name set in ASCII code order (lexicographic order) of the name set strings. If there are no multi reads, write just none on the line after multi_targets.)
+mapq_histogram
+<MAPQ value> <number of reads with that value> (one line for each MAPQ value occurring among the mapped reads, in decreasing order of value)
+nm_histogram
+<NM value> <number of reads with that value> (one line for each NM value occurring among the mapped reads, in increasing order of value)
+error_profile aligned_bases <number of aligned pairs in the error tally> mismatches <how many of them are mismatches> rate <mismatches / aligned_bases>
+substitutions
+ref A C G T N
+<reference base x> <number of pairs of x with W base A> <number of pairs of x with C> <number of pairs of x with G> <number of pairs of x with T> <number of pairs of x with N> (4 lines, for x = A, C, G, T in this order)
+mismatch_by_cycle
+cycle <cycle v> aligned <number of aligned pairs with cycle v> mismatches <how many of them are mismatches> rate <mismatches / aligned>
+(one line each for v = 1, 2, ..., (the maximum |F| over all reads), in this order)
+quality matched <number of matching pairs> mean <sum of the quality values of matching pairs / number of matching pairs> mismatched <number of mismatching pairs> mean <sum of the quality values of mismatching pairs / number of mismatching pairs>
+quality_bins
+<range> aligned <number of pairs whose quality value is in that range> mismatches <how many of them are mismatches> rate <mismatches / aligned>
+(the ranges are the five 0-9, 10-19, 20-29, 30-39, 40-, giving 5 lines in this order; 40- means 40 or more)
+cigar M <total of M> I <total of I> D <total of D> S <total of S>
+indels insertions <number of insertion events> <number of inserted bases> deletions <number of deletion events> <number of deleted bases>
+search dfs_calls <number of backtracking searches> dfs_nodes <total node count> dfs_leaves <total number of leaves> dfs_positions <total number of hits>
+seeds reads <number of reads for which stage 2 seeds were made> seeds <total number of seeds> with_n <number of seeds containing N> repetitive <number of repetitive seeds> without_hit <number of seeds without hits> candidates <number of candidates (after merging, summed over reads)> passing <number of accepted alignments (after merging, summed over reads)>
+The lines from error_profile through quality_bins come from the error tally of unique reads (16). reads on the seeds line is the number of reads for which L >= Ls in 11.
+
+[Source files]
+Split the program into the following 6 source files (file names follow each language's conventions).
+- main: handles the overall flow and most of the processing: building the text and the reverse text, converting text positions to sequence and offset, the index checks and statistics (the locate check, the k-mer statistics, invoking the direct sort cross-check, the size calculation), read trimming and the two mapping stages (organizing hits, making seeds and candidates, banded affine-gap alignment and traceback, accepting and organizing alignments, mapping quality), building CIGAR, MD and NM, coverage depth, variant calling, mapping statistics, and assembling the contents of the five output files.
+- sequence_io: reads the FASTA, FASTQ and settings files and returns the sequence names, sequences and masked counts, the read names, bases and quality strings, and the setting values. Also handles reverse complementing.
+- suffix_array: handles the symbol order, the stable counting sort, the suffix array by prefix doubling (including c_t for each round), the direct sort, and the adjacent comparison (correctly ordered pairs, l_i, lcp_sum, max_lcp, i*).
+- fm_index: handles the BWT, the C array, occurrences with checkpoints, the LF mapping, interval extension, the suffix array sample and locate, the inverse transform, and exact backward search.
+- search: handles the computation of the lower-bound array D and the mismatch-tolerant backtracking search with an explicit stack (including recording the node count and the leaves).
+- sam_writer: handles the ratio format (4 decimal places, - when the denominator is 0), assembling the SAM header lines and record lines, and writing lists of lines to files.
+
+[Constraints]
+- 1 <= m <= 10, 1 <= M_r, M_0 + ... + M_(m-1) <= 50000, 1 <= N_R <= 400, 1 <= |F| <= 100. At least one sequence has length at least Ls, and max_lcp is at least 1.
+- The given data are 3 sequences (total length 20150, n = 20153) and 366 reads (lengths 30 to 100). The reference sequences contain exact repeats spanning two sequences, slightly differing repeats, inverted repeats and short repeated sequences, and the reads contain substitution and insertion/deletion errors, N, low-quality ends, and reads that are not in the reference.
+- The input files correctly follow the formats above. There is no need to check the input for errors.
+- All integers that appear fit in the range of 32-bit signed integers. The absolute values of the alignment values are less than 2000.
+- In the given data, the total node count of the backtracking searches is about 70,000, the total LF steps in the locate check is about 150,000, and the number of stage 2 alignment candidates is about 80.
+- All computation is done in integers, and only the ratios are written as real numbers at the end. In the given data, every ratio written is sufficiently far from a rounding boundary (the difference from the boundary is greater than 1e-7).
+
+[Example]
+This is a small example that differs from the actual input (2 sequences, 10 reads). The values on each line of output/alignments.sam are separated by tab characters.
+
+input/reference.fasta:
+>seqA example sequence A
+TCTGATGAGATGATCACCGAtgggcgaacttggtGAGCCGGGGCGAGGAACACCCCGAAG
+TAGATGTACGGATACTTTCC
+>seqB
+GCACAGGGACTAtgggcgaacttggtGGTTAACCGCCACCCGGAAGTAGATTTCTT
+input/reads.fastq:
+@ex1
+GCCGGGGCGCGGAACACC
++
+@FBBFDBDH?HHGE?DHA
+@ex2
+TCCGGGTGGCGGTTAAGA
++
+GBHDDABCEDFH@G@G+,
+@ex3
+TGAGATGATGACCGAT
++
+AFFFGAGGF3?CCA?F
+@ex4
+GGGCGAACTTGG
++
+DB?C@GI??@FC
+@ex5
+CGCCCATCGGTGAATCATCTCATCA
++
+HB@?FGBI?E@E?G?BGCCDDGHEE
+@ex6
+AGAAGGGAGCCTGTA
++
+CB@IECIBFDABGHA
+@ex7
+TGTACGGATACTACGTA
++
+C@EFGEGH)&%%&,$)'
+@ex8
+CACCCGNAAGTAGA
++
+GDGFGA6BFCGBD?
+@ex9
+CTTCGGGGTGTTCCGCGCCC
++
+@DF@E@GEBA@C@CDFDAAC
+@ex10
+CACCCCGAAGTA
++
+CEDHGIAE@IIC
+input/params.txt:
+MAX_MISMATCHES 2
+MIN_READ_LENGTH 10
+TRIM_QUALITY 15
+SEED_LENGTH 8
+SEED_STEP 6
+MAX_SEED_HITS 3
+BAND_WIDTH 3
+SCORES 2 4 6 1
+MIN_SCORE_PERCENT 50
+MAX_ALT_HITS 2
+OCC_INTERVAL 8
+SA_SAMPLE_INTERVAL 4
+DIRECT_SORT_LIMIT 60
+COVERAGE_WINDOW 25
+COVERAGE_MIN_MAPQ 1
+VARIANTS 2 20 30 80
+output/alignments.sam:
+@HD	VN:1.6	SO:unsorted
+@SQ	SN:seqA	LN:80
+@SQ	SN:seqB	LN:56
+@PG	ID:fm_index_aligner	PN:fm_index_aligner	VN:1.0
+ex1	0	seqA	37	48	18M	*	0	0	GCCGGGGCGCGGAACACC	@FBBFDBDH?HHGE?DHA	NM:i:1	MD:Z:9A8	AS:i:30	X0:i:1	X1:i:0	YM:Z:MISMATCH
+ex2	16	seqB	29	60	2S16M	*	0	0	TCTTAACCGCCACCCGGA	,+G@G@HFDECBADDHBG	NM:i:0	MD:Z:16	AS:i:32	X0:i:1	X1:i:0	YM:Z:EXACT
+ex3	0	seqA	6	48	16M	*	0	0	TGAGATGATGACCGAT	AFFFGAGGF3?CCA?F	NM:i:1	MD:Z:9C6	AS:i:26	X0:i:1	X1:i:0	YM:Z:MISMATCH
+ex4	0	seqA	22	0	12M	*	0	0	GGGCGAACTTGG	DB?C@GI??@FC	NM:i:0	MD:Z:12	AS:i:24	X0:i:2	X1:i:0	YM:Z:EXACT	XA:Z:seqB,+14,12M,0;
+ex5	16	seqA	3	60	11M1I13M	*	0	0	TGATGAGATGATTCACCGATGGGCG	EEHGDDCCGB?G?E@E?IBGF?@BH	NM:i:1	MD:Z:24	AS:i:41	X0:i:1	X1:i:0	YM:Z:SEED
+ex6	4	*	0	0	*	*	0	0	AGAAGGGAGCCTGTA	CB@IECIBFDABGHA	YM:Z:NOHIT
+ex7	4	*	0	0	*	*	0	0	TGTACGGATACTACGTA	C@EFGEGH)&%%&,$)'	YM:Z:SHORT
+ex8	0	seqB	37	15	14M	*	0	0	CACCCGNAAGTAGA	GDGFGA6BFCGBD?	NM:i:1	MD:Z:6G7	AS:i:22	X0:i:1	X1:i:1	YM:Z:MISMATCH	XA:Z:seqA,+51,14M,2;
+ex9	16	seqA	41	48	20M	*	0	0	GGGCGCGGAACACCCCGAAG	CAADFDC@C@ABEG@E@FD@	NM:i:1	MD:Z:5A14	AS:i:34	X0:i:1	X1:i:0	YM:Z:MISMATCH
+ex10	0	seqA	51	27	12M	*	0	0	CACCCCGAAGTA	CEDHGIAE@IIC	NM:i:0	MD:Z:12	AS:i:24	X0:i:1	X1:i:1	YM:Z:EXACT	XA:Z:seqB,+37,12M,1;
+output/coverage.txt:
+window 25 min_mapq 1
+reference seqA length 80 covered 50 breadth 0.6250 mean_depth 1.1250 max_depth 3
+depth_histogram 0:30 1:14 2:32 3:4
+seqA 1 25 gc 0.5200 sum 39 mean 1.5600 max 2 zero 2 mapq0 1 |###############
+seqA 26 50 gc 0.6400 sum 25 mean 1.0000 max 2 zero 10 mapq0 0 |##########
+seqA 51 75 gc 0.5200 sum 26 mean 1.0400 max 3 zero 13 mapq0 0 |##########
+seqA 76 80 gc 0.4000 sum 0 mean 0.0000 max 0 zero 5 mapq0 0 |
+reference seqB length 56 covered 22 breadth 0.3929 mean_depth 0.5357 max_depth 2
+depth_histogram 0:34 1:14 2:8
+seqB 1 25 gc 0.6000 sum 0 mean 0.0000 max 0 zero 25 mapq0 0 |
+seqB 26 50 gc 0.5600 sum 30 mean 1.2000 max 2 zero 3 mapq0 0 |############
+seqB 51 56 gc 0.1667 sum 0 mean 0.0000 max 0 zero 6 mapq0 0 |
+output/variants.txt:
+min_depth 2 min_base_quality 20 min_alt_percent 30 hom_percent 80
+seqA 46 A>C depth 2 alt 2 fraction 1.0000 genotype 1/1 strands 1 1 counts 0 2 0 0
+callable 42 variants 1 heterozygous 0 homozygous 1
+output/index_stats.txt:
+text length 138 sequences 2
+sequence seqA length 80 offset 0 gc 0.5500 masked 14
+sequence seqB length 56 offset 81 gc 0.5357 masked 14
+symbols $ 1 # 1 A 33 C 31 G 43 T 29
+
+forward_index
+suffix_array rounds 5
+round 0 prefix_length 1 classes 6
+round 1 prefix_length 2 classes 20
+round 2 prefix_length 4 classes 95
+round 3 prefix_length 8 classes 127
+round 4 prefix_length 16 classes 137
+round 5 prefix_length 32 classes 138
+sa_check pairs 137 ordered 137 lcp_sum 471 mean_lcp 3.4380 max_lcp 16
+longest_repeat 16 seqA:20 seqB:12
+kmers length 8 occurrences 122 distinct 111 unique 100 max_occurrence 2 unique_fraction 0.8197
+bwt runs 91 head TCGTGGGGACCCCATGAATGTTGGCAAGGGGGTGGCGACTATGACACAACGGGCGCCCAC
+c_array $ 0 # 1 A 2 C 35 G 66 T 109
+occ interval 8 checkpoints 18
+sa_sample interval 4 samples 35
+locate rows 138 correct 138 total_steps 205 max_steps 3 mean_steps 1.4855
+inverse_bwt identical yes
+
+reverse_index
+suffix_array rounds 5
+sa_check pairs 137 ordered 137
+bwt runs 92 head TGGCCCGCCGCCCTTTTAGAAATACTGTGCTGGCATTACCCACTTGGCCGCGGGA#ACCG
+inverse_bwt identical yes
+
+direct_sort
+seqB length 57 rounds 3 identical yes
+
+index_size bwt_bytes 138 occ_bytes 432 sample_bytes 140 bitmap_bytes 18 total_bytes 728 full_bytes 690 ratio 1.0551
+output/summary.txt:
+reads total 10 trimmed 2 trimmed_bases 11 short 1
+mapped 8 rate 0.8000 unique 7 multi 1 unmapped 2
+unmapped short 1 nohit 1
+method exact 3 mismatch 4 seed 1
+strand forward 5 reverse 3
+reference seqA mapped 6 unique 5 forward 4 reverse 2
+reference seqB mapped 2 unique 2 forward 1 reverse 1
+length_bins
+0-9 reads 1 mapped 0 unique 0
+10-19 reads 7 mapped 6 unique 5
+20-29 reads 2 mapped 2 unique 2
+n_reads 1 n_bases 1 mapped 1
+multi_targets
+seqA+seqB 1
+mapq_histogram
+60 2
+48 3
+27 1
+15 1
+0 1
+nm_histogram
+0 3
+1 5
+error_profile aligned_bases 120 mismatches 4 rate 0.0333
+substitutions
+ref A C G T N
+A 32 2 0 0 0
+C 0 34 1 0 0
+G 0 0 37 0 1
+T 0 0 0 13 0
+mismatch_by_cycle
+cycle 1 aligned 7 mismatches 0 rate 0.0000
+cycle 2 aligned 7 mismatches 0 rate 0.0000
+cycle 3 aligned 7 mismatches 0 rate 0.0000
+cycle 4 aligned 7 mismatches 0 rate 0.0000
+cycle 5 aligned 7 mismatches 0 rate 0.0000
+cycle 6 aligned 7 mismatches 0 rate 0.0000
+cycle 7 aligned 7 mismatches 1 rate 0.1429
+cycle 8 aligned 7 mismatches 0 rate 0.0000
+cycle 9 aligned 7 mismatches 0 rate 0.0000
+cycle 10 aligned 7 mismatches 2 rate 0.2857
+cycle 11 aligned 7 mismatches 0 rate 0.0000
+cycle 12 aligned 7 mismatches 0 rate 0.0000
+cycle 13 aligned 6 mismatches 0 rate 0.0000
+cycle 14 aligned 5 mismatches 0 rate 0.0000
+cycle 15 aligned 5 mismatches 1 rate 0.2000
+cycle 16 aligned 5 mismatches 0 rate 0.0000
+cycle 17 aligned 3 mismatches 0 rate 0.0000
+cycle 18 aligned 3 mismatches 0 rate 0.0000
+cycle 19 aligned 2 mismatches 0 rate 0.0000
+cycle 20 aligned 2 mismatches 0 rate 0.0000
+cycle 21 aligned 1 mismatches 0 rate 0.0000
+cycle 22 aligned 1 mismatches 0 rate 0.0000
+cycle 23 aligned 1 mismatches 0 rate 0.0000
+cycle 24 aligned 1 mismatches 0 rate 0.0000
+cycle 25 aligned 1 mismatches 0 rate 0.0000
+quality matched 116 mean 34.9397 mismatched 4 mean 26.0000
+quality_bins
+0-9 aligned 0 mismatches 0 rate -
+10-19 aligned 1 mismatches 1 rate 1.0000
+20-29 aligned 1 mismatches 1 rate 1.0000
+30-39 aligned 114 mismatches 2 rate 0.0175
+40- aligned 4 mismatches 0 rate 0.0000
+cigar M 132 I 1 D 0 S 2
+indels insertions 1 1 deletions 0 0
+search dfs_calls 18 dfs_nodes 544 dfs_leaves 9 dfs_positions 10
+seeds reads 2 seeds 10 with_n 0 repetitive 0 without_hit 8 candidates 2 passing 1

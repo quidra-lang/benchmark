@@ -1,0 +1,389 @@
+[Overview]
+Write a source code formatter (pretty printer) for a small C-like language. The formatting follows the ideas of Wadler's "prettier printer". From the source code, the program builds a "document" (a tree combining elements such as strings, line-break candidates, groups and indentation), and lays it out by looking ahead to see whether content fits within the given line width, deciding for each group, from the outermost group inward, whether to place it on one line (flat) or with line breaks (break).
+The program runs in a directory that contains, besides the program's own files, input/ holding the input files and an empty output/. There are two inputs: a file that bundles one or more source files to be formatted (input/sources.txt) and a file describing the formatting settings (profiles) (input/style.txt). The results are written to five files under output/ (formatted.txt, idempotency.txt, diagnostics.txt, doc_tree.txt, changes.txt). Nothing is printed to standard output.
+For each source file, the following processing is performed (the numbers in parentheses are the section numbers in [Processing]).
+- Lexical analysis (1): split the source into tokens and comments, and record the number of blank lines before each of them.
+- Comment attachment (2): make each comment either a trailing comment of the preceding token or a leading comment of the following token.
+- Parsing (3): build a concrete syntax tree by recursive-descent parsing.
+- Comment position check (4): check whether each comment written on its own line is at a position where it can still be placed on its own line after formatting.
+- Document construction (5, 6): build the document according to the rules of the profile. This includes removal of redundant parentheses, splitting of binary operations according to operator precedence, method call chains, consistent splitting of lists, trailing commas, and preservation of blank lines.
+- Layout (7, 8): turn the document into a sequence of lines that fits the line width. Trailing comments are aligned to the specified column.
+- Checks and reports (9 to 11): check whether formatting the formatted result again gives the same result (idempotency), and compute the diagnostics, the document tree and metrics, and the line-based diff against the original source.
+A file in which an error is found in 1 to 4 is not formatted; the first error is reported, and the original content (with only the trailing spaces of each line removed) is output.
+
+[Input files]
+Both input files consist only of printable ASCII characters (character codes 32 to 126) and line feeds (LF), and every line (including the last line) ends with a line feed. They contain no tab characters.
+
+* input/style.txt
+A file describing one or more "profiles". Each line is "[<profile name>]", "<key>=<value>" or an empty line, and there are no extra spaces within a line. A profile starts with a "[<profile name>]" line, followed by one line for each of the following 10 keys (in any order). There is one empty line between profiles. A profile name is a string of 1 to 16 characters consisting of lowercase letters, digits and "_", and profile names are distinct.
+- width: the line width W. An integer from 20 to 120.
+- indent: the indentation width I. An integer from 1 to 8.
+- brace_style: how braces are placed. kr (the "{" of a control statement is placed on the same line) or allman (the "{" is placed on the next line).
+- space_around_operators: whether to put spaces before and after binary operators, assignment operators, and the "?" and ":" of conditional expressions. yes or no.
+- space_after_keyword: whether to put a space between if, while, for, switch and the "(" that follows. yes or no.
+- indent_case_labels: whether to indent the case and default labels of a switch statement. yes or no.
+- add_braces: whether to add braces when the body of if, else, while or for is not a brace block. yes or no.
+- max_blank_lines: the maximum number M of consecutive blank lines to preserve. An integer from 0 to 3.
+- remove_parens: whether to remove redundant parentheses. yes or no.
+- comment_column: the column Q to which trailing comments are aligned. 0 (no alignment) or an integer from 1 to W.
+Below, the values of the profile specified for a source file are referred to by the symbols W, I, M and Q, or by phrases such as "when kr" and "when add_braces is yes".
+
+* input/sources.txt
+A file listing one or more source files in order. Each source file starts with a header line "=== <file name> <profile name>", and its content runs from the line after the header up to the line just before the next header line (for the last file, up to the end of the file). Each line of this content is called a "source line". A header line consists of "===", one space, the file name, one space and the profile name, in this order. A file name is a string of 1 to 32 characters consisting of letters, digits, "_" and ".", and file names are distinct. The profile name is one that appears in input/style.txt. No source line starts with "=== ". There are zero or more source lines, and they may include empty lines, lines consisting only of spaces, and lines with trailing spaces.
+A position in a source file is written as "line number:column". Line numbers start at 1 for the line following the header, and columns start at 1 for the first character of the line.
+
+[Processing]
+* 1. Lexical analysis
+Read the source lines in order starting from line 1, each line from left to right, and split them into "tokens" and "comments". At the current reading position, check the following rules from top to bottom and use the first one that applies.
+(1) A space is skipped.
+(2) "//": the part from that position to the end of the line is one "line comment". The string of the comment is that part with its trailing spaces removed. Reading of that line ends here.
+(3) "/*": searching rightward from the character after it, the part up to the first "*/" that appears on the same line is one "block comment", and the string of the comment is the whole text from "/*" to "*/". The "*" of "/*" is never used as part of "*/" ("/*/" is not closed). If there is no "*/" on the same line, it is the lexical error "unterminated comment". A block comment never spans lines.
+(4) A letter (A to Z, a to z) or "_": the longest run of letters, digits (0 to 9) and "_" is one word. If the word is one of the following keywords, it is that "keyword"; otherwise it is an "identifier".
+    Keywords: int float bool string void if else while for return break continue true false switch case default
+    Of these, int, float, bool, string and void are called "type names".
+(5) A digit: take the longest run of digits. If it is immediately followed by "." and the character after that is a digit, also include the "." and the run of digits that follows it (as long as possible). The whole part taken this way is one "number" (e.g. "12", "3.25". "1." and ".5" are not numbers; they are split into "1" and ".", and into "." and "5", respectively).
+(6) A double quote ("): look rightward starting from the next character; whenever a "\" is found, skip it together with the one character after it (whatever that character is), and stop when a double quote appears. The whole part from the first double quote to the last double quote is one "string" token. If there is no closing double quote before the end of the line, it is the lexical error "unterminated string".
+(7) One of the following two-character symbols: <= >= == != && || += -= *= /= %=
+(8) One of the following one-character symbols: + - * / % < > = ! ( ) [ ] { } , ; . ? :
+(9) A character c to which none of the above applies is the lexical error "unexpected character 'c'" (e.g. "unexpected character '@'").
+The position of a lexical error is the position of the first character of that token, comment or character. When a lexical error is found, lexical analysis ends there, and that error becomes the error of the file.
+For each token and each comment, record the position (line number and column) of its first character. The string of a token is its sequence of characters exactly as written in the source.
+When the tokens and comments are arranged in the order in which they appear, for each of them let p be the line number of the immediately preceding token or comment (p = 0 for the first one), and record its "blank-line count" = max(0, own line number - p - 1). Since the lines between two consecutive tokens/comments contain no token or comment, the blank-line count is the number of empty lines (including lines consisting only of spaces) between them.
+Finally, after all the tokens, place one virtual token called the "end token", whose string is empty. The position of the end token is "(number of source lines + 1):1".
+
+* 2. Comment attachment
+Examine the comments one at a time in the order in which they appear, and attach them to tokens as follows. Let P be the last token before comment c, and N the first token after c (neither of them includes the end token).
+- If P exists, the line number of P equals the line number of c, and either N does not exist or the line number of N is greater than the line number of c, then c is a "trailing comment" of P.
+- Otherwise, c is a "leading comment" of N (of the end token if N does not exist).
+Each token holds its leading comments and its trailing comments, each in the order in which they appear. A leading comment c is an "own-line" comment if c is a line comment, or if there is no token or comment appearing next after c (the end token is not included), or if that token or comment is on a line with a greater line number than c; otherwise it is an "inline" comment.
+For example, the "// a" in "x = 1; // a" is a trailing comment of ";", the "/* b */" in "/* b */ y = 2;" is an inline leading comment of "y", and a "// c" written alone on its line is an own-line leading comment of the next token.
+
+* 3. Parsing
+Parse the sequence of tokens by recursive descent according to the following rules, and build a concrete syntax tree (a tree in which each construct holds all the tokens that make it up). Below, "read X" means checking that the next token is X and taking that token. "Read an identifier", "read a type name" and so on are similar. "The next token" is the first token not yet read (this includes the end token).
+(1) Program: repeatedly read an "item" until the next token is the end token. For an item, read a type name and read an identifier; then, if the next token is "(", continue reading it as a function definition, otherwise as a variable declaration.
+  - Function definition: read a parameter list and a block. A parameter list is a list whose opening bracket is "(", whose closing bracket is ")", whose elements are parameters, and which does not allow a trailing comma.
+  - Parameter: read a type name, read an identifier, and while the next token is "[", read "[" and "]".
+  - Rest of a variable declaration: while the next token is "[", read a dimension. A dimension is: read "[", read an expression if the next token is not "]", and read "]". Then, if the next token is "=", read "=" and an initializer. For a variable declaration as an item and for a variable declaration as a statement, finally read ";".
+  - Initializer: if the next token is "{", an initializer list (a list whose opening bracket is "{", whose closing bracket is "}", whose elements are initializers, and which allows a trailing comma); otherwise an expression.
+(2) List: read the opening bracket; if the next token is not the closing bracket, read an element, and while the next token is ",", repeat the following. In a list that allows a trailing comma, if the token after the "," is the closing bracket, read that "," as the "trailing comma" and end the repetition. Otherwise, read the "," and read an element. Finally, read the closing bracket.
+(3) Block: read "{", and while the next token is neither "}" nor the end token, read a statement. Finally, read "}".
+(4) Statement: read according to the next token, as follows.
+  - "{": a block.
+  - A type name: the type name, an identifier, and the rest of a variable declaration (up to ";").
+  - if: read if, "(", an expression, ")" and a body. If the next token is else, read else; then, if the next token is if, read an if statement (else if), otherwise read a body.
+  - while: while, "(", an expression, ")", a body.
+  - for: for, "(", the init part, ";", the condition part, ";", the update part, ")", a body. The init part is empty if the next token is ";"; if it is a type name, it is the type name, an identifier and the rest of a variable declaration (not including ";"); otherwise it is a simple statement. The condition part is empty if the next token is ";", otherwise it is an expression. The update part is empty if the next token is ")", otherwise it is a simple statement.
+  - switch: read switch, "(", an expression, ")" and "{", and while the next token is case or default, read a clause. Finally, read "}". A clause is: for case, read case, an expression and ":"; for default, read default and ":"; then, while the next token is none of case, default, "}" and the end token, read a statement.
+  - return: read return, read an expression if the next token is not ";", and read ";".
+  - break or continue: that keyword and ";".
+  - Anything else: a simple statement and ";".
+  A body is one statement (it may be a block or a statement that is not a block).
+(5) Simple statement: read an expression; if the next token is an assignment operator (= += -= *= /= %=), read it and an expression, making an "assignment". Otherwise it is an "expression statement".
+(6) Expression: read a precedence-1 expression; if the next token is "?", read "?", an expression, ":" and an expression, making a "conditional expression" (this makes it right-associative).
+(7) Binary operations: the operators of precedence 1 to 6 are as follows, and all of them are left-associative.
+  Precedence 1: ||  Precedence 2: &&  Precedence 3: == !=  Precedence 4: < <= > >=  Precedence 5: + -  Precedence 6: * / %
+  A precedence-k expression is obtained by reading a precedence-(k + 1) expression (a unary expression if k = 6) and, while the next token is a precedence-k operator, reading that operator and a precedence-(k + 1) expression, combining them into binary operations from left to right.
+(8) Unary expression: if the next token is "-" or "!", read it and a unary expression. Otherwise, read a primary expression, and then repeat the following until none of them applies: if the next token is "(", read a call (an argument list: a list whose opening bracket is "(", whose closing bracket is ")", whose elements are expressions, and which does not allow a trailing comma); if it is "[", read an index ("[", an expression, "]"); if it is ".", read a member (".", an identifier). Calls, indexes and members are called "postfix operations", and the expression to the left of a postfix operation is called its "target".
+(9) Primary expression: if the next token is an identifier, a number, a string, true or false, it is that token. If it is "(", read "(", an expression and ")", making a "parenthesized expression". If it is none of these, it is a syntax error.
+Syntax errors: when the next token is not the token that is to be read, it is the syntax error "expected <expected>, found <actual>". <expected> is the symbol enclosed in "'" where a symbol is being read (e.g. "';'", "')'"), "type" where a type name is being read, "identifier" where an identifier is being read, and "expression" where a primary expression is being read. <actual> is the string of the next token enclosed in "'" (e.g. "'return'"), or "end of file" if the next token is the end token. The position of the error is the position of the next token. Parsing ends at the first syntax error, and that error becomes the error of the file.
+
+* 4. Comment position check
+If parsing succeeds, check whether the own-line comments are allowed. The "first token" of a construct is, among the tokens that make it up, the one that comes earliest in the source. The following tokens are the "tokens that allow own-line comments".
+(a) The first token of each item (function definition or variable declaration)
+(b) The first token of each statement in a block
+(c) The label of each clause of a switch statement (the case or default token), and the first token of each statement in a clause
+(d) When the body of an if statement (the one before else), the body of a while or for statement, or the body after else is a statement that is not a block, the first token of that statement (the if of an else if is not included)
+(e) The closing brace "}" of each block and of each switch statement
+(f) The first token of each element of each list (parameters, arguments, initializer lists)
+(g) The end token
+Look at the tokens in order (and, within each token, at its leading comments in order). If an own-line leading comment of a token that is not a token that allows own-line comments, or a leading comment of a trailing comma (own-line or inline), is found, report the error "comment not allowed here" at the position of the first such comment found, and that error becomes the error of the file.
+
+* 5. Documents
+A document is a tree made of the following elements.
+- String: a sequence of characters that contains no line break.
+- line: a line-break candidate that becomes one space in flat mode and a line break in break mode.
+- softline: a line-break candidate that outputs nothing in flat mode and becomes a line break in break mode.
+- hardline: a forced line break that always becomes a line break.
+- break_parent: a marker that outputs nothing.
+- suffix(s): the trailing comment string s. The position where it is output is determined by the rules in 7.
+- if_break(a, b): an element that becomes the string a in break mode and the string b in flat mode.
+- group(x): a group. It has one child x.
+- nest(n, x): increases the indentation after line breaks within the child x by n.
+- align(x): sets the indentation after line breaks within the child x to the column where this element starts.
+- Concatenation: two or more elements arranged in order.
+Below, "[a, b, ...]" denotes the document obtained by "normalizing" the sequence of elements by the following rules. For a sequence written inside the parentheses of group(...), nest(n, ...) and align(...) as well, the sequence normalized in the same way becomes the child.
+(1) Each concatenation in the sequence is replaced by its sequence of elements (all nested concatenations are expanded).
+(2) Empty strings are removed.
+(3) Adjacent strings are joined, in order, into one string.
+(4) If no elements remain, the result is the empty string; if one remains, it is that element itself; if two or more remain, it is their concatenation.
+When the child of a group contains a hardline or a break_parent at any depth (including inside other groups, nest and align), the group is called a "force-broken" group.
+
+* 6. Document construction
+(6-1) Notation and auxiliary documents
+"abc" denotes a string, and "" denotes the empty string. The following are defined from the profile.
+- S: " " if space_around_operators is yes, "" if no.
+- K: " " if space_after_keyword is yes, "" if no.
+- O: line if space_around_operators is yes, softline if no.
+- SEP(n): a hardline followed by min(n, M) hardlines.
+- The "pre-blank count" of a token t: the blank-line count of the first leading comment of t if t has leading comments, otherwise the blank-line count of t.
+Comment sequence C(c1, ..., ck; z): for i = 1, ..., k in order, place the string ci (the string of the comment) and then place the following. Let y be c(i+1) if i < k, and z if i = k (z is a token or "none"). If y is "none", place nothing. Otherwise, if ci is own-line, place a hardline followed by min(blank-line count of y, M) hardlines, and if ci is inline, place " ".
+Token document T(t): [C(leading comments of t; t), the string of t, the trailing comment part]. The trailing comment part is suffix(s) when t has trailing comments, where s is their strings joined with one space in the order in which they appear; otherwise it is nothing. When T(R; G) is written for a closing brace R, only G is used out of the leading comments of R.
+(6-2) Whole file
+With D1, ..., Dn as the documents of the items, it is [D1, SEP(pre-blank count of the first token of the 2nd item), D2, ..., SEP(pre-blank count of the first token of the n-th item), Dn, closing comments]. When the end token has leading comments, the closing comments are SEP(blank-line count of the first leading comment of the end token), placed only if n >= 1, followed by C(leading comments of the end token; none); when it has none, they are nothing.
+(6-3) Function definitions and declarations
+- Function definition: [T(type name), " ", T(function name), L(parameter list), hardline, B(block)]. Regardless of brace_style, the "{" of a function body is placed on the next line.
+- Parameter: [T(type name), " ", T(name), for each "[" "]" pair: T([), T(])].
+- Variable declaration V: [T(type name), " ", T(name), for each dimension: T([), E(expression, 0) if there is an expression, T(]); if there is "=": S, T(=), S, the document of the initializer; if there is ";": T(;)]. The document of the initializer is L(initializer list) for an initializer list and E(expression, 0) for an expression.
+(6-4) List L
+If there are no elements, it is [T(opening bracket), T(closing bracket)]. When the elements are X1, ..., Xn (n >= 1) and the commas between them are c1, ..., c(n-1), it is
+  group([force marker, T(opening bracket), nest(I, [softline, X1, T(c1), line, X2, ..., T(c(n-1)), line, Xn, tail]), softline, T(closing bracket)])
+The document of each element Xi is the document of the parameter for a parameter, E(expression, 0) for an argument, and the document of the initializer for an element of an initializer list.
+For an initializer list, the "tail" is if_break(",", "") followed, when there is a trailing comma and it has trailing comments, by its trailing comment part (the same suffix as in T). For parameter and argument lists, it is nothing.
+The "force marker" is break_parent if any token from the opening bracket up to just before the closing bracket (including the tokens of nested constructs and the tokens of parentheses removed in (6-7); this is judged by the trailing comments as attached in the source) has a trailing comment; otherwise it is nothing.
+(6-5) Blocks and bodies
+Block B: let R be the closing brace, and split the leading comments of R into the sequence H up to and including the last own-line comment, and the remaining sequence G (which consists only of inline comments) (H is empty if there is no own-line comment). If there are no statements and H is also empty, it is [T({), T(R; G)]. Otherwise, with the statements s1, ..., sm, it is
+  [T({), nest(I, [hardline, D(s1), SEP(pre-blank count of the first token of s2), D(s2), ..., SEP(pre-blank count of the first token of sm), D(sm), comments before closing]), hardline, T(R; G)]
+If H is not empty, the comments before closing are SEP(blank-line count of the first comment of H), placed only if m >= 1, followed by C(H; none); if H is empty, they are nothing.
+Body Y(s) (the body of if, else, while or for): if s is a block, it is [" " if kr or hardline if allman, B(s)]. If s is not a block and add_braces is yes, it is [" " if kr or hardline if allman, "{", nest(I, [hardline, D(s)]), hardline, "}"] (the added braces are strings without comments). Otherwise, it is nest(I, [hardline, D(s)]).
+(6-6) Statements D
+- Block: B.
+- Variable declaration: V.
+- Assignment and expression statement: [U, T(;)]. U (the document of a simple statement) is [E(left side, 0), S, T(assignment operator), S, E(right side, 0)] for an assignment, and E(expression, 0) for an expression statement.
+- return: [T(return), " " and E(expression, 0) if there is an expression, T(;)].
+- break, continue: [T(keyword), T(;)].
+- while: [T(while), K, T((), E(condition, 0), T()), Y(body)].
+- for: [T(for), K, T((), group([align([init part, T(first ;), line and E(condition, 0) if there is a condition part, T(second ;), line and U(update part) if there is an update part])]), T()), Y(body)]. The init part is V (without ";") for a variable declaration, U for a simple statement, and nothing if it is empty.
+- if: F = [T(if), K, T((), E(condition, 0), T()), Y(body before else), else part]. The else part is nothing if there is no else; if there is one, it is [separator, T(else), continuation]. The separator is " " if kr and either the body before else is a block or add_braces is yes; otherwise it is hardline. The continuation is [" ", F of that if statement] if what follows else is an if statement; otherwise it is Y(body after else).
+- switch: split the leading comments of the closing brace R into H and G in the same way as for a block. Let J be I if indent_case_labels is yes and 0 if no, and let A = [T(switch), K, T((), E(condition, 0), T()), " " if kr or hardline if allman, T({)]. If there are no clauses and H is also empty, it is [A, T(R; G)]. Otherwise, with the clauses Z1, ..., Zm, it is
+  [A, nest(J, [hardline, Z1, SEP(pre-blank count of the label of Z2), Z2, ..., SEP(pre-blank count of the label of Zm), Zm, comments before closing]), hardline, T(R; G)]
+The comments before closing are the same as for a block (m is the number of clauses). The document of a clause Z is [T(label), " " and E(value, 0) for case, T(:), statements of the clause], where the statements of the clause are nest(I, [hardline, D(s1), SEP(pre-blank count of the first token of s2), D(s2), ..., SEP(pre-blank count of the first token of sr), D(sr)]) if there are statements s1, ..., sr (r >= 1), and nothing if there are none.
+(6-7) Expressions E(e, k)
+Each expression has a "level": 0 for a conditional expression, the precedence of its operator (1 to 6) for a binary operation, 7 for a unary expression, and 8 for everything else (primary expressions, parenthesized expressions, postfix operations). k is the level required at that position.
+"Opening e at level k": when remove_parens is yes, while e is a parenthesized expression, the level of its inner expression is k or more, and neither "(" nor ")" has leading comments, repeatedly replace e by its inner expression (removal of redundant parentheses). Each time one pair of parentheses is removed, move the trailing comments of "(" to the front of the sequence of trailing comments of the first token of the inner expression (keeping their order), and move the trailing comments of ")" to the back of the sequence of trailing comments of the last token of the inner expression. The removed "(" and ")" are not output. If remove_parens is no, nothing is done.
+E(e, k) is defined as follows according to the kind of e, after opening e at level k.
+- Primary expression: T(its token).
+- Parenthesized expression: [T((), E(inner expression, 0), T())].
+- Unary expression: [T(operator), E(operand, 8)].
+- Binary operation: let p be the level of e. Starting with x = e, while x is a binary operation of level p, record the operator and the right operand of x, and replace x by "the left operand of x opened at level p". Let a1 be the final x, and arrange the recorded items in reverse order as operators o1, ..., o(n-1) and operands a2, ..., an (in the source they appear in the order a1 o1 a2 ... o(n-1) an). The document is
+  group([E(a1, p), nest(I, [O, T(o1), S, E(a2, p+1), O, T(o2), S, E(a3, p+1), ..., O, T(o(n-1)), S, E(an, p+1)])])
+  (e.g. for "a * b + c * d", the two groups of "*" are inside the group of "+").
+- Conditional expression: let c be the condition of e. Start with an empty sequence R and f = e, and repeat the following. Append [O, T("?" of f), S, E(then expression of f, 0), O, T(":" of f), S] to R, and let g be the else expression of f opened at level 0. If g is a conditional expression, append E(condition of g, 1) to R, set f = g and repeat. If g is not a conditional expression, append E(g, 0) to R and stop. The document is group([E(c, 1), nest(I, R)]) (e.g. "a ? b : c ? d : e" becomes one group).
+- Postfix operation: starting with x = e, while x is a postfix operation, record that postfix operation and replace x by "the target of x opened at level 8". Call the final x the "head", and arrange the recorded postfix operations in reverse order (source order). The document of a postfix operation is L(argument list) for a call, [T([), E(index expression, 0), T(])] for an index, and [T(.), T(name)] for a member. Divide the arranged postfix operations into "segments" at the positions of the members. Segment 0 consists of the postfix operations before the first member (it may be empty), and each later segment consists of one member and the non-member postfix operations that follow it. If fewer than two of the segments from segment 1 on contain a call, the document is [E(head, 8), the documents of the postfix operations in order]. If two or more do, let segment j be the first segment from segment 1 on that contains a call (j >= 1 even if segment 0 contains a call); the document is
+  group([E(head, 8), the documents of the postfix operations of segments 0 to j-1 in order, nest(I, [softline, the documents of the postfix operations of segment j in order, softline, the documents of the postfix operations of segment j+1 in order, ...])])
+  (a method call chain; when broken, each segment from segment j on is placed on its own line).
+At the positions of arguments, indexes, dimensions, initializers, conditions, return values, both sides of an assignment, and case values, k = 0, as written above.
+(Note) When space_around_operators is no and the token immediately after the operator "/" has an inline leading comment, the sequence "//*" is output, and it becomes a line comment when read again. This formatter does not treat this case specially (it is detected by the idempotency check in 9).
+
+* 7. Layout
+Turn the whole-file document (6-2) into a sequence of lines by the following procedure. The state consists of the sequence of output lines, the string of the current line, the current column col (the number of characters in the current line), the sequence of pending trailing comments, and a stack of commands. A command is a triple (indentation, mode, document), and the mode is "flat" or "break". Initially the current line is empty, col = 0, there are no pending trailing comments, and the stack holds only (0, break, whole-file document).
+Until the stack is empty, pop the top command (i, m, x) and do the following according to the kind of x.
+- String s: append s to the current line and increase col by the length of s.
+- if_break(a, b): append a if m is break, or b if m is flat, in the same way as a string.
+- line: if m is flat, append one space (increasing col by 1); if it is break, perform a "newline".
+- softline: if m is flat, do nothing; if it is break, perform a "newline".
+- hardline: perform a "newline".
+- Concatenation: push its elements onto the stack as (i, m, element), starting from the last element (the first element ends up on top).
+- nest(n, y): push (i + n, m, y).
+- align(y): push (col, m, y).
+- suffix(s): append s to the end of the sequence of pending trailing comments.
+- break_parent: do nothing.
+- group(y): if m is flat, set the mode of this group to flat and push (i, flat, y). If m is break and this group is force-broken, set its mode to forced and push (i, break, y). Otherwise, perform the "fit check" with the remaining width W - col, the first command (i, flat, y) and the stack at that moment; if it fits, set the mode to flat and push (i, flat, y), and if it does not fit, set the mode to break and push (i, break, y).
+A "newline" means "finalizing" the current line, then making i spaces the new current line and setting col = i. When the stack has become empty, finalize the current line at the end.
+"Finalizing": let u be the current line with all of its trailing spaces removed. If there are pending trailing comments, let s be them joined with one space; if Q > 0 and (length of u) < Q - 1 and Q - 1 + (length of s) <= W, append spaces to u to make its length Q - 1 and then append s (the comment starts at column Q); otherwise, append one space and s to u. Empty the sequence of pending trailing comments. Append the string obtained in this way to the end of the sequence of output lines.
+"Fit check" (remaining width r, first command, stack): if r < 0, it does not fit. Otherwise, push the first command onto a check stack and repeat the following. When the check stack is empty: if no unused commands remain in the original stack, it fits; if some remain, push the topmost of them onto the check stack (they are used one at a time, from the top of the original stack downward). Then pop the top command (i, m, x) of the check stack and do the following according to the kind of x.
+- String s: subtract the length of s from r; if r < 0 as a result, it does not fit.
+- if_break(a, b): treat a if m is break, or b if m is flat, in the same way as a string.
+- line: if m is break, it fits. If it is flat, subtract 1 from r; if r < 0 as a result, it does not fit.
+- softline: if m is break, it fits. If it is flat, do nothing.
+- hardline: it fits.
+- Concatenation: push the elements onto the check stack as (i, m, element), starting from the last element.
+- group(y): push (i, break, y) if this group is force-broken, otherwise (i, m, y) (the check does not record the mode of groups).
+- nest(n, y), align(y): push (i, m, y).
+- suffix(s), break_parent: do nothing.
+In other words, it is judged to "fit" if, when the content of the group made flat and the part that follows it are laid out up to the point where the first line break occurs, all the strings fit within W columns.
+
+* 8. Formatted result
+The "formatted result" of a file without errors is the sequence of lines obtained in 7. However, the formatted result of a file that has no items at all and whose end token has no leading comments is zero lines (layout is not performed).
+
+* 9. Idempotency check
+For a file without errors, take the lines of the formatted result as source lines and perform the processing of 1 to 8 again with the same profile (the second formatting). If an error of any of 1, 3 or 4 is found in the second formatting, the file is "unstable (error)"; if the resulting sequence of lines is exactly the same as the first one, it is "stable"; otherwise it is "unstable". When it is unstable, find the number L of the first differing line. L is the smallest line number that exists in both and whose line strings differ; if there is no such line and one of them equals the beginning of the other, L is the line count of the shorter one + 1.
+
+* 10. Diff
+For a file without errors, compute the diff between the sequence a1, ..., an of the original source lines with their trailing spaces removed and the sequence b1, ..., bm of the lines of the formatted result, using the longest common subsequence.
+For 0 <= i <= n and 0 <= j <= m, let lcs(i, j) be the length of the longest common subsequence of a(i+1), ..., an and b(j+1), ..., bm. lcs(n, j) = lcs(i, m) = 0; otherwise, lcs(i, j) = lcs(i+1, j+1) + 1 if a(i+1) and b(j+1) are equal, and lcs(i, j) = max(lcs(i+1, j), lcs(i, j+1)) if they are not equal.
+Starting with i = j = 0, build a sequence of operations by repeating the following while i < n or j < m.
+- If i < n and j < m and a(i+1) and b(j+1) are equal, record a "common" and increase each of i and j by 1.
+- Otherwise, if j = m, or if i < n and lcs(i+1, j) >= lcs(i, j+1), record a "delete" of a(i+1) and increase i by 1.
+- Otherwise, record an "insert" of b(j+1) and increase j by 1.
+In the sequence of operations, a maximal run of consecutive operations that are not common is called a "hunk". For each hunk, let i0 and j0 be the values of i and j just before its first operation is recorded, d the number of deletes in the hunk, and e the number of inserts.
+
+* 11. Metrics
+For a file without errors, compute the following values.
+- lines: the number of lines of the formatted result.
+- longest: the maximum length of the lines of the formatted result (0 if it has zero lines).
+- comments: the number of comments in the file.
+- groups: the number of groups contained in the whole-file document.
+- broken: the number of those groups whose mode became break or forced in 7.
+- forced: the number of those groups whose mode became forced.
+
+[Output files]
+Every line of the five files ends with a line feed (LF) and has no trailing spaces.
+
+* output/formatted.txt
+For each source file (in input order), output its header line (the same string as the header line in input/sources.txt), followed by the lines of the formatted result for a file without errors, or by the original source lines with their trailing spaces removed for a file with an error.
+
+* output/idempotency.txt
+For each source file (in input order), output the following one line.
+- File with an error: "<file name>: skipped (syntax error)"
+- Stable: "<file name>: stable"
+- Unstable: "<file name>: unstable at line <L>"
+- Unstable (error): "<file name>: unstable (second pass: <line number>:<column>: <error message>)" (the position and message of the error found in the second formatting)
+
+* output/diagnostics.txt
+For each source file (in input order), output, for a file with an error, the one line "<file name>:<line number>:<column>: error: <error message>", and for a file without errors, one line "<file name>:<line number>: warning: line too long (<line length> > <W>)" for each line of the formatted result whose length exceeds W (in line number order). If no line was output for any file, output only the single line "no diagnostics". The error message is the message given in 1, 3 or 4 (e.g. "unterminated string", "expected ';', found 'return'", "comment not allowed here").
+
+* output/doc_tree.txt
+For each source file (in input order), output "=== <file name>". For a file with an error, then output "syntax error". For a file without errors, then output "metrics lines=<lines> longest=<longest> comments=<comments> groups=<groups> broken=<broken> forced=<forced>", and then output "no function" if there is no function definition; if there is one, output, for the first function definition, "function <function name>" and the lines that write the document of that function definition (the sequence of (6-3), normalized) by the following rules.
+Rules for writing a document x at depth d (each line starts with 2d spaces; initially d = 0):
+- String s: text "<s>" (s is enclosed in double quotes exactly as it is; it is not converted even if s contains a double quote)
+- suffix(s): suffix "<s>"
+- if_break(a, b): if_break "<a>" "<b>"
+- line, softline, hardline, break_parent: "line", "softline", "hardline", "break_parent", respectively
+- Concatenation: write each element in order at depth d (no line is written for the concatenation itself).
+- group(y): write "group <mode>" (the mode is whichever of flat, break and forced was recorded for that group in the layout (7) of the first formatting), then write y at depth d + 1.
+- nest(n, y): write "nest <n>", then write y at depth d + 1.
+- align(y): write "align", then write y at depth d + 1.
+
+* output/changes.txt
+For each source file (in input order), output "=== <file name>". For a file with an error, then output "skipped (syntax error)". For a file without errors, then output "hunks=<number of hunks> deleted=<total number of deletes> inserted=<total number of inserts>", and for each hunk (in the order of the sequence of operations), output the header "@@ -<A>,<d> +<B>,<e> @@" and then, for each operation in the hunk in order, a line consisting of "-" followed by the deleted line of a for a delete, or "+" followed by the inserted line of b for an insert. A is i0 + 1 if d >= 1 and i0 if d = 0; B is j0 + 1 if e >= 1 and j0 if e = 0.
+
+[Source files]
+Divide the program files into the following six roles (file names may follow the conventions of each language).
+- main: the overall flow. Reading the input files, splitting out the profiles and the source files, comment attachment (2), the comment position check (4), all the rules of document construction (6: whole file, declarations, lists, blocks and bodies, the various statements, the switch statement, removal of redundant parentheses and moving of comments, chains of binary operations and conditional expressions, chains of postfix operations), the overall formatting procedure (8), the idempotency check (9), metrics (11), and diagnostics and writing the five output files. It handles the largest part of the processing.
+- lexer: lexical analysis (1). Tokens and comments, positions, blank-line counts, lexical errors.
+- parser: recursive-descent parsing (3). The constructs of the concrete syntax tree and syntax errors.
+- doc_builder: the document elements (5), normalization of sequences, the force-broken check, counting of groups.
+- printer: layout (7). The command stack, the fit check, newlines and line finalization, alignment of trailing comments to the column.
+- report: writing the document tree (the tree part of doc_tree.txt) and the line-based diff (10).
+
+[Constraints]
+- style.txt contains 1 to 5 profiles.
+- sources.txt contains 1 to 20 source files. Each source file has 0 to 200 source lines, each line has at most 120 characters, and the total number of source lines is at most 1000.
+- In each file, the number of tokens and the number of comments are each at most 3000, and the nesting depth of the syntax (blocks, statements, expressions, lists) is at most 50.
+- All values such as line numbers, columns, lengths and counts are integers less than 100000, and there is no floating-point computation.
+
+[Example]
+The output for the following input is shown below (the content of each file is shown starting from the line after the "<file name>:" line, and one empty line is inserted between files as a separator; these separator empty lines are not part of the file contents).
+
+input/style.txt:
+[demo]
+width=32
+indent=2
+brace_style=kr
+space_around_operators=yes
+space_after_keyword=yes
+indent_case_labels=yes
+add_braces=no
+max_blank_lines=1
+remove_parens=yes
+comment_column=22
+
+input/sources.txt:
+=== demo.c demo
+int area(int w,int h){return (w*h);} // size
+
+
+void show(int count) {
+  print_values(count, count * 2, count * 3);
+  if (count > 0) total = total + count; else total = 0;
+}
+=== bad.c demo
+int f() { return 1 }
+
+output/formatted.txt:
+=== demo.c demo
+int area(int w, int h)
+{
+  return w * h;
+}                    // size
+
+void show(int count)
+{
+  print_values(
+    count,
+    count * 2,
+    count * 3
+  );
+  if (count > 0)
+    total = total + count;
+  else
+    total = 0;
+}
+=== bad.c demo
+int f() { return 1 }
+
+output/idempotency.txt:
+demo.c: stable
+bad.c: skipped (syntax error)
+
+output/diagnostics.txt:
+bad.c:1:20: error: expected ';', found '}'
+
+output/doc_tree.txt:
+=== demo.c
+metrics lines=17 longest=28 comments=1 groups=8 broken=1 forced=0
+function area
+text "int area"
+group flat
+  text "("
+  nest 2
+    softline
+    text "int w,"
+    line
+    text "int h"
+  softline
+  text ")"
+hardline
+text "{"
+nest 2
+  hardline
+  text "return "
+  group flat
+    text "w"
+    nest 2
+      line
+      text "* h"
+  text ";"
+hardline
+text "}"
+suffix "// size"
+=== bad.c
+syntax error
+
+output/changes.txt:
+=== demo.c
+hunks=2 deleted=5 inserted=15
+@@ -1,2 +1,4 @@
+-int area(int w,int h){return (w*h);} // size
+-
++int area(int w, int h)
++{
++  return w * h;
++}                    // size
+@@ -4,3 +6,11 @@
+-void show(int count) {
+-  print_values(count, count * 2, count * 3);
+-  if (count > 0) total = total + count; else total = 0;
++void show(int count)
++{
++  print_values(
++    count,
++    count * 2,
++    count * 3
++  );
++  if (count > 0)
++    total = total + count;
++  else
++    total = 0;
+=== bad.c
+skipped (syntax error)

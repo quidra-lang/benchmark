@@ -1,0 +1,847 @@
+import factorization = "./factorization.qui"
+import neighborhood = "./neighborhood.qui"
+import evaluation = "./evaluation.qui"
+import report = "./report.qui"
+
+string[] methods()
+    return ["GLOBAL", "BASELINE", "USER_KNN", "ITEM_KNN", "SLOPE_ONE", "SVD", "ALS"]
+
+string[] rankings()
+    return ["POPULAR", "BASELINE", "USER_KNN", "ITEM_KNN", "SLOPE_ONE", "SVD", "ALS"]
+
+string real_text(real64 value, bool defined = true)
+    return report.real_text(value, defined)
+
+string integers(int[] values)
+    string[] fields = [for int value = values[] then "{value}"]
+    return fields.join(" ")
+
+bool contains(int[] values, int value)
+    for int item = values[]
+        if item == value
+            return true
+    return false
+
+bool contains_name(string[] values, string value)
+    for string item = values[]
+        if item == value
+            return true
+    return false
+
+string title(factorization.ratings.Data data, int item)
+    return data.catalog.titles[data.item_catalog[item]]
+
+string[] genres(factorization.ratings.Data data, int item)
+    return data.catalog.genres[data.item_catalog[item]]
+
+real64 baseline_rmse(int[][] training, real64 mean, real64[] users, real64[] items)
+    real64 sum = 0.0
+    for int[] row = training[]
+        real64 difference = evaluation.as_real(row[2]) - ((mean + users[row[0]]) + items[row[1]])
+        sum += difference * difference
+    return evaluation.root(sum / evaluation.as_real(int(len(training))))
+
+class Baseline(real64[] users, real64[] items, real64[] log)
+class Prediction(real64 value, bool fallback, int count, real64 similarity, int top)
+class RankedItem(int index, real64 value)
+
+Baseline train_baseline(factorization.ratings.Data data)
+    real64[] users = factorization.zeros(int(len(data.users)))
+    real64[] items = factorization.zeros(int(len(data.items)))
+    real64[] log = []
+    for _ < 10
+        for int i < int(len(data.items))
+            real64 sum = 0.0
+            for int u = data.item_ratings[i][]
+                sum += evaluation.as_real(data.values[u][i]) - data.mean - users[u]
+            items[i] = sum / (data.params.item_reg + evaluation.as_real(data.item_counts[i]))
+        for int u < int(len(data.users))
+            real64 sum = 0.0
+            for int i = data.user_ratings[u][]
+                sum += evaluation.as_real(data.values[u][i]) - data.mean - items[i]
+            users[u] = sum / (data.params.user_reg + evaluation.as_real(data.user_counts[u]))
+        log = log.append(baseline_rmse(data.training, data.mean, users, items))
+    return Baseline(users, items, log)
+
+int[][][] empty_lists(int users)
+    int[][][] result = []
+    for int u < users
+        int[][] row = [[], [], [], [], [], [], []]
+        result = result.append(row)
+    return result
+
+class Predictor(factorization.ratings.Data[] inputs, Baseline[] baselines, neighborhood.Result[] neighborhoods, factorization.Model[] svds, factorization.Model[] alss, int[] popularity)
+    int[][][] lists = empty_lists(int(len(inputs[0].users)))
+    bool[][] cached = [for int u = inputs[0].users[] then [false, false, false, false, false, false, false]]
+
+    real64 baseline(int u, int i)
+        factorization.ratings.Data data = inputs[0]
+        Baseline model = baselines[0]
+        return (data.mean + model.users[u]) + model.items[i]
+
+    Prediction predict(int method, int u, int i, int requested_count = -1)
+        factorization.ratings.Data data = inputs[0]
+        factorization.ratings.Params params = data.params
+        neighborhood.Result neighbors = neighborhoods[0]
+        int count = if requested_count < 0 then params.k else requested_count
+        real64 value = baseline(u, i)
+        bool fallback = false
+        int used = 0
+        real64 average_similarity = 0.0
+        int top = -1
+        if method == 0
+            value = data.mean
+        elif method == 2 or method == 3
+            neighborhood.Candidate[] candidates = []
+            if method == 2
+                for int v = data.item_ratings[i][]
+                    real64 similarity = neighbors.users[u][v]
+                    if similarity != 2.0 and similarity > params.threshold
+                        candidates = candidates.append(neighborhood.Candidate(v, similarity, data.values[v][i]))
+            else
+                for int j = data.user_ratings[u][]
+                    real64 similarity = neighbors.items[i][j]
+                    if similarity != 2.0 and similarity > params.threshold
+                        candidates = candidates.append(neighborhood.Candidate(j, similarity, data.values[u][j]))
+            neighborhood.Candidate[] selected = neighborhood.select(candidates, count)
+            if len(selected) == 0
+                fallback = true
+            else
+                real64 numerator = 0.0
+                real64 denominator = 0.0
+                for neighborhood.Candidate candidate = selected[]
+                    real64 mean = if method == 2 then data.user_means[candidate.index] else data.item_means[candidate.index]
+                    numerator += candidate.similarity * (evaluation.as_real(candidate.rating) - mean)
+                    denominator += candidate.similarity
+                value = (if method == 2 then data.user_means[u] else data.item_means[i]) + numerator / denominator
+                used = int(len(selected))
+                average_similarity = denominator / evaluation.as_real(used)
+                top = selected[0].index
+        elif method == 4
+            real64 numerator = 0.0
+            int denominator = 0
+            for int j = data.user_ratings[u][]
+                int common = neighbors.common[i][j]
+                if common >= 1
+                    real64 deviation = evaluation.as_real(neighbors.difference[i][j]) / evaluation.as_real(common + params.shrinkage)
+                    numerator += (deviation + evaluation.as_real(data.values[u][j])) * evaluation.as_real(common)
+                    denominator += common
+            if denominator == 0
+                fallback = true
+            else
+                value = numerator / evaluation.as_real(denominator)
+        elif method == 5
+            factorization.Model model = svds[0]
+            value = ((data.mean + model.user_bias[u]) + model.item_bias[i]) + factorization.dot(model.users[u], model.items[i])
+        elif method == 6
+            factorization.Model model = alss[0]
+            value = baseline(u, i) + factorization.dot(model.users[u], model.items[i])
+        return Prediction(value, fallback, used, average_similarity, top)
+
+    int[] .ranked(int method, int u)
+        if cached[u][method]
+            return lists[u][method]
+        factorization.ratings.Data data = inputs[0]
+        int[] items = []
+        if method == 0
+            for int i = popularity[]
+                if data.values[u][i] == 0
+                    items = items.append(i)
+        else
+            RankedItem[] ordered = []
+            for int i < int(len(data.items))
+                if data.values[u][i] != 0
+                    continue
+                Prediction prediction = predict(method, u, i)
+                RankedItem item = RankedItem(i, prediction.value)
+                int place = int(len(ordered))
+                for int position < int(len(ordered))
+                    if item.value > ordered[position].value
+                        place = position
+                        break
+                ordered = ordered[0:<place].append(item).concat(ordered[place:<int(len(ordered))])
+            items = [for RankedItem item = ordered[] then item.index]
+        lists[u][method] = items
+        cached[u][method] = true
+        return items
+
+Predictor build_predictor(factorization.ratings.Data data)
+    Baseline baseline = train_baseline(data)
+    factorization.Model svd = factorization.svd(data)
+    factorization.Model als = factorization.als(data, baseline.users, baseline.items)
+    int[] popularity = []
+    for int i < int(len(data.items))
+        int place = int(len(popularity))
+        for int position < int(len(popularity))
+            int other = popularity[position]
+            if data.item_counts[i] > data.item_counts[other] or (data.item_counts[i] == data.item_counts[other] and data.item_means[i] > data.item_means[other])
+                place = position
+                break
+        popularity = popularity[0:<place].append(i).concat(popularity[place:<int(len(popularity))])
+    neighborhood.Result neighbors = neighborhood.build(data.values, data.user_ratings, data.item_ratings, data.user_means, data.params.shrinkage)
+    return Predictor([data], [baseline], [neighbors], [svd], [als], popularity)
+
+class Testing(string[] csv, Prediction[][] predictions, real64[][] clipped, real64[][] errors, bool[][] relevant, int[] relevant_counts, int[] evaluated)
+
+Testing test_predictions(Predictor predictor)
+    factorization.ratings.Data data = predictor.inputs[0]
+    Prediction[][] predictions = [[], [], [], [], [], [], []]
+    real64[][] clipped = [[], [], [], [], [], [], []]
+    real64[][] errors = [[], [], [], [], [], [], []]
+    string[] csv = ["user,item,actual,GLOBAL,BASELINE,USER_KNN,ITEM_KNN,SLOPE_ONE,SVD,ALS"]
+    for int[] row = data.testing[]
+        string[] fields = ["{data.users[row[0]]}", "{data.items[row[1]]}", "{row[2]}"]
+        for int method < 7
+            Prediction prediction = predictor.predict(method, row[0], row[1])
+            real64 value = evaluation.clip(prediction.value)
+            predictions[method] = predictions[method].append(prediction)
+            clipped[method] = clipped[method].append(value)
+            errors[method] = errors[method].append(value - evaluation.as_real(row[2]))
+            fields = fields.append(real_text(value))
+        csv = csv.append(fields.join(","))
+    bool[][] relevant = []
+    for int u < int(len(data.users))
+        relevant = relevant.append([for int i = data.items[] then false])
+    int[] relevant_counts = [for int u = data.users[] then 0]
+    for int[] row = data.testing[]
+        if row[2] >= 4
+            relevant[row[0]][row[1]] = true
+            relevant_counts[row[0]] += 1
+    int[] evaluated = []
+    for int u < int(len(data.users))
+        if relevant_counts[u] > 0
+            evaluated = evaluated.append(u)
+    return Testing(csv, predictions, clipped, errors, relevant, relevant_counts, evaluated)
+
+int group_number(int value, int[] bounds)
+    int result = 0
+    for int bound = bounds[]
+        if value >= bound
+            result += 1
+    return result
+
+string error_fields(real64[][] errors, int[] indices, bool absolute)
+    string[] names = methods()
+    string[] fields = []
+    for int method < 7
+        real64[] selected = [for int index = indices[] then errors[method][index]]
+        real64 value = 0.0
+        if len(selected) > 0
+            value = if absolute then evaluation.mae(selected) else evaluation.rmse(selected)
+        fields = fields.append(names[method] + " " + real_text(value, len(selected) > 0))
+    return fields.join(" ")
+
+real64 median(int[] values)
+    int[] ordered = values.sorted()
+    int count = int(len(ordered))
+    if count % 2 == 1
+        return evaluation.as_real(ordered[count / 2])
+    return evaluation.as_real(ordered[count / 2 - 1] + ordered[count / 2]) / 2.0
+
+evaluation.Ranking ranked_metrics(Predictor predictor, Testing tested, int u, int method, int count)
+    return evaluation.ranking(predictor.lists[u][method], tested.relevant[u], tested.relevant_counts[u], count)
+
+int[] bias_order(real64[] biases, bool descending)
+    int[] order = []
+    for int index < int(len(biases))
+        int place = int(len(order))
+        for int position < int(len(order))
+            int other = order[position]
+            if (descending and biases[index] > biases[other]) or (not descending and biases[index] < biases[other])
+                place = position
+                break
+        order = order[0:<place].append(index).concat(order[place:<int(len(order))])
+    return order
+
+string[] all_genres(factorization.ratings.Data data, int[] items)
+    string[] result = []
+    for int item = items[]
+        for string genre = genres(data, item)[]
+            if not contains_name(result, genre)
+                result = result.append(genre)
+    return result.sorted()
+
+string[] evaluation_report(Predictor predictor, Testing tested)
+    factorization.ratings.Data data = predictor.inputs[0]
+    factorization.ratings.Params params = data.params
+    neighborhood.Result neighbors = predictor.neighborhoods[0]
+    Baseline baseline = predictor.baselines[0]
+    factorization.Model svd = predictor.svds[0]
+    factorization.Model als = predictor.alss[0]
+    string[] names = methods()
+    string[] ranking_names = rankings()
+    string[][] sections = []
+    int[] histogram = [0, 0, 0, 0, 0]
+    int first_time = data.training[0][3]
+    int last_time = first_time
+    for int[] row = data.training[]
+        histogram[row[2] - 1] += 1
+        if row[3] < first_time
+            first_time = row[3]
+        if row[3] > last_time
+            last_time = row[3]
+    int[] user_counts = data.user_counts.sorted()
+    int[] item_counts = data.item_counts.sorted()
+    int user_pairs = 0
+    int usable_users = 0
+    int item_pairs = 0
+    int usable_items = 0
+    int slope_pairs = 0
+    for int u < int(len(data.users)) - 1
+        for u + 1 <= int v < int(len(data.users))
+            real64 similarity = neighbors.users[u][v]
+            if similarity != 2.0
+                user_pairs += 1
+                if similarity > params.threshold
+                    usable_users += 1
+    for int i < int(len(data.items)) - 1
+        for i + 1 <= int j < int(len(data.items))
+            real64 similarity = neighbors.items[i][j]
+            if similarity != 2.0
+                item_pairs += 1
+                if similarity > params.threshold
+                    usable_items += 1
+            if neighbors.common[i][j] >= 1
+                slope_pairs += 1
+    string[] lines = [
+        "data users {len(data.users)} items {len(data.items)} catalog {len(data.catalog.ids)} ratings {len(data.training)} test {len(data.testing)}",
+        "density " + real_text(evaluation.as_real(int(len(data.training))) / evaluation.as_real(int(len(data.users)) * int(len(data.items)))) + " global_mean " + real_text(data.mean),
+        "histogram " + integers(histogram),
+        "user_ratings min {user_counts[0]} median " + real_text(median(user_counts)) + " max {user_counts[len(user_counts) - 1]}",
+        "item_ratings min {item_counts[0]} median " + real_text(median(item_counts)) + " max {item_counts[len(item_counts) - 1]}",
+        "timestamps first {first_time} last {last_time}",
+        "cold_items {int(len(data.catalog.ids)) - int(len(data.items))}",
+        "similarities user_pairs {user_pairs} usable {usable_users} item_pairs {item_pairs} usable {usable_items} slope_pairs {slope_pairs}",
+    ]
+    sections = sections.append(lines)
+    int[] item_indices = (0:<int(len(data.items)))
+    string[] training_genres = all_genres(data, item_indices)
+    lines = ["genre_stats"]
+    for string genre = training_genres[]
+        int items = 0
+        int ratings = 0
+        int high = 0
+        for int i < int(len(data.items))
+            if not contains_name(genres(data, i), genre)
+                continue
+            items += 1
+            ratings += data.item_counts[i]
+            for int u = data.item_ratings[i][]
+                if data.values[u][i] >= 4
+                    high += 1
+        lines = lines.append("genre {genre} items {items} ratings {ratings} high {high}")
+    sections = sections.append(lines)
+    lines = ["time_buckets {params.buckets}"]
+    for 1 <= int bucket <= params.buckets
+        int count = 0
+        int sum = 0
+        bool[] users = [for int u = data.users[] then false]
+        for int[] row = data.training[]
+            int assigned = (row[3] - first_time) * params.buckets / (last_time - first_time + 1) + 1
+            if assigned == bucket
+                count += 1
+                sum += row[2]
+                users[row[0]] = true
+        int distinct = 0
+        for bool present = users[]
+            if present
+                distinct += 1
+        real64 mean = if count > 0 then evaluation.as_real(sum) / evaluation.as_real(count) else 0.0
+        lines = lines.append("bucket {bucket} ratings {count} users {distinct} mean " + real_text(mean, count > 0))
+    sections = sections.append(lines)
+    lines = ["rating_metrics"]
+    real64[] test_rmse = []
+    for int method < 7
+        int clipped_count = 0
+        int fallback = 0
+        for Prediction prediction = tested.predictions[method][]
+            if prediction.value < 1.0 or prediction.value > 5.0
+                clipped_count += 1
+            if prediction.fallback
+                fallback += 1
+        real64 value = evaluation.rmse(tested.errors[method])
+        test_rmse = test_rmse.append(value)
+        lines = lines.append(names[method] + " rmse " + real_text(value) + " mae " + real_text(evaluation.mae(tested.errors[method])) + " clipped {clipped_count} fallback {fallback}")
+    sections = sections.append(lines)
+    real64 global_sum = 0.0
+    for int[] row = data.training[]
+        real64 difference = evaluation.as_real(row[2]) - data.mean
+        global_sum += difference * difference
+    real64[] train = [evaluation.root(global_sum / evaluation.as_real(int(len(data.training)))), baseline.log[9], 0.0, 0.0, 0.0, svd.log[len(svd.log) - 1], als.log[len(als.log) - 1]]
+    lines = ["generalization"]
+    int[] generalization_methods = [0, 1, 5, 6]
+    for int method = generalization_methods[]
+        lines = lines.append(names[method] + " train " + real_text(train[method]) + " test " + real_text(test_rmse[method]) + " gap " + real_text(test_rmse[method] - train[method]))
+    sections = sections.append(lines)
+    lines = ["neighborhoods k {params.k}"]
+    int[] neighbor_methods = [2, 3]
+    for int method = neighbor_methods[]
+        int with_neighbors = 0
+        int count_sum = 0
+        real64 similarity_sum = 0.0
+        for Prediction prediction = tested.predictions[method][]
+            if not prediction.fallback
+                with_neighbors += 1
+                count_sum += prediction.count
+                similarity_sum += prediction.similarity
+        real64 mean_count = if with_neighbors > 0 then evaluation.as_real(count_sum) / evaluation.as_real(with_neighbors) else 0.0
+        real64 mean_similarity = if with_neighbors > 0 then similarity_sum / evaluation.as_real(with_neighbors) else 0.0
+        lines = lines.append(names[method] + " predictions {len(data.testing)} with_neighbors {with_neighbors} mean_neighbors " + real_text(mean_count, with_neighbors > 0) + " mean_similarity " + real_text(mean_similarity, with_neighbors > 0))
+    sections = sections.append(lines)
+    int actual_sum = 0
+    for int[] row = data.testing[]
+        actual_sum += row[2]
+    real64 actual_mean = evaluation.as_real(actual_sum) / evaluation.as_real(int(len(data.testing)))
+    real64 actual_squares = 0.0
+    bool actual_same = true
+    for int[] row = data.testing[]
+        real64 difference = evaluation.as_real(row[2]) - actual_mean
+        actual_squares += difference * difference
+        if row[2] != data.testing[0][2]
+            actual_same = false
+    lines = ["prediction_stats actual mean " + real_text(actual_mean) + " std " + real_text(evaluation.root(actual_squares / evaluation.as_real(int(len(data.testing)))))]
+    for int method < 7
+        real64 sum = 0.0
+        for real64 value = tested.clipped[method][]
+            sum += value
+        real64 mean = sum / evaluation.as_real(int(len(data.testing)))
+        real64 squares = 0.0
+        real64 cross = 0.0
+        bool all_same = true
+        for int t < int(len(data.testing))
+            real64 value = tested.clipped[method][t]
+            squares += (value - mean) * (value - mean)
+            cross += (value - mean) * (evaluation.as_real(data.testing[t][2]) - actual_mean)
+            if value != tested.clipped[method][0]
+                all_same = false
+        bool defined = not all_same and not actual_same
+        real64 correlation = if defined then cross / evaluation.root(squares * actual_squares) else 0.0
+        lines = lines.append(names[method] + " mean " + real_text(mean) + " std " + real_text(evaluation.root(squares / evaluation.as_real(int(len(data.testing))))) + " correlation " + real_text(correlation, defined))
+    sections = sections.append(lines)
+    lines = ["error_bins edges 0.5 1.0 1.5 2.0"]
+    real64[] edges = [0.5, 1.0, 1.5, 2.0]
+    for int method < 7
+        int[] bins = [0, 0, 0, 0, 0]
+        for real64 difference = tested.errors[method][]
+            real64 value = evaluation.absolute(difference)
+            int bin_index = 0
+            for real64 edge = edges[]
+                if value >= edge
+                    bin_index += 1
+            bins[bin_index] += 1
+        lines = lines.append(names[method] + " " + integers(bins))
+    sections = sections.append(lines)
+    lines = ["comparison"]
+    for int a < 6
+        for a + 1 <= int b < 7
+            int wins = 0
+            int ties = 0
+            int losses = 0
+            for int t < int(len(data.testing))
+                real64 first = evaluation.absolute(tested.errors[a][t])
+                real64 second = evaluation.absolute(tested.errors[b][t])
+                if first < second
+                    wins += 1
+                elif first == second
+                    ties += 1
+                else
+                    losses += 1
+            lines = lines.append(names[a] + " " + names[b] + " wins {wins} ties {ties} losses {losses}")
+    sections = sections.append(lines)
+    for int variable < 2
+        int[] bounds = if variable == 0 then params.user_groups else params.item_groups
+        int[] counts = if variable == 0 then data.user_counts else data.item_counts
+        string label = if variable == 0 then "user" else "item"
+        lines = [label + "_groups bounds " + integers(bounds)]
+        for int group <= int(len(bounds))
+            int[] indices = []
+            for int t < int(len(data.testing))
+                if group_number(counts[data.testing[t][variable]], bounds) == group
+                    indices = indices.append(t)
+            int first = if group == 0 then 1 else bounds[group - 1]
+            string last = if group == int(len(bounds)) then "-" else "{bounds[group] - 1}"
+            lines = lines.append("group {group + 1} from {first} to {last} pairs {len(indices)} " + error_fields(tested.errors, indices, false))
+        sections = sections.append(lines)
+    lines = ["by_rating"]
+    for 1 <= int value <= 5
+        int[] indices = []
+        for int t < int(len(data.testing))
+            if data.testing[t][2] == value
+                indices = indices.append(t)
+        lines = lines.append("rating {value} pairs {len(indices)} " + error_fields(tested.errors, indices, true))
+    sections = sections.append(lines)
+    int[] test_items = [for int[] row = data.testing[] then row[1]]
+    string[] test_genres = all_genres(data, test_items)
+    lines = ["genres"]
+    for string genre = test_genres[]
+        int[] indices = []
+        for int t < int(len(data.testing))
+            if contains_name(genres(data, data.testing[t][1]), genre)
+                indices = indices.append(t)
+        lines = lines.append("genre {genre} pairs {len(indices)} " + error_fields(tested.errors, indices, false))
+    sections = sections.append(lines)
+    int relevant_total = 0
+    for int u = tested.evaluated[]
+        relevant_total += tested.relevant_counts[u]
+    lines = ["ranking users {len(tested.evaluated)} relevant {relevant_total}"]
+    for int count = params.cutoffs[]
+        lines = lines.append("cutoff {count}")
+        for int method < 7
+            int hits = 0
+            real64 recall = 0.0
+            real64 ndcg = 0.0
+            real64 ap = 0.0
+            real64 rr = 0.0
+            int hit_users = 0
+            for int u = tested.evaluated[]
+                evaluation.Ranking metric = ranked_metrics(predictor, tested, u, method, count)
+                hits += metric.hits
+                recall += metric.recall
+                ndcg += metric.ndcg
+                ap += metric.ap
+                rr += metric.rr
+                if metric.hits > 0
+                    hit_users += 1
+            int users = int(len(tested.evaluated))
+            lines = lines.append("  " + ranking_names[method] + " precision " + real_text(evaluation.as_real(hits) / evaluation.as_real(count * users)) + " recall " + real_text(recall / evaluation.as_real(users)) + " ndcg " + real_text(ndcg / evaluation.as_real(users)) + " map " + real_text(ap / evaluation.as_real(users)) + " mrr " + real_text(rr / evaluation.as_real(users)) + " hit_rate " + real_text(evaluation.as_real(hit_users) / evaluation.as_real(users)))
+    sections = sections.append(lines)
+    int head = int(len(data.items)) / 5
+    bool[] popular = [for int i = data.items[] then false]
+    for int index < head
+        popular[predictor.popularity[index]] = true
+    lines = ["beyond_accuracy top_n {params.top} head {head}"]
+    for int method < 7
+        bool[] coverage = [for int i = data.items[] then false]
+        int diversity = 0
+        real64 novelty = 0.0
+        int popularity = 0
+        int long_tail = 0
+        real64 similarity = 0.0
+        for int u = tested.evaluated[]
+            int[] list = predictor.lists[u][method]
+            string[] distinct_genres = []
+            real64 nov = 0.0
+            real64 pair_sum = 0.0
+            for int rank < params.top
+                int i = list[rank]
+                coverage[i] = true
+                for string genre = genres(data, i)[]
+                    if not contains_name(distinct_genres, genre)
+                        distinct_genres = distinct_genres.append(genre)
+                real64 proportion = evaluation.as_real(int(len(data.users))) / evaluation.as_real(data.item_counts[i])
+                nov += evaluation.logarithm(proportion) / evaluation.logarithm(2.0)
+                popularity += data.item_counts[i]
+                if not popular[i]
+                    long_tail += 1
+            diversity += int(len(distinct_genres))
+            novelty += nov / evaluation.as_real(params.top)
+            for int a < params.top - 1
+                for a + 1 <= int b < params.top
+                    real64 value = neighbors.items[list[a]][list[b]]
+                    pair_sum += if value == 2.0 then 0.0 else value
+            int pairs = params.top * (params.top - 1) / 2
+            similarity += pair_sum / evaluation.as_real(pairs)
+        int coverage_count = 0
+        for bool present = coverage[]
+            if present
+                coverage_count += 1
+        int users = int(len(tested.evaluated))
+        lines = lines.append(ranking_names[method] + " coverage " + real_text(evaluation.as_real(coverage_count) / evaluation.as_real(int(len(data.items)))) + " diversity " + real_text(evaluation.as_real(diversity) / evaluation.as_real(users)) + " novelty " + real_text(novelty / evaluation.as_real(users)) + " popularity " + real_text(evaluation.as_real(popularity) / evaluation.as_real(params.top * users)) + " long_tail " + real_text(evaluation.as_real(long_tail) / evaluation.as_real(params.top * users)) + " similarity " + real_text(similarity / evaluation.as_real(users)))
+    sections = sections.append(lines)
+    lines = ["ranking_groups top_n {params.top} bounds " + integers(params.user_groups)]
+    for int group <= int(len(params.user_groups))
+        int[] users = []
+        for int u = tested.evaluated[]
+            if group_number(data.user_counts[u], params.user_groups) == group
+                users = users.append(u)
+        string[] fields = ["group {group + 1} users {len(users)}"]
+        for int method < 7
+            real64 sum = 0.0
+            for int u = users[]
+                evaluation.Ranking metric = ranked_metrics(predictor, tested, u, method, params.top)
+                sum += metric.ndcg
+            real64 mean = if len(users) > 0 then sum / evaluation.as_real(int(len(users))) else 0.0
+            fields = fields.append(ranking_names[method] + " " + real_text(mean, len(users) > 0))
+        lines = lines.append(fields.join(" "))
+    sections = sections.append(lines)
+    lines = ["agreement top_n {params.top}"]
+    for int a < 6
+        for a + 1 <= int b < 7
+            real64 total = 0.0
+            for int u = tested.evaluated[]
+                int[] first = predictor.lists[u][a][0:<params.top]
+                int[] second = predictor.lists[u][b][0:<params.top]
+                int intersection = 0
+                for int i = second[]
+                    if contains(first, i)
+                        intersection += 1
+                total += evaluation.as_real(intersection) / evaluation.as_real(2 * params.top - intersection)
+            lines = lines.append(ranking_names[a] + " " + ranking_names[b] + " jaccard " + real_text(total / evaluation.as_real(int(len(tested.evaluated)))))
+    sections = sections.append(lines)
+    lines = ["neighbor_grid"]
+    int[] best_k = [-1, -1]
+    real64[] best_error = [0.0, 0.0]
+    for int count = params.neighbor_grid[]
+        string[] fields = ["k {count}"]
+        for int index < 2
+            int method = index + 2
+            real64[] errors = []
+            for int[] row = data.testing[]
+                Prediction prediction = predictor.predict(method, row[0], row[1], count)
+                errors = errors.append(evaluation.clip(prediction.value) - evaluation.as_real(row[2]))
+            real64 value = evaluation.rmse(errors)
+            fields = fields.append(names[method] + " " + real_text(value))
+            if best_k[index] < 0 or value < best_error[index]
+                best_error[index] = value
+                best_k[index] = count
+        lines = lines.append(fields.join(" "))
+    lines = lines.append("best USER_KNN {best_k[0]} ITEM_KNN {best_k[1]}")
+    sections = sections.append(lines)
+    lines = ["biases"]
+    string[] kinds = ["item_high", "item_low", "user_high", "user_low"]
+    for int kind < 4
+        bool item = kind < 2
+        int[] ids = if item then data.items else data.users
+        real64[] biases = if item then baseline.items else baseline.users
+        int[] counts = if item then data.item_counts else data.user_counts
+        real64[] means = if item then data.item_means else data.user_means
+        int[] order = bias_order(biases, kind % 2 == 0)
+        for int index < params.list_size
+            int id = order[index]
+            string line = kinds[kind] + " {ids[id]} bias " + real_text(biases[id]) + " count {counts[id]} mean " + real_text(means[id])
+            if item
+                line += " " + title(data, id)
+            lines = lines.append(line)
+    sections = sections.append(lines)
+    string[] output = []
+    for int index < int(len(sections))
+        if index > 0
+            output = output.append("")
+        output = output.concat(sections[index])
+    return output
+
+class GenreCount(string name, int count)
+class Preferences(string[] names, string text)
+
+Preferences preferred_genres(factorization.ratings.Data data, int u, bool liked)
+    string[] all = all_genres(data, data.user_ratings[u])
+    GenreCount[] ordered = []
+    for string genre = all[]
+        int count = 0
+        for int item = data.user_ratings[u][]
+            int rating = data.values[u][item]
+            if ((liked and rating >= 4) or (not liked and rating <= 2)) and contains_name(genres(data, item), genre)
+                count += 1
+        if count == 0
+            continue
+        GenreCount item = GenreCount(genre, count)
+        int place = int(len(ordered))
+        for int index < int(len(ordered))
+            if count > ordered[index].count
+                place = index
+                break
+        ordered = ordered[0:<place].append(item).concat(ordered[place:<int(len(ordered))])
+    int limit = if len(ordered) < 3 then int(len(ordered)) else 3
+    string[] names = []
+    string[] fields = []
+    for int index < limit
+        GenreCount item = ordered[index]
+        names = names.append(item.name)
+        fields = fields.append("{item.name} {item.count}")
+    return Preferences(names, if len(fields) == 0 then "-" else fields.join(" "))
+
+string popular_line(int rank, int item, factorization.ratings.Data data)
+    return "  {rank} {data.items[item]} count {data.item_counts[item]} mean " + real_text(data.item_means[item]) + " " + title(data, item)
+
+string[] recommendations_report(Predictor predictor, Testing tested)
+    factorization.ratings.Data data = predictor.inputs[0]
+    factorization.ratings.Params params = data.params
+    Baseline baseline = predictor.baselines[0]
+    neighborhood.Result neighbors = predictor.neighborhoods[0]
+    string[] ranking_names = rankings()
+    string[] output = []
+    for int request < int(len(params.recommend_users))
+        int id = params.recommend_users[request]
+        int u = factorization.ratings.find_id(data.users, id)
+        if request > 0
+            output = output.append("")
+        if u < 0
+            output = output.concat(["user {id} unknown", "list POPULAR"])
+            for int rank < params.top
+                output = output.append(popular_line(rank + 1, predictor.popularity[rank], data))
+            continue
+        output = output.append("user {id} ratings {data.user_counts[u]} mean " + real_text(data.user_means[u]) + " bias " + real_text(baseline.users[u]))
+        Preferences liked = preferred_genres(data, u, true)
+        Preferences disliked = preferred_genres(data, u, false)
+        output = output.concat(["liked_genres " + liked.text, "disliked_genres " + disliked.text])
+        int[][] recent = []
+        for int[] row = data.training[]
+            if row[0] != u
+                continue
+            int place = int(len(recent))
+            for int position < int(len(recent))
+                int[] other = recent[position]
+                if row[3] > other[3] or (row[3] == other[3] and row[1] < other[1])
+                    place = position
+                    break
+            recent = recent[0:<place].append(row).concat(recent[place:<int(len(recent))])
+        string[] fields = ["recent"]
+        int recent_count = if len(recent) < 3 then int(len(recent)) else 3
+        for int rank < recent_count
+            int[] row = recent[rank]
+            fields = fields.append("{data.items[row[1]]} {row[2]}")
+        output = output.append(fields.join(" "))
+        neighborhood.Candidate[] users = []
+        for int v < int(len(data.users))
+            real64 value = neighbors.users[u][v]
+            if value != 2.0 and value > params.threshold
+                users = users.append(neighborhood.Candidate(v, value, 0))
+        for neighborhood.Candidate neighbor = neighborhood.select(users, params.list_size)[]
+            int v = neighbor.index
+            output = output.append("neighbor {data.users[v]} similarity " + real_text(neighbor.similarity) + " common {neighbors.user_common[u][v]}")
+        for int t < int(len(data.testing))
+            int[] row = data.testing[t]
+            if row[0] != u
+                continue
+            fields = ["heldout {data.items[row[1]]} actual {row[2]}"]
+            for int method < 7
+                fields = fields.append(real_text(tested.clipped[method][t]))
+            output = output.append(fields.join(" "))
+        for int method < 7
+            int[] list = predictor.lists[u][method]
+            int genre_match = 0
+            for int rank < params.top
+                bool matched = false
+                for string genre = genres(data, list[rank])[]
+                    if contains_name(liked.names, genre)
+                        matched = true
+                if matched
+                    genre_match += 1
+            output = output.append("list " + ranking_names[method] + " genre_match {genre_match}")
+            for int rank < params.top
+                int i = list[rank]
+                if method == 0
+                    output = output.append(popular_line(rank + 1, i, data))
+                else
+                    Prediction prediction = predictor.predict(method, u, i)
+                    string line = "  {rank + 1} {data.items[i]} " + real_text(prediction.value)
+                    if method == 2 or method == 3
+                        string top = "-"
+                        if prediction.top >= 0
+                            int top_id = if method == 2 then data.users[prediction.top] else data.items[prediction.top]
+                            top = "{top_id}"
+                        line += " via {top}"
+                    output = output.append(line + " " + title(data, i))
+    return output
+
+class Similar(int index, real64 value, int common, int difference)
+
+Similar[] order_similar(Similar[] rows, int mode)
+    Similar[] ordered = []
+    for Similar item = rows[]
+        int place = int(len(ordered))
+        for int position < int(len(ordered))
+            Similar other = ordered[position]
+            bool before = if mode == 1 then item.common > other.common else item.value > other.value
+            if mode == 2 and item.value == other.value and item.common > other.common
+                before = true
+            if before
+                place = position
+                break
+        ordered = ordered[0:<place].append(item).concat(ordered[place:<int(len(ordered))])
+    return ordered
+
+string[] similar_items_report(Predictor predictor)
+    factorization.ratings.Data data = predictor.inputs[0]
+    factorization.ratings.Params params = data.params
+    neighborhood.Result neighbors = predictor.neighborhoods[0]
+    Baseline baseline = predictor.baselines[0]
+    factorization.Model svd = predictor.svds[0]
+    string[] output = []
+    for int request < int(len(params.similar_items))
+        int id = params.similar_items[request]
+        int i = factorization.ratings.find_id(data.items, id)
+        if request > 0
+            output = output.append("")
+        string genre_text = data.catalog.genre_texts[data.item_catalog[i]]
+        output = output.append("item {id} ratings {data.item_counts[i]} mean " + real_text(data.item_means[i]) + " bias " + real_text(baseline.items[i]) + " genres {genre_text} title " + title(data, i))
+        Similar[] similarities = []
+        Similar[] factors = []
+        Similar[] common = []
+        Similar[] slope = []
+        for int j < int(len(data.items))
+            if j == i
+                continue
+            real64 value = neighbors.items[i][j]
+            if value != 2.0
+                similarities = similarities.append(Similar(j, value, neighbors.common[i][j], 0))
+            real64[] first = svd.items[i]
+            real64[] second = svd.items[j]
+            real64 cosine = factorization.dot(first, second) / evaluation.root(factorization.dot(first, first) * factorization.dot(second, second))
+            factors = factors.append(Similar(j, cosine, 0, 0))
+            int count = neighbors.common[i][j]
+            if count >= 1
+                common = common.append(Similar(j, 0.0, count, 0))
+                int difference = neighbors.difference[j][i]
+                real64 deviation = evaluation.as_real(difference) / evaluation.as_real(count + params.shrinkage)
+                slope = slope.append(Similar(j, deviation, count, difference))
+        similarities = order_similar(similarities, 0)
+        factors = order_similar(factors, 0)
+        common = order_similar(common, 1)
+        slope = order_similar(slope, 2)
+        output = output.append("cosine")
+        int limit = if params.list_size < int(len(similarities)) then params.list_size else int(len(similarities))
+        for int rank < limit
+            Similar row = similarities[rank]
+            output = output.append("  {rank + 1} {data.items[row.index]} similarity " + real_text(row.value) + " common {row.common} " + title(data, row.index))
+        output = output.append("factors")
+        limit = if params.list_size < int(len(factors)) then params.list_size else int(len(factors))
+        for int rank < limit
+            Similar row = factors[rank]
+            output = output.append("  {rank + 1} {data.items[row.index]} similarity " + real_text(row.value) + " " + title(data, row.index))
+        output = output.append("co_rated")
+        limit = if params.list_size < int(len(common)) then params.list_size else int(len(common))
+        for int rank < limit
+            Similar row = common[rank]
+            output = output.append("  {rank + 1} {data.items[row.index]} common {row.common} " + title(data, row.index))
+        output = output.append("slope_one")
+        limit = if params.list_size < int(len(slope)) then params.list_size else int(len(slope))
+        for int rank < limit
+            Similar row = slope[rank]
+            output = output.append("  {rank + 1} {data.items[row.index]} difference {row.difference} common {row.common} " + title(data, row.index))
+    return output
+
+string[] training_log(Predictor predictor)
+    Baseline baseline = predictor.baselines[0]
+    factorization.Model svd = predictor.svds[0]
+    factorization.Model als = predictor.alss[0]
+    string[] names = ["BASELINE", "SVD", "ALS"]
+    real64[][] logs = [baseline.log, svd.log, als.log]
+    string[] lines = ["method,epoch,train_rmse"]
+    for int method < 3
+        for int epoch < int(len(logs[method]))
+            lines = lines.append(names[method] + ",{epoch + 1}," + real_text(logs[method][epoch]))
+    return lines
+
+void run()
+    factorization.ratings.Data data = factorization.ratings.read_inputs()
+    Predictor predictor = build_predictor(data)
+    Testing tested = test_predictions(predictor)
+    int[] users = tested.evaluated
+    for int id = data.params.recommend_users[]
+        int u = factorization.ratings.find_id(data.users, id)
+        if u >= 0 and not contains(users, u)
+            users = users.append(u)
+    for int u = users[]
+        for int method < 7
+            int[] ranked = .predictor.ranked(method, u)
+    bool exists = file.is_directory("output")
+    if not exists
+        file.mkdir("output")
+    report.save("predictions.csv", tested.csv)
+    report.save("evaluation.txt", evaluation_report(predictor, tested))
+    report.save("recommendations.txt", recommendations_report(predictor, tested))
+    report.save("similar_items.txt", similar_items_report(predictor))
+    report.save("training_log.csv", training_log(predictor))
+
+run()

@@ -1,0 +1,502 @@
+[Overview]
+Write a "multi-agent path finding" program that, on the grid map of a warehouse, finds a plan in which several robots (hereafter "agents") move from their respective start cells to their goal cells without colliding with one another.
+The path of each agent is found by a space-time A* search whose states are pairs of a cell and a time (the "low-level search"). Plans for all agents are found by the following four methods ("solvers").
+- PP (prioritized planning): plans the agents one at a time in a fixed order, reserving the paths of the agents planned earlier and avoiding them. If an agent along the way cannot be planned, it retries with another order given in the parameter file.
+- CBS (Conflict-Based Search): starting from the shortest path of each agent, finds a conflict-free plan by a best-first tree search (the "constraint tree") that repeatedly picks one conflict and splits it into two alternative constraints.
+- ICBS (improved CBS): the same search as CBS, but it uses MDDs (multi-valued decision diagrams), which represent the set of shortest paths of each agent, to classify conflicts as cardinal, semi_cardinal or non_cardinal, and splits cardinal conflicts first.
+- WHCA (windowed cooperative A*): plans all agents while making reservations only within a short time window, executes only part of that plan, and then plans again.
+The cost of a plan is measured either as the sum of the agents' costs (SOC) or as their maximum (MAKESPAN). The program performs, in order, the combinations of solver and cost function ("runs") specified in the parameter file, and outputs the paths and costs found, a record of the searches, a validation of the plans, a simulation of execution when robots are delayed, and an animation in ASCII characters. The searches have limits, and a run that reaches a limit fails (FAIL).
+The input is three files in the input/ folder (map, agents, parameters), and the results are written to five files in the output/ folder. Nothing is written to standard output. All computation is done with integers; no floating-point numbers and no random numbers are used. Since every rule is fully specified, the result is uniquely determined.
+
+[Input files]
+The input files are the three files input/map.txt, input/agents.csv and input/params.txt. Every file consists of ASCII characters only, and every line (including the last one) ends with a newline (LF). There are no spaces at the beginning or end of a line, and there are no blank lines. Values are separated by commas in agents.csv and by a single space in the other files. Every integer is 0 or greater and is written in decimal without extra leading zeros.
+
+== input/map.txt (map) ==
+Line 1 is the width W and the height H of the map, separated by a space. The following H lines are the map; from top to bottom they represent the rows y = 0, 1, ..., H - 1. Each line has exactly W characters, which from left to right represent the cells x = 0, 1, ..., W - 1. The character . is a passable cell (a "free cell"), and the character @ is an impassable cell (an obstacle).
+
+== input/agents.csv (agents) ==
+Line 1 is the header line, the string id,start_x,start_y,goal_x,goal_y. Each line from line 2 on represents one agent: the agent number, the x coordinate of the start, the y coordinate of the start, the x coordinate of the goal and the y coordinate of the goal, in this order, separated by commas. With n agents, the numbers are 0, 1, ..., n - 1, and the lines are in increasing order of number. The agent with number i is called "agent i".
+In the output, each agent is represented by a one-character uppercase "name". The name of the agent with number i is the (i + 1)-th uppercase letter counting from A (number 0 is A, 1 is B, ..., 19 is T).
+
+== input/params.txt (parameters) ==
+The following lines appear in this order.
+- HORIZON T_H: the upper limit T_H of the time handled by the low-level search (used in sections 3 and 9).
+- HL_BUDGET B_H: the upper limit B_H on the number of constraint tree nodes that can be expanded in one run of CBS or ICBS.
+- LL_BUDGET B_L: the upper limit B_L on the total number of low-level search expansions performed in one run.
+- WINDOW w s: the length w of the WHCA time window and the number s of time steps executed after each planning (1 <= s <= w).
+- Zero or more ORDER lines: the string ORDER followed by the numbers 0 to n - 1, each exactly once, in some order. These are alternative priority orders used by PP, used in the order in which they appear in the file.
+- One or more RUN lines: of the form RUN <solver> <cost function>, where the solver is one of PP, CBS, ICBS, WHCA and the cost function is SOC or MAKESPAN. Each RUN line represents one "run". The "name" of a run is the solver and the cost function joined by a hyphen - (for example ICBS-SOC), and all run names are distinct. The order in which they appear in the file is called the "run order".
+- ANIMATE <run name> F: the name of the run whose animation (section 13) is written, and the number of frames F. The run name is the name of the run of one of the RUN lines.
+- Zero or more DELAY lines: of the form DELAY i s k, meaning that in the delayed execution (section 12), agent i cannot move for k time steps starting at time s.
+
+[Processing]
+== 1. Map, paths and costs ==
+- A cell is written (x, y). The direction in which x increases by 1 is east, and the direction in which y increases by 1 is south (the top of the map is north).
+- An agent has five "actions": wait, N, E, S, W; this order is called the "action order". The actions move the cell (x, y) to (x, y), (x, y - 1), (x + 1, y), (x, y + 1), (x - 1, y), respectively. An action can be taken only when the destination is a free cell within the map (since an agent is always on a free cell, wait can always be taken). N, E, S, W are called "moves".
+- Times are the integers 0, 1, 2, .... In one "time step" from time t - 1 to t, all agents simultaneously take one action each.
+- A "path" is a sequence of cells p[0], p[1], ..., p[L] for times 0, 1, ..., L such that for each t with 1 <= t <= L, p[t] is the cell obtained by applying one action to p[t - 1]. In the paths returned by every solver, p[0] is that agent's start and p[L] is its goal. After time L the agent stays at its goal forever. The position pos(p, t) of path p at time t is p[t] if t <= L, and p[L] if t > L. L is called the "length" of the path, or the "cost" of that agent.
+- The set of paths of all agents is called a "plan". The SOC of a plan is the sum of the costs of all agents, and the MAKESPAN is the maximum of the costs. If the cost function of a run is SOC, the SOC is the "cost" of the plan in that run; if it is MAKESPAN, the MAKESPAN is.
+- The "distance" between two cells is the minimum number of moves needed to go from one to the other using moves only and passing only through free cells. The "distance table" d_i of agent i is the distance from each free cell to the goal of agent i, and can be computed by a breadth-first search from the goal. The distance of the start, d_i(start), is called the "shortest distance" D_i. Cells from which the goal cannot be reached do not appear in the computations below.
+
+== 2. Prohibitions and the arrival-allowed time ==
+The low-level search (section 3) uses a set of "prohibitions" of the following three kinds.
+- State prohibition (c, t): the agent must not be at cell c at time t.
+- Move prohibition (u, v, t): the agent must not make the move (u != v) of being at cell u at time t - 1 and at cell v at time t.
+- Permanent prohibition (c, t): the agent must not be at cell c at time t or at any later time (used only by PP).
+The "arrival-allowed time" r when searching for agent i is the maximum t over the state prohibitions (g, t) for the goal g of i, plus 1. If there is no state prohibition of the form (g, t), r = 0 (in the way this task uses them, the cell of a permanent prohibition is never the goal of i). If the agent reaches its goal at a time r or later, it can stay at its goal forever afterwards.
+
+== 3. Low-level search (space-time A*) ==
+For agent i, the search receives a "start state" (being at cell c0 at time t0), a set of prohibitions, an upper time limit tmax (t0 <= tmax), and whether it is in "window mode", and searches for a path by the following procedure.
+- A "state" is a pair (c, t) of a cell and a time. The g value of a state is t - t0, its h value is d_i(c), and its f value is g value + h value.
+- The "open list" is a set of states, and each state has an "insertion number". First, the state (c0, t0) is put into the open list with insertion number 0. A state that has once been put into the open list is called "generated" (it stays generated even after it is taken out).
+- Repeat the following.
+  (1) If the open list is empty, the search fails ("no path").
+  (2) Take out of the open list the state with the smallest f value (if tied, the one with the largest g value; if still tied, the one with the smallest insertion number). This is called "expanding" the state, and the "expansion count" of that run is increased by 1. If the expansion count exceeds B_L, that run is aborted immediately (how an abort is handled is described in sections 7 to 9).
+  (3) Let (c, t) be the state taken out. If c is the goal of i and t >= r, the search succeeds. In window mode, the search also succeeds when t = tmax.
+  (4) If t = tmax, go back to (1).
+  (5) For each action in the action order, let c' be the cell obtained by applying that action to c; if all of the following conditions hold, put the state (c', t + 1) into the open list with (c, t) as its "parent". Insertion numbers are assigned as 1, 2, 3, ... each time a state is put into the open list in this search.
+    - The action can be taken.
+    - (c', t + 1) is not a state prohibition.
+    - There is no permanent prohibition (c', u) with u <= t + 1.
+    - If the action is a move, (c, c', t + 1) is not a move prohibition.
+    - (c', t + 1) is not generated.
+    After all actions have been examined, go back to (1).
+- When the search succeeds, follow the parents from the state taken out last back to (c0, t0); the cells arranged in time order form the resulting path.
+- Each time a low-level search is started, the "search count" of that run is increased by 1.
+Hereafter, to "plan" agent i means to perform a low-level search that is not in window mode, with c0 the start of i, t0 = 0 and tmax = T_H. If it succeeds, the result is a path of i (p[0] is the start, and the last cell is the goal).
+
+== 4. Conflicts ==
+For a sequence of paths P_0, P_1, ..., P_(n-1) (P_i is the path of agent i), let T be the maximum of their lengths. For times t = 1, 2, ..., T in this order, and at each time for the number pairs (a, b) (a < b) in lexicographic order (increasing a, and for equal a, increasing b), find the following "conflicts".
+- Vertex conflict: when pos(P_a, t) = pos(P_b, t). This conflict has the time t, the agents a and b, and the cell pos(P_a, t).
+- Edge conflict: when it is not a vertex conflict, and pos(P_a, t) = pos(P_b, t - 1) and pos(P_b, t) = pos(P_a, t - 1) (a move in which the two agents swap positions). This conflict has the time t, the agents a and b, and a's source pos(P_a, t - 1) and destination pos(P_a, t).
+The conflicts in the order found are called the "conflict sequence", and their number is called the "conflict count". When three or more agents are at the same cell at the same time, every pair of them is a separate conflict. After time T, all agents stay at mutually distinct goals, so there are no conflicts.
+In a conflict-free plan, entering a cell where another agent was at time t - 1 without swapping with that agent ("following") is allowed. Three or more agents moving simultaneously in a cycle is also allowed.
+
+== 5. MDDs and conflict classification ==
+- For agent i, a length c, and a set of state prohibitions and move prohibitions, a "walk of length c" is a sequence of cells q[0], q[1], ..., q[c] such that q[0] is the start of i, q[c] is the goal of i, and for each t with 1 <= t <= c, q[t] is the cell obtained by applying one action to q[t - 1], (q[t], t) is not a state prohibition, and if q[t] != q[t - 1], (q[t - 1], q[t], t) is not a move prohibition.
+- An MDD consists of layers M(0), M(1), ..., M(c), where M(t) is the set of cells q[t] over all walks of length c. For t > c, M(t) is the set consisting only of the goal of i. The "state count" of the MDD is |M(0)| + |M(1)| + ... + |M(c)|, and its "width" is the maximum of |M(0)|, ..., |M(c)| (|X| is the number of cells in the set X).
+  (Example of how to compute it: from time 0 forward, find the set of cells that can be reached at time t from the start while obeying the prohibitions (you may keep only the cells with t + d_i(cell) <= c); then, backward from the goal at time c, keep only the cells from which the next layer can be entered while obeying the prohibitions.)
+- Given a plan and a set of prohibitions for each agent, the MDD of agent i is built with the length c equal to the length of i's path in that plan and with i's set of prohibitions. Agent a of a conflict is "fixed" if |M_a(t)| = 1 for a vertex conflict (time t), or |M_a(t - 1)| = 1 and |M_a(t)| = 1 for an edge conflict (time t) (M_a is the MDD of a). The same applies to agent b. The "class" of a conflict is cardinal if both a and b are fixed, semi_cardinal if exactly one of them is fixed, and non_cardinal if neither is fixed. The order cardinal, semi_cardinal, non_cardinal is called the "class order".
+
+== 6. Instance overview and the independent plan ==
+Before all runs, compute the following.
+- The number of free cells. With the "degree" of a free cell c defined as the number of actions among N, E, S, W that can be taken at c, the numbers of cells with degree 0, 1 and 2, and the number of cells with degree 3 or more. The number of groups (connected components) into which the free cells are divided so that cells mutually reachable by moves are in the same group.
+- For each agent i, the shortest distance D_i, and the state count and width of the MDD of length D_i with an empty set of prohibitions.
+- The sum and the maximum of the shortest distances. These are lower bounds on SOC and MAKESPAN and are called the "SOC lower bound" and the "MAKESPAN lower bound".
+- The "independent plan": the plan obtained by planning (section 3) each agent in order of number with an empty set of prohibitions (the shortest paths ignoring the other agents; the length of agent i's path is D_i). Compute the conflict sequence of this plan and the class of each conflict (with the sets of prohibitions of all agents empty). The searches for the independent plan are not counted in the search count or expansion count of any run, and the B_L limit does not apply to them.
+- "Conflict groups": the connected components, containing two or more agents, of the graph whose vertices are the agents and in which two agents that conflict at least once in the independent plan are joined by an edge.
+
+== 7. PP (prioritized planning) ==
+The "orders" are the order that lists the numbers 0, 1, ..., n - 1 in this order (the "number order"), followed by the orders of the ORDER lines (in the order in which they appear in the file). They are given "order numbers" 1, 2, ... from the first. The orders are tried one at a time from the first, and planning is done by the following procedure.
+(1) Empty the set of prohibitions.
+(2) Plan (section 3) the agents of the order one at a time from the first. When the planning of agent i succeeds, for its path p (length L), add to the set of prohibitions the state prohibition (p[t], t) for each t with 0 <= t <= L, the move prohibition (p[t], p[t - 1], t) for each t with 1 <= t <= L and p[t - 1] != p[t] (a prohibition of the reverse, swapping move), and the permanent prohibition (goal of i, L), and proceed to the next agent.
+(3) If the planning of some agent fails (no path), the remaining agents are not planned, the order fails, and the next order is tried. If all agents could be planned, that plan is the answer of PP and the procedure ends.
+If all orders fail, the run fails with reason orders. If the expansion count exceeds B_L along the way, the run fails with reason ll_budget.
+The "high-level count" of this run is the number of orders tried (including an aborted order).
+
+== 8. CBS and ICBS ==
+Each "node" of the constraint tree has a set of "constraints" (state prohibitions and move prohibitions) for each agent, the path of each agent, a cost (according to the cost function of the run), a conflict sequence, a "creation number", a "depth" and a parent node. The "key" of a node is the tuple (cost, conflict count, creation number), and tuples are compared lexicographically.
+(1) Root: with the constraints of all agents empty, plan each agent in order of number, using its constraints as the set of prohibitions (since there are no constraints and D_i <= T_H, this always succeeds). Create the root (creation number 0, depth 0, no parent) with those paths and put it into the open list (a set of nodes).
+(2) If the open list is empty, the run fails with reason exhausted.
+(3) Take out of the open list the node N with the smallest key.
+(4) If the conflict count of N is 0, the run succeeds with the paths of N as the answer.
+(5) If the number of nodes expanded so far equals B_H, the run fails with reason hl_budget.
+(6) Expand N (increase the number of expanded nodes by 1). Choose the conflict C to split. In CBS, it is the first conflict of N's conflict sequence. In ICBS, classify each conflict of N by the method of section 5 (the MDD of each agent is built with the length of N's path and N's constraints for that agent), and among the conflicts of the earliest class in the class order, choose the one that comes first in the conflict sequence.
+(7) Create two "new constraints" from C. For a vertex conflict (time t, agents a and b, cell v), they are the state prohibition (v, t) for a and the state prohibition (v, t) for b. For an edge conflict (time t, agents a and b, a's source u and destination v), they are the move prohibition (u, v, t) for a and the move prohibition (v, u, t) for b.
+(8) For the new constraint for a and then the new constraint for b, do the following. Let j be the agent receiving the new constraint. The constraints of j are N's constraints for j plus the new constraint; plan j using those constraints as the set of prohibitions. If there is no path, this child is not created ("pruning"). If it succeeds, create a child node in which only j's path among N's paths is replaced with the new path and the constraints of the other agents are the same as in N. The child's cost and conflict sequence are computed from its paths, its creation number is "the number of nodes created so far" (including the root), its depth is N's depth + 1, and its parent is N. Put the child into the open list.
+(9) Go back to (2).
+If the expansion count exceeds B_L along the way, the run fails with reason ll_budget. In that case, the expansion of the aborted node is included in the number of expanded nodes, and the children created before the abort are included in the number of created nodes (if the abort happens during the planning of the root, both are 0).
+The "high-level count" of this run is the number of expanded nodes, and the "generated count" is the number of created nodes (including the root). The depth of each node equals the total number of constraints of that node.
+
+== 9. WHCA (windowed cooperative A*) ==
+Let the "current position" of each agent be its start, and let the "executed path" of each agent be the sequence consisting only of its start. Starting from time T0 = 0, repeat the following "round".
+(1) If the current positions of all agents are their goals, end with success.
+(2) If T0 >= T_H, the run fails with reason timeout.
+(3) Increase the number of rounds by 1. Empty the set of prohibitions. The planning order is the agents whose current position is not their goal in order of number, followed by the agents whose current position is their goal in order of number.
+(4) In this order, for each agent i, perform a low-level search in window mode with the start state being at i's current position at time T0 and with tmax = T0 + w (the set of prohibitions is what has been added so far in this round). If there is no path, the remaining agents are not searched and the run fails with reason blocked. If it succeeds, append the last cell of the resulting path (which starts at time T0) repeatedly to its end until the path has w + 1 cells, for times T0 through T0 + w (this is called the "window plan"). For the window plan p (p[k] is the cell at time T0 + k), add to the set of prohibitions the state prohibition (p[k], T0 + k) for each k with 0 <= k <= w, and the move prohibition (p[k], p[k - 1], T0 + k) for each k with 1 <= k <= w and p[k - 1] != p[k].
+(5) When the window plans of all agents are done, for each agent append p[1], ..., p[s] of its window plan to the end of its executed path and set its current position to p[s]. Set T0 to T0 + s and go back to (1).
+On success, the answer path of each agent is its executed path with the trailing run of goal cells removed except for the first one of that run (after the removal, the last cell of the path is the goal, and the cell just before it is not the goal).
+If the expansion count exceeds B_L along the way, the run fails with reason ll_budget.
+The "high-level count" of this run is the number of rounds (including the failed round).
+
+== 10. Plan statistics ==
+For the plan of a successful run, compute the following. Let p (length L) be the path of agent i.
+- Extra: L - D_i.
+- Wait count: the number of t (1 <= t <= L) with p[t] = p[t - 1].
+- Turn count: looking at the time steps of p in order and taking only the moves, the number of places where two adjacent moves have different directions (opposite directions included).
+- Arrival time: the smallest t such that p[t] is the goal.
+- Leave count: the number of t (1 <= t <= L) such that p[t - 1] is the goal and p[t] is not the goal.
+- Action string: the string of length L made by writing the actions of the time steps t = 1, 2, ..., L in order, with . for wait and the name of the move (N, E, S, W) for a move.
+- Arrival counts over time: for each time t = 0, 1, ..., MAKESPAN, the number of agents with L_i <= t.
+- Cell traffic count: for each cell, the number of agents whose path p[0], ..., p[L] contains that cell at least once.
+- Cell wait count: for each cell, the total, over all agents, of the number of t (1 <= t <= L) such that p[t - 1] = p[t] is that cell.
+- Hotspots: the first 5 cells (or all of them if fewer than 5) when the cells with traffic count 1 or more are sorted by (decreasing traffic count, increasing y, increasing x).
+- Ratio: the reduced fraction of the plan's cost and the lower bound matching the cost function (the SOC lower bound for SOC, the MAKESPAN lower bound for MAKESPAN). For integers a >= 0 and b > 0, the reduced fraction is a'/b', where a' and b' are a and b divided by their greatest common divisor (example: 3/2 for 6 and 4, 1/1 for 5 and 5).
+
+== 11. Validation ==
+Validate the independent plan and the plan of each successful run.
+- start: the number of agents whose path's first cell is not their start.
+- goal: the number of agents whose path's last cell is not their goal.
+- moves: among the time steps of the paths (the t with 1 <= t <= L of all agents), the number for which p[t] is not a cell obtained by applying an action that can be taken at p[t - 1].
+- vertex, edge: the numbers of vertex conflicts and edge conflicts in the conflict sequence of section 4.
+- follows: the number of combinations of a time t (1 <= t <= T, where T is the maximum of the path lengths) and an ordered pair of two different agents a and b that satisfy all of pos(P_a, t) != pos(P_a, t - 1), pos(P_a, t) = pos(P_b, t - 1) and pos(P_b, t) != pos(P_a, t - 1) (following).
+If start, goal, moves, vertex and edge are all 0, the verdict is VALID; otherwise it is INVALID. follows does not affect the verdict.
+
+== 12. Delayed execution ==
+For the plan of each successful run, compute the result of executing it by the following method (delayed execution). Each agent passes through the cells of its plan in the same order, but it does not follow the plan's times; instead it proceeds after confirming that "every other agent scheduled to enter that cell earlier has already left that cell".
+- The "steps" of the path p (length L) of agent i are (0, p[0]) and (t, p[t]) for each t (1 <= t <= L) with p[t] != p[t - 1], arranged in order of t, and numbered 0, 1, ..., m_i from the first. A step (tau, c) means "enter cell c at the scheduled time tau".
+- The "prerequisites" of step k (k >= 1, (tau, c)) of agent i are all steps l ((tau', c')) of agents j other than i with c' = c and tau' < tau.
+- Set the "progress" e_i of each agent to 0, and starting from time t = 0, repeat the following until e_i = m_i for all i.
+  (1) For each agent i (with e_i < m_i), using the progress values as of time t, decide as follows. If there is a line DELAY i s k with s <= t < s + k, the agent is "stopped". Otherwise, if e_j > l for every prerequisite (step l of agent j) of step e_i + 1, the agent "advances"; otherwise it is "held", and the hold count is increased by 1.
+  (2) If no agent advances and no agent is stopped, it is a "deadlock", and the execution is cut off at time t.
+  (3) Increase e_i of every advancing agent by 1, and set its "finish time" to t + 1. Increase t by 1.
+- The finish time of each agent is the time at which e_i became m_i. The sum of the finish times is the execution SOC, and their maximum is the execution MAKESPAN.
+
+== 13. Animation ==
+If the run of the ANIMATE line succeeded, create "frames" of its plan for times t = 0, 1, ..., F - 1. Each frame is a picture of H lines of W characters, one character per map cell: a cell where an agent is at time t is that agent's name (uppercase letter); otherwise, a cell that is the goal of some agent is that agent's name in lowercase; other free cells are .; obstacles are @.
+In each frame, the numbers of agents in each state are also counted. An agent is "done" if t >= L_i; otherwise it is "moving" if t >= 1 and pos(P_i, t) != pos(P_i, t - 1); otherwise it is "waiting".
+Finally, the cell traffic counts and the cell wait counts of section 10 are each shown as a picture of the same form. The character of a free cell is . if the count is 0, that digit if it is between 1 and 9 inclusive, and + if it is 10 or more. Obstacles are @.
+
+[Output files]
+Write the five files output/solutions.txt, output/stats.csv, output/validation.txt, output/trace.txt and output/frames.txt.
+
+== Common rules ==
+- The output consists of ASCII characters only, and every line (including the last one) ends with a newline (LF). Do not put spaces at the end of a line, and do not insert blank lines that are not specified. The only spaces at the beginning of a line are the indentation shown in the formats (two spaces).
+- In the formats below, a part enclosed in < > is replaced with a value, and all other characters are written as they are. Values are separated by commas in the CSV file and by a single space in the other files. "<...> ..." means values of the same kind listed separated by single spaces.
+- Integers are written in decimal without extra leading zeros. Negative numbers do not occur.
+- A cell is written <x>,<y> (the x coordinate and the y coordinate joined by a comma, with no spaces), and an agent is written by its name.
+- A conflict is written vertex t <time> <a> <b> at <cell> for a vertex conflict, and edge t <time> <a> <b> from <a's source> to <a's destination> for an edge conflict (a and b are the names of the agents a and b of the conflict). This is called the "conflict notation".
+
+== output/solutions.txt ==
+First, write the instance overview of section 6 in the following form.
+instance width <W> height <H> free <number of free cells> agents <n>
+map isolated <number with degree 0> dead_ends <number with degree 1> corridors <number with degree 2> junctions <number with degree 3 or more> components <number of connected components>
+agent <name> start <start> goal <goal> distance <D_i> mdd <MDD state count> width <MDD width>
+... (n lines, one per agent, in order of number)
+lower_bound soc <SOC lower bound> makespan <MAKESPAN lower bound>
+independent conflicts <conflict count> vertex <number of vertex conflicts> edge <number of edge conflicts> cardinal <count> semi_cardinal <count> non_cardinal <count>
+groups <conflict group> ...
+The values on the independent line are those of the independent plan, and the last three are the numbers of conflicts of each class. On the groups line, each conflict group is represented by the string formed by joining the names of its agents in order of number (example: ABJ), and the groups are listed in order of the smallest number in each group. If there are no conflict groups, write groups -.
+Then write the block of each run in run order. Put one blank line before each block. The block of a successful run has the following form.
+run <name> solver <solver> cost_function <cost function> result OK cost <cost> soc <SOC> makespan <MAKESPAN> ratio <ratio>
+<solver-specific lines>
+agent <name> cost <cost> extra <extra> waits <wait count> turns <turn count> arrive <arrival time> leave <leave count> moves <action string>
+... (n lines, one per agent, in order of number)
+arrivals <arrival count> ...
+hotspots <cell>:<traffic count> ...
+execution soc <execution SOC> makespan <execution MAKESPAN> blocked <hold count> finish <finish time> ...
+The arrivals line lists the arrival counts over time in time order, the hotspots line lists the hotspots in order, and finish lists the finish time of each agent in order of number. When the delayed execution ends in a deadlock, write execution deadlock time <time of the cutoff> instead of the execution line.
+The block of a failed run has the following form.
+run <name> solver <solver> cost_function <cost function> result FAIL reason <reason>
+<solver-specific lines>
+The solver-specific lines are as follows.
+- PP: for each order tried, one line per order in order of order number: order <order number> <order> planned <number of agents planned> expansions <expansion count in that order> ok (for the successful order) or order ... failed <agent whose planning failed> (for a failed order). <order> is the string formed by joining the names of the agents of the order in sequence (example: ABCD). The line for an order aborted because the expansion count exceeded B_L is not written.
+- CBS, ICBS: one line search expanded <number of expanded nodes> generated <generated count> pruned <number of prunings> open <number of nodes in the open list at the end>. For ICBS, this is followed by one line classes cardinal <count> semi_cardinal <count> non_cardinal <count> (the numbers of conflicts chosen in step (6) of section 8 per class; their total equals the number of expanded nodes). For a successful run, there is further one line solution node <creation number of the answer node> depth <its depth>, followed by every constraint of the answer node, one per line, written constraint <agent> vertex <v> t <t> for a state prohibition (v, t) and constraint <agent> edge <u> <v> t <t> for a move prohibition (u, v, t). The constraint lines are sorted in increasing order of (agent number, time, kind (vertex first), x of u, y of u, x of v, y of v) (for a state prohibition, u = v = its cell). The number of nodes in the open list at the end is the number of nodes remaining in the open list when the run ends (it does not include the node taken out in step (3) of section 8; when aborted by ll_budget, it includes the children put into the open list before the abort).
+- WHCA: one line window <w> step <s> rounds <number of rounds>.
+After the blocks of all runs, put one blank line and then write the following.
+summary ok <number of successful runs> failed <number of failed runs>
+best_soc <minimum SOC> <name> ...
+best_makespan <minimum MAKESPAN> <name> ...
+ranking <name> ...
+The best_soc line lists the minimum SOC over the successful runs and the names of the runs achieving that value in run order. The best_makespan line is the same for MAKESPAN. The ranking line lists the names of the successful runs in increasing order of (SOC, MAKESPAN, run order). If there are no successful runs, write only the summary line.
+
+== output/stats.csv ==
+Line 1 is run,solver,cost_function,result,reason,cost,soc,makespan,sum_extra,max_extra,waits,turns,exec_soc,exec_makespan,high_level,generated,searches,expansions. Then, for each run in run order, write one line with the following values in this order, separated by commas.
+- run, solver, cost_function: the run name, the solver and the cost function.
+- result, reason: OK and - on success, FAIL and the reason on failure.
+- cost, soc, makespan: the cost, SOC and MAKESPAN of the plan.
+- sum_extra, max_extra: the sum and the maximum of the agents' extras.
+- waits, turns: the sum of the agents' wait counts and the sum of their turn counts.
+- exec_soc, exec_makespan: the SOC and MAKESPAN of the delayed execution (- and - in case of a deadlock).
+- high_level: the high-level count (sections 7 to 9).
+- generated: the generated count for CBS and ICBS, - for PP and WHCA.
+- searches, expansions: the search count and expansion count of that run (when aborted, the count including the expansion that caused the abort).
+For a failed run, the nine values from cost through exec_makespan are all -.
+
+== output/validation.txt ==
+Write the validation results, first for the independent plan and then for the plan of each successful run.
+plan <plan name> verdict <VALID or INVALID> start <start> goal <goal> moves <moves> vertex <vertex> edge <edge> follows <follows>
+The plan name is INDEPENDENT for the independent plan and the run name for the plan of a run. Following this line, write each conflict of the conflict sequence on its own line, as two spaces followed by the conflict notation. On the conflict lines of the independent plan, append one space and the class (cardinal, semi_cardinal, non_cardinal).
+In run order, for a failed run, write the single line plan <name> verdict NONE at its position.
+
+== output/trace.txt ==
+Write the search record of each run in run order. Put one blank line between runs. The record of each run begins with the line run <name>, followed by the lines below, and ends with an end line.
+- PP: for each low-level search, in the order performed, order <order number> agent <agent> cost <path length> expansions <expansion count in that search> (success) or order <order number> agent <agent> failed expansions <expansion count in that search> (no path). The last line is end OK order <order number of the answer> or end FAIL <reason>.
+- CBS, ICBS: for each expanded node, in the order expanded, expand <ordinal of the expansion> node <creation number> parent <creation number of the parent> depth <depth> cost <cost> conflicts <conflict count> split <split conflict> children <child 1> <child 2>. The creation number of the parent is - for the root. <split conflict> is written in the conflict notation; for ICBS it is followed by one space, the string class, one space and its class. <child 1> and <child 2> are the creation numbers of the children created with the new constraint for a and the new constraint for b; a pruned child is -. The last line is end OK node <creation number of the answer node> cost <cost> or end FAIL <reason>.
+- WHCA: for each low-level search, in the order performed, round <round number> time <T0> agent <agent> moves <action string of the window plan> expansions <expansion count in that search> (success) or round <round number> time <T0> agent <agent> blocked expansions <expansion count in that search> (no path). Round numbers are 1, 2, .... The action string of the window plan lists the actions of the time steps of the window plan (w of them) using the same characters as the action string of section 10. The last line is end OK rounds <number of rounds> or end FAIL <reason>.
+When a run is aborted because the expansion count exceeded B_L, the line of the aborted search (for CBS and ICBS, the line of the node being expanded) is not written; write the lines before it and end FAIL ll_budget.
+
+== output/frames.txt ==
+If the run of the ANIMATE line failed, write only the single line run <name> FAIL. If it succeeded, the form is as follows.
+run <name> frames <F>
+(blank line)
+frame <t> done <number done> moving <number moving> waiting <number waiting>
+<picture of the frame (H lines)>
+... (the blank line and the frame are repeated F times, for t = 0, 1, ..., F - 1 in order)
+(blank line)
+traffic
+<picture of the cell traffic counts (H lines)>
+(blank line)
+waits
+<picture of the cell wait counts (H lines)>
+
+[Source files]
+Split the program into the following six source files (file names follow the conventions of each language).
+- main: handles the overall flow and most of the processing: reading the parameters, the instance overview (degrees, connected components, lower bounds), building MDDs and classifying conflicts, the independent plan and conflict groups, invoking each run, the loop over PP orders, the constraint tree search of CBS and ICBS, the loop over WHCA rounds, plan statistics, validation, delayed execution, the animation pictures, and assembling the contents of the five output files.
+- grid_map: handles reading the map and the agents, deciding free cells, enumerating destinations in the action order, degrees, and distance tables by breadth-first search.
+- low_level: handles sets of prohibitions (state prohibitions, move prohibitions, permanent prohibitions, the arrival-allowed time, reserving paths), the low-level search by space-time A*, counting expansions and searches, and the abort by B_L.
+- cbs: handles the position of a path at time t, detecting the conflict sequence, creating the two new constraints from a conflict, and constraint tree nodes (including key comparison).
+- prioritized: handles, for one PP order, planning the agents in sequence and adding reservations.
+- report: handles formatting cells, conflicts, action strings, reduced fractions and CSV lines, and writing sequences of lines to files.
+
+[Constraints]
+- 2 <= W <= 32, 2 <= H <= 32, 1 <= n <= 20. Each line of the map has exactly W characters.
+- The start and the goal of each agent are free cells; the start and the goal are different and are mutually reachable by moves. The starts of all agents are distinct, and the goals of all agents are distinct (the start of one agent may be the goal of another agent).
+- 1 <= T_H <= 200, and D_i <= T_H for every agent. 1 <= B_H <= 10000, 1 <= B_L <= 10000000, 1 <= s <= w <= 32, 1 <= F <= 100. There are at most 10 ORDER lines, between 1 and 10 RUN lines, and at most 20 DELAY lines; in DELAY i s k, 0 <= i < n, 0 <= s <= 1000, 1 <= k <= 100.
+- The given data has W = 27, H = 13, n = 10, T_H = 64, B_H = 100, B_L = 200000, w = 8, s = 4, F = 10. There are 2 ORDER lines, 5 RUN lines (PP-SOC, CBS-SOC, ICBS-SOC, ICBS-MAKESPAN, WHCA-SOC) and 3 DELAY lines. With the given data, the delayed execution never ends in a deadlock.
+- Every integer appearing in the computation (including counts such as the expansion count) is less than 2^31.
+- The input files correctly follow the formats above. There is no need to check the input for errors.
+
+[Example]
+A small example that differs from the actual input (W = 11, H = 5, n = 5, 5 RUN lines).
+
+File input/map.txt:
+11 5
+...........
+.@@.@@@.@@.
+.@@.@@@.@..
+.@@@@.@.@@.
+...........
+File input/agents.csv:
+id,start_x,start_y,goal_x,goal_y
+0,1,4,8,4
+1,5,0,3,1
+2,7,1,10,3
+3,8,0,3,2
+4,2,4,6,0
+File input/params.txt:
+HORIZON 20
+HL_BUDGET 12
+LL_BUDGET 100000
+WINDOW 4 4
+ORDER 4 3 2 1 0
+RUN PP SOC
+RUN CBS SOC
+RUN ICBS SOC
+RUN ICBS MAKESPAN
+RUN WHCA SOC
+ANIMATE ICBS-SOC 4
+DELAY 0 2 2
+DELAY 3 1 1
+File output/solutions.txt:
+instance width 11 height 5 free 35 agents 5
+map isolated 0 dead_ends 3 corridors 27 junctions 5 components 1
+agent A start 1,4 goal 8,4 distance 7 mdd 8 width 1
+agent B start 5,0 goal 3,1 distance 3 mdd 4 width 1
+agent C start 7,1 goal 10,3 distance 7 mdd 14 width 2
+agent D start 8,0 goal 3,2 distance 7 mdd 8 width 1
+agent E start 2,4 goal 6,0 distance 10 mdd 11 width 1
+lower_bound soc 34 makespan 10
+independent conflicts 2 vertex 2 edge 0 cardinal 1 semi_cardinal 1 non_cardinal 0
+groups BCD
+
+run PP-SOC solver PP cost_function SOC result OK cost 38 soc 38 makespan 10 ratio 19/17
+order 1 ABCDE planned 3 expansions 220 failed D
+order 2 EDCBA planned 5 expansions 56 ok
+agent A cost 7 extra 0 waits 0 turns 0 arrive 7 leave 0 moves EEEEEEE
+agent B cost 7 extra 4 waits 0 turns 5 arrive 3 leave 1 moves WWSNWES
+agent C cost 7 extra 0 waits 0 turns 2 arrive 7 leave 0 moves SSSEEEN
+agent D cost 7 extra 0 waits 0 turns 1 arrive 7 leave 0 moves WWWWWSS
+agent E cost 10 extra 0 waits 0 turns 2 arrive 10 leave 0 moves EEEEENNNNW
+arrivals 0 0 0 0 0 0 0 4 4 4 5
+hotspots 7,4:3 3,0:2 4,0:2 5,0:2 6,0:2
+execution soc 44 makespan 10 blocked 3 finish 10 9 7 8 10
+
+run CBS-SOC solver CBS cost_function SOC result FAIL reason hl_budget
+search expanded 12 generated 25 pruned 0 open 12
+
+run ICBS-SOC solver ICBS cost_function SOC result OK cost 38 soc 38 makespan 10 ratio 19/17
+search expanded 9 generated 19 pruned 0 open 9
+classes cardinal 4 semi_cardinal 5 non_cardinal 0
+solution node 17 depth 6
+constraint B vertex 3,0 t 5
+constraint B edge 3,0 4,0 t 5
+constraint B vertex 3,1 t 6
+constraint B edge 3,1 3,0 t 6
+constraint B edge 3,2 3,1 t 7
+constraint C vertex 7,0 t 1
+agent A cost 7 extra 0 waits 0 turns 0 arrive 7 leave 0 moves EEEEEEE
+agent B cost 7 extra 4 waits 0 turns 5 arrive 3 leave 1 moves WWSNWES
+agent C cost 7 extra 0 waits 0 turns 2 arrive 7 leave 0 moves SSSEEEN
+agent D cost 7 extra 0 waits 0 turns 1 arrive 7 leave 0 moves WWWWWSS
+agent E cost 10 extra 0 waits 0 turns 2 arrive 10 leave 0 moves EEEEENNNNW
+arrivals 0 0 0 0 0 0 0 4 4 4 5
+hotspots 7,4:3 3,0:2 4,0:2 5,0:2 6,0:2
+execution soc 44 makespan 10 blocked 3 finish 10 9 7 8 10
+
+run ICBS-MAKESPAN solver ICBS cost_function MAKESPAN result OK cost 10 soc 38 makespan 10 ratio 1/1
+search expanded 7 generated 15 pruned 0 open 7
+classes cardinal 2 semi_cardinal 5 non_cardinal 0
+solution node 13 depth 6
+constraint B vertex 3,0 t 5
+constraint B edge 3,0 4,0 t 5
+constraint B vertex 3,1 t 6
+constraint B edge 3,1 3,0 t 6
+constraint B edge 3,2 3,1 t 7
+constraint C vertex 7,0 t 1
+agent A cost 7 extra 0 waits 0 turns 0 arrive 7 leave 0 moves EEEEEEE
+agent B cost 7 extra 4 waits 0 turns 5 arrive 3 leave 1 moves WWSNWES
+agent C cost 7 extra 0 waits 0 turns 2 arrive 7 leave 0 moves SSSEEEN
+agent D cost 7 extra 0 waits 0 turns 1 arrive 7 leave 0 moves WWWWWSS
+agent E cost 10 extra 0 waits 0 turns 2 arrive 10 leave 0 moves EEEEENNNNW
+arrivals 0 0 0 0 0 0 0 4 4 4 5
+hotspots 7,4:3 3,0:2 4,0:2 5,0:2 6,0:2
+execution soc 44 makespan 10 blocked 3 finish 10 9 7 8 10
+
+run WHCA-SOC solver WHCA cost_function SOC result FAIL reason blocked
+window 4 step 4 rounds 5
+
+summary ok 3 failed 2
+best_soc 38 PP-SOC ICBS-SOC ICBS-MAKESPAN
+best_makespan 10 PP-SOC ICBS-SOC ICBS-MAKESPAN
+ranking PP-SOC ICBS-SOC ICBS-MAKESPAN
+File output/stats.csv:
+run,solver,cost_function,result,reason,cost,soc,makespan,sum_extra,max_extra,waits,turns,exec_soc,exec_makespan,high_level,generated,searches,expansions
+PP-SOC,PP,SOC,OK,-,38,38,10,4,4,0,10,44,10,2,-,9,276
+CBS-SOC,CBS,SOC,FAIL,hl_budget,-,-,-,-,-,-,-,-,-,12,25,29,630
+ICBS-SOC,ICBS,SOC,OK,-,38,38,10,4,4,0,10,44,10,9,19,23,417
+ICBS-MAKESPAN,ICBS,MAKESPAN,OK,-,10,38,10,4,4,0,10,44,10,7,15,19,266
+WHCA-SOC,WHCA,SOC,FAIL,blocked,-,-,-,-,-,-,-,-,-,5,-,24,82
+File output/validation.txt:
+plan INDEPENDENT verdict INVALID start 0 goal 0 moves 0 vertex 2 edge 0 follows 7
+  vertex t 1 C D at 7,0 semi_cardinal
+  vertex t 6 B D at 3,1 cardinal
+plan PP-SOC verdict VALID start 0 goal 0 moves 0 vertex 0 edge 0 follows 9
+plan CBS-SOC verdict NONE
+plan ICBS-SOC verdict VALID start 0 goal 0 moves 0 vertex 0 edge 0 follows 9
+plan ICBS-MAKESPAN verdict VALID start 0 goal 0 moves 0 vertex 0 edge 0 follows 9
+plan WHCA-SOC verdict NONE
+File output/trace.txt:
+run PP-SOC
+order 1 agent A cost 7 expansions 8
+order 1 agent B cost 3 expansions 4
+order 1 agent C cost 7 expansions 8
+order 1 agent D failed expansions 200
+order 2 agent E cost 10 expansions 11
+order 2 agent D cost 7 expansions 8
+order 2 agent C cost 7 expansions 8
+order 2 agent B cost 7 expansions 21
+order 2 agent A cost 7 expansions 8
+end OK order 2
+
+run CBS-SOC
+expand 1 node 0 parent - depth 0 cost 34 conflicts 2 split vertex t 1 C D at 7,0 children 1 2
+expand 2 node 1 parent 0 depth 1 cost 34 conflicts 1 split vertex t 6 B D at 3,1 children 3 4
+expand 3 node 4 parent 1 depth 2 cost 35 conflicts 1 split vertex t 7 B D at 3,1 children 5 6
+expand 4 node 2 parent 0 depth 1 cost 35 conflicts 2 split edge t 2 C D from 7,0 to 8,0 children 7 8
+expand 5 node 7 parent 2 depth 2 cost 35 conflicts 1 split vertex t 7 B D at 3,1 children 9 10
+expand 6 node 6 parent 4 depth 3 cost 36 conflicts 1 split vertex t 8 B D at 3,1 children 11 12
+expand 7 node 10 parent 7 depth 3 cost 36 conflicts 1 split vertex t 8 B D at 3,1 children 13 14
+expand 8 node 8 parent 2 depth 2 cost 36 conflicts 2 split vertex t 2 C D at 8,0 children 15 16
+expand 9 node 15 parent 8 depth 3 cost 36 conflicts 1 split vertex t 8 B D at 3,1 children 17 18
+expand 10 node 12 parent 6 depth 4 cost 37 conflicts 1 split vertex t 9 B D at 3,1 children 19 20
+expand 11 node 14 parent 10 depth 4 cost 37 conflicts 1 split vertex t 9 B D at 3,1 children 21 22
+expand 12 node 18 parent 15 depth 4 cost 37 conflicts 1 split vertex t 9 B D at 3,1 children 23 24
+end FAIL hl_budget
+
+run ICBS-SOC
+expand 1 node 0 parent - depth 0 cost 34 conflicts 2 split vertex t 6 B D at 3,1 class cardinal children 1 2
+expand 2 node 2 parent 0 depth 1 cost 35 conflicts 2 split vertex t 7 B D at 3,1 class cardinal children 3 4
+expand 3 node 4 parent 2 depth 2 cost 36 conflicts 2 split vertex t 8 B D at 3,1 class cardinal children 5 6
+expand 4 node 6 parent 4 depth 3 cost 37 conflicts 2 split vertex t 9 B D at 3,1 class cardinal children 7 8
+expand 5 node 1 parent 0 depth 1 cost 38 conflicts 2 split vertex t 1 C D at 7,0 class semi_cardinal children 9 10
+expand 6 node 9 parent 1 depth 2 cost 38 conflicts 1 split edge t 6 B D from 3,1 to 3,0 class semi_cardinal children 11 12
+expand 7 node 11 parent 9 depth 3 cost 38 conflicts 1 split edge t 7 B D from 3,2 to 3,1 class semi_cardinal children 13 14
+expand 8 node 13 parent 11 depth 4 cost 38 conflicts 1 split vertex t 5 B D at 3,0 class semi_cardinal children 15 16
+expand 9 node 15 parent 13 depth 5 cost 38 conflicts 1 split edge t 5 B D from 3,0 to 4,0 class semi_cardinal children 17 18
+end OK node 17 cost 38
+
+run ICBS-MAKESPAN
+expand 1 node 0 parent - depth 0 cost 10 conflicts 2 split vertex t 6 B D at 3,1 class cardinal children 1 2
+expand 2 node 1 parent 0 depth 1 cost 10 conflicts 2 split vertex t 1 C D at 7,0 class semi_cardinal children 3 4
+expand 3 node 3 parent 1 depth 2 cost 10 conflicts 1 split edge t 6 B D from 3,1 to 3,0 class semi_cardinal children 5 6
+expand 4 node 5 parent 3 depth 3 cost 10 conflicts 1 split edge t 7 B D from 3,2 to 3,1 class semi_cardinal children 7 8
+expand 5 node 7 parent 5 depth 4 cost 10 conflicts 1 split vertex t 5 B D at 3,0 class semi_cardinal children 9 10
+expand 6 node 8 parent 5 depth 4 cost 10 conflicts 1 split vertex t 7 B D at 3,1 class cardinal children 11 12
+expand 7 node 9 parent 7 depth 5 cost 10 conflicts 1 split edge t 5 B D from 3,0 to 4,0 class semi_cardinal children 13 14
+end OK node 13 cost 10
+
+run WHCA-SOC
+round 1 time 0 agent A moves EEEE expansions 5
+round 1 time 0 agent B moves WWS. expansions 4
+round 1 time 0 agent C moves NEEE expansions 5
+round 1 time 0 agent D moves .EES expansions 8
+round 1 time 0 agent E moves EEEE expansions 5
+round 2 time 4 agent A moves EEE. expansions 4
+round 2 time 4 agent C moves SSS. expansions 4
+round 2 time 4 agent D moves SWEN expansions 6
+round 2 time 4 agent E moves ENNN expansions 5
+round 2 time 4 agent B moves .... expansions 1
+round 3 time 8 agent D moves NWWW expansions 5
+round 3 time 8 agent E moves NW.. expansions 3
+round 3 time 8 agent A moves .... expansions 1
+round 3 time 8 agent B moves .... expansions 1
+round 3 time 8 agent C moves .... expansions 1
+round 4 time 12 agent D moves WWWW expansions 5
+round 4 time 12 agent A moves .... expansions 1
+round 4 time 12 agent B moves .... expansions 1
+round 4 time 12 agent C moves .... expansions 1
+round 4 time 12 agent E moves WWWW expansions 5
+round 5 time 16 agent D moves SS.. expansions 3
+round 5 time 16 agent E moves EEEE expansions 5
+round 5 time 16 agent A moves .... expansions 1
+round 5 time 16 agent B blocked expansions 2
+end FAIL blocked
+File output/frames.txt:
+run ICBS-SOC frames 4
+
+frame 0 done 0 moving 0 waiting 5
+.....Be.D..
+.@@b@@@C@@.
+.@@d@@@.@..
+.@@@@.@.@@c
+.AE.....a..
+
+frame 1 done 0 moving 5 waiting 0
+....B.eD...
+.@@b@@@.@@.
+.@@d@@@C@..
+.@@@@.@.@@c
+..AE....a..
+
+frame 2 done 0 moving 5 waiting 0
+...B..D....
+.@@b@@@.@@.
+.@@d@@@.@..
+.@@@@.@C@@c
+...AE...a..
+
+frame 3 done 0 moving 5 waiting 0
+.....De....
+.@@B@@@.@@.
+.@@d@@@.@..
+.@@@@.@.@@c
+....AE.Ca..
+
+traffic
+..1222221..
+.@@2@@@2@@.
+.@@1@@@2@..
+.@@@@.@2@@1
+.1222223211
+
+waits
+...........
+.@@.@@@.@@.
+.@@.@@@.@..
+.@@@@.@.@@.
+...........
+In this example map, (3,1) and (3,2) at x = 3 form a dead-end corridor that can be entered only from (3,0) to the north; B's goal (3,1) is near the entrance and D's goal (3,2) is at the far end. In PP order 1 (ABCDE), B reaches its goal at time 3 and the permanent prohibition ((3,1), 3) is added, so D cannot reach (3,2). D's search examines every state up to time T_H = 20 and fails (expansion count 200), and order 2 (EDCBA) is tried. In order 2, D is planned first, so B's arrival-allowed time is 7, the time after time 6 at which D is at (3,1). B reaches its goal once at time 3, then steps aside to (3,0) and (2,0) to let D pass, and returns at time 7 (moves WWSNWES, leave 1).
+In CBS, the conflict between B staying at its goal and D wanting to pass through it reappears at times 6, 7, 8, 9, and no answer is found even after expanding B_H = 12 nodes, so the run fails with reason hl_budget. In ICBS, of the two conflicts at the root, vertex t 6 B D at 3,1, which comes later in the conflict sequence, is cardinal (B is staying at its goal at time 6, and the time-6 layer of D's MDD is only (3,1)), so it is split first. vertex t 1 C D at 7,0 is semi_cardinal because the time-1 layer of C's MDD has two cells, (7,0) and (7,2). In ICBS-MAKESPAN, E's cost 10 determines the MAKESPAN, so every expanded node has cost 10, and the order is decided by the conflict count and the creation number.
+WHCA (w = 4, s = 4) fails in round 5 (time 16). At that moment D is at the corridor entrance (3,0) and B is at its goal (3,1). D, which is not at its goal, is planned first and reserves a window plan that advances to (3,1) at time 17 and (3,2) at time 18. B, planned afterwards, cannot stay at (3,1) at time 17, and moving to (3,0) would violate the move prohibition of swapping with D, so its only option is to advance to (3,2). But at time 18 it cannot stay at (3,2), and going back to (3,1) would again mean swapping with D, so there is no path after 2 expansions and the run fails with reason blocked.
+In the delayed execution, A is scheduled to enter (2,4), the cell where E was at time 0, at time 1 (following), but since E has not yet left (2,4), A is held at time 0. Furthermore, DELAY 0 2 2 stops it at times 2 and 3, so A's finish time is 10, which is 3 more than its planned cost 7. D is stopped at time 1 by DELAY 3 1 1, and its finish time is 8.

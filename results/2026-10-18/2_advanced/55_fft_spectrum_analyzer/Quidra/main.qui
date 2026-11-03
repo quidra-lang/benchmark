@@ -1,0 +1,606 @@
+import math
+import signal_io = "./signal_io.qui"
+import fft = "./fft.qui"
+import windows = "./windows.qui"
+import spectral = "./spectral.qui"
+import report = "./report.qui"
+
+real64 absolute(real64 value)
+    return if value < 0.0 then -value else value
+
+int min_int(int first, int second)
+    return if first < second then first else second
+
+int max_int(int first, int second)
+    return if first > second then first else second
+
+real64 total(real64[] values)
+    real64 result = 0.0
+    for real64 value = values[]
+        result += value
+    return result
+
+real64 energy(real64[] values)
+    real64 result = 0.0
+    for real64 value = values[]
+        result += value * value
+    return result
+
+real64 rms(real64[] values)
+    real64 result = math.sqrt(energy(values) / real64(len(values)))
+    return result
+
+real64 db(real64 value, real64 factor = 20.0)
+    real64 logarithm = math.log(value)
+    return factor * logarithm / 2.302585092994046
+
+real64 arctangent(real64 value)
+    bool invert = value > 1.0
+    real64 z = if invert then 1.0 / value else value
+    bool reduce = z > 0.41421356237309503
+    if reduce
+        z = (z - 1.0) / (z + 1.0)
+    real64 squared = z * z
+    real64 power = z
+    real64 result = 0.0
+    for int j < 40
+        result += power / real64(2 * j + 1)
+        power *= -squared
+    if reduce
+        result += fft.pi / 4.0
+    return if invert then fft.pi / 2.0 - result else result
+
+real64 argument(com64 value)
+    if value.real == 0.0 and value.imag == 0.0
+        return 0.0
+    if value.real == 0.0
+        return if value.imag >= 0.0 then fft.pi / 2.0 else -fft.pi / 2.0
+    real64 ratio = value.imag / value.real
+    real64 result = arctangent(absolute(ratio))
+    if ratio < 0.0
+        result = -result
+    if value.real < 0.0
+        result += if value.imag >= 0.0 then fft.pi else -fft.pi
+    return result
+
+real64 phase(com64 value)
+    return argument(value) * 180.0 / fft.pi
+
+int maximum_index(real64[] values, int first, int last)
+    int best = first
+    for first + 1 <= int j <= last
+        if values[j] > values[best]
+            best = j
+    return best
+
+int[] strongest(real64[] values, int limit)
+    int[] indices = [for 1 <= int j < int(len(values)) - 1 if spectral.local_maximum(values, j) then j]
+    int count = int(len(indices))
+    int span = 1
+    while span < count
+        int[] merged = []
+        for int start < count step 2 * span
+            int middle = min_int(count, start + span)
+            int finish = min_int(count, start + 2 * span)
+            int first = start
+            int second = middle
+            while first < middle or second < finish
+                bool take_first = second >= finish
+                if first < middle and second < finish
+                    int a = indices[first]
+                    int b = indices[second]
+                    take_first = values[a] > values[b] or (values[a] == values[b] and a < b)
+                if take_first
+                    merged = merged.append(indices[first])
+                    first += 1
+                else
+                    merged = merged.append(indices[second])
+                    second += 1
+        indices = merged
+        span *= 2
+    int[] result = []
+    for int j < min_int(limit, count)
+        result = result.append(indices[j])
+    return result
+
+(real64[], real64[]) detrend(real64[] samples, int sample_rate)
+    int count = int(len(samples))
+    real64 average = total(samples) / real64(count)
+    real64 center = real64(count - 1) / 2.0
+    real64 numerator = 0.0
+    real64 denominator = 0.0
+    real64 low = samples[0]
+    real64 high = samples[0]
+    for int i < count
+        real64 offset = real64(i) - center
+        numerator += offset * (samples[i] - average)
+        denominator += offset * offset
+        if samples[i] < low
+            low = samples[i]
+        if samples[i] > high
+            high = samples[i]
+    real64 slope = numerator / denominator
+    real64[] residual = []
+    real64 peak = 0.0
+    real64 third = 0.0
+    real64 fourth = 0.0
+    for int i < count
+        real64 value = samples[i] - average - slope * (real64(i) - center)
+        residual = residual.append(value)
+        if absolute(value) > peak
+            peak = absolute(value)
+        third += value ^ 3.0
+        fourth += value ^ 4.0
+    real64 level = rms(residual)
+    return (residual, [average, slope * real64(sample_rate), level, low, high, peak / level, (third / real64(count)) / (level ^ 3.0), (fourth / real64(count)) / (level ^ 4.0)])
+
+real64 bandwidth(real64[] values, int index)
+    real64 root_two = math.sqrt(2.0)
+    real64 cutoff = values[index] / root_two
+    real64 left = 0.0
+    real64 right = real64(int(len(values)) - 1)
+    for index + 1 <= int j < int(len(values))
+        if values[j] <= cutoff
+            right = real64(j - 1) + (values[j - 1] - cutoff) / (values[j - 1] - values[j])
+            break
+    int j = index - 1
+    while j >= 0
+        if values[j] <= cutoff
+            left = real64(j + 1) - (values[j + 1] - cutoff) / (values[j + 1] - values[j])
+            break
+        j -= 1
+    return right - left
+
+class Peak(int bin, real64 position, real64 amplitude, real64 frequency, real64 refined, real64 level_db, real64 phase_angle, real64 band_width, real64 snr, real64 coherence_value, string label)
+
+(Peak[], real64, real64) analyze_peaks(real64[] amplitudes, com64[] transformed, signal_io.Params params, int sample_rate, spectral.Welch welch)
+    int length = params.main_length
+    real64 fs = real64(sample_rate)
+    real64 largest = amplitudes[maximum_index(amplitudes, 0, int(len(amplitudes)) - 1)]
+    real64 floor_value = spectral.median(amplitudes[1:<int(len(amplitudes)) - 1])
+    Peak[] peaks = []
+    for int k = strongest(amplitudes, int(len(amplitudes)))[]
+        if db(amplitudes[k] / largest) < params.peak_threshold or int(len(peaks)) >= params.peak_count
+            continue
+        real64[] fitted = spectral.interpolate(amplitudes, k)
+        int coherence_bin = (2 * k * params.welch_length + length) / (2 * length)
+        peaks = peaks.append(Peak(k, fitted[0], fitted[1], real64(k) * fs / real64(length), fitted[0] * fs / real64(length), db(amplitudes[k] / largest), phase(transformed[k]), bandwidth(amplitudes, k) * fs / real64(length), db(amplitudes[k] / floor_value), welch.coherence[coherence_bin], "other"))
+    for auto &peak = &peaks[]
+        for 1 <= int h <= 10
+            if absolute(peak.position - real64(h) * params.fundamental * real64(length) / fs) <= real64(params.search_width)
+                peak.label = "h{h}"
+                break
+        if peak.label == "other"
+            int multiple = math.floor(peak.refined / real64(params.notch_frequency) + 0.5)
+            if multiple >= 1 and absolute(peak.refined - real64(multiple * params.notch_frequency)) <= real64(params.notch_width)
+                peak.label = "mains"
+        if peak.label == "other"
+            for int pivot < int(len(peaks))
+                Peak middle = peaks[pivot]
+                if middle.bin == peak.bin or amplitudes[middle.bin] <= amplitudes[peak.bin]
+                    continue
+                for Peak other = peaks[]
+                    if other.bin != peak.bin and other.bin != middle.bin and amplitudes[middle.bin] > amplitudes[other.bin] and absolute(peak.position + other.position - 2.0 * middle.position) <= 1.0
+                        peak.label = "sideband{pivot + 1}"
+                        break
+                if peak.label != "other"
+                    break
+    return (peaks, largest, floor_value)
+
+class FilterResult(real64[] bandpassed, real64[] notched, real64[] envelope, real64[] smoothed)
+    int kept = 0
+    int removed = 0
+    real64 band_rms = 0.0
+    real64 notch_rms = 0.0
+    real64 band_ratio = 0.0
+    real64 dc_gain = 0.0
+    real64 fir_gain = 0.0
+    real64 fir_rms = 0.0
+    real64 fir_error = 0.0
+    real64 envelope_mean = 0.0
+    int envelope_bin = 0
+    real64 envelope_frequency = 0.0
+    real64 envelope_amplitude = 0.0
+    real64 envelope_depth = 0.0
+    real64 instantaneous_mean = 0.0
+    real64 instantaneous_std = 0.0
+
+FilterResult analyze_filters(real64[] first, real64[] second, signal_io.Params params, int sample_rate)
+    int count = int(len(first))
+    real64 fs = real64(sample_rate)
+    com64[] transformed = fft.dft(fft.complex_values(first))
+    com64[] band = fft.zeros(count)
+    com64[] notch = fft.zeros(count)
+    com64[] analytic_spectrum = fft.zeros(count)
+    int kept = 0
+    int removed = 0
+    for int k < count
+        int frequency = min_int(k, count - k) * sample_rate
+        if params.band_low * count <= frequency <= params.band_high * count
+            band[k] = transformed[k]
+            kept += 1
+        int multiple = (2 * frequency + params.notch_frequency * count) / (2 * params.notch_frequency * count)
+        int difference = frequency - multiple * params.notch_frequency * count
+        if multiple >= 1 and (if difference < 0 then -difference else difference) <= params.notch_width * count
+            removed += 1
+        else
+            notch[k] = transformed[k]
+        if 1 <= k <= (count - 1) / 2 and params.envelope_low * count <= k * sample_rate <= params.envelope_high * count
+            analytic_spectrum[k] = com64(2.0) * transformed[k]
+    com64[] bp = fft.idft(band)
+    com64[] nt = fft.idft(notch)
+    com64[] analytic = fft.idft(analytic_spectrum)
+    real64[] bandpassed = [for com64 value = bp[] then value.real]
+    real64[] notched = [for com64 value = nt[] then value.real]
+    real64[] envelope = [for com64 value = analytic[] then fft.magnitude(value)]
+    real64 envelope_mean = total(envelope) / real64(count)
+    real64[] centered = [for real64 value = envelope[] then value - envelope_mean]
+    com64[] envelope_transform = fft.dft(fft.complex_values(centered))
+    real64[] modulation = [for com64 value = envelope_transform[] then 2.0 * fft.magnitude(value) / real64(count)]
+    int envelope_bin = maximum_index(modulation, 1, ((params.envelope_high - params.envelope_low) * count) / (2 * sample_rate))
+    real64[] fitted = spectral.interpolate(modulation, envelope_bin)
+    real64[] instantaneous = []
+    for 1 <= int i < count
+        real64 delta = argument(analytic[i]) - argument(analytic[i - 1])
+        if delta <= -fft.pi
+            delta += 2.0 * fft.pi
+        if delta > fft.pi
+            delta -= 2.0 * fft.pi
+        instantaneous = instantaneous.append(delta * fs / (2.0 * fft.pi))
+    real64 frequency_mean = total(instantaneous) / real64(len(instantaneous))
+    real64 variance = 0.0
+    for real64 value = instantaneous[]
+        variance += (value - frequency_mean) ^ 2.0
+    real64[] smoothed = fft.convolution(second, params.fir)
+    com64 gain = com64(0.0)
+    for int j < int(len(params.fir))
+        gain += com64(params.fir[j]) * fft.rot(2.0 * fft.pi * params.fundamental * real64(j) / fs)
+    real64 fir_error = 0.0
+    for int i < count + int(len(params.fir)) - 1
+        real64 direct = 0.0
+        for max_int(0, i - int(len(params.fir)) + 1) <= int j <= min_int(count - 1, i)
+            direct += second[j] * params.fir[i - j]
+        real64 difference = absolute(smoothed[i] - direct)
+        if difference > fir_error
+            fir_error = difference
+    auto result = FilterResult(bandpassed, notched, envelope, smoothed)
+    result.kept = kept
+    result.removed = removed
+    result.band_rms = rms(bandpassed)
+    result.notch_rms = rms(notched)
+    result.band_ratio = energy(bandpassed) / energy(first)
+    result.dc_gain = total(params.fir)
+    result.fir_gain = db(fft.magnitude(gain))
+    result.fir_rms = rms(smoothed[0:<count])
+    result.fir_error = fir_error
+    result.envelope_mean = envelope_mean
+    result.envelope_bin = envelope_bin
+    result.envelope_frequency = fitted[0] * fs / real64(count)
+    result.envelope_amplitude = fitted[1]
+    result.envelope_depth = fitted[1] / envelope_mean
+    result.instantaneous_mean = frequency_mean
+    result.instantaneous_std = math.sqrt(variance / real64(len(instantaneous)))
+    return result
+
+int wrapped(int index, int size)
+    return if index < 0 then index + size else index % size
+
+(int, real64) choose_lag(real64[] values, int limit)
+    int size = int(len(values))
+    int best = -limit
+    for -limit <= int lag <= limit
+        real64 value = values[wrapped(lag, size)]
+        real64 previous = values[wrapped(best, size)]
+        int magnitude = if lag < 0 then -lag else lag
+        int previous_magnitude = if best < 0 then -best else best
+        if value > previous or (value == previous and (magnitude < previous_magnitude or (magnitude == previous_magnitude and lag < best)))
+            best = lag
+    real64[] neighborhood = [values[wrapped(best - 1, size)], values[wrapped(best, size)], values[wrapped(best + 1, size)]]
+    real64[] fitted = spectral.interpolate(neighborhood, 1, false)
+    return (best, real64(best) + fitted[0] - 1.0)
+
+class Correlation(int lag, real64 refined, real64 delay, real64 coefficient, int phat_lag, real64 phat_refined, real64 phat_delay)
+
+Correlation analyze_correlation(real64[] first, real64[] second, int limit, int sample_rate)
+    int size = fft.pow2(2 * int(len(first)) - 1)
+    com64[] fx = fft.radix2(fft.complex_values(first, size))
+    com64[] fy = fft.radix2(fft.complex_values(second, size))
+    com64[] cross = [for int k < size then fft.conjugate(fx[k]) * fy[k]]
+    com64[] phased = [for com64 value = cross[] then value / com64(fft.magnitude(value))]
+    real64[] raw = [for com64 value = fft.radix2(cross, true)[] then value.real]
+    real64[] phat = [for com64 value = fft.radix2(phased, true)[] then value.real]
+    (int lag, real64 refined) = choose_lag(raw, limit)
+    (int phat_lag, real64 phat_refined) = choose_lag(phat, limit)
+    real64 scale = math.sqrt(energy(first) * energy(second))
+    return Correlation(lag, refined, 1000.0 * refined / real64(sample_rate), raw[wrapped(lag, size)] / scale, phat_lag, phat_refined, 1000.0 * phat_refined / real64(sample_rate))
+
+class Pitch(int lag_min, int lag_max, int hps_bin, real64 hps_frequency, int acf_lag, real64 period, real64 frequency, real64 strength, int crossings, real64 crossing_frequency)
+
+Pitch analyze_pitch(real64[] amplitudes, real64[] bandpassed, signal_io.Params params, int sample_rate)
+    int length = params.main_length
+    int half = length / 2
+    int hps_bin = -1
+    real64 hps_value = -inf
+    for 1 <= int k <= half
+        if not (params.pitch_low * length <= k * sample_rate <= params.pitch_high * length and 5 * k <= half)
+            continue
+        real64 value = 0.0
+        for 1 <= int r <= 5
+            real64 logarithm = math.log(amplitudes[r * k])
+            value += logarithm
+        if value > hps_value
+            hps_value = value
+            hps_bin = k
+    int size = fft.pow2(2 * int(len(bandpassed)) - 1)
+    com64[] transformed = fft.radix2(fft.complex_values(bandpassed, size))
+    com64[] power = []
+    for com64 value = transformed[]
+        real64 magnitude = fft.magnitude(value)
+        power = power.append(com64(magnitude * magnitude))
+    real64[] acf = [for com64 value = fft.radix2(power, true)[] then value.real]
+    int lag_min = (sample_rate + params.pitch_high - 1) / params.pitch_high
+    int lag_max = sample_rate / params.pitch_low
+    int lag = maximum_index(acf, lag_min, lag_max)
+    real64[] fitted = spectral.interpolate(acf, lag, false)
+    int crossings = 0
+    for 1 <= int i < int(len(bandpassed))
+        if bandpassed[i - 1] < 0.0 <= bandpassed[i]
+            crossings += 1
+    return Pitch(lag_min, lag_max, hps_bin, real64(hps_bin * sample_rate) / real64(length), lag, fitted[0], real64(sample_rate) / fitted[0], fitted[1] / acf[0], crossings, real64(crossings * sample_rate) / real64(len(bandpassed)))
+
+int target_index(real64[] values, int length, real64 center, int width)
+    int best = -1
+    for 1 <= int k < length / 2
+        if absolute(real64(k) - center) <= real64(width) and (best < 0 or values[k] > values[best])
+            best = k
+    return best
+
+class Harmonic(int bin, real64 position, real64 amplitude, real64 refined, real64 level_db)
+
+string yes_no(bool value)
+    return if value then "yes" else "no"
+
+void run()
+    signal_io.Input data = signal_io.read_inputs()
+    signal_io.Params params = data.params
+    int sample_rate = data.sample_rate
+    real64 fs = real64(sample_rate)
+    int count = int(len(data.first))
+    int length = params.main_length
+    int half = length / 2
+    (real64[] first, real64[] first_stats) = detrend(data.first, sample_rate)
+    (real64[] second, real64[] second_stats) = detrend(data.second, sample_rate)
+    (real64[] weighted, com64[] transformed, real64[] amplitudes) = spectral.amplitude(first, params.main_window, length)
+    real64[] figures = windows.figures(windows.window(params.main_window, length), sample_rate)
+    spectral.Welch welch = spectral.welch(first, second, sample_rate, params.welch_length, params.welch_window)
+    (Peak[] peaks, real64 largest, real64 floor_value) = analyze_peaks(amplitudes, transformed, params, sample_rate, welch)
+    Harmonic[] harmonics = []
+    real64 harmonic_energy = 0.0
+    for 1 <= int h <= 10
+        real64 center = real64(h) * params.fundamental * real64(length) / fs
+        int index = target_index(amplitudes, length, center, params.search_width)
+        real64[] fitted = spectral.interpolate(amplitudes, index)
+        harmonics = harmonics.append(Harmonic(index, fitted[0], fitted[1], fitted[0] * fs / real64(length), 0.0))
+        if h > 1
+            harmonic_energy += fitted[1] * fitted[1]
+    real64 primary = harmonics[0].amplitude
+    for auto &harmonic = &harmonics[]
+        harmonic.level_db = db(harmonic.amplitude / primary)
+    real64 root_harmonic = math.sqrt(harmonic_energy)
+    real64 thd = root_harmonic / primary
+    real64[] power = [for int k <= half then 0.0]
+    real64 sum_power = 0.0
+    real64 first_power = 0.0
+    real64 weighted_frequency = 0.0
+    real64 log_power = 0.0
+    for 1 <= int k < half
+        real64 value = amplitudes[k] * amplitudes[k] / 2.0
+        power[k] = value
+        sum_power += value
+        int distance = k - harmonics[0].bin
+        if (if distance < 0 then -distance else distance) <= params.search_width
+            first_power += value
+        weighted_frequency += (real64(k) * fs / real64(length)) * value
+        real64 logarithm = math.log(value)
+        log_power += logarithm
+    real64 total_power = sum_power / figures[3]
+    real64 p1 = first_power / figures[3]
+    real64 thdn = math.sqrt((total_power - p1) / p1)
+    real64 centroid = weighted_frequency / sum_power
+    real64 spread_sum = 0.0
+    real64 cumulative = 0.0
+    real64 rolloff = -1.0
+    for 1 <= int k < half
+        spread_sum += ((real64(k) * fs / real64(length) - centroid) ^ 2.0) * power[k]
+        cumulative += power[k]
+        if rolloff < 0.0 and cumulative >= 0.85 * sum_power
+            rolloff = real64(k) * fs / real64(length)
+    real64 spread = math.sqrt(spread_sum / sum_power)
+    real64 geometric_mean = math.exp(log_power / real64(half - 1))
+    real64 flatness = db(geometric_mean / (sum_power / real64(half - 1)), 10.0)
+    (real64[][] grid, real64 frame_error) = spectral.spectrogram(first, params.frame_length, params.hop, params.frame_window)
+    real64 gmax = 0.0
+    for real64[] row = grid[]
+        for real64 value = row[]
+            if value > gmax
+                gmax = value
+    int[] dominant = []
+    real64[] flux = [0.0]
+    for int t < int(len(grid))
+        dominant = dominant.append(maximum_index(grid[t], 1, params.frame_length / 2 - 1))
+        if t > 0
+            real64 value = 0.0
+            for int k < int(len(grid[t]))
+                real64 difference = grid[t][k] - grid[t - 1][k]
+                value += if difference > 0.0 then difference else 0.0
+            flux = flux.append(value)
+    real64 onset_threshold = params.onset_factor * spectral.median(flux[1:<int(len(flux))])
+    int[] onsets = []
+    for 1 <= int t < int(len(grid))
+        if flux[t] > onset_threshold and flux[t] > flux[t - 1] and (t == int(len(grid)) - 1 or flux[t] > flux[t + 1])
+            onsets = onsets.append(t)
+    real64[] kurtosis = []
+    for int k <= params.frame_length / 2
+        real64 second_moment = 0.0
+        real64 fourth_moment = 0.0
+        for real64[] row = grid[]
+            second_moment += row[k] ^ 2.0
+            fourth_moment += row[k] ^ 4.0
+        kurtosis = kurtosis.append(real64(len(grid)) * fourth_moment / (second_moment * second_moment) - 2.0)
+    int top_kurtosis = maximum_index(kurtosis, 1, params.frame_length / 2 - 1)
+    FilterResult filters = analyze_filters(first, second, params, sample_rate)
+    Pitch pitch = analyze_pitch(amplitudes, filters.bandpassed, params, sample_rate)
+    Correlation correlation = analyze_correlation(first, second, params.max_lag, sample_rate)
+    real64 zoom_step = real64(params.zoom_high - params.zoom_low) / real64(params.zoom_count - 1)
+    com64[] zoom_transform = fft.chirp_z(weighted, sample_rate, params.zoom_low, params.zoom_high, params.zoom_count)
+    real64[] zoom = [for com64 value = zoom_transform[] then 2.0 * fft.magnitude(value) / figures[0]]
+    real64 inverse_error = 0.0
+    real64 time_energy = energy(weighted)
+    real64 frequency_energy = 0.0
+    com64[] inverse = fft.idft(transformed)
+    for int j < length
+        real64 difference = fft.magnitude(inverse[j] - com64(weighted[j]))
+        if difference > inverse_error
+            inverse_error = difference
+    for com64 value = transformed[]
+        real64 magnitude = fft.magnitude(value)
+        frequency_energy += magnitude * magnitude
+    real64 parseval_error = absolute(time_energy - frequency_energy / real64(length)) / time_energy
+    real64 spot_error = 0.0
+    for Peak peak = peaks[]
+        com64 direct = com64(0.0)
+        for int n < length
+            direct += com64(weighted[n]) * fft.rot(2.0 * fft.pi * real64((peak.bin * n) % length) / real64(length))
+        real64 difference = fft.magnitude(direct - transformed[peak.bin])
+        if difference > spot_error
+            spot_error = difference
+    string[][] spectrum_rows = [for int k <= half then [report.decimal(real64(k) * fs / real64(length)), report.decimal(amplitudes[k])]]
+    string[][] psd_rows = [for int k < int(len(welch.psd)) then [report.decimal(real64(k) * fs / real64(params.welch_length)), report.decimal(db(welch.psd[k], 10.0))]]
+    string[][] filtered_rows = [for int j < count then [j.string(), report.decimal(filters.bandpassed[j]), report.decimal(filters.notched[j]), report.decimal(filters.smoothed[j]), report.decimal(filters.envelope[j])]]
+    report.csv("spectrum.csv", "frequency,amplitude", spectrum_rows)
+    report.csv("welch_psd.csv", "frequency,psd_db", psd_rows)
+    report.csv("filtered.csv", "index,bandpass,notched,smoothed,envelope", filtered_rows)
+    string[] peak_lines = ["length={length} window={params.main_window} resolution=" + report.decimal(fs / real64(length)) + " threshold_db=" + report.decimal(params.peak_threshold), "max_amplitude=" + report.decimal(largest) + " noise_floor=" + report.decimal(floor_value) + " noise_floor_db=" + report.decimal(db(floor_value)), "peaks={len(peaks)}"]
+    for int rank < int(len(peaks))
+        Peak peak = peaks[rank]
+        peak_lines = peak_lines.append("{rank + 1} bin={peak.bin} frequency=" + report.decimal(peak.frequency) + " refined=" + report.decimal(peak.refined) + " amplitude=" + report.decimal(peak.amplitude) + " level_db=" + report.decimal(peak.level_db) + " phase=" + report.decimal(peak.phase_angle) + " bandwidth=" + report.decimal(peak.band_width) + " snr_db=" + report.decimal(peak.snr) + " coherence=" + report.decimal(peak.coherence_value) + " label={peak.label}")
+    report.write_lines("peaks.txt", peak_lines)
+    string[] spectrogram_lines = ["frames={len(grid)} bins={params.frame_length / 2 + 1} frame_length={params.frame_length} hop={params.hop} window={params.frame_window} band_db={params.band_db} max_db=" + report.decimal(db(gmax))]
+    spectrogram_lines = spectrogram_lines.concat(report.shades(grid, sample_rate, params.frame_length, params.band_db, gmax)).append("track")
+    for int t < int(len(dominant))
+        int index = dominant[t]
+        spectrogram_lines = spectrogram_lines.append("frame={t} time=" + report.decimal(real64(t * params.hop) / fs) + " frequency=" + report.decimal(real64(index) * fs / real64(params.frame_length)) + " level_db=" + report.decimal(db(grid[t][index] / gmax)))
+    spectrogram_lines = spectrogram_lines.append("onsets={len(onsets)} threshold=" + report.decimal(onset_threshold))
+    for int t = onsets[]
+        spectrogram_lines = spectrogram_lines.append("frame={t} time=" + report.decimal(real64(t * params.hop) / fs) + " flux=" + report.decimal(flux[t]))
+    spectrogram_lines = spectrogram_lines.append("kurtosis bin={top_kurtosis} frequency=" + report.decimal(real64(top_kurtosis) * fs / real64(params.frame_length)) + " value=" + report.decimal(kurtosis[top_kurtosis]))
+    report.write_lines("spectrogram.txt", spectrogram_lines)
+    string[] rows = ["[signal]", "sample_rate={sample_rate} samples={count} duration=" + report.decimal(real64(count) / fs)]
+    string[] stat_names = ["mean", "slope", "rms", "min", "max", "crest", "skewness", "kurtosis"]
+    for int channel < 2
+        real64[] stats = if channel == 0 then first_stats else second_stats
+        string line = "channel={channel + 1}"
+        for int j < int(len(stat_names))
+            line += " {stat_names[j]}=" + report.decimal(stats[j])
+        rows = rows.append(line)
+    real64[][] history = []
+    int loudest = 0
+    for int block < count / params.block_length
+        int start = block * params.block_length
+        int stop = (block + 1) * params.block_length
+        real64[] left = first[start:<stop]
+        real64[] right = second[start:<stop]
+        real64 peak = 0.0
+        for real64 value = left[]
+            if absolute(value) > peak
+                peak = absolute(value)
+        history = history.append([rms(left), rms(right), peak])
+        if history[block][0] > history[loudest][0]
+            loudest = block
+    rows = rows.concat(["[levels]", "block_length={params.block_length} blocks={len(history)} loudest={loudest}"])
+    for int j < int(len(history))
+        rows = rows.append("block={j} time=" + report.decimal(real64(j * params.block_length) / fs) + " rms1=" + report.decimal(history[j][0]) + " rms2=" + report.decimal(history[j][1]) + " peak1=" + report.decimal(history[j][2]))
+    rows = rows.append("[windows]")
+    for string name = windows.names()[]
+        real64[] calibration = windows.figures(windows.window(name, length), sample_rate)
+        (real64[] windowed, com64[] transform, real64[] aw) = spectral.amplitude(first, name, length)
+        int index = target_index(aw, length, params.fundamental * real64(length) / fs, params.search_width)
+        real64[] fitted = spectral.interpolate(aw, index)
+        real64 floor_db = db(spectral.median(aw[1:<int(len(aw)) - 1]))
+        rows = rows.append("name={name} coherent_gain=" + report.decimal(calibration[2]) + " enbw_bins=" + report.decimal(calibration[3]) + " enbw_hz=" + report.decimal(calibration[4]) + " scalloping_db=" + report.decimal(calibration[5]) + " fundamental_bin={index} bin_amplitude=" + report.decimal(aw[index]) + " refined_amplitude=" + report.decimal(fitted[1]) + " floor_db=" + report.decimal(floor_db))
+    bool power_two = fft.pow2(length) == length
+    string method = if power_two then "radix2" else "bluestein"
+    int transform_size = if power_two then length else fft.pow2(2 * length - 1)
+    rows = rows.concat(["[main]", "length={length} window={params.main_window} method={method} transform_size={transform_size} resolution=" + report.decimal(fs / real64(length)), "total_power=" + report.decimal(total_power) + " centroid=" + report.decimal(centroid) + " spread=" + report.decimal(spread) + " rolloff=" + report.decimal(rolloff) + " flatness_db=" + report.decimal(flatness), "[bands]"])
+    for int j < int(len(params.bands)) - 1
+        int low = params.bands[j]
+        int high = params.bands[j + 1]
+        real64 value = 0.0
+        for 1 <= int k < half
+            if low * length <= k * sample_rate < high * length
+                value += power[k]
+        value /= figures[3]
+        rows = rows.append("range={low}-{high} power=" + report.decimal(value) + " percent=" + report.decimal(100.0 * value / total_power))
+    rows = rows.append("[third_octave]")
+    for params.third_low <= int band <= params.third_high
+        real64 center = 1000.0 * (2.0 ^ (real64(band) / 3.0))
+        real64 low = 1000.0 * (2.0 ^ (real64(2 * band - 1) / 6.0))
+        real64 high = 1000.0 * (2.0 ^ (real64(2 * band + 1) / 6.0))
+        real64 value = 0.0
+        int bins = 0
+        for 1 <= int k < half
+            real64 frequency = real64(k) * fs / real64(length)
+            if low <= frequency < high
+                value += power[k]
+                bins += 1
+        rows = rows.append("band={band} center=" + report.decimal(center) + " lower=" + report.decimal(low) + " upper=" + report.decimal(high) + " bins={bins} level_db=" + report.decimal(db(value / figures[3], 10.0)))
+    rows = rows.concat(["[harmonics]", "fundamental=" + report.decimal(params.fundamental) + " search={params.search_width}"])
+    for int h < 10
+        Harmonic harmonic = harmonics[h]
+        rows = rows.append("h={h + 1} target=" + report.decimal(real64(h + 1) * params.fundamental) + " bin={harmonic.bin} refined=" + report.decimal(harmonic.refined) + " amplitude=" + report.decimal(harmonic.amplitude) + " level_db=" + report.decimal(harmonic.level_db))
+    rows = rows.concat(["thd_percent=" + report.decimal(100.0 * thd) + " thd_db=" + report.decimal(db(thd)), "thdn_percent=" + report.decimal(100.0 * thdn) + " thdn_db=" + report.decimal(db(thdn)), "[pitch]", "range={params.pitch_low}-{params.pitch_high} lags={pitch.lag_min}-{pitch.lag_max}", "hps bin={pitch.hps_bin} order=5 frequency=" + report.decimal(pitch.hps_frequency), "autocorrelation lag={pitch.acf_lag} period=" + report.decimal(pitch.period) + " frequency=" + report.decimal(pitch.frequency) + " strength=" + report.decimal(pitch.strength), "zero_crossing count={pitch.crossings} frequency=" + report.decimal(pitch.crossing_frequency), "[zoom]", "band={params.zoom_low}-{params.zoom_high} points={params.zoom_count} step=" + report.decimal(zoom_step)])
+    int[] zoom_peaks = strongest(zoom, 3)
+    for int rank < int(len(zoom_peaks))
+        real64[] fitted = spectral.interpolate(zoom, zoom_peaks[rank])
+        rows = rows.append("peak={rank + 1} frequency=" + report.decimal(real64(params.zoom_low) + fitted[0] * zoom_step) + " amplitude=" + report.decimal(fitted[1]))
+    real64 integrated = total(welch.psd) * fs / real64(params.welch_length)
+    real64 variance = energy(first) / real64(count)
+    rows = rows.concat(["[welch]", "segment_length={params.welch_length} segments={welch.segments} window={params.welch_window} resolution=" + report.decimal(fs / real64(params.welch_length)), "integrated_power=" + report.decimal(integrated) + " variance=" + report.decimal(variance) + " ratio=" + report.decimal(integrated / variance)])
+    int[] welch_peaks = strongest(welch.psd, 5)
+    for int rank < int(len(welch_peaks))
+        int index = welch_peaks[rank]
+        rows = rows.append("peak={rank + 1} frequency=" + report.decimal(real64(index) * fs / real64(params.welch_length)) + " psd_db=" + report.decimal(db(welch.psd[index], 10.0)) + " coherence=" + report.decimal(welch.coherence[index]) + " gain=" + report.decimal(fft.magnitude(welch.transfer[index])) + " phase=" + report.decimal(phase(welch.transfer[index])))
+    rows = rows.concat(["[filter]", "bandpass={params.band_low}-{params.band_high} bins_kept={filters.kept} rms=" + report.decimal(filters.band_rms) + " energy_ratio=" + report.decimal(filters.band_ratio), "notch={params.notch_frequency} width={params.notch_width} bins_removed={filters.removed} rms=" + report.decimal(filters.notch_rms), "fir_taps={len(params.fir)} dc_gain=" + report.decimal(filters.dc_gain) + " gain_at_fundamental_db=" + report.decimal(filters.fir_gain) + " rms=" + report.decimal(filters.fir_rms), "[envelope]", "band={params.envelope_low}-{params.envelope_high} mean=" + report.decimal(filters.envelope_mean) + " bin={filters.envelope_bin} frequency=" + report.decimal(filters.envelope_frequency) + " amplitude=" + report.decimal(filters.envelope_amplitude) + " depth=" + report.decimal(filters.envelope_depth), "instantaneous_frequency mean=" + report.decimal(filters.instantaneous_mean) + " std=" + report.decimal(filters.instantaneous_std), "[correlation]", "max_lag={params.max_lag} lag={correlation.lag} refined_lag=" + report.decimal(correlation.refined) + " delay_ms=" + report.decimal(correlation.delay) + " coefficient=" + report.decimal(correlation.coefficient), "phat_lag={correlation.phat_lag} refined_lag=" + report.decimal(correlation.phat_refined) + " delay_ms=" + report.decimal(correlation.phat_delay), "[checks]"])
+    string[] check_names = ["inverse_roundtrip", "parseval", "real_packing", "fir_fft_vs_direct", "dft_spot_check"]
+    real64[] errors = [inverse_error, parseval_error, (if welch.packing_error > frame_error then welch.packing_error else frame_error), filters.fir_error, spot_error]
+    for int j < int(len(check_names))
+        string status = if errors[j] <= 0.000001 then "ok" else "failed"
+        string line = "{check_names[j]}={status}"
+        if j == 2
+            line += " transforms={2 * welch.segments + int(len(grid))}"
+        elif j == 4
+            line += " bins={len(peaks)}"
+        rows = rows.append(line)
+    real64 ratio = harmonics[1].amplitude / primary
+    int loose = 0
+    for 2 <= int h < 10
+        if harmonics[h].level_db >= -30.0
+            loose += 1
+    bool has_electrical = false
+    real64 electrical_level = 0.0
+    for Peak peak = peaks[]
+        if peak.label == "mains"
+            has_electrical = true
+            electrical_level = peak.level_db
+            break
+    bool[] symptoms = [ratio >= 0.5, loose >= 3, filters.envelope_depth >= 0.2, has_electrical and electrical_level >= -20.0, len(onsets) > 0]
+    int findings = 0
+    for bool symptom = symptoms[]
+        if symptom
+            findings += 1
+    string electrical_text = if has_electrical then report.decimal(electrical_level) else "none"
+    string status = if findings == 0 then "normal" elif findings == 1 then "warning" else "alarm"
+    rows = rows.concat(["[diagnosis]", "misalignment=" + yes_no(symptoms[0]) + " ratio=" + report.decimal(ratio), "looseness=" + yes_no(symptoms[1]) + " harmonics={loose}", "bearing=" + yes_no(symptoms[2]) + " depth=" + report.decimal(filters.envelope_depth), "electrical=" + yes_no(symptoms[3]) + " level_db={electrical_text}", "transient=" + yes_no(symptoms[4]) + " onsets={len(onsets)}", "status={status} findings={findings}"])
+    report.write_lines("report.txt", rows)
+
+run()

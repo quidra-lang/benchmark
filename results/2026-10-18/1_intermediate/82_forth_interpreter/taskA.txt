@@ -1,0 +1,271 @@
+[Overview]
+Write an interpreter for the Forth language. The program reads a Forth program from standard input one line at a time, executes it, and writes its output to standard output. It handles an integer data stack and return stack, arithmetic including floored division, comparison and logical operations, stack manipulation, number input and output with a changeable radix, colon definitions (redefinition with early binding, and recursion), compilation of conditionals, various loops and CASE statements, memory for variables, constants, values and arrays, defining words with CREATE and DOES>, deferred words (DEFER and IS), execution tokens and exception handling (CATCH and THROW), local variables, and deletion of words (FORGET). When an error occurs, it outputs the line "ERROR word: reason", empties both stacks, and skips the rest of that line.
+
+[Input format]
+The input consists of multiple lines, and the last line is a line consisting of only the 3 uppercase letters BYE. No line before it consists of only the 3 characters BYE.
+Each line is a string of 0 to 200 characters consisting only of ASCII printable characters (character codes 32 to 126), and is one line of a Forth program.
+
+[Processing]
+1. Terms and notation
+- "Space" means only the space character (character code 32). LF denotes the newline character (character code 10).
+- A "word" is a sequence of one or more characters that contains no space. The words in a line are separated by one or more spaces; how words are read from a line is described in section 3.
+- When words are compared with each other, uppercase and lowercase letters are not distinguished (lowercase letters a to z are converted to uppercase letters A to Z before comparing). For this reason words are written in uppercase below, but in the input they may be written either way. For example, dup, Dup and DUP are the same word. The same applies to the names of words defined by the user, and when a name is output, it is output with its lowercase letters converted to uppercase. On the other hand, strings (the contents of ." and the like) are treated exactly as written.
+- For integers a and b (b is not 0), the "floored quotient" is the largest integer q that is <= a/b, and the "floored remainder" is a - b*q. For example, the floored quotient of -7 and 2 is -4 and the floored remainder is 1; the floored quotient of 7 and -2 is -4 and the floored remainder is -1.
+- The behavior of a word is described by its "stack effect" (before -> after). "before" and "after" list the values at the upper part of the data stack before and after the word is executed, with the left side toward the bottom and the right end being the top. For example, + (a b -> a+b) means that the top value b and the value a below it are removed and a+b is pushed. If the stack does not have enough values to remove, it is the error stack underflow of that word (section 6). Unless the description of a word specifies the order otherwise, the word first removes all the "before" values (stack underflow if there are not enough), and then makes the checks given in its description, in the order described.
+- A truth value (flag) is -1 for true and 0 for false. When a value is tested as a condition, 0 is regarded as false and any value other than 0 as true.
+
+2. State
+The program has the following state.
+- Data stack: a stack of integers, initially empty. Below, "the stack" alone means the data stack.
+- Return stack: a stack of integers, initially empty (section 10).
+- Memory: a sequence of "cells", each of which holds one integer. The address of the k-th cell from the start (k = 0, 1, 2, ...) is 8k. When the number of cells is n, 8n is called HERE. Initially there is only one cell (address 0), and its value is 10; that is, the initial HERE is 8. The cell at address 0 is called BASE, and its value is the radix used for number input and output (section 4). An address a is "valid" if a is a multiple of 8 that is at least 0 and less than HERE.
+- Dictionary: pairs of a word name and a behavior, arranged in the order in which they were defined. Initially it contains only the built-in words (section 7). Words defined by the user (words added by :, CREATE, VARIABLE, CONSTANT, VALUE and DEFER; they are called "user-defined words") are added at the newest position of the dictionary. When "searching" for a word by name, select the newest of the user-defined words with that name, and if there is none, select the built-in word with that name. If neither exists, the word is not found. The special words described later (section 3) are not in the dictionary, so searching for them finds nothing.
+- Execution token table: initially empty (section 13).
+- Mode: either interpret mode or compile mode, initially interpret mode. While in compile mode, there is one definition being compiled (section 8).
+- Pending line: the string of output that has not been output yet, initially empty (section 5).
+
+3. Processing a line
+The input lines are processed in order from the first. The handling of the final BYE line is described in section 16.
+For each line, the read position is set to the start of the line, and then words are read and processed one at a time. "Reading one word" means skipping spaces from the read position, taking the characters up to just before the next space or the end of the line as a word, and advancing the read position to just after it. If there is no word before the end of the line, the processing of that line ends. When the processing of a line ends (including when it ends because of an error), if the pending line has one or more characters, that line is flushed (section 5). The mode and the definition being compiled carry over across lines, so a definition can be written over multiple lines.
+The following 38 words are called "special words".
+  Compile-only words (30): IF ELSE THEN DO ?DO LOOP +LOOP LEAVE UNLOOP I J BEGIN UNTIL WHILE REPEAT AGAIN CASE OF ENDOF ENDCASE EXIT RECURSE DOES> ; >R R> R@ ABORT" ['] {:
+  Interpret-only words (3): : :NONAME FORGET
+  Words usable in both modes (5): ." ( \ TO IS
+Let W be the word read, and do the first of the following that applies.
+1. If W is \: skip the whole rest of the line (comment).
+2. If W is (: skip up to the first character ) that appears at or after the read position, and advance the read position to just after that ) (comment). If there is no ) at or after the read position, the error is unterminated comment.
+3. In interpret mode, if W is a compile-only word: the error is compile only.
+4. In compile mode, if W is an interpret-only word: the error is interpret only.
+5. If W is ." or ABORT": take the character after the character at the read position (the space right after W) as the start position, and look for the first character " that appears at or after the start position. The characters from the start position up to just before that " are the "string" (it may be the empty string), and the read position is advanced to just after that ". If W is at the end of the line, or there is no " at or after the start position, the error is unterminated string. If W is .", in interpret mode the string is written immediately (section 5), and in compile mode a "write the string" action is added to the definition being compiled. The case where W is ABORT" is described in section 9 (in interpret mode it becomes an error at step 3).
+6. If W is TO or IS: process it as described in section 11.
+7. If W is : or :NONAME: start a definition as described in section 8. If W is FORGET: process it as described in section 14.
+8. In compile mode: compile W into the definition being compiled (section 8).
+9. If a word with the name W is found in the dictionary: execute that word.
+10. If W matches the number format (section 4): push its value onto the stack.
+11. If none of these applies: the error is undefined word.
+When the read position advances during the processing of a word (strings, comments, the "read a name" processing described later, and so on), the next word is read from that new read position.
+
+4. Numbers
+- "Digits" are 0 to 9 and letters: 0 to 9 represent the values 0 to 9 respectively, and A to Z (likewise a to z) represent the values 10 to 35 respectively. A digit whose value is less than b is called a "digit of radix b".
+- To "interpret a string in radix b" means the following: when the string has the form "zero or one -, followed by one or more digits of radix b", its value is the value of that digit sequence read in base b (with its sign inverted if there is a -). If the string does not have this form, it cannot be interpreted.
+- The procedure for interpreting a word as a number is as follows.
+  (1) If the word is exactly 3 characters long and its first and third characters are ': the value is the character code of the second character (uppercase and lowercase letters are distinguished here). For example, 'A' is 65, 'a' is 97 and ''' is 39.
+  (2) If (1) does not apply and the first character of the word is one of $, # and %: the rest after removing that one character is interpreted in radix 16, 10 and 2 respectively.
+  (3) If neither (1) nor (2) applies: if the value of BASE is not between 2 and 36 inclusive, it is the error invalid base of that word. Otherwise, the whole word is interpreted in radix equal to the value of BASE.
+  When it can be interpreted, the word is said to "match the number format", and that value is the value of the word.
+  Examples: when BASE is 10, -12 is -12, 007 is 7, -0 is 0, $FF is 255, $-1a is -26, #99 is 99, %101 is 5 and '0' is 48. The word consisting only of -, 12abc, $G, %2 and 'AB' do not match the number format. When BASE is 16, FF is 255 and 10 is 16.
+- The "output form" of an integer n is its notation in radix b, where b is the value of BASE. Write the absolute value of n in base b (with no extra leading zeros, 0 written as 0, and digits with values 10 or more written as uppercase A to Z), and prefix - if n is negative. The words that output numbers (., .R, .S, ?) fail with the error invalid base if the value of BASE is not between 2 and 36 inclusive.
+
+5. Output
+- Words that produce output append characters to the end of the pending line. This is called "writing".
+- To "flush the line" means to output to standard output the string obtained by removing all trailing spaces from the pending line, followed by LF, and then make the pending line empty. Flushing when the pending line is empty outputs one empty line.
+- The line is flushed only in these 3 cases: when CR is executed; when the processing of an input line ends and the pending line has one or more characters; and just before an error line is output, when the pending line has one or more characters (section 6). A pending line consisting only of spaces is also flushed if it has one or more characters, and the result is an empty line.
+
+6. Errors
+- When an error occurs, unless it is caught by CATCH (section 13), the following is done in order.
+  (1) If the pending line has one or more characters, flush it.
+  (2) Output the single line "ERROR <word>: <reason>". There is one space between ERROR and <word>, and <word> is immediately followed by : and one space.
+  (3) Abort the execution of all definitions being executed (the nesting depth of definition execution (section 15) returns to 0), and empty the data stack and the return stack. If in compile mode, discard the definition being compiled and return to interpret mode.
+  (4) Skip the rest of that input line and go on to the next input line.
+  The memory, the words added to the dictionary and the execution token table remain as they were before the error occurred.
+- <word> is the word that caused the error, written exactly as in the input (with uppercase and lowercase letters kept as they are). When a word compiled into a definition is executed and causes the error, it is the word exactly as it was written when that definition was written. Unless otherwise specified in the descriptions below, <word> is the word being processed or executed at that time. However, when a word executed through an execution token (section 13) itself causes the error, <word> is the name of that execution token.
+- There are the following 27 kinds of error reasons. The number on the right is the error code (section 13); the ones marked "-" are errors that CATCH never catches.
+  aborted                    -1
+  <ABORT" string>            -2
+  stack overflow             -3
+  stack underflow            -4
+  return stack overflow      -5
+  return stack underflow     -6
+  nesting too deep           -7
+  invalid address            -9
+  division by zero           -10
+  undefined word             -13
+  missing name               -16
+  invalid name               -19
+  deferred word not set      -21
+  invalid argument           -24
+  no CREATE word             -31
+  invalid base               -40
+  exception <n>              n
+  compile only               -
+  interpret only             -
+  unterminated comment       -
+  unterminated string        -
+  unterminated locals        -
+  control structure mismatch -
+  unclosed <X>               -
+  not a value                -
+  not deferred               -
+  unterminated definition    -
+
+7. Built-in words
+The following words are built-in words that are in the dictionary from the start. Each of them can be redefined by the user with the same name (section 8).
+Arithmetic:
+- + (a b -> a+b), - (a b -> a-b), * (a b -> a*b)
+- / (a b -> q), MOD (a b -> r), /MOD (a b -> r q): q is the floored quotient of a and b, and r is the floored remainder. If b is 0, the error is division by zero.
+- */ (a b c -> q), */MOD (a b c -> r q): q is the floored quotient of a*b and c, and r is the floored remainder. If c is 0, the error is division by zero.
+- NEGATE (a -> -a), ABS (a -> the absolute value of a), MIN (a b -> the smaller one), MAX (a b -> the larger one)
+- 1+ (a -> a+1), 1- (a -> a-1), 2* (a -> 2a), 2/ (a -> the floored quotient of a and 2)
+Comparison and logic:
+- =, <>, <, > (a b -> flag): true when a=b, a!=b, a<b and a>b respectively.
+- 0=, 0<>, 0<, 0> (a -> flag): true when a=0, a!=0, a<0 and a>0 respectively.
+- WITHIN (n lo hi -> flag): true when lo <= n and n < hi.
+- TRUE (-> -1), FALSE (-> 0)
+- AND, OR, XOR (a b -> c): bitwise AND, bitwise OR and bitwise exclusive OR in two's complement representation. INVERT (a -> -a-1): bitwise NOT.
+Stack manipulation:
+- DUP (a -> a a), ?DUP (a -> a a, but a -> a if a is 0), DROP (a ->), SWAP (a b -> b a), OVER (a b -> a b a), ROT (a b c -> b c a), -ROT (a b c -> c a b), NIP (a b -> b), TUCK (a b -> b a b), 2DUP (a b -> a b a b), 2DROP (a b ->), 2SWAP (a b c d -> c d a b), 2OVER (a b c d -> a b c d a b)
+- DEPTH (-> n): n is the number of elements on the stack before execution.
+- PICK: pop the top value u. If u is negative, the error is invalid argument; if the number of remaining elements is u or less, the error is stack underflow. Otherwise, push a copy of the u-th value of the remaining elements counting from the top (the top being the 0th). 0 PICK works the same as DUP.
+- ROLL: pop the top value u, make the same checks as PICK, then remove the u-th value of the remaining elements counting from the top and push it on top. 1 ROLL works the same as SWAP and 2 ROLL the same as ROT, and 0 ROLL changes nothing.
+Output:
+- . (n ->): write n in output form, followed by one space.
+- .R (n w ->): if the length of the string representing n in output form is less than w, pad it on the left with spaces to length w and write it. If it is w or more, write only the string. No space is appended after it.
+- .S (->): without changing the stack, write the character <, the number of elements on the stack, the character > and one space, and then write each element from bottom to top, each followed by one space. Both the number of elements and each element are written in output form. For example, when the stack holds 1, 2, 3 from the bottom, write "<3> 1 2 3 ".
+- ? (a ->): if a is not a valid address, the error is invalid address. Otherwise, write the value of the cell at address a in the same way as . does.
+- CR (->): flush the pending line (section 5).
+- EMIT (c ->): if c is not between 32 and 126 inclusive, the error is invalid argument. Otherwise, write the character with character code c.
+- SPACE (->): write one space. SPACES (n ->): write n spaces. If n is 0 or less, write nothing.
+- BL (-> 32)
+Memory:
+- ! (x a ->): if a is not a valid address, the error is invalid address; if it is valid, set the value of the cell at address a to x.
+- @ (a -> x): if a is not a valid address, the error is invalid address; if it is valid, push the value x of the cell at address a.
+- +! (n a ->): a is checked in the same way as for !, and n is added to the value of the cell at address a.
+- , (x ->): append one cell with value x to the end of memory (HERE increases by 8).
+- ALLOT (n ->): if n is not a multiple of 8 that is 0 or more, the error is invalid argument. Otherwise, append n/8 cells with value 0 to the end of memory.
+- HERE (-> the value of HERE), CELLS (n -> 8n), CELL+ (a -> a+8)
+- BASE (-> 0): push 0, the address of BASE. HEX (->): set the value of BASE to 16. DECIMAL (->): set the value of BASE to 10.
+Definitions and execution:
+- CREATE, VARIABLE, CONSTANT, VALUE, DEFER: see section 11.
+- ', EXECUTE, CATCH, THROW, ABORT: see section 13.
+- WORDS: see section 14.
+
+8. Definitions and compilation
+- To "read a name" means to read one word from the read position (section 3) and take it as the name. If there is no word, it is the error missing name of the word that tried to read the name.
+- When a new word is defined, its name is checked after it is read. If the name is a special word, or if it can be interpreted as a number by the procedure of section 4 with the value of BASE taken as 10, the error is invalid name (<word> is the name). Any other name is allowed, even if it is the same as the name of a built-in word or an already defined word. When a new word is defined with the same name, searching by that name from then on finds the new word.
+- : (interpret-only): read and check a name, start creating a definition with that name, and enter compile mode. The definition being compiled is not added to the dictionary until it is completed by ;. Therefore, writing its own name inside the definition refers to the word with the same name defined before it (undefined word if there is none). Use RECURSE to call the definition itself.
+- :NONAME (interpret-only): start creating a definition without a name, and enter compile mode.
+- In compile mode, at step 8 of section 3, the word W is compiled according to the first of the following that applies.
+  (a) If W is a control structure word of section 9 (IF ELSE THEN DO ?DO LOOP +LOOP LEAVE BEGIN UNTIL WHILE REPEAT AGAIN CASE OF ENDOF ENDCASE), EXIT, RECURSE, ;, DOES>, ['] or {:, do as described for each of them.
+  (b) If W is >R, R>, R@, I, J or UNLOOP: add an action that performs, at run time, the behavior described in section 10.
+  (c) If W is the name of a local variable of the definition being compiled (section 12): add an action that pushes the value of that local variable.
+  (d) If a word with the name W is found in the dictionary: add an action that executes that word. Which word is executed is determined at this point (early binding), and does not change even if a word with the same name is defined or FORGET is applied later.
+  (e) If W matches the number format: add an action that pushes its value. The value is determined with BASE at this point (if BASE is invalid in (3) of section 4, invalid base).
+  (f) If none of these applies: the error is undefined word.
+- ;: if not all control structures are closed, it is an error (section 9). If they are closed, complete the definition being compiled and return to interpret mode. A definition started with : is added at the newest position of the dictionary. A definition started with :NONAME is not added to the dictionary; instead, a new execution token is assigned to it (section 13) and that token is pushed onto the stack.
+- EXIT: when executed, it immediately ends the execution of the definition being executed.
+- RECURSE: add an action that executes the definition being compiled itself from its beginning.
+- When a word defined by the user is executed, its added actions are executed in order from the beginning. Below, the execution of a colon definition (a definition made with : or :NONAME) and the execution of a DOES> part (section 11) are called a "definition execution".
+
+9. Control structures
+During compilation, a "control stack" is used to record the control structures that are not closed yet. When a definition is started, the control stack is empty. Below, "error if the top is not X" means that if the control stack is empty or the record at its top is not X, it is the error control structure mismatch of that word. At run time, "go to just after T" means to continue execution from the action that follows the corresponding word T in the definition.
+- IF: (compile time) push IF. (run time) pop a flag; if it is false, go to just after the corresponding ELSE (just after THEN if there is no ELSE).
+- ELSE: (compile time) error if the top is not IF. Replace the top IF with ELSE. (run time) go to just after the corresponding THEN.
+- THEN: (compile time) error if the top is not IF or ELSE. Remove the top. (run time) do nothing.
+- BEGIN: (compile time) push BEGIN. (run time) do nothing.
+- UNTIL: (compile time) error if the top is not BEGIN. Remove the top. (run time) pop a flag; if it is false, go to just after the corresponding BEGIN.
+- AGAIN: (compile time) same as UNTIL. (run time) go to just after the corresponding BEGIN.
+- WHILE: (compile time) error if the top is not BEGIN. Replace the top BEGIN with WHILE. (run time) pop a flag; if it is false, go to just after the corresponding REPEAT.
+- REPEAT: (compile time) error if the top is not WHILE. Remove the top. (run time) go to just after the corresponding BEGIN.
+- DO: (compile time) push DO. (run time) (limit start ->): pop the two values and push limit and then start onto the return stack, in this order. The top value of the return stack is called the loop "index", and the value below it the "limit".
+- ?DO: (compile time) push ?DO. (run time) (limit start ->): if limit and start are equal, push nothing onto the return stack and go to just after the corresponding LOOP (or +LOOP). If they are not equal, same as DO.
+- LOOP: (compile time) error if the top is not DO or ?DO. Remove the top. (run time) do the same as +LOOP with step being 1.
+- +LOOP: (compile time) same as LOOP. (run time) pop step. If the return stack has fewer than 2 elements, the error is return stack underflow. Let i be the index at the top of the return stack and m the limit below it, and let d1 = i - m and d2 = i + step - m. If one of d1 and d2 is negative and the other is 0 or more, remove 2 elements from the return stack and simply continue with the next action (the loop ends). Otherwise, replace the index with i + step and go to just after the corresponding DO (or ?DO).
+- LEAVE: (compile time) if there is neither DO nor ?DO anywhere on the control stack, the error is control structure mismatch. If there is, associate LEAVE with the one among them closest to the top. The control stack is not changed. (run time) remove 2 elements from the return stack (if there are fewer than 2, the error is return stack underflow), and go to just after the corresponding LOOP (or +LOOP).
+- CASE: (compile time) push CASE. (run time) do nothing.
+- OF: (compile time) error if the top is not CASE. Push OF on top of the CASE. (run time) (x1 x2 ->): pop the two values; if x1 and x2 are equal, simply continue with the next action. If they are not equal, push x1 back and go to just after the corresponding ENDOF.
+- ENDOF: (compile time) error if the top is not OF. Remove the top. (run time) go to just after the corresponding ENDCASE.
+- ENDCASE: (compile time) error if the top is not CASE. Remove the top. (run time) pop one value and discard it.
+- ABORT": (compile time) read the string as in step 5 of section 3, and add an action that holds that string. (run time) pop a flag; if it is true, raise an error whose reason is that string and whose error code is -2. If it is false, do nothing.
+- If the control stack is not empty when ; is processed, it is the error unclosed <X> of ;. <X> is IF if the top record is IF or ELSE, BEGIN if it is BEGIN or WHILE, DO if it is DO, ?DO if it is ?DO, CASE if it is CASE, and OF if it is OF.
+
+10. Return stack
+- >R (x ->): push x onto the return stack.
+- R>: pop a value from the return stack and push it onto the data stack.
+- R@: push a copy of the top value of the return stack onto the data stack.
+- I: push a copy of the top value of the return stack onto the data stack.
+- J: push a copy of the 3rd value from the top of the return stack (counting the top as the 1st) onto the data stack.
+- UNLOOP: remove 2 elements from the return stack.
+- For R>, R@, I, J and UNLOOP, if the return stack has fewer elements than the required number (1 for R>, R@ and I, 3 for J, 2 for UNLOOP), the error is return stack underflow.
+- I and J only read the values on the return stack at that moment, regardless of whether they are inside a loop. For example, I executed right after >R inside a loop returns the value pushed by >R.
+- When a definition execution ends (including when it runs to the end and when it ends by EXIT or DOES>, but not including when it is aborted by an error), if the return stack has more elements than when that execution started, the excess elements are removed from the top. For example, even if EXIT is done in the middle of a loop, the index and limit of that loop are removed.
+
+11. Defining words, values and deferred words
+- The following words, when executed, read a name (section 8), check the name, and then add a new word to the dictionary. When the new word is added, the value of HERE at that time is recorded as that word's "definition-time HERE" (section 14).
+  CREATE: add a new word. The "data address" of this word is HERE at that time (no cell is added). Executing this word pushes its data address.
+  VARIABLE: after adding a new word, append one cell with value 0 to the end of memory. Executing this word pushes the address of that cell.
+  CONSTANT (x ->): after reading and checking the name, pop x and add a new word. Executing this word pushes x.
+  VALUE (x ->): after reading and checking the name, pop x, add a new word, and then append one cell with value x to the end of memory. Executing this word pushes the value of that cell.
+  DEFER: add a new "deferred word". A deferred word can hold one execution token, but initially it holds nothing. Executing a deferred word executes the word of the execution token it holds in the same way as EXECUTE (section 13). If it holds nothing, it is the error deferred word not set of that deferred word.
+  These words are not special words, so in compile mode they are compiled as ordinary words. In that case, the name is read not when the definition is written but when that definition is executed, from the read position of the input line being processed at that time. For example, after defining ": MAKE CREATE ;", "MAKE ABC" creates a word named ABC.
+- DOES> (compile-only): (compile time) if the control stack is not empty, the error is control structure mismatch. If it is empty, add a "DOES> action". The part of the definition after DOES> (up to ;) is called the "DOES> part". (run time) if the newest word in the dictionary is not a word added by CREATE, the error is no CREATE word. Otherwise, change the behavior of that word to "push the data address, then execute this DOES> part", and end the execution of the definition being executed (same as EXIT). Since it is the word itself whose behavior changes, executing that word from inside definitions compiled before this also gives the new behavior. The execution of a DOES> part is one definition execution.
+- TO (usable in both modes): read a name right after TO. In compile mode, if the name is the name of a local variable of the definition being compiled (section 12), add an action that "pops one value and makes it the value of that local variable". Otherwise, search the dictionary for the name; if it is not found, the error is undefined word, and if the word found is not a word added by VALUE, the error is not a value (in both cases <word> is the name). In interpret mode, pop one value and make it the value of that word's cell. In compile mode, add an action that does the same at run time (which word's cell is used is determined at this point). In either case, if there is no value to pop, it is the error stack underflow of TO.
+- IS (usable in both modes): read a name right after IS and search the dictionary for it. If it is not found, the error is undefined word, and if the word found is not a deferred word, the error is not deferred (in both cases <word> is the name). Immediately in interpret mode, or at run time in compile mode (which deferred word is used is determined at this point), do the following: pop one value x (if there is none, the error stack underflow of IS); if x is not a valid execution token (section 13), the error invalid argument of IS; if it is valid, set the execution token held by the deferred word to x.
+
+12. Local variables
+- {: (compile-only): read the words after {: one at a time, up to the first word :} that appears in the same line. If there is no such word in that line, the error is unterminated locals. Among the words read (:} not included), the words before the first -- (all the words if there is no --) are the names of local variables, and the words from -- on are ignored. Each name is checked in the same way as the name of a new word (section 8). When there are k names, add an action that "pops k values from the stack and makes them, starting from the value nearest the bottom, the values of the local variables in the order written" (the local variable with the last name gets the top value). If there are fewer than k values at run time, it is the error stack underflow of {:.
+- The name of a local variable can be used in the definition being compiled from the position where it is declared up to the end of the definition (;). The names of local variables take precedence over the words in the dictionary. If a local variable with the same name is declared again, the name refers to the newer one after that point.
+- Local variables are prepared separately for each definition execution, and their values are 0 when the execution starts. A local variable whose {: action has not been executed (for example, at a position before the {:, or when it is declared inside an IF that was skipped) keeps the value 0. Separate local variables are also prepared for a call by RECURSE and for the execution of a DOES> part.
+- ', ['], IS and FORGET do not search local variables.
+
+13. Execution tokens and exceptions
+- An "execution token" (xt) is a positive integer that represents a word. When the xt of a word is requested for the first time by ' or ['], that word is assigned the number "number of words in the table + 1" and added to the table (the first number assigned is 1). Requesting the xt of the same word again gives the same number. Here "the same word" means the same definition; a word defined again with the same name is a different word. A new number is also assigned when a :NONAME definition is completed. Once assigned, a number is never cancelled or changed by later errors or FORGET, and it keeps representing the same word. An integer that is at least 1 and at most the number of words in the table is called a "valid execution token".
+- The "name" of an execution token is the name of that word in the dictionary (in uppercase). The name of a :NONAME definition is :NONAME.
+- "Executing through an execution token" means executing the word represented by an execution token by EXECUTE, CATCH or a deferred word.
+- ' (-> xt): read a name and search the dictionary for it. If it is not found, the error is undefined word (<word> is the name). If it is found, push the xt of that word. ' is not a special word, so when it is compiled, it reads the name when it is executed, in the same way as CREATE and the like (section 11).
+- ['] (compile-only): read a name right after ['], obtain the xt of that word at this point in the same way as ', and add an action that pushes that value.
+- EXECUTE (xt ->): if xt is not a valid execution token, the error is invalid argument. If it is valid, execute the word that xt represents.
+- CATCH (xt -> code): pop xt; if it is not a valid execution token, it is the error invalid argument of CATCH. If it is valid, record the contents of the data stack at that time, the number of elements of the return stack and the nesting depth of definition execution (section 15), and then execute the word that xt represents. If it finishes without an error, push 0. If an error occurs during the execution, do not do the processing of section 6; instead, restore the data stack to the recorded contents, remove elements from the top of the return stack until it has the recorded number of elements (if it already has that number of elements or fewer, remove nothing), restore the nesting depth to the recorded value, and then push the error code (section 6) of that error. In either case, execution then continues from the point after CATCH. Characters written up to then, changes to memory and the dictionary, and changes of the read position are not undone. If another CATCH is executed while a CATCH is executing, an error is caught by the innermost CATCH (the one that started executing last and has not finished yet).
+- THROW (n ->): if n is 0, do nothing. Otherwise, raise an error whose reason is "exception <n>" (<n> is n in decimal notation, with a leading - if it is negative) and whose error code is n.
+- ABORT (->): raise an error whose reason is aborted.
+
+14. FORGET and WORDS
+- FORGET (interpret-only): read a name. If there is no user-defined word with that name in the dictionary (built-in words are not included), the error is undefined word (<word> is the name). If there is, remove the newest such word and all the words added to the dictionary after it from the dictionary. Furthermore, set HERE back to the definition-time HERE of the oldest of the removed words (the word whose name was given), and remove the cells after that from memory. The definition-time HERE of a word made with : is the HERE at the time that : was processed. Searching by the name of a removed word finds again an older remaining word with the same name or a built-in word. The execution tokens of removed words remain valid.
+- WORDS (->): write the names of the user-defined words in the dictionary, from the newest word to the oldest, each name followed by one space. If there are multiple words with the same name, write all of them. Built-in words and :NONAME definitions are not written.
+
+15. Limits
+- When the number of elements on the data stack exceeds 1000, it is the error stack overflow of the word that caused it. When the cause is an action that pushes a number or the value of a local variable, <word> is the word written as that number or local variable name.
+- When the number of elements on the return stack exceeds 1000, it is the error return stack overflow of the word that caused it.
+- The "nesting depth of definition execution" is initially 0, increases by 1 each time a definition execution starts, and decreases by 1 when that execution ends. If a further definition execution is about to start while the depth is 100, it is the error nesting too deep of the word that tried to start that execution. Here "the word that tried to start" is a colon-definition word, RECURSE, or a word that has a DOES> part; when executing through an execution token, it is the name of that execution token.
+- When a word added by CREATE has a DOES> part, executing that word first pushes the data address (with the stack overflow check), and then starts the execution of the DOES> part (with the nesting too deep check).
+
+16. End of input
+When the BYE line is read, if in compile mode, output the single line "ERROR <name>: unterminated definition". <name> is, if the definition being compiled was started with :, the name written after the : exactly as written, and if it was started with :NONAME, that :NONAME word exactly as written. Then the program ends. The BYE line itself is not processed as words.
+
+[Output format]
+- The output consists only of the flushed output lines (section 5), the error lines (section 6) and the error line of section 16, as described in [Processing]. Every line ends with LF.
+- Since trailing spaces are removed when a line is flushed, no output line ends with a space.
+- An error line has the form "ERROR <word>: <reason>", where <reason> is one of the 27 kinds in section 6 (<ABORT" string>, <n> and <X> are replaced as described).
+
+[Constraints]
+- The number of input lines is at most 3000.
+- The absolute values of the values of words in the input that match the number format (including words regarded as numbers in the name check), of all values placed on the stacks or in memory, and of all values that appear during computation (including a*b in */ and */MOD, i + step in +LOOP, and so on) are less than 2^53.
+- The absolute values of the values given to AND, OR, XOR and INVERT and of their results are less than 2^31.
+- HERE is always at most 80000.
+- After a word added by VALUE has been removed by FORGET, neither that word nor an action added by TO for that word is executed again.
+- The value given to SPACES and the w of .R are at most 200, and every output line has at most 1000 characters.
+- The string of ABORT" has at least 1 character, and its last character is not a space.
+- The program always finishes processing up to the end of the input in finite time, including when it stops because of errors (there are no loops that never end).
+
+[Example]
+Input:
+: SQUARE ( n -- n*n ) DUP * ;
+5 square . 3 SQUARE 1+ . CR
+: countdown ( n -- ) BEGIN DUP . 1- DUP 0= UNTIL DROP ;
+3 countdown ." liftoff!"
+VARIABLE total 10 total ! 5 total +! total ?
+: check ( n -- ) 0< ABORT" negative" ." fine " ;
+4 check -4 check ." skipped"
+HEX ff . DECIMAL 1 0 ' / CATCH . .S
+: broken 1 IF 2 ;
+BYE
+
+Output:
+25 10
+3 2 1 liftoff!
+15
+fine
+ERROR ABORT": negative
+FF -10 <2> 1 0
+ERROR ;: unclosed IF
+
+In this example, the CR on line 2 flushes the line "25 10", and line 4 is flushed at the end of the processing of the line. On line 7, the ABORT" inside -4 check raises an error, so the pending "fine " is flushed and then the error line is output, and the rest of the line (." skipped") is skipped. On line 8, the execution token obtained by ' / is executed with CATCH, and the division by zero error is caught and the error code -10 is pushed. The stack has been restored to 1 0, as it was before CATCH. Line 9 is an error because ; was reached while IF was still unclosed, and the definition broken is not added to the dictionary.

@@ -1,0 +1,524 @@
+[Overview]
+Write an automated planner that solves STRIPS-style planning problems written in a PDDL-like syntax. The subject matter is parcel delivery (trucks that drive on roads and drones that fly after recharging), but the types, predicates and actions are all given in the input, so the program can also be used as-is for domains on other subjects.
+The program is run in a directory that contains, besides the source files, input/ holding the input files and an empty output/. The input consists of 4 files: the domain definition (input/domain.txt), one or more problem definitions (input/problems.txt), the search settings (input/params.txt), and candidate plans written by people (input/candidates.txt). The results are written to 5 files in output/ (grounding.txt, plans.txt, graphplan.txt, validation.txt, comparison.csv). Nothing is written to standard output. All computation is done with integers; no floating-point numbers are used.
+The processing consists of the following 7 main parts.
+1. Validation: check the actions of the domain and the atoms of each problem's initial state and goal, report errors, and remove the erroneous ones.
+2. Grounding: create ground actions by assigning objects to the parameters of the actions, filter them with the static predicates and the equality conditions, remove the actions that are not used according to a reachability analysis that ignores delete effects, and number the facts and actions.
+3. Heuristics: compute 5 kinds: the number of unachieved goals, h_max, h_add, h_FF (relaxed plan and helpful actions), and the number of fact landmarks found by backward chaining in the planning graph and verification.
+4. Search: run breadth-first search, uniform-cost search, greedy best-first search, A*, weighted A*, and enforced hill-climbing with helpful actions, in the combinations specified in the settings.
+5. GraphPlan: expand a planning graph with mutual exclusion relations, and extract a parallel plan backwards while memoizing failed goal sets.
+6. Plan analysis: split each plan found into parallel layers, remove redundant actions, check which landmarks are reached, and validate the plan by a simulation that goes back to the action definitions. If there is a plan guaranteed to have minimum cost, also compute the value of each heuristic along that plan and its causal links.
+7. Candidate validation and repair: validate the plans written by people, and if a plan has an error, repair it by completing the continuation of its correct part with a search.
+
+[Input files]
+All 4 input files consist only of printable ASCII characters (including the space) and newlines (LF), and every line (including the last line) ends with a newline. They contain no tab characters. All letters are lowercase; no uppercase letters appear.
+
+## Tokens and expressions (common to input/domain.txt and input/problems.txt)
+On each line, the part from ";" to the end of the line is a comment and is skipped. The remaining sequence of characters is split into the following "tokens". "(" and ")" are each a token of one character. A longest possible run of characters other than space, newline, "(" and ")" is one "word". Spaces and newlines only separate tokens and are not tokens themselves.
+The sequence of tokens is read as a sequence of "expressions". An expression is either a single word, or "(", zero or more expressions, and ")" in this order (called a "list"). The parentheses are always balanced.
+Words are of the following kinds.
+- Name: a word that begins with a lowercase letter and consists only of lowercase letters, digits (0 to 9), "-" and "_" (examples: truck, s1, total-cost).
+- Variable: a word consisting of "?" followed by a name (example: ?from).
+- Keyword: a word consisting of ":" followed by a name (example: :parameters).
+- Integer: a word consisting only of digits, without extra leading zeros.
+- "-": the word consisting of the single character "-"; it denotes a type separator.
+- "=": the word consisting of the single character "="; it denotes equality.
+A "typed list" is a sequence of zero or more names (or variables) with pairs of "-" and a type name inserted between them. The type of each name is the word right after the first "-" that appears after that name. The type of a name with no "-" after it is object. For example, "a b - t c - u d" means that the type of a and b is t, the type of c is u, and the type of d is object.
+
+## input/domain.txt (domain)
+It consists of a single expression "(define (domain <domain name>) <section> ...)". The sections appear in the following order.
+- "(:requirements <keyword> ...)": may be omitted. Its content is not used.
+- "(:types <typed list of type names>)": may be omitted.
+- "(:predicates <predicate declaration> ...)": always present. A predicate declaration is "(<predicate name> <typed list of variables>)" and gives the number of arguments of the predicate and the type of each argument (the variable names are not used; every argument type is a declared type). The predicate names are distinct from each other and are not "=".
+- "(:action ...)": one or more.
+Types: object is a type that exists from the start. Every word in :types other than "-" is a type name; the type names appearing in :types together with object are called the "declared types". In the typed list, the type attached to a name is the "parent" of the type with that name. A type name that appears only right after "-" (one that does not appear as a name of the list and is not object) has parent object. object has no parent. Each type name appears as a name of the list at most once, and object never appears as a name of the list. Following parents always leads to object. Type t is a "subtype" of type u if t and u are the same, or u is reached from t by following parents one or more times. The "type order" is object first, followed by the type names other than object that appear in :types (including those appearing right after "-") in order of first appearance.
+Actions: an action is a list "(:action <action name> :parameters (<typed list of variables>) :precondition <condition> :effect <effect>)"; ":precondition <condition>" may be omitted (when it is omitted, the condition has zero literals). The action names are distinct from each other. The variables in :parameters are called the "parameters" of the action, and the parameter names are distinct from each other.
+- A condition is either "(and <literal> ...)" (zero or more literals) or a single literal.
+- A literal is either "<atom>" (a positive literal) or "(not <atom>)" (a negative literal). An atom is either "(<predicate name> <term> ...)" (zero or more terms) or "(= <term> <term>)". The latter is called an "equality atom", and its predicate name is taken to be "=". Every term in an action is a variable.
+- An effect is either "(and <effect element> ...)" (one or more elements) or a single effect element. An effect element is one of "<atom>" (add effect), "(not <atom>)" (delete effect), and "(increase (total-cost) <integer>)" (cost). An atom in an effect is not an equality atom. There is at most one cost element, and its integer (1 or more) is the "cost" of the action. If there is no cost element, the cost is 1. The effect elements other than the cost element are called "effect literals" (add effects are positive literals and delete effects are negative literals).
+- The type of a parameter may be an undeclared type, and a literal may contain an undeclared predicate name, a variable that is not a parameter, or arguments whose number or types do not match (these are checked in step 1 of [Processing]).
+
+## input/problems.txt (problems)
+It is a sequence of one or more expressions "(define (problem <problem name>) (:domain <domain name>) (:objects <typed list of object names>) (:init <atom> ...) (:goal <goal>))". The problem names are distinct from each other, and the domain name is the same as the domain name in domain.txt.
+- The object names are distinct within a problem, and the type of each object is a declared type. For each problem, the objects are given "object numbers" 0, 1, 2, ... in the order written in :objects.
+- :init has zero or more atoms, and the goal is either "(and <atom> ...)" (one or more atoms) or a single atom. Every term of the atoms here is a name, and no equality atoms appear. However, an undeclared predicate name, an object name not in the problem, or arguments whose number or types do not match may appear, and the same atom may appear twice or more (these are checked in step 2 of [Processing]).
+
+## input/params.txt (settings)
+Blank lines and lines beginning with "#" are ignored. Every other line is one of the following, with its words separated by single spaces.
+- "budget <integer>": the upper limit (budget) B on the number of nodes expanded in a search.
+- "weight <integer>": the weight w of weighted A*.
+- "graphplan <integer>": the upper limit L on the index of the fact levels built by GraphPlan.
+- "run <algorithm> <heuristic>": a search to run. There are one or more such lines, and they are run in the order written.
+- "repair <algorithm> <heuristic>": the search used to repair candidates.
+The algorithm is one of bfs, ucs, gbfs, astar, wastar, ehc, and the heuristic is one of none, goalcount, hmax, hadd, ff, lmcount. The heuristic of bfs and ucs is none, and the heuristic of any other algorithm is not none. There is exactly one line each for budget, weight, graphplan and repair, and no two run lines have the same pair of algorithm and heuristic. The "<algorithm> <heuristic>" of a run line (with a single space between them) is called the "tag" of that search (example: "astar hmax"). The tag of GraphPlan is "graphplan".
+
+## input/candidates.txt (candidate plans)
+Blank lines and lines beginning with "#" are ignored. The remaining lines form a sequence of zero or more blocks. A block consists of a line "plan <problem name> <label>", step lines (zero or more), and a line "end", in this order. The problem name is the name of one of the problems in problems.txt, and the label is a word of the form of a name. A step line is the concatenation, in this order, of "(", one or more words (strings that contain no space, "(" or ")") separated by single spaces, and ")". The first word of a step is called the "action name" and the remaining words the "arguments". The blocks are given "candidate numbers" 1, 2, 3, ... from the beginning.
+
+[Processing]
+## Terms and notation
+- An atom is a pair of a predicate name and a sequence of terms. Two atoms whose predicate names and term sequences are equal are the same atom. The "notation" of an atom is the string formed by concatenating "(", the predicate name and the terms separated by single spaces, and ")" (example: "(at r1 a)"; with zero terms it has the form "(p)"). The notation of a negative literal is "(not <notation of the atom>)" (example: "(not (= a a))"). The notations of a step and of a ground action are formed in the same way from the action name (a name) and the arguments (example: "(move r1 a b)").
+- The "number list" of a set of integers is the string of its elements in ascending order joined by ","; for the empty set it is "-" (example: "0,4").
+- "The list following heading H" is the string formed by H followed by the items in order, each preceded by a single space. When there are zero items, it is the string formed by H, a single space and "-". For example, the list following the heading "helpful:" is "helpful: (move r1 a b) (pick r1 b1 a)" when there are 2 items, and "helpful: -" when there are 0 items.
+- All numbers are written as decimal integers without extra leading zeros. Infinity is written as "inf". Infinity is larger than every integer, and infinity plus an integer is infinity.
+- In an output format, <...> is replaced by the value it describes ("<" and ">" themselves are not output).
+
+## 1. Domain validation
+"Argument checking", given a sequence of arguments x1, ..., xk, a sequence of expected types t1, ..., tm, a table T that maps a name to its type, and a noun N ("object" or "variable"), checks the following in order and returns the error string of the first one that applies (if none applies, there is no error).
+  (a) If k != m: "expected <m> arguments, got <k>".
+  (b) For i = 1, ..., k in order: if xi is not in T, "unknown <N> <xi>"; if the type of xi is not a subtype of ti, "argument <i> (<xi>) is not of type <ti>".
+For each action of the domain in the order written, check the following in order; the first error found is the error of that action.
+  (1) Looking at the parameters in the order written: if a type is not a declared type, "unknown type <type name>".
+  (2) Looking at the condition literals in the order written, then the effect literals in the order written, for the atom of each literal: if the predicate name is neither "=" nor a declared predicate, "unknown predicate <predicate name>"; otherwise, the error of argument checking (the arguments are the terms of the atom, the expected types are the argument types in the predicate declaration (object and object for "="), T is the table of the parameters and their types, and N is "variable"). An error of (2) is prefixed with the notation of the atom, giving "<notation of the atom>: <error>".
+For each action with an error, record the diagnostic "error: action <action name>: <error>" and remove that action. In all later processing, a removed action is treated as if it had not been written in the domain. From here on, "the actions of the domain" means the remaining actions.
+After all actions have been checked, for each predicate, in order of the predicate declarations, that does not appear in any literal (condition or effect) of any action of the domain, record the diagnostic "warning: predicate <predicate name> is not used by any action".
+A predicate that appears in some effect literal of some action of the domain is called a "fluent predicate", and every other declared predicate is called a "static predicate".
+
+## 2. Problem validation
+For each problem, examine the atoms of :init in the order written, then the atoms of the goal in the order written, checking the following in order.
+  (1) If the predicate name is not a declared predicate: "unknown predicate <predicate name>".
+  (2) Otherwise, the error of argument checking (the arguments are the terms of the atom, the expected types are the argument types in the predicate declaration, T is the table of the problem's objects and their types, and N is "object").
+  (3) If there is no error and the same atom has already been kept on the same side (:init for an atom of :init, the goal for an atom of the goal): "duplicate".
+For each atom with an error, record the problem's diagnostic "warning: init <notation of the atom>: <error>" (for an atom of the goal, "warning: goal <notation of the atom>: <error>") and remove that atom. The atoms without errors are kept in the order written. From here on, the problem's "initial-state atoms" and "goal atoms" mean the sequences of remaining atoms, respectively. At least one goal atom remains.
+
+## 3. Grounding
+For each problem, create the facts and the ground actions by the following procedure.
+(1) The "objects of type t" are the objects whose type is a subtype of t, listed in order of object number.
+(2) For each action of the domain (in the order written), enumerate the combinations of parameters. A combination assigns to each parameter one object of that parameter's type; the combinations are listed in lexicographic order that compares the object number of the 1st parameter with the highest priority, then those of the 2nd, 3rd, ... parameters (the smaller number comes first). If there are zero parameters, there is exactly one combination, the empty assignment. The total number of combinations (the product of the numbers of objects of each parameter's type) is the "assignment count" of that action of the domain.
+(3) For each combination, examine the condition literals, with the parameters replaced by the assigned objects, in the order written. An equality atom is true when its two terms are the same object, and an atom of a static predicate is true when it is contained in the initial-state atoms. A positive literal is satisfied when its atom is true, and a negative literal is satisfied when its atom is false. If even one literal whose atom is an equality atom or an atom of a static predicate is not satisfied, the combination is discarded. Otherwise, one "candidate" is created from the combination. A candidate has the action of the domain it came from (called its "source action"), its arguments (the names of the assigned objects, from the 1st parameter on), its cost (the cost of the source action), and the following 4 sets of atoms (each is a set of atoms with the parameters replaced).
+  - Preconditions: the set of atoms of the positive literals of fluent predicates.
+  - Negative preconditions: the set of atoms of the negative literals of fluent predicates.
+  - Adds: the set of atoms of the add effects.
+  - Deletes: the set of atoms of the delete effects, excluding those contained in the adds.
+The candidates are ordered by the order of the actions of the domain, and within the same action of the domain by the order of the combinations. The number of candidates of each action of the domain is the "candidate count" of that action of the domain.
+(4) Reachability analysis: start a set R with the initial-state atoms of fluent predicates. A candidate whose preconditions are all contained in R is "reachable", and the atoms of its adds are added to R. This is repeated until no new candidate becomes reachable (the final R and the reachable candidates do not depend on the order of examination). The number of reachable candidates of each action of the domain is the "reachable count" of that action of the domain.
+(5) Facts: the atoms of the final R are called "facts". They are ordered by the order of the predicate declarations, and within the same predicate in lexicographic order of the sequence of object numbers of the arguments (the number of the 1st argument with the highest priority), and are given "fact numbers" 0, 1, 2, .... From here on, a set of facts is handled as a set of fact numbers.
+(6) Ground actions: the reachable candidates, in candidate order, are given "action numbers" 0, 1, 2, ..., and are called "ground actions". A ground action has the source action, arguments and cost of the candidate, and the sets of fact numbers pre (preconditions), neg (negative preconditions), add (adds) and del (deletes). Atoms that are not facts are removed from neg and del (they are false in every state). From here on, "action" alone means a ground action, and the "name" of a ground action is the name of its source action.
+(7) The initial state is the set of fact numbers of the initial-state atoms of fluent predicates. The goal is determined as follows. Looking at the goal atoms in the order written, if an atom is a fact, its fact number is added to the goal set G. Among the atoms that are not facts, an atom of a static predicate that is contained in the initial-state atoms is always true and is ignored. Every other atom is an "unreachable goal".
+(8) A problem with one or more unreachable goals is called an "unreachable problem". For an unreachable problem, the processing of the heuristics, search, GraphPlan, plan analysis, and profile and causal links (5 to 8 and 10) is not performed, and for these only the lines specified in [Output files] are output.
+The "number of static facts" of a problem is the number of initial-state atoms of static predicates.
+
+## 4. States and plans
+A state is a set of fact numbers, and two states are the same state when they have the same elements. An action a is "applicable" in a state s when all facts of pre(a) are contained in s and none of the facts of neg(a) is contained in s. The result of "applying" an applicable action a to s is the state obtained from s by removing the facts of del(a) and adding the facts of add(a). A state that contains all facts of G is called a "goal state". A "plan" is a sequence of actions; its length is the number of actions and its cost is the sum of the costs of the actions. The "successors" of a state s are the sequence, in order of action number, of the pairs (a, s') of each action a applicable in s and the state s' that results from applying a to s.
+
+## 5. Heuristics
+Define the following values for a state s. All of them are based on the "relaxation" that ignores deletes and negative preconditions. An action a is said to "achieve" the facts of add(a), and an action that achieves a fact p is called an "achiever" of p.
+(1) goalcount(s): the number of facts of G that are not contained in s.
+(2) Relaxed cost: the value c(p) of each fact is computed as follows. Start with 0 if p is contained in s and infinity otherwise, and repeat the following pass until no value changes: "look at the actions in order of action number, compute for action a the value v(a) = cost(a) + Agg(the c values of the facts of pre(a)), and for each fact p of add(a), if v(a) < c(p), set c(p) to v(a)". Agg is the maximum for h_max and the sum for h_add; it is 0 if pre(a) is empty and infinity if the values include infinity. The result does not depend on the order of the passes, so it may be computed by any other method that gives the same result (such as Dijkstra's algorithm). The relaxed cost of h_max is written cmax and that of h_add is written cadd.
+(3) hmax(s) is the maximum of cmax(g) over the facts g of G, and hadd(s) is the sum of cadd(g) over the facts g of G (G is not empty). Each of them is infinity if there is an infinite value.
+(4) Relaxed plan and ff(s): if cadd of some fact of G is infinity, ff(s) is infinity and there is no relaxed plan. Otherwise, for a fact p that is not contained in s and whose cadd(p) is finite, its "best achiever" bs(p) is, among the achievers a of p whose pre facts all have finite cadd, the one that minimizes cost(a) + (the sum of cadd over the facts of pre(a)) (if two or more attain the minimum, the one with the smallest action number). The "relaxed plan" is the smallest set of actions that satisfies both of the following.
+  - For each fact g of G that is not contained in s, bs(g) is in the relaxed plan.
+  - For each action a in the relaxed plan and each fact q of pre(a) that is not contained in s, bs(q) is in the relaxed plan.
+ff(s) is the sum of the costs of the actions of the relaxed plan. The actions of the relaxed plan are ordered by action number.
+(5) Helpful actions helpful(s): the sequence, in order of action number, of the actions of the relaxed plan that are applicable in s. It is empty if there is no relaxed plan.
+(6) Planning graph levels: compute the "levels" of the facts and actions from s. The facts of s have level 0; for k = 0, 1, 2, ... in order, repeat "give level k to the actions that have no level yet and whose pre facts all have level k or less (including those whose pre is empty), and give level k + 1 to the facts achieved by those actions that have no level yet", and stop when at some k no fact newly gets a level. The facts and actions that got no level have level infinity.
+(7) Landmarks and lmcount(s): if some fact of G has level infinity, lmcount(s) is infinity and there are no landmarks. Otherwise, start the set of facts LM with the facts of G that are not contained in s, and repeat adding facts by the following rule until no fact is added.
+  - For a fact p of LM, let A(p) be the set of all achievers of p whose level is (the level of p - 1) (A(p) is never empty); the facts that are contained in the pre of every action of A(p) and are not contained in s are the "candidates of p". If a candidate q of p is not yet in LM and passes the following verification, q is added to LM. Verification: using only the actions that remain after removing all actions that achieve q, compute the set of facts reachable from s by the same method as 3 (4) (repeatedly adding the adds of the actions whose preconditions are all contained). It passes if some fact of G is not reachable.
+The candidates of p and the result of the verification depend only on p, q and s, so the final LM does not depend on the order of examination. The facts of LM are called the "landmarks of s", and lmcount(s) is the number of facts of LM.
+The value of the heuristic none is always 0. Below, the value of the heuristic h in a state s is written h(s).
+
+## 6. Search
+A search is run with a start state s0, an algorithm, a heuristic h and a budget B, and determines its result ("solved", or one of the failure reasons "dead end", "exhausted", "budget", "stuck"), the plan when it is solved, the "expanded count" and the "generated count". The start state of a run search is the initial state (in the repair of 12 it is a different state).
+
+(A) Best-first search (bfs, ucs, gbfs, astar, wastar)
+A node has a state, g (the sum of the costs of the actions from the start state), d (the number of actions from the start state), a parent node, and the action from the parent node. Nodes have serial numbers n = 0, 1, 2, ... in the order in which they are inserted into the open list, and the node whose key (f, h, n) is lexicographically smallest is removed from the open list. Here h is the heuristic value of the node's state, and f is d for bfs, g for ucs, h for gbfs, g + h for astar, and g + w * h for wastar. A table T that maps a state to an integer is also used.
+  (1) If h(s0) is infinity, the result is "dead end", and the expanded count and the generated count are 0.
+  (2) Set T[s0] to 0 and insert the start node (state s0, g = 0, d = 0, serial number 0) into the open list. Set the expanded count and the generated count to 0.
+  (3) If the open list is empty, the result is "exhausted".
+  (4) Remove a node N from the open list. If the algorithm is one of ucs, astar, wastar and the g of N is greater than T[state of N], discard N and go back to (3).
+  (5) If the state of N is a goal state, the result is "solved". The plan is the sequence of the actions met when following parents from the start node to N, ordered from the one nearest to the start node.
+  (6) If the expanded count equals B, the result is "budget".
+  (7) Increase the expanded count by 1 and process the successors (a, s') of the state of N in order. For each successor, increase the generated count by 1, let g' = (g of N) + cost(a), and do the following.
+    - bfs and gbfs: if s' is in T, discard this successor. Otherwise set T[s'] to g'.
+    - ucs, astar, wastar: if s' is in T and T[s'] <= g', discard this successor. Otherwise set T[s'] to g'.
+    For a successor that was not discarded, compute h(s'); if it is infinity, discard the successor. Otherwise give the node (state s', g', d of N + 1, parent N, action a) the next serial number and insert it into the open list.
+    When all successors have been processed, go back to (3).
+
+(B) Enforced hill-climbing (ehc)
+  (1) Set the expanded count and the generated count to 0 and the plan to the empty sequence, let the current state c be s0, and let hc be h(s0). If hc is infinity, the result is "dead end".
+  (2) If c is a goal state, the result is "solved".
+  (3) Run a breadth-first local search from c. Put only (c, empty sequence) into a queue, and let the set of visited states be the set consisting of c only.
+    (a) If the queue is empty, the result is "stuck".
+    (b) Remove the front (s, pi) of the queue. If the expanded count equals B, the result is "budget". Increase the expanded count by 1.
+    (c) Process the actions a of helpful(s) in order (every action of helpful(s) is applicable in s). Let s' be the result of applying a to s, and increase the generated count by 1. If s' is visited, go on to the next action. Add s' to the visited states; if h(s') is infinity, go on to the next action. If h(s') < hc, append pi and then a to the end of the plan, set c to s' and hc to h(s'), and go back to (2) (the remaining actions of helpful(s) are not processed). Otherwise, append (s', pi followed by a) to the end of the queue.
+    (d) Go back to (a).
+
+## 7. GraphPlan
+For each problem that is not unreachable, compute a parallel plan by the following procedure.
+(1) Transforming negative preconditions: let P1, ..., Pr be the fact numbers that appear in the neg of some action, without duplicates and in ascending order, let F be the number of facts, and give the "complement fact" of Pj (j = 1, ..., r) the number F + j - 1 (a complement fact represents "Pj is false"). For each action a, the transformed precondition pre'(a) is pre(a) plus the complement facts of the facts of neg(a); the transformed add add'(a) is add(a) plus the complement facts of those facts of del(a) that have a complement fact; and the transformed delete del'(a) is del(a) plus the complement facts of those facts of add(a) that have a complement fact. The transformed initial state I' is the initial state plus all complement facts of the Pj that are not contained in the initial state. The goal stays G. In 7 (2) to (5), the transformed ones are simply written pre, add, del.
+(2) Planning graph: fact level i (i = 0, 1, 2, ...) has a set F_i of facts (including complement facts) and a set M_i of mutually exclusive pairs of facts. Action level i has a sequence A_i of elements and a set X_i of mutually exclusive pairs of elements. An element is either an action or the "no-op" of a fact p (whose pre and add consist of p only and whose del is empty). Every pair is an unordered pair of two different things.
+(3) Let F_0 be I' and M_0 the empty set, and for i = 0, 1, 2, ... in order do the following.
+  (a) Record the line "fact level <i>: facts=<number of elements of F_i> mutexes=<number of pairs of M_i>".
+  (b) If all facts of G are contained in F_i and no pair of two facts of G is contained in M_i, perform the extraction from level i ((5)) and record the line "extract level <i>: <result> searched=<increase of the search count in this extraction> memo_hits=<increase of the memo hit count in this extraction>". The result is "success" on success and "fail" on failure. On success, the result of GraphPlan is "solved", and the procedure ends here.
+  (c) When the extraction of (b) was not performed: if i >= 1, F_i and F_(i-1) have the same number of elements, and M_i and M_(i-1) also have the same number of pairs (the graph has leveled off), the result is "unreachable" and the procedure ends.
+  (d) If i = L, the result is "level limit" and the procedure ends.
+  (e) Build action level i. A_i is the actions whose pre is entirely contained in F_i and no pair of two of whose pre facts is contained in M_i, in order of action number, followed by the no-ops of the facts of F_i in order of fact number. Two different elements x, y of A_i are mutually exclusive, and their pair is put into X_i, when any of the following holds.
+    - Some fact of del(x) is contained in pre(y) or add(y).
+    - Some fact of del(y) is contained in pre(x) or add(x).
+    - There are a fact p of pre(x) and a fact q of pre(y) such that the pair {p, q} is contained in M_i.
+    Record the line "action level <i>: actions=<number of actions (that are not no-ops) of A_i> noops=<number of elements of F_i> mutexes=<number of pairs of X_i>".
+  (f) Let F_(i+1) be the set of all facts of the add of the elements of A_i. For two different facts p, q of F_(i+1), if for every element x of A_i whose add contains p and every element y of A_i whose add contains q, x and y are different and the pair {x, y} is contained in X_i, put the pair {p, q} into M_(i+1).
+(4) The "achiever order" of a fact g at action level j is the sequence of the elements of A_j whose add contains g, with the no-op of g first, followed by the actions in order of action number.
+(5) Extraction: a goal set is handled as the sequence of its fact numbers in ascending order. The "memo" is a set of pairs (level number, goal sequence). The memo, the search count, the memo hit count and the try count start empty or 0 for each problem and continue to be used across all extractions of that problem. The result of the extraction from level i is the result of Extract(i, G).
+  Extract(j, Q): if j = 0, it succeeds and the sequence of layers is the empty sequence. If (j, Q) is in the memo, increase the memo hit count by 1 and fail. Otherwise, increase the search count by 1, compute Assign(j, Q, 1, empty sequence), and return its result; however, if the result is a failure, add (j, Q) to the memo.
+  Assign(j, Q, k, C) (C is the sequence of chosen elements): first, while k is at most the length of Q and the k-th fact of Q is contained in the add of some element of C, increase k by 1. If k exceeds the length of Q, compute Extract(j - 1, Q') for the sequence Q' of all facts of the pre of all elements of C in ascending order; if it fails, fail. If it succeeds, return its sequence of layers with one sequence appended at the end: the actions (that are not no-ops) among the elements of C, in order of action number. If k is at most the length of Q, look at each element x in the achiever order at action level j - 1 of the k-th fact g of Q in turn; when no pair of x and an element of C is contained in X_(j-1), increase the try count by 1, compute Assign(j, Q, k + 1, C with x appended at the end), and return it if it succeeds. If it succeeds for no x, fail.
+The sequence of layers (a sequence of i sequences) on a successful extraction is the parallel plan, and its m-th layer (m = 1, ..., i) is the sequence of the actions chosen at action level m - 1 (it may be empty). The sequence formed by concatenating the layers of the parallel plan in order, with the actions within each layer in order of action number, is "the GraphPlan plan". The "expanded count" of GraphPlan is the search count, and its "generated count" is the try count (both are totals for the problem).
+
+## 8. Plan analysis
+For each problem that is not unreachable, perform the following analysis for the plan of each of the run searches (in run order) and GraphPlan whose result is solved. Below, the plan is a1, ..., an, and pre, neg, add, del are the ones before the transformation of 7 (1).
+(1) Parallelization: two actions x, y "interfere" when any of the following holds.
+  - Some fact of del(x) is contained in pre(y) or add(y).
+  - Some fact of del(y) is contained in pre(x) or add(x).
+  - Some fact of add(x) is contained in neg(y).
+  - Some fact of add(y) is contained in neg(x).
+  For i < j, "aj depends on ai" if any of the following holds.
+  - Some fact of add(ai) is contained in pre(aj).
+  - Some fact of del(ai) is contained in neg(aj).
+  - ai and aj interfere.
+  For j = 1, ..., n in order, the "layer" of aj is the maximum of the layers of the ai on which aj depends, plus 1 (1 if it depends on no ai). The number of layers K is the maximum layer (0 if n = 0), and the k-th layer (k = 1, ..., K) is the sequence of the actions whose layer is k, in plan order.
+(2) Parallel validation: let the state s be the initial state, and do the following for each layer from the 1st layer on. If some action of the k-th layer is not applicable in s, or two different actions of the k-th layer interfere, the result is "invalid at layer <k>". Otherwise, remove from s the facts of the del of all actions of the k-th layer, and add the facts of the add of all actions of the k-th layer. After all layers have been processed, the result is "valid" if s is a goal state and "goal not reached" otherwise.
+(3) Removing redundant actions: let the sequence pi be the plan, and repeat the following starting from i = 1. If i exceeds the length of pi, stop. Let s be the state obtained by applying the first i - 1 actions of pi in order from the initial state; leaving out the i-th action of pi, look at the (i + 1)-th and later actions in order, and apply to s only those that are applicable in s (skipping those that are not applicable). If the final s is a goal state, replace pi with "the sequence of the first i - 1 actions of pi followed by the applied actions in order" (i is unchanged). If it is not a goal state, increase i by 1. The pi at the end is the "improved plan".
+(4) Reaching landmarks: a landmark of the initial state (5 (7)) that is contained in any of the states after each application, when the actions of the plan are applied in order from the initial state, is "reached".
+(5) Validation: perform the validation of 9 with the name and arguments of each action of the plan as the steps. Validate the improved plan in the same way.
+
+## 9. Validation by the action definitions
+For a problem and a sequence of steps (each an action name and a sequence of arguments), determine the result (one of "valid", "invalid", "goal not reached"), a sequence of messages, and the "number of correct steps". The results of grounding are not used; the simulation is done with a set W of atoms. Let W be the set of the initial-state atoms (including those of static predicates) and let the cost be 0, and examine the steps in order (k = 1, 2, ...). Let E be the notation of the step.
+  (1) If the action name is not the name of any action of the domain, the result is "invalid" and the message is "step <k> <E>: unknown action <action name>".
+  (2) If argument checking (the arguments are the arguments of the step, the expected types are the parameter types of the action of the domain with that name, T is the table of the problem's objects and their types, and N is "object") gives an error, the result is "invalid" and the message is "step <k> <E>: <error>".
+  (3) Examine the condition literals of that action of the domain, with the parameters replaced by the arguments, in the order written. An equality atom is true when its two terms are the same, and any other atom is true when it is contained in W. If there is a literal that is not satisfied, then for the first such literal the result is "invalid" and the message is "step <k> <E>: precondition <notation of that literal> is false" (the notation is the one with the parameters replaced; example: "(not (busy r1))").
+  (4) Remove from W the atoms of the delete effects with the parameters replaced, add the atoms of the add effects with the parameters replaced, and add the cost of that action of the domain to the cost.
+When the result is "invalid", the number of correct steps is k - 1 and the message is the single one above. When all steps have been processed, the number of correct steps is the number of steps. In that case, if some goal atoms are not contained in W, the result is "goal not reached" and the messages are "unsatisfied goal <notation of the atom>" for each such atom (in the order written). Otherwise, the result is "valid" and there is a single message "length=<number of steps> cost=<cost>".
+The "verdict" of a validation is the string "valid <message>" if the result is valid, and "<result>: <first message>" otherwise (examples: "valid length=3 cost=4", "invalid: step 2 (drop r1 b1 b): precondition (at r1 b) is false").
+
+## 10. Profile and causal links
+For a problem that is not unreachable, if among the run searches there is one whose tag is "ucs none" or "astar hmax" and whose result is solved, the first such one in run order is the "proof search", and its plan is the "optimal plan" (the plans found by ucs and by astar with h_max, which never overestimates, have minimum cost). Let the optimal plan be a1, ..., an, and let sk be the state obtained by applying a1, ..., ak in order to the initial state (s0 is the initial state).
+(1) Profile: for k = 0, ..., n, let h*_k be the sum of the costs of a(k+1), ..., an (the minimum cost from sk to the goal), and compute the values in sk of the 5 heuristics goalcount, hmax, hadd, ff, lmcount. For each heuristic, the number of k for which its value is greater than h*_k is its "overestimate count".
+(2) Causal links: for k = 1, ..., n, the "supplier" of each fact p of pre(ak) is the last position j among a1, ..., a(k-1) of an action whose add contains p (0 if there is no such action). Also, the supplier of each fact of G is the last position among a1, ..., an of an action whose add contains that fact (0 if there is none).
+
+## 11. Summary
+For each problem, determine the following for the results of the run searches (in run order) and GraphPlan. For an unreachable problem, all those results are taken to be "unreachable goal", with expanded count and generated count 0.
+- Solved count: the number of results that are solved.
+- Best cost: the minimum of the costs of the plans of the results that are solved (if no result is solved, there is none).
+- Optimal cost: if there is a proof search, the cost of its plan. Otherwise, "none" if any of the results is "unreachable goal", "dead end", "exhausted" or "unreachable" (since it has been shown that there is no solution), and "unknown" otherwise.
+Also, for each tag, determine over all problems the solved count (the number of problems for which it is solved), the number of problems for which the cost equaled the best cost, the total expanded count, and the total generated count.
+
+## 12. Candidate validation and repair
+For each candidate (in order of candidate number), perform the validation of 9 for its sequence of steps on its problem.
+(1) If the result is valid, map each step to the ground action whose name and arguments are equal to the action name and arguments of the step (it always exists), and compute the improved plan of 8 (3) for the resulting sequence of actions.
+(2) If the result is not valid, try a repair. For an unreachable problem, the repair fails with the reason "unreachable goal". Otherwise, map the first "number of correct steps" steps to ground actions in the same way as (1) (they always exist), and, with the state obtained by applying them in order from the initial state as the start state, run the search of 6 with the algorithm and heuristic of repair and the budget B. If the result of the search is not solved, the repair fails with that result as the reason. If it is solved, the sequence formed by the mapped actions followed by the plan found by the search is the "repaired plan", and the validation of 9 is performed with the name and arguments of each of its actions as the steps.
+
+[Output files]
+Every line of the 5 files ends with a newline (LF) and has no trailing spaces. Leading spaces appear only where they are specified in the format. Blank lines are output only at the positions specified in the format.
+
+## output/grounding.txt
+First output the following.
+  "== domain <domain name> =="
+  The diagnostics recorded in 1 (the error lines in order of the actions, followed by the warning lines in order of the predicates)
+  For each type t in the type order, "type <chain>". The chain is the type names obtained by following parents from t to object, joined by " < " (space, "<", space) (example: "type robot < thing < object"; for object, "type object").
+  For each predicate in order of the predicate declarations, "predicate <predicate name>/<number of arguments> fluent" if it is a fluent predicate, and "predicate <predicate name>/<number of arguments> static" if it is a static predicate
+  For each action of the domain, "action <action name>/<number of parameters> cost=<cost> pre=<number of condition literals> add=<number of add effects> del=<number of delete effects>" (the numbers are counted as written)
+Then, for each problem, output one blank line and the following lines.
+  "== problem <problem name> =="
+  The diagnostics recorded in 2 (in the order recorded)
+  "objects: <number of objects>"
+  For each type t in the type order, the list of the names of the objects of type t following the heading "  <t>:" (2 leading spaces)
+  "static facts: <number of static facts>"
+  For each action of the domain, "schema <action name>: assignments=<assignment count> candidates=<candidate count> reachable=<reachable count>"
+  "candidates: <total of the candidate counts> reachable: <number of ground actions>"
+  "facts: <number of facts> init: <number of facts of the initial state> goals: <number of facts of G>"
+  For each unreachable goal (in the order written), "unreachable goal: <notation of the atom>"
+  The list following the heading "facts by predicate:" of "<predicate name>=<number of facts of that predicate>" for each fluent predicate (in declaration order)
+  "facts:" and, for each fact in order of number, "  <fact number> <notation of the atom>" (2 leading spaces)
+  "actions:" and, for each ground action in order of number, "  <action number> <notation of the action> cost=<cost> pre=<number list of pre> neg=<number list of neg> add=<number list of add> del=<number list of del>" (2 leading spaces)
+
+## output/plans.txt
+For each problem, output the following in order, and at the end one blank line.
+  "== problem <problem name> =="
+  For an unreachable problem, the single line "initial h: unreachable goal". Otherwise the following lines.
+    "initial h: goalcount=<value> hmax=<value> hadd=<value> ff=<value> lmcount=<value>" (the values in the initial state)
+    "landmarks: <number of landmarks of the initial state>" and, for each of those landmarks in order of fact number, "  <notation of the atom>"
+    "relaxed plan: length=<number of actions of the relaxed plan of the initial state> cost=<ff value of the initial state>" and, for each action of that relaxed plan in order of number, "  <notation of the action>"
+    The list following the heading "helpful:" of the notations of the actions of helpful(initial state)
+  For each run search (in run order), "-- <tag> --", the result line, and, if the result is solved, the plan block. The result line is "result: FAIL (unreachable goal)" for an unreachable problem; otherwise it is "result: solved expanded=<expanded count> generated=<generated count>" if solved, and "result: FAIL (<failure reason>) expanded=<expanded count> generated=<generated count>" otherwise.
+  "-- graphplan --", the result line, and, if the result is solved, the plan block for the GraphPlan plan. The result line is "result: FAIL (unreachable goal)" for an unreachable problem; otherwise it is "result: solved expanded=<search count> generated=<try count>" if solved, and "result: FAIL (<unreachable or level limit>) expanded=<search count> generated=<try count>" otherwise.
+  If there is a proof search, the following lines.
+    "-- profile (<tag of the proof search>) --"
+    For k = 0, ..., n in order, "  <k>: h*=<h*_k> goalcount=<value> hmax=<value> hadd=<value> ff=<value> lmcount=<value>" (the values in sk)
+    "overestimates: goalcount=<count> hmax=<count> hadd=<count> ff=<count> lmcount=<count>" (the overestimate counts)
+    "-- causal links (<tag of the proof search>) --"
+    For k = 1, ..., n in order, the list following the heading "  <k> <notation of ak>:" of "<notation of p><-<supplier>" for each fact p of pre(ak) (in order of number) (example: "  3 (drop r1 b1 b): (at r1 b)<-2 (holding r1 b1)<-1")
+    The list following the heading "  goal:" of "<notation of the fact><-<supplier>" for each fact of G (in order of number)
+The plan block, with the plan a1, ..., an, consists of the following lines in order.
+  "plan: length=<n> cost=<cost>". However, if a plan block output earlier for the same problem has exactly the same sequence of actions, " (same as <tag>)" is appended to the end of this line, using the tag of the first such block.
+  For k = 1, ..., n in order, "  <k> <notation of ak>"
+  The list following the heading "schemas:" of "<name of the action of the domain>=<number of actions of the plan that have it as their source action>" for each action of the domain (in the order written, excluding those that are not the source action of any action of the plan)
+  "parallel: layers=<number of layers K>" and, for k = 1, ..., K in order, the list following the heading "  <k>:" of the notations of the actions of the k-th layer
+  "improved: length=<length of the improved plan> cost=<cost of the improved plan> removed=<n - length of the improved plan>". If removed is 1 or more, this is followed by "  <k> <notation of the action>" for each k-th action of the improved plan (k = 1, 2, ...)
+  "landmarks reached: <number of reached landmarks>/<number of landmarks of the initial state>" and, for each landmark that was not reached in order of fact number, "  missed <notation of the atom>"
+After all problems, output the following.
+  "== summary =="
+  For each problem, "<problem name>: solved=<solved count>/<number of run searches + 1> best=<best cost ("-" if there is none)> optimal=<optimal cost>"
+  For each tag (in run order, with graphplan last), "<tag>: solved=<solved count> best=<number of problems for which the cost equaled the best cost> expanded=<total expanded count> generated=<total generated count>"
+
+## output/graphplan.txt
+For each problem, output the following in order, and at the end one blank line.
+  "== problem <problem name> =="
+  For an unreachable problem, the single line "result: FAIL (unreachable goal)". Otherwise the following lines.
+    "complementary facts: <number of complement facts r>"
+    The lines recorded in 7 (3) (in the order recorded)
+    The result line: if solved, "result: solved levels=<number of layers of the parallel plan> length=<length of the GraphPlan plan> cost=<cost of the GraphPlan plan> searched=<search count> memo_hits=<memo hit count> tried=<try count>"; otherwise "result: FAIL (<unreachable or level limit>) searched=<search count> memo_hits=<memo hit count> tried=<try count>" (the counts are the totals for the problem)
+    If solved, for each layer m of the parallel plan (m = 1, 2, ...), the list following the heading "layer <m>:" of the notations of the actions of the m-th layer
+
+## output/validation.txt
+For each problem, output "== problem <problem name> ==", then the following 3 lines for each plan analyzed in 8 (in the same order as in plans.txt), and at the end one blank line.
+  "<tag>: <verdict of the validation of that plan>"
+  "  parallel: <result of the parallel validation>"
+  "  improved: <verdict of the validation of the improved plan>"
+Then output "== candidates ==" and, for each candidate (in order of candidate number), the following.
+  If the result is valid, "candidate <candidate number> <problem name> <label>: <verdict>" and "  improved: length=<length of the improved plan> cost=<cost of the improved plan> removed=<number of steps - length of the improved plan> best known=<best cost of that problem ("-" if there is none)>".
+  If the result is not valid, "candidate <candidate number> <problem name> <label>: <result>" (the result is invalid or goal not reached), "  <message>" for each message, and then the repair line. If the repair failed, it is "  repair: FAIL (<reason>)". If it succeeded, it is "  repair: kept=<number of mapped steps> added=<length of the plan found by the search> <verdict of the validation of the repaired plan>", followed by "    <k> <notation of the action>" (4 leading spaces) for each k-th action of the repaired plan (k = 1, 2, ...).
+Finally, output one blank line, "== summary ==", "plans: <number of plans validated in 8 (improved plans are not counted)> valid: <number of those whose validation result is valid>", and "candidates: <number of candidates> valid: <number of candidates whose validation result is valid>".
+
+## output/comparison.csv
+Line 1 is "problem,algorithm,heuristic,length,cost,expanded,generated". Then, for each problem, output one line for each run search (in run order) and one for GraphPlan: "<problem name>,<algorithm>,<heuristic>,<plan length>,<plan cost>,<expanded count>,<generated count>". In the GraphPlan line, the algorithm is "graphplan", the heuristic is "none", the expanded count is the search count, and the generated count is the try count. If the result is not solved, the plan length and the plan cost are both "-". In the lines of an unreachable problem, the expanded count and the generated count are 0.
+
+[Source files]
+Divide the source files into the following 6 roles (the file names may follow the conventions of each language).
+- main: handles the overall flow and the largest part of the processing: calling the reading of the 4 input files, interpreting params.txt and candidates.txt, argument checking and domain validation (1), problem validation (2), assembling the content of grounding.txt (domain summary, objects per type, counts per action, number of facts per predicate, etc.), the analysis of the initial state (heuristic values, landmarks, relaxed plan, helpful actions), calling the searches and GraphPlan, the transformation of negative preconditions for GraphPlan (7 (1)), plan analysis (parallelization, parallel validation, removing redundant actions, reaching landmarks, detecting identical plans, counts per action name, 8), validation by the action definitions (9), profile and causal links (10), summary (11), candidate validation and repair (12), and writing the 5 output files.
+- pddl_parser: handles removing comments and splitting into tokens, reading expressions (lists), typed lists, and reading the domain (parents of types and type order, predicate declarations, parameters, conditions, effects and costs of actions) and the problems (objects, initial state, goal).
+- grounding: handles subtype tests, distinguishing fluent predicates from static predicates, enumerating parameter combinations and filtering them by static predicates and equality, reachability analysis, numbering facts and ground actions, mapping the initial state and the goal, and unreachable goals (3).
+- heuristics: handles the achiever table, relaxed costs, goalcount, hmax, hadd, the relaxed plan and ff, helpful actions, planning graph levels, landmark candidates and verification, and lmcount (5).
+- search: handles applicability tests and applying actions, generating successors, goal state tests, best-first search (bfs, ucs, gbfs, astar, wastar) and enforced hill-climbing (6).
+- graphplan: handles expanding the planning graph (fact levels and action levels, no-ops, mutual exclusion relations, leveling-off test) and the backward extraction using the memo (7 (2) to (5)).
+
+[Constraints]
+- Each line of domain.txt and problems.txt has at most 200 characters. There are at most 10 declared types, at most 15 predicates and at most 10 actions (:action); each action has at most 4 parameters, at most 8 condition literals and at most 6 effect literals.
+- There are 1 to 8 problems; each problem has at most 20 objects, at most 60 atoms in :init and at most 10 goal atoms. The assignment count of each action is at most 10000.
+- After grounding, each problem has at most 100 facts and at most 300 ground actions.
+- 1 <= B <= 2000, 1 <= w <= 10, 0 <= L <= 30, and there are at most 12 run lines. There are at most 20 candidates, and each candidate has at most 50 steps.
+- All integers that occur (costs, expanded counts, generated counts, mutex counts, etc.) are less than 2^31.
+- In the given data, the domain has 2 actions with errors and 1 predicate that is not used by any of the actions without errors. There are 4 problems, including 1 unreachable problem. There are 8 run lines and 8 candidates, and B = 400, w = 2, L = 12.
+- The input files correctly follow the formats above. Apart from the errors whose checks are defined in this statement (1, 2 and 9 of [Processing]), there is no need to check for input errors.
+
+[Example]
+This is a small example that differs from the actual input (3 actions, 1 problem, 2 candidates). Below, the content of each file is shown starting on the line after its "<file name>:" line, and one empty line is inserted between files as a separator. These separator empty lines are not part of the file contents. Note that in output/plans.txt and output/graphplan.txt each problem's block ends with a blank line, so the last line of output/graphplan.txt is a blank line (below, that blank line is followed by the separator empty line).
+
+input/domain.txt:
+; example domain
+(define (domain mini)
+  (:requirements :strips :typing :negative-preconditions :equality)
+  (:types robot ball - thing room)
+  (:predicates
+    (at ?x - thing ?r - room)
+    (holding ?r - robot ?b - ball)
+    (busy ?r - robot)
+    (dark ?r - room))
+  (:action move
+    :parameters (?r - robot ?from ?to - room)
+    :precondition (and (at ?r ?from) (not (= ?from ?to)))
+    :effect (and (not (at ?r ?from)) (at ?r ?to) (increase (total-cost) 2)))
+  (:action pick
+    :parameters (?r - robot ?b - ball ?x - room)
+    :precondition (and (at ?r ?x) (at ?b ?x) (not (busy ?r)) (not (dark ?x)))
+    :effect (and (not (at ?b ?x)) (holding ?r ?b) (busy ?r)))
+  (:action drop
+    :parameters (?r - robot ?b - ball ?x - room)
+    :precondition (and (at ?r ?x) (holding ?r ?b))
+    :effect (and (not (holding ?r ?b)) (not (busy ?r)) (at ?b ?x)))
+)
+
+input/problems.txt:
+(define (problem e1)
+  (:domain mini)
+  (:objects r1 - robot b1 - ball a b - room)
+  (:init (at r1 a) (at b1 a) (at b1 a))
+  (:goal (at b1 b)))
+
+input/params.txt:
+budget 3
+weight 2
+graphplan 5
+run bfs none
+run astar hmax
+run ehc ff
+repair gbfs ff
+
+input/candidates.txt:
+plan e1 wander
+(move r1 a b)
+(move r1 b a)
+(pick r1 b1 a)
+(move r1 a b)
+(drop r1 b1 b)
+end
+plan e1 early-drop
+(pick r1 b1 a)
+(drop r1 b1 b)
+end
+
+output/grounding.txt:
+== domain mini ==
+type object
+type robot < thing < object
+type ball < thing < object
+type thing < object
+type room < object
+predicate at/2 fluent
+predicate holding/2 fluent
+predicate busy/1 fluent
+predicate dark/1 static
+action move/3 cost=2 pre=2 add=1 del=1
+action pick/3 cost=1 pre=4 add=2 del=1
+action drop/3 cost=1 pre=2 add=1 del=2
+
+== problem e1 ==
+warning: init (at b1 a): duplicate
+objects: 4
+  object: r1 b1 a b
+  robot: r1
+  ball: b1
+  thing: r1 b1
+  room: a b
+static facts: 0
+schema move: assignments=4 candidates=2 reachable=2
+schema pick: assignments=2 candidates=2 reachable=2
+schema drop: assignments=2 candidates=2 reachable=2
+candidates: 6 reachable: 6
+facts: 6 init: 2 goals: 1
+facts by predicate: at=4 holding=1 busy=1
+facts:
+  0 (at r1 a)
+  1 (at r1 b)
+  2 (at b1 a)
+  3 (at b1 b)
+  4 (holding r1 b1)
+  5 (busy r1)
+actions:
+  0 (move r1 a b) cost=2 pre=0 neg=- add=1 del=0
+  1 (move r1 b a) cost=2 pre=1 neg=- add=0 del=1
+  2 (pick r1 b1 a) cost=1 pre=0,2 neg=5 add=4,5 del=2
+  3 (pick r1 b1 b) cost=1 pre=1,3 neg=5 add=4,5 del=3
+  4 (drop r1 b1 a) cost=1 pre=0,4 neg=- add=2 del=4,5
+  5 (drop r1 b1 b) cost=1 pre=1,4 neg=- add=3 del=4,5
+
+output/plans.txt:
+== problem e1 ==
+initial h: goalcount=1 hmax=3 hadd=4 ff=4 lmcount=3
+landmarks: 3
+  (at r1 b)
+  (at b1 b)
+  (holding r1 b1)
+relaxed plan: length=3 cost=4
+  (move r1 a b)
+  (pick r1 b1 a)
+  (drop r1 b1 b)
+helpful: (move r1 a b) (pick r1 b1 a)
+-- bfs none --
+result: FAIL (budget) expanded=3 generated=5
+-- astar hmax --
+result: solved expanded=3 generated=6
+plan: length=3 cost=4
+  1 (pick r1 b1 a)
+  2 (move r1 a b)
+  3 (drop r1 b1 b)
+schemas: move=1 pick=1 drop=1
+parallel: layers=3
+  1: (pick r1 b1 a)
+  2: (move r1 a b)
+  3: (drop r1 b1 b)
+improved: length=3 cost=4 removed=0
+landmarks reached: 3/3
+-- ehc ff --
+result: solved expanded=3 generated=4
+plan: length=3 cost=4 (same as astar hmax)
+  1 (pick r1 b1 a)
+  2 (move r1 a b)
+  3 (drop r1 b1 b)
+schemas: move=1 pick=1 drop=1
+parallel: layers=3
+  1: (pick r1 b1 a)
+  2: (move r1 a b)
+  3: (drop r1 b1 b)
+improved: length=3 cost=4 removed=0
+landmarks reached: 3/3
+-- graphplan --
+result: solved expanded=3 generated=6
+plan: length=3 cost=4 (same as astar hmax)
+  1 (pick r1 b1 a)
+  2 (move r1 a b)
+  3 (drop r1 b1 b)
+schemas: move=1 pick=1 drop=1
+parallel: layers=3
+  1: (pick r1 b1 a)
+  2: (move r1 a b)
+  3: (drop r1 b1 b)
+improved: length=3 cost=4 removed=0
+landmarks reached: 3/3
+-- profile (astar hmax) --
+  0: h*=4 goalcount=1 hmax=3 hadd=4 ff=4 lmcount=3
+  1: h*=3 goalcount=1 hmax=3 hadd=3 ff=3 lmcount=2
+  2: h*=1 goalcount=1 hmax=1 hadd=1 ff=1 lmcount=1
+  3: h*=0 goalcount=0 hmax=0 hadd=0 ff=0 lmcount=0
+overestimates: goalcount=0 hmax=0 hadd=0 ff=0 lmcount=0
+-- causal links (astar hmax) --
+  1 (pick r1 b1 a): (at r1 a)<-0 (at b1 a)<-0
+  2 (move r1 a b): (at r1 a)<-0
+  3 (drop r1 b1 b): (at r1 b)<-2 (holding r1 b1)<-1
+  goal: (at b1 b)<-3
+
+== summary ==
+e1: solved=3/4 best=4 optimal=4
+bfs none: solved=0 best=0 expanded=3 generated=5
+astar hmax: solved=1 best=1 expanded=3 generated=6
+ehc ff: solved=1 best=1 expanded=3 generated=4
+graphplan: solved=1 best=1 expanded=3 generated=6
+
+output/graphplan.txt:
+== problem e1 ==
+complementary facts: 1
+fact level 0: facts=3 mutexes=0
+action level 0: actions=2 noops=3 mutexes=4
+fact level 1: facts=6 mutexes=7
+action level 1: actions=4 noops=6 mutexes=29
+fact level 2: facts=6 mutexes=5
+action level 2: actions=5 noops=6 mutexes=34
+fact level 3: facts=7 mutexes=9
+extract level 3: success searched=3 memo_hits=0
+result: solved levels=3 length=3 cost=4 searched=3 memo_hits=0 tried=6
+layer 1: (pick r1 b1 a)
+layer 2: (move r1 a b)
+layer 3: (drop r1 b1 b)
+
+
+output/validation.txt:
+== problem e1 ==
+astar hmax: valid length=3 cost=4
+  parallel: valid
+  improved: valid length=3 cost=4
+ehc ff: valid length=3 cost=4
+  parallel: valid
+  improved: valid length=3 cost=4
+graphplan: valid length=3 cost=4
+  parallel: valid
+  improved: valid length=3 cost=4
+
+== candidates ==
+candidate 1 e1 wander: valid length=5 cost=8
+  improved: length=3 cost=4 removed=2 best known=4
+candidate 2 e1 early-drop: invalid
+  step 2 (drop r1 b1 b): precondition (at r1 b) is false
+  repair: kept=1 added=2 valid length=3 cost=4
+    1 (pick r1 b1 a)
+    2 (move r1 a b)
+    3 (drop r1 b1 b)
+
+== summary ==
+plans: 3 valid: 3
+candidates: 2 valid: 1
+
+output/comparison.csv:
+problem,algorithm,heuristic,length,cost,expanded,generated
+e1,bfs,none,-,-,3,5
+e1,astar,hmax,3,4,3,6
+e1,ehc,ff,3,4,3,4
+e1,graphplan,none,3,4,3,6

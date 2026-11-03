@@ -1,0 +1,32 @@
+const commands = [
+  "undo", "type hello world", "delete 5", "type there", "undo", "undo", "redo",
+  "type friend", "redo", "delete 20", "undo", "redo", "redo", "type see you"
+];
+let buffer = "";
+const undoStack: string[] = [], redoStack: string[] = [];
+for (const command of commands) {
+  if (command === "undo") {
+    if (undoStack.length === 0) {
+      console.log("undo => nothing to undo");
+      continue;
+    }
+    redoStack.push(buffer);
+    buffer = undoStack.pop()!;
+  } else if (command === "redo") {
+    if (redoStack.length === 0) {
+      console.log("redo => nothing to redo");
+      continue;
+    }
+    undoStack.push(buffer);
+    buffer = redoStack.pop()!;
+  } else {
+    undoStack.push(buffer);
+    redoStack.length = 0;
+    if (command.startsWith("type ")) {
+      buffer += command.slice(5);
+    } else {
+      buffer = buffer.slice(0, -Number(command.slice(7)));
+    }
+  }
+  console.log(`${command} => "${buffer}"`);
+}

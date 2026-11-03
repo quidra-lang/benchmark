@@ -1,0 +1,26 @@
+#include <charconv>
+#include <iostream>
+#include <string>
+#include <array>
+
+int main() {
+    for (const std::string &s : std::array<std::string, 5>{"AAABBBCCCD", "WWWWWWWWWWWWBWWWWWWWWWWWWBBB",
+        "ALGORITHM", "MISSISSIPPI", "XXXXXXXXXXYYYYYYYYYYYYYYYYYYYYYZ"}) {
+        std::string encoded, decoded;
+        for (std::size_t i = 0; i < s.size();) {
+            std::size_t j = i + 1;
+            while (j < s.size() && s[j] == s[i])
+                j++;
+            encoded += std::to_string(j - i) + s[i];
+            i = j;
+        }
+        const char *end = encoded.data() + encoded.size();
+        for (const char *p = encoded.data(); p < end;) {
+            int count = 0;
+            const char *next = std::from_chars(p, end, count).ptr;
+            decoded.append(count, *next);
+            p = next + 1;
+        }
+        std::cout << s << " -> " << encoded << " -> " << decoded << '\n';
+    }
+}

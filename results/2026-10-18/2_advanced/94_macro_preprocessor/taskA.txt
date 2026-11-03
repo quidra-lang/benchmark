@@ -1,0 +1,498 @@
+[Overview]
+Write a macro expander modeled on the C preprocessor. The program processes the translation unit input/main.c, starting from a state in which the macros given in input/defines.txt are defined. It performs inclusion of files by #include (searching input/ and input/include/, and omitting inclusion by include guards and #pragma once), conditional inclusion by the #if family of directives (evaluation of constant expressions), expansion of object-like and function-like macros defined by #define (argument collection, stringizing with #, pasting with ##, variable arguments, and rescanning with hide sets), and the processing of #line, #error, #warning and #pragma. It writes the expanded token sequence with line markers, together with the include tree, the history and the final table of macro definitions, the record of conditional inclusion, and the diagnostic messages, to five files under output/. The program runs in a directory that contains, besides the program's source files, input/ holding the input files and an empty output/. Nothing is printed to standard output.
+
+[Input files]
+* Source files (input/main.c, files under input/ and files under input/include/)
+input/main.c is the source file where processing starts, and the files brought in by #include directives (files directly under input/ or directly under input/include/) are also source files. A source file is referred to by its name relative to input/, and this name is called its "path". The path of a file directly under input/ is the file name itself (e.g. "main.c", "config.h"), and the path of a file directly under input/include/ is "include/" followed by the file name (e.g. "include/regs.h").
+A source file is a text file consisting only of printable ASCII characters (character codes 32 to 126) and line feeds (LF); it contains no tabs and no carriage returns (CR). A non-empty file ends with a line feed. The interpretation of the file content is described in 1 of [Processing]. input/defines.txt is not a source file.
+
+* input/defines.txt
+A text file listing the macros to be defined before processing starts, one per line. Each line ends with a line feed. Each non-empty line is either a name alone or of the form "name=value"; the former means that the name is defined as 1, and the latter means that the name is defined as the value (e.g. "DEBUG", "LOG_LEVEL=2", "SQUARE(x)=((x)*(x))"). Empty lines are ignored. The exact handling is described in 2 of [Processing].
+
+[Processing]
+* Terms and notation
+- Literal strings in this statement are enclosed in double quotes; the enclosing quotes are not part of the literal, even when the literal itself contains double quotes.
+- Each line of a file is called a "physical line", and the physical lines are numbered 1, 2, ... starting from the first one. The number of physical lines of a file is the number of line feeds contained in the file.
+- The "ASCII order" of strings is the lexicographic order comparing character codes (if one string is a prefix of the other, the shorter one comes first).
+- The "diagnostics" recorded during processing are of two kinds, "error" and "warning", and they are output to output/diagnostics.txt in the order in which they were recorded. A diagnostic consists of the position of the diagnostic (a file name and a line number), its kind, and a message. Recording a diagnostic does not stop processing; processing continues as described below.
+- In the format of an output string, a part written as <...> is replaced by the value it describes (the "<" and ">" themselves are not output). All other characters in the format (including double quotes, "'", "#", "(" and so on) are output as they are. For example, if <name> in the message macro "<name>" is not used is UNUSED, the message is macro "UNUSED" is not used.
+- The "list following heading H" is the string formed by H followed by the items in order, each item preceded by one space. If there are zero items, it is just H. For example, the list of A and B following the heading "refs:" is "refs: A B".
+
+* 1. Lexical analysis
+When a source file is included for the first time (9(4)), the whole file is split at once into a sequence of "tokens", and at the same time into "logical lines", by steps (1) to (4) below. When the same file is included again, this result is used as it is.
+
+(1) Line splicing
+Remove from the file content every pair of two characters consisting of "\" and the line feed immediately after it. Each character of the string after the removal keeps the number of the physical line where that character was in the original file. Steps (2) and (3) below operate on this string after the removal.
+
+(2) Comments and spaces
+Look at the string in order from the beginning, and repeat the following.
+  - A space: skip it.
+  - A line feed: the end of a logical line ((4)).
+  - "/*": skip, as a "comment", the part from these two characters to the end of the first "*/" located after these two characters (the "*" of "/*/" does not become part of the closing "*/"). A line feed inside a comment does not end a logical line.
+  - "//": skip, as a comment, the part from that position to just before the next line feed (that line feed is the end of a logical line).
+  - Anything else: read one token from that position by the rules of (3).
+A "/*" or "//" inside a character constant or a string literal is read as part of the token, so it does not start a comment.
+
+(3) Reading a token
+A token has a "kind" and a "spelling" (the string of the token). From position p, check (a) to (f) below in order, and read the first one that applies as one token. Below, a "letter" means A to Z and a to z, and a "digit" means 0 to 9.
+  (a) Header name: when the tokens read so far in that logical line are exactly the two tokens "#" and "include", the character at p is "<", and there is a ">" after p and before the next line feed, the part from p to the first ">" is a token of kind "header name" (e.g. "<regs.h>").
+  (b) Identifier: when the character at p is a letter or "_", the longest run of letters, digits and "_" starting there is a token of kind "identifier".
+  (c) Number: when the character at p is a digit, or the character at p is "." and the next character is a digit, it is a token of kind "number". The token is the one character at p, to which characters are added repeatedly, starting from the next position, as long as the following rule can be applied: if the character at that position is one of "e", "E", "p", "P" and the character after it is "+" or "-", add those two characters; otherwise, if the character at that position is a letter, a digit, "_" or ".", add that one character (e.g. "42", "0x1F", "1e+5", "08", "1u", ".5", "9LIVES").
+  (d) Character constant and string literal: when the character at p is "'" or a double quote, look from the character after p until the same quote character as at p appears. If a "\" appears on the way and the character after it is not a line feed, advance over the two characters, "\" and the character after it, together (even if that character is the quote character, it is not taken as the end). If the same quote character appears before the next line feed (for a string examined in 1(5), before the end of that string), the part from p to that quote character is a token of kind "character constant" when it starts with "'", or of kind "string" when it starts with a double quote (e.g. 'A', '\n', "a\"b"). If it does not appear, (d) does not apply.
+  (e) Punctuator: among the following punctuators, the longest one starting at position p is a token of kind "punctuator".
+      3 characters: "...", "<<=", ">>="
+      2 characters: "->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "*=", "/=", "%=", "+=", "-=", "&=", "^=", "|=", "##"
+      1 character: "[", "]", "(", ")", "{", "}", ".", "&", "*", "+", "-", "~", "!", "/", "%", "<", ">", "^", "|", "?", ":", ";", "=", ",", "#"
+  (f) Other: when none of the above applies, the one character at p is a token of kind "other" (e.g. "@", "$", an unclosed "'").
+Each token read is given the following values in addition to its spelling and kind.
+  - "line number": the number of the physical line of the first character of the token.
+  - "space flag": true if, in the string after the removal of (1), there is at least one space, line feed or comment between the token and the token immediately before it, and false otherwise (a removed pair of "\" and line feed does not count). For the first token of the file it is true.
+  - "hide set": a set of macro names; it is empty when the token is read (used in 5).
+Below, "the punctuator whose spelling is X" is sometimes written simply as "X" (e.g. "(", "##").
+
+(4) Logical lines
+A sequence of tokens (possibly of zero tokens) delimited by the line feeds that end logical lines in (2) is called a "logical line". Each logical line has the number of the physical line of the line feed that ends it; this is called the "end line" of the logical line. The "start line" of the first logical line is 1, and the start line of every other logical line is the end line of the previous logical line plus 1. For example, a logical line containing a comment that spans three lines, or a logical line containing a line splice, consists of several physical lines.
+A logical line whose first token is "#" is called a "directive line", and if the second token of a directive line is an identifier, its spelling is called the "directive name" of the directive line. The sequence of the third and later tokens of a directive line is called its "operands".
+
+(5) Rendering of token sequences
+- The "rendering" of a token sequence is the string formed by concatenating the spellings of its tokens in order, except that for the second and later tokens, one space is placed before the spelling if the space flag is true.
+- When a token with spelling R follows immediately after a token with spelling L, "a separator is needed" if L is "/" and the first character of R is "/" or "*", or if, when one token is read by the rules of (3)(b) to (f) from the beginning of the string L followed by R, its length differs from the number of characters of L. For example, "-" and "-", "x" and "y", "1" and ".5", and "+" and "=" need a separator, while "x" and "+", and ")" and ";" do not.
+- The "output rendering" of a token sequence is the same as the rendering, except that for the second and later tokens, one space is placed before the spelling if the space flag is true or a separator is needed between the token and the previous token.
+- A string X "forms a single token" if X starts with neither "//" nor "/*" and, when one token is read by the rules of (3)(b) to (f) from the beginning of X, its length is exactly the number of characters of X. The kind of that token is then called the kind of X.
+
+* 2. Overall flow
+(1) Process the lines of input/defines.txt in order from the first one. The line number n counts from 1. Empty lines are ignored. For a non-empty line, build a string: if the line contains "=", replace its first "=" with one space; if it contains no "=", append " 1" (a space and 1) to the line. Split this string into tokens as one logical line by the rules of 1(2) and (3). Using this token sequence as the operands of #define, define a macro by the rules of 4(3) to (5). The definition position is line n of "defines.txt", and the definition is not a main-file definition (4(5)). Diagnostics for errors in the definition are also positioned at line n of "defines.txt".
+(2) As the first line of output/preprocessed.txt, output the line marker "# 1 "main.c"" (6(2)). Then, for input/main.c, perform the "performing the inclusion" of 9(4) at depth 0 (for main.c, no tree line and no inclusion line markers are output).
+(3) When the processing of main.c has finished, record the "end-of-processing unused warnings" of 4(6), and write the five output files.
+
+* 3. Processing a file
+Each time a source file is included, the following state is created for that inclusion. However many times the same file is included, each inclusion has its own separate state.
+  - depth: 0 for main.c; for a file included by #include, the depth of the file that included it plus 1.
+  - display file name: initially the path of the file. It is changed by #line.
+  - line offset: initially 0. It is changed by #line. The "display line number" of physical line p is p plus the line offset.
+  - condition stack: a stack onto which the "blocks" (7) of conditional inclusion are pushed; initially empty.
+  - segment: a sequence of tokens waiting to be expanded; initially empty.
+Below, when a position within an inclusion is shown in a diagnostic or elsewhere, the display file name and the display line number at that moment are used. For example, the "position" of a directive line is the display file name at that moment together with the display line number of the line number of the first token "#" of the directive line. When the condition stack is not empty and the "active" value of its top block is false, the inclusion is said to be "skipping".
+Process the logical lines of the file in order from the first one, as follows.
+  (a) For a directive line whose directive name is one of if, ifdef, ifndef, elif, elifdef, elifndef, else, endif (called a "conditional directive"), output the segment (6(1)) and process the line by the rules of 7. This is done even while skipping.
+  (b) While skipping, all logical lines other than conditional directives (both directive lines and other lines) are ignored.
+  (c) For a directive line other than a conditional directive, output the segment and process the line, according to its directive name, by the rules of 4 (define, undef), 9 (include) or 10 (all others).
+  (d) For a logical line that is not a directive line, append all its tokens in order to the end of the segment (a logical line with no tokens appends nothing).
+After the last logical line has been processed, output the segment, close the skipped regions of 7(5) for the blocks remaining on the condition stack, and record the diagnostics of 7(6).
+Thus a segment collects the tokens of consecutive logical lines that are not directive lines; the arguments of a function-like macro can span several logical lines, but cannot cross a directive line or the end of the file.
+
+* 4. Macro definitions
+(1) Macros
+There are "object-like macros", which have a name and a replacement list (a sequence of tokens), and "function-like macros", which in addition have a parameter list. A function-like macro may be a "variadic macro", which has "..." at the end of its parameter list; in its replacement list, the identifier __VA_ARGS__ denotes the parameter corresponding to "...". Below, the parameter list of a variadic macro is treated as having a parameter named __VA_ARGS__ as its last parameter. Each macro definition further has a definition position (a display file name and a display line number), whether it is a "main-file definition", an "expansion count" and a "test count" (both initially 0). The expansion count increases only when 1 is added to it in 5(1), and the test count only when 1 is added to it in 7(2)(iv) (including defined in 8(1)); other lookups in the macro table (9(4)(iii), 10(3), etc.) do not change them.
+The collection of the macros defined at a given moment is called the "macro table". The macro table holds at most one definition per name. In addition to these, there are three "builtin macros": __LINE__, __FILE__ and __COUNTER__. Builtin macros are not contained in the macro table, but they are treated as always defined (5(2), 7(2), 8(1)).
+The "signature" of a macro is its name for an object-like macro, and for a function-like macro the string consisting of the name followed by "(", the parameter names joined with ", " (a comma and a space), and ")". For a variadic macro, however, the last parameter is written as "..." instead of __VA_ARGS__ (e.g. "BUF_SIZE", "MAX(a, b)", "LOG(level, ...)", "NOARGS()").
+
+(2) Checking the macro name
+Check the macro name at the beginning of the operands of #define and #undef as follows, in this order. The first one that applies is an error, and the processing of that directive stops (<directive name> is define or undef).
+  - There are no operands: "no macro name given in #<directive name> directive"
+  - The first token is not an identifier: "macro names must be identifiers"
+  - The identifier is defined: ""defined" cannot be used as a macro name"
+  - The identifier is the name of a builtin macro: for #define, "cannot redefine builtin macro "<name>""; for #undef, "cannot undefine builtin macro "<name>""
+
+(3) Parsing #define
+Parse the operands of #define as follows. If there is an error, record it as an error at the position of the directive, and ignore that #define (neither the macro table nor the history is changed).
+  (i) Perform the check of (2). Then, if the name is __VA_ARGS__, it is the error ""__VA_ARGS__" can only appear in the expansion of a variadic macro".
+  (ii) If the second token is "(" and its space flag is false (that is, if "(" immediately follows the name without a space), the macro is a function-like macro; read the parameter list starting from the third token. Otherwise it is an object-like macro, and the second and later tokens are the replacement list.
+  (iii) Read the parameter list by the following rules. If the tokens run out, it is the error "missing ')' in macro parameter list" at that point.
+      - If the first token is ")", there are zero parameters, and the list ends there.
+      - At a position where a parameter is read: if the token is "...", add it as the variadic parameter (named __VA_ARGS__). If it is an identifier: if its spelling is __VA_ARGS__, it is the error ""__VA_ARGS__" can only appear in the expansion of a variadic macro"; if it has the same name as a previous parameter, it is the error "duplicate macro parameter "<name>""; otherwise add it as a parameter. If it is any other token, it is the error "expected parameter name, found "<spelling of that token>"".
+      - After one parameter has been read: if the next token is ")", the list ends. If the parameter just read was "...", any token other than ")" is the error "expected ')' after "...", found "<spelling>"". Otherwise, if the next token is ",", read a parameter again from the position after it. Any other token is the error "expected ',' or ')', found "<spelling>"".
+     The tokens from the one after the ")" that ends the list to the last one are the replacement list.
+  (iv) Set the space flag of the first token of the replacement list to false. Check the replacement list as follows, in this order; the first one that applies is an error.
+      - The replacement list is not empty, and its first or last token is "##": "'##' cannot appear at either end of a macro expansion"
+      - Looking at the replacement list in order from the beginning, for the first token to which either of the following two applies, that error.
+          - an identifier whose spelling is __VA_ARGS__, when the macro is not a variadic macro: ""__VA_ARGS__" can only appear in the expansion of a variadic macro"
+          - a "#" in the replacement list of a function-like macro that has no next token, or whose next token is not an identifier that is a parameter name (for a variadic macro, including __VA_ARGS__): "'#' is not followed by a macro parameter"
+     A "#" in the replacement list of an object-like macro is an ordinary token.
+
+(4) Identical definitions
+Two definitions are "identical" if both of the following hold.
+  - Both are object-like macros, or both are function-like macros whose lists of parameter names (including whether they are variadic) are equal.
+  - Their replacement lists have the same number of tokens, and the spellings and space flags of corresponding tokens are all equal (by (3)(iv), the space flag of the first token is always false).
+
+(5) Performing a definition
+When there was no error in (3), let N be the name of the new definition, and let the definition position be the position of the directive (for defines.txt, the position of 2(1)). A main-file definition is a definition made by a #define within the inclusion at depth 0 (main.c).
+  - If the macro table has no definition of N, add the new definition to the macro table, and record "define <signature>" in the history.
+  - If the macro table has a definition of N and it is identical to the new definition, leave the macro table unchanged (the definition position and the counts also stay those of the original definition), and record "identical <signature>" in the history.
+  - If the macro table has a definition of N and it is not identical, first perform the unused check of (6) on the original definition, then record the warning ""<N>" redefined (previous definition at <display file name of the original definition>:<display line number of the original definition>)" at the position of the directive. Then replace the definition of N in the macro table with the new definition (the counts start again from 0), and record "redefine <signature>" in the history.
+The signature is that of the new definition. Each name that is added to or replaced in the macro table is remembered as an "ever-defined name".
+The "history" lists the events concerning the macro table in the order in which they were recorded; each entry is a string of the form "<display file name>:<display line number>: <content>". The position is the position of the directive that caused the event (for defines.txt, that of 2(1)).
+
+(6) Unused warnings
+A definition is "unused" if it is a main-file definition and both its expansion count and its test count are 0. When a definition is removed from the macro table (#undef), and when it is replaced by a definition that is not identical ((5)), if that definition is unused, record the warning "macro "<name>" is not used". The position of this warning is the position of that definition, not the position of the directive that removes it.
+The "end-of-processing unused warnings" record the same warning, in ASCII order of name, for each definition that is in the macro table at the moment the processing of main.c has finished and that is unused. When a definition is restored or removed by #pragma pop_macro (10(3)), this check is not performed.
+
+(7) #undef
+Perform the check of (2) on the operands; if there is an error, record it and stop. If there is no error, and the operands consist of two or more tokens, record the warning "extra tokens at end of #undef directive". Then, if the macro table has a definition of that name, perform the check of (6), remove the definition, and record "undef <name>" in the history. If there is no definition, record "undef <name> (not defined)" in the history.
+
+* 5. Macro expansion
+(1) The expansion procedure
+To "expand" a token sequence S means to build a result sequence by the following procedure. All macro expansion is done by this procedure (it is the method known as Prosser's algorithm).
+Let the "input sequence" be a copy of S and the "result sequence" be the empty sequence. Until the input sequence becomes empty, take out the first token T of the input sequence and process it as follows.
+  (a) If T is not an identifier, or the spelling of T is contained in the hide set of T, append T to the end of the result sequence.
+  (b) If the spelling of T is the name of a builtin macro, append the token produced in (2) to the end of the result sequence.
+  (c) If the macro table has no definition whose name is the spelling of T, append T to the end of the result sequence.
+  (d) If that definition M is an object-like macro, perform the substitution of (4) without arguments, and let R be its result. The set H used in the substitution is the hide set of T with the name of M added.
+  (e) If that definition M is a function-like macro: if the input sequence is empty or its first token is not "(", append T to the end of the result sequence. If it is "(", collect the arguments by the rules of (3). If they cannot be collected (an error is recorded), append T to the end of the result sequence (the input sequence stays as it was right after T was taken out). If they are collected, perform the substitution of (4) with those arguments, and let R be its result. The set H used in the substitution is the intersection of the hide set of T and the hide set of the ")" token that closes the argument list, with the name of M added.
+  When R has been produced in (d) or (e), add 1 to the expansion count of M. If R is empty, the space flag of T is true, and the input sequence is not empty, set the space flag of the first token of the input sequence to true. Then place the tokens of R, keeping their order, at the front of the input sequence (R is subsequently scanned again).
+All tokens are treated as values. Changing the space flag or another value of a token in one sequence does not change the same token in any other sequence (for example, an argument sequence of (3)).
+
+(2) Builtin macros
+From a token T whose spelling is the name of a builtin macro, produce the following token. The produced token has the line number and space flag of T, and its hide set is empty. Each time a builtin macro is expanded, add 1 to the use count of that name.
+  - __LINE__: a token of kind "number" whose spelling is the display line number of the line number of T written in decimal.
+  - __FILE__: a token of kind "string" whose spelling is a double quote, the display file name at that moment, and a double quote, concatenated.
+  - __COUNTER__: a token of kind "number" whose spelling is the value of the "counter" written in decimal. There is one counter for the whole processing; it is initially 0, and each time __COUNTER__ is expanded, 1 is added to it after the token has been produced.
+The display line number and display file name here are those of the inclusion performing the expansion, at that moment.
+
+(3) Collecting arguments
+Look at the tokens in order, starting from the token after the "(" at the front of the input sequence, and collect the arguments as follows while counting the nesting depth of "(" (initially 0).
+  - ")" at depth 0: the end of the collection. This ")" is called the "closing parenthesis".
+  - "," at depth 0: an argument separator. Remember that "," token, and start the next argument.
+  - Any other token: if it is "(", add 1 to the depth; if it is ")", subtract 1 from the depth; and append the token to the end of the current argument.
+The number of arguments is the number of separating "," tokens plus 1 (if there is nothing, as in "F()", there is considered to be one empty argument). If there is no closing parenthesis before the end of the input sequence, record the error "unterminated argument list invoking macro "<name>"", and the collection fails.
+Next, compare the number of arguments k with the number of parameters n of the macro (for a variadic macro, the number excluding __VA_ARGS__), checking the following in this order. If one applies, record the error, and the collection fails.
+  - The macro is not a variadic macro, it has zero parameters, and the arguments are not just a single empty argument: "macro "<name>" passed <k> arguments, but takes just 0"
+  - k < n: "macro "<name>" requires <n> arguments, but only <k> given"
+  - k > n and the macro is not a variadic macro: "macro "<name>" passed <k> arguments, but takes just <n>"
+The position of these errors is the display line number of the line number of T. If the collection succeeds, remove the tokens from the "(" through the closing parenthesis from the input sequence. For a variadic macro, the sequence formed by joining all the arguments after the n-th one, in order, with the separating "," tokens between them (the "," tokens themselves are used), is the argument of the parameter __VA_ARGS__. If k = n, the argument of __VA_ARGS__ is the empty sequence. In this way, the argument corresponding to each parameter (a token sequence; the "raw argument") is determined.
+
+(4) Substitution
+From the replacement list of macro M and the arguments, build the result of the substitution by (i) to (iv) below. T is the token of the name of the macro being expanded, and H is the set determined in (1).
+  (i) Look at the replacement list in order from the beginning, and build a list of "items". Each item is either a token sequence or a "paste operator".
+      - A "#" in the replacement list of a function-like macro (it is always followed by a parameter): take the two tokens, that "#" and the following parameter, together, and make them an item consisting of one token, the result of stringizing the raw argument of that parameter by (5).
+      - "##": make it a paste operator item.
+      - An identifier P that is a parameter name: if the token immediately before or immediately after P in the replacement list is "##", use the raw argument of P; otherwise, use the sequence obtained by expanding the argument of P. Expanding an argument means performing the procedure of (1) with only the tokens of that argument as the input sequence; within one substitution it is done at most once for the same parameter, when it is first needed (when, looking at the replacement list from the beginning, a parameter P for which the expanded sequence is used is encountered for the first time), and the same result is used the second and later times. If the sequence to be used is not empty, make the item from a copy of it in which the space flag of the first token is replaced by the space flag of P. If it is empty, make an item consisting of one "placemarker" (a special token with no spelling) that has the space flag of P.
+      - Any other token: make an item consisting of that one token.
+  (ii) Look at the items in order from the beginning, and build a sequence U while performing pastes. For an item that is a token sequence, append all its tokens to the end of U. For a paste operator item, remove the last token of U and make it the left operand L, and make the next item the right item (if the next item is also a paste operator, treat it as an item consisting of one punctuator token with spelling "##"). With the first token of the right item as the right operand R, append to U the token resulting from pasting L and R by (6), and then append the remaining tokens of the right item to U. The right item is thereby regarded as used, and processing proceeds to the item after it.
+  (iii) Remove the placemarkers from U. When a placemarker whose space flag is true is removed, set the space flag of the first token (that is not removed) following it to true (if there is no such token, do nothing).
+  (iv) For each remaining token, set its line number to the line number of T, and its hide set to the union of its original hide set and H. If the result is not empty, set the space flag of its first token to the space flag of T. This is the result of the substitution.
+
+(5) Stringizing
+The token obtained by stringizing a token sequence (a raw argument) has kind "string", the space flag of the "#" in the replacement list, and an empty hide set, and its spelling is a double quote, the following string, and a double quote, concatenated. For each token of the sequence in order, concatenate its spelling (except that for a token whose kind is string or character constant, each "\" in the spelling is replaced by "\\" and each double quote by \" (a backslash and a double quote)). For the second and later tokens, place one space before it if its space flag is true. If the sequence is empty, the spelling is "" (two double quotes).
+
+(6) Pasting
+Pasting a left operand L and a right operand R is done as follows.
+  - If L is a placemarker, the result is R with its space flag replaced by the space flag of L (if R is also a placemarker, it is a placemarker).
+  - If R is a placemarker, the result is L.
+  - Otherwise, if the string formed by the spelling of L followed by the spelling of R forms a single token (1(5)), the result is the token whose spelling is that string, whose kind is its kind, whose space flag is that of L, and whose hide set is the intersection of the hide sets of L and R. If it does not form a single token, record the error "pasting "<spelling of L>" and "<spelling of R>" does not give a valid preprocessing token" at the display line number of the line number of T, and the result is the two tokens L, followed by R with its space flag set to false (if a paste operator follows after this, its left operand is this R).
+
+* 6. Outputting segments and line markers
+(1) Outputting the segment
+To output the segment, first perform the poison check of 10(4) on the tokens of the segment, and then expand the segment (5(1)). The segment is made empty. Divide the result of the expansion into the parts consisting of consecutive tokens with equal line numbers, and, in order from the beginning, output each part as one "output line" by the rules of (2). The string of an output line is the output rendering (1(5)) of that part, and the position of the output line is the display file name at that moment and the display line number of the line number of the tokens of that part. If the result is empty, nothing is output.
+For example, when a call of a function-like macro spans physical lines 10 to 12, all the tokens resulting from the expansion have line number 10, so they are gathered into the output line of physical line 10, and the tokens that follow the closing parenthesis on physical line 12 form the next output line.
+
+(2) Output lines and line markers
+In output/preprocessed.txt, write line markers, blank lines and the strings of output lines, one per line, in the order in which they are output. Keep track of the "previous position" (a pair of a display file name and a display line number).
+  - Outputting a line marker means outputting the line "# <n> "<f>"" (n is a line number and f is a file name). In 9(4), " 1" or " 2" (a space and a digit) is appended after it. After outputting a line marker, set the previous position to (f, n - 1). The previous position after the first line marker of 2(2) is (main.c, 0).
+  - When outputting an output line at position (f, n), let (g, m) be the previous position; if f and g are equal and m < n <= m + 8, output n - m - 1 blank lines (possibly 0 lines); otherwise, output the line marker "# <n> "<f>"". Then output the string of the output line, and set the previous position to (f, n).
+Each time an output line is output, add 1 to the "output line count" of the file of the inclusion that output it (the path of the file, not the display file name). The #pragma lines of 10(3) are also output lines.
+
+* 7. Conditional inclusion
+(1) Blocks
+An #if, #ifdef or #ifndef directive line starts a new "block", which ends at the corresponding #endif. A block has the following values.
+  - kind: the directive name of the directive that started the block (if, ifdef, ifndef).
+  - start position: the position (display file name and display line number) of the directive line that started the block.
+  - parent active: true if, when the block was started, the condition stack was empty or the "active" value of the top block was true.
+  - chosen: whether some group (a part from one directive to the next directive) of the block has already been chosen. Initially false.
+  - active: whether the current group is being included. Initially false.
+  - else seen: whether #else has been processed. Initially false.
+  - skip start line: a physical line number or "none"; initially "none" ((5)).
+
+(2) Testing conditions
+The test of #if and #elif is done by the rules of 8, and its result is an integer value or "error". The test of #ifdef, #ifndef, #elifdef and #elifndef is as follows.
+  (i) Perform the poison check of 10(4) on the operands.
+  (ii) If there are no operands, record the error "no macro name given in #<directive name> directive"; if the first token is not an identifier, record the error "macro names must be identifiers"; in these cases the result is "error".
+  (iii) If the operands consist of two or more tokens, record the warning "extra tokens at end of #<directive name> directive".
+  (iv) Determine whether the name that is the spelling of the first token is "defined". A name is defined if the macro table has a definition of that name (in this case, add 1 to the test count of that definition), if the name is the name of a builtin macro, or if it is __has_include. For #ifdef and #elifdef the result value is 1 if the name is defined and 0 if not; for #ifndef and #elifndef it is the opposite.
+The "result string" of a directive whose condition was tested is as follows.
+  - "not taken (error)" if the result is an error, "taken" if the value is not 0, and "not taken" if it is 0.
+  - For #if and #elif, if the result is not an error, " (value <value>)" is appended after it (the value in decimal, with "-" if negative).
+  - For #if and #elif, if the expansion of 8(2) was performed (even when the result is an error), " [<output rendering of the result of the expansion>]" is further appended after that.
+Below, when the result of a test is not an error and the value is not 0, "the test is true".
+
+(3) Processing conditional directives
+The position of a conditional directive is the position of its directive line.
+  - #if, #ifdef, #ifndef: create a new block. If it is parent active, test the condition; if the test is true, set chosen and active to true. If it is false (including an error), set the skip start line to the end line of the directive line plus 1. The "record result" in this case is the result string of the test. If it is not parent active, no test is performed (neither the poison check nor the expansion is done either), and the record result is "skipped". Make the record of (4) before pushing the block onto the condition stack.
+  - #elif, #elifdef, #elifndef, #else, #endif: if the condition stack is empty, record the error "#<directive name> without #if", and ignore this directive line (no record is made either). If it is not empty, let S be the top block, and first close the skipped region of S with the end line being the start line of this directive line minus 1 ((5)). Then do the following according to the directive name, and finally make the record of (4).
+     - #endif: remove S from the condition stack. If S is parent active and there are operands, record the warning "extra tokens at end of #endif directive". The record result is "closes #<kind of S> at line <display line number of the start position of S>".
+     - #elif, #elifdef, #elifndef, #else: if else seen of S is true, record the error "#<directive name> after #else" (after recording it, processing continues as described below).
+     - #else: if S is parent active and there are operands, record the warning "extra tokens at end of #else directive". Set else seen to true. If S is parent active, set active to the negation of chosen, and then set chosen to true; the record result is "taken" if active is true, and "not taken" otherwise. If S is not parent active, the record result is "skipped".
+     - #elif, #elifdef, #elifndef: if S is not parent active, set active to false, and the record result is "skipped". If S is parent active and chosen is true, do not test the condition; set active to false, and the record result is "not evaluated". Otherwise, test the condition; if the test is true, set chosen and active to true; otherwise set active to false. The record result is the result string of the test.
+     - For #else, #elif, #elifdef, #elifndef, finally, if S is parent active and active is false, set the skip start line to the end line of this directive line plus 1.
+Here "S is parent active" means that the parent active value of S is true.
+
+(4) Records
+The record of processing a conditional directive is a string of the form "<display file name>:<display line number>: <indentation><directive rendering> => <record result>", and the records are output to output/conditionals.txt in the order in which they were recorded. The position is the position of the conditional directive. The indentation is a number of spaces equal to twice the following value: for #if, #ifdef, #ifndef, the number of levels of the condition stack before the block is pushed; for the others, the number of levels of the condition stack before this directive line is processed (for #endif, before the block is removed) minus 1 (in both cases, the condition stack of that inclusion). The "directive rendering" is "#" followed by the directive name and, if there are operands, by one space and the rendering of the operands (e.g. "#if VERSION >= 2", "#endif junk").
+
+(5) Skipped regions
+To "close the skipped region of a block with end line e" means the following. If the skip start line s of the block is not "none" and e >= s, record "<display file name>:<display line number of s>-<display line number of e> lines=<e - s + 1>" as a skipped region (skipped regions are output to output/conditionals.txt in the order in which they were recorded), and add e - s + 1 to the "skipped line count" of the file of that inclusion. Then set the skip start line to "none".
+When the last logical line of a file has been processed, close the blocks remaining on the condition stack, in order from the bottom level, with the end line being the number of physical lines of that file.
+
+(6) Unterminated blocks
+When the last logical line of a file has been processed, for each block remaining on the condition stack, in order from the bottom level, record the error "unterminated #<kind of the block>" at the start position of the block.
+
+* 8. Testing #if and #elif
+(1) Replacing operators
+First, perform the poison check of 10(4) on the operands. Then, looking at the operands in order from the beginning, build a sequence in which each identifier defined and each identifier __has_include, together with the following tokens described below, is replaced by a single token of kind "number" with spelling "1" or "0". The replacing token has the line number and space flag of the defined or __has_include token. All other tokens are copied as they are. When an error is found, record only that one error, and the result of the test is an error (no further replacement and no expansion is done; the test counts added up to that point remain as they are).
+  - defined: if the next token is "(", the token after it must be an identifier X, and the token after that must be ")". Otherwise, the next token must be an identifier X. If there is no identifier at a position where an identifier should be (including when there is no token), it is the error "operator "defined" requires an identifier"; if there is no ")" at a position where ")" should be, it is the error "missing ')' after "defined"". Replace with 1 if X is defined (7(2)(iv); if it is in the macro table, add 1 to the test count), and with 0 otherwise.
+  - __has_include: if the next token is not "(", it is the error "missing '(' after "__has_include"". Read a "header specification" from the position after the "(". If there is no header specification, or its name is empty, it is the error "operator "__has_include" requires a header-name". If the token after the header specification is not ")", it is the error "missing ')' after "__has_include" operand". Replace with 1 if the search of 9(2) finds a file, and with 0 if it does not.
+To "read a header specification" from position i of a token sequence means the following. If the token at position i is a string or a header name, its spelling is the "rendering" of the header specification. If the token at position i is "<", search for the first ">" after it; if there is one, the rendering is the string formed by "<", the rendering of the token sequence between them, and ">". If there is none, it is the error "missing terminating > character". In any other case (including when there is no token at position i), "there is no header specification". The string obtained by removing the first character and the last character of the rendering is the "name" of the header specification; a header specification whose rendering starts with a double quote is said to be in "quoted form", and one whose rendering starts with "<" in "angle-bracket form".
+
+(2) Expansion and syntax
+Expand the sequence built in (1) (5(1)). If the result of the expansion is empty, it is the error "#<directive name> with no expression". Otherwise, read the result of the expansion in order from the beginning according to the following grammar, and build an expression tree. If tokens remain when the reading is finished, it is the error "missing binary operator before "<spelling of the first remaining token>"".
+  - Expression: read a logical-or expression; if the next token is "?", skip it and read an expression; then, if the next token is not ":", it is the error "'?' without following ':'", and if it is ":", skip it and read an expression. In this case, the expression is the conditional operation "a ? b : c" (this makes it right-associative).
+  - The binary operator levels are the following 10 levels, from the lowest precedence; all are left-associative.
+      level 1 "||", level 2 "&&", level 3 "|", level 4 "^", level 5 "&", level 6 "==" "!=", level 7 "<" ">" "<=" ">=", level 8 "<<" ">>", level 9 "+" "-", level 10 "*" "/" "%"
+    A level-k expression is read by reading a level-(k + 1) expression (for level 10, a unary expression) and then, as long as the next token is a level-k operator, repeatedly reading that operator and a level-(k + 1) expression. A logical-or expression is a level-1 expression.
+  - Unary expression: if the next token is one of "+", "-", "!", "~", read it and then read a unary expression. Otherwise, it is a primary expression.
+  - Primary expression: if there is no token, it is the error "expected value at end of expression". A token of kind "number" is an integer constant, a character constant token is a character constant, an identifier is the value of an identifier, and for "(", read an expression, and if the next token is not ")", it is the error "missing ')' in expression". Any other token is the error "expected value before "<spelling>"".
+The values of integer constants and character constants are obtained by (3); if one cannot be obtained, it is an error at that point. If there is a syntax error, record only the first error found, and the result of the test is an error.
+
+(3) Integer constants and character constants
+If the spelling of an integer constant ends with one of "ll", "LL", "l", "L" (checked in this order; only the first one that applies) and the spelling is longer than that suffix, remove the suffix. If the remainder is one of the following, that is its value.
+  - "0x" or "0X" followed by one or more hexadecimal digits (0 to 9, a to f, A to F): hexadecimal
+  - "0" followed by zero or more digits from 0 to 7: octal
+  - a digit from 1 to 9 followed by zero or more digits: decimal
+If it is none of these, it is the error "invalid integer constant "<spelling>"" (e.g. "08", "1u", "0x", "1.5").
+The value of a character constant is as follows: if the string between the quotes is one character other than "'" and "\", it is the character code of that character; if it is two characters, "\" and the next one character, and the next character is "n", "t", "\", "'", a double quote, or "0", it is 10, 9, 92, 39, 34, 0, respectively. If it is none of these, it is the error "invalid character constant <spelling>" (the spelling includes the quotes).
+
+(4) Evaluation
+If there is no syntax error, evaluate the expression tree with integers, and make its value the result of the test.
+  - An integer constant or a character constant is its value. An identifier is 0, and each time it is evaluated, record the warning "identifier "<spelling>" evaluates to 0" at the position of the directive.
+  - Unary: +a is a, -a is a with its sign inverted, !a is 1 if a is 0 and 0 otherwise, and ~a is -a - 1.
+  - "&&": evaluate the left operand; if it is 0, the result is 0 without evaluating the right operand; otherwise evaluate the right operand, and the result is 1 if it is not 0 and 0 if it is 0. "||": evaluate the left operand; if it is not 0, the result is 1 without evaluating the right operand; otherwise evaluate the right operand, and the result is 1 if it is not 0 and 0 if it is 0.
+  - Conditional operation a ? b : c: evaluate a; if it is not 0, evaluate only b, and if it is 0, evaluate only c; the result is that value.
+  - Any other binary operator is computed after evaluating both operands, the left operand first and then the right operand. "*", "+", "-" are the ordinary product, sum and difference, and the six comparisons are 1 if they hold and 0 if they do not. "/" is the quotient of a divided by b with its fractional part truncated toward 0, and "%" is a - b * (a / b) (where "/" is the quotient just described). For "/" and "%", if b is 0, record the error "division by zero in #if", stop the evaluation, and the result of the test is an error (the warnings recorded up to that point remain). "<<" is a * 2^b, and ">>" is a / 2^b rounded toward negative infinity (an arithmetic right shift). "&", "|", "^" are the bitwise AND, OR and exclusive OR in two's complement representation.
+In parts that are not evaluated (the side not evaluated by "&&", "||" or the conditional operation), neither identifier warnings nor division-by-zero errors occur.
+
+* 9. #include
+(1) The target file name
+Read a header specification from the beginning (position 0) of the operands (8(1)). If there is no header specification and the operands are not empty, expand the operands (5(1)), and read a header specification from the beginning of the result. If there is still no header specification, it is the error "#include expects "FILENAME" or <FILENAME>". If, in the sequence from which the header specification was read, tokens remain after it, record the warning "extra tokens at end of #include directive". Then, if the name of the header specification is empty, it is the error "empty filename in #include". The errors of this item, including the error "missing terminating > character" (8(1)) that occurs when reading a header specification, are recorded as soon as they are found, and the processing of this directive ends (when this error occurs on the operands before expansion, no expansion is done).
+
+(2) Search
+For a name X in quoted form, look for input/X and then input/include/X, in this order; for a name X in angle-bracket form, look only for input/include/X; include the first file found. The path of that file is "X" for input/X, and "include/X" for input/include/X.
+
+(3) Detecting include guards
+When a file is included for the first time, determine the "guard" of that file as follows. Arrange the logical lines that have tokens (in this paragraph, simply called "lines") in order; if all of the following hold, the spelling X of the third token of the first line is the guard, and otherwise there is no guard.
+  - There is at least one line, the first line consists of exactly three tokens, "#", "ifndef" and an identifier X, and the last line consists of exactly two tokens, "#" and "endif".
+  - When the lines are looked at in order from the beginning and a depth (initially 0) is increased by 1 at a line whose directive name is if, ifdef or ifndef and decreased by 1 at an endif line, there is no line whose directive name is elif, elifdef, elifndef or else at a place where the depth is 1, and the depth returns to 0 for the first time at the last line.
+A logical line consisting only of comments and an empty logical line have no tokens, so they do not affect the determination of the first line and the last line.
+
+(4) Deciding and performing the inclusion
+Let d be the depth of the including side, and let the "prefix" of a tree line be the string formed by 2 * (d + 1) spaces, the line number of the first token of the #include directive line (the physical line number, not the display line number), and ": ". Tree lines are output to output/includes.txt in the order in which they were recorded.
+  (i) If the file is not found, record the tree line "<prefix><rendering of the header specification> [not found]", record the error "cannot find include file <rendering of the header specification>", and stop.
+  (ii) If the file has been included at least once before and has the #pragma once (10(3)) mark, record the tree line "<prefix><path> [skipped: pragma once]", add 1 to the "skip count" of that file, and stop.
+  (iii) If the file has been included at least once before, has a guard X, and the macro table has a definition of X, record the tree line "<prefix><path> [skipped: guard <X>]", add 1 to the skip count of that file, and stop.
+  (iv) If d + 1 > 8, record the tree line "<prefix><path> [too deep]", record the error "#include nested too deeply", and stop.
+  (v) Record the tree line "<prefix><path>", output the line marker "# 1 "<path>" 1", and include the file at depth d + 1 (performing the inclusion). When the processing of the included file has finished, output the line marker "# <n> "<f>" 2". Here f is the display file name of the including side at that moment, and n is the display line number of the physical line whose number is the end line of the #include directive line plus 1.
+In "performing the inclusion", if the file is being included for the first time, read the file and perform lexical analysis on it (1), determine its guard ((3)), and append the file to the end of the "order of included files". Then add 1 to the "entry count" of the file, and process the file by the rules of 3. In (ii) and (iii), a file "has been included at least once before" if performing the inclusion has already been started for it at least once, even if that inclusion has not finished yet (main.c, or a file that includes itself directly or indirectly, counts as included from the moment its processing starts).
+
+* 10. Other directives
+Directive lines other than conditional directives, #define, #undef and #include are processed as follows. Except for a directive line whose directive name is pragma and whose first two operand tokens are spelled "GCC" and "poison", and a directive line whose only token is "#", the poison check of (4) is performed on the operands before processing (the same applies to #define, #undef and #include). The position of errors is the position of the directive line.
+(1) #line
+If the operands are empty, or the first token is not a token of kind "number" consisting only of digits, use the result of expanding the operands in place of the operands. The form is correct only when the operands are one or two tokens, the first token is a token of kind "number" consisting only of digits, and the second token, if present, is a string; otherwise it is the error "invalid #line directive". If the value L of the first token read as a decimal number is not at least 1 and at most 2147483647, it is the error "line number out of range". If there is no error, set the line offset to L - (end line of the directive line + 1) (the display line number of the next physical line becomes L). If there is a string, set the display file name to its spelling with the first and the last double quote removed.
+
+(2) #error and #warning
+#error records an error, and #warning records a warning, with the message "#<directive name>" (followed, if there are operands, by one space and the rendering of the operands). The operands are not expanded.
+
+(3) #pragma
+Process the directive according to its operands, as follows.
+  - When the first token is the identifier once: if the operands consist of two or more tokens, record the warning "extra tokens at end of #pragma once directive". Next, if the depth is 0 (main.c), record the warning "#pragma once in main file". Then put the "pragma once" mark on that file (path).
+  - When the first two tokens are spelled "GCC" and "poison": if any of the remaining tokens is not an identifier, record the error "invalid #pragma GCC poison directive" and stop. Otherwise, for each of the remaining tokens in order, if the macro table has a definition of that name, record the warning "poisoning existing macro "<name>"", and add the name to the set of "poisoned names".
+  - When the first token is the identifier push_macro or pop_macro: unless the operands are exactly four tokens, the second being "(", the third a string and the fourth ")", it is the error "invalid #pragma <spelling of the first token> directive". Let the name N be the spelling of the string with its first and last double quote removed. Each name has a "save stack".
+      - push_macro: push the definition of N in the macro table ("no definition" if there is none) onto the save stack of N, and record "push <N>" in the history.
+      - pop_macro: if the save stack of N is empty, record the warning "no matching push_macro for "<N>"". If it is not empty, take out the top entry; if it is "no definition", remove the definition of N from the macro table (do nothing if there is none), and record "pop <N> (undefined)" in the history. If it is a definition, make the definition of N in the macro table that definition (adding it if there is none), and record "pop <N>" in the history. The definition position, whether it is a main-file definition, and the counts are values held by each definition; a restored definition is the very definition that was pushed, and its counts continue from that definition's counts (including the counts accumulated while it stayed in the macro table after being pushed).
+  - In any other case (including when the operands are empty): output "#pragma" (followed, if there are operands, by one space and the rendering of the operands) as the output line at the position of the line number of the first token of the directive line (6(2)).
+
+(4) Poison check
+The "poison check" of a token sequence means looking at each token of the sequence in order and, for each identifier whose spelling is contained in the set of poisoned names, recording the error "attempt to use poisoned "<spelling>"" at the position given by the display file name at that moment and the display line number of the line number of that token. After the check, processing continues treating the tokens as ordinary tokens. The set of poisoned names is initially empty. Tokens that are not contained in the sequence being checked, such as the tokens of a macro's replacement list, are not checked.
+
+(5) Other directive lines
+A directive line whose only token is "#" does nothing. Otherwise, for a directive line that has no directive name, or whose directive name is none of define, undef, include, line, error, warning, pragma and the conditional directives, record the error "invalid preprocessing directive #<spelling of the second token>".
+
+[Output files]
+Every line of the five files ends with a line feed (LF), and no line has trailing spaces. All numbers are written as decimal integers without extra leading zeros. Below, at each place described as a "blank line", output one empty line; at all other places, output no empty lines other than those defined by the rules.
+
+* output/preprocessed.txt
+Write the first line marker of 2(2) and the lines output in 6(2) and 9(4) (line markers, blank lines and strings of output lines), in the order in which they were output.
+
+* output/includes.txt
+Output the following, in this order.
+  one line "main.c", and the tree lines recorded in 9(4) (in the order in which they were recorded)
+  a blank line, "== files =="
+  for each file that was included at least once, in ASCII order of path, one line "<path> entered=<entry count> skipped=<skip count> lines=<number of physical lines> output_lines=<output line count> skipped_lines=<skipped line count> guard=<guard> once=<mark>". <guard> is the name of the guard of 9(3), or "-" if there is no guard. <mark> is "yes" if the pragma once mark has been put on the file, and "no" otherwise. The entry count, skip count, output line count and skipped line count are the totals over all inclusions.
+  a blank line, the dependency lines
+The dependency lines are built as follows. The first line starts as "main.o:", and for each path P in the order of included files (main.c comes first): if the number of characters of the current line + 1 + the number of characters of P is greater than 76, and the current line already contains at least one path, append " \" (a space and "\") to the end of the current line, end that line, and start a new line with one space. Then append one space and P to the end of the current line. The output ends with the last line, after all the paths have been appended.
+
+* output/macros.txt
+Output the following, in this order.
+  "== history ==" and the history entries recorded in 4 and 10(3) (in the order in which they were recorded)
+  a blank line, "== table =="
+  for each definition in the macro table at the end of processing, in ASCII order of name, the following three lines
+    a line consisting of "#define <signature>", followed, if the replacement list is not empty, by one space and the rendering of the replacement list
+    "  at <display file name of the definition>:<display line number of the definition> expanded=<expansion count> tested=<test count> recursive=<recursive>" (two spaces at the start of the line)
+    the list of references following the heading "  refs:" (two spaces at the start of the line)
+  a blank line
+  "macros=<number of definitions in the macro table> object_like=<number of object-like macros> function_like=<number of function-like macros>"
+  the list, following the heading "undefined:", of the ever-defined names (4(5)) that are not in the macro table at the end of processing, in ASCII order
+  "builtins: __COUNTER__=<use count of __COUNTER__> __FILE__=<use count of __FILE__> __LINE__=<use count of __LINE__>"
+The "references" of a definition M are the spellings of the identifiers appearing in the replacement list of M whose spelling is a name in the macro table at the end of processing and is not a parameter name of M (including __VA_ARGS__), with duplicates removed, arranged in ASCII order. <recursive> is "yes" if M can be reached again from M by following references (moving to the definition of each name in the references) one or more times, and "no" if it cannot.
+
+* output/conditionals.txt
+Output the following, in this order.
+  the records of conditional directives recorded in 7(4) (in the order in which they were recorded)
+  a blank line, "== skipped regions ==" and the skipped regions recorded in 7(5) (in the order in which they were recorded)
+  a blank line, "directives=<number of records> taken=<a> not_taken=<b> skipped=<c> not_evaluated=<d> endif=<e> regions=<number of skipped regions>"
+a, b, c, d, e are the numbers of records whose record result starts with "taken", "not taken", "skipped", "not evaluated" and "closes", respectively.
+
+* output/diagnostics.txt
+Output the recorded diagnostics in the order in which they were recorded, one line per diagnostic, in the form "<file name>:<line number>: <kind>: <message>". <kind> is "error" or "warning". The last line is "errors=<number of errors> warnings=<number of warnings>".
+The position of a diagnostic, except where a rule specifically defines it (a definition position, the start position of a block, the position of a token, a line of defines.txt), is the position of the directive line for which the diagnostic was recorded. The errors recorded during macro expansion (5(3), (6)) are at the position of the token of the name of the macro being expanded (the display file name at that moment and the display line number of the line number of the token).
+
+[Source files]
+Divide the source files into the following six roles (file names and extensions follow the conventions of each language).
+- main: the overall flow and the largest share of the processing. Processing of defines.txt, the per-inclusion state and the processing of logical lines (3), outputting segments, output rendering and the separator check, placement of output lines with line markers and blank lines (6), performing #define and #undef (warnings for non-identical redefinitions, history, unused warnings), management of the blocks of conditional inclusion and the testing, records and skipped regions (7), replacement of operators in #if and #elif (defined, __has_include) and reading header specifications (8(1)), determining the target name of #include, deciding the inclusion, recording the tree and line markers (9(1), (4)), processing of #line, #error, #warning and #pragma (once, GCC poison, push_macro, pop_macro, others) and the poison check (10), determination of references and recursion, and assembling and writing the lines of the five output files.
+- lexer: line splicing, comments and spaces, reading tokens (header names, identifiers, numbers, character constants, string literals, punctuators, others) and space flags, splitting into logical lines and end lines, rendering of token sequences, and checking whether a string forms a single token (1).
+- definitions: the data representing a macro definition (name, parameters, replacement list, position, counts) and signatures, checking macro names, parsing the operands of #define (parameter list, checks of the replacement list), and checking whether definitions are identical (4(1) to (4)).
+- expression: parsing of #if expressions (precedence and associativity, conditional operation, syntax errors), the values of integer constants and character constants, and evaluation of expressions (short-circuit evaluation, truncating division, division by zero, identifier warnings) (8(2) to (4)).
+- expander: the macro expansion procedure (hide sets and rescanning), builtin macros and the counter, collecting arguments and checking their number, substitution (items, argument expansion, placemarkers, space flags), stringizing, and pasting (5).
+- include_manager: searching for files by header name (9(2)), reading files and holding the results of lexical analysis, detecting include guards (9(3)), and the per-file counts and line counts (entry count, skip count, pragma once mark, skipped line count).
+
+[Constraints]
+- There are at most 20 source files; each file has at most 500 lines, and each physical line has at most 200 characters. defines.txt has at most 50 lines, and each line has at most 100 characters. input/include/ and input/defines.txt always exist.
+- Every "/*" in a source file has a corresponding "*/" after it. In a non-empty source file, the character immediately before the last line feed is not "\".
+- The header names specified by #include, by a computed #include (the result of expansion) and by __has_include are strings of at most 40 characters consisting of letters, digits, "_", "." and "-", and they never name a directory. The string of #line contains no double quote and no "\".
+- In #if and #elif expressions, the values of integer constants are less than 2^53, and every intermediate result of the operations evaluated has an absolute value less than 2^53. For the evaluated "&", "|", "^", "~", "<<" and ">>", the operands and the results are all at least -2^31 and less than 2^31, and the right operand of a shift is at least 0 and at most 31.
+- A token of #line consisting only of digits has at most 10 characters. __has_include is never used as the name of a macro in #define, #undef or defines.txt.
+- The value of the counter, the counts, the line counts and the display line numbers are all less than 2^31. The total number of tokens taken out of the input sequence in one run of the expansion procedure is at most 100000.
+
+[Example]
+The output for the following input is shown below (the content of each file is shown starting from the line after its "file name:" line, and one empty line is placed between files as a separator. These separating empty lines are not part of the file contents. The blank lines inside output/preprocessed.txt are part of the file content).
+
+input/defines.txt:
+VERSION=2
+TRACE
+
+input/main.c:
+#include "point.h"
+#include "point.h"
+#define SQUARE(x) ((x) * (x))
+#define NAME(p) #p
+#define FIELD(p, f) p ## _ ## f
+#if VERSION >= 2 && defined TRACE
+int area = SQUARE(w + 1);
+#else
+int area = 0;
+#endif
+const char *n = NAME(pt), *f = __FILE__;
+coord FIELD(pt, x) = ORIGIN, line = __LINE__;
+int bad = SQUARE(1, 2);
+#define UNUSED 1
+
+input/point.h:
+#ifndef POINT_H
+#define POINT_H
+#include <types.h>
+#define ORIGIN 0
+#endif
+
+input/include/types.h:
+typedef int coord;
+
+output/preprocessed.txt:
+# 1 "main.c"
+# 1 "point.h" 1
+# 1 "include/types.h" 1
+typedef int coord;
+# 4 "point.h" 2
+# 2 "main.c" 2
+
+
+
+
+
+int area = ((w + 1) * (w + 1));
+
+
+
+const char *n = "pt", *f = "main.c";
+coord pt_x = 0, line = 12;
+int bad = SQUARE(1, 2);
+
+output/includes.txt:
+main.c
+  1: point.h
+    3: include/types.h
+  2: point.h [skipped: guard POINT_H]
+
+== files ==
+include/types.h entered=1 skipped=0 lines=1 output_lines=1 skipped_lines=0 guard=- once=no
+main.c entered=1 skipped=0 lines=14 output_lines=4 skipped_lines=1 guard=- once=no
+point.h entered=1 skipped=1 lines=5 output_lines=0 skipped_lines=0 guard=POINT_H once=no
+
+main.o: main.c point.h include/types.h
+
+output/macros.txt:
+== history ==
+defines.txt:1: define VERSION
+defines.txt:2: define TRACE
+point.h:2: define POINT_H
+point.h:4: define ORIGIN
+main.c:3: define SQUARE(x)
+main.c:4: define NAME(p)
+main.c:5: define FIELD(p, f)
+main.c:14: define UNUSED
+
+== table ==
+#define FIELD(p, f) p ## _ ## f
+  at main.c:5 expanded=1 tested=0 recursive=no
+  refs:
+#define NAME(p) #p
+  at main.c:4 expanded=1 tested=0 recursive=no
+  refs:
+#define ORIGIN 0
+  at point.h:4 expanded=1 tested=0 recursive=no
+  refs:
+#define POINT_H
+  at point.h:2 expanded=0 tested=0 recursive=no
+  refs:
+#define SQUARE(x) ((x) * (x))
+  at main.c:3 expanded=1 tested=0 recursive=no
+  refs:
+#define TRACE 1
+  at defines.txt:2 expanded=0 tested=1 recursive=no
+  refs:
+#define UNUSED 1
+  at main.c:14 expanded=0 tested=0 recursive=no
+  refs:
+#define VERSION 2
+  at defines.txt:1 expanded=1 tested=0 recursive=no
+  refs:
+
+macros=8 object_like=5 function_like=3
+undefined:
+builtins: __COUNTER__=0 __FILE__=1 __LINE__=1
+
+output/conditionals.txt:
+point.h:1: #ifndef POINT_H => taken
+point.h:5: #endif => closes #ifndef at line 1
+main.c:6: #if VERSION >= 2 && defined TRACE => taken (value 1) [2 >= 2 && 1]
+main.c:8: #else => not taken
+main.c:10: #endif => closes #if at line 6
+
+== skipped regions ==
+main.c:9-9 lines=1
+
+directives=5 taken=2 not_taken=1 skipped=0 not_evaluated=0 endif=2 regions=1
+
+output/diagnostics.txt:
+main.c:13: error: macro "SQUARE" passed 2 arguments, but takes just 1
+main.c:14: warning: macro "UNUSED" is not used
+errors=1 warnings=1
+
+In this example, line 2 of main.c tries to include point.h again, but point.h has the guard POINT_H and POINT_H is defined, so the inclusion is skipped. In the expansion of SQUARE on line 7, the parameter x is replaced by the sequence obtained by expanding the argument "w + 1". NAME(pt) on line 11 becomes "pt" (including the double quotes) by stringizing, and FIELD(pt, x) on line 12 becomes "pt_x" by two pastes. The call of SQUARE on line 13 has two arguments, so it is an error, and it is output as it is without being expanded. Line 9, the group of #else, is a skipped region. The output lines are at lines 7, 11, 12 and 13 of main.c; since the difference from the previous position is at most 8, blank lines are output instead of line markers to align the positions. UNUSED, defined in main.c, is never used, so an unused warning is recorded at the end of processing. TRACE was examined by defined, so its test count is 1.

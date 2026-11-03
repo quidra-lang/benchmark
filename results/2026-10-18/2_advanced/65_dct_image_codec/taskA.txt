@@ -1,0 +1,510 @@
+[Overview]
+Write an image codec (an encoder and a decoder) that compresses a colour image with the same mechanism as baseline JPEG and restores it. The encoder converts an RGB image into luminance Y and chrominance Cb, Cr, subsamples the chrominance if requested, applies the discrete cosine transform (DCT) to each block of 8 x 8 pixels, quantizes the result, and encodes the coefficients, arranged in zigzag order, into a JPEG-format byte sequence with run lengths and Huffman codes. The decoder parses a JPEG-format byte sequence and turns it back into an image.
+The program does the following.
+- It compresses the input image at several qualities and lists the number of bytes and the image quality (PSNR) for each quality.
+- For the result compressed at the first quality (the reference quality), it computes the decoded image, the JPEG byte sequence, the Huffman tables, per-block statistics, a reduced image built from the DC coefficients only, the image quality when coefficients are truncated, and the distribution of errors.
+- It compares the chroma subsampling modes, measures the degradation when compression and decoding are repeated, and searches for a quality that fits within a target number of bytes.
+- It decodes a JPEG byte sequence in which some bytes are corrupted (given as an input file), using the restart markers as clues, and builds an image in which the corrupted intervals are filled in. From that result it then builds a repaired byte sequence with optimized Huffman tables and checks that it decodes correctly.
+All computations are done with integers, except the logarithm of the PSNR. The program reads the files in the input/ folder and writes files to the output/ folder. It prints nothing to standard output.
+
+[Input files]
+Every input file consists of ASCII characters only, and every line ends with a newline (LF). The values on a line are separated by single spaces, with no whitespace at the start or end of a line. Integers are written in decimal, and negative numbers have a leading "-". There are no empty lines.
+
+(1) input/image.ppm: the input image
+A colour image in P3 format (ASCII PPM). Line 1 is P3, line 2 holds the width W and the height H, and line 3 holds the maximum value, which is always 255. Of the following H lines, line y + 1 (y = 0, 1, ..., H - 1) holds 3 * W integers: the red, green and blue values R, G, B of the pixels (0, y), (1, y), ..., (W - 1, y), in pixel order, and within each pixel in the order R, G, B. The values are integers from 0 to 255. There are no comment lines.
+
+(2) input/params.txt: parameters
+It consists of the following 7 lines in this order. Each line is a parameter name followed by one or more values.
+- qualities Q_1 Q_2 ... Q_n: the list of qualities (integers) to compress at. The first one, Q_1, is called the reference quality.
+- sampling S: the chroma subsampling mode, one of 444, 422, 420.
+- restart_interval Ri: the restart interval (a number of MCUs). When it is 0, no restart markers are used.
+- huffman M: the kind of Huffman tables to use, standard (the standard tables) or optimized (optimized tables).
+- target_bytes T: the target number of bytes for the quality search.
+- generations Ng: the number of repeated compressions.
+- truncate K_1 K_2 ... K_m: the list of numbers of coefficients (integers) to keep in coefficient truncation.
+
+(3) input/tables.txt: transform and coding tables
+It consists of 39 lines and contains the following tables in this order.
+- Line 1 is dct. Of the following 8 lines, line u + 1 (u = 0, 1, ..., 7) holds the elements C(u, 0), C(u, 1), ..., C(u, 7) of the DCT matrix. C(u, x) is the value of 8192 * c_u * cos((2x + 1)u * pi / 16) rounded to an integer, where c_0 = 1 / sqrt(8) and c_u = 1 / 2 (u >= 1). The program uses the values of this table as they are and must not compute trigonometric functions.
+- Line 10 is quant 0. Of the following 8 lines, line u + 1 holds the elements B_0(u, 0), B_0(u, 1), ..., B_0(u, 7) of the basic luminance quantization table.
+- Line 19 is quant 1. The following 8 lines hold the basic chrominance quantization table B_1 in the same format.
+- Lines 28 to 39 are 4 Huffman tables of 3 lines each. The first line is huffman c i (c is the class of the table: 0 for DC, 1 for AC; i is the id of the table: 0 for luminance, 1 for chrominance). The second line holds 16 integers BITS(1), BITS(2), ..., BITS(16), where BITS(L) is the number of codes of length L bits. The third line is the symbol list HUFFVAL, made of BITS(1) + BITS(2) + ... + BITS(16) integers. The tables appear in the order (c, i) = (0, 0), (1, 0), (0, 1), (1, 1).
+The quantization tables and the Huffman tables are the standard tables shown in Annex K of the JPEG standard (ITU-T T.81).
+
+(4) input/stream.hex: a corrupted JPEG byte sequence
+A JPEG-format byte sequence produced by another encoder, written in hexadecimal. Each line consists of an even number of characters (0-9 and a-f), at least 2 and at most 64. Concatenate all lines, split the resulting string into groups of 2 characters from the start, and read each group as a 2-digit hexadecimal number; these values are the bytes b_0, b_1, ..., b_(N-1) of the byte sequence. The byte sequence follows the format described in section 10, but the values of some bytes inside the entropy-coded data (the scan) have been changed (corrupted). See [Constraints] for details.
+
+[Processing]
+Process according to sections 1 to 17 below. Sections 1 to 11 describe the methods of encoding, decoding and evaluation, and sections 12 to 17 are the processing performed with them.
+
+* Notation
+- floor(a / b) (b a positive integer) is the largest integer not greater than a / b (for negative numbers it rounds toward -infinity; for example floor(-7 / 2) = -4). ceil(a / b) (a, b positive integers) is the smallest integer not less than a / b. a mod b (b a positive integer) is a - b * floor(a / b) (it lies between 0 and b - 1 inclusive).
+- rnd(a, s) = floor((a + 2^(s-1)) / 2^s) (s is a positive integer; this is a / 2^s rounded to an integer, with an exact half rounded up to the larger value).
+- clamp(a) = min(max(a, 0), 255). |a| is the absolute value of a.
+- A plane is a 2-dimensional array of integers; the element of plane P at column x and row y is written P(x, y) (x counts from left to right and y from top to bottom, both starting from 0).
+- Block (bx, by) of a plane P is the set of 64 elements P(8 * bx + i, 8 * by + j) with 0 <= i <= 7, 0 <= j <= 7, and P(8 * bx + i, 8 * by + j) is called the element at position (i, j) of the block.
+- Byte values are also written as "0x" followed by 2 hexadecimal digits, as in 0xFF. Writing a value a in n bits means writing the n digits of the binary representation of a from the most significant digit (nothing is written if n = 0). Writing a value a in 2 bytes means writing the 2 bytes floor(a / 256), a mod 256 in this order.
+
+* 1. Colour conversion
+The conversion from RGB to YCbCr computes Y, Cb, Cr from the pixel values R, G, B with the following formulas (each result lies between 0 and 255 inclusive).
+  Y = floor((19595 * R + 38470 * G + 7471 * B + 32768) / 65536)
+  Cb = floor((-11059 * R - 21709 * G + 32768 * B + 8421375) / 65536)
+  Cr = floor((32768 * R - 27439 * G - 5329 * B + 8421375) / 65536)
+The conversion from YCbCr to RGB computes R, G, B with the following formulas.
+  R = clamp(Y + floor((91881 * (Cr - 128) + 32768) / 65536))
+  G = clamp(Y + floor((-22554 * (Cb - 128) - 46802 * (Cr - 128) + 32768) / 65536))
+  B = clamp(Y + floor((116130 * (Cb - 128) + 32768) / 65536))
+The 3 planes of width W and height H obtained by converting each pixel of an image to YCbCr are called the Y plane, Cb plane and Cr plane of that image. The Y plane, Cb plane and Cr plane of the input image are called the original Y plane, original Cb plane and original Cr plane, respectively.
+
+* 2. Components, MCUs and block order
+An image consists of 3 components k = 1 (Y), 2 (Cb), 3 (Cr), and component k has horizontal and vertical sampling factors H_k, V_k (1 or 2). For encoding, (H_1, V_1) = (1, 1) if S is 444, (2, 1) if it is 422, and (2, 2) if it is 420; components 2 and 3 always have (H_k, V_k) = (1, 1). Let Hmax = max(H_1, H_2, H_3) and Vmax = max(V_1, V_2, V_3).
+- An MCU is a region 8 * Hmax pixels wide and 8 * Vmax pixels high. The image is covered by MX = ceil(W / (8 * Hmax)) MCUs horizontally and MY = ceil(H / (8 * Vmax)) MCUs vertically. The MCUs are numbered m = 0, 1, ..., MX * MY - 1 from the top row down, and from left to right within each row.
+- The component plane of component k is a plane of width 8 * H_k * MX and height 8 * V_k * MY. MCU m contains the H_k * V_k blocks (H_k * (m mod MX) + h, V_k * floor(m / MX) + v) (0 <= h <= H_k - 1, 0 <= v <= V_k - 1) of the component plane of component k.
+- The coding order is the order of blocks obtained by taking the MCUs in order of their numbers, within each MCU the components in the order 1, 2, 3, and within each component the blocks in increasing order of v, and for equal v in increasing order of h. Encoding and decoding process the blocks in this order. The rank of a block in the coding order, counted from the start (starting from 0), is called its block number.
+- When the restart interval Ri >= 1, the groups obtained by dividing the MCUs, in order of their numbers, into runs of Ri MCUs are called intervals. Interval j (j = 0, 1, ...) consists of the MCUs j * Ri, j * Ri + 1, ..., min((j + 1) * Ri, MX * MY) - 1, and the number of intervals is N_I = ceil(MX * MY / Ri). When Ri = 0, there is only interval 0, consisting of all MCUs, and N_I = 1.
+
+* 3. Building the component planes
+The component planes to be encoded are built from an image and S as follows. Let PW = 8 * Hmax * MX and PH = 8 * Vmax * MY.
+(1) From each of the Y plane, Cb plane and Cr plane A of the image, build an extended plane E of width PW and height PH with E(x, y) = A(min(x, W - 1), min(y, H - 1)) (it is widened by repeating the values of the rightmost column and the bottom row).
+(2) For component k let fx = Hmax / H_k and fy = Vmax / V_k, and build the component plane P_k from the extended plane E of that component with the following formula (0 <= x <= 8 * H_k * MX - 1, 0 <= y <= 8 * V_k * MY - 1). The sum runs over all pairs (i, j) with 0 <= i <= fx - 1 and 0 <= j <= fy - 1.
+  P_k(x, y) = floor((sum of E(fx * x + i, fy * y + j)) / (fx * fy))
+When fx = fy = 1, P_k = E.
+
+* 4. DCT and inverse DCT
+The DCT of an 8 x 8 integer array f(y, x) (0 <= x <= 7, 0 <= y <= 7) is the 8 x 8 array F(u, v) (0 <= u <= 7, 0 <= v <= 7) computed in the following 2 stages. sum_y is the sum over y = 0, 1, ..., 7, and sum_x, sum_u, sum_v are defined in the same way.
+  e(u, x) = rnd(sum_y C(u, y) * f(y, x), 11)
+  F(u, v) = rnd(sum_x e(u, x) * C(v, x), 15)
+The inverse DCT of an 8 x 8 integer array D(u, v) is the 8 x 8 array g(y, x) computed in the following 2 stages.
+  s(y, v) = rnd(sum_u C(u, y) * D(u, v), 11)
+  g(y, x) = clamp(rnd(sum_v s(y, v) * C(v, x), 15) + 128)
+In encoding, with a the value of the element at position (i, j) of a block of a component plane, let f(j, i) = a - 128 and compute its DCT. In decoding, the value g(j, i) obtained by the inverse DCT becomes the value of the element at position (i, j) of the block of the component plane.
+
+* 5. Quantization
+The quantization tables for quality Q (1 to 100) are built as follows. Let sc = floor(5000 / Q) if Q < 50 and sc = 200 - 2 * Q if Q >= 50, and for t = 0, 1 let
+  q_t(u, v) = min(max(floor((B_t(u, v) * sc + 50) / 100), 1), 255)
+q_0 is the quantization table for luminance (component 1), and q_1 is the one for chrominance (components 2 and 3).
+The value of a DCT result F(u, v) quantized with quantization table q is, with a = floor((|F(u, v)| + floor(q(u, v) / 2)) / q(u, v)), a if F(u, v) >= 0 and -a if F(u, v) < 0. The dequantized value of a quantized value L(u, v) is L(u, v) * q(u, v).
+
+* 6. Zigzag order
+Arrange the 64 positions (u, v) of an 8 x 8 array in increasing order of u + v; positions with equal u + v are arranged in increasing order of u if u + v is odd, and in decreasing order of u if it is even. The k-th position in this order (k = 0, 1, ..., 63) is denoted (u_k, v_k). The order starts (0, 0), (0, 1), (1, 0), (2, 0), (1, 1), (0, 2), (0, 3), (1, 2), ... and ends with (7, 7).
+The sequence z_0, z_1, ..., z_63 obtained by arranging the quantized values L(u, v) of a block in this order as z_k = L(u_k, v_k) is called the coefficient sequence of the block. z_0 is called the DC coefficient, and z_1, ..., z_63 are called the AC coefficients.
+
+* 7. Symbols
+The size category cat(a) of an integer a is 0 if a = 0, and otherwise the smallest positive integer n with |a| < 2^n. The extra bits of a are, with n = cat(a), a written in n bits if a > 0 and a + 2^n - 1 written in n bits if a < 0 (nothing is written if a = 0).
+In encoding, a symbol sequence is built from the coefficient sequence of each block as follows. Each component k has a predictor Z_k, and before processing of the first MCU of each interval starts, Z_k = 0 is set for all components. The blocks are processed in coding order, and for a block of component k the following (1) and (2) are performed.
+(1) Let d = z_0 - Z_k be the DC difference, and set Z_k = z_0. Output the DC symbol cat(d) and the extra bits of d.
+(2) Let r = 0, and for i = 1, 2, ..., 63 in this order: if z_i = 0, increase r by 1; if z_i != 0, do the following. First, while r >= 16, output the AC symbol 0xF0 (ZRL; it stands for 16 zeros and has no extra bits) and decrease r by 16. Next, with n = cat(z_i), output the AC symbol 16 * r + n and the extra bits of z_i, and set r = 0. If r > 0 after processing up to i = 63, output the AC symbol 0x00 (EOB; it means that all the remaining coefficients are 0, and it has no extra bits).
+Each symbol is coded with one of the 4 Huffman tables according to its kind (DC or AC) and its component. The DC and AC symbols of component 1 are coded with tables (0, 0) and (1, 0) respectively, and the DC and AC symbols of components 2 and 3 with tables (0, 1) and (1, 1) respectively. For table (c, i), c is called the class and i the id, and the tables (0, 0), (1, 0), (0, 1), (1, 1) are named dc_luma, ac_luma, dc_chroma, ac_chroma respectively.
+
+* 8. Huffman tables
+A Huffman table is a pair of BITS(1), BITS(2), ..., BITS(16) and HUFFVAL.
+(1) Code assignment: let code = 0, and for L = 1, 2, ..., 16 in this order, assign to the first BITS(L) symbols of HUFFVAL that have not been assigned yet, in HUFFVAL order, the code length L and the code value code, increasing code by 1 after each assignment. When the processing of that L is finished, double code. The code of a symbol is its code value written in as many bits as its code length.
+(2) Standard tables: the 4 tables of input/tables.txt.
+(3) Optimized tables: from the symbol sequence to be coded, each of the 4 tables is built as follows. For v = 0, 1, ..., 255, let freq(v) be the number of symbols v coded with that table; in addition, add a reserved symbol 256 with freq(256) = 1.
+ (a) For v = 0, 1, ..., 256, set codesize(v) = 0 and others(v) = -1.
+ (b) Let c1 be the v with freq(v) > 0 whose freq(v) is smallest (if there are several, the largest v), and let c2 be the v other than c1 with freq(v) > 0 whose freq(v) is smallest (if there are several, the largest v). If there is no c2, go to (e).
+ (c) Add freq(c2) to freq(c1), and set freq(c2) = 0.
+ (d) Increase codesize(c1) by 1, and while others(c1) != -1, repeat setting c1 = others(c1) and increasing codesize(c1) by 1. Then set others(c1) = c2. Next increase codesize(c2) by 1, and while others(c2) != -1, repeat setting c2 = others(c2) and increasing codesize(c2) by 1. Go back to (b).
+ (e) For each positive integer L, let count(L) be the number of v (0 <= v <= 256) with codesize(v) = L.
+ (f) Let Lmax be the largest L with count(L) > 0. If Lmax >= 17, then for L = Lmax, Lmax - 1, ..., 17 in this order, repeat the following while count(L) > 0. Let j = L - 2, and while count(j) = 0 decrease j by 1. Decrease count(L) by 2, increase count(L - 1) by 1, increase count(j + 1) by 2, and decrease count(j) by 1.
+ (g) For the largest L not greater than 16 with count(L) > 0, decrease count(L) by 1 (this removes the reserved symbol).
+ (h) Let BITS(L) = count(L) (L = 1, 2, ..., 16). HUFFVAL is the list of the v (0 <= v <= 255) with codesize(v) > 0, arranged in increasing order of codesize(v) as computed up to (d), and for equal codesize(v) in increasing order of v.
+The code length of each symbol is the length determined by (1) from the BITS and HUFFVAL built in this way (it may differ from codesize(v)).
+
+* 9. JPEG byte sequence (encoding)
+Encoding an image with (Q, S, M, Ri) means building a JPEG byte sequence from that image, the quality Q, the subsampling mode S, the kind of Huffman tables M and the restart interval Ri as follows.
+(1) Build the component planes by section 3, quantize the DCT (section 4) of each of their blocks (section 5) with q_0 for component 1 and with q_1 for components 2 and 3, and obtain the coefficient sequences (section 6).
+(2) Build the symbol sequence by section 7. If M is standard, use the standard tables; if it is optimized, use the optimized tables built from this symbol sequence.
+(3) Build the byte sequence formed by concatenating the following (a) to (h) in this order. (a) to (f) are called the header, and (g) is called the scan.
+ (a) SOI: 0xFF 0xD8.
+ (b) DQT: 0xFF 0xDB, 132 written in 2 bytes, 0x00, q_0(u_k, v_k) for k = 0, 1, ..., 63 in this order, one byte each (64 bytes), 0x01, then q_1(u_k, v_k) in the same way (64 bytes).
+ (c) SOF0: 0xFF 0xC0, 17 written in 2 bytes, 0x08, H written in 2 bytes, W written in 2 bytes, 0x03, 0x01, 16 * H_1 + V_1, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01.
+ (d) DHT: 0xFF 0xC4, 2 + 17 * 4 + (the total number of HUFFVAL entries of the 4 tables) written in 2 bytes, followed, for each table in the order dc_luma, ac_luma, dc_chroma, ac_chroma, by the 1 byte 16 * class + id, the 16 bytes BITS(1), ..., BITS(16), and each symbol of HUFFVAL as 1 byte.
+ (e) DRI (only when Ri > 0): 0xFF 0xDD, 4 written in 2 bytes, Ri written in 2 bytes.
+ (f) SOS: the 14 bytes 0xFF 0xDA 0x00 0x0C 0x03 0x01 0x00 0x02 0x11 0x03 0x11 0x00 0x3F 0x00.
+ (g) Scan: described below.
+ (h) EOI: 0xFF 0xD9.
+The scan is a sequence of bytes built by writing bits one after another. The written bits are grouped from the start into bytes of 8 bits each, with the bit written first as the most significant bit, and each byte is appended to the scan. If an appended byte is 0xFF, 0x00 is appended right after it (byte stuffing). The blocks are processed in coding order, and the symbols of each block are written in order, each as the code of the symbol followed by the extra bits of that symbol. Before writing the blocks of the first MCU of interval j (j >= 1), first, if the number of bits written so far is not a multiple of 8, write 1 bits until it is a multiple of 8 (padding; byte stuffing is applied to the resulting bytes). Then append the 2 bytes 0xFF, 0xD0 + ((j - 1) mod 8) (a restart marker; no byte stuffing is applied) to the scan. After the last block has been written, padding is also performed in the same way.
+The following values are defined.
+- Bits of a block: the total number of bits of the codes and extra bits of the symbols of that block (padding, byte stuffing and restart markers are not included).
+- The number of header bytes, the number of scan bytes, and the total number of bytes (the length of the byte sequence).
+- Position and length of interval j: the data of interval j starts right after SOS if j = 0, and right after the restart marker before interval j if j >= 1. The position of its first byte, counted from the start of the byte sequence (starting from 0), is the position of interval j, and the number of bytes from there to just before the next restart marker or EOI is the length of interval j.
+
+* 10. Decoding
+A JPEG byte sequence b_0, b_1, ..., b_(N-1) is decoded as follows. The byte sequence starts with 0xFF 0xD8 and ends with 0xFF 0xD9.
+(1) Segment parsing: let p = 2 and repeat the following. Let b_(p+1) be the marker type and Ls = 256 * b_(p+2) + b_(p+3) the segment length, and let the Ls - 2 bytes b_(p+4), ..., b_(p+Ls+1) be the segment contents. Record the segment (position p, name, length Ls), increase p by Ls + 2, and then process the contents according to the marker type as follows. If the marker type is 0xDA (SOS), end the repetition after processing it, and let the p at that point be the scan start position p_0.
+ - 0xDB (DQT): the contents are a sequence of groups of 65 bytes. The first byte of each group is the quantization table id t (0 to 3), and the following 64 bytes are q_t(u_0, v_0), q_t(u_1, v_1), ..., q_t(u_63, v_63). If a table with the same id appears again, the later table replaces it.
+ - 0xC4 (DHT): the contents are a sequence of Huffman tables. Each table consists of the 1 byte 16 * c + i (c is the class, i is the id), the 16 bytes BITS(1), ..., BITS(16), and the BITS(1) + ... + BITS(16) bytes of HUFFVAL. This is table (c, i). If a table with the same (c, i) appears again, the later table replaces it.
+ - 0xC0 (SOF0): the contents are the 1 byte precision (8), the height H and the width W each written in 2 bytes, the 1 byte number of components (3), followed, for each of the components k = 1, 2, 3, by 1 byte each of the component identifier, 16 * H_k + V_k, and the quantization table id Tq_k.
+ - 0xDD (DRI): the contents are the restart interval Ri written in 2 bytes. If there is no DRI, Ri = 0.
+ - 0xDA (SOS): the contents are the 1 byte number of components (3), followed, for each of the components k = 1, 2, 3 (in the same order as SOF0), by 1 byte each of the component identifier and 16 * Td_k + Ta_k, and finally 3 bytes (not used). Td_k and Ta_k are the ids of the Huffman tables used for the DC and AC symbols of component k.
+ - 0xE0 to 0xEF (APP0 to APP15) and 0xFE (COM): the contents are not used.
+ The segment names are SOF0 for 0xC0, DHT for 0xC4, DQT for 0xDB, DRI for 0xDD, SOS for 0xDA, COM for 0xFE, and, for 0xE0 + n (0 <= n <= 15), APP followed by n written in decimal (for example APP0). The segment list is the list consisting of the segment with position 0, name SOI and length 0, the recorded segments, and the segment with position N - 2, name EOI and length 0, in this order. The number of scan bytes is N - 2 - p_0.
+(2) From H_k and V_k, determine Hmax, Vmax, MX, MY, the sizes of the component planes and the coding order by the rules of section 2, and determine the intervals with the Ri of (1). The coefficient sequences of all blocks are initially all 0.
+(3) Reading bits: a read position p (initially p_0) and a bit buffer (initially empty) are used. To read 1 bit, if the buffer is empty, first take in 1 byte as follows. If b_p != 0xFF, take in b_p and increase p by 1. If b_p = 0xFF and b_(p+1) = 0x00, take in 0xFF and increase p by 2. If b_p = 0xFF and b_(p+1) != 0x00, it is error marker (p is not changed). The 8 bits of the byte taken in are put into the buffer and taken out one bit at a time from the most significant bit. Reading an n-bit integer means reading 1 bit n times and regarding the bits as an n-digit binary number with the bit read first as the most significant.
+(4) Reading a symbol: to read one symbol with a table, let code = 0, and for L = 1, 2, ..., 16 in this order, read 1 bit beta and set code = 2 * code + beta; if the table has a symbol whose code length is L and whose code value is code (section 8 (1)), that symbol is the result. If none is found up to L = 16, it is error code.
+(5) Decoding a block: a block of component k is decoded as follows, with table (0, Td_k) for DC and table (1, Ta_k) for AC. Set the coefficient sequence to all 0, and read the DC symbol n. If n > 0, read an n-bit integer w, and let d = w if w >= 2^(n-1) and d = w - 2^n + 1 otherwise (if n = 0, d = 0). Add d to the predictor Z_k, and set z_0 = Z_k. Next let i = 1, and repeat the following while i <= 63. Read an AC symbol a; if a = 0x00, end the repetition. Otherwise let r = floor(a / 16) and n = a mod 16, add r to i, and if i > 63 it is error index. If n > 0, read an n-bit integer, convert it to a value by the same rule as for DC, and set it as z_i. Increase i by 1.
+(6) Processing the intervals: let j = 0 and repeat the following while j < N_I.
+ (a) Set Z_k = 0 for all components, and decode the blocks of the MCUs of interval j in coding order by (5).
+ (b) Empty the buffer (remaining bits are discarded). The expected marker is 0xD0 + (j mod 8) if j < N_I - 1, and 0xD9 if j = N_I - 1. If b_p = 0xFF and b_(p+1) is the expected marker, interval j is ok. The coefficient sequences decoded in (a) become the coefficient sequences of the blocks of interval j, p is increased by 2, and j is increased by 1. Otherwise, it is error sync.
+ (c) If an error occurs in (a) or (b), stop decoding interval j at that point. Interval j is damaged. The coefficient sequences of the blocks of interval j stay all 0 (the values decoded in (a) are not used). Record the kind of error, the number of the MCU being decoded when the error occurred (for sync, the number of the last MCU of interval j), and the value of p at that time (the error offset), and empty the buffer. Next, find the smallest q with q >= p and q + 1 <= N - 1 such that b_q = 0xFF and b_(q+1) is one of 0xD0 to 0xD7 or 0xD9; this is the resync position (since the byte sequence ends with 0xFF 0xD9, a resync position always exists).
+  - If b_(q+1) = 0xD0 + n (0 <= n <= 7), let j' = j + 1 + ((n - j) mod 8). Intervals j + 1, ..., min(j', N_I) - 1 are lost (if j' = j + 1, no interval is lost). Set p = q + 2 and j = j'.
+  - If b_(q+1) = 0xD9, intervals j + 1, ..., N_I - 1 are all lost, and the processing of the intervals ends.
+ The coefficient sequences of the blocks of lost intervals stay all 0.
+(7) For each block of component k, from its coefficient sequence z_0, z_1, ..., z_63 form L with L(u_0, v_0) = z_0, L(u_1, v_1) = z_1, ..., L(u_63, v_63) = z_63, dequantize L with the quantization table q_(Tq_k) (the quantization table of component k), and take its inverse DCT as the values of that block of the component plane of component k. A block whose coefficient sequence is all 0 gets the value 128 everywhere.
+(8) For component k, build the plane D_k of width W and height H with D_k(x, y) = P_k(floor(x * H_k / Hmax), floor(y * V_k / Vmax)) (P_k is the component plane of component k built in (7)). D_1, D_2, D_3 are the decoded Y plane, Cb plane and Cr plane, and the image obtained by converting each pixel to RGB by section 1 is the decoded image.
+When a byte sequence built by section 9 is decoded, no error occurs, all intervals are ok, and the coefficient sequence of each block equals the one at encoding time.
+
+* 11. Evaluation
+(1) The PSNR of sequences of integers a_1, ..., a_n and b_1, ..., b_n, each between 0 and 255 inclusive, is, with eps = (a_1 - b_1)^2 + ... + (a_n - b_n)^2, inf if eps = 0, and if eps > 0 the value 10 * log10(65025 * n / eps) computed in double-precision floating point, rounded to 2 decimal places and written with exactly 2 digits after the decimal point (for example 31.47, 30.50).
+(2) When the byte sequence of an encoded image is decoded, psnr_y is the PSNR of the W * H values of the original Y plane and of the decoded Y plane (values at the same position are paired). psnr_cb and psnr_cr are likewise the PSNR of the original Cb plane and the decoded Cb plane, and of the original Cr plane and the decoded Cr plane. psnr_rgb is the PSNR of the 3 * W * H values R, G, B of the input image and of the decoded image (values of the same colour of the same pixel are paired). The maximum error is the maximum of the absolute differences between the values of the same colour of the same pixel of the input image and the decoded image.
+(3) When the total number of bytes is b, the bits per pixel bpp is 8 * b / (W * H) expressed as an irreducible fraction, written as "a/c" with numerator a and denominator c (the "/1" is written even when c = 1).
+
+* 12. Evaluation per quality
+For each Q_i (i = 1, 2, ..., n), compute the total numbers of bytes when the input image is encoded with (Q_i, S, standard, Ri) and with (Q_i, S, optimized, Ri). Also decode the byte sequence of the input image encoded with (Q_i, S, M, Ri), and compute psnr_y, psnr_cb, psnr_cr, psnr_rgb, the maximum error, and the bpp of that byte sequence.
+
+* 13. Details at the reference quality
+For the input image encoded with (Q_1, S, M, Ri) (the reference encoding) and for the decoding of that byte sequence (the reference decoding), compute the following.
+(1) Block statistics: for each block of the reference encoding, compute z_0, the DC difference, the number of nonzero AC coefficients, the largest k with z_k != 0 (0 <= k <= 63; 0 if there is no such k), the bits of the block, and the error of the block. The error of the block is the sum of the squared differences between the 64 values of that block of the component plane built by section 3 in the reference encoding and the 64 values of the same block of the component plane built by section 10 (7) in the reference decoding, pairing values at the same position.
+(2) Thumbnail: an image of width TW = ceil(W / 8) and height TH = ceil(H / 8). The value of pixel (x, y) is computed as follows. For each component k = 1, 2, 3, from the z_0 of block (floor(x * H_k / Hmax), floor(y * V_k / Vmax)) of component k in the reference decoding and the (0, 0) value w = q_(Tq_k)(0, 0) of the quantization table q_(Tq_k) used for component k in the reference decoding, compute clamp(floor((z_0 * w + 4) / 8) + 128). The results for k = 1, 2, 3 are Y, Cb, Cr respectively, and they are converted to RGB by section 1.
+(3) Coefficient truncation: for each K_i, build the component plane of component 1 by the same method as section 10 (7) from the coefficient sequences of the blocks of component 1 in the reference decoding, keeping only z_0, ..., z_(K_i - 1) and setting the rest to 0. Compute the PSNR of the W * H values of the part 0 <= x <= W - 1, 0 <= y <= H - 1 of that component plane and of the original Y plane.
+(4) Error distribution: divide the absolute differences (3 * W * H of them) between the values of the same colour of the same pixel of the input image and of the decoded image of the reference decoding into the 8 ranges 0, 1, 2 to 3, 4 to 7, 8 to 15, 16 to 31, 32 to 63, 64 to 255, and count how many fall into each range.
+
+* 14. Comparison of subsampling modes
+For each of S' = 444, 422, 420, compute the total number of bytes when the input image is encoded with (Q_1, S', M, Ri), and psnr_cb, psnr_cr, psnr_rgb when that byte sequence is decoded.
+
+* 15. Repeated compression
+Let the input image be I_0, and for g = 1, 2, ..., Ng in this order, encode image I_(g-1) with (Q_1, S, M, Ri) and let I_g be the decoded image of that byte sequence. For each g, compute the total number of bytes, the psnr_rgb of the input image and I_g (the PSNR of the 3 * W * H values), and the number of pixels for which at least one of the R, G, B values differs between I_(g-1) and I_g (the number of changed pixels). I_1 is the same as the decoded image of the reference decoding.
+
+* 16. Quality search
+Let lo = 1 and hi = 100, and repeat the following while lo < hi. Let mid = floor((lo + hi + 1) / 2), compute the total number of bytes b when the input image is encoded with (mid, S, M, Ri), and record the pair (mid, b). If b <= T, set lo = mid; otherwise set hi = mid - 1. Let Q* be lo when the repetition ends, and compute the total number of bytes b* when the input image is encoded with (Q*, S, M, Ri), whether b* <= T, and the psnr_rgb when that byte sequence is decoded.
+
+* 17. Decoding and repairing the corrupted byte sequence
+(1) Decode the byte sequence of input/stream.hex by section 10.
+(2) Repair: build a new byte sequence by the same method as sections 7 to 9, using the coefficient sequences of all blocks obtained in (1) (all 0 for the blocks of damaged and lost intervals) as they are, without DCT or quantization. Here W, H and the restart interval Ri are those of the byte sequence of (1), (H_1, V_1) is that of component 1 of the byte sequence of (1), and (H_2, V_2) = (H_3, V_3) = (1, 1). q_0 is the quantization table q_(Tq_1) of component 1 in (1), q_1 is the quantization table q_(Tq_2) of component 2 in (1), and the Huffman tables are the optimized tables.
+(3) Decode the byte sequence built in (2) by section 10, and check whether its decoded image is exactly identical to the decoded image of (1) (all values of all colours of all pixels are equal).
+
+[Output files]
+Write the following 9 files to the output/ folder. Every file consists of ASCII characters only, and every line ends with a newline (LF). The words on a line are separated by single spaces (in (1) they are separated by ","), with no whitespace at the start or end of a line, and no empty lines are output. Integers are written in decimal without extra leading zeros, and negative numbers have a leading "-" (for example -12). A PSNR is written in the format of section 11 (1). In the formats below, the parts enclosed in < > are replaced by values, and everything else is output as it is.
+
+* Images in PPM format (decoded.ppm, thumbnail.ppm, stream_decoded.ppm)
+Line 1 is P3, line 2 is <width> <height>, and line 3 is 255. Of the following <height> lines, line y + 1 (y = 0, 1, ...) holds the R, G, B values of the pixels (0, y), (1, y), ... on one line, in the same order as input/image.ppm. No comments are output.
+
+* Hexadecimal files (bitstream.hex, repaired.hex)
+The byte sequence is divided from the start into chunks of 32 bytes, and each chunk is written on one line (the last line may have fewer than 32 bytes). Each byte is written as 2 lowercase hexadecimal digits (00 to ff), with no spaces between bytes.
+
+(1) output/rate_distortion.csv: the results of section 12. Line 1 is the following header.
+  quality,bytes_standard,bytes_optimized,bpp,psnr_y,psnr_cb,psnr_cr,psnr_rgb,max_error
+  Then, for each Q_i in order of i, output the following line.
+  <Q_i>,<total number of bytes with standard>,<total number of bytes with optimized>,<bpp>,<psnr_y>,<psnr_cb>,<psnr_cr>,<psnr_rgb>,<maximum error>
+(2) output/decoded.ppm: the decoded image of the reference decoding (width W, height H).
+(3) output/bitstream.hex: the byte sequence of the reference encoding.
+(4) output/thumbnail.ppm: the thumbnail of section 13 (2) (width TW, height TH).
+(5) output/huffman_tables.txt: the Huffman tables used in the reference encoding. For each table in the order dc_luma, ac_luma, dc_chroma, ac_chroma, output the following 2 lines and then one line per HUFFVAL symbol, in HUFFVAL order.
+  table <table name> class <class> id <id> symbols <number of HUFFVAL entries> coded <number of symbols coded with the table> bits <total number of code bits>
+  counts <BITS(1)> <BITS(2)> ... <BITS(16)>
+  symbol <symbol> length <code length> code <code> count <count>
+  <symbol> is the value of the symbol written as 2 lowercase hexadecimal digits (for example 0a, f0), <code> is the code of the symbol written with the characters 0 and 1 (the number of characters equals the code length), and <count> is the number of times that symbol was coded with that table (it may be 0). <total number of code bits> is the sum of (count * code length) over all symbols of HUFFVAL (extra bits are not included).
+(6) output/blocks.txt: the block statistics of section 13 (1). Line 1 is blocks <number of blocks>, followed by one line per block in order of block number.
+  block <block number> <component> <bx> <by> dc <z_0> diff <DC difference> nonzero <number of nonzero AC coefficients> last <largest k with z_k != 0> bits <bits of the block> sse <error of the block>
+  <component> is one of Y, Cb, Cr, and <bx> <by> is the position of the block in the component plane.
+(7) output/stream_decoded.ppm: the decoded image of section 17 (1).
+(8) output/repaired.hex: the byte sequence built in section 17 (2).
+(9) output/report.txt: output the following lines in this order. The lines from image to interval are about the reference encoding, the error_histogram and truncate lines are results of section 13, the lines starting with stream are about the decoding of section 17 (1), and the repair line is the result of section 17 (2) and (3).
+  image <W> <H>
+  sampling <S> mcu <8 * Hmax> <8 * Vmax> grid <MX> <MY>
+  padded <PW> <PH>
+  blocks <number of blocks of component 1> <number of blocks of component 2> <number of blocks of component 3>
+  restart_interval <Ri> markers <number of restart markers>
+  huffman <M>
+  quality <Q_1>
+  quant 0 <q_0(u_0, v_0)> <q_0(u_1, v_1)> ... <q_0(u_63, v_63)>
+  quant 1 <q_1(u_0, v_0)> <q_1(u_1, v_1)> ... <q_1(u_63, v_63)>
+  symbols <count for dc_luma> <count for ac_luma> <count for dc_chroma> <count for ac_chroma>
+  eob <number of EOBs> zrl <number of ZRLs>
+  zero_ac_blocks <number of blocks whose AC coefficients are all 0>
+  nonzero <n_0> <n_1> ... <n_63>
+  component Y bits <bits> nonzero <number of nonzero coefficients> sse <error>
+  component Cb bits <bits> nonzero <number of nonzero coefficients> sse <error>
+  component Cr bits <bits> nonzero <number of nonzero coefficients> sse <error>
+  padding_bits <number of bits written as padding>
+  stuffed_bytes <number of 0x00 bytes added by byte stuffing>
+  header_bytes <number of header bytes>
+  scan_bytes <number of scan bytes>
+  total_bytes <total number of bytes>
+  interval <j> <number of the first MCU of interval j> <number of MCUs of interval j> <position of interval j> <length of interval j> (one line per interval, in order of j)
+  error_histogram <the counts of the 8 ranges, in range order>
+  truncate <K_i> <PSNR> (one line per K_i, in order of i)
+  sampling_compare <S'> <total number of bytes> <psnr_cb> <psnr_cr> <psnr_rgb> (3 lines, in the order S' = 444, 422, 420)
+  generation <g> <total number of bytes> <psnr_rgb> <number of changed pixels> (Ng lines, in the order g = 1, 2, ..., Ng)
+  rate_control_step <mid> <b> (one line per recorded pair, in the order recorded)
+  rate_control <Q*> <b*> <yes if b* <= T, otherwise no> <psnr_rgb>
+  stream_segment <position> <name> <length> (one line per segment, in the order of the segment list)
+  stream_image <W> <H>
+  stream_component <identifier> <H_k> <V_k> <Tq_k> <Td_k> <Ta_k> (3 lines, in the order k = 1, 2, 3)
+  stream_quant <t> <q_t(u_0, v_0)> <q_t(u_1, v_1)> ... <q_t(u_63, v_63)> (one line per defined quantization table, in increasing order of t)
+  stream_huffman <c> <i> symbols <number of HUFFVAL entries> longest <longest code length> (one line per defined Huffman table (c, i), in increasing order of c, and for equal c in increasing order of i)
+  stream_restart <Ri> intervals <N_I> ok <number of ok intervals> damaged <number of damaged intervals> lost <number of lost intervals>
+  stream_interval <j> <number of the first MCU of interval j> <number of MCUs of interval j> <state> (one line per interval, in order of j)
+  stream_scan_bytes <number of scan bytes>
+  repair <total number of bytes> <number of header bytes> <number of scan bytes> identical <yes if identical, otherwise no>
+  - <number of restart markers> is N_I - 1.
+  - The values of the symbols line are the numbers of symbols coded with each table. The values of the eob and zrl lines are the numbers of symbols 0x00 (EOB) and 0xF0 (ZRL) output over all blocks.
+  - <n_k> (k = 0, 1, ..., 63) is the number of blocks with z_k != 0 (blocks of all components are counted).
+  - A component line gives totals over the blocks of that component: <bits> is the sum of the bits of the blocks, <number of nonzero coefficients> is the sum of the numbers of nonzero values among z_0, ..., z_63, and <error> is the sum of the errors of the blocks.
+  - <state> is ok for an ok interval, lost for a lost interval, and damaged <kind of error> mcu <MCU number> offset <error offset> resync <resync position> for a damaged interval. <kind of error> is one of marker, code, index, sync.
+  - <longest code length> is the largest L with BITS(L) > 0 in that table.
+  - The byte counts of the repair line are those of the byte sequence built in section 17 (2).
+
+[Source files]
+There are the following 6 source files. The names are language-neutral role names; extensions and capitalization follow the conventions of each language.
+- main: handles the overall flow and contains most of the processing. Reading the input and calling each module; the encoding flow (building the coefficient sequences of the blocks from the component planes, building the symbol sequence (section 7), assembling the header and the scan and inserting the restart markers (section 9)); the decoder (segment parsing, decoding symbols and blocks, processing the intervals and resynchronizing after errors, building the component planes and the decoded image (section 10)); evaluation (section 11); the processing of sections 12 to 17; building and writing the contents of all output files.
+- image_io: reading and writing PPM images, reading params.txt and tables.txt, reading and writing hexadecimal files.
+- color: colour conversion (section 1), building the extended planes and chroma subsampling (section 3), upsampling of the component planes in decoding (section 10 (8)).
+- dct: zigzag order (section 6), building the quantization tables, quantization and dequantization (section 5), DCT and inverse DCT (section 4).
+- entropy: computing size categories and extra bits, converting extra bits back to values (section 7, section 10 (5)), building optimized Huffman tables (section 8 (3)), code assignment (section 8 (1)).
+- bitstream: writing bits (grouping into bytes, byte stuffing, padding, appending restart markers), reading bits (taking in bytes and detecting error marker (section 10 (3)), searching for the resync position (section 10 (6) (c))).
+
+[Constraints]
+- 8 <= W <= 64 and 8 <= H <= 64.
+- 1 <= n <= 8, 1 <= Q_i <= 100, and Q_1, ..., Q_n are all distinct.
+- 0 <= Ri <= 64, 1 <= T <= 100000, 1 <= Ng <= 8, 1 <= m <= 8, and 1 <= K_1 < K_2 < ... < K_m <= 64.
+- |C(u, x)| <= 4096 and 1 <= B_t(u, v) <= 255. The standard Huffman tables contain every symbol that occurs in section 7.
+- When optimized tables are built, every table has at least one symbol to code.
+- For input/stream.hex the following holds.
+  - N <= 4096, b_0 = 0xFF, b_1 = 0xD8, b_(N-2) = 0xFF, b_(N-1) = 0xD9.
+  - After SOI come segments among APP0 to APP15, COM, DQT, DHT, SOF0 and DRI, followed by the SOS segment. There is exactly one SOF0 and exactly one SOS, there is one DRI, and all quantization tables and Huffman tables that are used are defined before SOS.
+  - The SOF0 precision is 8, the width and height are between 8 and 64 inclusive, and the number of components is 3. H_1, V_1 of component 1 are 1 or 2; components 2 and 3 have H_k = V_k = 1 and use the same quantization table and the same Huffman tables. The order of the components in SOS is the same as in SOF0. The Ri of DRI is at least 1.
+  - The values of the quantization tables are between 1 and 255 inclusive. Every Huffman table is such that, when codes are assigned by section 8 (1), all code values of length L are less than 2^L. The symbols of the DC tables are between 0 and 11 inclusive, and the symbols of the AC tables are 0x00, 0xF0, or 16 * r + n (0 <= r <= 15, 1 <= n <= 10).
+  - Only bytes inside the scan are corrupted; the segments up to SOS and the last 2 bytes are not corrupted.
+- For the given input, the absolute value of every integer, including intermediate values of computations, is less than 2^31.
+- For the given input, every PSNR that is output has eps > 0, and the exact value of 10 * log10(65025 * n / eps) is at least 10^(-6) away from a boundary for rounding to 2 decimal places (a value whose digits from the 3rd decimal place on are exactly 5).
+
+[Example]
+The following example only illustrates the formats and differs from the actual input files. The input/stream.hex of this example is the byte sequence of an image of width 64 and height 8 encoded with (H_1, V_1) = (2, 1) and Ri = 1, with the byte at position 340 and the byte at position 383 (the second byte of the restart marker after interval 2) changed.
+Example input (input/image.ppm):
+P3
+20 10
+255
+59 89 199 66 88 193 76 90 190 86 92 187 89 87 177 97 87 172 111 93 173 117 91 166 121 87 157 131 89 154 141 91 151 145 87 142 157 91 141 162 88 133 169 87 127 177 87 122 188 90 120 196 90 115 201 87 107 210 88 103
+57 97 197 69 101 196 76 100 190 81 97 182 95 103 183 101 101 176 105 97 167 114 98 163 126 102 162 134 102 157 141 101 151 145 97 142 157 101 141 165 101 136 172 100 130 177 97 122 186 98 118 193 97 112 205 101 111 215 103 108
+58 108 198 67 109 194 76 110 190 82 108 183 221 51 41 217 47 37 221 51 41 219 49 39 221 51 41 223 53 43 142 112 152 146 108 143 153 107 137 165 111 136 173 111 131 182 112 127 186 108 118 195 109 114 201 107 107 213 111 106
+62 122 202 65 117 192 77 121 191 81 117 182 221 51 41 218 48 38 220 50 40 222 52 42 221 51 41 220 50 40 143 123 153 147 119 144 156 120 140 241 231 121 240 230 120 239 229 119 239 229 119 238 228 118 207 123 113 210 118 103
+62 132 202 71 133 198 74 128 188 81 127 182 221 51 41 219 49 39 221 51 41 220 50 40 219 49 39 222 52 42 140 130 150 147 129 144 157 131 141 237 227 117 237 227 117 241 231 121 240 230 120 238 228 118 207 133 113 211 129 104
+58 138 198 68 140 195 76 140 190 81 137 182 222 52 42 217 47 37 223 53 43 221 51 41 221 51 41 223 53 43 143 143 153 147 139 144 155 139 139 242 232 122 239 229 119 241 231 121 240 230 120 241 231 121 207 143 113 212 140 105
+57 147 197 71 153 198 73 147 187 83 149 184 220 50 40 222 52 42 222 52 42 217 47 37 217 47 37 222 52 42 142 152 152 147 149 144 158 152 142 241 231 121 242 232 122 243 233 123 240 230 120 239 229 119 206 152 112 212 150 105
+62 162 202 67 159 194 73 157 187 84 160 185 219 49 39 218 48 38 221 51 41 217 47 37 220 50 40 217 47 37 138 158 148 151 163 148 155 159 139 238 228 118 242 232 122 238 228 118 240 230 120 240 230 120 207 163 113 212 160 105
+57 167 197 66 168 193 76 170 190 84 170 185 93 171 181 99 169 174 106 168 168 119 173 168 124 170 160 135 173 158 141 171 151 147 169 144 158 172 142 240 230 120 239 229 119 242 232 122 240 230 120 238 228 118 202 168 108 209 167 102
+58 178 198 66 178 193 74 178 188 86 182 187 90 178 178 97 177 172 108 180 170 119 183 168 125 181 161 130 178 153 139 179 149 147 179 144 153 177 137 162 178 133 172 180 130 181 181 126 187 179 119 197 181 116 205 181 111 211 179 104
+Example input (input/params.txt):
+qualities 60 20
+sampling 420
+restart_interval 1
+huffman optimized
+target_bytes 400
+generations 2
+truncate 1 10 64
+Example input (input/tables.txt): the same content as the actual input file (39 lines).
+Example input (input/stream.hex):
+ffd8ffe000104a46494600010100000100010000fffe00114d50542074657374
+2073747265616dffdb004301100b0c0e0c0a100e0d0e1211101318281a181616
+183123251d283a333d3c3933383740485c4e404457453738506d51575f626768
+673e4d71797064785c656763ffdb0043001112121815182f1a1a2f6342384263
+6363636363636363636363636363636363636363636363636363636363636363
+6363636363636363636363636363636363ffc000110800080040030121010211
+00031100ffc4003f110000030705010000000000000000000000010204111214
+31618105062382c1321000010500020300000000000000000000000102031231
+0413223242ffc4002d0001010101000000000000000000000000030500020101
+0003010000000000000000000000000400010306ffdd00040001ffda000c0301
+1102000300003f0043851a473d444894ffd0e876d838da7afa26e627cb76f06a
+7c851fa21fffd1d0d203a8a5b78e4ef17cd9d5c848a265d2f83355d5f1d3ff52
+23025b79272d0d334c05c216589975a615f8eaeaa5b4ffd9
+Example output (output/rate_distortion.csv):
+quality,bytes_standard,bytes_optimized,bpp,psnr_y,psnr_cb,psnr_cr,psnr_rgb,max_error
+60,695,379,379/25,30.94,23.48,24.69,21.08,76
+20,644,318,318/25,27.55,22.71,19.98,18.53,102
+Example output (output/decoded.ppm):
+P3
+20 10
+255
+40 81 231 43 84 234 63 97 171 67 101 175 131 88 108 134 91 111 117 106 104 119 108 106 154 76 136 150 72 132 118 87 157 135 104 174 168 82 143 165 79 140 179 105 120 169 95 110 188 93 97 205 110 114 186 87 92 189 90 95
+48 89 239 51 92 242 68 102 176 70 104 178 130 87 107 131 88 108 112 101 99 114 103 101 172 94 154 172 94 154 139 108 178 142 111 181 170 84 145 172 86 147 178 104 119 160 86 101 177 82 86 198 103 107 186 87 92 199 100 105
+38 116 216 41 119 219 109 100 153 107 98 151 218 49 80 214 45 76 206 52 64 207 53 65 204 40 91 213 49 100 146 101 130 143 98 127 153 96 102 180 123 129 184 145 102 165 126 83 197 120 102 209 132 114 188 105 89 197 114 98
+45 123 223 49 127 227 116 107 160 112 103 156 219 50 81 213 44 75 205 51 63 207 53 65 199 35 86 214 50 101 162 117 146 155 110 139 181 124 130 239 182 188 250 211 168 237 198 155 255 184 166 254 177 159 208 125 109 198 115 99
+43 139 190 47 143 194 122 119 138 117 114 133 221 56 62 214 49 55 185 67 41 188 70 44 165 77 65 175 87 75 123 165 119 107 149 103 154 156 93 227 229 166 255 243 147 249 236 140 255 226 179 255 210 163 206 148 102 188 130 84
+47 143 194 53 149 200 128 125 144 121 118 137 223 58 64 215 50 56 186 68 42 190 72 46 160 72 60 161 73 61 118 160 114 100 142 96 146 148 85 219 221 158 238 225 129 239 226 130 255 210 163 255 202 155 208 150 104 198 140 94
+41 158 193 46 163 198 124 135 153 115 126 144 228 54 79 217 43 68 220 45 50 225 50 55 225 48 64 221 44 60 181 151 117 171 141 107 181 168 98 248 235 165 218 247 131 226 255 139 241 212 136 240 211 135 199 165 93 193 159 87
+46 163 198 52 169 204 129 140 158 118 129 147 228 54 79 216 42 67 218 43 48 222 47 52 221 44 60 213 36 52 182 152 118 178 148 114 185 172 102 244 231 161 203 232 116 213 242 126 254 225 149 251 222 146 207 173 101 196 162 90
+70 155 212 73 158 215 64 175 186 66 177 188 100 169 151 102 171 153 82 190 141 85 193 144 141 169 146 140 168 145 121 179 138 128 186 145 182 184 134 202 204 154 217 232 149 229 244 161 236 222 134 222 208 120 206 188 104 194 176 92
+73 158 215 77 162 219 68 179 190 70 181 192 103 172 154 105 174 156 85 193 144 89 197 148 148 176 153 146 174 151 125 183 142 125 183 142 168 170 120 173 175 125 174 189 106 178 193 110 214 200 112 207 193 105 201 183 99 197 179 95
+Example output (output/bitstream.hex):
+ffd8ffdb0084000d090a0b0a080d0b0a0b0e0e0d0f13201513121213271c1e17
+202e2931302e292d2c333a4a3e333646372c2d405741464c4e525352323e5a61
+5a50604a51524f010e0e0e131113261515264f352d354f4f4f4f4f4f4f4f4f4f
+4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f
+4f4f4f4f4f4f4f4fffc0001108000a001403012200021101031101ffc4006c00
+0002030000000000000000000000000004050102031000020103030305000000
+0000000000000102110003210405121331511423416191010101010000000000
+0000000000000000050002110002010401050000000000000000000001020003
+0411311213415161c1ffdd00040001ffda000c03010002110311003f000eedae
+8858c4d37d8f6fb7ae3ef160bc099581998abda0318a2ecb3234a3153e418aae
+cbf2660db99b6bd0d456985c11dfcefd7d9fffd065aadbd2c6a5eddb92a220b7
+7ed597a4fa1f94cc92c793649f935103c0a33aac37125aed89ffd9
+Example output (output/thumbnail.ppm):
+P3
+3 2
+255
+105 111 109 142 148 146 202 146 99
+147 153 151 165 171 169 225 169 122
+Example output (output/huffman_tables.txt):
+table dc_luma class 0 id 0 symbols 5 coded 8 bits 19
+counts 0 2 3 0 0 0 0 0 0 0 0 0 0 0 0 0
+symbol 04 length 2 code 00 count 2
+symbol 05 length 2 code 01 count 3
+symbol 01 length 3 code 100 count 1
+symbol 02 length 3 code 101 count 1
+symbol 03 length 3 code 110 count 1
+table ac_luma class 1 id 0 symbols 17 coded 94 bits 311
+counts 0 2 1 3 3 3 5 0 0 0 0 0 0 0 0 0
+symbol 01 length 2 code 00 count 26
+symbol 02 length 2 code 01 count 17
+symbol 11 length 3 code 100 count 12
+symbol 00 length 4 code 1010 count 8
+symbol 03 length 4 code 1011 count 8
+symbol 21 length 4 code 1100 count 5
+symbol 04 length 5 code 11010 count 3
+symbol 05 length 5 code 11011 count 3
+symbol 12 length 5 code 11100 count 2
+symbol 13 length 6 code 111010 count 1
+symbol 31 length 6 code 111011 count 2
+symbol 51 length 6 code 111100 count 2
+symbol 14 length 7 code 1111010 count 1
+symbol 23 length 7 code 1111011 count 1
+symbol 41 length 7 code 1111100 count 1
+symbol 61 length 7 code 1111101 count 1
+symbol 91 length 7 code 1111110 count 1
+table dc_chroma class 0 id 1 symbols 3 coded 4 bits 7
+counts 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0
+symbol 05 length 1 code 0 count 2
+symbol 00 length 2 code 10 count 1
+symbol 02 length 3 code 110 count 1
+table ac_chroma class 1 id 1 symbols 13 coded 38 bits 125
+counts 0 2 1 4 1 5 0 0 0 0 0 0 0 0 0 0
+symbol 01 length 2 code 00 count 7
+symbol 02 length 2 code 01 count 10
+symbol 00 length 3 code 100 count 4
+symbol 03 length 4 code 1010 count 3
+symbol 04 length 4 code 1011 count 3
+symbol 11 length 4 code 1100 count 2
+symbol 31 length 4 code 1101 count 3
+symbol 12 length 5 code 11100 count 1
+symbol 13 length 6 code 111010 count 1
+symbol 41 length 6 code 111011 count 1
+symbol 51 length 6 code 111100 count 1
+symbol 61 length 6 code 111101 count 1
+symbol c1 length 6 code 111110 count 1
+Example output (output/blocks.txt):
+blocks 12
+block 0 Y 0 0 dc -12 diff -12 nonzero 8 last 13 bits 53 sse 1114
+block 1 Y 1 0 dc 11 diff 23 nonzero 20 last 29 bits 115 sse 4770
+block 2 Y 0 1 dc 14 diff 3 nonzero 5 last 9 bits 32 sse 254
+block 3 Y 1 1 dc 25 diff 11 nonzero 15 last 22 bits 72 sse 1561
+block 4 Cb 0 0 dc 0 diff 0 nonzero 9 last 13 bits 47 sse 9916
+block 5 Cr 0 0 dc -2 diff -2 nonzero 17 last 48 bits 100 sse 18375
+block 6 Y 2 0 dc 18 diff 18 nonzero 18 last 27 bits 111 sse 3482
+block 7 Y 3 0 dc 13 diff -5 nonzero 4 last 20 bits 40 sse 120
+block 8 Y 2 1 dc 32 diff 19 nonzero 12 last 19 bits 60 sse 1320
+block 9 Y 3 1 dc 31 diff -1 nonzero 4 last 10 bits 25 sse 144
+block 10 Cb 1 0 dc -19 diff -19 nonzero 4 last 8 bits 30 sse 1713
+block 11 Cr 1 0 dc 18 diff 18 nonzero 4 last 5 bits 29 sse 1012
+Example output (output/stream_decoded.ppm):
+P3
+64 8
+255
+44 199 107 44 199 107 48 197 107 48 197 107 54 194 107 54 194 107 62 190 107 62 190 107 68 183 105 67 182 104 76 178 104 75 177 103 80 173 102 80 173 102 81 171 101 81 171 101 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128
+44 198 112 44 198 112 47 196 112 47 196 112 52 194 112 52 194 112 61 189 112 61 189 112 67 183 110 67 183 110 76 179 110 75 178 109 79 174 108 78 173 107 82 171 107 81 170 106 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128
+43 198 120 43 198 120 46 197 120 46 197 120 53 193 120 53 193 120 60 190 120 60 190 120 69 184 119 68 183 118 75 179 118 74 178 117 80 173 116 80 173 116 82 171 115 82 171 115 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128
+43 198 132 43 198 132 46 196 132 46 196 132 51 194 132 51 194 132 60 189 132 60 189 132 67 184 131 67 184 131 75 179 130 75 179 130 79 175 129 78 174 128 83 172 128 82 171 127 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128
+40 197 142 40 197 142 44 195 142 44 195 142 50 192 142 50 192 142 58 188 142 58 188 142 68 185 143 68 185 143 75 179 142 74 178 141 79 174 140 79 174 140 82 171 139 82 171 139 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128
+40 197 154 40 197 154 44 195 154 44 195 154 50 192 154 50 192 154 58 188 154 58 188 154 67 184 155 67 184 155 75 179 154 75 179 154 80 175 153 79 174 152 81 173 152 80 172 151 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128
+39 197 162 39 197 162 44 195 162 44 195 162 49 192 162 49 192 162 58 188 162 58 188 162 67 185 163 67 185 163 75 180 163 74 179 162 79 175 161 78 174 160 82 172 160 82 172 160 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128
+39 196 165 39 196 165 42 195 165 42 195 165 49 191 165 49 191 165 56 188 165 56 188 165 68 185 167 68 185 167 74 180 166 74 180 166 80 176 165 79 175 164 81 172 163 81 172 163 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128
+Example output (output/repaired.hex):
+ffd8ffdb008400100b0c0e0c0a100e0d0e1211101318281a181616183123251d
+283a333d3c3933383740485c4e404457453738506d51575f626768673e4d7179
+7064785c656763011112121815182f1a1a2f6342384263636363636363636363
+6363636363636363636363636363636363636363636363636363636363636363
+6363636363636363ffc00011080008004003012100021101031101ffc4005400
+0101010000000000000000000000000000010410010003000000000000000000
+0000000000010211010101010000000000000000000000000000020511010003
+0000000000000000000000000000010313ffdd00040001ffda000c0301000211
+0311003f00d189354e4c4aa5ffd000ffd100ffd200ffd9
+Example output (output/report.txt):
+image 20 10
+sampling 420 mcu 16 16 grid 2 1
+padded 32 16
+blocks 8 2 2
+restart_interval 1 markers 1
+huffman optimized
+quality 60
+quant 0 13 9 10 11 10 8 13 11 10 11 14 14 13 15 19 32 21 19 18 18 19 39 28 30 23 32 46 41 49 48 46 41 45 44 51 58 74 62 51 54 70 55 44 45 64 87 65 70 76 78 82 83 82 50 62 90 97 90 80 96 74 81 82 79
+quant 1 14 14 14 19 17 19 38 21 21 38 79 53 45 53 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79 79
+symbols 8 94 4 38
+eob 12 zrl 0
+zero_ac_blocks 0
+nonzero 11 9 12 10 7 8 5 5 8 7 5 6 5 5 1 2 1 1 5 4 2 1 2 1 1 1 0 2 1 1 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+component Y bits 508 nonzero 94 sse 12765
+component Cb bits 77 nonzero 14 sse 11629
+component Cr bits 129 nonzero 23 sse 19387
+padding_bits 6
+stuffed_bytes 0
+header_bytes 285
+scan_bytes 92
+total_bytes 379
+interval 0 0 1 285 53
+interval 1 1 1 340 37
+error_histogram 15 25 49 88 159 165 93 6
+truncate 1 18.22
+truncate 10 26.83
+truncate 64 30.94
+sampling_compare 444 407 27.63 27.89 24.50
+sampling_compare 422 391 25.65 26.71 22.99
+sampling_compare 420 379 23.48 24.69 21.08
+generation 1 379 21.08 200
+generation 2 368 20.82 199
+rate_control_step 51 364
+rate_control_step 76 412
+rate_control_step 63 385
+rate_control_step 69 395
+rate_control_step 72 399
+rate_control_step 74 406
+rate_control_step 73 402
+rate_control 72 399 yes 22.52
+stream_segment 0 SOI 0
+stream_segment 2 APP0 16
+stream_segment 20 COM 17
+stream_segment 39 DQT 67
+stream_segment 108 DQT 67
+stream_segment 177 SOF0 17
+stream_segment 196 DHT 63
+stream_segment 261 DHT 45
+stream_segment 308 DRI 4
+stream_segment 314 SOS 12
+stream_segment 406 EOI 0
+stream_image 64 8
+stream_component 1 2 1 1 1 1
+stream_component 2 1 1 0 0 0
+stream_component 3 1 1 0 0 0
+stream_quant 0 17 18 18 24 21 24 47 26 26 47 99 66 56 66 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99
+stream_quant 1 16 11 12 14 12 10 16 14 13 14 18 17 16 19 24 40 26 24 22 22 24 49 35 37 29 40 58 51 61 60 57 51 56 55 64 72 92 78 64 68 87 69 55 56 80 109 81 87 95 98 103 104 103 62 77 113 121 112 100 120 92 101 103 99
+stream_huffman 0 0 symbols 4 longest 4
+stream_huffman 0 1 symbols 5 longest 4
+stream_huffman 1 0 symbols 11 longest 6
+stream_huffman 1 1 symbols 16 longest 6
+stream_restart 1 intervals 4 ok 1 damaged 2 lost 1
+stream_interval 0 0 1 ok
+stream_interval 1 1 1 damaged code mcu 1 offset 346 resync 357
+stream_interval 2 2 1 damaged sync mcu 2 offset 382 resync 406
+stream_interval 3 3 1 lost
+stream_scan_bytes 78
+repair 279 261 16 identical yes

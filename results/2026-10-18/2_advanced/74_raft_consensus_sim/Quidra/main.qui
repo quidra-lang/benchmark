@@ -1,0 +1,585 @@
+import math
+import cluster = "./cluster.qui"
+import minstd = "./minstd.qui"
+import network = "./network.qui"
+import raft_node = "./raft_node.qui"
+import checker = "./checker.qui"
+
+class Election(int tick, int node, int term, string trigger, bool[] votes)
+    int won = -1
+class Leader(int node, int elected, bool[] votes)
+    int appended = 1
+    int ended = -1
+    string reason = "ACTIVE"
+    int commit = 0
+class Gap(int first, int last)
+class Simulation(cluster.Settings settings, cluster.Script script, network.Network net)
+    raft_node.Node[] nodes = [for int i = (0:(settings.nodes))[] then raft_node.Node(i, settings.nodes)]
+    minstd.Generator rng = minstd.Generator(settings.seed)
+    checker.Checker checks = checker.Checker()
+    int tick = 0
+    string[] trace = []
+    Election[] elections = []
+    map<int, Leader> leaders
+    string[] timelines = []
+    int leader_ticks = 0
+    int multi_ticks = 0
+    Gap[] gaps = []
+    int gap_start = -1
+    int maximum_term = 0
+    map<string, int> reference_state
+    map<string, int>[] reference_states = []
+    int[] status_counts = [0, 0, 0, 0, 0]
+    int[] latencies = []
+    map<string, int> key_requests
+    map<string, int> key_committed
+
+void trace(Simulation &sim, string content)
+    sim.trace = sim.trace.append("{sim.tick} {content}")
+
+void set_election_timer(Simulation &sim, int number)
+    int duration = .sim.rng.between(sim.settings.election_min, sim.settings.election_max)
+    sim.nodes[number].election_deadline = sim.tick + duration
+
+Leader leader_record(Simulation sim, int term)
+    match sim.leaders.get(term)
+        Leader record
+            return record
+        none
+            return Leader(0, 0, [])
+
+void send_append(Simulation &sim, int first, int second)
+    raft_node.Node node = sim.nodes[first]
+    int previous = node.next_index[second] - 1
+    network.Message message = network.Message("AE", first, second, node.term)
+    message.previous = previous
+    message.previous_term = raft_node.term_at(node, previous)
+    message.entries = node.log[previous:<math.min(previous + sim.settings.batch, raft_node.last_index(node))]
+    message.commit = node.commit
+    network.send(&sim.net, sim.tick, message)
+
+void broadcast_append(Simulation &sim, int number)
+    for 1 <= int other <= sim.settings.nodes
+        if other != number
+            send_append(&sim, number, other)
+
+void end_leadership(Simulation &sim, int number, string reason)
+    raft_node.Node node = sim.nodes[number]
+    Leader record = leader_record(sim, node.term)
+    record.ended = sim.tick
+    record.reason = reason
+    record.commit = node.commit
+    .sim.leaders.set(node.term, record)
+    raft_node.cancel_transfer(&sim.nodes[number])
+
+void advance_commit(Simulation &sim, int number, int index)
+    raft_node.Node &node = &sim.nodes[number]
+    for node.commit + 1 <= int position <= index
+        checker.commit(&sim.checks, position, raft_node.term_at(node, position), sim.tick)
+    node.commit = index
+    int first = node.applied + 1
+    for first <= int position <= index
+        raft_node.Entry entry = node.log[position - 1]
+        string result = raft_node.apply_command(&node.store, entry.command)
+        node.applies += 1
+        checker.apply(&sim.checks, position, entry, result)
+    node.applied = index
+    trace(&sim, "APPLY n{number} {first}-{index}")
+
+void check_commit(Simulation &sim, int number)
+    raft_node.Node node = sim.nodes[number]
+    int index = raft_node.last_index(node)
+    while index > node.commit
+        if raft_node.term_at(node, index) != node.term
+            return
+        int count = 1
+        for 1 <= int other <= sim.settings.nodes
+            if other != number and node.matched[other] >= index
+                count += 1
+        if 2 * count > sim.settings.nodes
+            trace(&sim, "COMMIT n{number} {node.commit + 1}-{index} term {node.term}")
+            advance_commit(&sim, number, index)
+            return
+        index -= 1
+
+void send_timeout_now(Simulation &sim, int number)
+    raft_node.Node &node = &sim.nodes[number]
+    trace(&sim, "TIMEOUTNOW n{number} n{node.transfer_target} term {node.term} index {raft_node.last_index(node)}")
+    node.transfer_sent = true
+    network.send(&sim.net, sim.tick, network.Message("TN", number, node.transfer_target, node.term))
+
+void become_leader(Simulation &sim, int number)
+    raft_node.Node &node = &sim.nodes[number]
+    node.role = "LEADER"
+    node.known_leader = number
+    node.next_index = array(nat(sim.settings.nodes + 1), fill = raft_node.last_index(node) + 1)
+    node.matched = array(nat(sim.settings.nodes + 1), fill = 0)
+    node.log = node.log.append(raft_node.Entry(node.term, "NOOP", 0))
+    node.leader_terms += 1
+    sim.elections[node.election_record].won = sim.tick
+    checker.leader(&sim.checks, node)
+    .sim.leaders.set(node.term, Leader(number, sim.tick, node.votes))
+    trace(&sim, "LEADER n{number} term {node.term} votes {raft_node.node_set(node.votes)} noop {raft_node.last_index(node)}")
+    broadcast_append(&sim, number)
+    node.heartbeat_deadline = sim.tick + sim.settings.heartbeat
+    node.quorum_deadline = sim.tick + sim.settings.quorum
+    node.heard = array(nat(sim.settings.nodes + 1), fill = false)
+
+void start_election(Simulation &sim, int number, string trigger)
+    raft_node.Node &node = &sim.nodes[number]
+    node.term += 1
+    node.role = "CANDIDATE"
+    node.voted_for = number
+    node.votes = array(nat(sim.settings.nodes + 1), fill = false)
+    node.votes[number] = true
+    node.known_leader = 0
+    set_election_timer(&sim, number)
+    node.elections += 1
+    node.election_record = int(len(sim.elections))
+    sim.elections = sim.elections.append(Election(sim.tick, number, node.term, trigger, node.votes))
+    trace(&sim, "ELECTION n{number} term {node.term} last {raft_node.last_index(node)}/{raft_node.term_at(node, raft_node.last_index(node))} deadline {node.election_deadline}")
+    for 1 <= int other <= sim.settings.nodes
+        if other != number
+            network.Message message = network.Message("RV", number, other, node.term)
+            message.last_index = raft_node.last_index(node)
+            message.last_term = raft_node.term_at(node, message.last_index)
+            network.send(&sim.net, sim.tick, message)
+
+void vote_request(Simulation &sim, network.Message message)
+    int number = message.destination
+    raft_node.Node &node = &sim.nodes[number]
+    string reason = ""
+    if message.term < node.term
+        reason = "term"
+    elif node.voted_for != 0 and node.voted_for != message.source
+        reason = "voted"
+    elif not raft_node.accepts_log(node, message.last_index, message.last_term)
+        reason = "log"
+    if reason == ""
+        node.voted_for = message.source
+        node.votes_granted += 1
+        set_election_timer(&sim, number)
+        trace(&sim, "VOTE n{number} n{message.source} term {node.term} deadline {node.election_deadline}")
+    else
+        trace(&sim, "DENY n{number} n{message.source} term {node.term} {reason}")
+    network.Message response = network.Message("RVR", number, message.source, node.term)
+    response.success = reason == ""
+    network.send(&sim.net, sim.tick, response)
+
+void append_request(Simulation &sim, network.Message message)
+    int number = message.destination
+    raft_node.Node &node = &sim.nodes[number]
+    network.Message response = network.Message("AER", number, message.source, node.term)
+    if message.term < node.term
+        network.send(&sim.net, sim.tick, response)
+        return
+    if node.role == "CANDIDATE"
+        node.role = "FOLLOWER"
+        trace(&sim, "YIELD n{number} term {node.term} n{message.source}")
+    node.known_leader = message.source
+    set_election_timer(&sim, number)
+    int previous = message.previous
+    if previous > raft_node.last_index(node) or raft_node.term_at(node, previous) != message.previous_term
+        node.ae_fail += 1
+        response.confirmed = if previous > raft_node.last_index(node) then raft_node.last_index(node) else previous - 1
+        network.send(&sim.net, sim.tick, response)
+        return
+    node.ae_ok += 1
+    for int offset < int(len(message.entries))
+        int index = previous + 1 + offset
+        raft_node.Entry entry = message.entries[offset]
+        if index <= raft_node.last_index(node) and raft_node.term_at(node, index) != entry.term
+            raft_node.Entry[] removed = node.log[index - 1:]
+            node.log = node.log[0:<index - 1]
+            node.truncated += int(len(removed))
+            checker.truncate(&sim.checks, index, removed)
+            trace(&sim, "TRUNCATE n{number} from {index} removed {len(removed)}")
+        if index > raft_node.last_index(node)
+            node.log = node.log.append(entry)
+            node.appended += 1
+    response.success = true
+    response.confirmed = previous + int(len(message.entries))
+    int commit = math.min(message.commit, response.confirmed)
+    if commit > node.commit
+        advance_commit(&sim, number, commit)
+    network.send(&sim.net, sim.tick, response)
+
+void append_response(Simulation &sim, network.Message message)
+    int number = message.destination
+    raft_node.Node &node = &sim.nodes[number]
+    if node.role != "LEADER" or message.term != node.term
+        return
+    int source = message.source
+    node.heard[source] = true
+    if message.success
+        node.matched[source] = math.max(node.matched[source], message.confirmed)
+        node.next_index[source] = math.max(node.next_index[source], message.confirmed + 1)
+        check_commit(&sim, number)
+        if source == node.transfer_target and not node.transfer_sent and node.matched[source] == raft_node.last_index(node)
+            send_timeout_now(&sim, number)
+        elif node.next_index[source] <= raft_node.last_index(node)
+            send_append(&sim, number, source)
+    else
+        node.next_index[source] = math.max(node.matched[source] + 1, math.min(node.next_index[source] - 1, message.confirmed + 1))
+        trace(&sim, "BACKTRACK n{number} n{source} next {node.next_index[source]}")
+        send_append(&sim, number, source)
+
+void receive(Simulation &sim, network.Message message)
+    int number = message.destination
+    raft_node.Node &node = &sim.nodes[number]
+    if message.term > node.term
+        string role = node.role
+        trace(&sim, "TERM n{number} {node.term}->{message.term} {message.kind} n{message.source} {role}")
+        if role == "LEADER"
+            end_leadership(&sim, number, "STEPDOWN")
+        node.term = message.term
+        node.voted_for = 0
+        node.known_leader = 0
+        node.role = "FOLLOWER"
+        if role == "LEADER"
+            set_election_timer(&sim, number)
+    if message.kind == "RV"
+        vote_request(&sim, message)
+    elif message.kind == "RVR"
+        if node.role == "CANDIDATE" and message.term == node.term and message.success
+            node.votes[message.source] = true
+            sim.elections[node.election_record].votes = node.votes
+            if 2 * raft_node.members(node.votes) > sim.settings.nodes
+                become_leader(&sim, number)
+    elif message.kind == "AE"
+        append_request(&sim, message)
+    elif message.kind == "AER"
+        append_response(&sim, message)
+    elif message.term != node.term or node.role != "FOLLOWER"
+        trace(&sim, "IGNORE n{number} TN n{message.source} term {message.term}")
+    else
+        start_election(&sim, number, "transfer")
+
+void start_transfer(Simulation &sim, int number, int destination)
+    raft_node.Node &node = &sim.nodes[number]
+    string prefix = "TRANSFER n{number} n{destination}"
+    if not node.up or node.role != "LEADER" or node.transfer_target != 0 or number == destination
+        trace(&sim, prefix + " ignored")
+        return
+    trace(&sim, "{prefix} start match {node.matched[destination]}/{raft_node.last_index(node)}")
+    node.transfer_target = destination
+    node.transfer_sent = false
+    node.transfer_deadline = sim.tick + sim.settings.election_min
+    if node.matched[destination] == raft_node.last_index(node)
+        send_timeout_now(&sim, number)
+    else
+        send_append(&sim, number, destination)
+
+void control(Simulation &sim, cluster.Control event)
+    if event.kind == "CRASH"
+        int number = int.parse(event.arguments[0])
+        trace(&sim, "CRASH n{number} {sim.nodes[number].role} term {sim.nodes[number].term}")
+        if sim.nodes[number].role == "LEADER"
+            end_leadership(&sim, number, "CRASH")
+        raft_node.crash(&sim.nodes[number])
+    elif event.kind == "RESTART"
+        int number = int.parse(event.arguments[0])
+        sim.nodes[number].up = true
+        set_election_timer(&sim, number)
+        trace(&sim, "RESTART n{number} term {sim.nodes[number].term} length {raft_node.last_index(sim.nodes[number])} deadline {sim.nodes[number].election_deadline}")
+    elif event.kind == "PARTITION"
+        int[][] groups = cluster.partition_groups(event.arguments)
+        network.partition(&sim.net, groups)
+        string[] names = []
+        for int[] group = groups[]
+            bool[] flags = array(nat(sim.settings.nodes + 1), fill = false)
+            for int number = group[]
+                flags[number] = true
+            names = names.append(raft_node.node_set(flags))
+        trace(&sim, "PARTITION " + names.join(" "))
+    elif event.kind == "HEAL"
+        sim.net.groups = array(nat(sim.settings.nodes + 1), fill = 0)
+        trace(&sim, "HEAL")
+    else
+        start_transfer(&sim, int.parse(event.arguments[0]), int.parse(event.arguments[1]))
+
+void attempt(Simulation &sim, int request_index)
+    cluster.Request &request = &sim.script.requests[request_index]
+    request.attempts += 1
+    int destination = request.destination
+    int redirects = 0
+    string reason = ""
+    while true
+        raft_node.Node &node = &sim.nodes[destination]
+        if not node.up
+            reason = "down"
+            break
+        if node.role == "LEADER"
+            if node.transfer_target != 0
+                reason = "transfer"
+                break
+            node.log = node.log.append(raft_node.Entry(node.term, request.command, request.number))
+            Leader record = leader_record(sim, node.term)
+            record.appended += 1
+            .sim.leaders.set(node.term, record)
+            request.accepted_index = raft_node.last_index(node)
+            request.accepted_term = node.term
+            request.scheduled = -1
+            trace(&sim, "ACCEPT r{request.number} n{destination} index {request.accepted_index} term {node.term}")
+            return
+        if node.known_leader == 0 or redirects >= sim.settings.nodes - 1
+            reason = "noleader"
+            break
+        trace(&sim, "REDIRECT r{request.number} n{destination} n{node.known_leader}")
+        destination = node.known_leader
+        redirects += 1
+        request.redirects += 1
+    string prefix = "REJECT r{request.number} n{destination} {reason}"
+    if request.attempts < sim.settings.attempts
+        request.destination = destination % sim.settings.nodes + 1
+        request.scheduled = sim.tick + sim.settings.retry
+        trace(&sim, "{prefix} retry n{request.destination} at {request.scheduled}")
+    else
+        request.abandoned = true
+        request.scheduled = -1
+        trace(&sim, prefix + " giveup")
+
+void timers(Simulation &sim, int number)
+    raft_node.Node &node = &sim.nodes[number]
+    if node.role == "LEADER"
+        if node.quorum_deadline == sim.tick
+            if 2 * (1 + raft_node.members(node.heard)) <= sim.settings.nodes
+                trace(&sim, "STEPDOWN n{number} term {node.term} heard {raft_node.node_set(node.heard)}")
+                end_leadership(&sim, number, "QUORUM")
+                node.role = "FOLLOWER"
+                node.known_leader = 0
+                set_election_timer(&sim, number)
+                return
+            node.heard = array(nat(sim.settings.nodes + 1), fill = false)
+            node.quorum_deadline = sim.tick + sim.settings.quorum
+        if node.transfer_target != 0 and node.transfer_deadline == sim.tick
+            trace(&sim, "TRANSFER n{number} n{node.transfer_target} abort")
+            raft_node.cancel_transfer(&node)
+        if node.heartbeat_deadline == sim.tick
+            broadcast_append(&sim, number)
+            node.heartbeat_deadline = sim.tick + sim.settings.heartbeat
+    elif node.election_deadline == sim.tick
+        start_election(&sim, number, "timeout")
+
+void end_of_tick(Simulation &sim)
+    checker.check_logs(&sim.checks, sim.nodes)
+    int count = 0
+    string[] fields = []
+    for 1 <= int number <= sim.settings.nodes
+        raft_node.Node &node = &sim.nodes[number]
+        if node.up and node.role == "LEADER"
+            node.leader_ticks += 1
+            count += 1
+        string state = if node.up then node.role[0] else "D"
+        fields = fields.append("{state}{node.term}")
+    if count > 0
+        sim.leader_ticks += 1
+        if count >= 2
+            sim.multi_ticks += 1
+        if sim.gap_start >= 0
+            sim.gaps = sim.gaps.append(Gap(sim.gap_start, sim.tick - 1))
+            sim.gap_start = -1
+    elif sim.gap_start < 0
+        sim.gap_start = sim.tick
+    if sim.tick % sim.settings.sample == 0
+        sim.timelines = sim.timelines.append("TIMELINE {sim.tick} " + fields.join(" "))
+
+void finish_statistics(Simulation &sim)
+    int committed_count = int(len(sim.checks.committed_terms)) - 1
+    sim.reference_states = [sim.reference_state]
+    for 1 <= int index <= committed_count
+        string unused = raft_node.apply_command(&sim.reference_state, sim.checks.applied_entries[index].command)
+        sim.reference_states = sim.reference_states.append(sim.reference_state)
+    for 1 <= int number <= sim.settings.nodes
+        sim.maximum_term = math.max(sim.maximum_term, sim.nodes[number].term)
+    for int request_index < int(len(sim.script.requests))
+        cluster.Request &request = &sim.script.requests[request_index]
+        string key = request.command.split(" ")[1]
+        .sim.key_requests.set(key, raft_node.value_or_zero(sim.key_requests, key) + 1)
+        int status = 4
+        int index = request.accepted_index
+        if index > 0
+            if index <= committed_count and sim.checks.committed_terms[index] == request.accepted_term
+                status = 0
+                request.status = "COMMITTED"
+                request.latency = sim.checks.committed_times[index] - request.tick
+                request.result = sim.checks.results[index]
+                sim.latencies = sim.latencies.append(request.latency)
+                .sim.key_committed.set(key, raft_node.value_or_zero(sim.key_committed, key) + 1)
+            else
+                status = 2
+                request.status = "LOST"
+                for 1 <= int number <= sim.settings.nodes
+                    if raft_node.last_index(sim.nodes[number]) >= index and raft_node.term_at(sim.nodes[number], index) == request.accepted_term
+                        status = 1
+                        request.status = "UNCOMMITTED"
+                        break
+        elif request.abandoned
+            status = 3
+            request.status = "FAILED"
+        sim.status_counts[status] += 1
+
+void run(Simulation &sim)
+    for 1 <= int number <= sim.settings.nodes
+        set_election_timer(&sim, number)
+        trace(&sim, "START n{number} deadline {sim.nodes[number].election_deadline}")
+    for int tick <= sim.settings.end
+        sim.tick = tick
+        for cluster.Control event = sim.script.controls[]
+            if event.tick == tick
+                control(&sim, event)
+        for int request_index < int(len(sim.script.requests))
+            if sim.script.requests[request_index].scheduled == tick
+                attempt(&sim, request_index)
+        for network.Message message = network.arrivals(&sim.net, tick)[]
+            if network.deliver(&sim.net, message, sim.nodes[message.destination].up)
+                receive(&sim, message)
+        for 1 <= int number <= sim.settings.nodes
+            if sim.nodes[number].up
+                timers(&sim, number)
+        end_of_tick(&sim)
+    if sim.gap_start >= 0
+        sim.gaps = sim.gaps.append(Gap(sim.gap_start, sim.settings.end))
+    finish_statistics(&sim)
+
+string[] leader_lines(Simulation sim)
+    string[] lines = []
+    for Election record = sim.elections[]
+        string outcome = if record.won >= 0 then "WON {record.won}" else "LOST"
+        lines = lines.append("ELECTION {record.tick} n{record.node} term {record.term} trigger {record.trigger} votes {raft_node.members(record.votes)} {outcome}")
+    for 1 <= int term <= sim.maximum_term
+        bool[] candidates = array(nat(sim.settings.nodes + 1), fill = false)
+        int start = -1
+        for Election election = sim.elections[]
+            if election.term == term
+                candidates[election.node] = true
+                if start < 0
+                    start = election.tick
+        string names = raft_node.node_set(candidates)
+        if not sim.leaders.has(term)
+            lines = lines.append("TERM {term} NONE candidates {names}")
+            continue
+        Leader record = leader_record(sim, term)
+        string ended = if record.ended < 0 then "-" else "{record.ended}"
+        int commit = if record.ended < 0 then sim.nodes[record.node].commit else record.commit
+        lines = lines.append("TERM {term} LEADER n{record.node} elected {record.elected} votes {raft_node.node_set(record.votes)} ended {ended} {record.reason} appended {record.appended} commit {commit} candidates {names} started {start} wait {record.elected - start}")
+    for 1 <= int number <= sim.settings.nodes
+        raft_node.Node node = sim.nodes[number]
+        lines = lines.append("NODE n{number} elections {node.elections} leader_terms {node.leader_terms} leader_ticks {node.leader_ticks} votes_granted {node.votes_granted}")
+    lines = lines.concat(sim.timelines)
+    int longest = 0
+    for Gap gap = sim.gaps[]
+        int length = gap.last - gap.first + 1
+        longest = math.max(longest, length)
+        lines = lines.append("GAP {gap.first}-{gap.last} length {length}")
+    lines = lines.append("SUMMARY terms {sim.maximum_term} leaders {sim.leaders.size()} elections {len(sim.elections)} leader_ticks {sim.leader_ticks} multi_ticks {sim.multi_ticks} ticks {sim.settings.end + 1} gaps {len(sim.gaps)} longest {longest}")
+    return lines
+
+string[] log_lines(Simulation sim)
+    string[] lines = []
+    int prefix = raft_node.last_index(sim.nodes[1])
+    for 1 <= int number <= sim.settings.nodes
+        raft_node.Node node = sim.nodes[number]
+        string status = if node.up then node.role else "DOWN"
+        string voted = if node.voted_for == 0 then "-" else "n{node.voted_for}"
+        lines = lines.append("NODE n{number} {status} term {node.term} voted {voted} commit {node.commit} applied {node.applied} length {raft_node.last_index(node)}")
+        for int offset < int(len(node.log))
+            raft_node.Entry entry = node.log[offset]
+            string suffix = if entry.request == 0 then "" else " r{entry.request}"
+            lines = lines.append("{offset + 1} {entry.term} {entry.command}{suffix}")
+        prefix = math.min(prefix, raft_node.last_index(node))
+        int common = 0
+        while common < prefix and node.log[common] == sim.nodes[1].log[common]
+            common += 1
+        prefix = common
+    int count = int(len(sim.checks.committed_terms)) - 1
+    lines = lines.append("AGREE prefix {prefix} committed {count}")
+    for 1 <= int number <= sim.settings.nodes
+        raft_node.Node node = sim.nodes[number]
+        int common = 0
+        while common < math.min(raft_node.last_index(node), count) and raft_node.term_at(node, common + 1) == sim.checks.committed_terms[common + 1]
+            common += 1
+        lines = lines.append("DIFF n{number} common {common} behind {count - common} extra {raft_node.last_index(node) - common} ae_ok {node.ae_ok} ae_fail {node.ae_fail} appended {node.appended} truncated {node.truncated} applies {node.applies}")
+    return lines
+
+bool same_store(map<string, int> first, map<string, int> second)
+    if first.size() != second.size()
+        return false
+    for string key = first.keys()[]
+        if not second.has(key) or raft_node.value_or_zero(first, key) != raft_node.value_or_zero(second, key)
+            return false
+    return true
+
+string[] state_lines(Simulation sim)
+    string[] lines = []
+    for 1 <= int number <= sim.settings.nodes
+        raft_node.Node node = sim.nodes[number]
+        string status = if node.up then "UP" else "DOWN"
+        string replay = if same_store(node.store, sim.reference_states[node.applied]) then "match" else "mismatch"
+        lines = lines.append("NODE n{number} {status} applied {node.applied} keys {node.store.size()} replay {replay}")
+        for string key = node.store.keys().sorted()[]
+            lines = lines.append("{key} {raft_node.value_or_zero(node.store, key)}")
+    for cluster.Request request = sim.script.requests[]
+        string line = "REQUEST r{request.number} at {request.tick} n{request.initial_destination} {request.command} attempts {request.attempts} redirects {request.redirects} "
+        if request.accepted_index > 0
+            line += "{request.status} index {request.accepted_index} term {request.accepted_term}"
+            if request.status == "COMMITTED"
+                line += " latency {request.latency} result {request.result}"
+        elif request.abandoned
+            line += "FAILED"
+        else
+            line += "WAITING next {request.scheduled}"
+        lines = lines.append(line)
+    for string key = sim.key_requests.keys().sorted()[]
+        lines = lines.append("KEY {key} requests {raft_node.value_or_zero(sim.key_requests, key)} committed {raft_node.value_or_zero(sim.key_committed, key)} final {raft_node.value_text(sim.reference_state, key)}")
+    int[] counts = sim.status_counts
+    lines = lines.append("REQUESTS total {len(sim.script.requests)} committed {counts[0]} uncommitted {counts[1]} lost {counts[2]} failed {counts[3]} waiting {counts[4]}")
+    int total = 0
+    int minimum = 0
+    int maximum = 0
+    for int i < int(len(sim.latencies))
+        int value = sim.latencies[i]
+        total += value
+        minimum = if i == 0 then value else math.min(minimum, value)
+        maximum = math.max(maximum, value)
+    lines = lines.append("LATENCY count {len(sim.latencies)} total {total} min {minimum} max {maximum}")
+    return lines
+
+string[] safety_lines(Simulation sim)
+    string[] lines = checker.property_lines(sim.checks, sim.maximum_term)
+    lines = lines.append("MESSAGES " + network.statistics(sim.net.total))
+    string[] types = network.type_names()
+    for int kind < 5
+        lines = lines.append("TYPE {types[kind]} " + network.statistics(sim.net.by_type[kind]))
+    for 1 <= int first <= sim.settings.nodes
+        for 1 <= int second <= sim.settings.nodes
+            if first == second
+                continue
+            network.Link link = sim.net.links[first][second]
+            int dropped = link.stats[3] + link.stats[4] + link.stats[5] + link.stats[6]
+            lines = lines.append("LINK n{first}->n{second} delay {link.delay} loss {link.loss} sent {link.stats[0]} delivered {link.stats[1]} dropped {dropped}")
+    lines = lines.append("DRAWS {sim.rng.draws}")
+    bool safe = true
+    for int violations = sim.checks.violations[]
+        if violations > 0
+            safe = false
+    lines = lines.append(if safe then "RESULT SAFE" else "RESULT UNSAFE")
+    return lines
+
+void write_lines(string filename, string[] lines)
+    file.write destination("output/" + filename)
+    .destination(lines.join(NL) + NL)
+
+void run_program()
+    cluster.Settings settings = cluster.read_settings()
+    Simulation sim = Simulation(settings, cluster.read_script(), network.read_network(settings.nodes))
+    run(&sim)
+    if not file.exists("output")
+        file.mkdir("output")
+    write_lines("trace.txt", sim.trace)
+    write_lines("leaders.txt", leader_lines(sim))
+    write_lines("logs.txt", log_lines(sim))
+    write_lines("state.txt", state_lines(sim))
+    write_lines("safety.txt", safety_lines(sim))
+
+run_program()

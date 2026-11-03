@@ -1,0 +1,562 @@
+[Overview]
+Write a program that trains and evaluates a decision tree in the CART style. From training data consisting of integer attributes and categorical attributes, it grows a tree by repeatedly applying the binary split that reduces Gini impurity the most, and it finds surrogate splits for rows in which attribute values are missing. It performs reduced-error pruning and cost-complexity pruning with the validation data, cross-validation with contiguous folds and selection of the tree depth, bagging, and a learning curve, and it makes predictions and evaluations on the test data (confusion matrix, McNemar test, AUC). Furthermore, it converts the pruned tree into rules and generalizes them, and it computes attribute importance in two ways: by impurity decrease and by permuting values.
+The input is five files in the input/ folder (attribute definitions, training data, validation data, test data, settings), and the results are written to six files in the output/ folder. Nothing is written to standard output. All decisions such as split selection, pruning and rule generalization are made exactly with integer arithmetic, and random numbers come only from the specified generator, so the result is uniquely determined.
+
+[Input files]
+There are five input files: input/schema.txt, input/train.csv, input/validation.csv, input/test.csv and input/params.txt. Every file consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). There are no empty lines, and there is no whitespace at the start or end of a line. Values are separated by a single comma in the .csv files and by a single space in the other files. An integer is a base-10 number without extra leading zeros (0 is written as 0).
+A "name" is a string of 1 to 20 characters that starts with a lowercase English letter and consists of lowercase English letters, digits and "_".
+
+* input/schema.txt (attribute definitions)
+It consists of m + 1 lines (m >= 1). Lines 1 to m are the attribute definitions, and each of them has one of the following forms.
+- ATTRIBUTE <attribute name> INT: an integer attribute.
+- ATTRIBUTE <attribute name> CAT <value_1> <value_2> ... <value_r>: a categorical attribute. It lists r >= 2 distinct values.
+The last line (line m + 1) is CLASS <class attribute name> <class_1> <class_2> ... <class_K>, listing K >= 2 distinct classes. Attribute names, the class attribute name, values of categorical attributes and classes are all names. The attribute names and the class attribute name are distinct from each other and also differ from id.
+The attributes are called attribute 1, attribute 2, ..., attribute m in the order of definition, and this order is called the "attribute order". The values of a categorical attribute, arranged in the order in which they are listed in its definition, are called the "value order" of that attribute. The classes, arranged in the order in which they are listed in the definition, are called the "class order". The value order and the class order are not necessarily the order of character codes.
+
+* input/train.csv (training data)
+The first line is a header line listing id, the attribute names (in attribute order) and the class attribute name in this order, separated by commas. Each line from the second line on is one "training row", listing the ID, the value of each attribute (in attribute order) and the class in this order, separated by commas.
+- An ID is a string of 1 to 10 characters consisting of uppercase English letters and digits. The IDs of all rows across the three .csv files are distinct from each other.
+- The value of an integer attribute is an integer between 0 and 100000 inclusive, the value of a categorical attribute is one of the values of that attribute, and the class is one of the classes. Training rows have no missing values ("?", described next).
+Let N be the number of training rows. The order of the rows in the file is called the "row order", and the i-th training row in row order (i = 1, 2, ..., N) is called "training row number i".
+
+* input/validation.csv (validation data), input/test.csv (test data)
+Both have the same format as train.csv, and the first line is the same header line as in train.csv. Each line from the second line on is called a "validation row" in validation.csv and a "test row" in test.csv. However, an attribute value may be the single character "?". This is called a "missing value" and means that the value of that attribute is unknown. The class is never a missing value.
+The order of the rows in each file is called the "validation row order" and the "test row order", respectively. Let V be the number of validation rows and M the number of test rows.
+
+* input/params.txt (settings)
+It consists of the following 10 lines, in this order. Each line is a keyword followed by its values.
+- MAX_DEPTH D: the upper limit of the tree depth (between 1 and 10 inclusive)
+- MIN_SAMPLES_SPLIT s: the minimum number of rows of a node for which a split is attempted (2 or more)
+- MIN_SAMPLES_LEAF l: the minimum number of rows of a child when splitting (1 or more)
+- MAX_SURROGATES u: the maximum number of surrogate splits kept per node (between 0 and m - 1 inclusive)
+- FOLDS F: the number of folds of cross-validation (between 2 and N inclusive)
+- CURVE c_1 c_2 ...: the list of numbers of training rows used for the learning curve (distinct integers between 1 and N inclusive; one or more, in increasing order)
+- BAG_TREES B: the number of bagging trees (between 1 and 30 inclusive)
+- BAG_SEED: the random seed used for bagging (between 1 and 2147483646 inclusive)
+- PERMUTATION_REPEATS R: the number of repetitions of permutation importance (between 1 and 10 inclusive)
+- PERMUTATION_SEED: the random seed used for permutation importance (between 1 and 2147483646 inclusive)
+
+[Processing]
+* 1. Notation and computation rules
+- SUM (written in place of the summation sign) denotes a sum, max and min are the maximum and the minimum, floor(x) is the largest integer not exceeding x, and |x| is the absolute value of x. x mod y is the remainder of dividing a nonnegative integer x by a positive integer y. t^2 means t * t, and 2^31 is 2 to the power of 31.
+- The comparisons used for split selection, pruning, rule generalization, AUC scores and so on, and the comparisons of every sort except the one in 15 (1), are all performed exactly with integers (or fractions of integers). Fractions a/b and c/d (b > 0, d > 0) are compared by comparing a * d with c * b. Every integer that appears is less than 2^53, but it may exceed 2^31, so compute with 64-bit integers (in languages whose integer types have at most 32 bits or that have no integer type, use double-precision real numbers, which represent integers less than 2^53 exactly).
+- The only values computed with double-precision real numbers are the impurity decrease of 15 (1) and the real values that are output (v of ratios and reduced fractions, gains, macro averages).
+- Unless stated otherwise, a sequence obtained by taking some rows out of a sequence of rows keeps the order of the original sequence.
+- Every rule that selects a maximum or minimum and every sorting rule always comes with the treatment of equal values.
+
+* 2. Statistics of a sequence of rows
+For a sequence of rows R, the following values are used. R may contain the same training row two or more times (this happens only in the bagging of 11); in that case, every count in this statement counts the row as many times as it is contained.
+- n(R): the number of rows of R
+- c_k(R): the number of rows of R whose class is the k-th class in class order (k = 1, ..., K). These are called the "class counts" and are written c_1, ..., c_K in class order.
+- S(R) = SUM c_k(R)^2 (the sum of squares of the class counts)
+- Majority class: the class with the largest c_k(R) (ties: the one earlier in class order)
+- Error count e(R) = n(R) - max c_k(R) (the number of rows that are wrong when every row is predicted as the majority class)
+The Gini impurity of R is 1 - S(R) / n(R)^2.
+
+* 3. Splits
+A "split" is a pair of an attribute a and, if a is an integer attribute, an integer t (the "doubled threshold"), or, if a is a categorical attribute, a value v of a. A row whose value of attribute a is x is sent to the "left" if 2 * x <= t (that is, x is at most t / 2) for an integer attribute, or if x = v for a categorical attribute; otherwise it is sent to the "right".
+(1) Split candidates: for a sequence of rows R, the split candidates of attribute a are arranged in the following order, which is called the "candidate order".
+- Integer attribute: list the values of a that appear in R, without duplicates, in increasing order as w_1 < w_2 < ... < w_p; the candidates are the splits with t = w_j + w_(j+1) for j = 1, 2, ..., p - 1 in this order (twice the midpoint of adjacent values). If p = 1, there are no candidates.
+- Categorical attribute: if two or more distinct values of a appear in R, the candidates are the splits with v for each value v in the value order of a that appears in R (in value order). If only one distinct value appears, there are no candidates.
+Every candidate divides the rows of R into left and right with at least one row on each side.
+(2) Split notation: the "left condition" and the "right condition" of a split are the following strings. <threshold> is t / 2 written with 1 decimal place (t / 2 is an integer or an integer plus 0.5, so no rounding occurs; examples: 35.5 for t = 71, 66.0 for t = 132).
+- Integer attribute: the left condition is <attribute name> <= <threshold>, and the right condition is <attribute name> > <threshold>
+- Categorical attribute: the left condition is <attribute name> = <v>, and the right condition is <attribute name> != <v>
+
+* 4. Best split
+When a sequence of rows R (n = n(R), S = S(R)) is divided by a split into the sequence L of rows sent to the left and the sequence L' of rows sent to the right, let n_L = n(L), n_R = n(L'), S_L = S(L), S_R = S(L').
+- A split is "valid" if n_L >= l and n_R >= l (l is MIN_SAMPLES_LEAF).
+- The "evaluation value" of a split is Q = S_L / n_L + S_R / n_R, handled as the fraction (S_L * n_R + S_R * n_L) / (n_L * n_R). The average of the left and right Gini impurities weighted by the numbers of rows is 1 - Q / n, so the larger Q is, the smaller the impurity after the split.
+- The "best split" of R is the one with the largest Q when all valid candidates are examined, for each attribute in attribute order, in candidate order. If candidates have equal Q, choose the one whose attribute is earlier in attribute order, and within the same attribute the one earlier in candidate order (for an integer attribute the smaller t, for a categorical attribute the value earlier in value order). If there is no valid candidate at all, there is no best split.
+- "The split improves" means that Q of the best split is greater than S / n, that is, (S_L * n_R + S_R * n_L) * n > S * n_L * n_R (the split strictly decreases the impurity).
+
+* 5. Growing a tree
+"Growing a tree from a sequence of rows R" means creating nodes by the following procedure grow(R, 1, 0). grow(R, i, d) creates a node whose sequence of rows is R, whose "node number" is i and whose "depth" is d. Below, the class counts, majority class and error count of a node's sequence of rows are called the class counts, majority class and error count of that node.
+- A node is a "leaf" if any of the following holds.
+(a) All rows of R have the same class (max c_k(R) = n(R))
+(b) d = D (D is MAX_DEPTH)
+(c) n(R) < s (s is MIN_SAMPLES_SPLIT)
+(d) R has no best split
+(e) The best split does not improve
+- If none of them holds, the node is an "internal node", and the best split becomes the node's "split". The "left child" is created by grow(..., 2 * i, d + 1) on the sequence of rows of R sent to the left, and the "right child" by grow(..., 2 * i + 1, d + 1) on the sequence of rows sent to the right. Also, the surrogate splits are found by the rules of 6.
+- The "predicted class" of a node is its majority class.
+The "grown tree" is the tree grown from the sequence of all training rows (in row order). In cross-validation, bagging and the learning curve, trees are grown from sequences of some of the training rows with the same settings (when MAX_DEPTH is changed, this is stated explicitly).
+The "descendants" of a node are its children and the descendants of its children. The "preorder" of the nodes of a tree starts from the root and, at each node, visits the node, then the left child and its descendants (in preorder), then the right child and its descendants (in preorder). The "postorder" visits, at each node, the left child and its descendants (in postorder), then the right child and its descendants (in postorder), then the node. The "depth" of a tree is the maximum depth of its leaves.
+
+* 6. Surrogate splits
+Surrogate splits decide, with other attributes, where to send rows whose value of the attribute used by the node's split is a missing value. At an internal node (sequence of rows R, n = n(R), split P), they are found as follows. Let n_L be the number of rows of R sent to the left by P, and n_R the number of rows sent to the right.
+1. For each attribute a other than the attribute of P (in attribute order), examine the split candidates of a in R (3 (1); whether they are valid does not matter) in candidate order. For a candidate C, the "agreement count" g is the number of rows of R that C sends in the same direction (left or right) as P. If g >= n - g, the "direction" of C is left and its "score" is g; otherwise the direction is right and the score is n - g. The candidate of a with the largest score (ties: the one earlier in candidate order) is the "best surrogate" of a. If a has no candidates, a has no best surrogate.
+2. Keep only the best surrogates whose score is greater than max(n_L, n_R), sort them by score in decreasing order (ties: attribute order), and take the first u of them (u is MAX_SURROGATES; all of them if there are fewer than u) as the node's "surrogate splits". In this order they are called the 1st, 2nd, ... surrogate split.
+A surrogate split with direction left sends rows that satisfy the left condition of its split to the left child and rows that do not satisfy it to the right child. A surrogate split with direction right sends rows that satisfy the left condition to the right child and rows that do not satisfy it to the left child.
+Also, the node's "default direction" is left if n_L >= n_R, and right otherwise.
+
+* 7. Routing, prediction, pruned trees
+(1) Routing: "routing" a row r through a tree means starting from the root and repeating the following until a leaf is reached. At an internal node, if r's value of the split's attribute is not a missing value, go to the left or right child according to the split (the "method" at this node is primary). If it is a missing value, examine the surrogate splits starting from the 1st, and go according to the first surrogate split whose attribute value is not a missing value (the method is surrogate). If there is no such surrogate split (including the case where the node has no surrogate splits), go to the child in the default direction (the method is default). The nodes passed through, listed from the root to the leaf, are called the "path" of r, and the predicted class of the leaf reached is called the "prediction" of r.
+(2) Correct count: for a sequence of rows, the number of rows whose prediction matches the row's class is called the "correct count".
+(3) Pruned tree: for a tree T and a set C of internal nodes of T, "T pruned by C" is the tree in which every node in C is regarded as a leaf and its descendants are removed. Routing ends when it reaches a node regarded as a leaf. The nodes of the pruned tree are the nodes of T that can be reached from the root without passing below a node regarded as a leaf. Node numbers, depths, class counts, predicted classes, surrogate splits and default directions stay as in T. The tree as grown is also regarded as a tree pruned by the empty set.
+The "training error count" of a tree (including a pruned tree) is the sum of the error counts of all its leaves.
+
+* 8. Reduced-error pruning
+The grown tree T is pruned with the validation rows as follows.
+1. For each node t of T, let V(t) be the sequence of validation rows whose path passes through t when they are routed through T. The "leaf error" of t is the number of rows of V(t) whose class differs from the majority class of t.
+2. Visit the nodes of T in postorder and compute the "error" err(t) of each node t. If t is a leaf of T, err(t) is the leaf error of t. If t is an internal node (at this point err of both children has already been determined), let the "subtree error" be err(left child) + err(right child); if leaf error <= subtree error, decide to "prune" t, add it to the set C, and set err(t) = leaf error. Otherwise, decide to "keep" t and set err(t) = subtree error.
+3. T pruned by C is called the "pruned tree".
+Every internal node is decided, including those with an ancestor that is pruned later. An internal node whose V(t) is empty has leaf error and subtree error both 0, so it is pruned.
+
+* 9. Cost-complexity pruning
+From the grown tree T, a sequence of pruned trees T_0, T_1, ... is built. C_0 is the empty set, and T_i is T pruned by C_i.
+If the root of T_i is a leaf, the sequence ends there. Otherwise, for each internal node t of T_i, let L(t) be the number of leaves of T_i among the descendants of t and E(t) the sum of the error counts of those leaves, and let g(t) = (e(t) - E(t)) / (L(t) - 1) (e(t) is the error count of t; g(t) is a fraction that is 0 or more). Let alpha_(i+1) be the minimum of g(t), and let C_(i+1) be the set obtained by adding to C_i every internal node t with g(t) = alpha_(i+1).
+For each T_i, the "alpha value" is alpha_i / N (where alpha_0 = 0); compute the number of leaves, the training error count and the "validation error count" (V minus the correct count of the validation rows). The T_i with the smallest validation error count (ties: the larger i) is the "selected sequence tree".
+
+* 10. Cross-validation and depth selection
+(1) Folds: for f = 0, 1, ..., F, let b_f = floor(f * N / F). Fold f (f = 1, ..., F) consists of training rows number b_(f-1) + 1 through b_f. The sequence of all training rows except those of fold f (in row order) is called the "training sequence of fold f".
+(2) Cross-validation: for each fold f, grow a tree from the training sequence of fold f and compute the correct count of the training rows of fold f on that tree. Their sum is the "cross-validation correct count".
+(3) Depth selection: for each d = 0, 1, ..., D, change only MAX_DEPTH to d, grow a tree from the training sequence of each fold f, and compute the sum of the correct counts of the training rows of fold f (the "cross-validation correct count of depth d"). Also, for the tree grown from the sequence of all training rows with MAX_DEPTH changed to d (the "tree of depth d"), compute the number of leaves and the correct counts of the training rows, the validation rows and the test rows. The d with the largest cross-validation correct count of depth d (ties: the smaller d) is the "selected depth".
+A tree grown with MAX_DEPTH set to d is the same as the tree grown from the same sequence of rows with MAX_DEPTH set to D and then pruned by the set of its internal nodes at depth d (because the decisions at nodes shallower than depth d do not depend on MAX_DEPTH). You may use this to compute the results without growing the trees again.
+
+* 11. Bagging
+(1) Random numbers: the random number generator is MINSTD. The initial value of the state x is the seed, and each time a random number is "drawn", x is replaced by (48271 * x) mod 2147483647 and the new x is returned.
+(2) Samples and trees: prepare one generator with BAG_SEED as its seed, and do the following for b = 1, 2, ..., B in this order. The generator is not reinitialized for each tree; it continues to be used.
+- Draw N random numbers; with x_j the value obtained at the j-th draw, build a sequence of N rows whose j-th row is training row number (x_j mod N) + 1 (the "sample"; it may contain the same training row many times).
+- Grow tree b from the sample.
+- The training rows that are not contained in the sample even once are called the "out-of-bag rows" of tree b, and the number of distinct training rows contained in the sample is called the "sample row count". Compute the correct count of the out-of-bag rows on tree b.
+(3) Out-of-bag prediction: for each training row, the prediction of each tree for which the row is an out-of-bag row counts as one vote, and the class with the most votes (ties: the one earlier in class order) is the "out-of-bag prediction" of that training row. A training row with no votes has no out-of-bag prediction.
+(4) Test prediction: for each test row, the prediction of each of the B trees counts as one vote; let v_k be the number of votes for the k-th class in class order. The class with the most votes (ties: the one earlier in class order) is the "bagging prediction" of that test row.
+
+* 12. Learning curve
+For each value c of CURVE, grow a tree from the sequence of the first c training rows in row order, and prune that tree by the procedure of 8 (with the validation rows). For both the tree as grown and the pruned tree, compute the number of leaves and the correct count of the test rows.
+
+* 13. Evaluation on the test rows
+(1) Models: compute the prediction of each test row with the following five "models".
+- grown: the grown tree
+- pruned: the pruned tree (8)
+- depth: the tree of the selected depth (10 (3))
+- cost_complexity: the selected sequence tree (9)
+- bagging: the bagging prediction (11 (4))
+(2) Classification evaluation: for a model's sequence of (class, prediction) pairs (in test row order), the "confusion matrix" consists of X[a][b], the number of pairs whose class is a and whose prediction is b, for each class a (row) and each class b (column) in class order. For class k, let TP = X[k][k], P = (the sum of column k), A = (the sum of row k), and let precision = TP / P, recall = TP / A, F1 = (2 * TP) / (P + A). A metric whose denominator is 0 has no value. A is called the "support". The macro average of F1 is obtained by adding the F1 values (double-precision real numbers) of the classes that have a value, in class order, and dividing by the number of classes that have a value.
+(3) McNemar test: compare pruned with each of the other four models (grown, depth, cost_complexity, bagging). Let b be "the number of test rows for which pruned's prediction is correct and the other model's prediction is not correct" and c be "the number of test rows for which the other model's prediction is correct and pruned's prediction is not correct"; let u = (max(0, |b - c| - 1))^2, and let the statistic be u / (b + c). If 1000 * u > 3841 * (b + c), the result is "significant" (yes); otherwise it is no (this decides exactly with integers whether the statistic exceeds 3.841).
+(4) AUC: for the three models grown, pruned and bagging, the "score" of class k for each test row is defined as follows. For a tree, it is c_k / n, where c_1, ..., c_K are the class counts of the leaf the row reaches and n is the number of rows of that leaf; for bagging, it is v_k / B. Scores are compared exactly as fractions. For class k, the test rows whose class is k are the "positives" (P_k of them) and the other test rows are the "negatives" (N_k of them); W_k is the sum obtained by adding, for every pair of a positive and a negative, 2 if the positive's score is larger, 1 if they are equal, and 0 if it is smaller. The AUC of class k is W_k / (2 * P_k * N_k). If P_k = 0 or N_k = 0, there is no value. The macro average of AUC is obtained by adding the AUC values (double-precision real numbers) of the classes that have a value, in class order, and dividing by the number of classes that have a value.
+
+* 14. Rules
+(1) Rules: one "rule" is created for each leaf of the pruned tree. The rules are arranged in preorder of the leaves and numbered rule 1, rule 2, .... The "class" of a rule is the predicted class of the leaf. The "condition list" of a rule lists, for each internal node on the path from the root to the leaf, the condition toward the next child on the path (the left condition of the split if going to the left child, the right condition if going to the right child).
+(2) Simplification: for each attribute that appears in the condition list (in attribute order), the conditions on that attribute are combined into one "condition".
+- Integer attribute: the maximum t among the right conditions (2 * x > t) is the "lower bound" lo, and the minimum t among the left conditions (2 * x <= t) is the "upper bound" hi (if there is no such condition, that bound does not exist). The condition is written <lo / 2> < <attribute name> <= <hi / 2> if both exist, <attribute name> > <lo / 2> if only the lower bound exists, and <attribute name> <= <hi / 2> if only the upper bound exists (the numbers have 1 decimal place, as for thresholds). A row satisfies this condition when its value x of that attribute is not a missing value and satisfies 2 * x > lo if the lower bound exists and 2 * x <= hi if the upper bound exists.
+- Categorical attribute: if there is a left condition (= v) (there is at most one), the condition is <attribute name> = <v>, and it is satisfied by rows whose value is v. Otherwise, the values v of the right conditions (!= v), listed without duplicates in value order as v_1, ..., v_q, are the "excluded values", and the condition is written <attribute name> != <v_1> if q = 1, and <attribute name> not in {<v_1>,<v_2>,...} if q >= 2 (the values are separated by commas, without spaces). It is satisfied by rows whose value is not a missing value and is none of the excluded values.
+The simplified conditions arranged in attribute order are called the "conditions" of the rule. When the conditions are written, they are listed separated by " and " (space, and, space); if there are no conditions at all, true is written.
+(3) Coverage: for a sequence of rows, the rows that satisfy all the conditions of a rule are called "covered rows"; their number is the "coverage count", and the number of them whose class matches the rule's class is the "hit count". A rule with no conditions at all covers all rows. A row with a missing value does not satisfy the condition on that attribute, so the result may differ from routing (7 (1)).
+(4) Generalization: with cov the coverage count and hit the hit count on the validation rows, (hit + 1) / (cov + K) is the "Laplace estimate" of the conditions. For each rule, starting with the current conditions equal to the rule's conditions, repeat the following.
+- If there are no conditions at all, stop.
+- For each condition of the current conditions (in attribute order), compute the Laplace estimate of the conditions with only that condition removed. If the largest of these (ties: the one that removes the condition earlier in attribute order) is greater than or equal to the Laplace estimate of the current conditions, remove that condition and repeat. Otherwise, stop.
+The conditions at the time of stopping are called the "generalized conditions", and the attribute names of the removed conditions, in the order in which they were removed, are called the "removed attributes".
+(5) Explanation of misclassifications: for each test row (in test row order) whose prediction on the pruned tree differs from its class, the "explanation" lists, for each internal node of its path on the pruned tree, the condition toward the next child on the path (as in (1)). If the method at that node (7 (1)) is surrogate, " [surrogate]" is appended after the condition, and if it is default, " [default]" is appended.
+
+* 15. Importance
+(1) Importance by impurity decrease: it is computed for both the grown tree and the pruned tree. For each attribute a, let imp(a) = 0 (a double-precision real number); visit the internal nodes of the tree in preorder and, at each internal node t, compute
+delta = (S_L / n_L + S_R / n_R) - S / n
+in double precision (n and S are the number of rows and the sum of squares of t, n_L and S_L those of the left child, and n_R and S_R those of the right child; perform each of the three divisions separately, add the first two, then subtract the third), and add delta to imp(a) of the attribute a of t's split. delta equals n * (the Gini impurity of t) minus (number of rows) * (Gini impurity) of each of the left and right children. The number of internal nodes whose split uses the attribute is called the "split count". Let total be the sum of imp(a) added in attribute order; the "decrease" is imp(a) / N and the "share" is imp(a) / total (when there are no internal nodes and total = 0, all shares are 0). The attributes are sorted by the 4-decimal value of the share (the value rounded to 4 decimal places, the same as in the output) in decreasing order (ties: attribute order).
+(2) Permutation importance: it is computed with the pruned tree and the test rows. The correct count of the test rows on the pruned tree is the "base correct count". Prepare one MINSTD generator (11 (1)) with PERMUTATION_SEED as its seed, and for each attribute a in attribute order, do the following R times (R is PERMUTATION_REPEATS). The generator is not reinitialized; it continues to be used.
+- Let y_1, ..., y_M be the values of attribute a of the test rows (including missing values) in test row order. For i = M, M - 1, ..., 2 in this order, draw one random number x, let j = (x mod i) + 1, and swap y_i and y_j.
+- Compute the correct count of the pruned tree on the sequence in which only the value of attribute a of the i-th test row (in test row order) is replaced by y_i (the other attribute values and the class are unchanged).
+y is rebuilt from the original values of the test rows at every repetition. With c_1, ..., c_R the correct counts of the R repetitions, the "drop" is R * (base correct count) - (c_1 + ... + c_R), and the "mean drop rate" is drop / (R * M) (it may be negative). The attributes are sorted by drop in decreasing order (ties: attribute order).
+
+* 16. Root split candidates
+For the sequence of all training rows, for each attribute a in attribute order, find the best of the valid candidates of a (the rules of 4 applied only to the candidates of a). Attributes with no valid candidate are omitted. For each of them, the "gain" is Q / N - S / N^2 (S is the sum of squares of all training rows; this is the Gini impurity of the root minus the weighted average of the left and right Gini impurities), and they are sorted by Q in decreasing order (ties: attribute order). This is computed regardless of whether the root is a leaf.
+
+[Output files]
+Six files are written: output/tree.txt, output/pruned_tree.txt, output/predictions.csv, output/rules.txt, output/evaluation.txt and output/importance.txt.
+
+* Common format rules
+- The output consists of ASCII characters only, and every line (including the last line) ends with a newline (LF). No extra spaces are placed at the start or end of a line, and no empty lines are inserted unless specified.
+- In the formats below, the parts enclosed in < > are replaced by values, and all other characters are written as they are. Values are separated by a single space (a single comma in .csv files). A notation like "<...> ..." means values of the same kind listed with one separator between consecutive values.
+- Integers are written in base 10 without extra leading zeros.
+- Unless specified otherwise, real numbers are rounded to 4 decimal places and written in fixed-point notation with exactly 4 digits after the decimal point (examples: 0.53 is 0.5300, 0.91153 is 0.9115). Exponent notation is not used, and 0 is written when the integer part is 0. Negative numbers are prefixed with -, but a value whose rounded result is 0 is written without - (example: -0.00004 is 0.0000). The alpha value (9) and the gain (16) are written in the same way with 6 decimal places. The data contains no values close to a rounding boundary.
+- A "ratio" is written in the form <a>/<b> <v>. a and b are integers and are not reduced. v is the real number a / b (example: 112/150 0.7467). When b = 0, 0/0 - is written.
+- A "reduced fraction" is written in the form <p>/<q> <v>. p / q is the irreducible fraction obtained by dividing the numerator and the denominator by their greatest common divisor (if the numerator is 0, it is 0/1; if the numerator is negative, p carries the -), and v is its value as a real number (examples: numerator 94 and denominator 119 give 94/119 0.7899; numerator -2 and denominator 1500 give -1/750 -0.0013). When there is no value, - - is written.
+- <counts> is the class counts in class order (<c_1> <c_2> ... <c_K>).
+
+* Tree format
+A tree (including a pruned tree) is written as follows.
+(1) For each node of the tree (in preorder), one line is written: for an internal node
+<indent><node number> <condition> n <number of rows> counts <counts>
+and for a leaf
+<indent><node number> <condition> n <number of rows> counts <counts> leaf <predicted class>
+<indent> is (2 * depth) spaces, and <condition> is root for the root, the left condition of the parent's split for a left child, and the right condition of the parent's split for a right child.
+(2) One empty line is written.
+(3) nodes <number of nodes> leaves <number of leaves> depth <tree depth> errors <ratio>
+is written. The ratio is (training error count) / N.
+(4) For each d = 0, 1, ..., (tree depth), the line
+level <d> nodes <number of nodes at depth d> leaves <number of leaves at depth d> rows <sum of the numbers of rows of the leaves at depth d> errors <sum of the error counts of the leaves at depth d>
+is written.
+
+* output/tree.txt
+The following three parts are written in this order, with one empty line between consecutive parts.
+(1) Root split candidates
+root candidates n <N> counts <counts of all training rows>
+followed by, for each attribute sorted as in 16, the line
+<rank> <left condition of the best candidate> left <n_L> right <n_R> gain <gain>
+is written. The ranks are 1, 2, ....
+(2) The grown tree is written in the tree format.
+(3) Surrogate splits
+surrogates
+followed by, for each internal node of the grown tree (in preorder), the line
+node <node number> split <left condition of the split> default <default direction> surrogates <list of surrogate splits>
+is written. <list of surrogate splits> lists, for each surrogate split (in the order 1st, 2nd, ...), <left condition of that split> <direction> <score>/<number of rows of the node>, separated by " ; " (space, semicolon, space); if there are no surrogate splits, it is none.
+
+* output/pruned_tree.txt
+(1) Record of reduced-error pruning
+reduced_error_pruning validation <V>
+followed by, for each internal node of the grown tree (in postorder, which is the order of the decisions), the line
+node <node number> depth <depth> rows <number of rows of V(t)> leaf <leaf error> subtree <subtree error> <pruned or kept>
+is written. pruned means that the node was decided to be pruned, and kept means that it was decided to be kept. Finally, the line
+examined <number of internal nodes decided> pruned <number decided to be pruned> kept <number decided to be kept>
+is written.
+(2) One empty line is written.
+(3) The pruned tree is written in the tree format.
+
+* output/predictions.csv
+The first line is id,predicted,actual,grown,leaf,path,missing. Then, for each test row (in test row order), one line
+<ID>,<prediction on the pruned tree>,<class>,<prediction on the grown tree>,<node number of the leaf reached on the pruned tree>,<path>,<missing count>
+is written. <path> is the node numbers of the path on the pruned tree, from the root, joined by - (example: 1-3-7), and <missing count> is the number of internal nodes of that path at which the method was surrogate or default.
+
+* output/rules.txt
+The following three parts are written in this order, with one empty line between consecutive parts.
+(1) Rules
+rules <number of rules>
+followed by, for each rule (in rule order), the line
+rule <number> node <node number of the leaf> if <conditions> then <class> train <ratio> test <ratio>
+is written. The train ratio is (number of rows of the majority class of the leaf) / (number of rows of the leaf). The test ratio is, for the test rows that reach this leaf when routed through the pruned tree, (number of rows whose class matches the rule's class) / (number of test rows that reach this leaf).
+(2) Generalized rules
+generalized <number of rules>
+followed by, for each rule (in rule order), the line
+general <number> if <generalized conditions> then <class> removed <removed attributes> laplace <reduced fraction> validation <hit count>/<coverage count> test <hit count>/<coverage count>
+is written. <removed attributes> lists the attribute names in the order in which they were removed, separated by commas (without spaces), and is none if there are none. The reduced fraction is the Laplace estimate of the generalized conditions. validation and test give the hit count and the coverage count of the generalized conditions on the validation rows and on the test rows (14 (3); they are not reduced, and no real number is written).
+(3) Explanation of misclassifications
+misclassified <number of test rows whose prediction on the pruned tree differs from their class>
+followed by, for each test row of 14 (5) (in test row order), the line
+<ID> actual <class> predicted <prediction> rule <number of the rule of the leaf reached> path <explanation>
+is written. <explanation> lists the conditions separated by "; " (semicolon, space). When the root of the pruned tree is a leaf and the explanation is empty, root is written.
+
+* output/evaluation.txt
+The following parts are written in this order. One empty line is inserted between consecutive parts (none before the first part or after the last part).
+(1) Data
+data train <N> validation <V> test <M> attributes <m> classes <K> target <class attribute name>
+followed by, for each class k in class order, the line
+class <k> train <number of training rows of class k> validation <number of validation rows of class k> test <number of test rows of class k>
+is written. Then the line
+missing validation <number of missing values in the validation rows> test <number of missing values in the test rows>
+is written, and for each attribute in attribute order, the line
+missing <attribute name> validation <number of missing values of that attribute in the validation rows> test <number of missing values of that attribute in the test rows>
+is written.
+(2) Trees
+grown nodes <number of nodes> leaves <number of leaves> depth <tree depth> train <ratio> validation <ratio> test <ratio>
+pruned nodes <number of nodes> leaves <number of leaves> depth <tree depth> train <ratio> validation <ratio> test <ratio>
+The first line is for the grown tree, and the second line is for the pruned tree. The ratios are (correct count) / (number of rows) for the training rows, the validation rows and the test rows, respectively.
+(3) Evaluation of grown: the classification evaluation of grown is written in the following "evaluation format" (<title> is grown test).
+- Line 1: confusion <title> correct <correct count>/<M> accuracy <reduced fraction> (the reduced fraction is (correct count) / M)
+- Line 2: actual\predicted followed by each class in class order. "\" is a single backslash character (ASCII code 92).
+- Then, for each class a in class order, <a> followed by X[a][b] (b in class order).
+- Then, for each class k in class order, class <k> precision <reduced fraction> recall <reduced fraction> f1 <reduced fraction> support <A>. The reduced fractions are, in order, the precision TP / P, the recall TP / A, and the F1 (2 * TP) / (P + A).
+- Finally, macro_f1 <macro average of F1>.
+(4) Evaluation of pruned: the classification evaluation of pruned is written in the evaluation format (the title is pruned test).
+(5) Routing
+routing pruned test
+followed by, for each internal node of the pruned tree (in preorder), the line
+node <node number> rows <number of test rows whose path passes through this node> primary <number of rows whose method at this node is primary> surrogate <number of surrogate rows> default <number of default rows>
+is written, and finally the lines
+complete rows <number of test rows with no missing value> correct <ratio>
+incomplete rows <number of test rows with one or more missing values> correct <ratio>
+are written. Each ratio is (correct count) / (number of rows) of those test rows on the pruned tree.
+(6) Cross-validation
+cross_validation folds <F>
+followed by, for each fold f (in the order f = 1, ..., F), the line
+fold <f> rows <b_(f-1) + 1>-<b_f> leaves <number of leaves of the tree grown from the training sequence of fold f> correct <ratio>
+is written, and finally the line
+cv accuracy <ratio>
+is written. The ratio of a fold line is (correct count of the training rows of fold f) / (number of training rows of fold f), and the ratio of the last line is (cross-validation correct count) / N.
+(7) Depth selection
+depth_selection
+followed by, for each d = 0, 1, ..., D, the line
+depth <d> leaves <number of leaves of the tree of depth d> cv <ratio> train <ratio> validation <ratio> test <ratio>
+is written, and finally the line
+selected depth <selected depth> leaves <number of leaves of the tree of the selected depth> test <ratio>
+is written. The cv ratio is (cross-validation correct count of depth d) / N; the train, validation and test ratios are (correct count) / (number of rows) on the tree of depth d; and the ratio of the last line is (correct count of the test rows) / M on the tree of the selected depth.
+(8) Cost-complexity pruning
+cost_complexity
+followed by, for each T_i of the sequence (in the order i = 0, 1, ...), the line
+subtree <i> alpha <reduced fraction> leaves <number of leaves> train_errors <training error count> validation_errors <validation error count>
+is written, and finally the line
+selected subtree <i of the selected sequence tree> leaves <its number of leaves> test <ratio>
+is written. The reduced fraction is the alpha value, and its real number is written with 6 decimal places. The ratio is (correct count of the test rows) / M on the selected sequence tree.
+(9) Bagging
+bagging trees <B> seed <BAG_SEED>
+followed by, for each tree b (in the order b = 1, ..., B), the line
+bag <b> distinct <sample row count> leaves <number of leaves of tree b> oob <ratio>
+is written, and then the line
+oob accuracy <ratio> unvoted <number of training rows with no out-of-bag prediction>
+is written. The ratio of a bag line is (correct count of the out-of-bag rows on tree b) / (number of out-of-bag rows), and the ratio of oob accuracy is (number of training rows whose out-of-bag prediction matches their class) / (number of training rows that have an out-of-bag prediction). Immediately after that (without an empty line), the classification evaluation of bagging is written in the evaluation format (the title is bagging test).
+(10) McNemar test
+mcnemar pruned test
+followed by, for each model in the order grown, depth, cost_complexity, bagging, the line
+versus <model name> b <b> c <c> statistic <reduced fraction> significant <yes or no>
+is written. The reduced fraction is the statistic with numerator u and denominator b + c. However, when b + c = 0, 0/1 0.0000 is written.
+(11) AUC: for each model in the order grown, pruned, bagging, one line
+auc <model name> <for each class k in class order, k and the reduced fraction of its AUC> ... macro <macro average of AUC>
+is written (example: auc grown yes 3/4 0.7500 no 3/4 0.7500 macro 0.7500). The reduced fraction of an AUC has numerator W_k and denominator 2 * P_k * N_k, and is - - if there is no value. If no AUC has a value, the macro average is written as -.
+(12) Learning curve
+learning_curve
+followed by, for each value c of CURVE (in CURVE order), the line
+size <c> grown leaves <number of leaves of the tree as grown> test <ratio> pruned leaves <number of leaves of the pruned tree> test <ratio>
+is written. Each ratio is (correct count of the test rows) / M on the respective tree.
+
+* output/importance.txt
+The following three parts are written in this order, with one empty line between consecutive parts.
+(1) impurity grown, followed by, for each attribute of the grown tree sorted as in 15 (1), the line
+<rank> <attribute name> decrease <decrease> share <share> splits <split count>
+is written. The ranks are 1, 2, ....
+(2) impurity pruned, followed by the same lines as in (1) for the pruned tree, is written.
+(3) permutation pruned test repeats <R> seed <PERMUTATION_SEED> base <ratio>
+followed by, for each attribute sorted as in 15 (2), the line
+<rank> <attribute name> correct <c_1> <c_2> ... <c_R> drop <reduced fraction>
+is written. The ratio is (base correct count) / M, and the reduced fraction is the mean drop rate (numerator: drop, denominator: R * M).
+
+[Source files]
+Split the program into the following six source files (file names follow each language's conventions).
+- main: handles the overall flow and most of the processing: reading the input, calling the tree growing and the two prunings, the tree format (node lines and per-depth tallies), the root split candidates, the list of surrogate splits, the record of reduced-error pruning, the prediction output, building the rules, simplification, generalization by coverage and Laplace estimates, the explanation of misclassifications, the tally of routing methods, cross-validation and depth selection, evaluation and selection over the cost-complexity pruning sequence, the MINSTD generator, bagging (samples, out-of-bag rows, voting), the McNemar test, AUC, the learning curve, importance by impurity decrease and by permutation, and assembling the contents of the six output files.
+- dataset: reads the five input files and returns the attribute definitions (names, types, value orders), the class attribute name and the class order, the sequences of training rows, validation rows and test rows (ID, attribute values, class; missing values are distinguished), and the settings.
+- impurity: handles class counts, sums of squares, majority classes, error counts, the fraction of the evaluation value Q and its comparison with integers, the improvement test, and the computation of the impurity decrease delta.
+- tree_builder: handles the representation of splits, surrogate splits and nodes, the enumeration of split candidates, the selection of the best split, the selection of surrogate splits, and tree growing (node numbers and stopping conditions).
+- pruning: handles reduced-error pruning (recording V(t) and the decisions in postorder) and building the cost-complexity pruning sequence.
+- evaluation: handles routing rows (including surrogate splits and default directions), deciding leaves in a pruned tree, predictions and correct counts, the confusion matrix and the evaluation format (precision, recall, F1, macro average), ratios, reduced fractions, and real-number formatting.
+
+[Constraints]
+- 1 <= m <= 12, a categorical attribute has 2 to 8 values, and 2 <= K <= 6.
+- 2 <= N <= 500, 1 <= V <= 300, 1 <= M <= 300. The settings are within the ranges given in [Input files].
+- Every integer that appears is less than 2^53. The products that appear in comparisons of evaluation values are at most N^5 / 16 (less than 2^41), and the products that appear in the improvement test are at most N^4 / 4. 48271 * x in MINSTD is less than 2^47.
+- The input files correctly follow the formats above. There is no need to check for input errors.
+- The given data predicts the screening result (3 classes: approve, review, reject) from loan applications (9 attributes: age, annual income, employment type, housing, credit history, loan amount, repayment period, number of dependents and purpose; 5 integer attributes and 4 categorical attributes), with N = 400, V = 150, M = 150. The validation rows and the test rows each contain 52 missing values. The grown tree consists of 53 nodes, and the total number of times a tree is grown, including regrowing for depth selection, is less than 100.
+- In the given data, every real number output is sufficiently far from a rounding boundary. Also, the sorting by the 4-decimal value of the share in 15 (1) has enough margin not to change under differences in the order of additions, fused multiply-add, or differences in the last digit of division results (about 1 ulp). Nevertheless, compute with the formulas and orders defined in this statement.
+
+[Example]
+A small example that differs from the actual input (3 attributes (2 integer attributes and 1 categorical attribute), 2 classes, 20 training rows, 8 validation rows, 6 test rows).
+
+input/schema.txt:
+ATTRIBUTE tenure INT
+ATTRIBUTE plan CAT basic standard premium
+ATTRIBUTE calls INT
+CLASS status stay churn
+input/train.csv:
+id,tenure,plan,calls,status
+C35,38,basic,3,churn
+C61,3,basic,7,churn
+C63,23,standard,4,stay
+C11,19,premium,1,stay
+C94,32,basic,7,churn
+C17,25,premium,5,churn
+C47,7,premium,2,churn
+C97,20,basic,3,churn
+C26,59,basic,2,stay
+C43,47,basic,0,stay
+C85,54,standard,1,stay
+C84,18,premium,5,churn
+C88,26,basic,4,churn
+C32,15,standard,1,stay
+C67,60,basic,7,churn
+C99,32,standard,7,churn
+C46,57,basic,2,stay
+C83,4,basic,3,churn
+C45,5,basic,0,churn
+C50,43,standard,5,stay
+input/validation.csv:
+id,tenure,plan,calls,status
+C57,?,basic,5,churn
+C37,27,basic,7,churn
+C73,?,basic,0,stay
+C68,6,premium,5,churn
+C25,52,standard,1,stay
+C23,49,?,6,churn
+C80,33,standard,3,stay
+C13,57,basic,?,stay
+input/test.csv:
+id,tenure,plan,calls,status
+C41,29,premium,0,stay
+C91,7,basic,?,churn
+C10,14,standard,4,churn
+C52,10,standard,2,churn
+C76,34,basic,?,churn
+C86,?,?,?,churn
+input/params.txt:
+MAX_DEPTH 3
+MIN_SAMPLES_SPLIT 5
+MIN_SAMPLES_LEAF 2
+MAX_SURROGATES 1
+FOLDS 4
+CURVE 10 20
+BAG_TREES 2
+BAG_SEED 2026
+PERMUTATION_REPEATS 2
+PERMUTATION_SEED 7
+output/tree.txt:
+root candidates n 20 counts 8 12
+1 calls <= 2.5 left 8 right 12 gain 0.163333
+2 tenure <= 40.5 left 14 right 6 gain 0.160952
+3 plan = standard left 5 right 15 gain 0.106667
+
+1 root n 20 counts 8 12
+  2 calls <= 2.5 n 8 counts 6 2
+    4 tenure <= 11.0 n 2 counts 0 2 leaf churn
+    5 tenure > 11.0 n 6 counts 6 0 leaf stay
+  3 calls > 2.5 n 12 counts 2 10
+    6 plan = standard n 3 counts 2 1 leaf stay
+    7 plan != standard n 9 counts 0 9 leaf churn
+
+nodes 7 leaves 4 depth 2 errors 1/20 0.0500
+level 0 nodes 1 leaves 0 rows 0 errors 0
+level 1 nodes 2 leaves 0 rows 0 errors 0
+level 2 nodes 4 leaves 4 rows 20 errors 1
+
+surrogates
+node 1 split calls <= 2.5 default right surrogates tenure <= 45.0 right 15/20
+node 2 split tenure <= 11.0 default right surrogates none
+node 3 split plan = standard default right surrogates none
+output/pruned_tree.txt:
+reduced_error_pruning validation 8
+node 2 depth 1 rows 3 leaf 0 subtree 0 pruned
+node 3 depth 1 rows 5 leaf 1 subtree 0 kept
+node 1 depth 0 rows 8 leaf 4 subtree 0 kept
+examined 3 pruned 1 kept 2
+
+1 root n 20 counts 8 12
+  2 calls <= 2.5 n 8 counts 6 2 leaf stay
+  3 calls > 2.5 n 12 counts 2 10
+    6 plan = standard n 3 counts 2 1 leaf stay
+    7 plan != standard n 9 counts 0 9 leaf churn
+
+nodes 5 leaves 3 depth 2 errors 3/20 0.1500
+level 0 nodes 1 leaves 0 rows 0 errors 0
+level 1 nodes 2 leaves 1 rows 8 errors 2
+level 2 nodes 2 leaves 2 rows 12 errors 1
+output/predictions.csv:
+id,predicted,actual,grown,leaf,path,missing
+C41,stay,stay,stay,2,1-2,0
+C91,churn,churn,churn,7,1-3-7,1
+C10,stay,churn,stay,6,1-3-6,0
+C52,stay,churn,churn,2,1-2,0
+C76,churn,churn,churn,7,1-3-7,1
+C86,churn,churn,churn,7,1-3-7,2
+output/rules.txt:
+rules 3
+rule 1 node 2 if calls <= 2.5 then stay train 6/8 0.7500 test 1/2 0.5000
+rule 2 node 6 if plan = standard and calls > 2.5 then stay train 2/3 0.6667 test 0/1 0.0000
+rule 3 node 7 if plan != standard and calls > 2.5 then churn train 9/9 1.0000 test 3/3 1.0000
+
+generalized 3
+general 1 if calls <= 2.5 then stay removed none laplace 3/4 0.7500 validation 2/2 test 1/2
+general 2 if plan = standard then stay removed calls laplace 3/4 0.7500 validation 2/2 test 0/2
+general 3 if plan != standard and calls > 2.5 then churn removed none laplace 4/5 0.8000 validation 3/3 test 0/0
+
+misclassified 2
+C10 actual churn predicted stay rule 2 path calls > 2.5; plan = standard
+C52 actual churn predicted stay rule 1 path calls <= 2.5
+output/evaluation.txt:
+data train 20 validation 8 test 6 attributes 3 classes 2 target status
+class stay train 8 validation 4 test 1
+class churn train 12 validation 4 test 5
+missing validation 4 test 5
+missing tenure validation 2 test 1
+missing plan validation 1 test 1
+missing calls validation 1 test 3
+
+grown nodes 7 leaves 4 depth 2 train 19/20 0.9500 validation 8/8 1.0000 test 5/6 0.8333
+pruned nodes 5 leaves 3 depth 2 train 17/20 0.8500 validation 8/8 1.0000 test 4/6 0.6667
+
+confusion grown test correct 5/6 accuracy 5/6 0.8333
+actual\predicted stay churn
+stay 1 0
+churn 1 4
+class stay precision 1/2 0.5000 recall 1/1 1.0000 f1 2/3 0.6667 support 1
+class churn precision 1/1 1.0000 recall 4/5 0.8000 f1 8/9 0.8889 support 5
+macro_f1 0.7778
+
+confusion pruned test correct 4/6 accuracy 2/3 0.6667
+actual\predicted stay churn
+stay 1 0
+churn 2 3
+class stay precision 1/3 0.3333 recall 1/1 1.0000 f1 1/2 0.5000 support 1
+class churn precision 1/1 1.0000 recall 3/5 0.6000 f1 3/4 0.7500 support 5
+macro_f1 0.6250
+
+routing pruned test
+node 1 rows 6 primary 3 surrogate 2 default 1
+node 3 rows 4 primary 3 surrogate 0 default 1
+complete rows 3 correct 1/3 0.3333
+incomplete rows 3 correct 3/3 1.0000
+
+cross_validation folds 4
+fold 1 rows 1-5 leaves 4 correct 3/5 0.6000
+fold 2 rows 6-10 leaves 4 correct 3/5 0.6000
+fold 3 rows 11-15 leaves 4 correct 3/5 0.6000
+fold 4 rows 16-20 leaves 4 correct 3/5 0.6000
+cv accuracy 12/20 0.6000
+
+depth_selection
+depth 0 leaves 1 cv 12/20 0.6000 train 12/20 0.6000 validation 4/8 0.5000 test 5/6 0.8333
+depth 1 leaves 2 cv 8/20 0.4000 train 16/20 0.8000 validation 7/8 0.8750 test 5/6 0.8333
+depth 2 leaves 4 cv 11/20 0.5500 train 19/20 0.9500 validation 8/8 1.0000 test 5/6 0.8333
+depth 3 leaves 4 cv 12/20 0.6000 train 19/20 0.9500 validation 8/8 1.0000 test 5/6 0.8333
+selected depth 0 leaves 1 test 5/6 0.8333
+
+cost_complexity
+subtree 0 alpha 0/1 0.000000 leaves 4 train_errors 1 validation_errors 0
+subtree 1 alpha 1/20 0.050000 leaves 3 train_errors 2 validation_errors 1
+subtree 2 alpha 1/10 0.100000 leaves 2 train_errors 4 validation_errors 1
+subtree 3 alpha 1/5 0.200000 leaves 1 train_errors 8 validation_errors 4
+selected subtree 0 leaves 4 test 5/6 0.8333
+
+bagging trees 2 seed 2026
+bag 1 distinct 13 leaves 3 oob 5/7 0.7143
+bag 2 distinct 13 leaves 4 oob 4/7 0.5714
+oob accuracy 7/10 0.7000 unvoted 10
+confusion bagging test correct 4/6 accuracy 2/3 0.6667
+actual\predicted stay churn
+stay 1 0
+churn 2 3
+class stay precision 1/3 0.3333 recall 1/1 1.0000 f1 1/2 0.5000 support 1
+class churn precision 1/1 1.0000 recall 3/5 0.6000 f1 3/4 0.7500 support 5
+macro_f1 0.6250
+
+mcnemar pruned test
+versus grown b 0 c 1 statistic 0/1 0.0000 significant no
+versus depth b 1 c 2 statistic 0/1 0.0000 significant no
+versus cost_complexity b 0 c 1 statistic 0/1 0.0000 significant no
+versus bagging b 0 c 0 statistic 0/1 0.0000 significant no
+
+auc grown stay 1/1 1.0000 churn 1/1 1.0000 macro 1.0000
+auc pruned stay 9/10 0.9000 churn 9/10 0.9000 macro 0.9000
+auc bagging stay 3/5 0.6000 churn 3/5 0.6000 macro 0.6000
+
+learning_curve
+size 10 grown leaves 3 test 4/6 0.6667 pruned leaves 2 test 5/6 0.8333
+size 20 grown leaves 4 test 5/6 0.8333 pruned leaves 3 test 4/6 0.6667
+output/importance.txt:
+impurity grown
+1 calls decrease 0.1633 share 0.3952 splits 1
+2 tenure decrease 0.1500 share 0.3629 splits 1
+3 plan decrease 0.1000 share 0.2419 splits 1
+
+impurity pruned
+1 calls decrease 0.1633 share 0.6203 splits 1
+2 plan decrease 0.1000 share 0.3797 splits 1
+3 tenure decrease 0.0000 share 0.0000 splits 0
+
+permutation pruned test repeats 2 seed 7 base 4/6 0.6667
+1 calls correct 3 2 drop 1/4 0.2500
+2 plan correct 3 4 drop 1/12 0.0833
+3 tenure correct 4 4 drop 0/1 0.0000
+Some points about this example are explained below.
+- The first-ranked root split candidate, calls <= 2.5, has class counts 6, 2 for the 8 rows on the left and 2, 10 for the 12 rows on the right. Q = (36 + 4) / 8 + (4 + 100) / 12 = 41 / 3, and the sum of squares of all training rows is S = 8 * 8 + 12 * 12 = 208, so the gain is (41 / 3) / 20 - 208 / 400 = 0.163333.
+- The surrogate split tenure <= 45.0 right 15/20 of node 1 means that rows whose tenure is at most 45.0 are sent to the right child and the other rows to the left child. Nodes 2 and 3 have no candidate whose score is greater than max(n_L, n_R), so they have no surrogate splits.
+- In reduced-error pruning, 3 validation rows pass through node 2, and both its leaf error and its subtree error are 0, so node 2 is pruned. Node 3 is kept because its leaf error (1) is greater than its subtree error (0).
+- Test row C91 has a missing value for calls, so at node 1 it follows the surrogate split tenure <= 45.0 right (its tenure is 7) and goes to the right child. Test row C86 has missing values for all attributes, so at node 1 it goes in the default direction (right) because the attribute of the surrogate split is also missing, and at node 3 it goes in the default direction (right) because there is no surrogate split, reaching leaf 7. For both rows, the missing count in predictions.csv is the number of surrogate and default steps on the path (1 for C91, 2 for C86).
+- In depth selection, the cross-validation correct counts of depth 0 and depth 3 are both 12, the maximum, so the smaller depth, 0, is selected.
+- The conditions of rule 2 are plan = standard and calls > 2.5, and their Laplace estimate on the validation rows is (1 + 1) / (1 + 2) = 2/3. Removing the calls condition gives (2 + 1) / (2 + 2) = 3/4, and removing the plan condition gives (1 + 1) / (5 + 2) = 2/7, so the calls condition is removed. Removing the remaining plan = standard gives (4 + 1) / (8 + 2) = 1/2, which is less than 3/4, so the process stops there. Validation row C23 has a missing value for plan, so it does not satisfy the plan condition.
+- In bagging, 10 of the 20 training rows are contained in the samples of both trees, so they have no out-of-bag prediction (unvoted 10).

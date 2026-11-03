@@ -1,0 +1,603 @@
+[Overview]
+Write a program that implements an in-memory key-value store (KVS) similar to Redis. The program reads commands from standard input one line at a time, registers, looks up, modifies and deletes values associated with keys, and writes the reply to each command to standard output in a simplified form of the redis-cli display. There are five value types: string, list, hash, set and sorted set. The task covers the commands of each type and the detection of type errors, the parsing of arguments that contain quotes and escapes, searching for keys with patterns that use "*", "?" and "[...]", key expiry based on a logical clock, transactions that can be nested (commit and rollback), and saving and restoring named snapshots. For an erroneous command, the program prints a prescribed error reply and changes no state at all.
+
+[Input format]
+The first line contains the number of commands N. Each of the following N lines contains one command. Each line is a string of 1 to 200 characters consisting only of printable ASCII characters (character codes 32 to 126), and contains at least one character other than a space. Each line is split into a sequence of "arguments" by the rules of [Processing] section 1; the first argument is the command name, and the remaining arguments are the arguments of that command.
+
+The commands have the following 69 formats.
+
+  Strings:
+  SET key value [option ...]
+  GET key
+  MSET key value [key value ...]
+  MGET key [key ...]
+  INCR key
+  DECR key
+  INCRBY key increment
+  DECRBY key decrement
+  APPEND key value
+  STRLEN key
+  GETRANGE key start end
+
+  Lists:
+  LPUSH key element [element ...]
+  RPUSH key element [element ...]
+  LPOP key [count]
+  RPOP key [count]
+  LRANGE key start stop
+  LLEN key
+  LINDEX key index
+  LSET key index element
+  LREM key count element
+  LTRIM key start stop
+  LINSERT key where pivot element
+
+  Hashes:
+  HSET key field value [field value ...]
+  HGET key field
+  HDEL key field [field ...]
+  HGETALL key
+  HLEN key
+  HEXISTS key field
+  HKEYS key
+  HVALS key
+  HINCRBY key field increment
+
+  Sets:
+  SADD key member [member ...]
+  SREM key member [member ...]
+  SISMEMBER key member
+  SMEMBERS key
+  SCARD key
+  SINTER key [key ...]
+  SUNION key [key ...]
+  SDIFF key [key ...]
+  SINTERSTORE destination key [key ...]
+  SUNIONSTORE destination key [key ...]
+  SDIFFSTORE destination key [key ...]
+
+  Sorted sets:
+  ZADD key score member [score member ...]
+  ZSCORE key member
+  ZINCRBY key increment member
+  ZREM key member [member ...]
+  ZCARD key
+  ZRANK key member
+  ZRANGE key start stop [WITHSCORES]
+  ZRANGEBYSCORE key min max [WITHSCORES]
+
+  Keys and time:
+  DEL key [key ...]
+  EXISTS key [key ...]
+  TYPE key
+  RENAME key newkey
+  RENAMENX key newkey
+  KEYS pattern
+  EXPIRE key seconds [condition]
+  TTL key
+  PERSIST key
+  TICK ticks
+  TIME
+  DBSIZE
+  FLUSH
+  INFO
+
+  Transactions and snapshots:
+  BEGIN
+  COMMIT
+  ROLLBACK
+  SNAPSHOT name
+  RESTORE name
+
+In the formats, words in uppercase letters are command names and keywords, and words in lowercase letters are arguments. A part enclosed in [ ] may be omitted, and "..." means that the immediately preceding argument (or, when arguments form a group as in "key value ...", that group) may be repeated any number of further times. The number of arguments of each command is as given in the table in [Processing] section 5.
+The lines of the input do not necessarily match these formats. There are also lines whose command name is none of the 69, lines with a wrong number of arguments, lines with invalid argument contents, and lines that are invalid by the rules of [Processing] section 1. How they are handled is defined in [Processing]. It is guaranteed that N, the length of each line, the kinds of characters, and every item of [Constraints] are respected.
+
+[Processing]
+Process the commands one at a time in order, starting with the first line, and print each reply immediately. In the descriptions below, a string enclosed in double quotes is a string that appears exactly as written in the input or output (the enclosing quotes themselves are not part of it). A string that itself contains a double quote or a backslash, or that begins or ends with a space, is enclosed in backquotes instead (for example `"`, `\` and `) `); the backquotes are likewise not part of it. No escaping is applied inside either kind of quotes. A part such as <n> in a description is replaced by its value.
+
+== 1. Splitting a line ==
+Split each line, from the beginning, into "arguments" as follows.
+- A space separates arguments. Spaces may be consecutive. Spaces at the beginning and at the end of the line are ignored.
+- A part that starts with a non-space character becomes one argument. If its first character is not `"`, the string up to just before the next space (up to the end of the line if there is no further space) becomes one argument as it is. Inside such an argument, both `"` and `\` are ordinary characters.
+- If the first character is `"`, the argument is a "quoted argument". Read the characters one at a time in order, starting from the character after it, and build the content of the argument as follows. When `"` is read, it is the closing `"`, and the quoted argument ends there. When `\` is read, read it together with the character after it as two characters; if they are `\"`, append `"` to the end of the content, and if they are `\\`, append `\` to the end of the content. When any other character is read, append that character to the end of the content. The content may be empty (`""` is an argument that is the empty string).
+- A line is "invalid" if any of the following holds: a `\` read inside a quoted argument is followed by a character that is neither `"` nor `\`, or that `\` is the last character of the line; the end of the line is reached before the closing `"` is read; the closing `"` is immediately followed by a character that is neither a space nor the end of the line.
+For example, the line `SET  "a b"  x\y` is split into the three arguments "SET", "a b" and `x\y`, and the line `SET k "say \"hi\" \\o/"` is split into the three arguments "SET", "k" and `say "hi" \o/`. The lines `SET k "abc`, `SET k "ab"c` and `SET k "a\b"` are invalid.
+Since every line contains a non-space character, a line that is not invalid is always split into one or more arguments.
+
+== 2. State ==
+The program has the following state.
+- Database: a collection of keys (strings); each key has one "value" and one "expiry". No key appears twice or more. Initially there are no keys at all. Below, "a key exists" means that the key is in the database.
+- Current time: an integer >= 0, initially 0. Only TICK advances the current time.
+- Save stack: a sequence of copies of the database pushed by BEGIN (section 12). Initially it is empty. The number of copies on it is called the "transaction depth".
+- Snapshots: a collection of copies of the database, each with a name (a string) (section 12). No two snapshots have the same name. Initially there are none.
+
+A value has exactly one of the following five "types". The word in parentheses is the type name.
+- String (string): one string of 0 or more characters.
+- List (list): one or more strings ("elements") arranged in order. The same string may occur any number of times.
+- Hash (hash): one or more mutually distinct strings ("fields"), each associated with one string (the "value" of that field).
+- Set (set): a collection of one or more mutually distinct strings ("members").
+- Sorted set (zset): one or more mutually distinct strings ("members"), each associated with one integer (its "score").
+When, as a result of processing, the number of elements, fields or members of a list, hash, set or sorted set becomes 0, the key is deleted from the database. Therefore, a key whose value has 0 elements (or fields or members) never exists.
+
+The expiry of a key is either "none" or an integer (a time). A key whose expiry is an integer is deleted when the current time becomes greater than or equal to that integer. Specifically, immediately after TICK advances the current time, and immediately after ROLLBACK and RESTORE replace the database, all keys whose expiry is <= the current time are deleted. By the rules below, a key whose expiry is <= the current time never exists at any other time.
+The expiry of a newly created key is "none". A command that changes the value of an existing key does not change that key's expiry, except where stated in the description.
+
+== 3. Terms ==
+- An "integer notation" is "0", or a sequence of 1 to 9 digits ("0" to "9") that starts with one of "1" to "9", or such a sequence preceded by one "-". For example, "0", "7", "-42" and "999999999" are integer notations, and "-0", "007", "+5", "1.5", "1234567890", "abc" and the empty string are not. The integer represented by an integer notation is its value read as an ordinary decimal number, and it is between -999999999 and 999999999 inclusive. Whenever an integer is printed or written to the database as a string, the integer notation of that integer is always used.
+- "String order" is the order in which two strings are compared character by character from the beginning by character code (ASCII), the one whose first differing character has the smaller character code comes first, and, when one of them matches the beginning part of the other, the shorter one comes first. For example, the empty string, "B", "Ba", "a" and "b" are in this order. Below, "sort" means, unless stated otherwise, arranging in ascending string order (earlier ones first).
+- The "length" of a string is its number of characters.
+- Two strings are "equal ignoring case" when the strings obtained from them by replacing every lowercase letter ("a" to "z") with the corresponding uppercase letter are equal. Command names, the options of SET, the where of LINSERT, the argument in the WITHSCORES position of ZRANGE and ZRANGEBYSCORE, and the condition of EXPIRE are compared in this way, ignoring case.
+- "Range normalization" determines, from a sequence of length n (such as the sequence of elements of a list or the sequence of characters of a string) and two integers start and stop, a range within the sequence as follows. The positions in the sequence are counted 0, 1, ..., n-1, with the first one being 0.
+  (1) If start is negative, add n to start. If stop is negative, add n to stop.
+  (2) If start after (1) is negative, set start to 0. If stop is n or more, set stop to n-1.
+  (3) If start <= stop, the range is from position start to position stop (both ends included). Otherwise the range is empty.
+  For example, when n=5: start, stop = 1, 3 give positions 1 to 3; -2, -1 give positions 3 to 4; -100, 100 give positions 0 to 4; and 3, 1 or 5, 10 or 0, -6 give an empty range. When n=0 the range is always empty.
+
+== 4. How replies are written ==
+Each command prints a "reply" of exactly one of the following forms.
+- Status reply: the string itself written on one line (example: "OK").
+- Integer reply: the single line "(integer) <n>" (example: "(integer) -2").
+- String reply: for a string s, the single line formed by concatenating `"`, s and `"` in this order, where every `\` in s is written as the two characters `\\`, and every `"` in s as the two characters `\"`. For example, if s is `say "hi"`, the line is `"say \"hi\""`, and if s is the empty string, the line is `""`.
+- Nil reply: the single line "(nil)".
+- Array reply: a sequence of k "items" (k >= 0). If k=0, it is the single line "(empty array)". If k >= 1, it consists of k lines, and line i (i=1, 2, ..., k) is <number>, `) ` (a closing parenthesis and one space) and the i-th item concatenated in this order. <number> is i in decimal notation; if it has fewer digits than k in decimal notation, it is padded on the left with spaces to the number of digits of k. Each item is written in the same form as a string reply if it is a string, and as "(nil)" if it is "none". For example, if the items are the two strings "a" and "b", the reply is the two lines `1) "a"` and `2) "b"`; if there are 10 items, line 1 begins like ` 1) "a"`, and line 10 begins with `10) `.
+- Error reply: the single line "(error) <message>".
+
+The following error messages are referred to below by the names on the left.
+  WRONGTYPE: WRONGTYPE Operation against a key holding the wrong kind of value
+  NOTINT: ERR value is not an integer or out of range
+  OVERFLOW: ERR increment or decrement would overflow
+  SYNTAX: ERR syntax error
+  POSITIVE: ERR value is out of range, must be positive
+  NOKEY: ERR no such key
+For example, the reply for the error NOTINT is the single line "(error) ERR value is not an integer or out of range". The other messages are written directly in the description of each command.
+
+== 5. Command matching and common checks ==
+For each line, examine (1) to (5) below in order, produce only the output of the first one that applies, and finish processing that line.
+(1) If the line is invalid (section 1), print the single line "Invalid argument(s)" (this is not in the form of an error reply).
+(2) If the first argument is not equal ignoring case to any of the 69 command names, print the error reply "ERR unknown command '<name>'". <name> is the first argument written as it is (as obtained in section 1).
+(3) If the number of arguments, excluding the command name, does not match the following table, print the error reply "ERR wrong number of arguments for '<name>' command". <name> is the command name written in lowercase letters (example: "(error) ERR wrong number of arguments for 'lpush' command").
+  0: TIME, DBSIZE, FLUSH, INFO, BEGIN, COMMIT, ROLLBACK
+  1: GET, INCR, DECR, STRLEN, LLEN, HGETALL, HLEN, HKEYS, HVALS, SMEMBERS, SCARD, ZCARD, TYPE, KEYS, TTL, PERSIST, TICK, SNAPSHOT, RESTORE
+  2: INCRBY, DECRBY, APPEND, LINDEX, HGET, HEXISTS, SISMEMBER, ZSCORE, ZRANK, RENAME, RENAMENX
+  3: GETRANGE, LRANGE, LSET, LREM, LTRIM, HINCRBY, ZINCRBY
+  4: LINSERT
+  1 or 2: LPOP, RPOP
+  2 or 3: EXPIRE
+  3 or 4: ZRANGE, ZRANGEBYSCORE
+  1 or more: MGET, SINTER, SUNION, SDIFF, DEL, EXISTS
+  2 or more: SET, LPUSH, RPUSH, HDEL, SADD, SREM, ZREM, SINTERSTORE, SUNIONSTORE, SDIFFSTORE
+  an even number, 2 or more: MSET
+  an odd number, 3 or more: HSET, ZADD
+(4) Perform the "Checks" in the description of each command in sections 6 to 12, in the order written. If one of them applies, print its error reply.
+(5) If none of them applies, perform the "Processing" in the description and print the "Reply".
+A line for which an error reply or "Invalid argument(s)" is printed changes no state at all.
+
+In the checks, a "type check (T)" is the check "if key exists and the type of its value is not T, WRONGTYPE". T is written as a type name. key is the argument key of that command.
+In the checks, an "integer check (a)" is the check "if the argument a is not an integer notation, NOTINT". Below, an argument that has passed an integer check is treated as the integer it represents.
+
+== 6. String commands ==
+SET key value [option ...]
+Sets the value of key to the string value. As option, the following five kinds can be specified, ignoring case, in any order.
+  NX: set only if key does not exist.
+  XX: set only if key exists.
+  EX seconds: set the expiry to "current time + seconds". The one argument immediately after EX is treated as seconds regardless of its content.
+  KEEPTTL: if key exists, keep its expiry.
+  GET: reply with the value of key before setting.
+Checks:
+(1) Read the option arguments in order from the first (when EX is read, read the argument after it as seconds). If there is an argument that is not equal to any of the five kinds, the same kind of option appears twice or more, or there is no argument after EX, SYNTAX. After all of them have been read, if both NX and XX are present, or both EX and KEEPTTL are present, also SYNTAX.
+(2) If EX is present, integer check (seconds). If seconds <= 0, "ERR invalid expire time in 'set' command".
+(3) If GET is present, type check (string).
+Processing: if NX is present and key exists, or if XX is present and key does not exist, change nothing. Otherwise, set the value of key to the string value (regardless of its previous type), and set the expiry as follows: if EX is present, "current time + seconds"; if KEEPTTL is present and key existed, the original expiry unchanged; otherwise "none".
+Reply: if GET is present, the string reply of the value of key before processing (a nil reply if key did not exist). If GET is not present, the status reply "OK" if the value was set, or a nil reply if nothing was changed.
+
+GET key
+Checks: type check (string).
+Reply: the string reply of the value of key. A nil reply if key does not exist.
+
+MSET key value [key value ...]
+Processing: for the pairs in order from the first, set the value of key to the string value (regardless of its previous type), and set its expiry to "none". If the same key appears twice or more, the value of the later pair remains.
+Reply: the status reply "OK".
+
+MGET key [key ...]
+Reply: an array reply that lists, for each key in the order of the keys, its value if it exists and its type is string, and "none" otherwise. This command never results in WRONGTYPE.
+
+INCR key
+DECR key
+INCRBY key increment
+DECRBY key decrement
+Let d be 1 for INCR, -1 for DECR, increment for INCRBY, and the integer decrement with its sign reversed for DECRBY.
+Checks:
+(1) For INCRBY, integer check (increment); for DECRBY, integer check (decrement).
+(2) Type check (string).
+(3) If key exists and its value is not an integer notation, NOTINT.
+(4) Let r be the integer represented by the value of key (0 if key does not exist) plus d. If r is not between -999999999 and 999999999 inclusive, OVERFLOW.
+Processing: set the value of key to the string that is the integer notation of r. If key did not exist, create it.
+Reply: the integer reply r.
+
+APPEND key value
+Checks: type check (string).
+Processing: if key exists, append value to the end of its value. If it does not exist, create a string key whose value is value.
+Reply: the integer reply of the length of the value of key after processing.
+
+STRLEN key
+Checks: type check (string).
+Reply: the integer reply of the length of the value of key. 0 if key does not exist.
+
+GETRANGE key start end
+Checks:
+(1) Integer check (start), then integer check (end).
+(2) Type check (string).
+Reply: perform range normalization with start and end on the sequence of characters of the value of key (the empty string if key does not exist), and give the string reply of the string formed by concatenating the characters in that range in order. If the range is empty, the reply is `""`.
+
+== 7. List commands ==
+LPUSH key element [element ...]
+RPUSH key element [element ...]
+Checks: type check (list).
+Processing: if key does not exist, start by creating a new list key with 0 elements. Add each element, one at a time in order from the first, to the head of the list for LPUSH, or to the tail for RPUSH. For example, "LPUSH key a b c" on a key that does not exist makes the list c, b, a in this order.
+Reply: the integer reply of the number of elements of the list after processing.
+
+LPOP key [count]
+RPOP key [count]
+Checks:
+(1) If count is present and it is not an integer notation or it represents a negative integer, POSITIVE.
+(2) Type check (list).
+Processing and reply:
+- If key does not exist, a nil reply, whether or not count is present.
+- If count is not present, remove one element from the head of the list (the tail for RPOP), and give the string reply of that element.
+- If count is present, remove elements one at a time from the head of the list (the tail for RPOP) until count elements have been removed or the list has no elements left, and give an array reply of the removed elements in the order they were removed. If count is 0, nothing is removed, and the reply is "(empty array)".
+When the list has no elements left, key is deleted (section 2).
+
+LRANGE key start stop
+Checks:
+(1) Integer check (start), then integer check (stop).
+(2) Type check (list).
+Reply: perform range normalization with start and stop on the list (a sequence of 0 elements if key does not exist), and give an array reply of the elements in that range in order.
+
+LLEN key
+Checks: type check (list).
+Reply: the integer reply of the number of elements of the list. 0 if key does not exist.
+
+LINDEX key index
+Checks:
+(1) Integer check (index).
+(2) Type check (list).
+Reply: let n be the number of elements of the list (0 if key does not exist). If index is negative, add n to index. If index is between 0 and n-1 inclusive, the string reply of the element at position index. Otherwise a nil reply.
+
+LSET key index element
+Checks:
+(1) Integer check (index).
+(2) Type check (list).
+(3) If key does not exist, NOKEY.
+(4) Let n be the number of elements of the list, and if index is negative, add n to index. If index is not between 0 and n-1 inclusive, "ERR index out of range".
+Processing: replace the element at position index with element.
+Reply: the status reply "OK".
+
+LREM key count element
+Checks:
+(1) Integer check (count).
+(2) Type check (list).
+Processing: remove elements equal to element as follows. The order of the remaining elements does not change. If key does not exist, do nothing.
+- If count is positive: looking at the elements in order from the head toward the tail, at most count equal elements.
+- If count is negative: looking at the elements in order from the tail toward the head, at most -count equal elements.
+- If count is 0: all equal elements.
+Reply: the integer reply of the number of removed elements.
+
+LTRIM key start stop
+Checks:
+(1) Integer check (start), then integer check (stop).
+(2) Type check (list).
+Processing: if key exists, perform range normalization with start and stop, keep only the elements in that range, and remove all other elements. If the range is empty, remove all elements. If key does not exist, do nothing.
+Reply: the status reply "OK".
+
+LINSERT key where pivot element
+Checks:
+(1) If where is equal ignoring case to neither "BEFORE" nor "AFTER", SYNTAX.
+(2) Type check (list).
+Processing and reply: if key does not exist, do nothing and give the integer reply 0. If the list has no element equal to pivot, do nothing and give the integer reply -1. Otherwise, insert element immediately before (when where is BEFORE) or immediately after (when it is AFTER) the first element equal to pivot, counting from the head, and give the integer reply of the number of elements of the list after processing.
+
+== 8. Hash commands ==
+HSET key field value [field value ...]
+Checks: type check (hash).
+Processing: if key does not exist, start by creating a new hash key with 0 fields. For the pairs in order from the first, set the value of the field field to value (adding field if it is not present).
+Reply: the integer reply of the number of newly added fields. When the same field appears twice or more, the second and later occurrences are treated as an already existing field.
+
+HGET key field
+Checks: type check (hash).
+Reply: the string reply of the value of the field field. A nil reply if key does not exist or field is not present.
+
+HDEL key field [field ...]
+Checks: type check (hash).
+Processing: for each field in order from the first, remove that field if it is present. If key does not exist, do nothing.
+Reply: the integer reply of the number of removed fields.
+
+HGETALL key
+Checks: type check (hash).
+Reply: an array reply of the sequence in which the fields are sorted and each field is immediately followed by its value (field 1, value 1, field 2, value 2, ...). If key does not exist, the reply is "(empty array)".
+
+HLEN key
+Checks: type check (hash).
+Reply: the integer reply of the number of fields. 0 if key does not exist.
+
+HEXISTS key field
+Checks: type check (hash).
+Reply: the integer reply 1 if the field field is present, and the integer reply 0 otherwise (including when key does not exist).
+
+HKEYS key
+Checks: type check (hash).
+Reply: an array reply of the sorted fields. If key does not exist, the reply is "(empty array)".
+
+HVALS key
+Checks: type check (hash).
+Reply: an array reply of the values of the fields, in the order of the sorted fields. If key does not exist, the reply is "(empty array)".
+
+HINCRBY key field increment
+Checks:
+(1) Integer check (increment).
+(2) Type check (hash).
+(3) If the field field is present and its value is not an integer notation, "ERR hash value is not an integer".
+(4) Let r be the integer represented by the value of field (0 if key does not exist or field is not present) plus increment. If r is not between -999999999 and 999999999 inclusive, OVERFLOW.
+Processing: set the value of the field field to the integer notation of r. If key or field is not present, create it.
+Reply: the integer reply r.
+
+== 9. Set commands ==
+SADD key member [member ...]
+Checks: type check (set).
+Processing: if key does not exist, start by creating a new set key with 0 members. For each member in order from the first, add it if it is not in the set.
+Reply: the integer reply of the number of newly added members.
+
+SREM key member [member ...]
+Checks: type check (set).
+Processing: for each member in order from the first, remove it if it is in the set. If key does not exist, do nothing.
+Reply: the integer reply of the number of removed members.
+
+SISMEMBER key member
+Checks: type check (set).
+Reply: the integer reply 1 if member is in the set, and the integer reply 0 otherwise (including when key does not exist).
+
+SMEMBERS key
+Checks: type check (set).
+Reply: an array reply of the sorted members. If key does not exist, the reply is "(empty array)".
+
+SCARD key
+Checks: type check (set).
+Reply: the integer reply of the number of members. 0 if key does not exist.
+
+SINTER key [key ...]
+SUNION key [key ...]
+SDIFF key [key ...]
+Checks: for each key in order from the first, type check (set).
+Reply: treating a key that does not exist as a set with 0 members, an array reply of the sorted members of the following set.
+- SINTER: the set of members contained in the sets of all keys.
+- SUNION: the set of members contained in the set of at least one key.
+- SDIFF: the set of the members of the set of the first key that are contained in none of the sets of the second and later keys.
+
+SINTERSTORE destination key [key ...]
+SUNIONSTORE destination key [key ...]
+SDIFFSTORE destination key [key ...]
+Checks: for each key in order from the first, type check (set). destination is not checked.
+Processing: from the keys, compute the same set as SINTER, SUNION and SDIFF respectively (even if destination is the same as one of the keys, the set is computed from the values before processing). If the computed set has 1 or more members, set the value of destination to that set (regardless of its previous type), and set its expiry to "none". If it has 0 members, delete destination if it exists.
+Reply: the integer reply of the number of members of the computed set.
+
+== 10. Sorted set commands ==
+The "sorted order" of the members of a sorted set is the order in which they are arranged by ascending score, with members of equal score arranged in string order. The position of a member in this sorted order, counting the first as 0, is called the "rank" of that member.
+
+ZADD key score member [score member ...]
+Checks:
+(1) For each score in order from the first, integer check (score).
+(2) Type check (zset).
+Processing: if key does not exist, start by creating a new sorted set key with 0 members. For the pairs in order from the first, set the score of member to score (adding member if it is not present).
+Reply: the integer reply of the number of newly added members. When the same member appears twice or more, the second and later occurrences are treated as an already existing member.
+
+ZSCORE key member
+Checks: type check (zset).
+Reply: the string reply of the integer notation of the score of member. A nil reply if key does not exist or member is not present.
+
+ZINCRBY key increment member
+Checks:
+(1) Integer check (increment).
+(2) Type check (zset).
+(3) Let r be the score of member (0 if key does not exist or member is not present) plus increment. If r is not between -999999999 and 999999999 inclusive, OVERFLOW.
+Processing: set the score of member to r. If key or member is not present, create it.
+Reply: the string reply of the integer notation of r (not an integer reply).
+
+ZREM key member [member ...]
+Checks: type check (zset).
+Processing: for each member in order from the first, remove it if it is present. If key does not exist, do nothing.
+Reply: the integer reply of the number of removed members.
+
+ZCARD key
+Checks: type check (zset).
+Reply: the integer reply of the number of members. 0 if key does not exist.
+
+ZRANK key member
+Checks: type check (zset).
+Reply: the integer reply of the rank of member. A nil reply if key does not exist or member is not present.
+
+ZRANGE key start stop [WITHSCORES]
+Checks:
+(1) If there is an argument at the position of [WITHSCORES] in the format (the fourth argument, excluding the command name) and it is not equal ignoring case to "WITHSCORES", SYNTAX.
+(2) Integer check (start), then integer check (stop).
+(3) Type check (zset).
+Reply: perform range normalization with start and stop on the sequence of the members arranged in sorted order (a sequence of 0 elements if key does not exist), and give an array reply of the members in that range in order. When there is an argument at the WITHSCORES position, the reply is instead an array reply of the sequence in which each member is immediately followed by the integer notation of its score (member 1, score 1, member 2, score 2, ...).
+
+ZRANGEBYSCORE key min max [WITHSCORES]
+min and max are "score bounds" of one of the following forms.
+  "-inf": represents a value smaller than every score.
+  "+inf": represents a value larger than every score.
+  An integer notation x: represents x, and the bound is included.
+  "(" immediately followed by an integer notation x: represents x, and the bound is not included.
+"-inf" and "+inf" are accepted only when written exactly like this (in lowercase letters).
+Checks:
+(1) The same as check (1) of ZRANGE.
+(2) For min, then max: if it is not in the form of a score bound, "ERR min or max is not a float".
+(3) Type check (zset).
+Reply: an array reply of the members whose score is >= min (> min if min is in the form that does not include the bound) and <= max (< max if max is in the form that does not include the bound), arranged in sorted order. If key does not exist, the reply is "(empty array)". When there is an argument at the WITHSCORES position, each member is immediately followed by its score, as in ZRANGE.
+
+== 11. Key and time commands ==
+DEL key [key ...]
+Processing: for each key in order from the first, delete it if it exists.
+Reply: the integer reply of the number of deleted keys. When the same key appears twice or more, the second and later occurrences are not counted, because the key has already been deleted.
+
+EXISTS key [key ...]
+Reply: the integer reply of the number of the keys that exist. When the same key appears twice or more, it is counted that many times.
+
+TYPE key
+Reply: the status reply of the type name of the value of key (one of string, list, hash, set and zset). If key does not exist, the status reply "none".
+
+RENAME key newkey
+Checks: if key does not exist, NOKEY.
+Processing: if key and newkey are equal, change nothing. Otherwise, if newkey exists, delete it first, then create a key newkey that has the value and the expiry of key unchanged, and delete key.
+Reply: the status reply "OK".
+
+RENAMENX key newkey
+Checks: if key does not exist, NOKEY.
+Processing and reply: if newkey exists (including when key and newkey are equal), change nothing and give the integer reply 0. Otherwise, move the key in the same way as RENAME and give the integer reply 1.
+
+KEYS pattern
+Checks: if pattern is an "invalid pattern" as defined below, "ERR invalid pattern".
+Reply: an array reply of the sorted existing keys that match pattern.
+A pattern is divided, in order from the beginning, into the following "parts".
+- `\`: together with the one character immediately after it, it forms one part, which matches that one character itself. If `\` is the last character of the pattern, the pattern is invalid.
+- "[": together with everything up to the first "]" that appears after it, it forms one part (a character class). If there is no "]" after it, the pattern is invalid. Let C be the string between "[" and "]". If C begins with "^", the character class is "negated", and the one leading "^" is removed from C. If the C obtained in this way (the original C if not negated) is the empty string, the pattern is invalid. Read C from the beginning as follows to build a set of characters. If the character after the current character is "-" and there is yet another character after it, these three characters form a "range": add all characters from the one with the smaller character code to the one with the larger character code of the two end characters (both ends included), and advance by three characters. Otherwise, add the current character and advance by one character. A character class matches any one character contained in this set if it is not negated, and any one character not contained in this set if it is negated. Inside C, `\`, "*", "?", "[", "^" (except the leading one) and "-" (one that does not form a range) are also ordinary characters.
+- "*": matches any string of 0 or more characters.
+- "?": matches any one character.
+- Any other character: matches that character itself.
+A string s matches a pattern when s can be divided, in order from the beginning, into as many (possibly empty) pieces as there are parts, so that each piece matches the corresponding part. For example, "h?llo" matches "hello" and "hallo"; "h*llo" matches "hllo" and "heeeello"; "h[ae]llo" matches "hello" and "hallo"; "h[^e]llo" matches "hallo" and "hbllo" (it does not match "hello"); and "h[a-b]llo" matches "hallo" and "hbllo". Also, "[]", "[^]", "ab[c" and `ab\` are invalid patterns.
+
+EXPIRE key seconds [condition]
+Checks:
+(1) If condition is present and it is not equal ignoring case to any of "NX", "XX", "GT" and "LT", "ERR Unsupported option <condition>". <condition> is the argument condition written as it is (as obtained in section 1).
+(2) Integer check (seconds).
+Processing and reply: if key does not exist, do nothing and give the integer reply 0. Let w be "current time + seconds". If condition is present and the corresponding case below applies, do nothing and give the integer reply 0.
+  NX: the expiry of key is not "none".
+  XX: the expiry of key is "none".
+  GT: the expiry of key is "none", or w <= the expiry of key.
+  LT: the expiry of key is not "none", and w >= the expiry of key.
+Otherwise, if seconds <= 0, delete key, and if it is positive, set the expiry of key to w; then give the integer reply 1.
+
+TTL key
+Reply: the integer reply -2 if key does not exist. The integer reply -1 if the expiry of key is "none". Otherwise, the integer reply of "expiry - current time".
+
+PERSIST key
+Processing and reply: if key exists and its expiry is not "none", set its expiry to "none" and give the integer reply 1. Otherwise, do nothing and give the integer reply 0.
+
+TICK ticks
+Checks:
+(1) Integer check (ticks).
+(2) If ticks <= 0, POSITIVE.
+Processing: add ticks to the current time, and delete all keys whose expiry is <= the current time.
+Reply: the integer reply of the number of deleted keys.
+
+TIME
+Reply: the integer reply of the current time.
+
+DBSIZE
+Reply: the integer reply of the number of existing keys.
+
+FLUSH
+Processing: delete all keys. The current time, the save stack and the snapshots do not change.
+Reply: the status reply "OK".
+
+INFO
+Reply: the status reply consisting of the following single line.
+  keys=<a>,expires=<b>,string=<c>,list=<d>,hash=<e>,set=<f>,zset=<g>,time=<h>,depth=<i>,snapshots=<j>
+<a> is the number of existing keys, <b> is the number of those keys whose expiry is not "none", <c> to <g> are the numbers of keys whose value type is string, list, hash, set and zset respectively, <h> is the current time, <i> is the transaction depth, and <j> is the number of snapshots.
+
+== 12. Transactions and snapshots ==
+A "copy" of the database is a record, exactly as they are, of all keys of the database at that moment together with their values (type, elements and their order, fields and values, members, scores) and expiries. Changing the database after a copy has been made does not change the copy. Also, changing the database after it has been replaced from a copy does not change the original copy. Expiries are recorded as times, as they are.
+
+BEGIN
+Processing: make a copy of the current database, and push it onto the top of the save stack. Transactions can be nested to any depth.
+Reply: the status reply "OK".
+
+COMMIT
+Checks: if the save stack is empty, "ERR no transaction".
+Processing: remove the copy at the top of the save stack and discard it. The database does not change. Because of this, even after an inner transaction has been committed, a ROLLBACK of the outer transaction also undoes the changes made inside the inner one.
+Reply: the status reply "OK".
+
+ROLLBACK
+Checks: if the save stack is empty, "ERR no transaction".
+Processing: remove the copy at the top of the save stack, and replace the contents of the database with the same contents as that copy. Then delete all keys whose expiry is <= the current time. The current time and the snapshots are not restored.
+Reply: the status reply "OK".
+
+SNAPSHOT name
+Processing: save a copy of the current database as the snapshot named name. If a snapshot with the same name already exists, replace it. Saving a snapshot is not subject to transactions, and it is never undone by ROLLBACK.
+Reply: the status reply "OK".
+
+RESTORE name
+Checks: if there is no snapshot named name, "ERR no such snapshot".
+Processing: replace the contents of the database with the same contents as the copy of that snapshot. Then delete all keys whose expiry is <= the current time. The snapshot remains as it is and can be restored any number of times. The replacement by RESTORE is a change to the database, so it is undone by ROLLBACK.
+Reply: the status reply "OK".
+
+If copies remain on the save stack at the end of the input, do nothing.
+
+[Output format]
+- For each line (command), write only the output defined in [Processing], in order. Every line produces at least one line of output.
+- Each output line ends with a newline. Do not print spaces or blank lines that are not described.
+- Every character in the output is a printable ASCII character.
+
+[Constraints]
+- 1 <= N <= 1000
+- Each line has 1 to 200 characters and consists of the characters described in [Input format].
+- At every point during processing, the number of existing keys is at most 100; the number of elements, fields or members of any one list, hash, set or sorted set is at most 100 each; and the length of a string value is at most 1000.
+- The transaction depth is always at most 20, and the number of snapshots is always at most 20.
+- The sum of ticks over all TICK commands processed successfully is at most 1000000.
+- A KEYS pattern contains at most 4 "*".
+- Because of these, the absolute value of every integer that appears in processing is less than 2^31.
+
+[Example]
+Input:
+18
+SET greeting "hello world"
+APPEND greeting !
+RPUSH queue a b c d e f g h i j
+LRANGE queue 0 -1
+LPOP queue 2
+HSET user name "Ann \"A\"" age 30
+HGETALL user
+INCR user
+SET token abc EX 3
+BEGIN
+DEL greeting
+GET greeting
+ROLLBACK
+TICK 3
+KEYS *e*
+TTL token
+lpush queue
+SET k "oops
+
+Output:
+OK
+(integer) 12
+(integer) 10
+ 1) "a"
+ 2) "b"
+ 3) "c"
+ 4) "d"
+ 5) "e"
+ 6) "f"
+ 7) "g"
+ 8) "h"
+ 9) "i"
+10) "j"
+1) "a"
+2) "b"
+(integer) 2
+1) "age"
+2) "30"
+3) "name"
+4) "Ann \"A\""
+(error) WRONGTYPE Operation against a key holding the wrong kind of value
+OK
+OK
+(integer) 1
+(nil)
+OK
+(integer) 1
+1) "greeting"
+2) "queue"
+3) "user"
+(integer) -2
+(error) ERR wrong number of arguments for 'lpush' command
+Invalid argument(s)

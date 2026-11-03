@@ -1,0 +1,660 @@
+import math
+import data_io = "./data_io.qui"
+import models = "./models.qui"
+import integrator = "./integrator.qui"
+import fitting = "./fitting.qui"
+import report = "./report.qui"
+
+int minimum(int first, int second)
+    return if first < second then first else second
+
+int maximum(int first, int second)
+    return if first > second then first else second
+
+real64 absolute(real64 value)
+    return if value < 0.0 then -value else value
+
+real64 ordered_sum(real64[] values)
+    if len(values) == 0
+        return 0.0
+    real64 total = values[0]
+    for 1 <= int i < int(len(values))
+        total += values[i]
+    return total
+
+int integer_sum(int[] values)
+    int total = 0
+    for int value = values[]
+        total += value
+    return total
+
+real64 squared_errors(real64[] series, real64 coefficient, int[] observations)
+    real64[] terms = []
+    for int i < int(len(series))
+        real64 difference = coefficient * series[i] - real64(observations[i])
+        terms = terms.append(difference * difference)
+    return ordered_sum(terms)
+
+int peak(real64[] series)
+    int result = 0
+    for int i < int(len(series))
+        if series[i] > series[result]
+            result = i
+    return result
+
+string values_text(real64[] values, int places = 4)
+    return [for real64 value = values[] then report.fmt(value, places)].join(" ")
+
+real64[] multiplier_sequence(data_io.Intervention[] interventions, int days)
+    real64[] result = []
+    int index = 0
+    for 1 <= int day <= days
+        while index + 1 < int(len(interventions)) and interventions[index + 1].day <= day
+            index += 1
+        result = result.append(interventions[index].multiplier)
+    return result
+
+real64 final_size(real64 reproduction)
+    if reproduction <= 1.0
+        return 0.0
+    real64 low = 1.0 - 1.0 / reproduction
+    real64 high = 1.0
+    for int i < 20
+        real64 middle = (low + high) / 2.0
+        real64 value = 1.0 - middle - math.exp(-reproduction * middle)
+        if value > 0.0
+            low = middle
+        else
+            high = middle
+    return (low + high) / 2.0
+
+class Eigen(real64 value, real64[] vector)
+
+Eigen power_method(real64[][] matrix)
+    int size = int(len(matrix))
+    real64[] vector = [for int g < size then 1.0 / real64(size)]
+    real64 eigenvalue = 0.0
+    for int iteration < 200
+        real64[] product = []
+        for real64[] row = matrix[]
+            product = product.append(ordered_sum([for int h < size then row[h] * vector[h]]))
+        eigenvalue = ordered_sum(product)
+        vector = [for real64 value = product[] then value / eigenvalue]
+    return Eigen(eigenvalue, vector)
+
+real64[][] integrate_model(models.Model model, int kind, real64[] initial, real64[] multipliers)
+    if kind == 0
+        func<real64[]>(models.Model, real64[], real64) rates = models.seird
+        return integrator.simulate(rates, model, initial, multipliers, [5])
+    if kind == 1
+        func<real64[]>(models.Model, real64[], real64) rates = models.sir
+        return integrator.simulate(rates, model, initial, multipliers, [3])
+    if kind == 2
+        func<real64[]>(models.Model, real64[], real64) rates = models.age_seird
+        int[] inflows = [for int g < int(len(model.populations)) then 6 * g + 5]
+        return integrator.simulate(rates, model, initial, multipliers, inflows)
+    func<real64[]>(models.Model, real64[], real64) rates = models.generation
+    return integrator.simulate(rates, model, initial, multipliers, [2])
+
+class Objective(models.Model model, int kind, int axis, real64 rho, real64[] initial, real64[] multipliers, int[] observations, int first, int last)
+
+real64 cost_one(Objective context, real64 value)
+    models.Model model = context.model
+    real64 rho = context.rho
+    real64[] multipliers = context.multipliers
+    if context.axis == 0
+        model.beta = value
+    elif context.axis == 1
+        model.gamma = value
+    elif context.axis == 2
+        rho = value
+    else
+        for context.first <= int i < context.last
+            multipliers[i] = value
+    real64[][] states = integrate_model(model, context.kind, context.initial, multipliers)
+    int column = if context.kind == 1 then 3 else 5
+    return squared_errors([for real64[] state = states[] then state[column]], rho, context.observations)
+
+real64 cost_two(Objective context, real64 beta, real64 gamma)
+    models.Model model = context.model
+    model.beta = beta
+    model.gamma = gamma
+    real64[][] states = integrate_model(model, context.kind, context.initial, context.multipliers)
+    return squared_errors([for real64[] state = states[] then state[5]], context.rho, context.observations)
+
+class Study(data_io.Input data)
+    int days = int(len(data.cases))
+    int group_count = int(len(data.groups))
+    int population = integer_sum([for data_io.Group group = data.groups[] then group.population])
+    int case_total = integer_sum(data.cases)
+    int death_total = integer_sum(data.deaths)
+    real64[] populations = [for data_io.Group group = data.groups[] then real64(group.population)]
+    real64[] fatalities = [for data_io.Group group = data.groups[] then group.fatality]
+    real64 fatality = ordered_sum([for data_io.Group group = data.groups[] then real64(group.population) * group.fatality]) / real64(population)
+    real64 sigma = data.params.sigma
+    real64 gamma0 = data.params.gamma
+    real64[] initial = [real64(population) - data.params.initial[0] - data.params.initial[1], data.params.initial[0], data.params.initial[1], 0.0, 0.0, 0.0]
+    real64[] sir_initial = [initial[0], data.params.initial[0] + data.params.initial[1], 0.0, 0.0]
+    real64[] age_initial = []
+    for real64 group_population = populations[]
+        local real64 e = data.params.initial[0] * group_population / real64(population)
+        local real64 i = data.params.initial[1] * group_population / real64(population)
+        age_initial = age_initial.concat([group_population - e - i, e, i, 0.0, 0.0, 0.0])
+    real64[] multipliers = multiplier_sequence(data.interventions, days)
+    int[][] weeks = [for 1 <= int first <= days step 7 then [first, minimum(first + 6, days)]]
+    real64 delta_beta = (data.params.beta_grid.high - data.params.beta_grid.low) / real64(data.params.beta_grid.count - 1)
+    real64 delta_rho = (data.params.rho_grid.high - data.params.rho_grid.low) / real64(data.params.rho_grid.count - 1)
+    real64 beta_grid = 0.0
+    real64 rho_grid = 0.0
+    real64 beta_golden = 0.0
+    real64 beta = 0.0
+    real64 gamma = 0.0
+    real64 rho = 0.0
+    real64 sse_grid = 0.0
+    real64 sse_golden = 0.0
+    real64 sse_nm = 0.0
+    real64 r0 = 0.0
+    real64[][] states = []
+    real64[] incidence = []
+    real64[] reported = []
+    real64[] residuals = []
+    real64[] model_deaths = []
+    real64[] rt = []
+    real64[] averages = []
+    int[] cumulative_cases = []
+    real64[] cumulative_reported = []
+    real64 reported_total = 0.0
+    real64[] standard_errors = []
+    real64 kbar = 0.0
+    real64[][] normalized_contacts = []
+    real64[][] age_states = []
+    real64[] age_incidence = []
+    real64[] empirical_rt = []
+    string[] fit_lines = []
+    string[] reproduction_lines = []
+    string[] age_lines = []
+    string[] scenario_rows = []
+
+    real64 rmse(real64 squared_error, int count = 0)
+        real64 result = math.sqrt(squared_error / real64(if count == 0 then days else count))
+        return result
+
+    models.Model config(real64 b, real64 g, real64 s)
+        return models.Model(real64(population), s, fatality, b, g, populations, fatalities, normalized_contacts)
+
+    real64[][] seird_states(real64 b, real64 g, real64[] sequence, real64[] start, real64 s)
+        return integrate_model(config(b, g, s), 0, start, sequence)
+
+    real64[] incidence_for(real64 b, real64 g)
+        return [for real64[] state = seird_states(b, g, multipliers, initial, sigma)[] then state[5]]
+
+    real64 sse(real64 b, real64 g, real64 r)
+        return squared_errors(incidence_for(b, g), r, data.cases)
+
+    void .golden_records(int round_number, string name, fitting.Golden search)
+        for int i < int(len(search.records))
+            real64[] record = search.records[i]
+            fit_lines = fit_lines.append("golden {round_number} {name} {i} a " + report.fmt(record[0], 6) + " b " + report.fmt(record[1], 6) + " c " + report.fmt(record[2], 6) + " d " + report.fmt(record[3], 6) + " rmse " + report.fmt(rmse(record[4])) + " " + report.fmt(rmse(record[5])))
+        fit_lines = fit_lines.append("golden_result {round_number} {name} " + report.fmt(search.point, 6) + " sse " + report.fmt(search.value, 1))
+
+    void .fit_model()
+        data_io.Grid bgrid = data.params.beta_grid
+        data_io.Grid rgrid = data.params.rho_grid
+        real64[] betas = [for int i < bgrid.count then bgrid.low + (bgrid.high - bgrid.low) * real64(i) / real64(bgrid.count - 1)]
+        real64[] rhos = [for int j < rgrid.count then rgrid.low + (rgrid.high - rgrid.low) * real64(j) / real64(rgrid.count - 1)]
+        fit_lines = ["data days {days} cases {case_total} deaths {death_total} population {population} fatality " + report.fmt(fatality, 6), "grid gamma " + report.fmt(gamma0) + " rho " + values_text(rhos)]
+        bool first = true
+        for int i < bgrid.count
+            real64[] series = incidence_for(betas[i], gamma0)
+            real64[] errors = []
+            for int j < rgrid.count
+                real64 value = squared_errors(series, rhos[j], data.cases)
+                errors = errors.append(value)
+                if first or value < sse_grid
+                    first = false
+                    sse_grid = value
+                    beta_grid = betas[i]
+                    rho_grid = rhos[j]
+            fit_lines = fit_lines.append("grid beta " + report.fmt(betas[i]) + " rmse " + values_text([for real64 value = errors[] then rmse(value)], 2))
+        fit_lines = fit_lines.append("grid_best beta " + report.fmt(beta_grid) + " rho " + report.fmt(rho_grid) + " sse " + report.fmt(sse_grid, 1) + " rmse " + report.fmt(rmse(sse_grid)))
+        real64 b = beta_grid
+        real64 r = rho_grid
+        func<real64>(Objective, real64) cost = cost_one
+        for 1 <= int round_number <= data.params.golden_rounds
+            Objective beta_context = Objective(config(b, gamma0, sigma), 0, 0, r, initial, multipliers, data.cases, 0, 0)
+            fitting.Golden beta_search = fitting.golden(cost, beta_context, b - delta_beta, b + delta_beta, data.params.golden_iterations)
+            .golden_records(round_number, "beta", beta_search)
+            b = beta_search.point
+            Objective rho_context = Objective(config(b, gamma0, sigma), 0, 2, r, initial, multipliers, data.cases, 0, 0)
+            fitting.Golden rho_search = fitting.golden(cost, rho_context, r - delta_rho, r + delta_rho, data.params.golden_iterations)
+            .golden_records(round_number, "rho", rho_search)
+            r = rho_search.point
+            sse_golden = rho_search.value
+        beta_golden = b
+        rho = r
+        Objective context = Objective(config(b, gamma0, sigma), 0, 0, rho, initial, multipliers, data.cases, 0, 0)
+        func<real64>(Objective, real64, real64) cost_pair = cost_two
+        real64[] coefficients = data.params.nm_coefficients
+        fitting.Simplex result = fitting.nelder_mead(cost_pair, context, b, gamma0, data.params.simplex[0], data.params.simplex[1], coefficients[0], coefficients[1], coefficients[2], coefficients[3], data.params.nm_iterations)
+        for fitting.Vertex vertex = result.initial[]
+            fit_lines = fit_lines.append("simplex {vertex.serial} beta " + report.fmt(vertex.point[0], 6) + " gamma " + report.fmt(vertex.point[1], 6) + " rmse " + report.fmt(rmse(vertex.value)))
+        for int iteration < int(len(result.records))
+            fitting.Record record = result.records[iteration]
+            fit_lines = fit_lines.append("nelder_mead {iteration + 1} {record.operation} beta " + report.fmt(record.best.point[0], 6) + " gamma " + report.fmt(record.best.point[1], 6) + " rmse " + report.fmt(rmse(record.best.value)))
+        for int rank < 3
+            fitting.Vertex vertex = result.vertices[rank]
+            fit_lines = fit_lines.append("final_simplex {rank + 1} beta " + report.fmt(vertex.point[0], 6) + " gamma " + report.fmt(vertex.point[1], 6) + " rmse " + report.fmt(rmse(vertex.value)))
+        beta = result.vertices[0].point[0]
+        gamma = result.vertices[0].point[1]
+        sse_nm = result.vertices[0].value
+        r0 = beta / gamma
+        real64 average = real64(case_total) / real64(days)
+        real64 sst = ordered_sum([for int value = data.cases[] then (real64(value) - average) * (real64(value) - average)])
+        fit_lines = fit_lines.concat(["fitted beta " + report.fmt(beta, 6) + " gamma " + report.fmt(gamma, 6) + " rho " + report.fmt(rho, 6) + " sigma " + report.fmt(sigma, 6) + " r0 " + report.fmt(r0), "sse grid " + report.fmt(sse_grid, 1) + " golden " + report.fmt(sse_golden, 1) + " nelder_mead " + report.fmt(sse_nm, 1) + " rmse " + report.fmt(rmse(sse_nm)) + " r2 " + report.fmt(1.0 - sse_nm / sst)])
+        string[] names = ["grid", "golden", "nelder_mead"]
+        real64[][] stages = [[beta_grid, gamma0, rho_grid, sse_grid], [beta_golden, gamma0, rho, sse_golden], [beta, gamma, rho, sse_nm]]
+        for int i < 3
+            real64[] stage = stages[i]
+            fit_lines = fit_lines.append("stage {names[i]} beta " + report.fmt(stage[0], 6) + " gamma " + report.fmt(stage[1], 6) + " rho " + report.fmt(stage[2], 6) + " r0 " + report.fmt(stage[0] / stage[1]) + " rmse " + report.fmt(rmse(stage[3])))
+
+    void .death_analysis()
+        real64 numerator = ordered_sum([for int i < days then model_deaths[i] * real64(data.deaths[i])])
+        real64 denominator = ordered_sum([for real64 value = model_deaths[] then value * value])
+        real64 scale = numerator / denominator
+        real64 squared_error = squared_errors(model_deaths, 1.0, data.deaths)
+        fit_lines = fit_lines.append("deaths observed {death_total} model " + report.fmt(states[days][4], 1) + " rmse " + report.fmt(rmse(squared_error)) + " scale " + report.fmt(scale) + " implied_fatality " + report.fmt(fatality * scale, 6) + " cfr " + report.fmt(real64(death_total) / real64(case_total)))
+        real64[] correlations = []
+        for int lag <= data.params.death_lag
+            int a = 0
+            int b = 0
+            int y = 0
+            for int i < days - lag
+                a += data.cases[i] * data.deaths[i + lag]
+                b += data.cases[i] * data.cases[i]
+                y += data.deaths[i + lag] * data.deaths[i + lag]
+            real64 root = math.sqrt(real64(b) * real64(y))
+            real64 correlation = real64(a) / root
+            correlations = correlations.append(correlation)
+            real64 cfr = real64(integer_sum(data.deaths[lag:<days])) / real64(integer_sum(data.cases[0:<days - lag]))
+            fit_lines = fit_lines.append("death_lag {lag} correlation " + report.fmt(correlation) + " cfr " + report.fmt(cfr))
+        fit_lines = fit_lines.append("death_best_lag {peak(correlations)}")
+
+    void .fitted_diagnostics()
+        states = [initial].concat(seird_states(beta, gamma, multipliers, initial, sigma))
+        incidence = [for int d < days then states[d + 1][5]]
+        reported = [for real64 value = incidence[] then rho * value]
+        residuals = [for int d < days then real64(data.cases[d]) - reported[d]]
+        model_deaths = [for int d < days then states[d + 1][4] - states[d][4]]
+        rt = [for int d < days then r0 * multipliers[d] * states[d][0] / real64(population)]
+        for int d < days
+            int total = integer_sum(data.cases[maximum(0, d - 6):<d + 1])
+            averages = averages.append(real64(total) / real64(minimum(d + 1, 7)))
+        int observed_total = 0
+        for int d < days
+            observed_total += data.cases[d]
+            reported_total += reported[d]
+            cumulative_cases = cumulative_cases.append(observed_total)
+            cumulative_reported = cumulative_reported.append(reported_total)
+        real64 residual_sum = ordered_sum(residuals)
+        real64[] magnitudes = [for real64 value = residuals[] then absolute(value)]
+        int largest = peak(magnitudes)
+        int positive = 0
+        int runs = 1
+        for int d < days
+            if residuals[d] > 0.0
+                positive += 1
+            if d > 0 and (residuals[d] > 0.0) != (residuals[d - 1] > 0.0)
+                runs += 1
+        real64 residual_square = ordered_sum([for real64 value = residuals[] then value * value])
+        real64 durbin_numerator = ordered_sum([for 1 <= int d < days then (residuals[d] - residuals[d - 1]) * (residuals[d] - residuals[d - 1])])
+        fit_lines = fit_lines.append("residuals sum " + report.fmt(residual_sum, 1) + " mae " + report.fmt(ordered_sum(magnitudes) / real64(days), 1) + " max " + report.fmt(residuals[largest], 1) + " day {largest + 1} positive {positive} runs {runs} durbin_watson " + report.fmt(durbin_numerator / residual_square))
+        real64[] correlations = []
+        for 1 <= int lag <= 7
+            correlations = correlations.append(ordered_sum([for int d < days - lag then residuals[d] * residuals[d + lag]]) / residual_square)
+        fit_lines = fit_lines.append("autocorrelation " + values_text(correlations))
+        int outliers = 0
+        for int d < days
+            real64 root = math.sqrt(reported[d])
+            real64 z = residuals[d] / root
+            if absolute(z) > data.params.outlier
+                fit_lines = fit_lines.append("outlier {d + 1} observed {data.cases[d]} fitted " + report.fmt(reported[d], 1) + " z " + report.fmt(z))
+                outliers += 1
+        fit_lines = fit_lines.append("outliers {outliers}")
+        real64[] weekday_factors = []
+        for int weekday < 7
+            int observed = 0
+            real64[] fitted_terms = []
+            for weekday <= int d < days step 7
+                observed += data.cases[d]
+                fitted_terms = fitted_terms.append(reported[d])
+            real64 fitted = ordered_sum(fitted_terms)
+            real64 factor = real64(observed) / fitted
+            weekday_factors = weekday_factors.append(factor)
+            fit_lines = fit_lines.append("weekday {weekday + 1} observed {observed} fitted " + report.fmt(fitted, 1) + " factor " + report.fmt(factor))
+        real64[] adjusted = [for int d < days then reported[d] * weekday_factors[d % 7]]
+        real64 infections = ordered_sum(incidence)
+        fit_lines = fit_lines.concat(["weekday_adjusted rmse " + report.fmt(rmse(squared_errors(adjusted, 1.0, data.cases))), "burden infections " + report.fmt(infections, 1) + " ascertainment " + report.fmt(real64(case_total) / infections) + " deaths_per_infection " + report.fmt(real64(death_total) / infections, 6)])
+        .death_analysis()
+        int previous_observed = 0
+        for int w < int(len(weeks))
+            int first = weeks[w][0]
+            int last = weeks[w][1]
+            int observed = integer_sum(data.cases[first - 1:<last])
+            real64 fitted = ordered_sum(reported[first - 1:<last])
+            int dead = integer_sum(data.deaths[first - 1:<last])
+            real64 modeled = ordered_sum(model_deaths[first - 1:<last])
+            string growth = if w == 0 then "-" else report.fmt(real64(observed) / real64(previous_observed))
+            fit_lines = fit_lines.append("weekly {w + 1} days {first} {last} observed {observed} fitted " + report.fmt(fitted, 1) + " deaths_observed {dead} deaths_model " + report.fmt(modeled, 1) + " growth {growth}")
+            previous_observed = observed
+
+    void .profiles()
+        real64[] fitted = [beta, gamma, rho]
+        string[] names = ["beta", "gamma", "rho"]
+        real64 variance = sse_nm / real64(days - 3)
+        for int parameter < 3
+            real64 value = fitted[parameter]
+            real64[] errors = []
+            for -5 <= int offset <= 5
+                real64 point = value * (1.0 + real64(offset) / 100.0)
+                real64[] parameters = fitted
+                parameters[parameter] = point
+                real64 squared_error = sse(parameters[0], parameters[1], parameters[2])
+                errors = errors.append(squared_error)
+                fit_lines = fit_lines.append("profile {names[parameter]} {offset} value " + report.fmt(point, 6) + " rmse " + report.fmt(rmse(squared_error)))
+            real64 h = value / 100.0
+            real64 curvature = (errors[6] - 2.0 * errors[5] + errors[4]) / (h * h)
+            real64 standard_error = math.sqrt(2.0 * variance / curvature)
+            standard_errors = standard_errors.append(standard_error)
+            fit_lines = fit_lines.append("profile_se {names[parameter]} " + report.fmt(standard_error, 6))
+
+    void .backtest()
+        int holdout = data.params.holdout
+        int training_days = days - holdout
+        real64[] sequence = multipliers[0:<training_days]
+        int[] observations = data.cases[0:<training_days]
+        func<real64>(Objective, real64) cost = cost_one
+        Objective context = Objective(config(beta, gamma, sigma), 0, 0, rho, initial, sequence, observations, 0, 0)
+        fitting.Golden beta_search = fitting.golden(cost, context, beta - delta_beta, beta + delta_beta, data.params.golden_iterations)
+        context.model.beta = beta_search.point
+        context.axis = 2
+        fitting.Golden rho_search = fitting.golden(cost, context, rho - delta_rho, rho + delta_rho, data.params.golden_iterations)
+        real64[][] simulation = seird_states(beta_search.point, gamma, multipliers, initial, sigma)
+        real64[] forecasts = [for training_days <= int d < days then rho_search.point * simulation[d][5]]
+        real64 test_error = squared_errors(forecasts, 1.0, data.cases[training_days:<days])
+        real64 full_error = squared_errors(reported[training_days:<days], 1.0, data.cases[training_days:<days])
+        fit_lines = fit_lines.append("backtest train_days {training_days} beta " + report.fmt(beta_search.point, 6) + " rho " + report.fmt(rho_search.point, 6) + " train_rmse " + report.fmt(rmse(rho_search.value, training_days)) + " test_rmse " + report.fmt(rmse(test_error, holdout)) + " full_fit_test_rmse " + report.fmt(rmse(full_error, holdout)))
+        for int i < holdout
+            int d = training_days + i
+            fit_lines = fit_lines.append("backtest_day {d + 1} observed {data.cases[d]} forecast " + report.fmt(forecasts[i], 1) + " error " + report.fmt(real64(data.cases[d]) - forecasts[i], 1))
+
+    void .estimate_effects()
+        data_io.Intervention[] estimated = data.interventions
+        real64 after = sse_nm
+        real64 width = data.params.effect_width
+        func<real64>(Objective, real64) cost = cost_one
+        for 1 <= int k < int(len(estimated))
+            int first = estimated[k].day - 1
+            int last = if k + 1 < int(len(estimated)) then estimated[k + 1].day - 1 else days
+            Objective context = Objective(config(beta, gamma, sigma), 0, 3, rho, initial, multiplier_sequence(estimated, days), data.cases, first, last)
+            real64 given = data.interventions[k].multiplier
+            fitting.Golden search = fitting.golden(cost, context, given - width, given + width, data.params.golden_iterations)
+            estimated[k].multiplier = search.point
+            after = search.value
+            fit_lines = fit_lines.append("effect {k + 1} day {estimated[k].day} given " + report.fmt(given) + " estimated " + report.fmt(search.point, 6) + " sse " + report.fmt(after, 1))
+        fit_lines = fit_lines.append("effect_sse before " + report.fmt(sse_nm, 1) + " after " + report.fmt(after, 1) + " rmse " + report.fmt(rmse(after)))
+
+    void .sensitivity()
+        real64[] fitted = [beta, gamma, sigma, rho]
+        string[] names = ["beta", "gamma", "sigma", "rho"]
+        for int parameter < 4
+            for real64 factor = [0.9, 1.1][]
+                real64[] values = fitted
+                values[parameter] *= factor
+                real64[][] simulation = seird_states(values[0], values[1], multipliers, initial, values[2])
+                real64[] series = [for real64[] state = simulation[] then state[5]]
+                int day = peak(series)
+                real64 squared_error = squared_errors(series, values[3], data.cases)
+                real64 attack = (real64(population) - simulation[days - 1][0]) / real64(population)
+                fit_lines = fit_lines.append("sensitivity {names[parameter]} " + report.fmt(factor, 2) + " r0 " + report.fmt(values[0] / values[1]) + " rmse " + report.fmt(rmse(squared_error)) + " peak_day {day + 1} peak " + report.fmt(values[3] * series[day], 1) + " attack " + report.fmt(attack))
+
+    real64[][] age_states_for(real64[][] contacts, real64[] sequence, real64[] start)
+        models.Model model = config(beta, gamma, sigma)
+        model.contacts = contacts
+        return integrate_model(model, 2, start, sequence)
+
+    real64[][] next_generation(real64[][] contacts)
+        return [for int g < group_count then [for int h < group_count then r0 * contacts[g][h] * populations[g] / populations[h]]]
+
+    void .analyze_age()
+        real64[] row_totals = [for real64[] row = data.contacts[] then ordered_sum(row)]
+        kbar = ordered_sum([for int g < group_count then populations[g] * row_totals[g]]) / real64(population)
+        normalized_contacts = [for real64[] row = data.contacts[] then [for real64 value = row[] then value / kbar]]
+        real64[][] matrix = next_generation(normalized_contacts)
+        Eigen eigen = power_method(matrix)
+        for int g < group_count
+            age_lines = age_lines.append("ngm {data.groups[g].name} " + values_text(matrix[g]))
+        age_lines = age_lines.append("r0_age " + report.fmt(eigen.value) + " ratio " + report.fmt(eigen.value / r0) + " kbar " + report.fmt(kbar) + " eigenvector " + values_text(eigen.vector))
+        real64[] final = [for int g < group_count then 1.0]
+        for int iteration < 100
+            real64[] updated = []
+            for int g < group_count
+                real64 pressure = ordered_sum([for int h < group_count then r0 * normalized_contacts[g][h] * final[h]])
+                updated = updated.append(1.0 - math.exp(-pressure))
+            final = updated
+        real64[][] long_states = age_states_for(normalized_contacts, [for int d < 730 then 1.0], age_initial)
+        real64[] simulated = [for int g < group_count then (populations[g] - long_states[729][6 * g]) / populations[g]]
+        for int g < group_count
+            age_lines = age_lines.append("final_size_age {data.groups[g].name} equation " + report.fmt(final[g]) + " simulated " + report.fmt(simulated[g]))
+        real64 final_total = ordered_sum([for int g < group_count then populations[g] * final[g]]) / real64(population)
+        real64 simulated_total = ordered_sum([for int g < group_count then populations[g] * simulated[g]]) / real64(population)
+        age_lines = age_lines.append("final_size_age total equation " + report.fmt(final_total) + " simulated " + report.fmt(simulated_total))
+        age_states = [age_initial].concat(age_states_for(normalized_contacts, multipliers, age_initial))
+        age_incidence = [for 1 <= int d <= days then ordered_sum([for int g < group_count then age_states[d][6 * g + 5]])]
+        for 0 <= int d < days step 7
+            real64[] previous = age_states[d]
+            real64[][] effective_matrix = [for int g < group_count then [for int h < group_count then multipliers[d] * r0 * normalized_contacts[g][h] * previous[6 * g] / populations[h]]]
+            Eigen effective = power_method(effective_matrix)
+            age_lines = age_lines.append("age_rt {d + 1} " + report.fmt(effective.value) + " homogeneous " + report.fmt(rt[d]))
+        for int w < int(len(weeks))
+            int first = weeks[w][0]
+            int last = weeks[w][1]
+            real64[] totals = [for int g < group_count then ordered_sum([for first <= int d <= last then age_states[d][6 * g + 5]])]
+            age_lines = age_lines.append("age_weekly {w + 1} days {first} {last} " + values_text(totals, 1))
+        real64[] infections = [for int g < group_count then ordered_sum([for 1 <= int d <= days then age_states[d][6 * g + 5]])]
+        real64 infection_total = ordered_sum(infections)
+        for int g < group_count
+            real64[] series = [for 1 <= int d <= days then age_states[d][6 * g + 5]]
+            int day = peak(series)
+            real64 attack = (populations[g] - age_states[days][6 * g]) / populations[g]
+            real64 deaths = age_states[days][6 * g + 4]
+            age_lines = age_lines.append("age {data.groups[g].name} attack " + report.fmt(attack) + " infections " + report.fmt(infections[g], 1) + " share " + report.fmt(infections[g] / infection_total) + " deaths " + report.fmt(deaths, 1) + " peak_day {day + 1} peak " + report.fmt(series[day], 1))
+        for data_io.ContactChange change = data.params.changes[]
+            int target = -1
+            for int g < group_count
+                if data.groups[g].name == change.group
+                    target = g
+            real64[] tau = [for int g < group_count then (if g == target then change.factor else 1.0)]
+            real64[][] contacts = [for int g < group_count then [for int h < group_count then normalized_contacts[g][h] * tau[g] * tau[h]]]
+            Eigen changed_eigen = power_method(next_generation(contacts))
+            real64[][] changed_states = age_states_for(contacts, multipliers, age_initial)
+            real64 changed_infections = ordered_sum([for real64[] state = changed_states[] then ordered_sum([for int g < group_count then state[6 * g + 5]])])
+            real64 deaths = ordered_sum([for int g < group_count then changed_states[days - 1][6 * g + 4]])
+            real64 attack = ordered_sum([for int g < group_count then populations[g] - changed_states[days - 1][6 * g]]) / real64(population)
+            age_lines = age_lines.append("contact_change {change.name} group {change.group} factor " + report.fmt(change.factor) + " r0_age " + report.fmt(changed_eigen.value) + " infections " + report.fmt(changed_infections, 1) + " deaths " + report.fmt(deaths, 1) + " attack " + report.fmt(attack))
+
+    real64[] sir_incidence(real64 b)
+        real64[][] simulation = integrate_model(config(b, gamma, sigma), 1, sir_initial, multipliers)
+        return [for real64[] state = simulation[] then state[3]]
+
+    void .compare_models()
+        string[] names = ["sir", "seir", "age"]
+        real64[][] series = [sir_incidence(beta), incidence, age_incidence]
+        for int model_index < 3
+            real64[] values = series[model_index]
+            real64 squared_error = squared_errors(values, rho, data.cases)
+            real64 numerator = ordered_sum([for int d < days then real64(data.cases[d]) * values[d]])
+            real64 denominator = ordered_sum([for real64 value = values[] then value * value])
+            real64 reporting = numerator / denominator
+            real64 optimal = squared_errors(values, reporting, data.cases)
+            fit_lines = fit_lines.append("model {names[model_index]} rmse " + report.fmt(rmse(squared_error)) + " peak_day {peak(values) + 1} rho_opt " + report.fmt(reporting, 6) + " rmse_opt " + report.fmt(rmse(optimal)))
+        Objective context = Objective(config(beta, gamma, sigma), 1, 0, rho, sir_initial, multipliers, data.cases, 0, 0)
+        func<real64>(Objective, real64) cost = cost_one
+        fitting.Golden search = fitting.golden(cost, context, data.params.beta_grid.low, data.params.beta_grid.high, data.params.golden_iterations)
+        fit_lines = fit_lines.append("model sir_fit beta " + report.fmt(search.point, 6) + " rmse " + report.fmt(rmse(search.value)) + " peak_day {peak(sir_incidence(search.point)) + 1}")
+
+    void .generation_interval()
+        int length = data.params.generation
+        real64[][] simulation = integrate_model(config(beta, gamma, sigma), 3, [1.0, 0.0, 0.0], [for int d < length then 1.0])
+        real64[] amounts = [for real64[] state = simulation[] then state[2]]
+        real64 coverage = ordered_sum(amounts)
+        real64[] weights = [for real64 value = amounts[] then value / coverage]
+        real64 average = ordered_sum([for int d < length then (real64(d + 1) - 0.5) * weights[d]])
+        real64 theoretical = 1.0 / sigma + 1.0 / gamma
+        reproduction_lines = reproduction_lines.append("generation mean " + report.fmt(average) + " theory " + report.fmt(theoretical) + " coverage " + report.fmt(coverage))
+        for int d < length
+            reproduction_lines = reproduction_lines.append("generation_weight {d + 1} " + report.fmt(weights[d], 6))
+        real64[] pressures = []
+        for int d < days
+            pressures = pressures.append(ordered_sum([for 1 <= int lag <= minimum(length, d) then weights[lag - 1] * real64(data.cases[d - lag])]))
+        for int d < days
+            if d + 1 < length + 7
+                empirical_rt = empirical_rt.append(-1.0)
+            else
+                int observed = integer_sum(data.cases[d - 6:<d + 1])
+                real64 pressure = ordered_sum(pressures[d - 6:<d + 1])
+                empirical_rt = empirical_rt.append(real64(observed) / pressure)
+
+    void .epidemic_peaks()
+        int incidence_day = peak(incidence)
+        real64[] infectious = [for 1 <= int d <= days then states[d][2]]
+        int infectious_day = peak(infectious)
+        int observed_day = peak(real64(data.cases))
+        int average_day = peak(averages)
+        reproduction_lines = reproduction_lines.concat(["peak model day {incidence_day + 1} incidence " + report.fmt(incidence[incidence_day], 1) + " reported " + report.fmt(reported[incidence_day], 1) + " infectious_day {infectious_day + 1} infectious " + report.fmt(infectious[infectious_day], 1),
+            "peak observed day {observed_day + 1} cases {data.cases[observed_day]} average7_day {average_day + 1} average7 " + report.fmt(averages[average_day], 2)])
+
+    void .periods_and_milestones()
+        for int k < int(len(data.interventions))
+            int first = data.interventions[k].day
+            int last = if k + 1 < int(len(data.interventions)) then data.interventions[k + 1].day - 1 else days
+            real64[] period_residuals = residuals[first - 1:<last]
+            real64 squared_error = ordered_sum([for real64 value = period_residuals[] then value * value])
+            int count = last - first + 1
+            int observed = integer_sum(data.cases[first - 1:<last])
+            real64 fitted = ordered_sum(reported[first - 1:<last])
+            real64 bias = ordered_sum(period_residuals) / real64(count)
+            reproduction_lines = reproduction_lines.append("period {k + 1} days {first} {last} multiplier " + report.fmt(data.interventions[k].multiplier) + " rt_start " + report.fmt(rt[first - 1]) + " rt_end " + report.fmt(rt[last - 1]) + " observed {observed} fitted " + report.fmt(fitted, 1) + " rmse " + report.fmt(rmse(squared_error, count)) + " bias " + report.fmt(bias, 1))
+        for int target = data.params.milestones[]
+            string observed = "never"
+            string fitted = "never"
+            for int d < days
+                if observed == "never" and cumulative_cases[d] >= target
+                    observed = (d + 1).string()
+                if fitted == "never" and cumulative_reported[d] >= real64(target)
+                    fitted = (d + 1).string()
+            reproduction_lines = reproduction_lines.append("milestone {target} observed {observed} fitted {fitted}")
+
+    real64[] counterfactual_reported(data_io.Intervention[] interventions)
+        real64[] sequence = multiplier_sequence(interventions, days)
+        real64[][] simulation = seird_states(beta, gamma, sequence, initial, sigma)
+        return [for real64[] state = simulation[] then rho * state[5]]
+
+    void .counterfactuals()
+        real64[] counterfactual = counterfactual_reported(data.interventions[0:<1])
+        real64 total = ordered_sum(counterfactual)
+        int day = peak(counterfactual)
+        reproduction_lines = reproduction_lines.append("counterfactual none reported " + report.fmt(total, 1) + " peak_day {day + 1} peak " + report.fmt(counterfactual[day], 1) + " averted " + report.fmt(total - reported_total, 1))
+        for 1 <= int k < int(len(data.interventions))
+            data_io.Intervention[] changed = data.interventions[0:<k].concat(data.interventions[k + 1:<int(len(data.interventions))])
+            real64 without = ordered_sum(counterfactual_reported(changed))
+            reproduction_lines = reproduction_lines.append("counterfactual without {k + 1} reported " + report.fmt(without, 1) + " averted " + report.fmt(without - reported_total, 1))
+        for 1 <= int k < int(len(data.interventions))
+            for int shift = [-7, 7][]
+                data_io.Intervention[] changed = data.interventions
+                changed[k].day += shift
+                real64 shifted = ordered_sum(counterfactual_reported(changed))
+                reproduction_lines = reproduction_lines.append("timing {k + 1} shift {shift} reported " + report.fmt(shifted, 1) + " change " + report.fmt(shifted - reported_total, 1))
+
+    void .analyze_reproduction()
+        reproduction_lines = reproduction_lines.append("r0 " + report.fmt(r0) + " herd_immunity " + report.fmt(1.0 - 1.0 / r0))
+        real64[][] long_states = seird_states(beta, gamma, [for int d < 730 then 1.0], initial, sigma)
+        real64 attack = (real64(population) - long_states[729][0]) / real64(population)
+        reproduction_lines = reproduction_lines.append("final_size equation " + report.fmt(final_size(r0)) + " simulated " + report.fmt(attack))
+        .generation_interval()
+        .epidemic_peaks()
+        .periods_and_milestones()
+        .counterfactuals()
+        for 1 <= int d < days
+            if (rt[d] < 1.0) != (rt[d - 1] < 1.0)
+                string direction = if rt[d] < 1.0 then "down" else "up"
+                reproduction_lines = reproduction_lines.append("rt_cross day {d + 1} {direction}")
+        for int d < days
+            string empirical = if empirical_rt[d] < 0.0 then "-" else report.fmt(empirical_rt[d])
+            reproduction_lines = reproduction_lines.append("rt {d + 1} model " + report.fmt(rt[d]) + " empirical {empirical}")
+        reproduction_lines = reproduction_lines.concat(age_lines)
+
+    void .scenario_projections()
+        int horizon = data.params.horizon
+        scenario_rows = ["scenario,day,incidence,reported"]
+        real64 first_total = 0.0
+        for int index < int(len(data.params.scenarios))
+            data_io.Scenario scenario = data.params.scenarios[index]
+            real64[] future = [for int d < horizon then scenario.multiplier]
+            real64[][] projection = seird_states(beta, gamma, future, states[days], sigma)
+            real64[] predictions = [for real64[] state = projection[] then rho * state[5]]
+            real64 total = ordered_sum(predictions)
+            if index == 0
+                first_total = total
+            int peak_index = peak(predictions)
+            real64 attack = (real64(population) - projection[horizon - 1][0]) / real64(population)
+            real64 effective = r0 * scenario.multiplier * states[days][0] / real64(population)
+            string below = "never"
+            int above = 0
+            for int d < horizon
+                if predictions[d] < data.params.threshold and below == "never"
+                    below = (days + d + 1).string()
+                if predictions[d] >= data.params.threshold
+                    above += 1
+                scenario_rows = scenario_rows.append("{scenario.name},{days + d + 1}," + report.fmt(projection[d][5], 1) + "," + report.fmt(predictions[d], 1))
+            reproduction_lines = reproduction_lines.append("scenario {scenario.name} multiplier " + report.fmt(scenario.multiplier) + " rt " + report.fmt(effective) + " reported " + report.fmt(total, 1) + " peak_day {days + peak_index + 1} peak " + report.fmt(predictions[peak_index], 1) + " attack " + report.fmt(attack) + " final_size " + report.fmt(final_size(r0 * scenario.multiplier)) + " averted " + report.fmt(first_total - total, 1) + " below {below} days_above {above}")
+            real64[] bounds = [beta - 2.0 * standard_errors[0], beta + 2.0 * standard_errors[0]]
+            real64[] totals = []
+            for real64 bound = bounds[]
+                real64[][] simulation = seird_states(bound, gamma, multipliers.concat(future), initial, sigma)
+                totals = totals.append(ordered_sum([for days <= int d < days + horizon then rho * simulation[d][5]]))
+            reproduction_lines = reproduction_lines.append("scenario_band {scenario.name} beta_low " + report.fmt(bounds[0], 6) + " reported_low " + report.fmt(totals[0], 1) + " beta_high " + report.fmt(bounds[1], 6) + " reported_high " + report.fmt(totals[1], 1))
+            real64[][] age_projection = age_states_for(normalized_contacts, future, age_states[days])
+            real64[] final_state = age_projection[horizon - 1]
+            real64[] attacks = [for int g < group_count then (populations[g] - final_state[6 * g]) / populations[g]]
+            real64 deaths = ordered_sum([for int g < group_count then final_state[6 * g + 4]])
+            reproduction_lines = reproduction_lines.append("scenario_age {scenario.name} attack " + values_text(attacks) + " deaths " + report.fmt(deaths, 1))
+
+    string[] trajectories()
+        string[] rows = ["day,S,E,I,R,D,incidence,reported,observed,average7,cumulative_observed,cumulative_reported"]
+        for int d < days
+            string[] values = [(d + 1).string()]
+            values = values.concat([for real64 value = states[d + 1][] then report.fmt(value, 1)])
+            values = values.concat([report.fmt(reported[d], 1), data.cases[d].string(), report.fmt(averages[d], 2), cumulative_cases[d].string(), report.fmt(cumulative_reported[d], 1)])
+            rows = rows.append(values.join(","))
+        return rows
+
+void run()
+    data_io.Input data = data_io.read_inputs()
+    Study study = Study(data)
+    .study.fit_model()
+    .study.fitted_diagnostics()
+    .study.profiles()
+    .study.backtest()
+    .study.estimate_effects()
+    .study.sensitivity()
+    .study.analyze_age()
+    .study.compare_models()
+    .study.analyze_reproduction()
+    .study.scenario_projections()
+    data_io.write("fit.txt", study.fit_lines)
+    data_io.write("trajectories.csv", study.trajectories())
+    data_io.write("scenarios.csv", study.scenario_rows)
+    data_io.write("reproduction.txt", study.reproduction_lines)
+    data_io.write("curve_plot.txt", report.curve_plot(data.cases, study.reported))
+
+run()

@@ -1,0 +1,735 @@
+import math
+import bitstream = "./bitstream.qui"
+import reed_solomon = "./reed_solomon.qui"
+import matrix = "./matrix.qui"
+import masking = "./masking.qui"
+import render = "./render.qui"
+
+class RequestRecord(string identifier, string level, string mode, string version, string mask, string text)
+class BlockSpec(int version, string level, int ec, int b1, int k1, int b2, int k2)
+class Tables(BlockSpec[] blocks, int[][] alignment)
+class Segment(string mode, string text)
+class Split(Segment[] segments, int bits)
+class Padding(string bits, int terminator, int zero_fill, int pad_bytes)
+class Data(string bits, Padding padding, string[] lines)
+class BlockPosition(int block, int position)
+class BlockSet(int[][] data, int[][] ec, BlockPosition[] order, int[] sequence)
+class Selection(string message, string mode, int version, string level, Split split, BlockSpec block)
+class Decoded(bool success, string text, string[] lines)
+    int ok_blocks = 0
+    int corrected_blocks = 0
+    int failed_blocks = 0
+    int corrected_words = 0
+class Image(int[][] cells, int width, int height, int quiet, int scale, bool good)
+class Reports()
+    string[] codes = []
+    string[] codewords = []
+    string[] bit_lines = []
+    string[] checks = []
+    string[] scans = []
+    map<string, int> totals
+
+string[] input_lines(string path)
+    file.read source(path)
+    string[] result = []
+    while .source(string &line)
+        result = result.append(line)
+    return result
+
+void write_lines(string path, string[] lines)
+    file.write destination(path)
+    if len(lines) > 0
+        .destination(lines.join(NL) + NL)
+
+int separator(string text, string character)
+    for int i < int(len(text))
+        if text[i] == character
+            return i
+    return int(len(text))
+
+Tables read_tables()
+    BlockSpec[] blocks = []
+    int[][] alignment = [for int i = (int(0):10)[] then []]
+    for string line = input_lines("input/tables.txt")[]
+        string[] fields = line.split(" ")
+        int version = int.parse(fields[1])
+        if fields[0] == "block"
+            blocks = blocks.append(BlockSpec(version, fields[2], int.parse(fields[3]), int.parse(fields[4]), int.parse(fields[5]), int.parse(fields[6]), int.parse(fields[7])))
+        else
+            alignment[version] = [for string value = fields[2:][] then int.parse(value)]
+    return Tables(blocks, alignment)
+
+BlockSpec lookup_table(Tables tables, int version, string level)
+    for BlockSpec block = tables.blocks[]
+        if block.version == version and block.level == level
+            return block
+    return tables.blocks[0]
+
+int data_count(BlockSpec block)
+    return block.b1 * block.k1 + block.b2 * block.k2
+
+int total_count(BlockSpec block)
+    return data_count(block) + block.ec * (block.b1 + block.b2)
+
+int count_width(string mode, int version)
+    if mode == "NUMERIC"
+        return if version <= 9 then 10 else 12
+    if mode == "ALPHANUMERIC"
+        return if version <= 9 then 9 else 11
+    return if version <= 9 then 8 else 16
+
+int data_width(string mode, int length)
+    if mode == "NUMERIC"
+        return 10 * (length / 3) + (if length % 3 == 0 then 0 elif length % 3 == 1 then 4 else 7)
+    if mode == "ALPHANUMERIC"
+        return 11 * (length / 2) + 6 * (length % 2)
+    return 8 * length
+
+bool encodable(string mode, string text)
+    for int i < int(len(text))
+        int value = bitstream.character_value(text[i])
+        if mode == "NUMERIC" and (value < 0 or value >= 10)
+            return false
+        if mode == "ALPHANUMERIC" and value < 0
+            return false
+    return true
+
+Split split_segments(string text, string mode, int version)
+    int length = int(len(text))
+    if mode != "MIXED"
+        return Split([Segment(mode, text)], 4 + count_width(mode, version) + data_width(mode, length))
+    string[] names = ["NUMERIC", "ALPHANUMERIC", "BYTE"]
+    int[][] bad = [for int i = (int(0):<3)[] then array(nat(length + 1), fill = 0)]
+    for int k < 3
+        for int i < length
+            bad[k][i + 1] = bad[k][i] + (if encodable(names[k], text[i]) then 0 else 1)
+    int[] costs = [0].concat(array(nat(length), fill = 1000000000))
+    int[] starts = array(nat(length + 1), fill = 0)
+    int[] chosen = array(nat(length + 1), fill = 0)
+    for 1 <= int i <= length
+        for int j < i
+            for int k < 3
+                if bad[k][i] != bad[k][j]
+                    continue
+                int cost = costs[j] + 4 + count_width(names[k], version) + data_width(names[k], i - j)
+                if cost < costs[i]
+                    costs[i] = cost
+                    starts[i] = j
+                    chosen[i] = k
+    Segment[] segments = []
+    int cursor = length
+    while cursor > 0
+        int start = starts[cursor]
+        segments = [Segment(names[chosen[cursor]], text[start:<cursor])].concat(segments)
+        cursor = start
+    return Split(segments, costs[length])
+
+Selection select_request(RequestRecord request, Tables tables)
+    string message = ""
+    string[] levels = ["L", "M", "Q", "H", "L+", "M+", "Q+", "H+"]
+    string[] modes = ["NUMERIC", "ALPHANUMERIC", "BYTE", "AUTO", "MIXED"]
+    bool level_valid = false
+    bool mode_valid = false
+    for string level = levels[]
+        if request.level == level
+            level_valid = true
+    for string mode = modes[]
+        if request.mode == mode
+            mode_valid = true
+    bool version_valid = request.version == "AUTO"
+    for 1 <= int version <= 10
+        if request.version == "{version}"
+            version_valid = true
+    bool mask_valid = request.mask == "AUTO"
+    for int mask < 8
+        if request.mask == "{mask}"
+            mask_valid = true
+    if not level_valid
+        message = "level " + request.level
+    elif not mode_valid
+        message = "mode " + request.mode
+    elif not version_valid
+        message = "version " + request.version
+    elif not mask_valid
+        message = "mask " + request.mask
+    elif request.text == ""
+        message = "text"
+    elif request.mode == "NUMERIC" or request.mode == "ALPHANUMERIC"
+        for int i < int(len(request.text))
+            if not encodable(request.mode, request.text[i])
+                message = "charset position {i}"
+                break
+    BlockSpec empty = tables.blocks[0]
+    if message != ""
+        return Selection(message, request.mode, 0, "", Split([], 0), empty)
+    string determined = request.mode
+    if determined == "AUTO"
+        determined = if encodable("NUMERIC", request.text) then "NUMERIC" elif encodable("ALPHANUMERIC", request.text) then "ALPHANUMERIC" else "BYTE"
+    string level = request.level[0]
+    int version = 0
+    Split split = Split([], 0)
+    int first = if request.version == "AUTO" then 1 else int.parse(request.version)
+    int last = if request.version == "AUTO" then 10 else first
+    for first <= int candidate <= last
+        split = split_segments(request.text, determined, candidate)
+        BlockSpec block = lookup_table(tables, candidate, level)
+        if split.bits <= 8 * data_count(block)
+            version = candidate
+            break
+    if version == 0
+        int capacity = 8 * data_count(lookup_table(tables, last, level))
+        return Selection("capacity bits {split.bits} capacity {capacity}", determined, 0, level, split, empty)
+    if request.level.ends_with("+")
+        bool eligible = false
+        for string candidate = ["L", "M", "Q", "H"][]
+            if candidate == level
+                eligible = true
+            if eligible and split.bits <= 8 * data_count(lookup_table(tables, version, candidate))
+                level = candidate
+    return Selection("", determined, version, level, split, lookup_table(tables, version, level))
+
+Padding pad_data(string bits, int capacity)
+    int terminator = math.min(4, capacity - int(len(bits)))
+    string result = bits + string.repeat("0", nat(terminator))
+    int zero_fill = (8 - int(len(result)) % 8) % 8
+    result += string.repeat("0", nat(zero_fill))
+    int pad_bytes = 0
+    while int(len(result)) < capacity
+        result += if pad_bytes % 2 == 0 then "11101100" else "00010001"
+        pad_bytes += 1
+    return Padding(result, terminator, zero_fill, pad_bytes)
+
+int mode_indicator(string mode)
+    return if mode == "NUMERIC" then 1 elif mode == "ALPHANUMERIC" then 2 else 4
+
+Data make_data(Selection selected)
+    string bits = ""
+    string[] lines = []
+    for Segment segment = selected.split.segments[]
+        int indicator = mode_indicator(segment.mode)
+        int width = count_width(segment.mode, selected.version)
+        int length = int(len(segment.text))
+        string header = bitstream.write(indicator, 4) + bitstream.write(length, width)
+        bits += header
+        lines = lines.append("segment {segment.mode} indicator " + bitstream.write(indicator, 4) + " count {length} " + bitstream.write(length, width))
+        int start = 0
+        int group_limit = if segment.mode == "NUMERIC" then 3 elif segment.mode == "ALPHANUMERIC" then 2 else 1
+        while start < length
+            int size = math.min(group_limit, length - start)
+            string part = segment.text[start:<start + size]
+            int value = 0
+            int group_width = 8
+            if segment.mode == "NUMERIC"
+                for int i < size
+                    value = value * 10 + bitstream.character_value(part[i])
+                group_width = if size == 3 then 10 elif size == 2 then 7 else 4
+            elif segment.mode == "ALPHANUMERIC"
+                value = bitstream.character_value(part[0])
+                if size == 2
+                    value = value * 45 + bitstream.character_value(part[1])
+                group_width = if size == 2 then 11 else 6
+            else
+                value = part.codepoints()[0]
+            string group = bitstream.write(value, group_width)
+            bits += group
+            lines = lines.append("group {value} {group} " + DQ + part + DQ)
+            start += size
+    Padding padded = pad_data(bits, 8 * data_count(selected.block))
+    lines = lines.append("terminator {padded.terminator} zero_fill {padded.zero_fill} pad_bytes {padded.pad_bytes}")
+    return Data(bits, padded, lines)
+
+BlockPosition[] placement(BlockSpec spec)
+    int count = spec.b1 + spec.b2
+    BlockPosition[] order = []
+    int maximum = math.max(spec.k1, spec.k2)
+    for int i < maximum
+        for int block < count
+            int size = if block < spec.b1 then spec.k1 else spec.k2
+            if i < size
+                order = order.append(BlockPosition(block, i))
+    for int i < spec.ec
+        for int block < count
+            int size = if block < spec.b1 then spec.k1 else spec.k2
+            order = order.append(BlockPosition(block, size + i))
+    return order
+
+BlockSet make_blocks(reed_solomon.Field field, BlockSpec spec, int[] words)
+    int[][] data = []
+    int[][] ec = []
+    int start = 0
+    for int block < spec.b1 + spec.b2
+        int size = if block < spec.b1 then spec.k1 else spec.k2
+        int[] part = words[start:<start + size]
+        data = data.append(part)
+        ec = ec.append(reed_solomon.encode(field, part, spec.ec))
+        start += size
+    BlockPosition[] order = placement(spec)
+    int[] sequence = []
+    for BlockPosition position = order[]
+        int size = int(len(data[position.block]))
+        sequence = sequence.append(if position.position < size then data[position.block][position.position] else ec[position.block][position.position - size])
+    return BlockSet(data, ec, order, sequence)
+
+int[][] transpose(int[][] cells)
+    int size = int(len(cells))
+    return [for int y = (0:<size)[] then [for int x = (0:<size)[] then cells[x][y]]]
+
+int[][] rotate(int[][] cells)
+    int size = int(len(cells))
+    return [for int y = (0:<size)[] then [for int x = (0:<size)[] then cells[size - 1 - x][y]]]
+
+int hamming(int a, int b)
+    int differing = bitstream.xor(a, b)
+    int count = 0
+    while differing > 0
+        count += differing % 2
+        differing /= 2
+    return count
+
+string ascii_character(int code)
+    string characters = " !" + DQ + "#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{{|}}~"
+    return characters[code - 32]
+
+Decoded decode_attempt(int[][] cells, Tables tables, reed_solomon.Field field)
+    int size = int(len(cells))
+    int version = (size - 17) / 4
+    Decoded result = Decoded(false, "", [])
+    int first_format = matrix.read_value(cells, matrix.format_positions(size, false))
+    int second_format = matrix.read_value(cells, matrix.format_positions(size, true))
+    int[] distances = [16, 16]
+    string[] levels = ["", ""]
+    int[] masks = [0, 0]
+    for int copy < 2
+        int value = if copy == 0 then first_format else second_format
+        for string level = ["L", "M", "Q", "H"][]
+            for int mask < 8
+                int distance = hamming(value, matrix.format_value(level, mask))
+                if distance < distances[copy]
+                    distances[copy] = distance
+                    levels[copy] = level
+                    masks[copy] = mask
+    int chosen = if distances[1] < distances[0] then 1 else 0
+    string format_line = "format " + bitstream.write(first_format, 15) + " " + bitstream.write(second_format, 15) + " distance {distances[0]} {distances[1]}"
+    if distances[chosen] > 3
+        result.lines = [format_line + " unreadable"]
+        return result
+    string level = levels[chosen]
+    int mask = masks[chosen]
+    result.lines = [format_line + " level {level} mask {mask}"]
+    if version >= 7
+        int first_version = matrix.read_value(cells, matrix.version_positions(size, false))
+        int second_version = matrix.read_value(cells, matrix.version_positions(size, true))
+        int[] version_distances = [19, 19]
+        int[] versions = [0, 0]
+        for int copy < 2
+            int value = if copy == 0 then first_version else second_version
+            for 7 <= int candidate <= 40
+                int distance = hamming(value, matrix.version_value(candidate))
+                if distance < version_distances[copy]
+                    version_distances[copy] = distance
+                    versions[copy] = candidate
+        int copy = if version_distances[1] < version_distances[0] then 1 else 0
+        string line = "version " + bitstream.write(first_version, 18) + " " + bitstream.write(second_version, 18) + " distance {version_distances[0]} {version_distances[1]}"
+        if version_distances[copy] > 3
+            result.lines = result.lines.append(line + " unreadable")
+            return result
+        result.lines = result.lines.append(line + " decoded {versions[copy]}")
+        if versions[copy] != version
+            return result
+    BlockSpec spec = lookup_table(tables, version, level)
+    matrix.Pattern pattern = matrix.make(version, tables.alignment[version])
+    int[][] unmasked = masking.apply(cells, pattern.areas, mask)
+    matrix.Point[] order = matrix.reading_order(pattern)
+    string bits = [for matrix.Point point = order[] then (if unmasked[point.y][point.x] == 1 then "1" else "0")].join("")
+    int[] sequence = bitstream.to_words(bits[0:<8 * total_count(spec)])
+    int[][] received = [for int block = (0:<(spec.b1 + spec.b2))[] then array(nat((if block < spec.b1 then spec.k1 else spec.k2) + spec.ec), fill = 0)]
+    BlockPosition[] interleave = placement(spec)
+    for int i < int(len(sequence))
+        received[interleave[i].block][interleave[i].position] = sequence[i]
+    int[] data = []
+    for int block < spec.b1 + spec.b2
+        reed_solomon.Correction corrected = reed_solomon.correct(field, received[block], spec.ec)
+        string line = "block {block} syndromes " + bitstream.hexadecimal(corrected.syndromes)
+        if not corrected.success
+            line += " failed"
+            result.failed_blocks += 1
+        elif len(corrected.positions) == 0
+            line += " ok"
+            result.ok_blocks += 1
+        else
+            line += " corrected " + [for int position = corrected.positions[] then "{position}"].join(" ")
+            result.corrected_blocks += 1
+            result.corrected_words += int(len(corrected.positions))
+        result.lines = result.lines.append(line)
+        int length = if block < spec.b1 then spec.k1 else spec.k2
+        data = data.concat(corrected.words[0:<length])
+    if result.failed_blocks > 0
+        return result
+    bits = bitstream.from_words(data)
+    bitstream.Reader reader = bitstream.Reader(bits)
+    int end = 0
+    string text = ""
+    while int(len(bits)) - reader.position >= 4
+        int indicator = bitstream.read(&reader, 4)
+        if indicator == 0
+            break
+        string mode = if indicator == 1 then "NUMERIC" elif indicator == 2 then "ALPHANUMERIC" elif indicator == 4 then "BYTE" else ""
+        if mode == ""
+            result.lines = result.lines.append("parse failed indicator " + bitstream.write(indicator, 4))
+            return result
+        int width = count_width(mode, version)
+        if int(len(bits)) - reader.position < width
+            result.lines = result.lines.append("parse failed length " + mode)
+            return result
+        int length = bitstream.read(&reader, width)
+        if int(len(bits)) - reader.position < data_width(mode, length)
+            result.lines = result.lines.append("parse failed length " + mode)
+            return result
+        int remaining = length
+        int group_limit = if mode == "NUMERIC" then 3 elif mode == "ALPHANUMERIC" then 2 else 1
+        while remaining > 0
+            int group_size = math.min(group_limit, remaining)
+            int group_width = if mode == "NUMERIC" then (if group_size == 3 then 10 elif group_size == 2 then 7 else 4) elif mode == "ALPHANUMERIC" then (if group_size == 2 then 11 else 6) else 8
+            int value = bitstream.read(&reader, group_width)
+            bool valid = true
+            if mode == "NUMERIC"
+                int limit = if group_size == 3 then 1000 elif group_size == 2 then 100 else 10
+                valid = value < limit
+                if valid
+                    string part = "{value}"
+                    text += string.repeat("0", nat(group_size - int(len(part)))) + part
+            elif mode == "ALPHANUMERIC"
+                valid = value < (if group_size == 2 then 2025 else 45)
+                if valid
+                    string alphabet = bitstream.alphabet()
+                    text += if group_size == 2 then alphabet[value / 45] + alphabet[value % 45] else alphabet[value]
+            else
+                valid = 32 <= value and value <= 126
+                if valid
+                    text += ascii_character(value)
+            if not valid
+                result.lines = result.lines.append("parse failed value " + mode)
+                return result
+            remaining -= group_size
+        end = reader.position
+        result.lines = result.lines.append("segment {mode} {length}")
+    bool good = pad_data(bits[0:<end], int(len(bits))).bits == bits
+    result.lines = result.lines.append(if good then "padding ok" else "padding bad")
+    result.lines = result.lines.append("text " + DQ + text + DQ)
+    result.text = text
+    result.success = true
+    return result
+
+Decoded decode(int[][] cells, Tables tables, reed_solomon.Field field)
+    int size = int(len(cells))
+    matrix.Point[] corners = [matrix.Point(size - 7, size - 7), matrix.Point(size - 7, 0), matrix.Point(0, 0), matrix.Point(0, size - 7)]
+    int rotations = 0
+    int minimum = 50
+    for int k < 4
+        int score = 0
+        for int y < 7
+            for int x < 7
+                int expected = if math.max(math.abs(x - 3), math.abs(y - 3)) == 2 then 0 else 1
+                if cells[corners[k].y + y][corners[k].x + x] == expected
+                    score += 1
+        if score < minimum
+            minimum = score
+            rotations = k
+    int[][] oriented = cells
+    for int i < rotations
+        oriented = rotate(oriented)
+    Decoded adopted = decode_attempt(oriented, tables, field)
+    bool mirrored = false
+    if not adopted.success
+        Decoded alternative = decode_attempt(transpose(oriented), tables, field)
+        if alternative.success
+            adopted = alternative
+            mirrored = true
+    string mirror = if mirrored then "yes" else "no"
+    adopted.lines = ["orientation rotations {rotations} mirrored {mirror}"].concat(adopted.lines)
+    return adopted
+
+Image read_image(string[] lines)
+    string[] dimensions = lines[1].split(" ")
+    int width = int.parse(dimensions[0])
+    int height = int.parse(dimensions[1])
+    int left = width
+    int right = -1
+    int top = height
+    for int y < height
+        for int x < width
+            if lines[y + 2][x] == "1"
+                left = math.min(left, x)
+                right = math.max(right, x)
+                top = math.min(top, y)
+    int run = 0
+    while left + run < width and lines[top + 2][left + run] == "1"
+        run += 1
+    int unit = run / 7
+    int size = (right - left + 1) / unit
+    int[][] cells = [for int y = (0:<size)[] then [for int x = (0:<size)[] then (if lines[top + unit * y + 2][left + unit * x] == "1" then 1 else 0)]]
+    bool good = true
+    for int y < height
+        for int x < width
+            int expected = 0
+            if left <= x and x < left + unit * size and top <= y and y < top + unit * size
+                expected = cells[(y - top) / unit][(x - left) / unit]
+            if (lines[y + 2][x] == "1") != (expected == 1)
+                good = false
+    return Image(cells, width, height, left / unit, unit, good)
+
+string check_result(Decoded decoded, string expected)
+    return if not decoded.success then "failed" elif decoded.text == expected then "ok" else "mismatch"
+
+void record_check(Reports &reports, Decoded decoded, string expected)
+    .reports.totals.increment("checks")
+    .reports.totals.increment("checks." + check_result(decoded, expected))
+    .reports.totals.increment("blocks.ok", by = decoded.ok_blocks)
+    .reports.totals.increment("blocks.corrected", by = decoded.corrected_blocks)
+    .reports.totals.increment("blocks.failed", by = decoded.failed_blocks)
+    .reports.totals.increment("blocks.codewords", by = decoded.corrected_words)
+
+int tolerance(int[][] cells, int color, string expected, Tables tables, reed_solomon.Field field)
+    int size = int(len(cells))
+    for 1 <= int square <= size
+        int first = (size - square) / 2
+        int[][] damaged = cells
+        for first <= int y < first + square
+            for first <= int x < first + square
+                damaged[y][x] = color
+        Decoded result = decode(damaged, tables, field)
+        if not result.success or result.text != expected
+            return square - 1
+    return size
+
+void selfcheck(Reports &reports, RequestRecord request, Selection selected, int[][] cells, matrix.Pattern pattern, BlockSet blocks, Tables tables, reed_solomon.Field field, string[][] operations)
+    Image image = read_image(input_lines("output/qr_{request.identifier}.pbm"))
+    string verdict = if image.good then "ok" else "bad"
+    string[] lines = ["request {request.identifier}", "image {image.width} {image.height} quiet {image.quiet} scale {image.scale} size {len(image.cells)} {verdict}", "check clean"]
+    Decoded clean = decode(image.cells, tables, field)
+    lines = lines.concat(clean.lines).append("result " + check_result(clean, request.text))
+    record_check(&reports, clean, request.text)
+    if len(operations) > 0
+        int size = int(len(cells))
+        int[][] damaged = cells
+        for string[] operation = operations[]
+            if operation[1] == "flip"
+                int x = int.parse(operation[2])
+                int y = int.parse(operation[3])
+                damaged[y][x] = 1 - damaged[y][x]
+            elif operation[1] == "fill"
+                int first_x = int.parse(operation[2])
+                int first_y = int.parse(operation[3])
+                int width = int.parse(operation[4])
+                int height = int.parse(operation[5])
+                int color = if operation[6] == "dark" then 1 else 0
+                for first_y <= int y < first_y + height
+                    for first_x <= int x < first_x + width
+                        damaged[y][x] = color
+        matrix.Point[] order = matrix.reading_order(pattern)
+        int[][] positions = [for int y = (0:<size)[] then array(nat(size), fill = -1)]
+        for int i < int(len(order))
+            positions[order[i].y][order[i].x] = i
+        int[] changed = [0, 0, 0, 0, 0]
+        distinct<int>[] damaged_words = [for int block = (0:<(selected.block.b1 + selected.block.b2))[] then distinct<int>()]
+        for int y < size
+            for int x < size
+                if cells[y][x] == damaged[y][x]
+                    continue
+                int area = pattern.areas[y][x]
+                int category = if area == 1 then 0 elif area == 2 then 1 elif area == 3 then 2 elif positions[y][x] < int(len(blocks.sequence)) * 8 then 3 else 4
+                changed[category] += 1
+                if category == 3
+                    BlockPosition position = blocks.order[positions[y][x] / 8]
+                    .damaged_words[position.block].add(position.position)
+        int total = 0
+        for int value = changed[]
+            total += value
+        lines = lines.append("check damaged operations {len(operations)}")
+        lines = lines.append("damage changed {total} function {changed[0]} format {changed[1]} version {changed[2]} data {changed[3]} remainder {changed[4]}")
+        string errors = [for distinct<int> words = damaged_words[] then "{words.size()}"].join(" ")
+        lines = lines.append("errors {errors} limit {selected.block.ec / 2}")
+        for string[] operation = operations[]
+            if operation[1] == "rotate"
+                damaged = rotate(damaged)
+            elif operation[1] == "mirror"
+                damaged = transpose(damaged)
+        Decoded checked = decode(damaged, tables, field)
+        lines = lines.concat(checked.lines).append("result " + check_result(checked, request.text))
+        record_check(&reports, checked, request.text)
+    int light = tolerance(cells, 0, request.text, tables, field)
+    int dark = tolerance(cells, 1, request.text, tables, field)
+    reports.checks = reports.checks.concat(lines).append("tolerance light {light} dark {dark}")
+
+int dark_count(int[][] cells)
+    int count = 0
+    for int[] row = cells[]
+        for int value = row[]
+            count += value
+    return count
+
+void encode_request(Reports &reports, RequestRecord request, Tables tables, reed_solomon.Field field, int quiet, int scale, string[][] operations)
+    .reports.totals.increment("requests")
+    reports.codes = reports.codes.append("request {request.identifier}")
+    Selection selected = select_request(request, tables)
+    if selected.message != ""
+        reports.codes = reports.codes.append("error " + selected.message)
+        .reports.totals.increment("errors")
+        .reports.totals.increment("error." + selected.message.split(" ")[0])
+        return
+    .reports.totals.increment("encoded")
+    .reports.totals.increment("mode." + selected.mode)
+    .reports.totals.increment("level." + selected.level)
+    .reports.totals.increment("version.{selected.version}")
+    if selected.level != request.level[0]
+        .reports.totals.increment("boosted")
+    Data data = make_data(selected)
+    BlockSet blocks = make_blocks(field, selected.block, bitstream.to_words(data.padding.bits))
+    matrix.Pattern pattern = matrix.make(selected.version, tables.alignment[selected.version])
+    matrix.Point[] order = matrix.reading_order(pattern)
+    string placed_bits = bitstream.from_words(blocks.sequence)
+    int[][] unmasked = pattern.cells
+    for int i < int(len(order))
+        matrix.Point point = order[i]
+        unmasked[point.y][point.x] = if i < int(len(placed_bits)) and placed_bits[i] == "1" then 1 else 0
+    int[][][] symbols = []
+    masking.Penalty[] penalties = []
+    int chosen = 0
+    for int mask < 8
+        int[][] symbol = masking.apply(unmasked, pattern.areas, mask)
+        for bool second = [false, true][]
+            matrix.write_value(&symbol, matrix.format_positions(pattern.size, second), matrix.format_value(selected.level, mask))
+        symbols = symbols.append(symbol)
+        penalties = penalties.append(masking.penalty(symbol))
+        if masking.total(penalties[mask]) < masking.total(penalties[chosen])
+            chosen = mask
+    if request.mask != "AUTO"
+        chosen = int.parse(request.mask)
+    int[][] cells = symbols[chosen]
+    int dark = dark_count(cells)
+    int capacity = 8 * data_count(selected.block)
+    reports.codes = reports.codes.append("symbol version {selected.version} level {selected.level} mask {chosen} size {pattern.size}")
+    string segments = [for Segment segment = selected.split.segments[] then "{segment.mode}:{len(segment.text)}"].join(" ")
+    reports.codes = reports.codes.append("segments {len(selected.split.segments)} {segments}")
+    string[] alternatives = []
+    for string mode = ["NUMERIC", "ALPHANUMERIC", "BYTE"][]
+        string amount = if encodable(mode, request.text) then "{split_segments(request.text, mode, selected.version).bits}" else "-"
+        alternatives = alternatives.append("{mode} {amount}")
+    alternatives = alternatives.append("MIXED {split_segments(request.text, "MIXED", selected.version).bits}")
+    reports.codes = reports.codes.append("bits data {selected.split.bits} capacity {capacity} alternatives " + alternatives.join(" "))
+    string[] fits = []
+    for string level = ["L", "M", "Q", "H"][]
+        string fitting = "-"
+        for 1 <= int version <= 10
+            if split_segments(request.text, selected.mode, version).bits <= 8 * data_count(lookup_table(tables, version, level))
+                fitting = "{version}"
+                break
+        fits = fits.append("{level} {fitting}")
+    reports.codes = reports.codes.append("fits " + fits.join(" "))
+    reports.codes = reports.codes.append("modules function {pattern.size * pattern.size - int(len(order))} data {len(order)} remainder {int(len(order)) - int(len(placed_bits))} dark {dark}")
+    string version_bits = if selected.version >= 7 then bitstream.write(matrix.version_value(selected.version), 18) else "none"
+    reports.codes = reports.codes.append("format " + bitstream.write(matrix.format_value(selected.level, chosen), 15) + " version " + version_bits)
+    for int mask < 8
+        masking.Penalty penalty = penalties[mask]
+        reports.codes = reports.codes.append("penalty {mask} n1 {penalty.n1} n2 {penalty.n2} n3 {penalty.n3} n4 {penalty.n4} total {masking.total(penalty)}")
+    reports.codes = reports.codes.concat(render.symbol(cells))
+    reports.codewords = reports.codewords.append("request {request.identifier} version {selected.version} level {selected.level} blocks {len(blocks.data)} data {data_count(selected.block)} ec_per_block {selected.block.ec} total {len(blocks.sequence)}")
+    for int block < int(len(blocks.data))
+        reports.codewords = reports.codewords.append("block {block} data " + bitstream.hexadecimal(blocks.data[block]))
+        reports.codewords = reports.codewords.append("block {block} ec " + bitstream.hexadecimal(blocks.ec[block]))
+    reports.codewords = reports.codewords.append("interleaved " + bitstream.hexadecimal(blocks.sequence))
+    reports.bit_lines = reports.bit_lines.append("request {request.identifier} version {selected.version} bits {selected.split.bits} capacity {capacity}").concat(data.lines)
+    write_lines("output/qr_{request.identifier}.pbm", render.pbm(cells, quiet, scale))
+    selfcheck(&reports, request, selected, cells, pattern, blocks, tables, field, operations)
+    .reports.totals.increment("mask.{chosen}")
+    .reports.totals.increment("segments", by = int(len(selected.split.segments)))
+    .reports.totals.increment("data_codewords", by = data_count(selected.block))
+    .reports.totals.increment("ec_codewords", by = selected.block.ec * (selected.block.b1 + selected.block.b2))
+    .reports.totals.increment("modules", by = pattern.size * pattern.size)
+    .reports.totals.increment("dark", by = dark)
+
+string[] capacity_report(Tables tables)
+    string[] lines = []
+    for 1 <= int version <= 10
+        matrix.Pattern pattern = matrix.make(version, tables.alignment[version])
+        int modules = int(len(matrix.reading_order(pattern)))
+        int words = total_count(lookup_table(tables, version, "L"))
+        string alignment = if len(tables.alignment[version]) == 0 then "none" else [for int value = tables.alignment[version][] then "{value}"].join(" ")
+        lines = lines.append("version {version} size {pattern.size} data_modules {modules} codewords {words} remainder {modules - 8 * words} alignment {alignment}")
+        for string level = ["L", "M", "Q", "H"][]
+            BlockSpec block = lookup_table(tables, version, level)
+            int[] capacities = []
+            for string mode = ["NUMERIC", "ALPHANUMERIC", "BYTE"][]
+                int length = 0
+                while 4 + count_width(mode, version) + data_width(mode, length + 1) <= 8 * data_count(block)
+                    length += 1
+                capacities = capacities.append(length)
+            lines = lines.append("level {level} blocks {block.b1 + block.b2} data {data_count(block)} ec_per_block {block.ec} numeric {capacities[0]} alphanumeric {capacities[1]} byte {capacities[2]}")
+    return lines
+
+int total_value(Reports reports, string key)
+    match reports.totals.get(key)
+        int value
+            return value
+        none
+            return 0
+
+string total_fields(Reports reports, string prefix, string[] names)
+    return [for string name = names[] then "{name} {total_value(reports, prefix + name)}"].join(" ")
+
+string[] summary(Reports reports)
+    return [
+        "requests {total_value(reports, "requests")} encoded {total_value(reports, "encoded")} errors {total_value(reports, "errors")}",
+        "error_kinds " + total_fields(reports, "error.", ["level", "mode", "version", "mask", "text", "charset", "capacity"]),
+        "modes " + total_fields(reports, "mode.", ["NUMERIC", "ALPHANUMERIC", "BYTE", "MIXED"]),
+        "levels " + total_fields(reports, "level.", ["L", "M", "Q", "H"]) + " boosted {total_value(reports, "boosted")}",
+        "versions " + [for int version = (int(1):10)[] then "{total_value(reports, "version.{version}")}"].join(" "),
+        "masks " + [for int mask = (int(0):<8)[] then "{total_value(reports, "mask.{mask}")}"].join(" "),
+        total_fields(reports, "", ["segments", "data_codewords", "ec_codewords"]),
+        total_fields(reports, "", ["modules", "dark"]),
+        "checks {total_value(reports, "checks")} " + total_fields(reports, "checks.", ["ok", "mismatch", "failed"]),
+        "blocks " + total_fields(reports, "blocks.", ["ok", "corrected", "failed", "codewords"]),
+        "scans {total_value(reports, "scans")} " + total_fields(reports, "scans.", ["decoded", "failed"])
+    ]
+
+void external_scans(Reports &reports, Tables tables, reed_solomon.Field field)
+    string[] lines = input_lines("input/scans.txt")
+    int position = 0
+    while position < int(len(lines))
+        string name = lines[position].split(" ")[1]
+        position += 1
+        int size = int(len(lines[position]))
+        int[][] cells = [for int y = (0:<size)[] then [for int x = (0:<size)[] then (if lines[position + y][x] == "#" then 1 else 0)]]
+        position += size
+        Decoded decoded = decode(cells, tables, field)
+        string status = if decoded.success then "decoded" else "failed"
+        reports.scans = reports.scans.append("scan {name} size {size}").concat(decoded.lines).append("result " + status)
+        .reports.totals.increment("scans")
+        .reports.totals.increment("scans." + status)
+
+void run_program()
+    if not file.exists("output")
+        file.mkdir("output")
+    Tables tables = read_tables()
+    reed_solomon.Field field = reed_solomon.Field()
+    string[] parameters = input_lines("input/params.txt")
+    int quiet = int.parse(parameters[0].split(" ")[1])
+    int scale = int.parse(parameters[1].split(" ")[1])
+    string[][] damage = [for string line = input_lines("input/damage.txt")[] then line.split(" ")]
+    Reports reports = Reports()
+    for string line = input_lines("input/requests.txt")[]
+        int colon = separator(line, ":")
+        string[] header = line[0:<colon].split(" ")
+        RequestRecord request = RequestRecord(header[0], header[1], header[2], header[3], header[4], line[colon + 1:])
+        string[][] operations = [for string[] operation = damage[] if operation[0] == request.identifier then operation]
+        encode_request(&reports, request, tables, field, quiet, scale, operations)
+    external_scans(&reports, tables, field)
+    write_lines("output/codes.txt", reports.codes)
+    write_lines("output/codewords.txt", reports.codewords)
+    write_lines("output/bitstream.txt", reports.bit_lines)
+    write_lines("output/selfcheck.txt", reports.checks)
+    write_lines("output/scans.txt", reports.scans)
+    write_lines("output/capacity.txt", capacity_report(tables))
+    write_lines("output/summary.txt", summary(reports))
+
+run_program()

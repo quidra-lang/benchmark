@@ -1,0 +1,325 @@
+[Overview]
+Write a spectrum analyzer that analyzes signals recorded simultaneously by two-channel vibration sensors, using an FFT (fast Fourier transform) that you implement yourself. Channel 1 is a sensor mounted near a bearing of a rotating machine, and channel 2 is a sensor mounted a little farther away.
+The program reads the two files in the input/ folder (the signal and the analysis settings) and writes six files to the output/ folder: the amplitude spectrum, the list of peaks, the power spectral density by Welch's method, the spectrogram, the filtered waveforms, and the analysis report. It prints nothing to standard output.
+Implement the FFT yourself as an iterative radix-2 (decimation-in-time) transform, and use Bluestein's algorithm for transforms whose length is not a power of two, the packing method that uses a complex FFT of half the length for the transforms of real sequences in Welch's method and the spectrogram, and the chirp-z transform for a precise analysis over a narrowed frequency range. Use only the standard library (FFT and signal-processing libraries are not allowed).
+
+[Input files]
+Every line of the input files ends with a line feed (LF) and has no whitespace at the beginning or end.
+
+* input/signal.csv
+The first line has the form "fs,N": the sampling frequency fs (in Hz) and the number of samples N, separated by a comma. Both are positive decimal integers without leading zeros.
+Of the following N lines, the i-th line (i = 0, 1, ..., N - 1) contains the channel 1 value s1[i] and the channel 2 value s2[i] at time i / fs seconds, in this order, separated by a comma. Each value is a decimal number consisting of, in this order, a leading "-" only when it is negative, an integer part of one or more digits, ".", and a fractional part of exactly 6 digits (e.g. -0.123456, 2.500000). The file consists of exactly these N + 1 lines.
+
+* input/params.txt
+The analysis settings are written one item per line, in the following order, 18 lines in total. Each line consists of a keyword followed by its values, separated by single spaces. Below, "integer" means a decimal integer and "real" means a decimal number (which may contain a decimal point and a fractional part); both have a leading "-" when negative. A "window name" is one of the words rectangular, hann, hamming, blackman, flattop. Below, each value is referred to by the symbol given here.
+ 1. main_length M: the length M used for the main analysis (integer)
+ 2. main_window Wm: the window name Wm of the main analysis
+ 3. peak_threshold_db Tp: the peak detection threshold Tp (real, in dB)
+ 4. peak_count P: the maximum number P of peaks to report (integer)
+ 5. fundamental f0 D: the nominal fundamental frequency f0 (real, in Hz) and the search width D (integer, in bins)
+ 6. welch L Ww: the segment length L of Welch's method (integer) and the window name Ww
+ 7. spectrogram F H B Ws: the frame length F, the hop H and the width B of one shade level of the spectrogram (all integers; B is in dB) and the window name Ws
+ 8. onset_factor c: the onset detection factor c (real)
+ 9. pitch_range p1 p2: the lower limit p1 and the upper limit p2 of the range for fundamental frequency estimation (integers, in Hz)
+ 10. bandpass b1 b2: the lower limit b1 and the upper limit b2 of the pass band of the band-pass filter (integers, in Hz)
+ 11. notch fn wn: the base frequency fn and the half-width wn of the notch filter (integers, in Hz)
+ 12. envelope_band e1 e2: the lower limit e1 and the upper limit e2 of the band for envelope analysis (integers, in Hz)
+ 13. zoom z1 z2 J: the lower limit z1 and the upper limit z2 of the frequency range for zoom analysis (integers, in Hz) and the number of points J (integer)
+ 14. fir h[0] h[1] ... h[R - 1]: the R coefficients of the FIR filter (reals)
+ 15. max_lag Lmax: the maximum lag Lmax examined in the cross-correlation (integer, in samples)
+ 16. bands q[0] q[1] ... q[U]: the U + 1 boundary frequencies of the bands whose band power is computed (integers, in Hz)
+ 17. third_octave t1 t2: the lower limit t1 and the upper limit t2 of the range of 1/3-octave band numbers (integers)
+ 18. block_length Lb: the length Lb of the blocks for the level history (integer, in samples)
+
+[Processing]
+* 0. Notation and common rules
+- pi is 3.141592653589793. All real-number computation is done in double-precision floating point (IEEE 754 binary64).
+- Unless stated otherwise, a sum written with sum is added in increasing order of the index. sum(expr) is the sum of expr over the stated range of the index; sum_{n=a}^{b}(expr) and sum_n(expr) name the index (and its range) explicitly.
+- floor(x) is the largest integer not greater than x. For an integer a >= 0 and a positive integer b, a div b = floor(a / b), and a mod b is the remainder of dividing a by b. For a negative integer m and a positive integer Q, m mod Q is m + Q (in this task this occurs only when -Q < m < 0).
+- pow2(n) denotes the smallest power of two (one of 1, 2, 4, 8, ...) that is >= n.
+- For a complex number z = a + bi, |z| = sqrt(a^2 + b^2), conj(z) = a - bi, and arg(z) is the value of atan2(b, a) (in radians). For an angle theta, rot(theta) = cos theta - i sin theta.
+- log is the natural logarithm and log10 is the common (base-10) logarithm.
+- The median of a sequence of numbers is, with the values sorted in increasing order, the middle value if the count is odd, and the mean of the two middle values if the count is even.
+- When "choosing the k with the largest v[k]", if several k attain the maximum, choose the smallest such k.
+- An index k of a sequence v (one that has both neighbors v[k - 1] and v[k + 1]) is called a local maximum of v when v[k] > v[k - 1] and v[k] > v[k + 1].
+- The k-th element of the result of a DFT is called bin k.
+- Interpolation: for an index k of a sequence v, a position and a value are defined as follows. If k is not a local maximum of v, the position is k and the value is v[k]. If k is a local maximum of v, let alpha = log v[k - 1], beta = log v[k], gamma = log v[k + 1] and delta = (alpha - gamma) / (2 * (alpha - 2 * beta + gamma)); the position is k + delta and the value is exp(beta - (alpha - gamma) * delta / 4). This is called "log interpolation". The same formulas with alpha = v[k - 1], beta = v[k], gamma = v[k + 1] and the value beta - (alpha - gamma) * delta / 4 (without exp) are called "linear interpolation". In linear interpolation, the case where k is not a local maximum is handled in the same way.
+
+* 1. FFT
+(1) Radix-2 FFT: compute the discrete Fourier transform (DFT) A[k] = sum_{n=0}^{Q-1}(a[n] * rot(2 * pi * k * n / Q)) (k = 0, ..., Q - 1) of a sequence of complex numbers a[0], ..., a[Q - 1] of length Q (a power of two) with the following iterative procedure.
+  1. Bit-reversal permutation: for each n = 1, ..., Q - 1, let r be the number obtained by reversing the order of the digits of n viewed as a log2(Q)-digit binary number; if n < r, swap a[n] and a[r].
+  2. Twiddle factors: compute W[k] = rot(2 * pi * k / Q) for k = 0, ..., Q/2 - 1 only once, at the start of each transform.
+  3. For s = 2, 4, 8, ..., Q in this order, do the following. Divide the sequence, from the beginning, into blocks of length s; with b the first index of each block, for each j = 0, ..., s/2 - 1, let t = W[j * (Q / s)] * a[b + j + s/2] and u = a[b + j], and replace a[b + j] with u + t and a[b + j + s/2] with u - t.
+  The sequence a after step 3 is A. The inverse transform (IDFT) a[n] = (1 / Q) * sum_{k=0}^{Q-1}(A[k] * conj(rot(2 * pi * k * n / Q))) is computed by performing the same procedure with the twiddle factors replaced by W[k] = conj(rot(2 * pi * k / Q)), and finally dividing every element by Q.
+(2) Bluestein's algorithm: the DFT V[k] = sum_{n=0}^{m-1}(v[n] * rot(2 * pi * k * n / m)) (k = 0, ..., m - 1) of a sequence v whose length m is not a power of two is computed as follows. Let Q = pow2(2m - 1), and compute the chirp w[n] = rot(pi * (n^2 mod 2m) / m) for n = 0, ..., m - 1. Let a be the sequence of length Q with a[n] = v[n] * w[n] for n < m and 0 otherwise. Let b be the sequence of length Q with b[0] = conj(w[0]), b[n] = b[Q - n] = conj(w[n]) for n = 1, ..., m - 1, and 0 otherwise. Compute the DFTs of a and b with the radix-2 FFT, and with g the IDFT of their element-wise product, V[k] = w[k] * g[k].
+  The IDFT of a sequence whose length m is not a power of two is obtained by computing, with Bluestein's algorithm, the DFT of the sequence of the conjugates of its elements, then taking the conjugate of each element of the result and dividing it by m.
+  Hereafter, DFT_m and IDFT_m denote transforms of length m, computed with the radix-2 FFT if m is a power of two and with Bluestein's algorithm otherwise.
+(3) Packing method: for a sequence v of real numbers of length Q (a power of two, at least 4), the DFT elements V[k] for k = 0, ..., Q/2 are obtained as follows. Let h = Q/2, and let Z be the DFT of length h of z[j] = v[2j] + i * v[2j + 1] (j = 0, ..., h - 1). For each k = 0, ..., h, let Za = Z[k mod h], Zb = conj(Z[(h - k) mod h]), E = (Za + Zb) / 2, O = (Za - Zb) / (2i), and V[k] = E + rot(2 * pi * k / Q) * O. All transforms in Welch's method and in the spectrogram are computed with this method.
+(4) Linear convolution: the convolution conv(a, b)[n] = sum_j(a[j] * b[n - j]) (n = 0, ..., p + r - 2; the sum is over the j satisfying 0 <= j < p and 0 <= n - j < r) of a sequence a of p real numbers and a sequence b of r real numbers is obtained by letting Q = pow2(p + r - 1), padding a and b with zeros at the end to length Q, taking the IDFT of the element-wise product of the DFTs of the two sequences, and taking the first p + r - 1 elements of its real part.
+
+* 2. Preprocessing, statistics, level history
+For the sequence s of values of each channel (s1 or s2), compute the mean mu = sum(s[i]) / N, the center C = (N - 1) / 2 and the slope sl = sum((i - C) * (s[i] - mu)) / sum((i - C)^2) (both sums over i = 0, ..., N - 1), and form the detrended values d[i] = s[i] - mu - sl * (i - C). The d of channel 1 is written x, and the d of channel 2 is written y. All the analyses below use x and y.
+For each channel compute the following values: mean = mu, slope = sl * fs, rms = sqrt(sum(d[i]^2) / N), min and max are the minimum and maximum of s[i], crest = (maximum of |d[i]|) / rms, skewness = (sum(d[i]^3) / N) / rms^3, kurtosis = (sum(d[i]^4) / N) / rms^4.
+Level history: form G = N div Lb blocks. Block g (g = 0, ..., G - 1) consists of the samples whose index is >= g * Lb and < (g + 1) * Lb (the remaining samples are not used). For each block, compute rms1 = sqrt(sum(x[i]^2) / Lb), rms2 = sqrt(sum(y[i]^2) / Lb) (sums over the i in the block), and peak1 = the maximum of |x[i]| in the block. The number g of the block with the largest rms1 is loudest.
+
+* 3. Window functions
+The window w[0], ..., w[Q - 1] of length Q with window name W is w[n] = sum_j((-1)^j * a_j * cos(2 * pi * j * n / Q)). The sum is over j = 0 to (number of coefficients - 1), in increasing order of j, and the coefficients a_j are as follows.
+ rectangular: a0 = 1
+ hann: a0 = 0.5, a1 = 0.5
+ hamming: a0 = 0.54, a1 = 0.46
+ blackman: a0 = 0.42, a1 = 0.5, a2 = 0.08
+ flattop: a0 = 0.21557895, a1 = 0.41663158, a2 = 0.277263158, a3 = 0.083578947, a4 = 0.006947368
+The window figures are S1 = sum(w[n]), S2 = sum(w[n]^2), coherent_gain = S1 / Q, enbw_bins = Q * S2 / S1^2, enbw_hz = enbw_bins * fs / Q, scalloping_db = -20 * log10(|sum_n(w[n] * rot(pi * n / Q))| / S1).
+
+* 4. Amplitude spectrum and main analysis
+The amplitude spectrum with a window w of length M is defined as follows. Let u[n] = x[n] * w[n] (n = 0, ..., M - 1), X = DFT_M(u), K = M div 2, and A[k] = ck * |X[k]| / S1 for k = 0, ..., K. Here ck is 1 when k = 0 or 2k = M and 2 otherwise, and S1 is the S1 of this window. The frequency of bin k is k * fs / M.
+The u, X, A and S1 with window Wm are hereafter called the main-analysis u, X, A and S1, respectively, and A is called the main spectrum. The enbw_bins of Wm is written E. Below, fk is k * fs / M.
+
+* 5. Peak detection (peaks.txt)
+Let Amax be the maximum of A[0], ..., A[K]. The candidates are the k with 1 <= k <= K - 1 such that k is a local maximum of A and 20 * log10(A[k] / Amax) >= Tp. Sort the candidates in decreasing order of A[k] (ties in increasing order of k), take the first P of them (all of them if there are fewer than P candidates) as the peaks, and give them ranks 1, 2, ... in this order.
+The noise floor Fl is the median of A[1], ..., A[K - 1].
+For each peak (bin k), compute the following values.
+ - frequency = fk
+ - with qk the position and ak the value of the log interpolation of A at k, refined = qk * fs / M and amplitude = ak
+ - level_db = 20 * log10(A[k] / Amax)
+ - phase = arg(X[k]) * 180 / pi
+ - bandwidth: let lam = A[k] / sqrt(2). Right edge: examine j = k + 1, k + 2, ..., K in this order; with jr the first j such that A[j] <= lam, the right edge is jr - 1 + (A[jr - 1] - lam) / (A[jr - 1] - A[jr]); if there is no such j, it is K. Left edge: examine j = k - 1, k - 2, ..., 0 in this order; with jl the first j such that A[j] <= lam, the left edge is jl + 1 - (A[jl + 1] - lam) / (A[jl + 1] - A[jl]); if there is no such j, it is 0. bandwidth = (right edge - left edge) * fs / M.
+ - snr_db = 20 * log10(A[k] / Fl)
+ - coherence: the value of the coherence Coh[j] of section 7 at j = (2 * k * L + M) div (2 * M)
+ - label: a string determined by the following rules
+  1. Examine h = 1, 2, ..., 10 in this order; if some h satisfies |qk - h * f0 * M / fs| <= D, the label is "h" followed by the decimal representation of the first such h (e.g. h3).
+  2. If rule 1 does not apply, let fq = qk * fs / M and j = floor(fq / fn + 1/2); if j >= 1 and |fq - j * fn| <= wn, the label is mains.
+  3. If neither rule 1 nor rule 2 applies, and there is a pair of two other peaks p and r (this peak, p and r are all distinct peaks) satisfying A[kp] > A[k], A[kp] > A[kr] and |qk + qr - 2 * qp| <= 1, the label is "sideband" followed by the rank of p (e.g. sideband4). Here kp and kr are the bins of peaks p and r, and qp and qr are their respective log interpolation positions. If several pairs qualify, use the one in which the rank of p is smallest.
+  4. If none of these applies, the label is other.
+
+* 6. Harmonics, power, bands
+Harmonics: for each h = 1, 2, ..., 10, let ch = h * f0 * M / fs, and let kh be the k with the largest A[k] among the k satisfying 1 <= k <= K - 1 and |k - ch| <= D. Let qh be the position and ah the value of the log interpolation of A at kh (below, kh and ah for h = 1 are written k1 and a1, and likewise for h = 2 and later). refined = qh * fs / M, amplitude = ah, level_db = 20 * log10(ah / a1). THD = sqrt(sum_{h=2}^{10}(ah^2)) / a1, thd_percent = 100 * THD, thd_db = 20 * log10(THD).
+Power: let Pw[k] = A[k]^2 / 2; in this section, sums of Pw are over k = 1, ..., K - 1 unless stated otherwise. The total power Ptot = sum(Pw[k]) / E, the fundamental power P1 = (sum of Pw[k] over the k (1 <= k <= K - 1) satisfying |k - k1| <= D) / E, THDN = sqrt((Ptot - P1) / P1), thdn_percent = 100 * THDN, thdn_db = 20 * log10(THDN).
+Features: centroid = sum(fk * Pw[k]) / sum(Pw[k]), spread = sqrt(sum((fk - centroid)^2 * Pw[k]) / sum(Pw[k])). rolloff is the fk of the first k at which the running sum, adding Pw[k] for k = 1, 2, ... in this order, becomes >= 0.85 * sum(Pw[k]). flatness_db = 10 * log10(exp(sum(log Pw[k]) / (K - 1)) / (sum(Pw[k]) / (K - 1))).
+Band power: for each eta = 0, ..., U - 1, power is sum(Pw[k]) / E over the k (1 <= k <= K - 1) satisfying the integer comparison q[eta] * M <= k * fs < q[eta + 1] * M, and percent is 100 * power / Ptot.
+1/3-octave bands: for each b = t1, ..., t2, let center = 1000 * 2^(b / 3), lower = 1000 * 2^((2b - 1) / 6), upper = 1000 * 2^((2b + 1) / 6). Let bins be the number of k (1 <= k <= K - 1) satisfying lower <= fk < upper, and Pb the sum(Pw[k]) / E over those k; level_db = 10 * log10(Pb).
+Window comparison: for each of the five windows, compute the figures of section 3 for that window as a window of length M, and the amplitude spectrum Aw with that window. Among the k satisfying 1 <= k <= K - 1 and |k - c1| <= D (c1 is the ch of the harmonics for h = 1), the k with the largest Aw[k] is fundamental_bin, Aw[k] is bin_amplitude, and the log interpolation value of Aw at that k is refined_amplitude; with med the median of Aw[1], ..., Aw[K - 1], floor_db = 20 * log10(med).
+
+* 7. Welch's method
+Let w be the window Ww of length L, and Uw = sum(w[n]^2). The number of segments is Ns = (N - L) div (L/2) + 1, and segment j (j = 0, ..., Ns - 1) is the interval of length L starting at index j * L/2. Multiply the x and the y of each segment by w, and let Xj[k] and Yj[k] (k = 0, ..., L/2) be their DFTs computed with the packing method.
+Let Pxx[k] = sum_j(|Xj[k]|^2), Pyy[k] = sum_j(|Yj[k]|^2), Pxy[k] = sum_j(conj(Xj[k]) * Yj[k]) (each added in increasing order of j), PSD[k] = ck * Pxx[k] / (Ns * fs * Uw) (ck is 1 when k = 0 or k = L/2 and 2 otherwise), the coherence Coh[k] = |Pxy[k]|^2 / (Pxx[k] * Pyy[k]), and the transfer function Hxy[k] = Pxy[k] / Pxx[k].
+integrated_power = (sum_{k=0}^{L/2}(PSD[k])) * fs / L, variance = (rms of channel 1)^2, ratio = integrated_power / variance.
+Welch peaks: sort the k with 1 <= k <= L/2 - 1 that are local maxima of PSD in decreasing order of PSD[k] (ties in increasing order of k), select the first 5 (all of them if there are fewer than 5), and rank them in this order. For each, compute frequency = k * fs / L, psd_db = 10 * log10(PSD[k]), coherence = Coh[k], gain = |Hxy[k]|, phase = arg(Hxy[k]) * 180 / pi.
+
+* 8. Spectrogram
+Let w be the window Ws of length F, and let the number of frames be Nt = (N - F) div H + 1. Frame t (t = 0, ..., Nt - 1) is the interval of length F starting at index t * H. Multiply the x of each frame by w, compute its DFT with the packing method, and let G[t][k] (k = 0, ..., F/2) be the absolute values. Let Gmax be the maximum of all G[t][k].
+Shade levels: let d = 20 * log10(G[t][k] / Gmax), and represent the level lev = max(0, 9 - floor(-d / B)) by the lev-th character (counting from 0) of the string " .:-=+*#%@" (10 characters; the first one is a space).
+Dominant frequency: for each frame, choose the k with the largest G[t][k] among 1 <= k <= F/2 - 1; frequency = k * fs / F and level_db = 20 * log10(G[t][k] / Gmax).
+Onsets: let Phi[0] = 0 and Phi[t] = sum_{k=0}^{F/2}(max(0, G[t][k] - G[t - 1][k])) for t = 1, ..., Nt - 1. Let theta = c * (median of Phi[1], ..., Phi[Nt - 1]); the onsets are the t with 1 <= t <= Nt - 1 satisfying Phi[t] > theta, Phi[t] > Phi[t - 1], and "t = Nt - 1 or Phi[t] > Phi[t + 1]", listed in increasing order of t.
+Spectral kurtosis: for k = 0, ..., F/2, let kappa[k] = Nt * sum_t(G[t][k]^4) / (sum_t(G[t][k]^2))^2 - 2 (sums over t = 0, ..., Nt - 1), and choose the k with the largest kappa[k] among 1 <= k <= F/2 - 1.
+
+* 9. Filters and envelope
+Let Xf = DFT_N(x), and for each k = 0, ..., N - 1 compute the integer gk = min(k, N - k) * fs (gk / N is the frequency of bin k). All band comparisons for the band-pass, the notch and the envelope are done in integers. The rms of a sequence v is sqrt(sum(v[i]^2) / N) (i = 0, ..., N - 1).
+Band-pass: keep Xf[k] for the bins k satisfying b1 * N <= gk <= b2 * N and set the others to 0; the real part of the IDFT_N of this sequence is bandpassed. The number of kept bins is bins_kept.
+Notch: let jk = (2 * gk + fn * N) div (2 * fn * N); set to 0 the bins k satisfying jk >= 1 and |gk - jk * fn * N| <= wn * N, and keep the other Xf[k]; the real part of the IDFT_N of this sequence is notched. The number of bins set to 0 is bins_removed.
+Envelope: let Ze[k] = 2 * Xf[k] for the k satisfying 1 <= k <= (N - 1) div 2 and e1 * N <= k * fs <= e2 * N, and Ze[k] = 0 for the other k; z = IDFT_N(Ze), envelope[i] = |z[i]|, em = sum(envelope[i]) / N. Let Ev be the DFT_N of the sequence envelope[i] - em (i = 0, ..., N - 1), and Be[k] = 2 * |Ev[k]| / N. Let ke be the k with the largest Be[k] among 1 <= k <= ((e2 - e1) * N) div (2 * fs); with qe the position and be the value of the log interpolation of Be at ke, frequency = qe * fs / N, amplitude = be, depth = be / em.
+Instantaneous frequency: let ph[i] = arg(z[i]); for each i = 1, ..., N - 1, compute dp = ph[i] - ph[i - 1]; if dp <= -pi, add 2 * pi to dp, and if dp > pi, subtract 2 * pi from dp; then nu[i] = dp * fs / (2 * pi). mean = sum(nu[i]) / (N - 1), std = sqrt(sum((nu[i] - mean)^2) / (N - 1)) (sums over i = 1, ..., N - 1).
+FIR: let sm be the linear convolution of y and h (computed with the method of section 1 (4)) (length N + R - 1). dc_gain = sum(h[j]), gain_at_fundamental_db = 20 * log10(|sum_j(h[j] * rot(2 * pi * f0 * j / fs))|), rms = sqrt(sum(sm[i]^2) / N) (i = 0, ..., N - 1).
+
+* 10. Fundamental frequency estimation
+Let lam1 = (fs + p2 - 1) div p2 and lam2 = fs div p1.
+HPS: for the k satisfying p1 * M <= k * fs <= p2 * M and 5 * k <= K, let Hs[k] = sum_{r=1}^{5}(log A[r * k]), and choose the k with the largest Hs[k]. frequency = k * fs / M.
+Autocorrelation: let Q = pow2(2N - 1), and let Bq be the DFT of bandpassed padded with zeros at the end to length Q. Let rho be the real part of the IDFT of the sequence |Bq[k]|^2 (complex numbers with zero imaginary part). Choose the ell with the largest rho[ell] among lam1 <= ell <= lam2; with tau the position and rho* the value of the linear interpolation of rho at ell, period = tau, frequency = fs / tau, strength = rho* / rho[0].
+Zero crossings: count is the number of i with 1 <= i <= N - 1 satisfying bandpassed[i - 1] < 0 <= bandpassed[i], and frequency = count * fs / N.
+
+* 11. Zoom analysis (chirp-z transform)
+Let dz = (z2 - z1) / (J - 1) and fj = z1 + j * dz (j = 0, ..., J - 1), and compute X(fj) = sum_{n=0}^{M-1}(u[n] * rot(2 * pi * fj * n / fs)) for the main-analysis u with the following chirp-z transform. Let Qz = pow2(M + J - 1), and build sequences a and b of length Qz.
+ - a[n] = u[n] * rot(2 * pi * z1 * n / fs) * rot(pi * dz * n^2 / fs) (n = 0, ..., M - 1); the other a[n] are 0
+ - b[m mod Qz] = conj(rot(pi * dz * m^2 / fs)) for m = -(M - 1), ..., J - 1; the other elements of b are 0
+With g the IDFT of the element-wise product of the DFTs of a and b, X(fj) = rot(pi * dz * j^2 / fs) * g[j]. The zoom amplitude is Zm[j] = 2 * |X(fj)| / S1 (the main-analysis S1).
+Sort the j with 1 <= j <= J - 2 that are local maxima of Zm in decreasing order of Zm[j] (ties in increasing order of j), select the first 3 (all of them if there are fewer than 3), and rank them in this order. For each, with qz the position of the log interpolation of Zm at j, frequency = z1 + qz * dz, and amplitude is the value of the log interpolation.
+
+* 12. Cross-correlation
+Let Q = pow2(2N - 1), let Fx and Fy be the DFTs of x and y padded with zeros at the end to length Q, and Cxy[k] = conj(Fx[k]) * Fy[k]. Let r be the real part of the IDFT of Cxy, and rp the real part of the IDFT of the sequence Cxy[k] / |Cxy[k]|. The value of r for a lag ell is r[ell mod Q] (this equals sum_i(x[i] * y[i + ell])).
+Choose the ell with the largest r[ell mod Q] among -Lmax <= ell <= Lmax. If several ell attain the maximum, choose the one with the smaller |ell|, and if that is also equal, the negative one. Viewing the three values r[(ell - 1) mod Q], r[ell mod Q], r[(ell + 1) mod Q] as a sequence v[0], v[1], v[2], let 1 + delta be the position of the linear interpolation of v at index 1; then refined_lag = ell + delta, delay_ms = 1000 * refined_lag / fs, coefficient = r[ell mod Q] / sqrt(sum(x[i]^2) * sum(y[i]^2)).
+For rp too, choose a lag (phat_lag) with the same method, and compute its refined_lag and delay_ms.
+
+* 13. Checks
+Each of the following items is ok if its error is <= 1e-6, and failed otherwise.
+ - inverse_roundtrip: the maximum of the element-wise absolute differences between the IDFT_M of the main-analysis X and u
+ - parseval: |sum(u[n]^2) - sum(|X[k]|^2) / M| / sum(u[n]^2) (sums over n, k = 0, ..., M - 1)
+ - real_packing: over every segment of x and of y in Welch's method and every frame of the spectrogram, the maximum of the absolute differences (k = 0, ..., length / 2) between V[k] obtained by transforming the windowed sequence with the packing method and the k-th element of the result of transforming the same sequence (complex numbers with zero imaginary part) with the radix-2 FFT. The number of transforms is 2 * Ns + Nt.
+ - fir_fft_vs_direct: the maximum of the absolute differences (n = 0, ..., N + R - 2) between the FIR convolution computed with the FFT and the values computed directly from the defining formula
+ - dft_spot_check: the maximum, over the peaks (bin k), of the absolute difference between sum_n(u[n] * rot(2 * pi * ((k * n) mod M) / M)) (n = 0, ..., M - 1) and X[k] (0 if there are no peaks)
+
+* 14. Diagnosis
+Evaluate the following five items; findings is the number of items that are yes.
+ - misalignment: yes if ratio = a2 / a1 is 0.5 or more
+ - looseness: let n3 be the number of h among h = 3, ..., 10 whose harmonic level_db is -30 or more; yes if n3 is 3 or more
+ - bearing: yes if the envelope depth is 0.2 or more
+ - electrical: yes if the level_db of the peak with the smallest rank among the peaks whose label is mains is -20 or more; no if there is no mains peak
+ - transient: yes if there is at least one onset
+status is normal if findings is 0, warning if it is 1, and alarm if it is 2 or more.
+
+[Output files]
+Common format:
+- Everything is ASCII; every line ends with a line feed (LF) and has no trailing whitespace. There are no blank lines.
+- Unless stated otherwise, a real number is rounded to the nearest value and written with exactly 4 digits after the decimal point (e.g. -0.5000, 12.3457, 37.3000). A value whose rounded digits are all 0 is written 0.0000 without "-", even if it is negative. An integer is written in decimal without leading zeros, with "-" for a negative number.
+- In a line listing "name=value" items, the items are separated by a single space. In the line formats below, a part enclosed in < > is replaced by a value. The value of "name=..." is the one defined under the same name in the processing sections.
+
+* output/spectrum.csv
+The first line is frequency,amplitude. Then write K + 1 lines "<fk>,<A[k]>" for k = 0, ..., K in this order.
+
+* output/peaks.txt
+Line 1: length=<M> window=<Wm> resolution=<fs / M> threshold_db=<Tp>
+Line 2: max_amplitude=<Amax> noise_floor=<Fl> noise_floor_db=<20 * log10(Fl)>
+Line 3: peaks=<number of peaks>
+Line 4 onward: one line per peak in rank order, <rank> bin=<k> frequency=... refined=... amplitude=... level_db=... phase=... bandwidth=... snr_db=... coherence=... label=<label>
+
+* output/welch_psd.csv
+The first line is frequency,psd_db. Then write "<k * fs / L>,<10 * log10(PSD[k])>" for k = 0, ..., L/2 in this order.
+
+* output/spectrogram.txt
+Line 1: frames=<Nt> bins=<F/2 + 1> frame_length=<F> hop=<H> window=<Ws> band_db=<B> max_db=<20 * log10(Gmax)>
+The next F/2 + 1 lines: one line for each k = F/2, F/2 - 1, ..., 0 in this order (highest frequency first), consisting of, in this order: k * fs / F written with 4 digits after the decimal point and padded on the left with spaces to 9 characters (as is if it is 9 characters or longer), a single space, "|", the shade characters of frames t = 0, ..., Nt - 1 in this order (Nt characters), and "|".
+The next line: track
+The next Nt lines, in frame order: frame=<t> time=<t * H / fs> frequency=<dominant frequency> level_db=<level_db of the dominant frequency>
+The next line: onsets=<number of onsets> threshold=<theta>
+Then one line per onset: frame=<t> time=<t * H / fs> flux=<Phi[t]>
+The last line: kurtosis bin=<the chosen k> frequency=<k * fs / F> value=<kappa[k]>
+
+* output/filtered.csv
+The first line is index,bandpass,notched,smoothed,envelope. Then write "<i>,<bandpassed[i]>,<notched[i]>,<sm[i]>,<envelope[i]>" for i = 0, ..., N - 1 in this order.
+
+* output/report.txt
+Write the following lines in this order. The lines enclosed in square brackets ([signal] and so on) are headings and are written as they are.
+[signal]
+sample_rate=<fs> samples=<N> duration=<N / fs>
+channel=1 mean=... slope=... rms=... min=... max=... crest=... skewness=... kurtosis=...
+channel=2 ... (the same items as the line above, for channel 2)
+[levels]
+block_length=<Lb> blocks=<G> loudest=<loudest>
+block=<g> time=<g * Lb / fs> rms1=... rms2=... peak1=... (G lines, for g = 0, ..., G - 1)
+[windows]
+name=<window name> coherent_gain=... enbw_bins=... enbw_hz=... scalloping_db=... fundamental_bin=... bin_amplitude=... refined_amplitude=... floor_db=... (5 lines, in the order rectangular, hann, hamming, blackman, flattop)
+[main]
+length=<M> window=<Wm> method=<radix2 if M is a power of two, otherwise bluestein> transform_size=<M if M is a power of two, otherwise pow2(2M - 1)> resolution=<fs / M>
+total_power=<Ptot> centroid=... spread=... rolloff=... flatness_db=...
+[bands]
+range=<q[eta]>-<q[eta + 1]> power=... percent=... (U lines, for eta = 0, ..., U - 1)
+[third_octave]
+band=<b> center=... lower=... upper=... bins=... level_db=... (lines for b = t1, ..., t2)
+[harmonics]
+fundamental=<f0> search=<D>
+h=<h> target=<h * f0> bin=<kh> refined=... amplitude=... level_db=... (10 lines, for h = 1, ..., 10)
+thd_percent=... thd_db=...
+thdn_percent=... thdn_db=...
+[pitch]
+range=<p1>-<p2> lags=<lam1>-<lam2>
+hps bin=<the chosen k> order=5 frequency=...
+autocorrelation lag=<the chosen ell> period=... frequency=... strength=...
+zero_crossing count=<count> frequency=...
+[zoom]
+band=<z1>-<z2> points=<J> step=<dz>
+peak=<rank> frequency=... amplitude=... (one line for each j selected in section 11)
+[welch]
+segment_length=<L> segments=<Ns> window=<Ww> resolution=<fs / L>
+integrated_power=... variance=... ratio=...
+peak=<rank> frequency=... psd_db=... coherence=... gain=... phase=... (one line per Welch peak)
+[filter]
+bandpass=<b1>-<b2> bins_kept=<bins_kept> rms=<rms of bandpassed> energy_ratio=<sum(bandpassed[i]^2) / sum(x[i]^2)>
+notch=<fn> width=<wn> bins_removed=<bins_removed> rms=<rms of notched>
+fir_taps=<R> dc_gain=... gain_at_fundamental_db=... rms=...
+[envelope]
+band=<e1>-<e2> mean=<em> bin=<ke> frequency=... amplitude=... depth=...
+instantaneous_frequency mean=... std=...
+[correlation]
+max_lag=<Lmax> lag=<the chosen ell> refined_lag=... delay_ms=... coefficient=...
+phat_lag=<the ell chosen from rp> refined_lag=... delay_ms=...
+[checks]
+inverse_roundtrip=<ok or failed>
+parseval=<ok or failed>
+real_packing=<ok or failed> transforms=<2 * Ns + Nt>
+fir_fft_vs_direct=<ok or failed>
+dft_spot_check=<ok or failed> bins=<number of peaks>
+[diagnosis]
+misalignment=<yes or no> ratio=...
+looseness=<yes or no> harmonics=<n3>
+bearing=<yes or no> depth=...
+electrical=<yes or no> level_db=<the level_db used for the decision; none if there is no mains peak>
+transient=<yes or no> onsets=<number of onsets>
+status=<one of normal, warning, alarm> findings=<findings>
+
+[Source files]
+Split the source into the following six files (name the files according to each language's conventions).
+- main: handles the overall flow (from reading the input to writing the six files), and performs detrending and statistics, the level history, peak detection and labeling, harmonics, power, bands, 1/3-octave bands and the window comparison, fundamental frequency estimation, the spectrogram shade levels, dominant frequencies, onsets and spectral kurtosis, the filters, envelope and instantaneous frequency, zoom analysis, cross-correlation, checks, diagnosis, and the assembly of the lines of each output file. Most of the processing is placed in this file.
+- signal_io: reads and parses input/signal.csv and input/params.txt.
+- fft: holds the radix-2 FFT and its inverse, Bluestein's algorithm, the packing method, linear convolution by FFT, the chirp-z transform, and pow2.
+- windows: holds the coefficients of the five windows, window generation, and the computation of the window figures of section 3.
+- spectral: holds the amplitude spectrum of section 4, the splitting into segments and frames and their transformation with the packing method, the computation of the PSD, coherence and transfer function from Pxx, Pyy and Pxy in section 7, the interpolation formulas, and the median.
+- report: holds the real-number formatting (4 digits after the decimal point, and the handling of "-" for values that become 0), writing CSV and line files, and assembling the lines of shade characters of the spectrogram.
+
+[Constraints]
+- 100 <= fs <= 10000, 64 <= N <= 8192. |s1[i]| and |s2[i]| are less than 100.
+- 16 <= M <= N, -100 < Tp < 0, 1 <= P <= 20, 0 < f0, 1 <= D <= 20. For every h = 1, ..., 10, there is at least one k that is a target of the harmonic search.
+- L and F are powers of two, 8 <= L <= N, 8 <= F <= N, 1 <= H <= F, Nt >= 2, 1 <= B <= 20, 0 < c.
+- 1 <= p1 < p2, 2 <= lam1 <= lam2 <= N - 2, and there is at least one k that is a target of HPS.
+- 0 <= b1 < b2 <= fs / 2, 1 <= fn, 0 <= wn, 2 * wn < fn, 0 < e1 < e2 < fs / 2, and there is at least one k that is a target of the envelope spectrum search.
+- 0 < z1 < z2 < fs / 2, 3 <= J <= 4096.
+- 1 <= R <= 32, 1 <= Lmax <= N - 2, 1 <= U <= 20, 0 <= q[0] < q[1] < ... < q[U] <= fs / 2, and every band contains at least one k. t1 <= t2, every 1/3-octave band contains at least one k, and 1000 * 2^((2 * t2 + 1) / 6) < fs / 2. 1 <= Lb <= N.
+- Every integer that appears during the computation has an absolute value less than 2^31.
+- Every value whose logarithm is taken is positive, and every denominator of a division is nonzero (the complex |Cxy[k]| is also nonzero).
+- In the given input data, for every comparison of magnitudes, selection of a maximum, sort, comparison with a threshold, determination of a shade level by floor, comparison with a non-integer boundary (1/3-octave bands, peak labels and so on), phase wrapping, and sign test, the two values compared differ by at least max(1, v) * 1e-6, where v is the larger of the absolute values of the compared values. Therefore differences in the order of summation, or in the last digits of sin, cos, log, exp, atan2 and powers, cannot change the result.
+- In the given input data, for every real number that is output, its exact value differs from the rounding boundary (the value exactly halfway between two numbers with 4 digits after the decimal point) by at least max(1, v) * 1e-9, where v is the absolute value of that value.
+
+[Example]
+The following is an example showing the format. All values are for illustration only and are not the correct output for the given input.
+
+Beginning of input/signal.csv (example):
+1000,2048
+0.012345,-0.250000
+-1.500000,0.031250
+
+input/params.txt (example):
+main_length 1500
+main_window hann
+peak_threshold_db -40
+peak_count 5
+fundamental 25 2
+welch 128 hamming
+spectrogram 64 32 6 hann
+onset_factor 2.5
+pitch_range 10 100
+bandpass 10 80
+notch 60 1
+envelope_band 100 200
+zoom 140 160 201
+fir 0.25 0.5 0.25
+max_lag 50
+bands 0 100 250 500
+third_octave -17 -4
+block_length 200
+
+Beginning of output/peaks.txt (example):
+length=1500 window=hann resolution=0.6667 threshold_db=-40.0000
+max_amplitude=0.9876 noise_floor=0.0021 noise_floor_db=-53.5556
+peaks=5
+1 bin=37 frequency=24.6667 refined=24.9871 amplitude=1.0234 level_db=0.0000 phase=-12.3456 bandwidth=1.2001 snr_db=53.4567 coherence=0.9987 label=h1
+
+Shade-level lines of output/spectrogram.txt (example, for F = 8 and Nt = 6):
+ 500.0000 |  .:-=|
+ 375.0000 | .:=+*|
+ 250.0000 |%@@%#*|
+ 125.0000 |=+**+=|
+   0.0000 |:..: .|
+
+Beginning of output/filtered.csv (example):
+index,bandpass,notched,smoothed,envelope
+0,0.1234,-0.5678,0.0000,0.2345
+
+Part of output/report.txt (example):
+[correlation]
+max_lag=50 lag=12 refined_lag=12.3456 delay_ms=12.3456 coefficient=0.8765
+phat_lag=12 refined_lag=12.2345 delay_ms=12.2345
+[diagnosis]
+misalignment=no ratio=0.3333
+looseness=no harmonics=1
+bearing=no depth=0.0500
+electrical=no level_db=none
+transient=yes onsets=2
+status=warning findings=1

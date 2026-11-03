@@ -1,0 +1,466 @@
+[Overview]
+Write an evaluation engine for access control policies (a policy decision point) in the style of XACML 3.0 that combines role-based access control (RBAC) and attribute-based access control (ABAC). The input consists of four files, all read from the input/ folder: the RBAC definitions (roles, role inheritance, role permissions, separation-of-duty constraints, and role assignments to users), the policies (nested policy sets, policies and rules), the attributes of subjects and resources together with the attribute domains used for analysis, and the list of access requests.
+For each access request, the program activates the requested roles (reporting refused activations), checks the RBAC permission by following role inheritance, assembles the attributes and evaluates the root policy set, and determines one of the decisions PERMIT, DENY, NOT_APPLICABLE or INDETERMINATE together with the obligations and advice attached to that decision. For designated requests, it writes out the evaluation process in the form of a tree. In addition, it computes the effective permissions of each user, the errors in the RBAC definitions and the static separation-of-duty violations, the applicability of each rule when all combinations of the attribute domains are enumerated (rules that apply to no combination ("dead rules"), rules that never take effect because they are hidden by earlier rules, and conflicts between rules), a coverage table of rules versus requests, and more, and writes them to four files in the output/ folder. Nothing is printed to standard output.
+Every number that appears in the computation is an integer; no real numbers are used.
+
+[Input files]
+The common format is as follows.
+- Every file consists only of printable ASCII characters (codes 32-126) and line feeds (LF), and every line ends with a line feed (including the last line). There are no tabs or CRs. Below, "space" means the ASCII space character.
+- The files other than input/policies.txt have no blank lines, no line has leading or trailing spaces, and the words within a line are all separated by a single space.
+- A "name" is a string consisting of one lowercase letter followed by zero or more lowercase letters, digits or "_" (e.g. finance_manager, pr_2026q1). Role names, user names, constraint names, action names, resource types, resource IDs, attribute names, IDs of policy elements, and IDs and argument names of obligations and advice are all names. A request ID is a string of 1 to 8 characters consisting of letters and digits.
+- An "attribute reference" is a category, ".", and an attribute name, concatenated in this order. The category is one of subject, resource, action and environment (e.g. subject.department, environment.day).
+- Below, <...> denotes a part where a value goes. The angle brackets of <...> themselves appear in neither input nor output. Text inside double quotes "..." stands for exactly those characters (apart from the <...> parts in it).
+- Line numbers count the first line of a file as line 1.
+
+* Writing values
+The attribute values that appear in input/attributes.txt and input/requests.txt (the <value> part of "<attribute name>=<value>") are written as follows, and the way a value is written determines its type. There are four value types: integer, string, boolean and bag.
+- "true" or "false": a boolean.
+- Zero or one "-" followed by one or more digits: an integer (e.g. 42, -3). There are no redundant leading zeros.
+- Something that starts with "[" and ends with "]": a bag of strings (an ordered collection that allows duplicates). Each part between "[" and "]", separated by ",", is an element string, and the elements are ordered as written. An element is a string of one or more characters among lowercase letters, digits, "_" and ".". "[]" is a bag with no elements.
+- Anything else: a string. It is a string of one or more characters among letters, digits, "_", ".", "-", "/" and ":", and its first character is a letter (e.g. finance, INC42, apollo.ui). true and false are never strings.
+
+* input/rbac.txt (RBAC definitions)
+Each line is one of the following six kinds. The lines may be in any order; the processing order is defined in section 2 of [Processing].
+- "ROLE <role name>": defines a role.
+- "INHERITS <senior role> <junior role>": the senior role inherits the junior role. The senior role has all the permissions of the junior role, and a user assigned the senior role can also activate the junior role.
+- "PERMIT <role name> <action name> <resource type>": gives the role a permission (a pair of an action name and a resource type).
+- "SSD <constraint name> <cardinality> <role list>": a static separation-of-duty constraint. The cardinality is a positive integer, and the role list is two or more role names joined with "," (without spaces), in which no role name appears twice.
+- "DSD <constraint name> <cardinality> <role list>": a dynamic separation-of-duty constraint. The format is the same as SSD.
+- "ASSIGN <user name> <role name> <start day> <end day>": assigns the role to the user. The start day and the end day are integers >= 0 and < 1000. A day is a serial number in which January 1 is 1, and the assignment is valid on every day from the start day to the end day (both inclusive).
+The user name of an ASSIGN line does not necessarily have a SUBJECT line in input/attributes.txt.
+
+* input/policies.txt (policies)
+Each line is read after removing its leading spaces (zero or more). No line has trailing spaces. Blank lines, and lines that start with "#" after the leading spaces are removed (comments), are ignored. Every other line is one of the following, determined by its first word (the keyword). The keyword is separated from what follows it by a single space.
+- "POLICYSET <ID> <combining algorithm>": the start of a policy set.
+- "POLICY <ID> <combining algorithm>": the start of a policy.
+- "RULE <ID> <effect>": the start of a rule. The effect is PERMIT or DENY.
+- "TARGET <target>": one line of an element's target.
+- "CONDITION <expression>": the condition of a rule.
+- "OBLIGATION <effect> <ID>" or "OBLIGATION <effect> <ID> <argument list>": an obligation. The effect is PERMIT or DENY.
+- "ADVICE <effect> <ID>" or "ADVICE <effect> <ID> <argument list>": an advice. The format is the same as OBLIGATION.
+- "END": the end of the most recently started element among the elements that have started and not yet ended.
+Policy sets, policies and rules are collectively called "elements". The combining algorithm is one of deny-overrides, permit-overrides, first-applicable, only-one-applicable, deny-unless-permit and permit-unless-deny.
+
+(Structure of elements)
+The whole file is exactly one policy set (the root), from its start line to its END. Between the start line of each element and its END line, the following appear in this order.
+- Policy set: zero or more TARGET lines, zero or more OBLIGATION and ADVICE lines in total (in any order relative to each other), and one or more child elements (policy sets or policies).
+- Policy: zero or more TARGET lines, zero or more OBLIGATION and ADVICE lines in total, and one or more child elements (rules).
+- Rule: zero or more TARGET lines, zero or one CONDITION line, and zero or more OBLIGATION and ADVICE lines in total.
+The children of an element are ordered as written. The order in which the start lines of the elements appear in the file is called "document order" (the root comes first). The IDs of elements are all distinct across policy sets, policies and rules. The elements obtained by following parents from an element (including the root) are called the "ancestors" of that element.
+
+(Targets)
+The <target> of a TARGET line consists of one or more "alternatives" separated by " | " (space, |, space), and each alternative consists of one or more "match clauses" separated by " & " (space, &, space). A match clause has the form "<attribute reference> <operator> <literal>", and its three parts are separated by single spaces. The attribute reference may be immediately followed by "!"; such a clause is called a "mandatory match clause". The operator is one of ==, <, <=, >, >= and ^=. The literal is an integer (zero or one "-" followed by one or more digits), a string literal (the same as in the expressions below), true, or false.
+For example, "TARGET action.id == "read" & resource.type == "log" | subject.role == "auditor"" consists of two alternatives, and the first alternative consists of two match clauses.
+
+(Expressions)
+The <expression> of a CONDITION line and the <expression> of an argument are sequences of the following tokens. Zero or more spaces may appear between tokens.
+- Integer literal: one or more digits (with no sign; a negative number is written with the unary "-").
+- String literal: a double quote ("), zero or more characters among letters, digits, "_", ".", "-", "/" and ":", and a double quote ("), concatenated in this order. Its value is the string between the two double quotes.
+- Word: one letter followed by zero or more letters, digits, "_" or ".", taken as long as possible. A word that contains "." is an attribute reference. A word without "." is either a keyword (and, or, not, in, true, false, it) or a function name (starts_with, size, present, any_of, all_of).
+- Symbol: "(" ")" "[" "]" "," "+" "-" "*" "==" "!=" "<" "<=" ">" ">=". If "<" or ">" is immediately followed by "=", the two characters form a single symbol.
+The grammar of expressions is as follows. Items further down bind more tightly.
+1. Disjunction: conjunctions joined with "or" (a single conjunction is also allowed). It associates from the left.
+2. Conjunction: negations joined with "and". It associates from the left.
+3. Negation: "not" followed by a negation, or a comparison.
+4. Comparison: a single sum, or a sum, a comparison operator and a sum in this order. The comparison operator is one of ==, !=, <, <=, >, >= and in. Comparisons are never chained (such as a < b < c).
+5. Sum: products joined with "+" or "-". It associates from the left (a - b + c is (a - b) + c).
+6. Product: unaries joined with "*". It associates from the left.
+7. Unary: "-" followed by a unary (sign negation), or a primary.
+8. Primary: one of an integer literal, a string literal, true, false, it, an attribute reference, an expression (disjunction) enclosed in "(" and ")", a bag literal, and a function call. A bag literal is "[", zero or more string literals separated by ",", and "]" in this order. A function call is a function name, "(", the arguments (expressions) separated by ",", and ")" in this order. The number of arguments is 2 for starts_with, 1 for size, 1 for present, and 2 for any_of and all_of. The argument of present is always a single attribute reference. it appears only inside the second argument of any_of or all_of.
+For example, "not a or b and c == 1 + 2 * 3" is read as "(not a) or (b and (c == (1 + (2 * 3))))".
+
+(Argument lists)
+The <argument list> of an OBLIGATION line or an ADVICE line consists of one or more parts separated by ";", and each part, with its leading and trailing spaces removed, has the form "<argument name>=<expression>" (there are no spaces between <argument name> and "="). The arguments are ordered as written.
+
+* input/attributes.txt (attributes)
+Each line is one of the following four kinds, and the lines may be in any order.
+- A line "SUBJECT <user name>" followed by zero or more " <attribute name>=<value>": the attributes of a subject (user).
+- A line "RESOURCE <resource ID> <resource type>" followed by zero or more " <attribute name>=<value>": the type and attributes of a resource.
+- A line "DOMAIN <attribute reference>" followed by one or more " <value>": the list of candidate values (the domain) of that attribute, used in the analysis (section 14 of [Processing]).
+- A line "REFERENCE" followed by one or more " <attribute name>=<value>": the environment attributes used to compute the effective permissions (section 13 of [Processing]). There is exactly one such line.
+The order of the DOMAIN lines is significant (section 14 of [Processing]).
+
+* input/requests.txt (access requests)
+Each line is one access request (hereafter a "request"): "<request ID> <user name> <role specification> <action name> <resource ID>" followed by zero or more " <attribute name>=<value>", and finally possibly followed by " EXPLAIN". The "<attribute name>=<value>" parts are the environment attributes of the request. A request with EXPLAIN is called an "explained request".
+The role specification is one of "-" (activate no role), "*" (activate all authorized roles), or one or more names joined with "," (without spaces). The list of names may contain undefined role names and duplicates of the same name.
+Requests are processed in the order in which they are written in the file.
+
+[Processing]
+* 1. Common rules
+- String order: strings are compared in lexicographic order, comparing character codes (ASCII) from the first character. When one is a prefix of the other, the shorter one is smaller. "Name order" means sorting in ascending order of this ordering.
+- Value notation: when a value is output, an integer is written in decimal (with a leading "-" if negative); a string is written as a double quote ("), the string, and a double quote ("), concatenated in this order; a boolean is written as "true" or "false"; and a bag is written as "[", its elements each written in the string notation and separated by ",", and "]", concatenated in this order (e.g. ["ssn","bank_account"], or [] if it has no elements).
+- Decision: the result of evaluating an element or a request is called a "decision". There are six decisions, PERMIT, DENY, NOT_APPLICABLE, INDETERMINATE{D}, INDETERMINATE{P} and INDETERMINATE{DP}, written as these strings. The last three are collectively called INDETERMINATE (cannot be evaluated). PERMIT and DENY are called "definite decisions". An INDETERMINATE decision always has a "reason" (a string).
+- Decision notation (with reason): an INDETERMINATE decision is written as "<decision> (<reason>)" (e.g. INDETERMINATE{D} (missing resource.owner)), and any other decision is written as <decision> alone.
+- Day set notation: a (nonempty) set of days is split into maximal runs of consecutive days, and for each run, starting from the run with the smallest days, "<first day>-<last day>" is written, joined with ",". Even when the first and last day are the same, it is written like "5-5" (e.g. {1, 2, 3, 7, 10, 11} is 1-3,7-7,10-11).
+
+* 2. Reading the RBAC definitions
+The lines of input/rbac.txt are processed one at a time, by keyword in the order ROLE, INHERITS, PERMIT, SSD, DSD, ASSIGN, and lines with the same keyword in increasing order of line number. For each line, the checks below are performed in the order written; if some error applies, the line is "rejected" and the message of the first applicable error is recorded (a rejected line has no effect at all); if there is no error, the line is "accepted". Below, the "defined roles" are the roles of accepted ROLE lines.
+- ROLE r: if r is already a defined role, "duplicate role <r>".
+- INHERITS s j: (1) checking s and then j, if x is the first one that is not a defined role, "unknown role <x>". (2) If an INHERITS line with the same s and j has already been accepted, "duplicate inheritance <s> <j>". (3) If s is contained in the closure of j (defined below; it includes j itself), adding this edge would make the inheritance cyclic, so "cycle <path>". The path is s followed by the roles of "the inheritance path from j to s", i.e. s, j, ..., s, joined with " > " (space, >, space). The inheritance path from j to s is the sequence of roles from j to s obtained by following accepted INHERITS from senior to junior (including j and s; if j and s are the same, just that one role). When there are several such sequences, the smallest one as a sequence of role names is used (compared element by element from the first in string order, the first difference deciding which is smaller). (Example: when INHERITS b a and INHERITS c b have been accepted, INHERITS a c is rejected because a is contained in the closure of c (c, b, a), and the path is a > c > b > a. The path of INHERITS a a is a > a.)
+- PERMIT r a t: (1) if r is not a defined role, "unknown role <r>". (2) If a PERMIT line with the same r, a and t has already been accepted, "duplicate permission <r> <a> <t>".
+- SSD and DSD (let the name be c and the cardinality n): (1) if a line with the same keyword (SSD with SSD, DSD with DSD) and the same constraint name has already been accepted, "duplicate constraint <c>". (2) Examining the role list from the beginning, if x is the first role that is not a defined role, "unknown role <x>". (3) If n is less than 2 or greater than the number of roles in the role list, "bad cardinality <c> <n>".
+- ASSIGN u r f l: (1) if r is not a defined role, "unknown role <r>". (2) If 1 <= f <= l <= 365 does not hold, "bad range <f> <l>". (3) The accepted SSD constraints are examined one at a time in file order. For each constraint, for the days d = f, f+1, ..., l in this order, let H be the intersection of "the set of roles of that constraint" and "the closure of the set (the assigned roles of u on day d) with r added", and find the first day on which the number of roles in H is greater than or equal to the cardinality. If there is such a day, then for the first constraint c found and that day d, the error is "ssd <c> day <d> roles <the roles of H in name order joined with ",">".
+The terms are defined as follows.
+- The "closure" of a set of roles X: the set consisting of every role of X and every role reachable from them by following accepted INHERITS from senior to junior any number of times.
+- The "assigned roles" of user u on day d: the set of the roles of all accepted ASSIGN lines whose user is u and for which start day <= d <= end day.
+- The "authorized roles" of user u on day d: the closure of the assigned roles of u on day d.
+- The "permissions" of a role: the set of (action name, resource type) pairs given to that role by accepted PERMIT lines (permissions obtained through inheritance are not included).
+The recorded errors (hereafter the "RBAC diagnostics") are triples of a line number, a keyword and a message, and they are output to analysis.txt in increasing order of line number (each line has at most one error).
+
+* 3. Checking requests
+For each request, the following are checked in order. If one applies, the result of the request is "ERROR <message>" for the first one that applies, and the processing from section 4 onward (activation and evaluation) is not performed.
+- If there is no SUBJECT line for the user name, "unknown user <user name>".
+- If there is no RESOURCE line for the resource ID, "unknown resource <resource ID>".
+- If the environment attributes contain no day, or the value of day is not an integer, or it is not between 1 and 365 inclusive, "bad day".
+Below, a request that did not result in ERROR is called a "valid request", and its value of day is called the "request day".
+
+* 4. Activating roles
+For a valid request, let u be the user, d the request day, and A the authorized roles of u on day d. The candidate list is empty if the role specification is "-", the roles of A in name order if it is "*", and otherwise the list of names written in the role specification (in written order). Starting with an empty list of active roles, each candidate c is processed from the beginning of the list as follows.
+1. If c is not a defined role, it is refused. The reason is "unknown".
+2. If the same name as c appears before c in the candidate list, it is refused. The reason is "duplicate" (this holds even if the earlier occurrence of the same name was refused).
+3. If c is not contained in A, it is refused. The reason is "unauthorized".
+4. The accepted DSD constraints are examined in file order, and if there is a first constraint x for which the number of roles in the intersection of "the set of roles of that constraint" and "the closure of the set of active roles with c added" is greater than or equal to the cardinality, it is refused. The reason is "dsd <constraint name of x>".
+5. If none of the above applies, c is appended to the end of the list of active roles (the activation succeeds).
+The closure of the set of active roles is called the "session roles". Among the session roles, the first one in name order whose permissions contain (the action name of the request, the type of the resource of the request) is called the "granting role". When there is a granting role, the request is said to be permitted by RBAC.
+
+* 5. Assembling attributes
+For a valid request, a mapping from attribute references to values (hereafter the "attribute set") is built as follows. An attribute reference contained in the attribute set is called a "present" attribute.
+- For each attribute n=v of the user's SUBJECT line, subject.<n> is v. In addition, subject.id is the user name (a string), subject.role is the bag of the session roles in name order, and subject.rbac is whether the request is permitted by RBAC (a boolean).
+- For each attribute n=v of the resource's RESOURCE line, resource.<n> is v. In addition, resource.id is the resource ID (a string), and resource.type is the resource type (a string).
+- action.id is the action name of the request (a string).
+- For each environment attribute n=v of the request, environment.<n> is v (day included).
+The attribute names id, role and rbac never appear in SUBJECT lines, and the attribute names id and type never appear in RESOURCE lines.
+
+* 6. Evaluating expressions
+An expression is evaluated under the attribute set, and its result is either a value (an integer, a string, a boolean or a bag) or an "error". An error has a reason. There are two kinds of reasons: "missing <attribute reference>" and "type <operation name>".
+- An integer literal, a string literal, true and false are their values. A bag literal is the bag of the values of its string literals in written order.
+- An attribute reference is the value of that attribute if it is present, and the error "missing <attribute reference>" if it is not present.
+- it is the element (a string) currently being examined by the innermost any_of or all_of being evaluated.
+- For the following operations (+, -, *, unary -, ==, !=, <, <=, >, >=, in, not, starts_with, size), first all operands (arguments) are evaluated from left to right, and if any of them is an error, the result is the leftmost error. If there is no error, the types of the operands are checked, and if they do not meet the type condition of that operation stated below, the result is the error "type <operation name>". The operation name is the name itself for in, not, starts_with and size, and the symbol for the others (+, -, *, ==, !=, <, <=, >, >=; unary - is also "-").
+- +, -, *: if both are integers, the sum, difference or product. Unary -: if it is an integer, the value with its sign inverted.
+- == and !=: if both have the same type and that type is integer, string or boolean, the boolean telling whether the values are equal (!= is its negation). If the types differ or a bag is involved, it is a type error.
+- <, <=, >, >=: if both are integers, the boolean result of the comparison.
+- in: if the left is a string and the right is a bag, the boolean telling whether some element of the bag equals the left.
+- not: if it is a boolean, its negation.
+- starts_with(a, b): if both are strings, the boolean telling whether b matches the beginning of a (true if b is empty).
+- size(x): if it is a bag, the number of its elements (an integer).
+- present(x): true if attribute x is present, false if it is not present. It never results in an error.
+- and and or: both the left and the right operands are evaluated. A value that is neither a boolean nor an error is regarded as the error "type and" ("type or" for or). and is false if either side is false, true if both are true, and otherwise an error (the left error if both are errors). or is true if either side is true, false if both are false, and otherwise an error (the left error if both are errors).
+- any_of(x, p) and all_of(x, p): first x is evaluated, and if it is an error, that is the result. If it is not a bag, the result is the error "type any_of" ("type all_of" for all_of). If it is a bag, p is evaluated with each of its elements, from the first, as it. If the result of p is neither a boolean nor an error, the result for that element is the error "type any_of" ("type all_of"). any_of is true if some element's result is true; otherwise, if some element's result is an error, the first such error; otherwise false (false if there are no elements). all_of is false if some element's result is false; otherwise, if some element's result is an error, the first such error; otherwise true (true if there are no elements).
+
+* 7. Evaluating targets
+The result of evaluating a target is one of MATCH, NO_MATCH and INDETERMINATE, and INDETERMINATE has a reason.
+- Match clause "A <operator> L": the "items" of the value of attribute A are: none if A is not present; its elements (in written order) if the value is a bag; and otherwise that single value. For each item v, "v <operator> L" is determined as follows. ==: if v and L have the same type (integer, string or boolean), whether they are equal; if the types differ, an error. <, <=, >, >=: if both are integers, the result of the comparison; otherwise an error. ^=: if both are strings, whether L matches the beginning of v; otherwise an error. The reason of the error is "type <operator>". The result of the match clause is MATCH if some item is true; otherwise INDETERMINATE if some item is an error (the reason is the reason of the first error item); otherwise INDETERMINATE (the reason is "missing <A>") if A is not present and the clause is a mandatory match clause; and NO_MATCH otherwise. When the attribute is present and its value is an empty bag, the result is NO_MATCH even for a mandatory match clause.
+- Alternative: NO_MATCH if any of its match clauses is NO_MATCH, MATCH if all of them are MATCH, and otherwise INDETERMINATE (the reason is the reason of the first INDETERMINATE match clause in written order).
+- TARGET line: MATCH if any of its alternatives is MATCH; otherwise INDETERMINATE if there is an INDETERMINATE alternative (the reason is the reason of the first such alternative); otherwise NO_MATCH.
+- Target of an element: MATCH if there is no TARGET line. Otherwise, NO_MATCH if any line is NO_MATCH, MATCH if all lines are MATCH, and otherwise INDETERMINATE (the reason is the reason of the first INDETERMINATE line).
+All match clauses, alternatives and lines are evaluated before the result is decided (the result does not depend on the order of evaluation).
+
+* 8. Evaluating rules
+Let E be D for a rule whose effect is DENY, and P for a rule whose effect is PERMIT. Let T be the result of the rule's target.
+- If T is NO_MATCH, the decision is NOT_APPLICABLE (the condition is not evaluated).
+- If T is INDETERMINATE, the decision is INDETERMINATE{E} and the reason is the reason of the target (the condition is not evaluated).
+- If T is MATCH, the condition value C is determined. If there is no CONDITION line, C is true; if there is one, C is the result of evaluating the expression. However, if the result is a value that is neither a boolean nor an error, C is the error "type condition". If C is true, the decision is the effect of the rule (PERMIT or DENY), and then the obligation processing of section 11 is performed. If C is false, the decision is NOT_APPLICABLE, and if C is an error, it is INDETERMINATE{E} (the reason is the reason of C).
+When the decision of a rule is a definite decision, its decisive element (section 9) is the rule itself.
+
+* 9. Evaluating policies and policy sets
+Let T be the result of the target of the element (a policy or a policy set).
+- If T is NO_MATCH, the decision is NOT_APPLICABLE, and the children are not evaluated.
+- Otherwise, the children are combined with the element's combining algorithm (section 10), giving the combined decision X (and its reason if INDETERMINATE). If T is MATCH, the decision of the element is X. If T is INDETERMINATE, the decision is INDETERMINATE{P} if X is PERMIT, INDETERMINATE{D} if X is DENY, NOT_APPLICABLE if X is NOT_APPLICABLE, and the decision of X unchanged if X is INDETERMINATE; when the result is INDETERMINATE, its reason is the reason of the target.
+- When the decision of the element is a definite decision, the children evaluated during combining whose decision equals the decision of the element, in child order, are called the "supporters". The "decisive element" of the element is the decisive element of the first supporter (the element itself if there are no supporters). Then the obligation processing of section 11 is performed.
+When the decision of an element is not a definite decision, the element has no decisive element, no obligations and no advice.
+
+* 10. Combining algorithms
+The children are evaluated one at a time from the first (by section 8 for a rule, by section 9 otherwise), and the combined decision is determined by the rules below. When the evaluation "stops", the remaining children are not evaluated (they become "skipped" children). Unless stated otherwise, the reason of an INDETERMINATE result is the reason of the first child, among the evaluated children, whose decision is INDETERMINATE.
+- deny-overrides: if a child's decision is DENY, the evaluation stops there and the result is DENY. When all children have been evaluated and there was no DENY: the result is INDETERMINATE{DP} if there is an INDETERMINATE{DP} child, or if there is an INDETERMINATE{D} child and also an INDETERMINATE{P} or PERMIT child; otherwise INDETERMINATE{D} if there is an INDETERMINATE{D} child; otherwise PERMIT if there is a PERMIT child; otherwise INDETERMINATE{P} if there is an INDETERMINATE{P} child; and NOT_APPLICABLE if none of these.
+- permit-overrides: if a child's decision is PERMIT, the evaluation stops there and the result is PERMIT. When all children have been evaluated and there was no PERMIT: the result is INDETERMINATE{DP} if there is an INDETERMINATE{DP} child, or if there is an INDETERMINATE{P} child and also an INDETERMINATE{D} or DENY child; otherwise INDETERMINATE{P} if there is an INDETERMINATE{P} child; otherwise DENY if there is a DENY child; otherwise INDETERMINATE{D} if there is an INDETERMINATE{D} child; and NOT_APPLICABLE if none of these.
+- first-applicable: if a child's decision is not NOT_APPLICABLE, the evaluation stops there and the result is that child's decision (with its reason if INDETERMINATE). If all are NOT_APPLICABLE, the result is NOT_APPLICABLE.
+- deny-unless-permit: if a child's decision is PERMIT, the evaluation stops there and the result is PERMIT. If all children have been evaluated and there was no PERMIT, the result is DENY.
+- permit-unless-deny: if a child's decision is DENY, the evaluation stops there and the result is DENY. If all children have been evaluated and there was no DENY, the result is PERMIT.
+- only-one-applicable (used only by policy sets): the children are examined one at a time from the first by evaluating only their targets (section 7). (This is called the "applicability check"; a child that only underwent the applicability check does not count as evaluated.) If the result is INDETERMINATE, the evaluation stops there and the result is INDETERMINATE{DP} (the reason is the reason of that target). If the result is MATCH and there is already an earlier child whose result was MATCH, the evaluation stops there and the result is INDETERMINATE{DP} (the reason is "multiple applicable <ID of the earlier MATCH child> <ID of this child>"). When all children have been examined: if there is no MATCH child, the result is NOT_APPLICABLE. If there is exactly one, that child is evaluated (its target is evaluated again as well), and its decision (with its reason if INDETERMINATE) is the result.
+
+* 11. Obligations and advice
+Obligations (OBLIGATION lines) and advice (ADVICE lines) are handled only when the decision of the element in which they are written is a definite decision. Let X be the decision of the element (PERMIT or DENY), and perform the following in order.
+1. The obligation list of the element is empty for a rule, and for a policy or a policy set it is the concatenation of the obligation lists of the supporters in supporter order. The advice list is formed in the same way.
+2. The element's own obligations whose effect is X are processed in written order. All argument expressions of each obligation are evaluated in written order, and if any of them is an error, the decision of the element is changed to INDETERMINATE{D} (when X is DENY) or INDETERMINATE{P} (when X is PERMIT), and its reason is "obligation <obligation ID>: <reason of the first error>". In this case the element has no decisive element, no obligations and no advice, and the processing of this element's obligations and advice ends here. If there is no error, "<obligation ID>" followed by " <argument name>=<value notation>" for each argument in written order (just the ID if there are no arguments) is appended to the end of the obligation list.
+3. The element's own advice whose effect is X are processed in written order. All argument expressions are evaluated, and if there is no error, an entry of the same form as for obligations is appended to the end of the advice list; if there is an error, that advice is not appended (the decision does not change).
+The obligations and advice of a request are the obligation list and the advice list of the root policy set.
+
+* 12. Evaluating and recording requests
+For a valid request, the root policy set is evaluated according to sections 4 to 11, and its decision is the decision of the request. If the decision of the request is a definite decision, the decisive element of the root is the decisive element of the request.
+During the evaluation, a "coverage symbol" is recorded for each rule as follows. An evaluated rule gets "P" if its decision (after the obligation processing) is PERMIT, "D" if it is DENY, "-" if it is NOT_APPLICABLE, and "I" if it is INDETERMINATE. Rules that were not evaluated (skipped ones, ones for which the target of an ancestor was NO_MATCH, descendants of an element that only underwent the applicability check, and so on), and all rules for a request that resulted in ERROR, get ".".
+
+* 13. Effective permissions
+The users that appear in accepted ASSIGN lines are sorted in name order, and the following are computed for each user u.
+- Assignment: for each role r that appears in u's accepted ASSIGN lines, the union of the valid days of those lines is the assignment days of r.
+- Authorization: for a role x, the union of the assignment days of all roles r that have an assignment and for which x is contained in the closure of the set consisting of r alone is the authorization days of x (only nonempty ones are considered). This is the same as the set of days d on which the authorized roles of u on day d contain x.
+- Permissions: for each (action name, resource type) pair contained in the permissions of a role whose authorization days are nonempty, those roles whose permissions contain the pair are called the "via roles", and the union of the authorization days of the via roles is the days of the pair.
+- Effective count: if u has a SUBJECT line, then for each permission pair (a, t), let n be the number of resources whose type is t, and k the number of those resources for which the decision of the following hypothetical request is PERMIT. The hypothetical request has user u, role specification "*", action name a, that resource as its resource, and the attributes of the REFERENCE line as its environment attributes, and it is evaluated according to sections 4 to 11. Hypothetical requests do not affect the other parts of the output files (coverage symbols, summary counts, and so on). The day of the REFERENCE line is an integer between 1 and 365 inclusive.
+
+* 14. Analysis
+(The domain space)
+Consider every combination of candidate values of the DOMAIN lines (one candidate value chosen for each attribute, in the order in which the DOMAIN lines appear in the file); each combination is called a "point". The number of points is the product of the numbers of candidates of the DOMAIN lines. The points are ordered so that the choice for the first DOMAIN line changes slowest and the choice for the last DOMAIN line changes fastest (the candidates of each line are chosen in written order), and this order is called the "canonical order". For example, the canonical order for DOMAIN a 1 2 and DOMAIN b x y z is (1,x), (1,y), (1,z), (2,x), (2,y), (2,z).
+The attribute set at each point consists only of the attributes of the DOMAIN lines with the values of that point (all other attributes are not present).
+The "standalone value" of a rule is the decision of section 8 without the obligation processing. That is: NOT_APPLICABLE if the target is NO_MATCH; INDETERMINATE if the target is INDETERMINATE; and if the target is MATCH, the effect (PERMIT or DENY) if the condition value is true, NOT_APPLICABLE if it is false, and INDETERMINATE if it is an error (including a value that is not a boolean). A rule "applies" at a point if, at that point, the results of the targets of all ancestors of the rule are MATCH and the standalone value of the rule is PERMIT or DENY (combining algorithms are not taken into account).
+- Applicability count and example: for each rule, the number of points at which it applies (the applicability count) and the first point in canonical order at which it applies (the example) are computed.
+- Dead rule: a rule whose applicability count is 0.
+- Shadowed rule: a rule that is a child of a policy whose combining algorithm is first-applicable, that is not a dead rule, and such that at every point where it applies, at least one rule that comes before it in the same policy has a standalone value that is not NOT_APPLICABLE. The earliest of those earlier rules is called the "blocker" at that point.
+- Conflict: for each policy, for each pair of its child rules (an earlier rule a and a later rule b) with different effects, the number of points at which both a and b apply is computed. A pair for which this number is 1 or more is called a conflict. The "winner" of a conflict is a if the combining algorithm of the policy is first-applicable, the rule whose effect is DENY if it is deny-overrides or permit-unless-deny, and the rule whose effect is PERMIT if it is permit-overrides or deny-unless-permit.
+(Counts about requests)
+- Coverage: for each rule, the sequence of the coverage symbols (section 12) of the requests (in file order) and the number of P and D in it are computed. A rule for which this number is 0 is called an "uncovered rule".
+- Grant count: for each (role, action name, resource type) of an accepted PERMIT line, the number of valid requests whose granting role is that role and whose action name and resource type are equal to those of the line is computed.
+- Summary: the number of requests for each decision, the total number of refused activations, the number of times each element was the decisive element, and the number of each obligation and advice ID are computed (see the description of analysis.txt in [Output files]).
+
+[Output files]
+Write the following four files to output/. Every file consists only of ASCII characters, every line ends with a line feed (LF), and no line has trailing spaces. Text inside double quotes is written exactly as shown, and the <...> parts are replaced by values. Apart from indentation, every separator is a single space. "(indent k)" means that k spaces are placed at the start of the line. A file with no lines to write is an empty file (0 bytes).
+
+* output/decisions.txt (decisions)
+For each request, in file order, the following lines are output. No blank lines are placed between requests.
+- A request that resulted in ERROR: only the single line "<request ID> ERROR <message>".
+- A valid request: the first line is "<request ID> <decision notation (with reason) of the request>", followed by " by <ID of the decisive element>" if the decision is a definite decision. Then, for each refused activation in candidate order, (indent 2) "refused <role name> <refusal reason>"; for each item of the request's obligation list, (indent 2) "obligation <item>"; and for each item of the request's advice list, (indent 2) "advice <item>" are output.
+
+* output/traces.txt (evaluation explanations)
+For each explained request, in file order, a block is output, with one blank line only between blocks. The first line of each block is "request <request ID>".
+The block of a request that resulted in ERROR then has the single line (indent 2) "error <message>" and ends.
+The block of a valid request then consists of the following lines.
+- (indent 2) "user <user name> resource <resource ID> type <resource type> action <action name> day <request day>"
+- For each candidate in candidate order, (indent 2) "activate <role name> ok" for one whose activation succeeded, and (indent 2) "activate <role name> refused <refusal reason>" for one that was refused
+- (indent 2) "roles <the session roles in name order joined with ",">" ("roles -" if there are no session roles)
+- (indent 2) "rbac yes <granting role>" if there is a granting role, and (indent 2) "rbac no" otherwise
+- The evaluation tree: with the root policy set at depth 0, the "tree lines" below are output. The line of an element at depth k is written with (indent 2+2k).
+- (indent 2) "decision <the first line of that request in decisions.txt with the request ID and the single space after it removed>"
+The tree lines are as follows.
+- An evaluated rule: one line consisting of "rule <ID> <effect> target <T>", followed by " condition <C>" if T is MATCH, and then followed by " -> <decision notation (with reason) of the rule>". T is the result of the target, and C is TRUE if the condition value is true, FALSE if it is false, and INDETERMINATE if it is an error.
+- An evaluated policy or policy set: one line "<kind> <ID> <combining algorithm> target <T> -> <decision notation (with reason) of the element>". The kind is policyset or policy. If T is not NO_MATCH, it is followed by its children in order, with the depth increased by 1. A child that was evaluated is output (including its descendants) according to these rules; a skipped child is the single line "<kind> <ID> skipped" (the kind is policyset, policy or rule); and a child that only underwent the applicability check in only-one-applicable is the single line "<kind> <ID> <combining algorithm> target <result of the target>" (followed by " (<reason>)" if the result is INDETERMINATE).
+If there are no explained requests, this file is empty.
+
+* output/permissions.txt (effective permissions)
+For each user of section 13, in name order, a block is output, with one blank line only between blocks. Each block consists of the following lines.
+- "user <user name>"
+- For each role that has an assignment, in role name order, (indent 2) "assigned <role name> <notation of the assignment days>"
+- For each role whose authorization days are nonempty, in role name order, (indent 2) "authorized <role name> <notation of the authorization days>"
+- For each permission pair, in order of action name and then of type when action names are equal, (indent 2) "permission <action name> <resource type> <notation of the days of the pair> via <the via roles in name order joined with ","> effective <k>/<n>". If u has no SUBJECT line, "effective -" is written instead of "effective <k>/<n>".
+The notation of days is the "day set notation" of section 1.
+
+* output/analysis.txt (analysis)
+The following parts are output in this order. No blank lines are placed.
+1. "rbac <number of RBAC diagnostics>", followed, for each diagnostic in increasing order of line number, by (indent 2) "line <line number> <keyword> <message>".
+2. "grants <number of accepted PERMIT lines>", followed by the (role name, action name, resource type) of the accepted PERMIT lines, sorted in order of role name, then of action name when equal, then of type when equal, each as (indent 2) "<role name> <action name> <resource type> <grant count>".
+3. "applicability <number of points>", followed, for every rule in document order, by (indent 2) "<rule ID> <applicability count> <notation of the example>". The notation of the example is "-" if the applicability count is 0, and otherwise, only for the attributes of DOMAIN lines that have two or more candidates, "<attribute reference>=<value notation of the value at that point>" in DOMAIN line order, separated by single spaces.
+4. "dead <number of dead rules>", followed, for each dead rule in document order, by (indent 2) "<rule ID>".
+5. "shadowed <number of shadowed rules>", followed, for each shadowed rule in document order, by (indent 2) "<rule ID> by <list of blocker IDs>". The list of blocker IDs is the IDs of the rules that were the blocker at some point where the rule applies (without duplicates), in document order, joined with ",".
+6. "conflicts <number of conflicts>", followed, for each conflict, in document order of the policy, then in document order of the earlier rule for the same policy, then in document order of the later rule when equal, by (indent 2) "<policy ID> <ID of the earlier rule> <ID of the later rule> <number of points at which both apply> <ID of the winner rule>".
+7. "coverage <number of requests>", followed, for every rule in document order, by (indent 2) "<rule ID> <sequence of coverage symbols> <number of P and D>". The sequence of coverage symbols is the coverage symbols of the requests concatenated without separators in the file order of the requests (its length is the number of requests).
+8. "uncovered <number of uncovered rules>", followed, for each uncovered rule in document order, by (indent 2) "<rule ID>".
+9. "summary", followed by the following lines.
+  - Five lines (indent 2) "decision <name> <count>", with the names in the order PERMIT, DENY, NOT_APPLICABLE, INDETERMINATE, ERROR. The count is the number of requests with that decision; INDETERMINATE is the total of the three kinds of INDETERMINATE, and ERROR is the number of requests that resulted in ERROR.
+  - (indent 2) "refused <total number of refused activations>" (summed over all valid requests)
+  - For each element that was the decisive element at least once, in document order, (indent 2) "decisive <element ID> <number of requests for which that element was the decisive element>"
+  - For each obligation ID that appears in the obligation lines of decisions.txt, in ID order, (indent 2) "obligation <ID> <number of obligation lines with that ID>"
+  - For each advice ID that appears in the advice lines of decisions.txt, in ID order, (indent 2) "advice <ID> <number of advice lines with that ID>"
+
+[Source files]
+The source code is split into the following six files (file names and extensions follow the conventions of each language).
+- main: handles the overall flow and the core of the processing, and holds the largest share of the logic. It reads the attribute and request files (determining types from the way values are written), checks requests, activates roles (authorized roles, the DSD check, expansion of "*") and determines the granting role, assembles the attribute set, evaluates expressions (value types, error reasons, the three-valued handling of and and or, any_of and all_of, functions), evaluates targets (match clauses, alternatives, lines), evaluates rules, policies and policy sets (converting the decision when the target is INDETERMINATE, supporters and decisive elements), processes obligations and advice, builds the lines of the evaluation tree, records coverage symbols, computes effective permissions (unions of day sets and the effective counts by hypothetical requests), computes the applicability counts and examples over the domain space and the dead rules, shadowed rules and conflicts, computes coverage, grant counts and the summary, and builds and writes every line of the four output files.
+- rbac: handles reading input/rbac.txt and its processing order, roles, inheritance (cycle detection and determining the path), permissions, SSD and DSD constraints, assignments (the range and SSD checks), closures, computing assigned roles and authorized roles, and recording the RBAC diagnostics.
+- policy_parser: reads input/policies.txt and builds the tree of elements (policy sets, policies, rules, combining algorithms and effects, target lines, alternatives and match clauses, condition expressions, and the argument expressions of obligations and advice).
+- expressions: performs lexical analysis of expressions (splitting into tokens) and parsing according to the binding strength of the operations, building syntax trees of expressions.
+- combining: handles the six combining algorithms (the extended INDETERMINATE values, the order of evaluating children and stopping, how reasons are chosen, and the applicability check of only-one-applicable).
+- analysis: handles enumerating the points of the domain space in canonical order, building the day set notation, determining the winner of a conflict, and determining blockers.
+
+[Constraints]
+- input/rbac.txt has at most 300 lines, and there are at most 40 accepted roles. There are at most 50 users in ASSIGN lines.
+- input/policies.txt has at most 500 lines, there are at most 100 elements in total, and the nesting depth is at most 8, counting the root as 1. This file is written correctly as described in [Input files] (the structure of elements, no duplicate IDs, the grammar of targets and expressions, the number of function arguments, only-one-applicable being used only for policy sets, and the usage of it and present).
+- In input/attributes.txt, the user names of SUBJECT lines are distinct, and the resource IDs of RESOURCE lines are distinct. There are at most 100 SUBJECT lines and at most 200 RESOURCE lines. The attribute names within one line, and within one request, are distinct. The attribute references of DOMAIN lines are distinct, and the candidate values within one DOMAIN line are distinct.
+- The number of points is between 1 and 10000 inclusive, and there is at least one DOMAIN line with two or more candidates.
+- input/requests.txt has between 1 and 300 lines, and the request IDs are distinct.
+- The absolute value of every integer and integer literal written in the input is at most 10^6, and in every expression evaluation (for requests, hypothetical requests and the whole domain space), the absolute value of every arithmetic result is at most 10^6.
+
+[Example]
+The following is a small example to show the format; it differs from the actual input.
+
+input/rbac.txt
+ROLE staff
+ROLE editor
+ROLE chief
+ROLE auditor
+INHERITS editor staff
+INHERITS chief editor
+INHERITS staff chief
+PERMIT staff read article
+PERMIT editor write article
+PERMIT chief publish article
+PERMIT auditor read article
+SSD sod_review 2 chief,auditor
+DSD dsd_edit 2 editor,auditor
+ASSIGN ann chief 1 365
+ASSIGN ann auditor 100 200
+ASSIGN ben editor 1 180
+ASSIGN ben auditor 1 365
+
+input/policies.txt
+# newsroom
+POLICYSET site deny-overrides
+  OBLIGATION DENY log user=subject.id
+  POLICY desk first-applicable
+    TARGET resource.type == "article"
+    RULE own_desk PERMIT
+      CONDITION subject.rbac and subject.desk == resource.desk
+      OBLIGATION PERMIT stamp level=resource.level
+    END
+    RULE rbac_read PERMIT
+      TARGET action.id == "read"
+      CONDITION subject.rbac
+    END
+    RULE other DENY
+      ADVICE DENY ask desk=resource.desk
+    END
+    RULE late PERMIT
+      TARGET action.id == "write"
+    END
+  END
+  POLICY sensitive deny-overrides
+    TARGET resource.level >= 2
+    RULE low_level DENY
+      CONDITION subject.level < resource.level
+    END
+    RULE night DENY
+      TARGET environment.hour >= 22
+    END
+  END
+END
+
+input/attributes.txt
+SUBJECT ann desk=news level=3
+SUBJECT ben desk=sports level=1
+RESOURCE a1 article desk=news level=2 owner=ben
+RESOURCE a2 article desk=sports
+DOMAIN resource.type article
+DOMAIN subject.rbac true false
+DOMAIN action.id read write
+DOMAIN subject.desk news
+DOMAIN resource.desk news sports
+DOMAIN subject.level 1 3
+DOMAIN resource.level 2
+REFERENCE day=50
+
+input/requests.txt
+r1 ann chief publish a1 day=150 EXPLAIN
+r2 ben editor,auditor write a1 day=20 hour=23
+r3 ben * read a2 day=200
+r4 cid - read a1 day=5
+r5 ann auditor,chief read a2 day=150 EXPLAIN
+
+output/decisions.txt
+r1 PERMIT by own_desk
+  obligation stamp level=2
+r2 DENY by other
+  refused auditor dsd dsd_edit
+  obligation log user="ben"
+  advice ask desk="news"
+r3 INDETERMINATE{P} (obligation stamp: missing resource.level)
+r4 ERROR unknown user cid
+r5 PERMIT by rbac_read
+  refused auditor unauthorized
+
+output/traces.txt
+request r1
+  user ann resource a1 type article action publish day 150
+  activate chief ok
+  roles chief,editor,staff
+  rbac yes chief
+  policyset site deny-overrides target MATCH -> PERMIT
+    policy desk first-applicable target MATCH -> PERMIT
+      rule own_desk PERMIT target MATCH condition TRUE -> PERMIT
+      rule rbac_read skipped
+      rule other skipped
+      rule late skipped
+    policy sensitive deny-overrides target MATCH -> NOT_APPLICABLE
+      rule low_level DENY target MATCH condition FALSE -> NOT_APPLICABLE
+      rule night DENY target NO_MATCH -> NOT_APPLICABLE
+  decision PERMIT by own_desk
+
+request r5
+  user ann resource a2 type article action read day 150
+  activate auditor refused unauthorized
+  activate chief ok
+  roles chief,editor,staff
+  rbac yes staff
+  policyset site deny-overrides target MATCH -> PERMIT
+    policy desk first-applicable target MATCH -> PERMIT
+      rule own_desk PERMIT target MATCH condition FALSE -> NOT_APPLICABLE
+      rule rbac_read PERMIT target MATCH condition TRUE -> PERMIT
+      rule other skipped
+      rule late skipped
+    policy sensitive deny-overrides target NO_MATCH -> NOT_APPLICABLE
+  decision PERMIT by rbac_read
+
+output/permissions.txt
+user ann
+  assigned chief 1-365
+  authorized chief 1-365
+  authorized editor 1-365
+  authorized staff 1-365
+  permission publish article 1-365 via chief effective 1/2
+  permission read article 1-365 via staff effective 2/2
+  permission write article 1-365 via editor effective 1/2
+
+user ben
+  assigned auditor 1-365
+  assigned editor 1-180
+  authorized auditor 1-365
+  authorized editor 1-180
+  authorized staff 1-180
+  permission read article 1-365 via auditor,staff effective 0/2
+  permission write article 1-180 via editor effective 0/2
+
+output/analysis.txt
+rbac 2
+  line 7 INHERITS cycle staff > chief > editor > staff
+  line 15 ASSIGN ssd sod_review day 100 roles auditor,chief
+grants 4
+  auditor read article 1
+  chief publish article 1
+  editor write article 1
+  staff read article 1
+applicability 16
+  own_desk 4 subject.rbac=true action.id="read" resource.desk="news" subject.level=1
+  rbac_read 4 subject.rbac=true action.id="read" resource.desk="news" subject.level=1
+  other 16 subject.rbac=true action.id="read" resource.desk="news" subject.level=1
+  late 8 subject.rbac=true action.id="write" resource.desk="news" subject.level=1
+  low_level 8 subject.rbac=true action.id="read" resource.desk="news" subject.level=1
+  night 0 -
+dead 1
+  night
+shadowed 1
+  late by own_desk,other
+conflicts 3
+  desk own_desk other 4 own_desk
+  desk rbac_read other 4 rbac_read
+  desk other late 8 other
+coverage 5
+  own_desk P-I.- 1
+  rbac_read .-..P 1
+  other .D... 1
+  late ..... 0
+  low_level -.... 0
+  night -.... 0
+uncovered 3
+  late
+  low_level
+  night
+summary
+  decision PERMIT 2
+  decision DENY 1
+  decision NOT_APPLICABLE 0
+  decision INDETERMINATE 1
+  decision ERROR 1
+  refused 2
+  decisive own_desk 1
+  decisive rbac_read 1
+  decisive other 1
+  obligation log 1
+  obligation stamp 1
+  advice ask 1
+
+Some notes on this example. INHERITS staff chief is rejected because staff is contained in the closure of chief (chief, editor, staff). The assignment of auditor to ann is rejected by the SSD constraint sod_review, because on day 100 both chief and auditor would be authorized roles. Therefore the activation of auditor in r5 is unauthorized. In r2, after editor has been activated, the closure of the set with auditor added (editor, staff, auditor) contains two roles of the DSD constraint dsd_edit, so the activation of auditor is refused. In r3, ben's only authorized role on day 200 is auditor, and own_desk becomes PERMIT, but the argument resource.level of the obligation stamp is not present, so the decision of own_desk becomes INDETERMINATE{P}. In the domain space environment.hour is not present, so the target of night is NO_MATCH at every point, and night is a dead rule.

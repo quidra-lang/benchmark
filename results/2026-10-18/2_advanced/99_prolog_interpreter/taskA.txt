@@ -1,0 +1,500 @@
+[Overview]
+Write a small Prolog interpreter. The program reads input/prelude.pl, which contains library predicates, and input/program.pl, which contains the user's program, in this order to build a database of clauses (hereafter called "consulting"), and then executes the queries written in input/queries.txt one line at a time.
+Consulting reads clauses by operator precedence parsing with a fixed operator table, reports syntax errors together with their positions, and resumes reading from the next clause. It also reports clause errors (such as redefinition of a built-in predicate) and warnings (variables that occur only once, discontiguous clauses, redefinition of a library predicate, calls to undefined predicates).
+Queries are executed by depth-first SLD resolution. Execution is an iteration that explicitly maintains a "goal list" and a "choice point stack"; the resolution must not be driven by recursive calls of the implementation language. Each time a clause is called, it is used with fresh variables, and unification does not perform the occurs check. The interpreter provides cut, if-then-else, negation (\+), call, exceptions with catch and throw, and built-in predicates such as findall, between and length. All arithmetic is done on integers in the 32-bit range; floating-point numbers are not supported. Errors in built-in predicates become exception terms in a form modeled on the ISO standard.
+As results, the program writes five files: the consulting report (output/consult.txt), the listing of the clauses in the database (output/listing.txt), the answers to each query (output/answers.txt), the text output by write/1 and similar predicates (output/write_output.txt), and inference statistics (output/stats.txt). The program runs in a directory that contains, besides the source files, input/ holding the input files and an empty output/, and prints nothing to standard output.
+
+[Input files]
+There are three input files: input/prelude.pl, input/program.pl and input/queries.txt. Every file consists only of printable ASCII characters (character codes 32 to 126) and line feeds (LF), and every line (including the last line) ends with a line feed. No tabs appear, and no line has trailing spaces. Below, a "space" means one half-width space character, and a part enclosed in < > denotes a value.
+
+* input/prelude.pl, input/program.pl
+Prolog sources. prelude.pl is the library and program.pl is the user's program; the two files are written in the same grammar and are processed by the same rules (except that the redefinition rule of 5 (4) applies only to the clauses of program.pl). A position in a file is a pair of a line number (the first line of the file is 1) and a column number (the first character of a line is 1). The sources do not necessarily follow the grammar of [Processing].
+
+* input/queries.txt
+A file with one query per line; there are no empty lines. Each line has one of the following forms.
+  ?- <query body>
+  <limit> ?- <query body>
+<limit> is an integer from 1 to 100 written in decimal (without leading zeros), and is the maximum number of solutions sought for that query. A query without <limit> has no limit on the number of solutions. The part from the character after "?- " ("?-" and one space) to the end of the line is called the "query body". A query body usually consists of one term and a terminating ".", but it does not necessarily follow the grammar. The numbers 1, 2, ... assigned in line order are called "query numbers".
+
+[Processing]
+* 1. Lexical analysis
+Read a text (a whole file, or one query body) from the beginning and split it into "tokens". The position of each token is the position of its first character. For positions within a query body, the line number is 1, and the column number is counted with the first character of that line of queries.txt as 1 (the column of the first character of the body is 4 or more).
+Below, "lowercase letter" means a to z, "uppercase letter" means A to Z and "digit" means 0 to 9, and lowercase letters, uppercase letters, digits and "_" are together called "alphanumeric characters". The following 17 characters are called "symbol characters".
+    + - * / \ ^ < > = ~ : . ? @ # & $
+Depending on the character at the current position, perform whichever of (1) to (9) below applies, and repeat until the end of the text.
+(1) Space or line feed: skip it.
+(2) "%": the start of a comment. Skip everything up to just before the line feed of that line (or up to the end of the text, if there is no line feed at the end of the text).
+(3) Digit: the longest run of digits is an "integer token", whose value is the run read as a decimal number (leading zeros are allowed). If the value is greater than 2147483647, the whole run becomes the invalid token "integer too large".
+(4) Lowercase letter, uppercase letter or "_": the longest run of alphanumeric characters. If its first character is a lowercase letter, it is a "name token"; otherwise it is a "variable token".
+(5) Symbol character: the longest run of symbol characters. If it is the single character "." and the next character is a space, a line feed or "%", or the end of the text has been reached, it is an "end token". Otherwise it is a name token (for example, ":-", "=.." and "\+" are each one name token).
+(6) "!" or ";": that single character is a name token.
+(7) ",", "|", "(", ")", "[", "]": that single character is a "punctuation token".
+(8) "'": the start of a "quoted name token". Starting from the next character, advance one or two characters at a time by the following rules.
+  - When a line feed or the end of the text is reached: the part from the opening "'" up to just before it becomes the invalid token "unterminated quoted atom", and lexical analysis continues from that line feed (or the end of the text).
+  - Two consecutive "'": the two together represent the single character "'".
+  - A single "'": the end of the quote. The part from the opening "'" to this "'" is one token.
+  - "\" and the next character (which is not a line feed): the two characters form a pair. "\n" represents a line feed, "\t" a tab, "\\" the character "\", and "\'" the character "'". Any pair other than these four is an "incorrect escape". When "\" is followed by a line feed or the end of the text, the "\" represents nothing and only one character is advanced (the next step then produces an invalid token by the rule above).
+  - Any other character: it represents itself.
+  When the end of the quote is reached, if there was no incorrect escape, the token is a quoted name token whose name is the string of the represented characters in order (it may be empty). Otherwise, the whole token becomes the invalid token "undefined escape sequence".
+(9) A character that is none of the above (such as the double quote ", "`", "{" and "}"): that single character becomes the invalid token "illegal character 'c'" (c is that character).
+Finally, an "EOF token" representing the end of the text is placed at the end position of the text. For a file, this is after the line feed of the last line, so its line number is the number of lines of the file plus 1, and its column number is 1. For a query body, the line number is 1 and the column number is the number of characters of that line of queries.txt plus 1.
+A token is said to "have whitespace before it" when a space, a line feed or a comment lies immediately before it (between it and the previous token in the same text). The first token of a text is also considered to have whitespace before it.
+The name of a name token of (4) to (6) is its spelling, and the name of a quoted name token is the string it represents. Below, a plain "name token" includes quoted name tokens, while an "unquoted name token" means only those of (4) to (6). The "spelling" of a token is its exact character string in the source (for a quoted name token, it includes the enclosing "'" characters and the escapes exactly as written).
+
+* 2. Terms
+A term is an integer, an atom, a variable or a compound term.
+- An integer is an integer from -2147483648 to 2147483647.
+- An atom is a constant that has a name (a string of zero or more characters). Atoms with the same name are the same atom. Below, an atom is written by its name.
+- A variable represents nothing while it is "unbound"; once it is "bound" to another term, it represents that term.
+- A compound term consists of a "functor name" (a string) and a sequence of one or more "arguments" (terms). The number of arguments is called the "arity", and the compound term with functor name f and arguments t1, ..., tn is written f(t1, ..., tn).
+Atoms and compound terms are together called "callable terms". The arity of an atom is 0, and the pair of the functor name (for an atom, its name) and the arity of a callable term is called its "predicate indicator", written "name/arity" (examples: append/3, nl/0).
+Below, terms are always considered "dereferenced": a bound variable is considered replaced by the term it represents (bindings may form a chain, in which case it is followed until an unbound variable or some other term is reached). The arguments of a compound term are also dereferenced at the time they are examined.
+"Lists" are represented with the atom [] (the empty list) and compound terms with functor name "." and arity 2 (the first argument is called the "first element" and the second argument the "rest"). Starting from a term L, repeatedly move to the rest while the term is a compound term with functor name "." and arity 2; the first elements of the compound terms passed, in order, are called the "elements of L", and the term finally reached is called the "tail of L". When the tail is [], L is called a "proper list". The proper list with elements t1, ..., tn and tail [] is written [t1, ..., tn].
+
+* 3. Operators
+The operators in the following table are used. The table is fixed and never changes. Priorities are integers from 1 to 1200.
+  Infix operators:
+    1200 xfx  :-
+    1100 xfy  ;
+    1050 xfy  ->
+    1000 xfy  ,
+     700 xfx  =  \=  ==  \==  is  =:=  =\=  <  >  =<  >=  =..
+     500 yfx  +  -
+     400 yfx  *  /  //  mod  rem
+  Prefix operators:
+     900 fy   \+
+     200 fy   -
+For an infix operator of priority p, the "left limit" is p-1 for types xfx and xfy and p for yfx, and the "right limit" is p-1 for types xfx and yfx and p for xfy. The "argument limit" of a prefix operator (both have type fy) is its priority p.
+The names of the infix and prefix operators (the 24 strings that appear in the table above) are called "operator names", and an atom whose name is an operator name is called an "operator atom".
+
+* 4. Parsing
+(1) Reading clauses and queries
+From a position in the token sequence, read one "clause" by the following steps. Below, "the next token" means the first token not yet consumed.
+  1. Read a term with limit 1200 ((2)).
+  2. Consume the next token. If it is not an end token, there is a syntax error at that token.
+A query body is read as one clause by the same steps starting from its first token, and then the following step is also performed.
+  3. If the next token is not the EOF token, there is a syntax error at that token.
+Within one clause (or query body), variable tokens with the same spelling denote the same variable, and fresh variables are used for each clause (each query). However, a variable token whose spelling is the single character "_" (an "anonymous variable") denotes a different fresh variable each time it appears.
+When a syntax error occurs, reading stops at that point. The position of a syntax error is the position of its token. The "message" of a syntax error, except for the one defined in (3) (c), depends on the token as follows.
+  - Invalid token: the string of that invalid token (example: illegal character '"').
+  - EOF token: unexpected end of file
+  - End token: unexpected end of clause
+  - Unquoted name token whose name is an infix operator name: operator priority clash
+  - Otherwise: unexpected "S" (S is the spelling of the token; example: unexpected ")")
+(2) Reading a term
+To "read a term with limit M" means to obtain a term T and its priority P by the following steps.
+  1. Read a primary term with limit M ((3)), and let T and P be that term and its priority.
+  2. If the next token is an "infix operator token" (an unquoted name token whose name is an infix operator name, or the punctuation token ","), let p be the priority of that operator, la its left limit and ra its right limit. If p <= M and P <= la, consume that token, read a term with limit ra and call it R, replace T with "the compound term whose functor name is the name of the operator and whose arguments are T, R" and P with p, and repeat 2. Otherwise, and also when the next token is not an infix operator token, go to 3.
+  3. T and P are the result.
+For example, "a - b - c" becomes -(-(a, b), c), "a , b , c" becomes ','(a, ','(b, c)), and "a :- b , c" becomes :-(a, ','(b, c)). In "a = b = c", the condition of 2 (P <= la) does not hold at the second "=", so the term ends there, and step 2 of reading a clause gives a syntax error at that "=" (message: operator priority clash).
+(3) Reading a primary term
+To "read a primary term with limit M" means to consume the next token t and obtain a term and its priority according to t as follows.
+  - Integer token: the integer with its value, with priority 0.
+  - Variable token: that variable, with priority 0.
+  - Punctuation token "(": read a term with limit 1200 and consume the next token. If it is not the punctuation token ")", there is a syntax error at that token. The result is the term read, with priority 0.
+  - Punctuation token "[": if the next token is the punctuation token "]", consume it; the result is the atom [] (priority 0). Otherwise, read a term with limit 999, and while the next token is the punctuation token ",", repeatedly consume it and read a term with limit 999; the terms read are the elements, in order. Then, if the next token is the punctuation token "|", consume it and read a term with limit 999, which becomes the tail (otherwise the tail is []). Finally, consume the next token; if it is not the punctuation token "]", there is a syntax error at that token. The result is the list with those elements and that tail (priority 0).
+  - Name token (including quoted ones): the first of (a) to (d) below that applies.
+    (a) The next token is the punctuation token "(" and does not have whitespace before it: consume that "(", read a term with limit 999, and while the next token is the punctuation token ",", repeatedly consume it and read a term with limit 999. Then consume the next token; if it is not the punctuation token ")", there is a syntax error at that token. The result is the compound term whose functor name is the name of t and whose arguments are the terms read, in order (priority 0).
+    (b) t is the unquoted name token "-", and the next token is an integer token that does not have whitespace before it: consume that integer token. The result is the integer whose value is that token's value with its sign inverted (priority 0).
+    (c) t is an unquoted name token whose name is a prefix operator name, and the next token "can start a term": let p be the priority of the prefix operator. If p > M, there is a syntax error at t, with the message "operator priority clash". Otherwise, read a term with limit p (the argument limit) and call it X; the result is the compound term whose functor name is the name of t and whose only argument is X, with priority p. Here, a token "can start a term" if it is an integer token, a variable token, a quoted name token, the punctuation token "(" or "[", or an unquoted name token whose name is not an infix operator name (or is also a prefix operator name).
+    (d) Otherwise: the result is the atom whose name is the name of t (priority 0).
+  - Otherwise (the punctuation tokens ")", "]", ",", "|", an end token, the EOF token, an invalid token): there is a syntax error at t.
+For example, "- 1" and "-(1)" are both -(1), "-1" is the integer -1, "- a" and "-a" are both -(a), and "- -1" is -(-1). In "f(-)" and "- = a", the "-" is an atom because the next token cannot start a term. "X = \+ a" gives a syntax error at "\+" (operator priority clash), because the priority 900 of "\+" is greater than 699, the right limit of "=". "1.5" becomes three tokens: the integer 1, the name token "." and the integer 5.
+
+* 5. Consulting
+(1) Reading clauses and recovering from syntax errors
+Read the token sequence of each file from the beginning, in the order prelude.pl, program.pl. If the next token is the EOF token, that file is finished. Otherwise, read one clause starting from the next token (4 (1)). The line number of its first token is called the "line" of that clause.
+When a syntax error occurs, report it (consult.txt in [Output files]). Then search forward from the token of the syntax error for the first end token that appears (if the token of the syntax error is itself an end token, that token), and continue reading clauses from the token after it. If the EOF token is reached without an end token appearing, that file is finished.
+A term read without a syntax error is processed as in (2) to (4) below.
+(2) Checking a clause
+Let C be the term read. If C is a compound term with functor name ":-" and arity 2, its first argument is the "head" and its second argument is the "body". Otherwise, the whole of C is the head and there is no body (a clause without a body is called a "fact"). Check 1 to 4 below in this order; at the first one that applies, report a "clause error" and discard the clause. The message of the report is the string of the respective term written in the quoted style of 9.
+  1. The head is a variable: instantiation_error
+  2. The head is an integer: type_error(callable, H) (H is the head)
+  3. The predicate indicator of the head is that of a control construct (7 (3)) or a built-in predicate (7 (4) and 8): permission_error(modify, static_procedure, N/A) (N/A is that predicate indicator)
+  4. There is a body and the goal conversion of the body ((3)) fails: type_error(callable, B) (B is the body before conversion)
+If there is no clause error, then, when there is a body, replace the body with the term obtained by its goal conversion, and add the clause to the database as in (4).
+(3) Goal conversion
+The "goal conversion" of a term G builds a term by the following rules. If a failure occurs during the conversion, the whole conversion fails.
+  - G is a variable: call(G)
+  - G is an integer: failure.
+  - G is a compound term with functor name ",", ";" or "->" and arity 2: the term with the same functor name whose two arguments are each converted
+  - Otherwise (atoms and other compound terms): G itself
+The conversion only rebuilds the shape of the term; variables are the original variables themselves (for example, the conversion of "X, \+ Y" is ','(call(X), \+(Y))).
+(4) Adding clauses and warnings
+The database holds a sequence of clauses for each predicate (predicates are distinguished by predicate indicator), and the predicates are arranged in "database order" (the order in which their first clause was added). Let N/A be the predicate indicator of the head of the clause being added and P its predicate, and perform 1 to 4 below in this order. Warnings are reported as described for consult.txt in [Output files].
+  1. Redefinition: for a clause of program.pl, if P has clauses from prelude.pl (in this case all clauses of P are from prelude.pl), report the warning "redefining prelude procedure N/A" and remove all clauses of P. The position of P in database order does not change.
+  2. Discontiguity: if P already has clauses from this file, the predicate of the clause added last from this file is not P, and this warning has not yet been reported for P in this file, report the warning "clauses of N/A are not together".
+  3. Add the clause at the end of the clause sequence of P. If P is not yet in the database, add P at the end of database order.
+  4. Variable warnings: if, among the variable tokens of the clause (both head and body), there are spellings that do not start with "_" and occur only once, report the warning "singleton variables: X, Y" (those spellings joined by ", " in order of their first occurrence in the clause). Then, if there are spellings of two or more characters starting with "_" that occur two or more times, report the warning "variables starting with _ occur more than once: _A, _B" (joined in the same way).
+N/A in a warning is the string of the term representing the predicate indicator (the compound term with functor name "/" whose arguments are the atom of the name and the integer of the arity) written in the quoted style of 9 (examples: last/2, (is)/2). Every predicate indicator displayed below is written the same way.
+(5) Checking for undefined predicates
+After both files have been read, examine the clauses of each predicate in database order, each predicate's clauses in clause-sequence order, and for each clause with a body, traverse the body from left to right by the following rules.
+  - Variables and integers are not examined.
+  - For a term with functor name ",", ";" or "->" and arity 2, traverse the first argument and then the second argument.
+  - For a term whose predicate indicator is \+/1 or call/1, traverse its argument; for findall/3, the second argument; for catch/3, the first argument and then the third argument.
+  - For any other term whose predicate indicator is neither a control construct nor a built-in predicate and whose predicate is not in the database: if that predicate indicator has not yet been reported, report the warning "undefined procedure N/A called from M/B" (N/A is the predicate indicator of the term, and M/B is the predicate indicator of the clause's predicate) at the position of that clause.
+
+* 6. Unification and copying
+The "unification" of two terms is done as follows.
+  - If the two are the same variable, it succeeds.
+  - If one is an unbound variable, bind it to the other term and succeed (no occurs check is performed).
+  - If both are integers, it succeeds when their values are equal; if both are atoms, it succeeds when their names are equal.
+  - If both are compound terms with equal functor names and arities, unify their arguments pairwise in order; it succeeds if all of them succeed.
+  - Otherwise it fails (for example, the integer 1 and the atom '1' do not unify).
+Bindings made before a unification fails are always undone by the later rules, so they do not affect the result.
+A "copy" of a term is the term obtained by replacing each unbound variable in it with a fresh variable (the same variable is replaced with the same fresh variable).
+Two terms are "identical" when they are the same variable, integers with equal values, atoms with equal names, or compound terms with equal functor names and arities whose arguments are pairwise identical.
+
+* 7. Execution
+(1) Execution state
+Execution uses a "goal list" and a "choice point stack".
+- The goal list is a sequence of "goal entries", executed from the front. Each goal entry consists of three parts: a goal (a term, or a "marker" defined below), a "cut barrier" (an integer >= 0), and a "catch context" (a CATCH choice point, described later, or "none").
+- The elements of the choice point stack are called "choice points", and the number of elements is called the "height". Every choice point records the binding state at the time it was created (so that the bindings made after that can be undone) and a "resume list" (a goal list). There are six kinds of choice points: ALT, CLAUSES, BETWEEN, LENGTH, CATCH and FINDALL.
+- To "cut to height h" means to remove choice points from the top (the newest) until the height of the choice point stack is h.
+- To "undo the bindings" of a choice point means to undo all bindings made after that choice point was created, returning those variables to the unbound state.
+Below, [G1 (c1, k1), G2 (c2, k2)] + L denotes the list obtained by placing the goal entries "goal G1, cut barrier c1, catch context k1" and "G2, c2, k2", in this order, in front of the goal list L. A goal entry written without a cut barrier and catch context uses the cut barrier c and the catch context k of the goal entry being executed.
+(2) Executing a query
+Let Q be the term read from the query body. Set the goal list to [call(Q) (0, none)], the choice point stack to empty, and the inference count, the number of choice points created, the backtrack count and the solution count all to 0, and repeat the following.
+  1. If the goal list is empty, a solution has been found ((9)).
+  2. Otherwise, remove the first goal entry and execute it. The remaining list is called the "continuation", and let c and k be the cut barrier and the catch context of the removed goal entry. The goal (when it is not a marker) is considered dereferenced, and it is always a callable term. The execution either "succeeds" with a new goal list, "fails", or "raises" an exception. On success, that list becomes the goal list and execution goes back to 1; on failure, backtrack ((6)); on an exception, handle it as in (7).
+(3) Control constructs
+When the predicate indicator of a goal is one of the following, the goal is a "control construct" and is executed as follows. Executing a control construct does not count as an inference.
+  - ','/2 (goal ','(A, B)): succeed with [A, B] + continuation.
+  - !/0: cut to height c, and succeed with continuation.
+  - ;/2 (goal ;(L, R)): let h be the current height, and create an ALT choice point whose resume list is [R] + continuation. If L is a compound term ->(I, T) with functor name "->" and arity 2, succeed with [I (h+1, k), ITE-marker(h), T] + continuation. Otherwise, succeed with [L] + continuation.
+  - ->/2 (goal ->(I, T)): let h be the current height, and succeed with [I (h, k), ITE-marker(h), T] + continuation (no choice point is created).
+  - \+/1 (goal \+(G)): let h be the current height, create an ALT choice point whose resume list is the continuation, and succeed with [call(G), NAF-marker(h)] + continuation.
+  - call/1 to call/8 (goal call(G, A1, ..., An), 0 <= n <= 7): let N be the arity of call (n+1). If G is a variable, raise the exception error(instantiation_error, call/N); if G is an integer, raise the exception error(type_error(callable, G), call/N). Otherwise, build the term G' obtained by adding n arguments to G: if n = 0, G' is G itself; if G is an atom, G' is the compound term whose functor name is the name of G and whose arguments are A1, ..., An; if G is a compound term, G' is the compound term with A1, ..., An appended after the arguments of G. If the goal conversion of G' (5 (3)) fails, raise the exception error(type_error(callable, G'), call/N). If it succeeds, let G'' be the converted term and h the current height, and succeed with [G'' (h, k)] + continuation.
+  - catch/3 (goal catch(G, C, R)): create a CATCH choice point F whose resume list is the continuation and which records the "catcher" C, the "recovery" R and the "parent context" k, and succeed with [call(G) (c, F), EXIT-marker(F)] + continuation.
+The "markers" placed instead of goals are of the following four kinds, and are executed as follows (they do not count as inferences).
+  - ITE-marker(h): cut to height h, and succeed with continuation.
+  - NAF-marker(h): cut to height h, and fail.
+  - EXIT-marker(F): if the top of the choice point stack is F, remove F. Succeed with continuation.
+  - COLLECT-marker(F): add a copy (6) of the template of the FINDALL choice point F to the end of F's result list, and fail.
+(4) Inferences
+Executing a goal that is neither a control construct nor a marker is an "inference". When performing an inference, first check the limit of (8), then add 1 to the inference count and to the "call count" of the goal's predicate indicator (counted across all queries), and then execute it as follows.
+  - findall/3 (goal findall(T, G, L)): create a FINDALL choice point F whose resume list is the continuation and which records the "template" T, the "result term" L and an empty "result list", and succeed with [call(G), COLLECT-marker(F)] (nothing follows the COLLECT marker).
+  - throw/1 (goal throw(B)): if B is a variable, raise the exception error(instantiation_error, throw/1); otherwise raise the exception B.
+  - between/3, length/2 and the predicates of 8 (2): succeed or fail as described in 8 (2) and (3). On success, succeed with continuation. When one of the "errors" defined in 8 applies, raise the exception error(E, N/A) (E is the term of that error and N/A is the predicate indicator of that predicate; example: error(type_error(evaluable,foo/0),(is)/2)).
+  - Otherwise: a call of a user-defined predicate ((5)).
+findall/3, throw/1, between/3, length/2 and the predicates of 8 (2) are together called "built-in predicates".
+(5) Calling a user-defined predicate
+Let N/A be the predicate indicator of the goal G. If there is no predicate N/A in the database, raise the exception error(existence_error(procedure, N/A), N/A).
+The clauses of that predicate that satisfy the following condition, arranged in clause-sequence order, are the "candidate clauses". When A = 0, all clauses are candidates. When A >= 1, let x be the first argument of G and y the first argument of the clause's head; the clause is a candidate if at least one of x and y is a variable, or if x and y are "of the same kind". Being of the same kind means being integers with equal values, atoms with equal names, or compound terms with equal functor names and arities.
+If there are no candidate clauses, fail. Otherwise, let h be the current height; if there are two or more candidate clauses, create a CLAUSES choice point that records the goal G, the candidate clauses, the next candidate to try (the second candidate), the cut barrier h, the catch context k and the resume list (the continuation). Then "try" the first candidate clause with cut barrier h.
+To "try" a clause with cut barrier h' means the following. Add 1 to the predicate's "try count" (counted across all queries), copy (6) the head and the body (if any) of the clause together as one term, and unify the copied head with G. If the unification fails, the try fails. If it succeeds, succeed with continuation for a fact, or with [copied body (h', k)] + continuation if there is a body.
+(6) Backtracking
+On failure, backtrack by the following steps.
+  1. Add 1 to the backtrack count.
+  2. If the choice point stack is empty, this query has no more solutions ((9)).
+  3. Let X be the top choice point, undo the bindings of X, and proceed according to the kind of X as follows.
+    - ALT: remove X, and continue execution with X's resume list as the goal list.
+    - CLAUSES: let D be the next candidate to try of X. If D is the last candidate, remove X; otherwise set the next candidate to try of X to the candidate after D. Try D using the goal, the cut barrier, the catch context and the resume list (continuation) recorded in X. If it succeeds, continue execution with that list; if it fails, go back to 1.
+    - BETWEEN, LENGTH: perform an inference (check the limit of (8), and add 1 to the inference count and to the call count of between/3 or length/2), and try the next solution as in 8 (3). If it succeeds, continue execution with X's resume list; if it fails, go back to 1.
+    - CATCH: remove X, and go back to 2.
+    - FINDALL: remove X, and unify the proper list whose elements are the elements of X's result list, in order, with X's result term. If it succeeds, continue execution with X's resume list; if it fails, go back to 1.
+(7) Exceptions
+An exception is raised together with a term called the "ball". When an exception is raised, a copy of the ball at that moment is made, and from then on that copy is the ball. When an exception occurs during the execution of a goal entry, let F be the catch context of that goal entry, and repeat the following.
+  1. If F is "none", the query ends with an "uncaught exception" ((9)).
+  2. Remove F and all choice points above it from the choice point stack, and undo the bindings of F. (F is the catch context only of goal entries placed by the execution of the catch/3 that created F, so F is always on the choice point stack here.)
+  3. Unify a copy of the ball with the catcher of F. If it succeeds, let h be the current height, and continue execution with [call(R) (h, parent context of F)] + resume list of F as the goal list (R is the recovery of F). If it fails, undo the bindings made by this unification, set F to the parent context of F, and go back to 1.
+Exception handling does not count as backtracking.
+(8) Inference limit
+At most 20000 inferences can be performed in one query. When an inference is about to be performed and the inference count of that query is already 20000, the inference is not performed (and the count is not increased), and the query ends with the "inference limit" ((9)).
+(9) Solutions and the end of a query
+When a solution is found, add 1 to the solution count and build the answer (10). If the solution count equals the limit of the query, or the choice point stack is empty, write the line consisting of the answer followed by ".", and end the query. Otherwise, write the line consisting of the answer followed by " ;" (one space and ";"), and backtrack ((6)) to search for the next solution.
+When there are no more solutions on backtracking (step 2 of (6)), write the line "false."; when the query ended with an uncaught exception, write the line "uncaught exception: B" (B is the ball written in the quoted style of 9); when it ended with the inference limit, write the line "inference limit exceeded"; then end the query. These lines are the content written to output/answers.txt.
+
+* 8. Built-in predicates
+(1) Arithmetic evaluation
+The "value" of a term E is obtained as follows. Evaluation stops as soon as an error is found.
+  - Variable: error instantiation_error
+  - Integer: that integer
+  - Atom: error type_error(evaluable, E/0)
+  - Compound term whose predicate indicator is in the table below: evaluate the arguments from left to right, and compute the table's operation on their values. If the result is not between -2147483648 and 2147483647 inclusive, error evaluation_error(int_overflow).
+  - Any other compound term: error type_error(evaluable, N/A) (N/A is the predicate indicator of that compound term)
+  Table (X and Y are the values of the arguments; for //, mod and rem, when Y is 0, error evaluation_error(zero_divisor))
+    X + Y, X - Y, X * Y: sum, difference, product
+    X // Y: the quotient of X divided by Y, truncated toward zero (example: -7 // 2 is -3)
+    X mod Y: X - Y * q (q is the quotient of X divided by Y, rounded toward negative infinity; examples: 7 mod -2 is -1, -7 mod 2 is 1)
+    X rem Y: X - Y * (X // Y) (example: -7 rem 2 is -1)
+    - X: -X
+    abs(X): the absolute value of X
+    min(X, Y), max(X, Y): the smaller, the larger
+(2) Deterministic built-in predicates
+Each of the following predicates succeeds, fails or gives an error, and creates no choice point. Below, when several unifications are done "in this order", the result is success if all of them succeed, and failure at the point where any one of them fails (the same applies in 8 (3)). When one of the following "checks" is performed on a term X, the errors are checked in the order given.
+  - Integer check: if X is a variable, instantiation_error; if it is not an integer, type_error(integer, X)
+  - Atom check: if X is a variable, instantiation_error; if it is not an atom, type_error(atom, X)
+  - Proper list check: if the tail of X is a variable, instantiation_error; if the tail is not [], type_error(list, X)
+  - true/0: succeeds. fail/0, false/0: fail.
+  - =/2 (X = Y): unify X and Y.
+  - \=/2 (X \= Y): try unifying X and Y, and undo the bindings made by that unification. Succeeds if the unification failed, and fails if it succeeded.
+  - ==/2 (X == Y): succeeds if X and Y are identical (6). \==/2: succeeds if they are not identical.
+  - var/1, nonvar/1: succeed when the argument is an unbound variable, and when it is not, respectively.
+  - atom/1 succeeds for an atom, number/1 and integer/1 for an integer, atomic/1 for an atom or an integer, compound/1 for a compound term, callable/1 for an atom or a compound term, and is_list/1 for a proper list.
+  - is/2 (X is E): evaluate E and unify its value with X.
+  - =:=/2, =\=/2, </2, >/2, =</2, >=/2 (X op Y): evaluate X, then Y, and succeed if the values are, respectively, "equal", "not equal", "left is smaller", "left is larger", "left is smaller or equal", "left is larger or equal".
+  - functor/3 (functor(T, N, A)): when T is not a variable: if T is a compound term, unify N with the atom whose name is its functor name and A with its arity, in this order; if T is an integer or an atom, unify N with T and A with 0, in this order. When T is a variable, check in the following order: if at least one of N and A is a variable, error instantiation_error; if N is a compound term, type_error(atomic, N); if A is not an integer, type_error(integer, A); if A is negative, domain_error(not_less_than_zero, A); if A is greater than 255, representation_error(max_arity). If A = 0, unify T and N. If N is an integer, error type_error(atom, N). Otherwise, unify T with the compound term whose functor name is the name of N and whose arguments are A fresh variables.
+  - arg/3 (arg(N, T, X)): if at least one of N and T is a variable, error instantiation_error; if N is not an integer, type_error(integer, N); if T is not a compound term, type_error(compound, T). If 1 <= N <= (the arity of T), unify the N-th argument of T with X; otherwise fail.
+  - =../2 (T =.. L): if T is a compound term, unify [atom of the functor name, first argument, ..., last argument] with L; if T is an integer or an atom, unify [T] with L. When T is a variable, perform the proper list check on L, and let its elements be H, A1, ..., An. If there are no elements, error domain_error(non_empty_list, []); if H is a variable, instantiation_error. When n = 0: if H is a compound term, error type_error(atomic, H); otherwise unify T and H. When n >= 1: if H is not an atom, error type_error(atom, H); if n is greater than 255, representation_error(max_arity); otherwise unify T with the compound term whose functor name is the name of H and whose arguments are A1, ..., An.
+  - copy_term/2 (copy_term(X, Y)): unify a copy of X with Y.
+  - atom_length/2 (atom_length(A, N)): perform the atom check on A; if N is neither a variable nor an integer, error type_error(integer, N). Unify the number of characters of the name of A with N.
+  - atom_chars/2 (atom_chars(A, L)): when A is not a variable, perform the atom check on A, and unify L with the proper list whose elements are, in order, the atoms whose names are the individual characters of the name of A. When A is a variable, perform the proper list check on L, and examine its elements from the first: if an element is a variable, error instantiation_error; if it is not an atom whose name is one character, type_error(character, that element). If there is no error, unify A with the atom whose name is the concatenation of the names of the elements in order.
+  - write/1 (write(T)): append the string of T written in the unquoted style of 9 to the end of that query's "output", and succeed. writeq/1: likewise, append the string written in the quoted style of 9. nl/0: append one line feed.
+(3) Built-in predicates that create choice points
+  - between/3 (between(L, H, X)): perform the integer check on L, then the integer check on H; if X is neither a variable nor an integer, error type_error(integer, X). If X is an integer, succeed when L <= X <= H, and fail otherwise. When X is a variable: if L > H, fail; if L = H, unify X and L. If L < H, create a BETWEEN choice point that records H, X and the "next value" L+1 and whose resume list is the continuation, and then unify X and L.
+    When trying the next solution from a BETWEEN choice point Xp ((6)), let v be the next value of Xp; if v = H, remove Xp; otherwise set the next value of Xp to v+1. Then unify X and v.
+  - length/2 (length(L, N)): if N is neither a variable nor an integer, error type_error(integer, N); if N is a negative integer, domain_error(not_less_than_zero, N). Next, let k be the number of elements of L and T the tail of L. If T is [], unify N and k. If T is neither a variable nor [], error type_error(list, L). When T is a variable: if N is an integer, fail when N < k, and otherwise unify T with the proper list whose elements are N-k fresh variables. If N is a variable, create a LENGTH choice point that records T, N, k and the "next length" k+1 and whose resume list is the continuation, and then unify T with [] and N with k, in this order.
+    When trying the next solution from a LENGTH choice point Xp ((6)), let m be the next length of Xp, and set the next length of Xp to m+1 (Xp is not removed). Then unify T with the proper list whose elements are m-k fresh variables, and N with m, in this order; succeed if both succeed, and fail otherwise.
+
+* 9. Writing terms
+A term is turned into a string in the "quoted style" (used for writeq/1, answers, the listing, reports and so on) or in the "unquoted style" (used for write/1). Both write a term T "with limit M", specifying whether or not it is "in operand position", by the following rules. Unless specified otherwise, the limit is 1200 and the term is not in operand position.
+  - Unbound variable: the variable name determined by the context (see below).
+  - Integer: decimal notation (a negative number is preceded by "-").
+  - Atom: the name of the atom, written as described below. However, an operator atom in operand position is enclosed as a whole in "(" and ")" (examples: (-), (',')).
+  - Compound term with functor name "." and arity 2 (a list): "[", the elements each written with limit 999 and joined with ",", then, if the tail is not [], "|" and the tail written with limit 999, and "]", in this order (examples: [a,b,c], [a|T]).
+  - Compound term of arity 2 whose functor name is an infix operator name: let p be the priority of the operator. Let L and R be the first argument written with the left limit and the second argument written with the right limit, both in operand position. If the operator is ",", the result is "L,R"; for an operator that begins with a letter (is, mod, rem), it is L, a space, the operator, a space and R; for any other operator, it is L, the operator and R, in this order. In the last case, however, insert one space before the operator if the last character of L is a symbol character, and one space after the operator if the first character of R is a symbol character (no space is inserted if L or R is the empty string, as when an atom with an empty name is written in the unquoted style). If p > M, enclose the whole in "(" and ")" (examples: 1+2*3, (1+2)*3, 1- -1, a=(b=c), X is Y mod 2, a:-b,c, f((a:-b))).
+  - Compound term of arity 1 whose functor name is a prefix operator name: let p be the priority of the operator, and let X be the argument written with limit p (the argument limit) in operand position. The result is the operator followed by X, but if the first character of X is a symbol character, a digit or "(", insert one space between them (no space is inserted if X is the empty string). If p > M, enclose the whole in "(" and ")" (examples: -a, - 1, - -1, \+ (a,b), \+f(x)).
+  - Any other compound term: the functor name written by the same rules as an atom name, "(", the arguments each written with limit 999 and joined with ",", and ")", in this order (examples: f(a,b), f((a,b)), 'hello world'(1)).
+In the unquoted style, the name of an atom (and the functor name in the last case above) is written as the string itself. In the quoted style, a name that matches any of the following is written as is, and a name that matches none of them is written enclosed in "'".
+  - It starts with a lowercase letter and consists only of alphanumeric characters.
+  - It consists only of one or more symbol characters, and is not the single character ".".
+  - It is one of [], ! and ;.
+When enclosing a name in "'", replace "\" in the name with "\\", "'" with "\'", a line feed with "\n" and a tab with "\t" (examples: 'A', 'hello world', 'it\'s', '', ',', '.', 'line\nbreak').
+The names of unbound variables are determined per context as follows. Within the same context, the same variable gets the same name.
+  - write/1, writeq/1: within the string written by one call, names _G1, _G2, ... are given in order of first appearance from the left.
+  - Uncaught exception line: names _G1, _G2, ... are given likewise within the ball of that line.
+  - Clause error report (5 (2)): names _G1, _G2, ... are given likewise within the term of that report (example: type_error(callable,(write(_G1),1))).
+  - Answers: as described in 10.
+  - Listing: as described in 11.
+
+* 10. Answers
+The variables denoted by the variable tokens of the query body whose spellings do not start with "_", arranged in order of first appearance in the body, are called the "query variables". When a solution is found, build the following "item" for each query variable V, in this order (below, the value of V means the dereferenced term of V).
+  - When the value of V is an unbound variable: if among the earlier query variables there are ones whose value is the same variable, let U be the one closest to V (the last one) among them, and build the item "U = V" (U and V are their spellings). If there is none, no item is built.
+  - Otherwise: build the item "V = T", where T is the value of V written in the quoted style with limit 699 in operand position.
+The names of unbound variables in the items are as follows. A variable that is the value of some query variable is named with the spelling of the first query variable that has that variable as its value. Other variables are named _G1, _G2, ..., numbered throughout the whole answer in order of first appearance as the items are written from left to right.
+If there are one or more items, the "answer" is the items joined by ", "; if there are no items, the answer is "true" (example: X = Y, Y = Z, W = g(X,_G1)).
+
+* 11. Listing
+Write the clauses of each predicate in database order, each predicate's clauses in clause-sequence order. The body is the one after goal conversion.
+For each clause, among the variables that appear when traversing the clause (head, then body) from left to right, those that occur two or more times in the clause are named, in order of first appearance, A, B, ..., Z, A1, B1, ..., Z1, A2, ... (the k-th name counting from 0 is the (k mod 26)-th uppercase letter counting from A, followed by the decimal notation of k div 26 if k is 26 or more). A variable that occurs only once is named "_". Terms are written in the quoted style.
+  - Fact: one line consisting of the written head followed by ".".
+  - Clause with a body: a line consisting of the written head followed by " :-" (one space and ":-"). Then split the body into goals G1, ..., Gn as follows, and for each of them write a line consisting of four spaces, the goal written with limit 999, and "," if it is not the last goal or "." if it is the last goal, in this order. Splitting into goals: while the body is a compound term with functor name "," and arity 2, take its first argument as the next goal and repeat with its second argument. The term left at the end is the last goal.
+Insert one empty line between predicates.
+
+[Output files]
+* output/consult.txt
+Write the consulting reports in the order they were reported. F is the file name of the position (prelude.pl or program.pl).
+  - Syntax error: the following three lines.
+      Line 1: "F:L:C: syntax error: message" (L and C are the line and column of the position of the syntax error, and message is its message)
+      Line 2: four spaces followed by line L of file F as is
+      Line 3: (C+3) spaces followed by "^" (the "^" comes directly below the character at column C of line L)
+    However, when the position is the position of the EOF token, lines 2 and 3 are not written.
+  - Clause error: one line "F:L: error: message" (L is the line of the clause).
+  - Warning: one line "F:L: warning: message". L is the line of the added clause (for an undefined predicate warning, F and L are the file and line of the clause whose body was examined).
+After all reports, write one line each for prelude.pl and then program.pl, as follows.
+  F: clauses=N1 errors=N2 warnings=N3
+N1 is the number of clauses added from that file (including clauses later removed by redefinition), N2 is the number of syntax errors and clause errors in that file, and N3 is the number of warnings whose position is in that file. Finally, write the line "database: predicates=N4 clauses=N5", where N4 and N5 are the numbers of predicates and clauses in the database when consulting has finished.
+
+* output/listing.txt
+The listing of 11.
+
+* output/answers.txt
+In order of query number, write the following lines for each query.
+  1. A line with that line of queries.txt as is.
+  2. If a syntax error occurred while reading the query body, one line "syntax error at column C: message" (C is the column of the position of the syntax error). This query is not executed.
+  3. Otherwise, the lines written by executing that query as in 7 (9) (answer lines, "false.", "uncaught exception: B", "inference limit exceeded"), in order.
+
+* output/write_output.txt
+In order of query number, for each query write the line "== query N ==" (N is the query number), followed by the output appended by write/1, writeq/1 and nl/0 during the execution of that query, as is. If the output is not empty and does not end with a line feed, write one line feed after it. The output of a query that was not executed because of a syntax error is empty.
+
+* output/stats.txt
+In order of query number, write one line for each query. For a query that was not executed because of a syntax error, the line is "query N: syntax error"; for any other query, it is
+  query N: solutions=S inferences=I choicepoints=C backtracks=B
+where S is the solution count, I the inference count, C the number of choice points created (counting all six kinds) and B the backtrack count, each being the value at the end of that query. Then write the respective totals over all executed queries in the line "total: solutions=S inferences=I choicepoints=C backtracks=B".
+Then write the line "== profile ==", followed by one line for each predicate indicator whose call count is 1 or more, as follows. The lines are ordered by call count, largest first, and for equal counts, in lexicographic order by character code of the string of the predicate indicator (N/A of 5 (4)) (if one is a prefix of the other, the shorter one comes first).
+  - Predicate indicator whose predicate is in the database: "N/A calls=X tries=Y" (X is the call count and Y the try count)
+  - Otherwise (built-in predicates and predicates not in the database): "N/A calls=X"
+The call counts and try counts are counted across all queries (7 (4), (5), (6)).
+
+[Source files]
+Divide the source files into the following six roles (file names may follow the conventions of each language).
+- main: the overall flow. Reading the three input files, checking clauses and goal conversion, adding clauses and warnings, checking for undefined predicates (5), the execution state (goal entries, the six kinds of choice points, the choice point stack) and the query execution loop (7 (1), (2)), control constructs and markers (7 (3)), counting inferences and the limit, execution of findall/3, throw/1, between/3 and length/2 (8 (3)), calling user-defined predicates, backtracking, exception handling (7 (4) to (9)), writing terms (9), answers (10), the listing (11), formatting the reports and statistics, and writing the five output files. It handles the largest part of the processing.
+- reader: lexical analysis (1), the operator table (3), reading clauses and query bodies by operator precedence parsing, syntax error messages (4), and recording the spellings and occurrence counts of the variable tokens in a clause.
+- terms: representation of terms (integers, atoms, variables, compound terms), dereferencing, building lists and extracting their elements and tails, copying terms, enumerating the variables in a term, and building error terms.
+- unify: binding and its recording, unification (6), undoing bindings, and the identity test.
+- database: representation of clauses (head, body, file, line), the clause sequence of each predicate, selection of candidate clauses (the selection by first argument in 7 (5)), and copying clauses.
+- predicates: arithmetic evaluation (8 (1)) and the behavior and errors of the deterministic built-in predicates (8 (2)).
+
+[Constraints]
+- prelude.pl and program.pl each have at most 300 lines, and each line has at most 100 characters. queries.txt has at most 100 lines, and each line has at most 120 characters.
+- During execution, no term that contains itself in its arguments (cyclic term) is ever created. Every term has a nesting depth (a list counts as one level per element) of at most 200.
+- During the execution of one query, the length of the goal list and the height of the choice point stack are each at most 50000. The output of each query is at most 10000 characters.
+- No line of the five output files has trailing spaces.
+
+[Example]
+The output for the following input is shown below (the content of each file is shown starting from the line after the "<file name>:" line, and one empty line is inserted between files as a separator; these separator empty lines are not part of the file contents).
+
+input/prelude.pl:
+append([], L, L).
+append([H|T], L, [H|R]) :- append(T, L, R).
+member(X, [X|_]).
+member(X, [_|T]) :- member(X, T).
+last([X], X).
+last([_|T], X) :- last(T, X).
+
+input/program.pl:
+% example program
+likes(mary, wine).
+likes(john, X) :- likes(X, wine).
+max(X, Y, X) :- X >= Y, !.
+max(_, Y, Y).
+count(N, N) :- !.
+count(I, N) :- write(I), nl, J is I + 1, count(J, N).
+likes(Z, beer).
+grade(S, G) :- ( S >= 80 -> G = good ; G = poor ).
+oops(X) :- X = (a :- ).
+rich(P) :- owns(P, gold).
+safe(G, R) :- catch(G, error(E, _), R = caught(E)).
+last([X], X) :- !.
+last([_|T], X) :- last(T, X).
+length(nil, 0).
+
+input/queries.txt:
+?- append(X, Y, [1,2]).
+?- likes(john, W).
+2 ?- member(X, [a,b,c]).
+?- max(3, 7, M), grade(85, G), last([p,q,r], L).
+?- count(1, 3).
+?- X = f(Y, _), Z = (a :- b, - 1), W = 'it''s'.
+?- X is 7 / 2.
+?- safe(rich(ann), R).
+?- \+ member(z, [a,b]).
+?- foo(.
+
+output/consult.txt:
+program.pl:8: warning: clauses of likes/2 are not together
+program.pl:8: warning: singleton variables: Z
+program.pl:10:22: syntax error: unexpected ")"
+    oops(X) :- X = (a :- ).
+                         ^
+program.pl:13: warning: redefining prelude procedure last/2
+program.pl:15: error: permission_error(modify,static_procedure,length/2)
+program.pl:11: warning: undefined procedure owns/2 called from rich/1
+prelude.pl: clauses=6 errors=0 warnings=0
+program.pl: clauses=12 errors=2 warnings=4
+database: predicates=9 clauses=16
+
+output/listing.txt:
+append([],A,A).
+append([A|B],C,[A|D]) :-
+    append(B,C,D).
+
+member(A,[A|_]).
+member(A,[_|B]) :-
+    member(A,B).
+
+last([A],A) :-
+    !.
+last([_|A],B) :-
+    last(A,B).
+
+likes(mary,wine).
+likes(john,A) :-
+    likes(A,wine).
+likes(_,beer).
+
+max(A,B,A) :-
+    A>=B,
+    !.
+max(_,A,A).
+
+count(A,A) :-
+    !.
+count(A,B) :-
+    write(A),
+    nl,
+    C is A+1,
+    count(C,B).
+
+grade(A,B) :-
+    (A>=80->B=good;B=poor).
+
+rich(A) :-
+    owns(A,gold).
+
+safe(A,B) :-
+    catch(A,error(C,_),B=caught(C)).
+
+output/answers.txt:
+?- append(X, Y, [1,2]).
+X = [], Y = [1,2] ;
+X = [1], Y = [2] ;
+X = [1,2], Y = [] ;
+false.
+?- likes(john, W).
+W = mary ;
+W = beer.
+2 ?- member(X, [a,b,c]).
+X = a ;
+X = b.
+?- max(3, 7, M), grade(85, G), last([p,q,r], L).
+M = 7, G = good, L = r.
+?- count(1, 3).
+true.
+?- X = f(Y, _), Z = (a :- b, - 1), W = 'it''s'.
+X = f(Y,_G1), Z = (a:-b,- 1), W = 'it\'s'.
+?- X is 7 / 2.
+uncaught exception: error(type_error(evaluable,(/)/2),(is)/2)
+?- safe(rich(ann), R).
+R = caught(existence_error(procedure,owns/2)).
+?- \+ member(z, [a,b]).
+true.
+?- foo(.
+syntax error at column 8: unexpected end of clause
+
+output/write_output.txt:
+== query 1 ==
+== query 2 ==
+== query 3 ==
+== query 4 ==
+== query 5 ==
+1
+2
+== query 6 ==
+== query 7 ==
+== query 8 ==
+== query 9 ==
+== query 10 ==
+
+output/stats.txt:
+query 1: solutions=3 inferences=3 choicepoints=3 backtracks=4
+query 2: solutions=2 inferences=3 choicepoints=2 backtracks=3
+query 3: solutions=2 inferences=2 choicepoints=2 backtracks=1
+query 4: solutions=1 inferences=8 choicepoints=5 backtracks=3
+query 5: solutions=1 inferences=9 choicepoints=3 backtracks=2
+query 6: solutions=1 inferences=3 choicepoints=0 backtracks=0
+query 7: solutions=0 inferences=1 choicepoints=0 backtracks=0
+query 8: solutions=1 inferences=4 choicepoints=1 backtracks=0
+query 9: solutions=1 inferences=3 choicepoints=4 backtracks=4
+query 10: syntax error
+total: solutions=12 inferences=36 choicepoints=20 backtracks=17
+== profile ==
+(=)/2 calls=5
+member/2 calls=5 tries=9
+(is)/2 calls=3
+append/3 calls=3 tries=6
+count/2 calls=3 tries=5
+last/2 calls=3 tries=5
+likes/2 calls=3 tries=6
+(>=)/2 calls=2
+nl/0 calls=2
+write/1 calls=2
+grade/2 calls=1 tries=1
+max/3 calls=1 tries=2
+owns/2 calls=1
+rich/1 calls=1 tries=1
+safe/2 calls=1 tries=1
+
+In this example, the clause of likes/2 on line 8 of program.pl appears after the clauses of max/3 and count/2, so it causes the discontiguity warning, and the variable Z occurs only once, so it causes the variable warning. Line 10 has no term to the right of ":-" and gives a syntax error at ")", so that clause is discarded. last/2 on line 13 is a redefinition of a prelude.pl predicate, so the two clauses from prelude.pl are removed (the position of last/2 in database order remains right after member/2). length/2 on line 15 is a built-in predicate, so it is a clause error. owns/2 has no clauses anywhere, so it gets an undefined predicate warning at the end of consulting, and during the execution of the 8th query it becomes an exception, which is caught by the catch/3 of safe/2.
+In the 1st query, the first argument of append/3 is a variable, so there are two candidate clauses, and each call creates a CLAUSES choice point. On the backtrack after the third solution, the unification of the head of the second clause with the third argument [] fails, so it backtracks once more, and since the choice point stack is empty, the result is "false." (4 backtracks in total). The second solution of the 2nd query comes from the third clause likes(Z, beer); since it is the last candidate, no choice point remains, and the line ends with ".". The 3rd query has limit 2, so it ends at the second solution. In the 6th query, Y is a query variable, so it is written with its spelling, and the anonymous variable is written as _G1. In the 9th query, four choice points are created in total: the ALT choice point of \+ and the CLAUSES choice points of the three calls of member/2.
