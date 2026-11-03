@@ -1,21 +1,7 @@
-# Task B selection: 44_luhn_checksum / Quidra
+# Task B selection — 44_luhn_checksum / Quidra
 
-## Common answer requirements
+The fixture is a string, so its leading zero survives indexing and printing. Only each indexed character is parsed. The left-to-right zero-based index i maps to right-based position len(number) - i, so even positions are doubled, with 9 subtracted from doubled digits above 9. A nonzero residue enters the invalid branch. Subtracting the last digit from the total leaves the prefix contribution, and (10 - prefix % 10) % 10 gives the replacement. The total is 42, and the prefix contribution is 38, so the original number is printed unchanged with replacement digit 2. The other fixture values are irrelevant to the trace.
 
-Explain leading-zero preservation of 0128469655154 as a digit string through validation/output; identify alternating doubled positions counting from the right; explain expected replacement of the rightmost check digit on failure.
+Selected complete source lines in order are 1, 3, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23.
 
-These requirements were fixed for the topic before choosing the language-specific excerpts. Task B assumptions and the language specification/standard-library semantics are used; no Task A program was compiled or executed.
-
-## Source evidence and minimization
-
-The previous reviewed answer dependencies are retained; only equivalent range-header spelling or local type/index expressions changed. Explain leading-zero preservation of 0128469655154 as a digit string through validation/output; identify alternating doubled positions counting from the right; explain expected replacement of the rightmost check digit on failure.
-
-These requirements were fixed for the topic before choosing the language-specific excerpts. Task B assumptions and the language specification/standard-library semantics are used; no Task A program was compiled or executed.
-
-Locations in main source: L1, L2, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19.
-
-All selected lines are complete, verbatim and in source order. The source evidence, the question, and documented language/library semantics support the answer. Inputs and branches unrelated to the answer are excluded. A modification-only question does not require unchanged implementation details solely to reconfirm the program remains correct. Imported library bindings are included when their contracts are used. Static types may replace inspection of user-defined implementations only for facts those types actually guarantee.
-
-Alternative considered: the contiguous span between the first and last selected line and the full source. Those contain additional context, but do not reduce token cost. The selection is a reviewed sufficient candidate; exhaustive mathematical global minimality is not claimed.
-
-Measurement: Task A 359; Task B 336. Tokenizer: metric/tokenizer.py, unchanged. Neither these lexical checks nor this selection establish execution/compilation of Task A.
+Tokenizer: Task A 357 tokens; Task B 242 tokens.
