@@ -16,7 +16,7 @@ Source: `main.qui`. Selected original lines: 1-12,14-18,20-21. The following lin
 
 - L1: `int[] values := [3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L2: `int[] targets := [42, 3, 77, 31, 50, 1]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
-- L3: `for int target := targets[]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
+- L3: `for target := targets[]` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L4: `    int lo = 0` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L5: `    int hi = 15` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
 - L6: `    int found = -1` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
@@ -44,7 +44,7 @@ The following smaller deletion candidates were measured as alternative line sets
 
 - Without L1: 217 tokens (versus 287); removes `int[] values := [3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77]`.
 - Without L2: 257 tokens (versus 287); removes `int[] targets := [42, 3, 77, 31, 50, 1]`.
-- Without L3: 276 tokens (versus 287); removes `for int target := targets[]`.
+- Without L3: 276 tokens (versus 287); removes `for target := targets[]`.
 - Without L4: 278 tokens (versus 287); removes `int lo := 0`.
 - Without L5: 277 tokens (versus 287); removes `int hi := 15`.
 - Without L6: 277 tokens (versus 287); removes `int found := -1`.

@@ -16,4 +16,4 @@ All selected lines are complete, verbatim and in source order. The source eviden
 
 Alternative considered: the contiguous span between the first and last selected line and the full source. Those contain additional context, but do not reduce token cost. The selection is a reviewed sufficient candidate; exhaustive mathematical global minimality is not claimed.
 
-Measurement: Task A 240; Task B 125. Tokenizer: metric/tokenizer.py, unchanged. Neither these lexical checks nor this selection establish execution/compilation of Task A.
+Measurement: Task A 235; Task B 122. Tokenizer: metric/tokenizer.py, unchanged. Neither these lexical checks nor this selection establish execution/compilation of Task A.

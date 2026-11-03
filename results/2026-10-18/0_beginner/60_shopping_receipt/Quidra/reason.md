@@ -16,4 +16,4 @@ Selected complete main.qui source lines: 1, 2, 3, 4, 5, 7, 8, 9, 10, 13, 14, 16.
 
 ## Measurement and validation
 
-Using unchanged metric/tokenizer.py (SHA-256 4edefba77b30a2a7d55e2849f30e2d022fb1f6b2d12d7319f45293830459555a): Task A 382 tokens; Task B 272 tokens. Original values: Task A 382; Task B 382. Task B proposed modifications have not been implemented. Native validation of Task A is recorded separately in validation-results.json; lexical counts or excerpt review do not by themselves establish compilation or correctness.
+Using unchanged metric/tokenizer.py (SHA-256 4edefba77b30a2a7d55e2849f30e2d022fb1f6b2d12d7319f45293830459555a): Task A 382 tokens; Task B 272 tokens. Original values: Task A 368; Task B 260. Task B proposed modifications have not been implemented. Native validation of Task A is recorded separately in validation-results.json; lexical counts or excerpt review do not by themselves establish compilation or correctness.
