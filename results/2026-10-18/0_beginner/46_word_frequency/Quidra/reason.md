@@ -1,5 +1,7 @@
-The answer must explain case normalization before counting, derive one equal-frequency pair from the supplied text, and explain alphabetical tie breaking before selecting five words. The passage, ascii_words(ignore_case = true), and frequencies call establish that case-insensitive ASCII-letter words are counted. For example, cat occurs three times and bird occurs three times; the sorted order puts bird before cat because their counts tie and bird is alphabetically earlier. The loop header sorts entries by descending counts and then ascending keys, and only afterward slices the first five.
+# Task B selection: 46_word_frequency / Quidra
 
-Known Text ascii_words semantics select maximal ASCII-letter runs and lowercase them when ignore_case is true. Collections frequencies returns map<string, nat>; entries, keys and values all follow the map's same stable insertion order, so the external key arrays align with the entries being sorted. Quidra sorted is nonmutating, uses the tuple's lexicographic sort-key order and the per-key descending flags, and slicing retains that computed order. These documented library and language semantics avoid reading helper implementations.
+The passage and ASCII tokenization allow a tied pair to be counted and show where case is normalized. The frequency map, ranking contract, and five-entry slice show why ascending word order breaks equal counts before selection.
 
-Alternatives considered were sorting an index array and retaining separate words/amounts/order arrays, or selecting only the loop header. The former stores unnecessary parallel representations in Task A; the latter cannot establish actual equal counts or normalization. The output body and distinct-count print are unnecessary for this question because the full loop header already shows the final top-five selection. Every retained line supplies required evidence; this is a sufficient locally reviewed slice, without a globally proven minimum claim.
+The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
+
+Task A: 230 tokens. Task B: 193 tokens.
