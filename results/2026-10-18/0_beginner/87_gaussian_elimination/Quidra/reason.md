@@ -4,6 +4,8 @@ The output interpolation is the only site that changes. Set frac to six and pres
 
 Selected complete lines in order are 30.
 
-Task A uses 576 tokens. Task B uses 22 tokens.
+Task A uses 564 tokens. Task B uses 22 tokens.
 
-Measurement: Task A 576; Task B 22. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 564; Task B 22. Tokenizer: metric/tokenizer.py, unchanged.
+
+The elimination ranges inherit int from n and the preceding range variables; the omitted types do not change pivoting, arithmetic or output.

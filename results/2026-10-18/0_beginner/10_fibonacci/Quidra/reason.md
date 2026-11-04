@@ -6,7 +6,7 @@ Extend the exact Fibonacci term generation and its linked sum to 40 terms, prese
 
 ## Evidence and answer
 
-The inclusive loop endpoint is the single bound to change from 30 to 40. The explicit int seed values and tuple assignment identify the Fibonacci recurrence; the total adds a before advancing the pair inside that same loop. Quidra int is exact arbitrary precision, so neither state nor total requires widening. F(40) is 102334155 and the sum is 267914295. The unchanged per-term print, spacing and final label already use this state and total; no separate output-bound change is needed.
+The inclusive loop endpoint is the single bound to change from 30 to 40. The integer-literal seed values infer int, and the tuple assignment identifies the Fibonacci recurrence; the total adds a before advancing the pair inside that same loop. Quidra int is exact arbitrary precision, so neither state nor total requires widening. F(40) is 102334155 and the sum is 267914295. The unchanged per-term print, spacing and final label already use this state and total; no separate output-bound change is needed.
 
 ## Minimization
 

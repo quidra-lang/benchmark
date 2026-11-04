@@ -4,6 +4,8 @@ The edge list and adjacency builder establish the graph and its ascending neighb
 
 Selected source lines in order are 1, 4, 5, 6, 7, 8, 9, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35, 36, 37, 38.
 
-Task A uses 572 tokens. Task B uses 460 tokens.
+Task A uses 570 tokens. Task B uses 458 tokens.
 
-Measurement: Task A 572; Task B 460. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 570; Task B 458. Tokenizer: metric/tokenizer.py, unchanged.
+
+The Queue<int> contract determines the removed vertex as int. The inferred binding preserves the same success type and failure handling.

@@ -6,7 +6,7 @@ Locate the candidate enumeration and reverse it to 9 through 1. Keep the next-ce
 
 ## Source evidence
 
-The typed range has inclusive bounds 1 and 9. Reverse the bounds and comparison direction to enumerate 9 down to 1, using the default descending integer step.
+The range has inclusive bounds 1 and 9 and infers int from those integer literals. Reverse the bounds and comparison direction to enumerate 9 down to 1, using the default descending integer step.
 
 ## Minimization
 

@@ -12,6 +12,8 @@ The table’s boundary entries are the length of the nonempty prefix: from empty
 
 The question supplies both inputs. Case arrays, unrelated examples, and caller prints are unnecessary; the selected table indexing, boundary writes and recurrence determine the answer.
 
-Selected complete lines of `main.qui`: 1, 11–18. The prior excerpt measured 274 tokens; this excerpt measures 233 with `metric/tokenizer.py`.
+Selected complete lines of `main.qui`: 1, 11–18. The prior excerpt measured 274 tokens; this excerpt measures 227 with `metric/tokenizer.py`.
 
-Measurement: Task A 355; Task B 233. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 349; Task B 227. Tokenizer: metric/tokenizer.py, unchanged.
+
+The prefix ranges inherit int from the explicitly converted lengths. The cost conditional has only integer-literal branches and therefore also infers int.

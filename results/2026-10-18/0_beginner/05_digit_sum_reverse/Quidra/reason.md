@@ -4,6 +4,8 @@ For 98000, the decimal text has length 5. The selected comprehension maps every 
 
 Selected complete lines in order are 1, 5, 6, 7, 8.
 
-Task A uses 156 tokens. Task B uses 98 tokens.
+Task A uses 154 tokens. Task B uses 96 tokens.
 
-Measurement: Task A 156; Task B 98. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 154; Task B 96. Tokenizer: metric/tokenizer.py, unchanged.
+
+The numeric string conversion gives string, whose codepoints() result is int[]. The comprehension therefore infers an int element binding, and the unchanged subtraction and sum use exact integers.
