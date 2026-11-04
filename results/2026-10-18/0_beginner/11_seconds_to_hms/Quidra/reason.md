@@ -17,4 +17,4 @@ The integer declarations and arithmetic identify seconds as the source duration:
 
 Selected complete main.qui lines: 3, 4, 5, 6. Every selected line is copied verbatim, once per source location and in source order. The excerpt is not required to compile independently. The stated Task B assumptions, language guarantees and documented first-party library semantics apply. The full source or contiguous context span is a larger alternative; unchanged unrelated input, processing and formatting are omitted when they supply no answer requirement. This is a reviewed minimum among the identified alternatives, not a proof of a global mathematical optimum.
 
-Using unchanged metric/tokenizer.py: Task A 149 → 149; Task B 106 → 95. Compiler and native-output validation is recorded separately; token or verbatim checks alone do not establish compilation or correctness.
+Using unchanged metric/tokenizer.py: Task A 149 → 139; Task B 106 → 87. Compiler and native-output validation is recorded separately; token or verbatim checks alone do not establish compilation or correctness.

@@ -14,4 +14,4 @@ Selected complete `main.qui` lines: 5, 6, 7, 8, 9. All excerpt lines are verbati
 
 The selected input/state bindings, bounds, decisions, arithmetic and output change sites support the requested answer. Unrelated unchanged source is omitted. The complete source and enclosing span are sufficient alternatives that add unrelated tokens. This is a reviewed sufficient selection, not a proof of global mathematical minimality.
 
-Using unchanged `metric/tokenizer.py`: Task A **270** tokens; Task B **78** tokens. These are lexical evidence measurements; execution verification is recorded separately.
+Using unchanged `metric/tokenizer.py`: Task A **266** tokens; Task B **78** tokens. These are lexical evidence measurements; execution verification is recorded separately.

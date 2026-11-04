@@ -17,4 +17,4 @@ The declaration and focused phrase literal establish the actual input spelling a
 
 Selected complete main.qui lines: 1, 3, 8, 11, 12, 13, 14. Every selected line is copied verbatim, once per source location and in source order. The excerpt is not required to compile independently. The stated Task B assumptions, language guarantees and documented first-party library semantics apply. The full source or contiguous context span is a larger alternative; unchanged unrelated input, processing and formatting are omitted when they supply no answer requirement. This is a reviewed minimum among the identified alternatives, not a proof of a global mathematical optimum.
 
-Using unchanged metric/tokenizer.py: Task A 185 → 189; Task B 130 → 118. Compiler and native-output validation is recorded separately; token or verbatim checks alone do not establish compilation or correctness.
+Using unchanged metric/tokenizer.py: Task A 185 → 178; Task B 130 → 107. Compiler and native-output validation is recorded separately; token or verbatim checks alone do not establish compilation or correctness.

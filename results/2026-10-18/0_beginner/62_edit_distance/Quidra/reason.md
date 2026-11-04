@@ -18,6 +18,6 @@ Locations in main source: L1, L3, L5, L9, L10, L11, L12, L13, L14, L15, L16, L17
 
 All selected lines are complete, verbatim and in source order. The selected source, the question, and documented language/library semantics support the answer. The full source is a sufficient alternative but includes the unrelated material identified above; the retained selection is a reviewed lower-token sufficient candidate, without a claim of exhaustive global minimality.
 
-Measurement: Task A 355; Task B 274. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
+Measurement: Task A 353; Task B 274. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
 
 Execution verification: the revised program compiled and its stdout matched the valid historical Quidra program exactly.

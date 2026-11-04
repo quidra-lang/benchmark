@@ -17,4 +17,4 @@ The selected print line contains the repeated-star count and the unchanged numer
 
 Selected complete main.qui lines: 4. Every selected line is copied verbatim, once per source location and in source order. The excerpt is not required to compile independently. The stated Task B assumptions, language guarantees and documented first-party library semantics apply. The full source or contiguous context span is a larger alternative; unchanged unrelated input, processing and formatting are omitted when they supply no answer requirement. This is a reviewed minimum among the identified alternatives, not a proof of a global mathematical optimum.
 
-Using unchanged metric/tokenizer.py: Task A 130 → 126; Task B 44 → 35. Compiler and native-output validation is recorded separately; token or verbatim checks alone do not establish compilation or correctness.
+Using unchanged metric/tokenizer.py: Task A 130 → 119; Task B 44 → 33. Compiler and native-output validation is recorded separately; token or verbatim checks alone do not establish compilation or correctness.

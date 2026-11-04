@@ -31,7 +31,7 @@ Complete main.qui source lines: 1, 2.
 Every retained line is an exact verbatim source line in source order.
 Equal-text alternative occurrences have equal token cost; the earliest
 valid in-order occurrence was used. Unrelated lines were excluded.
-Tokenizer: Task A 60 tokens; Task B 60 tokens.
+Tokenizer: Task A 58 tokens; Task B 58 tokens.
 This uses the prior semantic rationale as a constraint; its automated
 line checks do not prove globally minimal evidence or compilation.
 
@@ -45,6 +45,6 @@ Complete main.qui source lines: 1, 2.
 Every retained line is an exact verbatim source line in source order.
 Equal-text alternative occurrences have equal token cost; the earliest
 valid in-order occurrence was used. Unrelated lines were excluded.
-Tokenizer: Task A 60 tokens; Task B 60 tokens.
+Tokenizer: Task A 58 tokens; Task B 58 tokens.
 This uses the prior semantic rationale as a constraint; its automated
 line checks do not prove globally minimal evidence or compilation.

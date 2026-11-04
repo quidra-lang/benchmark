@@ -18,4 +18,4 @@ Locations in main source: L1, L3, L4, L6, L7, L8, L9, L10, L11, L12, L14, L15, L
 
 All selected lines are complete, verbatim and in source order. The selected source, the question, and documented language/library semantics support the answer. The full source is a sufficient alternative but includes the unrelated material identified above; the retained selection is a reviewed lower-token sufficient candidate, without a claim of exhaustive global minimality.
 
-Measurement: Task A 585; Task B 409. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
+Measurement: Task A 579; Task B 409. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.

@@ -14,4 +14,4 @@ Selected complete `main.qui` lines: 1, 3, 4, 5, 6, 7, 8, 21, 24, 27, 28. Every e
 
 The retained declarations, input values, control flow, calculations and change sites support the requested Task B answer. Unchanged unrelated processing and output are omitted. The complete source and the enclosing contiguous span are sufficient alternatives that add unrelated tokens. This is a reviewed sufficient selection, not a proof of global mathematical minimality.
 
-Using unchanged `metric/tokenizer.py`: Task A **460** tokens; Task B **184** tokens. These measurements describe lexical source evidence; execution verification is recorded separately.
+Using unchanged `metric/tokenizer.py`: Task A **456** tokens; Task B **182** tokens. These measurements describe lexical source evidence; execution verification is recorded separately.

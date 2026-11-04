@@ -8,5 +8,5 @@ Collections `.push` explicitly mutates an array binding by appending one element
 
 Complete source lines: 1, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 25, 26, 27, 28, 29, 30, 31, 32.
 All lines are verbatim and in source order.
-Tokenizer: Task A 549; Task B 483.
+Tokenizer: Task A 547; Task B 481.
 Execution is checked separately; these source-line checks alone do not establish compilation or a global minimum.

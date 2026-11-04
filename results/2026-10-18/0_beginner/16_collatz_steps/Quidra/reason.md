@@ -18,4 +18,4 @@ The selected int n = start explicitly binds the question-supplied starting value
 
 Selected complete main.qui lines: 3, 4, 5, 6, 7, 8, 9, 10. Every selected line is copied verbatim, once per source location and in source order. The excerpt is not required to compile independently. The stated Task B assumptions, language guarantees and documented first-party library semantics apply. The full source or contiguous context span is a larger alternative; unchanged unrelated input, processing and formatting are omitted when they supply no answer requirement. This is a reviewed minimum among the identified alternatives, not a proof of a global mathematical optimum.
 
-Using unchanged metric/tokenizer.py: Task A 163 → 163; Task B 139 → 101. Compiler and native-output validation is recorded separately; token or verbatim checks alone do not establish compilation or correctness.
+Using unchanged metric/tokenizer.py: Task A 163 → 155; Task B 139 → 97. Compiler and native-output validation is recorded separately; token or verbatim checks alone do not establish compilation or correctness.
