@@ -15,16 +15,16 @@ The current counter starts at zero for each point and increments only after both
 
 ## Source evidence and minimization
 
-The success bindings convert integer coordinates and differences to double precision before arithmetic, in the original multiplication/division/addition order. The counter initialization, both crossing conditions, intersection expression, increment and parity expression establish the actual count to print. The existing output line locates the only required modification and preserves coordinates and point order. Input coordinates and edge traversal mechanics do not change and are not necessary for this output-only analysis.
+The explicit numeric conversions use double precision before each arithmetic operation, in the original multiplication/division/addition order. The compound updates consume each successful value and fail fast on its error alternative. The counter initialization, both crossing conditions, intersection expression, increment and parity expression establish the actual count to print. The existing output line locates the only required modification and preserves coordinates and point order. Input coordinates and edge traversal mechanics do not change and are not necessary for this output-only analysis.
 
-Locations in main source: L4, L5, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19.
+Locations in main source: L4, L5, L8, L9, L10, L11, L12, L13, L14, L15, L16.
 
 All selected lines are complete, verbatim and in source order. The selected source, the question, and documented language/library semantics support the answer. The full source is a sufficient alternative but includes the unrelated material identified above; the retained selection is a reviewed lower-token sufficient candidate, without a claim of exhaustive global minimality.
 
-Measurement: Task A 409; Task B 202. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
+Measurement: Task A 382; Task B 175. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
 
 Current validation: this source passes the current Core type checker. Native execution of this revision has not been rechecked.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 409; Task B 202.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 382; Task B 175.
