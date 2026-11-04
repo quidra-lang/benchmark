@@ -12,6 +12,10 @@ These are reproducible proxies for token usage, not measurements of complete LLM
 
 When the user asks you to "start the benchmark," follow the steps below.
 
+## File change restrictions
+
+Do not add, edit, or delete any files other than those explicitly specified in this README.
+
 ## 1. Preparation and language selection
 
 1. Clone this repository, or pull its latest changes if it is already available locally. Work on the `develop` branch.

@@ -4,8 +4,6 @@
 
 Coverage: Beginner Task A and Task B include all 100 topics in all 20 languages. Intermediate and Advanced have not been measured in this run; their values and the totals across all difficulty levels remain `-`. Python = 100 normalization is shown only for the measured Beginner columns.
 
-Quidra sources use Core development revision [`84f1222`](https://github.com/quidra-lang/quidra/commit/84f122237795f1b6258a588ce740b377cbe6740d) for numeric literal defaults, common numeric types, checked argument conversions and `println()` and Collections development revision [`1dc70eb`](https://github.com/quidra-lang/collections/commit/1dc70ebbab0b6922a837b848258a89ae7fec8adf) for `distinct<T>.sorted()`.
-
 ### Normalized token consumption
 
 This table linearly normalizes each column of the table below so that Python scores 100 (score = language total / Python total x 100).
