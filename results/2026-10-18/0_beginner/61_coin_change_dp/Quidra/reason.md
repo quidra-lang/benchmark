@@ -16,10 +16,10 @@ Selected complete main.qui source lines: 10, 11, 12, 13, 14. Every selected line
 
 ## Measurement and validation
 
-Using unchanged metric/tokenizer.py (SHA-256 4edefba77b30a2a7d55e2849f30e2d022fb1f6b2d12d7319f45293830459555a): Task A 325 tokens; Task B 74 tokens. Original values: Task A 343; Task B 77. Task B proposed modifications have not been implemented. Native validation of Task A is recorded separately in validation-results.json; lexical counts or excerpt review do not by themselves establish compilation or correctness.
+Using unchanged metric/tokenizer.py (SHA-256 4edefba77b30a2a7d55e2849f30e2d022fb1f6b2d12d7319f45293830459555a): Task A 327 tokens; Task B 75 tokens. Original values: Task A 343; Task B 77. Task B proposed modifications have not been implemented. Native validation of Task A is recorded separately in validation-results.json; lexical counts or excerpt review do not by themselves establish compilation or correctness.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 325; Task B 74.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 327; Task B 75.
 
-Measurement: Task A 325; Task B 74. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 327; Task B 75. Tokenizer: metric/tokenizer.py, unchanged.

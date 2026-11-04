@@ -4,6 +4,6 @@ The fixture rows locate boards 4 and 6. The joined board defaults to draw when f
 
 Selected complete lines in order are 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13.
 
-Task A uses 384 tokens. Task B uses 364 tokens.
+Task A uses 383 tokens. Task B uses 363 tokens.
 
-Measurement: Task A 384; Task B 364. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 383; Task B 363. Tokenizer: metric/tokenizer.py, unchanged.

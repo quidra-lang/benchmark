@@ -12,6 +12,6 @@ The source enumerates A, B, C, D in that order. The last A-prefixed leaf is ADCB
 
 The initial call, choice and restore operations, and base-case counter update are necessary. A separate print statement does not explain how the leaf obtains its number; the excerpt retains output when it shares the increment line.
 
-Selected complete lines of `main.qui`: 1–3, 5–10, 12. The prior excerpt measured 131 tokens; this excerpt measures 116 with `metric/tokenizer.py`.
+Selected complete lines of `main.qui`: 1–3, 5–10, 12. The prior excerpt measured 131 tokens; this excerpt measures 115 with `metric/tokenizer.py`.
 
-Measurement: Task A 132; Task B 116. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 131; Task B 115. Tokenizer: metric/tokenizer.py, unchanged.

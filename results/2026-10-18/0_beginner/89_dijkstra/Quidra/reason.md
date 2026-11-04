@@ -4,6 +4,6 @@ Change the shared start index from 0 to 6. Both the zero-distance assignment and
 
 Selected complete source lines: 3, 10, 12, 13, 14, 28, 30, 31, 32, 33, 34.
 
-With the benchmark tokenizer, this selection measures 141 tokens; the previous selection measured 164. The full source is 520 tokens.
+With the benchmark tokenizer, this selection measures 140 tokens; the previous selection measured 164. The full source is 519 tokens.
 
-Measurement: Task A 520; Task B 141. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 519; Task B 140. Tokenizer: metric/tokenizer.py, unchanged.

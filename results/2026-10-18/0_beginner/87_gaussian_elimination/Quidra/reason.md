@@ -4,6 +4,6 @@ The output interpolation is the only site that changes. Set frac to six and pres
 
 Selected complete lines in order are 30.
 
-Task A uses 572 tokens. Task B uses 22 tokens.
+Task A uses 576 tokens. Task B uses 22 tokens.
 
-Measurement: Task A 572; Task B 22. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 576; Task B 22. Tokenizer: metric/tokenizer.py, unchanged.

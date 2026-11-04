@@ -4,6 +4,6 @@ Scan the indexed ascending names in reverse, retaining the same untaken and zero
 
 Selected complete source lines: 4, 5, 12, 13, 14, 15, 24.
 
-With the benchmark tokenizer, this selection measures 108 tokens; the previous selection measured 203. The full source is 654 tokens.
+With the benchmark tokenizer, this selection measures 109 tokens; the previous selection measured 203. The full source is 655 tokens.
 
-Measurement: Task A 654; Task B 108. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 655; Task B 109. Tokenizer: metric/tokenizer.py, unchanged.

@@ -8,10 +8,10 @@ The Math import and documented integer math.max contract identify the same large
 
 Selected complete main.qui lines: 1, 3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 17, 20. Each is copied verbatim once and in source order.
 
-Using unchanged metric/tokenizer.py on the current source: Task A 386; Task B 208. These are source-code token counts.
+Using unchanged metric/tokenizer.py on the current source: Task A 385; Task B 207. These are source-code token counts.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 386; Task B 208.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 385; Task B 207.
 
-Measurement: Task A 386; Task B 208. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 385; Task B 207. Tokenizer: metric/tokenizer.py, unchanged.

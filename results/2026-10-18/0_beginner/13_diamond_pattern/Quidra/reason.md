@@ -14,6 +14,6 @@ With n=5 from the question, these lines use i=5 and i=4, giving 0 spaces and 9 a
 
 Selected complete lines of `main.qui`: 2, 3, 4. The excerpt preserves their text, indentation and order.
 
-Adding the size declaration would repeat a supplied fact. Removing the traversal instead would lose the connection between output line numbers and the internal row index. The previous excerpt contained 97 tokens; the selected excerpt contains **89 tokens** using `metric/tokenizer.py`.
+Adding the size declaration would repeat a supplied fact. Removing the traversal instead would lose the connection between output line numbers and the internal row index. The previous excerpt contained 97 tokens; the selected excerpt contains **90 tokens** using `metric/tokenizer.py`.
 
-Measurement: Task A 97; Task B 89. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 98; Task B 90. Tokenizer: metric/tokenizer.py, unchanged.

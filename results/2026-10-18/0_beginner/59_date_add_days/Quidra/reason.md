@@ -14,6 +14,6 @@ Selected complete `main.qui` lines: 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 
 
 The selected input/state bindings, bounds, decisions, arithmetic and output change sites support the requested answer. Unrelated unchanged source is omitted. The complete source and enclosing span are sufficient alternatives that add unrelated tokens. This is a reviewed sufficient selection, not a proof of global mathematical minimality.
 
-Using unchanged `metric/tokenizer.py`: Task A **484** tokens; Task B **300** tokens. These are lexical evidence measurements; execution verification is recorded separately.
+Using unchanged `metric/tokenizer.py`: Task A **485** tokens; Task B **301** tokens. These are lexical evidence measurements; execution verification is recorded separately.
 
-Measurement: Task A 484; Task B 300. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 485; Task B 301. Tokenizer: metric/tokenizer.py, unchanged.

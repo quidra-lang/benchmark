@@ -18,8 +18,8 @@ Locations in main source: L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13
 
 All selected lines are complete, verbatim and in source order. The selected source, the question, and documented language/library semantics support the answer. The full source is a sufficient alternative but includes the unrelated material identified above; the retained selection is a reviewed lower-token sufficient candidate, without a claim of exhaustive global minimality.
 
-Measurement: Task A 318; Task B 279. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
+Measurement: Task A 317; Task B 278. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 318; Task B 279.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 317; Task B 278.
