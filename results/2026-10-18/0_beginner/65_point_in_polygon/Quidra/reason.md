@@ -15,16 +15,16 @@ The current counter starts at zero for each point and increments only after both
 
 ## Source evidence and minimization
 
-The typed success bindings convert integer coordinates and differences to double precision before arithmetic, in the original multiplication/division/addition order. The counter initialization, both crossing conditions, intersection expression, increment and parity expression establish the actual count to print. The existing output line locates the only required modification and preserves coordinates and point order. Input coordinates and edge traversal mechanics do not change and are not necessary for this output-only analysis.
+The success bindings convert integer coordinates and differences to double precision before arithmetic, in the original multiplication/division/addition order. The counter initialization, both crossing conditions, intersection expression, increment and parity expression establish the actual count to print. The existing output line locates the only required modification and preserves coordinates and point order. Input coordinates and edge traversal mechanics do not change and are not necessary for this output-only analysis.
 
-Locations in main source: L4, L5, L8, L9, L10, L11, L12, L13, L14, L15, L16.
+Locations in main source: L4, L5, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19.
 
 All selected lines are complete, verbatim and in source order. The selected source, the question, and documented language/library semantics support the answer. The full source is a sufficient alternative but includes the unrelated material identified above; the retained selection is a reviewed lower-token sufficient candidate, without a claim of exhaustive global minimality.
 
-Measurement: Task A 382; Task B 175. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
+Measurement: Task A 409; Task B 202. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
 
-Execution verification: the revised program compiled and its stdout matched the Python reference, because the historical Quidra source fails current compilation exactly.
+Current validation: this source passes the current Core type checker. Native execution of this revision has not been rechecked.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 382; Task B 175.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 409; Task B 202.
