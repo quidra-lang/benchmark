@@ -1,7 +1,5 @@
-# Task B selection for 22_char_frequency
+# Task B selection: 22_char_frequency / Quidra
 
-Change ignore_case to false so ascii_words still excludes nonletters while preserving the case of each ASCII character. Character splitting and frequencies then retain separate keys for P and p. sorted_entries orders these keys by code point, placing A–Z before a–z, and the existing output line retains the required format. The source sentence is unnecessary for locating the change.
+The qualified text.ascii_words call filters to ASCII letters and currently folds case. Disable ignore_case, leaving the joins and character split to supply distinct original-case keys to collections frequencies. sorted_entries enumerates present keys by their ASCII order, so capitals precede lowercase; println keeps the label and count format.
 
-Selected complete lines in order are 1, 2, 5, 6, 7, 8.
-
-Task A uses 109 tokens. Task B uses 85 tokens.
+Complete main.qui lines: 1, 5, 6, 7, 8. The explicit text namespace already identifies that API; the collections import binds the unqualified frequencies extension. The sentence and import of an already identified namespace do not supply needed change evidence. The benchmark tokenizer counts 81 tokens in this excerpt.

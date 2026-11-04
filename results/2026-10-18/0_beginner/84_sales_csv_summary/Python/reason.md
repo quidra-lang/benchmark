@@ -1,17 +1,7 @@
-# Task B selection: 84_sales_csv_summary / Python
+# Task B selection — 84_sales_csv_summary / Python
 
-## Common answer requirements
+The retained north rows contribute 10×200, 8×150 and 20×80, totaling 4,800. The notebook rows contribute 10, 9 and 6 units, totaling 25. The parsing and accumulators distinguish quantity×price grouped by region from quantity alone grouped by product. The region key is negative total followed by name, while the product keys use plain ascending sorted. Separate rows that belong to neither group, list terminators, and overall/date totals are unnecessary for these traces.
 
-Trace north sales and notebook quantities; establish independent money and quantity accumulators; explain regional descending-sales/name tie ordering versus product ascending-name ordering.
+Selected complete source lines: 1, 3, 5, 9, 10, 13, 15, 18, 20, 21, 22, 23, 25, 26, 29, 31.
 
-## Source evidence and minimization
-
-Retain the existing question-specific semantic selection, and add the actual import binding for each selected standard-library call. For the CSV trace, include the header to explain the data slice offset. These are required source facts, not additional implementation inspection.
-
-Locations in main source: L1, L3, L4, L5, L9, L10, L13, L15, L17, L18, L20, L21, L22, L23, L25, L26, L29, L31.
-
-All selected lines are complete, verbatim and in source order. The source evidence, the question, and documented language/library semantics support the answer. Inputs and branches unrelated to the answer are excluded. A modification-only question does not require unchanged implementation details solely to reconfirm the program remains correct. Imported library bindings are included when their contracts are used. Static types may replace inspection of user-defined implementations only for facts those types actually guarantee.
-
-Alternative considered: the contiguous span between the first and last selected line and the full source. Those contain additional context, but do not reduce token cost. The selection is a reviewed sufficient candidate; exhaustive mathematical global minimality is not claimed.
-
-Measurement: Task A 613; Task B 313. Tokenizer: metric/tokenizer.py, unchanged. Neither these lexical checks nor this selection establish execution/compilation of Task A.
+With the benchmark tokenizer, this selection measures 295 tokens; the previous selection measured 313. The full source is 613 tokens.

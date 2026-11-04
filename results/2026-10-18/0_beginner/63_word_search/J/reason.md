@@ -2,34 +2,14 @@
 
 ## Common answer requirements
 
-Identify all first-match exits and output/result state; explain preserving row-major cells and E,SE,S,SW,W,NW,N,NE direction order, visiting all valid matches, retaining the final match or not-found fallback in the current per-word format.
+Select the last valid match in the same row-major and direction order; preserve the match test and per-word result/fallback format.
 
-## Supported analysis
+## Source evidence
 
-Keep the shown increasing row/column/direction traversal. Replace first-success return/break with overwriting a saved result for each successful match; finish all search loops before returning or printing it. Remove found-based loop guards and all success exits that suppress later combinations. Keep the character-mismatch break inside the match test, because it rejects only the current candidate. Initialize the saved result to the existing not-found value, or retain a separate any-match flag and saved coordinates/direction. For implementations that print directly on success, move that print after the loops and print only the last saved tuple, falling back to not found when none was saved. The actual grid and word fixtures and unchanged match predicate internals are not needed to identify these edits.
+The row-major loops and direction traversal show the unchanged order. Replace the first-match return with assignment to a result initialized to the fallback, and return it after all loops. Every valid match replaces the saved value. Keep the per-word result format.
 
-Replace the success expression followed by return. with assignment to a result initialized to not found; return that result after traversal. The final source table records the exact retained boundaries. Multiline declarations/expressions are terminated where needed to distinguish data from processing; selected control/helper scopes use their original lexical terminators. Unrelated branch/display closes are excluded. Indentation is used as a scope guarantee only in indentation-defined languages.
+## Minimization
 
-## Source evidence and dependencies
+Board literals and the character checks do not change unless the checks share the retained success branch. The loop order, success handling, and fallback identify where to make the change; a helper’s caller already consumes the same result type and format.
 
-The excerpt is copied from `main.ijs`. Original source locations and their exact token costs are listed below. Read the selected lines together: declarations bind the named inputs and accumulators; loop headers establish traversal order and bounds; conditions govern the indented operations; assignments and expressions establish the actual data transformations. A line containing several operations cannot be shortened under the complete-line rule.
-
-| Original line | Tokens | Source evidence |
-| --- | ---: | --- |
-| 1 | 10 | `search =: 4 : 0` |
-| 5 | 24 | `  names =. ;:'E SE S SW W NW N NE'` |
-| 6 | 12 | `  for_r. i.10 do.` |
-| 7 | 12 | `    for_c. i.10 do.` |
-| 8 | 12 | `      for_d. i.8 do.` |
-| 19 | 45 | `        if. matched do. ('(',(":r),', ',(":c),') ',>d{names) return. end.` |
-| 20 | 4 | `      end.` |
-| 21 | 3 | `    end.` |
-| 22 | 3 | `  end.` |
-| 23 | 7 | `  'not found'` |
-| 24 | 2 | `)` |
-
-The table supplies the concrete operands, guards, updates, and call connections used by the analysis above. Imports, entry-point boilerplate, unrelated examples, and unrelated reporting are omitted when they add no requested fact. Ordinary scalar assignment, arithmetic, indexing, conditional execution, loop order, and the shown standard-library operations have their documented language meaning. No user-defined helper is assumed to have behavior merely from its name: where its behavior is needed, its relevant definition and operations are included. Task A compilation and correctness are assumed as required by README §2.3; no Task A program was executed.
-
-## Minimization and alternatives
-
-The selected set costs **134 tokens** under `metric/tokenizer.py`'s `tokenize`. The complete original source costs 451 tokens, an alternative that also contains the evidence but adds unrelated context. Restoring omitted standalone structural closing lines gives 148 tokens; the omitted closers finish wrapper/list syntax or other scopes that do not distinguish any requested decision or update. Scope terminators that do distinguish a selected branch, loop, helper definition, or following operation are retained and justified above. Indentation is not treated as a scope guarantee in brace/end languages. Closing lines that contain a substantive operation also remain selected. Each listed substantive line is retained for its input value, dependency binding, traversal rule, decision, state update, affected output operation, or required expression continuation; omitting such evidence would require importing implementation information absent from the excerpt. This is a reviewed lower-token sufficient selection among the relevant sets considered, not a proof of a global mathematical minimum.
+Selected complete lines of `main.ijs`: 1, 5–8, 19–23. The prior excerpt measured 134 tokens; this excerpt measures 132 with `metric/tokenizer.py`.

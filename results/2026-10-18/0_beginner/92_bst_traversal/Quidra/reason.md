@@ -1,19 +1,15 @@
-# Task B selection for 92_bst_traversal
+# Task B selection — 92_bst_traversal / Quidra
 
-The insertion order and search branches establish the subtree before
-deletion. Removing 6 leaves 13 to the left of 27. Deleting 27 calls
-`BinaryNodes.detach_leftmost` on the subtree rooted at 39. The documented
-operation follows left links, returns 31 and reconnects 31's right child 34
-at its former position. The caller replaces the target value with 31,
-assigns the remaining subtree rooted at 39 to its right, and writes the
-updated node back to the store. Thus 31 has left child 13 and right child 39,
-whose left child is 34. The final calls visit the replacement before its
-descendants and compute the height from the updated root.
+## Common answer requirements
 
-The selection keeps construction, both removals, and the final traversal
-and height calls. It excludes the initial output and the formatting helper.
-The documented Collections operations establish traversal order, height,
-and the successor splice without requiring their implementations.
+Trace the deletion of 27 after deletion of 6, show successor selection and reconnection, and connect the resulting tree to preorder and height.
 
-Selected complete lines in order are 1, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 47, 48, 53, 54, 55, 56, 61, 62, 63, 64.
-Task A uses 853 tokens. Task B uses 719 tokens.
+## Source evidence
+
+The insertion data and placement rules establish the tree. After removing 6, the successor of 27 is 31, reached as the leftmost node below its right child 39. Copy 31 into the deleted key position and splice 31’s right child 34 back as the left child of 39. The local subtree is rooted at 31 with children 13 and 39. The post-deletion preorder visits 31, 13, 39, 34, 45 in that subtree, and the resulting tree has height four nodes.
+
+## Minimization
+
+Selected complete lines of `main.qui`: L1, L4, L5, L6, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L21, L22, L24, L25, L28, L29, L30, L31, L32, L33, L34, L35, L36, L37, L38, L39, L40, L41, L42, L43, L44, L45, L47, L48, L53, L54, L55, L56, L61, L62, L63, L64. The selected construction, search, successor splice and traversal calls support the trace. Deleting the specified keys never searches an absent subtree, so a separate missing-key return is unnecessary here. The recursive insertion, preorder and height base cases still support their required facts. Output-only joining does not affect traversal.
+
+The selected excerpt measures **706 tokens** with `metric/tokenizer.py`.

@@ -2,22 +2,14 @@
 
 ## Common answer requirements
 
-[Code comprehension]
+Explain the empty-prefix table boundaries and trace the three predecessor cases through the distance from flaw to lawn.
 
-Using the source, explain how the edit-distance table represents transformations involving an empty prefix, then trace the calculation for flaw and lawn through the table entries needed for the final distance. Identify which code handles matching characters and which alternatives account for insertion, deletion, and replacement. Relate those alternatives to their prefix subproblems rather than merely giving the distance.
+## Source evidence
 
-## Answer supported by the selection
+The table’s boundary entries are the length of the nonempty prefix: from empty, insert every target character; to empty, delete every source character. With rows for flaw and columns for lawn, the upper entry plus one deletes the final source character, the left entry plus one inserts the final target character, and the diagonal entry adds zero for a match or one for replacement. In prefix-length coordinates, (1,0)=1 (delete f), (2,1)=1 (match l), (3,2)=1 (match a), and (4,3)=1 (match w). At (4,4) the alternatives are deletion 4, insertion 2, replacement 3; appending n yields the final distance 2.
 
-The row comprehension creates rows indexed i=0 through len(a), each beginning with i; therefore dp[i][0]=i counts deletions to an empty target. The generated integer range assigned to the first row sets dp[0][j]=j, counting insertions from an empty source. For flaw/lawn, rows 0 through 4 are [0,1,2,3,4], [1,1,2,3,4], [2,1,2,3,4], [3,2,1,2,3], and [4,3,2,1,2]. Matching l, a and w uses cost zero along dp[2][1]=1, dp[3][2]=1 and dp[4][3]=1. At dp[4][4], deletion gives dp[3][4]+1=4, insertion gives dp[4][3]+1=2 and replacement gives dp[3][3]+1=3, so the final distance is 2. The three array elements are deletion from the previous source prefix, insertion after the previous target prefix, and matching/replacing the last character after the two shorter prefixes; `min_all` chooses their minimum. The table remains two-dimensional and records all prefix pairs.
+## Minimization
 
-## Source evidence and minimization
+The question supplies both inputs. Case arrays, unrelated examples, and caller prints are unnecessary; the selected table indexing, boundary writes and recurrence determine the answer.
 
-Only the flaw/lawn input record is needed. The tuple loop supplies a and b, length bindings define table extents, and both initialization expressions establish empty-prefix states. Both nested loops, character-cost decision and complete recurrence establish the order and all predecessor cases. `import math` supplies the min_all contract. Other word pairs and the printing statement do not affect this trace.
-
-Locations in main source: L1, L3, L5, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18.
-
-All selected lines are complete, verbatim and in source order. The selected source, the question, and documented language/library semantics support the answer. The full source is a sufficient alternative but includes the unrelated material identified above; the retained selection is a reviewed lower-token sufficient candidate, without a claim of exhaustive global minimality.
-
-Measurement: Task A 353; Task B 274. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
-
-Execution verification: the revised program compiled and its stdout matched the valid historical Quidra program exactly.
+Selected complete lines of `main.qui`: 1, 11–18. The prior excerpt measured 274 tokens; this excerpt measures 231 with `metric/tokenizer.py`.

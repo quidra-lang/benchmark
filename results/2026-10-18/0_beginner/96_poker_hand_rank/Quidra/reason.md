@@ -1,7 +1,15 @@
-# Task B selection for 96_poker_hand_rank
+# Task B selection — 96_poker_hand_rank / Quidra
 
-The selected fixture rows, rank counts and suit checks identify both hands as nonflush straights. The wheel check accepts the ace-low ranks and substitutes [5,4,3,2,1] for comparison; the six-high hand retains [6,5,4,3,2]. Descending lexicographic order puts the six-high hand first. The output indexes the original hands using the sorted indices and preserves each hand string.
+## Common answer requirements
 
-Selected complete lines in order are 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 35, 36, 37, 38, 40, 42, 45, 54, 55, 56, 57.
+Classify and compare the two given hands, explain the ace-low special case, and follow the original hand strings to the output.
 
-Task A uses 830 tokens. Task B uses 581 tokens.
+## Source evidence
+
+The rank and suit tests classify both hands as ordinary straights. The ace-low ranks 2, 3, 4, 5 and 14 satisfy the special straight test and use the comparison sequence 5, 4, 3, 2, 1. The second hand uses 6, 5, 4, 3, 2 and wins at the first differing rank after the category ties. The selected input flow, score association and print expression show why the original input string is used even after the comparison order changes.
+
+## Minimization
+
+Selected complete lines of `main.qui`: L1, L2, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24, L25, L26, L27, L28, L35, L36, L37, L38, L54, L55, L56, L57. The question supplies both literal hand strings. The selected processing shows how a supplied string is classified and remains associated with its comparison key. The lookup that formats the category label, unrelated hand literals and categories, and output setup do not supply any fact required about classification or preservation of the original hand.
+
+The selected excerpt measures **538 tokens** with `metric/tokenizer.py`.

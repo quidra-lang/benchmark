@@ -1,27 +1,11 @@
 # Task B selection: 35_statistics_summary / Go
 
-## Common answer requirements
+Locate the population denominator and distinguish that edit from any other use of the length.
 
-Identify the standard-deviation denominator and change only that normalization from n=11 to n−1=10 before the square root. Preserve the mean, ordered squared-difference accumulation, stdev label, three-decimal half-up presentation and every other statistic.
+Use 10 as the divisor for the accumulated squared differences before taking the square root. Where the code derives the divisor from a collection size, use the collection size minus one at this division; where it uses a literal, replace that literal while retaining real division. Leave the mean calculation, the per-value differences and accumulation, and the existing field and formatter in place. Do not change a shared count used by the mean.
 
-These requirements were fixed for the topic before choosing the language-specific excerpts. Task B assumptions and the language specification/standard-library semantics are used; no Task A program was compiled or executed.
+Only the denominator changes. Where the expression is an unnamed argument in a multiline print call, the format identifies its destination. The mean, accumulation, input literals, and formatting internals are otherwise outside the edit. The unchanged formatter is used under the Task B assumptions.
 
-## Answer and source dependencies
+The format and deviation are separated in source, so both the format's last slot and the argument supplying it are retained.
 
-Replace the divisor inside the standard-deviation square root: hardcoded 11.0 becomes 10.0; a length/size/count expression becomes that count minus one (or the specified 10), retaining any floating-point conversion. Do not change the mean denominator or squared-difference accumulation. The affected expression is already separate from those computations, so their source is unnecessary to locate or explain this edit. Keep the existing rounding/formatting path and labels; the Task B assumptions apply to unchanged presentation.
-
-
-
-Source: `main.go`. Selected original lines: 35. The following line-by-line dependency record identifies the original statements retained (including unavoidable extra operations on a complete line):
-
-- L35: `		mean, sorted[5], mode, sorted[10]-sorted[0], math.Sqrt(s/11.0))` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
-
-## Minimization and semantics
-
-The selected excerpt measures **39 tokens** with `metric/tokenizer.py` `tokenize`. The complete original source is a sufficient alternative of **420 tokens**; its extra declarations, program wrappers, unrelated cases, and setup are unnecessary for these answer requirements. Source order, indentation, and complete original lines are preserved. No location is repeated.
-
-Each selected statement was reviewed against the answer dependencies above. Scope delimiters are retained where they establish a relevant branch/loop boundary (including completion before a following update or output). Other wrappers, imports, and standard I/O setup are omitted when they carry no needed behavior. Excerpts are evidence fragments and need not form a standalone compilable program. Standard arithmetic, indexing, iteration, collection operations, and formatting have their language/library meanings; implementations of standard operations do not need to be included. User-defined behavior is supported by its selected operations rather than inferred from a helper name.
-
-The following smaller deletion candidates were measured as alternative line sets. They lose the indicated original statement and therefore the corresponding calculation/control/data/output evidence described above; a lower count alone is insufficient. This is a source-dependency minimization, not a proof of a global mathematical optimum.
-
-- Without L35: 0 tokens (versus 39); removes `mean, sorted[5], mode, sorted[10]-sorted[0], math.Sqrt(s/11.0))`.
+Source: `main.go`, original lines 34–35. The previous excerpt measures 39 tokens; this evidence set measures 81 tokens.

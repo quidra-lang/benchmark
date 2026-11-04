@@ -2,20 +2,14 @@
 
 ## Common answer requirements
 
-Identify live direction encoding/update and insertion point after the eleven board rows before black count, after 300 complete steps; specify U,R,D,L mapping and thirteen-line result.
+Read the direction after 300 complete steps, map it to U/R/D/L, and add a line between board and count.
 
-These answer requirements are identical for all twenty languages. The Task B assumptions apply; this is source analysis, not execution or verification of Task A.
+## Supported analysis
 
-## Source evidence and minimization
+The row/column deltas (-1,0), (0,1), (1,0), (0,-1) map direction 0–3 to U,R,D,L. Each step turns using the current color, flips that cell, and moves with the new direction. Read the direction binding after the simulation, then emit direction: D after the completed eleven board rows and before the black count. The result has thirteen lines.
 
-The previous reviewed answer dependencies are retained; only equivalent range-header spelling or local type/index expressions changed. Identify live direction encoding/update and insertion point after the eleven board rows before black count, after 300 complete steps; specify U,R,D,L mapping and thirteen-line result.
+The excerpt is copied verbatim from `main.qui`, in source order. Retained source lines: 4, 5, 6, 7, 8, 9, 10, 11, 13, 19, 20. Additional evidence is on line 9: `black[row][column] = not black[row][column]`.
 
-These answer requirements are identical for all twenty languages. The Task B assumptions apply; this is source analysis, not execution or verification of Task A.
+## Minimization and alternatives
 
-Locations in main source: L4, L5, L6, L7, L8, L10, L11, L13, L19, L20.
-
-All selected lines are complete, verbatim and in source order. The source evidence, the question, and documented language/library semantics support the answer. Inputs and branches unrelated to the answer are excluded. A modification-only question does not require unchanged implementation details solely to reconfirm the program remains correct. Imported library bindings are included when their contracts are used. Static types may replace inspection of user-defined implementations only for facts those types actually guarantee.
-
-Alternative considered: the contiguous span between the first and last selected line and the full source. Those contain additional context, but do not reduce token cost. The selection is a reviewed sufficient candidate; exhaustive mathematical global minimality is not claimed.
-
-Measurement: Task A 350; Task B 186. Tokenizer: metric/tokenizer.py, unchanged. Neither these lexical checks nor this selection establish execution/compilation of Task A.
+The bound, turn, flip and move show the exact observation point. The board-row output and the count write show the insertion point; the board character decisions and black-count arithmetic do not need to change. The prior selection used 186 tokens; this selection uses 207 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.

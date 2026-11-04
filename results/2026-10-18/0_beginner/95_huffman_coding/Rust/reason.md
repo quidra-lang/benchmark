@@ -1,30 +1,15 @@
-# Task B source selection
+# Task B selection — 95_huffman_coding / Rust
 
 ## Common answer requirements
 
-Locate completed-tree traversal bit labels; reverse left/right labels while keeping tree priorities/child selection, ASCII print order and length-based bit totals.
+Reverse the bit labels for left and right recursion while preserving child selection, symbol order, and both bit totals.
 
-These answer requirements are identical for all twenty languages. The Task B assumptions apply; this is source analysis, not execution or verification of Task A.
+## Source evidence
 
-## Supported answer and change analysis
+The first assign call selects the left child and adds 0 to the path. The second selects the right child and adds 1. Exchange just these two bit literals. Every code is complemented with unchanged length, so the length-based bit totals and symbol ordering are unaffected.
 
-Swap the literal bit appended or written before the left recursive move from 0 to 1, and the right move from 1 to 0. Keep the completed tree and its left/right children unchanged. Every code becomes its bitwise complement with exactly the same length, so frequency-times-length encoded-bit totals and the fixed eight-bit comparison retain their values. The existing symbol-order printer consumes the newly assigned codes without an ordering/format change. There is no reason to alter frequency collection or queue priorities.
+## Minimization
 
+Selected complete lines of `main.rs`: L27, L29, L30, L33. The first call spans several source lines. The retained call head, child and path establish the left move and label. The separate arguments for the node store and code output, and the call terminator, add no fact about the bit assignment.
 
-
-## Source evidence and dependencies
-
-The selected locations in `main.rs` are L27, L28, L29, L30, L31, L33. Each retained line below supplies the indicated operation, condition, declaration, data value, or enclosing branch needed to connect the answer to this implementation:
-
-- L27: `assign(`. This line supplies the current bit literal or its association with the left/right recursive child; both associations are needed to reverse labels without swapping children.
-- L28: `nodes,`. This line supplies the current bit literal or its association with the left/right recursive child; both associations are needed to reverse labels without swapping children.
-- L29: `nodes[root].left.unwrap(),`. This line supplies the current bit literal or its association with the left/right recursive child; both associations are needed to reverse labels without swapping children.
-- L30: `prefix.clone() + "0",`. This line supplies the current bit literal or its association with the left/right recursive child; both associations are needed to reverse labels without swapping children.
-- L31: `codes,`. This line supplies the current bit literal or its association with the left/right recursive child; both associations are needed to reverse labels without swapping children.
-- L33: `assign(nodes, nodes[root].right.unwrap(), prefix + "1", codes);`. This line supplies the current bit literal or its association with the left/right recursive child; both associations are needed to reverse labels without swapping children.
-
-## Language semantics and minimization
-
-Use the language's ordinary expression evaluation, indexing, comparison, assignment, iteration and control-flow semantics, and the documented semantics of the standard-library operations shown in the excerpt. User-defined behavior needed for the answer is included rather than inferred solely from a helper name. Source lines need not form a standalone compilable program. Unrelated input/output setup, imports, whitespace, and purely structural closing lines are omitted unless they occur on a necessary complete line. The analysis identifies the affected logic; no replacement program is supplied.
-
-`metric/tokenizer.py`'s `tokenize` reports **72 tokens** for the selected original complete lines. A contiguous-context alternative spanning L27–L33 costs **76 tokens**; the entire source costs **966 tokens**. The selected set plus the additional context line L1 costs **78 tokens**. That extra line does not add an answer requirement. These comparisons favor the retained dependency slice over context-heavy alternatives. Every selected substantive line was reviewed for the facts or dependency it contributes. This is a minimized sufficient selection among reviewed alternatives, not a proof of a global mathematical minimum.
+The selected excerpt measures **62 tokens** with `metric/tokenizer.py`.

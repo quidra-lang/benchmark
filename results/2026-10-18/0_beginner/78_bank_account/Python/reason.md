@@ -2,18 +2,14 @@
 
 ## Common answer requirements
 
-Trace the two Emma-to-Nina transfers, equality and atomic failure, then the immediately following Emma withdrawal.
+Trace the two transfers and next withdrawal, including the equality boundary and why failure does not write either balance.
 
-## Source evidence and minimization
+## Supported analysis
 
-Emma starts at 800 and receives 1200, reaching 2000. Nina starts at 12000 and transfers 5000 to Leo, reaching 7000. The 2500 transfer fails without either guarded mutation; equality allows the 2000 transfer, leaving Emma 0 and Nina 9000. The subsequent 300 withdrawal fails. Both Leo-only withdrawals are omitted: independent dictionary entries and the selected guarded operations show they cannot change Emma or Nina. The same relevance boundary is used for Quidra. Relevant transaction records, parsing, the >= test and both guarded transfer updates remain.
+Emma starts at 800 and receives 1200; Nina starts at 12000 and sends 5000 to Leo. The transfers therefore start at Emma 2000 and Nina 7000. The 2500 transfer fails, with both debit and credit skipped. The 2000 transfer passes the inclusive check (or fails the strict insufficient-funds condition), leaving Emma at 0 and Nina at 9000. The next withdrawal of 300 fails against Emma’s new balance.
 
-Selected original source lines: L1, L2, L3, L5, L7, L8, L9, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24.
-Every selected line is complete, verbatim and in source order. Alternative complete
-source and contiguous-context selections retain unrelated information; the removed
-input records or independent operations add no required fact. This is a reviewed
-sufficient minimized candidate, not a proof of a global mathematical minimum.
-Language and documented library semantics are available as prior knowledge.
+The excerpt is copied verbatim from `main.py`, in source order. Retained source lines: 1, 2, 3, 5, 7, 8, 9, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24. Additional evidence is on line 13: `]`.
 
-Task B: 276 tokens under the unchanged metric/tokenizer.py. Task A is unchanged
-by this evidence correction.
+## Minimization and alternatives
+
+The prior transactions that alter either balance, the target transactions, parsing and account lookup determine the trace. Leo-only withdrawals have no effect when they can be omitted as whole lines, and later commands are outside the trace. The prior selection used 276 tokens; this selection uses 278 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.

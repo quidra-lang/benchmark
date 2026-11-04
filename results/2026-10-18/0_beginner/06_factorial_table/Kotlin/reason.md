@@ -1,24 +1,15 @@
 # Task B selection: 06_factorial_table / Kotlin
 
-## Common answer requirements
+## Answer requirements
 
-1. Locate the range endpoint and every representation/output dependency relevant to exact factorials through 15.
-2. Explain how to produce sixteen increasing rows, including 0!, without overflow or lossy decimal output.
+Locate the factorial range and determine which representation, operations or output would need to change to preserve exact results through 15!.
 
-## Answer supported by the excerpt
+## Evidence and answer
 
-Extend the inclusive endpoint to 15, or the exclusive/count endpoint to 16. The largest result is 15! = 1307674368000, which exceeds signed 32-bit range but fits signed 64-bit and the exact-integer range of binary64. Widen a 32-bit accumulator before multiplication; preserve the n=0 handling. Keep arbitrary-precision integer implementations as they are. Adjust a fixed-width decimal formatter if widening changes its required argument type. Architecture-dependent integer implementations must use a sufficiently wide integer representation rather than assume that a version number guarantees word size.
+Change the inclusive 0..12 range to end at 15. The initializer 1 gives factorial type Int; use Long to hold 15! = 1307674368000. Long multiplication accepts an Int factor without changing the loop variable or the existing update expression, and normal string interpolation prints the full integer. The update and the output line are unchanged.
 
-## Source evidence and dependencies
+## Minimization
 
-Selected `main.kt` lines: 2-4. The excerpt preserves these complete lines in their original order and indentation.
+Selected complete lines of `main.kt`: 2, 3. The excerpt preserves their text, indentation and order.
 
-The endpoint supplies the extent edit; the accumulator declaration, reduction or factorial call establishes the representation. A multiplication is additionally retained where operand type coupling or exactness matters. A format line is retained where the representation change can affect that formatter. Separate generic interpolation/stream output needs no edit when it already prints the resulting integer.
-
-The literal 1 infers Int. A Long accumulator (including a Long initial literal) holds 15!; Kotlin supports the corresponding Long/Int multiplication.
-
-## Language semantics and minimization
-
-Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. The loop endpoint alone is insufficient for fixed-width implementations because it hides the overflow risk. Copying the entire program adds only unchanged framing. The selected endpoint plus representation and affected formatting is the narrower sufficient set.
-
-The selected excerpt contains **43 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 43 tokens; the complete source contains 72 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+The loop header alone does not reveal the integer representation. Selecting the full loop body adds unchanged calculations or output that do not introduce another edit. The previous excerpt contained 43 tokens; the selected excerpt contains **25 tokens** using `metric/tokenizer.py`.

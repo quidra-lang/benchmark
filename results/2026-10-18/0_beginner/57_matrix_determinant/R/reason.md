@@ -2,34 +2,14 @@
 
 ## Common answer requirements
 
-Identify every recursive cofactor expansion site; explain second-row coefficient and minor formation, parity reversal for one-based j, preserving the one-entry base case and integer arithmetic without modifying source.
+Use the second row and matching minor at every non-base recursive expansion; flip the sign convention while preserving the base case and integer operations.
 
-## Supported analysis
+## Source evidence
 
-Change the expansion coefficient from the first to the second row. Construct each minor from all rows except that second row and all columns except the chosen column, preserving the order of remaining rows and columns. In a zero-based column loop, add when the index is odd and subtract when it is even; in a one-based loop add for even j and subtract for odd j. The recursive call uses the same changed routine, so this applies at every size at least two. Keep the one-entry return and integer accumulation. For manually packed minors, replace r-1 indexing with a separate destination-row counter or an equivalent skip-aware mapping, since the retained rows now include the original first row. Original printing and fixtures are unaffected and supply no edit dependency.
+The one-entry branch remains unchanged. In the recursive expansion, select the second-row coefficient and skip exactly that row in the minor, keeping the filter that removes the current column. The recursive call stays at the same site, so every non-base level uses the new row. Reverse the accumulation sign: add even one-based columns and subtract odd ones. Keep the accumulator and arithmetic integer.
 
-Negative row/column subscripts omit entries; change -1 to -2 and coefficient row 1 to 2. Keep drop=FALSE so recursive 1x1 minors remain matrices. The final source table records the exact retained boundaries. Multiline declarations/expressions are terminated where needed to distinguish data from processing; selected control/helper scopes use their original lexical terminators. Unrelated branch/display closes are excluded. Indentation is used as a scope guarantee only in indentation-defined languages.
+## Minimization
 
-## Source evidence and dependencies
+The selected expansion and column filter establish both axes of the minor. The matrices and callers do not change because the same function computes the same determinant; output formatting is independent.
 
-The excerpt is copied from `main.R`. Original source locations and their exact token costs are listed below. Read the selected lines together: declarations bind the named inputs and accumulators; loop headers establish traversal order and bounds; conditions govern the indented operations; assignments and expressions establish the actual data transformations. A line containing several operations cannot be shortened under the complete-line rule.
-
-| Original line | Tokens | Source evidence |
-| --- | ---: | --- |
-| 1 | 11 | `laplace <- function(values) {` |
-| 2 | 10 | `  n <- nrow(values)` |
-| 3 | 13 | `  if (n == 1) {` |
-| 4 | 12 | `    return(values[1, 1])` |
-| 5 | 3 | `  }` |
-| 6 | 8 | `  total <- 0L` |
-| 7 | 18 | `  for (j in seq_len(n)) {` |
-| 8 | 35 | `    term <- values[1, j] * laplace(values[-1, -j, drop = FALSE])` |
-| 9 | 30 | `    total <- total + if (j %% 2 == 1) term else -term` |
-| 10 | 3 | `  }` |
-| 12 | 2 | `}` |
-
-The table supplies the concrete operands, guards, updates, and call connections used by the analysis above. Imports, entry-point boilerplate, unrelated examples, and unrelated reporting are omitted when they add no requested fact. Ordinary scalar assignment, arithmetic, indexing, conditional execution, loop order, and the shown standard-library operations have their documented language meaning. No user-defined helper is assumed to have behavior merely from its name: where its behavior is needed, its relevant definition and operations are included. Task A compilation and correctness are assumed as required by README §2.3; no Task A program was executed.
-
-## Minimization and alternatives
-
-The selected set costs **145 tokens** under `metric/tokenizer.py`'s `tokenize`. The complete original source costs 454 tokens, an alternative that also contains the evidence but adds unrelated context. Restoring omitted standalone structural closing lines gives 150 tokens; the omitted closers finish wrapper/list syntax or other scopes that do not distinguish any requested decision or update. Scope terminators that do distinguish a selected branch, loop, helper definition, or following operation are retained and justified above. Indentation is not treated as a scope guarantee in brace/end languages. Closing lines that contain a substantive operation also remain selected. Each listed substantive line is retained for its input value, dependency binding, traversal rule, decision, state update, affected output operation, or required expression continuation; omitting such evidence would require importing implementation information absent from the excerpt. This is a reviewed lower-token sufficient selection among the relevant sets considered, not a proof of a global mathematical minimum.
+Selected complete lines of `main.R`: 1–9. The prior excerpt measured 145 tokens; this excerpt measures 140 with `metric/tokenizer.py`.

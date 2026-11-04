@@ -2,12 +2,14 @@
 
 ## Common answer requirements
 
-Locate cumulative scoring and separate it into frame scores without changing the roll cursor, bonus attribution, or tenth-frame handling.
+Change the existing frame-order cumulative output into individual frame scores, preserving bonuses, the tenth frame and spacing.
 
-## Source evidence
+## Supported analysis
 
-The normal strike path adds ten and the next two rolls while advancing the cursor one roll. The nonstrike path adds its two rolls, with the next roll only for a spare, and advances two. The tenth frame sums all rolls from its current cursor. Compute a separate value for each frame with those same rules, and emit or collect each frame value instead of the running total.
+Each cumulative value represents the completed frames through that position. Emit the difference from the preceding total, using zero for frame one. This retains bonuses in the frame to which the current calculation already credits them. Subtracting the ninth total from the tenth leaves only the tenth frame contribution. Use the existing write or collection sites, including any separate tenth-frame append. Where a complete frame-local score already exists, emit that score directly. Convert the selected two cumulative appends into differences, or take the differences of the completed list immediately before the existing print.
 
-## Minimization
+The excerpt is copied verbatim from `main.py`, in source order. Retained source lines: 10, 11, 19, 21, 22.
 
-Retain the branches and every cumulative update that must be redirected to the individual frame score. Game input literals are independent of the change. Selected complete lines of `main.py`: 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22.
+## Minimization and alternatives
+
+Adjacent differences preserve the current scoring calculation and avoid changing the strike/spare and tenth-frame branches. The frame loop, collection or write identify the emission sites. Keeping every branch is a larger alternative needed only if rewriting the scoring calculation. The prior selection used 207 tokens; this selection uses 54 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.

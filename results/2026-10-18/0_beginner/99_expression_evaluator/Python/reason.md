@@ -1,13 +1,15 @@
-# Task B selection: 99_expression_evaluator / Python
+# Task B selection — 99_expression_evaluator / Python
 
 ## Common answer requirements
 
-Change only quotient rounding to floor while preserving multiplication precedence, left-to-right operand evaluation, and first-error behavior.
+Locate the division operation and floor its signed quotient, preserving the order of operand evaluation, precedence, first errors, and commit-on-success assignments.
 
 ## Source evidence
 
-The multiplicative parser seeds its running value from the left operand and consumes one right operand per operator. The zero-divisor check precedes the division. Replace only the quotient computation with exact integer floor division, using an exact signed-remainder correction if needed. Keep token advancement, both operand reads, the zero check, and error propagation as written.
+The existing int conversion truncates the quotient toward zero. Floor division of the already evaluated integer operands implements the requested rounding at this site, including negative nonintegral quotients.
 
 ## Minimization
 
-The multiplicative loop establishes where rounding changes and why the operand order and zero-error ordering do not. The enclosing additive parser and assignment updates need no change. Selected complete lines of `main.py`: 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40.
+Selected complete lines of `main.py`: L39. The selected quotient operation locates the only edit. The wider parser context establishes unchanged processing but the local replacement preserves the existing zero check, operand reads, error handling and assignment logic.
+
+The selected excerpt measures **17 tokens** with `metric/tokenizer.py`.

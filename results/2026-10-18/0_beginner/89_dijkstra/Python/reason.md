@@ -1,15 +1,7 @@
-# Task B selection for 89_dijkstra
+# Task B selection — 89_dijkstra / Python
 
-Move the sole zero-distance seed from A (0) to G (6). The selected
-declarations establish the mapping from indexes to names, the infinity
-default and the predecessor sentinel.
+Move the zero-distance seed from A to G (index 6). The selected predecessor initialization and walk show that -1 denotes no predecessor, rather than encoding A; G becomes the endpoint without rewriting that stopping rule. Keep the ascending destination loop, existing path direction and output separators. The displayed path then starts at G and contains only G for G itself. The graph data and relaxation calculations have no changed dependency.
 
-The output loop initializes the predecessor walk from each destination in
-A-to-G order. The walk collects names until the sentinel and the output line
-reverses them. The start retains the predecessor sentinel, so the G line
-contains just G with distance zero. These same evidence requirements apply to
-the Quidra selection. Graph construction, relaxation, and path allocation
-are outside the requested change and add no necessary evidence.
+Selected complete source lines: 1, 20, 22, 33, 35, 36, 37, 38, 39.
 
-Selected complete lines in order are 1, 19, 20, 22, 33, 35, 36, 37, 38, 39.
-Task A uses 502 tokens. Task B uses 144 tokens.
+With the benchmark tokenizer, this selection measures 124 tokens; the previous selection measured 144. The full source is 502 tokens.

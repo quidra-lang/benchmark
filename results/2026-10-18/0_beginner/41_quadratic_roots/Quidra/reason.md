@@ -1,19 +1,11 @@
 # Task B selection: 41_quadratic_roots / Quidra
 
-## Common answer requirements
+Derive the discriminant and both formula values for the supplied coefficients, then trace the larger value into the printed x1 field.
 
-Trace coefficients (-2,5,4), the discriminant and formula results, larger-root ordering despite negative a, and printed x1/x2 fields.
+The discriminant is 57. With denominator −4, the plus-square-root numerator produces (5 − √57)/4 ≈ −0.6375, and the minus-square-root numerator produces (5 + √57)/4 ≈ 3.1375. Because the negative denominator reverses their order, the comparison and swap or max/min operations put 3.1375 in x1 and −0.6375 in x2. The print arguments or interpolations retain that association.
 
-## Source evidence and minimization
+The tuple is supplied by the question, so the other coefficient sets and unrelated real/complex branches do not supply evidence. The positive-discriminant branch, numeric root operations and field mapping are retained. A custom formatter is retained only where its behavior is needed to connect a root to the corresponding printed field.
 
-Task B supplies the coefficients; the typed destructuring loop establishes their a/b/c roles and integer types. The full input collection adds no required information. The discriminant is 57; the formula produces approximately -0.6374586 and 3.1374586. The selected comparison and tuple swap place the larger result in first, and the selected print preserves first as x1 and second as x2. The typed real64 denominator/numerator/root/result bindings preserve the numerical contract. The unchanged zero/complex branches are unnecessary for this positive-discriminant trace.
+The swap moves the greater value into the first output argument after both roots have been evaluated.
 
-Selected original source lines: L1, L4, L5, L6, L7, L9, L10, L11, L12, L13, L14, L15.
-Every selected line is complete, verbatim and in source order. Alternative complete
-source and contiguous-context selections retain unrelated information; the removed
-input records or independent operations add no required fact. This is a reviewed
-sufficient minimized candidate, not a proof of a global mathematical minimum.
-Language and documented library semantics are available as prior knowledge.
-
-Task B: 191 tokens under the unchanged metric/tokenizer.py. Task A uses 457 tokens.
-by this evidence correction.
+Source: `main.qui`, original lines 1, 5–7, 9–15. The previous excerpt measures 191 tokens; this evidence set measures 174 tokens.

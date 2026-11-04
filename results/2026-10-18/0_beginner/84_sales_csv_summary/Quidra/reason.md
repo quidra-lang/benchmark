@@ -1,7 +1,7 @@
 # Task B selection — 84_sales_csv_summary / Quidra
 
-The selected CSV records are those for north or notebook, with the header establishing the column meanings. Quantity and price are parsed as integers; only their product increments regional revenue, while quantity alone increments the product map. North totals 4,800 and notebook totals 25. The two output loops use the documented contracts of ranked_entries (revenue descending, key ascending for ties) and sorted_entries (key ascending). Daily totals and printing syntax do not affect either computation.
+The retained north rows contribute 10×200, 8×150 and 20×80, totaling 4,800. The notebook rows contribute 10, 9 and 6 units, totaling 25. The parsing and accumulators distinguish quantity×price grouped by region from quantity alone grouped by product. The collections contracts give ranked_entries descending value with ascending key ties, while sorted_entries uses ascending key alone. Separate rows that belong to neither group, list terminators, and overall/date totals are unnecessary for these traces.
 
-Selected source lines in order are 1, 3, 4, 5, 9, 10, 13, 15, 18, 19, 22, 23, 24, 25, 26, 28, 29, 32, 34.
+Selected complete source lines: 1, 3, 5, 9, 10, 13, 15, 18, 19, 22, 23, 24, 25, 26, 28, 29, 32, 34.
 
-Task A uses 629 tokens. Task B uses 326 tokens.
+With the benchmark tokenizer, this selection measures 310 tokens; the previous selection measured 326. The full source is 629 tokens.

@@ -1,31 +1,7 @@
 # Task B selection: 28_matrix_row_col_sums / J
 
-## Common answer requirements
+Replace each row, each column, and the whole matrix reduction with maxima. Preserve the original row fields and keep each summary in its current six-character field and line.
 
-Locate all row, column, and overall sum computations and any shared helper/callers that must become maxima; explain appropriate initialization and aggregation; retain row elements, six-character fields, and five-line arrangement.
+The row expression appends a rank-one sum to each original row, the column expression reduces across rows, and the last reduction is over columns. Replace those three plus reductions with max reductions using the same ranks and append positions. The 6.0 format stays.
 
-These requirements were fixed for the topic before choosing the language-specific excerpts. Task B assumptions and the language specification/standard-library semantics are used; no Task A program was compiled or executed.
-
-## Answer and source dependencies
-
-Change each row reduction from addition to maximum; change each column accumulator/reduction similarly; replace the grand-total sum with the maximum of row or column maxima (equivalently all matrix elements). For explicit accumulators, seed a maximum from an actual first element or a suitable minimum sentinel rather than relying on additive zero as a general identity. A shared sum helper can become a maximum reduction if every shown call needs maxima; preserve its existing field formatting and row/column output positions. Output operations containing the affected aggregate identify its destination; unchanged element printing and input literals need no edits.
-
-Replace +/ row/column reductions with >./ maxima (preserving the rank-1 row reduction and concatenations); the corner reduction must also become maximum.
-
-Source: `main.ijs`. Selected original lines: 2-4. The following line-by-line dependency record identifies the original statements retained (including unavoidable extra operations on a complete line):
-
-- L2: `rows =: matrix,.+/"1 matrix` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
-- L3: `columns =: +/matrix` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
-- L4: `result =: rows, columns,+/columns` — This original statement supplies its explicit data, calculation, branch, mutation, or output operation to the concrete dependency chain above; that operation, rather than its variable/helper name alone, is the evidence retained.
-
-## Minimization and semantics
-
-The selected excerpt measures **34 tokens** with `metric/tokenizer.py` `tokenize`. The complete original source is a sufficient alternative of **130 tokens**; its extra declarations, program wrappers, unrelated cases, and setup are unnecessary for these answer requirements. Source order, indentation, and complete original lines are preserved. No location is repeated.
-
-Each selected statement was reviewed against the answer dependencies above. Scope delimiters are retained where they establish a relevant branch/loop boundary (including completion before a following update or output). Other wrappers, imports, and standard I/O setup are omitted when they carry no needed behavior. Excerpts are evidence fragments and need not form a standalone compilable program. Standard arithmetic, indexing, iteration, collection operations, and formatting have their language/library meanings; implementations of standard operations do not need to be included. User-defined behavior is supported by its selected operations rather than inferred from a helper name.
-
-The following smaller deletion candidates were measured as alternative line sets. They lose the indicated original statement and therefore the corresponding calculation/control/data/output evidence described above; a lower count alone is insufficient. This is a source-dependency minimization, not a proof of a global mathematical optimum.
-
-- Without L2: 21 tokens (versus 34); removes `rows =: matrix,.+/"1 matrix`.
-- Without L3: 26 tokens (versus 34); removes `columns =: +/matrix`.
-- Without L4: 21 tokens (versus 34); removes `result =: rows, columns,+/columns`.
+Complete main.ijs lines: 2, 3, 4, 5. The loop/data dependencies connect each changed reduction to its axis; the affected fields identify destinations. Raw matrix values and individual unchanged element-output code are not needed for the modification. The benchmark tokenizer counts 48 tokens in this excerpt.

@@ -2,43 +2,14 @@
 
 ## Common answer requirements
 
-Trace array 2 through 10 and subsequent -2; explain restart versus extension and distinguish candidate-start state from the saved best range, including why a later candidate update can leave the recorded range unchanged.
+Trace array 2 through 10 and −2, including the restart/extend decision and preservation of the recorded best range.
 
-## Supported analysis
+## Source evidence
 
-For array 2, the running candidate/best evolves from -4/-4 to 7/7, 6/7, 9/9, 1/9, 11/11 at 10, then 9/11 at -2. Only the initial negative candidate restarts at the 7; the candidate at 10 extends the sum 1 and keeps that start. The best update copies the current start and current endpoint when the candidate strictly exceeds the saved sum. At -2 only the candidate sum falls to 9, so the recorded best stays 11 over zero-based [1,5]. Saved indices are scalar values, separate from the subsequently updated candidate state. A later restart likewise changes only candidate start unless a new strict maximum is found.
+In array 2, initialize at −4, restart at 7 because the preceding candidate sum is negative, then extend through −1, 3, and −8 to candidate sums 6, 9, and 1. Extend with 10 to 11, then with −2 to 9. The best total becomes 11 at the 10, copying the candidate start into the separate range [1,5] in the source’s indexing. The next candidate fails the strict improvement test, so the stored range is unchanged.
 
- The final source table records the exact retained boundaries. Multiline declarations/expressions are terminated where needed to distinguish data from processing; selected control/helper scopes use their original lexical terminators. Unrelated branch/display closes are excluded. Indentation is used as a scope guarantee only in indentation-defined languages.
+## Minimization
 
-## Source evidence and dependencies
+Data through the second array and the candidate and best updates are necessary. Output and independent third-array data do not participate; a trailing delimiter does not govern any further retained step.
 
-The excerpt is copied from `Main.java`. Original source locations and their exact token costs are listed below. Read the selected lines together: declarations bind the named inputs and accumulators; loop headers establish traversal order and bounds; conditions govern the indented operations; assignments and expressions establish the actual data transformations. A line containing several operations cannot be shortened under the complete-line rule.
-
-| Original line | Tokens | Source evidence |
-| --- | ---: | --- |
-| 3 | 12 | `        int[][] arrays = {` |
-| 4 | 46 | `            {3, -5, 8, -2, 6, -9, 4, 1, -7, 5, -3, 2},` |
-| 5 | 57 | `            {-4, 7, -1, 3, -8, 10, -2, 5, -6, -2, 9, -12, 4, -1},` |
-| 6 | 59 | `            {-6, -3, 5, -1, -4, 3, -9, 2, 3, -1, 4, -5, 1, 6, -2}};` |
-| 7 | 17 | `        for (int[] values : arrays) {` |
-| 8 | 45 | `            int current = values[0], best = current, start = 0, bestStart = 0, bestEnd = 0;` |
-| 9 | 30 | `            for (int i = 1; i < values.length; i++) {` |
-| 10 | 16 | `                if (current < 0) {` |
-| 11 | 15 | `                    current = values[i];` |
-| 12 | 12 | `                    start = i;` |
-| 13 | 10 | `                } else {` |
-| 14 | 15 | `                    current += values[i];` |
-| 15 | 6 | `                }` |
-| 16 | 16 | `                if (current > best) {` |
-| 17 | 12 | `                    best = current;` |
-| 18 | 13 | `                    bestStart = start;` |
-| 19 | 13 | `                    bestEnd = i;` |
-| 20 | 6 | `                }` |
-| 21 | 5 | `            }` |
-| 23 | 4 | `        }` |
-
-The table supplies the concrete operands, guards, updates, and call connections used by the analysis above. Imports, entry-point boilerplate, unrelated examples, and unrelated reporting are omitted when they add no requested fact. Ordinary scalar assignment, arithmetic, indexing, conditional execution, loop order, and the shown standard-library operations have their documented language meaning. No user-defined helper is assumed to have behavior merely from its name: where its behavior is needed, its relevant definition and operations are included. Task A compilation and correctness are assumed as required by README §2.3; no Task A program was executed.
-
-## Minimization and alternatives
-
-The selected set costs **409 tokens** under `metric/tokenizer.py`'s `tokenize`. The complete original source costs 493 tokens, an alternative that also contains the evidence but adds unrelated context. Restoring omitted standalone structural closing lines gives 414 tokens; the omitted closers finish wrapper/list syntax or other scopes that do not distinguish any requested decision or update. Scope terminators that do distinguish a selected branch, loop, helper definition, or following operation are retained and justified above. Indentation is not treated as a scope guarantee in brace/end languages. Closing lines that contain a substantive operation also remain selected. Each listed substantive line is retained for its input value, dependency binding, traversal rule, decision, state update, affected output operation, or required expression continuation; omitting such evidence would require importing implementation information absent from the excerpt. This is a reviewed lower-token sufficient selection among the relevant sets considered, not a proof of a global mathematical minimum.
+Selected complete lines of `Main.java`: 3–5, 7–19. The prior excerpt measured 409 tokens; this excerpt measures 335 with `metric/tokenizer.py`.

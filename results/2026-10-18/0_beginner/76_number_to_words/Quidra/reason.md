@@ -1,12 +1,15 @@
 # Task B selection: 76_number_to_words / Quidra
 
-Trace 0, 71000 and 300019; distinguish whole zero from omitted zero components; explain the joins without extra spaces.
+## Common answer requirements
 
-The small-number/tens tables and under_thousand body establish every word. The top-level zero case, thousand branch, nonzero remainder guard and joins show why71000 has no zero suffix and300019 has no empty hundred separator. Only nonempty components are pushed. The unrelated display setup and inputs outside the required traces are omitted where complete-line selection permits.
+Trace 0, 71000 and 300019, including skipped zero remainders and separators.
 
-Collections `.push` explicitly mutates an array binding by appending one element; array value copies remain independent. Its standard-library contract suffices; its implementation is not required. The selection retains the prior answer dependencies with the corresponding writable operations and their import. A full-source alternative adds unrelated lines.
+## Supported analysis
 
-Complete source lines: 1, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 25, 26, 27, 28, 29, 30, 31, 32.
-All lines are verbatim and in source order.
-Tokenizer: Task A 547; Task B 481.
-Execution is checked separately; these source-line checks alone do not establish compilation or a global minimum.
+The complete zero input emits zero through an explicit guard or an empty-parts fallback. In 71000 the quotient 71 yields seventy-one and remainder 0 is skipped: seventy-one thousand. In 300019 quotient 300 yields three hundred with no smaller remainder separator, and 19 gives nineteen: three hundred thousand nineteen. Join only nonempty components or insert a separator only when both neighboring components exist.
+
+The excerpt is copied verbatim from `main.qui`, in source order. Retained source lines: 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 25, 26, 27, 28, 29, 30, 31, 32. Additional evidence is on line 8: `]`.
+
+## Minimization and alternatives
+
+The small lookup needs entries through nineteen and the tens lookup needs entries through seventy. Trailing tens entries are unnecessary unless a complete source line also contains a required entry. Retain table delimiters and the join/append operations. The prior selection used 481 tokens; this selection uses 484 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.

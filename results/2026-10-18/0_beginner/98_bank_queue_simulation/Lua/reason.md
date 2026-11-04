@@ -1,36 +1,15 @@
-# Task B source selection
+# Task B selection — 98_bank_queue_simulation / Lua
 
 ## Common answer requirements
 
-Trace first three customers arrival and teller availability before each assignment; distinguish earliest-free teller choice from service start, prove teller-1 ties and single-teller availability update.
+Trace the first three arrivals and teller free times, identify the tie rule and distinguish teller selection, service start and the one-slot update.
 
-These answer requirements are identical for all twenty languages. The Task B assumptions apply; this is source analysis, not execution or verification of Task A.
+## Source evidence
 
-## Supported answer and change analysis
+From the initial state and the two random draws per customer, the first three arrivals are 3, 6, and 9. The free times before their assignments are (0, 0), (9, 0), and (9, 13). The first minimum wins on a tie, so the tellers are 1, 2, and 1. A separate maximum gives the service start, and assigning the end time to the chosen index leaves the other slot unchanged.
 
-The first six generator states are 2027382,1226992407,551494037,961371815,1404753842,2076553157. Odd draws give interarrivals 3,3,3, so arrivals are 3,6,9; even draws give services 6,7,2. Customer 1 sees teller free times (0,0), chooses teller 1 by the equality tie, starts 3 and ends 9, leaving (9,0). Customer 2 sees (9,0), chooses teller 2, starts 6 and ends 13, leaving (9,13). Customer 3 sees (9,13), chooses teller 1, starts 9 and ends 11, leaving (11,13). Teller selection compares free times before applying max(arrival,chosen-free-time); the max determines start only. The indexed assignment changes only the chosen teller. Index-first minimum operations pick the first teller on equal minima; zero-based implementations add one for the printed teller number.
+## Minimization
 
+Selected complete lines of `main.lua`: L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L12. The selected RNG recurrence, initialization, selection and indexed write suffice for all three assignments. In this one-based implementation the selected teller index is already the human-facing number, so the output line contributes no conversion.
 
-
-## Source evidence and dependencies
-
-The selected locations in `main.lua` are L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L12, L16. Each retained line below supplies the indicated operation, condition, declaration, data value, or enclosing branch needed to connect the answer to this implementation:
-
-- L1: `local state, arrival, total_wait, max_wait = 42, 0, 0, 0`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-- L2: `local free_times = {0, 0}`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-- L3: `for customer = 1, 20 do`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-- L4: `state = (state * 48271) % 2147483647`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-- L5: `arrival = arrival + state % 5 + 1`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-- L6: `state = (state * 48271) % 2147483647`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-- L7: `local service = state % 7 + 2`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-- L8: `local teller = free_times[1] <= free_times[2] and 1 or 2`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-- L9: `local start = math.max(arrival, free_times[teller])`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-- L10: `local departure = start + service`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-- L12: `free_times[teller] = departure`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-- L16: `customer, arrival, start, departure, teller, wait))`. This line supplies the seed/arrival/free-time initialization, interleaved random draws, teller minimum/tie rule, service timing, selected-teller update or printed teller numbering needed for the first three assignments.
-
-## Language semantics and minimization
-
-Use the language's ordinary expression evaluation, indexing, comparison, assignment, iteration and control-flow semantics, and the documented semantics of the standard-library operations shown in the excerpt. User-defined behavior needed for the answer is included rather than inferred solely from a helper name. Source lines need not form a standalone compilable program. Unrelated input/output setup, imports, whitespace, and purely structural closing lines are omitted unless they occur on a necessary complete line. The analysis identifies the affected logic; no replacement program is supplied.
-
-`metric/tokenizer.py`'s `tokenize` reports **255 tokens** for the selected original complete lines. A contiguous-context alternative spanning L1–L16 costs **346 tokens**; the entire source costs **418 tokens**. The selected set plus the additional context line L11 costs **268 tokens**. That extra line does not add an answer requirement. These comparisons favor the retained dependency slice over context-heavy alternatives. Every selected substantive line was reviewed for the facts or dependency it contributes. This is a minimized sufficient selection among reviewed alternatives, not a proof of a global mathematical minimum.
+The selected excerpt measures **234 tokens** with `metric/tokenizer.py`.

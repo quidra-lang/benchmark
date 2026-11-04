@@ -1,13 +1,9 @@
 # Task B selection: 43_run_length_encoding / Python
 
-## Common answer requirements
+Trace the two W runs in the second input, show how the decoder consumes a full count, and establish reconstruction from the encoded value.
 
-Trace the two twelve-W runs and show decoding of a multi-digit count from the encoded data.
+The B between the two runs interrupts equality or the run match, so the encoder generates two separate `12W` chunks. The encoded sequence is `12W1B12W3B`. The decoder parses all decimal digits of a count up to its letter, repeats that letter by the parsed count and appends it. Using the encoded data as the parser input reconstructs twelve Ws, one B, twelve Ws, and three Bs without reading the original during decoding.
 
-## Source evidence
+The original literal line is necessary for the separator and trailing run. The selected run and count logic plus its linkage to the decoded result are sufficient; other inputs, buffer capacity, and output formats that do not establish linkage can be omitted.
 
-The second source string contains twelve Ws, a B, another twelve Ws, and three Bs. groupby groups only adjacent equal characters, yielding 12W1B12W3B. The regex collects the entire digit sequence before each letter, int parses that count, and repeated letters are joined. The final display uses decoded, produced from encoded, alongside the original text.
-
-## Minimization
-
-Other input strings do not determine the focused runs. The output line confirms the decoded value is the one displayed, matching the same evidence requirement in Quidra. Selected complete lines of `main.py`: 1, 2, 4, 6, 11, 12, 13, 14, 16.
+Source: `main.py`, original lines 1–2, 4, 6, 11–14. The previous excerpt measures 157 tokens; this evidence set measures 134 tokens.

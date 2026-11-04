@@ -1,44 +1,15 @@
-# Task B source selection
+# Task B selection: 77_langtons_ant / Julia
 
 ## Common answer requirements
 
-Identify live direction encoding/update and insertion point after the eleven board rows before black count, after 300 complete steps; specify U,R,D,L mapping and thirteen-line result.
+Read the direction after 300 complete steps, map it to U/R/D/L, and add a line between board and count.
 
-These answer requirements are identical for all twenty languages. The Task B assumptions apply; this is source analysis, not execution or verification of Task A.
+## Supported analysis
 
-## Supported answer and change analysis
+The row/column deltas (-1,0), (0,1), (1,0), (0,-1) map direction 0–3 to U,R,D,L. Each step turns using the current color, flips that cell, and moves with the new direction. Read the direction binding after the simulation, then emit direction: D after the completed eleven board rows and before the black count. The result has thirteen lines.
 
-Read the final direction state after the simulation loop, map 0,1,2,3 respectively to U,R,D,L using the movement-vector order, and insert one direction: D output immediately before the black-count output. The existing board-output loop has already printed eleven rows there. Do not insert inside the step or row loop. The extra line raises the output total to thirteen. No simulation logic needs changing.
+The excerpt is copied verbatim from `main.jl`, in source order. Retained source lines: 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16. Additional evidence is on line 7: `board[row+1, column+1] = !board[row+1, column+1]`; line 14: `)`.
 
+## Minimization and alternatives
 
-
-## Source evidence and dependencies
-
-The selected locations in `main.jl` are L3, L4, L5, L6, L11, L12, L13, L16. Each retained line below supplies the indicated operation, condition, declaration, data value, or enclosing branch needed to connect the answer to this implementation:
-
-- L3: `row, column, direction = 5, 5, 0`. This line supplies the direction encoding/update, simulation bound or board/count output boundary; together they locate the new line after the board and map the live direction to its required letter.
-- L4: `directions = [(-1, 0), (0, 1), (1, 0), (0, -1)]`. This line supplies the direction encoding/update, simulation bound or board/count output boundary; together they locate the new line after the board and map the live direction to its required letter.
-- L5: `for step = 1:300`. This line supplies the direction encoding/update, simulation bound or board/count output boundary; together they locate the new line after the board and map the live direction to its required letter.
-- L6: `direction = mod(direction+(board[row+1, column+1] ? -1 : 1), 4)`. This line supplies the direction encoding/update, simulation bound or board/count output boundary; together they locate the new line after the board and map the live direction to its required letter.
-- L11: `for r = 0:10`. This line supplies the direction encoding/update, simulation bound or board/count output boundary; together they locate the new line after the board and map the live direction to its required letter.
-- L12: `println(`. This line supplies the direction encoding/update, simulation bound or board/count output boundary; together they locate the new line after the board and map the live direction to its required letter.
-- L13: `join(r == row && c == column ? 'A' : board[r+1, c+1] ? '#' : '.' for c = 0:10),`. This line supplies the direction encoding/update, simulation bound or board/count output boundary; together they locate the new line after the board and map the live direction to its required letter.
-- L16: `println("black: ", count(board))`. This line supplies the direction encoding/update, simulation bound or board/count output boundary; together they locate the new line after the board and map the live direction to its required letter.
-
-## Language semantics and minimization
-
-Use the language's ordinary expression evaluation, indexing, comparison, assignment, iteration and control-flow semantics, and the documented semantics of the standard-library operations shown in the excerpt. User-defined behavior needed for the answer is included rather than inferred solely from a helper name. Source lines need not form a standalone compilable program. Unrelated input/output setup, imports, whitespace, and purely structural closing lines are omitted unless they occur on a necessary complete line. The analysis identifies the affected logic; no replacement program is supplied.
-
-`metric/tokenizer.py` `tokenize` reports **260 tokens** for the final selected lines. The prior candidate measured 206 tokens. The final selection includes the required scope/data association identified by independent excerpt review; no Task A program was run.
-
-## Independent excerpt review repair
-
-Indexed movement connects the final direction variable to its row/column displacement, establishing0=U,1=R,2=D,3=L (with the shown one-based adjustment where applicable). Simulation and board-row completion identify the insertion point after300 complete steps and all11 rows, before black count.
-
-Final original source lines: L3, L4, L5, L6, L8, L9, L10, L11, L12, L13, L15, L16.
-- L8: `        dr, dc = directions[direction+1]` — Indexed movement connects the final direction variable to its row/column displacement, establishing0=U,1=R,2=D,3=L (with the shown one-based adjustment where applicable). Simulation and board-row completion identify the insertion point after300 complete steps and all11 rows, before black count.
-- L9: `        row, column = mod(row+dr, 11), mod(column+dc, 11)` — Indexed movement connects the final direction variable to its row/column displacement, establishing0=U,1=R,2=D,3=L (with the shown one-based adjustment where applicable). Simulation and board-row completion identify the insertion point after300 complete steps and all11 rows, before black count.
-- L10: `    end` — Indexed movement connects the final direction variable to its row/column displacement, establishing0=U,1=R,2=D,3=L (with the shown one-based adjustment where applicable). Simulation and board-row completion identify the insertion point after300 complete steps and all11 rows, before black count.
-- L15: `    end` — Indexed movement connects the final direction variable to its row/column displacement, establishing0=U,1=R,2=D,3=L (with the shown one-based adjustment where applicable). Simulation and board-row completion identify the insertion point after300 complete steps and all11 rows, before black count.
-
-Final selection: 260 metric tokens; contiguous span L3–L16: 293 tokens; complete source: 321 tokens. Scope-only lines are retained where they distinguish relevant branch/loop timing.
+The bound, turn, flip and move show the exact observation point. The board-row output and the count write show the insertion point; the board character decisions and black-count arithmetic do not need to change. The prior selection used 260 tokens; this selection uses 293 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.

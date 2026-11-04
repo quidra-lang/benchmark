@@ -1,7 +1,15 @@
-# Task B selection: 30_set_operations / Python
+# Task B selection — 30_set_operations / Python
 
-The selected lines establish the distinct/set operands, identify the difference expression to reverse, and show that its result is sorted for display. Swap only the operands of that expression. Keep the existing label and output position. The input values and other result expressions do not need to change.
+## Common answer requirements
 
-Selected complete source lines in order are 3, 7, 10. The excerpt uses documented library semantics and the Task B assumptions.
+Locate the third, labeled set-difference result and change only its membership direction to B minus A.
 
-Task A uses 180 tokens. Task B uses 51 tokens.
+## Source evidence
+
+Reverse the operand roles in the selected difference operation or predicate. Keep its existing result position, label and surrounding processing. Where a shared dispatcher selects operations by index, the selected label and dispatch bindings associate its third case with the required result.
+
+## Minimization
+
+Selected complete lines of `main.py`: L3, L7. Only membership for the third result changes. Its unchanged output, other result expressions, and sorting code do not need a separate edit. Keep type or iteration evidence only when it identifies the operation or the candidate domain needed to reverse it.
+
+The selected excerpt measures **33 tokens** with `metric/tokenizer.py`.

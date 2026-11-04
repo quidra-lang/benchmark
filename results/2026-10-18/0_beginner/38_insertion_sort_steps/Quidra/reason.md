@@ -1,22 +1,9 @@
 # Task B selection: 38_insertion_sort_steps / Quidra
 
-## Common answer requirements
+Locate the predicate that controls right shifts, explain the strict comparison, and identify the existing loop and insertion behavior.
 
-[Modification analysis]
+Shift only a preceding element strictly less than the saved value, keeping the existing prefix bound. If the code instead uses an early break, stop when the predecessor is greater than or equal to the saved value. On equality the earlier element stays before the new element, preserving stability. Leave the right shift, index decrement, one count increment per shift, insertion, and total accumulation in place. Keep the step loop and output calls, including the original spacing.
 
-Using the Task A source as evidence, explain which parts would need to change and how to satisfy the proposed requirements below. Do not edit the program or produce modified source code.
+The saved key, predecessor index, shift and final insertion identify why the strict condition is sufficient for stability. The loop bound, any size dependency, and one-based output adjustment identify which positions it processes. The counting and output logic need no changes.
 
-Proposed requirements:
-Modify the insertion sort to produce decreasing order while remaining stable. At each step, shift only sorted-prefix values strictly smaller than the value being inserted; equal values must retain their original relative order. Continue processing positions 1 through 7 and report the array and number of right shifts after each step, followed by the total shifts.
-
-Keep the original input and output labels and spacing. All other Task A requirements remain unchanged.
-
-## Source evidence and minimization
-
-The strict greater-than condition and right-shift assignment identify the sole ordering change: use strict less-than for descending order. Equality still performs no shift, preserving stable order. Bounds, counters and display remain unaffected.
-
-Locations in main source: L9, L10.
-
-The selected lines are complete, verbatim and in source order. Library semantics are used only with the required binding/type evidence. A separate pass checked that the excerpt supports each requested fact; unrelated output or unchanged implementations are excluded. Replacing this selection with the full enclosing span or whole source adds tokens without adding necessary answer evidence. This is a reviewed sufficient selection, not a proof of global mathematical minimality.
-
-Measurement: Task A 217; Task B 38. Tokenizer: metric/tokenizer.py, unchanged. These source-token checks do not establish compilation or execution of Task A.
+Source: `main.qui`, original lines 5–7, 9–11, 13. The previous excerpt measures 38 tokens; this evidence set measures 95 tokens.

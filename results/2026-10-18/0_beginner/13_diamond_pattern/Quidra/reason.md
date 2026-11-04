@@ -1,20 +1,17 @@
 # Task B selection: 13_diamond_pattern / Quidra
 
-## Common answer requirements
+## Answer requirements
 
-1. Derive the leading-space and asterisk counts on rows five and six of the size-five diamond.
-2. Explain the switch from expansion to contraction without duplicating the widest line.
-
-## Implementation decision
-
-Use explicit nat types for the diamond size, row index and positive half-row size. These values denote sizes and remain nonnegative under the existing loop and conditional. This removes both conversions at string.repeat while preserving all arithmetic and row order.
+Explain the transition from expansion to contraction and derive the spaces and stars on lines five and six of the size-five diamond.
 
 ## Evidence and answer
 
-All four substantive lines are necessary: n fixes the size; the loop defines the row traversal; the conditional yields i = 5 then 4 for the two rows; and repeat counts yield 0 spaces/9 stars then 1 space/7 stars. The same conditional uses row <= n, so the widest row appears once. string.repeat takes a natural count and returns repeated characters.
+The loop begins at row 1. The conditional uses i=row through n and i=2*n-row thereafter. string.repeat uses the nonnegative counts n-i and 2*i-1, then println emits one row.
 
-## Selection and minimization
+With n=5 from the question, these lines use i=5 and i=4, giving 0 spaces and 9 asterisks, then 1 space and 7 asterisks. The separately declared n=5 repeats the given size. The traversal and row construction still establish the transition and one widest row.
 
-Selected complete main.qui lines: 1, 2, 3, 4. Every selected line is copied verbatim, once per source location and in source order. The excerpt is not required to compile independently. The stated Task B assumptions, language guarantees and documented first-party library semantics apply. The full source or contiguous context span is a larger alternative; unchanged unrelated input, processing and formatting are omitted when they supply no answer requirement. This is a reviewed minimum among the identified alternatives, not a proof of a global mathematical optimum.
+## Minimization
 
-Using unchanged metric/tokenizer.py: Task A 107 → 97; Task B 107 → 97. Compiler and native-output validation is recorded separately; token or verbatim checks alone do not establish compilation or correctness.
+Selected complete lines of `main.qui`: 2, 3, 4. The excerpt preserves their text, indentation and order.
+
+Adding the size declaration would repeat a supplied fact. Removing the traversal instead would lose the connection between output line numbers and the internal row index. The previous excerpt contained 97 tokens; the selected excerpt contains **89 tokens** using `metric/tokenizer.py`.

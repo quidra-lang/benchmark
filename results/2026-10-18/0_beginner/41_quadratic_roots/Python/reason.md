@@ -1,19 +1,9 @@
 # Task B selection: 41_quadratic_roots / Python
 
-## Common answer requirements
+Derive the discriminant and both formula values for the supplied coefficients, then trace the larger value into the printed x1 field.
 
-Trace coefficients (-2,5,4), the discriminant and formula results, larger-root ordering despite negative a, and printed x1/x2 fields.
+The discriminant is 57. With denominator −4, the plus-square-root numerator produces (5 − √57)/4 ≈ −0.6375, and the minus-square-root numerator produces (5 + √57)/4 ≈ 3.1375. Because the negative denominator reverses their order, the comparison and swap or max/min operations put 3.1375 in x1 and −0.6375 in x2. The print arguments or interpolations retain that association.
 
-## Source evidence and minimization
+The tuple is supplied by the question, so the other coefficient sets and unrelated real/complex branches do not supply evidence. The positive-discriminant branch, numeric root operations and field mapping are retained. A custom formatter is retained only where its behavior is needed to connect a root to the corresponding printed field.
 
-Task B supplies the coefficients. The selected loop binder establishes their a/b/c roles, so the separate input record is unnecessary under the same criterion as Quidra. The discriminant is 57; the two formula expressions produce approximately -0.6374586 and 3.1374586. The max/min formatting assigns the larger result to x1 and smaller to x2, and the selected final print uses that result string. Unrelated cases and nonpositive-discriminant branches are excluded.
-
-Selected original source lines: L1, L3, L11, L12, L13, L14, L15, L17, L24.
-Every selected line is complete, verbatim and in source order. Alternative complete
-source and contiguous-context selections retain unrelated information; the removed
-input records or independent operations add no required fact. This is a reviewed
-sufficient minimized candidate, not a proof of a global mathematical minimum.
-Language and documented library semantics are available as prior knowledge.
-
-Task B: 176 tokens under the unchanged metric/tokenizer.py. Task A is unchanged
-by this evidence correction.
+Source: `main.py`, original lines 1, 11–17, 24. The previous excerpt measures 176 tokens; this evidence set measures 166 tokens.

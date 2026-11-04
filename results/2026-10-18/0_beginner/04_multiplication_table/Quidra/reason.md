@@ -1,13 +1,15 @@
 # Task B selection: 04_multiplication_table / Quidra
 
-## Common answer requirements
+## Answer requirements
 
-Identify the row and column limits, the product field width, and how twelve separator-free fields still become one newline-terminated row.
+Locate both table dimensions and the product-field width; explain how the new bounds and width produce the requested rows.
 
-## Source evidence
+## Evidence and answer
 
-The two inclusive loops cover 1 through 9 today. Change both upper bounds to 12 and the integer formatting width from 3 to 4. Plain `print` emits each field without a newline. The argumentless line-output call sits after the inner loop, so leave it in place to terminate each row.
+The inclusive row and column loops each change their endpoint from 9 to 12. The product is already emitted in the inner loop; int=3 sets the interpolation width with left spaces by default, and only the width changes to 4. The existing outer-row newline needs no edit: each last field ends with its product digits, so the existing newline follows without trailing spaces.
 
 ## Minimization
 
-Omitting the final call would hide the row boundary. These four lines are the complete loop and output sequence. Selected complete lines of `main.qui`: 1, 2, 3, 4.
+Selected complete lines of `main.qui`: 1, 2, 3. The excerpt preserves their text, indentation and order.
+
+The newline-only line is an unchanged action and adds no edit site. The alternative using the range headers alone would not identify the field-width change. The previous excerpt contained 53 tokens; the selected excerpt contains **48 tokens** using `metric/tokenizer.py`.

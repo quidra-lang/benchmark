@@ -2,32 +2,14 @@
 
 ## Common answer requirements
 
-Identify every recursive cofactor expansion site; explain second-row coefficient and minor formation, parity reversal for one-based j, preserving the one-entry base case and integer arithmetic without modifying source.
+Use the second row and matching minor at every non-base recursive expansion; flip the sign convention while preserving the base case and integer operations.
 
-## Supported analysis
+## Source evidence
 
-Change the expansion coefficient from the first to the second row. Construct each minor from all rows except that second row and all columns except the chosen column, preserving the order of remaining rows and columns. In a zero-based column loop, add when the index is odd and subtract when it is even; in a one-based loop add for even j and subtract for odd j. The recursive call uses the same changed routine, so this applies at every size at least two. Keep the one-entry return and integer accumulation. For manually packed minors, replace r-1 indexing with a separate destination-row counter or an equivalent skip-aware mapping, since the retained rows now include the original first row. Original printing and fixtures are unaffected and supply no edit dependency.
+The one-entry branch remains unchanged. In the recursive expansion, select the second-row coefficient and skip exactly that row in the minor, keeping the filter that removes the current column. The recursive call stays at the same site, so every non-base level uses the new row. Reverse the accumulation sign: subtract even zero-based columns and add odd ones, which adds even one-based j. Keep the accumulator and arithmetic integer.
 
- The final source table records the exact retained boundaries. Multiline declarations/expressions are terminated where needed to distinguish data from processing; selected control/helper scopes use their original lexical terminators. Unrelated branch/display closes are excluded. Indentation is used as a scope guarantee only in indentation-defined languages.
+## Minimization
 
-## Source evidence and dependencies
+The selected expansion and column filter establish both axes of the minor. The matrices and callers do not change because the same function computes the same determinant; output formatting is independent.
 
-The excerpt is copied from `main.swift`. Original source locations and their exact token costs are listed below. Read the selected lines together: declarations bind the named inputs and accumulators; loop headers establish traversal order and bounds; conditions govern the indented operations; assignments and expressions establish the actual data transformations. A line containing several operations cannot be shortened under the complete-line rule.
-
-| Original line | Tokens | Source evidence |
-| --- | ---: | --- |
-| 1 | 20 | `func determinant(_ matrix: [[Int]]) -> Int {` |
-| 2 | 25 | `    if matrix.count == 1 { return matrix[0][0] }` |
-| 3 | 9 | `    var result = 0` |
-| 4 | 13 | `    for column in matrix.indices {` |
-| 5 | 56 | `        let minor = matrix.dropFirst().map { row in row.enumerated().filter { $0.offset != column }.map { $0.element } }` |
-| 6 | 23 | `        let term = matrix[0][column] * determinant(minor)` |
-| 7 | 25 | `        result += column % 2 == 0 ? term : -term` |
-| 8 | 3 | `    }` |
-| 10 | 2 | `}` |
-
-The table supplies the concrete operands, guards, updates, and call connections used by the analysis above. Imports, entry-point boilerplate, unrelated examples, and unrelated reporting are omitted when they add no requested fact. Ordinary scalar assignment, arithmetic, indexing, conditional execution, loop order, and the shown standard-library operations have their documented language meaning. No user-defined helper is assumed to have behavior merely from its name: where its behavior is needed, its relevant definition and operations are included. Task A compilation and correctness are assumed as required by README §2.3; no Task A program was executed.
-
-## Minimization and alternatives
-
-The selected set costs **176 tokens** under `metric/tokenizer.py`'s `tokenize`. The complete original source costs 428 tokens, an alternative that also contains the evidence but adds unrelated context. Restoring omitted standalone structural closing lines gives 178 tokens; the omitted closers finish wrapper/list syntax or other scopes that do not distinguish any requested decision or update. Scope terminators that do distinguish a selected branch, loop, helper definition, or following operation are retained and justified above. Indentation is not treated as a scope guarantee in brace/end languages. Closing lines that contain a substantive operation also remain selected. Each listed substantive line is retained for its input value, dependency binding, traversal rule, decision, state update, affected output operation, or required expression continuation; omitting such evidence would require importing implementation information absent from the excerpt. This is a reviewed lower-token sufficient selection among the relevant sets considered, not a proof of a global mathematical minimum.
+Selected complete lines of `main.swift`: 1–7. The prior excerpt measured 176 tokens; this excerpt measures 171 with `metric/tokenizer.py`.

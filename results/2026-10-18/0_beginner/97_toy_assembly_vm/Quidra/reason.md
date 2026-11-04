@@ -1,13 +1,15 @@
-# Task B selection: 97_toy_assembly_vm / Quidra
+# Task B selection — 97_toy_assembly_vm / Quidra
 
 ## Common answer requirements
 
-Exclude PRINT and HALT from executed count while counting every executed arithmetic instruction and JNZ once.
+Locate the per-instruction increment and count exactly the six named opcodes, once per dispatch including untaken JNZ. Preserve existing output and control flow.
 
 ## Source evidence
 
-The existing increment happens once for every fetched instruction before dispatch. Guard that increment by the decoded operation, excluding PRINT and HALT there. The JNZ branch changes pc and continues whether its condition is true or false, so counting must remain before that control transfer. The PRINT operation, HALT break, and final executed label stay unchanged.
+The current program counter selects a line, split supplies its fields, and the first field is the operation. Guard the existing increment with membership in SET, ADD, SUB, MUL, MOD and JNZ. Its original per-dispatch location counts repeated visits and every JNZ regardless of the later branch outcome.
 
 ## Minimization
 
-The loop, affected counter, and three special dispatch paths show why moving the count to the loop bottom would omit jumps. Arithmetic/register implementations do not inform the count guard. Selected complete lines of `main.qui`: 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31, 46.
+Selected complete lines of `main.qui`: L21, L22, L23. The selected fetch, opcode and increment are sufficient to locate the guarded count. The HALT and JNZ control flow, register updates and output can all remain as written, so the larger dispatch excerpt is unnecessary.
+
+The selected excerpt measures **33 tokens** with `metric/tokenizer.py`.

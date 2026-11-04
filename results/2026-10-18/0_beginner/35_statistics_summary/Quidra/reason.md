@@ -1,7 +1,11 @@
-# Task B selection for 35_statistics_summary
+# Task B selection: 35_statistics_summary / Quidra
 
-Change only the denominator in the square-root expression from count to count - 1.0, preserving real64 arithmetic. The count binding establishes the number of values used by the existing denominator. The unchanged squared-difference accumulation and output format are outside the necessary change.
+Locate the population denominator and distinguish that edit from any other use of the length.
 
-Selected complete lines in order are 2, 5, 16.
+Use 10 as the divisor for the accumulated squared differences before taking the square root. Where the code derives the divisor from a collection size, use the collection size minus one at this division; where it uses a literal, replace that literal while retaining real division. Leave the mean calculation, the per-value differences and accumulation, and the existing field and formatter in place. Do not change a shared count used by the mean.
 
-Task A uses 272 tokens. Task B uses 31 tokens.
+Only the denominator changes. Where the expression is an unnamed argument in a multiline print call, the format identifies its destination. The mean, accumulation, input literals, and formatting internals are otherwise outside the edit. The unchanged formatter is used under the Task B assumptions.
+
+The source binds the converted length once and uses it in both divisions. Adjusting that binding would alter the mean.
+
+Source: `main.qui`, original lines 2, 5–6, 16. The previous excerpt measures 31 tokens; this evidence set measures 48 tokens.

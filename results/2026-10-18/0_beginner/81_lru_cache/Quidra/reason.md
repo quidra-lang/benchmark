@@ -1,13 +1,7 @@
-# Task B selection: 81_lru_cache / Quidra
+# Task B selection — 81_lru_cache / Quidra
 
-## Common answer requirements
+The full-miss test is the only fixed capacity; change the length comparison to four. The dynamically sized array and tail/front operations do not encode a slot number. Hit refresh, access sequence, counts, and output do not require edits. Including those paths adds no further capacity dependency.
 
-Identify the miss-only capacity guard, tail eviction, and unconditional front insertion while retaining hit refresh.
+Selected complete source lines: 15.
 
-## Source evidence
-
-A successful remove is a hit and removes the old position. The else branch is a miss and takes the tail only at capacity. Change the miss guard from 3 to 4, keeping the tail removal and the front insertion shared by both branches.
-
-## Minimization
-
-The focused branch evidence establishes that the new capacity cannot evict on a hit and that all accesses refresh recency. Counters and formatting need no change. Selected complete lines of `main.qui`: 10, 12, 15, 16, 17.
+With the benchmark tokenizer, this selection measures 13 tokens; the previous selection measured 60. The full source is 196 tokens.

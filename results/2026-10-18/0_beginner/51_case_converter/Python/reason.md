@@ -2,12 +2,14 @@
 
 ## Common answer requirements
 
-Append the upper field using the existing normalized words and output delimiter.
+Add ASCII-uppercase normalized words joined by underscores and append the fifth field to the existing per-identifier output.
 
 ## Source evidence
 
-The word-list expression splits on underscores, hyphens, and before ASCII uppercase letters, discards empty parts, and lowercases the remainder. The snake field shows underscore joining of those normalized words. The upper field can use the same normalized sequence with uppercase letters and append the requested comma-and-space field.
+The retained snake assignment joins the shared normalized words with underscores; the print call gives the insertion point and formatting. ASCII uppercasing distributes over the join because it leaves underscores unchanged. Compute the fifth field from snake and append “, upper=” and its value to the same output line. Empty parts stay discarded by the existing normalization.
 
 ## Minimization
 
-The regex import identifies the splitter and the word-list expression establishes its actual normalization. The snake expression and output line identify the existing join and framing. Selected complete lines of `main.py`: 1, 12, 13, 17.
+Reusing the already joined snake form avoids a second dependency on the split, empty-word filter, or other style calculations.
+
+Selected complete lines of `main.py`: 13, 17. The prior excerpt measured 105 tokens; this excerpt measures 52 with `metric/tokenizer.py`.

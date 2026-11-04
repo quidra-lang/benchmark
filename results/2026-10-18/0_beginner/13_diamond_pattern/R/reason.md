@@ -1,22 +1,17 @@
 # Task B selection: 13_diamond_pattern / R
 
-## Common answer requirements
+## Answer requirements
 
-1. Derive spaces and stars for printed lines five and six of the size-five diamond.
-2. Explain the transition from expansion to shrinkage and why the widest row is printed once.
+Explain the transition from expansion to contraction and derive the spaces and stars on lines five and six of the size-five diamond.
 
-## Answer supported by the excerpt
+## Evidence and answer
 
-The fifth printed row has effective size i=5: n-i=0 spaces and 2i-1=9 stars. The sixth has i=4: one leading space and seven stars. A one-based row loop changes from row to 2n-row after row5; a zero-based loop changes after row4. In two-range implementations, the decreasing range starts at n-1, not n, so the widest row is not repeated.
+The vector concatenates 1:n with (n-1):1, so only the ascending vector includes n. strrep emits the two fields and cat writes the newline with no separator.
 
-## Source evidence and dependencies
+With n=5 from the question, these lines use i=5 and i=4, giving 0 spaces and 9 asterisks, then 1 space and 7 asterisks. The separately declared n=5 repeats the given size. The traversal and row construction still establish the transition and one widest row.
 
-Selected `main.R` lines: 1-3. The excerpt preserves these complete lines in their original order and indentation.
+## Minimization
 
-The size, row enumeration, effective-size formula and character repetition/output jointly determine the two requested rows. The enumeration distinguishes zero-based and one-based cases and shows whether the widest level can repeat. A separately named row helper requires its body because the name does not establish spaces or star counts.
+Selected complete lines of `main.R`: 2, 3. The excerpt preserves their text, indentation and order.
 
-## Language semantics and minimization
-
-Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. The output formula without enumeration cannot identify which effective size belongs to printed lines five and six. The bounds without the output formula cannot determine their characters. Their selected union is sufficient, while the wrapper and imports add no diamond-specific fact.
-
-The selected excerpt contains **85 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 85 tokens; the complete source contains 87 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+Adding the size declaration would repeat a supplied fact. Removing the traversal instead would lose the connection between output line numbers and the internal row index. The previous excerpt contained 85 tokens; the selected excerpt contains **79 tokens** using `metric/tokenizer.py`.

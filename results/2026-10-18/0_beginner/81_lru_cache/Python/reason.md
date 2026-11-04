@@ -1,13 +1,7 @@
-# Task B selection: 81_lru_cache / Python
+# Task B selection — 81_lru_cache / Python
 
-## Common answer requirements
+The full-miss test is the only hard-coded capacity. Change the length comparison to four. The tail pop and front insertion already use relative positions and do not need separate evidence to locate the edit. Hit refresh, access sequence, counts, and output do not require edits. Including those paths adds no further capacity dependency.
 
-Identify the miss-only capacity guard, tail eviction, and unconditional front insertion while retaining hit refresh.
+Selected complete source lines: 11.
 
-## Source evidence
-
-A membership hit removes the key’s old position. The else branch is a miss and pops the tail only at capacity. Change the miss guard from 3 to 4, keeping the tail removal and the front insertion shared by both branches.
-
-## Minimization
-
-The focused branch evidence establishes that the new capacity cannot evict on a hit and that all accesses refresh recency. Counters and formatting need no change. Selected complete lines of `main.py`: 4, 6, 8, 11, 12, 13.
+With the benchmark tokenizer, this selection measures 14 tokens; the previous selection measured 70. The full source is 252 tokens.

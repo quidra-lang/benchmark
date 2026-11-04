@@ -1,13 +1,15 @@
 # Task B selection: 10_fibonacci / Quidra
 
-## Common answer requirements
+## Answer requirements
 
-Extend the recurrence to exactly 40 terms and retain exact accumulation and the two-line output.
+Extend the exact Fibonacci term generation and its linked sum to 40 terms, preserving output.
 
-## Source evidence
+## Evidence and answer
 
-The two initial values and the simultaneous update generate the recurrence in order. The inclusive loop bound determines which terms are both printed and added to total. Its upper bound becomes 40, with the same integer types, recurrence, and output calls. The final line-output call begins with NL, separating the sum label from the values.
+The inclusive loop endpoint is the single bound to change from 30 to 40. The explicit int seed values and tuple assignment identify the Fibonacci recurrence; the total adds a before advancing the pair inside that same loop. Quidra int is exact arbitrary precision, so neither state nor total requires widening. F(40) is 102334155 and the sum is 267914295. The unchanged per-term print, spacing and final label already use this state and total; no separate output-bound change is needed.
 
 ## Minimization
 
-The space-printing condition is untouched. The term emission and the final sum emission establish which loop output and accumulated value the changed bound affects. Selected complete lines of `main.qui`: 1, 2, 3, 4, 7, 8, 9, 10.
+Selected complete lines of `main.qui`: 1, 2, 3, 4, 8, 9. The excerpt preserves their text, indentation and order.
+
+The loop header alone cannot establish that the same iteration updates the total. Adding the print calls only shows existing formatting, which the proposed change does not touch. The previous excerpt contained 88 tokens; the selected excerpt contains **67 tokens** using `metric/tokenizer.py`.

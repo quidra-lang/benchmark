@@ -1,13 +1,15 @@
-# Task B selection: 93_sudoku_solver / Python
+# Task B selection — 93_sudoku_solver / Python
 
 ## Common answer requirements
 
-Reverse the digit candidate order while preserving first solution, placement counting, and backtracking.
+Locate the candidate enumeration and reverse it to 9 through 1. Keep the next-cell choice, successful-write count, backtracking and first-solution termination.
 
 ## Source evidence
 
-The digit loop currently tries 1 through 9. Reverse that loop to try 9 through 1, keeping the next-empty-cell search and validation logic. The retained placement operations count a successful write before recursion, propagate the first success without undoing it, and clear the cell after a failed recursive call. They should remain where they are.
+The range beginning at 1 with exclusive stop 10 is the candidate order. Change it to a descending range starting at 9 with exclusive stop 0 and a negative step.
 
 ## Minimization
 
-The retained completion and placement lines establish how changing order affects the first solution and placement count. Conflict expressions and output formatting stay unchanged. Selected complete lines of `main.py`: 9, 16, 17, 18, 19, 20, 21, 22, 34, 35, 36, 37, 38, 39, 40.
+Selected complete lines of `main.py`: L22. The change affects only the enumeration. The wider recursive body, puzzle data and output would provide context about unchanged behavior but do not locate any other edit.
+
+The selected excerpt measures **19 tokens** with `metric/tokenizer.py`.

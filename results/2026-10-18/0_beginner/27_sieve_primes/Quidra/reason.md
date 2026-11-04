@@ -1,7 +1,5 @@
-# Task B selection for 27_sieve_primes
+# Task B selection: 27_sieve_primes / Quidra
 
-The flags start true. Marking multiples from twice each still-marked p preserves 7 when p is 7 and crosses out 49 on that iteration. The later scan pushes only still-marked integers, so 7 enters the list and 49 does not. The documented chunks and join operations preserve the list order in output. The count label supplies no additional evidence about 7 or 49.
+The boolean flags start true. Marking by p from 2p never targets 7 from p=7, and no smaller p divides it. The 7 pass starts at 14 and marks 14, 21, 28, 35, 42 and 49 false. The final scan pushes exactly the remaining true numbers, and the documented chunks and text.join pass those numbers to println, so 7 prints and 49 does not.
 
-Selected complete lines in order are 1, 2, 4, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18.
-
-Task A uses 205 tokens. Task B uses 171 tokens.
+Complete main.qui lines: 1, 4, 7, 8, 9, 10, 12, 13, 14, 16, 17, 18. The explicit text namespace identifies join. The collections import is needed for the chunks extension. The empty declaration supplies no distinct fact about the final list membership for 7 and 49. The benchmark tokenizer counts 158 tokens in this excerpt.

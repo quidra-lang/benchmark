@@ -1,22 +1,17 @@
 # Task B selection: 11_seconds_to_hms / Java
 
-## Common answer requirements
+## Answer requirements
 
-1. Trace the given 312047 seconds into elapsed hours, minutes and seconds.
-2. Explain why hours are not reduced modulo 24, why minutes/seconds stay in 0 through 59, and how both are zero-padded.
+Trace 312047 seconds to elapsed hours, minute and second remainders, and their zero-padded display.
 
-## Answer supported by the excerpt
+## Evidence and answer
 
-312047 = 86 × 3600 + 2447 and 2447 = 40 × 60 + 47, so the line is `312047 seconds = 86:40:47`. Hours are the integer quotient by 3600 with no modulo-24 reduction. Minutes are either the remaining seconds divided by 60 or the total-minute quotient modulo 60; seconds are modulo 60. Width-two zero-padding supplies a leading zero for any one-digit minute or second.
+The first %d field receives seconds itself. The standard Formatter %d conversion accepts integral arguments; the primitive arithmetic expressions with / and % therefore use integer operands in this valid program. The hours quotient has no modulo 24, the minute and second remainders are each below 60, and %02d supplies the minimum width of two digits with zeros. The question gives the actual duration, so the typed input loop is redundant.
 
-## Source evidence and dependencies
+312047 = 86 × 3600 + 2447 and 2447 = 40 × 60 + 47. The output is 312047 seconds = 86:40:47. A one-digit minute or second would be padded with a leading zero.
 
-Selected `Main.java` lines: 5-7. The excerpt preserves these complete lines in their original order and indentation.
+## Minimization
 
-The question supplies the input value. Retained arithmetic establishes all three components, including integer division where type-dependent. The output format or small custom padding helper establishes the two-digit rendering. An input-loop line is retained only when it also establishes an integer operand type needed to interpret division.
+Selected complete lines of `Main.java`: 6, 7. The excerpt preserves their text, indentation and order.
 
-## Language semantics and minimization
-
-Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. An arithmetic-only excerpt cannot establish zero padding; a format-only excerpt cannot establish elapsed hours and component ranges. The selected arithmetic and formatting union excludes unrelated input rows unless inseparable from a needed type declaration.
-
-The selected excerpt contains **125 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 125 tokens; the complete source contains 169 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+The retained calculations and format fields cover the requested trace. The former explicit input/type line repeated the given value or integer-type evidence supplied by the operators or standard formatter. The previous excerpt contained 125 tokens; the selected excerpt contains **71 tokens** using `metric/tokenizer.py`.
