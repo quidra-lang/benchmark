@@ -4,4 +4,4 @@ The selected range controls the order of attempted candidate digits. Reverse it 
 
 Selected complete lines in order are 13.
 
-Task A uses 611 tokens. Task B uses 15 tokens.
+Task A uses 609 tokens. Task B uses 15 tokens.

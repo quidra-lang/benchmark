@@ -4,4 +4,4 @@ Change only the denominator in the square-root expression from count to count - 
 
 Selected complete lines in order are 2, 5, 16.
 
-Task A uses 276 tokens. Task B uses 31 tokens.
+Task A uses 274 tokens. Task B uses 31 tokens.
