@@ -13,3 +13,7 @@ The Collections removal operation mutates the list at its zero-based index and r
 The case values come from the question; a separate literal declaration is unnecessary when the selected algorithm identifies their roles. The removal operation itself identifies the removed person without a duplicate read just for printing or storing the removal.
 
 Selected complete lines of `main.qui`: 1, 5–6, 9–11. The prior excerpt measured 128 tokens; this excerpt measures 75 with `metric/tokenizer.py`.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 182; Task B 75.

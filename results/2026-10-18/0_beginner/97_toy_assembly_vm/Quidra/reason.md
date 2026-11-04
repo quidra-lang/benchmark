@@ -13,3 +13,7 @@ The current program counter selects a line, split supplies its fields, and the f
 Selected complete lines of `main.qui`: L21, L22, L23. The selected fetch, opcode and increment are sufficient to locate the guarded count. The HALT and JNZ control flow, register updates and output can all remain as written, so the larger dispatch excerpt is unnecessary.
 
 The selected excerpt measures **33 tokens** with `metric/tokenizer.py`.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 621; Task B 33.

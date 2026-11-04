@@ -12,4 +12,8 @@ The inclusive loop endpoint is the single bound to change from 30 to 40. The exp
 
 Selected complete lines of `main.qui`: 1, 2, 3, 4, 8, 9. The excerpt preserves their text, indentation and order.
 
-The loop header alone cannot establish that the same iteration updates the total. Adding the print calls only shows existing formatting, which the proposed change does not touch. The previous excerpt contained 88 tokens; the selected excerpt contains **67 tokens** using `metric/tokenizer.py`.
+The loop header alone cannot establish that the same iteration updates the total. Adding the print calls only shows existing formatting, which the proposed change does not touch. The previous excerpt contained 88 tokens; the selected excerpt contains **61 tokens** using `metric/tokenizer.py`.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 100; Task B 61.

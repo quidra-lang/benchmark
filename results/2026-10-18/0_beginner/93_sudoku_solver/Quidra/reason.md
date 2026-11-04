@@ -13,3 +13,7 @@ The typed range has inclusive bounds 1 and 9. Reverse the bounds and comparison 
 Selected complete lines of `main.qui`: L13. The change affects only the enumeration. The wider recursive body, puzzle data and output would provide context about unchanged behavior but do not locate any other edit.
 
 The selected excerpt measures **15 tokens** with `metric/tokenizer.py`.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 603; Task B 15.

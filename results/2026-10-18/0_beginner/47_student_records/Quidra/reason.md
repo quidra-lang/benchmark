@@ -4,4 +4,8 @@ The rank starts at zero and is assigned only when the sorted total differs from 
 
 Selected complete lines in order are 7, 8, 9, 10, 11, 12.
 
-Task A uses 309 tokens. Task B uses 64 tokens.
+Task A uses 307 tokens. Task B uses 62 tokens.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 307; Task B 62.

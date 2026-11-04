@@ -6,4 +6,8 @@ The loop condition establishes termination at zero. Math min caps payment at5000
 
 Selected complete source lines: 1, 7, 10, 11, 12, 14. All are verbatim and in source order. A full-source alternative adds unrelated month labels, initial values and printed summaries.
 
-Tokenizer: Task A193; Task B62. Runtime verification is separate.
+Tokenizer: Task A185; Task B62. Runtime verification is separate.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 185; Task B 62.

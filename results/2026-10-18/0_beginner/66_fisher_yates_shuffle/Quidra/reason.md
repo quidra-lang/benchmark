@@ -4,4 +4,8 @@ The deck construction determines each original card. The seed, loop bounds, upda
 
 The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
 
-Task A: 202 tokens. Task B: 163 tokens.
+Task A: 200 tokens. Task B: 161 tokens.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 200; Task B 161.

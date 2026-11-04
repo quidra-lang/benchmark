@@ -4,4 +4,8 @@ The fixture is a string, so its leading zero survives indexing and printing. Onl
 
 Selected complete source lines in order are 1, 3, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23.
 
-Tokenizer: Task A 342 tokens; Task B 229 tokens.
+Tokenizer: Task A 340 tokens; Task B 227 tokens.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 340; Task B 227.

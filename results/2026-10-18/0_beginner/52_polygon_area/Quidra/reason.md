@@ -11,3 +11,7 @@ The second polygon begins at (2, 1) and ends at (8, 2). The wrapped next-vertex 
 ## Minimization
 
 The first polygon establishes the second polygon’s ordinal position. Neither the list terminator nor later polygons supply evidence. The area appears in the Python output expression and in separate Quidra statements. Selected complete lines of `main.qui`: 1, 3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 394; Task B 296.

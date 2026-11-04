@@ -12,4 +12,8 @@ The full input scan supplies the position used by each push and by the immediate
 
 The unchanged input texts and output formatting do not affect the new representation or the error assignment. The matching evidence shows which comparison must still use the symbol after the stack gains a position.
 
-Selected complete lines of `main.qui`: 5–6, 8–20, 23–24. The prior excerpt measured 204 tokens; this excerpt measures 226 with `metric/tokenizer.py`.
+Selected complete lines of `main.qui`: 5–6, 8–20, 23–24. The prior excerpt measured 204 tokens; this excerpt measures 224 with `metric/tokenizer.py`.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 454; Task B 224.

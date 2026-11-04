@@ -4,4 +4,8 @@ Weights are examined in ascending order, with each vertex initially its own root
 
 Selected complete source lines: 1, 4, 5, 6, 7, 9, 10, 11, 12, 13, 15, 16, 17, 20, 22, 23, 25, 26, 27, 28, 29, 30, 31, 33, 34, 35, 36, 37, 38, 39, 42, 43, 44.
 
-With the benchmark tokenizer, this selection measures 349 tokens; the previous selection measured 351. The full source is 487 tokens.
+With the benchmark tokenizer, this selection measures 345 tokens; the previous selection measured 351. The full source is 481 tokens.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 481; Task B 345.

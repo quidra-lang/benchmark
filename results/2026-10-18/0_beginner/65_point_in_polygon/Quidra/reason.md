@@ -21,6 +21,10 @@ Locations in main source: L4, L5, L8, L9, L10, L11, L12, L13, L14, L15, L16.
 
 All selected lines are complete, verbatim and in source order. The selected source, the question, and documented language/library semantics support the answer. The full source is a sufficient alternative but includes the unrelated material identified above; the retained selection is a reviewed lower-token sufficient candidate, without a claim of exhaustive global minimality.
 
-Measurement: Task A 385; Task B 177. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
+Measurement: Task A 383; Task B 175. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
 
 Execution verification: the revised program compiled and its stdout matched the Python reference, because the historical Quidra source fails current compilation exactly.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 383; Task B 175.

@@ -6,4 +6,8 @@ The starting divisor is 2. No integer from 2 through 99 divides 9973, so the rem
 
 The question provides 9973. The original-to-working-value assignment, trial bounds and factor guards matter; other inputs do not. An empty list joined with a single factor produces no separator; in streaming versions the first-factor flag remains unchanged. The exponent formatting of earlier factors need not be read beyond the lines required to identify their guarded insertion.
 
-Source: `main.qui`, original lines 1, 5–18. The previous excerpt measures 222 tokens; this evidence set measures 188 tokens.
+Source: `main.qui`, original lines 1, 5–18. The previous excerpt measured 222 tokens; this evidence set measures 184 tokens.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 256; Task B 184.

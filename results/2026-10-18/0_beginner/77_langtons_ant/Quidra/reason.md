@@ -12,4 +12,8 @@ The excerpt is copied verbatim from `main.qui`, in source order. Retained source
 
 ## Minimization and alternatives
 
-The bound, turn, flip and move show the exact observation point. The board-row output and the count write show the insertion point; the board character decisions and black-count arithmetic do not need to change. The prior selection used 186 tokens; this selection uses 207 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+The bound, turn, flip and move show the exact observation point. The board-row output and the count write show the insertion point; the board character decisions and black-count arithmetic do not need to change. The prior selection used 186 tokens; this selection uses 205 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
+
+Current measurement with unchanged `metric/tokenizer.py`: Task A 342; Task B 205.
