@@ -4,4 +4,4 @@ For n=7 and k=3, the addition of k minus one advances two positions. The initial
 
 Selected complete lines in order are 1, 5, 6, 9, 10, 11.
 
-Task A uses 193 tokens. Task B uses 78 tokens.
+Task A uses 190 tokens. Task B uses 75 tokens.

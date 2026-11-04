@@ -4,4 +4,4 @@ The second input has two runs of twelve W characters separated by one B. The doc
 
 Selected complete source lines in order are 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 19, 20, 21, 22.
 
-Tokenizer: Task A 230 tokens; Task B 203 tokens.
+Tokenizer: Task A 217 tokens; Task B 190 tokens.

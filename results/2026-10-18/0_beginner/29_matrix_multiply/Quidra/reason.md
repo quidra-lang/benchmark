@@ -4,4 +4,4 @@ The gathered second column is [4,2,-1,7], and the first row of A is [3,-2,5,1]. 
 
 Selected complete lines in order are 1, 2, 4, 5, 6, 7, 8, 9, 10, 11.
 
-Task A uses 198 tokens. Task B uses 197 tokens.
+Task A uses 190 tokens. Task B uses 189 tokens.

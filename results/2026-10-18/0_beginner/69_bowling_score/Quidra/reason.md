@@ -4,4 +4,4 @@ The accumulator, frame loop and printed value locate the change from cumulative 
 
 Selected complete lines in order are 12, 14, 26.
 
-Task A uses 554 tokens. Task B uses 33 tokens.
+Task A uses 549 tokens. Task B uses 33 tokens.

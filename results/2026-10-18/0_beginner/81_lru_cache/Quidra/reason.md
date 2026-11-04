@@ -10,4 +10,4 @@ Selected complete source lines in order: 15.
 
 Every selected line is copied verbatim from `main.qui` in source order. The reviewed alternatives were the relevant contiguous span and complete source; each adds unchanged context. This is a reviewed sufficient selection, not a proof of a global minimum. Task B assumes Task A correctness as required by the benchmark README.
 
-Task A uses 206 tokens. Task B uses 13 tokens under the unchanged `metric/tokenizer.py`. Source selection and token measurement do not establish compilation or execution.
+Task A uses 200 tokens. Task B uses 13 tokens under the unchanged `metric/tokenizer.py`. Source selection and token measurement do not establish compilation or execution.

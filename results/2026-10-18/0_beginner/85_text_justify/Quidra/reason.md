@@ -6,4 +6,4 @@ The result binding is necessary for this pinned compiler: justify returns string
 
 Selected complete main.qui lines: 1, 4. Each is copied verbatim once and in source order.
 
-Using unchanged metric/tokenizer.py: Task A **186** tokens; Task B **24** tokens. These are source-token measures. This is a minimized sufficient selection among the reviewed alternatives, not a proof of a global minimum. Native compiler/output checks are recorded separately in validation.json.
+Using unchanged metric/tokenizer.py: Task A **179** tokens; Task B **21** tokens. These are source-token measures. This is a minimized sufficient selection among the reviewed alternatives, not a proof of a global minimum. Native compiler/output checks are recorded separately in validation.json.

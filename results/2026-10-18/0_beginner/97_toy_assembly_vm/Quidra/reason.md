@@ -4,4 +4,4 @@ The selected lines show the instruction mnemonic and the common execution counte
 
 Selected complete lines in order are 21, 22, 23.
 
-Task A uses 648 tokens. Task B uses 38 tokens.
+Task A uses 629 tokens. Task B uses 33 tokens.

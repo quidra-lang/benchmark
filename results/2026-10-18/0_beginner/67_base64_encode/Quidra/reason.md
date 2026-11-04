@@ -4,4 +4,4 @@ The byte array, loop width and remaining-byte calculation identify the partial f
 
 The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
 
-Task A: 362 tokens. Task B: 149 tokens.
+Task A: 340 tokens. Task B: 140 tokens.

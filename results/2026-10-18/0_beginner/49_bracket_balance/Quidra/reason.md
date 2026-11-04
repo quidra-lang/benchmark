@@ -4,4 +4,4 @@ Track the scan index with each opening bracket pushed and discard that index whe
 
 Selected complete lines in order are 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24.
 
-Task A uses 473 tokens. Task B uses 208 tokens.
+Task A uses 458 tokens. Task B uses 204 tokens.

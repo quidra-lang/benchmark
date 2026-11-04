@@ -4,4 +4,4 @@ The accumulator and right operand are signed integers obtained by evaluating the
 
 Selected complete source lines in order are 25, 31, 37.
 
-Tokenizer: Task A 1029 tokens; Task B 52 tokens.
+Tokenizer: Task A 993 tokens; Task B 48 tokens.

@@ -4,4 +4,4 @@ The output interpolation is the only site that changes. Set frac to six and pres
 
 Selected complete lines in order are 30.
 
-Task A uses 592 tokens. Task B uses 24 tokens.
+Task A uses 576 tokens. Task B uses 24 tokens.

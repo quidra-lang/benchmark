@@ -4,4 +4,4 @@ The selected CSV records are those for north or notebook, with the header establ
 
 Selected source lines in order are 1, 3, 4, 5, 9, 10, 13, 15, 18, 19, 22, 23, 24, 25, 26, 28, 29, 32, 34.
 
-Task A uses 663 tokens. Task B uses 348 tokens.
+Task A uses 649 tokens. Task B uses 334 tokens.

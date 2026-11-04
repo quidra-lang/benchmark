@@ -4,4 +4,4 @@ The deck construction determines each original card. The seed, loop bounds, upda
 
 The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
 
-Task A: 219 tokens. Task B: 171 tokens.
+Task A: 204 tokens. Task B: 163 tokens.
